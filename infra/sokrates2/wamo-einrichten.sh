@@ -34,6 +34,8 @@ if [ ! -f /etc/wamo/geheim.env ]; then
 # Claude Code: entweder API-Schluessel ODER Token aus "claude setup-token" (Abo)
 ANTHROPIC_API_KEY=
 CLAUDE_CODE_OAUTH_TOKEN=
+# Pflicht bei einem Organisationsschluessel (wrkspc_...), gleicher Wert wie in der .env des PCs
+ANTHROPIC_WORKSPACE_ID=
 # GitHub: Token der GitHub App WAMO oder fein granularer Token eines Bot-Kontos
 GH_TOKEN=
 # Vercel: Team-Token mit Ablaufdatum
@@ -41,6 +43,9 @@ VERCEL_TOKEN=
 VERCEL_ORG_ID=
 # Supabase Cloud: persoenlicher Zugriffstoken (Management-API, CLI, MCP)
 SUPABASE_ACCESS_TOKEN=
+# Jira (wamocon.atlassian.net): API-Token und Anmeldeadresse des Kontos, nur lesend genutzt
+JIRA_API_KEY=
+JIRA_EMAIL=
 # Sprachdienste und Gateway
 SONIOX_API_KEY=
 LITELLM_API_KEY=

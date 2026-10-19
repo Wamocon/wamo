@@ -29,10 +29,12 @@ Monorepo: `ui/` (Next.js 16), `voice-core/` (Python, Pipecat 1.x), `host/` (Pyth
 1. **Eigener Supabase-Stack auf Sokrates-2** (192.168.178.136, Compose-Projekt `supabase-wamo` in
    `/home/wamocon/supabase-wamo`, Container `wamo-supabase-*`, eingerichtet mit `infra/sokrates2/supabase-wamo-einrichten.sh`).
    Getrennt von allen anderen Diensten auf Sokrates-2: eigene Konten, eigene Geheimnisse, Registrierung geschlossen.
-   API und Auth `http://192.168.178.136:55321` (ES256, Prüfung lokal über JWKS).
+   API und Auth `https://192.168.178.136:55443` (ES256, Prüfung lokal über JWKS; Caddy `wamo-caddy` vor Envoy
+   `:55321`, eigene CA `infra/sokrates2/wamo-ca.crt`, im Voice-Core über `WAMO_CA_FILE`, Code in `voice-core/wamo_tls.py`).
    Der Voice-Core spricht direkt mit Postgres als Rolle `wamo_core` über Supavisor (Port 55322, Session-Modus,
-   Benutzer `wamo_core.wamo`). Kein `service_role`-Schlüssel im Voice-Core. Das Schema ist nicht in PostgREST.
-   Unterwegs über WireGuard ins Büronetz.
+   Benutzer `wamo_core.wamo`, TLS mit `sslmode=verify-full`). Kein `service_role`-Schlüssel im Voice-Core. Das Schema
+   ist nicht in PostgREST. Firewall `wamo-firewall` (DOCKER-USER): WAMO-Ports nur für Loopback, Caddy-Netz (HTTP) und
+   Büro-LAN. Unterwegs über WireGuard ins Büronetz.
 2. **Mehrere Profile.** Zugang nur mit aktivem Profil in `<schema>.profiles` und zweitem Faktor (aal2).
    Rollen `admin` und `mitglied`. PC-Werkzeuge und Entwicklungsaufträge vorerst nur für `admin`.
    Konten legt nur der Admin an (`scripts/wamo_nutzer.py`); zusätzlich entscheidet das aktive WAMO-Profil.
