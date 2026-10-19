@@ -106,6 +106,10 @@ class DevAgentHelperTests(unittest.TestCase):
         self.assertIn(f'--project-dir "{project.as_posix()}"', command)
         self.assertIn(f'--job-dir "{job.as_posix()}"', command)
         self.assertTrue(command.endswith("|| exit 2"))  # jeder Fehlstart blockiert
+        for event in ("PostToolUse", "PostToolUseFailure"):  # Freigaben verbucht erst die Ausführung
+            nachher = s["hooks"][event][0]["hooks"][0]["command"]
+            self.assertIn("--nachher", nachher)
+            self.assertIn(f'--job-dir "{job.as_posix()}"', nachher)
         deny = s["permissions"]["deny"]
         for rule in ("Bash(git push --force:*)", "Bash(gh repo delete:*)", "Read(**/.env)", "Read(~/.ssh/**)"):
             self.assertIn(rule, deny)
@@ -155,13 +159,13 @@ class DevAgentHelperTests(unittest.TestCase):
                     dev_agent.validate_project(bad)
 
     def test_projects_dir_must_not_contain_repo(self):
-        """M3: Projekte-Ordner gleich Elternordner des Repos, darüber oder darin: kein Auftrag."""
+        """M3: Projekte-Ordner gleich Elternordner des Repos, darüber oder darin: kein Auftrag (lokal)."""
         repo = dev_guard.REPO_ROOT
         for bad in (repo.parent, repo.parent.parent, repo, repo / "voice-core"):
             with self.subTest(bad=bad):
                 self.assertIsNotNone(dev_agent.projects_dir_problem(bad))
                 with mock.patch.object(dev_agent, "PROJECTS_DIR", bad), self.assertRaises(ValueError):
-                    dev_agent.validate_project("demo-app")
+                    dev_agent.validate_project("demo-app", "lokal")
         self.assertIsNone(dev_agent.projects_dir_problem(Path.home() / "Projekte"))
 
     def test_entwicklung_switch_default_off(self):
@@ -211,11 +215,14 @@ class DevAgentFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self._patch = mock.patch.object(dev_agent, "PROJECTS_DIR", Path.home() / "Projekte")
         self._patch.start()
-        self.agent = dev_agent.DevAgent(memory=None, auftraggeber="Erika")
+        self._env = mock.patch.dict(os.environ, {"WAMO_ENTWICKLUNG_LOKAL_BESTAETIGT": "ja"})
+        self._env.start()
+        self.agent = dev_agent.DevAgent(memory=None, auftraggeber="Erika", ort="lokal")
         self.task = FakeTask()
         self.agent.attach(self.task)
 
     async def asyncTearDown(self):
+        self._env.stop()
         self._patch.stop()
 
     async def prepare(self):

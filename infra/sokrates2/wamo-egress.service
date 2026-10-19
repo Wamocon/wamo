@@ -1,0 +1,25 @@
+# WAMO-Ausgangsfilter: nft-Tabelle inet wamo_egress für den Benutzer wamo (Entwicklungsaufträge).
+# Installiert durch infra/sokrates2/wamo-job-einrichten.sh nach /etc/systemd/system/.
+#
+# Lädt früh beim Start (vor dem Netz) und unabhängig von ufw und Docker. Conflicts=nftables.service: der
+# Ubuntu-Dienst nftables beginnt mit "flush ruleset" und würde die Tabelle löschen; er ist auf Sokrates-2 aus.
+# Fehlt die Tabelle, startet trotzdem kein Auftrag: der Selbsttest des Dispatchers prüft sie vor jedem Lauf.
+# Rückweg: wamo-egress-rueckweg.sh
+[Unit]
+Description=WAMO-Ausgangsfilter für den Benutzer wamo (nft inet wamo_egress)
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target
+Wants=network-pre.target
+Conflicts=nftables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/sbin/nft -c -f /etc/wamo/egress.nft
+ExecStart=/usr/sbin/nft -f /etc/wamo/egress.nft
+ExecReload=/usr/sbin/nft -f /etc/wamo/egress.nft
+ExecStop=/usr/sbin/nft delete table inet wamo_egress
+
+[Install]
+WantedBy=multi-user.target

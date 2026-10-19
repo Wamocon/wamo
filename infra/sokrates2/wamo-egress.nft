@@ -1,0 +1,44 @@
+#!/usr/sbin/nft -f
+# WAMO-Ausgangsfilter für den Benutzer wamo (Entwicklungsaufträge in der bubblewrap-Sandbox).
+# Vorlage: wamo-job-einrichten.sh setzt @WAMO_UID@ und installiert nach /etc/wamo/egress.nft (root:root 0644),
+# geladen von wamo-egress.service. Eigene Tabelle inet wamo_egress: ufw, iptables-restore und Docker fassen sie
+# nicht an. Nur Pakete aus Sockets des Benutzers wamo laufen in die Kette wamo; alles andere (andere Benutzer,
+# Dienste, Pakete des Kernels ohne Socket wie IPv6-Nachbarerkennung) bleibt unberührt.
+#
+#   erlaubt   bestehende Verbindungen (z. B. die eingehende SSH-Sitzung), DNS an 127.0.0.53,
+#             127.0.0.1:20000-20999 (Entwicklungsserver eines Auftrags), Internet nur auf TCP 80 und 443
+#   abgewiesen IPv6, private und besondere Netze (intern4), eigene, Broadcast-, Multicast- und Anycast-Adressen,
+#             jedes andere Protokoll und jeder andere Port; mit begrenztem Log und "admin prohibited"
+
+table inet wamo_egress
+delete table inet wamo_egress
+
+table inet wamo_egress {
+	set intern4 {
+		type ipv4_addr
+		flags interval
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12,
+			     192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 }
+	}
+
+	chain ausgang {
+		type filter hook output priority 0; policy accept;
+		meta skuid @WAMO_UID@ counter jump wamo
+	}
+
+	chain wamo {
+		ct state established,related accept
+		ip daddr 127.0.0.53 meta l4proto { tcp, udp } th dport 53 accept
+		ip daddr 127.0.0.1 tcp dport 20000-20999 accept
+		meta nfproto ipv6 counter jump abweisen
+		ip daddr @intern4 counter jump abweisen
+		fib daddr type { local, broadcast, multicast, anycast } counter jump abweisen
+		tcp dport { 80, 443 } accept
+		counter jump abweisen
+	}
+
+	chain abweisen {
+		limit rate 6/minute burst 10 packets log prefix "WAMO-AUSGANG abgewiesen: " level warn
+		reject with icmpx type admin-prohibited
+	}
+}
