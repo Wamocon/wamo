@@ -14,8 +14,11 @@ Das Netz bleibt an (Claude-API, GitHub, npm), aber zwei Wege zu Diensten auf dem
   * Abstrakte Unix-Sockets außerhalb der Sandbox (zum Beispiel @/tmp/.X11-unix/X1 einer Desktop-Sitzung)
     und Signale an Prozesse außerhalb.
 
-Fail-closed: Ohne Landlock ab ABI 6 (Kernel 6.12) startet der Befehl nicht (Exit 126). UDP (DNS) und
-das Binden eigener Ports bleiben frei. Nur Standardbibliothek (ctypes).
+Das Binden eigener TCP-Ports ist nur im Bereich 20000-20999 erlaubt (eigene Entwicklungsserver, M3), sonst
+gesperrt. Bind auf Port 0 (Quellport, zufälliger Lauscher) bleibt frei, connect bindet implizit Port 0.
+
+Fail-closed: Ohne Landlock ab ABI 6 (Kernel 6.12) startet der Befehl nicht (Exit 126). UDP (DNS) bleibt frei;
+der Ausgangsfilter (nft) begrenzt sie auf DNS. Nur Standardbibliothek (ctypes).
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ SYS_LANDLOCK_CREATE_RULESET = 444  # gleiche Nummern auf x86_64 und arm64 (gener
 SYS_LANDLOCK_ADD_RULE = 445
 SYS_LANDLOCK_RESTRICT_SELF = 446
 LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
+LANDLOCK_ACCESS_NET_BIND_TCP = 1 << 0
 LANDLOCK_ACCESS_NET_CONNECT_TCP = 1 << 1
 LANDLOCK_RULE_NET_PORT = 2
 LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
@@ -35,6 +39,7 @@ LANDLOCK_SCOPE_SIGNAL = 1 << 1
 PR_SET_NO_NEW_PRIVS = 38
 MIN_ABI = 6
 EXIT_FEHLER = 126
+BIND_MIN, BIND_MAX = 20000, 20999  # M3: nur diese Ports darf ein Auftrag binden (eigene Entwicklungsserver)
 
 
 class RulesetAttr(ctypes.Structure):
@@ -83,22 +88,45 @@ def abi_version() -> int:
                         ctypes.c_uint32(LANDLOCK_CREATE_RULESET_VERSION))
 
 
+def port_zugriff(gesperrt: set[int]) -> dict[int, int]:
+    """Je Port der erlaubte Zugriff: CONNECT für alle nicht gesperrten Ports, BIND nur für BIND_MIN..BIND_MAX.
+    Ports ohne Zugriff kommen nicht vor (connect dorthin und bind sonst wo sind damit gesperrt). Bind auf Port 0
+    (Quellport, zufälliger Lauscher) lässt Landlock ohnehin immer zu, connect bindet implizit Port 0."""
+    zugriff: dict[int, int] = {}
+    for p in range(1, 65536):
+        acc = 0
+        if p not in gesperrt:
+            acc |= LANDLOCK_ACCESS_NET_CONNECT_TCP
+        if BIND_MIN <= p <= BIND_MAX:
+            acc |= LANDLOCK_ACCESS_NET_BIND_TCP
+        if acc:
+            zugriff[p] = acc
+    return zugriff
+
+
 def abschotten(gesperrt: set[int]) -> None:
     libc = _libc()
     abi = abi_version()
     if abi < MIN_ABI:
         raise OSError(f"Landlock ABI {abi} zu alt oder nicht aktiv (nötig: {MIN_ABI})")
-    attr = RulesetAttr(0, LANDLOCK_ACCESS_NET_CONNECT_TCP,
+    attr = RulesetAttr(0, LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP,
                        LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL)
     fd = _check(libc.syscall(ctypes.c_long(SYS_LANDLOCK_CREATE_RULESET), ctypes.byref(attr),
                              ctypes.c_size_t(ctypes.sizeof(attr)), ctypes.c_uint32(0)), "create_ruleset")
     try:
-        rule = NetPortAttr(LANDLOCK_ACCESS_NET_CONNECT_TCP, 0)
-        for port in erlaubte_ports(gesperrt):
+        rule = NetPortAttr(0, 0)
+        for port, acc in port_zugriff(gesperrt).items():
+            rule.allowed_access = acc
             rule.port = port
             _check(libc.syscall(ctypes.c_long(SYS_LANDLOCK_ADD_RULE), ctypes.c_int(fd),
                                 ctypes.c_int(LANDLOCK_RULE_NET_PORT), ctypes.byref(rule), ctypes.c_uint32(0)),
                    "add_rule")
+        # Port 0 (bind -> zufälliger freier Port) gesondert und tolerant: manche Kernel lehnen eine Regel für
+        # Port 0 ab. Dann bleibt bind(0) gesperrt; das ist unkritisch (der Port lässt sich nicht gezielt wählen).
+        rule.allowed_access = LANDLOCK_ACCESS_NET_BIND_TCP
+        rule.port = 0
+        libc.syscall(ctypes.c_long(SYS_LANDLOCK_ADD_RULE), ctypes.c_int(fd),
+                     ctypes.c_int(LANDLOCK_RULE_NET_PORT), ctypes.byref(rule), ctypes.c_uint32(0))
         _check(libc.prctl(ctypes.c_int(PR_SET_NO_NEW_PRIVS), ctypes.c_ulong(1), ctypes.c_ulong(0),
                           ctypes.c_ulong(0), ctypes.c_ulong(0)), "no_new_privs")
         _check(libc.syscall(ctypes.c_long(SYS_LANDLOCK_RESTRICT_SELF), ctypes.c_int(fd), ctypes.c_uint32(0)),
@@ -128,14 +156,66 @@ SYSCALLS = {  # Name: (aarch64 = generische Tabelle, x86_64)
 ENOSYS_SYSCALLS = {"clone3": (435, 435)}
 SEND_SYSCALLS = {"sendto": ((206, 44), 3), "sendmsg": ((211, 46), 2), "sendmmsg": ((269, 307), 3)}  # (Nummern, Index flags)
 MSG_FASTOPEN = 0x20000000
-# socket(): Landlock regelt nur TCP. MPTCP (262) fällt bei der Verbindung auf TCP zurück und umginge die
-# Portsperre (auf Sokrates-2 nachgewiesen, net.mptcp.enabled=1), SCTP (132) ebenso, wenn das Modul nachlädt.
+# socket(): Allowlist der Familien (M2). Nur AF_UNIX, AF_INET, AF_INET6 und AF_NETLINK (nur Protokoll 0,
+# NETLINK_ROUTE für getaddrinfo) sind erlaubt; Bluetooth, QIPCRTR, MCTP, AF_PACKET, AF_VSOCK, AF_ALG, XDP und
+# andere Netlink-Protokolle (sock_diag, netfilter, audit, uevent) fallen weg. Innerhalb AF_INET/INET6 bleiben
+# MPTCP (262) und SCTP (132) gesperrt: MPTCP fällt bei connect auf TCP zurück und umginge die Landlock-Portsperre
+# (auf Sokrates-2 nachgewiesen), SCTP ebenso, sobald das Modul nachlädt.
 SOCKET_NR = (198, 41)
-SOCKET_FAMILIEN_GESPERRT = {"AF_PACKET": 17, "AF_VSOCK": 40, "AF_ALG": 38}
+AF_UNIX, AF_INET, AF_INET6, AF_NETLINK = 1, 2, 10, 16
+SOCKET_FAMILIEN_ERLAUBT = (AF_UNIX, AF_INET, AF_INET6, AF_NETLINK)
+NETLINK_PROTO_ERLAUBT = 0  # NETLINK_ROUTE
 SOCKET_PROTOKOLLE_GESPERRT = {"IPPROTO_MPTCP": 262, "IPPROTO_SCTP": 132}
 EPERM, ENOSYS = 1, 38
 RET_ALLOW, RET_ERRNO, RET_KILL_PROCESS = 0x7FFF0000, 0x00050000, 0x80000000
 LD_W_ABS, JEQ_K, JGE_K, JSET_K, RET_K = 0x20, 0x15, 0x35, 0x45, 0x06  # BPF_LD|W|ABS, BPF_JMP|JEQ|K, ...
+
+
+def _mit_labels(zeilen: list) -> list[tuple[int, int, int, int]]:
+    """Kleiner Assembler: ('label', name) markiert eine Stelle, (code, jt, jf, k) ist ein Befehl; jt/jf dürfen
+    Label-Namen (Strings) sein und werden in Vorwärts-Offsets aufgelöst (relativ zum nächsten Befehl)."""
+    pos: dict[str, int] = {}
+    befehle = []
+    for z in zeilen:
+        if z[0] == "label":
+            pos[z[1]] = len(befehle)
+        else:
+            befehle.append(z)
+    out = []
+    for i, (code, jt, jf, k) in enumerate(befehle):
+        aufl = lambda t: pos[t] - (i + 1) if isinstance(t, str) else t  # noqa: E731
+        out.append((code, aufl(jt), aufl(jf), k))
+    return out
+
+
+def _socket_block() -> list[tuple[int, int, int, int]]:
+    """In sich geschlossener Block für den socket()-Aufruf: Familien-Allowlist, AF_NETLINK nur Protokoll 0,
+    AF_INET/INET6 ohne MPTCP/SCTP. A enthält beim Eintritt die Syscall-Nummer (hier nicht mehr gebraucht)."""
+    eperm = (RET_K, 0, 0, RET_ERRNO | EPERM)
+    erlaubt = (RET_K, 0, 0, RET_ALLOW)
+    mptcp, sctp = SOCKET_PROTOKOLLE_GESPERRT["IPPROTO_MPTCP"], SOCKET_PROTOKOLLE_GESPERRT["IPPROTO_SCTP"]
+    return _mit_labels([  # nur Vorwärtssprünge (cBPF kann nicht rückwärts springen)
+        (LD_W_ABS, 0, 0, 16),                       # A = domain (args[0])
+        (JEQ_K, "erlaubt1", 0, AF_UNIX),
+        (JEQ_K, "inet", 0, AF_INET),
+        (JEQ_K, "inet", 0, AF_INET6),
+        (JEQ_K, "netlink", 0, AF_NETLINK),
+        eperm,                                       # jede andere Familie
+        ("label", "inet"),
+        (LD_W_ABS, 0, 0, 32),                        # A = protocol (args[2])
+        (JEQ_K, "eperm2", 0, mptcp),
+        (JEQ_K, "eperm2", 0, sctp),
+        ("label", "erlaubt1"),
+        erlaubt,
+        ("label", "eperm2"),
+        eperm,
+        ("label", "netlink"),
+        (LD_W_ABS, 0, 0, 32),
+        (JEQ_K, "erlaubt2", 0, NETLINK_PROTO_ERLAUBT),
+        eperm,
+        ("label", "erlaubt2"),
+        erlaubt,
+    ])
 
 
 def seccomp_programm(arch: str) -> list[tuple[int, int, int, int]]:
@@ -149,17 +229,7 @@ def seccomp_programm(arch: str) -> list[tuple[int, int, int, int]]:
         prog += [(JEQ_K, 0, 1, nummern[idx]), (RET_K, 0, 0, RET_ERRNO | EPERM)]
     for nummern in ENOSYS_SYSCALLS.values():
         prog += [(JEQ_K, 0, 1, nummern[idx]), (RET_K, 0, 0, RET_ERRNO | ENOSYS)]
-    # socket(domain, type, protocol): gesperrte Familien (args[0]) und Protokolle (args[2])
-    familien = list(SOCKET_FAMILIEN_GESPERRT.values())
-    protokolle = list(SOCKET_PROTOKOLLE_GESPERRT.values())
-    block = [(LD_W_ABS, 0, 0, 16)]
-    for i, familie in enumerate(familien):  # Treffer: Sprung auf RET EPERM am Blockende
-        block.append((JEQ_K, len(familien) - i + len(protokolle), 0, familie))
-    block.append((LD_W_ABS, 0, 0, 32))
-    for i, protokoll in enumerate(protokolle):
-        rest = len(protokolle) - i - 1
-        block.append((JEQ_K, rest, 1 if rest == 0 else 0, protokoll))
-    block += [(RET_K, 0, 0, RET_ERRNO | EPERM), (RET_K, 0, 0, RET_ALLOW)]
+    block = _socket_block()  # socket(): Familien-Allowlist (M2)
     prog += [(JEQ_K, 0, len(block), SOCKET_NR[idx]), *block]
     for nummern, flags_index in SEND_SYSCALLS.values():
         # nicht dieser Aufruf: 4 weiter; sonst flags (unteres Wort, little endian) auf MSG_FASTOPEN prüfen
@@ -188,6 +258,17 @@ def parse_args(argv: list[str]) -> tuple[set[int], list[str]]:
     return parse_ports(opts[1]), cmd
 
 
+def pdeathsig_setzen() -> None:
+    """Stirbt der übergeordnete Prozess (bwrap, letztlich die Kette bis zum Dispatcher), bekommt dieser Prozess
+    SIGKILL (N10, best effort). Deckt den häufigen Fall ab; ein hartes SIGKILL des Dispatchers selbst fängt
+    zusätzlich das Zeitlimit (RuntimeMaxSec) der systemd-Einheit ab."""
+    try:
+        PR_SET_PDEATHSIG, SIGKILL = 1, 9
+        ctypes.CDLL(None, use_errno=True).prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0)
+    except (OSError, AttributeError, ValueError, TypeError):
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["--seccomp-bpf"]:  # Installation: Filter erzeugen
@@ -199,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         gesperrt, cmd = parse_args(argv)
+        pdeathsig_setzen()
         abschotten(gesperrt)
     except (OSError, ValueError) as e:
         print(f"WAMO-Abschottung fehlgeschlagen, Auftrag startet nicht: {e}", file=sys.stderr)

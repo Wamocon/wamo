@@ -71,7 +71,7 @@ from pipecat.frames.frames import LLMMessagesAppendFrame
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.services.llm_service import FunctionCallParams
 
-from dev_guard import REPO_ROOT, SELF_REPO, decide, fingerprint, write_json_atomic
+from dev_guard import REPO_ROOT, SELF_REPO, _skript_befehl, decide, fingerprint, write_json_atomic
 from persona import clean_inline
 from werkzeugkarte import AUFTRAGSARTEN, KARTEN, anweisungsblock, art_beschreibung
 
@@ -112,6 +112,7 @@ REMOTE_ENDE_STATUS = {
     "fertig": "fertig", "zeitlimit": "abgebrochen (Zeitlimit)", "abgebrochen": "abgebrochen",
     "verlassen": "abgebrochen (Verbindung beendet)",
     "freigabe_mehrfach": "abgebrochen (Freigabe öfter genutzt als erteilt)",
+    "egress_offen": "abgebrochen (Ausgangsfilter auf Sokrates-2 ausgefallen)",
 }
 REMOTE_EXIT_STATUS = {
     2: "nicht gestartet (Auftrag abgewiesen)", 3: REMOTE_EREIGNIS_STATUS["selbsttest_fehlgeschlagen"],
@@ -815,8 +816,16 @@ class DevAgent:
                                MAX_OFFENE_FREIGABEN)
                 break
             if req["tool"] == ZUGANG_TOOL:
-                req["grund"] = clean_inline(str(job.ereignisse.get("zugang_erweitert", {}).get("grund", "")), 200) \
+                zug = job.ereignisse.get("zugang_erweitert", {})
+                req["grund"] = clean_inline(str(zug.get("grund", "")), 200) \
                     or "Mehr Zugänge als frühere Aufträge in diesem Projekt"
+                # H3: dem Admin die seit dem letzten Lauf geänderten Autostart-Flächen zeigen, dazu die Klon-Option
+                teile = [str(z) for z in zug.get("inventur", []) if isinstance(z, str)][:30]
+                if zug.get("hinweis_klon"):
+                    teile.append(str(zug["hinweis_klon"]))
+                req["detail"] = clean_inline(" | ".join(teile), 2000)
+            elif _skript_befehl(req["tool"], req["input"]):  # M5: Warnung bei Befehlen, die Projektcode ausführen
+                req["warnung"] = "Dieser Befehl führt Projektcode aus (Skript, npm, make); Inhalt genau prüfen."
             req["action_id"] = await self._memory.log_action(
                 tool=req["tool"], params=req["input"], reason=req["grund"], risk="critical")
             job.pending[req["id"]] = req
@@ -825,8 +834,8 @@ class DevAgent:
                 "type": "freigaben",
                 "job": job.id,
                 "projekt": job.projekt.name,
-                "items": [{"id": r["id"], "grund": r["grund"], "detail": _detail(r["tool"], r["input"]),
-                           "von": self._auftraggeber}
+                "items": [{"id": r["id"], "grund": r["grund"], "detail": r.get("detail") or _detail(r["tool"], r["input"]),
+                           "warnung": r.get("warnung"), "von": self._auftraggeber}
                           for r in job.pending.values()],
             })
 
@@ -902,7 +911,15 @@ def _describe(name: str, data: dict) -> str:
 DETAIL_CHARS = 20000  # Freigabekarte: der vollständige Aufruf, nur von Steuer- und Bidi-Zeichen bereinigt
 
 
+def _gekuerzt(text: str) -> str:
+    """Kürzt auf DETAIL_CHARS und macht die Kürzung sichtbar (N8); der Fingerabdruck deckt den ganzen Aufruf."""
+    sauber = clean_inline(text, DETAIL_CHARS + 1)
+    if len(sauber) > DETAIL_CHARS:
+        return sauber[:DETAIL_CHARS] + " […gekürzt; der Fingerabdruck deckt den vollständigen Aufruf]"
+    return sauber
+
+
 def _detail(tool: str, data: dict) -> str:
     if tool in ("Bash", "PowerShell", "Monitor"):
-        return clean_inline(str(data.get("command", "")), DETAIL_CHARS)
-    return clean_inline(f"{tool.rsplit('__', 1)[-1]} {json.dumps(data, ensure_ascii=False)}", DETAIL_CHARS)
+        return _gekuerzt(str(data.get("command", "")))
+    return _gekuerzt(f"{tool.rsplit('__', 1)[-1]} {json.dumps(data, ensure_ascii=False)}")

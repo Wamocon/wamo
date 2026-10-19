@@ -143,6 +143,12 @@ def tfo(port):
     try:
         s.sendto(b"x", socket.MSG_FASTOPEN, ("127.0.0.1", port)); return "gesendet"
     except OSError as e: return name(e)
+def bind_an(host, port):
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind((host, port)); s.listen(1); return "ok"
+    except OSError as e: return name(e)
+    finally: s.close()
 def eigener_server():
     srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", 20123)); srv.listen(1)
@@ -152,7 +158,9 @@ w = {"postgres": t("127.0.0.1", 55322), "ollama": t("127.0.0.1", 11434), "lo9": 
      "lo9mptcp": t("127.0.0.1", 9, 262), "netz10": t("10.255.255.254", 9), "netz10mptcp": t("10.255.255.254", 9, 262),
      "bruecke": t(sys.argv[1], 9), "lan443": t("192.168.178.1", 443), "github": t("github.com", 443, timeout=10),
      "ipv6": t("2606:4700:4700::1111", 443, fam=socket.AF_INET6), "x11": t("\0/tmp/.X11-unix/X1", fam=socket.AF_UNIX),
-     "tfo55322": tfo(55322), "eigener20123": eigener_server()}
+     "tfo55322": tfo(55322), "eigener20123": eigener_server(),
+     "bind_dev": bind_an("127.0.0.1", 20511), "bind_0.0.0.0:55999": bind_an("0.0.0.0", 55999),
+     "bind_80": bind_an("127.0.0.1", 80), "bind_ephemer": bind_an("127.0.0.1", 0)}
 for k, v in w.items(): print(k, v)
 '''
 
@@ -316,6 +324,10 @@ def grenzen() -> None:
     pruefe("Internet über 443 offen (github.com)", n.get("github") == "offen", n.get("github", "?"))
     pruefe("eigener Entwicklungsserver auf 127.0.0.1:20123 erreichbar", n.get("eigener20123") == "offen",
            n.get("eigener20123", "?"))
+    pruefe("Landlock bind: 20000-20999 erlaubt, Port 80 und 0.0.0.0:55999 gesperrt, Port 0 frei (M3)",
+           n.get("bind_dev") == "ok" and n.get("bind_ephemer") == "ok"
+           and n.get("bind_80") in zu and n.get("bind_0.0.0.0:55999") in zu,
+           " ".join(f"{k}={n.get(k)}" for k in ("bind_dev", "bind_0.0.0.0:55999", "bind_80", "bind_ephemer")))
 
     out, err = text(sandbox(job, f"cd {PROJ} && git clone -q --depth 1 https://github.com/octocat/Hello-World.git hallo && ls hallo"))
     pruefe("git clone über HTTPS im Projektordner", "README" in out, (err or out).strip()[-150:])
@@ -371,25 +383,53 @@ def entschaerfen_und_buchfuehrung() -> None:
     (PROJ / ".git" / "modules" / "sub" / "hooks" / "post-checkout").write_text("#!/bin/sh\n")
     (PROJ / ".git" / "modules" / "sub" / "config").write_text("[core]\n\tfsmonitor = touch /tmp/y\n")
     (PROJ / ".mcp.json").write_text("{}")
-    (PROJ / ".claude").mkdir(exist_ok=True)
+    (PROJ / ".claude" / "agents").mkdir(parents=True)
     (PROJ / ".claude" / "settings.json").write_text('{"hooks": {}}')
-    (PROJ / ".claude" / "settings.local.json").write_text("{}")
+    (PROJ / ".claude" / "agents" / "evil.md").write_text("x")
     entfernt = D.projekt_entschaerfen(PROJ)
     config = subprocess.run(["git", "config", "--file", str(PROJ / ".git" / "config"), "--list"], env=git_env,
                             capture_output=True, text=True).stdout
     sub = subprocess.run(["git", "config", "--file", str(PROJ / ".git" / "modules" / "sub" / "config"), "--list"],
                          env=git_env, capture_output=True, text=True).stdout
-    weg = [PROJ / ".mcp.json", PROJ / ".claude" / "settings.json", PROJ / ".claude" / "settings.local.json",
+    weg = [PROJ / ".mcp.json", PROJ / ".claude",
            PROJ / ".git" / "hooks" / "pre-commit", PROJ / ".git" / "modules" / "sub" / "hooks" / "post-checkout"]
-    pruefe("Entschärfen: .mcp.json, .claude/settings*.json, Git-Hooks (auch Submodule) entfernt",
+    pruefe("Entschärfen: .mcp.json, ganzes .claude/ (settings, agents), Git-Hooks (auch Submodule) entfernt",
            not any(p.exists() for p in weg), "; ".join(entfernt)[:250])
     pruefe("Entschärfen: .git/config nur Allowlist (Remote bleibt, fsmonitor, alias, hooksPath, insteadOf weg)",
            "remote.origin.url=https://github.com/wamocon/beispiel.git" in config and "user.name=Rauchtest" in config
            and not any(k in config for k in ("fsmonitor", "alias.", "hookspath", "insteadof")) and "fsmonitor" not in sub,
            config.replace("\n", " ")[:250])
 
+    # H2: vier Umgehungen des Git-Entschärfens, alle fail-closed
+    for name in os.listdir(PROJ):
+        entfernen(PROJ / name) if (PROJ / name).is_dir() else (PROJ / name).unlink()
+    boese = "[core]\n\tfsmonitor = touch /tmp/x\n\tpager = touch /tmp/y\n"
+    (PROJ / ".git" / "hooks").mkdir(parents=True)
+    (PROJ / ".git" / "config").write_text(boese)
+    os.rename(PROJ / ".git", PROJ / ".echtgit")
+    (PROJ / ".git").write_text("gitdir: .echtgit\n")  # .git als Zeiger-Datei
+    (PROJ / "sub" / ".git").mkdir(parents=True)        # eingebettetes Repo
+    (PROJ / "sub" / ".git" / "config").write_text(boese)
+    D.projekt_entschaerfen(PROJ)
+    offen = (PROJ / ".git").exists() and "fsmonitor" in (PROJ / ".echtgit" / "config").read_text()
+    sub_offen = "fsmonitor" in (PROJ / "sub" / ".git" / "config").read_text()
+    pruefe("H2: .git-Zeiger entfernt, eingebettetes Repo entschärft",
+           not (PROJ / ".git").exists() and not sub_offen, f"git-Zeiger da={offen}, sub offen={sub_offen}")
+    for name in os.listdir(PROJ):
+        entfernen(PROJ / name) if (PROJ / name).is_dir() else (PROJ / name).unlink()
+    (PROJ / ".git").mkdir()
+    (PROJ / ".git" / "config").symlink_to("../.evil.cfg")  # config als Link ins Projekt
+    (PROJ / ".evil.cfg").write_text(boese)
+    D.projekt_entschaerfen(PROJ)
+    pruefe("H2: .git/config-Link ersetzt, Linkziel unangetastet",
+           not (PROJ / ".git" / "config").is_symlink() and "fsmonitor" in (PROJ / ".evil.cfg").read_text(),
+           "Link noch da" if (PROJ / ".git" / "config").is_symlink() else "ersetzt")
+    for name in os.listdir(PROJ):
+        entfernen(PROJ / name) if (PROJ / name).is_dir() else (PROJ / name).unlink()
+
     projekt_eintrag = D.JOBS / ".projekte" / f"{PROJEKT}.json"
     projekt_eintrag.unlink(missing_ok=True)
+    (PROJ / "inhalt.txt").write_text("x")
     klein, gross = {"ANTHROPIC_API_KEY"}, {"ANTHROPIC_API_KEY", "GH_TOKEN"}
     a1 = D.zugang_pruefen(PROJEKT, klein, [])  # Projekt mit Inhalt, keine Buchführung: erst prüfen lassen
     a2 = D.zugang_pruefen(PROJEKT, klein, [a1["id"]] if a1 else [])
@@ -400,6 +440,14 @@ def entschaerfen_und_buchfuehrung() -> None:
     pruefe("Buchführung: mehr Zugänge als frühere Läufe brauchen eine Freigabe, weniger nicht",
            a1 is not None and a2 is None and a3 is not None and a3["input"]["neu"] == ["GH_TOKEN"] and a4 is None
            and a5 is None and a6 is not None, f"{bool(a1)} {a2} {a3 and a3['input']['neu']} {a4} {a5} {bool(a6)}")
+    # H1: unlesbarer Projektordner gilt nicht als leer (sonst käme mehr Zugang ohne Freigabe)
+    projekt_eintrag.write_text(json.dumps({"schnitt": ["ANTHROPIC_API_KEY"]}))
+    os.chmod(PROJ, 0o100)
+    try:
+        a7 = D.zugang_pruefen(PROJEKT, gross, [])
+    finally:
+        os.chmod(PROJ, 0o750)
+    pruefe("H1: chmod 100 macht das Projekt nicht 'leer', Freigabe bleibt nötig", a7 is not None, str(a7))
     projekt_eintrag.unlink(missing_ok=True)
     for name in os.listdir(PROJ):
         entfernen(PROJ / name) if (PROJ / name).is_dir() else (PROJ / name).unlink()
@@ -541,12 +589,14 @@ def ende_zu_ende() -> None:
     rc, zeilen_ = lauf_mit_attrappe(job, jobdir, session=session)
     eintraege = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
     ergebnis2 = [e["tool_result"] for e in eintraege if "tool_result" in e]
-    benutzt = (jobdir / "zustand" / "approvals.json.used").read_text().split()
-    pruefe("Lauf 2 (--resume): freigegebener Befehl läuft genau einmal durch",
-           rc == 0 and bool(ergebnis2) and "FREIGABE" not in ergebnis2[-1] and benutzt == [fp],
-           f"{' >> '.join(e[:110] for e in ergebnis2) if ergebnis2 else 'kein tool_result'}; verbraucht {len(benutzt)}")
-    pruefe("ECC-Hooks laufen als verwaltetes Plugin weiter (Fact-Forcing Gate hat gemeldet)",
-           any("Fact-Forcing Gate" in e for e in ergebnis2), "Gate gesehen" if any("Fact-Forcing Gate" in e for e in ergebnis2) else "kein Gate")
+    # Freigabe über den Socket (M5): der Befehl lief (kein FREIGABE mehr); verbraucht wird im Dispatcher-Server,
+    # nicht in approvals.json.used. Dass es GENAU einmal war, zeigt Lauf 3 (danach wieder verweigert).
+    pruefe("Lauf 2 (--resume): freigegebener Befehl läuft durch (Socket-Reservierung)",
+           rc == 0 and bool(ergebnis2) and "FREIGABE N" not in ergebnis2[-1],
+           f"{' >> '.join(e[:110] for e in ergebnis2) if ergebnis2 else 'kein tool_result'}")
+    out_ecc, _ = text(sandbox(job, "/srv/wamo/.local/bin/claude plugin list 2>&1 | tail -n 20", timeout=180))
+    pruefe("ECC-Plugin geladen (Skills und Agenten der Werkzeugkarte, M1)", "ecc" in out_ecc.lower(),
+           out_ecc.strip().replace("\n", " | ")[-200:])
 
     log.unlink(missing_ok=True)
     rc, zeilen_ = lauf_mit_attrappe(job, jobdir, session=session)

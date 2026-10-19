@@ -40,6 +40,7 @@ Nur Standardbibliothek. Wächter und Werkzeugkarte kommen aus /opt/wamo/waechter
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -101,6 +102,9 @@ MAX_PENDING_LINES = 200
 MAX_PENDING_LINE_BYTES = 64 * 1024
 MAX_STRING_CHARS = 8192
 DECIDE_TIMEOUT_S = 1.0
+GESAMT_PRUEF_BUDGET_S = 10.0  # N6: Gesamtzeit je gepruefte_anfragen-Aufruf
+O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)  # auf Nicht-Linux 0: die fd-Funktionen laufen nur auf dem Server
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 MAX_LOG_BYTES = 2 * 1024 * 1024
 MAX_ANGEFRAGT_BYTES = 1024 * 1024
 MAX_ZEILE_STDOUT = 4 * 1024 * 1024  # dev_agent liest bis 10 MiB je Zeile; längere Zeilen werden verworfen
@@ -505,6 +509,19 @@ def claude_konfiguration(claude_dir: Path, geheim: dict[str, str]) -> None:
     der Konfiguration von wamo: nichts, was ein früherer Lauf in .claude.json oder settings.json eingetragen
     hat (Hooks, projektbezogene MCP-Server, Helferbefehle), überlebt. MCP-Server ohne Geheimniswerte und nur,
     wenn mcp_server_pruefen nichts findet. Der Ordner ist in der Sandbox beschreibbar: ohne Links schreiben."""
+    # M1: den Auftrags-Konfigordner bis auf projects/ (Sitzungen für --resume) leeren, damit nichts, was ein
+    # früherer Lauf dort angelegt hat (agents/, commands/, skills/, settings.local.json), überlebt.
+    import shutil
+    for eintrag in claude_dir.iterdir() if claude_dir.is_dir() else ():
+        if eintrag.name == "projects" and eintrag.is_dir() and not eintrag.is_symlink():
+            continue
+        try:
+            if eintrag.is_dir() and not eintrag.is_symlink():
+                shutil.rmtree(eintrag)
+            else:
+                eintrag.unlink()
+        except OSError:
+            pass
     host = read_json(HEIM / ".claude.json", {})
     host = host if isinstance(host, dict) else {}
     conf = {k: host[k] for k in CLAUDE_JSON_KEYS if k in host}
@@ -630,7 +647,10 @@ def gepruefte_anfragen(jobdir: Path, projekt: str) -> list[dict]:
         return []
     g = waechter()
     out, seen = [], set()
+    schluss = time.monotonic() + GESAMT_PRUEF_BUDGET_S
     for line in text.splitlines()[:MAX_PENDING_LINES]:
+        if time.monotonic() > schluss:  # N6: Gesamtbudget je Aufruf, Rest gilt als ungültig
+            break
         if len(line.encode("utf-8", "replace")) > MAX_PENDING_LINE_BYTES:
             continue
         try:
@@ -658,13 +678,18 @@ def gepruefte_anfragen(jobdir: Path, projekt: str) -> list[dict]:
 
 # ---------------------------------------------------------------- Projekt entschärfen (H3)
 GIT_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1",
-           "GIT_CONFIG_GLOBAL": os.devnull, "LANG": "C"}
+           "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1", "LANG": "C"}
 GIT_ERLAUBT = [re.compile(p) for p in (
     r"core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|autocrlf|eol)",
     r"extensions\.objectformat", r"remote\..+\.(url|fetch)", r"branch\..+\.(remote|merge|rebase)",
     r"user\.(name|email)", r"pull\.(rebase|ff)", r"push\.(default|autosetupremote)", r"init\.defaultbranch",
 )]
 GIT_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+(:\d{1,5})?/[A-Za-z0-9._~/%-]*")
+GIT_SICHER = [("core.repositoryformatversion", "0"), ("core.bare", "false")]  # config, wenn die alte unlesbar ist
+MAX_CONFIG_BYTES = 1024 * 1024
+WALK_MAX_DIRS = 4000      # eingebettete Repos finden, aber node_modules nicht unbegrenzt durchlaufen
+WALK_MAX_TIEFE = 8
+INVENTUR_FLAECHEN = ("package.json", ".npmrc", ".envrc", "CLAUDE.md", ".claude", "node_modules/.bin")
 
 
 def git_config_filtern(eintraege: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -724,7 +749,28 @@ def _verzeichnis_at(dir_fd: int, name: str) -> int | None:
         return None
     if not stat.S_ISDIR(st.st_mode):
         return None
-    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    return os.open(name, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW, dir_fd=dir_fd)
+
+
+def _rmtree_at(dir_fd: int, name: str) -> bool:
+    """Entfernt name in dir_fd samt Inhalt, ohne Links zu verfolgen. Ein Link wird nur gelöst (unlink), ein
+    Verzeichnis rekursiv geleert. False, wenn es den Eintrag nicht gibt."""
+    try:
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        os.unlink(name, dir_fd=dir_fd)
+        return True
+    sub = os.open(name, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW, dir_fd=dir_fd)
+    try:
+        for kind in os.listdir(sub):
+            if not _rmtree_at(sub, kind):
+                os.unlink(kind, dir_fd=sub)
+    finally:
+        os.close(sub)
+    os.rmdir(name, dir_fd=dir_fd)
+    return True
 
 
 def _entfernen_at(dir_fd: int, name: str) -> bool:
@@ -736,6 +782,20 @@ def _entfernen_at(dir_fd: int, name: str) -> bool:
         return False
     os.unlink(name, dir_fd=dir_fd)
     return True
+
+
+def _config_schreiben_at(git_fd: int, praefix: str, gefiltert: list[tuple[str, str]], grund: str,
+                         entfernt: list[str]) -> None:
+    """Ersetzt git_fd/config durch eine gefilterte Fassung (fail-closed: auch wenn die alte ein Link, zu groß
+    oder unlesbar war). os.replace ersetzt die Datei oder den Link selbst, nicht dessen Ziel."""
+    neu = git_config_schreiben(gefiltert)
+    tmp = ".config.wamo.tmp"
+    _entfernen_at(git_fd, tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW, 0o644, dir_fd=git_fd)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(neu)
+    os.replace(tmp, "config", src_dir_fd=git_fd, dst_dir_fd=git_fd)
+    entfernt.append(f"{praefix}/config bereinigt ({grund})")
 
 
 def _git_ordner_entschaerfen(git_fd: int, praefix: str, entfernt: list[str]) -> None:
@@ -750,67 +810,220 @@ def _git_ordner_entschaerfen(git_fd: int, praefix: str, entfernt: list[str]) -> 
                     entfernt.append(f"{praefix}/hooks/{name}")
         finally:
             os.close(hooks_fd)
-    text = read_no_follow(Path("config"), 1024 * 1024, dir_fd=git_fd)
+    # config fail-closed: ein Link, eine Datei über MAX_CONFIG_BYTES oder unlesbares ergibt None und wird durch
+    # eine sichere Fassung ersetzt (nicht übersprungen). read_no_follow öffnet mit O_NOFOLLOW, folgt also keinem Link.
+    text = read_no_follow(Path("config"), MAX_CONFIG_BYTES, dir_fd=git_fd)
     if text is None:
+        _config_schreiben_at(git_fd, praefix, GIT_SICHER, "war Link, zu groß oder unlesbar", entfernt)
         return
     eintraege = git_config_lesen(text)
-    gefiltert = git_config_filtern(eintraege) if eintraege is not None else [
-        ("core.repositoryformatversion", "0"), ("core.bare", "false")]
-    if eintraege is not None and gefiltert == eintraege:
+    if eintraege is None:
+        _config_schreiben_at(git_fd, praefix, GIT_SICHER, "nicht parsbar", entfernt)
         return
-    neu = git_config_schreiben(gefiltert)
-    tmp = ".config.wamo.tmp"
-    _entfernen_at(git_fd, tmp)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=git_fd)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(neu)
-    os.replace(tmp, "config", src_dir_fd=git_fd, dst_dir_fd=git_fd)
-    weg = sorted({k for k, _ in (eintraege or [])} - {k for k, _ in gefiltert})
-    entfernt.append(f"{praefix}/config bereinigt ({', '.join(weg)[:200] or 'unlesbar'})")
+    gefiltert = git_config_filtern(eintraege)
+    if gefiltert == eintraege:
+        return
+    weg = sorted({k for k, _ in eintraege} - {k for k, _ in gefiltert})
+    _config_schreiben_at(git_fd, praefix, gefiltert, ", ".join(weg)[:200] or "nichts", entfernt)
+
+
+def _git_behandeln(parent_fd: int, praefix: str, st: os.stat_result, entfernt: list[str]) -> None:
+    """Ein .git-Eintrag: Link und gitdir-Zeiger (Datei) werden entfernt, ein echtes Verzeichnis entschärft."""
+    if stat.S_ISLNK(st.st_mode):
+        os.unlink(".git", dir_fd=parent_fd)
+        entfernt.append(f"{praefix}.git (Link entfernt)")
+        return
+    if not stat.S_ISDIR(st.st_mode):  # .git als Datei (gitdir:-Zeiger) oder Sonstiges: entfernen
+        os.unlink(".git", dir_fd=parent_fd)
+        entfernt.append(f"{praefix}.git (gitdir-Zeiger entfernt)")
+        return
+    git_fd = os.open(".git", os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        _git_ordner_entschaerfen(git_fd, f"{praefix}.git", entfernt)
+        module_fd = _verzeichnis_at(git_fd, "modules")
+        if module_fd is not None:
+            try:
+                for name in sorted(os.listdir(module_fd))[:200]:
+                    sub_fd = _verzeichnis_at(module_fd, name)
+                    if sub_fd is not None:
+                        try:
+                            _git_ordner_entschaerfen(sub_fd, f"{praefix}.git/modules/{name}", entfernt)
+                        finally:
+                            os.close(sub_fd)
+            finally:
+                os.close(module_fd)
+    finally:
+        os.close(git_fd)
+
+
+def _walk_entschaerfen(parent_fd: int, praefix: str, tiefe: int, zaehler: list[int], entfernt: list[str]) -> None:
+    """Begrenzte fd-basierte Suche nach .git-Einträgen (auch eingebettete Repos tief im Baum, H2). Kein Link
+    wird verfolgt; node_modules und ähnliche große Bäume begrenzt WALK_MAX_DIRS."""
+    if tiefe > WALK_MAX_TIEFE or zaehler[0] > WALK_MAX_DIRS:
+        return
+    try:
+        namen = sorted(os.listdir(parent_fd))
+    except OSError:
+        return
+    unterordner = []
+    for name in namen:
+        zaehler[0] += 1
+        if zaehler[0] > WALK_MAX_DIRS:
+            break
+        try:
+            st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError:
+            continue
+        if name == ".git":
+            _git_behandeln(parent_fd, praefix, st, entfernt)
+        elif stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode):
+            unterordner.append(name)
+    for name in unterordner:
+        if zaehler[0] > WALK_MAX_DIRS:
+            break
+        try:
+            sub_fd = os.open(name, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW, dir_fd=parent_fd)
+        except OSError:
+            continue
+        try:
+            _walk_entschaerfen(sub_fd, f"{praefix}{name}/", tiefe + 1, zaehler, entfernt)
+        finally:
+            os.close(sub_fd)
 
 
 def projekt_entschaerfen(projektdir: Path) -> list[str]:
-    """Entfernt Autostart-Flächen, die ein früherer Lauf (mit anderen Token) im Projekt gepflanzt haben
-    könnte: .mcp.json, .claude/settings*.json, Git-Hooks und config.worktree in .git und .git/modules/*,
-    und setzt deren config auf eine Allowlist zurück. Läuft außerhalb der Sandbox auf einem Ordner, den die
-    Sandbox beschreiben kann: alles über Verzeichnis-Deskriptoren, kein Link wird verfolgt."""
+    """Entfernt Autostart-Flächen, die ein früherer Lauf (mit anderen Token) gepflanzt haben könnte: .mcp.json,
+    .claude/settings*.json im Projektwurzel sowie Git-Hooks, config.worktree und eine bereinigte config in jedem
+    .git (auch eingebettet oder als gitdir-Zeiger) im Baum. Läuft außerhalb der Sandbox über Verzeichnis-
+    Deskriptoren, kein Link wird verfolgt. Fail-closed (H1): lässt sich der Ordner nicht öffnen, wirft os.open,
+    der Lauf startet dann nicht. Vorher chmod 0750, damit ein früherer Lauf den Ordner nicht unlesbar machen konnte."""
     entfernt: list[str] = []
     try:
-        projekt_fd = os.open(projektdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        os.chmod(projektdir, 0o750)
     except OSError:
-        return entfernt
+        pass
+    projekt_fd = os.open(projektdir, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW)  # Fehler: fail-closed
     try:
         if _entfernen_at(projekt_fd, ".mcp.json"):
             entfernt.append(".mcp.json")
-        claude_fd = _verzeichnis_at(projekt_fd, ".claude")
-        if claude_fd is not None:
-            try:
-                for name in os.listdir(claude_fd):
-                    if re.fullmatch(r"settings.*\.json", name) and _entfernen_at(claude_fd, name):
-                        entfernt.append(f".claude/{name}")
-            finally:
-                os.close(claude_fd)
-        git_fd = _verzeichnis_at(projekt_fd, ".git")
-        if git_fd is not None:
-            try:
-                _git_ordner_entschaerfen(git_fd, ".git", entfernt)
-                module_fd = _verzeichnis_at(git_fd, "modules")
-                if module_fd is not None:
-                    try:
-                        for name in os.listdir(module_fd)[:200]:
-                            sub_fd = _verzeichnis_at(module_fd, name)
-                            if sub_fd is not None:
-                                try:
-                                    _git_ordner_entschaerfen(sub_fd, f".git/modules/{name}", entfernt)
-                                finally:
-                                    os.close(sub_fd)
-                    finally:
-                        os.close(module_fd)
-            finally:
-                os.close(git_fd)
+        # Das projekteigene .claude (settings, agents, skills, commands, hooks) ist ein Ausführungsweg und wird
+        # für einen isolierten Lauf nicht gebraucht: ganz entfernen. Ein Link an der Stelle wird nur gelöst.
+        if _rmtree_at(projekt_fd, ".claude"):
+            entfernt.append(".claude/ entfernt")
+        _walk_entschaerfen(projekt_fd, "", 0, [0], entfernt)
     finally:
         os.close(projekt_fd)
     return entfernt
+
+
+def _signatur_at(projekt_fd: int, rel: str) -> str | None:
+    """Kurzsignatur einer Autostart-Fläche: bei package.json die scripts-Schlüssel, bei Ordnern die sortierte
+    Namensliste, sonst mtime und Größe. None, wenn es den Eintrag nicht gibt. Folgt keinem Link (dann als Link markiert)."""
+    pfade = rel.split("/")
+    fd = projekt_fd
+    zu_schliessen = []
+    try:
+        for teil in pfade[:-1]:
+            fd = _verzeichnis_at_ro(fd, teil)
+            if fd is None:
+                return None
+            zu_schliessen.append(fd)
+        name = pfade[-1]
+        try:
+            st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        except OSError:
+            return None
+        if stat.S_ISLNK(st.st_mode):
+            return "link"
+        if stat.S_ISDIR(st.st_mode):
+            try:
+                eintraege = sorted(os.listdir(os.open(name, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW, dir_fd=fd)))
+            except OSError:
+                return "ordner?"
+            return f"ordner[{len(eintraege)}]: " + ", ".join(eintraege[:20])
+        if rel == "package.json" and stat.S_ISREG(st.st_mode):
+            text = read_no_follow(Path(name), 512 * 1024, dir_fd=fd)
+            try:
+                skripte = json.loads(text).get("scripts") if text else None
+            except (ValueError, AttributeError):
+                skripte = None
+            if isinstance(skripte, dict):
+                return "scripts: " + "; ".join(f"{k}={str(v)[:60]}" for k, v in list(skripte.items())[:20])
+        return f"{int(st.st_mtime)}:{st.st_size}"
+    finally:
+        for f in zu_schliessen:
+            os.close(f)
+
+
+def _verzeichnis_at_ro(dir_fd: int, name: str) -> int | None:
+    """Wie _verzeichnis_at, aber ohne zu verändern (für die Inventur, nur lesen)."""
+    try:
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        return None
+    try:
+        return os.open(name, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW, dir_fd=dir_fd)
+    except OSError:
+        return None
+
+
+def projekt_inventur(projektdir: Path) -> dict[str, str]:
+    """Signaturen der Autostart-Flächen, die beim Weiterverwenden eines Projekts implizit Code ausführen können
+    (package.json-Skripte, .npmrc, .envrc, CLAUDE.md, .claude/, node_modules/.bin). Nur lesen."""
+    out: dict[str, str] = {}
+    try:
+        projekt_fd = os.open(projektdir, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+    except OSError:
+        return out
+    try:
+        for rel in INVENTUR_FLAECHEN:
+            sig = _signatur_at(projekt_fd, rel)
+            if sig is not None:
+                out[rel] = sig
+    finally:
+        os.close(projekt_fd)
+    return out
+
+
+def inventur_vergleich(vorher: dict, nachher: dict) -> list[str]:
+    """Menschlich lesbare Liste der Flächen, die seit dem letzten geprüften Lauf neu oder geändert sind (H3)."""
+    vorher = vorher if isinstance(vorher, dict) else {}
+    zeilen = []
+    for rel, sig in nachher.items():
+        if rel not in vorher:
+            zeilen.append(f"neu: {rel} ({sig})")
+        elif vorher[rel] != sig:
+            zeilen.append(f"geändert: {rel} ({sig})")
+    for rel in vorher:
+        if rel not in nachher:
+            zeilen.append(f"entfernt: {rel}")
+    return zeilen
+
+
+def projekt_leeren_sicher(projektdir: Path) -> bool:
+    """Löscht den Inhalt des Projektordners (für die Option 'frischer Klon' aus der Freigabekarte). Der Ordner
+    selbst bleibt. Fehler beim Öffnen gilt als nicht leer. Kein Link wird verfolgt."""
+    import shutil
+    try:
+        os.chmod(projektdir, 0o750)
+    except OSError:
+        pass
+    try:
+        with os.scandir(projektdir) as it:
+            eintraege = list(it)
+    except OSError:
+        return False
+    for e in eintraege:
+        try:
+            if e.is_symlink() or not e.is_dir(follow_symlinks=False):
+                os.unlink(e.path)
+            else:
+                shutil.rmtree(e.path)
+        except OSError:
+            return False
+    return True
 
 
 def zugang_pruefen(projekt: str, namen: set[str], freigaben: list[str]) -> dict | None:
@@ -823,26 +1036,38 @@ def zugang_pruefen(projekt: str, namen: set[str], freigaben: list[str]) -> dict 
     ordner.mkdir(mode=0o700, exist_ok=True)
     pfad = ordner / f"{projekt}.json"
     eintrag = read_json(pfad, None)
+    projektdir = PROJEKTE / projekt
+    # H1: ein früherer Lauf konnte den Ordner unlesbar machen (chmod 100). Erst wieder lesbar machen; lässt sich
+    # das nicht oder ist der Scan nicht möglich, gilt der Ordner NICHT als leer (sonst käme mehr Zugang ohne Freigabe).
     try:
-        leer = not any(os.scandir(PROJEKTE / projekt))
+        os.chmod(projektdir, 0o750)
     except OSError:
-        leer = True
+        pass
+    try:
+        leer = not any(os.scandir(projektdir))
+    except OSError:
+        leer = False
+    inventur = projekt_inventur(projektdir)
     bisher = set(eintrag["schnitt"]) if isinstance(eintrag, dict) and isinstance(eintrag.get("schnitt"), list) else None
     if leer:
-        write_json_atomic(pfad, {"schnitt": sorted(namen)})
+        write_json_atomic(pfad, {"schnitt": sorted(namen), "flaechen": inventur})
         return None
     if bisher is None:  # Projekt mit Inhalt, aber ohne Buchführung (älter, von Hand angelegt): erst prüfen lassen
         bisher = set()
     neu = namen - bisher
     if neu:
         anfrage_input = {"projekt": projekt, "neu": sorted(neu), "bisher": sorted(bisher)}
-        fp = waechter().fingerprint(ZUGANG_TOOL, anfrage_input)
+        fp = waechter().fingerprint(ZUGANG_TOOL, anfrage_input)  # Inventur NICHT im Fingerabdruck (ändert sich je Lauf)
         if fp not in freigaben:
+            alte_flaechen = eintrag.get("flaechen") if isinstance(eintrag, dict) else {}
+            geaendert = inventur_vergleich(alte_flaechen, inventur)
             return {"id": fp, "grund": "Mehr Zugänge als frühere Aufträge in diesem Projekt: " + ", ".join(sorted(neu)),
-                    "tool": ZUGANG_TOOL, "input": anfrage_input}
-        write_json_atomic(pfad, {"schnitt": sorted(namen)})  # geprüft und freigegeben
+                    "tool": ZUGANG_TOOL, "input": anfrage_input,
+                    "inventur": geaendert or ["keine geänderten Autostart-Flächen seit dem letzten Lauf"],
+                    "hinweis_klon": "Alternative: Projektordner vor dem Start leeren (frischer Klon)."}
+        write_json_atomic(pfad, {"schnitt": sorted(namen), "flaechen": inventur})  # geprüft und freigegeben
         return None
-    write_json_atomic(pfad, {"schnitt": sorted(bisher & namen)})
+    write_json_atomic(pfad, {"schnitt": sorted(bisher & namen), "flaechen": inventur})
     return None
 
 
@@ -942,6 +1167,98 @@ class Freigabezaehler:
         return False
 
 
+class FreigabeServer:
+    """Vergibt Freigaben atomar außerhalb der Sandbox (M5). Der Wächter in der Sandbox verbindet sich über
+    /run/wamo/zustand/freigabe.sock und reserviert im PreToolUse, bestätigt im PostToolUse oder gibt bei einer
+    Hook-Sperre zurück. Ein einziger Thread mit Sperre bedient die Anfragen: ein freigegebener Aufruf kann so
+    nie öfter laufen als freigegeben, auch nicht bei parallelen Hooks oder manipuliertem Zustand in der Sandbox.
+    Die Freigabeliste kommt aus approvals.json (schreibgeschützt in der Sandbox); verbraucht wird nur hier."""
+
+    def __init__(self, sock_path: Path, freigaben: object):
+        self.sock_path = str(sock_path)
+        self.granted: dict[str, int] = {}
+        for fp in freigaben if isinstance(freigaben, list) else []:
+            if isinstance(fp, str) and FP_RE.fullmatch(fp):
+                self.granted[fp] = self.granted.get(fp, 0) + 1
+        self.reserviert: dict[str, int] = {}
+        self.benutzt: dict[str, int] = {}
+        self._lock = threading.Lock()
+        self._srv: socket.socket | None = None
+
+    def start(self) -> None:
+        try:
+            os.unlink(self.sock_path)
+        except FileNotFoundError:
+            pass
+        self._srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._srv.bind(self.sock_path)
+        os.chmod(self.sock_path, 0o660)
+        self._srv.listen(16)
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self) -> None:
+        while True:
+            try:
+                conn, _ = self._srv.accept()
+            except OSError:
+                return
+            try:
+                conn.settimeout(5)
+                self._bedienen(conn)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    def _bedienen(self, conn: socket.socket) -> None:
+        line = conn.makefile("rb").readline(4096)
+        ok = False
+        try:
+            req = json.loads(line)
+            op, fp = req.get("op"), req.get("fp")
+        except (ValueError, AttributeError):
+            op, fp = None, None
+        if isinstance(fp, str) and FP_RE.fullmatch(fp):
+            with self._lock:
+                frei = self.granted.get(fp, 0) - self.benutzt.get(fp, 0) - self.reserviert.get(fp, 0)
+                if op == "reserve" and frei > 0:
+                    self.reserviert[fp] = self.reserviert.get(fp, 0) + 1
+                    ok = True
+                elif op == "commit" and self.reserviert.get(fp, 0) > 0:
+                    self.reserviert[fp] -= 1
+                    self.benutzt[fp] = self.benutzt.get(fp, 0) + 1
+                    ok = True
+                elif op == "release" and self.reserviert.get(fp, 0) > 0:
+                    self.reserviert[fp] -= 1
+                    ok = True
+        conn.sendall((json.dumps({"ok": ok}) + "\n").encode("utf-8"))
+
+    def stop(self) -> None:
+        if self._srv is not None:
+            try:
+                self._srv.close()
+            except OSError:
+                pass
+        try:
+            os.unlink(self.sock_path)
+        except OSError:
+            pass
+
+
+def egress_offen() -> bool:
+    """Prüft, ob der Ausgangsfilter steht: ein Verbindungsversuch zu einem privaten Ziel muss scheitern.
+    True heißt: der Filter ist weg (z. B. nft neu geladen), der Lauf muss sofort enden (M6)."""
+    s = socket.socket()
+    s.settimeout(2)
+    try:
+        s.connect(("10.255.255.254", 9))
+        return True  # eine Verbindung dorthin dürfte nie zustande kommen
+    except OSError as e:
+        return e.errno not in (errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EACCES, errno.EPERM, errno.ETIMEDOUT)
+    finally:
+        s.close()
+
+
 # ---------------------------------------------------------------- Befehle
 def cmd_ping() -> int:
     emit({"ok": True, "version": VERSION, "runner": RUNNER.is_file(), "waechter": (WAECHTER / "dev_guard.py").is_file()})
@@ -1031,7 +1348,7 @@ def ziel(host, port, proto=0, timeout=4):
 probe, bruecke, lan = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 werte = [("landlock", ziel("127.0.0.1", probe)), ("lo9", ziel("127.0.0.1", 9)), ("lo9mptcp", ziel("127.0.0.1", 9, 262)),
          ("netz10", ziel("10.255.255.254", 9)), ("netz10mptcp", ziel("10.255.255.254", 9, 262)),
-         ("bruecke", ziel(bruecke, 9) if bruecke != "-" else "keine"), ("lan", ziel(lan, 443)),
+         ("bruecke", ziel(bruecke, 9)), ("lan", ziel(lan, 443)),
          ("github", ziel("github.com", 443, timeout=10))]
 print("wamo-netz " + " ".join("%s=%s" % w for w in werte), file=sys.stderr)
 """
@@ -1085,6 +1402,10 @@ def selbsttest(job: str, projekt: str) -> tuple[bool, str]:
         ("[ -e /etc/docker ]", "/etc nicht auf die Allowlist begrenzt"),
         ("! [ -r /etc/claude-code/managed-settings.json ]", "managed-settings fehlt"),
         ("[ -w /run/wamo/zustand/approvals.json ]", "approvals beschreibbar"),
+        ("! grep -q '^Seccomp:[[:space:]]*2' /proc/self/status", "seccomp nicht aktiv"),
+        ("! grep -q '^NoNewPrivs:[[:space:]]*1' /proc/self/status", "no_new_privs nicht gesetzt"),
+        ("! grep -qE '^CapEff:[[:space:]]*0+$' /proc/self/status", "Capabilities nicht leer"),
+        ("unshare -U true 2>/dev/null", "Benutzer-Namensraum anlegbar (seccomp/disable-userns wirkt nicht)"),
         ("umbenennen /opt/wamo /opt/wamo-x", "Wächterordner umbenennbar"),
         ("umbenennen /opt/wamo/waechter /opt/wamo/x", "Wächter umbenennbar"),
         ("mkdir /opt/wamo/neu 2>/dev/null", "Wächterordner beschreibbar"),
@@ -1101,7 +1422,10 @@ def selbsttest(job: str, projekt: str) -> tuple[bool, str]:
     # Probe-Lauscher im Bereich, den der Ausgangsfilter auf Loopback zulässt: nur Landlock darf ihn sperren
     probe = probe_lauscher()
     port = probe.getsockname()[1]
-    bruecke = docker_bruecke() or "-"
+    bruecke = docker_bruecke()  # N1: None heißt ip fehlt oder keine Bridge -> Fehler, kein stummes Überspringen
+    if bruecke is None:
+        probe.close()
+        return False, "Docker-Bridge nicht ermittelbar (ip fehlt oder keine Bridge); Netzprobe nicht möglich"
     teile += [f"/usr/bin/python3 -I -c '{NETZPROBE}' {port} {bruecke} {LAN_PROBE}",
               f"( {hook} ); c=$?; echo \"wamo-selbsttest code=$c fehler=$f\" >&2"]
     argv = [str(RUNNER), "--auftrag", job, "--projekt", projekt, "--zeitlimit", "60",
@@ -1124,7 +1448,7 @@ def selbsttest(job: str, projekt: str) -> tuple[bool, str]:
     if not netz:
         return False, "Netzprobe lief nicht"
     werte = dict(w.split("=", 1) for w in netz.group(1).split() if "=" in w)
-    erwartet = {**NETZ_ERWARTET, **({"bruecke": "keine"} if bruecke == "-" else {})}
+    erwartet = NETZ_ERWARTET
     abweichend = {k: werte.get(k, "?") for k, v in erwartet.items() if werte.get(k) != v}
     if abweichend:
         return False, "Netzgrenzen nicht wie erwartet: " + ", ".join(f"{k}={v}" for k, v in abweichend.items())
@@ -1136,6 +1460,33 @@ def selbsttest(job: str, projekt: str) -> tuple[bool, str]:
     if code == 0 and decision == "deny" and grund.startswith(SELFTEST_GRUND):
         return True, "Hook lehnt ab, Grenzen und Netz geprüft"
     return False, f"Hook lieferte nicht die erwartete Ablehnung (Exit {code}, Entscheidung {decision})"
+
+
+def aufraeumen() -> None:
+    """Räumt als wamo alte Auftrags-Caches auf (N5: nicht als root über Sandbox-beschreibbare Ordner).
+    npm/cache/plugin-daten nach 7 Tagen, claude/ nach 30 Tagen; Projektordner, Buchführung und Sperren bleiben.
+    Best effort; Fehler stören den Lauf nicht. Folgt keinem Link (ein Link als Cache-Ordner wird entfernt)."""
+    import shutil
+    jetzt = time.time()
+    alter = {"npm": 7 * 86400, "cache": 7 * 86400, "plugin-daten": 7 * 86400, "claude": 30 * 86400}
+    try:
+        jobs = [e.name for e in os.scandir(JOBS) if e.is_dir() and not e.is_symlink() and JOB_RE.fullmatch(e.name)]
+    except OSError:
+        return
+    for job in jobs[:500]:
+        if job_laeuft(job):
+            continue
+        for teil, grenze in alter.items():
+            p = JOBS / job / teil
+            try:
+                st = p.lstat()
+            except OSError:
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                p.unlink(missing_ok=True)
+                continue
+            if stat.S_ISDIR(st.st_mode) and jetzt - st.st_mtime > grenze:
+                shutil.rmtree(p, ignore_errors=True)
 
 
 def _kopfzeile_lesen() -> bytes:
@@ -1151,6 +1502,7 @@ def _kopfzeile_lesen() -> bytes:
 
 def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> int:
     auftrag, system = parse_header(_kopfzeile_lesen())
+    aufraeumen()  # N5: alte Caches als wamo entfernen
     sperren = sperren_ordner()
     jobdir = job_ordner(job)
     # Eine Sperre gilt, solange ihr Objekt lebt (offene Datei): deshalb alle bis zum Ende festhalten.
@@ -1220,6 +1572,10 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
     log_pfad = jobdir / "lauf.log"
     if log_pfad.is_file() and not log_pfad.is_symlink():
         os.replace(log_pfad, jobdir / "lauf.log.1")  # je Lauf ein Protokoll, das vorige bleibt einmal erhalten
+    # Freigaben atomar außerhalb der Sandbox (M5): Socket im Zustand-Ordner, in der Sandbox /run/wamo/zustand/freigabe.sock
+    freigabe = FreigabeServer(jobdir / "zustand" / "freigabe.sock",
+                              read_json(jobdir / "zustand" / "approvals.json", []))
+    freigabe.start()
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             env=env, cwd="/", start_new_session=True)
     gruende: list[str] = []
@@ -1252,6 +1608,16 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
         if proc.poll() is None:
             stoppen("verlassen")
 
+    def egress_wache() -> None:
+        # M6: fällt der Ausgangsfilter aus (nft neu geladen o. Ä.), sofort stoppen
+        while not gestoppt.wait(15):
+            if proc.poll() is not None:
+                return
+            if egress_offen():
+                log(f"egress_offen {job}: Ausgangsfilter weg, Auftrag gestoppt", pflicht=True)
+                stoppen("egress_offen")
+                return
+
     def stderr_sichern() -> None:
         written = 0
         with open(log_pfad, "ab") as f:
@@ -1263,6 +1629,7 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
 
     threading.Thread(target=stderr_sichern, daemon=True).start()
     threading.Thread(target=lebenslinie, daemon=True).start()
+    threading.Thread(target=egress_wache, daemon=True).start()
     try:
         proc.stdin.write(auftrag.encode("utf-8"))
         proc.stdin.close()
@@ -1292,6 +1659,7 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
             stoppen("verlassen")
             break
     rc = proc.wait()
+    freigabe.stop()
     if (jobdir / "abbruch").exists():
         ergebnis, code = "abgebrochen", EXIT_ABGEBROCHEN
     elif gruende:
@@ -1314,13 +1682,24 @@ HANDLER = {"ping": cmd_ping, "start": cmd_start, "status": cmd_status, "pending"
 
 
 def speicher_begrenzen() -> None:
-    """Weiche Adressraumgrenze für diesen Prozess (Kinder setzen sie in wamo-job.sh wieder hoch)."""
+    """Weiche Adressraumgrenze für diesen Prozess (Kinder setzen sie in wamo-job.sh wieder hoch) und keine
+    Core-Dumps, die Token enthalten könnten (N2)."""
     try:
         import resource
         _, hart = resource.getrlimit(resource.RLIMIT_AS)
         weich = SPEICHER_DISPATCHER if hart == resource.RLIM_INFINITY else min(SPEICHER_DISPATCHER, hart)
         resource.setrlimit(resource.RLIMIT_AS, (weich, hart))
     except (ImportError, ValueError, OSError):
+        pass
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ImportError, ValueError, OSError):
+        pass
+    try:
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE=0
+    except (OSError, AttributeError, ValueError, TypeError):
         pass
 
 
@@ -1340,6 +1719,8 @@ def main(argv: list[str] | None = None) -> int:
         log(f"ABGEWIESEN ({e}): {(raw or '')[:80]!r}")
         print(f"WAMO-Auftrag abgewiesen: {e}", file=sys.stderr)
         return EXIT_ABGEWIESEN
+    except BrokenPipeError:  # der Voice-Core ist weg; still enden (N2)
+        return EXIT_ABGEBROCHEN
     except Exception as e:  # nichts durchreichen, aber protokollieren
         log(f"FEHLER {type(e).__name__}: {str(e)[:200]}")
         print(f"WAMO-Auftrag: interner Fehler ({type(e).__name__})", file=sys.stderr)

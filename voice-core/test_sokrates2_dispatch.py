@@ -398,9 +398,11 @@ class EntschaerfenTests(unittest.TestCase):
             (projekt / ".mcp.json").write_text("{}")
             (projekt / ".claude").mkdir()
             (projekt / ".claude" / "settings.json").write_text("{}")
+            (projekt / ".claude" / "agents").mkdir()
+            (projekt / ".claude" / "agents" / "evil.md").write_text("x")
             entfernt = D.projekt_entschaerfen(projekt)
             self.assertFalse((projekt / ".mcp.json").exists())
-            self.assertFalse((projekt / ".claude" / "settings.json").exists())
+            self.assertFalse((projekt / ".claude").exists())  # ganzes .claude weg (settings, agents, ...)
             self.assertFalse((projekt / ".git" / "hooks" / "pre-commit").exists())
             self.assertTrue((projekt / ".git" / "hooks" / "pre-commit.sample").exists())
             config = (projekt / ".git" / "config").read_text()
@@ -408,6 +410,154 @@ class EntschaerfenTests(unittest.TestCase):
             self.assertNotIn("fsmonitor", config)
             self.assertNotIn("alias", config)
             self.assertTrue(any("config bereinigt" in e for e in entfernt))
+
+    BOESE = "[core]\n\trepositoryformatversion = 0\n\tfsmonitor = touch /tmp/x\n\tpager = touch /tmp/y\n"
+
+    def _setup(self, tmp):
+        p = Path(tmp)
+        (p / ".git" / "hooks").mkdir(parents=True)
+        (p / ".git" / "hooks" / "pre-commit").write_text("#!/bin/sh\n")
+        (p / ".git" / "config").write_text(self.BOESE)
+        return p
+
+    def _boese(self, pfad):
+        try:
+            t = pfad.read_text(errors="replace")
+        except OSError:
+            return "nicht lesbar"
+        return "UNBEREINIGT" if ("fsmonitor" in t or "pager" in t) else "bereinigt"
+
+    def test_git_als_datei_entfernt(self):  # H2: .git als gitdir-Zeiger
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self._setup(tmp)
+            os.rename(p / ".git", p / ".echtgit")
+            (p / ".git").write_text("gitdir: .echtgit\n")
+            D.projekt_entschaerfen(p)
+            self.assertFalse((p / ".git").exists())
+
+    def test_git_config_als_link_ersetzt(self):  # H2: config ist ein Link ins Projekt
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self._setup(tmp)
+            (p / ".evil.cfg").write_text(self.BOESE)
+            (p / ".git" / "config").unlink()
+            os.symlink("../.evil.cfg", p / ".git" / "config")
+            D.projekt_entschaerfen(p)
+            self.assertFalse((p / ".git" / "config").is_symlink())
+            self.assertEqual(self._boese(p / ".git" / "config"), "bereinigt")
+            self.assertEqual(self._boese(p / ".evil.cfg"), "UNBEREINIGT")  # Linkziel unangetastet, Link ersetzt
+
+    def test_git_config_zu_gross_ersetzt(self):  # H2: config über 1 MiB
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self._setup(tmp)
+            (p / ".git" / "config").write_text("# " + "x" * (1024 * 1024 + 10) + "\n" + self.BOESE)
+            D.projekt_entschaerfen(p)
+            self.assertEqual(self._boese(p / ".git" / "config"), "bereinigt")
+
+    def test_eingebettetes_repo(self):  # H2: .git tief im Baum
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self._setup(tmp)
+            (p / "sub" / "tief" / ".git").mkdir(parents=True)
+            (p / "sub" / "tief" / ".git" / "config").write_text(self.BOESE)
+            (p / "sub" / "tief" / ".git" / "hooks").mkdir()
+            (p / "sub" / "tief" / ".git" / "hooks" / "pre-commit").write_text("x")
+            D.projekt_entschaerfen(p)
+            self.assertEqual(self._boese(p / "sub" / "tief" / ".git" / "config"), "bereinigt")
+            self.assertFalse((p / "sub" / "tief" / ".git" / "hooks" / "pre-commit").exists())
+
+    def test_fail_closed_bei_chmod_100(self):  # H1: unlesbarer Projektordner startet nicht
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self._setup(tmp)
+            os.chmod(p, 0o100)
+            try:
+                # chmod in projekt_entschaerfen macht wieder lesbar; sonst wäre os.open fehlgeschlagen (fail-closed)
+                D.projekt_entschaerfen(p)
+                self.assertEqual(self._boese(p / ".git" / "config"), "bereinigt")
+            finally:
+                os.chmod(p, 0o700)
+
+    def test_inventur_und_vergleich(self):  # H3
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / "package.json").write_text('{"scripts": {"build": "tsc", "prepare": "./evil.sh"}}')
+            (p / ".npmrc").write_text("x")
+            (p / "node_modules" / ".bin").mkdir(parents=True)
+            (p / "node_modules" / ".bin" / "tsc").write_text("x")
+            inv1 = D.projekt_inventur(p)
+            self.assertIn("prepare=./evil.sh", inv1["package.json"])
+            self.assertIn(".npmrc", inv1)
+            self.assertIn("node_modules/.bin", inv1)
+            self.assertEqual(D.inventur_vergleich(inv1, inv1), [])
+            (p / "package.json").write_text('{"scripts": {"build": "tsc"}}')
+            (p / "CLAUDE.md").write_text("x")
+            inv2 = D.projekt_inventur(p)
+            geaendert = D.inventur_vergleich(inv1, inv2)
+            self.assertTrue(any(z.startswith("geändert: package.json") for z in geaendert))
+            self.assertTrue(any(z.startswith("neu: CLAUDE.md") for z in geaendert))
+
+    def test_fail_closed_buchfuehrung_chmod_100(self):  # H1
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = Path(tmp) / "jobs"
+            jobs.mkdir()
+            projekt = Path(tmp) / "projekte" / "p"
+            projekt.mkdir(parents=True)
+            (projekt / "datei").write_text("x")
+            with mock.patch.object(D, "JOBS", jobs), mock.patch.object(D, "PROJEKTE", Path(tmp) / "projekte"):
+                (jobs / ".projekte").mkdir()
+                (jobs / ".projekte" / "p.json").write_text(json.dumps({"schnitt": ["ANTHROPIC_API_KEY"]}))
+                mehr = {"ANTHROPIC_API_KEY", "GH_TOKEN"}
+                os.chmod(projekt, 0o100)
+                try:
+                    anfrage = D.zugang_pruefen("p", mehr, [])
+                finally:
+                    os.chmod(projekt, 0o700)
+                self.assertIsNotNone(anfrage)  # nicht lesbar -> gilt nicht als leer -> Freigabe verlangt
+
+
+@unittest.skipUnless(LINUX, "AF_UNIX-Server nur unter Linux")
+class FreigabeServerTests(unittest.TestCase):
+    """M5: der Dispatcher-Server vergibt Freigaben atomar; der Wächter-Client reserviert und bestätigt."""
+
+    def _anfrage(self, sock_path, op, fp):
+        import socket as s
+        with s.socket(s.AF_UNIX, s.SOCK_STREAM) as c:
+            c.settimeout(4)
+            c.connect(sock_path)
+            c.sendall((json.dumps({"op": op, "fp": fp}) + "\n").encode())
+            return json.loads(c.makefile("rb").readline(4096)).get("ok")
+
+    def test_reserve_commit_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fp = "a" * 64
+            srv = D.FreigabeServer(Path(tmp) / "f.sock", [fp])  # genau einmal freigegeben
+            srv.start()
+            try:
+                sp = srv.sock_path
+                self.assertTrue(self._anfrage(sp, "reserve", fp))     # erste Reservierung
+                self.assertFalse(self._anfrage(sp, "reserve", fp))    # keine zweite (nur einmal frei)
+                self.assertTrue(self._anfrage(sp, "release", fp))     # Hook-Sperre: zurückgeben
+                self.assertTrue(self._anfrage(sp, "reserve", fp))     # danach wieder frei
+                self.assertTrue(self._anfrage(sp, "commit", fp))      # ausgeführt
+                self.assertFalse(self._anfrage(sp, "reserve", fp))    # verbraucht
+                self.assertFalse(self._anfrage(sp, "reserve", "b" * 64))  # nie freigegeben
+            finally:
+                srv.stop()
+
+    def test_guard_client_uses_socket(self):
+        import dev_guard as g
+        with tempfile.TemporaryDirectory() as tmp:
+            fp = g.fingerprint("Bash", {"command": "git push"})
+            srv = D.FreigabeServer(Path(tmp) / "f.sock", [fp, fp])  # zweimal freigegeben
+            srv.start()
+            try:
+                self.assertTrue(g._socket_anfrage(srv.sock_path, "reserve", fp))
+                self.assertTrue(g._socket_anfrage(srv.sock_path, "commit", fp))
+                self.assertTrue(g._socket_anfrage(srv.sock_path, "reserve", fp))  # zweite Freigabe offen
+                self.assertTrue(g._socket_anfrage(srv.sock_path, "commit", fp))
+                self.assertFalse(g._socket_anfrage(srv.sock_path, "reserve", fp))
+            finally:
+                srv.stop()
+        # nicht erreichbarer Socket: fail-closed
+        self.assertFalse(g._socket_anfrage(str(Path(tmp) / "weg.sock"), "reserve", fp))
 
 
 class GitConfigTests(unittest.TestCase):
@@ -496,14 +646,19 @@ class SeccompTests(unittest.TestCase):
                     self.assertEqual(lauf(nummern[idx]), A.RET_ERRNO | A.EPERM, name)
                 self.assertEqual(lauf(A.ENOSYS_SYSCALLS["clone3"][idx]), A.RET_ERRNO | A.ENOSYS)
                 sock = A.SOCKET_NR[idx]
+                # M2: Allowlist der Familien. AF_UNIX, AF_INET, AF_INET6, AF_NETLINK(Protokoll 0) erlaubt
+                self.assertEqual(lauf(sock, 1, 1, 0), A.RET_ALLOW)  # AF_UNIX
                 self.assertEqual(lauf(sock, 2, 1, 0), A.RET_ALLOW)  # AF_INET, SOCK_STREAM, TCP
                 self.assertEqual(lauf(sock, 10, 1, 6), A.RET_ALLOW)  # AF_INET6, TCP
+                self.assertEqual(lauf(sock, 2, 2, 1), A.RET_ALLOW)  # AF_INET, SOCK_DGRAM, UDP (DNS)
+                self.assertEqual(lauf(sock, 16, 3, 0), A.RET_ALLOW)  # AF_NETLINK NETLINK_ROUTE (getaddrinfo)
                 self.assertEqual(lauf(sock, 2, 1, 262), A.RET_ERRNO | A.EPERM)  # MPTCP
                 self.assertEqual(lauf(sock, 10, 1, 262), A.RET_ERRNO | A.EPERM)
                 self.assertEqual(lauf(sock, 2, 1, 132), A.RET_ERRNO | A.EPERM)  # SCTP
-                for familie in (17, 40, 38):  # AF_PACKET, AF_VSOCK, AF_ALG
-                    self.assertEqual(lauf(sock, familie, 3, 0), A.RET_ERRNO | A.EPERM)
-                self.assertEqual(lauf(sock, 1, 1, 0), A.RET_ALLOW)  # AF_UNIX
+                self.assertEqual(lauf(sock, 16, 3, 4), A.RET_ERRNO | A.EPERM)  # NETLINK_SOCK_DIAG
+                self.assertEqual(lauf(sock, 16, 3, 9), A.RET_ERRNO | A.EPERM)  # NETLINK_AUDIT
+                for familie in (17, 40, 38, 31, 42, 45, 44):  # PACKET, VSOCK, ALG, BLUETOOTH, QIPCRTR, MCTP, XDP
+                    self.assertEqual(lauf(sock, familie, 3, 0), A.RET_ERRNO | A.EPERM, familie)
                 for (nummern, flag_idx) in A.SEND_SYSCALLS.values():
                     args = [0] * 6
                     args[flag_idx] = A.MSG_FASTOPEN | 0x40
@@ -520,6 +675,17 @@ class SeccompTests(unittest.TestCase):
         with self.assertRaises(OSError):
             A.seccomp_bpf("riscv64")
 
+    def test_landlock_bind_nur_entwicklungsports(self):
+        z = A.port_zugriff({22, 55322, 20500})
+        self.assertEqual(z[443], A.LANDLOCK_ACCESS_NET_CONNECT_TCP)  # connect offen
+        self.assertNotIn(22, z)  # Host-Port: kein Zugriff (connect gesperrt, bind nicht erlaubt)
+        self.assertNotIn(55322, z)
+        self.assertEqual(z[20000], A.LANDLOCK_ACCESS_NET_BIND_TCP | A.LANDLOCK_ACCESS_NET_CONNECT_TCP)
+        self.assertEqual(z[20999], A.LANDLOCK_ACCESS_NET_BIND_TCP | A.LANDLOCK_ACCESS_NET_CONNECT_TCP)
+        self.assertEqual(z[20500], A.LANDLOCK_ACCESS_NET_BIND_TCP)  # für connect gesperrt, bind erlaubt
+        self.assertNotIn(80, [p for p, a in z.items() if a & A.LANDLOCK_ACCESS_NET_BIND_TCP])  # bind 80 gesperrt
+        self.assertNotIn(21000, [p for p, a in z.items() if a & A.LANDLOCK_ACCESS_NET_BIND_TCP])
+
 
 class ConsistencyTests(unittest.TestCase):
     """Dispatcher, Läufer, Ausgangsfilter, Managed-Settings und Voice-Core müssen zueinander passen."""
@@ -530,14 +696,26 @@ class ConsistencyTests(unittest.TestCase):
         self.assertIs(settings["allowManagedHooksOnly"], True)  # nur verwaltete Hooks ...
         self.assertEqual(settings["enabledPlugins"], {"ecc@ecc": True})  # ... ECC als verwaltetes Plugin bleibt
         self.assertIs(settings["enableAllProjectMcpServers"], False)
+        # M1: gepflanzte Agenten und MCP-Server aus dem Projekt greifen nicht; ECC-Skills/-Befehle bleiben nutzbar
+        self.assertEqual(settings["strictPluginOnlyCustomization"], ["agents", "mcp"])
+        self.assertNotIn("disableSkillShellExecution", settings)  # würde ECC-Skills die Shell nehmen
+        self.assertIn("ecc", settings["extraKnownMarketplaces"])
         self.assertEqual(settings["permissions"]["deny"], dev_agent.DENY_RULES)
         vorher = settings["hooks"]["PreToolUse"][0]
         self.assertEqual(vorher["matcher"], "*")
         cmd = vorher["hooks"][0]["command"]
         self.assertTrue(cmd.endswith("|| exit 2"))
-        self.assertIn("/opt/wamo/waechter/dev_guard.py --project-dir /run/wamo/projekt --job-dir /run/wamo/zustand", cmd)
+        self.assertIn("/opt/wamo/waechter/dev_guard.py", cmd)
+        self.assertIn("--freigabe-socket /run/wamo/zustand/freigabe.sock", cmd)  # M5
         for event in ("PostToolUse", "PostToolUseFailure"):
-            self.assertIn("--nachher", settings["hooks"][event][0]["hooks"][0]["command"])
+            nach = settings["hooks"][event][0]["hooks"][0]["command"]
+            self.assertIn("--nachher", nach)
+            self.assertIn("--freigabe-socket /run/wamo/zustand/freigabe.sock", nach)
+        mcp = json.loads((INFRA / "claude-code" / "managed-mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+        self.assertEqual(set(mcp), {"rea", "github", "supabase", "jira"})  # enterprise MCP, ersetzt Benutzer-Einträge
+        self.assertEqual(mcp["github"]["headers"]["Authorization"], "Bearer ${GH_TOKEN:-}")
+        self.assertEqual(mcp["jira"]["env"]["JIRA_API_TOKEN"], "${JIRA_API_KEY:-}")
+        self.assertNotIn("npx", [mcp[s].get("command") for s in mcp])  # feste Pfade, kein Download je Auftrag
         runner = (INFRA / "wamo-job.sh").read_text(encoding="utf-8")
         for mount in ("/run/wamo/zustand", "/run/wamo/projekt", '"$APP/claude-code" /etc/claude-code',
                       '"$APP/waechter" "$WAECHTER_INNEN"', "WAECHTER_INNEN=/opt/wamo/waechter", "--remount-ro /",

@@ -649,26 +649,50 @@ def _deny(reason: str) -> None:
     }, ensure_ascii=False))
 
 
-def parse_args(argv: list[str]) -> tuple[Path | None, Path | None, bool]:
-    """[--nachher] --project-dir <pfad> --job-dir <pfad> (Ordner optional; ohne Projektordner kein
-    Schreiben). --nachher: Aufruf als PostToolUse-Hook, verbucht nur ausgeführte Freigaben."""
+def parse_args(argv: list[str]) -> tuple[Path | None, Path | None, bool, str | None]:
+    """[--nachher] --project-dir <pfad> --job-dir <pfad> [--freigabe-socket <pfad>]. Ordner optional (ohne
+    Projektordner kein Schreiben). --nachher: PostToolUse-Hook, verbucht nur ausgeführte Freigaben.
+    --freigabe-socket: Freigaben werden über diesen Unix-Socket beim Dispatcher reserviert und bestätigt
+    (Sandbox auf Sokrates-2); ohne ihn gilt das dateibasierte Schema (lokal)."""
     values: dict[str, str] = {}
     nachher = False
     it = iter(argv)
     for arg in it:
-        if arg in ("--project-dir", "--job-dir"):
+        if arg in ("--project-dir", "--job-dir", "--freigabe-socket"):
             values[arg] = next(it, "")
         elif arg == "--nachher":
             nachher = True
         else:
             raise ValueError(f"unbekanntes Argument {arg!r}")
     project, job = values.get("--project-dir"), values.get("--job-dir")
-    return (Path(project) if project else None), (Path(job) if job else None), nachher
+    return (Path(project) if project else None), (Path(job) if job else None), nachher, values.get("--freigabe-socket")
 
 
-def _run(raw: str, project_dir: Path | None, job_dir: Path | None, nachher: bool = False) -> int:
+def _socket_anfrage(socket_path: str, op: str, fp: str) -> bool:
+    """Eine Reservierung, Bestätigung oder Rückgabe beim Dispatcher (M5). True bei ok. Fail-closed: bei jedem
+    Fehler False (eine nicht erreichbare Freigabestelle heißt: keine Freigabe)."""
+    import socket as s
+    try:
+        with s.socket(s.AF_UNIX, s.SOCK_STREAM) as c:
+            c.settimeout(4)
+            c.connect(socket_path)
+            c.sendall((json.dumps({"op": op, "fp": fp}) + "\n").encode("utf-8"))
+            antwort = c.makefile("rb").readline(4096)
+        return json.loads(antwort).get("ok") is True
+    except (OSError, ValueError):
+        return False
+
+
+def _reserve(fp: str, job_dir: Path | None, socket_path: str | None) -> bool:
+    if socket_path:
+        return _socket_anfrage(socket_path, "reserve", fp)
+    return _approval_open(fp, job_dir / "approvals.json") if job_dir is not None else False
+
+
+def _run(raw: str, project_dir: Path | None, job_dir: Path | None, nachher: bool = False,
+         socket_path: str | None = None) -> int:
     if nachher:
-        return _run_nachher(raw, project_dir, job_dir)
+        return _run_nachher(raw, project_dir, job_dir, socket_path)
     try:
         event = json.loads(raw or "{}")
     except json.JSONDecodeError:
@@ -687,12 +711,14 @@ def _run(raw: str, project_dir: Path | None, job_dir: Path | None, nachher: bool
         return 0
 
     fp = fingerprint(tool_name, tool_input or {})
+    if _reserve(fp, job_dir, socket_path):
+        return 0  # reserviert; bestätigt oder zurückgegeben wird erst nachher (_run_nachher)
     if job_dir is not None:
-        if _approval_open(fp, job_dir / "approvals.json"):
-            return 0  # verbraucht wird erst nachher (_run_nachher), wenn der Schritt wirklich lief
+        eintrag = {"id": fp, "grund": why, "tool": tool_name, "input": tool_input or {}}
+        if _skript_befehl(tool_name, tool_input):
+            eintrag["warnung"] = "Dieser Befehl führt Projektcode aus (Skript, npm, make); Inhalt genau prüfen."
         with open(job_dir / "pending.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps({"id": fp, "grund": why, "tool": tool_name, "input": tool_input or {}},
-                               ensure_ascii=False) + "\n")
+            f.write(json.dumps(eintrag, ensure_ascii=False) + "\n")
     _deny(
         f"FREIGABE NÖTIG ({why}). Ein Admin muss das in der Oberfläche freigeben. Mach alles andere "
         "fertig, führe diesen Schritt NICHT anders aus und nenne ihn am Ende deiner Antwort."
@@ -700,15 +726,35 @@ def _run(raw: str, project_dir: Path | None, job_dir: Path | None, nachher: bool
     return 0
 
 
-def _run_nachher(raw: str, project_dir: Path | None, job_dir: Path | None) -> int:
-    """PostToolUse/PostToolUseFailure: der Aufruf lief. War er freigabepflichtig, ist die Freigabe jetzt
-    verbraucht. Kann nichts mehr sperren; ein Fehler endet mit Exit 1 (Claude Code zeigt ihn nur an)."""
+SKRIPT_BEFEHL_RE = re.compile(
+    r"(^|[;&|]|\s)(\./|sh\s|bash\s|zsh\s|source\s|\.\s|make\b|npm\s+(run|exec|start|test)|pnpm\s+(run|exec)|"
+    r"yarn\s+(run|\w)|npx\s|node\s|python[0-9.]*\s|uv\s+run|poetry\s+run|pipenv\s+run|cargo\s+(run|test)|"
+    r"go\s+(run|test)|rake\b|gradlew|mvn\b|just\b|task\b)", re.IGNORECASE)
+
+
+def _skript_befehl(tool_name: str, tool_input: object) -> bool:
+    """Führt ein Shell-Befehl Projektcode aus (statt eines in sich geschlossenen Befehls wie git push)?
+    Für die Warnung auf der Freigabekarte (M5)."""
+    if tool_name not in SHELL_TOOLS or not isinstance(tool_input, dict):
+        return False
+    return bool(SKRIPT_BEFEHL_RE.search(str(tool_input.get("command", ""))))
+
+
+def _run_nachher(raw: str, project_dir: Path | None, job_dir: Path | None, socket_path: str | None = None) -> int:
+    """PostToolUse/PostToolUseFailure: War der Aufruf freigabepflichtig, wird die Reservierung jetzt bestätigt
+    (der Schritt lief) oder zurückgegeben (ein anderer Hook hat ihn gesperrt). Kann nichts mehr sperren."""
     event = json.loads(raw or "{}")
-    if not isinstance(event, dict) or job_dir is None or not tool_ran(event):
+    if not isinstance(event, dict):
         return 0
     tool_name, tool_input = str(event.get("tool_name", "")), event.get("tool_input")
-    if decide(tool_name, tool_input, project_dir)[0] == "approval":
-        _record_use(fingerprint(tool_name, tool_input or {}), job_dir / "approvals.json")
+    if decide(tool_name, tool_input, project_dir)[0] != "approval":
+        return 0
+    fp = fingerprint(tool_name, tool_input or {})
+    gelaufen = tool_ran(event)
+    if socket_path:
+        _socket_anfrage(socket_path, "commit" if gelaufen else "release", fp)
+    elif gelaufen and job_dir is not None:
+        _record_use(fp, job_dir / "approvals.json")
     return 0
 
 
@@ -737,9 +783,9 @@ def main(argv: list[str] | None = None) -> int:
     timer.daemon = True
     timer.start()
     try:
-        project_dir, job_dir, nachher = parse_args(sys.argv[1:] if argv is None else argv)
+        project_dir, job_dir, nachher, socket_path = parse_args(sys.argv[1:] if argv is None else argv)
         raw = sys.stdin.buffer.read().decode("utf-8", "replace")
-        return _run(raw, project_dir, job_dir, nachher)
+        return _run(raw, project_dir, job_dir, nachher, socket_path)
     except BaseException as e:  # fail-closed: lieber blockieren als durchlassen
         print(f"GESPERRT: Der Wächter ist auf einen Fehler gelaufen ({type(e).__name__}). "
               "Diesen Schritt nicht ausführen und nicht umgehen.", file=sys.stderr)

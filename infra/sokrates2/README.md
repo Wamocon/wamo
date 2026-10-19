@@ -269,25 +269,36 @@ Rauchtest danach immer: `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-r
 
 | Baustein | Ort | Zweck |
 | --- | --- | --- |
-| Dispatcher | `/opt/wamo/bin/wamo-job-dispatch` (root:wamo) | Forced Command des Schlüssels `wamo-jobs`: nur `ping`, `start`, `status`, `pending`, `approve`, `cancel` |
-| Läufer | `/opt/wamo/bin/wamo-job.sh` | bubblewrap-Sandbox, Landlock, seccomp, systemd-Grenzen, Zeitlimit |
-| Wächter | `/opt/wamo/waechter`, in der Sandbox unter demselben Pfad schreibgeschützt | Freigaben, Sperrliste, seccomp-Filter |
-| Managed-Settings | `/opt/wamo/claude-code/managed-settings.json`, in der Sandbox `/etc/claude-code` | nur verwaltete Hooks (Wächter, ECC als verwaltetes Plugin), keine Projekt-MCP-Server |
+| Dispatcher | `/opt/wamo/bin/wamo-job-dispatch` (root:wamo) | Forced Command des Schlüssels `wamo-jobs`: nur `ping`, `start`, `status`, `pending`, `approve`, `cancel`; Selbsttest mit Kanarienvögeln je Lauf; vergibt Freigaben atomar über einen Unix-Socket; räumt alte Caches als `wamo` auf |
+| Läufer | `/opt/wamo/bin/wamo-job.sh` | bubblewrap-Sandbox, Landlock (connect und bind), seccomp, systemd-Grenzen, Zeitlimit |
+| Wächter | `/opt/wamo/waechter`, in der Sandbox unter demselben Pfad schreibgeschützt | Freigaben (per Socket reserviert und bestätigt), Sperrliste, seccomp-Filter |
+| Managed-Settings | `/opt/wamo/claude-code/managed-settings.json`, in der Sandbox `/etc/claude-code` | nur verwaltete Hooks (Wächter, ECC-Plugin bleibt), keine Projekt-MCP-Server; `strictPluginOnlyCustomization` für `agents` und `mcp` |
+| Managed-MCP | `/opt/wamo/claude-code/managed-mcp.json` | die MCP-Server (rea, github, supabase, jira) kommen allein von hier (ersetzt Benutzer-Einträge); Token über `${…:-}` aus der Umgebung |
 | Ausgangsfilter | `/etc/wamo/egress.nft`, `wamo-egress.service` | nft-Tabelle `inet wamo_egress`, nur für uid `wamo` |
-| SSH | `/etc/ssh/authorized_keys.d/wamo`, `/etc/ssh/sshd_config.d/wamo.conf` | Schlüssel mit `restrict,from="192.168.178.0/24",command=...`; nur Public Key, keine Weiterleitungen, kein TTY |
-| Aufräumen | `/etc/tmpfiles.d/wamo-jobs.conf` | Caches der Aufträge nach 7 Tagen, Claude-Daten nach 30 Tagen |
+| SSH | `/etc/ssh/authorized_keys.d/wamo`, `/etc/ssh/sshd_config.d/wamo.conf` | Schlüssel mit `restrict,from="192.168.178.0/24",command=...`; `Match User wamo` mit `ForceCommand`, nur Public Key, keine Weiterleitungen, kein TTY, `PermitUserRC no`, `MaxSessions 2` |
 | Version | `CLAUDE_VERSION` in `/opt/wamo/wamo-job.conf` | nach einem Update von Claude Code startet nichts, bis das Einrichtungsskript und der Rauchtest liefen |
+
+Vor jedem Lauf entschärft der Dispatcher den Projektordner (außerhalb der Sandbox, ohne Links zu folgen): `.mcp.json`,
+das ganze projekteigene `.claude/`, Git-Hooks und `config.worktree` in jedem `.git` im Baum (auch eingebettet oder als
+`gitdir:`-Zeiger), und setzt jede `.git/config` auf eine Allowlist zurück. Der Auftrags-Konfigordner `jobs/<job>/claude`
+wird je Lauf bis auf `projects/` (Sitzungen für `--resume`) geleert. Bekäme ein Lauf mehr Token als frühere Läufe im
+selben Projekt, zeigt die Freigabekarte die seit dem letzten Lauf geänderten Autostart-Flächen (package.json-Skripte,
+`.npmrc`, `.envrc`, `node_modules/.bin`, `CLAUDE.md`) und verlangt eine Freigabe.
 
 Ausgangsfilter: Für Sockets des Benutzers `wamo` gilt nur Internet auf TCP 80 und 443, DNS an `127.0.0.53` und auf
 Loopback `127.0.0.1:20000-20999` für eigene Entwicklungsserver eines Auftrags. IPv6, LAN, Docker-Netze, private
 Netze und eigene Adressen des Servers werden abgewiesen (Log mit Ratenbegrenzung, Fehler `EHOSTUNREACH` bzw. bei IPv6
 `EACCES`). Andere Benutzer und Dienste laufen nicht durch die Kette (`meta skuid`); ufw, iptables-restore und Docker
-fassen die eigene Tabelle nicht an. Zähler: `sudo nft list table inet wamo_egress`.
+fassen die eigene Tabelle nicht an. Zähler: `sudo nft list table inet wamo_egress`. Landlock sperrt zusätzlich das
+Binden von TCP-Ports außer 20000-20999 (und Port 0), seccomp sperrt MPTCP und SCTP (die Landlock sonst umgingen).
+Der Dispatcher prüft alle 15 s, ob der Filter noch steht, und beendet den Lauf sofort, wenn nicht.
 
 Hinweise:
 
 - Die Login-Shell von `wamo` ist `/bin/sh`, damit Forced Commands keine `.bashrc` laden. Für Arbeiten von Hand als wamo
   `sudo -u wamo -H bash -l` verwenden.
+- Alte Auftrags-Caches räumt der Dispatcher als `wamo` auf (npm, cache, plugin-daten nach 7 Tagen, `claude/` nach 30 Tagen);
+  es gibt keine root-eigene tmpfiles-Regel über die von der Sandbox beschreibbaren Ordner.
 - Auch außerhalb der Sandbox gilt für `wamo` der Ausgangsfilter (etwa bei `npm install -g` von Hand: Internet über 443 geht).
 - Hostweite Schalter wie `net.mptcp.enabled=0` oder `kernel.io_uring_disabled` sind bewusst nicht gesetzt (betreffen andere
   Dienste); die Sandbox sperrt beides selbst per seccomp.

@@ -406,6 +406,56 @@ class HookEntryPointTests(unittest.TestCase):
             self.run_nachher("Bash", {"command": "git push"}, job, {"stdout": "x"})
             self.assertFalse((job / "approvals.json.used").exists())
 
+    def test_skript_befehl_warnung_in_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp)
+            # freigabepflichtig (git push) UND führt ein Projektskript aus (npm run): Warnung auf die Karte
+            out = self.run_hook("Bash", {"command": "git push origin main && npm run deploy"}, job)
+            self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+            eintrag = json.loads((job / "pending.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            self.assertIn("warnung", eintrag)
+            # git push allein ist in sich geschlossen: keine Warnung
+            self.run_hook("Bash", {"command": "git push origin main"}, job)
+            letzte = json.loads((job / "pending.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+            self.assertNotIn("warnung", letzte)
+
+    def test_skript_befehl(self):
+        for cmd in ("npm run build", "bash x.sh", "./deploy.sh", "make", "node app.js", "python3 tool.py",
+                    "yarn build", "uv run pytest", "cargo run", "go test ./...", "pnpm run dev"):
+            self.assertTrue(g._skript_befehl("Bash", {"command": cmd}), cmd)
+        for cmd in ("git push origin main", "gh pr create --fill", "ls -la", "cat README.md"):
+            self.assertFalse(g._skript_befehl("Bash", {"command": cmd}), cmd)
+        self.assertFalse(g._skript_befehl("Read", {"command": "npm run x"}))
+
+    def test_parse_args_socket(self):
+        pd, jd, nachher, sock = g.parse_args(["--project-dir", "/p", "--job-dir", "/j",
+                                              "--freigabe-socket", "/run/wamo/zustand/freigabe.sock"])
+        self.assertEqual((pd, jd, nachher), (Path("/p"), Path("/j"), False))
+        self.assertEqual(sock, "/run/wamo/zustand/freigabe.sock")
+        self.assertEqual(g.parse_args([])[3], None)
+
+    def test_run_mit_socket_reserviert(self):
+        push = {"command": "git push"}
+        raw = json.dumps({"tool_name": "Bash", "tool_input": push})
+        with mock.patch.object(g, "_socket_anfrage", return_value=True) as sock:
+            self.assertEqual(g._run(raw, Path("/p"), Path("/j"), socket_path="/s"), 0)  # reserviert -> allow
+        sock.assert_called_once_with("/s", "reserve", g.fingerprint("Bash", push))
+        with mock.patch.object(g, "_socket_anfrage", return_value=False), \
+             mock.patch.object(sys, "stdout", io.StringIO()) as out, tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(g._run(raw, Path("/p"), Path(tmp), socket_path="/s"), 0)  # keine Reservierung -> deny
+            self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_run_nachher_mit_socket(self):
+        push = {"command": "git push"}
+        gelaufen = json.dumps({"tool_name": "Bash", "tool_input": push, "tool_response": {"stdout": "ok"}})
+        gesperrt = json.dumps({"tool_name": "Bash", "tool_input": push,
+                               "tool_response": "Error: PreToolUse:Bash hook error: x"})
+        with mock.patch.object(g, "_socket_anfrage", return_value=True) as sock:
+            g._run(gelaufen, Path("/p"), Path("/j"), nachher=True, socket_path="/s")
+            self.assertEqual(sock.call_args[0][1], "commit")
+            g._run(gesperrt, Path("/p"), Path("/j"), nachher=True, socket_path="/s")
+            self.assertEqual(sock.call_args[0][1], "release")
+
     def test_tool_ran(self):
         self.assertFalse(g.tool_ran({"tool_response": "Error: PreToolUse:Bash hook error: gesperrt"}))
         self.assertFalse(g.tool_ran({"error": "<tool_use_error>PreToolUse:Write hook error: x</tool_use_error>"}))

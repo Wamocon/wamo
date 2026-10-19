@@ -20,13 +20,14 @@
 #   loginctl enable-linger wamo          systemd-Benutzerdienst (Grenzen und Abbruch über systemd-run --user)
 #   /opt/wamo                            root:wamo 0750, für wamo nur lesbar und ausführbar (nicht umbenennbar):
 #     bin/{wamo-job-dispatch,wamo-job.sh,wamo-job-rauchtest}, wamo-job.conf (Grenzen, CLAUDE_VERSION),
-#     waechter/{dev_guard,werkzeugkarte,abschottung}.py, waechter/seccomp.bpf, claude-code/managed-settings.json
+#     waechter/{dev_guard,werkzeugkarte,abschottung}.py, waechter/seccomp.bpf,
+#     claude-code/{managed-settings.json,managed-mcp.json}
 #   /etc/wamo/egress.nft, /etc/systemd/system/wamo-egress.service   Ausgangsfilter (nft inet wamo_egress)
-#   /etc/tmpfiles.d/wamo-jobs.conf       räumt Caches der Aufträge nach 7, Claude-Daten nach 30 Tagen auf
+#   Aufräumen der Auftrags-Caches erledigt der Dispatcher als wamo (frühere /etc/tmpfiles.d/wamo-jobs.conf wird entfernt)
 #   /etc/ssh/authorized_keys.d/wamo      root, Zeile restrict,from=...,command="/opt/wamo/bin/wamo-job-dispatch"
-#   /etc/ssh/sshd_config.d/wamo.conf     Match User wamo: nur Public Key, Schlüssel aus authorized_keys.d,
-#                                        keine Weiterleitungen, kein TTY, ClientAlive 30 s (geprüft mit sshd -t)
-#   Login-Shell von wamo: /bin/sh        Forced Commands laden keine .bashrc mehr
+#   /etc/ssh/sshd_config.d/wamo.conf     Match User wamo: nur Public Key, ForceCommand wamo-job-dispatch, keine
+#                                        Weiterleitungen, kein TTY, PermitUserRC no, MaxSessions 2 (geprüft mit sshd -t)
+#   Audio-Benutzerdienste (pipewire, wireplumber) von wamo maskiert; Login-Shell /bin/sh
 #   entfernt: /srv/wamo/app und /srv/wamo/.ssh aus früheren Fassungen
 # Umgebung: WAMO_JOBS_FROM_EXTRA="10.8.0.0/24" ergänzt das Büro-LAN 192.168.178.0/24 im from= des Schlüssels.
 set -euo pipefail
@@ -58,6 +59,7 @@ pruefe_herkunft() {
 [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo ausführen." >&2; exit 1; }
 pruefe_herkunft
 for datei in wamo-job.sh wamo_job_dispatch.py wamo_job_rauchtest.py abschottung.py claude-code/managed-settings.json \
+  claude-code/managed-mcp.json \
   dev_guard.py werkzeugkarte.py wamo-egress.nft wamo-egress.service; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei" >&2; exit 1; }
 done
@@ -109,6 +111,10 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 systemctl is-active --quiet "user@$UID_WAMO.service" || { echo "user@$UID_WAMO.service läuft nicht" >&2; exit 1; }
+# N9: Audio- und Mediendienste des Benutzers wamo maskieren (nie gebraucht). D-Bus NICHT maskieren, systemd-run
+# --user braucht ihn. Nach dem Maskieren wird unten (Prüfung) ein echter systemd-run --user getestet.
+sudo -u "$WAMO_USER" -H env XDG_RUNTIME_DIR="/run/user/$UID_WAMO" systemctl --user mask --now \
+  pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service >/dev/null 2>&1 || true
 
 echo "== 3. Programme nach $APP (root-eigen, für wamo nur lesbar bzw. ausführbar)"
 install -d -o root -g "$WAMO_USER" -m 0750 "$APP" "$APP/bin" "$APP/waechter" "$APP/claude-code"
@@ -117,6 +123,7 @@ install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo-job.sh" "$APP/bin/wamo-job.s
 install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo_job_rauchtest.py" "$APP/bin/wamo-job-rauchtest"
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/dev_guard.py" "$HERE/werkzeugkarte.py" "$HERE/abschottung.py" "$APP/waechter/"
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/claude-code/managed-settings.json" "$APP/claude-code/managed-settings.json"
+install -o root -g "$WAMO_USER" -m 0640 "$HERE/claude-code/managed-mcp.json" "$APP/claude-code/managed-mcp.json"
 sed -i 's/\r$//' "$APP/bin/wamo-job.sh" "$APP/bin/wamo-job-dispatch" "$APP/bin/wamo-job-rauchtest"
 bpf=$(mktemp)
 /usr/bin/python3 -I "$APP/waechter/abschottung.py" --seccomp-bpf > "$bpf"
@@ -183,18 +190,14 @@ systemctl enable wamo-egress.service >/dev/null 2>&1
 systemctl restart wamo-egress.service
 /usr/sbin/nft list table inet wamo_egress >/dev/null || { echo "Tabelle inet wamo_egress fehlt" >&2; exit 1; }
 
-echo "== 6. Aufräumen der Auftragsordner (systemd-tmpfiles-clean, täglich)"
-cat > /etc/tmpfiles.d/wamo-jobs.conf <<'TMP'
-# WAMO: Caches und Plugin-Daten der Entwicklungsaufträge nach 7 Tagen, Claude-Daten (Sitzungen) nach 30 Tagen.
-# Buchführung (.projekte) und Sperren (.sperren) bleiben unberührt. Projektordner werden nie aufgeräumt.
-e /srv/wamo/jobs/*/npm - - - 7d
-e /srv/wamo/jobs/*/cache - - - 7d
-e /srv/wamo/jobs/*/plugin-daten - - - 7d
-e /srv/wamo/jobs/*/claude - - - 30d
-TMP
-chmod 0644 /etc/tmpfiles.d/wamo-jobs.conf
+echo "== 6. Aufräumen (der Dispatcher räumt als wamo auf; die frühere root-tmpfiles-Regel wird entfernt, N5)"
+rm -f /etc/tmpfiles.d/wamo-jobs.conf
+echo "  Caches der Aufträge (npm, cache, plugin-daten) nach 7 Tagen, claude/ nach 30 Tagen: aufraeumen() im Dispatcher"
 
 echo "== 7. SSH: Schlüssel nur für Aufträge (Forced Command, from=, kein Shell-Zugang), Login-Shell /bin/sh"
+# N7: genau eine .pub-Datei im Quellordner (oder keine, dann wird ein schon eingetragener Schlüssel wiederverwendet)
+anzahl_pub=$(find "$HERE" -maxdepth 1 -name '*.pub' | wc -l)
+[ "$anzahl_pub" -le 1 ] || { echo "Mehr als eine .pub-Datei in $HERE; genau eine (den Auftragsschlüssel) ablegen." >&2; exit 1; }
 SCHLUESSEL=$(find "$HERE" -maxdepth 1 -name '*.pub' | head -n1)
 install -d -o root -g root -m 0755 /etc/ssh/authorized_keys.d
 if [ -n "$SCHLUESSEL" ]; then
@@ -224,6 +227,9 @@ Match User wamo
     KbdInteractiveAuthentication no
     AuthenticationMethods publickey
     AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u
+    ForceCommand /opt/wamo/bin/wamo-job-dispatch
+    PermitUserRC no
+    MaxSessions 2
     ClientAliveInterval 30
     ClientAliveCountMax 3
     AllowTcpForwarding no
