@@ -437,6 +437,17 @@ p, li { text-wrap: pretty; }
 }
 .pc-switch[data-an] .pc-switch-knopf { transform: translateX(16px); }
 .pc-switch-hint { font-size: 14px; color: var(--ink-soft); }
+.pc-steuerung { display: grid; gap: 8px; }
+.pc-auto { display: flex; align-items: flex-start; gap: 8px; min-height: 32px; font-size: 15px; cursor: pointer; }
+.pc-auto input { width: 18px; height: 18px; margin: 2px 0 0; flex: none; accent-color: var(--accent); cursor: pointer; }
+.pc-auto-hint { margin: -4px 0 0 26px; font-size: 14px; color: var(--ink); }
+.hinweis-toast {
+  margin: 0; padding: 8px 12px;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg); border: 1px solid var(--rule); border-left: 4px solid var(--accent); border-radius: 0 4px 4px 0;
+  font-size: 15px; font-weight: 700;
+  animation: enter var(--dur-enter) var(--ease-out) both;
+}
 .dot-rot { background: var(--accent) !important; box-shadow: none !important; }
 
 /* Fehler: Tinte mit rotem Symbol */
@@ -674,7 +685,8 @@ p, li { text-wrap: pretty; }
   .memos { order: 4; }
   .canvas { order: 5; min-height: 0; padding: 16px 12px; }
   .timeline { order: 6; }
-  .pc-switch-row { order: 7; }
+  .pc-steuerung { order: 7; }
+  .hinweis-toast { order: 4; }
   /* PC-Steuerung an: wichtiger als die Betriebsart (die steht weiter im Menü) */
   .status-items:has([data-feld="pcsteuerung"]) [data-feld="betriebsart"] { display: none; }
   .timeline > ol > li:nth-child(n + 4) { display: none; } /* eingeklappt: 3 */

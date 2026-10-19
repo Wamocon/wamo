@@ -11,6 +11,7 @@ import type { Sitzung } from "@/components/LoginGate";
 import { Orb } from "@/components/Orb";
 import { Verlauf } from "@/components/Verlauf";
 import { VoiceLine } from "@/components/VoiceLine";
+import { pcAutoSetzen, usePcAuto } from "@/lib/einstellungen";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
 import {
@@ -162,31 +163,69 @@ const PcSteuerungSchalter = memo(function PcSteuerungSchalter({
   const online = useSelect(wamo, istOnline);
   const an = useSelect(wamo, (s) => s.betrieb?.pcSteuerung === "an");
   const [ziel, setZiel] = useState<boolean | null>(null);
+  const auto = usePcAuto();
   const ausstehend = ziel !== null && ziel !== an;
-  if (!admin || !online) return null;
+  if (!admin) return null;
   return (
-    <div className="pc-switch-row">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={an}
-        className="pc-switch"
-        data-an={an || undefined}
-        disabled={ausstehend}
-        onClick={() => {
-          const neu = !an;
-          if (!onSchalten(neu)) return;
-          setZiel(neu);
-          setTimeout(() => setZiel(null), 5000); // ohne Rückmeldung nach 5 s wieder bedienbar
-        }}
-      >
-        <span className="pc-switch-bahn" aria-hidden="true">
-          <span className="pc-switch-knopf" />
-        </span>
-        PC-Steuerung {an ? "an" : "aus"}
-      </button>
-      <span className="pc-switch-hint">{ausstehend ? "wird geschaltet …" : "gilt nur für diese Sitzung"}</span>
+    <div className="pc-steuerung">
+      {online && (
+        <div className="pc-switch-row">
+          <PcSchalterKnopf an={an} ausstehend={ausstehend} onSchalten={onSchalten} setZiel={setZiel} />
+          <span className="pc-switch-hint">{ausstehend ? "wird geschaltet …" : "gilt nur für diese Sitzung"}</span>
+        </div>
+      )}
+      <label className="pc-auto">
+        <input type="checkbox" checked={auto} onChange={(e) => pcAutoSetzen(e.target.checked)} />
+        <span>PC-Steuerung beim Start automatisch einschalten (dieses Gerät)</span>
+      </label>
+      {auto && <p className="pc-auto-hint">Ohne Sprecherprüfung reagiert WAMO dann auf jede Stimme im Raum.</p>}
     </div>
+  );
+});
+
+function PcSchalterKnopf({
+  an,
+  ausstehend,
+  onSchalten,
+  setZiel,
+}: {
+  an: boolean;
+  ausstehend: boolean;
+  onSchalten: (an: boolean) => boolean;
+  setZiel: (ziel: boolean | null) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={an}
+      className="pc-switch"
+      data-an={an || undefined}
+      disabled={ausstehend}
+      onClick={() => {
+        const neu = !an;
+        if (!onSchalten(neu)) return;
+        setZiel(neu);
+        setTimeout(() => setZiel(null), 5000); // ohne Rückmeldung nach 5 s wieder bedienbar
+      }}
+    >
+      <span className="pc-switch-bahn" aria-hidden="true">
+        <span className="pc-switch-knopf" />
+      </span>
+      PC-Steuerung {an ? "an" : "aus"}
+    </button>
+  );
+}
+
+/** Kurzer sichtbarer Hinweis (z. B. Autostart der PC-Steuerung); die Ansage läuft über role="status". */
+const HinweisToast = memo(function HinweisToast() {
+  const toast = useSelect(wamo, (s) => s.toast);
+  if (!toast) return null;
+  return (
+    <p className="hinweis-toast" key={toast.key}>
+      <span className="dot dot-rot" aria-hidden="true" />
+      {toast.text}
+    </p>
   );
 });
 
@@ -235,6 +274,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
               <span className="legend-bot">WAMO</span>
             </p>
           </div>
+          <HinweisToast />
           <GemerktHinweis onVergessen={aktionen.vergessen} />
           <ActivityTimeline />
           <PcSteuerungSchalter onSchalten={aktionen.pcSteuerung} />

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { PipecatClient, RTVIError } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
+import { pcAutoLesen } from "@/lib/einstellungen";
 import { parseServerMessage, type Auftrag } from "@/lib/nachrichten";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
 import { getSupabase } from "@/lib/supabase";
@@ -21,6 +22,8 @@ import {
   reduceBotTranscript,
   resetWamo,
   wamo,
+  zeigeToast,
+  ZUG_LEER,
   type Approval,
   type Caption,
   type Fehler,
@@ -174,6 +177,9 @@ export function useWamo(): WamoAktionen {
   // Authorization-Header der laufenden Sitzung: wird bei TOKEN_REFRESHED aktualisiert
   const authHeaders = useRef<Headers | null>(null);
   const tokenAblauf = useRef<number | null>(null);
+  // Autostart der PC-Steuerung (Geräte-Einstellung): je Verbindung höchstens einmal senden;
+  // aktiv = Einstellung beim Verbindungsstart, manuellAus = Nutzer hat in dieser Sitzung ausgeschaltet
+  const pcAuto = useRef({ aktiv: false, gesendet: false, manuellAus: false, wartet: false });
 
   /**
    * Gemeinsamer Abbau für "Gespräch beenden", Verbindungsabbruch und Verlassen der Seite:
@@ -182,6 +188,7 @@ export function useWamo(): WamoAktionen {
    */
   const teardown = useCallback((grund: "nutzer" | "getrennt" | "unmount") => {
     genRef.current += 1;
+    pcAuto.current = { aktiv: false, gesendet: false, manuellAus: false, wartet: false };
     const client = clientRef.current;
     clientRef.current = null;
     authHeaders.current = null;
@@ -356,6 +363,8 @@ export function useWamo(): WamoAktionen {
     // erneut = zweiter Versuch nach erneuerter Sitzung (nur einmal, nach 401)
     const starte = async (erneut: boolean): Promise<void> => {
       teardown("unmount"); // Reste eines früheren Versuchs abbauen, ohne Meldung
+      // Geräte-Einstellung beim Start festhalten: ein Umschalten mitten im Gespräch wirkt erst beim nächsten
+      pcAuto.current.aktiv = pcAutoLesen();
       const gen = genRef.current;
       const aktuell = () => genRef.current === gen;
       seen.current = { botOutput: false, userInput: false };
@@ -392,7 +401,7 @@ export function useWamo(): WamoAktionen {
             wamo.set((s) => {
               let caption = s.caption;
               if (speaking) caption = { ...caption, interrupted: true };
-              else if (caption.turnEnd) caption = { ...caption, text: "", spoken: 0, turnEnd: false };
+              else if (caption.turnEnd) caption = { ...caption, ...ZUG_LEER };
               if (caption.userLogged) caption = { ...caption, userDone: "", userLive: "", userLogged: false };
               return { ...s, presence: "listening", caption, turn: s.turn + 1 };
             });
@@ -591,7 +600,39 @@ export function useWamo(): WamoAktionen {
       setFehler({ art: "sonst", text: "PC-Steuerung konnte nicht umgeschaltet werden." });
       return false;
     }
+    // manuell ausgeschaltet: in dieser Sitzung nicht wieder automatisch einschalten
+    if (!an) {
+      pcAuto.current.manuellAus = true;
+      pcAuto.current.wartet = false;
+    }
     return true;
+  }, []);
+
+  // Autostart der PC-Steuerung: Einstellung an, Profil admin, PC-Host verbunden und Steuerung aus
+  // -> einmal je Verbindung einschalten. Den Hinweis gibt es erst, wenn der Kern "an" bestätigt.
+  useEffect(() => {
+    const pruefe = () => {
+      const s = wamo.get();
+      const st = pcAuto.current;
+      const b = s.betrieb;
+      if (st.wartet && b?.pcSteuerung === "an") {
+        st.wartet = false;
+        zeigeToast("PC-Steuerung automatisch eingeschaltet");
+        return;
+      }
+      if (!st.aktiv || st.gesendet || st.manuellAus || !b || !istOnline(s)) return;
+      if (s.profil?.rolle !== "admin" || b.pc !== "verbunden" || b.pcSteuerung !== "aus") return;
+      const client = clientRef.current;
+      if (!client) return;
+      st.gesendet = true; // auch bei einem Fehler nicht erneut versuchen (kein Dauerfeuer)
+      try {
+        senden(client, { type: "pc_steuerung", data: { an: true } });
+        st.wartet = true;
+      } catch {
+        setFehler({ art: "sonst", text: "PC-Steuerung konnte nicht automatisch eingeschaltet werden." });
+      }
+    };
+    return wamo.subscribe(pruefe);
   }, []);
 
   const toggleMic = useCallback(() => {

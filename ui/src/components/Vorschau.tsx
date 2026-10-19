@@ -15,6 +15,7 @@ import {
   resetWamo,
   wamo,
   zeigeMemo,
+  zeigeToast,
   type LevelSample,
   type Presence,
   type WamoState,
@@ -31,6 +32,7 @@ import {
  *   /?vorschau=1&handelt=1          ein Werkzeug läuft gerade
  *   /?vorschau=1&auftrag=1          Entwicklungsauftrag wartet (&entwicklung=aus: gesperrt)
  *   /?vorschau=1&pcsteuerung=an     PC-Steuerung dieser Sitzung an
+ *   /?vorschau=1&pcauto=1           Autostart der PC-Steuerung (simuliert, ändert die Geräte-Einstellung nicht)
  *   /?vorschau=1&fehler=1           offline mit Fehlermeldung
  *   /?vorschau=1&rolle=mitglied     Profil als Mitglied
  *   /?vorschau=1&pc=getrennt        PC-Host getrennt (auch gesperrt, aus)
@@ -113,6 +115,7 @@ function beispiel(): { state: WamoState; presence: Presence } {
             spoken: presence === "speaking" ? 7 : 0,
             turnEnd: false,
             interrupted: false,
+            segs: [],
           },
     log: leer
       ? []
@@ -181,6 +184,14 @@ function Hauptvorschau() {
 
   useEffect(() => {
     resetWamo(state);
+    // Autostart simulieren: der Kern meldet nach kurzer Zeit "an", dazu der Hinweis
+    const autoTimer =
+      param("pcauto") === "1" && state.betrieb
+        ? setTimeout(() => {
+            wamo.set((s) => (s.betrieb ? { ...s, betrieb: { ...s.betrieb, pcSteuerung: "an" } } : s));
+            zeigeToast("PC-Steuerung automatisch eingeschaltet");
+          }, 1200)
+        : null;
     if (param("leer") !== "1" && state.presence !== "offline") {
       zeigeMemo({ bereich: "persoenlich", status: "aktiv", text: "Niko mag kurze Antworten.", id: "m1" });
     }
@@ -217,6 +228,7 @@ function Hauptvorschau() {
     }, 50);
     return () => {
       clearInterval(id);
+      if (autoTimer) clearTimeout(autoTimer);
       resetWamo();
     };
   }, [state, presence]);

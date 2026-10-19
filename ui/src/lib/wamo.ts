@@ -30,6 +30,21 @@ export type Caption = {
   spoken: number; // Anzahl schon gesprochener Wörter
   turnEnd: boolean;
   interrupted: boolean; // Rest wird kurz durchgestrichen gezeigt
+  // Segmente des Zugs (Pipecat segment_id): Wortfortschritt kommt je Segment, deshalb wird jedes
+  // Segment einzeln gepflegt. Sonst überschreibt der nächste Satz den vorherigen ("…, der 19." + "Oktober.").
+  segs: Segment[];
+};
+
+/** Ein Ausgabesegment von WAMO: voller Text und bereits gesprochener Anfang. */
+export type Segment = { id: number; text: string; done: string };
+
+/** Leerer WAMO-Zug (neuer Zug nach Satzende oder Unterbrechung). */
+export const ZUG_LEER: Pick<Caption, "text" | "spoken" | "turnEnd" | "interrupted" | "segs"> = {
+  text: "",
+  spoken: 0,
+  turnEnd: false,
+  interrupted: false,
+  segs: [],
 };
 
 export type LogEintrag = {
@@ -66,6 +81,8 @@ export type WamoState = {
   micOn: boolean;
   /** Text für role="status": nur bedeutsame Wechsel (verbunden, getrennt, Mikro, PC) */
   ansage: string;
+  /** kurzer sichtbarer Hinweis (z. B. "PC-Steuerung automatisch eingeschaltet"), verschwindet selbst */
+  toast: { key: number; text: string } | null;
 };
 
 export const HISTORY = 240; // ~12 s bei 20 Hz
@@ -75,10 +92,7 @@ export const leereCaption: Caption = {
   userDone: "",
   userLive: "",
   userLogged: false,
-  text: "",
-  spoken: 0,
-  turnEnd: false,
-  interrupted: false,
+  ...ZUG_LEER,
 };
 
 export const initialState: WamoState = {
@@ -96,6 +110,7 @@ export const initialState: WamoState = {
   memos: [],
   micOn: true,
   ansage: "",
+  toast: null,
 };
 
 export const wamo = createStore<WamoState>(initialState);
@@ -122,16 +137,34 @@ export function overlayZustand(s: WamoState) {
 
 // ---------- Untertitel ----------
 const words = (s: string) => (s.trim() ? s.trim().split(/\s+/).length : 0);
+const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 
 /** Bot-Ausgabe einarbeiten: Sätze kommen vorab (grau), Wörter im Moment des Sprechens (Tinte). */
 export function reduceBotOutput(c: Caption, d: BotOutputData): Caption {
   const kind = d.text_type ?? d.aggregated_by;
   if (!d.text || kind === "backchannel") return c;
-  const base = c.turnEnd || c.interrupted ? { ...c, text: "", spoken: 0, turnEnd: false, interrupted: false } : c;
-  if (d.spoken_progress) {
-    // RTVI 2: exakter Fortschritt im Satz
-    const { accumulated_text: done, remaining_text: rest } = d.spoken_progress;
-    return { ...base, text: `${done} ${rest}`.trim(), spoken: words(done) };
+  const base = c.turnEnd || c.interrupted ? { ...c, ...ZUG_LEER } : c;
+  if (typeof d.segment_id === "number") {
+    // RTVI 2: jedes Segment über seine ID pflegen. "new" kündigt es an, "in-progress" liefert den
+    // Wortfortschritt, "completed" schließt es ab. Der Zug ist die Folge aller Segmente.
+    const id = d.segment_id;
+    const prog = d.spoken_progress;
+    const voll = norm(prog ? `${prog.accumulated_text} ${prog.remaining_text}` : d.text);
+    const fertig = d.spoken_status === "completed" || d.will_be_spoken === false;
+    const done = prog ? norm(prog.accumulated_text) : fertig ? voll : "";
+    const alt = base.segs.find((s) => s.id === id);
+    const seg: Segment = {
+      id,
+      text: voll || alt?.text || "",
+      done: alt && words(alt.done) > words(done) ? alt.done : done, // Fortschritt geht nie zurück
+    };
+    const segs = alt ? base.segs.map((s) => (s.id === id ? seg : s)) : [...base.segs, seg];
+    return {
+      ...base,
+      segs,
+      text: norm(segs.map((s) => s.text).join(" ")),
+      spoken: segs.reduce((n, s) => n + words(s.done), 0),
+    };
   }
   if (kind === "word") {
     // Wort wird jetzt gesprochen
@@ -146,7 +179,7 @@ export function reduceBotOutput(c: Caption, d: BotOutputData): Caption {
 /** Rückfall für Kerne ohne bot-output (nur LLM-Text): alles gilt sofort als gesprochen. */
 export function reduceBotTranscript(c: Caption, text: string): Caption {
   if (!text) return c;
-  const base = c.turnEnd || c.interrupted ? { ...c, text: "", spoken: 0, turnEnd: false, interrupted: false } : c;
+  const base = c.turnEnd || c.interrupted ? { ...c, ...ZUG_LEER } : c;
   const next = `${base.text} ${text}`.trim();
   return { ...base, text: next, spoken: words(next) };
 }
@@ -213,8 +246,26 @@ export function weiterMemo(key: number) {
   wamo.set((s) => ({ ...s, memos: s.memos.map((m) => (m.key === key ? { ...m, paused: false } : m)) }));
 }
 
+// ---------- kurzer Hinweis (Toast), zugleich als Ansage für Screenreader ----------
+const TOAST_MS = 5000;
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+let toastKey = 0;
+
+export function zeigeToast(text: string) {
+  toastKey += 1;
+  const key = toastKey;
+  if (toastTimer) clearTimeout(toastTimer);
+  wamo.set((s) => ({ ...s, toast: { key, text }, ansage: text }));
+  toastTimer = setTimeout(() => {
+    toastTimer = null;
+    wamo.set((s) => (s.toast?.key === key ? { ...s, toast: null } : s));
+  }, TOAST_MS);
+}
+
 /** Alle Timer stoppen und den Zustand zurücksetzen (Abmelden, Vorschau). */
 export function resetWamo(state: WamoState = initialState) {
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = null;
   for (const t of memoTimer.values()) clearTimeout(t.timer);
   memoTimer.clear();
   memoRest.clear();

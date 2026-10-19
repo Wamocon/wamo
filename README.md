@@ -29,13 +29,14 @@ gemeinsamem Gedächtnis.
 - Sokrates-2: Benutzer `wamo` mit Claude Code, Node 22, ECC-Plugin, REA-Server, gh, Vercel- und Supabase-CLI.
 
 - Gesprächstest Ende zu Ende (Browser ohne Bildschirm, Testfrage als Mikrofon): Anmeldung mit zweitem Faktor,
-  Verbindung nach 1,4 s, Begrüßung über Soniox-Stimme, Frage von Soniox wörtlich erkannt und in `turns` protokolliert,
-  Sitzungen sauber beendet. ECC-Reviews (Python, Sicherheit, Datenbank, TypeScript) eingearbeitet.
+  Verbindung nach 1,4 s, Begrüßung über Soniox-Stimme, Frage wörtlich erkannt, Claude ruft das Zeitwerkzeug auf und
+  antwortet richtig, Verlauf und Live-Untertitel vollständig, Gespräch in `turns` protokolliert.
+  ECC-Reviews (Python, Sicherheit, Datenbank, TypeScript) eingearbeitet.
+- Claude mit Organisationsschlüssel: Workspace über `ANTHROPIC_WORKSPACE_ID` (Header `anthropic-workspace-id`).
+- PC-Steuerung je Sitzung per Schalter, wahlweise Autostart je Gerät (nur Admins, Standard aus).
 
 ### Offen
 
-- Antwort von Claude: Der Schlüssel ist ein Organisationsschlüssel ohne Workspace-Bindung. `ANTHROPIC_WORKSPACE_ID`
-  in `.env` eintragen oder einen an einen Workspace gebundenen Schlüssel verwenden.
 - Soniox: Der Schlüssel gehört zu einem US-Projekt, die Spracherkennung läuft deshalb vorerst über den US-Endpunkt.
   Für EU-Datenhaltung EU-Schlüssel anlegen und `SONIOX_STT_URL` und `SONIOX_TTS_URL` auf `*.eu.soniox.com` stellen.
 - TLS für Anmeldung und Datenbank im Büronetz und Firewall auf die PC-Adressen (Sicherheitsreview A3).
