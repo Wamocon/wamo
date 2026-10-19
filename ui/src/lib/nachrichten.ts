@@ -14,7 +14,8 @@ export type Profil = { name: string; rolle: Rolle };
 export type Betrieb = {
   modus: "lokal" | "buero";
   modelle: { llm?: string; stt?: string; tts?: string };
-  pc: "verbunden" | "getrennt" | "aus" | "gesperrt";
+  /** verbindet: Kern baut die Verbindung zum PC-Host gerade auf (Sitzungsbeginn) */
+  pc: "verbindet" | "verbunden" | "getrennt" | "aus" | "gesperrt";
   /** optional: wohin die Stimme geht */
   ort?: "cloud" | "haus";
   /** optional: Antwortzeit des PC-Hosts in Millisekunden */
@@ -23,6 +24,10 @@ export type Betrieb = {
   pcSteuerung?: "an" | "aus";
   /** Entwicklungsaufträge erlaubt? "aus" = gesperrt */
   entwicklung?: "an" | "aus";
+  /** optional: Rechnername des gesteuerten PCs (Büro: der PC am anderen Ende des Tunnels) */
+  pcName?: string;
+  /** Einschalten abgelehnt, weil eine andere Sitzung den PC gerade steuert */
+  pcBelegt?: boolean;
 };
 
 export type Gemerkt = {
@@ -182,11 +187,13 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         type: "betrieb",
         modus: m.modus,
         modelle: { llm: optStr(modelle.llm), stt: optStr(modelle.stt), tts: optStr(modelle.tts) },
-        pc: oneOf(m.pc, ["verbunden", "getrennt", "aus", "gesperrt"] as const) ? m.pc : "aus",
+        pc: oneOf(m.pc, ["verbindet", "verbunden", "getrennt", "aus", "gesperrt"] as const) ? m.pc : "aus",
         ort: oneOf(m.ort, ["cloud", "haus"] as const) ? m.ort : undefined,
         pcLatenzMs: latenz !== undefined ? Math.max(0, Math.round(latenz)) : undefined,
         pcSteuerung: oneOf(m.pc_steuerung, ["an", "aus"] as const) ? m.pc_steuerung : undefined,
         entwicklung: oneOf(m.entwicklung, ["an", "aus"] as const) ? m.entwicklung : undefined,
+        pcName: isStr(m.pc_name) && /^[A-Za-z0-9._-]{1,63}$/.test(m.pc_name) ? m.pc_name : undefined,
+        pcBelegt: m.pc_belegt === true ? true : undefined,
       };
     }
     case "gemerkt":

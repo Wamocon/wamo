@@ -9,3 +9,5 @@ __pycache__/
 .pytest_cache/
 *.jsonl
 .git/
+# Testsatz und Messergebnisse der Modellabnahme gehören nicht ins Image
+eval/

@@ -1,8 +1,10 @@
 """WAMO-Host: die "Hände" von WAMO auf dem Windows-PC.
 
 Werkzeuge per MCP. Zwei Betriebsarten:
-  --stdio   Der Voice-Core startet den Host als Unterprozess (lokal, nicht im Netz erreichbar).
-  sonst     Streamable HTTP auf WAMO_HOST_BIND (später Tunnel-Adresse, nie 0.0.0.0).
+  --stdio   Der Voice-Core startet den Host als Unterprozess (Betriebsart Unterwegs, nicht im Netz erreichbar).
+  --http    Streamable HTTP nur auf Loopback (WAMO_HOST_BIND, Standard 127.0.0.1:8765) mit Bearer-Token aus
+            WAMO_HOST_TOKEN_FILE (Betriebsart Büro: der Kern auf Sokrates-2 kommt über den SSH-Rücktunnel,
+            siehe host_http.py und scripts/wamo-tunnel.ps1). Ohne gültiges Token startet der Host nicht.
 
 Sicherheitsmodell (wird HIER erzwungen, nicht im Prompt). Alles, was ein Modell schickt, ist
 untrusted: auch Text aus Websuche, Mails oder Dateien kann im Modell als Anweisung wirken.
@@ -70,8 +72,9 @@ READ_CMDLET = re.compile(
 # "read" ist eine enge Allowlist: eine Pipeline aus Get-/Test-/...-Cmdlets mit schlichten
 # Argumenten. Diese Zeichen kommen darin nie vor, weil sie Code ausführen oder Befehle verketten:
 # Zeilenumbrüche und Steuerzeichen, Skriptblöcke {}, Ausdrücke (), Typzugriffe [] und ::,
-# Variablen $, Splatting @, Umleitungen <>, ; & `, und die Aliase % (ForEach) und ? (Where).
-UNSAFE_READ_CHARS = re.compile(r"[\x00-\x1f\x7f{}()\[\]$@<>;&`%?]")
+# Variablen $, Splatting @, Umleitungen <>, ; & `, die Aliase % (ForEach) und ? (Where) und der Platzhalter *
+# (sonst umgeht "WAM*\host-token" oder ".ss*\id_*" die Sperrliste der Zugangsdaten unten).
+UNSAFE_READ_CHARS = re.compile(r"[\x00-\x1f\x7f{}()\[\]$@<>;&`%?*]")
 # Wörter, mit denen man aus einem "harmlosen" Get-Befehl ausbrechen kann
 ESCAPE_TOKENS = re.compile(
     r"\binvoke-expression\b|\biex\b|-enc(odedcommand)?\b|\bstart-process\b"
@@ -121,8 +124,12 @@ PATH_CMDLETS = re.compile(
     r"Select-String|Test-Path|Get-WinEvent)\b", re.IGNORECASE)
 
 
+KANAL = "stdio"  # stdio (lokal) oder http (Tunnel); steht in jedem Audit-Eintrag
+
+
 def _audit(event: dict) -> None:
     event["ts"] = datetime.now(timezone.utc).isoformat()
+    event.setdefault("kanal", KANAL)
     with AUDIT_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
@@ -327,7 +334,8 @@ def programm_oeffnen(name: str) -> dict:
 
 
 HOME = Path(os.environ.get("USERPROFILE", str(Path.home()))).resolve()
-SENSITIVE_PARTS = {".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker", "credentials"}
+# "wamo": %LOCALAPPDATA%\WAMO enthält das Host-Token des Tunnels (scripts/wamo-tunnel-einrichten.ps1)
+SENSITIVE_PARTS = {".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker", "credentials", "wamo"}
 OPEN_WITH = {"vscode": "vscode", "code": "vscode", "explorer": "explorer", "notepad": "notepad", "editor": "notepad"}
 
 
@@ -512,6 +520,7 @@ def powershell_lesen(command: str, reason: str) -> dict:
 @mcp.tool()
 def system_info() -> dict:
     """Basisinfos zum PC (read)."""
+    _audit({"tool": "system_info", "risk": "read"})
     return {
         "status": "success",
         "os": platform.platform(),
@@ -606,8 +615,16 @@ def execute_approved(approval_id: str) -> dict:
 if __name__ == "__main__":
     if "--stdio" in sys.argv:
         mcp.run(transport="stdio")
+    elif "--http" in sys.argv:
+        import host_http
+
+        KANAL = "http"
+        if log_datei := (os.getenv("WAMO_HOST_LOG") or "").strip():
+            # Ohne Konsole (geplante Aufgabe): Meldungen von uvicorn in eine Datei; nie Token oder Header
+            sys.stdout = sys.stderr = open(log_datei, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        try:
+            host_http.starte(mcp, BIND_HOST, BIND_PORT, os.getenv("WAMO_HOST_TOKEN_FILE"), audit=_audit)
+        except (host_http.TokenFehler, ValueError) as e:
+            sys.exit(f"WAMO-Host startet nicht: {e}")
     else:
-        # HTTP-Modus hat noch keine eigene Anmeldung: nur an eine bestimmte Adresse binden, nie an alle.
-        if BIND_HOST.strip() in ("", "0.0.0.0", "::", "[::]"):
-            sys.exit("WAMO_HOST_BIND darf nicht 0.0.0.0 oder :: sein")
-        mcp.run(transport="streamable-http")
+        sys.exit("Aufruf: wamo_host.py --stdio | --http")

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import re
 import sys
@@ -62,7 +63,6 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
-from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.settings import LLMSettings
 from pipecat.services.soniox.stt import SonioxContextObject, SonioxSTTService
 from pipecat.services.soniox.tts import SonioxTTSService
@@ -87,8 +87,18 @@ from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, identity_from_body, install_access_gate
 from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
+from llm_anbieter import LLMNichtVerfuegbar, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
 from memory import MemoryStore, Profile, ProfileDirectory, Recall, shared_database
-from pc_host import call_host_tool, host_client, host_tools, pc_host_enabled
+from kern_dienst import runner_vorbereiten
+from pc_host import (
+    call_host_tool,
+    host_client,
+    host_tools,
+    ist_tunnel,
+    pc_host_fuer,
+    pc_lease_freigeben,
+    pc_lease_nehmen,
+)
 from persona import build_system_prompt
 from screen import PC_OFF, register_screen_tools
 from soft_interrupt import (
@@ -97,7 +107,7 @@ from soft_interrupt import (
     SoftInterruptGate,
 )
 from soniox_tts import LazySonioxTTSService
-from tools import TurnState, anthropic_client, gemerkt_message, register_tools
+from tools import TurnState, gemerkt_message, register_tools
 
 load_dotenv(override=True)
 
@@ -106,10 +116,11 @@ def _configure_logging() -> None:
     """Standard INFO (WAMO_LOG_LEVEL): INFO enthält keine Gesprächsinhalte, die stehen nur in DEBUG."""
     level = (os.getenv("WAMO_LOG_LEVEL") or "INFO").strip().upper()
     logger.remove()
+    # diagnose=False: loguru schriebe sonst bei Ausnahmen die Werte lokaler Variablen (Tokens, Schlüssel) ins Log
     try:
-        logger.add(sys.stderr, level=level)
+        logger.add(sys.stderr, level=level, backtrace=False, diagnose=False)
     except ValueError:
-        logger.add(sys.stderr, level="INFO")
+        logger.add(sys.stderr, level="INFO", backtrace=False, diagnose=False)
         logger.warning("WAMO_LOG_LEVEL {!r} unbekannt, nutze INFO", level)
 
 
@@ -154,7 +165,12 @@ SOFT_INTERRUPT_MAX_WORDS = int(os.getenv("SOFT_INTERRUPT_MAX_WORDS") or 3)
 # So weit laufen die Wort-Zeitstempel dem hörbaren Ton voraus (gemessen: etwa 0,5 s).
 SOFT_INTERRUPT_LAG_SECS = float(os.getenv("SOFT_INTERRUPT_LAG_SECS") or 0.5)
 DEFAULT_ALLOWED_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
-BETRIEB_MODUS = "lokal"  # Betriebsart in der Oberfläche: lokal | buero
+def betrieb_modus(wert: str | None) -> str:
+    """Betriebsart für die Oberfläche: buero (Kern auf Sokrates-2, wamo-core.service), sonst lokal (Unterwegs)."""
+    return "buero" if (wert or "").strip().lower() == "buero" else "lokal"
+
+
+BETRIEB_MODUS = betrieb_modus(os.getenv("WAMO_BETRIEB"))
 MODELL_ORT = "cloud"  # Claude und Soniox laufen in der Cloud; eigene Modelle auf den Sparks wären "haus"
 CLEANUP_DB_TIMEOUT_SECS = 5.0
 PROFILE_RECHECK_SECS = 60.0  # so oft prüft eine laufende Sitzung, ob das Profil noch gilt
@@ -184,15 +200,6 @@ def _keep(task: asyncio.Task) -> asyncio.Task:
     return task
 
 
-def lesbarer_modellname(model: str) -> str:
-    """'claude-haiku-5-5' -> 'Claude Haiku 5.5'; Unbekanntes bleibt, wie es ist."""
-    m = re.fullmatch(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?", model)
-    if not m:
-        return model
-    family, major, minor = m.groups()
-    return f"Claude {family.capitalize()} {major}.{minor}" if minor else f"Claude {family.capitalize()} {major}"
-
-
 def greeting_text(name: str) -> str:
     template = os.getenv("WAMO_GREETING", DEFAULT_GREETING)
     return template.replace("{name}", name).strip()
@@ -203,23 +210,40 @@ def profil_message(identity: Identity) -> dict:
 
 
 def betrieb_message(
-    pc: str, pc_latenz_ms: int | None = None, pc_steuerung: bool = False, entwicklung: bool = False
+    pc: str, pc_latenz_ms: int | None = None, pc_steuerung: bool = False, entwicklung: bool = False,
+    llm: str | None = None, pc_name: str | None = None, pc_belegt: bool = False,
 ) -> dict:
-    """pc: verbunden | getrennt | aus (gesperrt erkennt der Host noch nicht).
+    """pc: verbindet | verbunden | getrennt | aus (gesperrt erkennt der Host noch nicht).
     pc_steuerung: ob die PC-Werkzeuge in dieser Sitzung eingeschaltet sind (Standard aus).
-    entwicklung: ob Entwicklungsaufträge in dieser Sitzung angeboten werden (WAMO_ENTWICKLUNG und Rolle)."""
+    entwicklung: ob Entwicklungsaufträge in dieser Sitzung angeboten werden (WAMO_ENTWICKLUNG und Rolle).
+    llm: Anzeigename des Gesprächsmodells dieser Sitzung (llm_anbieter.Wahl.anzeige).
+    pc_name: Rechnername des gesteuerten PCs (aus system_info), damit die Oberfläche das Ziel zeigt.
+    pc_belegt: Einschalten abgelehnt, weil eine andere Sitzung den PC gerade steuert (Büro)."""
     message = {
         "type": "betrieb",
         "modus": BETRIEB_MODUS,
         "ort": MODELL_ORT,
-        "modelle": {"llm": lesbarer_modellname(CLAUDE_MODEL), "stt": "Soniox", "tts": f"Soniox {SONIOX_VOICE}"},
+        "modelle": {"llm": llm or lesbarer_modellname(CLAUDE_MODEL), "stt": "Soniox", "tts": f"Soniox {SONIOX_VOICE}"},
         "pc": pc,
         "pc_steuerung": "an" if pc_steuerung else "aus",
         "entwicklung": "an" if entwicklung else "aus",
     }
     if pc_latenz_ms is not None:
         message["pc_latenz_ms"] = pc_latenz_ms
+    if pc_name:
+        message["pc_name"] = pc_name
+    if pc_belegt:
+        message["pc_belegt"] = True
     return message
+
+
+def rechnername(system_info_text: str) -> str | None:
+    """Rechnername aus der Antwort von system_info (nur Zeichen, die in Windows-Namen vorkommen)."""
+    try:
+        name = json.loads(system_info_text).get("machine")
+    except (ValueError, AttributeError):
+        return None
+    return name if isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,63}", name) else None
 
 
 def gate_pc_tools(
@@ -333,22 +357,26 @@ def summary_prompt(name: str) -> str:
 
 
 async def build_session(transport, identity: Identity) -> Session:
-    """Baut Dienste, Pipeline und Ereignisse einer Sitzung, ohne Netzverbindungen aufzubauen."""
+    """Baut Dienste, Pipeline und Ereignisse einer Sitzung, ohne Netzverbindungen aufzubauen (bis auf
+    eine kurze Prüfung des LiteLLM-Gateways, wenn ein Baustein darauf steht, siehe llm_anbieter.py)."""
     memory = MemoryStore.from_env(identity.user_id)
     is_admin = identity.is_admin
-    pc_enabled = is_admin and pc_host_enabled()
+    pc_enabled = pc_host_fuer(identity)  # admin; im Büro zusätzlich an diesen PC gebunden (pc_host.py)
     entwicklung = is_admin and entwicklung_enabled()
     if entwicklung and (problem := entwicklung_problem()):
         logger.error("Entwicklungsaufträge aus: {}", problem)
         entwicklung = False
     # PC-Steuerung je Sitzung standardmäßig aus; nur ein Admin schaltet sie in der UI ein.
-    state: dict = {"pc": "getrennt" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
-                   "client_ready": False, "live": True, "cleaned": False, "guard": None}
+    state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
+                   "client_ready": False, "live": True, "cleaned": False, "guard": None,
+                   "pc_weg": False, "pc_tools": False, "pc_waechter": None,  # pc_weg: Hinweis im Prompt
+                   "pc_name": None, "pc_belegt": False}
+    lease = object()  # Kennung dieser Sitzung für die PC-Sperre (pc_host.pc_lease_nehmen)
 
     def prompt_for(recall: Recall) -> str:
         return build_system_prompt(
             identity.name, identity.anrede, recall.persoenlich, recall.gemeinsam,
-            pc_werkzeuge=pc_enabled, entwicklung=entwicklung,
+            pc_werkzeuge=pc_enabled, entwicklung=entwicklung, pc_erreichbar=not state["pc_weg"],
         )
 
     # Gedächtnis je Sitzung laden (kein prozessweiter Cache: jedes Profil sieht nur seins).
@@ -373,20 +401,11 @@ async def build_session(transport, identity: Identity) -> Session:
         settings=SonioxTTSService.Settings(voice=SONIOX_VOICE, language=Language.DE),
     )
 
-    llm = AnthropicLLMService(
-        api_key=os.environ["ANTHROPIC_API_KEY"],
-        client=anthropic_client(),  # gemeinsamer Client, inklusive Workspace-Header (ANTHROPIC_WORKSPACE_ID)
-        settings=AnthropicLLMService.Settings(
-            model=CLAUDE_MODEL,
-            # Persona als system_instruction, nicht als System-Nachricht im Kontext: die
-            # Satzende-Erkennung hängt ihre Regeln hier an. Eine System-Nachricht im Kontext
-            # würde Pipecat dann komplett verwerfen.
-            system_instruction=prompt_for(recall),
-            enable_prompt_caching=True,
-            # Haiku denkt sonst vor jeder Antwort nach (bis 1,6 s bis zum ersten Wort).
-            thinking=AnthropicLLMService.ThinkingConfig(type="disabled"),
-        ),
-    )
+    # Claude oder ein eigenes Modell über LiteLLM (WAMO_LLM_ANBIETER), mit Rückfall auf Claude.
+    # Persona als system_instruction (Einzelheiten in llm_anbieter.gespraech_dienst).
+    # Beide Prüfungen parallel, damit ein langsames Gateway den Start nur einmal verzögert.
+    # summary_llm None: Pipecat fasst mit dem Gesprächsmodell zusammen.
+    (llm, llm_wahl), summary_llm = await asyncio.gather(gespraech_llm(prompt_for(recall)), zusammenfassung_llm())
 
     transcript: list[tuple[str, str]] = []  # fürs Lernen
     # Fremdinhalte im laufenden Zug (Websuche, Bildschirm, PC, Entwicklungs-Ergebnisse) merken: kein
@@ -402,7 +421,7 @@ async def build_session(transport, identity: Identity) -> Session:
         standard_tools += dev.schemas()
     context = LLMContext(tools=ToolsSchema(standard_tools=standard_tools))
 
-    # PC-Werkzeuge (Host per MCP-stdio) nur für admin; im Hintergrund dazuholen.
+    # PC-Werkzeuge nur für admin; im Hintergrund dazuholen (lokal per stdio, im Büro über den Tunnel).
     pc_client = host_client() if pc_enabled else None
 
     def pc_allowed() -> bool:
@@ -428,6 +447,7 @@ async def build_session(transport, identity: Identity) -> Session:
                     min_messages_after_summary=8,
                     summarization_prompt=summary_prompt(identity.name),
                     summary_message_template="Zusammenfassung des bisherigen Gesprächs: {summary}",
+                    llm=summary_llm,
                 ),
             ),
         ),
@@ -504,28 +524,62 @@ async def build_session(transport, identity: Identity) -> Session:
         await task.queue_frames([RTVIServerMessageFrame(data=data)])
 
     async def send_betrieb() -> None:
-        await send(betrieb_message(state["pc"], state["pc_latenz_ms"], state["pc_steuerung"], entwicklung))
+        await send(betrieb_message(state["pc"], state["pc_latenz_ms"], state["pc_steuerung"], entwicklung,
+                                   llm=llm_wahl.anzeige, pc_name=state["pc_name"], pc_belegt=state["pc_belegt"]))
 
     async def refresh_prompt() -> None:
         await task.queue_frame(
             LLMUpdateSettingsFrame(delta=LLMSettings(system_instruction=prompt_for(await memory.recall())))
         )
 
-    async def attach_pc_tools() -> None:
+    async def set_pc(status: str, latenz_ms: int | None = None) -> None:
+        """PC-Zustand setzen; beim Wechsel erreichbar/nicht erreichbar auch den Hinweis im Prompt."""
+        weg = status == "getrennt"
+        hinweis_neu = weg != state["pc_weg"]
+        state["pc"], state["pc_weg"] = status, weg
+        if latenz_ms is not None:
+            state["pc_latenz_ms"] = latenz_ms
+        if not state["live"]:
+            return
+        if hinweis_neu:
+            await refresh_prompt()  # WAMO sagt dann "PC nicht erreichbar" statt Umwege zu versuchen
+        if state["client_ready"]:
+            await send_betrieb()
+
+    async def attach_pc_tools(melde_fehler: bool = True) -> bool:
         pc = await host_tools(pc_client)
+        if not pc and not melde_fehler:
+            return False
+        latenz = None
         if pc:
             pc_schemas = gate_pc_tools(list(pc.standard_tools), pc_allowed, turn.taint)
             context.set_tools(ToolsSchema(standard_tools=[*standard_tools, *pc_schemas, *screen_schemas]))
+            state["pc_tools"] = True
             started = time.monotonic()
-            with contextlib.suppress(Exception):  # Latenz ist nur eine Anzeige
-                await asyncio.wait_for(call_host_tool(pc_client, "system_info", {}), 5)
-                state["pc_latenz_ms"] = round((time.monotonic() - started) * 1000)
-        state["pc"] = "verbunden" if pc else "getrennt"
-        if state["client_ready"] and state["live"]:
-            await send_betrieb()
+            with contextlib.suppress(Exception):  # Latenz und Rechnername sind nur Anzeigen
+                info = await asyncio.wait_for(call_host_tool(pc_client, "system_info", {}), 5)
+                latenz = round((time.monotonic() - started) * 1000)
+                state["pc_name"] = rechnername(info)
+        await set_pc("verbunden" if pc else "getrennt", latenz)
+        return bool(pc)
+
+    async def pc_wechsel(erreichbar: bool, latenz_ms: int | None) -> None:
+        """Tunnel weg oder zurück (pc_tunnel.TunnelHost.ueberwache); Werkzeuge beim ersten Erfolg anhängen."""
+        if erreichbar and not state["pc_tools"]:
+            await attach_pc_tools()
+        else:
+            await set_pc("verbunden" if erreichbar else "getrennt", latenz_ms)
+
+    async def start_pc() -> None:
+        # Beim Sitzungsaufbau lädt der Kern Modelle; ein erster Fehlschlag zählt noch nicht als "nicht erreichbar"
+        if not await attach_pc_tools(melde_fehler=False):
+            await asyncio.sleep(2)
+            await attach_pc_tools()
+        if ist_tunnel(pc_client) and state["live"]:
+            state["pc_waechter"] = _keep(asyncio.create_task(pc_client.ueberwache(pc_wechsel)))
 
     if pc_client:
-        _keep(asyncio.create_task(attach_pc_tools()))
+        _keep(asyncio.create_task(start_pc()))
 
     @task.rtvi.event_handler("on_client_ready")
     async def on_client_ready(_rtvi):
@@ -546,8 +600,14 @@ async def build_session(transport, identity: Identity) -> Session:
                 await refresh_prompt()  # WAMO soll den Eintrag sofort nicht mehr nutzen
         elif msg.type == "pc_steuerung":
             # Nur ein Admin mit eingerichtetem PC-Host darf einschalten; ausschalten geht immer.
-            state["pc_steuerung"] = bool(data.get("an") is True and pc_enabled)
-            logger.info("PC-Steuerung {}", "an" if state["pc_steuerung"] else "aus")
+            # Im Büro steuert höchstens eine Sitzung den PC (pc_host.pc_lease_nehmen).
+            an = bool(data.get("an") is True and pc_enabled)
+            state["pc_belegt"] = an and not pc_lease_nehmen(lease)
+            if state["pc_belegt"] or not an:
+                an = False
+                pc_lease_freigeben(lease)
+            state["pc_steuerung"] = an
+            logger.info("PC-Steuerung {}{}", "an" if an else "aus", " (andere Sitzung steuert)" if state["pc_belegt"] else "")
             await send_betrieb()
         elif dev:
             await dev.on_client_message(msg.type, data)
@@ -591,7 +651,7 @@ async def build_session(transport, identity: Identity) -> Session:
             learned_upto = end
             return
         chunk = transcript[start:end]
-        saved = await learn_from_session(memory, chunk, CLAUDE_MODEL, name=identity.name)
+        saved = await learn_from_session(memory, chunk, name=identity.name)  # Modell: llm_anbieter, Baustein lernen
         learned_upto = end
         if not (saved and live and state["live"]):
             return
@@ -636,6 +696,11 @@ async def build_session(transport, identity: Identity) -> Session:
         guard_task = state["guard"]
         if guard_task is not None and guard_task is not asyncio.current_task():
             guard_task.cancel()
+        pc_waechter = state["pc_waechter"]
+        if pc_waechter is not None and pc_waechter is not asyncio.current_task():
+            pc_waechter.cancel()
+        state["pc_steuerung"] = False
+        pc_lease_freigeben(lease)
         if cancel_task:
             with contextlib.suppress(Exception):
                 await task.cancel()
@@ -683,10 +748,20 @@ async def bot(runner_args: RunnerArguments):
         return
     logger.info("Sitzung für Profil {} ({})", identity.user_id, identity.rolle)
     transport = await create_transport(runner_args, transport_params)
-    await run_bot(transport, runner_args, identity)
+    try:
+        await run_bot(transport, runner_args, identity)
+    except LLMNichtVerfuegbar as e:
+        # LiteLLM nicht nutzbar und kein Rückfall erlaubt (WAMO_LLM_RUECKFALL): Sitzung sauber beenden,
+        # statt die Verbindung ohne Pipeline offen zu lassen.
+        logger.error("Sitzung beendet, kein Gesprächsmodell: {}", e)
+        connection = getattr(runner_args, "webrtc_connection", None)
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                await connection.disconnect()
 
 
 if __name__ == "__main__":
+    from pipecat.runner import run as pipecat_runner
     from pipecat.runner.run import app, main
 
     # Nur die eigene Oberfläche darf Sitzungen starten. Ohne Liste erlaubt der Runner jede
@@ -696,4 +771,7 @@ if __name__ == "__main__":
         os.environ["PIPECAT_ALLOWED_ORIGINS"] = DEFAULT_ALLOWED_ORIGINS
     # Und auch von dort nur angemeldete Profile mit zweitem Faktor (auth_gate.py).
     install_access_gate(app)
+    # Log-Stufe nach dem Runner wiederherstellen (er setzt DEBUG) und auf Sokrates-2 nur über den
+    # Unix-Socket WAMO_CORE_UDS lauschen (kern_dienst.py).
+    runner_vorbereiten(pipecat_runner, _configure_logging)
     main()

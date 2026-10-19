@@ -2,6 +2,7 @@
 # Eingerichtet durch infra/sokrates2/wamo-tls-einrichten.sh, auf dem Server in /home/wamocon/wamo-tls/caddy.
 #
 #   https://192.168.178.136:55443  ->  Envoy des WAMO-Stacks (http, Port 55321)
+#   https://192.168.178.136:55444  ->  WAMO-Kern (wamo-core.service) über den Unix-Socket /run/wamo-core/core.sock
 #
 # Der Container läuft als wamocon (1000:1000) ohne Linux-Capabilities und mit schreibgeschütztem Dateisystem.
 # Schreiben darf er nur in data/ (Serverzertifikate) und config/. Unter /ca sieht er nur Root-Zertifikat und
@@ -27,6 +28,8 @@ services:
     ports:
       # Nur IPv4 (kein docker-proxy auf [::]); die WAMO-Firewall regelt die Quellen.
       - "0.0.0.0:55443:55443"
+      # Kern (Phase P3); ohne Site-Datei in etc/kern lauscht Caddy hier nicht
+      - "0.0.0.0:55444:55444"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -36,6 +39,8 @@ services:
       - ./ca:/ca:ro
       - ./data:/data
       - ./config:/config
+      # Socket des Kerns, nur lesend (Verzeichnis 0750 wamo-core:wamocon, angelegt per tmpfiles.d vor Docker)
+      - /run/wamo-core:/run/wamo-core:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
       interval: 30s

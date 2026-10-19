@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { PipecatClient, RTVIError } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
+import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
 import { pcAutoLesen } from "@/lib/einstellungen";
 import { parseServerMessage, type Auftrag } from "@/lib/nachrichten";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
@@ -43,6 +44,10 @@ declare global {
       levels: (sample: LevelSample & { zustand: string }) => void;
       /** Farben des Stimmen-Rands einmalig übergeben (ältere Desktop-Versionen kennen das nicht). */
       farben?: (farben: OverlayFarben) => void;
+      /** Betriebsart Büro/Unterwegs, gehalten vom Hauptprogramm (lib/betriebsart.ts) */
+      betriebsart?: BetriebsartBruecke;
+      /** Rechnername dieses PCs (Autostart der PC-Steuerung nur, wenn der Kern genau diesen PC steuert) */
+      rechnername?: () => Promise<unknown>;
     };
   }
 }
@@ -99,8 +104,6 @@ function restoreAudio(audio: HTMLAudioElement | null, state: SoftStop) {
   if (audio) audio.volume = 1;
 }
 
-const VOICE_CORE_URL = process.env.NEXT_PUBLIC_VOICE_CORE_URL ?? "http://localhost:7860";
-
 function setPresence(p: Presence) {
   wamo.set((s) => (s.presence === p ? s : { ...s, presence: p }));
 }
@@ -143,7 +146,12 @@ async function startFehler(e: unknown): Promise<{ status?: number; detail?: stri
   return { name, status: (e as { status?: number } | null)?.status };
 }
 
-function fehlerText(status: number | undefined, detail: string | undefined, name: string | undefined): Fehler {
+function fehlerText(
+  status: number | undefined,
+  detail: string | undefined,
+  name: string | undefined,
+  art: Betriebsart,
+): Fehler {
   const mitGrund = (text: string) => (detail ? `${text} (${detail})` : text);
   if (name === "NotAllowedError") {
     return { art: "mikrofon", text: "Mikrofon gesperrt: bitte in den Windows-Einstellungen für diese App freigeben." };
@@ -156,7 +164,12 @@ function fehlerText(status: number | undefined, detail: string | undefined, name
     case 503:
       return { art: "dienst", text: mitGrund("Profilprüfung nicht möglich, Datenbank nicht erreichbar.") };
     default:
-      return { art: "verbindung", text: `Voice-Core unter ${VOICE_CORE_URL} nicht erreichbar. Läuft bot.py?` };
+      return art === "buero"
+        ? {
+            art: "verbindung",
+            text: `Voice-Core auf Sokrates-2 (${kernUrl(art)}) nicht erreichbar. Läuft wamo-core? Ohne Büro-LAN die Betriebsart Unterwegs wählen.`,
+          }
+        : { art: "verbindung", text: `Voice-Core unter ${kernUrl(art)} nicht erreichbar. Läuft bot.py?` };
   }
 }
 
@@ -180,6 +193,8 @@ export function useWamo(): WamoAktionen {
   // Autostart der PC-Steuerung (Geräte-Einstellung): je Verbindung höchstens einmal senden;
   // aktiv = Einstellung beim Verbindungsstart, manuellAus = Nutzer hat in dieser Sitzung ausgeschaltet
   const pcAuto = useRef({ aktiv: false, gesendet: false, manuellAus: false, wartet: false });
+  // Rechnername dieses Geräts (nur Desktop-App), Vergleich mit betrieb.pcName im Büro
+  const geraet = useRef<string | null>(null);
 
   /**
    * Gemeinsamer Abbau für "Gespräch beenden", Verbindungsabbruch und Verlassen der Seite:
@@ -369,6 +384,27 @@ export function useWamo(): WamoAktionen {
       const aktuell = () => genRef.current === gen;
       seen.current = { botOutput: false, userInput: false };
       wamo.set((s) => ({ ...s, error: null, presence: "connecting", caption: leereCaption, micOn: true }));
+      // Welcher Kern: Betriebsart dieses Geräts direkt vor dem Verbinden (Desktop: aus dem Hauptprogramm)
+      const art = await betriebsartFuerStart();
+      if (!aktuell()) return;
+      const kern = kernUrl(art);
+      wamo.set((s) => ({ ...s, kern: art }));
+      geraet.current = null;
+      try {
+        const name = await window.wamoDesktop?.rechnername?.();
+        if (typeof name === "string" && /^[A-Za-z0-9._-]{1,63}$/.test(name)) geraet.current = name;
+      } catch {
+        // ältere Desktop-App oder Browser: kein Rechnername, also kein Autostart im Büro
+      }
+      if (!aktuell()) return;
+      if (!kern) {
+        wamo.set((s) => ({
+          ...s,
+          presence: "offline",
+          error: { art: "dienst", text: `Betriebsart ${KERN[art].name} ist auf diesem Gerät nicht eingerichtet.` },
+        }));
+        return;
+      }
       const fadeOut = () => fadeOutAudio(audioRef.current, softStop.current);
       const restoreVolume = () => restoreAudio(audioRef.current, softStop.current);
       const client = new PipecatClient({
@@ -519,7 +555,7 @@ export function useWamo(): WamoAktionen {
         const headers = new Headers(session ? { Authorization: `Bearer ${session.access_token}` } : {});
         authHeaders.current = headers;
         tokenAblauf.current = session?.expires_at ? session.expires_at * 1000 : null;
-        await client.startBotAndConnect({ endpoint: `${VOICE_CORE_URL}/start`, headers });
+        await client.startBotAndConnect({ endpoint: `${kern}/start`, headers });
         // inzwischen abgebrochen: die gerade entstandene Sitzung sofort wieder schließen
         if (!aktuell()) void client.disconnect().catch(() => undefined);
       } catch (e) {
@@ -540,7 +576,7 @@ export function useWamo(): WamoAktionen {
         authHeaders.current = null;
         tokenAblauf.current = null;
         void client.disconnect().catch(() => undefined);
-        wamo.set((s) => ({ ...s, presence: "offline", error: fehlerText(status, detail, name) }));
+        wamo.set((s) => ({ ...s, presence: "offline", error: fehlerText(status, detail, name, art) }));
       }
     };
     await starte(false);
@@ -622,6 +658,11 @@ export function useWamo(): WamoAktionen {
       }
       if (!st.aktiv || st.gesendet || st.manuellAus || !b || !istOnline(s)) return;
       if (s.profil?.rolle !== "admin" || b.pc !== "verbunden" || b.pcSteuerung !== "aus") return;
+      // Büro: Der Kern steuert den PC am Tunnel. Automatisch nur, wenn das genau dieser PC ist (Desktop-App
+      // meldet ihren Rechnernamen); vom Laptop oder aus dem Browser schaltet nur der Mensch selbst ein.
+      if (b.modus === "buero" && (!b.pcName || !geraet.current || b.pcName.toLowerCase() !== geraet.current.toLowerCase())) {
+        return;
+      }
       const client = clientRef.current;
       if (!client) return;
       st.gesendet = true; // auch bei einem Fehler nicht erneut versuchen (kein Dauerfeuer)

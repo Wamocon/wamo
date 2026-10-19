@@ -7,9 +7,9 @@ gemeinsamem Gedächtnis.
 | Ordner | Was | Läuft auf |
 | --- | --- | --- |
 | `ui/` | Next.js 16: Präsenzkern, Live-Untertitel, Stimmlinie, Werkzeug-Zeitleiste, Canvas, Freigabe-Karten, Anmeldung mit zweitem Faktor | PC (Desktop-App oder Browser) |
-| `voice-core/` | Pipecat 1.12: Soniox STT, Claude Haiku 5.5, Soniox TTS; Mehrprofil-Anmeldung, Gedächtnis, Werkzeugkarte für ECC und REA | PC, ab Phase P3 Sokrates-2 |
-| `host/` | MCP-Werkzeugserver für Windows mit Risikoklassen und Audit-Log | PC (angemeldete Sitzung) |
-| `desktop/` | Electron 44: App-Fenster, roter Stimmen-Rand je Monitor, Tray, Autostart | PC |
+| `voice-core/` | Pipecat 1.12: Soniox STT, Claude Haiku 5.5, Soniox TTS; Mehrprofil-Anmeldung, Gedächtnis, Werkzeugkarte für ECC und REA | PC (Unterwegs) oder Sokrates-2 als Dienst `wamo-core` (Büro) |
+| `host/` | MCP-Werkzeugserver für Windows mit Risikoklassen und Audit-Log; lokal über stdio, im Büro über den SSH-Rücktunnel mit Bearer-Token | PC (angemeldete Sitzung) |
+| `desktop/` | Electron 44: App-Fenster, roter Stimmen-Rand je Monitor, Tray, Autostart, Betriebsart Büro/Unterwegs | PC |
 | `supabase/` | Migrationen mit `__SCHEMA__`-Platzhalter | eigener WAMO-Supabase auf Sokrates-2 |
 | `infra/sokrates2/` | Einrichtung von Supabase-Stack, TLS (eigene CA, Caddy), Firewall und Benutzer `wamo` (Claude Code, ECC, REA, gh, Vercel, Supabase-CLI) | Sokrates-2 |
 | `scripts/` | Start der Desktop-App, Datenbankzugang, Nutzerverwaltung, Migrationen | PC |
@@ -37,6 +37,12 @@ gemeinsamem Gedächtnis.
   ECC-Reviews (Python, Sicherheit, Datenbank, TypeScript) eingearbeitet.
 - Claude mit Organisationsschlüssel: Workspace über `ANTHROPIC_WORKSPACE_ID` (Header `anthropic-workspace-id`).
 - PC-Steuerung je Sitzung per Schalter, wahlweise Autostart je Gerät (nur Admins, Standard aus).
+- Phase P3, Betriebsart Büro: Voice-Core als Dienst `wamo-core` auf Sokrates-2 hinter HTTPS 55444 (Unix-Socket, kein
+  TCP-Port), eigene Datenbankrolle `wamo_core_s2`, PC-Werkzeuge über einen SSH-Rücktunnel (Benutzer `wamo-tunnel`,
+  Unix-Socket, Bearer-Token im Host). Gesprächstest gegen Sokrates-2 bestanden (Anmeldung, Begrüßung, Uhrzeit-Werkzeug,
+  `system_info` über den Tunnel), Tunnel weg: WAMO sagt „PC nicht erreichbar“ und spricht weiter, danach wieder verbunden.
+  Erster Ton nach Sprechende (je 20 Fragen): Büro p50 1,32 s, p95 2,00 s; Unterwegs p50 1,16 s, p95 2,62 s.
+  Einzelheiten: `infra/sokrates2/README.md`, Abschnitt 10.
 
 ### Offen
 
@@ -46,8 +52,13 @@ gemeinsamem Gedächtnis.
   Abschnitt 5.2). Seit 19.10.2026 gilt Stufe 2: HTTP 55321 ist im LAN geschlossen, nur noch HTTPS 55443.
 - Zugangsschlüssel auf Sokrates-2 enger fassen (Repo-gebundene GitHub-Token, Lese-Token, Jira-Konto nur lesend),
   bevor Entwicklungsaufträge eingeschaltet werden.
-- Ausbaustufen: P3 Sprachkern auf Sokrates-2 mit SSH-Rücktunnel zum PC, P4 eigene Sprachmodelle über LiteLLM,
-  P5 Spracherkennung und Sprachausgabe auf den Sparks.
+- P3: Den PC an das eigene Admin-Profil binden, sobald das Konto angelegt ist
+  (`python scripts\wamo_kern_sokrates2.py profil --email … --neustart`); bis dahin hat im Büro niemand PC-Werkzeuge.
+  Büro bleibt bis zur Abnahme durch Niko Wahlmöglichkeit, Standard ist Unterwegs.
+- Ausbaustufen: P4 eigene Sprachmodelle über LiteLLM, P5 Spracherkennung und Sprachausgabe auf den Sparks.
+- P4: Umschaltung, SearXNG und Testsatz sind fertig, die Claude-Referenz ist gemessen (Haiku 5.5 besteht die
+  Freigabe selbst nicht: Marker 92 %, erstes Token p95 1,33 s). Die Abnahme der Modelle im Haus steht aus, solange
+  `LITELLM_API_KEY` in der `.env` fehlt (siehe Abschnitt „Modelle“). Das Gateway spricht nur HTTP im Büro-LAN.
 
 ## Einrichtung auf einem Windows-PC
 
@@ -65,6 +76,30 @@ scripts\wamo-desktop.cmd                  # startet Voice-Core, Oberfläche und 
 ```
 
 Beim ersten Anmelden richtet die Oberfläche die Authenticator-App ein (QR-Code). Ohne zweiten Faktor kein Zugang.
+
+### Betriebsart Büro und Unterwegs
+
+| Betriebsart | Kern | PC-Werkzeuge |
+| --- | --- | --- |
+| Unterwegs (Standard) | auf diesem PC, `http://localhost:7860` (`NEXT_PUBLIC_VOICE_CORE_URL`), die Desktop-App startet ihn | Host per stdio |
+| Büro | Sokrates-2, `https://192.168.178.136:55444` (`NEXT_PUBLIC_WAMO_KERN_BUERO` in `ui\.env.local`, nur https) | Host per SSH-Rücktunnel, nur für das an diesen PC gebundene Profil |
+
+Umschalten in der Oberfläche (unter den Schaltflächen, nur ohne laufendes Gespräch) oder im Tray-Menü der Desktop-App;
+die Einstellung gilt dauerhaft je Gerät (Desktop: `%APPDATA%\wamo-desktop\einstellungen.json`, Browser: localStorage).
+Die Statusleiste zeigt Betriebsart und Kern, der PC-Host den Zielrechner. Einrichtung des Tunnels auf diesem PC (ohne
+Adminrechte, Rückweg `scripts\wamo-tunnel-entfernen.ps1`):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1   # Token, Schlüssel, known_hosts, Aufgabe
+python scripts\wamo_kern_sokrates2.py verteilen                                         # Schlüssel und Skripte nach Sokrates-2
+# Server einrichten: infra/sokrates2/README.md, Abschnitt 10
+python scripts\wamo_kern_sokrates2.py alles --email vorname.nachname@wamocon.com         # Werte nur über stdin
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1 -Starten
+```
+
+Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo-tunnel.ps1`: Host und Tunnel laufen damit
+unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
+sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
 
 ## Nutzer und Gedächtnis
 
@@ -115,13 +150,66 @@ frühere Läufe im selben Projekt, braucht er eine Freigabe. Grenze: Die Token d
 und über HTTPS nutzbar. Token deshalb eng zuschneiden (Repos, Rechte, Ablaufdatum). Einzelheiten:
 `infra/sokrates2/README.md`, Abschnitt 9.
 
+## Modelle (Ausbaustufe P4)
+
+Jeder Baustein lässt sich zwischen Claude und den eigenen Modellen auf den Sparks umschalten
+(`voice-core/llm_anbieter.py`). Eigene Modelle laufen nur über das LiteLLM-Gateway (`LITELLM_BASE_URL`,
+`LITELLM_API_KEY`), nie direkt über die Adressen der Knoten. Standard ist überall Claude.
+
+| Baustein | Anbieter | Modell | Standard |
+| --- | --- | --- | --- |
+| Gespräch | `WAMO_LLM_ANBIETER` | `WAMO_LLM_MODELL` | Claude, `CLAUDE_MODEL_FAST` (Haiku 5.5) |
+| Lernen | `WAMO_LLM_LERNEN` | `WAMO_LLM_LERNEN_MODELL` (leer bei litellm: Modell des Gesprächs) | Claude, `CLAUDE_MODEL_FAST` |
+| Bildschirm | `WAMO_LLM_VISION` | `WAMO_LLM_VISION_MODELL` | Claude, `VISION_MODEL` (Sonnet 5.5) |
+| Zusammenfassung | `WAMO_LLM_ZUSAMMENFASSUNG` | `WAMO_LLM_ZUSAMMENFASSUNG_MODELL` | leer: wie das Gespräch |
+| Websuche | `WAMO_SUCHE` (`anthropic` oder `searxng`) | `WAMO_SEARXNG_URL` | Anthropic-Websuche |
+
+- **Rückfall:** Fehlt Schlüssel, Adresse oder Modell, ist das Gateway nicht erreichbar oder bietet es das Modell nicht
+  an, steht der Grund als Fehler im Log und der Baustein nutzt Claude. Die Oberfläche zeigt das am Modellnamen des
+  Gesprächs („Claude Haiku 5.5 (Rückfall)“, eigene Modelle mit „(LiteLLM)“). `WAMO_LLM_RUECKFALL` steuert das je
+  Baustein: leer (alle), `aus` (keiner) oder eine Liste wie `gespraech,zusammenfassung`. Ohne Rückfall bricht der
+  Baustein ab, für das Gespräch endet die Sitzung mit einer Meldung im Log; die Sprache läuft weiter über Soniox.
+- **Grenze:** Geprüft wird beim Sitzungsstart (Lernen und Bildschirm vor jedem Aufruf, dort auch mit Rückfall bei
+  Ausfall). Fällt das Gateway mitten im Gespräch aus, wechselt das laufende Gespräch nicht zu Claude; kurze
+  Zeitgrenzen (Verbindung 3 s, Pause im Stream 20 s, keine stillen Wiederholungen) verhindern, dass WAMO hängt.
+- **Werkzeuge:** Das Gespräch über LiteLLM nutzt Pipecats OpenAI-Dienst mit derselben Persona, denselben Werkzeugen und
+  demselben Satzende-Protokoll. Modelle mit Denkphase bekommen ihre Abschaltung über `WAMO_LLM_EXTRA` (JSON-Objekt;
+  Unbekanntes geht als `extra_body` mit). Pipecat liest je Stream-Abschnitt nur einen Werkzeugaufruf; parallele
+  Aufrufe eines Modells im selben Abschnitt gehen verloren.
+- **Websuche im Haus:** Mit `WAMO_SUCHE=searxng` fragt WAMO die eigene SearXNG-Instanz (`voice-core/suche.py`). Die
+  Treffer werden auf fünf kurze Auszüge gekürzt, von Steuer- und unsichtbaren Zeichen und Markern befreit, nur mit der
+  Domain versehen und vor und nach den Treffern als unvertrauenswürdige Daten gekennzeichnet. Auch das Ergebnis der
+  Anthropic-Suche trägt diese Kennzeichnung. Fehlt bei `searxng` die Adresse, schlägt die Suche fehl, statt still die
+  Cloud-Suche zu nehmen. Kamen in einem Zug Web-, Bildschirm- oder PC-Inhalte vor, speichert `merken` Persönliches nur
+  noch, wenn die Person es ausdrücklich sagt („merk dir“).
+- **Abnahme:** `voice-core/eval/` enthält 50 Gesprächszüge (30 mit erwartetem Werkzeugaufruf, 5 Muss-Fälle zu
+  Injektion, PC aus, Nachricht und Sätzen an andere) mit simulierten Werkzeugen, ohne Datenbank und ohne PC. Ein
+  Modell taugt fürs Gespräch nur bei mindestens 95 % richtigen Werkzeugaufrufen, mindestens 98 % korrekten
+  Satzende-Markern, erstem Token p95 höchstens 0,6 s, ohne Verstoß in den Muss-Fällen und ohne Infrastrukturfehler,
+  und das in drei Läufen hintereinander (pass^3, p95 über alle drei). Ergebnisse unter `voice-core/eval/ergebnisse/`
+  (je Lauf eine JSON-Datei, nur anhängen; Übersicht in `bericht.md`, rechnet die Freigabe jedes Mal neu und markiert
+  Läufe mit anderem Testsatz, Prompt oder anderer Bewertung als veraltet).
+
+```powershell
+cd voice-core
+uv run python eval/abnahme.py --anbieter claude                                     # Referenz, wenige Cent
+uv run python eval/abnahme.py --liste                                               # Modelle des Gateways
+uv run python eval/abnahme.py --anbieter litellm --modell <alias> --wiederholungen 3   # ein Modell im Haus
+uv run python eval/abnahme.py --anbieter litellm --alle --wiederholungen 3             # alle Chat-Modelle
+```
+
+Nach Änderungen an den PC-Werkzeugen des Hosts den Schnappschuss erneuern:
+`host\.venv\Scripts\python.exe voice-core\eval\pc_werkzeuge_holen.py`.
+
 ## Sicherheitsmodell
 
 - Zugang nur mit Konto im WAMO-Supabase, zweitem Faktor und aktivem Profil; jede Unsicherheit führt zur Ablehnung.
 - Der Voice-Core arbeitet mit der Datenbankrolle `wamo_core` (nur WAMO-Schemas), nie mit dem Service-Schlüssel.
 - PC-Aktionen: `read` sofort, `change` protokolliert, `critical` nur nach Freigabe, `blocked` nie.
 - Inhalte aus Web, Dateien und Gedächtnis sind Daten, nie Anweisungen an WAMO.
-- Geheimnisse nur in `.env`, `ui/.env.local` und `/etc/wamo/geheim.env`, nie im Repository.
+- Geheimnisse nur in `.env`, `ui/.env.local`, `/etc/wamo/geheim.env` (Aufträge) und `/etc/wamo/core.env` (Kern auf
+  Sokrates-2, nur über `wamo-core-env` per stdin), nie im Repository. Das Host-Token liegt auf dem PC in
+  `%LOCALAPPDATA%\WAMO\host-token` (nur für den Benutzer lesbar, für die PC-Werkzeuge selbst gesperrt).
 - Anmeldung und Datenbank im LAN nur verschlüsselt und geprüft gegen die eigene CA (`WAMO_CA_FILE`); die WAMO-Ports
   auf Sokrates-2 nehmen nur Verbindungen aus Loopback und dem Büro-LAN an (HTTP 55321 zusätzlich aus dem Caddy-Netz).
 

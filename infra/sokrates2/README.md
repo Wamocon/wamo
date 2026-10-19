@@ -10,7 +10,8 @@ REA-MCP-Server verbunden. Geheimnisse in `/etc/wamo/geheim.env` eingetragen (Abs
 Supabase und Jira eingerichtet und in der Auftrags-Sandbox geprüft (Abschnitt 3).
 Seit 19.10.2026 zusätzlich: HTTPS und Datenbank-TLS mit eigener CA (Abschnitt 5) und Firewall für die WAMO-Ports
 (Abschnitt 6). CA auf dem PC WMC-H-04-NS importiert, Stufe 2 seit 19.10.2026 aktiv (Abschnitt 7). Weitere PCs
-brauchen nur den Import (Abschnitt 5.2).
+brauchen nur den Import (Abschnitt 5.2). Seit 19.10.2026 abends läuft der Voice-Core zusätzlich als Dienst `wamo-core`
+auf Sokrates-2, die PC-Werkzeuge kommen über einen SSH-Rücktunnel (Phase P3, Abschnitt 10).
 
 ## 0. Eigener Supabase-Stack (eingerichtet am 19.10.2026)
 
@@ -199,6 +200,7 @@ Andere Ports und Dienste auf Sokrates-2 bleiben unberührt.
 | --- | --- | --- | --- |
 | 55321 | API und Auth über HTTP (Envoy) | 127.0.0.0/8, 172.24.0.0/24 (Caddy, nur über eine Docker-Bridge), 192.168.178.0/24 | ohne Büro-LAN |
 | 55443 | API und Auth über HTTPS (Caddy) | 127.0.0.0/8, 192.168.178.0/24 | unverändert |
+| 55444 | WAMO-Kern über HTTPS (Caddy vor dem Unix-Socket, Abschnitt 10) | 127.0.0.0/8, 192.168.178.0/24 | unverändert |
 | 55322 | Postgres Session (Supavisor, TLS) | 127.0.0.0/8, 192.168.178.0/24 | unverändert |
 | 56543 | Postgres Transaktion (Supavisor, TLS) | 127.0.0.0/8, 192.168.178.0/24 | unverändert |
 
@@ -258,6 +260,9 @@ Prüfen vom PC: `curl -s -m 5 http://192.168.178.136:55321/auth/v1/health` läuf
 | Sicherung der `.env` | `/home/wamocon/supabase-wamo/.env.vor-tls` gibt es nur während eines Laufs von `wamo-tls-einrichten.sh`; nach erfolgreicher Prüfung löscht das Skript sie. Bleibt sie nach einem Abbruch liegen, nach der Reparatur löschen |
 | Ausgangsfilter der Aufträge abschalten | `ssh sokrates2 "sudo bash ~/wamo-infra/wamo-egress-rueckweg.sh"` (mit `--entfernen` auch Unit und Regeldatei); danach startet kein Auftrag mehr (Selbsttest) |
 | sshd-Drop-in für wamo zurücknehmen | `ssh sokrates2 "sudo rm /etc/ssh/sshd_config.d/wamo.conf && sudo sshd -t && sudo systemctl reload ssh"`; ohne Drop-in sucht sshd den Schlüssel wieder unter `/srv/wamo/.ssh`, der Auftragsschlüssel geht dann nicht mehr |
+| Kern auf Sokrates-2 abschalten | `ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-rueckweg.sh"` (Dienst aus, Rolle `wamo_core_s2` nologin); mit `--entfernen` auch Code, venv, `core.env`, Benutzer, Rolle |
+| HTTPS 55444 zurücknehmen | `ssh sokrates2 "bash ~/wamo-infra/wamo-core-caddy.sh --zurueck"` (Site-Datei weg, `caddy reload`; Port und Mount bleiben im Compose, ohne Site lauscht Caddy dort nicht) |
+| Tunnel abschalten | `ssh sokrates2 "sudo bash ~/wamo-infra/wamo-tunnel-rueckweg.sh"` (Schlüssel und Drop-in weg, `sshd -t`, Sitzungen beendet); mit `--entfernen` auch Benutzer `wamo-tunnel`. Auf dem PC: `scripts\wamo-tunnel-entfernen.ps1 [-Alles]` |
 
 Die Sicherungen in `/var/backups/wamo-firewall` dienen zum Nachsehen. Nicht blind mit `iptables-restore` einspielen,
 weil Docker seine eigenen Regeln bei jedem Containerstart ändert.
@@ -302,6 +307,61 @@ Hinweise:
 - Auch außerhalb der Sandbox gilt für `wamo` der Ausgangsfilter (etwa bei `npm install -g` von Hand: Internet über 443 geht).
 - Hostweite Schalter wie `net.mptcp.enabled=0` oder `kernel.io_uring_disabled` sind bewusst nicht gesetzt (betreffen andere
   Dienste); die Sandbox sperrt beides selbst per seccomp.
+
+## 10. Kern auf Sokrates-2 und SSH-Rücktunnel zum PC (Phase P3, eingerichtet am 19.10.2026)
+
+Betriebsart **Büro**: Die Oberfläche auf dem PC spricht den Voice-Core auf Sokrates-2 an, die PC-Werkzeuge laufen über
+einen SSH-Rücktunnel auf dem PC. Betriebsart **Unterwegs** (Standard, bis Büro abgenommen ist): Kern auf dem PC wie bisher.
+
+```text
+Browser/Desktop-App (PC) ──HTTPS 55444──> wamo-caddy ──Unix-Socket /run/wamo-core/core.sock──> wamo-core.service
+          └──────────── WebRTC-Medien (UDP, direkt, nur Büro-LAN laut ufw) ────────────────────────┘
+wamo-core ──Unix-Socket /run/wamo-tunnel/pc.sock──> sshd (wamo-tunnel) ══SSH══> ssh.exe (PC) ──> 127.0.0.1:8765 wamo_host.py --http
+```
+
+| Baustein | Ort | Zweck |
+| --- | --- | --- |
+| Dienst | `/etc/systemd/system/wamo-core.service` | Benutzer `wamo-core` (System, nologin, keine weiteren Gruppen), `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, leeres `CapabilityBoundingSet`, `SystemCallFilter=@system-service ~@privileged`, `MemoryMax=4G`, `Restart=on-failure`; lauscht nur auf dem Unix-Socket (`WAMO_CORE_UDS`), kein TCP-Port |
+| Code und venv | `/opt/wamo-core` (root:wamo-core 0750) | `app/voice-core` (nur Laufzeitdateien), `venv` aus `uv.lock` (uv 0.13.1, Prüfsumme fest, System-Python 3.12), `wamo-ca.crt`, `bin/wamo-core-vorpruefung` |
+| Vorprüfung | `ExecStartPre` | keine `.env` im Code-Baum (bot.py lädt sie mit Vorrang), Pflichtwerte gesetzt, DSN mit `verify-full`, Entwicklung aus, Socket-Verzeichnis 0750 wamo-core:wamocon |
+| Geheimnisse | `/etc/wamo/core.env` (root:wamo-core 0640) | nur über `sudo /usr/local/sbin/wamo-core-env setzen` (stdin, Schlüssel-Allowlist, atomar); `liste` zeigt nur Namen. Was die Unit festlegt (Betriebsart, Socket-Pfade, `SUPABASE_URL`, CA, erlaubte Herkunft, Entwicklung aus) lässt sich dort nicht überschreiben |
+| Datenbank | Rolle `wamo_core_s2` | LOGIN, Mitglied von `wamo_core` (`WITH INHERIT TRUE, SET FALSE`), dieselben Rollen-Einstellungen; RLS-Policies `to wamo_core` greifen für Mitglieder. Verbindung über Supavisor `192.168.178.136:55322`, `sslmode=verify-full` |
+| HTTPS | `wamo-caddy`, Site `etc/kern/wamo-core.caddy` | `https://192.168.178.136:55444` (Zertifikat der WAMO-CA), `reverse_proxy unix//run/wamo-core/core.sock`, Body höchstens 512 KB; Socket-Verzeichnis per Bind-Mount nur lesend |
+| Socket-Verzeichnisse | `/etc/tmpfiles.d/wamo-core.conf`, `wamo-tunnel.conf` | `/run/wamo-core` 0750 wamo-core:wamocon (Caddy läuft als 1000:1000); `/run/wamo-tunnel` 2750 wamo-tunnel:wamo-core (setgid: der Socket gehört der Gruppe wamo-core) |
+| Tunnel | Benutzer `wamo-tunnel`, `/etc/ssh/authorized_keys.d/wamo-tunnel`, `/etc/ssh/sshd_config.d/wamo-tunnel.conf` | ohne Shell und Home; Schlüssel `restrict,port-forwarding,from="192.168.178.0/24",command="/bin/false"`; `AllowTcpForwarding remote`, `PermitListen none`, `PermitOpen none`, `AllowStreamLocalForwarding remote`, `StreamLocalBindMask 0117`, `StreamLocalBindUnlink yes`, `MaxSessions 0`, `PermitTTY no`, `ClientAlive 15 s x 2` |
+| PC | `scripts\wamo-tunnel.ps1`, geplante Aufgabe „WAMO Tunnel“ | Host (`--http`, nur 127.0.0.1:8765, Bearer-Token aus `%LOCALAPPDATA%\WAMO\host-token`) und ssh in eigenen Job-Objekten, Wiederverbindung 2 s bis 60 s, Tunnel nur, solange der eigene Host den Port hält |
+
+**Warum Unix-Sockets statt Ports:** Caddy im Bridge-Netz erreicht Loopback des Hosts nicht, und ein Port auf dem
+Bridge-Gateway bräuchte eine ufw-Regel. Beim Tunnel könnte einen TCP-Port auf Loopback bei einem Ausfall jeder lokale
+Benutzer belegen und so Anfragen und Token des Kerns abgreifen; den Socket legt nur `wamo-tunnel` an, verbinden kann nur
+`wamo-core`. **Warum `AllowTcpForwarding remote`:** OpenSSH 9.6 prüft Socket-Rückweiterleitungen über dieselbe Rechteliste
+wie TCP-Rückweiterleitungen, mit `no` wird auch der Socket abgelehnt. TCP-Listen verhindert `PermitListen none`, `-L`
+verhindert `PermitOpen none` (geprüft: Sitzung, `-R 127.0.0.1:…` und `-W` werden abgelehnt). **Grenze:** OpenSSH prüft
+Socket-Pfade nicht; `wamo-tunnel` kann Sockets überall anlegen, wo es schreiben darf (`/tmp`, `/dev/shm`), dort verbindet
+sich niemand. Deshalb genau ein Schlüssel und ein PC je Benutzer; für weitere PCs je PC ein eigener Benutzer und Socket.
+
+**WebRTC-Medien:** aioice bindet ephemere UDP-Ports (`local_addr=(addr, 0)`), ein fester Bereich geht ohne Patch nicht
+und hostweite sysctls sind tabu. ufw verwirft eingehend alles außer Büro-LAN, Port 22 und den ConnectX-Netzen der Sparks.
+
+**Profilbindung:** Den PC steuert nur das Profil aus `WAMO_PC_HOST_PROFILE` (genau eine user_id; Listen oder ungültige
+Werte heißen niemand) und immer nur eine Sitzung zugleich. Die Oberfläche zeigt den Zielrechner; der Autostart der
+PC-Steuerung greift im Büro nur, wenn die Desktop-App denselben Rechnernamen meldet.
+
+```bash
+# Vom PC (Repo-Wurzel). Einmal auf dem PC: scripts\wamo-tunnel-einrichten.ps1 (Token, Schlüssel, known_hosts, Aufgabe)
+python scripts/wamo_kern_sokrates2.py verteilen                 # ~/wamo-infra und ~/wamo-infra/kern
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-einrichten.sh"  # Benutzer, /opt/wamo-core, Unit, Firewall 55444
+ssh sokrates2 "bash ~/wamo-infra/wamo-core-caddy.sh"            # HTTPS 55444 (als wamocon)
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-tunnel-einrichten.sh" # danach binnen 5 Minuten über eine NEUE Verbindung:
+ssh sokrates2 "sudo touch /run/wamo-tunnel-sshd-bestaetigt"
+python scripts/wamo_kern_sokrates2.py alles --email <admin>     # DB-Rolle, Geheimnisse, Token, PC-Bindung, Neustart
+powershell -File scripts\wamo-tunnel-einrichten.ps1 -Starten     # Tunnel jetzt starten (sonst ab der nächsten Anmeldung)
+# Prüfen
+python scripts/wamo_kern_sokrates2.py status
+ssh sokrates2 "sudo journalctl -u wamo-core -n 50"               # INFO, ohne Gesprächsinhalte
+```
+
+Ein Update des Kerns ist `verteilen` und erneut `wamo-core-einrichten.sh` (ersetzt Code und venv, startet neu).
 
 ---
 

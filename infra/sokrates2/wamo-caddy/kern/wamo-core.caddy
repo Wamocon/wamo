@@ -1,0 +1,19 @@
+# WAMO-Kern (Voice-Core auf Sokrates-2, Betriebsart Büro) über HTTPS. Installiert durch wamo-core-caddy.sh nach
+# /home/wamocon/wamo-tls/caddy/etc/kern/, Rückweg: wamo-core-caddy.sh --zurueck (Datei weg, caddy reload).
+#
+# Signalisierung (Start, WebRTC-Offer, ICE) und das Anmelde-Token gehen nur verschlüsselt durchs LAN. Der Kern
+# lauscht ausschließlich auf dem Unix-Socket; die Medien (UDP) laufen direkt zwischen Browser und Kern.
+https://192.168.178.136:55444, https://sokrates2:55444, https://spark-651f.local:55444 {
+	tls internal
+	# SDP-Offers sind wenige Kilobyte groß (die Zugangskontrolle des Kerns begrenzt zusätzlich auf 256 KB)
+	request_body {
+		max_size 512KB
+	}
+	reverse_proxy unix//run/wamo-core/core.sock {
+		flush_interval -1
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 60s
+		}
+	}
+}

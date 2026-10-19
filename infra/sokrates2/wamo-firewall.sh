@@ -11,7 +11,7 @@
 #
 #   Port 55321 (HTTP, Envoy)            127.0.0.0/8, 172.24.0.0/24 (Caddy, nur über eine Docker-Bridge),
 #                                       Stufe 1 zusätzlich 192.168.178.0/24
-#   Ports 55443, 55322, 56543           127.0.0.0/8, 192.168.178.0/24 (Docker-Netze erst ab Phase P3)
+#   Ports 55443, 55444, 55322, 56543    127.0.0.0/8, 192.168.178.0/24 (55444: HTTPS des Kerns, Phase P3)
 #   Absender aus 172.16.0.0/12, die nicht über eine Docker-Bridge (br-*) kommen, gelten als gefälscht.
 #
 #   wamo-firewall start    Regeln setzen; wiederholbar und atomar (iptables-restore --noflush); legt DOCKER-USER
@@ -28,7 +28,7 @@ set -euo pipefail
 
 CONF="${WAMO_FW_CONF:-/etc/wamo/firewall.conf}"
 HTTP_PORT=55321
-LAN_PORTS="55443 55322 56543"       # API (HTTPS), Pooler Session, Pooler Transaktion
+LAN_PORTS="55443 55444 55322 56543" # API (HTTPS), Kern (HTTPS, wamo-core über Caddy), Pooler Session, Transaktion
 NETZ_LOOPBACK="127.0.0.0/8"
 NETZ_CADDY="172.24.0.0/24"          # wamo-caddy_default (fest in infra/sokrates2/wamo-caddy/docker-compose.yml)
 NETZ_DOCKER="172.16.0.0/12"         # alle Docker-Netze, nur zur Erkennung gefälschter Absender
@@ -70,7 +70,7 @@ regeln() {
   [ "$HTTP_NUR_INTERN" = ja ] || echo "-A $KETTE_HTTP -s $NETZ_LAN -j RETURN"
   echo "-A $KETTE_HTTP $LOG"
   echo "-A $KETTE_HTTP -j DROP"
-  # 55443 und Pooler: Loopback und Büro-LAN
+  # 55443, 55444 und Pooler: Loopback und Büro-LAN
   echo "-A $KETTE_LAN -s $NETZ_LOOPBACK -j RETURN"
   echo "-A $KETTE_LAN -s $NETZ_LAN -j RETURN"
   echo "-A $KETTE_LAN $LOG"

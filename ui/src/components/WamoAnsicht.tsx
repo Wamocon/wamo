@@ -11,6 +11,14 @@ import type { Sitzung } from "@/components/LoginGate";
 import { Orb } from "@/components/Orb";
 import { Verlauf } from "@/components/Verlauf";
 import { VoiceLine } from "@/components/VoiceLine";
+import {
+  BETRIEBSARTEN,
+  BUERO_VERFUEGBAR,
+  betriebsartSetzen,
+  KERN,
+  useBetriebsart,
+  type Betriebsart,
+} from "@/lib/betriebsart";
 import { pcAutoSetzen, usePcAuto } from "@/lib/einstellungen";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
@@ -21,6 +29,7 @@ import {
   levelsRef,
   wamo,
   wartetAufEntscheidung,
+  zeigeToast,
   type Presence,
 } from "@/lib/wamo";
 
@@ -162,16 +171,23 @@ const PcSteuerungSchalter = memo(function PcSteuerungSchalter({
   const admin = useSelect(wamo, (s) => s.profil?.rolle === "admin");
   const online = useSelect(wamo, istOnline);
   const an = useSelect(wamo, (s) => s.betrieb?.pcSteuerung === "an");
+  const belegt = useSelect(wamo, (s) => s.betrieb?.pcBelegt === true && s.betrieb?.pcSteuerung !== "an");
+  const pcName = useSelect(wamo, (s) => s.betrieb?.pcName ?? null);
   const [ziel, setZiel] = useState<boolean | null>(null);
   const auto = usePcAuto();
-  const ausstehend = ziel !== null && ziel !== an;
+  const ausstehend = ziel !== null && ziel !== an && !belegt;
   if (!admin) return null;
+  const hinweis = ausstehend
+    ? "wird geschaltet …"
+    : belegt
+      ? "eine andere Sitzung steuert diesen PC gerade"
+      : `gilt nur für diese Sitzung${pcName ? `, Ziel ${pcName}` : ""}`;
   return (
     <div className="pc-steuerung">
       {online && (
         <div className="pc-switch-row">
           <PcSchalterKnopf an={an} ausstehend={ausstehend} onSchalten={onSchalten} setZiel={setZiel} />
-          <span className="pc-switch-hint">{ausstehend ? "wird geschaltet …" : "gilt nur für diese Sitzung"}</span>
+          <span className="pc-switch-hint">{hinweis}</span>
         </div>
       )}
       <label className="pc-auto">
@@ -216,6 +232,48 @@ function PcSchalterKnopf({
     </button>
   );
 }
+
+/**
+ * Betriebsart dieses Geräts: Büro (Kern auf Sokrates-2) oder Unterwegs (Kern auf diesem PC). Umschalten nur ohne
+ * laufendes Gespräch; es gilt ab dem nächsten Verbinden. In der Desktop-App startet "Unterwegs" den lokalen Kern.
+ */
+const BetriebsartWahl = memo(function BetriebsartWahl() {
+  const art = useBetriebsart();
+  const offline = useSelect(wamo, (s) => s.presence === "offline");
+  const [laeuft, setLaeuft] = useState(false);
+  if (!BUERO_VERFUEGBAR) return null;
+  const waehle = (neu: Betriebsart) => {
+    if (neu === art || !offline || laeuft) return;
+    setLaeuft(true);
+    void betriebsartSetzen(neu)
+      .then((gilt) => zeigeToast(`Betriebsart ${KERN[gilt].name}: Kern ${KERN[gilt].ort}`))
+      .catch(() => zeigeToast("Betriebsart konnte nicht umgeschaltet werden"))
+      .finally(() => setLaeuft(false));
+  };
+  return (
+    <div className="betriebsart">
+      <div className="betriebsart-wahl" role="radiogroup" aria-label="Betriebsart">
+        {BETRIEBSARTEN.map((a) => (
+          <button
+            key={a}
+            type="button"
+            role="radio"
+            aria-checked={a === art}
+            data-an={a === art || undefined}
+            disabled={!offline || laeuft}
+            onClick={() => waehle(a)}
+          >
+            {KERN[a].name}
+          </button>
+        ))}
+      </div>
+      <span className="pc-switch-hint">
+        Kern: {KERN[art].ort}
+        {!offline && " (umschalten nach dem Gespräch)"}
+      </span>
+    </div>
+  );
+});
 
 /** Kurzer sichtbarer Hinweis (z. B. Autostart der PC-Steuerung); die Ansage läuft über role="status". */
 const HinweisToast = memo(function HinweisToast() {
@@ -278,6 +336,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           <GemerktHinweis onVergessen={aktionen.vergessen} />
           <ActivityTimeline />
           <PcSteuerungSchalter onSchalten={aktionen.pcSteuerung} />
+          <BetriebsartWahl />
           <Aktionen aktionen={aktionen} />
         </div>
         <section className="canvas" aria-label="Canvas">
