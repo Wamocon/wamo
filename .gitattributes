@@ -9,6 +9,7 @@ Caddyfile text eol=lf
 *.yml text eol=lf
 *.service text eol=lf
 *.crt text eol=lf
+*.nft text eol=lf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 *.png binary
