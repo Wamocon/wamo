@@ -7,7 +7,9 @@ Zwei Datenbankrollen mit getrennten Verbindungen (Migration 0001_wamo_init.sql):
   wamo_admin  WAMO_ADMIN_DATABASE_URL  nur wamo_admin.py: Profile anlegen und pflegen, gemeinsame
                                        Vorschläge freigeben oder ablehnen (AdminDirectory).
 Beide über Supavisor im Session-Modus, ohne service_role und ohne PostgREST. Das Schema kommt aus
-WAMO_DB_SCHEMA und darf nur wamo_dev, wamo_test oder wamo_prod heißen.
+WAMO_DB_SCHEMA und darf nur wamo_dev, wamo_test oder wamo_prod heißen. Mit WAMO_CA_FILE verbindet sich asyncpg
+nur über TLS und prüft das Pooler-Zertifikat gegen die WAMO-CA (sslmode=verify-full, Standard aus
+scripts/wamo_db_rolle.py); ein schwächerer sslmode sperrt die Datenbank (wamo_tls.py).
 
 Nutzergrenzen setzt dieser Code selbst (wamo_core sieht alle Zeilen):
   * Ein MemoryStore gehört zu genau einer Sitzung und einer user_id. Jede Abfrage filtert darauf.
@@ -34,6 +36,8 @@ from typing import Any
 
 import asyncpg
 from loguru import logger
+
+from wamo_tls import TlsConfigError, postgres_ssl
 
 SCHEMA_PATTERN = re.compile(r"^wamo_(dev|test|prod)$")
 DEFAULT_SCHEMA = "wamo_dev"
@@ -176,6 +180,10 @@ class Database:
             if self._pool_ready(loop):
                 return self._pool
             try:
+                tls = postgres_ssl(self._dsn)
+            except TlsConfigError as e:
+                raise DatabaseUnavailable(f"TLS zur Datenbank nicht einsatzbereit: {e}") from e
+            try:
                 self._pool = await asyncpg.create_pool(
                     dsn=self._dsn,
                     min_size=POOL_MIN_SIZE,
@@ -184,6 +192,7 @@ class Database:
                     timeout=CONNECT_TIMEOUT_SECS,
                     command_timeout=COMMAND_TIMEOUT_SECS,
                     max_inactive_connection_lifetime=120,
+                    **({"ssl": tls} if tls is not None else {}),
                 )
             except (OSError, asyncio.TimeoutError, asyncpg.PostgresError, asyncpg.InterfaceError) as e:
                 # Bewusst nur der Fehlertyp: die Meldung könnte Teile der Verbindungsdaten enthalten.

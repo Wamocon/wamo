@@ -12,15 +12,18 @@ Ausführen:  uv run python -m pytest -q test_integration_db.py   (im Ordner voic
 """
 
 import os
+import ssl
 import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
 
 import asyncpg
+import certifi
 from dotenv import dotenv_values
 
 import memory as m
+import wamo_tls
 
 HERE = Path(__file__).resolve().parent
 SCHEMA = "wamo_test"
@@ -40,13 +43,22 @@ def _env(name: str) -> str | None:
 
 CORE_DSN = _env("WAMO_DATABASE_URL")
 ADMIN_DSN = _env("WAMO_ADMIN_DATABASE_URL")
+CA_FILE = _env(wamo_tls.CA_ENV)
+
+
+def _test_env() -> dict[str, str]:
+    """Schema wamo_test, dazu die WAMO-CA für DSNs mit sslmode=verify-full."""
+    env = {"WAMO_DB_SCHEMA": SCHEMA}
+    if CA_FILE:
+        env[wamo_tls.CA_ENV] = CA_FILE
+    return env
 
 
 class _SchemaTest(unittest.IsolatedAsyncioTestCase):
     dsn: str | None = None
 
     async def asyncSetUp(self):
-        self._env = mock.patch.dict(os.environ, {"WAMO_DB_SCHEMA": SCHEMA})
+        self._env = mock.patch.dict(os.environ, _test_env())
         self._env.start()
         self.db = m.Database(self.dsn, os.environ["WAMO_DB_SCHEMA"])
         self.assertEqual(self.db.schema, SCHEMA)  # niemals ein anderes Schema
@@ -156,6 +168,45 @@ class AdminRoleTests(_SchemaTest):
         await self.expect_denied(f"delete from {self.db.t('profiles')} where false")
         await self.expect_denied(f"delete from {self.db.t('memories')} where false")
         await self.expect_denied(f"update {self.db.t('memories')} set content = 'x' where false")
+
+
+@unittest.skipUnless(
+    CORE_DSN and CA_FILE and wamo_tls.sslmode(CORE_DSN) == "verify-full",
+    "WAMO_DATABASE_URL ohne sslmode=verify-full oder WAMO_CA_FILE fehlt",
+)
+class PoolerTlsTests(unittest.IsolatedAsyncioTestCase):
+    """Supavisor spricht TLS mit einem Zertifikat der WAMO-CA; ein fremder Vertrauensanker scheitert."""
+
+    async def test_verbindung_mit_tls_und_gepruefter_adresse(self):
+        with mock.patch.dict(os.environ, {wamo_tls.CA_ENV: CA_FILE}):
+            ctx = wamo_tls.postgres_ssl(CORE_DSN)
+        self.assertTrue(ctx.check_hostname)
+        # Mit einem SSLContext verlangt asyncpg TLS (kein Rückfall auf unverschlüsselt)
+        conn = await asyncpg.connect(dsn=CORE_DSN, ssl=ctx, statement_cache_size=0, timeout=10)
+        try:
+            self.assertEqual(await conn.fetchval("select current_user"), "wamo_core")
+        finally:
+            await conn.close()
+
+    async def test_pool_des_voice_cores_ist_verschluesselt(self):
+        """Der Weg des Voice-Cores (Database.pool) nutzt TLS; geprüft am ssl_object der Verbindung."""
+        with mock.patch.dict(os.environ, _test_env()):
+            db = m.Database(CORE_DSN, SCHEMA)
+            try:
+                pool = await db.pool()
+                async with pool.acquire() as conn:
+                    # asyncpg bietet dafür keine öffentliche Schnittstelle; der Proxy reicht _transport weiter
+                    ssl_object = conn._transport.get_extra_info("ssl_object")
+                    self.assertIsNotNone(ssl_object)
+                    self.assertIn(ssl_object.version(), ("TLSv1.2", "TLSv1.3"))
+                    self.assertEqual(await conn.fetchval("select current_user"), "wamo_core")
+            finally:
+                await db.close()
+
+    async def test_ohne_wamo_ca_wird_das_zertifikat_abgelehnt(self):
+        ctx = ssl.create_default_context(cafile=certifi.where())  # nur öffentliche Zertifikate
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            await asyncpg.connect(dsn=CORE_DSN, ssl=ctx, statement_cache_size=0, timeout=10)
 
 
 if __name__ == "__main__":

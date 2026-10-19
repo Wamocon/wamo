@@ -2,7 +2,9 @@
 
 Das Passwort wird verdeckt abgefragt und nur ueber die SSH-Eingabe (stdin) uebertragen. Der
 Service-Schluessel des WAMO-Supabase bleibt auf Sokrates-2; das Skript liest ihn dort und
-gibt ihn nie zurueck. Existiert das Konto schon, bleibt dessen Passwort
+gibt ihn nie zurueck. Die Admin-Anfrage an GoTrue laeuft auf Sokrates-2 selbst ueber Loopback
+(http://localhost:55321): Sie verlaesst den Server nicht, braucht deshalb kein TLS und bleibt auch in
+Stufe 2 der WAMO-Firewall erlaubt (sie laeuft nicht durch DOCKER-USER). Existiert das Konto schon, bleibt dessen Passwort
 unveraendert und es wird nur das WAMO-Profil angelegt bzw. aktualisiert.
 Die Registrierung im WAMO-Supabase ist geschlossen; Konten entstehen nur ueber dieses Skript.
 

@@ -1,0 +1,21 @@
+# WAMO-Firewall: WAMO-Ports (55321, 55443, 55322, 56543) nur für Loopback, Büro-LAN und das Caddy-Netz.
+# Installiert durch infra/sokrates2/wamo-firewall-einrichten.sh nach /etc/systemd/system/.
+#
+# Before=docker.service: Beim Systemstart und bei jedem Start von Docker stehen die Regeln, bevor Docker Ports
+# veröffentlicht (das Skript legt DOCKER-USER bei Bedarf selbst an). Bewusst ohne Requires/PartOf: Ein Stopp oder
+# Neustart von Docker lässt die Regeln stehen. Änderungen übernimmt "systemctl reload" atomar, ohne Lücke.
+# ExecStop entfernt die Regeln nur bei einem ausdrücklichen "systemctl stop wamo-firewall" (Rückweg) und beim
+# Herunterfahren, dann erst nach Docker.
+[Unit]
+Description=WAMO-Firewall (WAMO-Ports in DOCKER-USER begrenzen)
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/wamo-firewall start
+ExecReload=/usr/local/sbin/wamo-firewall start
+ExecStop=/usr/local/sbin/wamo-firewall stop
+
+[Install]
+WantedBy=multi-user.target docker.service

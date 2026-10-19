@@ -5,6 +5,7 @@ Prüfung je HTTP-Anfrage an den Pipecat-Runner (/start, /api/offer, /sessions/..
   1. Bearer-Token: Signatur, Ablauf, Aussteller (iss), Zielgruppe (aud), aal2.
      Hauptweg ES256/RS256 lokal über die öffentlichen Schlüssel des Stacks (JWKS, gecacht).
      Rückfall HS256: GoTrue prüft selbst (GET /auth/v1/user mit SUPABASE_PUBLISHABLE_KEY).
+     Beide Abrufe laufen über HTTPS und vertrauen zusätzlich der WAMO-CA aus WAMO_CA_FILE (wamo_tls.py).
   2. Profil in <WAMO_DB_SCHEMA>.profiles nachschlagen (Cache: aktives Profil 60 s, kein oder
      inaktives Profil 10 s). Datenbank nicht konfiguriert oder nicht erreichbar: 503, also
      ebenfalls abgelehnt (fail-closed). Der eigene WAMO-Stack hat eine geschlossene Registrierung
@@ -12,7 +13,10 @@ Prüfung je HTTP-Anfrage an den Pipecat-Runner (/start, /api/offer, /sessions/..
      laufende Sitzung prüft das Profil zusätzlich jede Minute neu (bot.py, SessionGuard).
   Statuscodes (so wertet sie die Oberfläche aus): 401 = Token fehlt, ist ungültig oder abgelaufen
   ("Anmeldung abgelehnt"); 403 = Token gültig, aber zweiter Faktor fehlt (aal1) oder kein aktives
-  Profil ("kein aktives WAMO-Profil oder zweiter Faktor fehlt").
+  Profil ("kein aktives WAMO-Profil oder zweiter Faktor fehlt"); 503 = Anmeldedienst (JWKS, GoTrue)
+  oder Datenbank nicht erreichbar, auch bei gescheiterter TLS-Prüfung.
+  SUPABASE_URL muss https:// sein; http:// nur über Loopback (Voice-Core auf demselben Rechner wie der
+  Stack). Sonst ist die Prüfung nicht eingerichtet und jede Anfrage wird abgelehnt.
   3. Geprüfte Identität an den Bot weitergeben (siehe unten).
 CORS-Preflight (OPTIONS) bleibt offen, er trägt keine Daten. WebSockets lehnt die Middleware ab:
 WAMO nutzt nur WebRTC.
@@ -36,18 +40,22 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import os
+import ssl
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 import jwt
 from loguru import logger
 
 from memory import ANREDEN, ROLLEN, DatabaseUnavailable, Profile, ProfileDirectory, normalize_uuid, shared_database
+from wamo_tls import https_context
 
 TOKEN_CACHE_SECS = 60  # geprüfte Tokens so lange merken: ICE-Updates kommen im Sekundentakt
 PROFILE_HIT_SECS = 60.0  # aktives Profil
@@ -110,8 +118,35 @@ class TokenCheck:
     status: int = 200
 
 
+def _loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def supabase_url_problem(url: str | None) -> str | None:
+    """Grund, warum SUPABASE_URL nicht genutzt wird, oder None. Außerhalb von Loopback nur https."""
+    if not url:
+        return "Voice-Core ohne SUPABASE_URL"
+    parts = urlsplit(url.strip())
+    host = parts.hostname or ""
+    if parts.scheme == "https" and host:
+        return None
+    if parts.scheme == "http" and _loopback(host):
+        return None
+    return "SUPABASE_URL ohne https (http nur über Loopback erlaubt)"
+
+
 class TokenVerifier:
-    """Prüft Supabase-Access-Tokens. check() liefert TokenCheck (user_id oder Grund und Status)."""
+    """Prüft Supabase-Access-Tokens. check() liefert TokenCheck (user_id oder Grund und Status).
+
+    SUPABASE_URL muss https sein (http nur über Loopback), sonst ist der Prüfer nicht eingerichtet.
+    ssl_context: Vertrauensbasis für JWKS und GoTrue. Ohne Angabe gilt wamo_tls.https_context()
+    (öffentliche Zertifikate plus WAMO-CA aus WAMO_CA_FILE); ein unlesbarer WAMO_CA_FILE wirft CaFileError.
+    """
 
     def __init__(
         self,
@@ -121,21 +156,28 @@ class TokenVerifier:
         issuer: str | None = None,
         jwks_client: Any = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        ssl_context: ssl.SSLContext | None = None,
     ):
-        self.configured = bool(supabase_url)
-        base = (supabase_url or "").rstrip("/")
+        self.problem = supabase_url_problem(supabase_url)
+        self.configured = self.problem is None
+        if supabase_url and not self.configured:
+            logger.error("Zugangskontrolle: {}; alle Anfragen werden abgelehnt", self.problem)
+        base = (supabase_url or "").strip().rstrip("/")
         self.auth_url = f"{base}/auth/v1"
         self.issuer = (issuer or "").rstrip("/") or self.auth_url
         self.api_key = api_key
+        self.ssl_context = ssl_context if ssl_context is not None else (https_context() if self.configured else None)
         self._jwks = jwks_client
         if self._jwks is None and self.configured:
-            self._jwks = jwt.PyJWKClient(f"{self.auth_url}/.well-known/jwks.json", cache_keys=True, lifespan=600)
+            self._jwks = jwt.PyJWKClient(
+                f"{self.auth_url}/.well-known/jwks.json", cache_keys=True, lifespan=600, ssl_context=self.ssl_context
+            )
         self._transport = transport  # nur für Tests
         self._ok_until: dict[str, tuple[float, str]] = {}
 
     async def check(self, token: str) -> TokenCheck:
         if not self.configured:
-            return TokenCheck(None, "Voice-Core ohne SUPABASE_URL", 401)
+            return TokenCheck(None, self.problem or "Voice-Core ohne SUPABASE_URL", 401)
         if not token:
             return TokenCheck(None, "nicht angemeldet", 401)
         key = hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
@@ -162,6 +204,10 @@ class TokenVerifier:
                 return TokenCheck(None, f"Signaturverfahren {alg} nicht erlaubt", 401)
         except jwt.ExpiredSignatureError:
             return TokenCheck(None, "Anmeldung abgelaufen", 401)
+        except (jwt.PyJWKClientConnectionError, httpx.TransportError, ssl.SSLError) as e:
+            # Netz oder TLS-Prüfung zum Stack gescheitert: nicht die Schuld des Nutzers. Nur der Fehlertyp ins Log.
+            logger.warning("Zugangskontrolle: Anmeldedienst nicht erreichbar ({})", type(e).__name__)
+            return TokenCheck(None, "Anmeldedienst nicht erreichbar", 503)
         except (jwt.PyJWTError, httpx.HTTPError, ValueError) as e:
             return TokenCheck(None, f"Token ungültig ({type(e).__name__})", 401)
 
@@ -175,7 +221,8 @@ class TokenVerifier:
         return TokenCheck(user_id)
 
     async def _check_remote(self, token: str) -> dict:
-        async with httpx.AsyncClient(timeout=5, transport=self._transport) as client:
+        verify: ssl.SSLContext | bool = self.ssl_context if self.ssl_context is not None else True
+        async with httpx.AsyncClient(timeout=5, transport=self._transport, verify=verify) as client:
             response = await client.get(
                 f"{self.auth_url}/user",
                 headers={"Authorization": f"Bearer {token}", "apikey": self.api_key or ""},
@@ -224,7 +271,7 @@ class AccessGate:
         result = await self.verifier.check(token)
         user_id = result.user_id
         if user_id is None:
-            return Decision(None, result.status if result.status in (401, 403) else 401,
+            return Decision(None, result.status if result.status in (401, 403, 503) else 401,
                             result.reason or "nicht angemeldet")
         if self.profiles is None:
             return Decision(None, 503, "Profilprüfung nicht möglich: Datenbank ist nicht eingerichtet")
@@ -393,7 +440,7 @@ def install_access_gate(app) -> AccessGate:
         os.getenv("SUPABASE_PUBLISHABLE_KEY"),
         issuer=os.getenv("WAMO_AUTH_ISSUER"),
     )
-    if not verifier.configured:
+    if not os.getenv("SUPABASE_URL"):  # eine unbrauchbare Adresse meldet TokenVerifier selbst
         logger.error("Zugangskontrolle: SUPABASE_URL fehlt, alle Anfragen werden abgelehnt")
     profiles: ProfileDirectory | None = None
     try:

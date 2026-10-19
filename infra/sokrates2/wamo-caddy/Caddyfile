@@ -1,0 +1,48 @@
+# HTTPS-Vorbau für den WAMO-Supabase auf Sokrates-2 (Container wamo-caddy, Compose-Projekt wamo-caddy).
+# Eingerichtet durch infra/sokrates2/wamo-tls-einrichten.sh, auf dem Server in /home/wamocon/wamo-tls/caddy/etc.
+#
+# Interne CA: Die Root "WAMO interne CA" und ihr Schlüssel bleiben in /home/wamocon/wamo-tls/ca auf dem Host.
+# Der Container sieht unter /ca nur das Root-Zertifikat sowie ein Zwischenzertifikat mit Schlüssel (pathlen 0,
+# dieselben Namensbeschränkungen wie die Root, nur serverAuth). Daraus stellt Caddy je Adresse ein kurzlebiges
+# Serverzertifikat aus (192.168.178.136, sokrates2, spark-651f.local) und erneuert es selbst. Das
+# Zwischenzertifikat erneuert wamo-tls-einrichten.sh.
+{
+	# Verwaltungs-API nur im Container (für "caddy reload"), nie veröffentlicht
+	admin 127.0.0.1:2019
+	auto_https disable_redirects
+	skip_install_trust
+	# Die interne CA hat keinen OCSP-Dienst
+	ocsp_stapling off
+	# Wer per IP verbindet, sendet kein SNI: dann gilt das Zertifikat der IP-Adresse
+	default_sni 192.168.178.136
+	servers {
+		# Kein HTTP/3: veröffentlicht ist nur TCP 55443
+		protocols h1 h2
+		# Große Header (Tokens, Cookies) durchreichen
+		max_header_size 1MB
+	}
+	pki {
+		ca local {
+			name "WAMO interne CA"
+			root {
+				cert /ca/wamo-ca.crt
+			}
+			intermediate {
+				cert /ca/wamo-intermediate.crt
+				key /ca/wamo-intermediate.key
+			}
+		}
+	}
+}
+
+https://192.168.178.136:55443, https://sokrates2:55443, https://spark-651f.local:55443 {
+	tls internal
+	# Envoy des WAMO-Stacks (veröffentlicht auf 55321, über das Docker-Gateway des Hosts erreichbar).
+	# Host-Header und WebSockets (Realtime) reicht Caddy unverändert durch.
+	reverse_proxy host.docker.internal:55321 {
+		# Streaming-Antworten (Edge Functions, Server-Sent Events) sofort weitergeben
+		flush_interval -1
+		# Offene WebSockets bei "caddy reload" nicht sofort trennen
+		stream_close_delay 5m
+	}
+}
