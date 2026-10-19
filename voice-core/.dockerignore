@@ -1,0 +1,11 @@
+# Geheimnisse und lokale Zustände nie ins Image
+.env
+.env.*
+!.env.example
+.jobs/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.jsonl
+.git/

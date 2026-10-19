@@ -1,0 +1,20 @@
+[project]
+name = "wamo-host"
+version = "0.1.0"
+description = "WAMO-Host: Windows-Werkzeugserver (MCP) mit Freigabe-Klassen"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.10,<2",
+    "mss>=10.2.0",
+    "pillow>=13.0.0",
+    "pywin32>=308; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]

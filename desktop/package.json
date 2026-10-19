@@ -1,0 +1,13 @@
+{
+  "name": "wamo-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WAMO als Desktop-Client: ungedrosseltes Gespräch, Stimmen-Rand über allen Monitoren, Autostart",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "44.5.1"
+  }
+}
