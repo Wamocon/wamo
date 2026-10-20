@@ -8,7 +8,8 @@ Befehle (im Repo-Hauptordner):
   python scripts/wamo_kern_sokrates2.py verteilen        infra/sokrates2 nach ~/wamo-infra, Kern-Code nach ~/wamo-infra/kern
   python scripts/wamo_kern_sokrates2.py db               eigene Login-Rolle wamo_core_s2 (Mitglied von wamo_core), DSN in core.env
   python scripts/wamo_kern_sokrates2.py geheimnisse      SONIOX, ANTHROPIC, SUPABASE_PUBLISHABLE_KEY und Einstellungen aus .env
-  python scripts/wamo_kern_sokrates2.py token            Host-Token aus %LOCALAPPDATA%\\WAMO\\host-token (scripts\\wamo-tunnel-einrichten.ps1)
+  python scripts/wamo_kern_sokrates2.py token            Host-Token und Freigabe-Schlüssel aus %LOCALAPPDATA%\\WAMO
+                                                         (host-token, host-freigabe; scripts\\wamo-tunnel-einrichten.ps1)
   python scripts/wamo_kern_sokrates2.py profil --email E PC an genau dieses Admin-Profil binden (WAMO_PC_HOST_PROFILE)
   python scripts/wamo_kern_sokrates2.py alles --email E  db, geheimnisse, token, profil, dann Neustart des Dienstes
   python scripts/wamo_kern_sokrates2.py status           Schlüsselnamen in core.env und Zustand des Dienstes
@@ -40,6 +41,8 @@ ROLLE = "wamo_core_s2"
 VERBINDUNGEN = 20
 ENV_HELFER = "sudo -n /usr/local/sbin/wamo-core-env"
 TOKEN_DATEI = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "WAMO" / "host-token"
+# Zweites Geheimnis für Freigaben kritischer PC-Aktionen (host/wamo_host.py, freigabe_entscheiden)
+FREIGABE_DATEI = TOKEN_DATEI.with_name("host-freigabe")
 TUNNEL_PUB = Path.home() / ".ssh" / "id_ed25519_wamo_tunnel.pub"
 JOBS_PUB = Path.home() / ".ssh" / "id_ed25519_wamo_jobs.pub"
 SCHEMA_RE = re.compile(r"wamo_(dev|test|prod)")
@@ -52,7 +55,7 @@ AUS_ENV = (
     "SONIOX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "SUPABASE_PUBLISHABLE_KEY", "LITELLM_API_KEY",
     "WAMO_DB_SCHEMA", "SONIOX_STT_URL", "SONIOX_TTS_URL", "SONIOX_VOICE", "SONIOX_TERMS", "CLAUDE_MODEL_FAST",
     "VISION_MODEL", "MIN_INTERRUPT_WORDS", "WAMO_CITY", "WAMO_TIMEZONE", "WAMO_GREETING", "WAMO_MAX_SITZUNG_MIN",
-    "LITELLM_BASE_URL", "WAMO_SUCHE", "WAMO_SEARXNG_URL",
+    "LITELLM_BASE_URL", "WAMO_SUCHE", "WAMO_SEARXNG_URL", "WAMO_SITZUNG_EINZELN", "WAMO_ANMELDUNG_MAX_STUNDEN",
 )
 AUS_ENV_PRAEFIX = ("WAMO_LLM_",)
 
@@ -179,15 +182,24 @@ def geheimnisse(_args) -> None:
     env_setzen(werte)
 
 
-def token(_args) -> None:
+def _geheimnis(datei: Path, was: str) -> str:
     try:
-        wert = TOKEN_DATEI.read_text(encoding="ascii").strip()
+        wert = datei.read_text(encoding="ascii").strip()
     except FileNotFoundError:
-        sys.exit(f"{TOKEN_DATEI} fehlt (zuerst scripts\\wamo-tunnel-einrichten.ps1).")
+        sys.exit(f"{datei} fehlt (zuerst scripts\\wamo-tunnel-einrichten.ps1).")
     if not TOKEN_RE.fullmatch(wert):
-        sys.exit(f"Token in {TOKEN_DATEI} ist ungültig.")
-    env_setzen({"WAMO_PC_HOST_TOKEN": wert})
-    wert = None
+        sys.exit(f"{was} in {datei} ist ungültig.")
+    return wert
+
+
+def token(_args) -> None:
+    """Host-Token und Freigabe-Schlüssel des PCs an den Kern (beide nur über stdin, nie angezeigt)."""
+    werte = {"WAMO_PC_HOST_TOKEN": _geheimnis(TOKEN_DATEI, "Token"),
+             "WAMO_PC_HOST_FREIGABE": _geheimnis(FREIGABE_DATEI, "Freigabe-Schlüssel")}
+    if werte["WAMO_PC_HOST_TOKEN"] == werte["WAMO_PC_HOST_FREIGABE"]:
+        sys.exit("Token und Freigabe-Schlüssel sind gleich; scripts\\wamo-tunnel-einrichten.ps1 -FreigabeNeu ausführen.")
+    env_setzen(werte)
+    werte = None
 
 
 def profil(args) -> None:

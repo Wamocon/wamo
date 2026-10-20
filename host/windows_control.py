@@ -4,6 +4,7 @@ Sicherheitsregeln (hier, direkt vor der Aktion):
   * Tippen und Tastenkuerzel NIE in Konsolen, Registry, Admin-/Anmeldefenster oder Passwort-Manager:
     dort koennten getippte Zeichen Befehle ausfuehren oder Zugangsdaten beruehren.
   * Keine Tastenkuerzel mit der Windows-Taste (Win+R oeffnet "Ausfuehren").
+  * Bei gesperrtem Bildschirm (is_locked) keine Eingaben, Klicks und Fotos; das prüft wamo_host.py vorab.
   * Programme nur aus dem Startmenue des Nutzers, keine Shells/Registry/Admin-Werkzeuge.
   * Laengenlimits fuer Text.
 """
@@ -11,6 +12,7 @@ Sicherheitsregeln (hier, direkt vor der Aktion):
 from __future__ import annotations
 
 import ctypes
+import functools
 import json
 import re
 import subprocess
@@ -40,24 +42,45 @@ TYPE_BLOCKED_EXES = {"explorer.exe"}
 MESSAGING_EXES = {
     "outlook.exe", "olk.exe", "hxoutlook.exe", "ms-teams.exe", "teams.exe", "whatsapp.exe", "slack.exe",
     "thunderbird.exe", "signal.exe", "telegram.exe", "discord.exe", "mailspring.exe",
+    "zoom.exe", "mattermost.exe", "element.exe", "skype.exe", "rocket.chat.exe", "wire.exe", "threema.exe",
+    "messenger.exe",
 }
 MESSAGING_TITLE = re.compile(
     r"(outlook|teams|whatsapp|slack|thunderbird|signal|telegram|discord|e-mail|\bmail\b|posteingang|"
-    r"inbox|nachricht verfassen|neue nachricht)",
+    r"inbox|nachricht verfassen|neue nachricht|google chat|mattermost|messenger|rocket\.chat|threema)",
     re.IGNORECASE,
 )
+# Die eigene Oberfläche (Electron-App "WAMO", Browser-Tab "WAMO - ...") bedient WAMO nie: dort liegen die
+# Freigabekarten. Groß geschrieben und allein stehend, damit "wamo - Visual Studio Code" oder "WAMO-Konzept.docx"
+# weiter gehen.
+WAMO_UI_EXES = {"electron.exe"}
+WAMO_UI_TITLE = re.compile(r"^WAMO(?![-.\w])")
 # Adressleiste von Browsern und Explorer: Strg+L, Alt+D, F6
 ADDRESS_BAR_COMBOS = {frozenset({0x11, ord("L")}), frozenset({0x12, ord("D")}), frozenset({0x75})}
-SEND_COMBOS = {frozenset({0x0D}), frozenset({0x11, 0x0D}), frozenset({0x12, ord("S")})}
+# Senden in Mail- und Messenger-Fenstern: Enter, Strg+Enter, Strg+Umschalt+Enter, Alt+S, Leertaste (auf "Senden")
+SEND_COMBOS = {frozenset({0x0D}), frozenset({0x11, 0x0D}), frozenset({0x11, 0x10, 0x0D}), frozenset({0x12, ord("S")}),
+               frozenset({0x20})}
 
 
 def is_messaging(exe: str, title: str) -> bool:
     return (exe or "").lower() in MESSAGING_EXES or bool(MESSAGING_TITLE.search(title or ""))
 
 
-def check_typing_target(exe: str, title: str) -> None:
-    """Wie check_target, zusätzlich ohne Explorer (Adressleiste führt Befehle aus)."""
+def check_not_wamo_ui(exe: str, title: str) -> None:
+    """Wirft ValueError für die eigene Oberfläche (Freigabekarten): dort gibt nur ein Mensch frei."""
+    if (exe or "").lower() in WAMO_UI_EXES or WAMO_UI_TITLE.search(title or ""):
+        raise ValueError("In der eigenen Oberfläche tippt und klickt WAMO nicht (Freigaben gibt nur ein Mensch)")
+
+
+def check_input_target(exe: str, title: str) -> None:
+    """Für Eingaben (Klicken, Scrollen): wie check_target, zusätzlich nie in der eigenen Oberfläche."""
     check_target(exe, title)
+    check_not_wamo_ui(exe, title)
+
+
+def check_typing_target(exe: str, title: str) -> None:
+    """Wie check_input_target, zusätzlich ohne Explorer (Adressleiste führt Befehle aus)."""
+    check_input_target(exe, title)
     if (exe or "").lower() in TYPE_BLOCKED_EXES:
         raise ValueError("Im Explorer tippt WAMO nicht (die Adressleiste führt Befehle aus)")
 
@@ -187,6 +210,14 @@ def find_window(query: str) -> dict:
     return candidates[0]
 
 
+def window_info(hwnd: int) -> dict:
+    """Titel und Programm eines Fensters; ValueError, wenn es das Fenster nicht mehr gibt."""
+    win32gui, _, _ = _win32()
+    if not hwnd or not win32gui.IsWindow(hwnd):
+        raise ValueError("Das Fenster gibt es nicht mehr")
+    return {"hwnd": hwnd, "titel": _title(hwnd), "programm": _exe_of(hwnd)}
+
+
 def foreground() -> dict:
     win32gui, _, _ = _win32()
     hwnd = win32gui.GetForegroundWindow()
@@ -234,12 +265,12 @@ TYPE_RECHECK_CHARS = 100  # so oft prüft type_text, ob das Zielfenster noch das
 
 
 def type_text(text: str, recheck: Callable[[], None] | None = None) -> int:
-    """Tippt text. recheck wird vor jedem Block von TYPE_RECHECK_CHARS Zeichen aufgerufen und wirft
-    ValueError, wenn das Zielfenster gewechselt hat; dann bricht das Tippen ab. Gibt die Anzahl der
+    """Tippt text. recheck wird vor jedem Block von TYPE_RECHECK_CHARS Zeichen und vor jedem Enter aufgerufen und
+    wirft ValueError, wenn das Zielfenster gewechselt hat; dann bricht das Tippen ab. Gibt die Anzahl der
     getippten Zeichen zurück. Zeichen außerhalb der BMP (Emoji) gehen als UTF-16-Surrogatpaar."""
     KEYUP, UNICODE = 0x0002, 0x0004
     for i, ch in enumerate(text):
-        if recheck is not None and i % TYPE_RECHECK_CHARS == 0:
+        if recheck is not None and (i % TYPE_RECHECK_CHARS == 0 or ch == "\n"):
             recheck()
         if ch == "\n":
             _send([_key(vk=0x0D), _key(vk=0x0D, flags=KEYUP)])
@@ -256,6 +287,46 @@ def press(codes: list[int]) -> None:
     KEYUP = 0x0002
     _send([_key(vk=c) for c in codes] + [_key(vk=c, flags=KEYUP) for c in reversed(codes)])
     time.sleep(0.05)
+
+
+# ---------- Sperre ----------
+DESKTOP_READOBJECTS = 0x0001
+UOI_NAME = 2
+
+
+@functools.cache
+def _desktop_api():
+    """Eigene user32-Instanz mit Prototypen (die geteilte ctypes.windll bleibt unverändert)."""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.OpenInputDesktop.restype = wintypes.HANDLE
+    user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    user32.GetUserObjectInformationW.restype = wintypes.BOOL
+    user32.GetUserObjectInformationW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                                 ctypes.POINTER(wintypes.DWORD)]
+    user32.CloseDesktop.restype = wintypes.BOOL
+    user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+    return user32
+
+
+def is_locked(api=None) -> bool:
+    """Ist der Bildschirm gesperrt (Win+L, Anmeldebildschirm, UAC-Dialog auf dem sicheren Desktop)? Dann ist der
+    Eingabedesktop nicht "Default": OpenInputDesktop scheitert für normale Prozesse, oder der Desktop heißt anders
+    (Winlogon). Tippen, Klicken und Bildschirmfotos liefen dort ins Leere. Jeder Fehler gilt als gesperrt."""
+    try:
+        user32 = api if api is not None else _desktop_api()
+        desk = user32.OpenInputDesktop(0, False, DESKTOP_READOBJECTS)
+    except (AttributeError, OSError):
+        return True
+    if not desk:
+        return True
+    try:
+        name = ctypes.create_unicode_buffer(256)
+        noetig = wintypes.DWORD(0)
+        if not user32.GetUserObjectInformationW(desk, UOI_NAME, name, ctypes.sizeof(name), ctypes.byref(noetig)):
+            return True
+        return name.value.lower() != "default"
+    finally:
+        user32.CloseDesktop(desk)
 
 
 # ---------- Bildschirm und Maus ----------

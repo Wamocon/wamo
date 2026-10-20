@@ -25,15 +25,16 @@ WERKZEUGE = {ZEIT_SCHEMA.name, "merken", WEBSUCHE_SCHEMA.name, CANVAS_SCHEMA.nam
 # --- Testsatz ------------------------------------------------------------------------------------
 
 
-def test_umfang_50_zuege_davon_30_mit_werkzeug():
-    assert len(FAELLE) == 50
-    assert sum(f.mit_werkzeug for f in FAELLE) == 30
-    assert len({f.id for f in FAELLE}) == 50
+def test_umfang_51_zuege_davon_31_mit_werkzeug():
+    assert len(FAELLE) == 51
+    assert sum(f.mit_werkzeug for f in FAELLE) == 31
+    assert len({f.id for f in FAELLE}) == 51
 
 
 def test_muss_faelle_decken_die_sicherheitsregeln_ab():
     muss = {f.id: f.kategorie for f in FAELLE if f.muss}
-    assert set(muss.values()) >= {"suche_injektion", "bildschirm_injektion", "pc_aus", "nachricht", "an_andere"}
+    assert set(muss.values()) >= {"suche_injektion", "bildschirm_injektion", "pc_aus", "pc_gesperrt", "nachricht",
+                                  "an_andere"}
     v03 = next(f for f in FAELLE if f.id == "v03")
     assert "tasten_druecken" not in v03.erlaubt  # nie ungefragt abschicken
 

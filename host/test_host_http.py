@@ -225,6 +225,32 @@ class McpMitTokenTests(unittest.TestCase):
             self.assertEqual(json.loads(antwort["result"]["content"][0]["text"])["status"], "needs_approval")
             ps.assert_not_called()
 
+    def test_freigabe_ueber_http_nur_mit_zweitem_geheimnis(self):
+        """Das Bearer-Token allein reicht nicht: ohne Freigabe-Schlüssel wird nichts ausgeführt, mit genau einmal."""
+        schluessel = secrets.token_urlsafe(32)
+
+        def aufruf(name, argumente, rpc_id):
+            antwort = self._post(_rpc("tools/call", {"name": name, "arguments": argumente}, rpc_id))
+            return json.loads(antwort["result"]["content"][0]["text"])
+
+        host.PENDING.clear()
+        self.addCleanup(host.PENDING.clear)
+        with mock.patch.object(host, "_powershell", return_value={"status": "success"}) as ps, \
+                mock.patch.object(host, "FREIGABE_SCHLUESSEL", schluessel), \
+                mock.patch.object(host, "AUDIT_LOG", Path(tempfile.gettempdir()) / f"wamo-test-{secrets.token_hex(4)}.jsonl") as log:
+            self.addCleanup(lambda: log.unlink(missing_ok=True))
+            anfrage = aufruf("powershell_lesen", {"command": "Stop-Process -Name notepad", "reason": "t"}, 5)
+            aid = anfrage["approval_id"]
+            for falsch in ("", TOKEN, secrets.token_urlsafe(32)):  # auch das Bearer-Token ist kein Freigabe-Schlüssel
+                self.assertEqual(aufruf("freigabe_entscheiden", {"approval_id": aid, "ja": True, "schluessel": falsch}, 6)
+                                 ["status"], "blocked")
+            ps.assert_not_called()
+            ok = aufruf("freigabe_entscheiden", {"approval_id": aid, "ja": True, "schluessel": schluessel}, 7)
+            nochmal = aufruf("freigabe_entscheiden", {"approval_id": aid, "ja": True, "schluessel": schluessel}, 8)
+            self.assertEqual((ok["status"], nochmal["status"]), ("success", "error"))
+            ps.assert_called_once()
+            self.assertNotIn(schluessel, log.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ import { wamo } from "@/lib/wamo";
 /**
  * Was WAMO gerade tut: Zeitleiste der Werkzeugaufrufe (vom Voice-Core gemeldet).
  * Statusform zusätzlich zur Farbe: läuft (grauer Kreis, roter Bogen), erledigt (Häkchen),
- * nicht ausgeführt (Kreis mit Schrägstrich), Fehler (rotes Quadrat mit "!").
+ * nicht ausgeführt (Kreis mit Schrägstrich), wartet auf Freigabe (Kreis mit Pause), Fehler (rotes Quadrat mit "!").
  * Die Dauer steht erst am Ende da; während des Laufs zählt kein Timer (kein Neurendern).
  * Schritte früherer Gesprächszüge sind eingeklappt.
  */
@@ -41,6 +41,7 @@ const STATUS_TEXT: Record<ActivityStatus, string> = {
   fertig: "erledigt",
   abgelehnt: "nicht ausgeführt",
   fehler: "Fehler",
+  wartet: "wartet auf Freigabe",
 };
 
 const MAX_AKTUELL = 6;
@@ -72,6 +73,13 @@ function StatusMark({ status }: { status: ActivityStatus }) {
           <path d="M4 12L12 4" />
         </svg>
       );
+    case "wartet":
+      return (
+        <svg className="mark mark-wait" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" />
+          <path d="M6.2 5.5v5M9.8 5.5v5" />
+        </svg>
+      );
     case "fehler":
       return (
         <svg className="mark mark-error" viewBox="0 0 16 16" aria-hidden="true">
@@ -83,7 +91,7 @@ function StatusMark({ status }: { status: ActivityStatus }) {
 }
 
 function Zeile({ a }: { a: Activity }) {
-  const teilfehler = a.status === "abgelehnt" || a.status === "fehler";
+  const teilfehler = a.status === "abgelehnt" || a.status === "fehler" || a.status === "wartet";
   return (
     <li data-status={a.status}>
       <StatusMark status={a.status} />
@@ -102,9 +110,16 @@ function Zeile({ a }: { a: Activity }) {
   );
 }
 
+/** "wartet" nur, solange noch eine PC-Freigabe offen ist; sonst ist die Aktion nicht ausgeführt worden. */
+function mitFreigabeStand(a: Activity, pcOffen: boolean): Activity {
+  return a.status === "wartet" && !pcOffen ? { ...a, status: "abgelehnt", detail: "Freigabe nicht mehr offen" } : a;
+}
+
 export const ActivityTimeline = memo(function ActivityTimeline() {
-  const items = useSelect(wamo, (s) => s.activities);
+  const roh = useSelect(wamo, (s) => s.activities);
   const turn = useSelect(wamo, (s) => s.turn);
+  const pcOffen = useSelect(wamo, (s) => s.approvals.some((a) => a.job === "pc"));
+  const items = roh.map((a) => mitFreigabeStand(a, pcOffen));
   if (!items.length) return null;
   // aktueller Zug (und alles, was noch läuft) oben, frühere Schritte eingeklappt
   const aktuell = items.filter((a) => a.turn === turn || a.status === "laeuft").slice(0, MAX_AKTUELL);

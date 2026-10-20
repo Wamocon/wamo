@@ -2,8 +2,19 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { WmcLogo } from "@/components/WmcLogo";
+import {
+  anmeldeZeitpunktFehlt,
+  anmeldungAbgelaufen,
+  bleibenGewaehlt,
+  dauerText,
+  maxAnmeldungStunden,
+  maxStundenHier,
+  merkeAbmeldeGrund,
+  nimmAbmeldeGrund,
+  setzeAngemeldetBleiben,
+} from "@/lib/anmeldung";
 import { getSupabase } from "@/lib/supabase";
 import { unverschluesselteDienste } from "@/lib/umgebung";
 
@@ -12,6 +23,10 @@ import { unverschluesselteDienste } from "@/lib/umgebung";
  * Beim ersten Mal richtet jedes Profil den zweiten Faktor per QR-Code ein. Ob das Konto ein aktives
  * WAMO-Profil hat, prüft der Voice-Core mit demselben Token selbst (voice-core/auth_gate.py);
  * die Oberfläche ist nur die Tür.
+ *
+ * "Angemeldet bleiben" (in der Desktop-App vorausgewählt): ohne Haken liegt die Sitzung nur im sessionStorage. Beim
+ * Laden und jede Minute prüft die Tür das Alter der Anmeldung (ab Passwort und Code, lib/anmeldung.ts) und meldet ab:
+ * Desktop nach 7 Tagen, Browser nach NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER (Standard 24 Stunden).
  */
 
 // Build-Konstanten: auf Server und Client gleich, also ohne Hydration-Unterschied nutzbar
@@ -40,6 +55,30 @@ type Step =
 export function qrDataUrl(raw: string) {
   const svg = raw.slice(raw.indexOf(",") + 1).trim();
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+/** Gerät für die Anmeldemaske: Desktop-App (window.wamoDesktop) und letzte Wahl "bleiben". Server: keins von beiden. */
+const keinAbo = () => () => {};
+function geraetSchnappschuss() {
+  return `${window.wamoDesktop?.isDesktop ? "d" : "b"}${bleibenGewaehlt() ? "1" : "0"}`;
+}
+
+/** Anmeldung zu alt? Dann lokal abmelden (der Grund erscheint in der Anmeldemaske); true = abgemeldet. */
+async function abmeldenWennZuAlt(): Promise<boolean> {
+  const supabase = getSupabase();
+  if (!supabase) return false;
+  const { data } = await supabase.auth.getSession();
+  const stunden = maxStundenHier();
+  const token = data.session?.access_token;
+  if (!token || !anmeldungAbgelaufen(token, Date.now(), stunden)) return false;
+  if (anmeldeZeitpunktFehlt(token, Date.now())) {
+    console.warn("WAMO: Anmeldezeitpunkt (amr) fehlt im Token oder liegt in der Zukunft");
+    merkeAbmeldeGrund("Der Anmeldezeitpunkt fehlt im Token. Bitte neu anmelden.");
+  } else {
+    merkeAbmeldeGrund(`Deine Anmeldung ist abgelaufen (nach ${dauerText(stunden)}). Bitte neu anmelden.`);
+  }
+  await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
+  return true;
 }
 
 function CodeField() {
@@ -72,6 +111,10 @@ export function LoginGate({
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const geraet = useSyncExternalStore(keinAbo, geraetSchnappschuss, () => "b0");
+  const desktop = geraet.startsWith("d");
+  const bleibenVorauswahl = desktop || geraet.endsWith("1");
+  const maxStunden = maxAnmeldungStunden(desktop, process.env.NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER);
 
   // Welcher Schritt ist dran? Ohne Sitzung anmelden, mit aal1 Code abfragen oder einrichten.
   const nextStep = useCallback(async () => {
@@ -79,6 +122,7 @@ export function LoginGate({
     if (!supabase) return setStep({ kind: "fehlt" });
     const { data: sessionData } = await supabase.auth.getSession();
     if (!sessionData.session) return setStep({ kind: "anmelden" });
+    if (await abmeldenWennZuAlt()) return setStep({ kind: "anmelden" }); // Grund zeigt der SIGNED_OUT-Zweig
 
     const { data: aal, error: aalError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
     if (aalError) {
@@ -125,7 +169,11 @@ export function LoginGate({
     const supabase = getSupabase();
     if (!supabase) return;
     const { data } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_OUT") setStep({ kind: "anmelden" });
+      if (event === "SIGNED_OUT") {
+        setStep({ kind: "anmelden" });
+        const grund = nimmAbmeldeGrund(); // automatisch abgemeldet (zu alt, vom Voice-Core verlangt)
+        if (grund) setError(grund);
+      }
       // Weitere Supabase-Aufrufe erst nach dem Rückruf, sonst blockiert sich supabase-js selbst
       if (event === "INITIAL_SESSION") {
         setTimeout(() => {
@@ -138,6 +186,25 @@ export function LoginGate({
     });
     return () => data.subscription.unsubscribe();
   }, [nextStep, vorschau]);
+
+  // Auch bei offener Seite: jede Minute prüfen, ob die Anmeldung zu alt ist (dann abmelden), dazu beim Zurückkehren
+  // in den Tab oder die App (gedrosselte Timer nach Ruhezustand oder im Hintergrund)
+  const angemeldet = step.kind === "fertig";
+  useEffect(() => {
+    if (!angemeldet || vorschau) return;
+    const pruefe = () => void abmeldenWennZuAlt().catch(() => undefined);
+    const sichtbar = () => {
+      if (document.visibilityState === "visible") pruefe();
+    };
+    const id = setInterval(pruefe, 60_000);
+    document.addEventListener("visibilitychange", sichtbar);
+    window.addEventListener("focus", pruefe);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", sichtbar);
+      window.removeEventListener("focus", pruefe);
+    };
+  }, [angemeldet, vorschau]);
 
   const run = async (action: () => Promise<string | null>) => {
     setBusy(true);
@@ -162,6 +229,9 @@ export function LoginGate({
       setError(vorschau ? "Vorschau ohne Verbindung: hier ist keine Anmeldung möglich." : "Anmeldung nicht eingerichtet.");
       return;
     }
+    // vor dem Anmelden festlegen: davon hängt ab, wohin supabase-js die Sitzung schreibt (lib/anmeldung.ts)
+    setzeAngemeldetBleiben(form.get("bleiben") === "on");
+    nimmAbmeldeGrund(); // ein alter Abmeldegrund gehört nicht zu dieser Anmeldung
     void run(async () => {
       const { error } = await supabase.auth.signInWithPassword({
         email: String(form.get("email")).trim(),
@@ -238,6 +308,21 @@ export function LoginGate({
                 Passwort
                 <input name="password" type="password" autoComplete="current-password" required />
               </label>
+              <label className="gate-check">
+                {/* key nur nach Gerät: die Wahl der Person bleibt auch nach einem Fehlversuch stehen */}
+                <input
+                  key={desktop ? "d" : "b"}
+                  name="bleiben"
+                  type="checkbox"
+                  defaultChecked={bleibenVorauswahl}
+                  aria-describedby="gate-bleiben-hinweis"
+                />
+                Angemeldet bleiben
+              </label>
+              <p className="gate-hint gate-hint-klein" id="gate-bleiben-hinweis">
+                Ohne Haken endet die Anmeldung, wenn du {desktop ? "die App" : "den Tab"} schließt. Spätestens nach{" "}
+                {dauerText(maxStunden)} meldet WAMO ab.
+              </p>
               <button className="btn-primary btn-block" disabled={busy}>
                 {busy ? "Prüfe …" : "Anmelden"}
               </button>

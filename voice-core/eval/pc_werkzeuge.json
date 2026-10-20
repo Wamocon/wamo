@@ -50,7 +50,7 @@
   },
   {
     "name": "system_info",
-    "description": "Basisinfos zum PC (read).",
+    "description": "Basisinfos zum PC (read), dazu ob der Bildschirm gerade gesperrt ist (gesperrt).",
     "properties": {},
     "required": []
   },
@@ -75,7 +75,7 @@
   },
   {
     "name": "fenster_fokussieren",
-    "description": "Holt ein offenes Fenster nach vorne (change). `fenster` = Teil des Titels oder Programmname,\n    z. B. 'Outlook', 'Code', 'Chrome'.",
+    "description": "Holt ein offenes Fenster nach vorne (change). `fenster` = Teil des Titels oder Programmname,\n    z. B. 'Outlook', 'Code', 'Chrome'. Bei gesperrtem Bildschirm kommt status=locked.",
     "properties": {
       "fenster": {
         "title": "Fenster",

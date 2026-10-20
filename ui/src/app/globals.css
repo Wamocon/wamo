@@ -368,6 +368,8 @@ p, li { text-wrap: pretty; }
 .mark-skip { stroke: var(--rule-strong); }
 .mark-error rect { fill: var(--accent); stroke: none; }
 .mark-error path { stroke: #ffffff; stroke-width: 2; }
+.mark-wait circle { stroke: var(--accent); }
+.mark-wait path { stroke: var(--ink); stroke-width: 2; }
 @keyframes spin { to { transform: rotate(1turn); } }
 
 /* Freigabe-Karten: immer oben, rote Kante links */
@@ -381,6 +383,10 @@ p, li { text-wrap: pretty; }
 .approval h3 { margin: 2px 0 8px; font: 700 19px/1.25 var(--font-wmc); }
 .approval h3:focus-visible { outline-offset: 4px; }
 .approval-von { margin: -4px 0 8px; font-size: 15px; color: var(--ink-soft); }
+.approval-ziel { margin: 0 0 8px; font-size: 15px; color: var(--ink); overflow-wrap: anywhere; }
+.approval-ziel-label { font-weight: 700; }
+.approval-frist { margin: -4px 0 12px; font-size: 14px; color: var(--ink-soft); }
+.approval-anlass { margin: -4px 0 10px; font-size: 14px; color: var(--ink-soft); overflow-wrap: anywhere; }
 .approval-detail {
   margin: 0 0 12px; padding: 8px 10px;
   background: var(--surface); border-radius: 4px;
@@ -621,6 +627,9 @@ p, li { text-wrap: pretty; }
 .gate-form input:hover { border-color: var(--ink); }
 .gate-form input[name="code"] { font: 600 24px var(--font-code); letter-spacing: 0.3em; text-align: center; }
 .gate-form .btn-primary { margin-top: 4px; }
+.gate-form .gate-check { display: flex; align-items: center; gap: 10px; min-height: 44px; font-weight: 400; cursor: pointer; }
+.gate-form .gate-check input { width: 22px; min-height: 22px; height: 22px; padding: 0; accent-color: var(--accent); cursor: pointer; }
+.gate-hint-klein { margin-top: -8px; font-size: 14px; color: var(--ink-soft); }
 .gate-qr { justify-self: center; background: #ffffff; padding: 10px; border: 1px solid var(--rule); }
 .gate-secret { font-size: 15px; color: var(--ink-soft); }
 .gate-secret code { display: block; margin-top: 6px; font: 13px var(--font-code); word-break: break-all; }

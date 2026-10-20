@@ -12,14 +12,25 @@ Zwei Wege, gewählt über die Umgebung:
 
 Risikoklassen und Freigaben prüft der Host selbst. Nur Profile mit der Rolle admin bekommen die PC-Werkzeuge.
 WAMO_PC_HOST=off schaltet sie ganz ab.
+
+Freigaben kritischer PC-Aktionen (Host: status=needs_approval): Nur pc_freigabe_entscheiden ruft nach einem Klick in
+der Oberfläche das Host-Werkzeug freigabe_entscheiden auf. Es steht nicht in LLM_TOOLS (das Sprachmodell sieht es
+weder lokal noch über den Tunnel) und braucht ein zweites Geheimnis neben dem Bearer-Token: lokal erzeugt dieser Kern
+es je Host-Start und gibt es nur als Umgebung WAMO_HOST_FREIGABE an den Unterprozess, im Büro steht es in
+WAMO_PC_HOST_FREIGABE (/etc/wamo/core.env, am PC in %LOCALAPPDATA%\\WAMO\\host-freigabe). Der Schlüssel landet
+nie im Log, im Prompt oder in einer Antwort.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
+import secrets
 import shutil
 import sys
+import weakref
 from pathlib import Path
 
 from loguru import logger
@@ -29,7 +40,7 @@ from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.services.mcp_service import MCPClient
 
 from memory import normalize_uuid
-from pc_tunnel import PcNichtErreichbar, TunnelHost
+from pc_tunnel import PC_NICHT_ERREICHBAR, PcNichtErreichbar, TunnelHost
 
 HOST_DIR = Path(__file__).resolve().parent.parent / "host"
 HOST_SCRIPT = HOST_DIR / "wamo_host.py"
@@ -38,6 +49,30 @@ LLM_TOOLS = [
     "webseite_oeffnen", "programm_oeffnen", "powershell_lesen", "system_info", "dark_mode",
     "fenster_auflisten", "fenster_fokussieren", "tastatur_tippen", "tasten_druecken", "maus_scrollen", "oeffnen_mit",
 ]
+
+
+APPROVAL_ID_RE = re.compile(r"[0-9a-f]{16}")
+FREIGABE_SCHLUESSEL_RE = re.compile(r"[A-Za-z0-9_-]{43,512}")
+# Freigabe-Schlüssel je Host-Verbindung (nicht am Objekt, damit er in keiner Darstellung des Clients auftaucht)
+_FREIGABE_SCHLUESSEL: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def freigabe_schluessel(client: object) -> str | None:
+    """Zweites Geheimnis für die Freigaben dieses Hosts oder None (dann gibt es keinen Freigabeweg)."""
+    try:
+        return _FREIGABE_SCHLUESSEL.get(client)
+    except TypeError:
+        return None
+
+
+def _buero_freigabe_schluessel() -> str | None:
+    wert = (os.getenv("WAMO_PC_HOST_FREIGABE") or "").strip()
+    if not wert:
+        return None
+    if not FREIGABE_SCHLUESSEL_RE.fullmatch(wert):
+        logger.error("WAMO_PC_HOST_FREIGABE ist ungültig: Freigaben für PC-Aktionen bleiben aus")
+        return None
+    return wert
 
 
 def pc_host_enabled() -> bool:
@@ -101,6 +136,13 @@ def pc_lease_nehmen(sitzung: object) -> bool:
     return False
 
 
+def pc_lease_haelt(sitzung: object) -> bool:
+    """Hält diese Sitzung die Sperre? Lokal immer (jede Sitzung hat ihren eigenen Host über stdio)."""
+    if tunnel_socket() is None:
+        return True
+    return _lease is sitzung
+
+
 def pc_lease_freigeben(sitzung: object) -> None:
     global _lease
     if _lease is sitzung:
@@ -125,8 +167,11 @@ def host_client() -> MCPClient | TunnelHost | None:
         token = (os.getenv("WAMO_PC_HOST_TOKEN") or "").strip()
         if not token:
             return None
-        # bildschirmfoto und maus_klicken ruft nur der Voice-Core (screen.py) auf, nie das Sprachmodell
-        return TunnelHost(socket_path, token, tools_filter=LLM_TOOLS)
+        # bildschirmfoto, maus_klicken, sperre_pruefen und freigabe_entscheiden ruft nur der Kern auf, nie das Modell
+        tunnel = TunnelHost(socket_path, token, tools_filter=LLM_TOOLS)
+        if schluessel := _buero_freigabe_schluessel():
+            _FREIGABE_SCHLUESSEL[tunnel] = schluessel
+        return tunnel
     if buero():
         return None
     script = str(HOST_SCRIPT)
@@ -137,9 +182,13 @@ def host_client() -> MCPClient | TunnelHost | None:
     else:
         uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
         command, args = uv, ["run", "--project", str(HOST_DIR), "python", script, "--stdio"]
-    params = StdioServerParameters(command=command, args=args, cwd=str(HOST_DIR))
-    # bildschirmfoto und maus_klicken ruft nur der Voice-Core (screen.py) auf, nie das Sprachmodell
-    return MCPClient(server_params=params, tools_filter=LLM_TOOLS)
+    # Freigabe-Schlüssel je Host-Start; MCP legt env über seine Standard-Umgebung, der Host bekommt nur ihn dazu
+    schluessel = secrets.token_urlsafe(32)
+    params = StdioServerParameters(command=command, args=args, cwd=str(HOST_DIR), env={"WAMO_HOST_FREIGABE": schluessel})
+    # bildschirmfoto, maus_klicken, sperre_pruefen und freigabe_entscheiden ruft nur der Kern auf, nie das Modell
+    client = MCPClient(server_params=params, tools_filter=LLM_TOOLS)
+    _FREIGABE_SCHLUESSEL[client] = schluessel
+    return client
 
 
 async def host_tools(client: MCPClient | TunnelHost | None) -> ToolsSchema | None:
@@ -156,6 +205,71 @@ async def host_tools(client: MCPClient | TunnelHost | None) -> ToolsSchema | Non
     except Exception as e:  # PC-Werkzeuge sind optional
         logger.warning("PC-Host nicht verfügbar: {}", e)
         return None
+
+
+# ---------- Gesperrter Bildschirm ----------
+# Werkzeuge, die der Host bei Sperre mit status=locked ablehnt (wamo_host._gesperrt); ihr Erfolg beweist "entsperrt".
+SPERR_WERKZEUGE = frozenset({
+    "fenster_fokussieren", "tastatur_tippen", "tasten_druecken", "maus_scrollen", "bildschirm_ansehen",
+    "auf_bildschirm_klicken",
+})
+SPERR_PROBE = "sperre_pruefen"  # nur für den Kern, nie in LLM_TOOLS
+
+
+def _als_dict(result: object) -> dict | None:
+    try:
+        data = json.loads(result) if isinstance(result, str) else result
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def sperre_aus_ergebnis(name: str, result: object) -> bool | None:
+    """Was ein Werkzeugergebnis über die Sperre sagt: True gesperrt, False entsperrt, None nichts Belastbares."""
+    data = _als_dict(result)
+    if data is None:
+        return None
+    if data.get("status") == "locked":
+        return True
+    if name == "system_info" and isinstance(data.get("gesperrt"), bool):
+        return data["gesperrt"]
+    if name in SPERR_WERKZEUGE and data.get("status") == "success":
+        return False
+    return None
+
+
+async def pc_sperre_pruefen(client: MCPClient | TunnelHost | None) -> bool | None:
+    """Fragt den Host, ob der Bildschirm gesperrt ist. None, wenn es sich nicht feststellen lässt (Host weg, älterer
+    Host ohne Probe, kaputte Antwort); wirft nie."""
+    if client is None:
+        return None
+    try:
+        data = _als_dict(await call_host_tool(client, SPERR_PROBE, {}))
+    except Exception as e:  # noqa: BLE001 (Probe ist nur eine Anzeige)
+        logger.debug("Sperr-Probe: {}", type(e).__name__)
+        return None
+    gesperrt = data.get("gesperrt") if data else None
+    return gesperrt if isinstance(gesperrt, bool) else None
+
+
+async def pc_freigabe_entscheiden(client: MCPClient | TunnelHost | None, approval_id: object, ja: bool) -> dict:
+    """Entscheidung aus der Oberfläche an den Host (der einzige Weg, eine PC-Aktion freizugeben). Ohne bekannten
+    Schlüssel oder mit unsinniger ID wird der Host gar nicht gefragt. Liefert das Ergebnis des Hosts als dict."""
+    aid = approval_id if isinstance(approval_id, str) else ""
+    schluessel = freigabe_schluessel(client) if client is not None else None
+    if not APPROVAL_ID_RE.fullmatch(aid):
+        return {"status": "error", "summary": "Unbekannte Freigabe."}
+    if not schluessel:
+        return {"status": "error", "summary": "Freigaben sind für diesen PC nicht eingerichtet."}
+    try:
+        text = await call_host_tool(client, "freigabe_entscheiden",
+                                    {"approval_id": aid, "ja": ja is True, "schluessel": schluessel})
+    except PcNichtErreichbar:
+        return dict(PC_NICHT_ERREICHBAR)
+    except Exception as e:  # noqa: BLE001 (Antwort kaputt oder Host weg: klares Ergebnis statt Ausnahme)
+        logger.warning("PC-Freigabe: Host antwortet nicht verwertbar ({})", type(e).__name__)
+        return {"status": "error", "summary": "Der PC hat keine verwertbare Antwort geliefert."}
+    return _als_dict(text) or {"status": "error", "summary": "Der PC hat keine verwertbare Antwort geliefert."}
 
 
 async def call_host_tool(client: MCPClient | TunnelHost, name: str, arguments: dict) -> str:

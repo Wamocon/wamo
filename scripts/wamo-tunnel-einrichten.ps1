@@ -1,20 +1,24 @@
 ﻿# Richtet auf diesem PC den WAMO-Tunnel ein (Betriebsart Büro), nur für den aktuellen Benutzer, ohne Adminrechte.
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1 [-Starten] [-TokenNeu]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1 [-Starten] [-TokenNeu] [-FreigabeNeu]
 #
 # Was das Skript anlegt (Rückweg: scripts\wamo-tunnel-entfernen.ps1 [-Alles]):
 #   %LOCALAPPDATA%\WAMO                 Ordner nur für diesen Benutzer (Vererbung aus, nur eine Regel)
 #   %LOCALAPPDATA%\WAMO\host-token      Bearer-Token des Hosts, 256 Bit, base64url (wird nie angezeigt)
+#   %LOCALAPPDATA%\WAMO\host-freigabe   Freigabe-Schlüssel des Hosts (zweites Geheimnis, nur für Freigaben kritischer
+#                                       PC-Aktionen nach einem Klick in der Oberfläche; wird nie angezeigt)
 #   %USERPROFILE%\.ssh\id_ed25519_wamo_tunnel(.pub)   eigener Schlüssel nur für den Tunnel, ohne Passphrase
 #   %USERPROFILE%\.ssh\known_hosts_wamo_tunnel        Hostschlüssel von Sokrates-2 (Fingerabdruck fest geprüft)
 #   Rechte von scripts und host          Vererbung aus: dieser Benutzer, SYSTEM, Administratoren Vollzugriff, Benutzer
 #                                       nur Lesen (vorher erbten beide "Authentifizierte Benutzer: Ändern" vom Laufwerk)
 #   Geplante Aufgabe "WAMO Tunnel"      bei Anmeldung dieses Benutzers, startet scripts\wamo-tunnel.ps1 versteckt
-#   -TokenNeu startet einen laufenden Überwacher neu (der Host liest das Token nur beim Start)
+#   -TokenNeu erneuert Token und Freigabe-Schlüssel, -FreigabeNeu nur den Freigabe-Schlüssel; beide starten einen
+#   laufenden Überwacher neu (der Host liest beides nur beim Start)
 # Danach auf Sokrates-2 (Schlüssel) und für den Kern (Token) weiter, siehe Ausgabe am Ende.
 param(
   [switch]$Starten,
-  [switch]$TokenNeu
+  [switch]$TokenNeu,
+  [switch]$FreigabeNeu
 )
 
 Set-StrictMode -Version 3
@@ -24,6 +28,7 @@ $Repo = Split-Path -Parent $PSScriptRoot
 $Skript = Join-Path $PSScriptRoot "wamo-tunnel.ps1"
 $Daten = Join-Path $env:LOCALAPPDATA "WAMO"
 $TokenDatei = Join-Path $Daten "host-token"
+$FreigabeDatei = Join-Path $Daten "host-freigabe"
 $SshDir = Join-Path $env:USERPROFILE ".ssh"
 $Schluessel = Join-Path $SshDir "id_ed25519_wamo_tunnel"
 $KnownHosts = Join-Path $SshDir "known_hosts_wamo_tunnel"
@@ -52,20 +57,34 @@ New-Item -ItemType Directory -Force -Path $Daten | Out-Null
 NurIch $Daten $true
 New-Item -ItemType Directory -Force -Path (Join-Path $Daten "logs") | Out-Null
 
-Write-Host "== 2. Host-Token"
-if ($TokenNeu -or -not (Test-Path $TokenDatei)) {
+function NeuesGeheimnis([string]$Datei) {
+  # 256 Bit aus dem Zufallsgenerator des Systems, base64url ohne Auffüllung; der Wert wird nie angezeigt
   $bytes = New-Object byte[] 32
   $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
   $rng.GetBytes($bytes)
   $rng.Dispose()
-  $token = [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
-  [System.IO.File]::WriteAllText($TokenDatei, $token, (New-Object System.Text.ASCIIEncoding))
-  Remove-Variable token, bytes
+  $wert = [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
+  [System.IO.File]::WriteAllText($Datei, $wert, (New-Object System.Text.ASCIIEncoding))
+  Remove-Variable wert, bytes
+}
+
+Write-Host "== 2. Host-Token"
+if ($TokenNeu -or -not (Test-Path $TokenDatei)) {
+  NeuesGeheimnis $TokenDatei
   Write-Host "  neues Token erzeugt (nicht angezeigt). Danach: python scripts\wamo_kern_sokrates2.py token"
 } else {
   Write-Host "  vorhanden, unverändert (neu mit -TokenNeu)"
 }
 NurIch $TokenDatei $false
+
+Write-Host "== 2b. Freigabe-Schlüssel (zweites Geheimnis für Freigaben kritischer PC-Aktionen)"
+if ($TokenNeu -or $FreigabeNeu -or -not (Test-Path $FreigabeDatei)) {
+  NeuesGeheimnis $FreigabeDatei
+  Write-Host "  neuer Freigabe-Schlüssel erzeugt (nicht angezeigt). Danach: python scripts\wamo_kern_sokrates2.py token"
+} else {
+  Write-Host "  vorhanden, unverändert (neu mit -FreigabeNeu)"
+}
+NurIch $FreigabeDatei $false
 
 Write-Host "== 3. SSH-Schlüssel nur für den Tunnel"
 New-Item -ItemType Directory -Force -Path $SshDir | Out-Null
@@ -134,12 +153,12 @@ Register-ScheduledTask -TaskName $Aufgabe -Action $aktion -Trigger $ausloeser -P
   -Description "WAMO: Host und SSH-Rücktunnel zu Sokrates-2 (scripts\wamo-tunnel.ps1). Entfernen: scripts\wamo-tunnel-entfernen.ps1" `
   -Force | Out-Null
 Write-Host "  eingerichtet"
-if ($TokenNeu -and (Get-ScheduledTask -TaskName $Aufgabe).State -eq "Running") {
-  # Der laufende Host liest das Token nur beim Start: über die Stop-Datei sauber beenden und neu starten
+if (($TokenNeu -or $FreigabeNeu) -and (Get-ScheduledTask -TaskName $Aufgabe).State -eq "Running") {
+  # Der laufende Host liest Token und Freigabe-Schlüssel nur beim Start: über die Stop-Datei beenden und neu starten
   New-Item -ItemType File -Force -Path (Join-Path $Daten "tunnel.stop") | Out-Null
   for ($i = 0; $i -lt 30 -and (Get-ScheduledTask -TaskName $Aufgabe).State -eq "Running"; $i++) { Start-Sleep -Seconds 1 }
   $Starten = $true
-  Write-Host "  Überwacher wegen neuem Token beendet; Token jetzt an den Kern: python scripts\wamo_kern_sokrates2.py token --neustart"
+  Write-Host "  Überwacher wegen neuem Geheimnis beendet; jetzt an den Kern: python scripts\wamo_kern_sokrates2.py token --neustart"
 }
 if ($Starten) {
   Start-ScheduledTask -TaskName $Aufgabe
@@ -150,4 +169,4 @@ Write-Host ""
 Write-Host "Weiter:"
 Write-Host "  1. Öffentlichen Schlüssel nach Sokrates-2: scp `"$Schluessel.pub`" sokrates2:wamo-infra/wamo-tunnel.pub"
 Write-Host "     dann: ssh sokrates2 `"sudo bash ~/wamo-infra/wamo-tunnel-einrichten.sh`""
-Write-Host "  2. Token an den Kern (nur über stdin): python scripts\wamo_kern_sokrates2.py token"
+Write-Host "  2. Token und Freigabe-Schlüssel an den Kern (nur über stdin): python scripts\wamo_kern_sokrates2.py token"

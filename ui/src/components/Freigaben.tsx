@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useLayoutEffect, useRef } from "react";
 import { useSelect } from "@/lib/store";
 import type { Auftrag } from "@/lib/nachrichten";
 import { wamo, type Approval } from "@/lib/wamo";
@@ -19,7 +19,8 @@ function fokusWeitergeben() {
 }
 
 /**
- * Freigabe-Karte: immer ganz oben in der Präsenzspalte. Sicherheit: kein Tastenkürzel, Esc lehnt
+ * Freigabe-Karte: immer ganz oben in der Präsenzspalte. Für Entwicklungsaufträge und für kritische PC-Aktionen
+ * (job "pc": PowerShell, Senden in Mail und Messenger, lange Suchanfragen), dann mit Zielanwendung und Frist. Sicherheit: kein Tastenkürzel, Esc lehnt
  * nicht ab, keine Freigabe per Sprache. "Freigeben" und "Ablehnen" sind gleichgewichtig gestaltet,
  * damit nichts zum schnellen Bestätigen verleitet. Texte kommen bereinigt und gekürzt aus
  * lib/nachrichten.ts (keine Steuer- oder Bidi-Zeichen). Der Fokus springt auf die Überschrift (nicht
@@ -27,27 +28,53 @@ function fokusWeitergeben() {
  */
 function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (a: Approval, ja: boolean) => void }) {
   const head = useRef<HTMLHeadingElement>(null);
+  const karte = useRef<HTMLElement>(null);
   const id = `ap-${a.job}-${a.id}`.replace(/[^a-zA-Z0-9_-]/g, "_");
 
   useEffect(() => {
     if (document.activeElement === document.body) head.current?.focus();
   }, []);
 
+  // Verschwindet die Karte ohne Klick (Frist abgelaufen), während der Fokus in ihr liegt: Fokus weitergeben
+  useLayoutEffect(() => {
+    const el = karte.current;
+    return () => {
+      if (el && el.contains(document.activeElement)) fokusNachEntscheidung = true;
+    };
+  }, []);
+
   return (
-    <article className="approval" aria-labelledby={id} data-approval={id}>
+    <article className="approval" aria-labelledby={id} data-approval={id} ref={karte}>
       <p className="sr-only" role="alert">
-        Freigabe nötig: {a.grund}
+        {a.job === "pc" ? "PC-Aktion freigeben" : "Freigabe nötig"}: {a.grund}
+        {a.ziel && `, Ziel: ${a.ziel}`}
       </p>
       <p className="eyebrow">
-        Freigabe nötig{a.projekt && <> · {a.projekt}</>}
+        {a.job === "pc" ? "PC-Aktion freigeben" : "Freigabe nötig"}
+        {a.projekt && <> · {a.projekt}</>}
       </p>
       <h3 id={id} ref={head} tabIndex={-1}>
         {a.grund}
       </h3>
       {a.von && <p className="approval-von">angefordert von {a.von}</p>}
+      {a.ziel && (
+        <p className="approval-ziel">
+          <span className="approval-ziel-label">Ziel (Fenster und Programm):</span> {a.ziel}
+        </p>
+      )}
       <pre className="approval-detail" tabIndex={0} role="region" aria-label="Was genau ausgeführt wird">
         <code>{a.detail}</code>
       </pre>
+      {a.anlass && <p className="approval-anlass">Anlass laut WAMO (nur Hinweis): {a.anlass}</p>}
+      {a.ablauf !== undefined && (
+        <p className="approval-frist">
+          Gilt bis{" "}
+          <time dateTime={new Date(a.ablauf).toISOString()}>
+            {new Date(a.ablauf).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          </time>{" "}
+          Uhr, danach verfällt sie.
+        </p>
+      )}
       <div className="approval-actions">
         <button type="button" className="btn-decide" onClick={() => onDecide(a, true)}>
           Freigeben
@@ -63,6 +90,7 @@ function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (a: Approval, ja
 export const Freigaben = memo(function Freigaben({ onDecide }: { onDecide: Entscheide }) {
   const approvals = useSelect(wamo, (s) => s.approvals);
   useEffect(fokusWeitergeben, [approvals]);
+  useEffect(fokusWeitergeben); // auch wenn die letzte Karte selbst verfiel (nach dem Aufräumen der Karte)
 
   const entscheide = (a: Approval, ja: boolean) => {
     fokusNachEntscheidung = true;

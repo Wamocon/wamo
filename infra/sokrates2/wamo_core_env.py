@@ -32,8 +32,8 @@ MAX_ZEILEN = 200
 
 PFLICHT = ("SONIOX_API_KEY", "ANTHROPIC_API_KEY", "SUPABASE_PUBLISHABLE_KEY", "WAMO_DATABASE_URL")
 ERLAUBT = set(PFLICHT) | {
-    # Geheimnisse
-    "ANTHROPIC_WORKSPACE_ID", "WAMO_PC_HOST_TOKEN", "LITELLM_API_KEY",
+    # Geheimnisse (WAMO_PC_HOST_FREIGABE: zweites Geheimnis für Freigaben kritischer PC-Aktionen)
+    "ANTHROPIC_WORKSPACE_ID", "WAMO_PC_HOST_TOKEN", "WAMO_PC_HOST_FREIGABE", "LITELLM_API_KEY",
     # Bindung des PCs am Tunnel (genau eine user_id)
     "WAMO_PC_HOST_PROFILE",
     # Einstellungen wie in der .env des PCs
@@ -42,6 +42,8 @@ ERLAUBT = set(PFLICHT) | {
     "LEARN_EVERY_USER_TURNS", "SMART_TURN_STOP_SECS", "TURN_INCOMPLETE_SHORT_SECS", "TURN_INCOMPLETE_LONG_SECS",
     "SOFT_INTERRUPT_MAX_WORDS", "SOFT_INTERRUPT_LAG_SECS", "SUMMARY_TRIGGER_TOKENS", "SUMMARY_TARGET_TOKENS",
     "LITELLM_BASE_URL", "WAMO_SUCHE", "WAMO_SEARXNG_URL", "WAMO_LITELLM_EXTRA",
+    # Eine Sitzung je Profil und Höchstalter der Anmeldung (bot.py, auth_gate.py)
+    "WAMO_SITZUNG_EINZELN", "WAMO_ANMELDUNG_MAX_STUNDEN",
 }
 ERLAUBT_PRAEFIX = ("WAMO_LLM_",)  # Anbieter-Fabrik (Phase P4)
 SCHLUESSEL_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")

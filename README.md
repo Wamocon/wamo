@@ -14,7 +14,7 @@ gemeinsamem Gedächtnis.
 | `infra/sokrates2/` | Einrichtung von Supabase-Stack, TLS (eigene CA, Caddy), Firewall und Benutzer `wamo` (Claude Code, ECC, REA, gh, Vercel, Supabase-CLI) | Sokrates-2 |
 | `scripts/` | Start der Desktop-App, Datenbankzugang, Nutzerverwaltung, Migrationen | PC |
 
-## Stand (19.10.2026)
+## Stand (20.10.2026)
 
 ### Fertig und geprüft
 
@@ -28,7 +28,10 @@ gemeinsamem Gedächtnis.
 - Gedächtnis je Profil (persönlich) plus gemeinsames Firmengedächtnis mit Freigabe durch Admins.
 - Werkzeugkarte: Entwicklungsaufträge wählen je Auftragsart passende ECC-Skills, Agenten und REA-Werkzeuge.
 - Oberfläche im WMC-Design (hell und dunkel), Desktop-App umbenannt und gehärtet.
-- Tests: voice-core 206 bestanden (inklusive TLS-Handshakes und TLS gegen den echten Pooler), host 23 bestanden; UI: Lint, Typen und Build grün.
+- Tests (20.10.2026): voice-core 563 bestanden (12 übersprungen, inklusive TLS-Handshakes und Eval-Testsatz), host 93
+  bestanden (inklusive Echttest der Bildschirmsperre in einer interaktiven Sitzung); UI: 16 Unit-Tests (`npm test`,
+  Node lädt TypeScript selbst), Lint, Typen und Build grün; Desktop: 13 Tests (`npm test`, inklusive echtem
+  Vollbild-Wächter, der mit seinem Elternprozess endet).
 - Sokrates-2: Benutzer `wamo` mit Claude Code, Node 22, ECC-Plugin, REA-Server, gh, Vercel- und Supabase-CLI.
 
 - Gesprächstest Ende zu Ende (Browser ohne Bildschirm, Testfrage als Mikrofon): Anmeldung mit zweitem Faktor,
@@ -43,8 +46,16 @@ gemeinsamem Gedächtnis.
   `system_info` über den Tunnel), Tunnel weg: WAMO sagt „PC nicht erreichbar“ und spricht weiter, danach wieder verbunden.
   Erster Ton nach Sprechende (je 20 Fragen): Büro p50 1,32 s, p95 2,00 s; Unterwegs p50 1,16 s, p95 2,62 s.
   Einzelheiten: `infra/sokrates2/README.md`, Abschnitt 10.
+- Übernahmen und Freigaben (20.10.2026, Einzelheiten im Abschnitt „Sitzungen, Anmeldung und Freigaben“):
+  weiches Ausblenden bei Unterbrechung wirkt jetzt (vorher endeten Unterbrechungen hart), gesperrter PC wird erkannt
+  und klar gemeldet, eine Sitzung je Profil, Stimmen-Rand blendet sich bei Vollbild aus, Freigabeweg für kritische
+  PC-Aktionen per Karte in der Oberfläche, Höchstalter der Anmeldung und „Angemeldet bleiben“.
 
 ### Offen
+
+- Ausrollen der Übernahmen und Freigaben im Büro (Kern, PC-Tunnel, GoTrue-Sitzungsgrenzen): Die Skripte sind
+  vorbereitet, aber noch nicht angewendet. Bis dahin gibt es im Büro keinen Freigabeweg (fehlender Freigabe-Schlüssel:
+  nichts wird freigegeben), unterwegs wirkt alles nach dem nächsten Start der Desktop-App.
 
 - Soniox: Der Schlüssel gehört zu einem US-Projekt, die Spracherkennung läuft deshalb vorerst über den US-Endpunkt.
   Für EU-Datenhaltung EU-Schlüssel anlegen und `SONIOX_STT_URL` und `SONIOX_TTS_URL` auf `*.eu.soniox.com` stellen.
@@ -90,7 +101,7 @@ Die Statusleiste zeigt Betriebsart und Kern, der PC-Host den Zielrechner. Einric
 Adminrechte, Rückweg `scripts\wamo-tunnel-entfernen.ps1`):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1   # Token, Schlüssel, known_hosts, Aufgabe
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1   # Token, Freigabe-Schlüssel, SSH-Schlüssel, known_hosts, Aufgabe
 python scripts\wamo_kern_sokrates2.py verteilen                                         # Schlüssel und Skripte nach Sokrates-2
 # Server einrichten: infra/sokrates2/README.md, Abschnitt 10
 python scripts\wamo_kern_sokrates2.py alles --email vorname.nachname@wamocon.com         # Werte nur über stdin
@@ -100,6 +111,48 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einricht
 Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo-tunnel.ps1`: Host und Tunnel laufen damit
 unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
 sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
+
+### Sitzungen, Anmeldung und Freigaben
+
+- **Eine Sitzung je Profil** (`voice-core/sitzungen.py`, `WAMO_SITZUNG_EINZELN`, Standard an): Eine neue Sitzung
+  desselben Profils löst die laufende ab. Die alte verliert sofort die PC-Sperre (danach lehnt sie PC-Werkzeuge,
+  Freigaben und erneutes Einschalten ab), ihre Oberfläche zeigt „Sitzung beendet: Eine neue Sitzung dieses Profils hat
+  übernommen.“, dann wird sie getrennt. Andere Profile bleiben unberührt, der Büro-Kern bedient mehrere gleichzeitig.
+- **Gesperrter PC**: Der Host prüft vor Fensterwechsel, Tippen, Tasten, Scrollen, Klicken, Bildschirmfoto und dem
+  Öffnen von Programmen, Webseiten und Ordnern, ob der Bildschirm gesperrt ist (`OpenInputDesktop`, Desktop „Default“),
+  und meldet dann `status: "locked"` mit Audit-Eintrag. Auch Lesen (`powershell_lesen`, `fenster_auflisten`) ruht
+  dann, denn am gesperrten PC sieht niemand, wer ins Mikrofon spricht; nur `system_info` meldet weiter den Stand.
+  Die Statusleiste zeigt „Bildschirm gesperrt“, WAMO sagt, dass nur die Person selbst entsperren kann. Quelle sind die
+  Werkzeugergebnisse und die Tunnel-Probe (`sperre_pruefen`, nur für den Kern); unterwegs fragt der Kern bei
+  gesperrtem Bildschirm alle 10 s nach.
+- **Freigaben kritischer PC-Aktionen**: Verändernde PowerShell-Befehle, Senden in Mail- und Messenger-Fenstern (Enter,
+  Strg+Enter, Alt+S, Leertaste, Zeilenumbruch beim Tippen), Klicks in diesen Fenstern und sehr lange Suchanfragen führt
+  der Host nicht aus, sondern legt eine Anfrage an (Befehle und Webseiten 5 Minuten gültig, Senden, Tasten und Klicks
+  2 Minuten; höchstens 5 offen, gleiche Anfragen nur einmal). Die Oberfläche zeigt sie als Karte mit Zielanwendung und
+  genauem Text (⏎ markiert jedes Enter), den Anlass des Modells getrennt und nur als Hinweis; was die Karte nicht ganz
+  zeigen kann, wird gar nicht erst angefragt. Solange eine Anfrage offen ist oder eine freigegebene Aktion läuft,
+  ruhen am PC alle Eingaben (`status: "wartet"`), und die eigene Oberfläche bedient WAMO nie: Das Modell kann die Karte
+  weder anklicken noch per Tastatur bestätigen. Ausgeführt wird nur ins selbe Fenster mit demselben Titel (Chat,
+  Betreff), sonst gar nicht. Freigeben darf nur ein Admin mit
+  eingeschalteter PC-Steuerung, dessen Sitzung die PC-Sperre hält; der Klick geht über die angemeldete Verbindung an
+  den Kern, der Kern ruft im Host `freigabe_entscheiden` mit einem zweiten Geheimnis neben dem Bearer-Token auf.
+  Das Werkzeug sieht das Sprachmodell nie (auch nicht über den Tunnel), die Aktion läuft genau einmal, jeder Schritt
+  steht in der Tabelle `actions` (pending, approved oder rejected, running, done oder failed). Das Ergebnis bekommt
+  WAMO als Daten. Lokal erzeugt der Kern das Geheimnis je Host-Start, im Büro liegt es in
+  `%LOCALAPPDATA%\WAMO\host-freigabe` und als `WAMO_PC_HOST_FREIGABE` in `/etc/wamo/core.env`.
+- **Höchstalter der Anmeldung** (gemessen ab Passwort und Code, Claim `amr`): Der Kern lehnt Tokens ohne `amr` ab und
+  erzwingt `WAMO_ANMELDUNG_MAX_STUNDEN` (Standard 168), auch für gecachte Tokens; eine laufende Sitzung endet beim
+  Überschreiten, die Oberfläche meldet ab. Die Anmeldemaske hat „Angemeldet bleiben“ (in der Desktop-App
+  vorausgewählt; ohne Haken liegt die Sitzung nur im sessionStorage) und prüft das Alter beim Laden und jede Minute:
+  Desktop 7 Tage, Browser `NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER` (Standard 24 Stunden). Unterschieden wird über
+  `window.wamoDesktop`, nicht über die Adresse. GoTrue begrenzt Sitzungen zusätzlich (Zeitbox 168 Stunden,
+  Inaktivität 72 Stunden; `infra/sokrates2/supabase-wamo-einrichten.sh`, Schritt 3b).
+- **Stimmen-Rand bei Vollbild** (`desktop/vollbild.js`): Ein PowerShell-Wächter fragt alle 1,5 s
+  `SHQueryUserNotificationState` ab; bei Vollbild-Programm, Direct3D-Vollbild und Präsentation (Werte 2, 3, 4) blendet
+  sich der Rand aus, erst nach zwei gleichen Werten. Wert 7 (Store-App) zählt nicht, weil Store-Apps unter Windows 10
+  und 11 auch im Fenster laufen. Der Wächter endet mit der App und startet nach einem Absturz nach 5 s neu.
+- **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
+  spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel).
 
 ## Nutzer und Gedächtnis
 
@@ -120,7 +173,10 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
 
 WAMO startet Aufträge als Claude-Code-Lauf. Die Auftragsart (`planung`, `umsetzung`, `review`, `test`, `sicherheit`,
 `reverse_engineering` und weitere, siehe `voice-core/werkzeugkarte.py`) bestimmt, welche ECC-Skills und Agenten und
-welche REA-Werkzeuge der Lauf zuerst nutzt. ECC-Hooks bleiben aktiv. Freigabepflichtig sind unter anderem `git push`,
+welche REA-Werkzeuge der Lauf zuerst nutzt. ECC-Skills und -Agenten stehen in der Sandbox zur Verfügung, ECC-Hooks sind
+dort bewusst aus: Mehrere davon führen Programme aus dem Projektordner aus (`node_modules/.bin`), das wäre ein Weg für
+gepflanzten Code. Die Qualitätsprüfung ruft der Auftrag stattdessen ausdrücklich zum Abschluss auf (`verification-loop`,
+`/quality-gate`, siehe `ABSCHLUSS_SKILLS` in der Werkzeugkarte), und der Wächter prüft jeden Schritt. Freigabepflichtig sind unter anderem `git push`,
 Merges, Produktions-Deployments, Schreibzugriffe auf Produktionsdatenbanken und verändernde REA-Werkzeuge
 (Frida, ADB, Debugger). Der Wächter (`voice-core/dev_guard.py`) entscheidet vor jedem Schritt; eine Freigabe gilt
 genau einmal und wird erst verbraucht, wenn der Schritt wirklich lief.
@@ -182,8 +238,9 @@ Jeder Baustein lässt sich zwischen Claude und den eigenen Modellen auf den Spar
   Anthropic-Suche trägt diese Kennzeichnung. Fehlt bei `searxng` die Adresse, schlägt die Suche fehl, statt still die
   Cloud-Suche zu nehmen. Kamen in einem Zug Web-, Bildschirm- oder PC-Inhalte vor, speichert `merken` Persönliches nur
   noch, wenn die Person es ausdrücklich sagt („merk dir“).
-- **Abnahme:** `voice-core/eval/` enthält 50 Gesprächszüge (30 mit erwartetem Werkzeugaufruf, 5 Muss-Fälle zu
-  Injektion, PC aus, Nachricht und Sätzen an andere) mit simulierten Werkzeugen, ohne Datenbank und ohne PC. Ein
+- **Abnahme:** `voice-core/eval/` enthält 51 Gesprächszüge (31 mit erwartetem Werkzeugaufruf, 6 Muss-Fälle zu
+  Injektion, PC aus, Bildschirm gesperrt, Nachricht und Sätzen an andere) mit simulierten Werkzeugen, ohne Datenbank
+  und ohne PC. Läufe vor dem 20.10.2026 gelten im Bericht als veraltet (anderer Testsatz). Ein
   Modell taugt fürs Gespräch nur bei mindestens 95 % richtigen Werkzeugaufrufen, mindestens 98 % korrekten
   Satzende-Markern, erstem Token p95 höchstens 0,6 s, ohne Verstoß in den Muss-Fällen und ohne Infrastrukturfehler,
   und das in drei Läufen hintereinander (pass^3, p95 über alle drei). Ergebnisse unter `voice-core/eval/ergebnisse/`
@@ -196,7 +253,13 @@ uv run python eval/abnahme.py --anbieter claude                                 
 uv run python eval/abnahme.py --liste                                               # Modelle des Gateways
 uv run python eval/abnahme.py --anbieter litellm --modell <alias> --wiederholungen 3   # ein Modell im Haus
 uv run python eval/abnahme.py --anbieter litellm --alle --wiederholungen 3             # alle Chat-Modelle
+uv run python eval/bausteine.py --anbieter litellm --modell <alias>                    # Lernen, Zusammenfassung, Bild
 ```
+
+Die Bausteine Lernen, Zusammenfassung und Bildschirm prüft `voice-core/eval/bausteine.py` nach Qualität, nicht nach
+Latenz: gelernte Einträge (Fakten, keine Passwörter, keine Daten über andere, keine Anweisungen aus Mails, nichts
+doppelt), eine Zusammenfassung mit Namen, Zahlen und Terminen und ein erzeugtes Bildschirmfoto mit Text und einem
+Knopf an bekannter Stelle. Ergebnisse unter `voice-core/eval/ergebnisse/bausteine/`.
 
 Nach Änderungen an den PC-Werkzeugen des Hosts den Schnappschuss erneuern:
 `host\.venv\Scripts\python.exe voice-core\eval\pc_werkzeuge_holen.py`.
@@ -205,11 +268,15 @@ Nach Änderungen an den PC-Werkzeugen des Hosts den Schnappschuss erneuern:
 
 - Zugang nur mit Konto im WAMO-Supabase, zweitem Faktor und aktivem Profil; jede Unsicherheit führt zur Ablehnung.
 - Der Voice-Core arbeitet mit der Datenbankrolle `wamo_core` (nur WAMO-Schemas), nie mit dem Service-Schlüssel.
-- PC-Aktionen: `read` sofort, `change` protokolliert, `critical` nur nach Freigabe, `blocked` nie.
+- PC-Aktionen: `read` sofort, `change` protokolliert, `critical` nur nach Freigabe per Karte in der Oberfläche (Admin,
+  PC-Steuerung an, PC-Sperre gehalten, zweites Geheimnis im Host, befristet, genau einmal), `blocked` nie. Solange
+  eine Freigabe offen ist, ruhen alle Eingaben; die eigene Oberfläche bedient WAMO nie. Bei gesperrtem Bildschirm keine
+  Eingaben, Klicks, Fotos, kein Öffnen und kein Lesen.
 - Inhalte aus Web, Dateien und Gedächtnis sind Daten, nie Anweisungen an WAMO.
 - Geheimnisse nur in `.env`, `ui/.env.local`, `/etc/wamo/geheim.env` (Aufträge) und `/etc/wamo/core.env` (Kern auf
-  Sokrates-2, nur über `wamo-core-env` per stdin), nie im Repository. Das Host-Token liegt auf dem PC in
-  `%LOCALAPPDATA%\WAMO\host-token` (nur für den Benutzer lesbar, für die PC-Werkzeuge selbst gesperrt).
+  Sokrates-2, nur über `wamo-core-env` per stdin), nie im Repository. Host-Token und Freigabe-Schlüssel liegen auf dem
+  PC in `%LOCALAPPDATA%\WAMO\host-token` und `host-freigabe` (nur für den Benutzer lesbar, für die PC-Werkzeuge selbst
+  gesperrt); der Host entfernt den Freigabe-Schlüssel aus seiner Umgebung, Kindprozesse erben ihn nicht.
 - Anmeldung und Datenbank im LAN nur verschlüsselt und geprüft gegen die eigene CA (`WAMO_CA_FILE`); die WAMO-Ports
   auf Sokrates-2 nehmen nur Verbindungen aus Loopback und dem Büro-LAN an (HTTP 55321 zusätzlich aus dem Caddy-Netz).
 

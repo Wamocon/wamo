@@ -1,6 +1,7 @@
 ﻿# WAMO-Tunnel (Betriebsart Büro): hält auf diesem PC den Host und den SSH-Rücktunnel zu Sokrates-2 am Laufen.
 #
-#   Host    host\wamo_host.py --http auf 127.0.0.1:8765, Bearer-Token aus %LOCALAPPDATA%\WAMO\host-token
+#   Host    host\wamo_host.py --http auf 127.0.0.1:8765, Bearer-Token aus %LOCALAPPDATA%\WAMO\host-token,
+#           Freigabe-Schlüssel (zweites Geheimnis für PC-Freigaben) aus %LOCALAPPDATA%\WAMO\host-freigabe, falls da
 #   Tunnel  ssh -N -R /run/wamo-tunnel/pc.sock:127.0.0.1:8765 wamo-tunnel@192.168.178.136
 #
 # Gestartet von der geplanten Aufgabe "WAMO Tunnel" bei der Anmeldung (scripts\wamo-tunnel-einrichten.ps1), nur für
@@ -31,6 +32,7 @@ $HostDir = Join-Path $Repo "host"
 $HostPython = Join-Path $HostDir ".venv\Scripts\python.exe"
 $Daten = Join-Path $env:LOCALAPPDATA "WAMO"
 $TokenDatei = Join-Path $Daten "host-token"
+$FreigabeDatei = Join-Path $Daten "host-freigabe"
 $StopDatei = Join-Path $Daten "tunnel.stop"
 $LogDir = Join-Path $Daten "logs"
 $Log = Join-Path $LogDir "tunnel.log"
@@ -113,6 +115,16 @@ if (-not (Pruefe-NurBenutzer $TokenDatei) -or -not (Pruefe-NurBenutzer $Daten)) 
   Schreibe "Abbruch: $Daten oder das Token ist für andere Konten lesbar (wamo-tunnel-einrichten.ps1 erneut ausführen)"
   exit 1
 }
+# Freigabe-Schlüssel: optional. Fehlt er oder ist er für andere lesbar, startet der Host ohne ihn; dann lässt sich
+# keine kritische PC-Aktion freigeben (alles andere läuft wie bisher).
+$FreigabeFuerHost = ""
+if (-not (Test-Path $FreigabeDatei)) {
+  Schreibe "Hinweis: $FreigabeDatei fehlt, PC-Freigaben bleiben aus (wamo-tunnel-einrichten.ps1 legt ihn an)"
+} elseif (-not (Pruefe-NurBenutzer $FreigabeDatei)) {
+  Schreibe "Warnung: $FreigabeDatei ist für andere Konten lesbar, PC-Freigaben bleiben aus (wamo-tunnel-einrichten.ps1)"
+} else {
+  $FreigabeFuerHost = $FreigabeDatei
+}
 
 function Fremder-Schreiber([string]$Pfad) {
   # SID eines Kontos außer diesem Benutzer, SYSTEM und Administratoren, das hier schreiben darf (oder $null).
@@ -194,6 +206,7 @@ function Starte-Host {
     ProgramData = $env:ProgramData; PUBLIC = $env:PUBLIC; SystemDrive = $env:SystemDrive; ComSpec = $env:ComSpec
     PSModulePath = $env:PSModulePath; PYTHONUTF8 = "1"; PYTHONIOENCODING = "utf-8"
     WAMO_HOST_TOKEN_FILE = $TokenDatei; WAMO_HOST_PORT = "$HostPort"; WAMO_HOST_BIND = "127.0.0.1"; WAMO_HOST_LOG = $HostLog
+    WAMO_HOST_FREIGABE_DATEI = $FreigabeFuerHost  # leer: nicht gesetzt (Starte übernimmt nur Werte)
   }
   $kind = Starte $HostPython @("wamo_host.py", "--http") $HostDir $umgebung
   # warten, bis der eigene Host lauscht (höchstens 30 s)

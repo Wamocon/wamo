@@ -4,7 +4,8 @@
 #
 # Der Überwacher wird nur über seine Stop-Datei beendet; er beendet dann selbst seinen Host und seinen ssh (beide in
 # seinen Job-Objekten). Andere Prozesse fasst dieses Skript nicht an.
-# -Alles löscht zusätzlich %LOCALAPPDATA%\WAMO (Token, Logs), den Tunnel-Schlüssel und known_hosts_wamo_tunnel.
+# -Alles löscht zusätzlich %LOCALAPPDATA%\WAMO (Token, Freigabe-Schlüssel, Logs), den Tunnel-Schlüssel und
+# known_hosts_wamo_tunnel.
 param([switch]$Alles)
 
 Set-StrictMode -Version 3
@@ -50,8 +51,8 @@ if ($Alles) {
   foreach ($d in @("$ssh\id_ed25519_wamo_tunnel", "$ssh\id_ed25519_wamo_tunnel.pub", "$ssh\known_hosts_wamo_tunnel")) {
     if (Test-Path $d) { Remove-Item -Force $d; Write-Host "gelöscht: $d" }
   }
-  if (Test-Path $Daten) { Remove-Item -Recurse -Force $Daten; Write-Host "gelöscht: $Daten (Token, Logs)" }
+  if (Test-Path $Daten) { Remove-Item -Recurse -Force $Daten; Write-Host "gelöscht: $Daten (Token, Freigabe-Schlüssel, Logs)" }
   Write-Host ""
   Write-Host "Auf Sokrates-2 außerdem: ssh sokrates2 `"sudo bash ~/wamo-infra/wamo-tunnel-rueckweg.sh`""
-  Write-Host "und das Token im Kern löschen: ssh sokrates2 `"sudo /usr/local/sbin/wamo-core-env loeschen WAMO_PC_HOST_TOKEN`""
+  Write-Host "und Token und Freigabe-Schlüssel im Kern löschen: ssh sokrates2 `"sudo /usr/local/sbin/wamo-core-env loeschen WAMO_PC_HOST_TOKEN WAMO_PC_HOST_FREIGABE`""
 }

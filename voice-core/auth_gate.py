@@ -2,7 +2,7 @@
 Faktor (aal2) und aktivem WAMO-Profil.
 
 Prüfung je HTTP-Anfrage an den Pipecat-Runner (/start, /api/offer, /sessions/..., ICE-Updates):
-  1. Bearer-Token: Signatur, Ablauf, Aussteller (iss), Zielgruppe (aud), aal2.
+  1. Bearer-Token: Signatur, Ablauf, Aussteller (iss), Zielgruppe (aud), aal2 und Höchstalter der Anmeldung.
      Hauptweg ES256/RS256 lokal über die öffentlichen Schlüssel des Stacks (JWKS, gecacht).
      Rückfall HS256: GoTrue prüft selbst (GET /auth/v1/user mit SUPABASE_PUBLISHABLE_KEY).
      Beide Abrufe laufen über HTTPS und vertrauen zusätzlich der WAMO-CA aus WAMO_CA_FILE (wamo_tls.py).
@@ -18,6 +18,13 @@ Prüfung je HTTP-Anfrage an den Pipecat-Runner (/start, /api/offer, /sessions/..
   SUPABASE_URL muss https:// sein; http:// nur über Loopback (Voice-Core auf demselben Rechner wie der
   Stack). Sonst ist die Prüfung nicht eingerichtet und jede Anfrage wird abgelehnt.
   3. Geprüfte Identität an den Bot weitergeben (siehe unten).
+
+Höchstalter der Anmeldung: Gemessen ab Passwort und Code, also am frühesten Zeitstempel im Claim amr (GoTrue behält ihn
+beim Erneuern des Tokens bei), nicht am letzten Erneuern. Tokens ohne amr werden abgelehnt. Grenze
+WAMO_ANMELDUNG_MAX_STUNDEN (Standard 168, also 7 Tage; erlaubt mehr als 0 und höchstens 720, sonst gilt der Standard). Sie gilt auch für
+gecachte Tokens (der Zeitpunkt liegt mit im Cache). Abgelehnt wird mit 401 und code "anmeldung_zu_alt"; die Oberfläche
+meldet dann ab. Eine laufende Sitzung beendet bot.SessionGuard beim Überschreiten (Identity.anmeldung). Die Oberfläche
+meldet im Browser früher ab (NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER, ui/src/lib/anmeldung.ts).
 CORS-Preflight (OPTIONS) bleibt offen, er trägt keine Daten. WebSockets lehnt die Middleware ab:
 WAMO nutzt nur WebRTC.
 
@@ -42,11 +49,12 @@ import asyncio
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import ssl
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -64,23 +72,71 @@ LEEWAY_SECS = 30  # Uhren von Laptop und Server dürfen etwas auseinanderlaufen
 MAX_BODY_BYTES = 256 * 1024  # SDP-Offers sind wenige Kilobyte groß
 IDENTITY_KEY = "wamo"
 MAX_NAME_CHARS = 60
+ANMELDUNG_MAX_STUNDEN = 168.0  # Standard: 7 Tage ab Passwort und Code
+ANMELDUNG_MAX_STUNDEN_GRENZE = 720.0  # mehr als 30 Tage lässt sich nicht einstellen
+CODE_ZU_ALT = "anmeldung_zu_alt"
+
+
+def anmeldung_max_secs() -> float:
+    """WAMO_ANMELDUNG_MAX_STUNDEN in Sekunden. Leer, unlesbar, nicht positiv oder über 720: Standard 168 Stunden."""
+    roh = (os.getenv("WAMO_ANMELDUNG_MAX_STUNDEN") or "").strip()
+    if not roh:
+        return ANMELDUNG_MAX_STUNDEN * 3600
+    try:
+        stunden = float(roh)
+    except ValueError:
+        stunden = math.nan
+    if not (math.isfinite(stunden) and 0 < stunden <= ANMELDUNG_MAX_STUNDEN_GRENZE):
+        logger.error("WAMO_ANMELDUNG_MAX_STUNDEN {!r} ungültig (0 bis {} Stunden), es gilt {}", roh[:20],
+                     ANMELDUNG_MAX_STUNDEN_GRENZE, ANMELDUNG_MAX_STUNDEN)
+        return ANMELDUNG_MAX_STUNDEN * 3600
+    return stunden * 3600
+
+
+def anmeldezeit(claims: dict) -> float | None:
+    """Beginn der Anmeldung: frühester Zeitstempel in amr (Passwort, danach Code). None, wenn keiner gültig ist."""
+    eintraege = claims.get("amr")
+    if not isinstance(eintraege, list):
+        return None
+    stempel = [e.get("timestamp") for e in eintraege if isinstance(e, dict)]
+    gueltig = [float(t) for t in stempel
+               if isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t) and t > 0]
+    return min(gueltig) if gueltig else None
+
+
+def stunden_text(secs: float) -> str:
+    """Dauer in Stunden für Meldungen: "1 Stunde", "1,5 Stunden", "168 Stunden"."""
+    stunden = secs / 3600
+    return f"{stunden:g} Stunden".replace(".", ",") if stunden != 1 else "1 Stunde"
+
+
+def _zu_alt(anmeldung: float, jetzt: float, max_secs: float) -> str | None:
+    if jetzt - anmeldung <= max_secs:
+        return None
+    return f"Anmeldung älter als {stunden_text(max_secs)}, bitte neu anmelden"
 
 
 @dataclass(frozen=True)
 class Identity:
-    """Geprüfte Identität, wie sie der Bot in runner_args.body["wamo"] sieht."""
+    """Geprüfte Identität, wie sie der Bot in runner_args.body["wamo"] sieht. anmeldung: Beginn der Anmeldung
+    (Unix-Zeit aus amr), für das Höchstalter in bot.SessionGuard; zählt nicht beim Vergleich."""
 
     user_id: str
     name: str
     rolle: str
     anrede: str
+    anmeldung: float | None = field(default=None, compare=False)
 
     @property
     def is_admin(self) -> bool:
         return self.rolle == "admin"
 
-    def to_body(self) -> dict[str, str]:
-        return {"user_id": self.user_id, "name": self.name, "rolle": self.rolle, "anrede": self.anrede}
+    def to_body(self) -> dict[str, str | float]:
+        body: dict[str, str | float] = {"user_id": self.user_id, "name": self.name, "rolle": self.rolle,
+                                        "anrede": self.anrede}
+        if self.anmeldung is not None:
+            body["anmeldung"] = self.anmeldung
+        return body
 
 
 def identity_from_body(body: object) -> Identity | None:
@@ -92,10 +148,14 @@ def identity_from_body(body: object) -> Identity | None:
         return None
     user_id = normalize_uuid(raw.get("user_id"))
     name = " ".join(str(raw.get("name") or "").split())[:MAX_NAME_CHARS]
-    rolle, anrede = raw.get("rolle"), raw.get("anrede")
+    rolle, anrede, anmeldung = raw.get("rolle"), raw.get("anrede"), raw.get("anmeldung")
     if user_id is None or not name or rolle not in ROLLEN or anrede not in ANREDEN:
         return None
-    return Identity(user_id=user_id, name=name, rolle=rolle, anrede=anrede)
+    # Den Anmeldezeitpunkt setzt die Zugangskontrolle immer; ohne ihn ist die Identität nicht geprüft
+    if isinstance(anmeldung, bool) or not isinstance(anmeldung, (int, float)) or not math.isfinite(anmeldung) \
+            or anmeldung <= 0:
+        return None
+    return Identity(user_id=user_id, name=name, rolle=rolle, anrede=anrede, anmeldung=float(anmeldung))
 
 
 @dataclass(frozen=True)
@@ -103,6 +163,7 @@ class Decision:
     identity: Identity | None
     status: int = 200
     reason: str = ""
+    code: str | None = None  # maschinenlesbar für die Oberfläche, z. B. anmeldung_zu_alt
 
 
 class ProfileLookup(Protocol):
@@ -111,11 +172,14 @@ class ProfileLookup(Protocol):
 
 @dataclass(frozen=True)
 class TokenCheck:
-    """Ergebnis der Token-Prüfung: user_id oder Grund plus HTTP-Status (401 oder 403)."""
+    """Ergebnis der Token-Prüfung: user_id oder Grund plus HTTP-Status (401 oder 403). anmeldung und code zählen nicht
+    beim Vergleich (anmeldung: Beginn der Anmeldung aus amr; code: z. B. anmeldung_zu_alt)."""
 
     user_id: str | None
     reason: str | None = None
     status: int = 200
+    anmeldung: float | None = field(default=None, compare=False)
+    code: str | None = field(default=None, compare=False)
 
 
 def _loopback(host: str) -> bool:
@@ -146,6 +210,7 @@ class TokenVerifier:
     SUPABASE_URL muss https sein (http nur über Loopback), sonst ist der Prüfer nicht eingerichtet.
     ssl_context: Vertrauensbasis für JWKS und GoTrue. Ohne Angabe gilt wamo_tls.https_context()
     (öffentliche Zertifikate plus WAMO-CA aus WAMO_CA_FILE); ein unlesbarer WAMO_CA_FILE wirft CaFileError.
+    max_anmeldung_secs: Höchstalter der Anmeldung (Standard aus WAMO_ANMELDUNG_MAX_STUNDEN); uhr: nur für Tests.
     """
 
     def __init__(
@@ -157,8 +222,12 @@ class TokenVerifier:
         jwks_client: Any = None,
         transport: httpx.AsyncBaseTransport | None = None,
         ssl_context: ssl.SSLContext | None = None,
+        max_anmeldung_secs: float | None = None,
+        uhr: Callable[[], float] = time.time,
     ):
         self.problem = supabase_url_problem(supabase_url)
+        self.max_anmeldung_secs = max_anmeldung_secs if max_anmeldung_secs is not None else anmeldung_max_secs()
+        self._uhr = uhr
         self.configured = self.problem is None
         if supabase_url and not self.configured:
             logger.error("Zugangskontrolle: {}; alle Anfragen werden abgelehnt", self.problem)
@@ -173,7 +242,7 @@ class TokenVerifier:
                 f"{self.auth_url}/.well-known/jwks.json", cache_keys=True, lifespan=600, ssl_context=self.ssl_context
             )
         self._transport = transport  # nur für Tests
-        self._ok_until: dict[str, tuple[float, str]] = {}
+        self._ok_until: dict[str, tuple[float, str, float]] = {}  # Token-Hash -> (gültig bis, user_id, Anmeldung)
 
     async def check(self, token: str) -> TokenCheck:
         if not self.configured:
@@ -181,10 +250,13 @@ class TokenVerifier:
         if not token:
             return TokenCheck(None, "nicht angemeldet", 401)
         key = hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
-        now = time.time()
+        now = self._uhr()
         cached = self._ok_until.get(key)
         if cached and cached[0] > now:
-            return TokenCheck(cached[1])
+            # Auch aus dem Cache: das Höchstalter der Anmeldung gilt mit der aktuellen Zeit
+            if grund := _zu_alt(cached[2], now, self.max_anmeldung_secs):
+                return TokenCheck(None, grund, 401, code=CODE_ZU_ALT)
+            return TokenCheck(cached[1], anmeldung=cached[2])
         try:
             alg = jwt.get_unverified_header(token).get("alg")
             if alg in ("ES256", "RS256"):
@@ -216,9 +288,14 @@ class TokenVerifier:
             return TokenCheck(None, "Token ohne gültiges Konto", 401)
         if claims.get("aal") != "aal2":
             return TokenCheck(None, "zweiter Faktor fehlt", 403)
+        anmeldung = anmeldezeit(claims)
+        if anmeldung is None:
+            return TokenCheck(None, "Anmeldezeitpunkt fehlt im Token (amr)", 401)
+        if grund := _zu_alt(anmeldung, now, self.max_anmeldung_secs):
+            return TokenCheck(None, grund, 401, code=CODE_ZU_ALT)
         self._ok_until = {k: v for k, v in self._ok_until.items() if v[0] > now}
-        self._ok_until[key] = (min(float(claims["exp"]), now + TOKEN_CACHE_SECS), user_id)
-        return TokenCheck(user_id)
+        self._ok_until[key] = (min(float(claims["exp"]), now + TOKEN_CACHE_SECS), user_id, anmeldung)
+        return TokenCheck(user_id, anmeldung=anmeldung)
 
     async def _check_remote(self, token: str) -> dict:
         verify: ssl.SSLContext | bool = self.ssl_context if self.ssl_context is not None else True
@@ -272,7 +349,7 @@ class AccessGate:
         user_id = result.user_id
         if user_id is None:
             return Decision(None, result.status if result.status in (401, 403, 503) else 401,
-                            result.reason or "nicht angemeldet")
+                            result.reason or "nicht angemeldet", code=result.code)
         if self.profiles is None:
             return Decision(None, 503, "Profilprüfung nicht möglich: Datenbank ist nicht eingerichtet")
         try:
@@ -291,6 +368,7 @@ class AccessGate:
             name=" ".join(profile.name.split())[:MAX_NAME_CHARS] or "Gast",
             rolle=profile.rolle if profile.rolle in ROLLEN else "mitglied",
             anrede=profile.anrede if profile.anrede in ANREDEN else "du",
+            anmeldung=result.anmeldung,
         )
         return Decision(identity)
 
@@ -403,7 +481,7 @@ class AccessMiddleware:
         decision = await self.gate.authorize(token)
         if decision.identity is None:
             logger.warning("Zugang abgelehnt: {} {} ({})", scope["method"], scope["path"], decision.reason)
-            await _reject(send, decision.status, decision.reason)
+            await _reject(send, decision.status, decision.reason, decision.code)
             return
 
         target = _starts_bot(scope["path"]) if scope["method"] == "POST" else None
@@ -424,8 +502,11 @@ class AccessMiddleware:
         await self.app(scope, receive, send)
 
 
-async def _reject(send, status: int, reason: str) -> None:
-    body = json.dumps({"error": "nicht berechtigt", "detail": reason}, ensure_ascii=False).encode("utf-8")
+async def _reject(send, status: int, reason: str, code: str | None = None) -> None:
+    daten = {"error": "nicht berechtigt", "detail": reason}
+    if code:
+        daten["code"] = code
+    body = json.dumps(daten, ensure_ascii=False).encode("utf-8")
     headers = [(b"content-type", b"application/json; charset=utf-8")]
     if status == 401:
         headers.append((b"www-authenticate", b"Bearer"))

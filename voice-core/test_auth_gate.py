@@ -21,6 +21,8 @@ from auth_gate import (
     Identity,
     TokenCheck,
     TokenVerifier,
+    anmeldezeit,
+    anmeldung_max_secs,
     identity_from_body,
     inject_identity,
 )
@@ -76,6 +78,8 @@ def token(key=KEY, alg="ES256", **override):
         "role": "authenticated",
         "iat": now,
         "exp": now + 3600,
+        # Anmeldung vor zwei Minuten mit Passwort, danach Code (so schreibt GoTrue amr ins Token)
+        "amr": [{"method": "totp", "timestamp": now - 60}, {"method": "password", "timestamp": now - 120}],
     }
     claims.update(override)
     return jwt.encode(claims, key, algorithm=alg, headers={"kid": "test"})
@@ -203,6 +207,83 @@ class TokenTests(unittest.IsolatedAsyncioTestCase):
         await self._nicht_erreichbar(verifier(httpx.MockTransport(weg)), token(key=HS_SECRET, alg="HS256"))
 
 
+STUNDE = 3600
+
+
+class AnmeldungTests(unittest.IsolatedAsyncioTestCase):
+    """Höchstalter der Anmeldung (WAMO_ANMELDUNG_MAX_STUNDEN), gemessen ab Passwort und Code laut amr."""
+
+    async def test_gueltig_mit_anmeldezeitpunkt(self):
+        jetzt = int(time.time())
+        result = await verifier().check(token(amr=[{"method": "password", "timestamp": jetzt - 300},
+                                                   {"method": "totp", "timestamp": jetzt - 200}]))
+        self.assertEqual(result, TokenCheck(USER))
+        self.assertEqual(result.anmeldung, jetzt - 300)  # frühester Zeitstempel: das Passwort
+
+    async def test_ohne_amr_abgelehnt(self):
+        for amr in (None, [], "password", [{"method": "password"}], [{"timestamp": "123"}], [{"timestamp": True}],
+                    [{"timestamp": float("nan")}], [{"timestamp": -5}], ["x"]):
+            with self.subTest(amr=amr):
+                claims = {} if amr is None else {"amr": amr}
+                t = token(**claims) if amr is not None else _ohne_amr()
+                result = await verifier().check(t)
+                self.assertEqual((result.user_id, result.status), (None, 401))
+                self.assertIn("Anmeldezeitpunkt", result.reason)
+
+    async def test_zu_alt_abgelehnt(self):
+        jetzt = int(time.time())
+        alt = token(amr=[{"method": "password", "timestamp": jetzt - 169 * STUNDE},
+                         {"method": "totp", "timestamp": jetzt - 60}])  # Code neu, Passwort zu alt
+        v = TokenVerifier(URL, None, jwks_client=FakeJwks(), max_anmeldung_secs=168 * STUNDE)
+        result = await v.check(alt)
+        self.assertEqual((result.user_id, result.status, result.code), (None, 401, "anmeldung_zu_alt"))
+        self.assertIn("168 Stunden", result.reason)
+        knapp = token(amr=[{"method": "password", "timestamp": jetzt - 167 * STUNDE}])
+        self.assertEqual((await v.check(knapp)).user_id, USER)
+
+    async def test_grenze_gilt_auch_fuer_gecachte_tokens(self):
+        uhr = [time.time()]
+        v = TokenVerifier(URL, None, jwks_client=FakeJwks(), max_anmeldung_secs=2 * STUNDE, uhr=lambda: uhr[0])
+        jetzt = int(uhr[0])
+        t = token(amr=[{"method": "password", "timestamp": jetzt - STUNDE - 3590}])  # 1:59:50 alt
+        self.assertEqual((await v.check(t)).user_id, USER)
+        uhr[0] += 30  # noch im Cache (60 s), aber jetzt älter als zwei Stunden
+        result = await v.check(t)
+        self.assertEqual((result.user_id, result.code), (None, "anmeldung_zu_alt"))
+        self.assertEqual(v._jwks.calls, 1)  # kein neuer Schlüsselabruf: die Grenze kommt aus dem Cache
+
+    def test_grenze_aus_der_umgebung(self):
+        for wert, stunden in ((None, 168), ("", 168), ("24", 24), (" 72 ", 72), ("1.5", 1.5), ("0", 168), ("-3", 168),
+                              ("abc", 168), ("100000", 168), ("nan", 168), ("inf", 168)):
+            with self.subTest(wert=wert):
+                env = {} if wert is None else {"WAMO_ANMELDUNG_MAX_STUNDEN": wert}
+                with mock.patch.dict("os.environ", env, clear=False):
+                    if wert is None:
+                        import os
+                        os.environ.pop("WAMO_ANMELDUNG_MAX_STUNDEN", None)
+                    self.assertEqual(anmeldung_max_secs(), stunden * STUNDE)
+
+    def test_anmeldezeit(self):
+        self.assertEqual(anmeldezeit({"amr": [{"timestamp": 200}, {"timestamp": 100.5}]}), 100.5)
+        self.assertIsNone(anmeldezeit({"amr": [{"timestamp": None}]}))
+        self.assertIsNone(anmeldezeit({}))
+
+    async def test_gate_reicht_den_zeitpunkt_an_den_bot(self):
+        jetzt = int(time.time())
+        d = await gate().authorize(token(amr=[{"method": "password", "timestamp": jetzt - 50}]))
+        self.assertEqual(d.identity.anmeldung, jetzt - 50)
+        body = d.identity.to_body()
+        self.assertEqual(body["anmeldung"], jetzt - 50)
+        self.assertEqual(identity_from_body({"wamo": body}).anmeldung, jetzt - 50)
+
+
+def _ohne_amr():
+    now = int(time.time())
+    claims = {"sub": USER, "aal": "aal2", "aud": "authenticated", "iss": ISS, "role": "authenticated", "iat": now,
+              "exp": now + 3600}
+    return jwt.encode(claims, KEY, algorithm="ES256", headers={"kid": "test"})
+
+
 class GateTests(unittest.IsolatedAsyncioTestCase):
     async def test_gueltig_liefert_identitaet(self):
         d = await gate().authorize(token())
@@ -292,8 +373,19 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
 
 class IdentityTests(unittest.TestCase):
     def test_from_body(self):
-        body = {"wamo": {"user_id": USER, "name": " Erika  Muster ", "rolle": "mitglied", "anrede": "sie"}}
+        body = {"wamo": {"user_id": USER, "name": " Erika  Muster ", "rolle": "mitglied", "anrede": "sie",
+                         "anmeldung": 1760000000}}
         self.assertEqual(identity_from_body(body), Identity(USER, "Erika Muster", "mitglied", "sie"))
+        self.assertEqual(identity_from_body(body).anmeldung, 1760000000)
+
+    def test_from_body_ohne_anmeldezeitpunkt(self):
+        # Die Zugangskontrolle setzt ihn immer; fehlt er, ist die Identität nicht geprüft
+        for wert in (None, "1760000000", True, float("inf"), 0):
+            with self.subTest(wert=wert):
+                raw = {"user_id": USER, "name": "Erika", "rolle": "admin", "anrede": "du"}
+                if wert is not None:
+                    raw["anmeldung"] = wert
+                self.assertIsNone(identity_from_body({"wamo": raw}))
 
     def test_from_body_unvollstaendig(self):
         for body in [None, {}, {"wamo": "x"}, {"wamo": {"user_id": "keine-uuid", "name": "A", "rolle": "admin", "anrede": "du"}},
@@ -404,6 +496,8 @@ class MiddlewareTests(unittest.IsolatedAsyncioTestCase):
         called, _, seen = await self.run_mw(self.http(auth=f"Bearer {token()}"), json.dumps(forged).encode(), profiles=p)
         self.assertEqual(called, ["http"])
         body = json.loads(seen["body"])
+        anmeldung = body["body"]["wamo"].pop("anmeldung")
+        self.assertIsInstance(anmeldung, (int, float))
         self.assertEqual(body["body"]["wamo"], {"user_id": USER, "name": "Erika Muster", "rolle": "mitglied", "anrede": "sie"})
         self.assertEqual(seen["headers"][b"content-length"], str(len(seen["body"])).encode())
 
@@ -425,6 +519,14 @@ class MiddlewareTests(unittest.IsolatedAsyncioTestCase):
             self.http(auth=f"Bearer {token()}", path="/api/offer"), chunks=[raw[:5], raw[5:]])
         self.assertEqual(called, ["http"])
         self.assertEqual(json.loads(seen["body"])["request_data"]["wamo"]["user_id"], USER)
+
+    async def test_zu_alte_anmeldung_401_mit_kennung(self):
+        alt = token(amr=[{"method": "password", "timestamp": int(time.time()) - 400 * STUNDE}])
+        called, sent, _ = await self.run_mw(self.http(auth=f"Bearer {alt}"), b"{}")
+        self.assertEqual((called, sent[0]["status"]), ([], 401))
+        antwort = json.loads(sent[1]["body"])
+        self.assertEqual(antwort["code"], "anmeldung_zu_alt")
+        self.assertIn("Stunden", antwort["detail"])
 
     async def test_ungueltiges_json_400(self):
         called, sent, _ = await self.run_mw(self.http(auth=f"Bearer {token()}"), b"{kaputt")
