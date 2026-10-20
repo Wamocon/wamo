@@ -896,7 +896,11 @@ if __name__ == "__main__":
     if not os.getenv("PIPECAT_ALLOWED_ORIGINS", "").strip():
         os.environ["PIPECAT_ALLOWED_ORIGINS"] = DEFAULT_ALLOWED_ORIGINS
     # Und auch von dort nur angemeldete Profile mit zweitem Faktor (auth_gate.py).
-    install_access_gate(app)
+    gate = install_access_gate(app)
+    # Eigene Schnittstellen unter /wamo/api (Gerätebindung, Hinweise, geteilte Arbeit), hinter derselben Prüfung
+    import wamo_api
+
+    wamo_api.installieren(app, gate)
     # Log-Stufe nach dem Runner wiederherstellen (er setzt DEBUG) und auf Sokrates-2 nur über den
     # Unix-Socket WAMO_CORE_UDS lauschen (kern_dienst.py).
     runner_vorbereiten(pipecat_runner, _configure_logging)
