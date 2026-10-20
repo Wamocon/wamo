@@ -3,6 +3,21 @@
 Nur für Profile mit der Rolle admin UND nur bei WAMO_ENTWICKLUNG=an (Standard: aus). Sonst bietet
 bot.py die Werkzeuge gar nicht an.
 
+Betriebsart (WAMO_ENTWICKLUNG_ORT)
+  sokrates2 (Standard): Claude Code läuft auf Sokrates-2 als Benutzer wamo in einer bubblewrap-Sandbox
+     (infra/sokrates2/wamo-job.sh). Der Voice-Core spricht per SSH mit eigenem Schlüssel
+     (WAMO_ENTWICKLUNG_SSH_SCHLUESSEL, Standard ~/.ssh/id_ed25519_wamo_jobs; Hostschlüssel nur aus
+     WAMO_ENTWICKLUNG_SSH_KNOWN_HOSTS, Standard ~/.ssh/known_hosts_wamo_jobs) mit dem Dispatcher
+     /opt/wamo/bin/wamo-job-dispatch, der als Forced Command nur start, status, pending, approve und
+     cancel kennt. Der Auftrag geht als JSON-Zeile über stdin; stdin bleibt danach offen und ist die
+     Lebenslinie: Auflegen beendet den SSH-Prozess, damit endet der entfernte Auftrag. Projekte liegen
+     unter /srv/wamo/projekte/<projekt> (Klonen erledigt der Auftrag selbst). Wächter, Freigaben und
+     Anfragen liegen auf Sokrates-2 im Auftragsordner, approve und pending gehen über denselben Weg.
+     Meldet der Dispatcher zugang_erweitert (mehr Token als frühere Läufe im Projekt), wird daraus eine
+     Freigabekarte; nach dem Klick startet der Auftrag neu.
+  lokal: der frühere Weg, Claude Code als Windows-Benutzer auf diesem PC. Nur mit zusätzlich
+     WAMO_ENTWICKLUNG_LOKAL_BESTAETIGT=ja, mit deutlicher Warnung im Log; der Wächter ist dort nur eine Bremse.
+
 Ablauf
   1. entwicklung_vorbereiten(auftrag, projekt, art): prüft Projektname, Projekte-Ordner und
      Auftragsart und legt eine Karte in die Oberfläche (RTVI {"type": "auftrag", ...}).
@@ -29,8 +44,8 @@ Sicherheit
   * Umgebung als Allowlist: Geheimnisse des Voice-Cores erbt Claude Code nicht.
   * Ein Auftrag gleichzeitig (Lock), hartes Zeitlimit JOB_TIMEOUT_SECS; bei Ende, Fehler oder
     Auflegen wird der ganze Prozessbaum beendet.
-  * Das alles ist eine Bremse, keine Sandbox: als derselbe Windows-Benutzer bleiben Umwege möglich.
-    Echte Trennung bringt erst ein eigener Benutzer oder Container (offen).
+  * Lokal ist das alles eine Bremse, keine Sandbox: als derselbe Windows-Benutzer bleiben Umwege
+    möglich. Echte Trennung bringt die Betriebsart sokrates2 (eigener Benutzer, Sandbox, Landlock).
 """
 
 from __future__ import annotations
@@ -42,11 +57,12 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from loguru import logger
 
@@ -55,7 +71,7 @@ from pipecat.frames.frames import LLMMessagesAppendFrame
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.services.llm_service import FunctionCallParams
 
-from dev_guard import REPO_ROOT, SELF_REPO, decide, fingerprint, write_json_atomic
+from dev_guard import REPO_ROOT, SELF_REPO, _skript_befehl, decide, fingerprint, write_json_atomic
 from persona import clean_inline
 from werkzeugkarte import AUFTRAGSARTEN, KARTEN, anweisungsblock, art_beschreibung
 
@@ -68,6 +84,43 @@ MAX_TASK_CHARS = 4000
 ECC_PLUGIN = "ecc@ecc"
 SELFTEST_TIMEOUT_SECS = 20
 SELFTEST_EVENT = {"tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}}
+
+# ---------- Betriebsart sokrates2 (Dispatcher: infra/sokrates2/wamo_job_dispatch.py) ----------
+ORTE = ("sokrates2", "lokal")
+REMOTE_PROJECTS_DIR = PurePosixPath("/srv/wamo/projekte")
+SSH_ZIEL_STANDARD = "wamo@192.168.178.136"
+SSH_KNOWN_HOSTS_STANDARD = "~/.ssh/known_hosts_wamo_jobs"  # nur der ed25519-Hostschlüssel von Sokrates-2
+ZUGANG_TOOL = "WAMO-Zugang"  # Freigabe-Anfrage des Dispatchers: mehr Zugänge als frühere Läufe im Projekt
+MAX_OFFENE_FREIGABEN = 10
+SSH_ZIEL_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9.-]{1,253}")
+REMOTE_ARG_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+SSH_KURZ_TIMEOUT_SECS = 30
+REMOTE_PUFFER_SECS = 300  # das harte Zeitlimit gilt auf Sokrates-2; der Voice-Core wartet etwas länger
+LOKAL_WARNUNG = (
+    "WARNUNG: Entwicklungsaufträge laufen LOKAL (WAMO_ENTWICKLUNG_ORT=lokal, WAMO_ENTWICKLUNG_LOKAL_BESTAETIGT=ja) "
+    "als Windows-Benutzer ohne Sandbox. Claude Code darf damit alles, was dieser Benutzer darf; der Wächter ist "
+    "nur eine Bremse. Empfohlen: WAMO_ENTWICKLUNG_ORT=sokrates2."
+)
+# Ergebnisse und Exit-Codes von "wamo-job-dispatch start" auf Statustexte
+REMOTE_EREIGNIS_STATUS = {
+    "selbsttest_fehlgeschlagen": "nicht gestartet (Wächter-Selbsttest auf Sokrates-2 fehlgeschlagen)",
+    "keine_zugangsdaten": "nicht gestartet (kein Claude-Zugang auf Sokrates-2)",
+    "belegt": "nicht gestartet (Projekt oder Auftrag belegt)",
+    "zugang_erweitert": "wartet auf Freigabe (mehr Zugänge als frühere Aufträge im Projekt)",
+}
+REMOTE_ENDE_STATUS = {
+    "fertig": "fertig", "zeitlimit": "abgebrochen (Zeitlimit)", "abgebrochen": "abgebrochen",
+    "verlassen": "abgebrochen (Verbindung beendet)",
+    "freigabe_mehrfach": "abgebrochen (Freigabe öfter genutzt als erteilt)",
+    "egress_offen": "abgebrochen (Ausgangsfilter auf Sokrates-2 ausgefallen)",
+}
+REMOTE_EXIT_STATUS = {
+    2: "nicht gestartet (Auftrag abgewiesen)", 3: REMOTE_EREIGNIS_STATUS["selbsttest_fehlgeschlagen"],
+    4: REMOTE_EREIGNIS_STATUS["belegt"], 5: REMOTE_EREIGNIS_STATUS["keine_zugangsdaten"],
+    6: "fehlgeschlagen (Fehler im Dispatcher)", 7: REMOTE_EREIGNIS_STATUS["zugang_erweitert"],
+    124: "abgebrochen (Zeitlimit)", 130: "abgebrochen",
+    255: "fehlgeschlagen (SSH-Verbindung zu Sokrates-2)",
+}
 
 # Umgebung für Claude Code als Allowlist: nur, was Programme zum Laufen brauchen. Schlüssel des
 # Voice-Cores (API-Schlüssel, WAMO_DATABASE_URL, ...) erbt der Lauf so nie, auch neue nicht.
@@ -106,10 +159,113 @@ Assistenten WAMO. Er stammt aus einer Spracherkennung und kann ungenaue Wörter 
 - Antworte am Ende in 3 bis 6 kurzen deutschen Sätzen ohne Markdown: was erledigt ist, Links
   (Repo, Preview-URL), was offen ist."""
 
+REMOTE_RULES = """- Du arbeitest auf Sokrates-2 in einer abgeschotteten Sandbox. Dauerhaft ist nur der Projektordner;
+  alles andere (Home, /tmp) ist nach dem Auftrag weg. Gehört zum Auftrag ein bestehendes GitHub-Repo und
+  ist der Ordner leer, klone es zuerst hinein (git clone https://github.com/<owner>/<repo>.git .).
+- Zugangsdaten stehen nur als Umgebungsvariablen bereit; gh, git und die CLIs nutzen sie selbst. Gib sie
+  nie aus und lies sie nicht aus.
+- Netz: ins Internet nur HTTPS und HTTP (Port 443 und 80), kein IPv6, kein LAN, keine Dienste des Servers.
+  Eigene Entwicklungsserver und Tests auf 127.0.0.1 mit einem Port zwischen 20000 und 20999 (nicht
+  "localhost", das kann IPv6 bedeuten). Git-Hooks laufen in der Sandbox nicht."""
+
 
 def entwicklung_enabled() -> bool:
     """Schalter WAMO_ENTWICKLUNG=an|aus (Standard aus)."""
     return (os.getenv("WAMO_ENTWICKLUNG") or "aus").strip().lower() in ("an", "on", "ja", "1", "true")
+
+
+def entwicklung_ort() -> str | None:
+    """WAMO_ENTWICKLUNG_ORT=sokrates2|lokal, Standard sokrates2. Unbekannte Werte: None (dann keine Aufträge)."""
+    ort = (os.getenv("WAMO_ENTWICKLUNG_ORT") or "sokrates2").strip().lower()
+    return ort if ort in ORTE else None
+
+
+def ssh_ziel() -> str:
+    return (os.getenv("WAMO_ENTWICKLUNG_SSH_ZIEL") or SSH_ZIEL_STANDARD).strip()
+
+
+def ssh_schluessel() -> Path:
+    raw = os.getenv("WAMO_ENTWICKLUNG_SSH_SCHLUESSEL") or str(Path.home() / ".ssh" / "id_ed25519_wamo_jobs")
+    return Path(os.path.expanduser(raw.strip()))
+
+
+def ssh_known_hosts() -> Path:
+    raw = os.getenv("WAMO_ENTWICKLUNG_SSH_KNOWN_HOSTS") or SSH_KNOWN_HOSTS_STANDARD
+    return Path(os.path.expanduser(raw.strip()))
+
+
+def ssh_problem() -> str | None:
+    """Grund, warum die Betriebsart sokrates2 nicht startbar ist, oder None."""
+    if not shutil.which("ssh"):
+        return "ssh nicht gefunden (OpenSSH-Client installieren)"
+    if not SSH_ZIEL_RE.fullmatch(ssh_ziel()):
+        return "WAMO_ENTWICKLUNG_SSH_ZIEL ist ungültig (Form benutzer@host)"
+    if not ssh_schluessel().is_file():
+        return f"SSH-Schlüssel für Aufträge fehlt ({ssh_schluessel().name})"
+    if not ssh_known_hosts().is_file():
+        return f"Hostschlüssel-Datei für Aufträge fehlt ({ssh_known_hosts().name})"
+    return None
+
+
+def lokal_bestaetigt() -> bool:
+    """Die Betriebsart lokal braucht eine zweite, ausdrückliche Variable."""
+    return (os.getenv("WAMO_ENTWICKLUNG_LOKAL_BESTAETIGT") or "").strip().lower() == "ja"
+
+
+def lokal_problem() -> str | None:
+    if not lokal_bestaetigt():
+        return "WAMO_ENTWICKLUNG_ORT=lokal braucht zusätzlich WAMO_ENTWICKLUNG_LOKAL_BESTAETIGT=ja"
+    return projects_dir_problem()
+
+
+def entwicklung_problem() -> str | None:
+    """Grund, warum Entwicklungsaufträge in der gewählten Betriebsart nicht gehen, oder None."""
+    ort = entwicklung_ort()
+    if ort is None:
+        return "WAMO_ENTWICKLUNG_ORT ist ungültig (erlaubt: sokrates2, lokal)"
+    return lokal_problem() if ort == "lokal" else ssh_problem()
+
+
+def ssh_argv(remote_args: list[str]) -> list[str]:
+    """argv für einen Aufruf des Dispatchers. Keine Konfigurationsdatei (-F none), nur der Auftragsschlüssel,
+    nur der hinterlegte ed25519-Hostschlüssel aus einer eigenen Datei (keine Aktualisierung), nur Public Key,
+    keine Weiterleitungen, kein Terminal. Der Befehl besteht nur aus geprüften Wörtern."""
+    exe = shutil.which("ssh")
+    if not exe:
+        raise RuntimeError("ssh nicht gefunden")
+    for arg in remote_args:
+        if not REMOTE_ARG_RE.fullmatch(arg):
+            raise ValueError(f"unzulässiges Argument für Sokrates-2: {arg!r}")
+    ziel = ssh_ziel()
+    if not SSH_ZIEL_RE.fullmatch(ziel):
+        raise ValueError("WAMO_ENTWICKLUNG_SSH_ZIEL ist ungültig")
+    # UserKnownHostsFile nimmt mehrere, durch Leerraum getrennte Dateien: Pfad in Anführungszeichen (Leerzeichen
+    # im Benutzerordner) und mit Schrägstrichen (Backslash wäre in Anführungszeichen ein Fluchtzeichen)
+    hosts = ssh_known_hosts().as_posix()
+    if '"' in hosts:
+        raise ValueError("Pfad der Hostschlüssel-Datei enthält Anführungszeichen")
+    return [exe, "-F", "none", "-i", str(ssh_schluessel()), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes", "-o", f'UserKnownHostsFile="{hosts}"',
+            "-o", "GlobalKnownHostsFile=none", "-o", "UpdateHostKeys=no", "-o", "HostKeyAlgorithms=ssh-ed25519",
+            "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
+            "-o", "PreferredAuthentications=publickey", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no",
+            "-o", "ForwardX11=no", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=4", "-o", "LogLevel=ERROR", "-T", "--", ziel, " ".join(remote_args)]
+
+
+def remote_status(returncode: int | None, ereignisse: dict[str, dict]) -> str:
+    """Statustext aus den wamo-Ereignissen des Dispatchers, ersatzweise aus dem Exit-Code von ssh."""
+    ende = ereignisse.get("ende", {})
+    if ende.get("ergebnis") in REMOTE_ENDE_STATUS:
+        return REMOTE_ENDE_STATUS[ende["ergebnis"]]
+    if ende.get("ergebnis") == "fehler":
+        return f"beendet (Code {ende.get('code')})"
+    for name, text in REMOTE_EREIGNIS_STATUS.items():
+        if name in ereignisse:
+            return text
+    if returncode == 0:
+        return "fertig"
+    return REMOTE_EXIT_STATUS.get(returncode, f"beendet (Code {returncode})")
 
 
 def projects_dir_problem(projects_dir: Path | None = None) -> str | None:
@@ -126,8 +282,9 @@ def projects_dir_problem(projects_dir: Path | None = None) -> str | None:
     return None
 
 
-def rules_for(name: str) -> str:
-    return RULES_TEMPLATE.format(name=clean_inline(name, 60) or "einem Admin")
+def rules_for(name: str, ort: str = "lokal") -> str:
+    rules = RULES_TEMPLATE.format(name=clean_inline(name, 60) or "einem Admin")
+    return f"{rules}\n{REMOTE_RULES}" if ort == "sokrates2" else rules
 
 
 def claude_exe() -> str:
@@ -146,7 +303,7 @@ def claude_exe() -> str:
     raise RuntimeError(f"Claude Code nicht gefunden ({', '.join(candidates)}); ist es installiert?")
 
 
-def validate_project(name: object) -> Path:
+def project_slug(name: object) -> str:
     if not isinstance(name, str):
         raise ValueError("Projektname fehlt")
     slug = name.strip().lower().replace(" ", "-").replace("_", "-")
@@ -154,6 +311,14 @@ def validate_project(name: object) -> Path:
         raise ValueError("Projektname: 3 bis 50 Zeichen, nur a-z, 0-9 und Bindestrich")
     if slug == SELF_REPO:
         raise ValueError("Das WAMO-Repo selbst ist für Aufträge gesperrt")
+    return slug
+
+
+def validate_project(name: object, ort: str | None = None) -> Path | PurePosixPath:
+    """Projektordner zum Namen: auf Sokrates-2 /srv/wamo/projekte/<name>, lokal unter WAMO_PROJECTS_DIR."""
+    slug = project_slug(name)
+    if (ort or entwicklung_ort()) == "sokrates2":
+        return REMOTE_PROJECTS_DIR / slug
     problem = projects_dir_problem()
     if problem:
         raise ValueError(problem)
@@ -170,21 +335,26 @@ def job_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k.upper() in allowed or k.upper().startswith(JOB_ENV_PREFIXES)}
 
 
-def hook_command(project: Path, job_dir: Path) -> str:
+def hook_command(project: Path, job_dir: Path, nachher: bool = False) -> str:
     """Befehl für den PreToolUse-Hook. "|| exit 2" setzt jeden Fehlstart (Python fehlt, Absturz vor
-    main, Exit 1) in eine Blockade um; das gilt in bash wie in cmd. Pfade mit Schrägstrichen."""
+    main, Exit 1) in eine Blockade um; das gilt in bash wie in cmd. Pfade mit Schrägstrichen.
+    nachher=True: derselbe Wächter als PostToolUse-Hook, er verbucht ausgeführte Freigaben."""
     parts = [Path(sys.executable).as_posix(), GUARD.as_posix(), project.as_posix(), job_dir.as_posix()]
     for p in parts:
         if any(c in p for c in '"`$%!\n\r'):
             raise ValueError(f"Pfad mit Sonderzeichen für den Wächter: {p}")
     python, guard, proj, job = parts
+    if nachher:
+        return f'"{python}" "{guard}" --nachher --project-dir "{proj}" --job-dir "{job}"'
     return f'"{python}" "{guard}" --project-dir "{proj}" --job-dir "{job}" || exit 2'
 
 
 def job_settings(project: Path, job_dir: Path) -> dict:
+    nachher = [{"matcher": "*", "hooks": [{"type": "command", "command": hook_command(project, job_dir, nachher=True)}]}]
     return {
         "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
-            {"type": "command", "command": hook_command(project, job_dir)}]}]},
+            {"type": "command", "command": hook_command(project, job_dir)}]}],
+                  "PostToolUse": nachher, "PostToolUseFailure": nachher},
         "disableAllHooks": False,
         "permissions": {"deny": list(DENY_RULES)},
         "enabledPlugins": {ECC_PLUGIN: True},
@@ -264,6 +434,7 @@ class Job:
     status: str = "vorbereitet"
     started: bool = False
     pending: dict[str, dict] = field(default_factory=dict)
+    ereignisse: dict[str, dict] = field(default_factory=dict)  # wamo-Ereignisse des Dispatchers (sokrates2)
 
     def __post_init__(self):
         self.dir = JOBS_DIR / self.id
@@ -272,9 +443,13 @@ class Job:
 class DevAgent:
     """Ein Objekt pro Gespräch. Braucht den PipelineTask, um Karten, Canvas und Meldungen zu senden."""
 
-    def __init__(self, memory, auftraggeber: str):
+    def __init__(self, memory, auftraggeber: str, ort: str | None = None):
         self._memory = memory
         self._auftraggeber = clean_inline(auftraggeber, 60) or "Admin"
+        self._ort = ort or entwicklung_ort() or "sokrates2"
+        if self._ort == "lokal":
+            logger.warning(LOKAL_WARNUNG)
+        self._running_job: Job | None = None
         self._task = None
         self._jobs: dict[str, Job] = {}
         self._running: asyncio.Task | None = None
@@ -327,7 +502,7 @@ class DevAgent:
         auftrag = str(params.arguments.get("auftrag", "")).strip()[:MAX_TASK_CHARS]
         art = str(params.arguments.get("art", "")).strip()
         try:
-            projekt = validate_project(params.arguments.get("projekt"))
+            projekt = validate_project(params.arguments.get("projekt"), self._ort)
         except ValueError as e:
             await params.result_callback({"ok": False, "fehler": str(e)})
             return
@@ -337,17 +512,20 @@ class DevAgent:
         if art not in KARTEN:
             await params.result_callback({"ok": False, "fehler": f"Unbekannte Auftragsart, erlaubt: {', '.join(AUFTRAGSARTEN)}"})
             return
-        job = Job(id=uuid.uuid4().hex[:8], auftrag=auftrag, projekt=projekt, art=art)
+        job = Job(id=uuid.uuid4().hex[:16], auftrag=auftrag, projekt=projekt, art=art)
         self._jobs[job.id] = job
         await self._send({
             "type": "auftrag", "job": job.id, "projekt": projekt.name, "art": art,
             "auftrag": clean_inline(auftrag, MAX_TASK_CHARS),
         })
-        await params.result_callback({
-            "ok": True, "auftrag_id": job.id, "art": KARTEN[art].titel, "neu": not projekt.exists(),
+        ergebnis = {
+            "ok": True, "auftrag_id": job.id, "art": KARTEN[art].titel,
             "hinweis": (f"Der Auftrag liegt als Karte in der Oberfläche. Sag kurz Auftrag und Art und dass "
                         f"{self._auftraggeber} ihn dort per Klick startet oder verwirft."),
-        })
+        }
+        if self._ort == "lokal":
+            ergebnis["neu"] = not Path(projekt).exists()
+        await params.result_callback(ergebnis)
 
     async def _status(self, params: FunctionCallParams):
         job = next(reversed(self._jobs.values()), None) if self._jobs else None
@@ -381,7 +559,7 @@ class DevAgent:
         if self._running and not self._running.done():
             await self._notify(f"Entwicklungsauftrag {job.projekt.name} wartet: es läuft schon ein Auftrag.")
             return
-        problem = projects_dir_problem()
+        problem = lokal_problem() if self._ort == "lokal" else ssh_problem()
         if problem:
             logger.error("Entwicklungsauftrag {} nicht gestartet: {}", job.id, problem)
             return
@@ -396,15 +574,27 @@ class DevAgent:
         approved = data.get("entscheidung") == "ja"
         await self._memory.update_action(req.get("action_id"), "approved" if approved else "rejected")
         if approved:
-            path = job.dir / "approvals.json"
-            try:
-                current = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
-            except (OSError, json.JSONDecodeError):
-                current = []
-            if not isinstance(current, list):
-                current = []
-            write_json_atomic(path, [*current, req["id"]])
+            if self._ort == "sokrates2":
+                code, _ = await self._ssh_kurz(["approve", job.id, req["id"]])
+                if code != 0:
+                    logger.error("Freigabe für Auftrag {} nicht übertragen (Code {})", job.id, code)
+                    job.steps.append(f"Freigabe nicht übertragen, bitte erneut versuchen: {req['grund']}")
+                    job.pending[req["id"]] = req
+                    await self._canvas(job)
+                    return
+            else:
+                path = job.dir / "approvals.json"
+                try:
+                    current = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+                except (OSError, json.JSONDecodeError):
+                    current = []
+                if not isinstance(current, list):
+                    current = []
+                write_json_atomic(path, [*current, req["id"]])
             job.steps.append(f"Freigegeben: {req['grund']}")
+            if req.get("tool") == ZUGANG_TOOL:  # Projekt mit diesen Zugängen freigegeben: Auftrag neu starten
+                self._running = asyncio.create_task(self._run(job, job.auftrag, resume=False))
+                return
             follow_up = (
                 f"{self._auftraggeber} hat freigegeben: {req['grund']} "
                 f"({json.dumps(req['input'], ensure_ascii=False)[:500]}). "
@@ -422,6 +612,10 @@ class DevAgent:
             await self._run_locked(job, prompt, resume)
 
     async def _run_locked(self, job: Job, prompt: str, resume: bool) -> None:
+        if self._ort == "sokrates2":
+            await self._run_remote(job, prompt, resume)
+            return
+        logger.warning(LOKAL_WARNUNG)
         job.dir.mkdir(parents=True, exist_ok=True)
         job.projekt.mkdir(parents=True, exist_ok=True)
         pending_file = job.dir / "pending.jsonl"
@@ -482,6 +676,82 @@ class DevAgent:
         await self._canvas(job)
         await self._announce(job)
 
+    # ---------- Betriebsart sokrates2 ----------
+    async def _ssh_kurz(self, args: list[str], timeout: float = SSH_KURZ_TIMEOUT_SECS) -> tuple[int, str]:
+        """Kurzer Dispatcher-Aufruf (pending, approve, cancel, status). (-1, "") bei Zeitüberschreitung."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *ssh_argv(args), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.error("Sokrates-2 nicht erreichbar ({})", type(e).__name__)
+            return -1, ""
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout)
+        except asyncio.TimeoutError:
+            await _kill_tree(proc)
+            return -1, ""
+        if proc.returncode != 0:
+            logger.warning("Dispatcher {}: Code {} {}", args[0], proc.returncode,
+                           err.decode("utf-8", "replace").strip()[-300:])
+        return proc.returncode, out.decode("utf-8", "replace")
+
+    async def _run_remote(self, job: Job, prompt: str, resume: bool) -> None:
+        """Auftrag auf Sokrates-2: ssh ... "start <job> <projekt> <art> [<session>]", Auftrag als JSON-Zeile
+        über stdin, stdin bleibt als Lebenslinie offen, stdout ist stream-json wie lokal."""
+        system_append = f"{rules_for(self._auftraggeber, 'sokrates2')}\n\n{anweisungsblock(job.art)}"
+        args = ["start", job.id, job.projekt.name, job.art]
+        if resume and job.session_id:
+            args.append(job.session_id)
+        job.ereignisse = {}
+        job.status = "läuft"
+        job.steps.append("Weiter nach Freigabe" if resume else f"Start auf Sokrates-2 in {job.projekt} ({KARTEN[job.art].titel})")
+        await self._canvas(job)
+        logger.info("Entwicklungsauftrag {} startet auf Sokrates-2 ({}, {})", job.id, job.projekt.name, job.art)
+        stderr_tail: deque[str] = deque(maxlen=40)
+        stderr_task: asyncio.Task | None = None
+        sauber = False
+        self._running_job = job
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                *ssh_argv(args), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, limit=10 * 1024 * 1024,
+                start_new_session=sys.platform != "win32",
+            )
+            stderr_task = asyncio.create_task(_drain(self._proc.stderr, stderr_tail))
+            kopf = json.dumps({"auftrag": prompt, "system": system_append}, ensure_ascii=False) + "\n"
+            self._proc.stdin.write(kopf.encode("utf-8"))
+            await self._proc.stdin.drain()  # stdin NICHT schließen: Lebenslinie des entfernten Auftrags
+            await asyncio.wait_for(self._read_stream(job), JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS)
+            await asyncio.wait_for(self._proc.wait(), 30)
+            job.status = remote_status(self._proc.returncode, job.ereignisse)
+            # sauber: Ende gemeldet, oder der Dispatcher hat gar nicht erst gestartet (Codes 2 bis 5)
+            sauber = "ende" in job.ereignisse or self._proc.returncode in (2, 3, 4, 5, 7)
+        except asyncio.TimeoutError:
+            job.status = "abgebrochen (Zeitlimit)"
+            job.result = job.result or "Der Auftrag hat das Zeitlimit überschritten und wurde abgebrochen."
+        except Exception as e:  # Start- und Laufzeitfehler landen im Ergebnis, nicht im Gespräch
+            logger.exception("Entwicklungsauftrag {} fehlgeschlagen", job.id)
+            job.status = "fehlgeschlagen"
+            job.result = f"Fehler beim Auftrag auf Sokrates-2: {type(e).__name__}"
+        finally:
+            proc, self._proc = self._proc, None
+            if proc is not None:
+                if proc.stdin is not None and not proc.stdin.is_closing():
+                    proc.stdin.close()
+                await _kill_tree(proc)  # beendet ssh; der Dispatcher sieht das Ende der Lebenslinie
+            if not sauber:
+                await self._ssh_kurz(["cancel", job.id], timeout=15)  # zweite Absicherung
+            self._running_job = None
+            if stderr_task is not None:
+                stderr_task.cancel()
+            if proc is not None and proc.returncode not in (0, None) and stderr_tail:
+                logger.warning("Sokrates-2 meldete: {}", " | ".join(stderr_tail)[-1500:])
+
+        await self._collect_pending(job, None)
+        await self._canvas(job)
+        await self._announce(job)
+
     async def _read_stream(self, job: Job) -> None:
         last_canvas = 0.0
         async for raw in self._proc.stdout:
@@ -497,6 +767,14 @@ class DevAgent:
                 for block in (ev.get("message") or {}).get("content", []):
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         job.steps.append(_describe(block.get("name", ""), block.get("input") or {}))
+            elif ev.get("type") == "wamo":  # Ereignisse des Dispatchers auf Sokrates-2
+                name = str(ev.get("ereignis") or "")
+                if name:
+                    job.ereignisse[name] = ev
+                if name == "selbsttest_ok":
+                    job.steps.append("Wächter-Selbsttest in der Sandbox bestanden")
+                elif name in REMOTE_EREIGNIS_STATUS:
+                    job.steps.append(REMOTE_EREIGNIS_STATUS[name])
             elif ev.get("type") == "result":
                 job.result = str(ev.get("result") or "")
                 job.cost_usd += float(ev.get("total_cost_usd") or 0)
@@ -505,12 +783,27 @@ class DevAgent:
                 last_canvas = time.monotonic()
                 await self._canvas(job)
 
-    async def _collect_pending(self, job: Job, pending_file: Path) -> None:
-        if not pending_file.is_file():
-            return
-        for line in pending_file.read_text(encoding="utf-8", errors="replace").splitlines():
+    async def _collect_pending(self, job: Job, pending_file: Path | None) -> None:
+        if self._ort == "sokrates2":
+            # Anfragen liegen auf Sokrates-2; der Dispatcher prüft sie, hier wird erneut geprüft. Pfade
+            # werden gegen einen neutralen Ordner außerhalb des Repos aufgelöst (der echte liegt dort).
+            code, out = await self._ssh_kurz(["pending", job.id])
+            lines = out.splitlines() if code == 0 else []
+            if code != 0:
+                job.status = f"{job.status}, Freigaben nicht abrufbar"
+                logger.error("Entwicklungsauftrag {}: Freigaben auf Sokrates-2 nicht abrufbar (Code {})", job.id, code)
+            zugang = job.ereignisse.get("zugang_erweitert")
+            if zugang:  # Anfrage des Dispatchers selbst, nicht aus der Sandbox
+                lines.append(json.dumps({k: zugang.get(k) for k in ("id", "grund", "tool", "input")}))
+            pruefprojekt = Path(tempfile.gettempdir()) / "wamo-sokrates2" / job.projekt.name
+        else:
+            if pending_file is None or not pending_file.is_file():
+                return
+            lines = pending_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            pruefprojekt = job.projekt
+        for line in lines:
             try:
-                req = valid_pending(json.loads(line), job.projekt)
+                req = valid_pending(json.loads(line), pruefprojekt)
             except (json.JSONDecodeError, RecursionError, TypeError):
                 req = None
             if req is None:
@@ -518,6 +811,21 @@ class DevAgent:
                 continue
             if req["id"] in job.pending:
                 continue
+            if len(job.pending) >= MAX_OFFENE_FREIGABEN:
+                logger.warning("Entwicklungsauftrag {}: mehr als {} offene Freigaben, Rest verworfen", job.id,
+                               MAX_OFFENE_FREIGABEN)
+                break
+            if req["tool"] == ZUGANG_TOOL:
+                zug = job.ereignisse.get("zugang_erweitert", {})
+                req["grund"] = clean_inline(str(zug.get("grund", "")), 200) \
+                    or "Mehr Zugänge als frühere Aufträge in diesem Projekt"
+                # H3: dem Admin die seit dem letzten Lauf geänderten Autostart-Flächen zeigen, dazu die Klon-Option
+                teile = [str(z) for z in zug.get("inventur", []) if isinstance(z, str)][:30]
+                if zug.get("hinweis_klon"):
+                    teile.append(str(zug["hinweis_klon"]))
+                req["detail"] = clean_inline(" | ".join(teile), 2000)
+            elif _skript_befehl(req["tool"], req["input"]):  # M5: Warnung bei Befehlen, die Projektcode ausführen
+                req["warnung"] = "Dieser Befehl führt Projektcode aus (Skript, npm, make); Inhalt genau prüfen."
             req["action_id"] = await self._memory.log_action(
                 tool=req["tool"], params=req["input"], reason=req["grund"], risk="critical")
             job.pending[req["id"]] = req
@@ -526,16 +834,17 @@ class DevAgent:
                 "type": "freigaben",
                 "job": job.id,
                 "projekt": job.projekt.name,
-                "items": [{"id": r["id"], "grund": r["grund"], "detail": _detail(r["tool"], r["input"]),
-                           "von": self._auftraggeber}
+                "items": [{"id": r["id"], "grund": r["grund"], "detail": r.get("detail") or _detail(r["tool"], r["input"]),
+                           "warnung": r.get("warnung"), "von": self._auftraggeber}
                           for r in job.pending.values()],
             })
 
     async def _canvas(self, job: Job) -> None:
         if not self._task:
             return
+        ordner = f"`{job.projekt}` (Sokrates-2, Sandbox)" if self._ort == "sokrates2" else f"`{job.projekt}`"
         lines = ["## Auftrag", job.auftrag, "", f"**Art:** {KARTEN[job.art].titel}",
-                 f"**Status:** {job.status}", f"**Ordner:** `{job.projekt}`"]
+                 f"**Status:** {job.status}", f"**Ordner:** {ordner}"]
         if job.cost_usd:
             lines.append(f"**Kosten bisher:** {job.cost_usd:.2f} USD")
         lines += ["", "## Schritte", *[f"- {s}" for s in job.steps[-25:]]]
@@ -566,8 +875,13 @@ class DevAgent:
         )
 
     async def close(self) -> None:
+        """Auflegen: laufenden Auftrag beenden. Auf Sokrates-2 genügt das Ende des ssh-Prozesses (die
+        Lebenslinie reißt ab); cancel ist die zweite Absicherung."""
+        running_job = self._running_job
         if self._proc is not None:
             await _kill_tree(self._proc)
+        if self._ort == "sokrates2" and running_job is not None:
+            await self._ssh_kurz(["cancel", running_job.id], timeout=10)
         if self._running and not self._running.done():
             self._running.cancel()
 
@@ -597,7 +911,15 @@ def _describe(name: str, data: dict) -> str:
 DETAIL_CHARS = 20000  # Freigabekarte: der vollständige Aufruf, nur von Steuer- und Bidi-Zeichen bereinigt
 
 
+def _gekuerzt(text: str) -> str:
+    """Kürzt auf DETAIL_CHARS und macht die Kürzung sichtbar (N8); der Fingerabdruck deckt den ganzen Aufruf."""
+    sauber = clean_inline(text, DETAIL_CHARS + 1)
+    if len(sauber) > DETAIL_CHARS:
+        return sauber[:DETAIL_CHARS] + " […gekürzt; der Fingerabdruck deckt den vollständigen Aufruf]"
+    return sauber
+
+
 def _detail(tool: str, data: dict) -> str:
     if tool in ("Bash", "PowerShell", "Monitor"):
-        return clean_inline(str(data.get("command", "")), DETAIL_CHARS)
-    return clean_inline(f"{tool.rsplit('__', 1)[-1]} {json.dumps(data, ensure_ascii=False)}", DETAIL_CHARS)
+        return _gekuerzt(str(data.get("command", "")))
+    return _gekuerzt(f"{tool.rsplit('__', 1)[-1]} {json.dumps(data, ensure_ascii=False)}")

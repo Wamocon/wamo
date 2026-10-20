@@ -27,7 +27,25 @@ class Karte:
     agenten: tuple[str, ...] = ()
     rea: tuple[str, ...] = ()  # nur lesende REA-Werkzeuge (ohne Präfix mcp__rea__)
     hinweis: str = ""
+    zugaenge: tuple[str, ...] = ()  # Dienste, deren Token der Auftrag auf Sokrates-2 bekommt (ZUGANG_VARIABLEN)
 
+
+# Token-Allowlist für Aufträge auf Sokrates-2 (infra/sokrates2/wamo_job_dispatch.py liest /etc/wamo/geheim.env
+# und reicht NUR diese Namen in die Sandbox). Claude-Zugang bekommt jeder Auftrag, genau einen davon.
+# Zum API-Schlüssel gehört ggf. ANTHROPIC_WORKSPACE_ID (als Header anthropic-workspace-id, nie als Variable).
+CLAUDE_VARIABLEN: tuple[str, ...] = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+ZUGANG_VARIABLEN: dict[str, tuple[str, ...]] = {
+    "github": ("GH_TOKEN",),
+    # Lesende Arten bekommen ein eigenes, nur lesendes Token (geheim.env: GH_TOKEN_LESEN), in der Sandbox unter
+    # dem Namen GH_TOKEN, damit gh und git es finden. Fehlt es, bekommen diese Arten gar kein GitHub-Token.
+    "github_lesen": ("GH_TOKEN_LESEN",),
+    "vercel": ("VERCEL_TOKEN", "VERCEL_ORG_ID"),
+    "supabase": ("SUPABASE_ACCESS_TOKEN",),
+    "jira": ("JIRA_URL", "JIRA_EMAIL", "JIRA_API_KEY", "JIRA_API_TOKEN"),
+}
+
+# Name in geheim.env: Name in der Sandbox (wo sie sich unterscheiden)
+SANDBOX_NAMEN: dict[str, str] = {"GH_TOKEN_LESEN": "GH_TOKEN"}
 
 ABSCHLUSS_SKILLS = ("verification-loop",)
 ABSCHLUSS_BEFEHLE = ("quality-gate",)
@@ -35,6 +53,7 @@ ABSCHLUSS_BEFEHLE = ("quality-gate",)
 KARTEN: dict[str, Karte] = {
     "planung": Karte(
         titel="Planung",
+        zugaenge=("github_lesen", "jira"),
         beschreibung="Vorhaben durchdenken, Architektur und Schritte planen, noch nichts bauen",
         skills=("blueprint", "plan-orchestrate", "architecture-decision-records", "search-first"),
         befehle=("plan", "plan-prd"),
@@ -43,6 +62,7 @@ KARTEN: dict[str, Karte] = {
     ),
     "umsetzung": Karte(
         titel="Umsetzung",
+        zugaenge=("github", "vercel", "jira"),
         beschreibung="Neue Funktion oder neues Projekt bauen",
         skills=("tdd-workflow", "coding-standards", "search-first"),
         befehle=("feature-dev", "prp-implement"),
@@ -51,6 +71,7 @@ KARTEN: dict[str, Karte] = {
     ),
     "fehlerbehebung": Karte(
         titel="Fehlerbehebung",
+        zugaenge=("github", "vercel", "jira"),
         beschreibung="Fehler, Absturz oder kaputten Build finden und beheben",
         skills=("error-handling", "tdd-workflow"),
         befehle=("build-fix", "orch-fix-defect"),
@@ -59,14 +80,17 @@ KARTEN: dict[str, Karte] = {
     ),
     "review": Karte(
         titel="Review",
+        zugaenge=("github_lesen",),
         beschreibung="Code prüfen und Befunde nach Schwere sortiert melden",
         skills=("coding-standards",),
         befehle=("code-review", "review-pr", "python-review", "react-review"),
         agenten=("code-reviewer", "python-reviewer", "typescript-reviewer", "react-reviewer"),
-        hinweis="Den Sprach-Reviewer passend zur Sprache des Projekts wählen.",
+        hinweis=("Den Sprach-Reviewer passend zur Sprache des Projekts wählen. Das GitHub-Token ist nur lesend: "
+                 "Befunde im Ergebnis nennen, nicht als Kommentar in den Pull Request schreiben."),
     ),
     "test": Karte(
         titel="Test",
+        zugaenge=("github",),
         beschreibung="Tests schreiben, ausführen oder die Testabdeckung verbessern",
         skills=("tdd-workflow", "python-testing", "e2e-testing", "ai-regression-testing", "browser-qa"),
         befehle=("test-coverage", "react-test"),
@@ -76,6 +100,7 @@ KARTEN: dict[str, Karte] = {
     ),
     "sicherheit": Karte(
         titel="Sicherheit",
+        zugaenge=("github_lesen",),
         beschreibung="Sicherheitsprüfung: Schwachstellen, Secrets, Rechte, Abhängigkeiten",
         skills=("security-review", "security-scan", "agent-security-hardening"),
         befehle=("security-scan",),
@@ -85,6 +110,7 @@ KARTEN: dict[str, Karte] = {
     ),
     "refactoring": Karte(
         titel="Refactoring",
+        zugaenge=("github",),
         beschreibung="Code aufräumen und vereinfachen, ohne das Verhalten zu ändern",
         skills=("coding-standards", "change-impact", "module-regression"),
         befehle=("refactor-clean", "orch-refine-code"),
@@ -93,13 +119,17 @@ KARTEN: dict[str, Karte] = {
     ),
     "dokumentation": Karte(
         titel="Dokumentation",
+        zugaenge=("github_lesen", "jira"),
         beschreibung="README, Architektur- oder Entwicklerdoku schreiben oder aktualisieren",
         skills=("docs-governance", "living-docs-governance", "architecture-decision-records", "code-tour"),
         befehle=("update-docs", "update-codemaps"),
         agenten=("doc-updater",),
+        hinweis=("Das GitHub-Token ist nur lesend: Änderungen lokal committen und im Ergebnis nennen; "
+                 "veröffentlichen geht über einen Umsetzungsauftrag."),
     ),
     "datenbank": Karte(
         titel="Datenbank",
+        zugaenge=("github", "supabase"),
         beschreibung="Schema, Migrationen, SQL, Indizes oder RLS",
         skills=("database-migrations", "postgres-patterns"),
         agenten=("database-reviewer",),
@@ -108,6 +138,7 @@ KARTEN: dict[str, Karte] = {
     ),
     "frontend": Karte(
         titel="Frontend",
+        zugaenge=("github", "vercel"),
         beschreibung="Oberfläche bauen oder verbessern (React, Next.js, Design, Barrierefreiheit)",
         skills=("frontend-design-direction", "frontend-patterns", "react-patterns", "frontend-a11y",
                 "make-interfaces-feel-better"),
@@ -117,6 +148,7 @@ KARTEN: dict[str, Karte] = {
     ),
     "deployment": Karte(
         titel="Deployment",
+        zugaenge=("github", "vercel", "supabase"),
         beschreibung="Bauen, ausliefern, Container, Preview- oder Produktions-Deploy",
         skills=("deployment-patterns", "docker-patterns", "canary-watch", "delivery-gate"),
         agenten=("build-error-resolver", "security-reviewer"),
@@ -124,6 +156,7 @@ KARTEN: dict[str, Karte] = {
     ),
     "analyse": Karte(
         titel="Analyse",
+        zugaenge=("github_lesen",),
         beschreibung="Bestehenden Code oder eine App verstehen und erklären, nichts ändern",
         skills=("codebase-onboarding", "repo-scan", "change-impact", "iterative-retrieval"),
         agenten=("code-explorer", "architect"),
@@ -133,6 +166,7 @@ KARTEN: dict[str, Karte] = {
     ),
     "reverse_engineering": Karte(
         titel="Reverse Engineering",
+        zugaenge=("github_lesen",),
         beschreibung="Fertige Software, Binärdatei, App oder Web-Bundle von außen untersuchen",
         skills=("iterative-retrieval",),
         agenten=("code-explorer",),
@@ -195,6 +229,17 @@ def anweisungsblock(art: str) -> str:
         "- Fehlt ein genanntes Werkzeug, arbeite ohne es weiter und erwähne das kurz am Ende.",
     ]
     return "\n".join(zeilen)
+
+
+def zugangs_variablen(art: str) -> tuple[str, ...]:
+    """Namen der Dienst-Token in geheim.env, die ein Auftrag dieser Art bekommt (ohne Claude). KeyError bei
+    unbekannter Art. In der Sandbox heißen sie wie sandbox_name() sagt."""
+    return tuple(name for dienst in KARTEN[art].zugaenge for name in ZUGANG_VARIABLEN[dienst])
+
+
+def sandbox_name(name: str) -> str:
+    """Name einer Variablen in der Sandbox (GH_TOKEN_LESEN kommt als GH_TOKEN an)."""
+    return SANDBOX_NAMEN.get(name, name)
 
 
 def referenzierte_namen() -> dict[str, set[str]]:

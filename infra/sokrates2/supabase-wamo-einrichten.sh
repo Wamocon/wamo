@@ -11,6 +11,7 @@
 # (scripts/wamo_nutzer.py).
 #
 # Ports:  55321 API und Auth (Envoy) | 55322 Postgres ueber Supavisor (Session) | 56543 Supavisor (Transaktion)
+# Danach: wamo-tls-einrichten.sh (HTTPS 55443, eigene CA, Pooler-TLS) und mit sudo wamo-firewall-einrichten.sh.
 set -euo pipefail
 
 SRC="${SRC:-}"

@@ -1,0 +1,22 @@
+# Ergänzung zum Compose-Projekt supabase-wamo: TLS am Pooler und Ports nur über IPv4.
+# Eingebunden über COMPOSE_FILE in /home/wamocon/supabase-wamo/.env, gesetzt durch
+# infra/sokrates2/wamo-tls-einrichten.sh. Zertifikat und Schlüssel des Poolers stellt dasselbe Skript aus
+# (WAMO interne CA) und legt sie in volumes/pooler/tls ab.
+#
+# - Supavisor nimmt auf 55322 und 56543 TLS an. Clients mit sslmode=prefer funktionieren weiter;
+#   WAMO verbindet sich mit sslmode=verify-full gegen infra/sokrates2/wamo-ca.crt.
+# - Envoy (55321) und Supavisor (55322, 56543) werden nur auf 0.0.0.0 veröffentlicht. Ohne diese Angabe
+#   lauscht docker-proxy zusätzlich auf [::], und IPv6 wäre allein durch ufw geschützt.
+services:
+  api-gw:
+    ports: !override
+      - "0.0.0.0:${API_GW_HTTP_PORT:-${KONG_HTTP_PORT:-8000}}:8000/tcp"
+  supavisor:
+    ports: !override
+      - "0.0.0.0:${POSTGRES_PORT}:5432"
+      - "0.0.0.0:${POOLER_PROXY_PORT_TRANSACTION}:6543"
+    volumes:
+      - ./volumes/pooler/tls:/etc/pooler/tls:ro
+    environment:
+      GLOBAL_DOWNSTREAM_CERT_PATH: /etc/pooler/tls/server.crt
+      GLOBAL_DOWNSTREAM_KEY_PATH: /etc/pooler/tls/server.key

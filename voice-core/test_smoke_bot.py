@@ -119,7 +119,9 @@ class SmokeTests(unittest.IsolatedAsyncioTestCase):
 class SwitchTests(unittest.IsolatedAsyncioTestCase):
     async def build(self, rolle, entwicklung):
         env = {**DUMMY_ENV, "WAMO_ENTWICKLUNG": entwicklung}
-        with mock.patch.dict(os.environ, env), mock.patch.object(bot, "DevAgent", wraps=bot.DevAgent) as dev:
+        # Nur die Schalterlogik: ob SSH-Schlüssel oder Hostschlüssel auf diesem Rechner liegen, spielt hier keine Rolle
+        with mock.patch.dict(os.environ, env), mock.patch.object(bot, "DevAgent", wraps=bot.DevAgent) as dev, \
+             mock.patch.object(bot, "entwicklung_problem", return_value=None):
             session = await bot.build_session(FakeTransport(), Identity(USER, "Erika", rolle, "du"))
         await session.cleanup()
         return dev

@@ -85,7 +85,7 @@ from pipecat.utils.context.llm_context_summarization import (
 from activity import ActivityReporter
 from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, identity_from_body, install_access_gate
-from dev_agent import DevAgent, entwicklung_enabled, projects_dir_problem
+from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
 from memory import MemoryStore, Profile, ProfileDirectory, Recall, shared_database
 from pc_host import call_host_tool, host_client, host_tools, pc_host_enabled
@@ -338,7 +338,7 @@ async def build_session(transport, identity: Identity) -> Session:
     is_admin = identity.is_admin
     pc_enabled = is_admin and pc_host_enabled()
     entwicklung = is_admin and entwicklung_enabled()
-    if entwicklung and (problem := projects_dir_problem()):
+    if entwicklung and (problem := entwicklung_problem()):
         logger.error("Entwicklungsaufträge aus: {}", problem)
         entwicklung = False
     # PC-Steuerung je Sitzung standardmäßig aus; nur ein Admin schaltet sie in der UI ein.

@@ -4,9 +4,11 @@ Ausführen:  uv run python -m pytest -q test_auth_gate.py   (im Ordner voice-cor
 """
 
 import json
+import ssl
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 import httpx
 import jwt
@@ -34,13 +36,16 @@ HS_SECRET = "nur-ein-testgeheimnis-fuer-hs256-tokens"
 
 
 class FakeJwks:
-    """Steht für PyJWKClient: liefert immer den öffentlichen Testschlüssel."""
+    """Steht für PyJWKClient: liefert immer den öffentlichen Testschlüssel (oder wirft error)."""
 
-    def __init__(self):
+    def __init__(self, error=None):
         self.calls = 0
+        self.error = error
 
     def get_signing_key_from_jwt(self, token):
         self.calls += 1
+        if self.error:
+            raise self.error
         return SimpleNamespace(key=KEY.public_key())
 
 
@@ -160,6 +165,43 @@ class TokenTests(unittest.IsolatedAsyncioTestCase):
         reason = (await v.check(token(key=HS_SECRET, alg="HS256", exp=int(time.time()) - 120))).reason
         self.assertEqual(reason, "Anmeldung abgelaufen")
 
+    async def test_http_ausserhalb_von_loopback_nicht_eingerichtet(self):
+        for url in ("http://192.168.178.136:55321", "http://sokrates2:55321", "ftp://192.168.178.136", "192.168.178.136"):
+            with self.subTest(url=url):
+                v = TokenVerifier(url, None, jwks_client=FakeJwks())
+                self.assertFalse(v.configured)
+                result = await v.check(token())
+                self.assertEqual((result.user_id, result.status), (None, 401))
+                self.assertIn("https", result.reason)
+                self.assertEqual(v._jwks.calls, 0)  # nichts wird abgefragt
+
+    async def test_http_ueber_loopback_und_https_erlaubt(self):
+        for url in ("http://127.0.0.1:55321", "http://localhost:55321", "http://[::1]:55321", URL):
+            with self.subTest(url=url):
+                self.assertTrue(TokenVerifier(url, None, jwks_client=FakeJwks()).configured)
+
+    async def _nicht_erreichbar(self, v, t):
+        logs = []
+        with mock.patch("auth_gate.logger.warning", side_effect=lambda *a: logs.append(" ".join(map(str, a)))):
+            result = await v.check(t)
+        self.assertEqual(result, TokenCheck(None, "Anmeldedienst nicht erreichbar", 503))
+        self.assertTrue(logs)
+        self.assertFalse(any(t in line for line in logs))  # nie das Token ins Log
+        return logs
+
+    async def test_jwks_nicht_erreichbar_503(self):
+        for error in (jwt.PyJWKClientConnectionError("weg"), ssl.SSLCertVerificationError("fremdes Zertifikat")):
+            with self.subTest(error=type(error).__name__):
+                v = TokenVerifier(URL, None, jwks_client=FakeJwks(error=error))
+                logs = await self._nicht_erreichbar(v, token())
+                self.assertIn(type(error).__name__, logs[0])
+
+    async def test_gotrue_nicht_erreichbar_503(self):
+        def weg(request):
+            raise httpx.ConnectError("keine Verbindung", request=request)
+
+        await self._nicht_erreichbar(verifier(httpx.MockTransport(weg)), token(key=HS_SECRET, alg="HS256"))
+
 
 class GateTests(unittest.IsolatedAsyncioTestCase):
     async def test_gueltig_liefert_identitaet(self):
@@ -194,6 +236,14 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         d = await gate(FakeProfiles(error=DatabaseUnavailable("weg"))).authorize(token())
         self.assertIsNone(d.identity)
         self.assertEqual(d.status, 503)
+
+    async def test_anmeldedienst_nicht_erreichbar_503(self):
+        profiles = FakeProfiles({USER: profile()})
+        v = TokenVerifier(URL, None, jwks_client=FakeJwks(error=jwt.PyJWKClientConnectionError("weg")))
+        d = await AccessGate(v, profiles).authorize(token())
+        self.assertIsNone(d.identity)
+        self.assertEqual((d.status, d.reason), (503, "Anmeldedienst nicht erreichbar"))
+        self.assertEqual(profiles.calls, 0)
 
     async def test_unbekannter_fehler_fail_closed(self):
         d = await gate(FakeProfiles(error=RuntimeError("kaputt"))).authorize(token())

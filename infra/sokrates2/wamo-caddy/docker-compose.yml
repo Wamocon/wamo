@@ -1,0 +1,56 @@
+# HTTPS-Vorbau für den WAMO-Supabase (eigenes Compose-Projekt, getrennt von supabase-wamo und allen anderen Diensten).
+# Eingerichtet durch infra/sokrates2/wamo-tls-einrichten.sh, auf dem Server in /home/wamocon/wamo-tls/caddy.
+#
+#   https://192.168.178.136:55443  ->  Envoy des WAMO-Stacks (http, Port 55321)
+#
+# Der Container läuft als wamocon (1000:1000) ohne Linux-Capabilities und mit schreibgeschütztem Dateisystem.
+# Schreiben darf er nur in data/ (Serverzertifikate) und config/. Unter /ca sieht er nur Root-Zertifikat und
+# Zwischenzertifikat mit Schlüssel, nie den Schlüssel der Root.
+name: wamo-caddy
+
+services:
+  caddy:
+    # Offizielles Image, festgehalten über den Digest (Multi-Arch-Index, arm64 auf Sokrates-2)
+    image: caddy:2.11.2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d
+    container_name: wamo-caddy
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    # Das offizielle Image versieht caddy mit cap_net_bind_service; ohne diese Erlaubnis im
+    # Begrenzungssatz startet das Programm nicht. Gebraucht wird sie nicht (Port über 1024).
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # Nur IPv4 (kein docker-proxy auf [::]); die WAMO-Firewall regelt die Quellen.
+      - "0.0.0.0:55443:55443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Ordner statt Einzeldateien: ein geändertes Caddyfile wirkt nach "caddy reload" ohne Neustart
+      - ./etc:/etc/caddy:ro
+      # nur wamo-ca.crt, wamo-intermediate.crt und wamo-intermediate.key (der Root-Schlüssel bleibt in ../ca)
+      - ./ca:/ca:ro
+      - ./data:/data
+      - ./config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  default:
+    ipam:
+      config:
+        # Festes Netz: Die WAMO-Firewall erlaubt Port 55321 nur aus diesem Netz (und Loopback)
+        - subnet: 172.24.0.0/24

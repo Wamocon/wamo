@@ -1,0 +1,84 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /opt/wamo/waechter/dev_guard.py --project-dir /run/wamo/projekt --job-dir /run/wamo/zustand --freigabe-socket /run/wamo/zustand/freigabe.sock || exit 2"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /opt/wamo/waechter/dev_guard.py --nachher --project-dir /run/wamo/projekt --job-dir /run/wamo/zustand --freigabe-socket /run/wamo/zustand/freigabe.sock"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /opt/wamo/waechter/dev_guard.py --nachher --project-dir /run/wamo/projekt --job-dir /run/wamo/zustand --freigabe-socket /run/wamo/zustand/freigabe.sock"
+          }
+        ]
+      }
+    ]
+  },
+  "disableAllHooks": false,
+  "allowManagedHooksOnly": true,
+  "enabledPlugins": {
+    "ecc@ecc": true
+  },
+  "enableAllProjectMcpServers": false,
+  "strictPluginOnlyCustomization": [
+    "agents",
+    "mcp"
+  ],
+  "extraKnownMarketplaces": {
+    "ecc": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/affaan-m/ECC.git"
+      }
+    }
+  },
+  "permissions": {
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(gh repo delete:*)",
+      "Bash(gh secret:*)",
+      "Bash(gh auth:*)",
+      "Bash(vercel env:*)",
+      "Bash(vercel rm:*)",
+      "Bash(supabase projects delete:*)",
+      "Bash(npm unpublish:*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.claude.json)",
+      "Read(~/.netrc)",
+      "Read(~/.npmrc)",
+      "Read(**/.env)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/*.pfx)",
+      "Read(**/*.p12)",
+      "Read(**/*.kdbx)",
+      "Read(**/id_rsa)",
+      "Read(**/id_ed25519)"
+    ]
+  }
+}

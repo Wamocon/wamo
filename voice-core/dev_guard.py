@@ -5,7 +5,7 @@ Prompt, gilt die Freigabe-Tabelle:
 
   sofort     Code schreiben im Projektordner, Tests, lokale Commits, Preview-Deploys per CLI,
              lesende Werkzeuge (Read/Grep/Glob, lesende MCP-Werkzeuge von Supabase, Vercel,
-             GitHub und REA)
+             GitHub, Jira und REA)
   Freigabe   git push, Veröffentlichen (npm, Docker, PyPI, GitHub-Release, gh repo create --push),
              Produktions-Deploys, schreibende gh-api-Aufrufe, Uploads an fremde Server,
              WebFetch/WebSearch, jedes schreibende oder unbekannte MCP-Werkzeug, unbekannte
@@ -15,17 +15,35 @@ Prompt, gilt die Freigabe-Tabelle:
              selbst (über aufgelöste Pfade gegen REPO_ROOT), Freigabedaten und Umgebungsvariablen
 
 Freigabe-Aktionen werden abgelehnt und als Anfrage in <job-dir>/pending.jsonl notiert. Ein Admin
-gibt sie per Klick in der UI frei; dann steht der exakte Fingerabdruck einmalig in
-<job-dir>/approvals.json und der nächste identische Aufruf darf durch. Projekt- und Job-Ordner
+gibt sie per Klick in der UI frei; dann steht der exakte Fingerabdruck in <job-dir>/approvals.json
+und identische Aufrufe dürfen durch, bis einer davon wirklich ausgeführt wurde: derselbe Wächter läuft
+mit --nachher als PostToolUse-Hook und verbucht die Ausführung in approvals.json.used. Sperrt ein anderer
+Hook den Aufruf, bleibt die Freigabe also bestehen. Die Freigabedatei selbst wird nie umgeschrieben und
+darf schreibgeschützt sein. Grenze: Laufen zwei identische Aufrufe parallel (Claude Code startet Hooks
+gleichzeitig), sehen beide die Freigabe noch offen und dürfen durch; auf Sokrates-2 zählt der Dispatcher die
+tatsächlichen Ausführungen im Datenstrom mit und beendet den Lauf, wenn eine Freigabe öfter genutzt wurde. Projekt- und Job-Ordner
 kommen als Argumente (--project-dir, --job-dir) aus der Hook-Konfiguration, nicht aus der Umgebung.
+
+Auf Sokrates-2 läuft derselbe Wächter in der bubblewrap-Sandbox (infra/sokrates2/wamo-job.sh), als
+Kopie unter /opt/wamo/waechter/dev_guard.py (auf der schreibgeschützten Wurzel der Sandbox, nicht
+umbenennbar). REPO_ROOT ist dort /opt/wamo (die Installation selbst), der Hook steht in der root-eigenen
+managed-settings.json, und approvals.json ist schreibgeschützt eingehängt.
+
+Was der Wächter leistet und was nicht: Er verhindert, dass ein Auftrag Freigaben fälscht oder freigabepflichtige
+Werkzeugaufrufe ohne Klick ausführt, und er bremst offensichtliche Umwege. Gegen einen feindlichen Agenten
+(etwa nach einer Prompt-Injection) schützt er nicht vollständig: Die Token der Auftragsart liegen in der
+Sandbox in der Umgebung und sind über Umwege lesbar (/proc/self/environ, env -0, process.env, getenv, eine
+Skriptdatei, die das tut) und mit curl oder einem eigenen Programm nutzbar. Die Sperrmuster für diese Wege
+sind eine Bremse gegen versehentliches Ausgeben, kein Schutz. Die harte Grenze ist die Sandbox selbst (Dateisystem,
+Namensräume, Landlock, seccomp, Ausgangsfirewall); den Rest begrenzen eng zugeschnittene Token.
 
 Fail-closed: Jede unerwartete Ausnahme und ein Hänger über WATCHDOG_SECS enden mit Exit-Code 2.
 dev_agent.py startet den Hook zusätzlich über "... || exit 2", damit auch ein fehlendes Python
 oder ein Absturz vor main() blockiert, und prüft den Wächter vor jedem Auftrag mit einem Selbsttest.
 
 Grenzen: Diese Regeln sind eine Bremse, keine Sandbox. Wer als derselbe Windows-Benutzer Befehle
-ausführt, findet Umwege (Skriptdateien, cd-Ketten, Aliase). Die eigentliche Grenze ist eine
-Isolation auf Betriebssystemebene (eigener Benutzer oder Container, nur der Projektordner).
+ausführt (Betriebsart lokal), findet Umwege (Skriptdateien, cd-Ketten, Aliase). Die eigentliche Grenze
+ist die Isolation auf Betriebssystemebene (Betriebsart sokrates2).
 
 Nur Standardbibliothek: läuft mit dem Python des Voice-Cores als eigener Prozess.
 """
@@ -57,8 +75,9 @@ SECRET_PATH_RE = re.compile(
     r"(\.ssh[\\/]|\.aws[\\/]|\.azure[\\/]|\.kube[\\/]|\.gnupg[\\/]|\.git-credentials|\.npmrc\b|\.netrc\b|"
     r"\.pgpass\b|\.claude[\\/]\.credentials|\.claude\.json\b|\.config[\\/]gh[\\/]|\.docker[\\/]config\.json|"
     r"credentials\.json\b|[\\/]Login Data\b|[\\/]Cookies\b|\bid_(rsa|dsa|ecdsa|ed25519)(_sk)?\b|"
+    r"[\\/]proc[\\/][^\\/\s]+[\\/]environ\b|"
     r"(^|[\\/\s\"'=*])\.env(\.(?!example\b|sample\b|template\b|dist\b)[\w.-]+)?(?=$|[\\/\s\"'`;&|),*])|"
-    r"[^\s\"'\\/]*\.(pem|key|pfx|p12|kdbx)(?=$|[\s\"'`;&|),])|\*\.(pem|key|pfx|p12|kdbx)\b)",
+    r"(?<![^\s\"'\\/])[^\s\"'\\/]*\.(pem|key|pfx|p12|kdbx)(?=$|[\s\"'`;&|),])|\*\.(pem|key|pfx|p12|kdbx)\b)",
     re.IGNORECASE,
 )
 # Schreiben in diese Dateien ändert Git- oder Claude-Code-Verhalten (Aliase, Hooks, Einstellungen)
@@ -215,15 +234,20 @@ SHELL_BLOCKED = [
     (r"\bsupabase\s+(projects\s+delete|secrets|orgs)\b", "Supabase-Projekte/Secrets sind gesperrt"),
     (r"\b(npm|pnpm|yarn|bun)\s+unpublish\b", "Pakete zurückziehen ist gesperrt"),
     (r"\b(dropdb|drop\s+database)\b", "Datenbank löschen ist gesperrt"),
-    (r"\brm\s+(-{1,2}[a-z-]+\s+)*(/\*?|~[^\s]*|\$HOME\S*|\$\{HOME\}\S*|[A-Za-z]:[\\/]?\*?)(\s|$)",
+    (r"\brm\s+(?:-[a-z-]+\s+)*(/\*?|~[^\s]*|\$HOME\S*|\$\{HOME\}\S*|[A-Za-z]:[\\/]?\*?)(\s|$)",
      "Löschen außerhalb des Projekts ist gesperrt"),
     (r"Remove-Item\b.*\s(C:\\|~|\$env:USERPROFILE)(\s|\\?$)", "Löschen außerhalb des Projekts ist gesperrt"),
     (r"\b(curl|wget|iwr|Invoke-WebRequest)\b[^|]*\|\s*(sh|bash|iex|powershell|pwsh)\b",
      "Skripte aus dem Netz direkt ausführen ist gesperrt"),
-    (r"approvals\.json|pending\.jsonl|[\\/]\.jobs\b|\bWAMO_|os\.environ|\bprintenv\b|\benviron\b|"
-     r"\$env:|\benv:|Win32_Process|\bwmic\b",
+    (r"approvals\.json|pending\.jsonl|[\\/]\.jobs\b|[\\/]run[\\/]wamo\b|\bWAMO_|os\.environ|\bprintenv\b|"
+     r"\benviron\b|\$env:|\benv:|Win32_Process|\bwmic\b",
      "Zugriff auf Freigabedaten und Umgebungsvariablen ist gesperrt"),
     (r"\bGIT_CONFIG_", "Git-Konfiguration über Umgebungsvariablen ist gesperrt"),
+    # Zugangstoken in der Sandbox: gh, vercel und Claude Code lesen sie selbst, Befehle brauchen sie nie.
+    (r"\b(GH_TOKEN|GH_TOKEN_LESEN|GITHUB_TOKEN|VERCEL_TOKEN|SUPABASE_ACCESS_TOKEN|JIRA_API_KEY|JIRA_API_TOKEN|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_CUSTOM_HEADERS)\b|"
+     r"\bprocess\.env\b|\bgetenv\b|"
+     r"(^|[;&|(]\s*)(env|export\s+-p|declare\s+-[a-z]*[px][a-z]*|set|compgen\s+-[ev])\s*($|[;&|)>])",
+     "Zugriff auf Zugangstoken ist gesperrt"),
 ]
 SHELL_APPROVAL = [
     (r"\bgh\s+pr\s+merge\b", "Pull Request mergen"),
@@ -249,10 +273,16 @@ MCP_BLOCKED = {
         r"protection_bypass|revoke|token|kms|pause_project|delete|attack_challenge|bypass_ip|drain)",
         re.IGNORECASE),
     "github": re.compile(r"(delete|secret|archive)", re.IGNORECASE),
+    "jira": re.compile(r"(delete|remove|token)", re.IGNORECASE),
 }
 # Lesend klingende Namen, die trotzdem etwas freigeben oder abrufen lassen
 MCP_READ_EXCEPTIONS = re.compile(r"(access_to|deletion|share|token|key_?s?$|env)", re.IGNORECASE)
-MCP_READ_EXTRA = {"supabase": {"generate_typescript_types"}, "vercel": set(), "github": set()}
+MCP_READ_EXTRA = {
+    "supabase": {"generate_typescript_types"}, "vercel": set(), "github": set(),
+    "jira": {"jira_search", "confluence_search", "jira_batch_get_changelogs"},
+}
+# Der Jira-Server (mcp-atlassian) stellt seinen Werkzeugen das Produkt voran: jira_get_issue, confluence_get_page
+MCP_NAME_PREFIXES = {"jira": ("jira_", "confluence_")}
 
 # ---------- MCP: REA (rea-agents 6.5.0) ----------
 # Freigabepflichtig: verändert Geräte, Prozesse oder Dateien oder führt Code im Ziel aus.
@@ -359,7 +389,7 @@ SAFE_BUILTINS = {
 
 def fingerprint(tool_name: str, tool_input: dict) -> str:
     raw = tool_name + "\n" + json.dumps(tool_input, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()  # volle 256 Bit, kein Geburtstagsangriff
 
 
 def _mcp_parts(tool_name: str) -> tuple[str, str] | None:
@@ -443,10 +473,15 @@ def decide_rea(name: str, tool_input: dict) -> tuple[str, str]:
 
 
 def decide_mcp_service(service: str, name: str) -> tuple[str, str]:
-    """Supabase, Vercel, GitHub: Gesperrtes sperren, Lesendes erlauben, alles andere freigeben lassen."""
+    """Supabase, Vercel, GitHub, Jira: Gesperrtes sperren, Lesendes erlauben, alles andere freigeben lassen."""
     if MCP_BLOCKED[service].search(name):
         return "block", f"{service} {name} ist gesperrt"
-    readable = (name.lower().startswith(MCP_READ_PREFIXES) and not MCP_READ_EXCEPTIONS.search(name)) \
+    base = name.lower()
+    for prefix in MCP_NAME_PREFIXES.get(service, ()):
+        if base.startswith(prefix):
+            base = base[len(prefix):]
+            break
+    readable = (base.startswith(MCP_READ_PREFIXES) and not MCP_READ_EXCEPTIONS.search(name)) \
         or name in MCP_READ_EXTRA[service]
     if readable:
         return "allow", ""
@@ -531,7 +566,7 @@ def decide(tool_name: str, tool_input: dict, project_dir: Path | None) -> tuple[
 
     if _is_rea(server):
         return decide_rea(name, tool_input)
-    for service in ("supabase", "vercel", "github"):
+    for service in ("supabase", "vercel", "github", "jira"):
         if service in server:
             return decide_mcp_service(service, name)
     return "approval", f"Unbekannter MCP-Dienst {server}"  # fail-safe
@@ -549,18 +584,59 @@ def write_json_atomic(path: Path, data: object) -> None:
         raise
 
 
-def _consume_approval(fp: str, approvals_path: Path | None) -> bool:
+def _granted(fp: str, approvals_path: Path | None) -> int:
+    """Wie oft der Fingerabdruck in approvals.json steht (zweimal freigegeben heißt zweimal darin)."""
     if not approvals_path or not approvals_path.is_file():
-        return False
+        return 0
     try:
         approved = json.loads(approvals_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return 0
+    return sum(1 for a in approved if a == fp) if isinstance(approved, list) else 0
+
+
+def _used_path(approvals_path: Path) -> Path:
+    return approvals_path.with_name(approvals_path.name + ".used")
+
+
+def _approval_open(fp: str, approvals_path: Path | None) -> bool:
+    """Vorher (PreToolUse): ist eine Freigabe für genau diesen Aufruf noch offen? Liest nur."""
+    granted = _granted(fp, approvals_path)
+    if not granted:
         return False
-    if not isinstance(approved, list) or fp not in approved:
+    try:
+        used = _used_path(approvals_path).read_text(encoding="utf-8").split()
+    except FileNotFoundError:
+        used = []
+    return used.count(fp) < granted
+
+
+def _record_use(fp: str, approvals_path: Path | None) -> bool:
+    """Nachher (PostToolUse und PostToolUseFailure): der freigegebene Schritt lief, die Freigabe ist
+    verbraucht. Erst hier, nicht schon beim Durchlassen: sperrt ein anderer Hook (etwa ein ECC-Hook) den
+    Aufruf, bleibt die Freigabe für den nächsten identischen Versuch bestehen. approvals.json wird nie
+    umgeschrieben (in der Sandbox auf Sokrates-2 ist sie schreibgeschützt), verbraucht wird zeilenweise
+    in approvals.json.used."""
+    granted = _granted(fp, approvals_path)
+    if not granted:
         return False
-    approved.remove(fp)  # einmalig
-    write_json_atomic(approvals_path, approved)
+    with open(_used_path(approvals_path), "a+", encoding="utf-8") as f:
+        _lock(f)
+        f.seek(0)
+        if f.read().split().count(fp) >= granted:
+            return False
+        f.seek(0, os.SEEK_END)
+        f.write(fp + "\n")
     return True
+
+
+def _lock(f) -> None:
+    """Exklusive Sperre bis zum Schließen (parallele Hooks); unter Windows ohne Sperre wie bisher."""
+    try:
+        import fcntl
+    except ImportError:
+        return
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
 
 
 def _deny(reason: str) -> None:
@@ -573,20 +649,50 @@ def _deny(reason: str) -> None:
     }, ensure_ascii=False))
 
 
-def parse_args(argv: list[str]) -> tuple[Path | None, Path | None]:
-    """--project-dir <pfad> --job-dir <pfad> (beide optional; ohne Projektordner kein Schreiben)."""
+def parse_args(argv: list[str]) -> tuple[Path | None, Path | None, bool, str | None]:
+    """[--nachher] --project-dir <pfad> --job-dir <pfad> [--freigabe-socket <pfad>]. Ordner optional (ohne
+    Projektordner kein Schreiben). --nachher: PostToolUse-Hook, verbucht nur ausgeführte Freigaben.
+    --freigabe-socket: Freigaben werden über diesen Unix-Socket beim Dispatcher reserviert und bestätigt
+    (Sandbox auf Sokrates-2); ohne ihn gilt das dateibasierte Schema (lokal)."""
     values: dict[str, str] = {}
+    nachher = False
     it = iter(argv)
     for arg in it:
-        if arg in ("--project-dir", "--job-dir"):
+        if arg in ("--project-dir", "--job-dir", "--freigabe-socket"):
             values[arg] = next(it, "")
+        elif arg == "--nachher":
+            nachher = True
         else:
             raise ValueError(f"unbekanntes Argument {arg!r}")
     project, job = values.get("--project-dir"), values.get("--job-dir")
-    return (Path(project) if project else None), (Path(job) if job else None)
+    return (Path(project) if project else None), (Path(job) if job else None), nachher, values.get("--freigabe-socket")
 
 
-def _run(raw: str, project_dir: Path | None, job_dir: Path | None) -> int:
+def _socket_anfrage(socket_path: str, op: str, fp: str) -> bool:
+    """Eine Reservierung, Bestätigung oder Rückgabe beim Dispatcher (M5). True bei ok. Fail-closed: bei jedem
+    Fehler False (eine nicht erreichbare Freigabestelle heißt: keine Freigabe)."""
+    import socket as s
+    try:
+        with s.socket(s.AF_UNIX, s.SOCK_STREAM) as c:
+            c.settimeout(4)
+            c.connect(socket_path)
+            c.sendall((json.dumps({"op": op, "fp": fp}) + "\n").encode("utf-8"))
+            antwort = c.makefile("rb").readline(4096)
+        return json.loads(antwort).get("ok") is True
+    except (OSError, ValueError):
+        return False
+
+
+def _reserve(fp: str, job_dir: Path | None, socket_path: str | None) -> bool:
+    if socket_path:
+        return _socket_anfrage(socket_path, "reserve", fp)
+    return _approval_open(fp, job_dir / "approvals.json") if job_dir is not None else False
+
+
+def _run(raw: str, project_dir: Path | None, job_dir: Path | None, nachher: bool = False,
+         socket_path: str | None = None) -> int:
+    if nachher:
+        return _run_nachher(raw, project_dir, job_dir, socket_path)
     try:
         event = json.loads(raw or "{}")
     except json.JSONDecodeError:
@@ -605,17 +711,65 @@ def _run(raw: str, project_dir: Path | None, job_dir: Path | None) -> int:
         return 0
 
     fp = fingerprint(tool_name, tool_input or {})
+    if _reserve(fp, job_dir, socket_path):
+        return 0  # reserviert; bestätigt oder zurückgegeben wird erst nachher (_run_nachher)
     if job_dir is not None:
-        if _consume_approval(fp, job_dir / "approvals.json"):
-            return 0
+        eintrag = {"id": fp, "grund": why, "tool": tool_name, "input": tool_input or {}}
+        if _skript_befehl(tool_name, tool_input):
+            eintrag["warnung"] = "Dieser Befehl führt Projektcode aus (Skript, npm, make); Inhalt genau prüfen."
         with open(job_dir / "pending.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps({"id": fp, "grund": why, "tool": tool_name, "input": tool_input or {}},
-                               ensure_ascii=False) + "\n")
+            f.write(json.dumps(eintrag, ensure_ascii=False) + "\n")
     _deny(
         f"FREIGABE NÖTIG ({why}). Ein Admin muss das in der Oberfläche freigeben. Mach alles andere "
         "fertig, führe diesen Schritt NICHT anders aus und nenne ihn am Ende deiner Antwort."
     )
     return 0
+
+
+SKRIPT_BEFEHL_RE = re.compile(
+    r"(^|[;&|]|\s)(\./|sh\s|bash\s|zsh\s|source\s|\.\s|make\b|npm\s+(run|exec|start|test)|pnpm\s+(run|exec)|"
+    r"yarn\s+(run|\w)|npx\s|node\s|python[0-9.]*\s|uv\s+run|poetry\s+run|pipenv\s+run|cargo\s+(run|test)|"
+    r"go\s+(run|test)|rake\b|gradlew|mvn\b|just\b|task\b)", re.IGNORECASE)
+
+
+def _skript_befehl(tool_name: str, tool_input: object) -> bool:
+    """Führt ein Shell-Befehl Projektcode aus (statt eines in sich geschlossenen Befehls wie git push)?
+    Für die Warnung auf der Freigabekarte (M5)."""
+    if tool_name not in SHELL_TOOLS or not isinstance(tool_input, dict):
+        return False
+    return bool(SKRIPT_BEFEHL_RE.search(str(tool_input.get("command", ""))))
+
+
+def _run_nachher(raw: str, project_dir: Path | None, job_dir: Path | None, socket_path: str | None = None) -> int:
+    """PostToolUse/PostToolUseFailure: War der Aufruf freigabepflichtig, wird die Reservierung jetzt bestätigt
+    (der Schritt lief) oder zurückgegeben (ein anderer Hook hat ihn gesperrt). Kann nichts mehr sperren."""
+    event = json.loads(raw or "{}")
+    if not isinstance(event, dict):
+        return 0
+    tool_name, tool_input = str(event.get("tool_name", "")), event.get("tool_input")
+    if decide(tool_name, tool_input, project_dir)[0] != "approval":
+        return 0
+    fp = fingerprint(tool_name, tool_input or {})
+    gelaufen = tool_ran(event)
+    if socket_path:
+        _socket_anfrage(socket_path, "commit" if gelaufen else "release", fp)
+    elif gelaufen and job_dir is not None:
+        _record_use(fp, job_dir / "approvals.json")
+    return 0
+
+
+HOOK_BLOCKED_RE = re.compile(r"^\s*(Error:\s*)?(<tool_use_error>\s*)?PreToolUse:\S* hook (error|blocked)")
+
+
+def tool_ran(event: dict) -> bool:
+    """Lief der Aufruf wirklich? Sperrt ein PreToolUse-Hook per Exit-Code (etwa ein ECC-Hook), meldet
+    Claude Code trotzdem PostToolUse, mit "Error: PreToolUse:<Werkzeug> hook error: ..." als Antwort.
+    Im Zweifel gilt der Aufruf als gelaufen (Freigabe verbraucht, nie doppelt nutzbar)."""
+    for key in ("tool_response", "error"):
+        value = event.get(key)
+        if isinstance(value, str) and HOOK_BLOCKED_RE.match(value):
+            return False
+    return True
 
 
 def _watchdog() -> None:
@@ -629,9 +783,9 @@ def main(argv: list[str] | None = None) -> int:
     timer.daemon = True
     timer.start()
     try:
-        project_dir, job_dir = parse_args(sys.argv[1:] if argv is None else argv)
+        project_dir, job_dir, nachher, socket_path = parse_args(sys.argv[1:] if argv is None else argv)
         raw = sys.stdin.buffer.read().decode("utf-8", "replace")
-        return _run(raw, project_dir, job_dir)
+        return _run(raw, project_dir, job_dir, nachher, socket_path)
     except BaseException as e:  # fail-closed: lieber blockieren als durchlassen
         print(f"GESPERRT: Der Wächter ist auf einen Fehler gelaufen ({type(e).__name__}). "
               "Diesen Schritt nicht ausführen und nicht umgehen.", file=sys.stderr)
