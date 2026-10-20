@@ -12,7 +12,19 @@
 #
 # Ports:  55321 API und Auth (Envoy) | 55322 Postgres ueber Supavisor (Session) | 56543 Supavisor (Transaktion)
 # Danach: wamo-tls-einrichten.sh (HTTPS 55443, eigene CA, Pooler-TLS) und mit sudo wamo-firewall-einrichten.sh.
+#
+# Sitzungsgrenzen von GoTrue (Schritt 3b, bei jedem Lauf): Zeitbox SITZUNG_ZEITBOX (Standard 168h, wie
+# WAMO_ANMELDUNG_MAX_STUNDEN im Voice-Core) und Inaktivitaet SITZUNG_INAKTIV (Standard 72h) als SESSIONS_TIMEBOX und
+# SESSIONS_INACTIVITY_TIMEOUT in der .env, an den Auth-Container ueber supabase-wamo/docker-compose.wamo-sitzungen.yml
+# (GOTRUE_SESSIONS_TIMEBOX, GOTRUE_SESSIONS_INACTIVITY_TIMEOUT; Namen geprueft gegen gotrue v2.196.0).
+# Nur diese Grenzen fuer einen laufenden Stack setzen (ohne SRC; erstellt nur den Auth-Container neu):
+#   NUR_SITZUNGSGRENZEN=1 bash supabase-wamo-einrichten.sh
 set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SITZUNG_ZEITBOX="${SITZUNG_ZEITBOX:-168h}"
+SITZUNG_INAKTIV="${SITZUNG_INAKTIV:-72h}"
+NUR_SITZUNGSGRENZEN="${NUR_SITZUNGSGRENZEN:-0}"
 
 SRC="${SRC:-}"
 DST="${DST:-/home/wamocon/supabase-wamo}"
@@ -22,7 +34,14 @@ PG_PORT="${PG_PORT:-55322}"
 TX_PORT="${TX_PORT:-56543}"
 SUBNET="${SUBNET:-172.23.0.0/16}"
 
-[ -n "$SRC" ] && [ -f "$SRC/docker-compose.yml" ] || { echo "Vorlage fehlt: SRC auf den Ordner eines offiziellen Supabase-Self-Hosting-Stacks setzen." >&2; exit 1; }
+if [ "$NUR_SITZUNGSGRENZEN" = 1 ]; then
+  [ -f "$DST/.env" ] || { echo "$DST/.env fehlt: zuerst den Stack einrichten (mit SRC)." >&2; exit 1; }
+else
+  [ -n "$SRC" ] && [ -f "$SRC/docker-compose.yml" ] || { echo "Vorlage fehlt: SRC auf den Ordner eines offiziellen Supabase-Self-Hosting-Stacks setzen." >&2; exit 1; }
+fi
+
+# Wert in der .env des Stacks setzen (im aktuellen Ordner; Werte nie ausgeben)
+set_env() { if grep -q "^$1=" .env; then sed -i "s|^$1=.*$|$1=$2|" .env; else echo "$1=$2" >> .env; fi; }
 
 if [ ! -f "$DST/.env" ]; then
   echo "== 1. Konfiguration kopieren (ohne Daten und Geheimnisse)"
@@ -50,7 +69,6 @@ if [ ! -f "$DST/.env" ]; then
   sh utils/generate-keys.sh --update-env >/dev/null 2>&1
   sh utils/add-new-auth-keys.sh --update-env >/dev/null 2>&1
   rm -f .env.old
-  set_env() { if grep -q "^$1=" .env; then sed -i "s|^$1=.*$|$1=$2|" .env; else echo "$1=$2" >> .env; fi; }
   set_env SUPABASE_PUBLIC_URL "http://${HOST_IP}:${API_PORT}"
   set_env API_EXTERNAL_URL "http://${HOST_IP}:${API_PORT}/auth/v1"
   set_env SITE_URL "http://localhost:3000"
@@ -69,6 +87,41 @@ if [ ! -f "$DST/.env" ]; then
 else
   echo "== $DST/.env existiert, Kopie und Schluesselerzeugung werden uebersprungen"
   cd "$DST"
+fi
+
+echo "== 3b. Sitzungsgrenzen von GoTrue (Zeitbox $SITZUNG_ZEITBOX, Inaktivitaet $SITZUNG_INAKTIV)"
+for dauer in "$SITZUNG_ZEITBOX" "$SITZUNG_INAKTIV"; do
+  [[ "$dauer" =~ ^[1-9][0-9]{0,3}h$ ]] || { echo "Ungueltige Dauer $dauer (Form 168h, 1h bis 9999h)." >&2; exit 1; }
+done
+set_env SESSIONS_TIMEBOX "$SITZUNG_ZEITBOX"
+set_env SESSIONS_INACTIVITY_TIMEOUT "$SITZUNG_INAKTIV"
+compose_file="$(grep -m1 '^COMPOSE_FILE=' .env | cut -d= -f2- || true)"
+compose_file="${compose_file:-docker-compose.yml}"
+pruef_args=()
+while IFS= read -r f; do
+  [ -n "$f" ] && [ "$f" != docker-compose.wamo-sitzungen.yml ] && pruef_args+=(-f "$f")
+done < <(tr ':' '\n' <<<"$compose_file")
+# Ergaenzung vorab gegen die uebrigen Compose-Dateien pruefen (-q: ohne Ausgabe, also ohne Werte)
+docker compose "${pruef_args[@]}" -f "$HERE/supabase-wamo/docker-compose.wamo-sitzungen.yml" config -q
+install -m 644 "$HERE/supabase-wamo/docker-compose.wamo-sitzungen.yml" docker-compose.wamo-sitzungen.yml
+case ":$compose_file:" in
+  *:docker-compose.wamo-sitzungen.yml:*) ;;
+  *) set_env COMPOSE_FILE "${compose_file}:docker-compose.wamo-sitzungen.yml" ;;
+esac
+chmod 600 .env
+if [ "$NUR_SITZUNGSGRENZEN" = 1 ]; then
+  # Nur der Auth-Container wird neu erstellt; alle anderen Dienste laufen weiter
+  docker compose up -d --no-deps auth
+  for i in $(seq 1 30); do
+    zustand="$(docker inspect --format '{{.State.Health.Status}}' wamo-supabase-auth 2>/dev/null || true)"
+    [ "$zustand" = healthy ] && break
+    sleep 2
+  done
+  echo "  Auth: ${zustand:-unbekannt}"
+  # Nur Namen, nie Werte: sind beide Grenzen im Container angekommen?
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' wamo-supabase-auth | cut -d= -f1 \
+    | grep -E '^GOTRUE_SESSIONS_(TIMEBOX|INACTIVITY_TIMEOUT)$' | sed 's/^/  gesetzt: /'
+  exit 0
 fi
 
 echo "== 4. Geheimnisse pruefen (nur ob gesetzt und neu, ohne Werte)"

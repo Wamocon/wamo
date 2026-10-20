@@ -7,10 +7,13 @@ import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type Betriebsart
 import { pcAutoLesen } from "@/lib/einstellungen";
 import { parseServerMessage, type Auftrag } from "@/lib/nachrichten";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
+import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
 import { getSupabase } from "@/lib/supabase";
+import { sollAusblenden, type SoftStop } from "@/lib/weicherStopp";
 import {
   HISTORY,
   applyServerMessage,
+  entferneAblauf,
   entferneMemo,
   gesprochen,
   historyRef,
@@ -79,8 +82,6 @@ function senden(client: PipecatClient, msg: ClientMessage) {
   client.sendClientMessage(msg.type, msg.data);
 }
 
-type SoftStop = { armedAt: number | null; fading: boolean };
-
 /** WAMOs Stimme in 140 ms ausblenden (weicher Stopp bei Unterbrechung). */
 function fadeOutAudio(audio: HTMLAudioElement | null, state: SoftStop) {
   state.fading = true;
@@ -128,18 +129,26 @@ function userText(text: string, final: boolean) {
   });
 }
 
-/** Statuscode und Begründung aus einem Startfehler lesen. client-js lehnt bei HTTP-Fehlern mit der
- * Response selbst ab; RTVIError (z. B. StartBotError) trägt nur den Status. */
-async function startFehler(e: unknown): Promise<{ status?: number; detail?: string; name?: string }> {
+/** Der Kern verlangt eine neue Anmeldung (zu alt): lokal abmelden, die Anmeldemaske zeigt den Grund. */
+function neuAnmelden(grund: string) {
+  merkeAbmeldeGrund(grund);
+  void getSupabase()?.auth.signOut({ scope: "local" }).catch(() => undefined);
+}
+
+/** Statuscode und Begründung aus einem Startfehler lesen. Teils lehnt client-js mit der Response selbst ab; beim
+ * Start (StartBotError) trägt der RTVIError Status und den Text des Kerns (detail), aber nicht dessen code. */
+async function startFehler(e: unknown): Promise<{ status?: number; detail?: string; name?: string; code?: string }> {
   if (typeof Response !== "undefined" && e instanceof Response) {
     let detail: string | undefined;
+    let code: string | undefined;
     try {
-      const body = (await e.clone().json()) as { detail?: unknown };
+      const body = (await e.clone().json()) as { detail?: unknown; code?: unknown };
       if (typeof body?.detail === "string") detail = body.detail.slice(0, 200);
+      if (typeof body?.code === "string") code = body.code.slice(0, 40);
     } catch {
       // kein JSON: dann ohne Begründung
     }
-    return { status: e.status, detail };
+    return { status: e.status, detail, code };
   }
   if (e instanceof RTVIError) return { status: e.status, detail: e.message, name: e.name };
   const name = (e as { name?: string } | null)?.name;
@@ -195,6 +204,9 @@ export function useWamo(): WamoAktionen {
   const pcAuto = useRef({ aktiv: false, gesendet: false, manuellAus: false, wartet: false });
   // Rechnername dieses Geräts (nur Desktop-App), Vergleich mit betrieb.pcName im Büro
   const geraet = useRef<string | null>(null);
+  // Grund, mit dem der Kern die Sitzung beendet hat (sitzung_beendet, z. B. neue Sitzung dieses Profils): beim
+  // folgenden Trennen bleibt diese Meldung stehen statt "Verbindung getrennt"
+  const kernEnde = useRef<string | null>(null);
 
   /**
    * Gemeinsamer Abbau für "Gespräch beenden", Verbindungsabbruch und Verlassen der Seite:
@@ -223,12 +235,16 @@ export function useWamo(): WamoAktionen {
     lv.user = 0;
     lv.bot = 0;
     lv.cut = false;
+    const vomKern = kernEnde.current;
+    kernEnde.current = null;
     if (grund === "unmount") return;
     wamo.set((s) => {
       const verfallen = s.approvals.length > 0 || s.auftraege.length > 0;
       const war = s.presence !== "offline";
       let error = s.error;
-      if (grund === "getrennt" && war) {
+      if (grund === "getrennt" && war && vomKern !== null) {
+        error = { art: "hinweis", text: vomKern ? `Sitzung beendet: ${vomKern}` : "Sitzung vom Voice-Core beendet." };
+      } else if (grund === "getrennt" && war) {
         error = {
           art: "verbindung",
           text: verfallen
@@ -270,6 +286,11 @@ export function useWamo(): WamoAktionen {
         for (const v of meter.buf) sum += v * v;
         // RMS ungefähr auf die Skala des Mikrofonpegels bringen (Sprache ~0,1 bis 0,3)
         lv.bot = Math.min(1, Math.sqrt(sum / meter.buf.length) * 2);
+      }
+      // Weicher Stopp nach "leiser_stopp": in der nächsten Wortpause, spätestens nach 600 ms ausblenden.
+      // Hier im Takt mit dem eigenen Pegel, weil SmallWebRTC keinen Pegel der Gegenseite meldet.
+      if (sollAusblenden(softStop.current, lv.bot, performance.now())) {
+        fadeOutAudio(audioRef.current, softStop.current);
       }
       const s = { ...lv };
       lv.cut = false; // cutAt bleibt für den Kern stehen
@@ -405,7 +426,6 @@ export function useWamo(): WamoAktionen {
         }));
         return;
       }
-      const fadeOut = () => fadeOutAudio(audioRef.current, softStop.current);
       const restoreVolume = () => restoreAudio(audioRef.current, softStop.current);
       const client = new PipecatClient({
         // WavMediaManager statt des Standards DailyMediaManager: Mikrofon rein lokal per getUserMedia.
@@ -496,15 +516,6 @@ export function useWamo(): WamoAktionen {
           onLocalAudioLevel: (level) => {
             if (aktuell()) levelsRef.current.user = level;
           },
-          onRemoteAudioLevel: (level) => {
-            if (!aktuell()) return;
-            levelsRef.current.bot = level;
-            // Weicher Stopp: in der nächsten Wortpause (oder spätestens nach 600 ms) ausblenden
-            const armed = softStop.current.armedAt;
-            if (armed && !softStop.current.fading && (level < 0.015 || performance.now() - armed > 600)) {
-              fadeOut();
-            }
-          },
           onTrackStarted: (track, participant) => {
             if (!aktuell() || participant?.local || track.kind !== "audio") return;
             if (!audioRef.current) audioRef.current = new Audio();
@@ -528,7 +539,11 @@ export function useWamo(): WamoAktionen {
             const msg = parseServerMessage(data);
             if (!msg) return; // unbekannte oder unvollständige Nachricht: ignorieren
             if (msg.type === "leiser_stopp") softStop.current.armedAt = performance.now();
-            else applyServerMessage(msg);
+            else {
+              if (msg.type === "sitzung_beendet") kernEnde.current = msg.grund;
+              applyServerMessage(msg);
+              if (msg.type === "sitzung_beendet" && msg.anmelden) neuAnmelden(msg.grund || "Bitte neu anmelden.");
+            }
           },
           onError: (msg) => {
             if (!aktuell()) return;
@@ -552,6 +567,13 @@ export function useWamo(): WamoAktionen {
         const { data } = supabase ? await supabase.auth.getSession() : { data: { session: null } };
         if (!aktuell()) return;
         const session = data.session;
+        if (session && anmeldungAbgelaufen(session.access_token, Date.now(), maxStundenHier())) {
+          // zu alt: gar nicht erst verbinden, sondern abmelden (die Anmeldemaske nennt den Grund)
+          clientRef.current = null;
+          wamo.set((s) => ({ ...s, presence: "offline" }));
+          neuAnmelden("Deine Anmeldung ist abgelaufen. Bitte neu anmelden.");
+          return;
+        }
         const headers = new Headers(session ? { Authorization: `Bearer ${session.access_token}` } : {});
         authHeaders.current = headers;
         tokenAblauf.current = session?.expires_at ? session.expires_at * 1000 : null;
@@ -563,8 +585,19 @@ export function useWamo(): WamoAktionen {
           void client.disconnect().catch(() => undefined);
           return; // vom Nutzer abgebrochen: keine Meldung
         }
-        const { status, detail, name } = await startFehler(e);
+        const { status, detail, name, code } = await startFehler(e);
         if (!aktuell()) return;
+        // Der Kern meldet code anmeldung_zu_alt; client-js reicht beim Start nur den Text (detail) weiter
+        if (status === 401 && (code === "anmeldung_zu_alt" || /Anmeldung älter als/.test(detail ?? ""))) {
+          // Erneuern hilft nicht (gemessen ab Passwort und Code): abmelden statt erneut versuchen
+          clientRef.current = null;
+          authHeaders.current = null;
+          tokenAblauf.current = null;
+          void client.disconnect().catch(() => undefined);
+          wamo.set((s) => ({ ...s, presence: "offline" }));
+          neuAnmelden("Deine Anmeldung ist zu alt. Bitte neu anmelden.");
+          return;
+        }
         if (status === 401 && !erneut) {
           // einmal die Sitzung erneuern und mit frischem Token und neuem Client wiederholen
           const supabase = getSupabase();
@@ -586,6 +619,17 @@ export function useWamo(): WamoAktionen {
   // Die Karte verschwindet erst, wenn das Senden geklappt hat.
   const decide = useCallback((a: Approval, ja: boolean) => {
     const client = clientRef.current;
+    if (a.ablauf !== undefined && Date.now() > a.ablauf) {
+      // abgelaufen: nicht mehr senden (der Kern würde ablehnen), Karte weg und klar sagen
+      entferneAblauf(a);
+      wamo.set((s) => ({
+        ...s,
+        approvals: s.approvals.filter((x) => !(x.job === a.job && x.id === a.id)),
+        ansage: `Freigabe abgelaufen: ${a.grund}`,
+      }));
+      setFehler({ art: "hinweis", text: "Die Freigabe ist abgelaufen; am PC ist nichts passiert." });
+      return false;
+    }
     if (!client || !istOnline(wamo.get())) {
       setFehler({ art: "verbindung", text: "Keine Verbindung: Die Freigabe konnte nicht gesendet werden." });
       return false;
@@ -596,6 +640,7 @@ export function useWamo(): WamoAktionen {
       setFehler({ art: "sonst", text: "Die Entscheidung konnte nicht gesendet werden. Bitte noch einmal versuchen." });
       return false;
     }
+    entferneAblauf(a);
     wamo.set((s) => ({
       ...s,
       approvals: s.approvals.filter((x) => !(x.job === a.job && x.id === a.id)),

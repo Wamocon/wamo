@@ -133,6 +133,36 @@ class SwitchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.build("admin", "an")).called)
 
 
+class PcFreigabeWiringTests(unittest.IsolatedAsyncioTestCase):
+    """Freigabeweg für PC-Aktionen: nur Sitzungen mit PC-Werkzeugen (admin) bekommen ihn."""
+
+    async def build(self, rolle, pc):
+        class Client:
+            async def close(self):
+                pass
+
+        gebaut = []
+        echt = bot.PcFreigaben
+
+        def merken(*args, **kwargs):
+            gebaut.append(echt(*args, **kwargs))
+            return gebaut[-1]
+
+        with mock.patch.dict(os.environ, DUMMY_ENV), mock.patch.object(bot, "pc_host_fuer", return_value=pc), \
+             mock.patch.object(bot, "host_client", return_value=Client()), \
+             mock.patch.object(bot, "host_tools", mock.AsyncMock(return_value=None)), \
+             mock.patch.object(bot, "PcFreigaben", side_effect=merken):
+            session = await bot.build_session(FakeTransport(), Identity(USER, "Erika", rolle, "du"))
+        await session.cleanup()
+        return gebaut
+
+    async def test_admin_mit_pc_hat_den_freigabeweg(self):
+        self.assertEqual(len(await self.build("admin", True)), 1)
+
+    async def test_ohne_pc_werkzeuge_kein_freigabeweg(self):
+        self.assertEqual(await self.build("mitglied", False), [])
+
+
 class PcGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_gate_refuses_when_off_and_marks_foreign_content(self):
         from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -206,6 +236,19 @@ class SessionGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await g.check())
         now[0] = 120 * 60
         self.assertIn("Sitzungsdauer", await g.check())
+
+    async def test_login_age_ends_session_and_asks_for_new_login(self):
+        now = [0.0]
+        wand = [1_760_000_000.0]
+        ident = Identity(USER, "Erika", "admin", "du", anmeldung=wand[0] - 167 * 3600)
+        g = bot.SessionGuard(ident, self.Lookup(self.profile()), interval=60, max_secs=120 * 60,
+                             max_anmeldung_secs=168 * 3600, clock=lambda: now[0], wanduhr=lambda: wand[0])
+        self.assertIsNone(await g.check())
+        self.assertFalse(g.neu_anmelden)
+        wand[0] += 3601
+        reason = await g.check()
+        self.assertIn("168 Stunden", reason)
+        self.assertTrue(g.neu_anmelden)
 
     async def test_db_errors_tolerated_three_times(self):
         now = [0.0]

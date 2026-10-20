@@ -363,6 +363,26 @@ ssh sokrates2 "sudo journalctl -u wamo-core -n 50"               # INFO, ohne Ge
 
 Ein Update des Kerns ist `verteilen` und erneut `wamo-core-einrichten.sh` (ersetzt Code und venv, startet neu).
 
+## 11. Freigaben für PC-Aktionen und Sitzungsgrenzen (vorbereitet am 20.10.2026, noch nicht ausgerollt)
+
+| Baustein | Ort | Zweck |
+| --- | --- | --- |
+| Freigabe-Schlüssel | PC `%LOCALAPPDATA%\WAMO\host-freigabe`, Kern `WAMO_PC_HOST_FREIGABE` in `/etc/wamo/core.env` | zweites Geheimnis neben dem Host-Token; nur damit führt der Host eine freigegebene kritische Aktion aus (`freigabe_entscheiden`, nie für das Sprachmodell). Fehlt er, startet der Host trotzdem, gibt aber nichts frei |
+| Kern-Einstellungen | `/etc/wamo/core.env` | `WAMO_SITZUNG_EINZELN` (eine Sitzung je Profil, Standard an), `WAMO_ANMELDUNG_MAX_STUNDEN` (Standard 168); `wamo-core-env` kennt die neuen Namen erst nach `wamo-core-einrichten.sh` |
+| GoTrue | `/home/wamocon/supabase-wamo/.env` und `docker-compose.wamo-sitzungen.yml` | `GOTRUE_SESSIONS_TIMEBOX` (168h) und `GOTRUE_SESSIONS_INACTIVITY_TIMEOUT` (72h), geprüft gegen gotrue v2.196.0; erstellt nur den Auth-Container neu |
+
+```bash
+# PC: Freigabe-Schlüssel anlegen (Token bleibt), Überwacher dabei neu starten
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1 -FreigabeNeu
+# Kern: Code und Helfer aktualisieren (startet wamo-core neu), dann Token und Freigabe-Schlüssel übertragen
+python scripts/wamo_kern_sokrates2.py verteilen
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-einrichten.sh"
+python scripts/wamo_kern_sokrates2.py token --neustart
+# GoTrue: Sitzungsgrenzen (Werte anpassbar mit SITZUNG_ZEITBOX=168h SITZUNG_INAKTIV=72h)
+ssh sokrates2 "NUR_SITZUNGSGRENZEN=1 bash ~/wamo-infra/supabase-wamo-einrichten.sh"
+python scripts/wamo_kern_sokrates2.py status                     # WAMO_PC_HOST_FREIGABE: gesetzt
+```
+
 ---
 
 WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn

@@ -19,8 +19,20 @@ export type LevelSample = { user: number; bot: number; cut: boolean; speaker: nu
 /** Verlauf der Stimmlinie; seq zählt jeden neuen Abtastwert (VoiceLine zeichnet nur dann neu). */
 export type LevelHistory = { samples: LevelSample[]; seq: number };
 
-/** Aktion eines Entwicklungsauftrags, die das angemeldete Profil per Klick freigeben muss. */
-export type Approval = { job: string; projekt: string; id: string; grund: string; detail: string; von?: string };
+/** Aktion, die das angemeldete Profil per Klick freigeben muss: Entwicklungsauftrag oder kritische PC-Aktion
+ * (job "pc"). ziel: Zielanwendung; ablauf: Zeitpunkt (Date.now), ab dem die Freigabe verfällt. */
+export type Approval = {
+  job: string;
+  projekt: string;
+  id: string;
+  grund: string;
+  detail: string;
+  von?: string;
+  ziel?: string;
+  /** Begründung des Modells, getrennt von dem, was ausgeführt wird */
+  anlass?: string;
+  ablauf?: number;
+};
 
 /** Live-Untertitel: Nutzerzeile und der aktuelle WAMO-Zug (Karaoke über spoken). */
 export type Caption = {
@@ -266,10 +278,44 @@ export function zeigeToast(text: string) {
   }, TOAST_MS);
 }
 
+// ---------- Freigaben mit Frist (PC-Aktionen): abgelaufene Karten verschwinden selbst ----------
+const ablaufTimer = new Map<string, ReturnType<typeof setTimeout>>();
+/** So viel früher als der Kern verfällt die Karte hier (Laufzeit der Nachricht, Uhren). */
+export const FRIST_MARGE_MS = 2000;
+
+/** Timer einer Karte stoppen (nach der Entscheidung). */
+export function entferneAblauf(a: Pick<Approval, "job" | "id">) {
+  const schluessel = `${a.job}:${a.id}`;
+  const t = ablaufTimer.get(schluessel);
+  if (t) clearTimeout(t);
+  ablaufTimer.delete(schluessel);
+}
+
+function planeAblauf(a: Approval) {
+  const schluessel = `${a.job}:${a.id}`;
+  const alt = ablaufTimer.get(schluessel);
+  if (alt) clearTimeout(alt);
+  const ms = Math.max(0, (a.ablauf ?? 0) - Date.now());
+  ablaufTimer.set(
+    schluessel,
+    setTimeout(() => {
+      ablaufTimer.delete(schluessel);
+      wamo.set((s) => {
+        const approvals = s.approvals.filter((x) => !(x.job === a.job && x.id === a.id && x.ablauf === a.ablauf));
+        return approvals.length === s.approvals.length
+          ? s
+          : { ...s, approvals, ansage: `Freigabe abgelaufen: ${a.grund}` };
+      });
+    }, ms),
+  );
+}
+
 /** Alle Timer stoppen und den Zustand zurücksetzen (Abmelden, Vorschau). */
 export function resetWamo(state: WamoState = initialState) {
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = null;
+  for (const t of ablaufTimer.values()) clearTimeout(t);
+  ablaufTimer.clear();
   for (const t of memoTimer.values()) clearTimeout(t.timer);
   memoTimer.clear();
   memoRest.clear();
@@ -333,11 +379,18 @@ export function applyServerMessage(msg: ServerMessage) {
     }
     case "freigaben": {
       const { job, projekt } = msg;
-      const fresh = msg.items.map((it) => ({ ...it, job, projekt }));
+      const jetzt = Date.now();
+      const fresh: Approval[] = msg.items.map(({ gueltigS, ...it }) => ({
+        ...it,
+        job,
+        projekt,
+        ablauf: gueltigS ? jetzt + gueltigS * 1000 - FRIST_MARGE_MS : undefined,
+      }));
       wamo.set((s) => ({
         ...s,
         approvals: [...s.approvals.filter((a) => !fresh.some((f) => f.job === a.job && f.id === a.id)), ...fresh],
       }));
+      for (const a of fresh) if (a.ablauf) planeAblauf(a);
       return;
     }
     case "profil":
@@ -363,6 +416,7 @@ export function applyServerMessage(msg: ServerMessage) {
       }));
       // Im Gespräch sichtbar machen, wenn der PC wegfällt oder eine andere Sitzung ihn steuert
       if (vorher && vorher.pc === "verbunden" && betrieb.pc === "getrennt") zeigeToast("PC nicht erreichbar");
+      if (vorher && vorher.pc !== "gesperrt" && betrieb.pc === "gesperrt") zeigeToast("Bildschirm am PC gesperrt");
       if (betrieb.pcBelegt && !vorher?.pcBelegt) zeigeToast("Eine andere Sitzung steuert diesen PC gerade");
       return;
     }

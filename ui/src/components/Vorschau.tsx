@@ -28,7 +28,7 @@ import {
  *   /?vorschau=1                    Hauptansicht mit Beispieldaten (WAMO spricht)
  *   /?vorschau=1&zustand=listening  Zustand (offline, connecting, idle, listening, thinking, speaking)
  *   /?vorschau=1&leer=1             leeres Canvas, keine Werkzeuge, kein Verlauf
- *   /?vorschau=1&freigabe=1         mit Freigabe-Karte
+ *   /?vorschau=1&freigabe=1         mit Freigabe-Karte (freigabe=pc: kritische PC-Aktion mit Ziel und Frist)
  *   /?vorschau=1&handelt=1          ein Werkzeug läuft gerade
  *   /?vorschau=1&auftrag=1          Entwicklungsauftrag wartet (&entwicklung=aus: gesperrt)
  *   /?vorschau=1&pcsteuerung=an     PC-Steuerung dieser Sitzung an
@@ -136,7 +136,20 @@ function beispiel(): { state: WamoState; presence: Presence } {
           { id: "a1", name: "aktuelle_zeit", detail: "", status: "fertig", turn: 1, startedAt: 0, endedAt: 80 },
         ],
     approvals:
-      param("freigabe") === "1"
+      param("freigabe") === "pc"
+        ? [
+            {
+              job: "pc",
+              projekt: "WMC-PC",
+              id: "0123456789abcdef",
+              grund: "Nachricht tippen und senden",
+              detail: "Bin in fünf Minuten da⏎",
+              ziel: "Chat | Microsoft Teams (ms-teams.exe)",
+              von: "Niko",
+              ablauf: Date.now() + 5 * 60 * 1000,
+            },
+          ]
+        : param("freigabe") === "1"
         ? [
             {
               job: "vorschau",

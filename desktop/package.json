@@ -5,7 +5,8 @@
   "description": "WAMO als Desktop-Client: ungedrosseltes Gespräch, Stimmen-Rand über allen Monitoren, Autostart",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node --test"
   },
   "devDependencies": {
     "electron": "44.5.1"

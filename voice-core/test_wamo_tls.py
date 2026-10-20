@@ -343,7 +343,7 @@ class TokenVerifierTlsTests(_CaTest):
         now = int(time.time())
         token = jwt.encode(
             {"sub": USER, "aal": "aal2", "aud": "authenticated", "iss": f"{self.URL}/auth/v1", "iat": now,
-             "exp": now + 600},
+             "exp": now + 600, "amr": [{"method": "password", "timestamp": now - 60}]},
             "nur-ein-testgeheimnis-fuer-hs256-tokens",
             algorithm="HS256",
         )

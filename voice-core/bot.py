@@ -23,7 +23,10 @@ Nachrichten an die Oberfläche (RTVI-Servernachrichten, zusätzlich zu canvas, a
   {"type": "gemerkt", "bereich", "status", "text", "id"}           nach jedem gespeicherten Gedächtniseintrag
 Nachrichten von der Oberfläche:
   {"type": "vergessen", "data": {"id"}}   eigenen Eintrag deaktivieren (memory.forget)
-  {"type": "freigabe", "data": {...}}     Freigabe für Entwicklungsaufträge (nur admin)
+  {"type": "freigabe", "data": {"job": "pc", "id", "entscheidung"}}
+                                          Freigabe einer kritischen PC-Aktion (pc_freigaben.py; nur admin, PC-Steuerung
+                                          an, Sitzung hält die PC-Sperre), geprüft vor den Entwicklungsaufträgen
+  {"type": "freigabe", "data": {...}}     sonst Freigabe für Entwicklungsaufträge (nur admin)
 Live-Untertitel: Pipecat sendet bot-output (mit Wortfortschritt aus den Soniox-Zeitstempeln) und
 user-transcription von selbst; RTVIObserverParams bleiben dafür auf dem Standard (eingeschaltet).
 
@@ -50,7 +53,7 @@ from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMUpdateSettingsFrame, TTSSpeakFrame
+from pipecat.frames.frames import LLMMessagesAppendFrame, LLMUpdateSettingsFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -84,7 +87,7 @@ from pipecat.utils.context.llm_context_summarization import (
 
 from activity import ActivityReporter
 from audio_monitor import AudioInputMonitor, SpeakerTracker
-from auth_gate import Identity, identity_from_body, install_access_gate
+from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
 from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
 from llm_anbieter import LLMNichtVerfuegbar, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
@@ -96,11 +99,13 @@ from pc_host import (
     host_tools,
     ist_tunnel,
     pc_host_fuer,
-    pc_lease_freigeben,
-    pc_lease_nehmen,
+    pc_sperre_pruefen,
+    sperre_aus_ergebnis,
 )
+from pc_freigaben import PcFreigaben
 from persona import build_system_prompt
 from screen import PC_OFF, register_screen_tools
+from sitzungen import Sitzung, Sitzungen
 from soft_interrupt import (
     MeaningfulWordsUserTurnStartStrategy,
     PlaybackTracker,
@@ -175,6 +180,7 @@ MODELL_ORT = "cloud"  # Claude und Soniox laufen in der Cloud; eigene Modelle au
 CLEANUP_DB_TIMEOUT_SECS = 5.0
 PROFILE_RECHECK_SECS = 60.0  # so oft prüft eine laufende Sitzung, ob das Profil noch gilt
 MAX_SITZUNG_MIN = float(os.getenv("WAMO_MAX_SITZUNG_MIN") or 120)
+SPERR_PROBE_SECS = 10.0  # lokal: so oft fragt eine Sitzung bei gesperrtem Bildschirm nach dem Entsperren
 
 INTERRUPTED_NOTE = (
     "[Hinweis für WAMO: Du wurdest gerade unterbrochen. Deine letzte Antwort endet dort, wo du "
@@ -185,6 +191,9 @@ INTERRUPTED_NOTE = (
 # Referenzen halten, sonst räumt der Garbage Collector laufende Hintergrund-Tasks weg.
 # (Nur Task-Referenzen, kein Cache: Profil und Gedächtnis gehören zur Sitzung.)
 _background_tasks: set[asyncio.Task] = set()
+# Eine Sitzung je Profil (sitzungen.py, WAMO_SITZUNG_EINZELN): eine neue löst die laufende desselben Profils ab
+SITZUNGEN = Sitzungen()
+ENDE_MELDUNG_SECS = 0.5  # so lange darf die Meldung "sitzung_beendet" laufen, bevor die Pipeline endet
 
 transport_params = {
     "webrtc": lambda: TransportParams(
@@ -213,7 +222,7 @@ def betrieb_message(
     pc: str, pc_latenz_ms: int | None = None, pc_steuerung: bool = False, entwicklung: bool = False,
     llm: str | None = None, pc_name: str | None = None, pc_belegt: bool = False,
 ) -> dict:
-    """pc: verbindet | verbunden | getrennt | aus (gesperrt erkennt der Host noch nicht).
+    """pc: verbindet | verbunden | gesperrt | getrennt | aus (gesperrt: Bildschirm am PC gesperrt, pc_anzeige).
     pc_steuerung: ob die PC-Werkzeuge in dieser Sitzung eingeschaltet sind (Standard aus).
     entwicklung: ob Entwicklungsaufträge in dieser Sitzung angeboten werden (WAMO_ENTWICKLUNG und Rolle).
     llm: Anzeigename des Gesprächsmodells dieser Sitzung (llm_anbieter.Wahl.anzeige).
@@ -235,6 +244,17 @@ def betrieb_message(
     if pc_belegt:
         message["pc_belegt"] = True
     return message
+
+
+def darf_pc_freigeben(identity: Identity, pc_enabled: bool, steuerung_an: bool, haelt_sperre: bool) -> bool:
+    """Darf diese Sitzung eine kritische PC-Aktion freigeben? Nur admin mit PC-Werkzeugen, eingeschalteter
+    PC-Steuerung und gehaltener PC-Sperre (eine abgelöste Sitzung hält sie nie)."""
+    return identity.is_admin and pc_enabled and steuerung_an and haelt_sperre
+
+
+def pc_anzeige(status: str, gesperrt: bool) -> str:
+    """PC-Zustand für die Oberfläche: ein verbundener PC mit gesperrtem Bildschirm ist "gesperrt"."""
+    return "gesperrt" if status == "verbunden" and gesperrt else status
 
 
 def rechnername(system_info_text: str) -> str | None:
@@ -270,8 +290,9 @@ def gate_pc_tools(
 
 
 class SessionGuard:
-    """Prüft eine laufende Sitzung regelmäßig (M5): Profil noch aktiv, Rolle unverändert, maximale
-    Dauer nicht überschritten. Datenbankfehler werden einige Male toleriert, dann endet die Sitzung."""
+    """Prüft eine laufende Sitzung regelmäßig (M5): Anmeldung nicht zu alt (WAMO_ANMELDUNG_MAX_STUNDEN, ab Passwort und
+    Code), Profil noch aktiv, Rolle unverändert, maximale Dauer nicht überschritten. Datenbankfehler werden einige Male
+    toleriert, dann endet die Sitzung. neu_anmelden: das Ende verlangt eine neue Anmeldung (die Oberfläche meldet ab)."""
 
     def __init__(
         self,
@@ -281,7 +302,9 @@ class SessionGuard:
         interval: float = PROFILE_RECHECK_SECS,
         max_secs: float = MAX_SITZUNG_MIN * 60,
         max_failures: int = 3,
+        max_anmeldung_secs: float | None = None,
         clock: Callable[[], float] = time.monotonic,
+        wanduhr: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
         self.identity = identity
@@ -289,13 +312,20 @@ class SessionGuard:
         self.interval = interval
         self.max_secs = max_secs
         self.max_failures = max_failures
+        self.max_anmeldung_secs = max_anmeldung_secs if max_anmeldung_secs is not None else anmeldung_max_secs()
+        self.neu_anmelden = False
         self._clock = clock
+        self._wanduhr = wanduhr
         self._sleep = sleep
         self._started = clock()
         self._failures = 0
 
     async def check(self) -> str | None:
         """Grund für das Ende der Sitzung oder None."""
+        anmeldung = self.identity.anmeldung
+        if anmeldung is not None and self._wanduhr() - anmeldung > self.max_anmeldung_secs:
+            self.neu_anmelden = True
+            return f"Die Anmeldung ist älter als {stunden_text(self.max_anmeldung_secs)}. Bitte neu anmelden."
         if self._clock() - self._started >= self.max_secs:
             return "Die maximale Sitzungsdauer ist erreicht."
         if self.lookup is None:
@@ -356,7 +386,7 @@ def summary_prompt(name: str) -> str:
     )
 
 
-async def build_session(transport, identity: Identity) -> Session:
+async def build_session(transport, identity: Identity, sitzung: Sitzung | None = None) -> Session:
     """Baut Dienste, Pipeline und Ereignisse einer Sitzung, ohne Netzverbindungen aufzubauen (bis auf
     eine kurze Prüfung des LiteLLM-Gateways, wenn ein Baustein darauf steht, siehe llm_anbieter.py)."""
     memory = MemoryStore.from_env(identity.user_id)
@@ -370,8 +400,10 @@ async def build_session(transport, identity: Identity) -> Session:
     state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
                    "client_ready": False, "live": True, "cleaned": False, "guard": None,
                    "pc_weg": False, "pc_tools": False, "pc_waechter": None,  # pc_weg: Hinweis im Prompt
-                   "pc_name": None, "pc_belegt": False}
-    lease = object()  # Kennung dieser Sitzung für die PC-Sperre (pc_host.pc_lease_nehmen)
+                   "pc_name": None, "pc_belegt": False,
+                   "pc_gesperrt": False, "sperr_probe": None}  # Bildschirm am PC gesperrt (Host: status=locked)
+    # Kennung dieser Sitzung für die PC-Sperre (Sitzung.pc_lease_nehmen) und ihre Ablösung (sitzungen.py)
+    sitzung = sitzung or Sitzung(identity.user_id)
 
     def prompt_for(recall: Recall) -> str:
         return build_system_prompt(
@@ -425,7 +457,8 @@ async def build_session(transport, identity: Identity) -> Session:
     pc_client = host_client() if pc_enabled else None
 
     def pc_allowed() -> bool:
-        return bool(state["pc_steuerung"])
+        # Abgelöst oder Sperre verloren (Büro): sofort keine PC-Aktionen mehr, auch vor dem Trennen
+        return bool(state["pc_steuerung"]) and sitzung.pc_lease_haelt()
 
     # Bildschirm sehen/klicken: Foto vom Host, Bildmodell entscheidet (siehe screen.py)
     screen_schemas = register_screen_tools(llm, lambda: pc_client, pc_allowed, turn.taint) if pc_client else []
@@ -490,6 +523,7 @@ async def build_session(transport, identity: Identity) -> Session:
         playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
     )
 
+    aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
     pipeline = Pipeline(
         [
             transport.input(),
@@ -499,7 +533,7 @@ async def build_session(transport, identity: Identity) -> Session:
             user_agg,
             soft_gate,
             llm,
-            ActivityReporter(),  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
+            aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
             tts,
             transport.output(),
             PlaybackTracker(soft_gate),
@@ -524,8 +558,53 @@ async def build_session(transport, identity: Identity) -> Session:
         await task.queue_frames([RTVIServerMessageFrame(data=data)])
 
     async def send_betrieb() -> None:
-        await send(betrieb_message(state["pc"], state["pc_latenz_ms"], state["pc_steuerung"], entwicklung,
-                                   llm=llm_wahl.anzeige, pc_name=state["pc_name"], pc_belegt=state["pc_belegt"]))
+        await send(betrieb_message(pc_anzeige(state["pc"], state["pc_gesperrt"]), state["pc_latenz_ms"],
+                                   state["pc_steuerung"], entwicklung, llm=llm_wahl.anzeige, pc_name=state["pc_name"],
+                                   pc_belegt=state["pc_belegt"]))
+
+    async def set_sperre(gesperrt: bool) -> None:
+        """Bildschirm am PC gesperrt oder entsperrt (Werkzeugergebnis, Tunnel-Probe, system_info)."""
+        if gesperrt == state["pc_gesperrt"]:
+            return
+        state["pc_gesperrt"] = gesperrt
+        logger.info("PC-Bildschirm {}", "gesperrt" if gesperrt else "entsperrt")
+        # Lokal (stdio) gibt es keine Tunnel-Probe: solange gesperrt, regelmäßig nachfragen, damit die Anzeige
+        # nach dem Entsperren nicht stehen bleibt
+        probe = state["sperr_probe"]
+        if gesperrt and state["live"] and not ist_tunnel(pc_client) and (probe is None or probe.done()):
+            state["sperr_probe"] = _keep(asyncio.create_task(lokale_sperr_probe()))
+        if state["live"] and state["client_ready"]:
+            await send_betrieb()
+
+    async def lokale_sperr_probe() -> None:
+        while state["live"] and state["pc_gesperrt"]:
+            await asyncio.sleep(SPERR_PROBE_SECS)
+            if await pc_sperre_pruefen(pc_client) is False:
+                await set_sperre(False)
+
+    async def pc_ergebnis(name: str, _args: dict, result: object) -> None:
+        """Jedes Werkzeugergebnis (activity.ActivityReporter): status=locked oder ein Erfolg am Bildschirm."""
+        if pc_client is None:
+            return
+        gesperrt = sperre_aus_ergebnis(name, result)
+        if gesperrt is not None:
+            await set_sperre(gesperrt)
+
+    aktivitaet.on_ergebnis = pc_ergebnis
+
+    async def melde_llm(text: str) -> None:
+        """Kurze Nachricht an das Sprachmodell, das dann antwortet (Ergebnis einer PC-Freigabe)."""
+        if state["live"]:
+            await task.queue_frames([LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)])
+
+    # Freigaben kritischer PC-Aktionen (pc_freigaben.py): nur mit PC-Werkzeugen; die Karte entsteht in activity.py
+    freigaben = PcFreigaben(
+        memory, client=lambda: pc_client, melden=melde_llm, fremdinhalt=turn.taint, senden=send, von=identity.name,
+        darf=lambda: darf_pc_freigeben(identity, pc_enabled, bool(state["pc_steuerung"]), sitzung.pc_lease_haelt()),
+        pc_name=lambda: state["pc_name"],
+    ) if pc_client else None
+    if freigaben is not None:
+        aktivitaet.on_freigabe = freigaben.anfrage
 
     async def refresh_prompt() -> None:
         await task.queue_frame(
@@ -556,10 +635,12 @@ async def build_session(transport, identity: Identity) -> Session:
             context.set_tools(ToolsSchema(standard_tools=[*standard_tools, *pc_schemas, *screen_schemas]))
             state["pc_tools"] = True
             started = time.monotonic()
-            with contextlib.suppress(Exception):  # Latenz und Rechnername sind nur Anzeigen
+            with contextlib.suppress(Exception):  # Latenz, Rechnername und Sperre sind nur Anzeigen
                 info = await asyncio.wait_for(call_host_tool(pc_client, "system_info", {}), 5)
                 latenz = round((time.monotonic() - started) * 1000)
                 state["pc_name"] = rechnername(info)
+                if (gesperrt := sperre_aus_ergebnis("system_info", info)) is not None:
+                    await set_sperre(gesperrt)
         await set_pc("verbunden" if pc else "getrennt", latenz)
         return bool(pc)
 
@@ -576,7 +657,7 @@ async def build_session(transport, identity: Identity) -> Session:
             await asyncio.sleep(2)
             await attach_pc_tools()
         if ist_tunnel(pc_client) and state["live"]:
-            state["pc_waechter"] = _keep(asyncio.create_task(pc_client.ueberwache(pc_wechsel)))
+            state["pc_waechter"] = _keep(asyncio.create_task(pc_client.ueberwache(pc_wechsel, set_sperre)))
 
     if pc_client:
         _keep(asyncio.create_task(start_pc()))
@@ -600,15 +681,21 @@ async def build_session(transport, identity: Identity) -> Session:
                 await refresh_prompt()  # WAMO soll den Eintrag sofort nicht mehr nutzen
         elif msg.type == "pc_steuerung":
             # Nur ein Admin mit eingerichtetem PC-Host darf einschalten; ausschalten geht immer.
-            # Im Büro steuert höchstens eine Sitzung den PC (pc_host.pc_lease_nehmen).
+            # Im Büro steuert höchstens eine Sitzung den PC (pc_host.pc_lease_nehmen); eine abgelöste nie wieder.
             an = bool(data.get("an") is True and pc_enabled)
-            state["pc_belegt"] = an and not pc_lease_nehmen(lease)
+            state["pc_belegt"] = an and not sitzung.pc_lease_nehmen()
             if state["pc_belegt"] or not an:
                 an = False
-                pc_lease_freigeben(lease)
+                sitzung.pc_lease_freigeben()
             state["pc_steuerung"] = an
             logger.info("PC-Steuerung {}{}", "an" if an else "aus", " (andere Sitzung steuert)" if state["pc_belegt"] else "")
             await send_betrieb()
+        elif msg.type == "freigabe" and data.get("job") == "pc":
+            # PC-Freigabe vor den Entwicklungsaufträgen. Ohne PC-Werkzeuge (z. B. Mitglied) gibt es keine.
+            if freigaben is None:
+                logger.warning("PC-Freigabe ohne PC-Werkzeuge in dieser Sitzung abgewiesen")
+                return
+            await freigaben.entscheiden(data)
         elif dev:
             await dev.on_client_message(msg.type, data)
 
@@ -679,11 +766,32 @@ async def build_session(transport, identity: Identity) -> Session:
 
     async def end_session(reason: str) -> None:
         logger.warning("Sitzung beendet: {}", reason)
+        meldung = {"type": "sitzung_beendet", "grund": reason}
+        if guard.neu_anmelden:
+            meldung["anmelden"] = True  # Anmeldung zu alt: die Oberfläche meldet ab
         with contextlib.suppress(Exception):
-            await send({"type": "sitzung_beendet", "grund": reason})
+            await send(meldung)
+            await asyncio.sleep(ENDE_MELDUNG_SECS)  # die Meldung soll die Oberfläche noch erreichen
         if dev:
             await dev.close()
         await cleanup(cancel_task=True)
+
+    async def abgeloest(grund: str) -> None:
+        """Eine neue Sitzung desselben Profils hat übernommen (sitzungen.py). Die PC-Sperre ist schon weg; hier nur
+        melden. Getrennt wird von außen; endet die Verbindung nicht von selbst, räumt der Rückfall unten auf."""
+        state["pc_steuerung"] = False
+        logger.info("Sitzung abgelöst: {}", grund)
+        with contextlib.suppress(Exception):
+            await send({"type": "sitzung_beendet", "grund": grund})
+        _keep(asyncio.create_task(ende_nach_abloesung()))
+
+    async def ende_nach_abloesung() -> None:
+        await asyncio.sleep(ENDE_MELDUNG_SECS * 4)
+        if dev:
+            await dev.close()
+        await cleanup(cancel_task=True)  # idempotent: meist hat das Trennen schon aufgeräumt
+
+    sitzung.abloesen = abgeloest
 
     async def cleanup(cancel_task: bool = False) -> None:
         """Einmal je Sitzung, egal ob Auflegen, Pipeline-Ende oder Fehler. Beim Auflegen erst die
@@ -696,16 +804,21 @@ async def build_session(transport, identity: Identity) -> Session:
         guard_task = state["guard"]
         if guard_task is not None and guard_task is not asyncio.current_task():
             guard_task.cancel()
-        pc_waechter = state["pc_waechter"]
-        if pc_waechter is not None and pc_waechter is not asyncio.current_task():
-            pc_waechter.cancel()
+        for name in ("pc_waechter", "sperr_probe"):
+            hintergrund = state[name]
+            if hintergrund is not None and hintergrund is not asyncio.current_task():
+                hintergrund.cancel()
         state["pc_steuerung"] = False
-        pc_lease_freigeben(lease)
+        sitzung.pc_lease_freigeben()
         if cancel_task:
             with contextlib.suppress(Exception):
                 await task.cancel()
         if dev:
             await dev.close()  # laufenden Entwicklungsauftrag beim Auflegen beenden
+        if freigaben is not None:
+            # offene PC-Freigaben ablehnen: keine Eingabesperre am PC und keine offene Zeile in actions zurücklassen
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(freigaben.schliessen(), CLEANUP_DB_TIMEOUT_SECS)
         if pc_client:
             with contextlib.suppress(Exception):
                 await pc_client.close()
@@ -727,8 +840,15 @@ async def build_session(transport, identity: Identity) -> Session:
     return Session(task=task, cleanup=cleanup)
 
 
-async def run_bot(transport, runner_args: RunnerArguments, identity: Identity) -> None:
-    session = await build_session(transport, identity)
+async def run_bot(
+    transport, runner_args: RunnerArguments, identity: Identity, sitzung: Sitzung | None = None
+) -> None:
+    session = await build_session(transport, identity, sitzung)
+    if sitzung is not None and sitzung.abgeloest:
+        # Während des Aufbaus hat eine neuere Sitzung desselben Profils übernommen: nicht erst starten
+        logger.info("Sitzung beim Aufbau abgelöst, wird nicht gestartet")
+        await session.cleanup()
+        return
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
     try:
         await runner.run(session.task)
@@ -747,17 +867,23 @@ async def bot(runner_args: RunnerArguments):
                 await connection.disconnect()
         return
     logger.info("Sitzung für Profil {} ({})", identity.user_id, identity.rolle)
-    transport = await create_transport(runner_args, transport_params)
+    connection = getattr(runner_args, "webrtc_connection", None)
+    sitzung = Sitzung(identity.user_id, connection)
     try:
-        await run_bot(transport, runner_args, identity)
+        await SITZUNGEN.uebernehmen(sitzung)  # eine laufende Sitzung desselben Profils wird abgelöst
+        if sitzung.abgeloest:  # inzwischen selbst abgelöst (drei Verbindungen kurz nacheinander)
+            return
+        transport = await create_transport(runner_args, transport_params)
+        await run_bot(transport, runner_args, identity, sitzung)
     except LLMNichtVerfuegbar as e:
         # LiteLLM nicht nutzbar und kein Rückfall erlaubt (WAMO_LLM_RUECKFALL): Sitzung sauber beenden,
         # statt die Verbindung ohne Pipeline offen zu lassen.
         logger.error("Sitzung beendet, kein Gesprächsmodell: {}", e)
-        connection = getattr(runner_args, "webrtc_connection", None)
         if connection is not None:
             with contextlib.suppress(Exception):
                 await connection.disconnect()
+    finally:
+        SITZUNGEN.freigeben(sitzung)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,15 @@
+# Ergänzung zum Compose-Projekt supabase-wamo: Sitzungsgrenzen von GoTrue (Auth).
+# Eingebunden über COMPOSE_FILE in /home/wamocon/supabase-wamo/.env, gesetzt durch
+# infra/sokrates2/supabase-wamo-einrichten.sh (Schritt 3b). Die Werte stehen in derselben .env.
+#
+# Namen geprüft gegen supabase/gotrue v2.196.0 (Struktur-Tags im Programm: sessions.timebox und
+# sessions.inactivity_timeout mit split_words), also GOTRUE_SESSIONS_TIMEBOX und GOTRUE_SESSIONS_INACTIVITY_TIMEOUT.
+#   Zeitbox:      Eine Sitzung lässt sich nach dieser Zeit ab der Anmeldung nicht mehr erneuern (harte Grenze,
+#                 passend zu WAMO_ANMELDUNG_MAX_STUNDEN im Voice-Core, Standard 168h).
+#   Inaktivität:  Wird eine Sitzung so lange nicht erneuert (App und Browser zu), endet sie.
+# Das laufende Access-Token gilt danach noch bis zu seinem Ablauf (JWT_EXPIRY); der Voice-Core prüft das Alter selbst.
+services:
+  auth:
+    environment:
+      GOTRUE_SESSIONS_TIMEBOX: ${SESSIONS_TIMEBOX:-168h}
+      GOTRUE_SESSIONS_INACTIVITY_TIMEOUT: ${SESSIONS_INACTIVITY_TIMEOUT:-72h}

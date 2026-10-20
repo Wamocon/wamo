@@ -16,7 +16,8 @@ Er braucht nur initialize (als Probe, prüft serverInfo "wamo-host"), tools/list
 Ausfall: Fehlt der Socket, lehnt die Gegenstelle ab oder läuft eine Zeit ab, wirft jeder Aufruf
 PcNichtErreichbar; die Werkzeug-Handler liefern dann PC_NICHT_ERREICHBAR an das Sprachmodell, und die
 Überwachung (ueberwache) meldet den Wechsel an die Sitzung (bot.py: Status "getrennt", Prompt-Hinweis). Kehrt
-der Tunnel zurück, meldet sie "erreichbar".
+der Tunnel zurück, meldet sie "erreichbar". Mit einem zweiten Rückruf fragt dieselbe Probe auch, ob der Bildschirm
+am PC gesperrt ist (Werkzeug sperre_pruefen, nie für das Sprachmodell), und meldet den Wechsel (bot.py: "gesperrt").
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ SERVER_NAME = "wamo-host"
 CONNECT_TIMEOUT_SECS = 3.0
 CALL_TIMEOUT_SECS = 30.0
 # Werkzeuge, die am PC selbst länger laufen dürfen (powershell_lesen hat dort 60 s Zeitlimit)
-LANGE_WERKZEUGE = {"powershell_lesen": 75.0}
+LANGE_WERKZEUGE = {"powershell_lesen": 75.0, "freigabe_entscheiden": 135.0}  # Freigabe: 120 s am PC
 PROBE_TIMEOUT_SECS = 5.0
 ERSTKONTAKT_TIMEOUT_SECS = 10.0  # tools() beim Sitzungsaufbau, wenn der Kern noch Modelle lädt
 MAX_ANTWORT_BYTES = 8 * 1024 * 1024  # Bildschirmfotos als JPEG-Base64 liegen bei etwa 1 MB
@@ -191,10 +192,16 @@ class TunnelHost:
         return text or json.dumps({"status": "error", "summary": "Leere Antwort vom PC."}, ensure_ascii=False)
 
     # ---------- Überwachung ----------
-    async def ueberwache(self, on_change: Callable[[bool, int | None], Awaitable[None]]) -> None:
+    async def ueberwache(
+        self,
+        on_change: Callable[[bool, int | None], Awaitable[None]],
+        on_sperre: Callable[[bool], Awaitable[None]] | None = None,
+    ) -> None:
         """Prüft regelmäßig (verbunden alle 10 s, getrennt alle 5 s, sofort nach einem gescheiterten Aufruf) und
         meldet jeden Wechsel. "Nicht erreichbar" erst nach zwei Fehlschlägen im Abstand von 1 s, damit ein
-        einzelner Aussetzer den System-Prompt nicht umschaltet. Läuft, bis die Sitzung den Task abbricht."""
+        einzelner Aussetzer den System-Prompt nicht umschaltet. Mit on_sperre fragt jede erfolgreiche Probe auch,
+        ob der Bildschirm gesperrt ist, und meldet den ersten Stand und jeden Wechsel. Läuft, bis die Sitzung den
+        Task abbricht."""
         gemeldet = self.erreichbar
         while True:
             warten = UEBERWACHUNG_SECS if self.erreichbar else UEBERWACHUNG_GETRENNT_SECS
@@ -217,6 +224,29 @@ class TunnelHost:
                     raise
                 except Exception as e:  # ein Fehler der Sitzung darf die Überwachung nicht still beenden
                     logger.warning("PC-Überwachung: Meldung an die Sitzung fehlgeschlagen ({})", type(e).__name__)
+            if on_sperre is not None and latenz is not None:
+                # Jeder gültige Stand geht an die Sitzung (sie entprellt selbst): auch ein Werkzeugergebnis kann den
+                # Zustand dort geändert haben, ein eigener Merker hier liefe dann auseinander
+                neu = await self._sperre()
+                if neu is not None:
+                    try:
+                        await on_sperre(neu)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:  # wie oben: die Überwachung läuft weiter
+                        logger.warning("PC-Überwachung: Sperre nicht gemeldet ({})", type(e).__name__)
+
+    async def _sperre(self) -> bool | None:
+        """Bildschirm gesperrt? (Werkzeug sperre_pruefen des Hosts) None, wenn unbekannt; wirft nie."""
+        try:
+            result = await self._rpc("tools/call", {"name": "sperre_pruefen", "arguments": {}},
+                                     timeout=PROBE_TIMEOUT_SECS)
+            texte = [c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict)]
+            daten = json.loads("".join(t for t in texte if isinstance(t, str)))
+        except Exception:  # noqa: BLE001 (älterer Host, Aussetzer, kaputte Antwort: Stand bleibt)
+            return None
+        wert = daten.get("gesperrt") if isinstance(daten, dict) else None
+        return wert if isinstance(wert, bool) else None
 
     async def _probe(self) -> int | None:
         """Antwortzeit in ms oder None (nicht erreichbar); wirft nie."""

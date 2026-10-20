@@ -8,6 +8,8 @@
 //   Im Ruhezustand unsichtbar; WAMO spricht rot, der Mensch als Licht von unten, dazu Denken, Handeln
 //   und wartende Freigaben (Zustand kommt mit den Pegeln). Die Farben kommen einmalig aus den
 //   CSS-Variablen der Oberfläche (ui/src/lib/stimmfarben.ts), sie sind nur dort definiert.
+//   Bei Vollbild-Programmen (Spiele, Videos, Präsentationen) blendet sich der Rand aus (vollbild.js); sichtbar ist er
+//   nur, wenn der Tray-Haken "Stimmen-Rand" an ist und kein Vollbild läuft (randSichtbarkeit).
 // * Tray-Symbol mit "Mit Windows starten"; Schließen versteckt nur ins Tray, das Gespräch bleibt.
 // * Startet bei Bedarf Voice-Core und UI selbst (WAMO_MANAGE_SERVICES=off schaltet das ab). Die UI
 //   läuft als Produktions-Build (next build einmalig, dann next start nur auf 127.0.0.1);
@@ -18,7 +20,8 @@
 //   Büro läuft über HTTPS mit der WAMO-CA, der Chromium der App vertraut ihr über den Windows-Speicher.
 //
 // Umgebung: WAMO_UI_URL, WAMO_VOICE_CORE_URL (http oder https), WAMO_MANAGE_SERVICES, WAMO_UI_DEV,
-// WAMO_VEIL_CM, WAMO_LOG_LEVEL (an den Voice-Core; Standard INFO, nie DEBUG).
+// WAMO_VEIL_CM, WAMO_LOG_LEVEL (an den Voice-Core; Standard INFO, nie DEBUG), WAMO_VOLLBILD_LOG=1 (Rohwerte des
+// Vollbild-Wächters in logs/vollbild.log).
 //
 // Sicherheit: contextIsolation + sandbox, keine nodeIntegration. Die Seite darf nur Pegel mit Zustand
 // und einmalig die Randfarben melden; beides wird hier gegen eine feste Liste geprüft. Navigation und
@@ -44,6 +47,7 @@ const http = require("node:http");
 const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
+const { powershellPfad, starteVollbildWaechter } = require("./vollbild");
 
 // Zweite Instanz: sofort zurückkehren, bevor irgendetwas registriert oder gestartet wird. Sonst würde
 // sie beim Beenden die Dienste der ersten Instanz stoppen (killStale, stopServices). Die erste Instanz
@@ -74,6 +78,8 @@ let mainWin = null;
 let tray = null;
 let overlays = [];
 let borderOn = true;
+let vollbild = false; // Vollbild-Programm vorne (vollbild.js, entprellt)
+let vollbildWaechter = null;
 let quitting = false;
 let farben = null; // Randfarben aus der Oberfläche, geprüft (siehe ipcMain "farben")
 let energieId = null; // powerSaveBlocker nur während eines Gesprächs
@@ -283,7 +289,9 @@ function startService(name, command, args, cwd, extraEnv = {}) {
 // alten Voice-Core weiterlaufen (Port 7860 belegt, neue Version wurde nie geladen).
 function killTree(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return;
-  spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+  // voller Pfad: nie ein gleichnamiges Programm aus dem Arbeitsordner oder PATH starten
+  const taskkill = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe");
+  spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
 }
 
 /** Name, Pfad, Befehlszeile und Startzeit eines Prozesses (Windows, über CIM). */
@@ -293,7 +301,7 @@ function prozessInfo(pid) {
     `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | ForEach-Object { ` +
     "[pscustomobject]@{ Name = $_.Name; Pfad = $_.ExecutablePath; Befehl = $_.CommandLine; " +
     "Start = $_.CreationDate.ToUniversalTime().ToString('o') } } | ConvertTo-Json -Compress";
-  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", befehl], {
+  const r = spawnSync(powershellPfad(), ["-NoProfile", "-NonInteractive", "-Command", befehl], {
     windowsHide: true,
     encoding: "utf8",
     timeout: 10000,
@@ -533,9 +541,26 @@ function createOverlays() {
       if (farben) win.webContents.send("farben", farben);
     });
     void win.loadFile(path.join(__dirname, "overlay.html"), { query: { veil: String(veilWidthDip()) } });
-    win.once("ready-to-show", () => borderOn && win.showInactive());
+    win.once("ready-to-show", () => {
+      if (randSoll()) win.showInactive();
+    });
     return win;
   });
+}
+
+/** Soll der Rand zu sehen sein? Tray-Haken an und kein Vollbild-Programm vorne. */
+function randSoll() {
+  return borderOn && !vollbild;
+}
+
+/** Gemeinsamer Weg für Tray-Haken und Vollbild-Zustand: alle Rand-Fenster zeigen oder ausblenden. */
+function randSichtbarkeit() {
+  const zeigen = randSoll();
+  for (const w of overlays) {
+    if (w.isDestroyed()) continue;
+    if (zeigen) w.showInactive();
+    else w.hide();
+  }
 }
 
 // Bildschirmwechsel kommen oft in Schüben (Dock, Skalierung): Ränder erst nach 300 ms Ruhe neu bauen
@@ -610,7 +635,7 @@ function aktualisiereTray() {
         checked: borderOn,
         click: (item) => {
           borderOn = item.checked;
-          overlays.forEach((w) => !w.isDestroyed() && (borderOn ? w.showInactive() : w.hide()));
+          randSichtbarkeit();
         },
       },
       {
@@ -744,6 +769,18 @@ app.whenReady().then(async () => {
   if (await uiIstDa()) void mainWin.loadURL(UI_URL);
   else zeigeStart("fehler", "Zeitüberschreitung beim Start");
   createOverlays();
+  if (process.platform === "win32") {
+    const vollbildLog = new Logdatei("vollbild");
+    vollbildWaechter = starteVollbildWaechter({
+      pid: process.pid,
+      onWechsel: (an) => {
+        vollbild = an;
+        randSichtbarkeit();
+      },
+      log: (text) => vollbildLog.schreiben(`${new Date().toISOString()} ${text}\n`),
+      rohwerte: process.env.WAMO_VOLLBILD_LOG === "1", // Rohwerte von SHQueryUserNotificationState mitschreiben
+    });
+  }
   screen.on("display-added", overlaysSpaeter);
   screen.on("display-removed", overlaysSpaeter);
   screen.on("display-metrics-changed", overlaysSpaeter);
@@ -751,6 +788,8 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   quitting = true;
+  vollbildWaechter?.stop();
+  vollbildWaechter = null;
   energieschutz(false);
   stopServices();
 });

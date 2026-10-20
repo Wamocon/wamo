@@ -64,9 +64,15 @@ SCHEMAS = [
 ]
 
 
+class BildschirmGesperrt(RuntimeError):
+    """Der Host meldet status=locked: der Bildschirm am PC ist gesperrt."""
+
+
 async def _shot(pc_client) -> dict:
     raw = await call_host_tool(pc_client, "bildschirmfoto", {"monitor": 0})
     shot = json.loads(raw)
+    if shot.get("status") == "locked":
+        raise BildschirmGesperrt(str(shot.get("summary") or "Der Bildschirm ist gesperrt."))
     if shot.get("status") != "success":
         raise RuntimeError(shot.get("summary", "Bildschirmfoto fehlgeschlagen"))
     return shot
@@ -118,6 +124,8 @@ async def _click(pc_client, ziel: str, arguments: dict) -> dict:
         "x": x, "y": y,
         "taste": "rechts" if arguments.get("rechtsklick") else "links",
         "doppelt": bool(arguments.get("doppelt")),
+        # für die Freigabekarte bei Klicks in Mail und Messenger: was das Bildmodell dort sieht
+        "beschreibung": str(found.get("was", ""))[:200],
     })
     logger.info("Klick bei {},{}", x, y)
     logger.debug("Klick auf {!r}: {}", ziel, raw[:120])
@@ -132,6 +140,8 @@ async def _click(pc_client, ziel: str, arguments: dict) -> dict:
 
 
 PC_OFF = {"status": "rejected", "summary": "Die PC-Steuerung ist aus. Sie lässt sich in der Oberfläche einschalten."}
+# Eigener, fester Text statt der Antwort vom PC (die Meldung des Hosts ist gleichbedeutend)
+GESPERRT_TEXT = "Der Bildschirm ist gesperrt. Entsperren kann nur die Person selbst, WAMO kann das nicht."
 
 
 def register_screen_tools(
@@ -154,10 +164,14 @@ def register_screen_tools(
         try:
             antwort = await describe(client, str(params.arguments.get("frage", "Was ist zu sehen?"))[:500])
             on_foreign_content()
+        except BildschirmGesperrt:
+            await params.result_callback({"status": "locked", "antwort": GESPERRT_TEXT})
+            return
         except Exception as e:  # Bildschirm ist optional; das Gespräch läuft weiter
             logger.warning("bildschirm_ansehen: {}", type(e).__name__)
-            antwort = "Ich konnte den Bildschirm gerade nicht ansehen."
-        await params.result_callback({"antwort": antwort})
+            await params.result_callback({"status": "error", "antwort": "Ich konnte den Bildschirm gerade nicht ansehen."})
+            return
+        await params.result_callback({"status": "success", "antwort": antwort})
 
     async def auf_bildschirm_klicken(params: FunctionCallParams):
         client = get_pc_client()
@@ -171,6 +185,8 @@ def register_screen_tools(
         on_foreign_content()
         try:
             result = await _click(client, ziel, params.arguments)
+        except BildschirmGesperrt:
+            result = {"status": "locked", "summary": GESPERRT_TEXT}
         except Exception as e:  # Bildmodell, Host oder Antwort kaputt: Modell bekommt trotzdem ein Ergebnis
             logger.warning("auf_bildschirm_klicken: {}", e)
             result = {"status": "error", "summary": "Bildschirm konnte nicht ausgewertet werden"}

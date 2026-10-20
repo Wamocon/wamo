@@ -38,7 +38,8 @@ export type Gemerkt = {
   id?: string;
 };
 
-export type ActivityStatus = "laeuft" | "fertig" | "abgelehnt" | "fehler";
+/** wartet: kritische PC-Aktion, die auf eine Freigabe in der Oberfläche wartet */
+export type ActivityStatus = "laeuft" | "fertig" | "abgelehnt" | "fehler" | "wartet";
 
 /** Ein Werkzeugaufruf von WAMO für die Aktivitäts-Zeitleiste (activity.py im Voice-Core). */
 export type Activity = {
@@ -52,7 +53,17 @@ export type Activity = {
   turn?: number;
 };
 
-export type FreigabePunkt = { id: string; grund: string; detail: string; von?: string };
+/** Ein Punkt zum Freigeben. ziel: Zielanwendung (PC-Aktionen, z. B. Fenster und Programm); gueltigS: Frist in s. */
+export type FreigabePunkt = {
+  id: string;
+  grund: string;
+  detail: string;
+  von?: string;
+  ziel?: string;
+  /** Begründung des Modells (nur Hinweis, nicht das, was ausgeführt wird) */
+  anlass?: string;
+  gueltigS?: number;
+};
 
 /** Entwicklungsauftrag, den das Profil vor dem Start bestätigen muss (Servernachricht "auftrag"). */
 export type Auftrag = { job: string; projekt: string; art: string; auftrag: string };
@@ -67,7 +78,7 @@ export type ServerMessage =
   | ({ type: "betrieb" } & Betrieb)
   | ({ type: "gemerkt" } & Gemerkt)
   | ({ type: "auftrag" } & Auftrag)
-  | { type: "sitzung_beendet"; grund: string };
+  | { type: "sitzung_beendet"; grund: string; anmelden?: boolean };
 
 type Roh = Record<string, unknown>;
 
@@ -94,7 +105,7 @@ export function sauber(text: string, max: number, zeilen = true): string {
   return t.length > max ? `${t.slice(0, max)} … (gekürzt)` : t;
 }
 
-const AKTIVITAET_STATUS = ["laeuft", "fertig", "abgelehnt", "fehler"] as const;
+const AKTIVITAET_STATUS = ["laeuft", "fertig", "abgelehnt", "fehler", "wartet"] as const;
 
 const zelle = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 
@@ -167,7 +178,14 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
           id: (it.id as string).slice(0, 100),
           grund: sauber(it.grund as string, 200, false),
           detail: sauber(it.detail as string, 2000),
-          von: optStr(it.von, 60) && sauber(optStr(it.von, 60) as string, 60, false),
+          // erst bereinigen, dann kürzen: so erscheint "(gekürzt)", wenn etwas fehlt
+          von: isStr(it.von) && it.von.trim() ? sauber(it.von.trim(), 60, false) : undefined,
+          ziel: isStr(it.ziel) && it.ziel.trim() ? sauber(it.ziel.trim(), 200, false) : undefined,
+          anlass: isStr(it.anlass) && it.anlass.trim() ? sauber(it.anlass.trim(), 200, false) : undefined,
+          gueltigS:
+            typeof it.gueltig_s === "number" && Number.isInteger(it.gueltig_s) && it.gueltig_s > 0 && it.gueltig_s <= 3600
+              ? it.gueltig_s
+              : undefined,
         }));
       return {
         type: "freigaben",
@@ -221,7 +239,12 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
       };
     case "sitzung_beendet":
       // Kern beendet die Sitzung selbst (Profil gesperrt, Rolle geändert, Höchstdauer erreicht)
-      return { type: "sitzung_beendet", grund: isStr(m.grund) ? sauber(m.grund, 200, false) : "" };
+      // anmelden: der Kern verlangt eine neue Anmeldung (Anmeldung zu alt); die Oberfläche meldet dann ab
+      return {
+        type: "sitzung_beendet",
+        grund: isStr(m.grund) ? sauber(m.grund, 200, false) : "",
+        anmelden: m.anmelden === true ? true : undefined,
+      };
     default:
       return null;
   }
