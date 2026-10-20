@@ -20,10 +20,11 @@ export function unverschluesselt(url: string | undefined): boolean {
 export const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 export const VOICE_CORE_URL = process.env.NEXT_PUBLIC_VOICE_CORE_URL ?? "http://localhost:7860";
 
-/** Adressen, die unverschlüsselt im LAN laufen (für den Hinweis in der Oberfläche). */
+/** Adressen, die unverschlüsselt im LAN laufen (für den Hinweis in der Oberfläche). Den Büro-Kern nimmt
+ * lib/betriebsart.ts nur mit https an, er taucht hier deshalb nie auf. */
 export function unverschluesselteDienste(): { name: string; url: string }[] {
   return [
     { name: "Anmeldung (Supabase)", url: SUPABASE_URL },
-    { name: "Voice-Core", url: VOICE_CORE_URL },
+    { name: "Voice-Core (Unterwegs)", url: VOICE_CORE_URL },
   ].filter((d) => unverschluesselt(d.url));
 }

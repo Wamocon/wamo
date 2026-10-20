@@ -46,3 +46,7 @@ https://192.168.178.136:55443, https://sokrates2:55443, https://spark-651f.local
 		stream_close_delay 5m
 	}
 }
+
+# Weitere WAMO-Sites (Phase P3: HTTPS 55444 vor dem Kern auf Sokrates-2, kern/wamo-core.caddy, installiert durch
+# wamo-core-caddy.sh). Ohne Datei gibt Caddy nur eine Warnung aus.
+import /etc/caddy/kern/*.caddy

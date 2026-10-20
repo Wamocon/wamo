@@ -111,6 +111,9 @@ def sync_ui_env(lines: list[str]) -> None:
     ui_lines = set_value(ui_lines, "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", key)
     if not current_value(ui_lines, "NEXT_PUBLIC_VOICE_CORE_URL"):
         ui_lines = set_value(ui_lines, "NEXT_PUBLIC_VOICE_CORE_URL", "http://localhost:7860")
+    if not current_value(ui_lines, "NEXT_PUBLIC_WAMO_KERN_BUERO"):
+        # Betriebsart Büro: Kern auf Sokrates-2 hinter wamo-caddy (infra/sokrates2/README.md, Abschnitt 10)
+        ui_lines = set_value(ui_lines, "NEXT_PUBLIC_WAMO_KERN_BUERO", f"https://{DB_HOST}:55444")
     UI_ENV_FILE.write_text("\n".join(ui_lines) + "\n", encoding="utf-8")
     print(f"Oberflaeche: {UI_ENV_FILE} abgeglichen.")
 

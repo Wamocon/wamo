@@ -1,6 +1,7 @@
 "use client";
 
 import { memo } from "react";
+import { KERN, useBetriebsart, type Betriebsart } from "@/lib/betriebsart";
 import type { Betrieb } from "@/lib/nachrichten";
 import { useSelect } from "@/lib/store";
 import { unverschluesselteDienste } from "@/lib/umgebung";
@@ -9,7 +10,8 @@ import { istOnline, wamo } from "@/lib/wamo";
 // Build-Konstanten: auf Server und Client gleich
 const UNSICHER = unverschluesselteDienste().map((d) => d.name);
 
-const MODUS_TEXT: Record<Betrieb["modus"], string> = { lokal: "Lokal", buero: "Büro" };
+// Was der Kern meldet (lokal = Kern auf diesem PC, also Betriebsart Unterwegs)
+const MODUS_ART: Record<Betrieb["modus"], Betriebsart> = { lokal: "unterwegs", buero: "buero" };
 
 function Symbol({ art }: { art: "haus" | "laptop" | "schloss" | "warnung" }) {
   // schlichte Liniensymbole, Farbe über currentColor; das Warnsymbol ist ein rotes Quadrat
@@ -41,14 +43,20 @@ function PcText({ betrieb }: { betrieb: Betrieb | null }) {
     );
   }
   switch (betrieb.pc) {
+    case "verbindet":
+      return (
+        <>
+          <span className="dot" aria-hidden="true" />
+          PC<span className="status-label"> verbindet …</span>
+        </>
+      );
     case "verbunden":
       return (
         <>
           <span className="dot" data-on="true" aria-hidden="true" />
           PC
           <span className="status-label">
-            {" "}
-            verbunden
+            {betrieb.pcName && <span className="num"> {betrieb.pcName}</span>} verbunden
             {betrieb.pcLatenzMs !== undefined && <span className="num latency"> {betrieb.pcLatenzMs} ms</span>}
           </span>
         </>
@@ -89,7 +97,11 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
   const online = useSelect(wamo, istOnline);
   const betrieb = useSelect(wamo, (s) => s.betrieb);
   const micOn = useSelect(wamo, (s) => s.micOn);
+  const gewaehlt = useBetriebsart();
   const dt = kompakt ? "sr-only" : undefined;
+  // Verbunden: was der Kern meldet. Sonst: die gewählte Betriebsart für das nächste Gespräch.
+  const art = betrieb ? MODUS_ART[betrieb.modus] : gewaehlt;
+  const kernText = `Kern: ${KERN[art].ort}`;
   const m = betrieb?.modelle;
   const modelleKurz = (m && [m.llm, m.stt].filter(Boolean).join(" · ")) || "Modelle unbekannt";
 
@@ -106,9 +118,10 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
       </div>
       <div data-feld="betriebsart">
         <dt className={dt}>Betriebsart</dt>
-        <dd>
-          {betrieb && <Symbol art={betrieb.modus === "buero" ? "haus" : "laptop"} />}
-          {betrieb ? MODUS_TEXT[betrieb.modus] : kompakt ? "Betriebsart unbekannt" : "unbekannt"}
+        <dd title={kernText}>
+          <Symbol art={art === "buero" ? "haus" : "laptop"} />
+          {KERN[art].name}
+          {!kompakt && <span className="status-label"> ({kernText}{betrieb ? "" : ", gewählt"})</span>}
         </dd>
       </div>
       {kompakt ? (

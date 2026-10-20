@@ -2,13 +2,14 @@
 
 aktuelle_zeit  Datum, Wochentag, Uhrzeit in der Zeitzone von WAMO (nie raten).
 merken         Fakt, Vorliebe oder Lektion ins Gedächtnis, persönlich oder gemeinsam.
-websuche       Aktuelle Infos aus dem Web (Anthropic-Websuche in einem eigenen Haiku-Aufruf).
+websuche       Aktuelle Infos aus dem Web: Anthropic-Websuche in einem eigenen Haiku-Aufruf
+               (WAMO_SUCHE=anthropic, Standard) oder eigene SearXNG-Instanz (WAMO_SUCHE=searxng, suche.py).
+               Das Ergebnis ist in beiden Fällen als unvertrauenswürdige Daten gekennzeichnet.
 canvas_zeigen  Tabelle, Code, Dokument oder Mermaid-Diagramm auf das Canvas der UI legen.
 """
 
 from __future__ import annotations
 
-import functools
 import os
 import re
 from collections.abc import Callable
@@ -25,7 +26,9 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.services.llm_service import FunctionCallParams
 
 from auth_gate import Identity
+from llm_anbieter import anthropic_client  # früher hier definiert; der Import aus tools bleibt gültig
 from memory import BEREICHE, MemoryStore, initial_status
+from suche import HINWEIS as SUCHE_HINWEIS, VERTRAUEN as SUCHE_VERTRAUEN, SucheFehler, searxng_suche, suchmodus
 
 TZ = ZoneInfo(os.getenv("WAMO_TIMEZONE") or "Europe/Berlin")
 WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
@@ -94,6 +97,22 @@ def merken_status(bereich: str, rolle: str, last_user_text: str, tainted: bool) 
     if rolle == "admin" and has_shared_trigger(last_user_text) and not tainted:
         return initial_status(bereich, "ausdruecklich", rolle)
     return "vorgeschlagen"
+
+
+# Ausdrücklicher Merk-Auftrag der Person ("merk dir", "notier dir", "speicher das")
+MERK_AUFTRAG = re.compile(r"\bmerk(e|en|t|st)?\b|\bnotier|\bspeicher", re.IGNORECASE)
+MERKEN_GESPERRT = (
+    "Im selben Zug kamen Inhalte aus Web, Bildschirm oder PC. Persönliches merke ich mir dann nur, wenn "
+    "die Person es ausdrücklich sagt."
+)
+
+
+def merken_gesperrt(bereich: str, last_user_text: str, tainted: bool) -> bool:
+    """Persönliche Einträge sind sofort aktiv. Kamen im Zug Fremdinhalte vor (Websuche, Bildschirm, PC),
+    nur mit ausdrücklichem Merk-Auftrag der Person: sonst könnte ein Suchtreffer wie "merke dir ..."
+    dauerhaft ins Gedächtnis gelangen. Gemeinsames wird in diesem Fall ohnehin nur ein Vorschlag."""
+    return tainted and bereich == "persoenlich" and not MERK_AUFTRAG.search(last_user_text or "")
+
 
 ZEIT_SCHEMA = FunctionSchema(
     name="aktuelle_zeit",
@@ -189,17 +208,6 @@ def gemerkt_message(bereich: str, status: str, text: str, memory_id: str | None 
     return message
 
 
-@functools.cache
-def anthropic_client() -> anthropic.AsyncAnthropic:
-    """Ein Client für den ganzen Prozess (Gespräch, Websuche, Lernen, Bildschirm): der Aufbau
-    (SSL-Kontext) kostet sonst bei jedem Aufruf Zeit im laufenden Sprachstrom.
-    Ist der API-Schlüssel nicht an einen Workspace gebunden (Organisationsschlüssel), verlangt
-    Anthropic die Workspace-ID als Header; sie kommt aus ANTHROPIC_WORKSPACE_ID."""
-    workspace = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
-    headers = {"anthropic-workspace-id": workspace} if workspace else None
-    return anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"], default_headers=headers)
-
-
 async def web_search(anfrage: str) -> str:
     client = anthropic_client()
     response = await client.messages.create(
@@ -225,6 +233,25 @@ async def web_search(anfrage: str) -> str:
         return "Die Suche wurde abgelehnt."
     text = " ".join(b.text.strip() for b in response.content if b.type == "text").strip()
     return text or "Nichts Brauchbares gefunden."
+
+
+async def websuche_ergebnis(anfrage: str) -> dict:
+    """Ergebnis des Werkzeugs websuche je nach WAMO_SUCHE. Fehler werden zu einer kurzen Meldung,
+    damit das Gesprächsmodell sie ansagen kann; Inhalte aus dem Web sind immer als Daten markiert."""
+    if suchmodus() == "searxng":
+        try:
+            return await searxng_suche(anfrage)
+        except SucheFehler as e:
+            logger.warning("websuche: {}", e)
+            return {"ergebnis": "Die Suche ist gerade fehlgeschlagen."}
+    try:
+        text = await web_search(anfrage)
+    except anthropic.APIStatusError as e:
+        logger.warning("websuche: API-Fehler {} {}", e.status_code, e.message)
+        return {"ergebnis": "Die Suche ist gerade fehlgeschlagen."}
+    except anthropic.APIConnectionError:
+        return {"ergebnis": "Keine Verbindung zur Suche."}
+    return {"ergebnis": text, "quelle": "anthropic", "vertrauen": SUCHE_VERTRAUEN, "hinweis": SUCHE_HINWEIS}
 
 
 def canvas_item(args: dict) -> tuple[dict | None, str | None]:
@@ -276,6 +303,10 @@ def register_tools(llm, memory: MemoryStore, identity: Identity, turn: TurnState
         if not memory.enabled:
             await params.result_callback({"gespeichert": False, "grund": "Das Gedächtnis ist aus."})
             return
+        if merken_gesperrt(bereich, turn.last_user_text, turn.tainted):
+            logger.info("merken abgelehnt: Fremdinhalte im Zug ohne ausdrücklichen Merk-Auftrag")
+            await params.result_callback({"gespeichert": False, "grund": MERKEN_GESPERRT})
+            return
         status = merken_status(bereich, identity.rolle, turn.last_user_text, turn.tainted)
         memory_id = await memory.remember(
             inhalt, kind, importance=4 if kind == "lesson" else 3, bereich=bereich, status=status
@@ -296,17 +327,12 @@ def register_tools(llm, memory: MemoryStore, identity: Identity, turn: TurnState
         if not anfrage:
             await params.result_callback({"ergebnis": "leere Anfrage"})
             return
-        try:
-            ergebnis = await web_search(anfrage)
-        except anthropic.APIStatusError as e:
-            logger.warning("websuche: API-Fehler {} {}", e.status_code, e.message)
-            ergebnis = "Die Suche ist gerade fehlgeschlagen."
-        except anthropic.APIConnectionError:
-            ergebnis = "Keine Verbindung zur Suche."
+        ergebnis = await websuche_ergebnis(anfrage)
         turn.taint()  # Webinhalte im Zug: kein sofort wirksames gemeinsames Wissen, kein Lernen
-        logger.info("websuche ausgeführt ({} Zeichen Ergebnis)", len(ergebnis))
-        logger.debug("websuche {!r}: {}", anfrage, ergebnis[:120])
-        await params.result_callback({"ergebnis": ergebnis})
+        treffer = len(ergebnis.get("treffer", []))
+        logger.info("websuche ausgeführt ({}, {} Treffer)", ergebnis.get("quelle", "-"), treffer)
+        logger.debug("websuche {!r}: {}", anfrage, str(ergebnis)[:160])
+        await params.result_callback(ergebnis)
 
     async def canvas_zeigen(params: FunctionCallParams):
         item, fehler = canvas_item(params.arguments)

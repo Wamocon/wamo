@@ -1,5 +1,6 @@
 import type { BotOutputData } from "@pipecat-ai/client-js";
 import type { CanvasItem } from "@/components/Canvas";
+import type { Betriebsart } from "@/lib/betriebsart";
 import type { Activity, Auftrag, Betrieb, Gemerkt, Profil, ServerMessage } from "@/lib/nachrichten";
 import { createStore } from "@/lib/store";
 
@@ -76,6 +77,8 @@ export type WamoState = {
   auftraege: Auftrag[];
   canvas: CanvasItem[];
   betrieb: Betrieb | null;
+  /** Kern der laufenden oder letzten Verbindung (Betriebsart beim Verbinden, lib/betriebsart.ts) */
+  kern: Betriebsart | null;
   profil: Profil | null;
   memos: Memo[];
   micOn: boolean;
@@ -106,6 +109,7 @@ export const initialState: WamoState = {
   auftraege: [],
   canvas: [],
   betrieb: null,
+  kern: null,
   profil: null,
   memos: [],
   micOn: true,
@@ -276,6 +280,7 @@ export function resetWamo(state: WamoState = initialState) {
 
 // ---------- Servernachrichten in den Store übernehmen ----------
 const PC_ANSAGE: Record<Betrieb["pc"], string> = {
+  verbindet: "PC wird verbunden",
   verbunden: "PC verbunden",
   getrennt: "PC nicht erreichbar",
   aus: "PC-Steuerung aus",
@@ -347,12 +352,18 @@ export function applyServerMessage(msg: ServerMessage) {
         pcLatenzMs: msg.pcLatenzMs,
         pcSteuerung: msg.pcSteuerung,
         entwicklung: msg.entwicklung,
+        pcName: msg.pcName,
+        pcBelegt: msg.pcBelegt,
       };
+      const vorher = wamo.get().betrieb;
       wamo.set((s) => ({
         ...s,
         betrieb,
         ansage: s.betrieb && s.betrieb.pc !== betrieb.pc ? PC_ANSAGE[betrieb.pc] : s.ansage,
       }));
+      // Im Gespräch sichtbar machen, wenn der PC wegfällt oder eine andere Sitzung ihn steuert
+      if (vorher && vorher.pc === "verbunden" && betrieb.pc === "getrennt") zeigeToast("PC nicht erreichbar");
+      if (betrieb.pcBelegt && !vorher?.pcBelegt) zeigeToast("Eine andere Sitzung steuert diesen PC gerade");
       return;
     }
     case "gemerkt":

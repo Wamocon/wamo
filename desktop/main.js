@@ -12,6 +12,10 @@
 // * Startet bei Bedarf Voice-Core und UI selbst (WAMO_MANAGE_SERVICES=off schaltet das ab). Die UI
 //   läuft als Produktions-Build (next build einmalig, dann next start nur auf 127.0.0.1);
 //   WAMO_UI_DEV=1 startet stattdessen next dev.
+// * Betriebsart je Gerät (userData/einstellungen.json, Tray und Oberfläche): "unterwegs" (Standard) startet den
+//   lokalen Voice-Core wie bisher, "buero" nutzt den Kern auf Sokrates-2 und startet lokal keinen. Die Oberfläche
+//   bekommt nur den Namen der Betriebsart; die Adressen stehen in ihrer Build-Konfiguration (und CSP). Der Kern im
+//   Büro läuft über HTTPS mit der WAMO-CA, der Chromium der App vertraut ihr über den Windows-Speicher.
 //
 // Umgebung: WAMO_UI_URL, WAMO_VOICE_CORE_URL (http oder https), WAMO_MANAGE_SERVICES, WAMO_UI_DEV,
 // WAMO_VEIL_CM, WAMO_LOG_LEVEL (an den Voice-Core; Standard INFO, nie DEBUG).
@@ -74,6 +78,59 @@ let quitting = false;
 let farben = null; // Randfarben aus der Oberfläche, geprüft (siehe ipcMain "farben")
 let energieId = null; // powerSaveBlocker nur während eines Gesprächs
 const children = [];
+const kinder = {}; // Dienstname -> laufender Kindprozess aus diesem Lauf
+
+// ---------- Einstellungen je Gerät (Betriebsart) ----------
+const BETRIEBSARTEN = ["buero", "unterwegs"];
+const STANDARD_BETRIEBSART = "unterwegs"; // bis die Betriebsart Büro abgenommen ist
+let betriebsart = STANDARD_BETRIEBSART;
+
+function einstellungsDatei() {
+  return path.join(app.getPath("userData"), "einstellungen.json");
+}
+
+function ladeEinstellungen() {
+  try {
+    const roh = JSON.parse(fs.readFileSync(einstellungsDatei(), "utf8"));
+    if (BETRIEBSARTEN.includes(roh?.betriebsart)) betriebsart = roh.betriebsart;
+  } catch {
+    betriebsart = STANDARD_BETRIEBSART; // fehlt oder kaputt: Standard
+  }
+}
+
+function speichereEinstellungen() {
+  const datei = einstellungsDatei();
+  const tmp = `${datei}.neu`;
+  fs.mkdirSync(path.dirname(datei), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify({ betriebsart }, null, 2));
+  fs.renameSync(tmp, datei); // atomar ersetzen
+}
+
+/** Betriebsart umschalten: speichern, lokalen Kern starten oder (nur den eigenen) stoppen, alle informieren. */
+async function setzeBetriebsart(art) {
+  if (!BETRIEBSARTEN.includes(art)) return betriebsart;
+  if (art !== betriebsart) {
+    betriebsart = art;
+    try {
+      speichereEinstellungen();
+    } catch (err) {
+      console.error(`Einstellungen nicht gespeichert: ${err.message}`);
+    }
+    // Ein laufendes Gespräch mit dem lokalen Kern nicht abreißen: dann erst nach dem Gespräch stoppen
+    if (art === "buero" && energieId === null) stoppeEigenenKern();
+    else if (art === "unterwegs") void starteKernWennNoetig();
+    aktualisiereTray();
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("betriebsart", art);
+  }
+  return betriebsart;
+}
+
+/** Nur den Voice-Core beenden, den diese App in diesem Lauf selbst gestartet hat. */
+function stoppeEigenenKern() {
+  const kind = kinder["voice-core"];
+  delete kinder["voice-core"]; // sofort, nicht erst beim exit-Ereignis (sonst startet ein Neustart nicht)
+  if (kind && kind.exitCode === null && kind.signalCode === null) killTree(kind.pid);
+}
 
 // ---------- Logdateien mit Rotation ----------
 class Logdatei {
@@ -198,6 +255,7 @@ function startService(name, command, args, cwd, extraEnv = {}) {
   const weg = () => {
     const i = children.indexOf(child);
     if (i >= 0) children.splice(i, 1);
+    if (kinder[name] === child) delete kinder[name];
     log.schliessen();
     fs.rmSync(pidDatei(name), { force: true });
   };
@@ -211,6 +269,7 @@ function startService(name, command, args, cwd, extraEnv = {}) {
     weg();
   });
   children.push(child);
+  kinder[name] = child;
   // PID-Datei nur mit echter PID; dazu Programm und Startzeit, damit ein späterer Start nur genau
   // diesen Prozess beendet und nie einen fremden mit wiederverwendeter PID
   if (child.pid) {
@@ -325,17 +384,23 @@ function istLoopback(url) {
   }
 }
 
+/** Lokalen Voice-Core starten, aber nur in "unterwegs" und nur, wenn nicht schon einer läuft. */
+async function starteKernWennNoetig() {
+  if (process.env.WAMO_MANAGE_SERVICES === "off" || betriebsart !== "unterwegs" || kinder["voice-core"]) return;
+  if (await coreIstDa()) return;
+  const uv = path.join(os.homedir(), ".local", "bin", "uv.exe");
+  startService("voice-core", fs.existsSync(uv) ? uv : "uv", ["run", "bot.py"], path.join(REPO, "voice-core"), {
+    WAMO_LOG_LEVEL: LOG_LEVEL,
+  });
+}
+
 async function ensureServices() {
   if (process.env.WAMO_MANAGE_SERVICES === "off") return;
   // Reste eines früheren Laufs dieser App beenden (nur wenn sicher unsere), damit der aktuelle Code läuft
   killStale("voice-core");
   await new Promise((r) => setTimeout(r, 800));
-  if (!(await coreIstDa())) {
-    const uv = path.join(os.homedir(), ".local", "bin", "uv.exe");
-    startService("voice-core", fs.existsSync(uv) ? uv : "uv", ["run", "bot.py"], path.join(REPO, "voice-core"), {
-      WAMO_LOG_LEVEL: LOG_LEVEL,
-    });
-  }
+  // Büro: Der Kern läuft auf Sokrates-2, lokal wird keiner gestartet (und auf keinen gewartet)
+  await starteKernWennNoetig();
   // Die UI nur dann selbst starten, wenn sie auf diesem Rechner laufen soll
   if (istLoopback(UI_URL) && !(await uiIstDa())) {
     killStale("ui");
@@ -353,7 +418,7 @@ async function ensureServices() {
     }
   }
   for (let i = 0; i < 45; i++) {
-    if ((await uiIstDa()) && (await coreIstDa())) return;
+    if ((await uiIstDa()) && (betriebsart !== "unterwegs" || (await coreIstDa()))) return;
     await new Promise((r) => setTimeout(r, 2000));
   }
 }
@@ -511,10 +576,34 @@ function showMain() {
 
 function createTray() {
   tray = new Tray(nativeImage.createFromPath(iconPath()));
-  tray.setToolTip("WAMO");
+  aktualisiereTray();
+  tray.on("click", showMain);
+}
+
+/** Tray-Menü (neu aufgebaut, wenn sich die Betriebsart ändert). */
+function aktualisiereTray() {
+  if (!tray) return;
+  tray.setToolTip(betriebsart === "buero" ? "WAMO (Büro, Kern auf Sokrates-2)" : "WAMO (Unterwegs, Kern auf diesem PC)");
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "WAMO öffnen", click: showMain },
+      {
+        label: "Betriebsart",
+        submenu: [
+          {
+            label: "Büro (Kern auf Sokrates-2)",
+            type: "radio",
+            checked: betriebsart === "buero",
+            click: () => void setzeBetriebsart("buero"),
+          },
+          {
+            label: "Unterwegs (Kern auf diesem PC)",
+            type: "radio",
+            checked: betriebsart === "unterwegs",
+            click: () => void setzeBetriebsart("unterwegs"),
+          },
+        ],
+      },
       {
         label: "Stimmen-Rand",
         type: "checkbox",
@@ -533,7 +622,9 @@ function createTray() {
       { type: "separator" },
       {
         label: "Voice-Core neu starten",
+        visible: betriebsart === "unterwegs", // im Büro läuft der Kern als Dienst auf Sokrates-2
         click: async () => {
+          stoppeEigenenKern();
           killStale("voice-core");
           await ensureServices();
           mainWin?.reload();
@@ -542,7 +633,6 @@ function createTray() {
       { label: "WAMO beenden", click: () => { quitting = true; app.quit(); } },
     ]),
   );
-  tray.on("click", showMain);
 }
 
 // ---------- Brücke von der Oberfläche zu den Rand-Fenstern ----------
@@ -550,6 +640,16 @@ function createTray() {
 function fromMainUi(event) {
   return Boolean(mainWin) && event.sender === mainWin.webContents && sameOrigin(event.senderFrame?.url ?? "");
 }
+
+// Betriebsart: nur das Hauptfenster mit der eigenen Oberfläche, nur die zwei bekannten Werte (keine Adressen)
+ipcMain.handle("betriebsart:lesen", (event) => (fromMainUi(event) ? betriebsart : null));
+ipcMain.handle("betriebsart:setzen", async (event, art) => {
+  if (!fromMainUi(event) || !BETRIEBSARTEN.includes(art)) return betriebsart;
+  return setzeBetriebsart(art);
+});
+// Rechnername dieses PCs: die Oberfläche schaltet die PC-Steuerung im Büro nur automatisch ein, wenn der Kern
+// genau diesen PC steuert
+ipcMain.handle("rechnername", (event) => (fromMainUi(event) ? os.hostname() : null));
 
 // Zustände, die der Rand kennt (alles andere wird "idle")
 const ZUSTAENDE = new Set(["offline", "idle", "listening", "thinking", "speaking", "acting", "approval"]);
@@ -560,6 +660,8 @@ function energieschutz(an) {
   if (!an && energieId !== null) {
     if (powerSaveBlocker.isStarted(energieId)) powerSaveBlocker.stop(energieId);
     energieId = null;
+    // Während des Gesprächs auf Büro umgeschaltet: den eigenen lokalen Kern jetzt beenden
+    if (betriebsart === "buero") stoppeEigenenKern();
   }
 }
 
@@ -618,6 +720,7 @@ function istEigeneUi(wc, url) {
 }
 
 app.whenReady().then(async () => {
+  ladeEinstellungen(); // Betriebsart vor dem Start der Dienste (Büro: kein lokaler Kern)
   const ses = session.defaultSession;
   // Mikrofon (nur Audio, nie Kamera) und Zwischenablage nur für die eigene Oberfläche, sonst nichts
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {

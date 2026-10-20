@@ -1,0 +1,79 @@
+# WAMO Voice-Core auf Sokrates-2 (Betriebsart Büro). Installiert durch infra/sokrates2/wamo-core-einrichten.sh.
+#
+# Lauscht nur auf dem Unix-Socket /run/wamo-core/core.sock (kein TCP-Port); HTTPS macht wamo-caddy auf 55444.
+# WebRTC-Medien (UDP, ephemere Ports von aioice) gehen direkt; ufw lässt sie nur aus dem Büro-LAN zu.
+# PC-Werkzeuge über den SSH-Rücktunnel: /run/wamo-tunnel/pc.sock (wamo-tunnel-einrichten.sh, scripts/wamo-tunnel.ps1).
+# Geheimnisse in /etc/wamo/core.env (root:wamo-core 0640), nur über /usr/local/sbin/wamo-core-env.
+# Was hier mit Environment= steht, lässt wamo-core-env bewusst nicht setzen (EnvironmentFile hätte Vorrang).
+[Unit]
+Description=WAMO Voice-Core (Betriebsart Büro)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wamo-core
+Group=wamo-core
+WorkingDirectory=/opt/wamo-core/app/voice-core
+EnvironmentFile=/etc/wamo/core.env
+Environment=WAMO_BETRIEB=buero
+Environment=WAMO_CORE_UDS=/run/wamo-core/core.sock
+Environment=WAMO_PC_HOST=on
+Environment=WAMO_PC_HOST_SOCKET=/run/wamo-tunnel/pc.sock
+Environment=SUPABASE_URL=https://192.168.178.136:55443
+Environment=WAMO_CA_FILE=/opt/wamo-core/wamo-ca.crt
+Environment=PIPECAT_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+Environment=WAMO_ENTWICKLUNG=aus
+Environment=WAMO_LOG_LEVEL=INFO
+Environment=WAMO_CHANNEL=buero
+Environment=HOME=/var/lib/wamo-core
+Environment=XDG_CACHE_HOME=/var/cache/wamo-core
+Environment=NUMBA_CACHE_DIR=/var/cache/wamo-core/numba
+Environment=HF_HUB_OFFLINE=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+ExecStartPre=/opt/wamo-core/bin/wamo-core-vorpruefung
+ExecStart=/opt/wamo-core/venv/bin/python bot.py -t webrtc
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+StateDirectory=wamo-core
+StateDirectoryMode=0700
+CacheDirectory=wamo-core
+CacheDirectoryMode=0700
+ReadWritePaths=/run/wamo-core
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+# AF_NETLINK: aioice liest die Netzwerkschnittstellen (Kandidaten für WebRTC)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=4G
+TasksMax=512
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

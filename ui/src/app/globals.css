@@ -441,6 +441,21 @@ p, li { text-wrap: pretty; }
 .pc-auto { display: flex; align-items: flex-start; gap: 8px; min-height: 32px; font-size: 15px; cursor: pointer; }
 .pc-auto input { width: 18px; height: 18px; margin: 2px 0 0; flex: none; accent-color: var(--accent); cursor: pointer; }
 .pc-auto-hint { margin: -4px 0 0 26px; font-size: 14px; color: var(--ink); }
+
+/* Betriebsart Büro/Unterwegs (je Gerät, nur ohne laufendes Gespräch umschaltbar) */
+.betriebsart { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.betriebsart-wahl { display: inline-flex; border: 2px solid var(--rule-strong); border-radius: 4px; overflow: hidden; }
+.betriebsart-wahl button {
+  min-height: 40px; padding: 0 14px;
+  background: var(--bg); color: var(--ink); border: 0;
+  font: 700 16px/1 var(--font-wmc); cursor: pointer;
+  transition-property: background-color, color; transition-duration: var(--dur-fast);
+}
+.betriebsart-wahl button + button { border-left: 2px solid var(--rule-strong); }
+.betriebsart-wahl button[data-an] { background: var(--accent); color: var(--on-accent); }
+.betriebsart-wahl button:disabled { cursor: not-allowed; }
+.betriebsart-wahl button:disabled:not([data-an]) { color: var(--ink-soft); }
+.betriebsart-wahl button:focus-visible { outline: 2px solid var(--focus); outline-offset: -4px; }
 .hinweis-toast {
   margin: 0; padding: 8px 12px;
   display: flex; align-items: center; gap: 8px;
@@ -686,6 +701,7 @@ p, li { text-wrap: pretty; }
   .canvas { order: 5; min-height: 0; padding: 16px 12px; }
   .timeline { order: 6; }
   .pc-steuerung { order: 7; }
+  .betriebsart { order: 8; }
   .hinweis-toast { order: 4; }
   /* PC-Steuerung an: wichtiger als die Betriebsart (die steht weiter im Menü) */
   .status-items:has([data-feld="pcsteuerung"]) [data-feld="betriebsart"] { display: none; }

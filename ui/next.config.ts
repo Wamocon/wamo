@@ -13,11 +13,19 @@ function herkunft(url: string | undefined): string {
   }
 }
 
-// Erlaubte Gegenstellen: eigene Seite, Anmeldung (Supabase) und Voice-Core (Start, Offer, ICE).
+/** Wie herkunft, aber nur für https (Büro-Kern auf Sokrates-2; lib/betriebsart.ts nimmt ihn sonst nicht an). */
+function sichereHerkunft(url: string | undefined): string {
+  const o = herkunft(url);
+  return o.startsWith("https://") ? o : "";
+}
+
+// Erlaubte Gegenstellen: eigene Seite, Anmeldung (Supabase) und beide Voice-Cores (Start, Offer, ICE):
+// Unterwegs auf diesem PC, Büro auf Sokrates-2. Die Betriebsart wählt zur Laufzeit nur zwischen diesen beiden.
 const connect = [
   "'self'",
   herkunft(process.env.NEXT_PUBLIC_SUPABASE_URL),
   herkunft(process.env.NEXT_PUBLIC_VOICE_CORE_URL ?? "http://localhost:7860"),
+  sichereHerkunft(process.env.NEXT_PUBLIC_WAMO_KERN_BUERO),
 ].filter(Boolean);
 
 // Next.js setzt Inline-Skripte (Hydration) und Inline-Styles (next/font, React-Styles, Mermaid-SVG),

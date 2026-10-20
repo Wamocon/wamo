@@ -1,0 +1,160 @@
+[
+  {
+    "name": "webseite_oeffnen",
+    "description": "Oeffnet eine Webseite im Browser (change). Fuer Suchen auf Shops direkt die Such-URL bauen,\n    z. B. https://www.amazon.de/s?k=wohnzimmer+lampe. browser: chrome oder edge.",
+    "properties": {
+      "url": {
+        "title": "Url",
+        "type": "string"
+      },
+      "browser": {
+        "default": "chrome",
+        "title": "Browser",
+        "type": "string"
+      }
+    },
+    "required": [
+      "url"
+    ]
+  },
+  {
+    "name": "programm_oeffnen",
+    "description": "Startet ein installiertes Programm (change), z. B. Outlook, Teams, VS Code, Claude, Chrome.\n    Gesucht wird im Startmenue. Ist es schon offen, besser fenster_fokussieren nutzen.\n    Shells, Registry und Admin-Werkzeuge startet WAMO nicht.",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ]
+  },
+  {
+    "name": "powershell_lesen",
+    "description": "Liest Informationen per PowerShell (nur Get-/Test-Befehle, optional mit | Select/Where/Sort/\n    Format/Measure). Alles, was etwas veraendert, wird NICHT ausgefuehrt, sondern als Freigabe-\n    Anfrage gestellt (status=needs_approval), die ein Admin freigeben muss. `reason` = wofür,\n    wird protokolliert.",
+    "properties": {
+      "command": {
+        "title": "Command",
+        "type": "string"
+      },
+      "reason": {
+        "title": "Reason",
+        "type": "string"
+      }
+    },
+    "required": [
+      "command",
+      "reason"
+    ]
+  },
+  {
+    "name": "system_info",
+    "description": "Basisinfos zum PC (read).",
+    "properties": {},
+    "required": []
+  },
+  {
+    "name": "dark_mode",
+    "description": "Windows-Dark-Mode fuer Apps und System an/aus (change, nur HKCU).",
+    "properties": {
+      "enabled": {
+        "title": "Enabled",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "enabled"
+    ]
+  },
+  {
+    "name": "fenster_auflisten",
+    "description": "Listet die offenen Fenster mit Titel und Programm (read). Nutzen, um zu sehen, was laeuft,\n    z. B. ob VS Code oder Outlook schon offen ist.",
+    "properties": {},
+    "required": []
+  },
+  {
+    "name": "fenster_fokussieren",
+    "description": "Holt ein offenes Fenster nach vorne (change). `fenster` = Teil des Titels oder Programmname,\n    z. B. 'Outlook', 'Code', 'Chrome'.",
+    "properties": {
+      "fenster": {
+        "title": "Fenster",
+        "type": "string"
+      }
+    },
+    "required": [
+      "fenster"
+    ]
+  },
+  {
+    "name": "tastatur_tippen",
+    "description": "Tippt Text ins Fenster vorne oder vorher ins genannte Fenster (change), z. B. eine Nachricht in\n    Teams oder einen Prompt in den Claude-Chat in VS Code. Zeilenumbruch = Enter. Nur tippen, was\n    die Person so gewollt hat. In Konsolen, Admin- und Passwortfenster tippt WAMO nie.",
+    "properties": {
+      "text": {
+        "title": "Text",
+        "type": "string"
+      },
+      "fenster": {
+        "default": "",
+        "title": "Fenster",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text"
+    ]
+  },
+  {
+    "name": "tasten_druecken",
+    "description": "Drueckt eine Taste oder Tastenkombination (change), z. B. 'enter', 'ctrl+t', 'esc', 'alt+tab'.\n    Gesperrt: Windows-Taste, Adressleiste (ctrl+l, alt+d, f6), Konsolen, Explorer, Admin- und\n    Passwortfenster. Senden in Mail- und Messenger-Fenstern (enter, ctrl+enter, alt+s) braucht eine\n    Freigabe.",
+    "properties": {
+      "kombination": {
+        "title": "Kombination",
+        "type": "string"
+      },
+      "fenster": {
+        "default": "",
+        "title": "Fenster",
+        "type": "string"
+      }
+    },
+    "required": [
+      "kombination"
+    ]
+  },
+  {
+    "name": "maus_scrollen",
+    "description": "Scrollt im Fenster vorne (change). richtung: hoch oder runter, schritte 1-20.",
+    "properties": {
+      "richtung": {
+        "default": "runter",
+        "title": "Richtung",
+        "type": "string"
+      },
+      "schritte": {
+        "default": 5,
+        "title": "Schritte",
+        "type": "integer"
+      }
+    },
+    "required": []
+  },
+  {
+    "name": "oeffnen_mit",
+    "description": "Oeffnet einen Ordner oder eine Datei direkt in einem Programm (change): vscode (Standard, z. B.\n    ein Projektordner), explorer oder notepad. Der richtige Weg, um Projekte/Dateien zu oeffnen;\n    niemals Befehle wie 'code ...' in ein Fenster tippen. Nur Pfade im eigenen Benutzerordner.",
+    "properties": {
+      "pfad": {
+        "title": "Pfad",
+        "type": "string"
+      },
+      "programm": {
+        "default": "vscode",
+        "title": "Programm",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pfad"
+    ]
+  }
+]

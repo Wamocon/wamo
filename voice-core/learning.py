@@ -1,5 +1,7 @@
-"""Lernen während und nach dem Gespräch: Haiku liest einen Gesprächsabschnitt und hält neue
-Fakten, Vorlieben und die Sprechweise der Person fest. Jeder Eintrag bekommt einen Bereich:
+"""Lernen während und nach dem Gespräch: ein Sprachmodell liest einen Gesprächsabschnitt und hält
+neue Fakten, Vorlieben und die Sprechweise der Person fest. Anbieter und Modell kommen aus
+llm_anbieter (Baustein lernen: WAMO_LLM_LERNEN, WAMO_LLM_LERNEN_MODELL, Standard Claude Haiku).
+Jeder Eintrag bekommt einen Bereich:
   persoenlich  Eigenschaften, Vorlieben und Verhalten der Person (immer aktiv)
   gemeinsam    Wissen über Firma, Kunden, Projekte und Abläufe, das allen nützt
                (startet immer als Vorschlag, ein Admin gibt ihn frei)
@@ -14,12 +16,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-import anthropic
 from loguru import logger
 
+from llm_anbieter import LLMFehler, anfrage, json_aus_text
 from memory import BEREICHE, MemoryStore, initial_status
 from persona import clean_inline
-from tools import anthropic_client
 
 MIN_USER_TURNS = 3
 MAX_ENTRIES = 5
@@ -99,9 +100,7 @@ def transcript_text(transcript: list[tuple[str, str]], name: str) -> str:
     )
 
 
-async def learn_from_session(
-    memory: MemoryStore, transcript: list[tuple[str, str]], model: str, *, name: str
-) -> list[Gemerkt]:
+async def learn_from_session(memory: MemoryStore, transcript: list[tuple[str, str]], *, name: str) -> list[Gemerkt]:
     """Wertet den Abschnitt aus und speichert neue Einträge. Gibt die gespeicherten zurück."""
     if not memory.enabled:
         return []
@@ -115,36 +114,25 @@ async def learn_from_session(
     bekannt = "\n".join(f"- {clean_inline(k)}" for k in bekannt_liste) or "(noch nichts)"
 
     try:
-        response = await anthropic_client().messages.create(
-            model=model,
-            max_tokens=2000,
+        antwort = await anfrage(
+            "lernen",
             system=system_prompt(name),
-            output_config={
-                "effort": "low",
-                "format": {"type": "json_schema", "schema": SCHEMA},
-            },
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Bereits bekannt:\n{bekannt}\n\nGespräch:\n{transcript_text(lines, name)}",
-                }
-            ],
+            inhalt=f"Bereits bekannt:\n{bekannt}\n\nGespräch:\n{transcript_text(lines, name)}",
+            max_tokens=2000,
+            json_schema=SCHEMA,
+            schema_name="eintraege",
         )
-    except anthropic.APIStatusError as e:
-        logger.warning("Lernen: API-Fehler {} {}", e.status_code, e.message)
-        return []
-    except anthropic.APIConnectionError as e:
-        logger.warning("Lernen: keine Verbindung ({})", e)
+    except LLMFehler as e:
+        logger.warning("Lernen: {}", e)
         return []
 
-    if response.stop_reason in ("refusal", "max_tokens"):
-        logger.warning("Lernen: abgebrochen ({})", response.stop_reason)
+    if antwort.ende != "fertig":
+        logger.warning("Lernen: abgebrochen ({})", antwort.ende)
         return []
-    text = next((b.text for b in response.content if b.type == "text"), "")
     try:
-        entries = json.loads(text)["eintraege"][:MAX_ENTRIES]
+        entries = json_aus_text(antwort.text)["eintraege"][:MAX_ENTRIES]
     except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.warning("Lernen: Antwort nicht lesbar ({})", e)
+        logger.warning("Lernen: Antwort nicht lesbar ({})", type(e).__name__)
         return []
 
     saved: list[Gemerkt] = []
