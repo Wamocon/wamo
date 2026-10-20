@@ -1,0 +1,655 @@
+// WAMO-Desktop: der Client auf dem PC.
+//
+// * Hauptfenster mit der bekannten Oberfläche (localhost:3000), OHNE Hintergrund-Drosselung:
+//   Mikrofon und Sprachausgabe laufen weiter, auch wenn Chrome, Amazon & Co. vorne sind.
+//   Beim Start zeigt es sofort eine Ladeseite (start.html), bei Ladefehlern eine Fehlerseite mit
+//   "Wiederholen".
+// * Stimmen-Rand "Rote Kante": pro Monitor ein durchsichtiges, nicht anklickbares Fenster ganz oben.
+//   Im Ruhezustand unsichtbar; WAMO spricht rot, der Mensch als Licht von unten, dazu Denken, Handeln
+//   und wartende Freigaben (Zustand kommt mit den Pegeln). Die Farben kommen einmalig aus den
+//   CSS-Variablen der Oberfläche (ui/src/lib/stimmfarben.ts), sie sind nur dort definiert.
+// * Tray-Symbol mit "Mit Windows starten"; Schließen versteckt nur ins Tray, das Gespräch bleibt.
+// * Startet bei Bedarf Voice-Core und UI selbst (WAMO_MANAGE_SERVICES=off schaltet das ab). Die UI
+//   läuft als Produktions-Build (next build einmalig, dann next start nur auf 127.0.0.1);
+//   WAMO_UI_DEV=1 startet stattdessen next dev.
+//
+// Umgebung: WAMO_UI_URL, WAMO_VOICE_CORE_URL (http oder https), WAMO_MANAGE_SERVICES, WAMO_UI_DEV,
+// WAMO_VEIL_CM, WAMO_LOG_LEVEL (an den Voice-Core; Standard INFO, nie DEBUG).
+//
+// Sicherheit: contextIsolation + sandbox, keine nodeIntegration. Die Seite darf nur Pegel mit Zustand
+// und einmalig die Randfarben melden; beides wird hier gegen eine feste Liste geprüft. Navigation und
+// Weiterleitungen bleiben auf dem UI-Origin, keine Webviews, Mikrofon (nur Audio) nur für das
+// Hauptfenster mit der eigenen Oberfläche, fremde Seiten öffnen im normalen Browser.
+// Prozesse aus PID-Dateien werden nur beendet, wenn Programmname, Befehlszeile und Startzeit passen.
+
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  Tray,
+  ipcMain,
+  nativeImage,
+  powerSaveBlocker,
+  screen,
+  session,
+  shell,
+} = require("electron");
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const http = require("node:http");
+const https = require("node:https");
+const os = require("node:os");
+const path = require("node:path");
+
+// Zweite Instanz: sofort zurückkehren, bevor irgendetwas registriert oder gestartet wird. Sonst würde
+// sie beim Beenden die Dienste der ersten Instanz stoppen (killStale, stopServices). Die erste Instanz
+// holt über "second-instance" ihr Fenster nach vorne.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  return;
+}
+
+const UI_URL = process.env.WAMO_UI_URL || "http://localhost:3000";
+const VOICE_CORE_URL = process.env.WAMO_VOICE_CORE_URL || "http://localhost:7860";
+const REPO = path.resolve(__dirname, "..");
+const UI_DIR = path.join(REPO, "ui");
+const UI_ORIGIN = new URL(UI_URL).origin;
+const LOG_DIR = path.join(__dirname, "logs");
+const LOG_MAX_BYTES = 5 * 1024 * 1024; // je Logdatei höchstens 5 MB
+const LOG_DATEIEN = 3; // name.log, name.log.1, name.log.2
+const LOG_LEVEL = ["INFO", "WARNING", "ERROR"].includes(process.env.WAMO_LOG_LEVEL) ? process.env.WAMO_LOG_LEVEL : "INFO";
+
+// Chromium-Drosselung für verdeckte/Hintergrund-Fenster aus (die Ursache der Abbrüche)
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion,IntensiveWakeUpThrottling");
+if (process.platform === "win32") app.setAppUserModelId("de.wamocon.wamo");
+
+let mainWin = null;
+let tray = null;
+let overlays = [];
+let borderOn = true;
+let quitting = false;
+let farben = null; // Randfarben aus der Oberfläche, geprüft (siehe ipcMain "farben")
+let energieId = null; // powerSaveBlocker nur während eines Gesprächs
+const children = [];
+
+// ---------- Logdateien mit Rotation ----------
+class Logdatei {
+  constructor(name) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    this.file = path.join(LOG_DIR, `${name}.log`);
+    this.oeffnen();
+  }
+
+  oeffnen() {
+    this.fd = fs.openSync(this.file, "a");
+    this.size = fs.fstatSync(this.fd).size;
+    if (this.size > LOG_MAX_BYTES) this.rotieren();
+  }
+
+  rotieren() {
+    try {
+      fs.closeSync(this.fd);
+    } catch {
+      // schon zu
+    }
+    // name.log.1 -> name.log.2, name.log -> name.log.1 (die älteste fällt weg)
+    for (let i = LOG_DATEIEN - 1; i >= 1; i--) {
+      const von = i === 1 ? this.file : `${this.file}.${i - 1}`;
+      try {
+        if (fs.existsSync(von)) fs.renameSync(von, `${this.file}.${i}`);
+      } catch {
+        // Datei gerade gesperrt: dann eben beim nächsten Mal
+      }
+    }
+    this.fd = fs.openSync(this.file, "a");
+    this.size = 0;
+  }
+
+  schreiben(chunk) {
+    try {
+      fs.writeSync(this.fd, chunk);
+      this.size += chunk.length;
+      if (this.size > LOG_MAX_BYTES) this.rotieren();
+    } catch {
+      // Logging darf den Dienst nie stören
+    }
+  }
+
+  schliessen() {
+    try {
+      fs.closeSync(this.fd);
+    } catch {
+      // schon zu
+    }
+  }
+}
+
+// ---------- Dienste (Voice-Core, UI) ----------
+// Erwartete Prozesse je Dienst: nur solche werden über eine PID-Datei beendet.
+const DIENSTE = {
+  "voice-core": { programme: ["uv.exe", "python.exe", "pythonw.exe"], merkmal: "bot.py" },
+  ui: { programme: ["node.exe"], merkmal: "next" },
+};
+
+/**
+ * Erreichbarkeit prüfen; das passende Modul je Protokoll, damit eine https-Adresse den Start nicht
+ * abbricht. pruefe(status, body) entscheidet, ob die Antwort vom erwarteten Dienst stammt.
+ */
+function isUp(url, pruefe) {
+  return new Promise((resolve) => {
+    let target;
+    try {
+      target = new URL(url);
+    } catch {
+      resolve(false);
+      return;
+    }
+    const client = target.protocol === "https:" ? https : target.protocol === "http:" ? http : null;
+    if (!client) {
+      resolve(false);
+      return;
+    }
+    let req;
+    try {
+      req = client.get(target, (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (d) => {
+          if (body.length < 65536) body += d;
+        });
+        res.on("end", () => resolve(pruefe(res.statusCode ?? 0, body)));
+        res.on("error", () => resolve(false));
+      });
+    } catch {
+      resolve(false);
+      return;
+    }
+    req.on("error", () => resolve(false));
+    req.setTimeout(2000, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+const uiIstDa = () => isUp(UI_URL, (status, body) => status >= 200 && status < 400 && body.includes("WAMO"));
+// Der Voice-Core lehnt Anfragen ohne Token mit 401 und "nicht berechtigt" ab: das ist seine Kennung
+const coreIstDa = () =>
+  isUp(VOICE_CORE_URL, (status, body) => (status >= 200 && status < 400) || (status === 401 && body.includes("nicht berechtigt")));
+
+function pidDatei(name) {
+  return path.join(LOG_DIR, `${name}.pid`);
+}
+
+function startService(name, command, args, cwd, extraEnv = {}) {
+  const log = new Logdatei(name);
+  // argv-Liste ohne Shell
+  const child = spawn(command, args, {
+    cwd,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", ...extraEnv },
+  });
+  child.stdout?.on("data", (d) => log.schreiben(d));
+  child.stderr?.on("data", (d) => log.schreiben(d));
+  const weg = () => {
+    const i = children.indexOf(child);
+    if (i >= 0) children.splice(i, 1);
+    log.schliessen();
+    fs.rmSync(pidDatei(name), { force: true });
+  };
+  child.on("error", (err) => {
+    console.error(`${name} konnte nicht starten: ${err.message}`);
+    log.schreiben(`[WAMO-Desktop] Start fehlgeschlagen: ${err.message}\n`);
+    weg();
+  });
+  child.on("exit", (code) => {
+    console.log(`${name} beendet (${code})`);
+    weg();
+  });
+  children.push(child);
+  // PID-Datei nur mit echter PID; dazu Programm und Startzeit, damit ein späterer Start nur genau
+  // diesen Prozess beendet und nie einen fremden mit wiederverwendeter PID
+  if (child.pid) {
+    const eintrag = { pid: child.pid, startedAt: Date.now(), dienst: name };
+    fs.writeFileSync(pidDatei(name), JSON.stringify(eintrag));
+  }
+  return child;
+}
+
+// Ganzen Prozessbaum beenden: "uv run" startet Python als Kindprozess; nur uv zu beenden ließ den
+// alten Voice-Core weiterlaufen (Port 7860 belegt, neue Version wurde nie geladen).
+function killTree(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+}
+
+/** Name, Pfad, Befehlszeile und Startzeit eines Prozesses (Windows, über CIM). */
+function prozessInfo(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const befehl =
+    `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | ForEach-Object { ` +
+    "[pscustomobject]@{ Name = $_.Name; Pfad = $_.ExecutablePath; Befehl = $_.CommandLine; " +
+    "Start = $_.CreationDate.ToUniversalTime().ToString('o') } } | ConvertTo-Json -Compress";
+  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", befehl], {
+    windowsHide: true,
+    encoding: "utf8",
+    timeout: 10000,
+  });
+  if (r.status !== 0 || !r.stdout.trim()) return null;
+  try {
+    return JSON.parse(r.stdout);
+  } catch {
+    return null;
+  }
+}
+
+/** Verwaisten Dienst eines früheren Laufs beenden, aber nur wenn er sicher unserer ist. */
+function killStale(name) {
+  const datei = pidDatei(name);
+  if (!fs.existsSync(datei)) return;
+  let eintrag = null;
+  try {
+    eintrag = JSON.parse(fs.readFileSync(datei, "utf8"));
+  } catch {
+    eintrag = null; // alte Form (nur Zahl) oder kaputt: nicht prüfbar, also nicht beenden
+  }
+  fs.rmSync(datei, { force: true });
+  const erwartet = DIENSTE[name];
+  if (!eintrag || !erwartet || !Number.isInteger(eintrag.pid) || !Number.isFinite(eintrag.startedAt)) return;
+  const info = prozessInfo(eintrag.pid);
+  if (!info) return; // läuft nicht mehr
+  const programm = String(info.Name ?? "").toLowerCase();
+  const befehl = String(info.Befehl ?? "").toLowerCase();
+  const start = Date.parse(info.Start ?? "");
+  const passt =
+    erwartet.programme.includes(programm) &&
+    befehl.includes(erwartet.merkmal) &&
+    Number.isFinite(start) &&
+    Math.abs(start - eintrag.startedAt) < 15000;
+  if (passt) killTree(eintrag.pid);
+  else console.warn(`${name}: PID ${eintrag.pid} gehört nicht (mehr) zu WAMO, nicht beendet`);
+}
+
+function stopServices() {
+  for (const c of children.splice(0)) {
+    // nur noch laufende eigene Kindprozesse (Handle aus diesem Lauf, keine PID-Datei nötig)
+    if (c.exitCode === null && c.signalCode === null) killTree(c.pid);
+  }
+  for (const name of Object.keys(DIENSTE)) fs.rmSync(pidDatei(name), { force: true });
+}
+
+/** Neueste Änderungszeit unter einem Pfad (für "Build veraltet?"). */
+function neuesteAenderung(p) {
+  let neueste = 0;
+  let stat;
+  try {
+    stat = fs.statSync(p);
+  } catch {
+    return 0;
+  }
+  if (!stat.isDirectory()) return stat.mtimeMs;
+  for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+    if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+    neueste = Math.max(neueste, neuesteAenderung(path.join(p, e.name)));
+  }
+  return neueste;
+}
+
+function buildVeraltet() {
+  const buildId = path.join(UI_DIR, ".next", "BUILD_ID");
+  if (!fs.existsSync(buildId)) return true;
+  const gebaut = fs.statSync(buildId).mtimeMs;
+  const quellen = ["src", "public", "package.json", "package-lock.json", "next.config.ts", ".env.local"].map((q) =>
+    neuesteAenderung(path.join(UI_DIR, q)),
+  );
+  return Math.max(...quellen) > gebaut;
+}
+
+function warteAufEnde(child) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null) resolve(child.exitCode);
+    child.once("exit", (code) => resolve(code));
+    child.once("error", () => resolve(-1));
+  });
+}
+
+function istLoopback(url) {
+  try {
+    return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function ensureServices() {
+  if (process.env.WAMO_MANAGE_SERVICES === "off") return;
+  // Reste eines früheren Laufs dieser App beenden (nur wenn sicher unsere), damit der aktuelle Code läuft
+  killStale("voice-core");
+  await new Promise((r) => setTimeout(r, 800));
+  if (!(await coreIstDa())) {
+    const uv = path.join(os.homedir(), ".local", "bin", "uv.exe");
+    startService("voice-core", fs.existsSync(uv) ? uv : "uv", ["run", "bot.py"], path.join(REPO, "voice-core"), {
+      WAMO_LOG_LEVEL: LOG_LEVEL,
+    });
+  }
+  // Die UI nur dann selbst starten, wenn sie auf diesem Rechner laufen soll
+  if (istLoopback(UI_URL) && !(await uiIstDa())) {
+    killStale("ui");
+    const nextBin = path.join(UI_DIR, "node_modules", "next", "dist", "bin", "next");
+    const port = new URL(UI_URL).port || "3000";
+    if (process.env.WAMO_UI_DEV === "1") {
+      startService("ui", "node", [nextBin, "dev", "-H", "127.0.0.1", "-p", port], UI_DIR);
+    } else {
+      if (buildVeraltet()) {
+        zeigeStart("bauen");
+        const build = startService("ui-build", "node", [nextBin, "build"], UI_DIR);
+        await warteAufEnde(build);
+      }
+      startService("ui", "node", [nextBin, "start", "-H", "127.0.0.1", "-p", port], UI_DIR);
+    }
+  }
+  for (let i = 0; i < 45; i++) {
+    if ((await uiIstDa()) && (await coreIstDa())) return;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+// ---------- Fenster ----------
+function sameOrigin(url) {
+  try {
+    return new URL(url).origin === UI_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
+/** Lade- oder Fehlerseite im Hauptfenster (lokale Datei, eigene CSP). */
+function zeigeStart(zustand, code = "") {
+  if (!mainWin || mainWin.isDestroyed()) return;
+  void mainWin.loadFile(path.join(__dirname, "start.html"), { query: { zustand, ziel: UI_URL, code } });
+}
+
+function createMainWindow() {
+  mainWin = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    title: "WAMO",
+    icon: iconPath(),
+    autoHideMenuBar: true,
+    backgroundColor: "#FFFFFF",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      webviewTag: false,
+      backgroundThrottling: false,
+    },
+  });
+  const wc = mainWin.webContents;
+
+  // Fremde Seiten nie im WAMO-Fenster: externe Links gehen in den normalen Browser
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  wc.on("will-navigate", (event, url) => {
+    if (!sameOrigin(url)) event.preventDefault();
+  });
+  wc.on("will-redirect", (event, url) => {
+    if (!sameOrigin(url)) event.preventDefault();
+  });
+  wc.on("will-frame-navigate", (event) => {
+    if (!sameOrigin(event.url)) event.preventDefault();
+  });
+  // Ladefehler der Oberfläche: Fehlerseite mit "Wiederholen" statt eines leeren Fensters
+  wc.on("did-fail-load", (_event, code, beschreibung, url, isMainFrame) => {
+    if (!isMainFrame || code === -3 || !sameOrigin(url)) return; // -3 = abgebrochen
+    zeigeStart("fehler", beschreibung);
+  });
+
+  mainWin.on("close", (event) => {
+    if (!quitting) {
+      event.preventDefault();
+      mainWin.hide();
+    }
+  });
+  // Windows meldet sich ab oder fährt herunter: Dienste sauber beenden
+  mainWin.on("session-end", () => {
+    quitting = true;
+    stopServices();
+  });
+  zeigeStart("laden");
+}
+
+// Schleierbreite in geräteunabhängigen Pixeln: 96 DIP entsprechen nominal 2,54 cm (Windows rechnet
+// Skalierung schon ein). Standard 4,55 cm; WAMO_VEIL_CM ändert das (2 bis 12 cm).
+function veilWidthDip() {
+  const cm = Math.min(12, Math.max(2, Number(process.env.WAMO_VEIL_CM) || 4.55));
+  return Math.round((cm * 96) / 2.54);
+}
+
+function createOverlays() {
+  overlays.forEach((w) => !w.isDestroyed() && w.destroy());
+  overlays = screen.getAllDisplays().map((display) => {
+    const { x, y, width, height } = display.bounds;
+    const win = new BrowserWindow({
+      x, y, width, height,
+      transparent: true,
+      frame: false,
+      resizable: false,
+      movable: false,
+      focusable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      alwaysOnTop: true,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, "overlay-preload.js"),
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        webviewTag: false,
+        backgroundThrottling: false,
+      },
+    });
+    win.setIgnoreMouseEvents(true); // Klicks gehen durch auf darunterliegende Programme
+    win.setAlwaysOnTop(true, "screen-saver");
+    win.setVisibleOnAllWorkspaces(true);
+    // Der Rand lädt nur seine lokale Datei, nie etwas anderes
+    win.webContents.on("will-navigate", (event) => event.preventDefault());
+    win.webContents.on("will-redirect", (event) => event.preventDefault());
+    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    win.webContents.on("did-finish-load", () => {
+      if (farben) win.webContents.send("farben", farben);
+    });
+    void win.loadFile(path.join(__dirname, "overlay.html"), { query: { veil: String(veilWidthDip()) } });
+    win.once("ready-to-show", () => borderOn && win.showInactive());
+    return win;
+  });
+}
+
+// Bildschirmwechsel kommen oft in Schüben (Dock, Skalierung): Ränder erst nach 300 ms Ruhe neu bauen
+let overlayTimer = null;
+function overlaysSpaeter() {
+  if (overlayTimer) clearTimeout(overlayTimer);
+  overlayTimer = setTimeout(() => {
+    overlayTimer = null;
+    createOverlays();
+  }, 300);
+}
+
+// Nicht gepackte App: Windows muss electron.exe MIT dem App-Ordner starten
+function loginItem() {
+  return app.isPackaged ? {} : { path: process.execPath, args: [__dirname] };
+}
+
+function raisePriority() {
+  for (const m of app.getAppMetrics()) {
+    try {
+      os.setPriority(m.pid, os.constants.priority.PRIORITY_ABOVE_NORMAL);
+    } catch {
+      // Prozess schon weg oder keine Rechte: egal
+    }
+  }
+}
+
+// App-Symbol aus dem WMC-Logo (desktop/assets): unter Windows .ico (mehrere Größen), sonst PNG
+function iconPath() {
+  return path.join(__dirname, "assets", process.platform === "win32" ? "wamo.ico" : "wamo.png");
+}
+
+function showMain() {
+  if (!mainWin) return;
+  mainWin.show();
+  mainWin.focus();
+}
+
+function createTray() {
+  tray = new Tray(nativeImage.createFromPath(iconPath()));
+  tray.setToolTip("WAMO");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "WAMO öffnen", click: showMain },
+      {
+        label: "Stimmen-Rand",
+        type: "checkbox",
+        checked: borderOn,
+        click: (item) => {
+          borderOn = item.checked;
+          overlays.forEach((w) => !w.isDestroyed() && (borderOn ? w.showInactive() : w.hide()));
+        },
+      },
+      {
+        label: "Mit Windows starten",
+        type: "checkbox",
+        checked: app.getLoginItemSettings(loginItem()).openAtLogin,
+        click: (item) => app.setLoginItemSettings({ ...loginItem(), openAtLogin: item.checked }),
+      },
+      { type: "separator" },
+      {
+        label: "Voice-Core neu starten",
+        click: async () => {
+          killStale("voice-core");
+          await ensureServices();
+          mainWin?.reload();
+        },
+      },
+      { label: "WAMO beenden", click: () => { quitting = true; app.quit(); } },
+    ]),
+  );
+  tray.on("click", showMain);
+}
+
+// ---------- Brücke von der Oberfläche zu den Rand-Fenstern ----------
+// Nur das Hauptfenster mit der eigenen Oberfläche darf senden.
+function fromMainUi(event) {
+  return Boolean(mainWin) && event.sender === mainWin.webContents && sameOrigin(event.senderFrame?.url ?? "");
+}
+
+// Zustände, die der Rand kennt (alles andere wird "idle")
+const ZUSTAENDE = new Set(["offline", "idle", "listening", "thinking", "speaking", "acting", "approval"]);
+
+/** Energiesparschutz nur während eines Gesprächs (Zustand nicht offline). */
+function energieschutz(an) {
+  if (an && energieId === null) energieId = powerSaveBlocker.start("prevent-app-suspension");
+  if (!an && energieId !== null) {
+    if (powerSaveBlocker.isStarted(energieId)) powerSaveBlocker.stop(energieId);
+    energieId = null;
+  }
+}
+
+ipcMain.on("levels", (event, sample) => {
+  if (!fromMainUi(event)) return;
+  const s = {
+    user: clamp(Number(sample?.user)),
+    bot: clamp(Number(sample?.bot)),
+    cut: Boolean(sample?.cut),
+    speaker: Math.max(0, Math.min(7, Math.trunc(Number(sample?.speaker)) || 0)),
+    zustand: ZUSTAENDE.has(sample?.zustand) ? sample.zustand : "idle",
+  };
+  energieschutz(s.zustand !== "offline");
+  if (!borderOn) return; // Rand ausgeschaltet: nichts weiterreichen
+  for (const w of overlays) if (!w.isDestroyed()) w.webContents.send("levels", s);
+});
+
+// Farben des Randes (einmalig beim Laden der Oberfläche, aus deren CSS-Variablen --overlay-*):
+// { wamo: [r,g,b], mensch: [r,g,b], andere: [r,g,b] }
+ipcMain.on("farben", (event, value) => {
+  if (!fromMainUi(event)) return;
+  const geprueft = checkFarben(value);
+  if (!geprueft) return;
+  farben = geprueft;
+  for (const w of overlays) if (!w.isDestroyed()) w.webContents.send("farben", farben);
+});
+
+function checkRgb(c) {
+  if (!Array.isArray(c) || c.length !== 3) return null;
+  const out = c.map((v) => Math.round(Number(v)));
+  return out.every((v) => Number.isFinite(v) && v >= 0 && v <= 255) ? out : null;
+}
+
+function checkFarben(value) {
+  const wamo = checkRgb(value?.wamo);
+  const mensch = checkRgb(value?.mensch);
+  const andere = checkRgb(value?.andere);
+  return wamo && mensch && andere ? { wamo, mensch, andere } : null;
+}
+
+function clamp(v) {
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
+}
+
+// Keine Webviews, keine neuen Fenster aus irgendeinem Inhalt
+app.on("web-contents-created", (_event, contents) => {
+  contents.on("will-attach-webview", (event) => event.preventDefault());
+  contents.setWindowOpenHandler(() => ({ action: "deny" }));
+});
+
+app.on("second-instance", showMain);
+
+/** Berechtigungen nur für das Hauptfenster mit der eigenen Oberfläche. */
+function istEigeneUi(wc, url) {
+  return Boolean(wc) && Boolean(mainWin) && wc === mainWin.webContents && sameOrigin(url ?? "");
+}
+
+app.whenReady().then(async () => {
+  const ses = session.defaultSession;
+  // Mikrofon (nur Audio, nie Kamera) und Zwischenablage nur für die eigene Oberfläche, sonst nichts
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    if (!istEigeneUi(wc, details.requestingUrl)) return callback(false);
+    if (permission === "media") {
+      const typen = details.mediaTypes ?? [];
+      return callback(typen.length > 0 && typen.every((t) => t === "audio"));
+    }
+    callback(permission === "clipboard-sanitized-write");
+  });
+  ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
+    if (!istEigeneUi(wc, requestingOrigin)) return false;
+    if (permission === "media") return details?.mediaType === "audio";
+    return permission === "clipboard-sanitized-write";
+  });
+  // Audio bekommt Vorrang, wenn Chrome & Co. beim Öffnen kurz die CPU belegen (Aussetzer)
+  setInterval(raisePriority, 5000);
+  createTray();
+  createMainWindow(); // sofort mit Ladeseite, nicht erst nach dem Hochfahren der Dienste
+  await ensureServices();
+  if (await uiIstDa()) void mainWin.loadURL(UI_URL);
+  else zeigeStart("fehler", "Zeitüberschreitung beim Start");
+  createOverlays();
+  screen.on("display-added", overlaysSpaeter);
+  screen.on("display-removed", overlaysSpaeter);
+  screen.on("display-metrics-changed", overlaysSpaeter);
+});
+
+app.on("before-quit", () => {
+  quitting = true;
+  energieschutz(false);
+  stopServices();
+});
+
+app.on("window-all-closed", (e) => e.preventDefault()); // lebt im Tray weiter

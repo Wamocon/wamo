@@ -1,0 +1,221 @@
+import type { CanvasItem } from "@/components/Canvas";
+
+/**
+ * RTVI-Servernachrichten des Voice-Core (kommen über onServerMessage in useWamo.ts an).
+ * Die Daten stammen aus dem Netz: jede Nachricht wird hier geprüft, unbekannte oder
+ * unvollständige Nachrichten ergeben null und werden ignoriert. Zusatzfelder, die der Kern
+ * vielleicht später schickt (id für "Rückgängig", Latenz, Cloud oder im Haus), sind optional.
+ */
+
+export type Rolle = "admin" | "mitglied";
+
+export type Profil = { name: string; rolle: Rolle };
+
+export type Betrieb = {
+  modus: "lokal" | "buero";
+  modelle: { llm?: string; stt?: string; tts?: string };
+  pc: "verbunden" | "getrennt" | "aus" | "gesperrt";
+  /** optional: wohin die Stimme geht */
+  ort?: "cloud" | "haus";
+  /** optional: Antwortzeit des PC-Hosts in Millisekunden */
+  pcLatenzMs?: number;
+  /** PC-Steuerung dieser Sitzung (Schalter nur für admin); fehlt = aus */
+  pcSteuerung?: "an" | "aus";
+  /** Entwicklungsaufträge erlaubt? "aus" = gesperrt */
+  entwicklung?: "an" | "aus";
+};
+
+export type Gemerkt = {
+  bereich: "persoenlich" | "gemeinsam";
+  status: "aktiv" | "vorgeschlagen";
+  text: string;
+  /** optional: Kennung des Eintrags, nur dann gibt es "Rückgängig" */
+  id?: string;
+};
+
+export type ActivityStatus = "laeuft" | "fertig" | "abgelehnt" | "fehler";
+
+/** Ein Werkzeugaufruf von WAMO für die Aktivitäts-Zeitleiste (activity.py im Voice-Core). */
+export type Activity = {
+  id: string;
+  name: string;
+  detail: string;
+  status: ActivityStatus;
+  /** im Browser gesetzt: Beginn und Ende (performance.now), Gesprächszug */
+  startedAt?: number;
+  endedAt?: number;
+  turn?: number;
+};
+
+export type FreigabePunkt = { id: string; grund: string; detail: string; von?: string };
+
+/** Entwicklungsauftrag, den das Profil vor dem Start bestätigen muss (Servernachricht "auftrag"). */
+export type Auftrag = { job: string; projekt: string; art: string; auftrag: string };
+
+export type ServerMessage =
+  | { type: "canvas"; item: CanvasItem }
+  | ({ type: "aktivitaet" } & Pick<Activity, "id" | "name" | "detail" | "status">)
+  | { type: "sprecher"; index: number }
+  | { type: "leiser_stopp" }
+  | { type: "freigaben"; job: string; projekt: string; items: FreigabePunkt[] }
+  | ({ type: "profil" } & Profil)
+  | ({ type: "betrieb" } & Betrieb)
+  | ({ type: "gemerkt" } & Gemerkt)
+  | ({ type: "auftrag" } & Auftrag)
+  | { type: "sitzung_beendet"; grund: string };
+
+type Roh = Record<string, unknown>;
+
+const isObj = (v: unknown): v is Roh => typeof v === "object" && v !== null && !Array.isArray(v);
+const isStr = (v: unknown): v is string => typeof v === "string";
+const oneOf = <T extends string>(v: unknown, werte: readonly T[]): v is T =>
+  isStr(v) && (werte as readonly string[]).includes(v);
+const optStr = (v: unknown, max = 80) => (isStr(v) && v.trim() ? v.trim().slice(0, max) : undefined);
+
+const CANVAS_KINDS = ["tabelle", "code", "dokument", "mermaid"] as const;
+
+/** Grenzen gegen übergroße Canvas-Inhalte (Speicher, Darstellung). */
+export const CANVAS_MAX_ZEILEN = 500;
+export const CANVAS_MAX_SPALTEN = 30;
+export const CANVAS_MAX_TEXT = 200_000;
+
+// Steuerzeichen (außer Zeilenumbruch und Tab) und Bidi-Steuerzeichen, die Text optisch umdrehen können
+const STEUER = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+
+/** Text bereinigen und kürzen; gekürzte Texte enden sichtbar mit "… (gekürzt)". */
+export function sauber(text: string, max: number, zeilen = true): string {
+  let t = text.replace(STEUER, "");
+  if (!zeilen) t = t.replace(/[\r\n\t]+/g, " ");
+  return t.length > max ? `${t.slice(0, max)} … (gekürzt)` : t;
+}
+
+const AKTIVITAET_STATUS = ["laeuft", "fertig", "abgelehnt", "fehler"] as const;
+
+const zelle = (v: unknown) => (v === null || v === undefined ? "" : String(v));
+
+function canvasItem(v: unknown): CanvasItem | null {
+  if (!isObj(v) || !oneOf(v.kind, CANVAS_KINDS) || !isStr(v.title)) return null;
+  const id = isStr(v.id) ? v.id.slice(0, 100) : null;
+  const title = sauber(v.title, 200, false);
+  switch (v.kind) {
+    case "tabelle":
+      if (!Array.isArray(v.columns) || !Array.isArray(v.rows)) return null;
+      {
+        const rows = v.rows.filter(Array.isArray) as unknown[][];
+        const gekuerzt = rows.length > CANVAS_MAX_ZEILEN;
+        return {
+          id,
+          kind: "tabelle",
+          title: gekuerzt ? `${title} (erste ${CANVAS_MAX_ZEILEN} Zeilen)` : title,
+          columns: v.columns.slice(0, CANVAS_MAX_SPALTEN).map((c) => sauber(zelle(c), 200, false)),
+          rows: rows
+            .slice(0, CANVAS_MAX_ZEILEN)
+            .map((row) => row.slice(0, CANVAS_MAX_SPALTEN).map((c) => sauber(zelle(c), 2000))),
+        };
+      }
+    case "code":
+      if (!isStr(v.text)) return null;
+      return {
+        id,
+        kind: "code",
+        title,
+        text: sauber(v.text, CANVAS_MAX_TEXT),
+        language: isStr(v.language) ? sauber(v.language, 30, false) : undefined,
+      };
+    case "dokument":
+      return isStr(v.text) ? { id, kind: v.kind, title, text: sauber(v.text, CANVAS_MAX_TEXT) } : null;
+    case "mermaid":
+      // Diagrammtext nicht kürzen (sonst ungültig): zu groß heißt ablehnen
+      return isStr(v.text) && v.text.length <= CANVAS_MAX_TEXT ? { id, kind: v.kind, title, text: v.text.replace(STEUER, "") } : null;
+  }
+}
+
+/** Prüft eine Servernachricht und gibt sie typisiert zurück; alles Unbekannte wird null. */
+export function parseServerMessage(data: unknown): ServerMessage | null {
+  if (!isObj(data) || !isStr(data.type)) return null;
+  const m = data;
+  switch (m.type) {
+    case "canvas": {
+      const item = canvasItem(m.item);
+      return item ? { type: "canvas", item } : null;
+    }
+    case "aktivitaet":
+      if (!isStr(m.id) || !m.id || !isStr(m.name) || !m.name || !oneOf(m.status, AKTIVITAET_STATUS)) return null;
+      return {
+        type: "aktivitaet",
+        id: m.id.slice(0, 100),
+        name: sauber(m.name, 60, false),
+        detail: isStr(m.detail) ? sauber(m.detail, 200, false) : "",
+        status: m.status,
+      };
+    case "sprecher":
+      return typeof m.index === "number" && Number.isFinite(m.index)
+        ? { type: "sprecher", index: Math.max(0, Math.min(7, Math.trunc(m.index))) }
+        : null;
+    case "leiser_stopp":
+      return { type: "leiser_stopp" };
+    case "freigaben": {
+      if (!isStr(m.job) || !Array.isArray(m.items)) return null;
+      const items = m.items
+        .filter((it): it is Roh => isObj(it) && isStr(it.id) && isStr(it.grund) && isStr(it.detail))
+        .map((it) => ({
+          id: (it.id as string).slice(0, 100),
+          grund: sauber(it.grund as string, 200, false),
+          detail: sauber(it.detail as string, 2000),
+          von: optStr(it.von, 60) && sauber(optStr(it.von, 60) as string, 60, false),
+        }));
+      return {
+        type: "freigaben",
+        job: m.job.slice(0, 100),
+        projekt: isStr(m.projekt) ? sauber(m.projekt, 80, false) : "",
+        items,
+      };
+    }
+    case "profil":
+      if (!isStr(m.name) || !m.name.trim() || !oneOf(m.rolle, ["admin", "mitglied"] as const)) return null;
+      return { type: "profil", name: sauber(m.name.trim(), 60, false), rolle: m.rolle };
+    case "betrieb": {
+      if (!oneOf(m.modus, ["lokal", "buero"] as const)) return null;
+      const modelle = isObj(m.modelle) ? m.modelle : {};
+      const latenz = typeof m.pc_latenz_ms === "number" && Number.isFinite(m.pc_latenz_ms) ? m.pc_latenz_ms : undefined;
+      return {
+        type: "betrieb",
+        modus: m.modus,
+        modelle: { llm: optStr(modelle.llm), stt: optStr(modelle.stt), tts: optStr(modelle.tts) },
+        pc: oneOf(m.pc, ["verbunden", "getrennt", "aus", "gesperrt"] as const) ? m.pc : "aus",
+        ort: oneOf(m.ort, ["cloud", "haus"] as const) ? m.ort : undefined,
+        pcLatenzMs: latenz !== undefined ? Math.max(0, Math.round(latenz)) : undefined,
+        pcSteuerung: oneOf(m.pc_steuerung, ["an", "aus"] as const) ? m.pc_steuerung : undefined,
+        entwicklung: oneOf(m.entwicklung, ["an", "aus"] as const) ? m.entwicklung : undefined,
+      };
+    }
+    case "gemerkt":
+      if (
+        !oneOf(m.bereich, ["persoenlich", "gemeinsam"] as const) ||
+        !oneOf(m.status, ["aktiv", "vorgeschlagen"] as const)
+      )
+        return null;
+      return {
+        type: "gemerkt",
+        bereich: m.bereich,
+        status: m.status,
+        text: isStr(m.text) ? sauber(m.text, 280, false) : "",
+        id: optStr(m.id, 64),
+      };
+    case "auftrag":
+      // Auftragstext vollständig zeigen (großzügige Grenze), aber ohne Steuer- und Bidi-Zeichen
+      if (!isStr(m.job) || !m.job || !isStr(m.auftrag) || !m.auftrag.trim()) return null;
+      return {
+        type: "auftrag",
+        job: m.job.slice(0, 100),
+        projekt: isStr(m.projekt) ? sauber(m.projekt, 80, false) : "",
+        art: isStr(m.art) ? sauber(m.art, 60, false) : "",
+        auftrag: sauber(m.auftrag, 20_000),
+      };
+    case "sitzung_beendet":
+      // Kern beendet die Sitzung selbst (Profil gesperrt, Rolle geändert, Höchstdauer erreicht)
+      return { type: "sitzung_beendet", grund: isStr(m.grund) ? sauber(m.grund, 200, false) : "" };
+    default:
+      return null;
+  }
+}

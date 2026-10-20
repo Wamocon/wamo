@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'" />
+    <title>WAMO</title>
+    <style>
+      :root { color-scheme: light dark; --bg: #ffffff; --ink: #000000; --soft: #6b6b6b; --line: #d9d9d9; --red: #f40e0e; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #0e0e0e; --ink: #f3f3f3; --soft: #a3a3a3; --line: #2e2e2e; } }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+        font: 400 17px/1.45 "Arial Narrow", "Liberation Sans Narrow", Arial, sans-serif; }
+      main { min-height: 100%; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
+      .karte { width: min(100%, 420px); border: 1px solid var(--line); border-top: 4px solid var(--red); border-radius: 6px; padding: 28px; }
+      h1 { margin: 0 0 4px; font-size: 44px; line-height: 1; color: var(--red); letter-spacing: 0.04em; }
+      p { margin: 12px 0 0; }
+      .leise { color: var(--soft); font-size: 15px; }
+      .balken { height: 3px; margin-top: 18px; background: var(--line); overflow: hidden; }
+      .balken::after { content: ""; display: block; width: 30%; height: 100%; background: var(--red); animation: lauf 1.4s ease-in-out infinite; }
+      @keyframes lauf { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+      @media (prefers-reduced-motion: reduce) { .balken::after { animation: none; width: 100%; } }
+      button { margin-top: 18px; min-height: 44px; padding: 0 20px; border-radius: 4px; border: 2px solid var(--red);
+        background: var(--red); color: #ffffff; font: 700 19px/1 inherit; font-family: inherit; cursor: pointer; }
+      button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="karte" aria-live="polite">
+        <h1>WAMO</h1>
+        <p class="leise">Sprachassistent der WAMOCON GmbH</p>
+        <div id="laden">
+          <p id="laden-text">WAMO startet. Voice-Core und Oberfläche werden vorbereitet …</p>
+          <div class="balken" aria-hidden="true"></div>
+        </div>
+        <div id="fehler" hidden>
+          <p><strong>Die Oberfläche ist nicht erreichbar.</strong></p>
+          <p class="leise" id="fehler-text"></p>
+          <button type="button" id="wiederholen">Wiederholen</button>
+        </div>
+      </section>
+    </main>
+    <script src="start.js"></script>
+  </body>
+</html>
