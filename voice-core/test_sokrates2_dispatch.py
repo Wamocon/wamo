@@ -722,6 +722,8 @@ class FakeGithub:
                  netzfehler=False, waehrend_post=None):
         self.public_key, self.token, self.status, self.antwort = public_key, token, status, antwort
         self.widerruf, self.netzfehler, self.waehrend_post = widerruf, netzfehler, waehrend_post
+        self.repos = ["wamocon/app", "wamocon/rezepte-app"]  # was /installation/repositories ohne Ziel-Repo zeigt
+        self.repo_status = 200
         self.anfragen: list[tuple] = []
         self.claims: list[dict] = []
 
@@ -744,6 +746,11 @@ class FakeGithub:
             return self.status, json.dumps(body).encode()
         if methode == "DELETE":
             return self.widerruf, b""
+        if methode == "GET" and pfad.startswith("/installation/repositories"):
+            seite = int(pfad.rsplit("page=", 1)[1]) if "page=" in pfad else 1
+            teil = self.repos[(seite - 1) * 100:seite * 100]
+            return self.repo_status, json.dumps({"total_count": len(self.repos),
+                                                 "repositories": [{"full_name": n} for n in teil]}).encode()
         return 404, b"{}"
 
     def widerrufe(self):
@@ -779,7 +786,7 @@ class GithubAppTests(unittest.TestCase):
                         mock.patch.object(D, "_https", side_effect=lambda *a, **k: self.fake(*a, **k)),
                         mock.patch.object(D, "log", side_effect=lambda t, pflicht=False: self.logzeilen.append(t)),
                         mock.patch.object(D, "JOBS", self.jobs), mock.patch.object(D, "PROJEKTE", self.projekte),
-                        mock.patch.object(D, "HEIM", self.heim),
+                        mock.patch.object(D, "HEIM", self.heim), mock.patch.object(D, "WIDERRUF_PAUSEN_S", (0.0, 0.0)),
                         mock.patch.object(D, "emit", side_effect=lambda ev: self.ereignisse.append(ev) or True)]
         if LINUX:  # echte Rechteprüfung: Besitzer ist hier der Testbenutzer statt root
             os.chmod(self.ordner, 0o750)
@@ -871,6 +878,16 @@ class GithubAppTests(unittest.TestCase):
         with mock.patch.dict(wk.GITHUB_APP_RECHTE, {"lesen": {**wk.GITHUB_APP_RECHTE["lesen"], "administration": "read"}}):
             with self.assertRaises(ValueError):
                 wk.github_app_rechte("review")
+        # die Stufe lesen bleibt lesend, auch wenn der Bereich erlaubt ist; schreiben nie über die Obergrenze
+        for stufe, art, aenderung in (("lesen", "review", {"contents": "write"}),
+                                      ("lesen", "review", {"pull_requests": "write"}),
+                                      ("schreiben", "umsetzung", {"metadata": "write"})):
+            with self.subTest(stufe=stufe, aenderung=aenderung), \
+                 mock.patch.dict(wk.GITHUB_APP_RECHTE, {stufe: {**wk.GITHUB_APP_RECHTE[stufe], **aenderung}}):
+                with self.assertRaises(ValueError):
+                    wk.github_app_rechte(art)
+                with self.assertRaises(D.GithubAppFehler):
+                    D.installations_token(self.app(), art, None)
         self.assertEqual(self.fake.anfragen, [])
 
     # ------------------------------------------------------------ Repo-Begrenzung
@@ -917,11 +934,92 @@ class GithubAppTests(unittest.TestCase):
         self.fake.widerruf = 500
         with D.github_token_fuer_lauf(JOB, "umsetzung", None, self.app()):
             pass
-        self.assertEqual(len(self.fake.widerrufe()), 2)  # zwei Versuche bei Netzfehlern, hier je eine Antwort 500
+        self.assertEqual(len(self.fake.widerrufe()), 3)  # drei Versuche bei Serverfehlern, hier je eine Antwort 500
         self.assertTrue(any("FEHLGESCHLAGEN" in z for z in self.logzeilen))
         # der Voice-Core erfährt es (Ereignis ohne Token), damit es nicht nur im Log steht
         self.assertEqual([e["ereignis"] for e in self.ereignisse], ["gh_widerruf_fehlgeschlagen"])
         self.geheimnisfrei(json.dumps(self.ereignisse))
+
+    def test_widerruf_wiederholt_bei_ratenbegrenzung_mit_pausen(self):
+        pausen = []
+        with mock.patch.object(D, "WIDERRUF_PAUSEN_S", (1.0, 3.0)), \
+             mock.patch.object(D.time, "sleep", side_effect=pausen.append):
+            for status in (403, 429):  # Ratenbegrenzung: drei Versuche mit Pausen
+                self.fake.anfragen.clear()
+                pausen.clear()
+                self.fake.widerruf = status
+                self.assertFalse(D.token_widerrufen(self.fake.token))
+                self.assertEqual((len(self.fake.widerrufe()), pausen), (3, [1.0, 3.0]))
+            self.fake.anfragen.clear()
+            self.fake.widerruf = 404  # alles andere unter 500: aufgeben, keine Wiederholung
+            self.assertFalse(D.token_widerrufen(self.fake.token))
+            self.assertEqual(len(self.fake.widerrufe()), 1)
+            self.fake.anfragen.clear()
+            self.fake.widerruf = 401  # schon ungültig: erledigt
+            self.assertTrue(D.token_widerrufen(self.fake.token))
+            self.assertEqual(len(self.fake.widerrufe()), 1)
+
+    def test_ohne_repo_nur_ausgewaehlte_repos_und_nie_das_wamo_repo(self):
+        rechte = wk.GITHUB_APP_RECHTE["schreiben"]
+        faelle = {
+            "Auswahl alle": {"token": self.fake.token, "permissions": rechte, "repository_selection": "all"},
+            "Auswahl fehlt": {"token": self.fake.token, "permissions": rechte},
+            "WAMO-Repo dabei": {"token": self.fake.token, "permissions": rechte, "repository_selection": "selected",
+                                "repositories": [{"full_name": "wamocon/app"}, {"full_name": "Wamocon/WAMO"}]},
+        }
+        for name, antwort in faelle.items():
+            self.fake.anfragen.clear()
+            self.fake.antwort = antwort
+            with self.subTest(fall=name), self.assertRaises(D.GithubAppFehler):
+                D.installations_token(self.app(), "umsetzung", None)
+            self.assertEqual(len(self.fake.widerrufe()), 1, name)  # sofort widerrufen
+        self.fake.anfragen.clear()
+        self.fake.antwort = {"token": self.fake.token, "permissions": rechte, "repository_selection": "selected",
+                             "repositories": [{"full_name": "wamocon/app"}, {"full_name": "wamocon/wamo-docs"}]}
+        self.assertEqual(D.installations_token(self.app(), "umsetzung", None)[0], self.fake.token)  # wamo-docs ist ok
+        self.assertEqual(self.fake.widerrufe(), [])
+
+    def test_ohne_repo_prueft_die_liste_der_installation(self):
+        """Die echte Antwort zählt die Repos nicht auf: erst /installation/repositories zeigt das WAMO-Repo."""
+        faelle = {"WAMO-Repo in der Liste": dict(repos=["wamocon/app", "wamocon/WAMO"]),
+                  "Liste nicht lesbar": dict(repo_status=500),
+                  "mehr als 500 Repos": dict(repos=[f"wamocon/r{i}" for i in range(501)])}
+        for name, einstellung in faelle.items():
+            self.fake.anfragen.clear()
+            for k, v in einstellung.items():
+                setattr(self.fake, k, v)
+            with self.subTest(fall=name), self.assertRaises(D.GithubAppFehler):
+                D.installations_token(self.app(), "umsetzung", None)
+            self.assertEqual(len(self.fake.widerrufe()), 1, name)  # Token sofort widerrufen
+            self.fake.repos, self.fake.repo_status = ["wamocon/app"], 200
+        self.fake.anfragen.clear()
+        self.fake.repos = [f"wamocon/r{i}" for i in range(250)]  # mehrere Seiten, kein WAMO-Repo: in Ordnung
+        D.installations_token(self.app(), "review", None)
+        self.assertEqual([a[1] for a in self.fake.anfragen if a[0] == "GET"],
+                         [f"/installation/repositories?per_page=100&page={i}" for i in (1, 2, 3)])
+        self.assertEqual(self.fake.widerrufe(), [])
+        self.fake.anfragen.clear()
+        D.installations_token(self.app(), "umsetzung", "wamocon/rezepte-app")  # mit Ziel-Repo keine Liste nötig
+        self.assertEqual([a for a in self.fake.anfragen if a[0] == "GET"], [])
+
+    def test_echte_token_sind_lang_und_haben_punkte(self):
+        lang = "ghs_" + "Ab1_" * 40 + "." + "Cd-2" * 50  # Form der echten Token: rund 390 Zeichen mit Punkten
+        self.fake.token = lang
+        self.assertEqual(D.installations_token(self.app(), "umsetzung", None)[0], lang)
+        code, aufrufe = self.start(art="review", repo=None)
+        self.assertEqual((code, aufrufe[0][1]["GH_TOKEN"]), (D.EXIT_OK, lang))
+        self.assertEqual(self.fake.widerrufe()[-1][2]["Authorization"], f"Bearer {lang}")
+        for schlecht in ("ghp_" + "a" * 30, "ghs_" + "a" * 5, "ghs_a b" + "c" * 20, "ghs_" + "a" * 1001, "ghs_x\n" + "a" * 20):
+            self.assertIsNone(D.TOKEN_RE.fullmatch(schlecht), schlecht)
+
+    def test_abgelehntes_token_ohne_widerruf_wird_gemeldet(self):
+        self.fake.antwort = {"token": self.fake.token, "permissions": {"contents": "write", "administration": "write"}}
+        self.fake.widerruf = 500
+        with self.assertRaises(D.GithubAppFehler):
+            D.installations_token(self.app(), "umsetzung", None)
+        self.assertTrue(any("FEHLGESCHLAGEN" in z for z in self.logzeilen))
+        self.assertEqual([e["ereignis"] for e in self.ereignisse], ["gh_widerruf_fehlgeschlagen"])
+        self.geheimnisfrei(json.dumps(self.ereignisse) + "\n".join(self.logzeilen))
 
     def test_unerwartete_antwort_widerruft_das_token(self):
         faelle = {
@@ -1110,6 +1208,7 @@ class GithubAppTests(unittest.TestCase):
             "Pfad außerhalb": {"WAMO_GH_APP_SCHLUESSEL": "/srv/wamo/gh-app.pem"},
             "Pfad mit ..": {"WAMO_GH_APP_SCHLUESSEL": f"{self.ordner.as_posix()}/../gh-app.pem"},
             "Pfad Unterordner": {"WAMO_GH_APP_SCHLUESSEL": f"{self.ordner.as_posix()}/sub/gh-app.pem"},
+            "Tippfehler im Namen": {"WAMO_GH_APP_SCHLUESEL": f"{self.ordner.as_posix()}/gh-app.pem"},
             "Datei fehlt": {"WAMO_GH_APP_SCHLUESSEL": f"{self.ordner.as_posix()}/fehlt.pem"},
             "kein Schlüssel": {"WAMO_GH_APP_SCHLUESSEL": f"{self.ordner.as_posix()}/kaputt.pem"},
         }
@@ -1154,6 +1253,28 @@ class GithubAppTests(unittest.TestCase):
         self.assertIn("Installation-ID", D._github_meldung(404, {"message": "Not Found"}))
         self.assertIn("Uhrzeit", D._github_meldung(401, {"message": "x\ny"}))
         self.assertNotIn("\n", D._github_meldung(401, {"message": "x\ny"}))
+
+    def test_tippfehler_in_allen_drei_namen_schaltet_den_app_modus_nicht_still_aus(self):
+        falsch = {k: v for k, v in self.geheim.items() if not k.startswith("WAMO_GH_APP")} | {
+            "WAMO_GH_APP_IDD": "123456", "WAMO_GH_APP_INSTALATION_ID": "987654",
+            "WAMO_GH_APP_SCHLUESEL": f"{self.ordner.as_posix()}/gh-app.pem"}
+        with self.assertRaises(D.GithubAppFehler) as ctx:
+            D.github_app_konfig(falsch)
+        self.assertIn("Tippfehler", str(ctx.exception))
+        code, aufrufe = self.start(geheim=falsch)  # kein Rückfall auf ghp_persoenlich...
+        self.assertEqual((code, aufrufe), (D.EXIT_GITHUB_APP, []))
+        with mock.patch.object(D, "lese_geheimnisse", return_value=falsch):
+            self.assertTrue(D.github_status().startswith("fehler: "))
+
+    @unittest.skipUnless(LINUX, "Prozess und AF_UNIX-Socket nur unter Linux")
+    def test_signal_beim_start_des_prozesses_stoppt_und_wirft_weiter(self):
+        jobdir = self.jobs / JOB
+        (jobdir / "zustand").mkdir(parents=True)
+        with mock.patch.object(D, "stop_units") as stopp, mock.patch.object(D, "_status"), \
+             mock.patch.object(D.subprocess, "Popen", side_effect=D._Beendet(15)):
+            with self.assertRaises(D._Beendet):  # kein AttributeError durch ein noch nicht gesetztes proc
+                D._ausfuehren(["/bin/true"], {"PATH": "/usr/bin"}, "Auftrag", jobdir, JOB, "rezepte-app", "umsetzung")
+        stopp.assert_called_once_with(JOB)
 
     def test_status_app_bereit(self):
         with mock.patch.object(D, "lese_geheimnisse", return_value=self.geheim):

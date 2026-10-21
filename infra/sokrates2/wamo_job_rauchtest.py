@@ -732,6 +732,8 @@ def _github_attrappe(spec: dict):
         if methode == "DELETE":
             notieren({"methode": methode, "pfad": pfad, "token_ok": anmeldung == f"Bearer {spec['token']}"})
             return 204, b""
+        if methode == "GET" and pfad.startswith("/installation/repositories"):  # Prüfung auf das WAMO-Repo ohne Ziel-Repo
+            return 200, json.dumps({"total_count": 1, "repositories": [{"full_name": "wamocon/rauchtest"}]}).encode()
         return 404, b"{}"
     return https
 
@@ -980,6 +982,9 @@ def github_app_echt() -> None:
         gesehen.extend(repos)
         pruefe(f"GitHub-App: Lesetoken (ganze Installation, läuft ab {ablauf}) listet {len(repos)} Repos",
                code == 200 and bool(repos), ", ".join(str(r.get("full_name")) for r in repos[:15]))
+        pruefe("GitHub-App: das WAMO-Repo selbst gehört nicht zur Installation (für Aufträge gesperrt)",
+               not any(str(r.get("full_name")).rsplit("/", 1)[-1].lower() == D.SELF_REPO for r in repos),
+               "bitte in den Einstellungen der Installation aus der Auswahl entfernen")
 
     lesetoken("für die ganze Installation", None, alle_repos)
     if not gesehen:

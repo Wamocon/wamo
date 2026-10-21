@@ -98,7 +98,12 @@ class SwitchTests(unittest.TestCase):
         for eigen in ("wamocon/wamo", "Wamocon/WAMO", "https://github.com/wamocon/wamo.git"):  # Selbstschutz
             with self.subTest(eigen=eigen), self.assertRaises(ValueError):
                 dev_agent.repo_pruefen(eigen)
-        self.assertIsNone(aus("Siehe https://github.com/wamocon/wamo für den Hintergrund."))  # nie als Ziel
+        with self.assertRaises(ValueError) as ctx:  # nie stillschweigend übergehen: sonst Token für die ganze Installation
+            aus("Siehe https://github.com/wamocon/wamo für den Hintergrund.")
+        self.assertIn("Feld repo", str(ctx.exception))
+        for gross in ("https://GitHub.com/a/b", "HTTP://GITHUB.COM/a/b/", "GitHub.com/a/b.git"):  # Groß-/Kleinschreibung
+            with self.subTest(gross=gross):
+                self.assertEqual(dev_agent.repo_pruefen(gross), "a/b")
 
     def test_rules_mention_sandbox_only_remote(self):
         self.assertIn("Sandbox", dev_agent.rules_for("Erika", "sokrates2"))

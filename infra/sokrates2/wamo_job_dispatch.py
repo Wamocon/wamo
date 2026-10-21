@@ -373,7 +373,10 @@ MAX_SCHLUESSEL_BYTES = 16 * 1024
 MIN_RSA_BITS = 2048
 APP_ID_RE = re.compile(r"[1-9][0-9]{0,11}")
 INSTALLATION_RE = re.compile(r"[1-9][0-9]{0,15}")
-TOKEN_RE = re.compile(r"[A-Za-z0-9_]{20,255}")  # Form des Installations-Tokens (ghs_...), sicher als Header und Umgebung
+# Form des Installations-Tokens: ghs_ plus Zeichen, die als Header und Umgebungswert unbedenklich sind. Echte Token
+# sind rund 390 Zeichen lang und enthalten Punkte (Stand 21.10.2026), deshalb Obergrenze 1000 statt 255.
+TOKEN_RE = re.compile(r"ghs_[A-Za-z0-9_.-]{16,1000}")
+TOKEN_ZEICHEN_RE = re.compile(r"[\x21-\x7e]{1,2000}")  # darf zum Widerruf als Bearer-Header dienen
 GITHUB_API_HOST = "api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
 GITHUB_ZEITLIMIT_S = 15
@@ -399,6 +402,9 @@ def github_app_konfig(geheim: dict[str, str]) -> GithubApp | None:
     """App-Modus aus geheim.env. None, wenn keine der drei Variablen gesetzt ist (Rückfall auf GH_TOKEN bzw.
     GH_TOKEN_LESEN). Ist nur ein Teil gesetzt oder ein Wert ungültig, GithubAppFehler: wer den App-Modus
     einrichtet, bekommt bei einem Fehler keinen stillen Rückfall auf den persönlichen Token (fail-closed)."""
+    unbekannt = sorted(n for n in geheim if n.startswith("WAMO_GH_") and n not in GH_APP_VARIABLEN)
+    if unbekannt:  # Tippfehler im Namen schaltet den App-Modus sonst still aus (Rückfall auf den persönlichen Token)
+        raise GithubAppFehler(f"unbekannte Einstellung {', '.join(unbekannt)[:120]} (Tippfehler im Namen?)")
     gesetzt = [n for n in GH_APP_VARIABLEN if geheim.get(n)]
     if not gesetzt:
         return None
@@ -573,12 +579,37 @@ def _antwort_pruefen(obj: dict, rechte: dict[str, str], repo: str | None) -> str
         if bereich not in rechte or not isinstance(stufe, str) \
                 or STUFEN_RANG.get(stufe, 99) > STUFEN_RANG[rechte[bereich]]:
             return f"GitHub vergab mehr Rechte als angefragt ({_clean(str(bereich))[:40]})"
+    repos = obj.get("repositories")
+    namen = [r.get("full_name") for r in repos if isinstance(r, dict)] if isinstance(repos, list) else []
     if repo:
-        repos = obj.get("repositories")
-        namen = [r.get("full_name") for r in repos if isinstance(r, dict)] if isinstance(repos, list) else []
         if len(namen) != 1 or not isinstance(namen[0], str) or namen[0].lower() != repo.lower():
             return f"Token gilt nicht genau für {repo} (gehört das Repo zur Installation?)"
+        return None
+    # Ohne Ziel-Repo gilt das Token für die ganze Installation: sie muss auf ausgewählte Repos beschränkt sein, und
+    # das WAMO-Repo selbst (für Aufträge gesperrt) darf nicht dazugehören
+    if obj.get("repository_selection") != "selected":
+        return "Installation ist nicht auf ausgewählte Repos beschränkt (Only select repositories einstellen)"
+    if any(isinstance(n, str) and n.rsplit("/", 1)[-1].lower() == SELF_REPO for n in namen):
+        return "Das WAMO-Repo gehört zur Installation (aus der Auswahl der App entfernen)"
     return None
+
+
+MAX_REPO_SEITEN = 5  # 500 Repos; mehr gelten als nicht prüfbar
+
+
+def _repos_der_installation(token: str) -> list[str]:
+    """Namen (owner/name) aller Repos, die das Token sieht. GithubAppFehler, wenn die Liste nicht lesbar ist."""
+    namen: list[str] = []
+    for seite in range(1, MAX_REPO_SEITEN + 1):
+        status, obj = _github("GET", f"/installation/repositories?per_page=100&page={seite}", token)
+        repos = obj.get("repositories") if isinstance(obj, dict) else None
+        if status != 200 or not isinstance(repos, list):
+            raise GithubAppFehler(f"Repos der Installation nicht lesbar (GitHub antwortet {status})")
+        namen += [r["full_name"] for r in repos if isinstance(r, dict) and isinstance(r.get("full_name"), str)]
+        if len(repos) < 100:
+            return namen
+    raise GithubAppFehler(f"Installation hat mehr als {MAX_REPO_SEITEN * 100} Repos, die Prüfung auf das WAMO-Repo "
+                          "ist nicht möglich")
 
 
 def installations_token(app: GithubApp, art: str, repo: str | None) -> tuple[str, str]:
@@ -609,26 +640,36 @@ def installations_token(app: GithubApp, art: str, repo: str | None) -> tuple[str
         grund = _antwort_pruefen(obj, rechte, repo)
         if grund:
             raise GithubAppFehler(grund)
+        if not repo and any(n.rsplit("/", 1)[-1].lower() == SELF_REPO for n in _repos_der_installation(token)):
+            # die Antwort zählt die Repos nicht auf: erst die Liste der Installation zeigt, ob das WAMO-Repo dabei ist
+            raise GithubAppFehler("Das WAMO-Repo gehört zur Installation (aus der Auswahl der App entfernen)")
         ablauf = obj.get("expires_at")
         ablauf = ablauf if isinstance(ablauf, str) and re.fullmatch(r"[0-9TZ:.+-]{10,40}", ablauf) else "?"
         return token, ablauf
     except BaseException:
-        if isinstance(token, str) and re.fullmatch(r"[\x21-\x7e]{1,255}", token):  # als Header unbedenklich
-            token_widerrufen(token)
+        if isinstance(token, str) and TOKEN_ZEICHEN_RE.fullmatch(token) and not token_widerrufen(token):
+            log("gh_app_widerruf FEHLGESCHLAGEN (abgelehntes Token, läuft spätestens nach einer Stunde ab)")
+            wamo_event("gh_widerruf_fehlgeschlagen", grund="Ein abgelehntes GitHub-Token konnte nicht widerrufen "
+                       "werden; es läuft spätestens nach einer Stunde ab")
         raise
 
 
+WIDERRUF_PAUSEN_S = (1.0, 3.0)  # Pausen vor dem zweiten und dritten Versuch
+
+
 def token_widerrufen(token: str) -> bool:
-    """DELETE /installation/token mit dem Token selbst. True bei 204 (oder 401: schon ungültig). Zwei Versuche bei
-    Netzfehlern und Serverfehlern (5xx)."""
-    for _ in range(2):
+    """DELETE /installation/token mit dem Token selbst. True bei 204 (oder 401: schon ungültig). Bis zu drei
+    Versuche mit kurzen Pausen bei Netzfehlern, Serverfehlern (5xx) und Ratenbegrenzung (403, 429)."""
+    for versuch in range(len(WIDERRUF_PAUSEN_S) + 1):
+        if versuch:
+            time.sleep(WIDERRUF_PAUSEN_S[versuch - 1])
         try:
             status, _obj = _github("DELETE", "/installation/token", token)
         except GithubAppFehler:
             continue
         if status in (204, 401):
             return True
-        if status < 500:
+        if status < 500 and status not in (403, 429):
             return False
     return False
 
@@ -2066,6 +2107,8 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
         gestoppt.set()
         gruende.append(grund)
         stop_units(job)
+        if proc is None:  # Signal noch vor dem Start des Prozesses: es gibt nichts zu beenden
+            return
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(proc.pid, sig)
@@ -2109,10 +2152,12 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
     # Ein GitHub-Token ist ein Geheimnis dieses Laufs: erscheint es in der Ausgabe des Agenten, wird es vor dem
     # Weiterreichen an den PC (Canvas, Sprachmodell) geschwärzt (Defense in Depth; kodierte Formen fängt das nicht)
     schwaerzen = [w.encode("utf-8") for w in (env.get("GH_TOKEN", ""),) if len(w) >= 8]
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env=env, cwd="/", start_new_session=True)
     verworfen = 0
-    try:  # beginnt direkt nach dem Start: ein Signal ab hier stoppt immer auch die Sandbox
+    # Der try-Block beginnt vor dem Start: ein Signal ab hier stoppt immer auch die Sandbox, selbst wenn es
+    # zwischen Popen und dem ersten Befehl danach eintrifft
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=env, cwd="/", start_new_session=True)
         threading.Thread(target=stderr_sichern, daemon=True).start()
         threading.Thread(target=lebenslinie, daemon=True).start()
         threading.Thread(target=egress_wache, daemon=True).start()

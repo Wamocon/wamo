@@ -300,8 +300,9 @@ def repo_pruefen(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("Repo fehlt")
     repo = value.strip()
-    if repo.lower().startswith(("https://github.com/", "http://github.com/", "github.com/")):
-        repo = repo.split("github.com/", 1)[1].rstrip("/")
+    repo = re.sub(r"^(?:https?://)?github\.com/", "", repo, count=1, flags=re.IGNORECASE)
+    if repo != value.strip():
+        repo = repo.rstrip("/")
     if repo.lower().endswith(".git"):
         repo = repo[:-4]
     name = repo.split("/", 1)[-1]
@@ -322,6 +323,9 @@ def repo_aus_auftrag(auftrag: str) -> str | None:
         name = name.rstrip(".,;:!?)")
         if name.lower().endswith(".git"):
             name = name[:-4]
+        if name.lower() == SELF_REPO:  # nie stillschweigend übergehen: sonst bekäme der Auftrag ein Token ohne Repo
+            raise ValueError("Der Auftrag nennt das WAMO-Repo, das für Aufträge gesperrt ist; bitte das Repo, "
+                             "an dem gearbeitet wird, ausdrücklich im Feld repo angeben")
         try:
             repo = repo_pruefen(f"{owner}/{name}")
         except ValueError:

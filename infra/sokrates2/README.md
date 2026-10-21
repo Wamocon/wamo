@@ -80,7 +80,8 @@ App-Modus: Sind `WAMO_GH_APP_ID`, `WAMO_GH_APP_INSTALLATION_ID` und `WAMO_GH_APP
 jeder Lauf ein eigenes, kurzlebiges Token der App (Ablauf in Abschnitt 9); `GH_TOKEN` und `GH_TOKEN_LESEN` werden dann
 nie mehr in eine Sandbox gegeben. Fehlen alle drei, gilt der Rückfall auf `GH_TOKEN` bzw. `GH_TOKEN_LESEN`. Ist nur ein
 Teil gesetzt oder ein Wert ungültig (Datei fehlt, falsche Rechte, kein RSA-Schlüssel), startet kein Auftrag mit GitHub:
-fail-closed, ohne Rückfall auf den persönlichen Token.
+fail-closed, ohne Rückfall auf den persönlichen Token. Dasselbe gilt für einen Namen mit Präfix `WAMO_GH_`, der keiner
+der drei Namen ist (Tippfehler): so schaltet ein Schreibfehler den App-Modus nicht still aus.
 
 ### GitHub-App einrichten: kurzlebige Token je Auftrag
 
@@ -98,7 +99,8 @@ Token (Schritte 5 bis 7).
 2. **Nur gewünschte Repos.** Bei der Installation der App in der Organisation (Settings, GitHub Apps, „Configure“) unter
    „Repository access“ „Only select repositories“ wählen, nur die Repos auswählen, an denen Aufträge arbeiten dürfen,
    und speichern. Das WAMO-Repo selbst gehört nicht dazu (es ist für Aufträge gesperrt und soll auch per Token nicht
-   erreichbar sein). Neue Repos legt ein Auftrag im App-Modus nicht selbst an (dafür fehlt bewusst das Recht
+   erreichbar sein); der Dispatcher lehnt ein Token ohne Ziel-Repo ab, wenn die Installation „All repositories“ ist
+   oder das WAMO-Repo enthält. Neue Repos legt ein Auftrag im App-Modus nicht selbst an (dafür fehlt bewusst das Recht
    „Administration“): Repo von Hand anlegen und hier hinzufügen.
 3. **Privater Schlüssel (bei einer neuen App oder einer Neuerzeugung).** In den Einstellungen der App unter „General“,
    Abschnitt „Private keys“, „Generate a private key“ klicken; der Browser lädt eine `.pem`-Datei herunter. Vom PC
@@ -129,7 +131,8 @@ Token (Schritte 5 bis 7).
    Rückfall auf den persönlichen Token), steht dort `"fehler: …"`, nennt der Text den Grund (etwa falsche Rechte der
    Schlüsseldatei). Danach der Rauchtest: `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp
    --attrappe --app-echt"`. `--app-echt` arbeitet nur lesend und zeigt: Rechte der Installation (nur Contents und Pull
-   requests schreibend, Metadata lesend), nur ausgewählte Repos, ein Lesetoken für die Installation listet die Repos,
+   requests schreibend, Metadata lesend), nur ausgewählte Repos, ein Lesetoken für die Installation listet die Repos
+   (das WAMO-Repo ist nicht dabei),
    ein Lesetoken nur für ein Repo sieht genau dieses, liest es und seine Pull Requests, ein anderes privates Repo
    bleibt unsichtbar, beide Token sind nach dem Widerruf ungültig. Alle Zeilen müssen `[OK]` zeigen.
 7. **Persönliche Token abschaffen.** Mit `ssh -t sokrates2 "sudoedit /etc/wamo/geheim.env"` die Zeilen `GH_TOKEN=` und
@@ -144,9 +147,11 @@ Hinweise zum Betrieb:
   Standard 1800, Obergrenze 7200), verlieren danach den GitHub-Zugang.
 - Fehlt beim Auftrag das Ziel-Repo, gilt das Token für alle Repos der Installation (mit den Rechten der Art). Das
   Sprachmodell setzt `repo`, wenn der Auftrag ein Repo nennt; nennt der Auftragstext mehrere Repos, fragt WAMO nach.
-- `contents: write` erlaubt Push in die Zielrepos. In den Zielrepos Branch-Regeln (Rulesets) setzen: kein direkter
-  Push auf den Standardbranch, Pull Request Pflicht. Der Wächter verlangt für `git push` ohnehin eine Freigabe, das
-  Token selbst bleibt aber in der Sandbox nutzbar.
+- `contents: write` erlaubt Push in die Zielrepos, `pull_requests: write` auch das Mergen eines Pull Requests über die
+  API. In jedem Zielrepo deshalb ein Ruleset für den Standardbranch einrichten und verbindlich so setzen: kein direkter
+  Push, Pull Request Pflicht, mindestens eine Genehmigung durch einen Menschen, die App nicht als „Bypass actor“
+  eintragen. Ohne diese Regel kann ein Auftrag seinen eigenen Pull Request mergen. Der Wächter verlangt für `git push`
+  ohnehin eine Freigabe, das Token selbst bleibt aber in der Sandbox nutzbar (der Ausgangsfilter lässt Port 443 offen).
 - Der Schlüssel ist das eigentliche Geheimnis (er stellt Token für alle Rechte der App aus): nur in `/etc/wamo`, nie in
   die Sandbox, nie in ein Repository, bei Verdacht in GitHub löschen und neu erzeugen.
 - Der GitHub-MCP-Server in der Sandbox verbindet sich mit dem App-Token. Meldet `--mcp` github als nicht verbunden,
@@ -410,13 +415,17 @@ Sandbox:
    `pull_requests` schreibend, `metadata` lesend; recherche bekommt kein Token. Nie `administration`, `workflows`,
    `secrets`, `actions` oder `members`. Nennt die Kopfzeile ein Repo (`repo`, Form `owner/name`, vom Voice-Core gesetzt,
    wenn der Auftrag ein Repo nennt), gilt das Token nur dafür, sonst für die Installation mit den Rechten der Art.
-4. Die Antwort wird geprüft: nie mehr Rechte als angefragt, mit Repo genau dieses Repo samt Owner. Passt etwas nicht,
-   widerruft der Dispatcher das Token sofort und lehnt den Start ab (Code 8).
+4. Die Antwort wird geprüft: nie mehr Rechte als angefragt, mit Repo genau dieses Repo samt Owner, ohne Repo nur bei
+   einer Installation mit ausgewählten Repos, zu denen das WAMO-Repo nicht gehört (dafür liest der Dispatcher mit dem
+   neuen Token `GET /installation/repositories`, höchstens 500 Repos). Passt etwas nicht, widerruft der
+   Dispatcher das Token sofort und lehnt den Start ab (Code 8). Nennt ein Auftragstext das WAMO-Repo, ohne dass das
+   Feld `repo` gesetzt ist, lehnt schon der Voice-Core den Auftrag ab und bittet um das Ziel-Repo.
 5. Das Token geht als `GH_TOKEN` in die Sandbox (gh und git nutzen es wie bisher), der Systemtext bekommt einen kurzen
    Hinweis auf die Grenzen. Während der Erzeugung sind SIGTERM und SIGHUP aufgeschoben, danach führen sie zum Stopp der
    Sandbox.
-6. Am Laufende wird das Token widerrufen (`DELETE https://api.github.com/installation/token` mit dem Token selbst),
-   auch bei `cancel`, abgerissener Lebenslinie, Fehler im Dispatcher oder SIGTERM. Nur bei SIGKILL oder Stromausfall
+6. Am Laufende wird das Token widerrufen (`DELETE https://api.github.com/installation/token` mit dem Token selbst,
+   bis zu drei Versuche mit 1 s und 3 s Pause, auch bei Ratenbegrenzung), auch bei `cancel`, abgerissener Lebenslinie,
+   Fehler im Dispatcher oder SIGTERM, selbst wenn das Signal genau beim Start der Sandbox eintrifft. Nur bei SIGKILL oder Stromausfall
    bleibt es bis zu seinem Ablauf gültig, höchstens eine Stunde.
 7. Audit (`/srv/wamo/logs/auftraege.log`): `gh_app_token <job> repo=<owner/name oder *> stufe=<lesen|schreiben>
    ablauf=<Zeit>`, `start ... github=app repo=...` und `gh_app_widerruf <job> ok`, nie das Token. Scheitert der Widerruf,

@@ -81,6 +81,8 @@ GITHUB_APP_RECHTE: dict[str, dict[str, str]] = {
     "lesen": {"contents": "read", "metadata": "read", "pull_requests": "read"},
     "schreiben": {"contents": "write", "pull_requests": "write", "metadata": "read"},
 }
+# Obergrenze der Tabelle: schreibend darf höchstens Inhalt und Pull Requests sein; die Stufe "lesen" nie schreibend
+GITHUB_APP_RECHTE_HOECHSTENS: dict[str, str] = {"contents": "write", "pull_requests": "write", "metadata": "read"}
 # Bereiche, die ein Auftrags-Token nie bekommt, auch nicht durch einen Fehler in der Tabelle oben
 GITHUB_APP_RECHTE_VERBOTEN: frozenset[str] = frozenset({
     "administration", "workflows", "secrets", "actions", "members", "organization_administration",
@@ -313,7 +315,9 @@ def github_app_rechte(art: str) -> dict[str, str] | None:
         return None
     rechte = dict(GITHUB_APP_RECHTE[stufe])
     if set(rechte) & GITHUB_APP_RECHTE_VERBOTEN or not set(rechte) <= {"contents", "metadata", "pull_requests"} \
-            or rechte.get("metadata") != "read" or any(v not in ("read", "write") for v in rechte.values()):
+            or rechte.get("metadata") != "read" or any(v not in ("read", "write") for v in rechte.values()) \
+            or any(v == "write" and GITHUB_APP_RECHTE_HOECHSTENS.get(b) != "write" for b, v in rechte.items()) \
+            or (stufe == "lesen" and any(v != "read" for v in rechte.values())):
         raise ValueError(f"GITHUB_APP_RECHTE[{stufe!r}] enthält unzulässige Rechte")
     return rechte
 
