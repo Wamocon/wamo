@@ -252,5 +252,99 @@ class McpMitTokenTests(unittest.TestCase):
             self.assertNotIn(schluessel, log.read_text(encoding="utf-8"))
 
 
+BESITZER = "0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c"
+KENNUNG = "pc-wmc-h-04-ns"
+
+
+class GeraetBindungTests(unittest.TestCase):
+    """Zweite Schicht neben dem Token: Kennung und Besitzer aus geraet.json (ohne FastMCP, mit Dummy-App)."""
+
+    def setUp(self):
+        self.ordner = tempfile.TemporaryDirectory()
+        self.addCleanup(self.ordner.cleanup)
+        self.datei = Path(self.ordner.name) / "geraet.json"
+        self.audit: list[dict] = []
+        self.erreicht = 0
+
+        async def app(scope, receive, send):
+            self.erreicht += 1
+            await host_http._antwort(send, 200, b"{}")
+
+        self.client = TestClient(host_http.TokenWaechter(app, TOKEN, audit=self.audit.append,
+                                                         geraet=host_http.GeraetBindung(str(self.datei))),
+                                 base_url=BASIS)
+
+    def _schreibe(self, **felder):
+        daten = {"v": 1, "kennung": KENNUNG, "besitzer": BESITZER, "stufe": "mitglied"}
+        daten.update(felder)
+        self.datei.write_text(json.dumps(daten), encoding="utf-8")
+
+    def _post(self, **kopf):
+        headers = {**auth(), "X-WAMO-Geraet": KENNUNG, "X-WAMO-Profil": BESITZER}
+        headers.update({k: v for k, v in kopf.items() if v is not None})
+        return self.client.post("/mcp", json={}, headers=headers)
+
+    def test_passt(self):
+        self._schreibe()
+        self.assertEqual(self._post().status_code, 200)
+        self.assertEqual(self._post(**{"X-WAMO-Profil": BESITZER.upper()}).status_code, 200)  # Groß/Klein egal
+        self.assertEqual(self.erreicht, 2)
+
+    def test_falsches_geraet_oder_profil(self):
+        self._schreibe()
+        self.assertEqual(self._post(**{"X-WAMO-Geraet": "pc-anderer"}).status_code, 403)
+        self.assertEqual(self._post(**{"X-WAMO-Profil": "5b3f1c2d-8e7a-4b6c-9d0e-1f2a3b4c5d6e"}).status_code, 403)
+        self.assertEqual(self.erreicht, 0)
+        self.assertTrue(all("Gerätebindung" in e["grund"] for e in self.audit))
+        self.assertNotIn(BESITZER, json.dumps(self.audit))  # keine Werte im Audit
+
+    def test_fehlende_oder_doppelte_header(self):
+        self._schreibe()
+        r = self.client.post("/mcp", json={}, headers=auth())
+        self.assertEqual(r.status_code, 403)
+        r = self.client.post("/mcp", json={}, headers=[("Authorization", f"Bearer {TOKEN}"), ("X-WAMO-Geraet", KENNUNG),
+                                                       ("X-WAMO-Geraet", KENNUNG), ("X-WAMO-Profil", BESITZER)])
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(self.erreicht, 0)
+
+    def test_ohne_datei_oder_kaputt_nichts_durch(self):
+        self.assertEqual(self._post().status_code, 403)  # fehlt
+        for kaputt in ("kein json", "[]", json.dumps({"kennung": "x", "besitzer": BESITZER}),
+                       json.dumps({"kennung": KENNUNG, "besitzer": "nein"}), "x" * 9000):
+            self.datei.write_text(kaputt, encoding="utf-8")
+            self.assertEqual(self._post().status_code, 403, kaputt[:20])
+        self.assertEqual(self.erreicht, 0)
+
+    def test_token_bleibt_zuerst(self):
+        self._schreibe()
+        r = self.client.post("/mcp", json={}, headers={"X-WAMO-Geraet": KENNUNG, "X-WAMO-Profil": BESITZER})
+        self.assertEqual(r.status_code, 401)
+
+    def test_datei_wird_neu_gelesen(self):
+        self._schreibe()
+        self.assertEqual(self._post().status_code, 200)
+        self._schreibe(besitzer="5b3f1c2d-8e7a-4b6c-9d0e-1f2a3b4c5d6e")  # Neubindung ohne Neustart des Hosts
+        self.assertEqual(self._post().status_code, 403)
+
+    def test_stufe_standard_mitglied(self):
+        bindung = host_http.GeraetBindung(str(self.datei))
+        self.assertEqual(bindung.stufe, "mitglied")  # Datei fehlt
+        for roh, soll in (("admin", "admin"), ("mitglied", "mitglied"), ("root", "mitglied"), (7, "mitglied"), (None, "mitglied")):
+            self._schreibe(stufe=roh)
+            self.datei.touch()
+            self.assertEqual(bindung.stufe, soll)
+        daten = json.loads(self.datei.read_text(encoding="utf-8"))
+        del daten["stufe"]
+        self.datei.write_text(json.dumps(daten), encoding="utf-8")
+        self.assertEqual(bindung.stufe, "mitglied")
+
+    def test_ohne_bindung_bleibt_alles_wie_bisher(self):
+        async def app(scope, receive, send):
+            await host_http._antwort(send, 200, b"{}")
+
+        client = TestClient(host_http.TokenWaechter(app, TOKEN), base_url=BASIS)
+        self.assertEqual(client.post("/mcp", json={}, headers=auth()).status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

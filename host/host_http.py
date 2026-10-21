@@ -9,6 +9,10 @@ lauscht der Host ausschließlich auf Loopback. Was hier erzwungen wird:
     Zeit (hmac.compare_digest).
   * Anfragen mit Origin-Header (also aus einem Browser) werden abgelehnt (403); der Kern schickt keinen.
   * Erst nach der Anmeldung: nur der Pfad /mcp, alles andere 404. WebSockets werden geschlossen.
+  * Gerätebindung (wenn WAMO_HOST_GERAET_DATEI gesetzt ist, siehe GeraetBindung): Jede Anfrage trägt X-WAMO-Geraet
+    (Kennung) und X-WAMO-Profil (Besitzer), beide müssen zu geraet.json passen, die die Desktop-App bei der Bindung
+    schreibt. Sonst 403. Das ist eine zweite Schicht neben dem Token (Kern und Laptop müssen sich über Kennung und
+    Besitzer einig sein), keine Grenze gegen die Person am Laptop selbst.
   * Das Token kommt aus einer Datei (WAMO_HOST_TOKEN_FILE), nie aus Befehlszeile oder Umgebung. Es hat mindestens
     43 Zeichen aus dem base64url-Alphabet (secrets.token_urlsafe(32), 256 Bit).
   * Fehlversuche landen gedrosselt im Audit-Log, nie mit dem gesendeten Wert.
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import json
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -30,6 +35,10 @@ from typing import Any
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43,512}")
 MCP_PATH = "/mcp"
+KENNUNG_RE = re.compile(r"pc-[a-z0-9]+(?:-[a-z0-9]+)*")
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+STUFEN = ("admin", "mitglied")
+GERAET_MAX_BYTES = 8192
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
 FEHLVERSUCHE_JE_MINUTE = 10  # so viele Fehlversuche je Minute landen im Audit-Log, der Rest nur als Zähler
 
@@ -70,14 +79,70 @@ def pruefe_bindung(host: str) -> str:
     return str(ip)
 
 
+class GeraetBindung:
+    """Kennung, Besitzer und Stufe dieses Laptops aus geraet.json (%LOCALAPPDATA%\\WAMO, geschrieben von der Desktop-App
+    nach der Bindung). Die Datei wird bei jeder Änderung neu gelesen (Bindung oder Entzug ohne Neustart des Hosts).
+    Fehlt sie oder ist sie ungültig, lehnt der Host alles ab (fail closed). Die Stufe ist "mitglied", wenn sie fehlt oder
+    unbekannt ist; "admin" steht nur ausdrücklich in der Datei."""
+
+    def __init__(self, pfad: str):
+        self._pfad = Path(pfad)
+        self._stempel: tuple[int, int] | None = None
+        self._werte: tuple[str, str, str] | None = None
+
+    def _lesen(self) -> tuple[str, str, str] | None:
+        try:
+            st = self._pfad.stat()
+            stempel = (st.st_mtime_ns, st.st_size)
+            if stempel == self._stempel:
+                return self._werte
+            if st.st_size > GERAET_MAX_BYTES:
+                raise ValueError("zu groß")
+            daten = json.loads(self._pfad.read_text(encoding="utf-8"))
+            kennung, besitzer = daten.get("kennung"), daten.get("besitzer")
+            if not (isinstance(kennung, str) and KENNUNG_RE.fullmatch(kennung)
+                    and isinstance(besitzer, str) and UUID_RE.fullmatch(besitzer)):
+                raise ValueError("Kennung oder Besitzer ungültig")
+            stufe = daten.get("stufe") if daten.get("stufe") in STUFEN else "mitglied"
+            werte = (kennung, besitzer, stufe)
+        except (OSError, ValueError, AttributeError, UnicodeError):
+            stempel, werte = None, None
+        self._stempel, self._werte = stempel, werte
+        return werte
+
+    @property
+    def stufe(self) -> str:
+        werte = self._lesen()
+        return werte[2] if werte else "mitglied"
+
+    def pruefen(self, headers: list[tuple[bytes, bytes]]) -> str | None:
+        """None, wenn die Anfrage zu diesem Gerät passt, sonst ein kurzer Grund (ohne Werte)."""
+        werte = self._lesen()
+        if werte is None:
+            return "geraet.json fehlt oder ist ungültig"
+        kennung, besitzer, _stufe = werte
+        gefunden = {}
+        for name, schluessel in ((b"x-wamo-geraet", "Geraet"), (b"x-wamo-profil", "Profil")):
+            liste = [v.strip() for k, v in headers if k.lower() == name]
+            if len(liste) != 1:
+                return f"Header X-WAMO-{schluessel} fehlt oder ist mehrdeutig"
+            gefunden[schluessel] = liste[0]
+        if not hmac.compare_digest(gefunden["Geraet"], kennung.encode("ascii")):
+            return "Kennung passt nicht zu diesem Gerät"
+        if not hmac.compare_digest(gefunden["Profil"].lower(), besitzer.encode("ascii")):
+            return "Profil ist nicht der Besitzer dieses Geräts"
+        return None
+
+
 class TokenWaechter:
     """ASGI-Middleware vor der FastMCP-App. Lässt nur Lifespan und angemeldete Anfragen an /mcp durch."""
 
     def __init__(self, app, token: str, *, audit: Callable[[dict], None] | None = None,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, geraet: GeraetBindung | None = None):
         if not TOKEN_RE.fullmatch(token or ""):
             raise TokenFehler("Token ist ungültig")
         self.app = app
+        self._geraet = geraet
         self._token = token.encode("ascii")
         self._audit = audit
         self._clock = clock
@@ -126,6 +191,10 @@ class TokenWaechter:
         if scope.get("path") != MCP_PATH:
             await _antwort(send, 404, b'{"error":"unbekannt"}')
             return
+        if self._geraet is not None and (grund := self._geraet.pruefen(headers)) is not None:
+            self._vermerke_fehlversuch(scope, f"Gerätebindung: {grund}")
+            await _antwort(send, 403, b'{"error":"gehoert nicht zu diesem Geraet"}')
+            return
         await self.app(scope, receive, send)
 
 
@@ -136,17 +205,19 @@ async def _antwort(send: Send, status: int, body: bytes, extra: list[tuple[bytes
     await send({"type": "http.response.body", "body": body})
 
 
-def baue_app(mcp, token: str, audit: Callable[[dict], None] | None = None):
+def baue_app(mcp, token: str, audit: Callable[[dict], None] | None = None, geraet: GeraetBindung | None = None):
     """FastMCP-App für den Tunnel: zustandslos, JSON-Antworten, hinter dem TokenWaechter. Nur einmal je Prozess
     aufrufen (der Sitzungsmanager von FastMCP lässt sich nur einmal starten)."""
     mcp.settings.stateless_http = True
     mcp.settings.json_response = True
     mcp.settings.streamable_http_path = MCP_PATH
-    return TokenWaechter(mcp.streamable_http_app(), token, audit=audit)
+    return TokenWaechter(mcp.streamable_http_app(), token, audit=audit, geraet=geraet)
 
 
-def starte(mcp, host: str, port: int, token_datei: str | None, audit: Callable[[dict], None] | None = None) -> None:
-    """Startet den HTTP-Host (blockiert). Ohne gültiges Token oder mit Nicht-Loopback-Adresse: Abbruch."""
+def starte(mcp, host: str, port: int, token_datei: str | None, audit: Callable[[dict], None] | None = None,
+           geraet_datei: str | None = None) -> None:
+    """Startet den HTTP-Host (blockiert). Ohne gültiges Token oder mit Nicht-Loopback-Adresse: Abbruch. Mit
+    geraet_datei (geraet.json) prüft der Host bei jeder Anfrage Kennung und Besitzer des Geräts."""
     import logging
 
     import uvicorn
@@ -155,7 +226,7 @@ def starte(mcp, host: str, port: int, token_datei: str | None, audit: Callable[[
     for name in ("mcp", "mcp.server", "mcp.server.lowlevel.server", "mcp.server.streamable_http"):
         logging.getLogger(name).setLevel(logging.WARNING)
     bindung = pruefe_bindung(host)
-    app = baue_app(mcp, lade_token(token_datei), audit)
+    app = baue_app(mcp, lade_token(token_datei), audit, GeraetBindung(geraet_datei) if geraet_datei else None)
     uvicorn.run(
         app,
         host=bindung,
