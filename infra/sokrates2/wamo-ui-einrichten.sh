@@ -140,7 +140,8 @@ kern_ruhig() {
   pid="$(systemctl show wamo-core -p MainPID --value 2>/dev/null || echo 0)"
   if [ -z "$pid" ] || [ "$pid" = 0 ]; then return 0; fi
   udp="$(sudo -n ss -uanpH 2>/dev/null | grep -c "pid=$pid," || true)"
-  log="$(sudo -n journalctl -u wamo-core --since '-5 min' --no-pager -q 2>/dev/null | wc -l)"
+  # abgewiesene Anfragen ohne Anmeldung (401) sind keine Sitzung
+  log="$(sudo -n journalctl -u wamo-core --since '-5 min' --no-pager -q 2>/dev/null | grep -vE 'Zugang abgelehnt|401 Unauthorized' | wc -l)"
   if [ "${udp:-0}" != 0 ] || [ "${log:-0}" != 0 ]; then
     echo "  Kern nicht ruhig: UDP-Sockets $udp, Journalzeilen der letzten 5 Minuten $log" >&2
     return 1

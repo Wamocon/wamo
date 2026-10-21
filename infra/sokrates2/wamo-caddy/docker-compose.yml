@@ -69,6 +69,9 @@ networks:
   ui:
     name: wamo-ui-netz
     internal: true
+    driver_opts:
+      # Die Bridge bekommt keine Adresse: Aus dem Netz ist auch der Host selbst (sshd usw.) nicht erreichbar
+      com.docker.network.bridge.inhibit_ipv4: "true"
     ipam:
       config:
         - subnet: 172.25.0.0/24

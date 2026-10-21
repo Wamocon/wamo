@@ -69,7 +69,7 @@ if sudo -n test -f "$DROPIN"; then
   if [ "$NEUSTART" = ja ]; then
     pid="$(systemctl show wamo-core -p MainPID --value)"
     udp="$(sudo -n ss -uanpH 2>/dev/null | grep -c "pid=$pid," || true)"
-    log="$(sudo -n journalctl -u wamo-core --since '-5 min' --no-pager -q 2>/dev/null | wc -l)"
+    log="$(sudo -n journalctl -u wamo-core --since '-5 min' --no-pager -q 2>/dev/null | grep -vE 'Zugang abgelehnt|401 Unauthorized' | wc -l)"
     if [ "${udp:-0}" = 0 ] && [ "${log:-0}" = 0 ]; then
       sudo -n systemctl restart wamo-core
       sleep 5
