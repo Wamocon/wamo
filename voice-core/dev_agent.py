@@ -73,6 +73,7 @@ from pipecat.services.llm_service import FunctionCallParams
 
 from dev_guard import REPO_ROOT, SELF_REPO, _skript_befehl, decide, fingerprint, write_json_atomic
 from persona import clean_inline
+from teilen import eigene_fassung
 from werkzeugkarte import AUFTRAGSARTEN, KARTEN, anweisungsblock, art_beschreibung
 
 PROJECTS_DIR = Path(os.getenv("WAMO_PROJECTS_DIR") or (Path.home() / "Projekte"))
@@ -435,6 +436,7 @@ class Job:
     started: bool = False
     pending: dict[str, dict] = field(default_factory=dict)
     ereignisse: dict[str, dict] = field(default_factory=dict)  # wamo-Ereignisse des Dispatchers (sokrates2)
+    gespeichert_id: str | None = None  # Ergebnis als Canvas-Dokument (teilbar, Migration 0003)
 
     def __post_init__(self):
         self.dir = JOBS_DIR / self.id
@@ -842,6 +844,9 @@ class DevAgent:
     async def _canvas(self, job: Job) -> None:
         if not self._task:
             return
+        await self._send({"type": "canvas", "item": self._canvas_item(job)})
+
+    def _canvas_item(self, job: Job) -> dict:
         ordner = f"`{job.projekt}` (Sokrates-2, Sandbox)" if self._ort == "sokrates2" else f"`{job.projekt}`"
         lines = ["## Auftrag", job.auftrag, "", f"**Art:** {KARTEN[job.art].titel}",
                  f"**Status:** {job.status}", f"**Ordner:** {ordner}"]
@@ -854,7 +859,23 @@ class DevAgent:
             lines += ["", "## Wartet auf Freigabe", *[f"- {p['grund']}" for p in job.pending.values()]]
         item = {"id": f"dev-{job.id}", "kind": "dokument", "title": f"Entwicklung: {job.projekt.name}",
                 "text": "\n".join(lines)}
-        await self._send({"type": "canvas", "item": item})
+        if job.gespeichert_id:  # gespeichert: die Oberfläche kann es teilen (Dokument oder ganzes Projekt)
+            item["teilbar_id"] = job.gespeichert_id
+            item["teilbar_projekt"] = job.projekt.name
+        return item
+
+    async def _ergebnis_speichern(self, job: Job) -> None:
+        """Ergebnis eines Laufs als Canvas-Dokument speichern, damit es sich teilen lässt (Migration 0003): beim ersten
+        Mal neu, nach weiteren Läufen als neue Fassung. Fehler stören den Auftrag nicht."""
+        item = self._canvas_item(job)
+        daten = {k: v for k, v in item.items() if k in ("kind", "title", "text")}
+        daten["auftrag"] = {"job": job.id, "projekt": job.projekt.name, "art": job.art, "status": job.status[:80]}
+        try:
+            if job.gespeichert_id and await eigene_fassung(self._memory, job.gespeichert_id, item["title"], daten):
+                return
+            job.gespeichert_id = await self._memory.save_canvas("document", item["title"], daten) or job.gespeichert_id
+        except Exception as e:  # noqa: BLE001 (Speichern ist eine Zugabe)
+            logger.warning("Entwicklungsauftrag {}: Ergebnis nicht gespeichert ({})", job.id, type(e).__name__)
 
     async def _notify(self, text: str, run_llm: bool = True) -> None:
         if self._task:
@@ -867,6 +888,9 @@ class DevAgent:
         damit nichts aus dem Auftrag (Webseiten, Dateien, Ausgaben) als Anweisung wirken kann."""
         if callable(self.on_result):
             self.on_result()
+        await self._ergebnis_speichern(job)
+        if job.gespeichert_id:
+            await self._canvas(job)  # jetzt mit teilbar_id: die Oberfläche bietet "Teilen" an
         offen = len(job.pending)
         await self._notify(
             f"Entwicklungsauftrag {job.projekt.name}: {job.status}. Die Details stehen auf dem Canvas. "

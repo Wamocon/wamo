@@ -1,15 +1,23 @@
 "use client";
 
 import { Fragment, memo, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { TeilenKnopf } from "@/components/Teilen";
+import { istUuid } from "@/lib/kernApi";
 import { useSelect } from "@/lib/store";
 import { wamo } from "@/lib/wamo";
 
 /** Was der Voice-Core per canvas_zeigen schickt (siehe voice-core/tools.py). */
-export type CanvasItem =
+export type CanvasItem = (
   | { id?: string | null; kind: "tabelle"; title: string; columns: string[]; rows: string[][] }
   | { id?: string | null; kind: "code"; title: string; text: string; language?: string }
   | { id?: string | null; kind: "dokument"; title: string; text: string }
-  | { id?: string | null; kind: "mermaid"; title: string; text: string };
+  | { id?: string | null; kind: "mermaid"; title: string; text: string }
+) & {
+  /** gespeichertes Ergebnis eines Entwicklungsauftrags: teilbar als Dokument oder als ganzes Projekt */
+  teilbar?: { id: string; projekt?: string };
+  /** von jemand anderem geteilt (geöffnet über geteilte Arbeit) */
+  geteilt?: { von: string | null; recht: "lesen" | "bearbeiten" };
+};
 
 const KIND_LABEL: Record<CanvasItem["kind"], string> = {
   tabelle: "Tabelle",
@@ -80,11 +88,25 @@ function Canvas({ items }: { items: CanvasItem[] }) {
         <header className="canvas-item-head">
           <span className="eyebrow">{KIND_LABEL[item.kind]}</span>
           <h2>{item.title}</h2>
+          {item.geteilt && (
+            <p className="canvas-geteilt">
+              Geteilt von {item.geteilt.von ?? "jemandem"}, {item.geteilt.recht === "bearbeiten" ? "du darfst bearbeiten" : "nur lesen"}
+            </p>
+          )}
+          <CanvasTeilen item={item} />
         </header>
         <CanvasBody item={item} />
       </article>
     </div>
   );
+}
+
+/** "Teilen" nur für eigene, gespeicherte Elemente (id aus der Datenbank oder gespeichertes Auftragsergebnis). */
+function CanvasTeilen({ item }: { item: CanvasItem }) {
+  if (item.geteilt) return null; // fremde Arbeit teilt nur ihr Besitzer
+  const id = item.teilbar?.id ?? (istUuid(item.id) ? item.id : null);
+  if (!id) return null;
+  return <TeilenKnopf key={id} ziel={{ art: "canvas", id, titel: item.title, projekt: item.teilbar?.projekt }} />;
 }
 
 function CanvasBody({ item }: { item: CanvasItem }) {

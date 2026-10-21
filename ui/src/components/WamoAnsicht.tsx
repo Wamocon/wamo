@@ -5,6 +5,8 @@ import { ActivityTimeline, LABEL } from "@/components/ActivityFeed";
 import { CanvasBereich } from "@/components/Canvas";
 import { Auftraege, Freigaben } from "@/components/Freigaben";
 import { GemerktHinweis } from "@/components/GemerktHinweis";
+import { GeteiltBereich } from "@/components/Geteilt";
+import { Hinweise } from "@/components/Hinweise";
 import { Kopfzeile } from "@/components/Kopfzeile";
 import { LiveCaption } from "@/components/LiveCaption";
 import type { Sitzung } from "@/components/LoginGate";
@@ -323,6 +325,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
         <div className="col-main">
           <Freigaben onDecide={aktionen.decide} />
           <Auftraege onDecide={aktionen.entscheideAuftrag} />
+          <Hinweise />
           <FehlerAnzeige onRetry={retry} onAbmelden={abmelden} onSchliessen={aktionen.schliesseFehler} />
           <Praesenz />
           <div className="voice">
@@ -337,6 +340,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           <ActivityTimeline />
           <PcSteuerungSchalter onSchalten={aktionen.pcSteuerung} />
           <BetriebsartWahl />
+          <GeteiltBereich />
           <Aktionen aktionen={aktionen} />
         </div>
         <section className="canvas" aria-label="Canvas">

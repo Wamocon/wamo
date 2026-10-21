@@ -109,7 +109,31 @@ const AKTIVITAET_STATUS = ["laeuft", "fertig", "abgelehnt", "fehler", "wartet"] 
 
 const zelle = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PROJEKT = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
+
+/** Angaben zum Teilen (voice-core/dev_agent.py: teilbar_id, teilbar_projekt; teilen_werkzeuge.py: geteilt). */
+function canvasZusatz(v: Record<string, unknown>): Pick<CanvasItem, "teilbar" | "geteilt"> {
+  const zusatz: Pick<CanvasItem, "teilbar" | "geteilt"> = {};
+  if (isStr(v.teilbar_id) && UUID.test(v.teilbar_id)) {
+    zusatz.teilbar = {
+      id: v.teilbar_id,
+      projekt: isStr(v.teilbar_projekt) && PROJEKT.test(v.teilbar_projekt) ? v.teilbar_projekt : undefined,
+    };
+  }
+  const geteilt = v.geteilt;
+  if (isObj(geteilt) && (geteilt.recht === "lesen" || geteilt.recht === "bearbeiten")) {
+    zusatz.geteilt = { von: isStr(geteilt.von) ? sauber(geteilt.von, 60, false) : null, recht: geteilt.recht };
+  }
+  return zusatz;
+}
+
 function canvasItem(v: unknown): CanvasItem | null {
+  const item = canvasGrund(v);
+  return item && isObj(v) ? { ...item, ...canvasZusatz(v) } : item;
+}
+
+function canvasGrund(v: unknown): CanvasItem | null {
   if (!isObj(v) || !oneOf(v.kind, CANVAS_KINDS) || !isStr(v.title)) return null;
   const id = isStr(v.id) ? v.id.slice(0, 100) : null;
   const title = sauber(v.title, 200, false);
