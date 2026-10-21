@@ -13,6 +13,10 @@
 export const STILLE_DBFS = -100;
 /** So lange muss die Spur ununterbrochen still sein, bevor die Oberfläche warnt. */
 export const STILLE_MS = 3000;
+/** So lange nach "Bot bereit" darf die eigene Mikrofonspur auf sich warten lassen, bevor die Oberfläche warnt. */
+export const SPUR_MS = 5000;
+/** So lange wartet die Oberfläche nach dem Ende einer Spur auf die Ersatzspur (Gerätewechsel), bevor sie warnt. */
+export const SPUR_ENDE_MS = 1500;
 
 /** Spitze und RMS eines Messfensters. spitzeDb ist -Infinity bei exakt null. */
 export function messen(buf: ArrayLike<number>): { rms: number; spitzeDb: number } {
@@ -75,6 +79,51 @@ export function kernStilleText(sekunden: number): string {
     `Beim Sprachkern kommt seit ${sekunden} Sekunden nur Stille vom Mikrofon an. Wähle unten ein anderes Mikrofon ` +
     "oder beende das Gespräch und starte es neu."
   );
+}
+
+/** Warnung vom Kern: es kommen gar keine Audiopakete mehr an (die Sendespur ist abgerissen). */
+export function kernFehltText(sekunden: number): string {
+  return (
+    `Beim Sprachkern kommt seit ${sekunden} Sekunden kein Ton mehr vom Mikrofon an, die Mikrofonspur ist abgerissen. ` +
+    "Wähle unten ein Mikrofon aus oder beende das Gespräch und starte es neu."
+  );
+}
+
+/** Die Spur des Mikrofons ist beendet (Gerät abgezogen oder von Windows entzogen) und es folgte keine neue. */
+export function spurEndeText(geraet?: string | null): string {
+  const welches = geraet ? ` („${geraet}“)` : "";
+  return (
+    `Das Mikrofon${welches} wurde getrennt oder von Windows entzogen, WAMO hört dich nicht mehr. Schließe es wieder ` +
+    "an oder wähle unten ein anderes Mikrofon."
+  );
+}
+
+/** Nach dem Verbinden kam nie eine Mikrofonspur an. */
+export function keineSpurText(): string {
+  return (
+    "Es kommt keine Mikrofonspur an, WAMO hört dich nicht. Wähle unten ein Mikrofon aus, prüfe " +
+    `${WINDOWS_EINGABE} das Gerät oder beende das Gespräch und starte es neu.`
+  );
+}
+
+/** Windows verweigert Desktop-Apps das Mikrofon (Datenschutz): dann liefert es nur Stille, ohne Fehler. */
+export function windowsGesperrtText(): string {
+  return (
+    "Windows blockiert das Mikrofon für Desktop-Apps, deshalb kommt nur Stille an. Erlaube den Zugriff in Windows " +
+    "unter Einstellungen > Datenschutz und Sicherheit > Mikrofon (Zugriff auf das Mikrofon und Desktop-Apps " +
+    "zulassen) und starte das Gespräch neu."
+  );
+}
+
+/** Zustand von systemPreferences.getMediaAccessStatus("microphone"): nur "denied" und "restricted" sperren. */
+export function windowsGesperrt(status: unknown): boolean {
+  return status === "denied" || status === "restricted";
+}
+
+/** Logzeile (landet in logs/oberflaeche.log der Desktop-App): das Mikrofon liefert echten Ton. */
+export function tonLog(geraet: string | null | undefined, spitzeDb: number): string {
+  const name = geraet ? geraet.slice(0, 120) : "unbekanntes Gerät";
+  return `Mikrofon liefert Ton: ${name}, Spitze ${Math.round(spitzeDb)} dBFS`;
 }
 
 /** getUserMedia ist fehlgeschlagen: Meldung je Fehlerart, immer mit Abhilfe. */

@@ -13,6 +13,8 @@ import {
   fehlerName,
   geraeteListe,
   gewaehltesMikrofon,
+  keineSpurText,
+  kernFehltText,
   kernStilleText,
   merkeMikrofon,
   messen,
@@ -20,9 +22,15 @@ import {
   neueStille,
   pruefeStille,
   sendeSpurErsetzen,
+  SPUR_ENDE_MS,
+  SPUR_MS,
+  spurEndeText,
   STILLE_DBFS,
   startGeraet,
   stilleText,
+  tonLog,
+  windowsGesperrt,
+  windowsGesperrtText,
   type Mikrofon,
 } from "@/lib/mikrofon";
 import { getSupabase } from "@/lib/supabase";
@@ -68,6 +76,8 @@ declare global {
       betriebsart?: BetriebsartBruecke;
       /** Rechnername dieses PCs (Autostart der PC-Steuerung nur, wenn der Kern genau diesen PC steuert) */
       rechnername?: () => Promise<unknown>;
+      /** Windows-Datenschutz für das Mikrofon: "granted", "denied", "restricted" oder "not-determined" (lib/mikrofon.ts) */
+      mikrofonStatus?: () => Promise<unknown>;
     };
   }
 }
@@ -250,6 +260,8 @@ export function useWamo(): WamoAktionen {
     analyser: AnalyserNode;
     buf: Float32Array<ArrayBuffer>;
     track: MediaStreamTrack;
+    /** schon einmal Ton über der Stille-Schwelle gemessen (für die positive Logzeile) */
+    ton: boolean;
   } | null>(null);
   const stille = useRef(neueStille());
   // Fehler beim Öffnen des Mikrofons (onDeviceError): Name wie NotAllowedError, für eine passende Meldung
@@ -368,6 +380,10 @@ export function useWamo(): WamoAktionen {
         mic.analyser.getFloatTimeDomainData(mic.buf);
         const { rms, spitzeDb } = messen(mic.buf);
         lv.user = anzeigePegel(rms);
+        if (!mic.ton && spitzeDb > STILLE_DBFS) {
+          mic.ton = true; // einmal je Spur: Beleg im Protokoll der Desktop-App (logs/oberflaeche.log)
+          console.info("[WAMO]", tonLog(mic.track.label, spitzeDb));
+        }
         // Nur prüfen, solange gemessen werden kann (AudioContext läuft) und das Mikrofon nicht stumm geschaltet ist
         const st = wamo.get();
         const aktiv = istOnline(st) && st.micOn && mic.ctx.state === "running";
@@ -377,6 +393,15 @@ export function useWamo(): WamoAktionen {
           warnungNachWechsel.current = false;
           console.warn("[WAMO] Mikrofon liefert seit 3 s nur Stille:", mic.track.label || "unbekanntes Gerät", mic.track.readyState);
           setFehler({ art: "mikrofon", text: stilleText(mic.track.label) });
+          // Sperrt Windows das Mikrofon für Desktop-Apps, kommt nur Stille an, ohne Fehler: dann den Grund nennen
+          void window.wamoDesktop
+            ?.mikrofonStatus?.()
+            .then((status) => {
+              if (windowsGesperrt(status) && wamo.get().error?.art === "mikrofon") {
+                setFehler({ art: "mikrofon", text: windowsGesperrtText() });
+              }
+            })
+            .catch(() => undefined);
         } else if (ergebnis === "wieder_da" || tonNachWechsel) {
           warnungNachWechsel.current = false;
           if (!kernStille.current && wamo.get().error?.art === "mikrofon") setFehler(null);
@@ -525,6 +550,7 @@ export function useWamo(): WamoAktionen {
       // Eigene Mikrofonspur (Start und jeder Gerätewechsel): Pegel messen und auf die laufende Verbindung legen
       const eigeneSpur = (track: MediaStreamTrack) => {
         const alt = micMeter.current;
+        const bekannt = alt?.track === track; // Mikrofon aus und wieder an meldet dieselbe Spur noch einmal
         if (alt) void alt.ctx.close().catch(() => undefined);
         // Steht schon eine Mikrofon-Warnung, verschwindet sie erst, wenn das neue Gerät wirklich Ton liefert
         stille.current = neueStille();
@@ -535,8 +561,19 @@ export function useWamo(): WamoAktionen {
         analyser.fftSize = 2048;
         ctx.createMediaStreamSource(new MediaStream([track])).connect(analyser);
         void ctx.resume().catch(() => undefined);
-        micMeter.current = { ctx, analyser, buf: new Float32Array(analyser.fftSize), track };
+        micMeter.current = { ctx, analyser, buf: new Float32Array(analyser.fftSize), track, ton: false };
         wamo.set((s) => ({ ...s, mikrofon: track.label ? track.label.slice(0, 120) : null }));
+        if (!bekannt) {
+          console.info("[WAMO] Mikrofon geöffnet:", track.label || "unbekanntes Gerät");
+          // Endet die Spur von außen (Gerät abgezogen, Windows entzieht es) und folgt keine neue, sagt es die Oberfläche
+          track.addEventListener("ended", () => {
+            setTimeout(() => {
+              if (!aktuell() || micMeter.current?.track !== track || !istOnline(wamo.get())) return;
+              console.warn("[WAMO] Mikrofonspur beendet:", track.label || "unbekanntes Gerät");
+              setFehler({ art: "mikrofon", text: spurEndeText(track.label) });
+            }, SPUR_ENDE_MS);
+          });
+        }
         void sendeSpurErsetzen(clientRef.current?.transport, track)
           .then((r) => {
             if (r === "ersetzt") console.info("[WAMO] Mikrofonspur der Verbindung ersetzt:", track.label);
@@ -556,7 +593,16 @@ export function useWamo(): WamoAktionen {
         enableCam: false,
         callbacks: {
           onBotReady: () => {
-            if (aktuell()) wamo.set((s) => ({ ...s, presence: "idle", error: null, ansage: "Verbunden" }));
+            if (!aktuell()) return;
+            wamo.set((s) => ({ ...s, presence: "idle", error: null, ansage: "Verbunden" }));
+            // Kam bis dahin keine eigene Mikrofonspur (Öffnen schlug lautlos fehl), hört WAMO nichts: nicht schweigen
+            setTimeout(() => {
+              const st = wamo.get();
+              if (aktuell() && istOnline(st) && st.micOn && !micMeter.current && st.error?.art !== "mikrofon") {
+                console.warn("[WAMO] Mikrofon: keine Spur nach dem Verbinden");
+                setFehler({ art: "mikrofon", text: keineSpurText() });
+              }
+            }, SPUR_MS);
           },
           onDisconnected: () => {
             if (aktuell()) teardown("getrennt");
@@ -673,9 +719,12 @@ export function useWamo(): WamoAktionen {
             if (!msg) return; // unbekannte oder unvollständige Nachricht: ignorieren
             if (msg.type === "leiser_stopp") softStop.current.armedAt = performance.now();
             else if (msg.type === "mikrofon") {
-              kernStille.current = msg.zustand === "still";
+              kernStille.current = msg.zustand !== "ok";
               const st = wamo.get();
-              if (msg.zustand === "still" && st.micOn && st.error?.art !== "mikrofon") {
+              if (msg.zustand === "fehlt" && st.micOn) {
+                // Die Spur ist abgerissen: wichtiger als eine Stille-Meldung der Oberfläche
+                setFehler({ art: "mikrofon", text: kernFehltText(msg.sekunden) });
+              } else if (msg.zustand === "still" && st.micOn && st.error?.art !== "mikrofon") {
                 setFehler({ art: "mikrofon", text: kernStilleText(msg.sekunden) });
               } else if (msg.zustand === "ok" && !stille.current.gemeldet && st.error?.art === "mikrofon") {
                 setFehler(null);

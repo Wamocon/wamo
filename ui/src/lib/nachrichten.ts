@@ -100,7 +100,7 @@ export type ServerMessage =
   | { type: "sitzung_beendet"; grund: string; anmelden?: boolean }
   | ({ type: "modellzugang" } & Modellzugang)
   /** Kern: still = seit `sekunden` nur digitale Stille vom Mikrofon, ok = wieder Ton (voice-core/audio_monitor.py) */
-  | { type: "mikrofon"; zustand: "still" | "ok"; sekunden: number };
+  | { type: "mikrofon"; zustand: "still" | "fehlt" | "ok"; sekunden: number };
 
 type Roh = Record<string, unknown>;
 
@@ -285,7 +285,7 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
       };
     }
     case "mikrofon": {
-      if (!oneOf(m.zustand, ["still", "ok"] as const)) return null;
+      if (!oneOf(m.zustand, ["still", "fehlt", "ok"] as const)) return null;
       const s = typeof m.sekunden === "number" && Number.isFinite(m.sekunden) ? Math.round(m.sekunden) : 10;
       return { type: "mikrofon", zustand: m.zustand, sekunden: Math.max(1, Math.min(3600, s)) };
     }

@@ -1,6 +1,6 @@
 // Hauptfenster: die Oberfläche darf nur Pegel an den Stimmen-Rand melden, einmalig die Stimmfarben
 // (ui/src/lib/stimmfarben.ts) übergeben, die Betriebsart (buero oder unterwegs) lesen und setzen und den
-// Rechnernamen erfragen, sonst nichts. main.js prüft Absender und Werte.
+// Rechnernamen und den Windows-Datenschutzstatus des Mikrofons erfragen, sonst nichts. main.js prüft Absender und Werte.
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("wamoDesktop", {
@@ -17,4 +17,5 @@ contextBridge.exposeInMainWorld("wamoDesktop", {
     },
   },
   rechnername: () => ipcRenderer.invoke("rechnername"),
+  mikrofonStatus: () => ipcRenderer.invoke("mikrofon:status"),
 });

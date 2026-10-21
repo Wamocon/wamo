@@ -8,14 +8,20 @@ import {
   anzeigePegel,
   fehlerName,
   geraeteListe,
+  keineSpurText,
+  kernFehltText,
   kernStilleText,
   messen,
   mikrofonFehlerText,
   neueStille,
   pruefeStille,
   sendeSpurErsetzen,
+  spurEndeText,
   startGeraet,
   stilleText,
+  tonLog,
+  windowsGesperrt,
+  windowsGesperrtText,
 } from "./mikrofon.ts";
 
 test("messen: exakt null ist -Infinity, Spitze und RMS stimmen", () => {
@@ -135,4 +141,34 @@ test("Sendespur: ohne Verbindung oder andere Transportversion passiert nichts", 
   assert.equal(await sendeSpurErsetzen({}, spur), "kein_sender");
   assert.equal(await sendeSpurErsetzen(null, spur), "kein_sender");
   assert.equal(await sendeSpurErsetzen({ pc: { getTransceivers: () => [] } }, spur), "kein_sender");
+});
+
+test("Meldungen zu fehlender, beendeter und von Windows gesperrter Spur nennen Abhilfe, ohne Gedankenstriche", () => {
+  const texte = [
+    kernFehltText(5),
+    spurEndeText("Headset (Test)"),
+    spurEndeText(null),
+    keineSpurText(),
+    windowsGesperrtText(),
+  ];
+  for (const text of texte) {
+    assert.ok(text.length > 40);
+    assert.doesNotMatch(text, / [–—-] /, "kein Gedankenstrich");
+  }
+  assert.match(kernFehltText(5), /5 Sekunden/);
+  assert.match(spurEndeText("Headset (Test)"), /Headset \(Test\)/);
+  assert.match(keineSpurText(), /Mikrofon aus/);
+  assert.match(windowsGesperrtText(), /Datenschutz und Sicherheit/);
+});
+
+test("Windows sperrt nur bei denied und restricted", () => {
+  assert.equal(windowsGesperrt("denied"), true);
+  assert.equal(windowsGesperrt("restricted"), true);
+  for (const frei of ["granted", "not-determined", "unknown", undefined, null, 1]) assert.equal(windowsGesperrt(frei), false);
+});
+
+test("Positive Logzeile nennt Gerät und gerundete Spitze", () => {
+  assert.equal(tonLog("Onboard MIC", -52.7), "Mikrofon liefert Ton: Onboard MIC, Spitze -53 dBFS");
+  assert.match(tonLog(null, -60), /unbekanntes Gerät/);
+  assert.ok(tonLog("x".repeat(500), -60).length < 200);
 });
