@@ -87,18 +87,16 @@ class GeraetBindung:
 
     def __init__(self, pfad: str):
         self._pfad = Path(pfad)
-        self._stempel: tuple[int, int] | None = None
-        self._werte: tuple[str, str, str] | None = None
 
     def _lesen(self) -> tuple[str, str, str] | None:
+        """Datei bei jeder Anfrage neu lesen (höchstens 8 KB): ein Zeitstempel als Cache-Schlüssel ist zu grob, eine
+        gleich lange Neubindung behielte sonst unter Windows den alten Besitzer."""
         try:
-            st = self._pfad.stat()
-            stempel = (st.st_mtime_ns, st.st_size)
-            if stempel == self._stempel:
-                return self._werte
-            if st.st_size > GERAET_MAX_BYTES:
+            with self._pfad.open("rb") as f:
+                roh = f.read(GERAET_MAX_BYTES + 1)
+            if len(roh) > GERAET_MAX_BYTES:
                 raise ValueError("zu groß")
-            daten = json.loads(self._pfad.read_text(encoding="utf-8"))
+            daten = json.loads(roh.decode("utf-8"))
             kennung, besitzer = daten.get("kennung"), daten.get("besitzer")
             if not (isinstance(kennung, str) and KENNUNG_RE.fullmatch(kennung)
                     and isinstance(besitzer, str) and UUID_RE.fullmatch(besitzer)):
@@ -106,8 +104,7 @@ class GeraetBindung:
             stufe = daten.get("stufe") if daten.get("stufe") in STUFEN else "mitglied"
             werte = (kennung, besitzer, stufe)
         except (OSError, ValueError, AttributeError, UnicodeError):
-            stempel, werte = None, None
-        self._stempel, self._werte = stempel, werte
+            return None
         return werte
 
     @property
