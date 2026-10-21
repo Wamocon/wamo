@@ -713,6 +713,9 @@ beruht auf einem offenen Punkt im Quelltext (`channels.c`: „XXX add ACLs for s
 Positivfall (eigener Socket, Dateirechte, Fingerabdruck) auch die Neinfälle samt Ablehnungsgrund im sshd-Journal
 (fremder Ordner, Ersetzen fremder Sockets, `-L` auf den Kern-Socket, TCP-Port, Befehl, `-W`, sftp, TTY), das Sperren
 laufender Verbindungen und den Streuner. Der Abgleich läuft dort unter denselben Sandkasten-Einstellungen wie die Unit.
+Das Journal liest der Test nach dem Programmnamen (`journalctl -t sshd`), nicht nach der Einheit: Der Verbindungsprozess
+eines angemeldeten Tunnelbenutzers liegt dank `pam_systemd` in `session-NNN.scope`, seine Ablehnungsgründe stehen deshalb
+nicht unter `ssh.service`. Die Gründe stehen bereits bei `LogLevel INFO` im Journal, `VERBOSE` ist nicht nötig.
 
 Restrisiken: Wer auf Sokrates-2 `sudo` oder die docker-Gruppe hat, ist root und kommt an alle Tokens. Sockets
 außerhalb von `/run/wamo-pc` sind möglich (der Streuner meldet sie binnen 5 Minuten); gefährlich wären sie nur, wenn ein

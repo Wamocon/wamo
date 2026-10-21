@@ -163,9 +163,13 @@ def warte(bedingung, frist=15.0, schritt=0.2) -> bool:
 
 
 def journal(seit: float) -> str:
+    """sshd-Meldungen seit einem Zeitpunkt. Gefiltert wird nach dem Programmnamen (sshd), NICHT nach der Einheit: Der
+    Verbindungsprozess eines angemeldeten Tunnelbenutzers liegt dank pam_systemd in session-NNN.scope und nicht in
+    ssh.service. Seine Meldungen (error: ... cannot bind to path, refused ... port forward, ...) tragen also eine andere
+    _SYSTEMD_UNIT; mit "-u ssh.service" blieben genau die Gründe der Ablehnungen unsichtbar."""
     stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(seit - 1))  # eine Sekunde Reserve: --since kennt keine Bruchteile
-    return lauf(["/usr/bin/journalctl", "-u", "ssh.service", "-u", "ssh.socket", "-t", "sshd", "--since", stamp,
-                 "--no-pager", "-o", "cat"]).stdout
+    # ab OpenSSH 9.8 loggt der Verbindungsprozess als "sshd-session"
+    return lauf(["/usr/bin/journalctl", "-t", "sshd", "-t", "sshd-session", "--since", stamp, "--no-pager", "-o", "cat"]).stdout
 
 
 def log_enthaelt(seit: float, muster: str, frist: float = 6.0) -> bool:
@@ -174,6 +178,13 @@ def log_enthaelt(seit: float, muster: str, frist: float = 6.0) -> bool:
 
 def datei(name: str, ordner: str) -> Path:
     return WURZEL / ordner / name
+
+
+def lies_datei(pfad: Path) -> str:
+    try:
+        return pfad.read_text().strip()
+    except OSError:
+        return ""
 
 
 def stat_von(pfad: Path):
@@ -269,20 +280,22 @@ def haupt() -> int:
         t = time.time()
         r = env.ssh("pa", ["-o", "ExitOnForwardFailure=yes", "-N", "-R", "/run/wamo-pc/pb/pc.sock:127.0.0.1:9"])
         pruefe(abgelehnt(r), f"A ersetzt den Socket von B: abgelehnt (Exit {r.returncode})")
-        pruefe(log_enthaelt(t, r"(Permission denied|cannot listen to path|bind)"), "  Grund im sshd-Journal (Rechte im Ordner von B)")
+        # sshd meldet (error:) "unlink(<pfad>): Permission denied" und "unix_listener: cannot bind to path <pfad>: ..."
+        pruefe(log_enthaelt(t, r"/run/wamo-pc/pb/pc\.sock\)?: Permission denied"), "  Grund im sshd-Journal (Rechte im Ordner von B)")
         s = stat_von(datei("pc.sock", "pb"))
         pruefe(s is not None and s.st_ino == ino_b and s.st_uid == uid_b, "  Socket von B unverändert (gleicher Inode, Besitzer B)")
         t = time.time()
         r = env.ssh("pa", ["-o", "ExitOnForwardFailure=yes", "-N", "-R", "/run/wamo-pc/pb/neu.sock:127.0.0.1:9"])
         pruefe(abgelehnt(r) and not datei("neu.sock", "pb").exists(), "A bindet einen neuen Socket in B's Ordner: abgelehnt")
-        pruefe(log_enthaelt(t, r"(Permission denied|cannot listen to path|bind)"), "  Grund im sshd-Journal")
+        pruefe(log_enthaelt(t, r"cannot bind to path /run/wamo-pc/pb/neu\.sock: Permission denied"),
+               "  Grund im sshd-Journal (Rechte im Ordner von B)")
 
         t = time.time()
         lokal = env.tmp / "l.sock"
         p = subprocess.Popen(env.ssh_argv("pa", ["-N", "-L", f"{lokal}:/run/wamo-core/core.sock"]),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
         env.verbindungen.append(p)
-        warte(lokal.exists, 10)
+        pruefe(warte(lokal.exists, 10), "A: -L baut den lokalen Socket am Client auf (die Ablehnung kommt erst vom Server)")
         antwort = b"?"
         try:
             c = socket.socket(socket.AF_UNIX)
@@ -299,13 +312,17 @@ def haupt() -> int:
             _, fehlerausgabe = p.communicate(timeout=5)
         except Exception:  # noqa: BLE001
             fehlerausgabe = b""
-        pruefe(log_enthaelt(t, r"(administratively prohibited|open failed|not permitted)") or b"prohibited" in fehlerausgabe
-               or b"open failed" in fehlerausgabe, "  Grund (Weiterleitung nach lokal verboten) im sshd-Journal oder am Client")
+        # sshd (AllowStreamLocalForwarding remote) meldet "refused streamlocal port forward: ... target <pfad>". Nur diese
+        # Meldung zählt: "open failed" am Client käme auch bei einem Dateirechtefehler am Kern-Socket.
+        pruefe(log_enthaelt(t, r"refused streamlocal port forward: .*target /run/wamo-core/core\.sock"),
+               "  Grund im sshd-Journal (Weiterleitung nach lokal verboten, AllowStreamLocalForwarding remote)")
 
         t = time.time()
         r = env.ssh("pa", ["-o", "ExitOnForwardFailure=yes", "-N", "-R", "127.0.0.1:47001:127.0.0.1:9"])
         pruefe(abgelehnt(r), "A: -R auf einen TCP-Port (127.0.0.1:47001): abgelehnt")
-        pruefe(log_enthaelt(t, r"(administratively prohibited|not permitted|Permission denied|listen|refused)"),
+        # sshd (PermitListen none): "Received request from <ip> port <n> to remote forward to host 127.0.0.1 port 47001,
+        # but the request was denied."
+        pruefe(log_enthaelt(t, r"remote forward to host 127\.0\.0\.1 port 47001, but the request was denied"),
                "  Grund im sshd-Journal (PermitListen none)")
         pruefe(lauf(["/usr/bin/ss", "-ltn", "sport = :47001"]).stdout.count("47001") == 0, "  Port 47001 lauscht nicht")
 
@@ -314,8 +331,11 @@ def haupt() -> int:
         r = env.ssh("pa", [], nach=[f"touch {marke}; id"])  # der Befehl steht HINTER dem Ziel
         pruefe(not marke.exists() and "uid=" not in r.stdout and r.returncode == 2,
                f"A: Befehl wird nicht ausgeführt, es läuft nur der Zwangsbefehl (dessen Exit 2 ohne Eingabe, hier {r.returncode})")
+        t = time.time()
         r = env.ssh("pa", ["-W", "127.0.0.1:22"], dauer=15)
         pruefe(abgelehnt(r) and "SSH-2.0" not in r.stdout, "A: -W 127.0.0.1:22: abgelehnt")
+        pruefe(log_enthaelt(t, r"refused local port forward: .*target 127\.0\.0\.1 port 22"),
+               "  Grund im sshd-Journal (Weiterleitung nach lokal verboten, AllowTcpForwarding remote)")
         sb = env.tmp / "sftp.txt"
         sb.write_text("ls /\n")
         r = lauf(["/usr/bin/sftp", "-F", "none", "-i", str(env.schluessel["pa"][0]), "-o", "IdentitiesOnly=yes",
@@ -341,8 +361,15 @@ def haupt() -> int:
         pruefe(streu in r.stdout and "WAMO-GERAET" in r.stdout, "Streuner meldet den Socket in /tmp mit Präfix WAMO-GERAET")
         pruefe(warte(lambda: sp.poll() is not None and a1.poll() is not None, 10), "  und beendet die Sitzungen von A")
         Path(streu).unlink(missing_ok=True)
+        # Ein Rest der beendeten Sitzung kann Socket und Dateien noch zeigen: erst gelten sie als "neu", wenn der Inode
+        # des Tokens ein anderer ist. Sonst startet die nächste Verbindung, während diese noch im Aufbau ist (zwei
+        # gleichzeitige Verbindungen beenden einander, das wäre ein Fehler des Tests, nicht des Zwangsbefehls).
+        alt_token = stat_von(datei("host-token", "pa"))
         a1 = env.halte("pa")
-        pruefe(warte(datei("pc.sock", "pa").exists), "A verbindet danach wieder (neuer eigener Tunnel steht)")
+        pruefe(warte(lambda: a1.poll() is None and datei("pc.sock", "pa").exists()
+                     and (s := stat_von(datei("host-token", "pa"))) is not None
+                     and (alt_token is None or s.st_ino != alt_token.st_ino)),
+               "A verbindet danach wieder (neuer eigener Tunnel steht, Token neu geschrieben)")
 
         print("== Verbindung: neueste gewinnt, nur eigene Inodes löschen")
         pruefe(a1.poll() is None, "A#1 läuft noch")
@@ -352,6 +379,12 @@ def haupt() -> int:
         except subprocess.TimeoutExpired:
             code = None
         pruefe(code == 75, f"A#2 (zweite Verbindung) endet mit Exit 75 und beendet die alte (Exit {code})")
+        if code != 75:
+            try:
+                _, diag = a2.communicate(timeout=3)
+            except Exception:  # noqa: BLE001
+                diag = b""
+            print("    Meldung des Clients:", diag.decode("utf-8", "replace")[:300].replace("\n", " | "), flush=True)
         pruefe(warte(lambda: a1.poll() is not None, 10), "A#1 wurde beendet")
         a3 = env.halte("pa", token="E" * 43, freigabe="F" * 43)
         pruefe(warte(lambda: datei("host-token", "pa").exists() and datei("host-token", "pa").read_text().strip() == "E" * 43),
@@ -372,7 +405,8 @@ def haupt() -> int:
 
         print("== Sperren: Eintrag aus der Liste nehmen")
         a4 = env.halte("pa", token="H" * 43, freigabe="I" * 43)
-        pruefe(warte(datei("pc.sock", "pa").exists), "A#4 verbunden")
+        pruefe(warte(lambda: datei("pc.sock", "pa").exists() and lies_datei(datei("host-token", "pa")) == "H" * 43),
+               "A#4 verbunden (Socket da, Token von A#4 geschrieben)")
         r = env.abgleich(["pb"])
         pruefe(r.returncode == 0, "Abgleich ohne A läuft")
         pruefe(warte(lambda: a4.poll() is not None, 10), "Laufende Verbindung von A wird getrennt")
@@ -381,8 +415,8 @@ def haupt() -> int:
         pruefe((WURZEL / "pb").exists() and b1.poll() is None, "B ist unberührt")
         r = env.ssh("pa", ["-o", "NumberOfPasswordPrompts=0"], stdin=b"")
         pruefe(r.returncode == 255 and "Permission denied" in r.stderr, "Neue Verbindung von A wird abgelehnt (publickey)")
-        pruefe(log_enthaelt(time.time() - 20, r"(Connection closed by authenticating user wamo-t-pa|Failed publickey for wamo-t-pa|"
-                            r"Invalid user|no matching|authentication)"), "  Grund im sshd-Journal")
+        pruefe(log_enthaelt(time.time() - 20, r"(Connection closed by authenticating user wamo-t-pa|Failed publickey for wamo-t-pa)"),
+               "  Grund im sshd-Journal (Schlüssel nicht mehr zugelassen)")
 
         print("== Gruppe wamo-core")
         gruppe = grp.getgrnam("wamo-core")
