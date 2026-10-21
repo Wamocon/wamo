@@ -370,11 +370,11 @@ async def main() -> None:
     load_dotenv(VOICE_CORE / ".env")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    from llm_anbieter import ausblenden_text, ausgeblendet
+    from llm_anbieter import ausgeblendet, log_schutz_einrichten
 
     logger.remove()
-    logger.configure(patcher=lambda r: r.update(message=ausblenden_text(r["message"])))
-    logger.add(sys.stderr, level="ERROR")
+    log_schutz_einrichten()  # Schlüssel schwärzen und fremde Aliase ausblenden, auch in Pipecat-Meldungen
+    logger.add(sys.stderr, level="ERROR", diagnose=False)
     if args.modell and ausgeblendet(args.modell):
         raise SystemExit("Dieses Modell ist über WAMO_LLM_AUSBLENDEN ausgeblendet")
     if args.bericht:

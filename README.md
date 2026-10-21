@@ -51,7 +51,15 @@ gemeinsamem Gedächtnis.
   und klar gemeldet, eine Sitzung je Profil, Stimmen-Rand blendet sich bei Vollbild aus, Freigabeweg für kritische
   PC-Aktionen per Karte in der Oberfläche, Höchstalter der Anmeldung und „Angemeldet bleiben“.
 
+- Modellzugang je Profil (21.10.2026, Abschnitt „Modellzugang je Profil“): eigener Claude-Schlüssel (verschlüsselt in
+  der Datenbank, Standard Haiku) oder nur Hausmodelle über LiteLLM und SearXNG ohne Rückfall auf Claude; Migration 0010
+  in `wamo_dev` und `wamo_test` angewendet.
+
 ### Offen
+
+- Modellzugang ausrollen: `WAMO_SCHLUESSEL_KEK` erzeugen und in `core.env` setzen, Schlüssel der Person zuordnen
+  oder hinterlegen, Migration 0010 in `wamo_prod`, Hausmodelle (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`) im Kern
+  eintragen. Solange der Kern auf Sokrates-2 den alten Stand hat, nutzt jedes Profil dort noch den Schlüssel des Kerns.
 
 - Ausrollen der Übernahmen und Freigaben im Büro (Kern, PC-Tunnel, GoTrue-Sitzungsgrenzen): Die Skripte sind
   vorbereitet, aber noch nicht angewendet. Bis dahin gibt es im Büro keinen Freigabeweg (fehlender Freigabe-Schlüssel:
@@ -153,6 +161,27 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   und 11 auch im Fenster laufen. Der Wächter endet mit der App und startet nach einem Absturz nach 5 s neu.
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
   spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel).
+- **Mikrofon-Wächter** (`ui/src/lib/mikrofon.ts`, `voice-core/audio_monitor.py`): Die Oberfläche misst die eigene Spur und
+  warnt nach 3 s digitaler Stille, bei einer beendeten Spur ohne Ersatz, ohne Spur 5 s nach „Bot bereit“ und bei
+  Mikrofonsperre durch Windows (Datenschutz für Desktop-Apps, `systemPreferences.getMediaAccessStatus`), jeweils mit
+  Gerätename, Abhilfe und Gerätewahl. Der Kern meldet per Servernachricht `mikrofon`: `still` nach 10 s nur digitaler
+  Stille, `fehlt` nach 5 s ganz ohne Audiopakete (die Sendespur ist abgerissen), `ok` bei Rückkehr. Wechselt das
+  Standardgerät (Dock, Headset), legt die Oberfläche die neue Spur auf die Verbindung (`sendeSpurErsetzen`); der
+  SmallWebRTC-Transport tut das mit dem WavMediaManager nicht, die alte, beendete Spur blieb am Sender und es kam
+  gar nichts mehr an. Protokoll der Desktop-App: `desktop/logs/oberflaeche.log` (Zeilen `[WAMO] Mikrofon …`, beim
+  Start der Windows-Mikrofonzugriff), `desktop/logs/berechtigungen.log` (abgelehnte Mikrofon-Anfragen; mit
+  `WAMO_BERECHTIGUNG_LOG=1` alle). Berechtigungen: `desktop/berechtigungen.js`, geprüft gegen ein echtes Electron
+  (`desktop/berechtigungen.electron.test.js`).
+- **Prüfung in 30 Sekunden**: App starten, „Gespräch starten“, einen Satz sagen. Dann zeigt
+  `desktop\logs\oberflaeche.log` zuletzt `[WAMO] Mikrofon liefert Ton: <Gerät>, Spitze -xx dBFS` (über -100), die
+  Stimmlinie bewegt sich, und im Kern steht `Mikrofon: Pegel Median … dBFS` deutlich über -100. Die Windows-Liste
+  der letzten Mikrofonnutzer (`HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged`)
+  ist nur ein Zusatz: In Testläufen aus der Entwicklungsumgebung trugen sich selbst Chrome, ffmpeg und Electron bei
+  echter Aufnahme nicht ein, ein fehlender Eintrag beweist also nicht, dass das Mikrofon nie geöffnet wurde.
+- **Keine doppelten Antworten** (`voice-core/turn_wache.py`): Pipecats Assistent-Aggregator merkt sich ein
+  Werkzeugergebnis, das während WAMOs Sprechen eintrifft, und schiebt den Verlauf beim nächsten „Bot stopped speaking“
+  noch einmal an, auch wenn der neue Zug der Person schon beantwortet wird. Die Turn-Wache vor und hinter dem Modell
+  verwirft solche Anfragen (gleicher Verlauf wie zuletzt, oder der Verlauf endet mit WAMOs Antwort).
 
 ## Nutzer und Gedächtnis
 
@@ -209,11 +238,41 @@ Dispatcher erzeugt je Lauf außerhalb der Sandbox ein kurzlebiges Installations-
 (und, wenn der Auftrag ein Repo nennt, nur für dieses) und widerruft es am Laufende; ohne diese Variablen gelten
 `GH_TOKEN` und `GH_TOKEN_LESEN` wie bisher. Einzelheiten und Anleitung: `infra/sokrates2/README.md`, Abschnitte 2 und 9.
 
+## Modellzugang je Profil
+
+Jedes Profil hat genau eine von zwei Arten (`voice-core/modellzugang.py`, Tabelle `model_access`, Migration 0010):
+
+| Art | Wann | Gespräch, Lernen, Zusammenfassung, Bildschirm | Websuche |
+| --- | --- | --- | --- |
+| Eigener Claude-Schlüssel | Die Person hat ihren Schlüssel hinterlegt (oder ist das Profil in `WAMO_CLAUDE_SCHLUESSEL_PROFIL`) | Claude mit dem Schlüssel dieses Profils, Standardmodell Haiku (ein Admin kann ein anderes festlegen); fällt Claude aus, übernehmen die Hausmodelle mit Hinweis | Anthropic-Websuche |
+| Nur Hausmodelle | Kein eigener Schlüssel, Fehler beim Laden des Zugangs oder vom Admin festgelegt | LiteLLM (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`), nie Anthropic, auch nicht als Rückfall | SearXNG |
+
+- **Hinterlegen** in der Oberfläche (Bereich „Modellzugang“, maskiertes Feld): Der Kern prüft den Schlüssel mit einer
+  kleinen Testanfrage (höchstens 5 Versuche je 10 Minuten), verschlüsselt ihn mit AES-256-GCM (Profil-ID als
+  zusätzliche Daten, Hauptschlüssel `WAMO_SCHLUESSEL_KEK` nur in `core.env` bzw. `.env` des Kerns) und speichert nur das
+  Chiffrat. Zurück zur Oberfläche gehen nur „hinterlegt“ und die letzten vier Zeichen. Ersetzen und Löschen gehen
+  ebenso. Eine Änderung gilt ab der nächsten Sitzung. Schlüssel stehen nie in Logs (ein Filter schwärzt `sk-ant-…`),
+  `actions` oder `turns`.
+- **Admin:** `uv run python wamo_admin.py modellzugang` zeigt die Zugänge, `modellzugang-setzen --user-id <uuid>
+  --nur-haus an` legt ein Profil auf Hausmodelle fest (der Trigger löscht dabei den Schlüssel; die Verwaltung kann
+  nie einen setzen oder lesen).
+- **Der Schlüssel in `ANTHROPIC_API_KEY`** gehört einer Person und gilt nur für das Profil in
+  `WAMO_CLAUDE_SCHLUESSEL_PROFIL`, nie für andere. Besser ist, ihn mit `uv run python modellzugang.py hinterlegen
+  --user-id <uuid>` zu hinterlegen und die Variable zu entfernen.
+- **Je Sitzung ein eigener Client:** Es gibt keinen Anthropic-Client und keinen Schlüssel, der Profile teilt. Der
+  Verbrauch steht als Tokenzahlen je Profil im Log (`Verbrauch profil=… anbieter=… modell=… ein=… aus=…`), ohne Inhalt.
+- **Stimme:** Jedes Profil trägt `stt` und `tts` (`soniox` oder `haus`) als Schnittstelle für Phase P5; ein Admin setzt
+  sie mit `modellzugang-setzen --stt haus --tts haus`.
+- **Entwicklungsaufträge** laufen vorerst nur mit dem Claude-Zugang der Sandbox (`/etc/wamo/geheim.env`), nicht mit
+  dem Zugang des Profils.
+
 ## Modelle (Ausbaustufe P4)
 
 Jeder Baustein lässt sich zwischen Claude und den eigenen Modellen auf den Sparks umschalten
 (`voice-core/llm_anbieter.py`). Eigene Modelle laufen nur über das LiteLLM-Gateway (`LITELLM_BASE_URL`,
-`LITELLM_API_KEY`), nie direkt über die Adressen der Knoten. Standard ist überall Claude.
+`LITELLM_API_KEY`), nie direkt über die Adressen der Knoten. Standard ist für Profile mit eigenem Claude-Schlüssel
+Claude (Haiku); Profile ohne Schlüssel nutzen immer die Hausmodelle, von den folgenden Einstellungen gelten für sie
+nur die Modellnamen.
 
 | Baustein | Anbieter | Modell | Standard |
 | --- | --- | --- | --- |

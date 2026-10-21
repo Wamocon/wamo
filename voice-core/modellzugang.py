@@ -35,6 +35,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import anthropic
+import asyncpg
 from loguru import logger
 
 from llm_anbieter import STANDARD_CLAUDE, Zugang, lesbarer_modellname
@@ -175,6 +176,8 @@ async def schluessel_testen(schluessel: str, workspace: str | None = None) -> st
         return f"Anthropic antwortet mit HTTP {e.status_code}"
     except anthropic.APIConnectionError:
         return "Anthropic ist gerade nicht erreichbar"
+    except anthropic.APIError as e:
+        return f"Anthropic-Fehler ({type(e).__name__})"
     finally:
         await client.close()
 
@@ -218,14 +221,19 @@ async def hinterlegen(user_id: str, schluessel_roh: object, workspace_roh: objec
     if grund := await testen(schluessel, workspace):
         raise ZugangFehler(grund)
     chiffre = tresor.verschluesseln(uid, schluessel)
-    await db.execute(
-        f"insert into {db.t('model_access')} (user_id, claude_schluessel, claude_schluessel_ende, claude_workspace, "
-        "claude_geprueft_at) values ($1::uuid, $2, $3, $4, now()) on conflict (user_id) do update set "
-        "claude_schluessel = excluded.claude_schluessel, claude_schluessel_ende = excluded.claude_schluessel_ende, "
-        "claude_workspace = excluded.claude_workspace, claude_geprueft_at = excluded.claude_geprueft_at",
-        uid, chiffre, ende(schluessel), workspace,
-    )
-    logger.info("Claude-Schlüssel für Profil {} hinterlegt (endet auf …{})", uid[:8], ende(schluessel))
+    try:
+        await db.execute(
+            f"insert into {db.t('model_access')} (user_id, claude_schluessel, claude_schluessel_ende, "
+            "claude_workspace, claude_geprueft_at) values ($1::uuid, $2, $3, $4, now()) on conflict (user_id) "
+            "do update set claude_schluessel = excluded.claude_schluessel, "
+            "claude_schluessel_ende = excluded.claude_schluessel_ende, claude_workspace = excluded.claude_workspace, "
+            "claude_geprueft_at = excluded.claude_geprueft_at",
+            uid, chiffre, ende(schluessel), workspace,
+        )
+    except asyncpg.CheckViolationError:
+        # Ein Admin hat das Profil zwischen Prüfung und Speichern auf nur Hausmodelle festgelegt
+        raise ZugangFehler("Ein Admin hat dieses Profil auf nur Hausmodelle festgelegt") from None
+    logger.info("Claude-Schlüssel für Profil {} hinterlegt", uid[:8])  # nie auch nur Teile des Schlüssels loggen
     return await stand_laden(uid, db=db)
 
 
@@ -252,7 +260,7 @@ async def modellzugang_nachricht(user_id: str, data: dict, senden: Callable[[dic
                                  testen: Pruefer = schluessel_testen) -> None:
     """Klick aus der Oberfläche (RTVI-Nachricht "modellzugang"). Die Antwort enthält nie den Schlüssel; der
     Inhalt der Nachricht wird nie geloggt."""
-    aktion = str(data.get("aktion") or "status")
+    aktion = data.get("aktion") if data.get("aktion") in ("hinterlegen", "loeschen", "status") else "status"
     try:
         if aktion == "hinterlegen":
             stand = await hinterlegen(user_id, data.get("schluessel"), data.get("workspace"), db=db, tresor=tresor,
@@ -272,6 +280,10 @@ async def modellzugang_nachricht(user_id: str, data: dict, senden: Callable[[dic
     except (DatabaseUnavailable, *DB_ERRORS) as e:
         logger.error("Modellzugang {} für Profil {}: Datenbank ({})", aktion, str(user_id)[:8], type(e).__name__)
         await senden({"type": "modellzugang", "aktion": aktion, "fehler": "Datenbank gerade nicht erreichbar"})
+    except Exception as e:  # nie ohne Antwort an die Oberfläche (sie wartet sonst bis zur Zeitgrenze)
+        logger.error("Modellzugang {} für Profil {}: unerwarteter Fehler ({})", aktion, str(user_id)[:8],
+                     type(e).__name__)
+        await senden({"type": "modellzugang", "aktion": aktion, "fehler": "Unerwarteter Fehler, bitte später noch einmal"})
 
 
 # ---------- Verwaltung (wamo_admin, nur wamo_admin.py) ----------
@@ -356,6 +368,9 @@ def main(argv: list[str] | None = None) -> int:
         if name == "hinterlegen":
             b.add_argument("--workspace", help="nur bei Organisationsschlüsseln: wrkspc_...")
     args = p.parse_args(argv)
+    # diagnose=False: loguru schriebe sonst bei Ausnahmen die Werte lokaler Variablen (auch Schlüssel) aus
+    logger.remove()
+    logger.add(sys.stderr, level="INFO", backtrace=False, diagnose=False)
     if args.befehl == "kek-erzeugen":
         from schluessel import kek_erzeugen
 

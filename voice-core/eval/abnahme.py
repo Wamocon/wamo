@@ -75,6 +75,7 @@ from llm_anbieter import (  # noqa: E402
     ausgeblendet,
     litellm_modelle,
     litellm_problem,
+    log_schutz_einrichten,
     sichtbare_modelle,
 )
 from messung import Messung, Sammler, messen  # noqa: E402
@@ -366,8 +367,8 @@ async def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Marker und Umlaute in der Windows-Konsole
     logger.remove()
-    logger.configure(patcher=lambda r: r.update(message=ausblenden_text(r["message"])))  # auch Pipecat-Meldungen
-    logger.add(sys.stderr, level="WARNING")
+    log_schutz_einrichten()  # Schlüssel schwärzen und fremde Aliase ausblenden, auch in Pipecat-Meldungen
+    logger.add(sys.stderr, level="WARNING", diagnose=False)
     hashes = aktuelle_hashes()
 
     if args.liste:

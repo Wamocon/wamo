@@ -37,6 +37,7 @@ from typing import Any
 import asyncpg
 from loguru import logger
 
+from schluessel import schwaerzen
 from wamo_tls import TlsConfigError, postgres_ssl
 
 SCHEMA_PATTERN = re.compile(r"^wamo_(dev|test|prod)$")
@@ -371,7 +372,7 @@ class MemoryStore:
     ) -> None:
         if not self.enabled or not content or role not in TURN_ROLES:
             return
-        turn = _PendingTurn(role, content[:MAX_TURN_CHARS], bool(interrupted), speaker_label,
+        turn = _PendingTurn(role, schwaerzen(content[:MAX_TURN_CHARS]), bool(interrupted), speaker_label,
                             datetime.now(timezone.utc))
         if self.session_id is None:
             # Sitzung wird gerade angelegt (oder gleich): puffern statt verwerfen.
@@ -397,6 +398,9 @@ class MemoryStore:
         if not self.enabled:
             return None
         content = (content or "").strip()[:MAX_CONTENT_CHARS]
+        if content != schwaerzen(content):  # wie ein API-Schlüssel: nie ins Gedächtnis, auch nicht geschwärzt
+            logger.warning("Gedächtnis: Eintrag mit Schlüssel verworfen")
+            return None
         if not content or kind not in KINDS or bereich not in BEREICHE or status not in STATUS_WERTE:
             logger.warning("Gedächtnis: ungültiger Eintrag verworfen (kind={}, bereich={}, status={})",
                            kind, bereich, status)
@@ -498,7 +502,7 @@ class MemoryStore:
                 f"values ($1::uuid, $2::uuid, $3, $4::text::jsonb, $5, $6::text::{db.t('risk_class')}) "
                 "returning id::text",
                 self.user_id, self.session_id, str(tool)[:200],
-                json.dumps(params, ensure_ascii=False, default=str), str(reason)[:1000], risk,
+                schwaerzen(json.dumps(params, ensure_ascii=False, default=str)), schwaerzen(str(reason)[:1000]), risk,
             )
         except DB_ERRORS as e:
             logger.warning("Gedächtnis: Aktion nicht protokolliert ({})", type(e).__name__)

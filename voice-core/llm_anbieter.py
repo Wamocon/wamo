@@ -45,6 +45,7 @@ import json
 import os
 import re
 import time
+from urllib.parse import urlparse
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -92,9 +93,11 @@ _ALLE = "*"  # Cache-Schlüssel für "Gateway ganz weg", gilt für jedes Modell
 class LLMFehler(Exception):
     """Ein Modellaufruf ist fehlgeschlagen. Der Text enthält nie Schlüssel oder Inhalte."""
 
-    def __init__(self, text: str, *, verbindung: bool = False):
+    def __init__(self, text: str, *, verbindung: bool = False, gateway_weg: bool = False, zeitlimit: bool = False):
         super().__init__(text)
         self.verbindung = verbindung  # Netz, Gateway oder Anbieter weg: Rückfall sinnvoll
+        self.gateway_weg = gateway_weg  # keine Verbindung aufgebaut: das ganze Gateway gilt als weg
+        self.zeitlimit = zeitlimit  # nur diese eine Anfrage war zu langsam: andere Sitzungen nicht beeinträchtigen
 
 
 class LLMNichtVerfuegbar(LLMFehler):
@@ -116,6 +119,7 @@ class Zugang:
     tts: str = "soniox"
     hinweis: str | None = None
     _client: list = field(default_factory=list, repr=False, init=False)  # einmal je Zugang gebaut
+    _zu: list = field(default_factory=list, repr=False, init=False)  # gefüllt, sobald die Sitzung schloss
 
     def __post_init__(self):
         if self.art == "claude" and not self.claude_schluessel:
@@ -149,8 +153,19 @@ class Zugang:
             raise LLMNichtVerfuegbar("Dieses Profil nutzt nur Hausmodelle, Anthropic ist gesperrt")
         if not self._client:
             kopf = {"anthropic-workspace-id": self.claude_workspace} if self.claude_workspace else None
-            self._client.append(anthropic.AsyncAnthropic(api_key=self.claude_schluessel, default_headers=kopf))
+            if self._zu:
+                raise LLMNichtVerfuegbar("Die Sitzung ist beendet, der Modellclient ist geschlossen")
+            # Zeitgrenzen wie bei den Einzelaufrufen: ein hängendes Anthropic soll WAMO nicht Minuten stumm machen
+            self._client.append(anthropic.AsyncAnthropic(
+                api_key=self.claude_schluessel, default_headers=kopf, max_retries=1,
+                timeout=anthropic.Timeout(GESPRAECH_LESE_TIMEOUT_SECS, connect=VERBINDUNG_TIMEOUT_SECS)))
         return self._client[0]
+
+    async def schliessen(self) -> None:
+        """Beendet den Client dieser Sitzung (Sitzungsende). Danach baut anthropic() keinen neuen mehr."""
+        self._zu.append(True)
+        while self._client:
+            await self._client.pop().close()
 
 
 @dataclass(frozen=True)
@@ -428,9 +443,10 @@ async def litellm_problem(modell: str | None) -> str | None:
     return problem
 
 
-def _litellm_ausgefallen(problem: str) -> None:
-    """Merkt sich einen Ausfall mitten im Betrieb, damit die nächsten Aufrufe gleich zurückfallen."""
-    _pruef_cache[(litellm_basis(), _ALLE)] = (time.monotonic(), problem)
+def _litellm_ausgefallen(problem: str, modell: str | None = None) -> None:
+    """Merkt sich einen Ausfall mitten im Betrieb, damit die nächsten Aufrufe gleich zurückfallen. Ohne Modell
+    gilt das ganze Gateway als weg (keine Verbindung), sonst nur dieses Modell (Fehler 5xx)."""
+    _pruef_cache[(litellm_basis(), modell or _ALLE)] = (time.monotonic(), problem)
 
 
 # --- Prüfung von Claude (nur für claude-Profile) -------------------------------------------------
@@ -440,12 +456,14 @@ _claude_cache: dict[str, tuple[float, str | None]] = {}
 
 def _claude_kennung(zugang: Zugang) -> str:
     # Nur ein Hash des Schlüssels als Cache-Schlüssel, nie der Schlüssel selbst
-    return hashlib.sha256((zugang.claude_schluessel or "").encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256((zugang.claude_schluessel or "").encode("utf-8")).hexdigest()
 
 
 async def claude_problem(zugang: Zugang) -> str | None:
     """Grund, warum Claude mit dem Schlüssel des Profils gerade nicht nutzbar ist, oder None. Kostet nichts
-    (Modellliste), Ergebnis gilt 60 s."""
+    (Modellliste), Ergebnis gilt 60 s. Wirft LLMNichtVerfuegbar bei haus-Profilen (nie ein Aufruf an Anthropic)."""
+    if zugang.art != "claude":
+        raise LLMNichtVerfuegbar("Dieses Profil nutzt nur Hausmodelle, Anthropic ist gesperrt")
     kennung, jetzt = _claude_kennung(zugang), time.monotonic()
     if (eintrag := _claude_cache.get(kennung)) and jetzt - eintrag[0] < CLAUDE_PRUEF_TTL_SECS:
         return eintrag[1]
@@ -456,6 +474,8 @@ async def claude_problem(zugang: Zugang) -> str | None:
         problem = None
     except anthropic.AuthenticationError:
         problem = "Claude lehnt den Schlüssel ab"
+    except anthropic.PermissionDeniedError:
+        problem = None  # Schlüssel ohne Recht auf die Modellliste: ob Nachrichten gehen, zeigt erst der Aufruf
     except anthropic.APIStatusError as e:
         problem = f"Claude antwortet mit HTTP {e.status_code}"
     except anthropic.APIConnectionError:
@@ -485,9 +505,23 @@ def _rueckfall_auf_claude(baustein: str, modell: str | None, problem: str, zugan
     return Wahl(baustein, "claude", claude, "litellm", problem)
 
 
+def anthropic_ziel(modell: str | None) -> str | None:
+    """Grund, wenn ein "Hausmodell" in Wahrheit zu Anthropic führen würde (Claude-Modellname, Anthropic-Alias auf
+    dem Gateway oder ein Gateway auf einem Anthropic-Host). Haus-Profile lehnen das ab."""
+    klein = (modell or "").lower()
+    if klein.startswith(("claude", "anthropic")) or "/claude" in klein or "anthropic/" in klein:
+        return f"Das Modell {modell!r} führt zu Anthropic"
+    host = (urlparse(litellm_basis()).hostname or "").lower()
+    if host == "anthropic.com" or host.endswith(".anthropic.com"):
+        return "LITELLM_BASE_URL zeigt auf Anthropic"
+    return None
+
+
 async def _haus_wahl(baustein: str, zugang: Zugang, gewuenscht: Anbieter, grund: str | None = None) -> Wahl:
     """Hausmodell für den Baustein; LLMNichtVerfuegbar, wenn es nicht nutzbar ist."""
     _anbieter, modell = konfiguration(baustein, Zugang.haus(zugang.user_id))
+    if ziel := anthropic_ziel(modell):
+        raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {ziel}")
     if problem := await litellm_problem(modell):
         raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {problem}")
     assert modell is not None  # litellm_problem prüft das
@@ -505,7 +539,9 @@ async def waehlen(baustein: str, zugang: Zugang) -> Wahl:
             logger.error("{}={!r} ist kein Claude-Modell, nutze {}", _ENV[baustein][1], modell,
                          claude_standardmodell(baustein, zugang))
             modell = None
-        return Wahl(baustein, "claude", modell or claude_standardmodell(baustein, zugang), "claude")
+        # Das vom Admin festgelegte Modell des Profils geht der Betriebsvorgabe (WAMO_LLM_*_MODELL) vor
+        return Wahl(baustein, "claude", zugang.claude_modell or modell or claude_standardmodell(baustein, zugang),
+                    "claude")
     problem = await litellm_problem(modell)
     if problem or not modell:
         return _rueckfall_auf_claude(baustein, modell, problem or "kein Modell gesetzt", zugang)
@@ -723,7 +759,9 @@ async def _claude_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
         raise LLMFehler("Claude: Schlüssel abgelehnt", verbindung=True) from None
     except anthropic.APIStatusError as e:
         raise LLMFehler(f"Claude: API-Fehler {e.status_code}", verbindung=e.status_code >= 500) from None
-    except anthropic.APIConnectionError:  # auch Zeitüberschreitung
+    except anthropic.APITimeoutError:
+        raise LLMFehler("Claude: Zeitüberschreitung", verbindung=True, zeitlimit=True) from None
+    except anthropic.APIConnectionError:
         raise LLMFehler("Claude: keine Verbindung", verbindung=True) from None
     if (u := getattr(r, "usage", None)) is not None:
         verbrauch_loggen(zugang, "claude", wahl.modell, a.baustein, eingabe=u.input_tokens or 0,
@@ -751,8 +789,10 @@ async def _litellm_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
         r = await litellm_client().chat.completions.create(**params)
     except openai.APIStatusError as e:
         raise LLMFehler(f"LiteLLM: HTTP {e.status_code}", verbindung=e.status_code >= 500) from None
-    except openai.APIConnectionError:  # auch Zeitüberschreitung
-        raise LLMFehler("LiteLLM: keine Verbindung", verbindung=True) from None
+    except openai.APITimeoutError:
+        raise LLMFehler("LiteLLM: Zeitüberschreitung", verbindung=True, zeitlimit=True) from None
+    except openai.APIConnectionError:
+        raise LLMFehler("LiteLLM: keine Verbindung", verbindung=True, gateway_weg=True) from None
     except TypeError:  # unbekannter Parameter trotz Prüfung in litellm_extra
         raise LLMFehler("LiteLLM: ungültige Anfrage-Parameter (WAMO_LLM_EXTRA prüfen)") from None
     if not r.choices:
@@ -791,7 +831,8 @@ async def anfrage(
         except LLMFehler as e:
             if not e.verbindung:
                 raise
-            _litellm_ausgefallen(str(e))
+            if not e.zeitlimit:  # eine langsame Anfrage sperrt weder das Gateway noch andere Sitzungen
+                _litellm_ausgefallen(str(e), None if e.gateway_weg else wahl.modell)
             wahl = _rueckfall_auf_claude(baustein, wahl.modell, str(e), zugang)
         return await _claude_anfrage(wahl, auftrag, zugang)
     try:
@@ -799,7 +840,8 @@ async def anfrage(
     except LLMFehler as e:
         if not e.verbindung:
             raise
-        _claude_ausgefallen(zugang, str(e))
+        if not e.zeitlimit:
+            _claude_ausgefallen(zugang, str(e))
         ersatz = await _haus_wahl(baustein, zugang, "claude", str(e))
         logger.warning("Claude für {} nicht nutzbar ({}): einmal mit dem Hausmodell {}", baustein, e, ersatz.modell)
         return await _litellm_anfrage(ersatz, auftrag, zugang)

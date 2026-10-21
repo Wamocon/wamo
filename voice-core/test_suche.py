@@ -193,6 +193,29 @@ async def test_websuche_ergebnis_anthropic_ist_markiert(monkeypatch):
     assert ergebnis["vertrauen"] == "unvertrauenswuerdig" and ergebnis["quelle"] == "anthropic"
 
 
+async def test_websuche_claude_ausgefallen_dann_searxng(monkeypatch):
+    """Die Anthropic-Suche ist bei eigenen Schlüsseln oft nicht freigeschaltet: mit SearXNG übernimmt es."""
+    import anthropic
+    import httpx
+
+    antwort = httpx.Response(403, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"))
+
+    async def gesperrt(anfrage, zugang):
+        raise anthropic.PermissionDeniedError("nicht freigeschaltet", response=antwort, body=None)
+
+    async def searx(anfrage, **kwargs):
+        return suche.als_daten(anfrage, suche.kuerzen(_treffer(1)))
+
+    monkeypatch.setattr(tools, "web_search", gesperrt)
+    monkeypatch.setattr(tools, "searxng_suche", searx)
+    monkeypatch.delenv("WAMO_SEARXNG_URL", raising=False)
+    ohne = await tools.websuche_ergebnis("x", CLAUDE)  # ohne SearXNG bleibt es bei der Meldung
+    assert ohne == {"ergebnis": "Die Suche ist gerade fehlgeschlagen."}
+    monkeypatch.setenv("WAMO_SEARXNG_URL", "http://searx.test.invalid:8080")
+    mit = await tools.websuche_ergebnis("x", CLAUDE)
+    assert mit["vertrauen"] == "unvertrauenswuerdig" and mit.get("quelle") != "anthropic"
+
+
 async def test_websuche_haus_profil_nie_anthropic(monkeypatch):
     """Profile mit nur Hausmodellen suchen immer über SearXNG, auch wenn der Betrieb WAMO_SUCHE=anthropic setzt."""
     monkeypatch.setenv("WAMO_SUCHE", "anthropic")

@@ -10,7 +10,9 @@
 --                             Schlüssel hinterlegt ist oder ein Admin das Profil festgelegt hat (nur_haus).
 -- Der Schlüssel liegt nur verschlüsselt in claude_schluessel (AES-256-GCM, Profil-ID als zusätzliche
 -- Daten, Hauptschlüssel WAMO_SCHLUESSEL_KEK nur in der Umgebung des Kerns). Die Datenbank sieht nie den
--- Klartext. wamo_admin darf die verschlüsselte Spalte weder lesen noch befüllen, nur leeren.
+-- Klartext. wamo_admin hat auf die Schlüsselspalten kein Recht; ein Admin leert einen Schlüssel nur, indem er das
+-- Profil auf nur_haus setzt (der Trigger räumt dann den Schlüssel). Der Kern auf Sokrates-2 läuft als wamo_core_s2
+-- (erbt wamo_core) und liest das Chiffrat nur, um es mit WAMO_SCHLUESSEL_KEK zu entschlüsseln.
 -- stt und tts bereiten Phase P5 vor (Spracherkennung und Sprachausgabe im Haus, Strang "Stimme").
 
 create table if not exists __SCHEMA__.model_access (
@@ -40,28 +42,32 @@ drop trigger if exists model_access_touch on __SCHEMA__.model_access;
 create trigger model_access_touch before update on __SCHEMA__.model_access
   for each row execute function __SCHEMA__.touch_updated_at();
 
--- Die Verwaltung (Rechte von wamo_admin, auch über eine Login-Rolle als Mitglied) darf einen Schlüssel nur
--- entfernen, nie setzen, ersetzen oder seine Angaben ändern; die Spalten bleiben in der Hand des Kerns.
+-- Die Verwaltung (Rechte von wamo_admin, auch über eine Login-Rolle als Mitglied oder eine SECURITY-DEFINER-
+-- Funktion, die unter einer Verwaltungssitzung läuft) darf einen Schlüssel nie setzen, ersetzen oder seine Angaben
+-- ändern. Das ist die zweite Sperre hinter den Spaltenrechten (dort hat wamo_admin kein Recht auf claude_schluessel*).
+-- Wer zugleich wamo_core ist (Kern) oder Superuser, gilt nie als Verwaltung.
 -- Der Wechsel auf nur_haus räumt den Schlüssel selbst, damit der Admin die Schlüsselspalten nie nennen muss.
 create or replace function __SCHEMA__.model_access_guard() returns trigger
-language plpgsql set search_path = '' as $$
+language plpgsql security invoker set search_path = '' as $$
+declare
+  verwaltung boolean :=
+    (pg_has_role(current_user, 'wamo_admin', 'USAGE') and not pg_has_role(current_user, 'wamo_core', 'USAGE'))
+    or (pg_has_role(session_user, 'wamo_admin', 'USAGE') and not pg_has_role(session_user, 'wamo_core', 'USAGE'));
 begin
-  if pg_has_role(current_user, 'wamo_admin', 'USAGE') and not pg_has_role(current_user, 'wamo_core', 'USAGE')
-     and new.claude_schluessel is not null then
+  if verwaltung and new.claude_schluessel is not null then
     if tg_op = 'INSERT' then
-      raise exception 'wamo_admin darf keinen Claude-Schlüssel setzen, nur entfernen' using errcode = '42501';
+      raise exception 'wamo_admin darf keinen Claude-Schlüssel setzen' using errcode = '42501';
     elsif (new.claude_schluessel, new.claude_schluessel_ende, new.claude_workspace, new.claude_geprueft_at)
           is distinct from
           (old.claude_schluessel, old.claude_schluessel_ende, old.claude_workspace, old.claude_geprueft_at) then
-      raise exception 'wamo_admin darf einen Claude-Schlüssel nur entfernen' using errcode = '42501';
+      raise exception 'wamo_admin darf einen Claude-Schlüssel nicht ändern' using errcode = '42501';
     end if;
   end if;
-  if tg_op = 'INSERT' then
-    if new.nur_haus then
-      new.claude_schluessel := null; new.claude_schluessel_ende := null;
-      new.claude_workspace := null;  new.claude_geprueft_at := null;
-    end if;
-  elsif new.nur_haus and not old.nur_haus then
+  -- Wird der Schlüssel geleert, gehen seine Angaben mit
+  if tg_op = 'UPDATE' and new.claude_schluessel is null and old.claude_schluessel is not null then
+    new.claude_schluessel_ende := null; new.claude_workspace := null; new.claude_geprueft_at := null;
+  end if;
+  if new.nur_haus and (tg_op = 'INSERT' or not old.nur_haus) then
     new.claude_schluessel := null; new.claude_schluessel_ende := null;
     new.claude_workspace := null;  new.claude_geprueft_at := null;
   end if;
@@ -86,12 +92,12 @@ grant insert (user_id, claude_schluessel, claude_schluessel_ende, claude_workspa
 grant update (claude_schluessel, claude_schluessel_ende, claude_workspace, claude_geprueft_at)
   on __SCHEMA__.model_access to wamo_core;
 
--- Verwaltung: sieht nie das Chiffrat; legt nur_haus, Modell und Stimme fest und darf den Schlüssel leeren.
+-- Verwaltung: sieht nie das Chiffrat und fasst die Schlüsselspalten nicht an; legt nur nur_haus, Modell und Stimme
+-- fest. nur_haus = true leert einen vorhandenen Schlüssel über den Trigger.
 grant select (user_id, nur_haus, claude_schluessel_ende, claude_workspace, claude_modell, claude_geprueft_at,
               stt, tts, created_at, updated_at) on __SCHEMA__.model_access to wamo_admin;
 grant insert (user_id, nur_haus, claude_modell, stt, tts) on __SCHEMA__.model_access to wamo_admin;
-grant update (nur_haus, claude_modell, stt, tts, claude_schluessel, claude_schluessel_ende, claude_workspace,
-              claude_geprueft_at) on __SCHEMA__.model_access to wamo_admin;
+grant update (nur_haus, claude_modell, stt, tts) on __SCHEMA__.model_access to wamo_admin;
 
 -- ---------- Row Level Security ----------
 alter table __SCHEMA__.model_access enable row level security;
@@ -100,5 +106,21 @@ drop policy if exists core_all on __SCHEMA__.model_access;
 create policy core_all on __SCHEMA__.model_access for all to wamo_core using (true) with check (true);
 drop policy if exists admin_all on __SCHEMA__.model_access;
 create policy admin_all on __SCHEMA__.model_access for all to wamo_admin using (true) with check (true);
+
+-- Selbsttest: bricht die Transaktion bei Rechtedrift ab (zweiter Lauf, später nachgezogene Grants).
+do $$ begin
+  if has_column_privilege('wamo_admin', '__SCHEMA__.model_access', 'claude_schluessel', 'SELECT,INSERT,UPDATE')
+     or has_table_privilege('wamo_admin', '__SCHEMA__.model_access', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')
+     or has_table_privilege('wamo_core', '__SCHEMA__.model_access', 'DELETE,TRUNCATE')
+     or has_column_privilege('wamo_core', '__SCHEMA__.model_access', 'nur_haus', 'INSERT,UPDATE')
+     or has_any_column_privilege('anon', '__SCHEMA__.model_access', 'SELECT,INSERT,UPDATE')
+     or has_any_column_privilege('authenticated', '__SCHEMA__.model_access', 'SELECT,INSERT,UPDATE')
+     or has_any_column_privilege('service_role', '__SCHEMA__.model_access', 'SELECT,INSERT,UPDATE')
+     or exists (select 1 from pg_roles r where not r.rolsuper
+                  and pg_has_role(r.oid, 'wamo_admin', 'USAGE') and pg_has_role(r.oid, 'wamo_core', 'USAGE'))
+  then
+    raise exception 'model_access: unzulässige Rechte (Rechte und Rollenmitgliedschaften prüfen)' using errcode = '42501';
+  end if;
+end $$;
 
 insert into __SCHEMA__.schema_migrations (version) values ('0010_modellzugang') on conflict do nothing;

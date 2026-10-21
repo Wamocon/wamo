@@ -21,8 +21,9 @@ Nachrichten an die Oberfläche (RTVI-Servernachrichten, zusätzlich zu canvas, a
   {"type": "betrieb", "modus", "ort", "modelle", "pc", "pc_latenz_ms"?}
                                                                    beim Verbinden und wenn der PC-Host steht
   {"type": "gemerkt", "bereich", "status", "text", "id"}           nach jedem gespeicherten Gedächtniseintrag
-  {"type": "mikrofon", "zustand": "still"|"ok", "sekunden"}        10 s nur digitale Stille vom Mikrofon bzw. wieder Ton
-                                                                   (audio_monitor.py)
+  {"type": "mikrofon", "zustand": "still"|"fehlt"|"ok", "sekunden"}
+                                                                   10 s nur digitale Stille vom Mikrofon, "fehlt": 5 s gar
+                                                                   keine Audiopakete, "ok": wieder Ton (audio_monitor.py)
 Nachrichten von der Oberfläche:
   {"type": "vergessen", "data": {"id"}}   eigenen Eintrag deaktivieren (memory.forget)
   {"type": "freigabe", "data": {"job": "pc", "id", "entscheidung"}}
@@ -217,6 +218,15 @@ def _keep(task: asyncio.Task) -> asyncio.Task:
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return task
+
+
+async def _zugang_nach_lernen(lernen: asyncio.Task | None, zugang) -> None:
+    """Schließt den Modellclient der Sitzung erst, wenn die letzte Auswertung (Lernen) fertig ist."""
+    if lernen is not None:
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.shield(lernen)
+    with contextlib.suppress(Exception):
+        await zugang.schliessen()
 
 
 def greeting_text(name: str) -> str:
@@ -456,9 +466,17 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Beide Prüfungen parallel, damit ein langsames Gateway den Start nur einmal verzögert.
     # summary_llm None: Pipecat fasst mit dem Gesprächsmodell zusammen.
     zugang = await zugang_laden(identity.user_id)
-    (llm, llm_wahl), summary_llm = await asyncio.gather(
-        gespraech_llm(prompt_for(recall), zugang), zusammenfassung_llm(zugang)
-    )
+    if entwicklung and zugang.art != "claude":
+        # Claude Code läuft über Anthropic: Profile mit nur Hausmodellen starten keine Entwicklungsaufträge
+        logger.warning("Entwicklungsaufträge aus: Profil {} nutzt nur Hausmodelle", zugang.kennung)
+        entwicklung = False
+    try:
+        (llm, llm_wahl), summary_llm = await asyncio.gather(
+            gespraech_llm(prompt_for(recall), zugang), zusammenfassung_llm(zugang)
+        )
+    except Exception:
+        await zugang.schliessen()  # ein bei der Prüfung gebauter Client darf nicht offen bleiben
+        raise
 
     # Spracherkennung und Sprachausgabe je Profil (Zugang.stt/tts) oder für alle (WAMO_STT_ANBIETER/WAMO_TTS_ANBIETER):
     # Soniox oder im Haus über LiteLLM, mit Rückfall auf Soniox (sprache_anbieter.py)
@@ -882,6 +900,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             logger.warning("Gedächtnis: Sitzungsende nicht rechtzeitig gespeichert")
         # Rest seit der letzten Auswertung im Hintergrund lernen; blockiert nichts.
         start_learning(live=False)
+        _keep(asyncio.create_task(_zugang_nach_lernen(learn_task, zugang)))
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):

@@ -257,6 +257,104 @@ async def test_haus_anfrage_faellt_nie_auf_claude(monkeypatch, hz):
         await la.anfrage("lernen", zugang=hz, system="s", inhalt="i", max_tokens=10)
 
 
+async def test_haus_profil_baut_nie_einen_anthropic_client(monkeypatch, hz):
+    """Alle Bausteine eines haus-Profils, auch bei Gateway-Ausfall: der Anthropic-Client wird nie gebaut."""
+    _hausmodelle(monkeypatch)
+    _gateway(monkeypatch, _liste("gemma4-31b", alias_status=200))
+
+    def verboten(*args, **kwargs):
+        raise AssertionError("haus-Profile dürfen keinen Anthropic-Client bauen")
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", verboten)
+    for baustein in la.BAUSTEINE:
+        assert (await la.waehlen(baustein, hz)).anbieter == "litellm"
+    dienst, wahl = await la.gespraech_llm("WAMO", hz)
+    assert wahl.anbieter == "litellm" and isinstance(dienst, la.LiteLLMService)
+    assert isinstance(await la.zusammenfassung_llm(hz), la.LiteLLMService)
+
+    async def weg(wahl, auftrag, zugang):
+        raise la.LLMFehler("LiteLLM: keine Verbindung", verbindung=True)
+
+    monkeypatch.setattr(la, "_litellm_anfrage", weg)
+    for baustein in ("lernen", "vision"):
+        with pytest.raises(la.LLMNichtVerfuegbar):
+            await la.anfrage(baustein, zugang=hz, system="s", inhalt="i", max_tokens=10)
+    with pytest.raises(la.LLMNichtVerfuegbar):
+        await la.claude_problem(hz)
+
+
+async def test_client_wird_am_sitzungsende_geschlossen_und_nicht_geteilt(cz):
+    erster = cz.anthropic()
+    await cz.schliessen()
+    assert erster.is_closed()
+    with pytest.raises(la.LLMNichtVerfuegbar, match="beendet"):  # nach dem Sitzungsende kein neuer, offener Client
+        cz.anthropic()
+    await la.Zugang.haus(USER).schliessen()  # nichts zu schließen, kein Fehler
+
+
+async def test_ein_langsamer_aufruf_sperrt_weder_gateway_noch_schluessel(monkeypatch, cz):
+    """Eine Zeitüberschreitung einer einzelnen Anfrage darf nicht für alle Sitzungen als Ausfall gelten."""
+    _hausmodelle(monkeypatch)
+    _gateway(monkeypatch, _liste("gemma4-31b", alias_status=200))
+    la._pruef_cache.clear()
+    la._claude_cache.clear()
+
+    async def langsam(wahl, auftrag, zugang):
+        raise la.LLMFehler("LiteLLM: Zeitüberschreitung", verbindung=True, zeitlimit=True)
+
+    async def langsam_claude(wahl, auftrag, zugang):
+        raise la.LLMFehler("Claude: Zeitüberschreitung", verbindung=True, zeitlimit=True)
+
+    monkeypatch.setattr(la, "_litellm_anfrage", langsam)
+    monkeypatch.setattr(la, "_claude_anfrage", langsam_claude)
+    with pytest.raises(la.LLMFehler):
+        await la.anfrage("lernen", zugang=la.Zugang.haus(USER), system="s", inhalt="i", max_tokens=10)
+    assert (await la.waehlen("lernen", la.Zugang.haus(USER))).anbieter == "litellm"  # Gateway nicht gesperrt
+    with pytest.raises(la.LLMFehler):
+        await la.anfrage("lernen", zugang=cz, system="s", inhalt="i", max_tokens=10)
+    assert la._claude_cache == {}  # Schlüssel nicht als ausgefallen vermerkt
+
+
+async def test_fehler_5xx_sperrt_nur_das_modell_keine_verbindung_das_gateway(monkeypatch):
+    _hausmodelle(monkeypatch)
+    _gateway(monkeypatch, _liste("gemma4-31b", "wamo-vision", alias_status=200))
+    la._pruef_cache.clear()
+    hz = la.Zugang.haus(USER)
+
+    async def fehler(wahl, auftrag, zugang):
+        raise la.LLMFehler("LiteLLM: HTTP 503", verbindung=True)
+
+    monkeypatch.setattr(la, "_litellm_anfrage", fehler)
+    with pytest.raises(la.LLMNichtVerfuegbar):
+        await la.anfrage("lernen", zugang=hz, system="s", inhalt="i", max_tokens=10)
+    with pytest.raises(la.LLMNichtVerfuegbar, match="HTTP 503"):  # dieses Modell gilt kurz als weg ...
+        await la.waehlen("lernen", hz)
+    assert (await la.waehlen("vision", hz)).anbieter == "litellm"  # ... ein anderes Modell nicht
+
+
+@pytest.mark.parametrize("name", ["claude-haiku-5-5", "Claude-Sonnet", "anthropic/claude-haiku", "bedrock/claude-x"])
+async def test_haus_profil_lehnt_anthropic_modelle_hinter_dem_gateway_ab(monkeypatch, name):
+    _hausmodelle(monkeypatch, modell=name)
+    _gateway(monkeypatch, _liste(name, alias_status=200))
+    with pytest.raises(la.LLMNichtVerfuegbar, match="Anthropic"):
+        await la.waehlen("gespraech", la.Zugang.haus(USER))
+
+
+async def test_haus_profil_lehnt_gateway_bei_anthropic_ab(monkeypatch):
+    _hausmodelle(monkeypatch)
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://api.anthropic.com/v1")
+    with pytest.raises(la.LLMNichtVerfuegbar, match="Anthropic"):
+        await la.waehlen("gespraech", la.Zugang.haus(USER))
+
+
+async def test_modell_des_admins_geht_der_betriebsvorgabe_vor(monkeypatch):
+    monkeypatch.setenv("WAMO_LLM_MODELL", "claude-sonnet-5-5")
+    mit = la.Zugang(USER, "claude", "profil", claude_schluessel=PROFIL_SCHLUESSEL, claude_modell="claude-haiku-5-5")
+    ohne = la.Zugang(USER, "claude", "profil", claude_schluessel=PROFIL_SCHLUESSEL)
+    assert (await la.waehlen("gespraech", mit)).modell == "claude-haiku-5-5"
+    assert (await la.waehlen("gespraech", ohne)).modell == "claude-sonnet-5-5"
+
+
 # --- Rückfälle für claude-Profile ------------------------------------------------------------------
 
 

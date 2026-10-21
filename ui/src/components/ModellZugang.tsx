@@ -144,7 +144,7 @@ export const ModellZugang = memo(function ModellZugang({
                   name="wamo-anthropic"
                   value={schluessel}
                   onChange={(e) => setSchluessel(e.target.value)}
-                  autoComplete="off"
+                  autoComplete="new-password"
                   spellCheck={false}
                   autoCapitalize="off"
                   data-1p-ignore

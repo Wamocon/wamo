@@ -56,6 +56,8 @@ AUS_ENV = (
     "WAMO_DB_SCHEMA", "SONIOX_STT_URL", "SONIOX_TTS_URL", "SONIOX_VOICE", "SONIOX_TERMS", "CLAUDE_MODEL_FAST",
     "VISION_MODEL", "MIN_INTERRUPT_WORDS", "WAMO_CITY", "WAMO_TIMEZONE", "WAMO_GREETING", "WAMO_MAX_SITZUNG_MIN",
     "LITELLM_BASE_URL", "WAMO_SUCHE", "WAMO_SEARXNG_URL", "WAMO_SITZUNG_EINZELN", "WAMO_ANMELDUNG_MAX_STUNDEN",
+    # Modellzugang je Profil: Hauptschlüssel der eigenen Claude-Schlüssel und das eine Profil, dem ANTHROPIC_API_KEY gehört
+    "WAMO_SCHLUESSEL_KEK", "WAMO_SCHLUESSEL_KEK_ALT", "WAMO_CLAUDE_SCHLUESSEL_PROFIL",
 )
 AUS_ENV_PRAEFIX = ("WAMO_LLM_",)
 
@@ -176,7 +178,7 @@ def geheimnisse(_args) -> None:
             wert = db_rolle.current_value(zeilen, name)
             if wert:
                 werte[name] = wert
-    for pflicht in ("SONIOX_API_KEY", "ANTHROPIC_API_KEY", "SUPABASE_PUBLISHABLE_KEY"):
+    for pflicht in ("SONIOX_API_KEY", "SUPABASE_PUBLISHABLE_KEY"):
         if pflicht not in werte:
             sys.exit(f"{pflicht} fehlt in {db_rolle.ENV_FILE}.")
     env_setzen(werte)

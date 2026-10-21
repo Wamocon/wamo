@@ -188,7 +188,8 @@ async def test_hinterlegen_verschluesselt_und_ohne_schluessel_im_log(db, tresor,
     assert (stand.art, stand.quelle, stand.hinterlegt, stand.ende) == ("claude", "profil", True, "Ab12")
     assert stand.geprueft == "2026-10-21T09:30+00:00"
     assert all(EIGENER not in str(a) for _sql, args in db.anweisungen for a in args)
-    assert any("endet auf …Ab12" in z for z in log) and all(_ohne_schluessel(z) for z in log)
+    assert any("hinterlegt" in z for z in log) and all(_ohne_schluessel(z) for z in log)
+    assert not any("Ab12" in z for z in log)  # auch kein Teil des Schlüssels im Log
 
 
 @pytest.mark.parametrize("schluessel,workspace,grund", [
@@ -213,6 +214,45 @@ async def test_hinterlegen_bei_festgelegtem_profil(db, tresor):
     db.zeile(ANDERE, nur_haus=True)
     with pytest.raises(mz.ZugangFehler, match="nur Hausmodelle"):
         await mz.hinterlegen(ANDERE, EIGENER, db=db, tresor=tresor, testen=_testen())
+
+
+async def test_hinterlegen_admin_legt_zwischendurch_nur_haus_fest(db, tresor, log):
+    """Race: Prüfung ok, dann setzt ein Admin nur_haus; die Datenbank lehnt ab (check_violation), die Person
+    liest den richtigen Grund und keinen Datenbankfehler."""
+    import asyncpg
+
+    async def lehnt_ab(sql, *args):
+        raise asyncpg.CheckViolationError("model_access_nur_haus_ohne_schluessel")
+
+    db.execute = lehnt_ab
+    with pytest.raises(mz.ZugangFehler, match="Admin hat dieses Profil auf nur Hausmodelle"):
+        await mz.hinterlegen(ANDERE, EIGENER, db=db, tresor=tresor, testen=_testen())
+    assert _ohne_schluessel("\n".join(log))
+
+
+async def test_gespeichert_wird_nur_das_chiffrat_nie_der_klartext(db, tresor):
+    await mz.hinterlegen(ANDERE, EIGENER, db=db, tresor=tresor, testen=_testen())
+    sql, args = db.anweisungen[-1]
+    zeile = db.zeilen[ANDERE]
+    assert isinstance(zeile["claude_schluessel"], bytes) and EIGENER.encode() not in zeile["claude_schluessel"]
+    assert all(EIGENER not in str(a) for a in args) and EIGENER not in sql
+    assert zeile["claude_schluessel_ende"] == EIGENER[-4:]
+    assert tresor.entschluesseln(ANDERE, zeile["claude_schluessel"]) == EIGENER
+
+
+async def test_zwei_profile_jedes_nur_mit_eigenem_schluessel(db, tresor, kern):
+    """Der Schlüssel des Kerns gehört dem zugeordneten Profil; ein zweites Profil mit eigenem Schlüssel bekommt
+    nie den des Kerns und umgekehrt, ein drittes ohne alles nur Hausmodelle."""
+    zweiter = "2b9d1c3e-7a4f-4d8b-9e6a-0c5f3a1b2d4e"
+    await mz.hinterlegen(ANDERE, EIGENER, db=db, tresor=tresor, testen=_testen())
+    niko = await mz.zugang_laden(NIKO, db=db, tresor=tresor)
+    andere = await mz.zugang_laden(ANDERE, db=db, tresor=tresor)
+    dritter = await mz.zugang_laden(zweiter, db=db, tresor=tresor)
+    assert (niko.art, niko.claude_schluessel) == ("claude", KERN_SCHLUESSEL)
+    assert (andere.art, andere.claude_schluessel) == ("claude", EIGENER)
+    assert (dritter.art, dritter.claude_schluessel) == ("haus", None)
+    assert len({id(niko.anthropic()), id(andere.anthropic())}) == 2  # je Sitzung ein eigener Client
+    assert niko.anthropic().api_key == KERN_SCHLUESSEL and andere.anthropic().api_key == EIGENER
 
 
 async def test_hinterlegen_ohne_hauptschluessel(monkeypatch, db):
@@ -288,6 +328,22 @@ async def test_nachricht_status_und_loeschen(db, tresor):
     assert (n["aktion"], n["hinterlegt"]) == ("loeschen", False)
 
 
+async def test_nachricht_unerwarteter_fehler_antwortet_trotzdem(db, tresor, log):
+    """Auch ein Programmfehler lässt die Oberfläche nicht bis zur Zeitgrenze warten, und der rohe Text der
+    Nachricht (kann ein Schlüssel sein) erscheint nie im Log oder in der Antwort."""
+    async def kaputt(schluessel, workspace):
+        raise RuntimeError(f"Absturz mit {schluessel}")
+
+    n = await _nachricht({"aktion": "hinterlegen", "schluessel": EIGENER}, db=db, tresor=tresor, testen=kaputt)
+    assert n["fehler"].startswith("Unerwarteter Fehler") and n["aktion"] == "hinterlegen"
+    assert log and all(_ohne_schluessel(z) for z in log)
+
+
+async def test_nachricht_unbekannte_aktion_wird_nicht_zurueckgegeben(db, tresor):
+    n = await _nachricht({"aktion": "\x1b[31mböse " + EIGENER}, db=db, tresor=tresor)
+    assert n["aktion"] == "status"
+
+
 async def test_nachricht_datenbank_weg(tresor):
     n = await _nachricht({"aktion": "loeschen"}, db=FakeDb(fehler=DatabaseUnavailable("weg")), tresor=tresor)
     assert n == {"type": "modellzugang", "aktion": "loeschen", "fehler": "Datenbank gerade nicht erreichbar"}
@@ -306,6 +362,7 @@ def _status(code):
     (anthropic.PermissionDeniedError("x", response=_status(403), body=None), "Workspace oder Berechtigung"),
     (anthropic.RateLimitError("x", response=_status(429), body=None), "HTTP 429"),
     (anthropic.APIConnectionError(request=httpx.Request("POST", "https://a.invalid")), "nicht erreichbar"),
+    (anthropic.APIError("x", request=httpx.Request("POST", "https://a.invalid"), body=None), "Anthropic-Fehler"),
 ])
 async def test_schluessel_testen(monkeypatch, fehler, grund):
     aufrufe = []
