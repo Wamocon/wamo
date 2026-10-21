@@ -1,0 +1,32 @@
+# WAMO: Abgleich der Rücktunnel-Plätze mit der Datenbank (Benutzer, Schlüssel, Ordner je Laptop).
+# Installiert durch infra/sokrates2/wamo-pc-tunnel-einrichten.sh nach /etc/systemd/system/. Der Zeitgeber
+# wamo-pc-abgleich.timer ruft ihn alle 10 s auf; die Ordner unter /run/wamo-pc stellt vorher tmpfiles sicher.
+# Läuft als root (legt Benutzer an, schreibt /etc/ssh/authorized_keys.d), deshalb kein ProtectSystem. Die Datenbank wird
+# nur gelesen (psql über docker exec, Sitzung mit default_transaction_read_only=on). Fällt sie aus, bleibt der Zustand unverändert.
+[Unit]
+Description=WAMO Rücktunnel: Plätze mit der Datenbank abgleichen
+After=docker.service systemd-tmpfiles-setup.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStartPre=+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/wamo-pc-wurzel.conf
+ExecStart=/opt/wamo-pc/bin/wamo-pc-abgleich
+TimeoutStartSec=60
+Nice=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+# kein RestrictSUIDSGID: systemd-tmpfiles legt die Geräteordner mit Modus 2750 (setgid) an; die Option sperrt das per seccomp
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=256M
+TasksMax=64

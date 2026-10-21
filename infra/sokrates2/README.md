@@ -263,6 +263,7 @@ Prüfen vom PC: `curl -s -m 5 http://192.168.178.136:55321/auth/v1/health` läuf
 | Kern auf Sokrates-2 abschalten | `ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-rueckweg.sh"` (Dienst aus, Rolle `wamo_core_s2` nologin); mit `--entfernen` auch Code, venv, `core.env`, Benutzer, Rolle |
 | HTTPS 55444 zurücknehmen | `ssh sokrates2 "bash ~/wamo-infra/wamo-core-caddy.sh --zurueck"` (Site-Datei weg, `caddy reload`; Port und Mount bleiben im Compose, ohne Site lauscht Caddy dort nicht) |
 | Tunnel abschalten | `ssh sokrates2 "sudo bash ~/wamo-infra/wamo-tunnel-rueckweg.sh"` (Schlüssel und Drop-in weg, `sshd -t`, Sitzungen beendet); mit `--entfernen` auch Benutzer `wamo-tunnel`. Auf dem PC: `scripts\wamo-tunnel-entfernen.ps1 [-Alles]` |
+| Rücktunnel je Gerät abschalten | `ssh sokrates2 "sudo bash ~/wamo-infra/wamo-pc-tunnel-rueckweg.sh"` (Zeitgeber aus, alle Schlüssel gesperrt, Sitzungen beendet, Drop-in weg, `sshd -t`); mit `--entfernen` auch Programme, Units und Konfiguration. Die Benutzer `wamo-t-NN` bleiben gesperrt bestehen (keine uid-Wiederverwendung). Der alte Tunnel `wamo-tunnel` bleibt unberührt |
 
 Die Sicherungen in `/var/backups/wamo-firewall` dienen zum Nachsehen. Nicht blind mit `iptables-restore` einspielen,
 weil Docker seine eigenen Regeln bei jedem Containerstart ändert.
@@ -382,6 +383,43 @@ python scripts/wamo_kern_sokrates2.py token --neustart
 ssh sokrates2 "NUR_SITZUNGSGRENZEN=1 bash ~/wamo-infra/supabase-wamo-einrichten.sh"
 python scripts/wamo_kern_sokrates2.py status                     # WAMO_PC_HOST_FREIGABE: gesetzt
 ```
+
+## 12. Rücktunnel je Gerät (Laptops, vorbereitet am 21.10.2026)
+
+Jeder Laptop meldet sich als eigener Unix-Benutzer `wamo-t-NN` (NN = `tunnel_slot` 01 bis 64 aus dem Geräteregister) und darf
+nur einen Socket in seinem Ordner `/run/wamo-pc/tNN` (2750, Besitzer `wamo-t-NN`, Gruppe `wamo-core`) anlegen. Grund:
+OpenSSH 9.6 prüft Socket-Pfade bei `-R` weder mit `PermitListen` noch mit `permitlisten`; getrennt wird deshalb über das
+Dateisystem. Der Kern (Gruppe `wamo-core`) öffnet nur den Ordner, den das Register für das Profil nennt, und prüft nach
+dem Verbinden per `SO_PEERCRED`, wer lauscht. Den alten Tunnel (Abschnitt 10, `wamo-tunnel`) lässt das alles unberührt.
+
+| Baustein | Ort auf Sokrates-2 | Zweck |
+| --- | --- | --- |
+| sshd-Drop-in | `/etc/ssh/sshd_config.d/wamo-pc.conf` | `Match User wamo-t-*`: nur Public Key, `AllowUsers wamo-t-*` (ergänzt ein globales `AllowUsers` aus anderen Drop-ins, ohne es zu ändern), nur Rückweiterleitung auf Unix-Sockets, kein TTY, `MaxSessions 1`, `ExposeAuthInfo`, `ForceCommand` |
+| Zwangsbefehl | `/opt/wamo-pc/bin/wamo-pc-token` | Login-Shell und `ForceCommand`: liest genau zwei Zeilen (Host-Token, Freigabe-Schlüssel), schreibt sie samt Fingerabdruck des benutzten Schlüssels nur in den eigenen Ordner (0640), löscht beim Trennen nur die eigenen Dateien. Neueste Verbindung gewinnt (Exit 75, der Laptop verbindet sofort neu) |
+| Abgleich | `wamo-pc-abgleich.timer` (alle 10 s), `/opt/wamo-pc/bin/wamo-pc-abgleich` | macht aus `<schema>.pc_abgleich_liste()` (nur aktive Geräte aktiver Profile) Benutzer, `/etc/ssh/authorized_keys.d/wamo-t-NN` und tmpfiles-Zeilen. Widerruf kommt zuerst und hängt an nichts anderem. Fällt die Datenbank aus, bleibt der Zustand (fail static); nach 5 Minuten ohne gültige Liste folgt `WAMO-GERAET ALARM` und Exit 1 |
+| Streuner | `wamo-pc-streuner.timer` (alle 5 Minuten) | meldet lauschende Sockets in `sshd: wamo-t-NN`-Prozessen außerhalb des eigenen Ordners (aus `/proc/net/unix`, Ort egal) und beendet die Sitzungen des Benutzers |
+| Konfiguration | `/etc/wamo/pc-abgleich.conf` | Schema (`WAMO_DB_SCHEMA`), Container, `from=`-Netze; Umstellen: `sudo sed -i 's/^WAMO_DB_SCHEMA=.*/WAMO_DB_SCHEMA=wamo_dev/' /etc/wamo/pc-abgleich.conf` |
+
+```bash
+scp infra/sokrates2/{wamo-pc-*,wamo_pc_*}* sokrates2:wamo-infra/           # oder Ablage wie in Abschnitt 0
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-pc-tunnel-einrichten.sh"        # prüft sshd -t, vergleicht sshd -T für wamocon und wamo-tunnel
+ssh sokrates2 "sudo touch /run/wamo-pc-sshd-bestaetigt"                    # binnen 5 Minuten über eine NEUE Verbindung (Totmannschalter)
+ssh sokrates2 "sudo python3 -I /opt/wamo-pc/bin/wamo-pc-rauchtest"         # Probe-Geräte pa und pb, alle Fälle grün
+ssh sokrates2 "journalctl -u wamo-pc-abgleich -u wamo-pc-streuner --since -1h | grep WAMO-GERAET"
+# Tests der Skripte selbst (als root, Datei test_pc_server.py aus voice-core/ danebenlegen):
+ssh sokrates2 "cd ~/wamo-infra && sudo PYTHONDONTWRITEBYTECODE=1 WAMO_INFRA=\$HOME/wamo-infra python3 -m unittest test_pc_server"
+```
+
+Der Rauchtest läuft nach jedem Update von `openssh-server` erneut: Die Pfadfreiheit von OpenSSH bei Rückweiterleitungen
+beruht auf einem offenen Punkt im Quelltext (`channels.c`: „XXX add ACLs for streamlocal“). Er prüft neben dem
+Positivfall (eigener Socket, Dateirechte, Fingerabdruck) auch die Neinfälle samt Ablehnungsgrund im sshd-Journal
+(fremder Ordner, Ersetzen fremder Sockets, `-L` auf den Kern-Socket, TCP-Port, Befehl, `-W`, sftp, TTY), das Sperren
+laufender Verbindungen und den Streuner. Der Abgleich läuft dort unter denselben Sandkasten-Einstellungen wie die Unit.
+
+Restrisiken: Wer auf Sokrates-2 `sudo` oder die docker-Gruppe hat, ist root und kommt an alle Tokens. Sockets
+außerhalb von `/run/wamo-pc` sind möglich (der Streuner meldet sie binnen 5 Minuten); gefährlich wären sie nur, wenn ein
+Dienst einen vorhersagbaren Pfad dort öffnet, deshalb prüft der Kern vor dem ersten Byte per `SO_PEERCRED`. Eine
+Obergrenze für Weiterleitungen je Gerät gibt es nicht (`MaxSessions` zählt nur Sitzungen).
 
 ---
 

@@ -1,0 +1,12 @@
+# WAMO: Streuner-Prüfung alle 5 Minuten (siehe wamo-pc-streuner.service).
+[Unit]
+Description=WAMO Rücktunnel: Streuner-Prüfung alle 5 Minuten
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=10s
+Persistent=no
+
+[Install]
+WantedBy=timers.target
