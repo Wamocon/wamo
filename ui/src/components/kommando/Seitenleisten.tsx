@@ -62,7 +62,8 @@ function useGemerktSitzung(): Memo[] {
     const merke = () => {
       const aktuell = wamo.get().memos;
       setListe((alt) => {
-        const neu = aktuell.filter((m) => !alt.some((a) => a.key === m.key));
+        // gleicher Text im gleichen Bereich steht nur einmal da
+        const neu = aktuell.filter((m) => !alt.some((a) => a.key === m.key || (a.bereich === m.bereich && a.text === m.text)));
         return neu.length ? [...neu, ...alt].slice(0, 8) : alt;
       });
     };
