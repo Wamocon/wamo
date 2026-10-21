@@ -1,0 +1,28 @@
+# WAMO: Streuner-Prüfung. OpenSSH prüft Socket-Pfade bei Rückweiterleitungen nicht; ein Tunnelbenutzer kann Sockets überall
+# anlegen, wo er schreiben darf (/tmp, /var/tmp, /dev/shm, /run/user). Dort verbindet sich niemand, aber es wird gemeldet
+# (Journal-Präfix WAMO-GERAET) und die Sitzungen des Benutzers werden beendet. Kein PrivateTmp: gesucht wird im echten /tmp.
+[Unit]
+Description=WAMO Rücktunnel: Sockets außerhalb von /run/wamo-pc suchen
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wamo-pc/bin/wamo-pc-abgleich --streuner
+TimeoutStartSec=120
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run
+MemoryMax=128M
+TasksMax=32

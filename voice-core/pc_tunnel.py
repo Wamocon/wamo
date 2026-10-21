@@ -1,5 +1,13 @@
 """PC-Host über den SSH-Rücktunnel (Betriebsart Büro: Kern auf Sokrates-2, Werkzeuge am PC).
 
+Zwei Betriebsweisen: Der alte Tunnel (ein Socket /run/wamo-tunnel/pc.sock, ein Token) und der Tunnel je Gerät
+(WAMO_PC_REGISTER=an, pc_geraet.py): Dort gehört jeder Laptop einem Unix-Benutzer wamo-t-NN mit eigenem Socket. Der Kern
+verbindet nur mit dem Socket, den das Register für das Profil nennt, und prüft NACH dem Verbinden per SO_PEERCRED, dass am
+anderen Ende genau dieser Benutzer lauscht, bevor ein Byte (und damit das Token) gesendet wird (GegenstellenPruefung).
+Jede Anfrage trägt X-WAMO-Geraet und X-WAMO-Profil (der Host prüft sie gegen geraet.json). Antworten der Laptops sind
+auf 4 MB begrenzt, Werkzeugaufrufe je Gerät auf 120 je Minute. Nach einem 401 liest der Kern das Token einmal neu (der
+Host erzeugt es bei jedem Start neu).
+
 Der PC öffnet zu Sokrates-2 eine Rückweiterleitung auf einen Unix-Socket (scripts/wamo-tunnel.ps1):
 
     ssh -N -R /run/wamo-tunnel/pc.sock:127.0.0.1:8765 wamo-tunnel@192.168.178.136
@@ -25,9 +33,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import socket as _socket
+import struct
 import time
-from collections.abc import Awaitable, Callable
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable
 
+import httpcore
 import httpx
 from loguru import logger
 
@@ -44,6 +56,9 @@ LANGE_WERKZEUGE = {"powershell_lesen": 75.0, "freigabe_entscheiden": 135.0}  # F
 PROBE_TIMEOUT_SECS = 5.0
 ERSTKONTAKT_TIMEOUT_SECS = 10.0  # tools() beim Sitzungsaufbau, wenn der Kern noch Modelle lädt
 MAX_ANTWORT_BYTES = 8 * 1024 * 1024  # Bildschirmfotos als JPEG-Base64 liegen bei etwa 1 MB
+MAX_ANTWORT_BYTES_GERAET = 4 * 1024 * 1024  # Laptops von Mitgliedern sind nicht vertrauenswürdig: kleinere Grenze
+AUFRUFE_JE_MINUTE_GERAET = 120
+OHNE_AUFRUFGRENZE = frozenset({"freigabe_entscheiden", "sperre_pruefen"})  # das Nein des Menschen zählt nie mit
 UEBERWACHUNG_SECS = 10.0
 UEBERWACHUNG_GETRENNT_SECS = 5.0
 NACHPRUEFEN_SECS = 1.0
@@ -64,6 +79,98 @@ class PcNichtErreichbar(RuntimeError):
     """Tunnel oder Host antworten nicht (Socket fehlt, abgelehnt, Zeitüberschreitung, falsches Token)."""
 
 
+class PcZuvieleAufrufe(PcNichtErreichbar):
+    """Mehr Werkzeugaufrufe an dieses Gerät als erlaubt (AUFRUFE_JE_MINUTE_GERAET)."""
+
+
+class GegenstelleFalsch(httpcore.ConnectError):
+    """Am Socket lauscht nicht der erwartete Benutzer (oder es ließ sich nicht feststellen)."""
+
+
+# ---------- Gegenstelle prüfen (Tunnel je Gerät) ----------
+def peer_uid(sock: object) -> int:
+    """uid des Prozesses am anderen Ende eines verbundenen Unix-Sockets (SO_PEERCRED, nur Linux). Wirft OSError."""
+    roh = sock.getsockopt(_socket.SOL_SOCKET, _socket.SO_PEERCRED, struct.calcsize("3i"))  # type: ignore[attr-defined]
+    return struct.unpack("3i", roh)[1]
+
+
+async def pruefe_gegenstelle(stream, erwartete_uid: int, lesen: Callable[[object], int] = peer_uid) -> None:
+    """Schließt den Stream und wirft ConnectError, wenn die Gegenstelle nicht genau erwartete_uid gehört oder sich
+    nicht feststellen lässt. Läuft direkt nach connect(), bevor irgendein Byte gesendet wird."""
+    try:
+        sock = stream.get_extra_info("socket")
+        uid = lesen(sock)
+    except Exception as e:  # noqa: BLE001 (nicht prüfbar heißt nicht vertrauenswürdig)
+        await stream.aclose()
+        raise GegenstelleFalsch("Gegenstelle nicht prüfbar") from e
+    if uid != erwartete_uid:
+        await stream.aclose()
+        raise GegenstelleFalsch("Gegenstelle gehört nicht dem erwarteten Benutzer")
+
+
+class GegenstellenPruefung(httpcore.AnyIOBackend):
+    """Netzwerk-Backend für httpcore: prüft bei JEDER neuen Verbindung zu einem Unix-Socket die Gegenstelle (auch die
+    Verbindungen im Pool, denn der Pool verbindet nur über dieses Backend; eine bestehende Verbindung behält ihre
+    gegenstelle, sie kann nicht den Besitzer wechseln)."""
+
+    def __init__(self, erwartete_uid: int, lesen: Callable[[object], int] = peer_uid):
+        super().__init__()
+        self._uid = erwartete_uid
+        self._lesen = lesen
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        stream = await super().connect_unix_socket(path, timeout, socket_options)
+        await pruefe_gegenstelle(stream, self._uid, self._lesen)
+        return stream
+
+
+class _Rumpf(httpx.AsyncByteStream):
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        try:
+            async for teil in self._stream:
+                yield teil
+        except httpcore.TimeoutException as e:  # wie httpx: Fehler beim Lesen des Rumpfs sind httpx-Fehler
+            raise httpx.ReadTimeout(str(e)) from e
+        except httpcore.ProtocolError as e:
+            raise httpx.RemoteProtocolError(str(e)) from e
+        except httpcore.NetworkError as e:
+            raise httpx.ReadError(str(e)) from e
+
+    async def aclose(self) -> None:
+        if hasattr(self._stream, "aclose"):
+            await self._stream.aclose()
+
+
+class UnixSocketTransport(httpx.AsyncBaseTransport):
+    """httpx-Transport über einen httpcore-Pool zu genau einem Unix-Socket mit prüfendem Backend."""
+
+    def __init__(self, socket_path: str, backend: httpcore.AsyncNetworkBackend):
+        self._pool = httpcore.AsyncConnectionPool(uds=socket_path, network_backend=backend, retries=0,
+                                                  max_connections=4, keepalive_expiry=30.0)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        angefragt = httpcore.Request(
+            method=request.method,
+            url=httpcore.URL(scheme=request.url.raw_scheme, host=request.url.raw_host, port=request.url.port,
+                             target=request.url.raw_path),
+            headers=request.headers.raw, content=request.stream, extensions=request.extensions,
+        )
+        try:
+            antwort = await self._pool.handle_async_request(angefragt)
+        except httpcore.TimeoutException as e:
+            raise httpx.TimeoutException(str(e), request=request) from e
+        except (httpcore.NetworkError, httpcore.ProtocolError, httpcore.UnsupportedProtocol) as e:
+            raise httpx.TransportError(str(e), request=request) from e
+        return httpx.Response(status_code=antwort.status, headers=antwort.headers, stream=_Rumpf(antwort.stream),
+                              extensions=antwort.extensions)
+
+    async def aclose(self) -> None:
+        await self._pool.aclose()
+
+
 class TunnelHost:
     """MCP-Client für den PC-Host über den Unix-Socket des Tunnels. Gleiche Schnittstelle wie Pipecats MCPClient,
     soweit bot.py und screen.py sie nutzen: tools(), close() und call_text() (über pc_host.call_host_tool)."""
@@ -76,18 +183,38 @@ class TunnelHost:
         tools_filter: list[str],
         transport: httpx.AsyncBaseTransport | None = None,
         url: str = HOST_URL,
+        erwartete_uid: int | None = None,
+        geraet: str | None = None,
+        profil: str | None = None,
+        nachladen: Callable[[], Awaitable[str]] | None = None,
+        max_antwort_bytes: int | None = None,
+        aufrufe_je_minute: int | None = None,
+        peer_lesen: Callable[[object], int] = peer_uid,
     ):
         if not token or not token.strip():
             raise ValueError("Host-Token fehlt")
         self._url = url
         self._filter = set(tools_filter)
+        self._token = token.strip()
+        self._geraet = geraet
+        self._nachladen = nachladen
+        self._max_antwort = max_antwort_bytes or MAX_ANTWORT_BYTES
+        self._aufrufe_je_minute = aufrufe_je_minute
+        self._aufrufe: deque[float] = deque()
+        # Accept-Encoding identity: ein Laptop darf keine komprimierte Antwort schicken, die sich beim Entpacken über die
+        # Grenze aufbläht (die Grenze gilt für die Rohbytes, siehe _lies_begrenzt)
+        kopf = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json",
+                "Accept-Encoding": "identity"}
+        if geraet:
+            kopf["X-WAMO-Geraet"] = geraet
+        if profil:
+            kopf["X-WAMO-Profil"] = profil
+        if transport is None and erwartete_uid is not None:
+            # Tunnel je Gerät: nach dem Verbinden prüfen, wer lauscht, bevor etwas gesendet wird
+            transport = UnixSocketTransport(socket_path, GegenstellenPruefung(erwartete_uid, peer_lesen))
         self._client = httpx.AsyncClient(
             transport=transport or httpx.AsyncHTTPTransport(uds=socket_path, retries=0),
-            headers={
-                "Authorization": f"Bearer {token.strip()}",
-                "Accept": "application/json, text/event-stream",
-                "Content-Type": "application/json",
-            },
+            headers=kopf,
             timeout=httpx.Timeout(CALL_TIMEOUT_SECS, connect=CONNECT_TIMEOUT_SECS),
             follow_redirects=False,
             trust_env=False,  # keine Proxys aus der Umgebung
@@ -105,24 +232,37 @@ class TunnelHost:
 
     async def _rpc(self, method: str, params: dict, timeout: float | None = None) -> dict:
         """Ein JSON-RPC-Aufruf. Gesamtzeit höchstens timeout (auch bei tröpfelnder Antwort), Antwort höchstens
-        MAX_ANTWORT_BYTES, beim Lesen gezählt (nie erst komplett puffern)."""
+        max_antwort_bytes, beim Lesen gezählt (nie erst komplett puffern). Nach einem 401 wird das Token einmal neu
+        gelesen (nachladen) und die Anfrage wiederholt."""
         self._next_id += 1
         rpc_id = self._next_id
         body = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
         gesamt = timeout if timeout is not None else CALL_TIMEOUT_SECS
-        try:
-            async with asyncio.timeout(gesamt):
-                async with self._client.stream(
-                    "POST", self._url, content=json.dumps(body), headers={"MCP-Protocol-Version": self._protokoll},
-                    timeout=httpx.Timeout(gesamt, connect=CONNECT_TIMEOUT_SECS),
-                ) as response:
-                    status = response.status_code
-                    typ = response.headers.get("content-type", "")
-                    if status == 200:
-                        daten = await _lies_begrenzt(response)
-        except (httpx.TransportError, OSError, TimeoutError) as e:  # Socket fehlt, abgelehnt, abgerissen, zu langsam
-            self._melde(False)
-            raise PcNichtErreichbar(f"Tunnel: {type(e).__name__}") from e
+        for versuch in (0, 1):
+            try:
+                async with asyncio.timeout(gesamt):
+                    async with self._client.stream(
+                        "POST", self._url, content=json.dumps(body),
+                        headers={"MCP-Protocol-Version": self._protokoll, "Authorization": f"Bearer {self._token}"},
+                        timeout=httpx.Timeout(gesamt, connect=CONNECT_TIMEOUT_SECS),
+                    ) as response:
+                        status = response.status_code
+                        typ = response.headers.get("content-type", "")
+                        if status == 200:
+                            daten = await _lies_begrenzt(response, self._max_antwort)
+            except (httpx.TransportError, OSError, TimeoutError) as e:  # Socket fehlt, abgelehnt, abgerissen, zu langsam
+                self._melde(False)
+                if isinstance(e.__cause__, GegenstelleFalsch):
+                    self._warne_gegenstelle(str(e.__cause__))
+                raise PcNichtErreichbar(f"Tunnel: {type(e).__name__}") from e
+            if status == 401 and versuch == 0 and self._nachladen is not None:
+                try:
+                    self._token = (await self._nachladen()).strip()
+                except Exception as e:  # noqa: BLE001 (Dateien weg oder ungültig: bleibt bei 401)
+                    logger.warning("WAMO-GERAET PC-Host: Token ließ sich nicht neu lesen ({})", e)
+                    break
+                continue
+            break
         if status in (401, 403):
             self._melde(False)
             logger.error("PC-Host lehnt die Anmeldung ab (HTTP {}): Host-Token prüfen", status)
@@ -172,6 +312,10 @@ class TunnelHost:
     async def _handler(self, params) -> None:
         try:
             text = await self.call_text(params.function_name, params.arguments or {})
+        except PcZuvieleAufrufe:
+            logger.warning("PC-Werkzeug {}: zu viele Aufrufe", params.function_name)
+            text = json.dumps({"status": "error", "summary": "Zu viele Aufrufe am PC in kurzer Zeit. Bitte kurz warten."},
+                              ensure_ascii=False)
         except PcNichtErreichbar as e:
             logger.warning("PC-Werkzeug {}: PC nicht erreichbar ({})", params.function_name, e)
             text = json.dumps(PC_NICHT_ERREICHBAR, ensure_ascii=False)
@@ -185,11 +329,31 @@ class TunnelHost:
 
     async def call_text(self, name: str, arguments: dict) -> str:
         """Ruft ein Werkzeug auf (auch bildschirmfoto und maus_klicken für screen.py) und liefert den Text."""
+        if name not in OHNE_AUFRUFGRENZE:
+            self._aufrufe_pruefen()
         result = await self._rpc("tools/call", {"name": name, "arguments": arguments},
                                  timeout=LANGE_WERKZEUGE.get(name, CALL_TIMEOUT_SECS))
         texts = [c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict) and c.get("type") == "text"]
         text = "".join(t for t in texts if isinstance(t, str))
         return text or json.dumps({"status": "error", "summary": "Leere Antwort vom PC."}, ensure_ascii=False)
+
+    def _warne_gegenstelle(self, grund: str) -> None:
+        """Falsche Gegenstelle ins Journal (Präfix WAMO-GERAET), höchstens einmal je Minute."""
+        jetzt = time.monotonic()
+        if jetzt - getattr(self, "_letzte_warnung", -1e9) >= 60.0:
+            self._letzte_warnung = jetzt
+            logger.warning("WAMO-GERAET {} (Gerät {}): keine Anfrage gesendet", grund, self._geraet or "-")
+
+    def _aufrufe_pruefen(self) -> None:
+        """Höchstens aufrufe_je_minute Werkzeugaufrufe je Minute (nur wenn gesetzt, Tunnel je Gerät)."""
+        if self._aufrufe_je_minute is None:
+            return
+        jetzt = time.monotonic()
+        while self._aufrufe and jetzt - self._aufrufe[0] > 60.0:
+            self._aufrufe.popleft()
+        if len(self._aufrufe) >= self._aufrufe_je_minute:
+            raise PcZuvieleAufrufe("Zu viele Aufrufe")
+        self._aufrufe.append(jetzt)
 
     # ---------- Überwachung ----------
     async def ueberwache(
@@ -263,16 +427,18 @@ class TunnelHost:
         await self._client.aclose()
 
 
-async def _lies_begrenzt(response: httpx.Response) -> bytes:
-    """Liest den Rumpf und bricht ab, sobald er MAX_ANTWORT_BYTES überschreitet (angekündigt oder gezählt)."""
+async def _lies_begrenzt(response: httpx.Response, grenze: int = MAX_ANTWORT_BYTES) -> bytes:
+    """Liest den Rumpf und bricht ab, sobald er grenze überschreitet (angekündigt oder gezählt)."""
+    if response.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity"):
+        raise RuntimeError("Antwort vom PC ist komprimiert")
     laenge = response.headers.get("content-length", "")
-    if laenge.isdigit() and int(laenge) > MAX_ANTWORT_BYTES:
+    if laenge.isdigit() and int(laenge) > grenze:
         raise RuntimeError("Antwort vom PC ist zu groß")
     teile: list[bytes] = []
     summe = 0
-    async for stueck in response.aiter_bytes():
+    async for stueck in response.aiter_bytes():  # Content-Encoding ist oben ausgeschlossen: kein Entpacken
         summe += len(stueck)
-        if summe > MAX_ANTWORT_BYTES:
+        if summe > grenze:
             raise RuntimeError("Antwort vom PC ist zu groß")
         teile.append(stueck)
     return b"".join(teile)
@@ -331,7 +497,8 @@ def _ergebnis(typ: str, daten: bytes, rpc_id: int) -> dict:
         raise RuntimeError("Antwort vom PC passt nicht zur Anfrage")
     if "error" in nachricht:
         fehler = nachricht.get("error") or {}
-        raise RuntimeError(f"PC-Host meldet Fehler {fehler.get('code') if isinstance(fehler, dict) else ''}")
+        code = fehler.get("code") if isinstance(fehler, dict) else None
+        raise RuntimeError(f"PC-Host meldet Fehler {code if isinstance(code, int) and not isinstance(code, bool) else 'unbekannt'}")
     result = nachricht.get("result")
     if not isinstance(result, dict):
         raise RuntimeError("Antwort vom PC ohne Ergebnis")

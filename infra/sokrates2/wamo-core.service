@@ -20,6 +20,10 @@ Environment=WAMO_BETRIEB=buero
 Environment=WAMO_CORE_UDS=/run/wamo-core/core.sock
 Environment=WAMO_PC_HOST=on
 Environment=WAMO_PC_HOST_SOCKET=/run/wamo-tunnel/pc.sock
+# Tunnel je Gerät (wamo-pc-tunnel-einrichten.sh, voice-core/pc_geraet.py): aus = alter Weg mit einem PC. Umstellen auf an
+# erst nach dem Rauchtest und der Abnahme (README Abschnitt 12), dann gilt der alte Socket nicht mehr.
+Environment=WAMO_PC_REGISTER=aus
+Environment=WAMO_PC_SOCKET_WURZEL=/run/wamo-pc
 Environment=SUPABASE_URL=https://192.168.178.136:55443
 Environment=WAMO_CA_FILE=/opt/wamo-core/wamo-ca.crt
 Environment=PIPECAT_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000

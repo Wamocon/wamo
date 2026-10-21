@@ -11,6 +11,9 @@ import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
 import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
+import { GeraetEinrichtung } from "@/components/GeraetEinrichtung";
+import { GeteiltBereich } from "@/components/Geteilt";
+import { Hinweise as AdminHinweise } from "@/components/Hinweise";
 import { Kopfzeile } from "@/components/Kopfzeile";
 import type { Sitzung } from "@/components/LoginGate";
 import { StatusDetails } from "@/components/Statusleiste";
@@ -336,6 +339,8 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           />
           <HinweisToast />
           <GemerktHinweis onVergessen={vergesseEintrag} />
+          <AdminHinweise />
+          <GeraetEinrichtung />
         </>
       }
       kernbereich={<Kernbereich />}
@@ -357,6 +362,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
               <PcSteuerungSchalter onSchalten={aktionen.pcSteuerung} />
               <BetriebsartWahl />
               <ModellZugang onAnfrage={aktionen.modellzugang} />
+              <GeteiltBereich />
             </>
           }
         />

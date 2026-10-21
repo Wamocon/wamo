@@ -1,0 +1,13 @@
+# WAMO: Abgleich der Rücktunnel-Plätze alle 10 s (ein frisch gebundenes Gerät braucht höchstens so lange bis zum Tunnel).
+# Nach dem Systemstart 20 s Wartezeit, damit Docker und die Datenbank oben sind; ohne Datenbank bleibt alles beim Alten.
+[Unit]
+Description=WAMO Rücktunnel: Abgleich alle 10 s
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=10s
+AccuracySec=1s
+Persistent=no
+
+[Install]
+WantedBy=timers.target
