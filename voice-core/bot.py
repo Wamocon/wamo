@@ -99,7 +99,7 @@ from memory import MemoryStore, Profile, ProfileDirectory, Recall, shared_databa
 from modellzugang import modellzugang_nachricht, zugang_laden
 from kern_dienst import runner_vorbereiten
 from cache_waerme import vorwaermen
-from latenz import LatenzObserver, latenz_log_an
+from latenz import LatenzObserver, api_messen, latenz_log_an
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from turn_wache import TurnWache
 from pc_host import (
@@ -591,11 +591,14 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         ]
     )
 
+    # Latenz je Zug ins Log (WAMO_LATENZ_LOG=1, latenz.py): Sprechende, Turn-Ende, STT, Modell, API, TTS, Ausgabe
+    latenz_beobachter = LatenzObserver() if latenz_log_an() else None
+    if latenz_beobachter:
+        api_messen(llm, latenz_beobachter)
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
-        # Latenz je Zug ins Log (WAMO_LATENZ_LOG=1, latenz.py): Sprechende, Turn-Ende, STT, Modell, TTS, Ausgabe
-        observers=[LatenzObserver()] if latenz_log_an() else [],
+        observers=[latenz_beobachter] if latenz_beobachter else [],
     )
     if dev:
         dev.attach(task)

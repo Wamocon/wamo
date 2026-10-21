@@ -6,6 +6,9 @@ Sprechende (VAD-Entscheidung minus stop_secs):
   turn_ende   UserStoppedSpeakingFrame: Turn-Ende erkannt (VAD, Smart-Turn, ggf. Satzende-Prüfung des Modells)
   stt_final   letztes endgültiges Transkript vor der Anfrage an das Modell
   llm_start   Anfrage an das Modell (LLMFullResponseStartFrame)
+  api_senden  Anfrage an die Claude-API abgeschickt (nur Claude, Aufbau des Kontexts davor)
+  api_antwort Antwortkopf der Claude-API da (Netz und Warteschlange beim Anbieter)
+  llm_marker  erstes Modell-Token: der Satzende-Marker, damit gilt der Redebeitrag als beendet
   llm_token   erstes Text-Token des Modells (ohne Satzende-Marker)
   tts_satz    erster Satzteil an die Sprachausgabe (TTSStartedFrame)
   tts_audio   erstes Audio der Sprachausgabe
@@ -31,6 +34,7 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     FunctionCallInProgressFrame,
     LLMFullResponseStartFrame,
+    LLMMarkerFrame,
     LLMTextFrame,
     MetricsFrame,
     TranscriptionFrame,
@@ -44,7 +48,8 @@ from pipecat.metrics.metrics import LLMUsageMetricsData
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.processors.frame_processor import FrameDirection
 
-ABSCHNITTE = ("turn_ende", "stt_final", "llm_start", "llm_token", "tts_satz", "tts_audio", "ausgabe")
+ABSCHNITTE = ("stt_final", "llm_start", "api_senden", "api_antwort", "llm_marker", "turn_ende", "llm_token", "tts_satz",
+              "tts_audio", "ausgabe")
 
 
 def latenz_log_an(wert: str | None = None) -> bool:
@@ -89,6 +94,13 @@ class LatenzObserver(BaseObserver):
         self._zug: Zug | None = None
         self._nummer = 0
 
+    def marke(self, name: str) -> None:
+        """Marke außerhalb des Frame-Flusses (Claude-API, siehe api_messen). Der Beobachter sieht Frames mit etwas
+        Abstand, die Anfrage kann also vor dem gestempelten llm_start rausgehen: es genügt ein laufender Zug."""
+        zug = self._zug
+        if zug is not None and "stt_final" in zug.marken and "ausgabe" not in zug.marken:
+            zug.markiere(name, self._uhr())
+
     async def on_push_frame(self, data: FramePushed):
         if data.direction != FrameDirection.DOWNSTREAM:
             return
@@ -114,6 +126,9 @@ class LatenzObserver(BaseObserver):
         elif isinstance(f, LLMFullResponseStartFrame):
             zug.antworten += 1
             zug.markiere("llm_start", jetzt)
+        elif isinstance(f, LLMMarkerFrame):
+            if "llm_start" in zug.marken:
+                zug.markiere("llm_marker", jetzt)
         elif isinstance(f, LLMTextFrame):
             if f.text.strip(" ●◐○"):
                 zug.markiere("llm_token", jetzt)
@@ -139,6 +154,29 @@ class LatenzObserver(BaseObserver):
             if "llm_start" in zug.marken and "ausgabe" not in zug.marken:
                 zug.markiere("ausgabe", jetzt)
                 self._melden(zug)
+
+
+def api_messen(llm: object, beobachter: LatenzObserver) -> bool:
+    """Stempelt Absenden und Antwortkopf jeder streamenden Anfrage des Claude-Dienstes (nur mit Latenz-Log).
+
+    Trennt den Aufbau im Kern (llm_start bis api_senden) von Netz und Modell (api_senden bis llm_marker). Der Aufruf
+    wird nur umhüllt, nichts an Anfrage oder Antwort verändert. False, wenn der Dienst keinen solchen Client hat."""
+    nachrichten = getattr(getattr(getattr(llm, "_client", None), "beta", None), "messages", None)
+    original = getattr(nachrichten, "create", None)
+    if original is None:
+        return False
+
+    async def create(*args, **kwargs):
+        stream = bool(kwargs.get("stream"))
+        if stream:
+            beobachter.marke("api_senden")
+        antwort = await original(*args, **kwargs)
+        if stream:
+            beobachter.marke("api_antwort")
+        return antwort
+
+    nachrichten.create = create
+    return True
 
 
 def zug_loggen(zug: Zug) -> None:

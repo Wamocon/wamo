@@ -7,6 +7,7 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     FunctionCallInProgressFrame,
     LLMFullResponseStartFrame,
+    LLMMarkerFrame,
     LLMTextFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
@@ -17,7 +18,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection
 
-from latenz import LatenzObserver, latenz_log_an
+from latenz import LatenzObserver, api_messen, latenz_log_an
 
 
 class Uhr:
@@ -109,6 +110,53 @@ class LatenzObserverTest(unittest.IsolatedAsyncioTestCase):
     async def test_upstream_wird_ignoriert(self):
         await self.obs.on_push_frame(push(VADUserStoppedSpeakingFrame(stop_secs=0.2), FrameDirection.UPSTREAM))
         self.assertIsNone(self.obs._zug)
+
+    async def test_marker_und_api_marken(self):
+        await self.schritt(0.0, VADUserStoppedSpeakingFrame(stop_secs=0.2, timestamp=self.uhr.t + 0.2))
+        self.uhr.t += 0.2
+        await self.schritt(0.1, TranscriptionFrame("Wie spät ist es?", "u", "t"))
+        self.uhr.t += 0.03
+        self.obs.marke("api_senden")
+        await self.schritt(0.0, LLMFullResponseStartFrame())
+        self.uhr.t += 0.25
+        self.obs.marke("api_antwort")
+        await self.schritt(0.4, LLMMarkerFrame("●"))
+        await self.schritt(0.0, UserStoppedSpeakingFrame())
+        await self.schritt(0.0, LLMTextFrame(" Es ist"))
+        await self.schritt(0.01, TTSStartedFrame())
+        await self.schritt(0.3, TTSAudioRawFrame(b"\x00\x00", 24000, 1))
+        await self.schritt(0.0, BotStartedSpeakingFrame())
+        ms = self.zuege[0].ms()
+        self.assertEqual([ms[k] for k in ("llm_start", "api_senden", "api_antwort", "llm_marker")], [330, 330, 580, 980])
+        self.assertEqual(ms["llm_token"], 980)
+        self.assertEqual(list(ms), ["stt_final", "llm_start", "api_senden", "api_antwort", "llm_marker", "turn_ende",
+                                    "llm_token", "tts_satz", "tts_audio", "ausgabe"])
+
+    async def test_api_marke_ohne_zug_wird_ignoriert(self):
+        self.obs.marke("api_senden")
+        self.assertIsNone(self.obs._zug)
+
+    async def test_api_messen_umhuellt_nur_streams(self):
+        aufrufe = []
+
+        class Nachrichten:
+            async def create(self, **kw):
+                aufrufe.append(kw)
+                return "antwort"
+
+        llm = SimpleNamespace(_client=SimpleNamespace(beta=SimpleNamespace(messages=Nachrichten())))
+        self.assertTrue(api_messen(llm, self.obs))
+        await self.schritt(0.0, VADUserStoppedSpeakingFrame(stop_secs=0.2, timestamp=self.uhr.t))
+        await self.schritt(0.1, TranscriptionFrame("Hallo", "u", "t"))
+        self.assertEqual(await llm._client.beta.messages.create(stream=False, model="m"), "antwort")
+        self.assertNotIn("api_senden", self.obs._zug.marken)
+        self.assertEqual(await llm._client.beta.messages.create(stream=True, model="m"), "antwort")
+        self.assertIn("api_senden", self.obs._zug.marken)
+        self.assertIn("api_antwort", self.obs._zug.marken)
+        self.assertEqual([a["stream"] for a in aufrufe], [False, True])
+
+    def test_api_messen_ohne_client(self):
+        self.assertFalse(api_messen(SimpleNamespace(), self.obs))
 
     def test_schalter(self):
         self.assertTrue(latenz_log_an("1"))
