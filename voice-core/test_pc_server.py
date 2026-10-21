@@ -192,6 +192,18 @@ class AbgleichLauf(unittest.TestCase):
         self.assertNotIn("t07", (self.ordner / "tmpfiles" / "wamo-pc.conf").read_text())
         self.assertIn("07", sys_.benutzer)  # Benutzer bleiben bestehen (keine uid-Wiederverwendung)
 
+    def test_schluesselwechsel_beendet_alte_sitzungen_und_leert_den_ordner(self):
+        sys_ = SystemAttrappe(self.ordner)
+        AB.abgleich(self._zeilen(4), sys_)
+        (sys_.wurzel / "t04").mkdir()
+        (sys_.wurzel / "t04" / "host-token").write_text("x")
+        (self.ordner / "keys" / "wamo-t-04").write_text("ssh-ed25519 anderer-schluessel\n")  # Platz gehörte einem anderen
+        sys_.beendet.clear()
+        AB.abgleich(self._zeilen(4), sys_)
+        self.assertEqual(sys_.beendet, ["wamo-t-04"])
+        self.assertTrue((sys_.wurzel / "t04").is_dir())
+        self.assertEqual(list((sys_.wurzel / "t04").iterdir()), [])  # Ordner bleibt, Inhalt weg
+
     def test_leere_liste_sperrt_alles(self):
         sys_ = SystemAttrappe(self.ordner)
         AB.abgleich(self._zeilen(1, 2), sys_)
@@ -251,9 +263,10 @@ class AbgleichLauf(unittest.TestCase):
         sys_ = SystemAttrappe(self.ordner)
         AB.abgleich(self._zeilen(2), sys_)
         pfad = self.ordner / "keys" / "wamo-t-02"
-        self.assertFalse(AB.System.schluessel_schreiben(sys_, AB.pruefe_zeile("2", "pc-g2", PUB, FP, False, fp_attrappe)))
+        platz = AB.pruefe_zeile("2", "pc-g2", PUB, FP, False, fp_attrappe)
+        self.assertEqual(AB.System.schluessel_schreiben(sys_, platz), "")
         pfad.write_text("alt\n")
-        self.assertTrue(AB.System.schluessel_schreiben(sys_, AB.pruefe_zeile("2", "pc-g2", PUB, FP, False, fp_attrappe)))
+        self.assertEqual(AB.System.schluessel_schreiben(sys_, platz), "geaendert")
         self.assertIn(PUB, pfad.read_text())
         self.assertEqual([p.name for p in (self.ordner / "keys").iterdir() if p.name.startswith(".")], [])
 

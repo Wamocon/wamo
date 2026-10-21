@@ -152,7 +152,13 @@ class System:
 
     # ---- Befehle ----
     def lauf(self, argv: list[str], eingabe: str | None = None, frist: int = 15) -> subprocess.CompletedProcess:
-        return subprocess.run(argv, input=eingabe, capture_output=True, text=True, timeout=frist, check=False)
+        """Befehl ohne Shell. Eine Zeitüberschreitung (hängendes ssh-keygen, useradd, ...) wird ein Fehlschlag mit Code 124,
+        kein Absturz: ein Hänger bei einem Platz darf weder die anderen Plätze noch einen Widerruf aufhalten."""
+        try:
+            return subprocess.run(argv, input=eingabe, capture_output=True, text=True, timeout=frist, check=False)
+        except subprocess.TimeoutExpired:
+            melde(f"Befehl {os.path.basename(argv[0])} nach {frist} s abgebrochen")
+            return subprocess.CompletedProcess(argv, 124, "", "")
 
     def fingerabdruck(self, pubkey: str) -> str:
         r = self.lauf(["/usr/bin/ssh-keygen", "-l", "-f", "/dev/stdin"], eingabe=pubkey + "\n")
@@ -226,18 +232,21 @@ class System:
     def schluesselzeile(self, platz: Platz) -> str:
         return f'restrict,port-forwarding,from="{self.von}" {platz.pubkey} wamo-geraet-{platz.kennung}\n'
 
-    def schluessel_schreiben(self, platz: Platz) -> bool:
-        """Schlüsseldatei atomar schreiben (root 0644). True, wenn sie sich geändert hat."""
+    def schluessel_schreiben(self, platz: Platz) -> str:
+        """Schlüsseldatei atomar schreiben (root 0644). Liefert "" (unverändert), "neu" oder "geaendert" (der Platz gehörte
+        vorher einem anderen Schlüssel, zum Beispiel nach einem Widerruf und einer Neuvergabe des Platzes)."""
         ziel = self.schluessel_dir / platz.benutzer
         soll = self.schluesselzeile(platz)
+        vorher = None
         try:
-            if ziel.read_text(encoding="utf-8") == soll:
-                return False
+            vorher = ziel.read_text(encoding="utf-8")
+            if vorher == soll:
+                return ""
         except OSError:
             pass
         self.schluessel_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
         atomar_schreiben(ziel, soll, 0o644)
-        return True
+        return "geaendert" if vorher is not None else "neu"
 
     def schluessel_sperren(self, benutzer: str) -> bool:
         """Schlüsseldatei nach gesperrt/ verschieben. True, wenn es eine gab."""
@@ -272,8 +281,8 @@ class System:
         if r.returncode != 0:
             raise RuntimeError("systemd-tmpfiles --create fehlgeschlagen")
 
-    def ordner_leeren(self, ordner: str) -> None:
-        """Inhalt und Ordner entfernen (keine Verzeichnisse darin, keine Links verfolgen)."""
+    def ordner_leeren(self, ordner: str, behalten: bool = False) -> None:
+        """Inhalt und Ordner entfernen (keine Verzeichnisse darin, keine Links verfolgen); mit behalten bleibt der Ordner."""
         pfad = self.wurzel / ordner
         try:
             eintraege = list(os.scandir(pfad))
@@ -287,6 +296,8 @@ class System:
                 os.unlink(e.path)
             except OSError:
                 pass
+        if behalten:
+            return
         try:
             os.rmdir(pfad)
         except OSError:
@@ -368,7 +379,13 @@ def abgleich(zeilen: list[tuple[str, str, str, str]], system: System) -> dict:
         return ergebnis
     for platz in bereit:
         try:
-            if system.schluessel_schreiben(platz):
+            geschrieben = system.schluessel_schreiben(platz)
+            if geschrieben == "geaendert":
+                # Der Platz hat einen anderen Schlüssel als zuvor: Sitzungen des alten Schlüssels und die Dateien seines
+                # Geräts (Token, Freigabe, Fingerabdruck) enden jetzt; der Kern lehnt sie ohnehin über den Fingerabdruck ab
+                system.prozesse_beenden(platz.benutzer)
+                system.ordner_leeren(platz.ordner, behalten=True)
+            if geschrieben:
                 melde(f"Schlüssel für Platz {platz.name} geschrieben ({platz.kennung}, {platz.fingerabdruck})")
             ergebnis["bereit"].append(platz.name)
         except OSError as e:

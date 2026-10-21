@@ -91,15 +91,22 @@ class Umgebung:
                     + sandbox_eigenschaften() + argv)
         return lauf(argv, timeout=90)
 
-    def ssh_argv(self, name: str, extra: list[str], benutzer: str | None = None, vorne: list[str] | None = None):
+    def ssh_argv(self, name: str, extra: list[str], benutzer: str | None = None, vorne: list[str] | None = None,
+                 nach: list[str] | None = None):
         return (["/usr/bin/ssh", "-F", "none", "-i", str(self.schluessel[name][0]), "-o", "IdentitiesOnly=yes",
                  "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={self.known}",
                  "-o", "ConnectTimeout=10", "-o", "LogLevel=ERROR", "-o", "ServerAliveInterval=5"]
-                + (vorne or []) + extra + [f"{benutzer or 'wamo-t-' + name}@{HOST}"])
+                + (vorne or []) + extra + [f"{benutzer or 'wamo-t-' + name}@{HOST}"] + (nach or []))
 
     def ssh(self, name: str, extra: list[str], stdin=None, dauer: float = 20, **kw) -> subprocess.CompletedProcess:
-        return lauf(self.ssh_argv(name, extra, **kw), stdin=subprocess.DEVNULL if stdin is None else None,
-                    input=stdin, timeout=dauer)
+        """ssh-Aufruf. Bytes als stdin werden für den Textmodus von lauf() als latin-1 gereicht (byteweise gleich). Eine
+        Zeitüberschreitung liefert returncode None (nicht "abgelehnt"): ein unerwartet erfolgreiches -N hängt ewig."""
+        eingabe = stdin.decode("latin-1") if isinstance(stdin, bytes) else stdin
+        try:
+            return lauf(self.ssh_argv(name, extra, **kw), stdin=subprocess.DEVNULL if stdin is None else None,
+                        input=eingabe, timeout=dauer)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess([], None, "", "Zeitüberschreitung")
 
     def halte(self, name: str, token=TOKEN_A, freigabe=FREIGABE_A, extra=None) -> subprocess.Popen:
         """Verbindung mit Rückweiterleitung und Geheimnissen; bleibt offen (stdin als Pipe)."""
@@ -141,6 +148,11 @@ def sandbox_eigenschaften() -> list[str]:
     return ausgabe
 
 
+def abgelehnt(r: subprocess.CompletedProcess) -> bool:
+    """Der Aufruf endete mit einem Fehlercode (nicht erfolgreich und nicht durch Zeitüberschreitung beendet)."""
+    return r.returncode not in (None, 0)
+
+
 def warte(bedingung, frist=15.0, schritt=0.2) -> bool:
     ende = time.monotonic() + frist
     while time.monotonic() < ende:
@@ -151,7 +163,7 @@ def warte(bedingung, frist=15.0, schritt=0.2) -> bool:
 
 
 def journal(seit: float) -> str:
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(seit))
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(seit - 1))  # eine Sekunde Reserve: --since kennt keine Bruchteile
     return lauf(["/usr/bin/journalctl", "-u", "ssh.service", "-u", "ssh.socket", "-t", "sshd", "--since", stamp,
                  "--no-pager", "-o", "cat"]).stdout
 
@@ -256,13 +268,13 @@ def haupt() -> int:
         ino_b = stat_von(datei("pc.sock", "pb")).st_ino
         t = time.time()
         r = env.ssh("pa", ["-o", "ExitOnForwardFailure=yes", "-N", "-R", "/run/wamo-pc/pb/pc.sock:127.0.0.1:9"])
-        pruefe(r.returncode != 0, "A ersetzt den Socket von B: abgelehnt (Exit %d)" % r.returncode)
+        pruefe(abgelehnt(r), f"A ersetzt den Socket von B: abgelehnt (Exit {r.returncode})")
         pruefe(log_enthaelt(t, r"(Permission denied|cannot listen to path|bind)"), "  Grund im sshd-Journal (Rechte im Ordner von B)")
         s = stat_von(datei("pc.sock", "pb"))
         pruefe(s is not None and s.st_ino == ino_b and s.st_uid == uid_b, "  Socket von B unverändert (gleicher Inode, Besitzer B)")
         t = time.time()
         r = env.ssh("pa", ["-o", "ExitOnForwardFailure=yes", "-N", "-R", "/run/wamo-pc/pb/neu.sock:127.0.0.1:9"])
-        pruefe(r.returncode != 0 and not datei("neu.sock", "pb").exists(), "A bindet einen neuen Socket in B's Ordner: abgelehnt")
+        pruefe(abgelehnt(r) and not datei("neu.sock", "pb").exists(), "A bindet einen neuen Socket in B's Ordner: abgelehnt")
         pruefe(log_enthaelt(t, r"(Permission denied|cannot listen to path|bind)"), "  Grund im sshd-Journal")
 
         t = time.time()
@@ -282,30 +294,34 @@ def haupt() -> int:
         except OSError:
             antwort = b""
         pruefe(antwort == b"", "A: -L auf /run/wamo-core/core.sock liefert nichts")
-        pruefe(log_enthaelt(t, r"(administratively prohibited|open failed|not permitted)") or p.poll() is not None
-               or b"prohibited" in (p.stderr.peek() if hasattr(p.stderr, "peek") else b""),
-               "  Grund (Weiterleitung nach lokal verboten) im sshd-Journal oder am Client")
         p.kill()
+        try:
+            _, fehlerausgabe = p.communicate(timeout=5)
+        except Exception:  # noqa: BLE001
+            fehlerausgabe = b""
+        pruefe(log_enthaelt(t, r"(administratively prohibited|open failed|not permitted)") or b"prohibited" in fehlerausgabe
+               or b"open failed" in fehlerausgabe, "  Grund (Weiterleitung nach lokal verboten) im sshd-Journal oder am Client")
 
         t = time.time()
         r = env.ssh("pa", ["-o", "ExitOnForwardFailure=yes", "-N", "-R", "127.0.0.1:47001:127.0.0.1:9"])
-        pruefe(r.returncode != 0, "A: -R auf einen TCP-Port (127.0.0.1:47001): abgelehnt")
+        pruefe(abgelehnt(r), "A: -R auf einen TCP-Port (127.0.0.1:47001): abgelehnt")
         pruefe(log_enthaelt(t, r"(administratively prohibited|not permitted|Permission denied|listen|refused)"),
                "  Grund im sshd-Journal (PermitListen none)")
         pruefe(lauf(["/usr/bin/ss", "-ltn", "sport = :47001"]).stdout.count("47001") == 0, "  Port 47001 lauscht nicht")
 
         marke = Path("/tmp/wamo-pc-rauchtest-befehl")
         marke.unlink(missing_ok=True)
-        r = env.ssh("pa", [f"touch {marke}; id"])
-        pruefe(not marke.exists() and "uid=" not in r.stdout, "A: Befehl/Shell wird nicht ausgeführt (nur der Zwangsbefehl)")
+        r = env.ssh("pa", [], nach=[f"touch {marke}; id"])  # der Befehl steht HINTER dem Ziel
+        pruefe(not marke.exists() and "uid=" not in r.stdout and r.returncode == 2,
+               f"A: Befehl wird nicht ausgeführt, es läuft nur der Zwangsbefehl (dessen Exit 2 ohne Eingabe, hier {r.returncode})")
         r = env.ssh("pa", ["-W", "127.0.0.1:22"], dauer=15)
-        pruefe(r.returncode != 0 and "SSH-2.0" not in r.stdout, "A: -W 127.0.0.1:22: abgelehnt")
+        pruefe(abgelehnt(r) and "SSH-2.0" not in r.stdout, "A: -W 127.0.0.1:22: abgelehnt")
         sb = env.tmp / "sftp.txt"
         sb.write_text("ls /\n")
         r = lauf(["/usr/bin/sftp", "-F", "none", "-i", str(env.schluessel["pa"][0]), "-o", "IdentitiesOnly=yes",
                   "-o", "BatchMode=yes", "-o", f"UserKnownHostsFile={env.known}", "-o", "LogLevel=ERROR",
                   "-b", str(sb), f"wamo-t-pa@{HOST}"], stdin=subprocess.DEVNULL)
-        pruefe(r.returncode != 0 and "etc" not in r.stdout, "A: sftp: abgelehnt (Zwangsbefehl statt Subsystem)")
+        pruefe(abgelehnt(r) and "etc" not in r.stdout, "A: sftp: abgelehnt (Zwangsbefehl statt Subsystem)")
         t = time.time()
         r = env.ssh("pa", ["-tt"], stdin=b"")
         pruefe("PTY allocation request failed" in r.stderr or "PTY" in r.stderr, "A: TTY wird nicht vergeben (PermitTTY no)")
