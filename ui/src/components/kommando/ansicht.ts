@@ -24,7 +24,7 @@ export function useEffektiveDarstellung(): { gewaehlt: Darstellung; effektiv: Da
 // ---------- Beginn des Gesprächs (für Sitzungsfortschritt und Zähler) ----------
 let start: number | null = null;
 const hoerer = new Set<() => void>();
-let abo: (() => void) | null = null;
+let abo: (() => void) | null = null; // hängt dauerhaft am Store, damit der Beginn auch ohne Hörer stimmt
 
 function pruefe() {
   const s = wamo.get();
@@ -41,10 +41,6 @@ function abonnieren(h: () => void) {
   pruefe();
   return () => {
     hoerer.delete(h);
-    if (!hoerer.size && abo) {
-      abo();
-      abo = null;
-    }
   };
 }
 
@@ -57,4 +53,18 @@ export function useGespraechsStart(): number | null {
 export function gespraechsStartSetzen(ms: number | null) {
   start = ms;
   hoerer.forEach((h) => h());
+}
+
+// ---------- Breite: drei Spalten (ab 1100 px) oder Reiterleiste ----------
+const BREIT = "(min-width: 1100px)";
+
+function abonnierenBreit(h: () => void) {
+  const m = window.matchMedia(BREIT);
+  m.addEventListener("change", h);
+  return () => m.removeEventListener("change", h);
+}
+
+/** Gilt gerade das Drei-Spalten-Layout? (Dieselbe Grenze wie in kommando.css.) */
+export function useBreit(): boolean {
+  return useSyncExternalStore(abonnierenBreit, () => window.matchMedia(BREIT).matches, () => true);
 }

@@ -10,6 +10,7 @@ import { WamoAnsicht } from "@/components/WamoAnsicht";
 import type { WamoAktionen } from "@/lib/useWamo";
 import {
   HISTORY,
+  entferneMemo,
   historyRef,
   initialState,
   levelsRef,
@@ -79,7 +80,7 @@ const KEINE_AKTIONEN: WamoAktionen & { textSenden?: (text: string) => boolean } 
     return true;
   },
   toggleMic: () => wamo.set((s) => ({ ...s, micOn: !s.micOn })),
-  vergessen: () => {},
+  vergessen: (m) => entferneMemo(m.key),
   entscheideAuftrag: (a) => {
     wamo.set((s) => ({ ...s, auftraege: s.auftraege.filter((x) => x.job !== a.job) }));
     return true;

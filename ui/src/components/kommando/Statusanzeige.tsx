@@ -22,7 +22,7 @@ export const Statusanzeige = memo(function Statusanzeige() {
   const modus = useSelect(wamo, (s) => s.betrieb?.modus ?? null);
   const gewaehlt = useBetriebsart();
   const start = useGespraechsStart();
-  const takt = useJetzt(10_000);
+  const takt = useJetzt(5_000);
 
   const art: Betriebsart = modus ? (modus === "lokal" ? "unterwegs" : "buero") : gewaehlt;
   const prozent = sitzungsProzent(start, takt.datum, MAX_MIN);
@@ -60,7 +60,7 @@ export const Statusanzeige = memo(function Statusanzeige() {
         {zustandText}
       </span>
       <span className="kz-kernort">Kern {KERN[art].ort}</span>
-      <time className="kz-uhr num" dateTime={new Date(takt.datum).toISOString()}>
+      <time className="kz-uhr num" dateTime={uhrzeit(new Date(takt.datum))}>
         {uhrzeit(new Date(takt.datum))}
       </time>
     </div>

@@ -84,7 +84,13 @@ const Schnellaktionen = memo(function Schnellaktionen({
   const online = useSelect(wamo, istOnline);
   const { gewaehlt } = useEffektiveDarstellung();
   const { zeigeCanvas } = useRahmen();
-  const umschalten = (d: Darstellung) => darstellungSetzen(gewaehlt === d ? "normal" : d);
+  const umschalten = (d: Darstellung) => {
+    darstellungSetzen(gewaehlt === d ? "normal" : d);
+    // Fokus blendet diese Chips aus: der Tastaturfokus geht auf den aktiven Schalter der Darstellungswahl
+    if (d === "fokus") {
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('.kz-wahl [aria-checked="true"]')?.focus());
+    }
+  };
 
   return (
     <ul className="kz-chips" aria-label="Schnellaktionen">

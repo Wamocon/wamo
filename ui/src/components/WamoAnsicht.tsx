@@ -6,6 +6,7 @@ import { CanvasBereich } from "@/components/Canvas";
 import { Auftraege, Freigaben } from "@/components/Freigaben";
 import { GemerktHinweis } from "@/components/GemerktHinweis";
 import { Bedienung, type TextSenden } from "@/components/kommando/Bedienung";
+import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
 import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
@@ -24,7 +25,7 @@ import {
 import { pcAutoSetzen, usePcAuto } from "@/lib/einstellungen";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
-import { istOnline, wamo, zeigeToast } from "@/lib/wamo";
+import { istOnline, wamo, zeigeToast, type Memo } from "@/lib/wamo";
 
 /** Fehler in Tinte mit rotem Symbol und sicherer nächster Aktion. */
 const FehlerAnzeige = memo(function FehlerAnzeige({
@@ -256,7 +257,15 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
   const [verlaufOffen, setVerlaufOffen] = useState(false);
   const toggleVerlauf = useCallback(() => setVerlaufOffen((o) => !o), []);
   const schliesseVerlauf = useCallback(() => setVerlaufOffen(false), []);
-  const { disconnect, connect } = aktionen;
+  const { disconnect, connect, vergessen } = aktionen;
+  // "Rückgängig" nimmt den Eintrag auch aus der Gedächtnis-Karte, sobald er aus dem Store verschwunden ist
+  const vergesseEintrag = useCallback(
+    (m: Memo) => {
+      vergessen(m);
+      gemerktZurueckgenommen(m);
+    },
+    [vergessen],
+  );
   const { signOut } = sitzung;
   const abmelden = useCallback(() => {
     void disconnect();
@@ -271,7 +280,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
         <>
           <FehlerAnzeige onRetry={retry} onAbmelden={abmelden} onSchliessen={aktionen.schliesseFehler} />
           <HinweisToast />
-          <GemerktHinweis onVergessen={aktionen.vergessen} />
+          <GemerktHinweis onVergessen={vergesseEintrag} />
         </>
       }
       kernbereich={<Kernbereich />}

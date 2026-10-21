@@ -51,11 +51,10 @@ export const DarstellungsWahl = memo(function DarstellungsWahl() {
           </button>
         ))}
       </div>
-      {pausiert && (
-        <p className="kz-wahl-hinweis" role="status">
-          {DARSTELLUNG_TEXT[gewaehlt]} pausiert, solange etwas auf deine Entscheidung wartet.
-        </p>
-      )}
+      {/* Live-Region bleibt immer im DOM, damit die Ansage zuverlässig kommt */}
+      <p className="kz-wahl-hinweis" role="status">
+        {pausiert ? `${DARSTELLUNG_TEXT[gewaehlt]} pausiert, solange etwas auf deine Entscheidung wartet.` : ""}
+      </p>
     </div>
   );
 });

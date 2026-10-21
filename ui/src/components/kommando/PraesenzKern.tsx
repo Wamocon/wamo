@@ -37,6 +37,13 @@ export const PraesenzKern = memo(function PraesenzKern({
   dichte?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dichteRef = useRef(dichte);
+  const weckeRef = useRef<(() => void) | null>(null);
+  // Die Dichte wechselt zwischen Normal und Zentrale; die Schleife läuft dabei weiter (kein Neustart, kein graues Aufblitzen)
+  useEffect(() => {
+    dichteRef.current = dichte;
+    weckeRef.current?.(); // auch das Standbild (getrennt) neu zeichnen
+  }, [dichte]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -104,7 +111,7 @@ export const PraesenzKern = memo(function PraesenzKern({
           freigabe: sm.freigabe,
           freigabePuls: bewegt ? 0.5 + 0.5 * Math.sin(jetzt / 320) : 1,
           fremd: (lv.speaker ?? 0) > 0,
-          dichte,
+          dichte: dichteRef.current,
         },
         farben,
       );
@@ -126,7 +133,7 @@ export const PraesenzKern = memo(function PraesenzKern({
       let fps = FPS[st.presence];
       if (st.acting || st.approval) fps = Math.max(fps, 30);
       if (jetzt - (levels.current.cutAt ?? -1e9) < 300) fps = 60;
-      if (reduced.matches) fps = Math.min(fps || 12, 12);
+      if (reduced.matches && fps > 0) fps = Math.min(fps, 12);
       if (fps === 0) {
         if (ruhig()) {
           // getrennt: ein Standbild, danach keine Bilder mehr
@@ -151,6 +158,7 @@ export const PraesenzKern = memo(function PraesenzKern({
       if (!raf && !document.hidden) raf = requestAnimationFrame(bild);
     }
 
+    weckeRef.current = wecke;
     const leseStore = () => {
       const s = wamo.get();
       st.presence = s.presence;
@@ -175,21 +183,35 @@ export const PraesenzKern = memo(function PraesenzKern({
       if (ruhend && (levels.current.user > 0.02 || levels.current.bot > 0.02)) wecke();
     }, 250);
 
+    // Der ResizeObserver meldet die Größe schon beim Start. Ein anderer Monitor ändert nur die Pixeldichte:
+    // dafür eine Medienabfrage auf den aktuellen Wert, die sich nach jedem Wechsel neu anmeldet.
     const groessenBeobachter = new ResizeObserver(resize);
     groessenBeobachter.observe(canvas);
-    resize();
+    let dpiAbfrage: MediaQueryList | null = null;
+    const beiDpi = () => {
+      resize();
+      beobachteDpi();
+    };
+    function beobachteDpi() {
+      dpiAbfrage?.removeEventListener("change", beiDpi);
+      dpiAbfrage = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      dpiAbfrage.addEventListener("change", beiDpi);
+    }
+    beobachteDpi();
 
     return () => {
+      weckeRef.current = null;
       cancelAnimationFrame(raf);
       clearInterval(pegelWecker);
       abmelden();
       groessenBeobachter.disconnect();
+      dpiAbfrage?.removeEventListener("change", beiDpi);
       beobachter.disconnect();
       dark.removeEventListener("change", beiTheme);
       reduced.removeEventListener("change", wecke);
       document.removeEventListener("visibilitychange", wecke);
     };
-  }, [levels, dichte]);
+  }, [levels]);
 
   return <canvas ref={canvasRef} className="kz-kern" aria-hidden="true" />;
 });

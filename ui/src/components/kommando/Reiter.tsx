@@ -9,6 +9,8 @@ export type ReiterDef<T extends string> = {
   zahl?: number;
   /** Wort für die Zahl im Screenreader, z. B. "offen" */
   zahlWort?: string;
+  /** true: der Reiter schaltet eine Ansicht um, die keine eigene Tafel ist (kein aria-controls) */
+  ohneTafel?: boolean;
 };
 
 /**
@@ -56,7 +58,7 @@ export function Reiterleiste<T extends string>({
           role="tab"
           id={`${praefix}-${r.id}`}
           aria-selected={r.id === aktiv}
-          aria-controls={`kz-p-${r.id}`}
+          aria-controls={r.ohneTafel ? undefined : `kz-p-${r.id}`}
           tabIndex={r.id === aktiv ? 0 : -1}
           className="kz-reiter"
           onClick={() => onWahl(r.id)}

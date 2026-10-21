@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { useSelect } from "@/lib/store";
 import { wamo } from "@/lib/wamo";
-import { offeneEntscheidungen, useEffektiveDarstellung } from "./ansicht";
+import { offeneEntscheidungen, useBreit, useEffektiveDarstellung } from "./ansicht";
 import { DarstellungsWahl } from "./DarstellungsWahl";
 import { RahmenKontext } from "./rahmenKontext";
 import { Reiterleiste, type ReiterDef } from "./Reiter";
@@ -35,34 +35,46 @@ const RECHTS: readonly ReiterDef<Rechts>[] = [
   { id: "erledigt", label: "Erledigt" },
 ];
 
+/** Rolle der Tafeln: tabpanel nur mit sichtbarem Reiter (labelledby), sonst ein benannter Bereich. */
+const tafel = (name: string, reiter: string | null) =>
+  reiter ? ({ role: "tabpanel", "aria-labelledby": reiter } as const) : ({ role: "region", "aria-label": name } as const);
+
 /**
  * Rahmen der Kommandozentrale. Ab 1100 px drei Spalten: links Hinweise, in der Mitte der Kern mit
  * Bedienung und Canvas, rechts Reiter (Aufträge, Vorgänge, Erledigt). Darunter eine Spalte mit
  * Reiterleiste (Kern, Aufträge, Vorgänge, Canvas, Hinweise). Welche Tafel sichtbar ist, entscheidet
  * das CSS über data-rechts und data-mobil; jede Tafel steht genau einmal im DOM.
  *
- * Neue Freigaben oder Aufträge schalten beide Reiterleisten sofort auf "Aufträge" (noch im selben
- * Render, damit die Karte sichtbar entsteht und ihre Fokusführung greift). Nacht erzwingt dunkel
- * über data-theme auf html (das Theme-Gerüst in globals.css kennt es bereits) und stellt es wieder her.
+ * Neue Freigaben oder Aufträge (eine Kennung, die vorher fehlte) schalten beide Reiterleisten sofort auf
+ * "Aufträge", noch im selben Render, damit die Karte sichtbar entsteht und ihre Fokusführung greift.
+ * Rollen: Tafeln sind nur dort role="tabpanel", wo die zugehörige Reiterleiste sichtbar ist (useBreit);
+ * sonst Bereiche (region) mit Namen. Nacht erzwingt dunkel über data-theme auf html (das Theme-Gerüst
+ * in globals.css kennt es bereits) und stellt den vorigen Wert wieder her.
  */
 export function KommandoRahmen(inhalt: RahmenInhalt) {
   const { gewaehlt, effektiv } = useEffektiveDarstellung();
+  const breit = useBreit();
   const offen = useSelect(wamo, offeneEntscheidungen);
+  // Kennungen aller offenen Karten: auch eine Karte, die eine andere ersetzt, zählt als neu
+  const kennungen = useSelect(wamo, (s) =>
+    [...s.approvals.map((a) => `${a.job}:${a.id}`), ...s.auftraege.map((a) => `auftrag:${a.job}`)].join("|"),
+  );
   const [rechts, setRechts] = useState<Rechts>("auftraege");
-  const [mobil, setMobil] = useState<Mobil>("kern");
-  const [gesehen, setGesehen] = useState(offen);
+  const [mobil, setMobil] = useState<Mobil>(() => (offen > 0 ? "auftraege" : "kern"));
+  const [gesehen, setGesehen] = useState(kennungen);
 
   // Zustand beim Rendern anpassen (React-Muster): kein Zwischenbild mit versteckter Karte
-  if (offen !== gesehen) {
-    setGesehen(offen);
-    if (offen > gesehen) {
+  if (kennungen !== gesehen) {
+    setGesehen(kennungen);
+    const alt = new Set(gesehen.split("|"));
+    if (kennungen.split("|").some((k) => k !== "" && !alt.has(k))) {
       setRechts("auftraege");
       setMobil("auftraege");
     }
   }
   const mobilEff: Mobil = effektiv === "normal" || effektiv === "nacht" ? mobil : "kern";
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (effektiv !== "nacht") return;
     const el = document.documentElement;
     const vorher = el.getAttribute("data-theme");
@@ -75,10 +87,12 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
 
   const zeigeCanvas = useCallback(() => {
     setMobil("canvas");
-    // erst nach dem Umschalten scrollen; die Mitte ist der scrollende Bereich
+    // erst nach dem Umschalten scrollen und den Fokus setzen; die Mitte ist der scrollende Bereich
     requestAnimationFrame(() => {
       const kurz = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      document.getElementById("kz-p-canvas")?.scrollIntoView({ behavior: kurz ? "auto" : "smooth", block: "start" });
+      const canvas = document.getElementById("kz-p-canvas");
+      canvas?.focus({ preventScroll: true });
+      canvas?.scrollIntoView({ behavior: kurz ? "auto" : "smooth", block: "start" });
     });
   }, []);
   const angebot = useMemo(() => ({ zeigeCanvas }), [zeigeCanvas]);
@@ -86,7 +100,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
   const rechtsReiter = useMemo(() => RECHTS.map((r) => (r.id === "auftraege" ? { ...r, zahl: offen } : r)), [offen]);
   const mobilReiter = useMemo<readonly ReiterDef<Mobil>[]>(
     () => [
-      { id: "kern", label: "Kern" },
+      { id: "kern", label: "Kern", ohneTafel: true },
       { id: "auftraege", label: "Aufträge", zahl: offen, zahlWort: "offen" },
       { id: "vorgaenge", label: "Vorgänge" },
       { id: "canvas", label: "Canvas" },
@@ -118,7 +132,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
             />
           )}
 
-          <div id="kz-p-hinweise" className="kz-links" data-p="hinweise" role="tabpanel" aria-label="Hinweise">
+          <div id="kz-p-hinweise" className="kz-links" data-p="hinweise" {...tafel("Hinweise", breit ? null : "kz-tab-m-hinweise")}>
             {inhalt.hinweise}
           </div>
 
@@ -140,7 +154,13 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
             {inhalt.kernbereich}
             <div className="kz-aktionen">{inhalt.aktionen}</div>
             {inhalt.bedienung}
-            <section id="kz-p-canvas" className="kz-canvas" data-p="canvas" role="tabpanel" aria-label="Canvas">
+            <section
+              id="kz-p-canvas"
+              className="kz-canvas"
+              data-p="canvas"
+              tabIndex={-1}
+              {...tafel("Canvas", breit ? null : "kz-tab-m-canvas")}
+            >
               {inhalt.canvas}
             </section>
           </div>
@@ -154,13 +174,29 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
               praefix="kz-tab-d"
               klasse="kz-reiterleiste kz-reiter-seite"
             />
-            <div id="kz-p-auftraege" className="kz-tafel" data-p="auftraege" role="tabpanel" aria-label="Aufträge">
+            <div
+              id="kz-p-auftraege"
+              className="kz-tafel"
+              data-p="auftraege"
+              {...tafel("Aufträge", breit ? "kz-tab-d-auftraege" : "kz-tab-m-auftraege")}
+            >
+              <h2 className="sr-only">Aufträge und Freigaben</h2>
               {inhalt.auftraege}
             </div>
-            <div id="kz-p-vorgaenge" className="kz-tafel" data-p="vorgaenge" role="tabpanel" aria-label="Vorgänge">
+            <div
+              id="kz-p-vorgaenge"
+              className="kz-tafel"
+              data-p="vorgaenge"
+              {...tafel("Vorgänge", breit ? "kz-tab-d-vorgaenge" : "kz-tab-m-vorgaenge")}
+            >
               {inhalt.vorgaenge}
             </div>
-            <div id="kz-p-erledigt" className="kz-tafel" data-p="erledigt" role="tabpanel" aria-label="Erledigt">
+            <div
+              id="kz-p-erledigt"
+              className="kz-tafel"
+              data-p="erledigt"
+              {...tafel("Erledigt", breit ? "kz-tab-d-erledigt" : null)}
+            >
               {inhalt.erledigt}
             </div>
           </div>

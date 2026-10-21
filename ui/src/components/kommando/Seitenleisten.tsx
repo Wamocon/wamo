@@ -1,10 +1,11 @@
 "use client";
 
-import { memo, useEffect, useState, type ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import { LABEL } from "@/components/ActivityFeed";
 import { useSelect } from "@/lib/store";
 import { wamo, type Memo } from "@/lib/wamo";
 import { offeneEntscheidungen } from "./ansicht";
+import { useGemerktSitzung } from "./gemerktSitzung";
 
 /** Freundlicher Hinweis, wenn ein Bereich noch leer ist. */
 function Leer({ children }: { children: ReactNode }) {
@@ -45,33 +46,19 @@ export const ErledigtListe = memo(function ErledigtListe() {
               {LABEL[a.name] ?? a.name}
               {a.detail && <span className="tl-detail"> {a.detail}</span>}
             </span>
-            <time className="num">
-              {a.startedAt !== undefined && a.endedAt !== undefined ? sekunden(a.endedAt - a.startedAt) : ""}
-            </time>
+            {a.startedAt !== undefined && a.endedAt !== undefined ? (
+              <time className="num" dateTime={`PT${((a.endedAt - a.startedAt) / 1000).toFixed(1)}S`}>
+                {sekunden(a.endedAt - a.startedAt)}
+              </time>
+            ) : (
+              <span />
+            )}
           </li>
         ))}
       </ol>
     </section>
   );
 });
-
-/** Merkt sich die Einträge, die in dieser Sitzung als "Gemerkt" erschienen sind (neueste zuerst, höchstens 8). */
-function useGemerktSitzung(): Memo[] {
-  const [liste, setListe] = useState<Memo[]>([]);
-  useEffect(() => {
-    const merke = () => {
-      const aktuell = wamo.get().memos;
-      setListe((alt) => {
-        // gleicher Text im gleichen Bereich steht nur einmal da
-        const neu = aktuell.filter((m) => !alt.some((a) => a.key === m.key || (a.bereich === m.bereich && a.text === m.text)));
-        return neu.length ? [...neu, ...alt].slice(0, 8) : alt;
-      });
-    };
-    merke();
-    return wamo.subscribe(merke);
-  }, []);
-  return liste;
-}
 
 function Eintrag({ m }: { m: Memo }) {
   return (
