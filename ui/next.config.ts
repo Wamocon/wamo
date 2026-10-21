@@ -19,12 +19,16 @@ function sichereHerkunft(url: string | undefined): string {
   return o.startsWith("https://") ? o : "";
 }
 
+// Build für Sokrates-2 (infra/sokrates2/wamo-ui): kein lokaler Kern, nur Betriebsart Büro (lib/geraet.ts)
+const nurBuero = (process.env.NEXT_PUBLIC_WAMO_NUR_BUERO ?? "").trim().toLowerCase() === "ja";
+
 // Erlaubte Gegenstellen: eigene Seite, Anmeldung (Supabase) und beide Voice-Cores (Start, Offer, ICE):
 // Unterwegs auf diesem PC, Büro auf Sokrates-2. Die Betriebsart wählt zur Laufzeit nur zwischen diesen beiden.
+// Im Build für Sokrates-2 fehlt der lokale Kern: Ein Browser dort darf nur Anmeldung und Büro-Kern erreichen.
 const connect = [
   "'self'",
   herkunft(process.env.NEXT_PUBLIC_SUPABASE_URL),
-  herkunft(process.env.NEXT_PUBLIC_VOICE_CORE_URL ?? "http://localhost:7860"),
+  nurBuero ? "" : herkunft(process.env.NEXT_PUBLIC_VOICE_CORE_URL ?? "http://localhost:7860"),
   sichereHerkunft(process.env.NEXT_PUBLIC_WAMO_KERN_BUERO),
 ].filter(Boolean);
 
