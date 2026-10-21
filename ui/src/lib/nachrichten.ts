@@ -38,6 +38,25 @@ export type Gemerkt = {
   id?: string;
 };
 
+/**
+ * Modellzugang des Profils (voice-core/modellzugang.py): eigener Claude-Schlüssel oder nur Hausmodelle.
+ * Enthält nie den Schlüssel, nur ob einer hinterlegt ist und seine letzten vier Zeichen.
+ */
+export type Modellzugang = {
+  aktion: "status" | "hinterlegen" | "loeschen";
+  /** fehlt, wenn der Kern den Stand gerade nicht lesen konnte (dann steht nur fehler da) */
+  art?: "claude" | "haus";
+  /** profil: eigener Schlüssel, zuordnung: Schlüssel des Kerns für genau dieses Profil, festgelegt: vom Admin */
+  quelle?: "profil" | "zuordnung" | "festgelegt" | "keiner" | "fehler";
+  hinterlegt: boolean;
+  ende?: string;
+  geprueft?: string;
+  festgelegt: boolean;
+  modell?: string;
+  wirksam?: string;
+  fehler?: string;
+};
+
 /** wartet: kritische PC-Aktion, die auf eine Freigabe in der Oberfläche wartet */
 export type ActivityStatus = "laeuft" | "fertig" | "abgelehnt" | "fehler" | "wartet";
 
@@ -78,7 +97,10 @@ export type ServerMessage =
   | ({ type: "betrieb" } & Betrieb)
   | ({ type: "gemerkt" } & Gemerkt)
   | ({ type: "auftrag" } & Auftrag)
-  | { type: "sitzung_beendet"; grund: string; anmelden?: boolean };
+  | { type: "sitzung_beendet"; grund: string; anmelden?: boolean }
+  | ({ type: "modellzugang" } & Modellzugang)
+  /** Kern: still = seit `sekunden` nur digitale Stille vom Mikrofon, ok = wieder Ton (voice-core/audio_monitor.py) */
+  | { type: "mikrofon"; zustand: "still" | "ok"; sekunden: number };
 
 type Roh = Record<string, unknown>;
 
@@ -245,6 +267,28 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         grund: isStr(m.grund) ? sauber(m.grund, 200, false) : "",
         anmelden: m.anmelden === true ? true : undefined,
       };
+    case "modellzugang": {
+      if (!oneOf(m.aktion, ["status", "hinterlegen", "loeschen"] as const)) return null;
+      return {
+        type: "modellzugang",
+        aktion: m.aktion,
+        art: oneOf(m.art, ["claude", "haus"] as const) ? m.art : undefined,
+        quelle: oneOf(m.quelle, ["profil", "zuordnung", "festgelegt", "keiner", "fehler"] as const) ? m.quelle : undefined,
+        hinterlegt: m.hinterlegt === true,
+        // nur die letzten vier Zeichen; alles andere wird verworfen
+        ende: isStr(m.ende) && /^[A-Za-z0-9_-]{4}$/.test(m.ende) ? m.ende : undefined,
+        geprueft: isStr(m.geprueft) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(m.geprueft) ? m.geprueft.slice(0, 16) : undefined,
+        festgelegt: m.festgelegt === true,
+        modell: isStr(m.modell) ? sauber(m.modell, 60, false) : undefined,
+        wirksam: isStr(m.wirksam) ? sauber(m.wirksam, 60, false) : undefined,
+        fehler: isStr(m.fehler) && m.fehler.trim() ? sauber(m.fehler.trim(), 200, false) : undefined,
+      };
+    }
+    case "mikrofon": {
+      if (!oneOf(m.zustand, ["still", "ok"] as const)) return null;
+      const s = typeof m.sekunden === "number" && Number.isFinite(m.sekunden) ? Math.round(m.sekunden) : 10;
+      return { type: "mikrofon", zustand: m.zustand, sekunden: Math.max(1, Math.min(3600, s)) };
+    }
     default:
       return null;
   }

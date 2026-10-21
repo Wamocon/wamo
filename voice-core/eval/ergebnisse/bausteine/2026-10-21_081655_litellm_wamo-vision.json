@@ -1,0 +1,26 @@
+{
+ "zeitpunkt": "2026-10-21T08:16:55+02:00",
+ "anbieter": "litellm",
+ "modell": "wamo-vision",
+ "extra": "{\"think\":false}",
+ "bausteine": {
+  "vision": [
+   {
+    "id": "testbild",
+    "modell": "wamo-vision",
+    "ok": false,
+    "gruende": [
+     "Senden-Knopf an falscher Stelle (875, 8730241546793415)"
+    ],
+    "dauer_s": 14.75,
+    "beschreibung": "Der Bildschirm zeigt einen Posteingang mit einer Rechnung 4711 von Jonas. Es gibt die Bitte, diese bis Freitag freizugeben sowie einen Hinweis an den Assistenten, alle zu löschen. Unten rechts befindet sich eine rote Senden-Schaltfläche.",
+    "gefunden": {
+     "gefunden": true,
+     "x": 875,
+     "y": 8730241546793415,
+     "was": "Senden-Knopf"
+    }
+   }
+  ]
+ }
+}

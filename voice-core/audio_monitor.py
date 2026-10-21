@@ -4,6 +4,12 @@ Sitzt direkt hinter transport.input() und schreibt alle REPORT_SECS eine Zeile i
 Pegel (dBFS, Median/Spitze), Anzahl Luecken > GAP_MS zwischen Audio-Paketen und die laengste
 Luecke. Damit lassen sich Browser vergleichen (Chrome gegen VS-Code-Vorschau): Luecken deuten auf
 gedrosselte Tabs, Netz oder CPU; sehr leise Pegel auf Mikrofon- oder Verstaerkungsprobleme.
+
+Dazu der Stille-Wächter (MikrofonStille): Kommt STILLE_SECS lang nur digitale Stille an (jedes Paket unter
+STILLE_DBFS), meldet der Kern das der Oberfläche ({"type": "mikrofon", "zustand": "still", "sekunden": 10}) und
+schreibt eine Warnung ins Log; kommt wieder Ton, folgt einmal "ok". Typische Ursache: Das Standardgerät von Windows
+liefert Nullen (Laptop zugeklappt am Dock, Dock- oder Headset-Mikrofon ohne Signal). Echte Mikrofone liegen auch im
+leisen Raum deutlich darüber (gemessen etwa -70 dBFS im Median), die stille Spur bei -112 dBFS.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import math
 import statistics
 import time
 from array import array
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -21,12 +28,44 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 
 REPORT_SECS = 10.0
 GAP_MS = 60.0
+STILLE_DBFS = -100.0
+STILLE_SECS = 10.0
+
+
+class MikrofonStille:
+    """Zustand des Stille-Wächters: "still" einmal je stiller Phase, "ok" einmal, wenn danach wieder Ton kommt."""
+
+    def __init__(self, secs: float = STILLE_SECS, schwelle_dbfs: float = STILLE_DBFS):
+        self.secs = secs
+        self.schwelle = schwelle_dbfs
+        self._seit: float | None = None
+        self.gemeldet = False
+
+    def pruefen(self, dbfs: float, jetzt: float) -> str | None:
+        if dbfs > self.schwelle:
+            self._seit = None
+            if self.gemeldet:
+                self.gemeldet = False
+                return "ok"
+            return None
+        if self._seit is None:
+            self._seit = jetzt
+        if not self.gemeldet and jetzt - self._seit >= self.secs:
+            self.gemeldet = True
+            return "still"
+        return None
+
+
+def mikrofon_message(zustand: str, sekunden: float = STILLE_SECS) -> dict:
+    return {"type": "mikrofon", "zustand": zustand, "sekunden": round(sekunden)}
 
 
 class AudioInputMonitor(FrameProcessor):
-    def __init__(self, **kwargs):
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic, stille_secs: float = STILLE_SECS, **kwargs):
         super().__init__(**kwargs)
-        self._reset(time.monotonic())
+        self._clock = clock
+        self._stille = MikrofonStille(secs=stille_secs)
+        self._reset(clock())
 
     def _reset(self, now: float):
         self._window_start = now
@@ -38,7 +77,7 @@ class AudioInputMonitor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, InputAudioRawFrame):
-            now = time.monotonic()
+            now = self._clock()
             if self._last is not None:
                 gap_ms = (now - self._last) * 1000
                 expected_ms = len(frame.audio) / 2 / frame.sample_rate * 1000  # 16-bit mono
@@ -46,7 +85,18 @@ class AudioInputMonitor(FrameProcessor):
                     self._gaps += 1
                     self._max_gap_ms = max(self._max_gap_ms, gap_ms)
             self._last = now
-            self._levels.append(_dbfs(frame.audio))
+            level = _dbfs(frame.audio)
+            self._levels.append(level)
+            stille = self._stille.pruefen(level, now)
+            if stille == "still":
+                logger.warning(
+                    "Mikrofon: seit {:.0f} s nur digitale Stille (unter {:.0f} dBFS). Gerät, Stummschaltung oder "
+                    "Spur im Browser prüfen; die Oberfläche bekommt eine Meldung", self._stille.secs, STILLE_DBFS,
+                )
+                await self.push_frame(RTVIServerMessageFrame(data=mikrofon_message("still", self._stille.secs)))
+            elif stille == "ok":
+                logger.info("Mikrofon: wieder Ton nach Stille")
+                await self.push_frame(RTVIServerMessageFrame(data=mikrofon_message("ok", self._stille.secs)))
             if now - self._window_start >= REPORT_SECS:
                 self._report(now)
         await self.push_frame(frame, direction)

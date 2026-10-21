@@ -21,7 +21,9 @@
 //
 // Umgebung: WAMO_UI_URL, WAMO_VOICE_CORE_URL (http oder https), WAMO_MANAGE_SERVICES, WAMO_UI_DEV,
 // WAMO_VEIL_CM, WAMO_LOG_LEVEL (an den Voice-Core; Standard INFO, nie DEBUG), WAMO_VOLLBILD_LOG=1 (Rohwerte des
-// Vollbild-Wächters in logs/vollbild.log).
+// Vollbild-Wächters in logs/vollbild.log), WAMO_BERECHTIGUNG_LOG=1 (jede Berechtigungsanfrage und -prüfung in
+// logs/berechtigungen.log; abgelehnte Mikrofon-Anfragen stehen immer dort). Mikrofon-Meldungen der Oberfläche
+// ("[WAMO] ...", z. B. "liefert nur Stille" mit Gerätename) landen in logs/oberflaeche.log.
 //
 // Sicherheit: contextIsolation + sandbox, keine nodeIntegration. Die Seite darf nur Pegel mit Zustand
 // und einmalig die Randfarben melden; beides wird hier gegen eine feste Liste geprüft. Navigation und
@@ -48,6 +50,13 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 const { powershellPfad, starteVollbildWaechter } = require("./vollbild");
+const {
+  anfrageErlaubt,
+  oberflaechenZeile,
+  protokollieren,
+  protokollZeile,
+  pruefungErlaubt,
+} = require("./berechtigungen");
 
 // Zweite Instanz: sofort zurückkehren, bevor irgendetwas registriert oder gestartet wird. Sonst würde
 // sie beim Beenden die Dienste der ersten Instanz stoppen (killStale, stopServices). Die erste Instanz
@@ -484,6 +493,12 @@ function createMainWindow() {
     if (!isMainFrame || code === -3 || !sameOrigin(url)) return; // -3 = abgebrochen
     zeigeStart("fehler", beschreibung);
   });
+  // Mikrofon-Meldungen der eigenen Oberfläche ("[WAMO] ...") mitschreiben: Gerät, Stille, Fehler beim Öffnen
+  wc.on("console-message", (event) => {
+    if (!sameOrigin(event?.frame?.url ?? wc.getURL())) return;
+    const zeile = oberflaechenZeile(event?.level, event?.message);
+    if (zeile) schreibeLog("oberflaeche", zeile);
+  });
 
   mainWin.on("close", (event) => {
     if (!quitting) {
@@ -744,22 +759,32 @@ function istEigeneUi(wc, url) {
   return Boolean(wc) && Boolean(mainWin) && wc === mainWin.webContents && sameOrigin(url ?? "");
 }
 
+// Diagnose der Berechtigungen (logs/berechtigungen.log, siehe berechtigungen.js) und der Mikrofon-Meldungen der
+// Oberfläche (logs/oberflaeche.log); die Logdateien entstehen erst beim ersten Eintrag
+const BERECHTIGUNG_LOG = process.env.WAMO_BERECHTIGUNG_LOG === "1";
+const logs = {};
+function schreibeLog(name, zeile) {
+  logs[name] ??= new Logdatei(name);
+  logs[name].schreiben(`${zeile}\n`);
+}
+function entscheide(art, permission, details, eigene, erlaubt) {
+  if (protokollieren(art, permission, erlaubt, BERECHTIGUNG_LOG)) {
+    schreibeLog("berechtigungen", protokollZeile(art, permission, details, eigene, erlaubt));
+  }
+  return erlaubt;
+}
+
 app.whenReady().then(async () => {
   ladeEinstellungen(); // Betriebsart vor dem Start der Dienste (Büro: kein lokaler Kern)
   const ses = session.defaultSession;
   // Mikrofon (nur Audio, nie Kamera) und Zwischenablage nur für die eigene Oberfläche, sonst nichts
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
-    if (!istEigeneUi(wc, details.requestingUrl)) return callback(false);
-    if (permission === "media") {
-      const typen = details.mediaTypes ?? [];
-      return callback(typen.length > 0 && typen.every((t) => t === "audio"));
-    }
-    callback(permission === "clipboard-sanitized-write");
+    const eigene = istEigeneUi(wc, details?.requestingUrl);
+    callback(entscheide("anfrage", permission, details, eigene, anfrageErlaubt(permission, details, eigene)));
   });
   ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
-    if (!istEigeneUi(wc, requestingOrigin)) return false;
-    if (permission === "media") return details?.mediaType === "audio";
-    return permission === "clipboard-sanitized-write";
+    const eigene = istEigeneUi(wc, requestingOrigin);
+    return entscheide("pruefung", permission, details, eigene, pruefungErlaubt(permission, details, eigene));
   });
   // Audio bekommt Vorrang, wenn Chrome & Co. beim Öffnen kurz die CPU belegen (Aussetzer)
   setInterval(raisePriority, 5000);

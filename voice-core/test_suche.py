@@ -11,6 +11,10 @@ import pytest
 import persona
 import suche
 import tools
+from llm_anbieter import Zugang
+
+CLAUDE = Zugang("0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c", "claude", claude_schluessel="sk-ant-api03-TESTtest-0123456789abcdefghij")
+HAUS = Zugang.haus("0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c")
 
 # Sonderzeichen ausgeschrieben, damit der Quelltext selbst keine unsichtbaren Zeichen enthält
 RLO, KLINGEL, TAG_I, WEICHES_TRENN, VS16 = chr(0x202E), chr(0x07), chr(0xE0069), chr(0xAD), chr(0xFE0F)
@@ -104,11 +108,11 @@ async def test_searxng_ohne_gueltige_adresse_schlaegt_fehl(monkeypatch, url):
     with pytest.raises(suche.SucheFehler, match="WAMO_SEARXNG_URL"):
         await suche.searxng_suche("x")
 
-    async def kein_claude(anfrage):
+    async def kein_claude(anfrage, zugang):
         raise AssertionError("ohne gültige SearXNG-Adresse darf die Anthropic-Suche nicht einspringen")
 
     monkeypatch.setattr(tools, "web_search", kein_claude)
-    assert await tools.websuche_ergebnis("x") == {"ergebnis": "Die Suche ist gerade fehlgeschlagen."}
+    assert await tools.websuche_ergebnis("x", CLAUDE) == {"ergebnis": "Die Suche ist gerade fehlgeschlagen."}
 
 
 async def _mit_mock(handler, anfrage="Wetter Eschborn"):
@@ -159,12 +163,12 @@ async def test_websuche_ergebnis_searxng(monkeypatch):
         roh = {"results": [{"url": "https://x.de", "title": "T", "content": INJEKTION}]}
         return suche.als_daten(anfrage, suche.kuerzen(roh))
 
-    async def kein_claude(anfrage):
+    async def kein_claude(anfrage, zugang):
         raise AssertionError("Mit WAMO_SUCHE=searxng darf die Anthropic-Suche nicht laufen")
 
     monkeypatch.setattr(tools, "searxng_suche", falsche_suche)
     monkeypatch.setattr(tools, "web_search", kein_claude)
-    ergebnis = await tools.websuche_ergebnis("Öffnungszeiten")
+    ergebnis = await tools.websuche_ergebnis("Öffnungszeiten", CLAUDE)
     assert ergebnis["vertrauen"] == "unvertrauenswuerdig"
     assert "\n" not in ergebnis["treffer"][0]["auszug"]
 
@@ -176,17 +180,35 @@ async def test_websuche_ergebnis_searxng_fehler(monkeypatch):
         raise suche.SucheFehler("SearXNG antwortet mit HTTP 500")
 
     monkeypatch.setattr(tools, "searxng_suche", kaputt)
-    assert await tools.websuche_ergebnis("x") == {"ergebnis": "Die Suche ist gerade fehlgeschlagen."}
+    assert await tools.websuche_ergebnis("x", CLAUDE) == {"ergebnis": "Die Suche ist gerade fehlgeschlagen."}
 
 
 async def test_websuche_ergebnis_anthropic_ist_markiert(monkeypatch):
-    async def claude_suche(anfrage):
+    async def claude_suche(anfrage, zugang):
         return "Laut Website offen bis 18 Uhr."
 
     monkeypatch.setattr(tools, "web_search", claude_suche)
-    ergebnis = await tools.websuche_ergebnis("x")
+    ergebnis = await tools.websuche_ergebnis("x", CLAUDE)
     assert ergebnis["ergebnis"] == "Laut Website offen bis 18 Uhr."
     assert ergebnis["vertrauen"] == "unvertrauenswuerdig" and ergebnis["quelle"] == "anthropic"
+
+
+async def test_websuche_haus_profil_nie_anthropic(monkeypatch):
+    """Profile mit nur Hausmodellen suchen immer über SearXNG, auch wenn der Betrieb WAMO_SUCHE=anthropic setzt."""
+    monkeypatch.setenv("WAMO_SUCHE", "anthropic")
+    gesucht = []
+
+    async def falsche_suche(anfrage, **kwargs):
+        gesucht.append(anfrage)
+        return suche.als_daten(anfrage, suche.kuerzen(_treffer(1)))
+
+    async def kein_claude(anfrage, zugang):
+        raise AssertionError("haus-Profile dürfen die Anthropic-Suche nie nutzen")
+
+    monkeypatch.setattr(tools, "searxng_suche", falsche_suche)
+    monkeypatch.setattr(tools, "web_search", kein_claude)
+    ergebnis = await tools.websuche_ergebnis("Wetter", HAUS)
+    assert gesucht == ["Wetter"] and ergebnis["vertrauen"] == "unvertrauenswuerdig"
 
 
 @pytest.mark.parametrize("letzter_satz,bereich,tainted,gesperrt", [

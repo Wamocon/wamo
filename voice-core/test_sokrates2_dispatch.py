@@ -17,6 +17,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -79,19 +80,33 @@ class CommandValidationTests(unittest.TestCase):
                 self.assertEqual(D.main([]), D.EXIT_ABGEWIESEN)
 
     def test_header(self):
-        auftrag, system, modell = D.parse_header(
+        auftrag, system, modell, repo = D.parse_header(
             json.dumps({"auftrag": "Baue\u0007 eine App\nmit Login", "system": "x"}).encode() + b"\n")
         self.assertEqual(auftrag, "Baue eine App\nmit Login")
         self.assertEqual(system, "x")
         self.assertIsNone(modell)
+        self.assertIsNone(repo)
         self.assertEqual(D.parse_header(b'{"auftrag": "x", "modell": "claude-opus-5-5"}\n')[2], "claude-opus-5-5")
+        self.assertEqual(D.parse_header(b'{"auftrag": "x", "repo": "wamocon/rezepte-app"}\n')[3], "wamocon/rezepte-app")
         for raw in [b'{"auftrag": "x"}', b'kein json\n', b'[]\n', b'{"auftrag": "x", "befehl": "id"}\n',
                     b'{"auftrag": 1}\n', b'{"auftrag": "   "}\n', b"[" * 5000 + b"\n",
                     b'{"auftrag": "x", "modell": 5}\n', b'{"auftrag": "x", "modell": "--dangerously"}\n',
-                    b'{"auftrag": "x", "modell": "a b"}\n',
+                    b'{"auftrag": "x", "modell": "a b"}\n', b'{"auftrag": "x", "repo": 5}\n',
                     json.dumps({"auftrag": "x" * (D.MAX_TEXT_CHARS + 1)}).encode() + b"\n"]:
             with self.subTest(raw=raw[:40]), self.assertRaises(D.Abgewiesen):
                 D.parse_header(raw)
+
+    def test_repo_strictly_checked(self):
+        for gut in ("wamocon/rezepte-app", "a/b", "Owner-1/repo.name_2", "x" * 39 + "/" + "y" * 100):
+            with self.subTest(gut=gut):
+                self.assertEqual(D.check_repo(gut), gut)
+        for schlecht in ("", "wamocon", "a/b/c", "/b", "a/", "-a/b", "a_b/c", "a.b/c", "a/b c", "a/b\n", "a/../b",
+                         "a/..", "a/.", "a/b.git", "a/B.GIT", "../b", "a\\b", "a/b;id", "a/b$", "ä/b", "a/bä",
+                         "x" * 40 + "/b", "a/" + "y" * 101, "a//b", " a/b", "a/b ", None, 5, ["a/b"],
+                         "wamocon/wamo", "Wamocon/WAMO", "x/Wamo"):  # das WAMO-Repo selbst bleibt gesperrt
+            with self.subTest(schlecht=schlecht), self.assertRaises(D.Abgewiesen):
+                D.check_repo(schlecht)
+        self.assertEqual(D.check_repo("wamocon/wamo-extra"), "wamocon/wamo-extra")  # nur der genaue Name ist gesperrt
 
 
 class SecretsAndEnvTests(unittest.TestCase):
@@ -690,6 +705,618 @@ class AuditTests(unittest.TestCase):
         self.assertEqual([z for z in zeilen if z.startswith("cancel")], [f"cancel {JOB}"])
 
 
+def _rsa_pem(bits: int = 2048):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    schluessel = rsa.generate_private_key(public_exponent=65537, key_size=bits)
+    pem = schluessel.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+                                   serialization.NoEncryption())
+    return schluessel, pem
+
+
+class FakeGithub:
+    """Attrappe der GitHub-API anstelle von D._https: prüft das JWT gegen den öffentlichen Schlüssel, stellt ein
+    Token mit den angefragten Rechten aus (Owner wamocon) und nimmt den Widerruf an. Keine echten Aufrufe."""
+
+    def __init__(self, public_key, token="ghs_" + "T0k3n" * 7 + "x", status=201, antwort=None, widerruf=204,
+                 netzfehler=False, waehrend_post=None):
+        self.public_key, self.token, self.status, self.antwort = public_key, token, status, antwort
+        self.widerruf, self.netzfehler, self.waehrend_post = widerruf, netzfehler, waehrend_post
+        self.anfragen: list[tuple] = []
+        self.claims: list[dict] = []
+
+    def __call__(self, methode, pfad, kopf, koerper=None):
+        import jwt as pyjwt
+        koerper_obj = json.loads(koerper) if koerper else None
+        self.anfragen.append((methode, pfad, dict(kopf), koerper_obj))
+        if self.netzfehler:
+            raise TimeoutError("timed out")
+        anmeldung = kopf["Authorization"].split(" ", 1)[1]
+        if methode == "POST":
+            self.claims.append(pyjwt.decode(anmeldung, self.public_key, algorithms=["RS256"],
+                                            options={"verify_exp": False, "verify_iat": False}))
+            if self.waehrend_post:
+                self.waehrend_post()
+            body = self.antwort if self.antwort is not None else {
+                "token": self.token, "expires_at": "2026-10-21T09:00:00Z",
+                "permissions": koerper_obj["permissions"], "repository_selection": "selected",
+                "repositories": [{"full_name": f"wamocon/{n}"} for n in koerper_obj.get("repositories", [])]}
+            return self.status, json.dumps(body).encode()
+        if methode == "DELETE":
+            return self.widerruf, b""
+        return 404, b"{}"
+
+    def widerrufe(self):
+        return [a for a in self.anfragen if a[0] == "DELETE" and a[1] == "/installation/token"]
+
+
+class GithubAppTests(unittest.TestCase):
+    """App-Modus: JWT, Rechte je Art, Repo-Begrenzung, Widerruf, keine Geheimnisse in Log und argv, Rückfall
+    ohne Konfiguration und fail-closed bei kaputter Konfiguration. GitHub ist eine Attrappe (FakeGithub)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.schluessel, cls.pem = _rsa_pem()
+        cls.public = cls.schluessel.public_key()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        wurzel = Path(self.tmp.name)
+        self.ordner = wurzel / "etc-wamo"
+        self.ordner.mkdir()
+        (self.ordner / "gh-app.pem").write_bytes(self.pem)
+        self.jobs, self.projekte, self.heim = wurzel / "jobs", wurzel / "projekte", wurzel / "heim"
+        for p in (self.jobs, self.projekte / "rezepte-app", self.heim):
+            p.mkdir(parents=True)
+        self.geheim = {"ANTHROPIC_API_KEY": "sk-ant-aaaaaaaaaaaa", "GH_TOKEN": "ghp_persoenlich1234567890",
+                       "GH_TOKEN_LESEN": "ghp_lesenpersoenlich12345", "VERCEL_TOKEN": "vercel-dddddddd",
+                       "WAMO_GH_APP_ID": "123456", "WAMO_GH_APP_INSTALLATION_ID": "987654",
+                       "WAMO_GH_APP_SCHLUESSEL": f"{self.ordner.as_posix()}/gh-app.pem"}
+        self.fake = FakeGithub(self.public)
+        self.logzeilen: list[str] = []
+        self.ereignisse: list[dict] = []
+        self.patches = [mock.patch.object(D, "SCHLUESSEL_ORDNER", self.ordner),
+                        mock.patch.object(D, "_https", side_effect=lambda *a, **k: self.fake(*a, **k)),
+                        mock.patch.object(D, "log", side_effect=lambda t, pflicht=False: self.logzeilen.append(t)),
+                        mock.patch.object(D, "JOBS", self.jobs), mock.patch.object(D, "PROJEKTE", self.projekte),
+                        mock.patch.object(D, "HEIM", self.heim),
+                        mock.patch.object(D, "emit", side_effect=lambda ev: self.ereignisse.append(ev) or True)]
+        if LINUX:  # echte Rechteprüfung: Besitzer ist hier der Testbenutzer statt root
+            os.chmod(self.ordner, 0o750)
+            os.chmod(self.ordner / "gh-app.pem", 0o640)
+            self.patches.append(mock.patch.object(D, "SCHLUESSEL_BESITZER", (os.getuid(),)))
+        else:  # Windows kennt keine POSIX-Rechte; _rechte_grund ist unten eigens getestet
+            self.patches.append(mock.patch.object(D, "_rechte_grund", return_value=None))
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+        self.tmp.cleanup()
+
+    def app(self):
+        return D.github_app_konfig(self.geheim)
+
+    # ------------------------------------------------------------ JWT
+    def test_jwt_aufbau_und_pruefung(self):
+        import jwt as pyjwt
+        jetzt = 1_800_000_000
+        token = D.jwt_erzeugen("123456", self.pem, jetzt=jetzt)
+        self.assertEqual(pyjwt.get_unverified_header(token), {"alg": "RS256", "typ": "JWT"})
+        claims = pyjwt.decode(token, self.public, algorithms=["RS256"], options={"verify_exp": False, "verify_iat": False})
+        self.assertEqual(claims, {"iat": jetzt - 60, "exp": jetzt + 540, "iss": "123456"})
+        self.assertLessEqual(claims["exp"] - jetzt, 9 * 60)
+        self.assertLessEqual(claims["exp"] - claims["iat"], 10 * 60)
+        frisch = pyjwt.decode(D.jwt_erzeugen("123456", self.pem), self.public, algorithms=["RS256"])  # jetzt gültig
+        self.assertEqual(frisch["iss"], "123456")
+        kopf, inhalt, signatur = token.split(".")
+        falsch = f"{kopf}.{inhalt[:-2]}AA.{signatur}"
+        with self.assertRaises(pyjwt.InvalidSignatureError):
+            pyjwt.decode(falsch, self.public, algorithms=["RS256"], options={"verify_exp": False})
+        anderer, _ = _rsa_pem()
+        with self.assertRaises(pyjwt.InvalidSignatureError):
+            pyjwt.decode(token, anderer.public_key(), algorithms=["RS256"], options={"verify_exp": False})
+        with self.assertRaises(D.GithubAppFehler):
+            D.jwt_erzeugen("12a", self.pem)
+
+    def test_ungeeignete_schluessel_abgewiesen(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        ec_pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+        klein, _ = _rsa_pem(1024)
+        klein_pem = klein.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                        serialization.NoEncryption())
+        mit_passwort = self.schluessel.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                     serialization.BestAvailableEncryption(b"geheim"))
+        for name, pem in (("ec", ec_pem), ("rsa1024", klein_pem), ("passwort", mit_passwort), ("muell", b"kein pem"),
+                          ("leer", b""), ("kaputt", b"-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n")):
+            with self.subTest(name=name), self.assertRaises(D.GithubAppFehler) as ctx:
+                D.jwt_erzeugen("123456", pem)
+            self.assertNotIn("BEGIN", str(ctx.exception))
+
+    # ------------------------------------------------------------ Rechte je Art
+    def test_rechte_je_art_aus_der_werkzeugkarte(self):
+        self.assertEqual(set(wk.GITHUB_ZUGRIFF), set(wk.AUFTRAGSARTEN))
+        lesen = {"contents": "read", "metadata": "read", "pull_requests": "read"}
+        schreiben = {"contents": "write", "pull_requests": "write", "metadata": "read"}
+        for art, karte in wk.KARTEN.items():
+            erwartet = schreiben if "github" in karte.zugaenge else lesen if "github_lesen" in karte.zugaenge else None
+            with self.subTest(art=art):
+                self.assertEqual(wk.github_app_rechte(art), erwartet)
+                if erwartet is None:
+                    continue
+                self.assertFalse(set(erwartet) & wk.GITHUB_APP_RECHTE_VERBOTEN)
+                self.fake.anfragen.clear()
+                token, ablauf = D.installations_token(self.app(), art, None)
+                methode, pfad, kopf, koerper = self.fake.anfragen[0]
+                self.assertEqual((methode, pfad), ("POST", "/app/installations/987654/access_tokens"))
+                self.assertEqual(koerper, {"permissions": erwartet})  # ohne Repo: ganze Installation, Rechte der Art
+                self.assertEqual(kopf["X-GitHub-Api-Version"], "2022-11-28")
+                self.assertEqual(token, self.fake.token)
+                self.assertEqual(ablauf, "2026-10-21T09:00:00Z")
+        for verboten in ("administration", "workflows", "secrets", "actions", "members"):
+            self.assertIn(verboten, wk.GITHUB_APP_RECHTE_VERBOTEN)
+        self.assertEqual(wk.GITHUB_ZUGRIFF["review"], "lesen")
+        self.assertEqual(wk.GITHUB_ZUGRIFF["umsetzung"], "schreiben")
+        self.assertIsNone(wk.github_app_rechte("recherche"))
+
+    def test_tabelle_gegen_karte_fail_closed(self):
+        with mock.patch.dict(wk.GITHUB_ZUGRIFF, {"review": "schreiben"}):
+            with self.assertRaises(ValueError):
+                wk.github_app_rechte("review")
+            with self.assertRaises(D.GithubAppFehler):
+                D.installations_token(self.app(), "review", None)
+        with mock.patch.dict(wk.GITHUB_APP_RECHTE, {"lesen": {**wk.GITHUB_APP_RECHTE["lesen"], "administration": "read"}}):
+            with self.assertRaises(ValueError):
+                wk.github_app_rechte("review")
+        self.assertEqual(self.fake.anfragen, [])
+
+    # ------------------------------------------------------------ Repo-Begrenzung
+    def test_repo_begrenzung(self):
+        D.installations_token(self.app(), "umsetzung", "wamocon/rezepte-app")
+        self.assertEqual(self.fake.anfragen[0][3]["repositories"], ["rezepte-app"])
+        self.assertEqual(self.fake.widerrufe(), [])
+        # Repo eines anderen Owners: GitHub stellt ein Token für wamocon/<name> aus, das passt nicht -> widerrufen
+        self.fake.anfragen.clear()
+        with self.assertRaises(D.GithubAppFehler) as ctx:
+            D.installations_token(self.app(), "umsetzung", "fremd/rezepte-app")
+        self.assertIn("fremd/rezepte-app", str(ctx.exception))
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+        self.assertEqual(self.fake.widerrufe()[0][2]["Authorization"], f"Bearer {self.fake.token}")
+
+    def test_mehr_rechte_als_angefragt_wird_widerrufen(self):
+        self.fake.antwort = {"token": self.fake.token, "expires_at": "x",
+                             "permissions": {"contents": "write", "administration": "write", "metadata": "read"}}
+        with self.assertRaises(D.GithubAppFehler) as ctx:
+            D.installations_token(self.app(), "umsetzung", None)
+        self.assertIn("mehr Rechte", str(ctx.exception))
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+        self.fake.anfragen.clear()
+        self.fake.antwort = {"token": self.fake.token, "permissions": {"contents": "write", "metadata": "read"}}
+        with self.assertRaises(D.GithubAppFehler):  # lesende Art bekommt Schreibrecht
+            D.installations_token(self.app(), "review", None)
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+
+    # ------------------------------------------------------------ Widerruf
+    def test_widerruf_bei_ende_abbruch_und_fehler(self):
+        with D.github_token_fuer_lauf(JOB, "umsetzung", "wamocon/rezepte-app", self.app()) as token:
+            self.assertEqual(token, self.fake.token)
+            self.assertEqual(self.fake.widerrufe(), [])
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+        for ausnahme in (RuntimeError("kaputt"), D._Beendet(15), KeyboardInterrupt()):
+            self.fake.anfragen.clear()
+            with self.subTest(ausnahme=type(ausnahme).__name__), self.assertRaises(type(ausnahme)):
+                with D.github_token_fuer_lauf(JOB, "review", None, self.app()):
+                    raise ausnahme
+            self.assertEqual(len(self.fake.widerrufe()), 1)
+        self.assertTrue(any(z.startswith(f"gh_app_widerruf {JOB} ok") for z in self.logzeilen))
+
+    def test_widerruf_fehlgeschlagen_wird_protokolliert(self):
+        self.fake.widerruf = 500
+        with D.github_token_fuer_lauf(JOB, "umsetzung", None, self.app()):
+            pass
+        self.assertEqual(len(self.fake.widerrufe()), 2)  # zwei Versuche bei Netzfehlern, hier je eine Antwort 500
+        self.assertTrue(any("FEHLGESCHLAGEN" in z for z in self.logzeilen))
+        # der Voice-Core erfährt es (Ereignis ohne Token), damit es nicht nur im Log steht
+        self.assertEqual([e["ereignis"] for e in self.ereignisse], ["gh_widerruf_fehlgeschlagen"])
+        self.geheimnisfrei(json.dumps(self.ereignisse))
+
+    def test_unerwartete_antwort_widerruft_das_token(self):
+        faelle = {
+            "Rechte als Liste": {"token": self.fake.token, "permissions": {"contents": ["write"], "metadata": "read"}},
+            "Token mit Bindestrich": {"token": "ghs-" + "a" * 30, "permissions": {"contents": "write"}},
+            "Rechte fehlen": {"token": self.fake.token},
+        }
+        for name, antwort in faelle.items():
+            self.fake.anfragen.clear()
+            self.fake.antwort = antwort
+            with self.subTest(fall=name), self.assertRaises(D.GithubAppFehler):
+                D.installations_token(self.app(), "umsetzung", None)
+            widerrufe = self.fake.widerrufe()
+            self.assertEqual(len(widerrufe), 1, name)
+            self.assertEqual(widerrufe[0][2]["Authorization"], f"Bearer {antwort['token']}")
+        self.fake.anfragen.clear()
+        self.fake.antwort = {"token": "ghs_\nX-Evil: 1" + "a" * 20, "permissions": {}}  # nicht header-sicher: kein Widerruf
+        with self.assertRaises(D.GithubAppFehler):
+            D.installations_token(self.app(), "umsetzung", None)
+        self.assertEqual(self.fake.widerrufe(), [])
+
+    def test_signal_handler_ignoriert_weitere_signale(self):
+        import signal as sig
+        alt = sig.getsignal(sig.SIGTERM)
+        try:
+            with self.assertRaises(D._Beendet):
+                D._als_ausnahme(sig.SIGTERM, None)
+            self.assertEqual(sig.getsignal(sig.SIGTERM), sig.SIG_IGN)  # ein zweites SIGTERM stört das Aufräumen nicht
+        finally:
+            sig.signal(sig.SIGTERM, alt)
+
+    def test_signal_im_widerruf_ueberspringt_ihn_nicht(self):
+        echt = D.token_widerrufen
+        aufrufe = []
+
+        def mit_signal(token):
+            aufrufe.append(token)
+            if len(aufrufe) == 1:
+                raise D._Beendet(15)  # das erste Signal trifft genau den ersten Widerruf
+            return echt(token)
+        with mock.patch.object(D, "token_widerrufen", side_effect=mit_signal):
+            with D.github_token_fuer_lauf(JOB, "umsetzung", None, self.app()):
+                pass
+        self.assertEqual(len(aufrufe), 2)
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+
+    def test_ohne_app_oder_ohne_github_kein_token(self):
+        with D.github_token_fuer_lauf(JOB, "recherche", None, self.app()) as token:
+            self.assertIsNone(token)
+        with D.github_token_fuer_lauf(JOB, "umsetzung", None, None) as token:
+            self.assertIsNone(token)
+        self.assertEqual(self.fake.anfragen, [])
+
+    @unittest.skipUnless(hasattr(__import__("signal"), "pthread_sigmask"), "Signalmaske nur unter Linux")
+    def test_sigterm_waehrend_der_erzeugung_widerruft(self):
+        import signal as sig
+        self.fake.waehrend_post = lambda: os.kill(os.getpid(), sig.SIGTERM)  # kommt mitten in der Token-Erzeugung
+        with D._signale(D._als_ausnahme), self.assertRaises(D._Beendet):
+            with D.github_token_fuer_lauf(JOB, "umsetzung", None, self.app()):
+                for _ in range(100):  # das aufgeschobene Signal kommt spätestens hier an
+                    pass
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+
+    # ------------------------------------------------------------ Echter Einstiegspunkt cmd_start
+    class _Sperre:
+        def __init__(self, pfad):
+            self.datei = None
+
+        def versuchen(self):
+            return True
+
+    def start(self, art="umsetzung", repo="wamocon/rezepte-app", ausfuehren=None, geheim=None):
+        """cmd_start mit Attrappen für Sperren, Selbsttest und Sandbox-Lauf; alles andere echt."""
+        aufrufe: list[tuple] = []
+
+        def fake_ausfuehren(argv, env, auftrag, jobdir, job, projekt, art_):
+            aufrufe.append((list(argv), dict(env)))
+            self.assertEqual(self.fake.widerrufe(), [])  # während des Laufs ist das Token gültig
+            return ausfuehren() if ausfuehren else D.EXIT_OK
+
+        kopf = {"auftrag": "Baue etwas", "system": "Regeln"}
+        if repo:
+            kopf["repo"] = repo
+        with mock.patch.object(D, "_kopfzeile_lesen", return_value=json.dumps(kopf).encode() + b"\n"), \
+             mock.patch.object(D, "Sperre", self._Sperre), mock.patch.object(D, "aufraeumen"), \
+             mock.patch.object(D, "exklusiv", lambda pfad: contextlib.nullcontext()), \
+             mock.patch.object(D, "selbsttest", return_value=(True, "ok")), \
+             mock.patch.object(D, "lese_geheimnisse", return_value=self.geheim if geheim is None else geheim), \
+             mock.patch.object(D, "projekt_entschaerfen", return_value=[]), \
+             mock.patch.object(D, "_ausfuehren", side_effect=fake_ausfuehren):
+            try:
+                code = D.cmd_start(uuid.uuid4().hex[:16], "rezepte-app", art)  # je Start ein neuer Auftrag
+            finally:
+                (self.jobs / ".projekte" / "rezepte-app.json").unlink(missing_ok=True)
+        return code, aufrufe
+
+    def geheimnisfrei(self, text: str) -> None:
+        pem_zeilen = [z for z in self.pem.decode().splitlines() if z and not z.startswith("-----")]
+        for geheim in (self.fake.token, "ghp_persoenlich1234567890", "ghp_lesenpersoenlich12345", *pem_zeilen[:3],
+                       "PRIVATE KEY"):
+            self.assertNotIn(geheim, text)
+
+    def test_cmd_start_app_modus_token_in_sandbox_und_widerruf(self):
+        code, aufrufe = self.start()
+        self.assertEqual(code, D.EXIT_OK)
+        argv, env = aufrufe[0]
+        self.assertEqual(env["GH_TOKEN"], self.fake.token)  # das App-Token, nicht der persönliche Token
+        self.assertNotIn("ghp_persoenlich1234567890", env.values())
+        self.assertFalse([k for k in env if k.startswith("WAMO_GH_APP")])
+        self.assertEqual(env["VERCEL_TOKEN"], "vercel-dddddddd")  # andere Zugänge der Art unverändert
+        self.assertEqual(self.fake.anfragen[0][3], {"permissions": wk.GITHUB_APP_RECHTE["schreiben"],
+                                                   "repositories": ["rezepte-app"]})
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+        self.assertIn("nur für das Repo wamocon/rezepte-app", argv[argv.index("--append-system-prompt") + 1])
+        # weder Schlüssel noch Token in argv, Audit oder Ereignissen; im Audit steht der Repo-Name
+        self.geheimnisfrei(" ".join(argv))
+        self.geheimnisfrei("\n".join(self.logzeilen))
+        self.geheimnisfrei(json.dumps(self.ereignisse))
+        self.assertTrue(any(re.fullmatch(r"gh_app_token [0-9a-f]{16} repo=wamocon/rezepte-app stufe=schreiben "
+                                         r"ablauf=2026-10-21T09:00:00Z", z) for z in self.logzeilen), self.logzeilen)
+        self.assertTrue(any("github=app repo=wamocon/rezepte-app" in z for z in self.logzeilen))
+        self.assertTrue(any(re.fullmatch(r"gh_app_widerruf [0-9a-f]{16} ok", z) for z in self.logzeilen))
+
+    def test_cmd_start_widerruf_bei_cancel_und_fehler(self):
+        code, _ = self.start(ausfuehren=lambda: D.EXIT_ABGEBROCHEN)  # cancel oder Lebenslinie: Lauf endet so
+        self.assertEqual(code, D.EXIT_ABGEBROCHEN)
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+        self.fake.anfragen.clear()
+
+        def kaputt():
+            raise RuntimeError("Fehler im Lauf")
+        with self.assertRaises(RuntimeError):
+            self.start(ausfuehren=kaputt)
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+        self.fake.anfragen.clear()
+
+        def signal_():
+            raise D._Beendet(15)
+        with self.assertRaises(D._Beendet):
+            self.start(ausfuehren=signal_)
+        self.assertEqual(len(self.fake.widerrufe()), 1)
+
+    def test_main_meldet_signal_als_abbruch(self):
+        def beendet(*_):
+            raise D._Beendet(15)
+        with mock.patch.dict(D.HANDLER, {"start": beendet}), mock.patch.dict(os.environ):
+            os.environ.pop("SSH_CONNECTION", None)
+            os.environ.pop("SSH_ORIGINAL_COMMAND", None)
+            self.assertEqual(D.main(["start", JOB, "rezepte-app", "umsetzung"]), D.EXIT_ABGEBROCHEN)
+
+    def test_lesende_art_bekommt_lesetoken(self):
+        code, aufrufe = self.start(art="review", repo=None)
+        self.assertEqual(code, D.EXIT_OK)
+        self.assertEqual(aufrufe[0][1]["GH_TOKEN"], self.fake.token)
+        self.assertEqual(self.fake.anfragen[0][3], {"permissions": wk.GITHUB_APP_RECHTE["lesen"]})
+        self.assertIn("für die Repos der Installation", aufrufe[0][0][aufrufe[0][0].index("--append-system-prompt") + 1])
+
+    def test_art_ohne_github_ruft_github_nicht(self):
+        code, aufrufe = self.start(art="recherche", repo=None)
+        self.assertEqual(code, D.EXIT_OK)
+        self.assertNotIn("GH_TOKEN", aufrufe[0][1])
+        self.assertEqual(self.fake.anfragen, [])
+
+    def test_rueckfall_ohne_konfiguration(self):
+        ohne = {k: v for k, v in self.geheim.items() if not k.startswith("WAMO_GH_APP")}
+        self.assertIsNone(D.github_app_konfig(ohne))
+        code, aufrufe = self.start(geheim=ohne)
+        self.assertEqual(code, D.EXIT_OK)
+        self.assertEqual(aufrufe[0][1]["GH_TOKEN"], "ghp_persoenlich1234567890")  # wie bisher
+        code, aufrufe = self.start(art="review", geheim=ohne)
+        self.assertEqual(aufrufe[0][1]["GH_TOKEN"], "ghp_lesenpersoenlich12345")
+        self.assertEqual(self.fake.anfragen, [])  # kein Aufruf bei GitHub
+        leer = {**ohne, "WAMO_GH_APP_ID": "", "WAMO_GH_APP_INSTALLATION_ID": "", "WAMO_GH_APP_SCHLUESSEL": ""}
+        self.assertIsNone(D.github_app_konfig(leer))
+        with mock.patch.object(D, "lese_geheimnisse", return_value=ohne):
+            self.assertEqual(D.github_status(), "token")
+
+    def test_fail_closed_bei_kaputter_konfiguration(self):
+        pfad = self.geheim["WAMO_GH_APP_SCHLUESSEL"]
+        faelle = {
+            "nur App-ID": {"WAMO_GH_APP_ID": "123456"},
+            "ohne Schlüssel": {"WAMO_GH_APP_ID": "123456", "WAMO_GH_APP_INSTALLATION_ID": "987654"},
+            "App-ID keine Zahl": {"WAMO_GH_APP_ID": "Iv1.abc"},
+            "Installation keine Zahl": {"WAMO_GH_APP_INSTALLATION_ID": "98 7654"},
+            "Pfad relativ": {"WAMO_GH_APP_SCHLUESSEL": "gh-app.pem"},
+            "Pfad außerhalb": {"WAMO_GH_APP_SCHLUESSEL": "/srv/wamo/gh-app.pem"},
+            "Pfad mit ..": {"WAMO_GH_APP_SCHLUESSEL": f"{self.ordner.as_posix()}/../gh-app.pem"},
+            "Pfad Unterordner": {"WAMO_GH_APP_SCHLUESSEL": f"{self.ordner.as_posix()}/sub/gh-app.pem"},
+            "Datei fehlt": {"WAMO_GH_APP_SCHLUESSEL": f"{self.ordner.as_posix()}/fehlt.pem"},
+            "kein Schlüssel": {"WAMO_GH_APP_SCHLUESSEL": f"{self.ordner.as_posix()}/kaputt.pem"},
+        }
+        (self.ordner / "kaputt.pem").write_text("kein Schlüssel", encoding="utf-8")
+        if LINUX:
+            os.chmod(self.ordner / "kaputt.pem", 0o640)
+        for name, aenderung in faelle.items():
+            if name in ("nur App-ID", "ohne Schlüssel"):
+                geheim = {k: v for k, v in self.geheim.items() if not k.startswith("WAMO_GH_APP")} | aenderung
+            else:
+                geheim = {**self.geheim, **aenderung}
+            self.ereignisse.clear()
+            with self.subTest(fall=name):
+                code, aufrufe = self.start(geheim=geheim)
+                self.assertEqual(code, D.EXIT_GITHUB_APP)
+                self.assertEqual(aufrufe, [])  # nichts gestartet, kein Rückfall auf ghp_persoenlich...
+                self.assertEqual(self.ereignisse[-1]["ereignis"], "start_abgelehnt")
+                self.assertIn("GitHub-App", self.ereignisse[-1]["grund"])
+                self.geheimnisfrei(json.dumps(self.ereignisse) + "\n".join(self.logzeilen))
+                with mock.patch.object(D, "lese_geheimnisse", return_value=geheim):
+                    self.assertTrue(D.github_status().startswith("fehler: "))
+        self.assertEqual(self.fake.anfragen, [])
+        self.assertEqual(pfad, self.geheim["WAMO_GH_APP_SCHLUESSEL"])
+
+    def test_fail_closed_bei_fehlern_von_github(self):
+        faelle = {"401": dict(status=401, antwort={"message": "A JSON web token could not be decoded"}),
+                  "404": dict(status=404, antwort={"message": "Not Found"}),
+                  "422 Repo": dict(status=422, antwort={"message": "There is at least one repository that does not exist"}),
+                  "500": dict(status=500, antwort={}),
+                  "Netz": dict(netzfehler=True),
+                  "ohne Token": dict(antwort={"expires_at": "x", "permissions": {}}),
+                  "Token mit Zeilenumbruch": dict(antwort={"token": "ghs_abc\nX-Evil: 1aaaaaaaaaaaaaaa", "permissions": {}})}
+        for name, kw in faelle.items():
+            self.fake = FakeGithub(self.public, **kw)
+            self.ereignisse.clear()
+            with self.subTest(fall=name):
+                code, aufrufe = self.start()
+                self.assertEqual(code, D.EXIT_GITHUB_APP)
+                self.assertEqual(aufrufe, [])
+                self.assertEqual(self.ereignisse[-1]["ereignis"], "start_abgelehnt")
+                self.geheimnisfrei(json.dumps(self.ereignisse) + "\n".join(self.logzeilen))
+        self.assertIn("Installation-ID", D._github_meldung(404, {"message": "Not Found"}))
+        self.assertIn("Uhrzeit", D._github_meldung(401, {"message": "x\ny"}))
+        self.assertNotIn("\n", D._github_meldung(401, {"message": "x\ny"}))
+
+    def test_status_app_bereit(self):
+        with mock.patch.object(D, "lese_geheimnisse", return_value=self.geheim):
+            self.assertEqual(D.github_status(), "app")
+        self.assertEqual(self.fake.anfragen, [])  # ping prüft ohne Netz
+
+    def test_buchfuehrung_im_app_modus(self):
+        self.assertEqual(D.zugangs_quellen("umsetzung", self.geheim, app_modus=True),
+                         {"ANTHROPIC_API_KEY", "GH_APP_SCHREIBEN@*", "VERCEL_TOKEN"})
+        self.assertEqual(D.zugangs_quellen("review", self.geheim, app_modus=True),
+                         {"ANTHROPIC_API_KEY", "GH_APP_LESEN@*"})
+        self.assertEqual(D.zugangs_quellen("recherche", self.geheim, app_modus=True), {"ANTHROPIC_API_KEY"})
+        # der Umfang des Tokens gehört in die Buchführung: ein anderes oder breiteres Repo ist ein neuer Zugang
+        self.assertIn("GH_APP_SCHREIBEN@wamocon/rezepte-app",
+                      D.zugangs_quellen("umsetzung", self.geheim, app_modus=True, repo="Wamocon/Rezepte-App"))
+        projekt = self.projekte / "rezepte-app"
+        eng = D.zugangs_quellen("umsetzung", self.geheim, app_modus=True, repo="wamocon/rezepte-app")
+        breit = D.zugangs_quellen("umsetzung", self.geheim, app_modus=True)
+        (projekt / "datei").write_text("x")
+        (self.jobs / ".projekte").mkdir(exist_ok=True)
+        (self.jobs / ".projekte" / "rezepte-app.json").write_text(json.dumps({"schnitt": sorted(eng)}))
+        anfrage = D.zugang_pruefen("rezepte-app", breit, [])  # Lauf A mit Repo, Lauf B ohne Repo: Freigabe nötig
+        self.assertEqual(anfrage["input"]["neu"], ["GH_APP_SCHREIBEN@*"])
+        anderes = D.zugangs_quellen("umsetzung", self.geheim, app_modus=True, repo="wamocon/anderes")
+        self.assertIsNotNone(D.zugang_pruefen("rezepte-app", anderes, []))  # anderes Repo: Freigabe nötig
+        self.assertIsNone(D.zugang_pruefen("rezepte-app", eng, []))  # dasselbe Repo: frei
+        self.assertIn("GH_TOKEN", D.zugangs_quellen("umsetzung", self.geheim))  # ohne App-Modus wie bisher
+        ohne_token = D.sandbox_env("umsetzung", self.geheim, app_modus=True)
+        self.assertNotIn("GH_TOKEN", ohne_token)  # App-Modus ohne erzeugtes Token: auch kein persönlicher
+        git = {ohne_token[f"GIT_CONFIG_KEY_{i}"] for i in range(int(ohne_token["GIT_CONFIG_COUNT"]))}
+        self.assertNotIn("credential.https://github.com.helper", git)
+
+    def test_repo_ist_an_den_auftrag_gebunden(self):
+        jobdir = self.jobs / JOB
+        jobdir.mkdir()
+        with mock.patch.object(D, "lese_geheimnisse", return_value={}):
+            D.vorbereiten(jobdir, JOB, "rezepte-app", "umsetzung", "wamocon/rezepte-app")
+            D.vorbereiten(jobdir, JOB, "rezepte-app", "umsetzung", "wamocon/rezepte-app")  # Fortsetzung: ok
+            for anders in (None, "wamocon/anderes"):
+                with self.subTest(repo=anders), self.assertRaises(D.Abgewiesen):
+                    D.vorbereiten(jobdir, JOB, "rezepte-app", "umsetzung", anders)
+            meta = json.loads((jobdir / "auftrag.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["repo"], "wamocon/rezepte-app")
+            ohne = self.jobs / "0123456789abcdef"
+            ohne.mkdir()
+            D.vorbereiten(ohne, "0123456789abcdef", "rezepte-app", "review")  # ohne Repo wie bisher
+            self.assertIsNone(json.loads((ohne / "auftrag.json").read_text(encoding="utf-8"))["repo"])
+
+    @unittest.skipUnless(LINUX, "Prozess mit /bin/sh und AF_UNIX-Socket nur unter Linux")
+    def test_token_in_der_ausgabe_wird_geschwaerzt(self):
+        import threading
+
+        class Leitung:  # stdin der SSH-Verbindung: bleibt offen, bis der Test endet
+            def __init__(self):
+                self.ende, self.buffer = threading.Event(), self
+
+            def read1(self, _n):
+                self.ende.wait(60)
+                return b""
+        jobdir = self.jobs / JOB
+        (jobdir / "zustand").mkdir(parents=True)
+        zeile = json.dumps({"type": "assistant", "text": f"Das Token ist {self.fake.token} und weiter"})
+        gesehen: list[bytes] = []
+        leitung = Leitung()
+        try:
+            with mock.patch.object(D.sys, "stdin", leitung), mock.patch.object(D, "stop_units"), \
+                 mock.patch.object(D, "_status"), mock.patch.object(D, "egress_offen", return_value=False), \
+                 mock.patch.object(D, "emit_raw", side_effect=lambda b: gesehen.append(b) or True):
+                code = D._ausfuehren(["/bin/sh", "-c", f"cat >/dev/null; printf '%s\\n' '{zeile}'"],
+                                     {"GH_TOKEN": self.fake.token, "PATH": "/usr/bin:/bin"}, "Auftrag", jobdir, JOB,
+                                     "rezepte-app", "umsetzung")
+        finally:
+            leitung.ende.set()
+        text = b"".join(gesehen).decode("utf-8")
+        self.assertEqual(code, D.EXIT_OK)
+        self.assertIn("Das Token ist [GH_TOKEN] und weiter", text)
+        self.assertNotIn(self.fake.token, text)
+
+    # ------------------------------------------------------------ Schlüsseldatei
+    def test_rechtepruefung(self):
+        def st(mode, uid=0):
+            return os.stat_result((mode, 1, 1, 1, uid, 0, 1700, 0, 0, 0))
+        pruefen = self._echte_rechtepruefung  # unter Windows ist D._rechte_grund in setUp ersetzt
+        with mock.patch.object(D, "SCHLUESSEL_BESITZER", (0,)):
+            self.assertIsNone(pruefen(st(0o100640), "Datei", True))
+            self.assertIsNone(pruefen(st(0o100600), "Datei", True))
+            self.assertIsNone(pruefen(st(0o40750), "Ordner", False))
+            self.assertIn("beschreibbar", pruefen(st(0o100660), "Datei", True))
+            self.assertIn("beschreibbar", pruefen(st(0o100602), "Datei", True))
+            self.assertIn("für alle", pruefen(st(0o100644), "Datei", True))
+            self.assertIn("root", pruefen(st(0o100640, uid=995), "Datei", True))
+            self.assertIn("reguläre", pruefen(st(0o120777), "Datei", True))
+            self.assertIn("reguläre", pruefen(st(0o10640), "Datei", True))  # FIFO
+            self.assertIn("Ordner", pruefen(st(0o100750), "Ordner", False))
+            self.assertIn("beschreibbar", pruefen(st(0o40770), "Ordner", False))
+
+    _echte_rechtepruefung = staticmethod(D._rechte_grund)
+
+    def test_schluessel_zu_gross(self):
+        (self.ordner / "gross.pem").write_bytes(b"-----BEGIN RSA PRIVATE KEY-----\n" + b"A" * (D.MAX_SCHLUESSEL_BYTES + 10))
+        if LINUX:
+            os.chmod(self.ordner / "gross.pem", 0o640)
+        with self.assertRaises(D.GithubAppFehler) as ctx:
+            D.schluessel_lesen("gross.pem")
+        self.assertIn("zu groß", str(ctx.exception))
+        for name in ("../gh-app.pem", "a/b", "", ".pem"):
+            with self.subTest(name=name), self.assertRaises(D.GithubAppFehler):
+                D.schluessel_lesen(name)
+
+    @unittest.skipUnless(LINUX, "symbolische Links und POSIX-Rechte")
+    def test_schluessel_als_link_oder_mit_falschen_rechten(self):
+        os.symlink(self.ordner / "gh-app.pem", self.ordner / "link.pem")
+        with self.assertRaises(D.GithubAppFehler):
+            D.schluessel_lesen("link.pem")
+        os.chmod(self.ordner / "gh-app.pem", 0o644)
+        with self.assertRaises(D.GithubAppFehler):
+            D.schluessel_lesen("gh-app.pem")
+        os.chmod(self.ordner / "gh-app.pem", 0o660)
+        with self.assertRaises(D.GithubAppFehler):
+            D.schluessel_lesen("gh-app.pem")
+        os.chmod(self.ordner / "gh-app.pem", 0o640)
+        os.chmod(self.ordner, 0o770)
+        with self.assertRaises(D.GithubAppFehler):
+            D.schluessel_lesen("gh-app.pem")
+        os.chmod(self.ordner, 0o750)
+        os.mkfifo(self.ordner / "fifo.pem")
+        with self.assertRaises(D.GithubAppFehler):  # hängt nicht (O_NONBLOCK), abgewiesen als keine reguläre Datei
+            D.schluessel_lesen("fifo.pem")
+        self.assertEqual(bytes(D.schluessel_lesen("gh-app.pem")), self.pem)
+
+    # ------------------------------------------------------------ Transport
+    def test_https_prueft_zertifikat_ohne_proxy_und_ohne_weiterleitung(self):
+        gesehen = {}
+
+        class Verbindung:
+            def __init__(self, host, port, timeout=None, context=None):
+                gesehen.update(host=host, port=port, timeout=timeout, context=context)
+
+            def request(self, methode, pfad, body=None, headers=None):
+                gesehen.update(methode=methode, pfad=pfad)
+
+            def getresponse(self):
+                return type("A", (), {"status": 302, "read": lambda self, n: b"{}"})()
+
+            def close(self):
+                gesehen["zu"] = True
+
+        self.patches[1].stop()  # echtes _https mit Attrappe der Verbindung
+        try:
+            with mock.patch.object(D.http.client, "HTTPSConnection", Verbindung), \
+                 mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://boese.example:3128"}):
+                status, _ = D._https("DELETE", "/installation/token", {"Authorization": "Bearer x"})
+        finally:
+            self.patches[1].start()
+        self.assertEqual(status, 302)  # eine Weiterleitung wird nicht verfolgt
+        self.assertEqual((gesehen["host"], gesehen["port"], gesehen["timeout"]), ("api.github.com", 443, D.GITHUB_ZEITLIMIT_S))
+        kontext = gesehen["context"]
+        self.assertEqual(kontext.verify_mode, D.ssl.CERT_REQUIRED)
+        self.assertTrue(kontext.check_hostname)
+        self.assertGreaterEqual(kontext.minimum_version, D.ssl.TLSVersion.TLSv1_2)
+        self.assertTrue(gesehen["zu"])
+
+
 class StreamTests(unittest.TestCase):
     def test_sandbox_lines_claiming_to_be_dispatcher_events_are_dropped(self):
         self.assertTrue(D.ist_wamo_zeile(b'{"type": "wamo", "ereignis": "ende", "ergebnis": "fertig"}\n'))
@@ -852,8 +1479,9 @@ class ConsistencyTests(unittest.TestCase):
         for name in [*wk.CLAUDE_VARIABLEN, *(wk.sandbox_name(n) for v in wk.ZUGANG_VARIABLEN.values() for n in v),
                      "ANTHROPIC_CUSTOM_HEADERS"]:
             self.assertIn(name, erlaubt)
-        for name in ("SONIOX_API_KEY", "LITELLM_API_KEY", "GH_TOKEN_LESEN"):
+        for name in ("SONIOX_API_KEY", "LITELLM_API_KEY", "GH_TOKEN_LESEN", *D.GH_APP_VARIABLEN):
             self.assertNotIn(name, erlaubt)
+        self.assertFalse(any(n.startswith("WAMO_") for n in erlaubt))  # App-Konfiguration nie in der Sandbox
 
     def test_egress_rules(self):
         nft = (INFRA / "wamo-egress.nft").read_text(encoding="utf-8")
@@ -895,6 +1523,9 @@ class ConsistencyTests(unittest.TestCase):
         self.assertEqual(dev_agent.ZUGANG_TOOL, D.ZUGANG_TOOL)
         self.assertEqual(dev_agent.MAX_OFFENE_FREIGABEN, D.MAX_OFFENE_FREIGABEN)
         self.assertIn("freigabe_mehrfach", dev_agent.REMOTE_ENDE_STATUS)
+        self.assertIn("GitHub", dev_agent.REMOTE_EXIT_STATUS[D.EXIT_GITHUB_APP])
+        self.assertIn("start_abgelehnt", dev_agent.REMOTE_EREIGNIS_STATUS)
+        self.assertEqual(dev_agent.REPO_RE.pattern, D.REPO_RE.pattern)  # gleiche Repo-Regel auf PC und Server
 
     def test_selftest_never_uses_mv(self):
         """mv kopiert bei EXDEV und löscht die Quelle: im Projektordner wäre danach der Inhalt weg."""

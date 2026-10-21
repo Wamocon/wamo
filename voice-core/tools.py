@@ -26,7 +26,7 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.services.llm_service import FunctionCallParams
 
 from auth_gate import Identity
-from llm_anbieter import anthropic_client  # früher hier definiert; der Import aus tools bleibt gültig
+from llm_anbieter import Zugang, verbrauch_loggen
 from memory import BEREICHE, MemoryStore, initial_status
 from suche import HINWEIS as SUCHE_HINWEIS, VERTRAUEN as SUCHE_VERTRAUEN, SucheFehler, searxng_suche, suchmodus
 
@@ -208,8 +208,9 @@ def gemerkt_message(bereich: str, status: str, text: str, memory_id: str | None 
     return message
 
 
-async def web_search(anfrage: str) -> str:
-    client = anthropic_client()
+async def web_search(anfrage: str, zugang: Zugang) -> str:
+    """Anthropic-Websuche mit dem Schlüssel des Profils (nur claude-Profile)."""
+    client = zugang.anthropic()
     response = await client.messages.create(
         model=SEARCH_MODEL,
         max_tokens=1500,
@@ -229,23 +230,27 @@ async def web_search(anfrage: str) -> str:
         ],
         messages=[{"role": "user", "content": f"{anfrage}\n(Heute: {jetzt_text()['datum']})"}],
     )
+    if (u := getattr(response, "usage", None)) is not None:
+        verbrauch_loggen(zugang, "claude", SEARCH_MODEL, "websuche", eingabe=u.input_tokens or 0,
+                         ausgabe=u.output_tokens or 0)
     if response.stop_reason == "refusal":
         return "Die Suche wurde abgelehnt."
     text = " ".join(b.text.strip() for b in response.content if b.type == "text").strip()
     return text or "Nichts Brauchbares gefunden."
 
 
-async def websuche_ergebnis(anfrage: str) -> dict:
-    """Ergebnis des Werkzeugs websuche je nach WAMO_SUCHE. Fehler werden zu einer kurzen Meldung,
-    damit das Gesprächsmodell sie ansagen kann; Inhalte aus dem Web sind immer als Daten markiert."""
-    if suchmodus() == "searxng":
+async def websuche_ergebnis(anfrage: str, zugang: Zugang) -> dict:
+    """Ergebnis des Werkzeugs websuche je nach WAMO_SUCHE; Profile mit nur Hausmodellen suchen immer über
+    SearXNG (nie Anthropic). Fehler werden zu einer kurzen Meldung, damit das Gesprächsmodell sie ansagen
+    kann; Inhalte aus dem Web sind immer als Daten markiert."""
+    if zugang.art == "haus" or suchmodus() == "searxng":
         try:
             return await searxng_suche(anfrage)
         except SucheFehler as e:
             logger.warning("websuche: {}", e)
             return {"ergebnis": "Die Suche ist gerade fehlgeschlagen."}
     try:
-        text = await web_search(anfrage)
+        text = await web_search(anfrage, zugang)
     except anthropic.APIStatusError as e:
         logger.warning("websuche: API-Fehler {} {}", e.status_code, e.message)
         return {"ergebnis": "Die Suche ist gerade fehlgeschlagen."}
@@ -284,8 +289,11 @@ def jetzt_text(now: datetime | None = None) -> dict:
     }
 
 
-def register_tools(llm, memory: MemoryStore, identity: Identity, turn: TurnState | None = None) -> ToolsSchema:
-    """Registriert die Handler am LLM und liefert das Schema für den Kontext."""
+def register_tools(
+    llm, memory: MemoryStore, identity: Identity, turn: TurnState | None = None, *, zugang: Zugang
+) -> ToolsSchema:
+    """Registriert die Handler am LLM und liefert das Schema für den Kontext. zugang: Modellzugang des
+    Profils (Websuche über Anthropic nur mit eigenem Schlüssel, sonst SearXNG)."""
     turn = turn or TurnState()
 
     async def aktuelle_zeit(params: FunctionCallParams):
@@ -327,7 +335,7 @@ def register_tools(llm, memory: MemoryStore, identity: Identity, turn: TurnState
         if not anfrage:
             await params.result_callback({"ergebnis": "leere Anfrage"})
             return
-        ergebnis = await websuche_ergebnis(anfrage)
+        ergebnis = await websuche_ergebnis(anfrage, zugang)
         turn.taint()  # Webinhalte im Zug: kein sofort wirksames gemeinsames Wissen, kein Lernen
         treffer = len(ergebnis.get("treffer", []))
         logger.info("websuche ausgeführt ({}, {} Treffer)", ergebnis.get("quelle", "-"), treffer)

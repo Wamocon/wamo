@@ -1,44 +1,52 @@
-"""Anbieter-Fabrik für die Sprachmodelle von WAMO (Ausbaustufe P4).
+"""Anbieter-Fabrik für die Sprachmodelle von WAMO (Ausbaustufen P4 und Modellzugang je Profil).
 
-Jeder Baustein lässt sich einzeln zwischen Claude und den eigenen Modellen auf den Sparks umschalten.
-Die eigenen Modelle laufen ausschließlich über das LiteLLM-Gateway (OpenAI-kompatibel), nie direkt
-über die Adressen der Knoten.
+Modellzugang je Profil (modellzugang.py lädt ihn beim Sitzungsstart, Zugang unten):
+  claude  Die Person hat einen eigenen Anthropic-Schlüssel hinterlegt (oder der Schlüssel des Kerns ist ihrem
+          Profil zugeordnet). Standardmodell Haiku. Fällt Claude aus, übernehmen die Hausmodelle mit Hinweis.
+  haus    Kein eigener Schlüssel oder vom Admin festgelegt: Gespräch, Lernen, Zusammenfassung und Bildschirm
+          laufen über LiteLLM, die Websuche über SearXNG. Kein Aufruf an Anthropic, auch nicht als Rückfall.
+Jede Sitzung hat ihren eigenen Anthropic-Client mit dem Schlüssel ihres Profils; es gibt keinen Client und
+keinen Schlüssel, der über Profile hinweg geteilt wird.
+
+Innerhalb von claude lässt sich jeder Baustein zusätzlich auf die Hausmodelle legen (Betrieb, ohne Kosten):
 
   Baustein          Anbieter (claude | litellm)   Modell
-  gespraech         WAMO_LLM_ANBIETER             WAMO_LLM_MODELL (Claude: CLAUDE_MODEL_FAST)
-  lernen            WAMO_LLM_LERNEN               WAMO_LLM_LERNEN_MODELL (Claude: CLAUDE_MODEL_FAST)
-  vision            WAMO_LLM_VISION               WAMO_LLM_VISION_MODELL (Claude: VISION_MODEL)
-  zusammenfassung   WAMO_LLM_ZUSAMMENFASSUNG      WAMO_LLM_ZUSAMMENFASSUNG_MODELL
+  gespraech         WAMO_LLM_ANBIETER             WAMO_LLM_MODELL (Claude: Modell des Profils, sonst Haiku)
+  lernen            WAMO_LLM_LERNEN               WAMO_LLM_LERNEN_MODELL (leer bei litellm: wie das Gespräch)
+  vision            WAMO_LLM_VISION               WAMO_LLM_VISION_MODELL (Claude: VISION_MODEL, sonst Haiku)
+  zusammenfassung   WAMO_LLM_ZUSAMMENFASSUNG      WAMO_LLM_ZUSAMMENFASSUNG_MODELL (leer: wie das Gespräch)
 
-Standard ist überall claude. Ist WAMO_LLM_ZUSAMMENFASSUNG leer, fasst Pipecat mit dem Gesprächsmodell
-zusammen. Steht lernen oder zusammenfassung auf litellm ohne eigenes Modell, gilt das LiteLLM-Modell des
-Gesprächs. Das Gateway kommt aus LITELLM_BASE_URL und LITELLM_API_KEY; zusätzliche Anfrage-Parameter
-(etwa zum Abschalten einer Denkphase) aus WAMO_LLM_EXTRA als JSON-Objekt.
+Für haus-Profile gelten nur die Modellnamen; der Anbieter ist immer litellm. Das Gateway kommt aus
+LITELLM_BASE_URL und LITELLM_API_KEY; zusätzliche Anfrage-Parameter aus WAMO_LLM_EXTRA als JSON-Objekt. Für die
+Modelle hinter dem Gateway schaltet {"think": false} die Denkphase ab (gemessen 20.10.2026: sonst bis zu 20 s
+bis zum ersten Wort).
 
-Rückfall: Fehlt Adresse, Schlüssel oder Modell, ist das Gateway nicht erreichbar oder bietet es das
-Modell nicht an, schreibt die Fabrik einen Fehler ins Log und nimmt Claude. Die Oberfläche zeigt das
-am Modellnamen des Gesprächs ("... (Rückfall)"). WAMO_LLM_RUECKFALL steuert das je Baustein:
-leer oder claude (alle), aus (keiner) oder eine Liste wie "gespraech,zusammenfassung". Ohne Rückfall
-bricht der Baustein mit LLMNichtVerfuegbar ab; dann geht für ihn nichts an Claude.
+Gruppen-Aliase des Gateways (z. B. wamo-allgemein) stehen nicht in /models; für sie prüft eine Anfrage mit
+einem einzigen Ausgabe-Token, ob das Gateway sie bedient. WAMO_LLM_AUSBLENDEN (kommagetrennte Wortteile,
+nur in der lokalen .env) blendet fremde Aliase aus Listen, Ausgaben und Ergebnisdateien aus.
 
-Grenze: Geprüft wird beim Start einer Sitzung (und bei Lernen und Vision vor jedem Aufruf). Fällt das
-Gateway mitten im Gespräch aus, wechselt das laufende Gespräch nicht zu Claude; Pipecat meldet den
-Fehler, die nächste Sitzung fällt zurück. Kurze Zeitgrenzen sorgen dafür, dass WAMO dann nicht hängt.
+Rückfall bei claude-Profilen: Ist ein auf litellm gelegter Baustein nicht nutzbar, nimmt er Claude mit dem
+Schlüssel des Profils (WAMO_LLM_RUECKFALL: leer oder claude für alle, aus für keinen, oder eine Liste wie
+"gespraech,zusammenfassung"). Grenze: Geprüft wird beim Start einer Sitzung (Lernen und Bildschirm vor jedem
+Aufruf). Fällt ein Anbieter mitten im Gespräch aus, wechselt das laufende Gespräch nicht; kurze Zeitgrenzen
+sorgen dafür, dass WAMO dann nicht hängt.
 
-Für Lernen und Vision gibt es einen schlanken gemeinsamen Aufruf (anfrage). Das Gespräch und die
-Zusammenfassung bekommen einen Pipecat-Dienst (gespraech_llm, zusammenfassung_llm).
+Kosten je Profil: Jeder Modellaufruf schreibt eine Logzeile "Verbrauch" mit Profilkennung, Anbieter, Modell
+und Tokens, ohne Inhalt. Ein Log-Filter schwärzt alles, was wie ein Anthropic-Schlüssel aussieht.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import functools
+import hashlib
 import inspect
 import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import anthropic
@@ -47,12 +55,16 @@ import openai
 from loguru import logger
 from openai.resources.chat.completions import AsyncCompletions
 
+from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.llm_service import LLMService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.utils.http import connection_limits
 
+from schluessel import schwaerzen
+
 Anbieter = Literal["claude", "litellm"]
+Art = Literal["claude", "haus"]
 Ende = Literal["fertig", "abgelehnt", "zu_lang"]
 ANBIETER: tuple[Anbieter, ...] = ("claude", "litellm")
 _ENV = {
@@ -62,11 +74,14 @@ _ENV = {
     "zusammenfassung": ("WAMO_LLM_ZUSAMMENFASSUNG", "WAMO_LLM_ZUSAMMENFASSUNG_MODELL"),
 }
 BAUSTEINE = tuple(_ENV)
-STANDARD_CLAUDE_SCHNELL = "claude-haiku-5-5"
-STANDARD_CLAUDE_VISION = "claude-sonnet-5-5"
+# Standard ist überall Haiku (Vorgabe: Sonnet kostet ein Vielfaches); VISION_MODEL kann das Bildmodell anheben.
+STANDARD_CLAUDE = "claude-haiku-5-5"
 PRUEF_TTL_SECS = 30.0  # so lange gilt das Ergebnis einer Gateway-Prüfung
 PRUEF_TIMEOUT_SECS = 2.0  # Prüfung vor dem Sitzungsstart darf das Gespräch kaum verzögern
-# Zeitgrenze je Aufruf. Vision: zwei Versuche (LiteLLM, dann Claude) müssen in die 30 s des Werkzeugs passen.
+PRUEF_ALIAS_TIMEOUT_SECS = 5.0  # Probe-Anfrage für Aliase, die nicht in /models stehen
+CLAUDE_PRUEF_TIMEOUT_SECS = 3.0
+CLAUDE_PRUEF_TTL_SECS = 60.0
+# Zeitgrenze je Aufruf. Vision: zwei Versuche (erster Anbieter, dann Rückfall) passen in die 30 s des Werkzeugs.
 ANFRAGE_TIMEOUT_SECS = {"lernen": 45.0, "vision": 12.0, "zusammenfassung": 60.0, "gespraech": 20.0}
 VERBINDUNG_TIMEOUT_SECS = 3.0
 GESPRAECH_LESE_TIMEOUT_SECS = 20.0  # längste Pause im Stream, bevor das Gespräch die Anfrage aufgibt
@@ -79,11 +94,63 @@ class LLMFehler(Exception):
 
     def __init__(self, text: str, *, verbindung: bool = False):
         super().__init__(text)
-        self.verbindung = verbindung  # Netz oder Gateway weg: Rückfall sinnvoll
+        self.verbindung = verbindung  # Netz, Gateway oder Anbieter weg: Rückfall sinnvoll
 
 
 class LLMNichtVerfuegbar(LLMFehler):
-    """LiteLLM ist für einen Baustein nicht nutzbar und der Rückfall auf Claude ist aus."""
+    """Kein erlaubter Anbieter ist für den Baustein nutzbar (bei haus-Profilen nie ein Rückfall auf Claude)."""
+
+
+@dataclass(frozen=True, eq=False)
+class Zugang:
+    """Modellzugang einer Sitzung. Gleichheit ist Identität: zwei Sitzungen teilen nie einen Zugang oder Client.
+    Der Schlüssel erscheint in keiner Darstellung (repr) und in keinem Log."""
+
+    user_id: str
+    art: Art
+    quelle: str = "keiner"  # profil | zuordnung | betreiber | festgelegt | keiner | fehler
+    claude_modell: str | None = None
+    claude_schluessel: str | None = field(default=None, repr=False)
+    claude_workspace: str | None = None
+    stt: str = "soniox"
+    tts: str = "soniox"
+    hinweis: str | None = None
+    _client: list = field(default_factory=list, repr=False, init=False)  # einmal je Zugang gebaut
+
+    def __post_init__(self):
+        if self.art == "claude" and not self.claude_schluessel:
+            raise ValueError("Zugang claude braucht einen Schlüssel")
+        if self.art == "haus" and self.claude_schluessel:
+            raise ValueError("Zugang haus darf keinen Claude-Schlüssel tragen")
+
+    @classmethod
+    def haus(cls, user_id: str, quelle: str = "keiner", hinweis: str | None = None, *, stt: str = "soniox",
+             tts: str = "soniox") -> Zugang:
+        return cls(user_id, "haus", quelle, stt=stt, tts=tts, hinweis=hinweis)
+
+    @classmethod
+    def betreiber(cls) -> Zugang:
+        """Schlüssel aus ANTHROPIC_API_KEY für Werkzeuge des Betreibers (Testsatz, Kommandozeile), nie für eine
+        Sitzung: die bekommt ihren Zugang aus dem Profil (modellzugang.zugang_laden)."""
+        schluessel = _env("ANTHROPIC_API_KEY")
+        if not schluessel:
+            return cls.haus("betreiber", "keiner", "ANTHROPIC_API_KEY fehlt")
+        return cls("betreiber", "claude", "betreiber", claude_schluessel=schluessel,
+                   claude_workspace=_env("ANTHROPIC_WORKSPACE_ID") or None)
+
+    @property
+    def kennung(self) -> str:
+        """Kurze Profilkennung für Logs (die ersten acht Zeichen der Profil-ID)."""
+        return (self.user_id or "-")[:8]
+
+    def anthropic(self) -> anthropic.AsyncAnthropic:
+        """Anthropic-Client dieser Sitzung mit dem Schlüssel des Profils (einmal gebaut, nie geteilt)."""
+        if self.art != "claude" or not self.claude_schluessel:
+            raise LLMNichtVerfuegbar("Dieses Profil nutzt nur Hausmodelle, Anthropic ist gesperrt")
+        if not self._client:
+            kopf = {"anthropic-workspace-id": self.claude_workspace} if self.claude_workspace else None
+            self._client.append(anthropic.AsyncAnthropic(api_key=self.claude_schluessel, default_headers=kopf))
+        return self._client[0]
 
 
 @dataclass(frozen=True)
@@ -102,11 +169,11 @@ class Wahl:
 
     @property
     def anzeige(self) -> str:
-        """Name für die Oberfläche, z. B. 'Claude Haiku 5.5' oder 'qwen3.6:35b (LiteLLM)'."""
+        """Name für die Oberfläche, z. B. 'Claude Haiku 5.5', 'gemma4-31b (LiteLLM)' oder '... (Rückfall)'."""
         name = lesbarer_modellname(self.modell)
-        if self.anbieter == "litellm":
-            return f"{name} (LiteLLM)"
-        return f"{name} (Rückfall)" if self.rueckfall else name
+        if self.rueckfall:
+            return f"{name} (Rückfall)"
+        return f"{name} (LiteLLM)" if self.anbieter == "litellm" else name
 
 
 @dataclass(frozen=True)
@@ -132,17 +199,70 @@ def lesbarer_modellname(model: str) -> str:
     return f"Claude {family.capitalize()} {major}.{minor}" if minor else f"Claude {family.capitalize()} {major}"
 
 
-# --- Konfiguration -----------------------------------------------------------------------------
+# --- Logs: Schlüssel schwärzen, fremde Aliase ausblenden, Verbrauch je Profil --------------------------
 
 
 def _env(name: str) -> str:
     return (os.getenv(name) or "").strip()
 
 
-def claude_standardmodell(baustein: str) -> str:
+def _ausgeblendete_woerter() -> list[str]:
+    return [w.strip().lower() for w in _env("WAMO_LLM_AUSBLENDEN").split(",") if w.strip()]
+
+
+def ausgeblendet(name: str) -> bool:
+    """WAMO_LLM_AUSBLENDEN: kommagetrennte Wortteile. Modellnamen, die einen davon enthalten (etwa Aliase
+    anderer Projekte auf demselben Gateway), erscheinen in keiner Liste, keiner Ausgabe und keiner Datei von
+    WAMO. Die Wortteile selbst stehen nur in der lokalen .env, nie im Repository."""
+    klein = (name or "").lower()
+    return any(w in klein for w in _ausgeblendete_woerter())
+
+
+def sichtbare_modelle(namen: list[str]) -> list[str]:
+    return [n for n in namen if not ausgeblendet(n)]
+
+
+def ausblenden_text(text: str) -> str:
+    """Ersetzt in einem Text (Fehlermeldung, Log) jedes Wort, das einen ausgeblendeten Wortteil enthält."""
+    woerter = _ausgeblendete_woerter()
+    if not woerter or not text:
+        return text
+    muster = re.compile(r"[^\s\"',;\[\]{}()<>]*(?:" + "|".join(map(re.escape, woerter)) + r")[^\s\"',;\[\]{}()<>]*",
+                        re.IGNORECASE)
+    return muster.sub("<ausgeblendet>", text)
+
+
+def _log_schuetzen(record: dict) -> None:
+    record["message"] = ausblenden_text(schwaerzen(record["message"]))
+
+
+def log_schutz_einrichten() -> None:
+    """Loguru-Patcher für alle Senken: Schlüssel schwärzen, ausgeblendete Namen ersetzen. Bleibt beim
+    Neuaufbau der Senken (logger.remove, logger.add) bestehen."""
+    logger.configure(patcher=_log_schuetzen)
+
+
+log_schutz_einrichten()
+
+
+def verbrauch_loggen(zugang: Zugang | None, anbieter: str, modell: str, baustein: str, *, eingabe: int = 0,
+                     ausgabe: int = 0, cache_lesen: int = 0, cache_schreiben: int = 0) -> None:
+    """Eine Zeile je Modellaufruf: wer, womit, wie viele Tokens. Nie Inhalte."""
+    logger.info("Verbrauch profil={} anbieter={} modell={} baustein={} ein={} aus={} cache_lesen={} cache_schreiben={}",
+                zugang.kennung if zugang else "-", anbieter, modell, baustein, eingabe, ausgabe, cache_lesen,
+                cache_schreiben)
+
+
+# --- Konfiguration -----------------------------------------------------------------------------
+
+
+def claude_standardmodell(baustein: str, zugang: Zugang | None = None) -> str:
+    """Modell des Profils (vom Admin festgelegt), sonst VISION_MODEL bzw. CLAUDE_MODEL_FAST, sonst Haiku."""
+    if zugang is not None and zugang.claude_modell:
+        return zugang.claude_modell
     if baustein == "vision":
-        return _env("VISION_MODEL") or STANDARD_CLAUDE_VISION
-    return _env("CLAUDE_MODEL_FAST") or STANDARD_CLAUDE_SCHNELL
+        return _env("VISION_MODEL") or _env("CLAUDE_MODEL_FAST") or STANDARD_CLAUDE
+    return _env("CLAUDE_MODEL_FAST") or STANDARD_CLAUDE
 
 
 def rueckfall_erlaubt(baustein: str) -> bool:
@@ -155,19 +275,20 @@ def rueckfall_erlaubt(baustein: str) -> bool:
     return baustein in {teil.strip() for teil in wert.split(",")}
 
 
-def konfiguration(baustein: str) -> tuple[Anbieter, str | None]:
-    """(Anbieter, Modell) aus der Umgebung. Ein unbekannter Anbieter gilt als claude (mit Fehlermeldung)."""
+def konfiguration(baustein: str, zugang: Zugang | None = None) -> tuple[Anbieter, str | None]:
+    """(Anbieter, Modell) aus der Umgebung. Für haus-Profile ist der Anbieter immer litellm."""
     if baustein not in _ENV:
         raise ValueError(f"unbekannter Baustein {baustein!r}")
     anbieter_env, modell_env = _ENV[baustein]
-    wert = _env(anbieter_env).lower() or "claude"
+    haus = zugang is not None and zugang.art == "haus"
+    wert = "litellm" if haus else (_env(anbieter_env).lower() or "claude")
     if wert not in ANBIETER:
         logger.error("{}={!r} ist unbekannt (erlaubt: claude, litellm), nutze claude", anbieter_env, wert)
         wert = "claude"
     anbieter: Anbieter = "litellm" if wert == "litellm" else "claude"
     modell = _env(modell_env) or None
-    if (anbieter == "litellm" and not modell and baustein in ("lernen", "zusammenfassung")
-            and _env("WAMO_LLM_ANBIETER").lower() == "litellm"):
+    gespraech_im_haus = haus or _env("WAMO_LLM_ANBIETER").lower() == "litellm"
+    if anbieter == "litellm" and not modell and baustein in ("lernen", "zusammenfassung") and gespraech_im_haus:
         modell = _env("WAMO_LLM_MODELL") or None  # dasselbe Modell wie das Gespräch
     return anbieter, modell
 
@@ -183,8 +304,8 @@ _ERLAUBTE_PARAMETER = frozenset(inspect.signature(AsyncCompletions.create).param
 
 def litellm_extra() -> dict[str, Any]:
     """Zusätzliche Parameter für jede LiteLLM-Anfrage aus WAMO_LLM_EXTRA (JSON-Objekt), z. B.
-    {"reasoning_effort": "none"} oder {"extra_body": {"chat_template_kwargs": {"enable_thinking": false}}}.
-    Was das OpenAI-SDK nicht als Parameter kennt, wandert in extra_body, statt die Anfrage abzubrechen."""
+    {"think": false} oder {"reasoning_effort": "none"}. Was das OpenAI-SDK nicht als Parameter kennt, wandert
+    in extra_body, statt die Anfrage abzubrechen."""
     raw = _env("WAMO_LLM_EXTRA")
     if not raw:
         return {}
@@ -255,6 +376,30 @@ def _angeboten(modell: str, modelle: list[str]) -> bool:
     return any(modell == m or ("*" in m and fnmatch.fnmatchcase(modell, m)) for m in modelle)
 
 
+async def _alias_pruefen(modell: str, *, client: httpx.AsyncClient | None = None) -> str | None:
+    """Gruppen-Aliase des Gateways stehen nicht in /models. Für einen Namen, der dort fehlt, prüft eine
+    Anfrage mit einem einzigen Ausgabe-Token, ob das Gateway ihn bedient (Ergebnis wird zwischengespeichert).
+    Wirft LLMFehler bei Netz- oder Schlüsselproblemen; sonst None oder der Grund."""
+    url = f"{litellm_basis()}/chat/completions"
+    kopf = {"Authorization": f"Bearer {_env('LITELLM_API_KEY')}"}
+    koerper = {"model": modell, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]}
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=PRUEF_ALIAS_TIMEOUT_SECS) as eigener:
+                r = await eigener.post(url, headers=kopf, json=koerper)
+        else:
+            r = await client.post(url, headers=kopf, json=koerper, timeout=PRUEF_ALIAS_TIMEOUT_SECS)
+    except httpx.HTTPError as e:
+        raise LLMFehler(f"Gateway nicht erreichbar ({type(e).__name__})", verbindung=True) from None
+    if r.status_code == 200:
+        return None
+    if r.status_code in (401, 403):
+        raise LLMFehler(f"Gateway lehnt den Schlüssel ab (HTTP {r.status_code})")
+    if r.status_code >= 500:
+        raise LLMFehler(f"Gateway antwortet mit HTTP {r.status_code}", verbindung=True)
+    return f"das Gateway bietet das Modell {modell!r} nicht an"
+
+
 def _gecacht(basis: str, modell: str, jetzt: float) -> tuple[bool, str | None]:
     for schluessel in ((basis, _ALLE), (basis, modell)):
         if (eintrag := _pruef_cache.get(schluessel)) and jetzt - eintrag[0] < PRUEF_TTL_SECS:
@@ -274,7 +419,7 @@ async def litellm_problem(modell: str | None) -> str | None:
         return problem
     try:
         modelle = await litellm_modelle()
-        problem = None if _angeboten(modell, modelle) else f"das Gateway bietet das Modell {modell!r} nicht an"
+        problem = None if _angeboten(modell, modelle) else await _alias_pruefen(modell)
     except LLMFehler as e:
         problem = str(e)
         if e.verbindung:  # Gateway ganz weg: nicht jedes Modell einzeln je 2 s prüfen
@@ -288,49 +433,106 @@ def _litellm_ausgefallen(problem: str) -> None:
     _pruef_cache[(litellm_basis(), _ALLE)] = (time.monotonic(), problem)
 
 
-def _rueckfall(baustein: str, modell: str | None, problem: str) -> Wahl:
-    claude = claude_standardmodell(baustein)
+# --- Prüfung von Claude (nur für claude-Profile) -------------------------------------------------
+
+_claude_cache: dict[str, tuple[float, str | None]] = {}
+
+
+def _claude_kennung(zugang: Zugang) -> str:
+    # Nur ein Hash des Schlüssels als Cache-Schlüssel, nie der Schlüssel selbst
+    return hashlib.sha256((zugang.claude_schluessel or "").encode("utf-8")).hexdigest()[:16]
+
+
+async def claude_problem(zugang: Zugang) -> str | None:
+    """Grund, warum Claude mit dem Schlüssel des Profils gerade nicht nutzbar ist, oder None. Kostet nichts
+    (Modellliste), Ergebnis gilt 60 s."""
+    kennung, jetzt = _claude_kennung(zugang), time.monotonic()
+    if (eintrag := _claude_cache.get(kennung)) and jetzt - eintrag[0] < CLAUDE_PRUEF_TTL_SECS:
+        return eintrag[1]
+    client = zugang.anthropic().with_options(
+        timeout=anthropic.Timeout(CLAUDE_PRUEF_TIMEOUT_SECS, connect=VERBINDUNG_TIMEOUT_SECS), max_retries=0)
+    try:
+        await client.models.list(limit=1)
+        problem = None
+    except anthropic.AuthenticationError:
+        problem = "Claude lehnt den Schlüssel ab"
+    except anthropic.APIStatusError as e:
+        problem = f"Claude antwortet mit HTTP {e.status_code}"
+    except anthropic.APIConnectionError:
+        problem = "Claude nicht erreichbar"
+    _claude_cache[kennung] = (jetzt, problem)
+    return problem
+
+
+def _claude_ausgefallen(zugang: Zugang, problem: str) -> None:
+    _claude_cache[_claude_kennung(zugang)] = (time.monotonic(), problem)
+
+
+# --- Auswahl je Baustein ---------------------------------------------------------------------------
+
+
+def _rueckfall_auf_claude(baustein: str, modell: str | None, problem: str, zugang: Zugang) -> Wahl:
+    """Ein auf litellm gelegter Baustein ist nicht nutzbar. Nur claude-Profile dürfen zu Claude wechseln."""
+    if zugang.art != "claude":
+        logger.error("LiteLLM für {} nicht nutzbar: {}. Profil {} nutzt nur Hausmodelle: kein Rückfall auf Claude.",
+                     baustein, problem, zugang.kennung)
+        raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {problem}")
     if not rueckfall_erlaubt(baustein):
         logger.error("LiteLLM für {} nicht nutzbar: {}. Kein Rückfall (WAMO_LLM_RUECKFALL).", baustein, problem)
         raise LLMNichtVerfuegbar(f"LiteLLM für {baustein} nicht nutzbar: {problem}")
+    claude = claude_standardmodell(baustein, zugang)
     logger.error("LiteLLM für {} nicht nutzbar ({}): {}. Rückfall auf Claude ({}).", baustein, modell, problem, claude)
     return Wahl(baustein, "claude", claude, "litellm", problem)
 
 
-async def waehlen(baustein: str) -> Wahl:
-    """Anbieter und Modell für einen Baustein, mit Prüfung des Gateways und Rückfall auf Claude."""
-    anbieter, modell = konfiguration(baustein)
+async def _haus_wahl(baustein: str, zugang: Zugang, gewuenscht: Anbieter, grund: str | None = None) -> Wahl:
+    """Hausmodell für den Baustein; LLMNichtVerfuegbar, wenn es nicht nutzbar ist."""
+    _anbieter, modell = konfiguration(baustein, Zugang.haus(zugang.user_id))
+    if problem := await litellm_problem(modell):
+        raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {problem}")
+    assert modell is not None  # litellm_problem prüft das
+    return Wahl(baustein, "litellm", modell, gewuenscht, grund)
+
+
+async def waehlen(baustein: str, zugang: Zugang) -> Wahl:
+    """Anbieter und Modell für einen Baustein nach dem Zugang des Profils."""
+    if zugang.art == "haus":
+        return await _haus_wahl(baustein, zugang, "litellm")
+    anbieter, modell = konfiguration(baustein, zugang)
     if anbieter == "claude":
         if modell and not modell.startswith("claude-"):
             # z. B. ein LiteLLM-Alias, der nach dem Zurückschalten stehen geblieben ist
             logger.error("{}={!r} ist kein Claude-Modell, nutze {}", _ENV[baustein][1], modell,
-                         claude_standardmodell(baustein))
+                         claude_standardmodell(baustein, zugang))
             modell = None
-        return Wahl(baustein, "claude", modell or claude_standardmodell(baustein), "claude")
+        return Wahl(baustein, "claude", modell or claude_standardmodell(baustein, zugang), "claude")
     problem = await litellm_problem(modell)
     if problem or not modell:
-        return _rueckfall(baustein, modell, problem or "kein Modell gesetzt")
+        return _rueckfall_auf_claude(baustein, modell, problem or "kein Modell gesetzt", zugang)
     return Wahl(baustein, "litellm", modell, "litellm")
 
 
-# --- Clients -----------------------------------------------------------------------------------
+async def _claude_oder_haus(baustein: str, wahl: Wahl, zugang: Zugang) -> Wahl:
+    """Bei einer Claude-Wahl: ist Claude für das Profil gerade nicht nutzbar, übernehmen die Hausmodelle."""
+    if wahl.anbieter != "claude" or (problem := await claude_problem(zugang)) is None:
+        return wahl
+    try:
+        ersatz = await _haus_wahl(baustein, zugang, "claude", problem)
+    except LLMNichtVerfuegbar as e:
+        logger.error("Claude für Profil {} nicht nutzbar ({}) und kein Hausmodell: {}", zugang.kennung, problem, e)
+        raise LLMNichtVerfuegbar(f"{problem}; {e}") from None
+    logger.warning("Claude für Profil {} nicht nutzbar ({}): Rückfall auf das Hausmodell {}", zugang.kennung,
+                   problem, ersatz.modell)
+    return ersatz
 
 
-@functools.cache
-def anthropic_client() -> anthropic.AsyncAnthropic:
-    """Ein Client für den ganzen Prozess (Gespräch, Websuche, Lernen, Bildschirm): der Aufbau
-    (SSL-Kontext) kostet sonst bei jedem Aufruf Zeit im laufenden Sprachstrom.
-    Ist der API-Schlüssel nicht an einen Workspace gebunden (Organisationsschlüssel), verlangt
-    Anthropic die Workspace-ID als Header; sie kommt aus ANTHROPIC_WORKSPACE_ID."""
-    workspace = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
-    headers = {"anthropic-workspace-id": workspace} if workspace else None
-    return anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"], default_headers=headers)
+# --- Clients für Hausmodelle -------------------------------------------------------------------------
 
 
 @functools.cache
 def _litellm_client(basis: str, schluessel: str) -> openai.AsyncOpenAI:
-    # Je Adresse und Schlüssel ein Client (Verbindungen bleiben offen). Keine stillen Wiederholungen:
-    # der Rückfall auf Claude ist die Wiederholung.
+    # Ein Client je Gateway (der Schlüssel des Kerns für das Gateway, nicht der eines Profils). Keine stillen
+    # Wiederholungen: der Rückfall ist die Wiederholung.
     return openai.AsyncOpenAI(base_url=basis, api_key=schluessel, max_retries=0,
                               timeout=openai.Timeout(ANFRAGE_TIMEOUT_SECS["lernen"], connect=VERBINDUNG_TIMEOUT_SECS))
 
@@ -342,7 +544,22 @@ def litellm_client() -> openai.AsyncOpenAI:
 # --- Pipecat-Dienste für Gespräch und Zusammenfassung ------------------------------------------
 
 
-class LiteLLMService(OpenAILLMService):
+class _Verbrauch:
+    """Schreibt den Verbrauch jedes Modellaufrufs des Dienstes mit Profilkennung ins Log (ohne Inhalt)."""
+
+    _wamo_zugang: Zugang | None = None
+    _wamo_baustein: str = "gespraech"
+    _wamo_anbieter: str = ""
+
+    async def start_llm_usage_metrics(self, tokens: LLMTokenUsage):
+        verbrauch_loggen(self._wamo_zugang, self._wamo_anbieter, str(self._settings.model), self._wamo_baustein,
+                         eingabe=tokens.prompt_tokens or 0, ausgabe=tokens.completion_tokens or 0,
+                         cache_lesen=tokens.cache_read_input_tokens or 0,
+                         cache_schreiben=tokens.cache_creation_input_tokens or 0)
+        await super().start_llm_usage_metrics(tokens)
+
+
+class LiteLLMService(_Verbrauch, OpenAILLMService):
     """Pipecat-Dienst für das LiteLLM-Gateway (OpenAI-kompatibel).
 
     Nicht jedes Modell hinter dem Gateway kennt die Rolle "developer" (Pipecat schickt damit z. B.
@@ -351,6 +568,12 @@ class LiteLLMService(OpenAILLMService):
     (Standard des SDK: 600 s und zwei Wiederholungen)."""
 
     supports_developer_role = False
+    _wamo_anbieter = "litellm"
+
+    def __init__(self, *, lese_timeout: float = GESPRAECH_LESE_TIMEOUT_SECS, **kwargs):
+        # vor super().__init__, denn dort entsteht der Client (create_client)
+        self._wamo_lese_timeout = lese_timeout
+        super().__init__(**kwargs)
 
     def create_client(self, api_key=None, base_url=None, organization=None, project=None, default_headers=None,
                       **kwargs):
@@ -361,17 +584,28 @@ class LiteLLMService(OpenAILLMService):
             project=project,
             default_headers=default_headers,
             max_retries=0,
-            timeout=openai.Timeout(GESPRAECH_LESE_TIMEOUT_SECS, connect=VERBINDUNG_TIMEOUT_SECS),
+            timeout=openai.Timeout(self._wamo_lese_timeout, connect=VERBINDUNG_TIMEOUT_SECS),
             http_client=openai.DefaultAsyncHttpxClient(
                 limits=connection_limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=None)
             ),
         )
 
 
-def gespraech_dienst(wahl: Wahl, system_instruction: str | None) -> LLMService:
+class ClaudeService(_Verbrauch, AnthropicLLMService):
+    """Anthropic-Dienst einer Sitzung mit dem Client des Profils."""
+
+    _wamo_anbieter = "claude"
+
+
+def gespraech_dienst(wahl: Wahl, system_instruction: str | None, zugang: Zugang,
+                     baustein: str = "gespraech") -> LLMService:
     """Pipecat-Dienst für eine feste Wahl (auch für den Testsatz in eval/)."""
     if wahl.anbieter == "litellm":
-        return LiteLLMService(
+        dienst: LLMService = LiteLLMService(
+            # Die Zusammenfassung läuft ohne Stream (Pipecat run_inference): die Lesezeit gilt dort für die
+            # ganze Antwort, nicht für die Pause zwischen zwei Stücken
+            lese_timeout=ANFRAGE_TIMEOUT_SECS["zusammenfassung"] if baustein == "zusammenfassung"
+            else GESPRAECH_LESE_TIMEOUT_SECS,
             api_key=_env("LITELLM_API_KEY"),
             base_url=litellm_basis(),
             settings=LiteLLMService.Settings(
@@ -380,38 +614,46 @@ def gespraech_dienst(wahl: Wahl, system_instruction: str | None) -> LLMService:
                 extra=litellm_extra(),
             ),
         )
-    return AnthropicLLMService(
-        api_key=os.environ["ANTHROPIC_API_KEY"],
-        client=anthropic_client(),  # gemeinsamer Client, inklusive Workspace-Header (ANTHROPIC_WORKSPACE_ID)
-        settings=AnthropicLLMService.Settings(
-            model=wahl.modell,
-            # Persona als system_instruction, nicht als System-Nachricht im Kontext: die
-            # Satzende-Erkennung hängt ihre Regeln hier an. Eine System-Nachricht im Kontext
-            # würde Pipecat dann komplett verwerfen.
-            system_instruction=system_instruction,
-            enable_prompt_caching=True,
-            # Haiku denkt sonst vor jeder Antwort nach (bis 1,6 s bis zum ersten Wort).
-            thinking=AnthropicLLMService.ThinkingConfig(type="disabled"),
-        ),
-    )
+    else:
+        dienst = ClaudeService(
+            api_key=zugang.claude_schluessel or "",
+            client=zugang.anthropic(),  # Client dieser Sitzung mit dem Schlüssel des Profils
+            settings=ClaudeService.Settings(
+                model=wahl.modell,
+                # Persona als system_instruction, nicht als System-Nachricht im Kontext: die
+                # Satzende-Erkennung hängt ihre Regeln hier an. Eine System-Nachricht im Kontext
+                # würde Pipecat dann komplett verwerfen.
+                system_instruction=system_instruction,
+                enable_prompt_caching=True,
+                # Haiku denkt sonst vor jeder Antwort nach (bis 1,6 s bis zum ersten Wort).
+                thinking=ClaudeService.ThinkingConfig(type="disabled"),
+            ),
+        )
+    dienst._wamo_zugang = zugang
+    dienst._wamo_baustein = baustein
+    return dienst
 
 
-async def gespraech_llm(system_instruction: str) -> tuple[LLMService, Wahl]:
-    """Dienst für das Gespräch nach WAMO_LLM_ANBIETER und WAMO_LLM_MODELL, mit Rückfall auf Claude.
-    Wirft LLMNichtVerfuegbar, wenn LiteLLM nicht nutzbar und der Rückfall für das Gespräch aus ist."""
-    wahl = await waehlen("gespraech")
-    logger.info("Gesprächsmodell: {} über {}", wahl.modell, wahl.anbieter)
-    return gespraech_dienst(wahl, system_instruction), wahl
+async def gespraech_llm(system_instruction: str, zugang: Zugang) -> tuple[LLMService, Wahl]:
+    """Dienst für das Gespräch nach dem Zugang des Profils. Wirft LLMNichtVerfuegbar, wenn kein erlaubter
+    Anbieter nutzbar ist (haus-Profile fallen nie auf Claude zurück)."""
+    wahl = await _claude_oder_haus("gespraech", await waehlen("gespraech", zugang), zugang)
+    logger.info("Gesprächsmodell für Profil {}: {} über {} (Zugang {})", zugang.kennung, wahl.modell, wahl.anbieter,
+                zugang.art)
+    return gespraech_dienst(wahl, system_instruction, zugang), wahl
 
 
-async def zusammenfassung_llm() -> LLMService | None:
-    """Eigener Dienst für Zusammenfassungen langer Gespräche, nur wenn WAMO_LLM_ZUSAMMENFASSUNG
-    gesetzt ist. None: Pipecat fasst mit dem Gesprächsmodell zusammen."""
-    if not _env("WAMO_LLM_ZUSAMMENFASSUNG"):
+async def zusammenfassung_llm(zugang: Zugang) -> LLMService | None:
+    """Eigener Dienst für Zusammenfassungen langer Gespräche. None: Pipecat fasst mit dem Gesprächsmodell der
+    Sitzung zusammen; das gilt nur, wenn Gespräch und Zusammenfassung bei Claude liegen. Läuft eines davon über
+    ein Hausmodell, gibt es immer einen eigenen Dienst mit längerer Zeitgrenze (Hausmodelle schreiben langsamer,
+    und die Zusammenfassung wartet auf die ganze Antwort)."""
+    wahl = await _claude_oder_haus("zusammenfassung", await waehlen("zusammenfassung", zugang), zugang)
+    nur_claude = wahl.anbieter == "claude" and konfiguration("gespraech", zugang)[0] == "claude"
+    if nur_claude and not _env("WAMO_LLM_ZUSAMMENFASSUNG"):
         return None
-    wahl = await waehlen("zusammenfassung")
-    logger.info("Zusammenfassung: {} über {}", wahl.modell, wahl.anbieter)
-    return gespraech_dienst(wahl, None)
+    logger.info("Zusammenfassung für Profil {}: {} über {}", zugang.kennung, wahl.modell, wahl.anbieter)
+    return gespraech_dienst(wahl, None, zugang, "zusammenfassung")
 
 
 # --- Schlanker Aufruf für Lernen und Vision ----------------------------------------------------
@@ -442,9 +684,15 @@ def _openai_inhalt(inhalt: str | list[str | Bild]) -> str | list[dict]:
     return teile
 
 
+# Systemtext je tatsächlich genutztem Anbieter (z. B. Koordinaten: Claude in Bildpixeln, Hausmodelle auf 0 bis
+# 1000); so passt er auch nach einem Rückfall auf den anderen Anbieter
+System = str | Callable[[Wahl], str]
+
+
 @dataclass(frozen=True)
 class _Auftrag:
-    system: str
+    baustein: str
+    system: System
     inhalt: str | list[str | Bild]
     max_tokens: int
     json_schema: dict | None
@@ -452,35 +700,45 @@ class _Auftrag:
     timeout: float
 
 
-async def _claude_anfrage(wahl: Wahl, a: _Auftrag) -> Antwort:
+def _systemtext(a: _Auftrag, wahl: Wahl) -> str:
+    return a.system(wahl) if callable(a.system) else a.system
+
+
+async def _claude_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
     output_config: dict[str, Any] = {"effort": "low"}
     if a.json_schema is not None:
         output_config["format"] = {"type": "json_schema", "schema": a.json_schema}
-    client = anthropic_client().with_options(
+    client = zugang.anthropic().with_options(
         timeout=anthropic.Timeout(a.timeout, connect=VERBINDUNG_TIMEOUT_SECS), max_retries=0
     )
     try:
         r = await client.messages.create(
             model=wahl.modell,
             max_tokens=a.max_tokens,
-            system=a.system,
+            system=_systemtext(a, wahl),
             output_config=output_config,
             messages=[{"role": "user", "content": _claude_inhalt(a.inhalt)}],
         )
+    except anthropic.AuthenticationError:
+        raise LLMFehler("Claude: Schlüssel abgelehnt", verbindung=True) from None
     except anthropic.APIStatusError as e:
-        raise LLMFehler(f"Claude: API-Fehler {e.status_code}") from None
+        raise LLMFehler(f"Claude: API-Fehler {e.status_code}", verbindung=e.status_code >= 500) from None
     except anthropic.APIConnectionError:  # auch Zeitüberschreitung
         raise LLMFehler("Claude: keine Verbindung", verbindung=True) from None
+    if (u := getattr(r, "usage", None)) is not None:
+        verbrauch_loggen(zugang, "claude", wahl.modell, a.baustein, eingabe=u.input_tokens or 0,
+                         ausgabe=u.output_tokens or 0, cache_lesen=getattr(u, "cache_read_input_tokens", 0) or 0,
+                         cache_schreiben=getattr(u, "cache_creation_input_tokens", 0) or 0)
     ende: Ende = {"refusal": "abgelehnt", "max_tokens": "zu_lang"}.get(r.stop_reason or "", "fertig")
     text = " ".join(b.text.strip() for b in r.content if b.type == "text").strip()
     return Antwort(text, ende, wahl)
 
 
-async def _litellm_anfrage(wahl: Wahl, a: _Auftrag) -> Antwort:
+async def _litellm_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
     params: dict[str, Any] = {
         "model": wahl.modell,
         "max_tokens": a.max_tokens,
-        "messages": [{"role": "system", "content": a.system}, {"role": "user", "content": _openai_inhalt(a.inhalt)}],
+        "messages": [{"role": "system", "content": _systemtext(a, wahl)}, {"role": "user", "content": _openai_inhalt(a.inhalt)}],
         "timeout": openai.Timeout(a.timeout, connect=VERBINDUNG_TIMEOUT_SECS),
     }
     if a.json_schema is not None:
@@ -499,6 +757,9 @@ async def _litellm_anfrage(wahl: Wahl, a: _Auftrag) -> Antwort:
         raise LLMFehler("LiteLLM: ungültige Anfrage-Parameter (WAMO_LLM_EXTRA prüfen)") from None
     if not r.choices:
         raise LLMFehler("LiteLLM: leere Antwort")
+    if (u := getattr(r, "usage", None)) is not None:
+        verbrauch_loggen(zugang, "litellm", wahl.modell, a.baustein, eingabe=getattr(u, "prompt_tokens", 0) or 0,
+                         ausgabe=getattr(u, "completion_tokens", 0) or 0)
     grund = r.choices[0].finish_reason or ""
     ende: Ende = {"content_filter": "abgelehnt", "length": "zu_lang"}.get(grund, "fertig")
     return Antwort((r.choices[0].message.content or "").strip(), ende, wahl)
@@ -507,27 +768,41 @@ async def _litellm_anfrage(wahl: Wahl, a: _Auftrag) -> Antwort:
 async def anfrage(
     baustein: str,
     *,
-    system: str,
+    zugang: Zugang,
+    system: System,
     inhalt: str | list[str | Bild],
     max_tokens: int,
     json_schema: dict | None = None,
     schema_name: str = "antwort",
 ) -> Antwort:
-    """Ein einzelner Modellaufruf für Lernen oder Vision, beim konfigurierten Anbieter.
+    """Ein einzelner Modellaufruf für Lernen oder Vision, nach dem Zugang des Profils.
 
-    Fällt LiteLLM mitten im Betrieb aus (Netz, Gateway, Zeitgrenze), wiederholt der Aufruf einmal bei
-    Claude, sofern der Rückfall für den Baustein erlaubt ist, und meldet das im Log. Wirft LLMFehler."""
-    auftrag = _Auftrag(system, inhalt, max_tokens, json_schema, schema_name, ANFRAGE_TIMEOUT_SECS.get(baustein, 30.0))
-    wahl = await waehlen(baustein)
+    Rückfälle bei Ausfall (Netz, Anbieter, Zeitgrenze, abgelehnter Schlüssel), jeweils mit Meldung im Log:
+      claude-Profil, Baustein auf Claude    einmal mit dem Hausmodell
+      claude-Profil, Baustein auf LiteLLM   einmal mit Claude (WAMO_LLM_RUECKFALL)
+      haus-Profil                           kein Rückfall, LLMNichtVerfuegbar oder LLMFehler
+    Wirft LLMFehler."""
+    auftrag = _Auftrag(baustein, system, inhalt, max_tokens, json_schema, schema_name,
+                       ANFRAGE_TIMEOUT_SECS.get(baustein, 30.0))
+    wahl = await waehlen(baustein, zugang)
     if wahl.anbieter == "litellm":
         try:
-            return await _litellm_anfrage(wahl, auftrag)
+            return await _litellm_anfrage(wahl, auftrag, zugang)
         except LLMFehler as e:
             if not e.verbindung:
                 raise
             _litellm_ausgefallen(str(e))
-            wahl = _rueckfall(baustein, wahl.modell, str(e))
-    return await _claude_anfrage(wahl, auftrag)
+            wahl = _rueckfall_auf_claude(baustein, wahl.modell, str(e), zugang)
+        return await _claude_anfrage(wahl, auftrag, zugang)
+    try:
+        return await _claude_anfrage(wahl, auftrag, zugang)
+    except LLMFehler as e:
+        if not e.verbindung:
+            raise
+        _claude_ausgefallen(zugang, str(e))
+        ersatz = await _haus_wahl(baustein, zugang, "claude", str(e))
+        logger.warning("Claude für {} nicht nutzbar ({}): einmal mit dem Hausmodell {}", baustein, e, ersatz.modell)
+        return await _litellm_anfrage(ersatz, auftrag, zugang)
 
 
 _ZAUN = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)

@@ -8,6 +8,23 @@ import { pcAutoLesen } from "@/lib/einstellungen";
 import { parseServerMessage, type Auftrag } from "@/lib/nachrichten";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
+import {
+  anzeigePegel,
+  fehlerName,
+  geraeteListe,
+  gewaehltesMikrofon,
+  kernStilleText,
+  merkeMikrofon,
+  messen,
+  mikrofonFehlerText,
+  neueStille,
+  pruefeStille,
+  sendeSpurErsetzen,
+  STILLE_DBFS,
+  startGeraet,
+  stilleText,
+  type Mikrofon,
+} from "@/lib/mikrofon";
 import { getSupabase } from "@/lib/supabase";
 import { sollAusblenden, type SoftStop } from "@/lib/weicherStopp";
 import {
@@ -69,14 +86,27 @@ export type WamoAktionen = {
   pcSteuerung: (an: boolean) => boolean;
   /** Fehlermeldung schließen */
   schliesseFehler: () => void;
+  /** angeschlossene Mikrofone (ohne die Windows-Aliase), leer ohne Verbindung */
+  mikrofone: () => Promise<Mikrofon[]>;
+  /** Mikrofon wechseln (gilt sofort und für die nächsten Gespräche auf diesem Gerät); true, wenn gewechselt */
+  mikrofonWaehlen: (id: string) => boolean;
+  /** Modellzugang des Profils abfragen, eigenen Claude-Schlüssel hinterlegen oder löschen; true, wenn gesendet.
+   *  Optional, damit die Vorschau ohne Kern auskommt. */
+  modellzugang?: (anfrage: ModellzugangAnfrage) => boolean;
 };
+
+/** Der Schlüssel geht nur in dieser einen Nachricht an den eigenen Kern und wird im Browser nicht gespeichert. */
+export type ModellzugangAnfrage =
+  | { aktion: "status" | "loeschen" }
+  | { aktion: "hinterlegen"; schluessel: string; workspace?: string };
 
 /** Nachrichten an den Voice-Core: feste Liste statt freier Typen. */
 type ClientMessage =
   | { type: "freigabe"; data: { job: string; id: string; entscheidung: "ja" | "nein" } }
   | { type: "vergessen"; data: { id: string } }
   | { type: "auftrag_start"; data: { job: string; entscheidung: "ja" | "nein" } }
-  | { type: "pc_steuerung"; data: { an: boolean } };
+  | { type: "pc_steuerung"; data: { an: boolean } }
+  | { type: "modellzugang"; data: ModellzugangAnfrage };
 
 function senden(client: PipecatClient, msg: ClientMessage) {
   client.sendClientMessage(msg.type, msg.data);
@@ -182,6 +212,27 @@ function fehlerText(
   }
 }
 
+/**
+ * Nach dem Verbinden auf das auf diesem Gerät gewählte Mikrofon wechseln, wenn es angeschlossen ist und nicht schon
+ * läuft. Ohne Wahl oder ohne das Gerät bleibt das Standardgerät von Windows.
+ */
+async function gewuenschtesMikrofon(client: PipecatClient, spur: MediaStreamTrack | undefined, aktuell: () => boolean) {
+  const wunsch = gewaehltesMikrofon();
+  if (!wunsch || !navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const geraete = await navigator.mediaDevices.enumerateDevices();
+    const id = startGeraet(geraeteListe(geraete), wunsch);
+    if (!id || !aktuell()) return;
+    const laeuft = spur?.getSettings?.() ?? {};
+    const ziel = geraete.find((g) => g.deviceId === id);
+    // "default" ist nur ein Alias: dasselbe Gerät, wenn die groupId übereinstimmt
+    const schon = laeuft.deviceId === id || (laeuft.deviceId === "default" && !!ziel && laeuft.groupId === ziel.groupId);
+    if (!schon) client.updateMic(id);
+  } catch {
+    // Geräteliste nicht lesbar: dann bleibt das Standardgerät
+  }
+}
+
 const TOKEN_REST_MS = 60_000; // so lange vor Ablauf gilt ein Token als "läuft ab"
 
 export function useWamo(): WamoAktionen {
@@ -192,6 +243,22 @@ export function useWamo(): WamoAktionen {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // WAMOs Pegel messen wir selbst: SmallWebRTC meldet onRemoteAudioLevel nie (kein Player).
   const botMeter = useRef<{ ctx: AudioContext; analyser: AnalyserNode; buf: Float32Array<ArrayBuffer> } | null>(null);
+  // Ebenso den eigenen Mikrofonpegel (onLocalAudioLevel kommt mit dem WavMediaManager nie): für Stimmlinie, Rand und
+  // den Stille-Wächter (lib/mikrofon.ts)
+  const micMeter = useRef<{
+    ctx: AudioContext;
+    analyser: AnalyserNode;
+    buf: Float32Array<ArrayBuffer>;
+    track: MediaStreamTrack;
+  } | null>(null);
+  const stille = useRef(neueStille());
+  // Fehler beim Öffnen des Mikrofons (onDeviceError): Name wie NotAllowedError, für eine passende Meldung
+  const geraetFehler = useRef<string | null>(null);
+  // Kern meldet nur Stille (Servernachricht "mikrofon")
+  const kernStille = useRef(false);
+  // Gerät gewechselt, während eine Mikrofon-Warnung steht: sie verschwindet, sobald das neue Gerät Ton liefert, und
+  // nennt nach STILLE_MS das neue Gerät, wenn auch dieses still bleibt
+  const warnungNachWechsel = useRef(false);
   const softStop = useRef<SoftStop>({ armedAt: null, fading: false });
   // Neue RTVI-Ereignisse (bot-output, user-input) haben Vorrang; ältere Kerne schicken nur Transkripte
   const seen = useRef({ botOutput: false, userInput: false });
@@ -224,6 +291,13 @@ export function useWamo(): WamoAktionen {
     const meter = botMeter.current;
     botMeter.current = null;
     if (meter) void meter.ctx.close().catch(() => undefined);
+    const mic = micMeter.current;
+    micMeter.current = null;
+    if (mic) void mic.ctx.close().catch(() => undefined);
+    stille.current = neueStille();
+    geraetFehler.current = null;
+    kernStille.current = false;
+    warnungNachWechsel.current = false;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.srcObject = null;
@@ -258,9 +332,11 @@ export function useWamo(): WamoAktionen {
         ...s,
         presence: "offline",
         betrieb: null, // Betriebsdaten gelten nur für eine laufende Verbindung
+        modellzugang: null, // wird beim nächsten Verbinden neu abgefragt
         approvals: [],
         auftraege: [],
         micOn: true,
+        mikrofon: null,
         error,
         ansage: !war ? s.ansage : grund === "getrennt" ? "Verbindung getrennt" : "Gespräch beendet",
       };
@@ -286,6 +362,25 @@ export function useWamo(): WamoAktionen {
         for (const v of meter.buf) sum += v * v;
         // RMS ungefähr auf die Skala des Mikrofonpegels bringen (Sprache ~0,1 bis 0,3)
         lv.bot = Math.min(1, Math.sqrt(sum / meter.buf.length) * 2);
+      }
+      const mic = micMeter.current;
+      if (mic) {
+        mic.analyser.getFloatTimeDomainData(mic.buf);
+        const { rms, spitzeDb } = messen(mic.buf);
+        lv.user = anzeigePegel(rms);
+        // Nur prüfen, solange gemessen werden kann (AudioContext läuft) und das Mikrofon nicht stumm geschaltet ist
+        const st = wamo.get();
+        const aktiv = istOnline(st) && st.micOn && mic.ctx.state === "running";
+        const ergebnis = pruefeStille(stille.current, spitzeDb, performance.now(), aktiv);
+        const tonNachWechsel = warnungNachWechsel.current && aktiv && spitzeDb > STILLE_DBFS;
+        if (ergebnis === "still") {
+          warnungNachWechsel.current = false;
+          console.warn("[WAMO] Mikrofon liefert seit 3 s nur Stille:", mic.track.label || "unbekanntes Gerät", mic.track.readyState);
+          setFehler({ art: "mikrofon", text: stilleText(mic.track.label) });
+        } else if (ergebnis === "wieder_da" || tonNachWechsel) {
+          warnungNachWechsel.current = false;
+          if (!kernStille.current && wamo.get().error?.art === "mikrofon") setFehler(null);
+        }
       }
       // Weicher Stopp nach "leiser_stopp": in der nächsten Wortpause, spätestens nach 600 ms ausblenden.
       // Hier im Takt mit dem eigenen Pegel, weil SmallWebRTC keinen Pegel der Gegenseite meldet.
@@ -427,6 +522,31 @@ export function useWamo(): WamoAktionen {
         return;
       }
       const restoreVolume = () => restoreAudio(audioRef.current, softStop.current);
+      // Eigene Mikrofonspur (Start und jeder Gerätewechsel): Pegel messen und auf die laufende Verbindung legen
+      const eigeneSpur = (track: MediaStreamTrack) => {
+        const alt = micMeter.current;
+        if (alt) void alt.ctx.close().catch(() => undefined);
+        // Steht schon eine Mikrofon-Warnung, verschwindet sie erst, wenn das neue Gerät wirklich Ton liefert
+        stille.current = neueStille();
+        warnungNachWechsel.current = wamo.get().error?.art === "mikrofon";
+        geraetFehler.current = null;
+        const ctx = new AudioContext();
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        ctx.createMediaStreamSource(new MediaStream([track])).connect(analyser);
+        void ctx.resume().catch(() => undefined);
+        micMeter.current = { ctx, analyser, buf: new Float32Array(analyser.fftSize), track };
+        wamo.set((s) => ({ ...s, mikrofon: track.label ? track.label.slice(0, 120) : null }));
+        void sendeSpurErsetzen(clientRef.current?.transport, track)
+          .then((r) => {
+            if (r === "ersetzt") console.info("[WAMO] Mikrofonspur der Verbindung ersetzt:", track.label);
+          })
+          .catch(() => {
+            if (aktuell()) {
+              setFehler({ art: "mikrofon", text: "Das neue Mikrofon ließ sich nicht verbinden. Bitte das Gespräch neu starten." });
+            }
+          });
+      };
       const client = new PipecatClient({
         // WavMediaManager statt des Standards DailyMediaManager: Mikrofon rein lokal per getUserMedia.
         // Der Daily-Manager lädt zur Laufzeit Code vom Daily-CDN; das blockt die CSP, und fremden Code
@@ -516,8 +636,21 @@ export function useWamo(): WamoAktionen {
           onLocalAudioLevel: (level) => {
             if (aktuell()) levelsRef.current.user = level;
           },
+          onDeviceError: (fehler) => {
+            // getUserMedia fehlgeschlagen (gesperrt, kein Gerät, belegt). Ohne diese Meldung lief der Start sonst in
+            // ein irreführendes "Voice-Core nicht erreichbar".
+            if (!aktuell() || !fehler.devices?.includes("mic")) return;
+            const name = fehlerName(fehler) ?? "unbekannt";
+            geraetFehler.current = name;
+            console.warn("[WAMO] Mikrofon lässt sich nicht öffnen:", name);
+            setFehler({ art: "mikrofon", text: mikrofonFehlerText(name) });
+          },
           onTrackStarted: (track, participant) => {
-            if (!aktuell() || participant?.local || track.kind !== "audio") return;
+            if (!aktuell() || track.kind !== "audio") return;
+            if (participant?.local) {
+              eigeneSpur(track);
+              return;
+            }
             if (!audioRef.current) audioRef.current = new Audio();
             const stream = new MediaStream([track]);
             audioRef.current.srcObject = stream;
@@ -539,7 +672,15 @@ export function useWamo(): WamoAktionen {
             const msg = parseServerMessage(data);
             if (!msg) return; // unbekannte oder unvollständige Nachricht: ignorieren
             if (msg.type === "leiser_stopp") softStop.current.armedAt = performance.now();
-            else {
+            else if (msg.type === "mikrofon") {
+              kernStille.current = msg.zustand === "still";
+              const st = wamo.get();
+              if (msg.zustand === "still" && st.micOn && st.error?.art !== "mikrofon") {
+                setFehler({ art: "mikrofon", text: kernStilleText(msg.sekunden) });
+              } else if (msg.zustand === "ok" && !stille.current.gemeldet && st.error?.art === "mikrofon") {
+                setFehler(null);
+              }
+            } else {
               if (msg.type === "sitzung_beendet") kernEnde.current = msg.grund;
               applyServerMessage(msg);
               if (msg.type === "sitzung_beendet" && msg.anmelden) neuAnmelden(msg.grund || "Bitte neu anmelden.");
@@ -580,6 +721,7 @@ export function useWamo(): WamoAktionen {
         await client.startBotAndConnect({ endpoint: `${kern}/start`, headers });
         // inzwischen abgebrochen: die gerade entstandene Sitzung sofort wieder schließen
         if (!aktuell()) void client.disconnect().catch(() => undefined);
+        else void gewuenschtesMikrofon(client, micMeter.current?.track, aktuell);
       } catch (e) {
         if (!aktuell()) {
           void client.disconnect().catch(() => undefined);
@@ -609,7 +751,10 @@ export function useWamo(): WamoAktionen {
         authHeaders.current = null;
         tokenAblauf.current = null;
         void client.disconnect().catch(() => undefined);
-        wamo.set((s) => ({ ...s, presence: "offline", error: fehlerText(status, detail, name, art) }));
+        // Ließ sich das Mikrofon nicht öffnen, ist das der Grund (der Start bricht dann im Transport ab)
+        const mic = geraetFehler.current;
+        const error = mic ? { art: "mikrofon" as const, text: mikrofonFehlerText(mic) } : fehlerText(status, detail, name, art);
+        wamo.set((s) => ({ ...s, presence: "offline", error }));
       }
     };
     await starte(false);
@@ -689,6 +834,17 @@ export function useWamo(): WamoAktionen {
     return true;
   }, []);
 
+  const modellzugang = useCallback((anfrage: ModellzugangAnfrage) => {
+    const client = clientRef.current;
+    if (!client || !istOnline(wamo.get())) return false;
+    try {
+      senden(client, { type: "modellzugang", data: anfrage });
+    } catch {
+      return false;
+    }
+    return true;
+  }, []);
+
   // Autostart der PC-Steuerung: Einstellung an, Profil admin, PC-Host verbunden und Steuerung aus
   // -> einmal je Verbindung einschalten. Den Hinweis gibt es erst, wenn der Kern "an" bestätigt.
   useEffect(() => {
@@ -751,6 +907,32 @@ export function useWamo(): WamoAktionen {
 
   const schliesseFehler = useCallback(() => setFehler(null), []);
 
+  // Mikrofone für die Auswahl in der Mikrofon-Warnung (Bezeichnungen gibt es erst nach der Freigabe)
+  const mikrofone = useCallback(async (): Promise<Mikrofon[]> => {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    try {
+      return geraeteListe(await navigator.mediaDevices.enumerateDevices());
+    } catch {
+      return [];
+    }
+  }, []);
+
+  // Gerät wechseln: der Medienmanager öffnet das neue Gerät, onTrackStarted legt die Spur auf die Verbindung
+  const mikrofonWaehlen = useCallback((id: string) => {
+    if (!id || id.length > 200) return false;
+    merkeMikrofon(id);
+    const client = clientRef.current;
+    if (!client || !istOnline(wamo.get())) return true; // gilt ab dem nächsten Gespräch
+    try {
+      client.updateMic(id);
+    } catch {
+      setFehler({ art: "mikrofon", text: "Das Mikrofon ließ sich nicht wechseln. Bitte das Gespräch neu starten." });
+      return false;
+    }
+    zeigeToast("Mikrofon gewechselt");
+    return true;
+  }, []);
+
   // Strg+M schaltet das Mikrofon (nicht in Eingabefeldern); ohne Modifikator kein Auslösen aus Versehen
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -774,7 +956,31 @@ export function useWamo(): WamoAktionen {
   );
 
   return useMemo(
-    () => ({ connect, disconnect, decide, entscheideAuftrag, pcSteuerung, toggleMic, vergessen, schliesseFehler }),
-    [connect, disconnect, decide, entscheideAuftrag, pcSteuerung, toggleMic, vergessen, schliesseFehler],
+    () => ({
+      connect,
+      disconnect,
+      decide,
+      entscheideAuftrag,
+      pcSteuerung,
+      toggleMic,
+      vergessen,
+      schliesseFehler,
+      mikrofone,
+      mikrofonWaehlen,
+      modellzugang,
+    }),
+    [
+      connect,
+      disconnect,
+      decide,
+      entscheideAuftrag,
+      pcSteuerung,
+      toggleMic,
+      vergessen,
+      schliesseFehler,
+      mikrofone,
+      mikrofonWaehlen,
+      modellzugang,
+    ],
   );
 }

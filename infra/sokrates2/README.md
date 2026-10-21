@@ -66,12 +66,91 @@ Datei `/etc/wamo/geheim.env` (Rechte 640, root:wamo). Nie ins Repository.
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` oder `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code ohne Bildschirm | Firmen-API-Schlüssel mit Ausgabenlimit, oder Abo-Token aus `claude setup-token` |
 | `ANTHROPIC_WORKSPACE_ID` | Pflicht bei einem Organisationsschlüssel (`wrkspc_…`), wird als Header `anthropic-workspace-id` mitgeschickt | derselbe Wert wie in der `.env` des PCs |
-| `GH_TOKEN` | gh, git push, Pull Requests | fein granularer Token eines Bot-Kontos, nur ausgewählte Repos, Ablaufdatum. Geplant: kurzlebige Tokens einer GitHub App je Lauf |
-| `GH_TOKEN_LESEN` | GitHub nur lesend für die Arten planung, review, analyse, sicherheit, reverse_engineering und dokumentation (kommt in der Sandbox als `GH_TOKEN` an) | fein granularer Token, nur „Contents: Read“ und „Metadata: Read“ auf die nötigen Repos, Ablaufdatum. Fehlt er, bekommen diese Arten gar kein GitHub-Token |
+| `WAMO_GH_APP_ID` | App-ID der GitHub-App (nur Ziffern); schaltet zusammen mit den beiden folgenden den App-Modus ein | Anleitung unten |
+| `WAMO_GH_APP_INSTALLATION_ID` | Installation-ID der App in der Organisation (nur Ziffern) | Anleitung unten |
+| `WAMO_GH_APP_SCHLUESSEL` | Pfad zum privaten Schlüssel der App, direkt in `/etc/wamo` (z. B. `/etc/wamo/gh-app.pem`) | Datei `root:wamo 0640`, RSA ab 2048 Bit, ohne Passwort; liegt außerhalb der Sandbox und wird dort nie eingehängt |
+| `GH_TOKEN` | gh, git push, Pull Requests (nur ohne App-Modus) | Rückfall, solange die GitHub-App nicht eingerichtet ist; danach entfernen und in GitHub widerrufen (Anleitung unten, Schritt 7) |
+| `GH_TOKEN_LESEN` | GitHub nur lesend für die Arten planung, review, analyse, sicherheit, reverse_engineering und dokumentation (kommt in der Sandbox als `GH_TOKEN` an; nur ohne App-Modus) | wie `GH_TOKEN`: Rückfall bis zur Umstellung. Fehlt er, bekommen diese Arten ohne App-Modus gar kein GitHub-Token |
 | `VERCEL_TOKEN`, `VERCEL_ORG_ID` | Vercel-CLI (Preview-Deployments, Logs) | Team-Token mit Ablaufdatum; Produktion nur nach Freigabe (dev_guard) |
 | `SUPABASE_ACCESS_TOKEN` | Supabase-CLI und MCP für Cloud-Projekte | Persönlicher Token eines Service-Kontos; MCP standardmäßig `--read-only` und mit `--project-ref` |
 | `JIRA_API_KEY`, `JIRA_EMAIL` | Jira-MCP (`wamocon.atlassian.net`), nur lesend | API-Token eines technischen Benutzers mit „Browse Projects“ auf die nötigen Projekte (Anleitung unten); `JIRA_EMAIL` ist dessen Anmeldeadresse |
 | `SONIOX_API_KEY`, `LITELLM_API_KEY` | Sprachkern auf Sokrates-2 (Phase P3) | eigener LiteLLM-Schlüssel nur für WAMO; gelangen nie in die Auftrags-Sandbox |
+
+App-Modus: Sind `WAMO_GH_APP_ID`, `WAMO_GH_APP_INSTALLATION_ID` und `WAMO_GH_APP_SCHLUESSEL` gesetzt und gültig, bekommt
+jeder Lauf ein eigenes, kurzlebiges Token der App (Ablauf in Abschnitt 9); `GH_TOKEN` und `GH_TOKEN_LESEN` werden dann
+nie mehr in eine Sandbox gegeben. Fehlen alle drei, gilt der Rückfall auf `GH_TOKEN` bzw. `GH_TOKEN_LESEN`. Ist nur ein
+Teil gesetzt oder ein Wert ungültig (Datei fehlt, falsche Rechte, kein RSA-Schlüssel), startet kein Auftrag mit GitHub:
+fail-closed, ohne Rückfall auf den persönlichen Token.
+
+### GitHub-App einrichten: kurzlebige Token je Auftrag
+
+Einmalig, etwa 15 Minuten. Der Name der App spielt keine Rolle und steht nirgends in WAMO. Eingerichtet sind Rechte,
+Repo-Auswahl und Schlüsseldatei bereits (Schritte 1 bis 3, bei einer neuen App oder einer Neuerzeugung des Schlüssels
+sind sie so zu wiederholen). Offen sind die Einträge in `geheim.env`, die Prüfung und das Abschaffen der persönlichen
+Token (Schritte 5 bis 7).
+
+1. **Rechte der App.** In GitHub die Einstellungen der App öffnen (Organisation, Settings, Developer settings, GitHub
+   Apps, bei der App „Edit“) und unter „Permissions & events“ bei „Repository permissions“ nur setzen:
+   „Contents: Read and write“, „Pull requests: Read and write“, „Metadata: Read-only“. Alle anderen Repository
+   permissions sowie alle „Organization permissions“ und „Account permissions“ auf „No access“. Speichern. Fordert
+   GitHub danach in der Installation eine Bestätigung der geänderten Rechte an, dort annehmen. Braucht die App für
+   andere Zwecke mehr Rechte, für WAMO eine eigene App mit genau diesen Rechten anlegen.
+2. **Nur gewünschte Repos.** Bei der Installation der App in der Organisation (Settings, GitHub Apps, „Configure“) unter
+   „Repository access“ „Only select repositories“ wählen, nur die Repos auswählen, an denen Aufträge arbeiten dürfen,
+   und speichern. Das WAMO-Repo selbst gehört nicht dazu (es ist für Aufträge gesperrt und soll auch per Token nicht
+   erreichbar sein). Neue Repos legt ein Auftrag im App-Modus nicht selbst an (dafür fehlt bewusst das Recht
+   „Administration“): Repo von Hand anlegen und hier hinzufügen.
+3. **Privater Schlüssel (bei einer neuen App oder einer Neuerzeugung).** In den Einstellungen der App unter „General“,
+   Abschnitt „Private keys“, „Generate a private key“ klicken; der Browser lädt eine `.pem`-Datei herunter. Vom PC
+   (Git Bash) nach Sokrates-2 kopieren und dort ablegen (`<heruntergeladene Datei>` durch deren Pfad ersetzen):
+
+   ```bash
+   scp "<heruntergeladene Datei>" sokrates2:gh-app.pem
+   ssh sokrates2 "chmod 600 ~/gh-app.pem && sudo mv ~/gh-app.pem /etc/wamo/gh-app.pem && sudo chown root:wamo /etc/wamo/gh-app.pem && sudo chmod 640 /etc/wamo/gh-app.pem && sudo ls -l /etc/wamo/gh-app.pem"
+   ```
+
+   Die Ausgabe muss `-rw-r----- 1 root wamo` zeigen. Danach die heruntergeladene Datei auf dem PC löschen und den
+   Papierkorb leeren. Schlüssel der App, die nirgends mehr gebraucht werden, in GitHub unter „Private keys“ löschen.
+4. **IDs ablesen.** Die App-ID steht in den Einstellungen der App unter „General“, Abschnitt „About“, als „App ID“
+   (eine Zahl, etwa `5137887`). Die Installation-ID steht in der Adresse der Installation: Organisation, Settings,
+   GitHub Apps, bei der App „Configure“; die Adresse endet auf `/settings/installations/<Zahl>`, diese Zahl ist die
+   Installation-ID (etwa `166575545`).
+5. **Eintragen.** `ssh -t sokrates2 "sudoedit /etc/wamo/geheim.env"` öffnen und drei Zeilen ergänzen (Datei bleibt
+   `root:wamo 0640`, kein Neustart nötig, jeder Auftrag liest sie beim Start). So sehen die Werte aus:
+
+   ```bash
+   WAMO_GH_APP_ID=5137887
+   WAMO_GH_APP_INSTALLATION_ID=166575545
+   WAMO_GH_APP_SCHLUESSEL=/etc/wamo/gh-app.pem
+   ```
+
+6. **Prüfen.** `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-dispatch ping"` muss `"github": "app"` melden;
+   steht dort `"token"`, hat ein Tippfehler im Namen aller drei Variablen den App-Modus nicht eingeschaltet (stiller
+   Rückfall auf den persönlichen Token), steht dort `"fehler: …"`, nennt der Text den Grund (etwa falsche Rechte der
+   Schlüsseldatei). Danach der Rauchtest: `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp
+   --attrappe --app-echt"`. `--app-echt` arbeitet nur lesend und zeigt: Rechte der Installation (nur Contents und Pull
+   requests schreibend, Metadata lesend), nur ausgewählte Repos, ein Lesetoken für die Installation listet die Repos,
+   ein Lesetoken nur für ein Repo sieht genau dieses, liest es und seine Pull Requests, ein anderes privates Repo
+   bleibt unsichtbar, beide Token sind nach dem Widerruf ungültig. Alle Zeilen müssen `[OK]` zeigen.
+7. **Persönliche Token abschaffen.** Mit `ssh -t sokrates2 "sudoedit /etc/wamo/geheim.env"` die Zeilen `GH_TOKEN=` und
+   `GH_TOKEN_LESEN=` löschen, den Rauchtest aus Schritt 6 wiederholen (wieder alles `[OK]`). Dann in GitHub den
+   persönlichen Token widerrufen: Profilbild, Settings, Developer settings, Personal access tokens (Fine-grained
+   tokens bzw. Tokens (classic)), den Token öffnen und „Delete“ bzw. „Revoke“. Steht derselbe Token noch an anderer
+   Stelle (etwa in der `.env` des PCs für die Betriebsart lokal), dort ebenfalls entfernen.
+
+Hinweise zum Betrieb:
+
+- Ein Token lebt höchstens eine Stunde. Aufträge, die länger als 60 Minuten laufen (`ZEITLIMIT_S` in `wamo-job.conf` ist
+  Standard 1800, Obergrenze 7200), verlieren danach den GitHub-Zugang.
+- Fehlt beim Auftrag das Ziel-Repo, gilt das Token für alle Repos der Installation (mit den Rechten der Art). Das
+  Sprachmodell setzt `repo`, wenn der Auftrag ein Repo nennt; nennt der Auftragstext mehrere Repos, fragt WAMO nach.
+- `contents: write` erlaubt Push in die Zielrepos. In den Zielrepos Branch-Regeln (Rulesets) setzen: kein direkter
+  Push auf den Standardbranch, Pull Request Pflicht. Der Wächter verlangt für `git push` ohnehin eine Freigabe, das
+  Token selbst bleibt aber in der Sandbox nutzbar.
+- Der Schlüssel ist das eigentliche Geheimnis (er stellt Token für alle Rechte der App aus): nur in `/etc/wamo`, nie in
+  die Sandbox, nie in ein Repository, bei Verdacht in GitHub löschen und neu erzeugen.
+- Der GitHub-MCP-Server in der Sandbox verbindet sich mit dem App-Token. Meldet `--mcp` github als nicht verbunden,
+  nimmt der MCP-Server dieses Token nicht an; `gh` und `git` im Auftrag sind davon nicht betroffen.
 
 ### Jira: technischer Benutzer statt persönlichem Schlüssel
 
@@ -300,6 +379,7 @@ Rauchtest danach immer: `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-r
 | SSH | `/etc/ssh/authorized_keys.d/wamo`, `/etc/ssh/sshd_config.d/wamo.conf` | Schlüssel mit `restrict,from="192.168.178.0/24",command=...`; `Match User wamo` mit `ForceCommand`, nur Public Key, keine Weiterleitungen, kein TTY, `PermitUserRC no`, `MaxSessions 2` |
 | Version | `CLAUDE_VERSION` in `/opt/wamo/wamo-job.conf` | nach einem Update von Claude Code startet nichts, bis das Einrichtungsskript und der Rauchtest liefen |
 | Modell | `modell` je Karte in `voice-core/werkzeugkarte.py` | Standard für alle Arten `claude-haiku-5-5` (Sonnet kostet etwa das Dreifache); `claude-sonnet-5-5` oder `claude-opus-5-5` nur über `WAMO_ENTWICKLUNG_MODELL` in der `.env` des PCs (nur Namen aus `MODELLE_ERLAUBT`, über die Kopfzeile an den Dispatcher) |
+| GitHub-Zugang | `GITHUB_ZUGRIFF` und `GITHUB_APP_RECHTE` in `voice-core/werkzeugkarte.py`, Schlüssel `/etc/wamo/gh-app.pem` | im App-Modus je Lauf ein kurzlebiges Installations-Token mit den Rechten der Art, auf Wunsch nur für ein Repo, am Laufende widerrufen (unten) |
 
 GitHub-CLI im Auftrag: ohne Karte nur lesende Befehle (`gh repo view/list/clone`, `gh pr view/list/diff/checks/status/
 checkout`, `gh issue view/list/status`, `gh run`, `gh workflow`, `gh release` lesend, `gh label list`, `gh gist view/list`,
@@ -313,6 +393,43 @@ das ganze projekteigene `.claude/`, Git-Hooks und `config.worktree` in jedem `.g
 wird je Lauf bis auf `projects/` (Sitzungen für `--resume`) geleert. Bekäme ein Lauf mehr Token als frühere Läufe im
 selben Projekt, zeigt die Freigabekarte die seit dem letzten Lauf geänderten Autostart-Flächen (package.json-Skripte,
 `.npmrc`, `.envrc`, `node_modules/.bin`, `CLAUDE.md`) und verlangt eine Freigabe.
+
+GitHub im App-Modus (Variablen und Einrichtung in Abschnitt 2). Ablauf je Lauf, alles im Dispatcher außerhalb der
+Sandbox:
+
+1. Beim Start prüft der Dispatcher die drei Variablen `WAMO_GH_APP_*`. Fehlen alle, gilt der Rückfall auf `GH_TOKEN`
+   bzw. `GH_TOKEN_LESEN`. Ist die Konfiguration unvollständig oder ungültig, endet der Start mit dem Ereignis
+   `start_abgelehnt` und Code 8, ohne Rückfall auf den persönlichen Token.
+2. Erst nach Selbsttest und Buchführung je Projekt liest er den privaten Schlüssel: Ordner und Datei ohne Links
+   (`O_NOFOLLOW`), Datei relativ zum geöffneten Ordner, Besitzer root, nicht gruppen- oder weltschreibbar, nicht
+   weltlesbar, höchstens 16 KiB, RSA ab 2048 Bit. Der Schlüssel steht nie im Log, in argv oder in der Sandbox.
+3. Er signiert ein JWT (RS256, `iat` eine Minute zurück, `exp` 9 Minuten voraus, `iss` = App-ID) mit dem Systempaket
+   `python3-cryptography` und ruft `POST https://api.github.com/app/installations/<id>/access_tokens` auf (TLS mit
+   Zertifikats- und Hostnamenprüfung, Zeitlimit 15 s, kein Proxy, keine Weiterleitung). Rechte je Art aus
+   `GITHUB_ZUGRIFF`: lesende Arten `contents`, `metadata` und `pull_requests` lesend, schreibende Arten `contents` und
+   `pull_requests` schreibend, `metadata` lesend; recherche bekommt kein Token. Nie `administration`, `workflows`,
+   `secrets`, `actions` oder `members`. Nennt die Kopfzeile ein Repo (`repo`, Form `owner/name`, vom Voice-Core gesetzt,
+   wenn der Auftrag ein Repo nennt), gilt das Token nur dafür, sonst für die Installation mit den Rechten der Art.
+4. Die Antwort wird geprüft: nie mehr Rechte als angefragt, mit Repo genau dieses Repo samt Owner. Passt etwas nicht,
+   widerruft der Dispatcher das Token sofort und lehnt den Start ab (Code 8).
+5. Das Token geht als `GH_TOKEN` in die Sandbox (gh und git nutzen es wie bisher), der Systemtext bekommt einen kurzen
+   Hinweis auf die Grenzen. Während der Erzeugung sind SIGTERM und SIGHUP aufgeschoben, danach führen sie zum Stopp der
+   Sandbox.
+6. Am Laufende wird das Token widerrufen (`DELETE https://api.github.com/installation/token` mit dem Token selbst),
+   auch bei `cancel`, abgerissener Lebenslinie, Fehler im Dispatcher oder SIGTERM. Nur bei SIGKILL oder Stromausfall
+   bleibt es bis zu seinem Ablauf gültig, höchstens eine Stunde.
+7. Audit (`/srv/wamo/logs/auftraege.log`): `gh_app_token <job> repo=<owner/name oder *> stufe=<lesen|schreiben>
+   ablauf=<Zeit>`, `start ... github=app repo=...` und `gh_app_widerruf <job> ok`, nie das Token. Scheitert der Widerruf,
+   steht `FEHLGESCHLAGEN` im Audit und der Voice-Core zeigt es auf dem Canvas. In der Buchführung je Projekt heißen die
+   Zugänge `GH_APP_LESEN@<owner/name oder *>` und `GH_APP_SCHREIBEN@<owner/name oder *>`: der Umfang des Tokens gehört
+   dazu, ein anderes oder breiteres Repo als in früheren Läufen verlangt eine Freigabe. Nach der Umstellung braucht
+   deshalb jedes Projekt mit Inhalt einmal eine Freigabe (Karte „mehr Zugänge“). Das Ziel-Repo ist an den Auftrag
+   gebunden (`auftrag.json`): eine Fortsetzung mit einem anderen Repo wird abgewiesen. Gibt der Agent das Token in
+   seiner Ausgabe aus, schwärzt es der Dispatcher vor dem Weiterreichen zu `[GH_TOKEN]`.
+
+`wamo-job-dispatch ping` meldet `"github": "app"`, `"token"` (Rückfall) oder `"fehler: <Grund>"`, ohne Netz. Der Rauchtest
+prüft den App-Modus mit `--attrappe` ohne echte GitHub-Aufrufe und mit `--app-echt` gegen die eingerichtete App
+(nur lesend).
 
 Ausgangsfilter: Für Sockets des Benutzers `wamo` gilt nur Internet auf TCP 80 und 443, DNS an `127.0.0.53` und auf
 Loopback `127.0.0.1:20000-20999` für eigene Entwicklungsserver eines Auftrags. IPv6, LAN, Docker-Netze, private

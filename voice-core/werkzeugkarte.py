@@ -56,6 +56,38 @@ ZUGANG_VARIABLEN: dict[str, tuple[str, ...]] = {
 # Name in geheim.env: Name in der Sandbox (wo sie sich unterscheiden)
 SANDBOX_NAMEN: dict[str, str] = {"GH_TOKEN_LESEN": "GH_TOKEN"}
 
+# GitHub-Zugriff je Auftragsart. Im App-Modus (WAMO_GH_APP_* in geheim.env) erzeugt der Dispatcher je Lauf ein
+# kurzlebiges Installations-Token mit genau den Rechten dieser Stufe; ohne App-Modus gilt weiter GH_TOKEN bzw.
+# GH_TOKEN_LESEN aus ZUGANG_VARIABLEN. Die Tabelle muss zu den zugaenge der Karten passen (github = schreiben,
+# github_lesen = lesen, keins = None); github_app_rechte() prüft das bei jedem Aufruf, die Tests ebenso.
+GITHUB_ZUGRIFF: dict[str, str | None] = {
+    "planung": "lesen",
+    "umsetzung": "schreiben",
+    "fehlerbehebung": "schreiben",
+    "review": "lesen",
+    "test": "schreiben",
+    "sicherheit": "lesen",
+    "refactoring": "schreiben",
+    "dokumentation": "lesen",
+    "datenbank": "schreiben",
+    "frontend": "schreiben",
+    "deployment": "schreiben",
+    "analyse": "lesen",
+    "reverse_engineering": "lesen",
+    "recherche": None,
+}
+# Rechte des Installations-Tokens je Stufe (Feld permissions der GitHub-API). Nie mehr als diese drei Bereiche.
+GITHUB_APP_RECHTE: dict[str, dict[str, str]] = {
+    "lesen": {"contents": "read", "metadata": "read", "pull_requests": "read"},
+    "schreiben": {"contents": "write", "pull_requests": "write", "metadata": "read"},
+}
+# Bereiche, die ein Auftrags-Token nie bekommt, auch nicht durch einen Fehler in der Tabelle oben
+GITHUB_APP_RECHTE_VERBOTEN: frozenset[str] = frozenset({
+    "administration", "workflows", "secrets", "actions", "members", "organization_administration",
+    "organization_secrets", "environments", "deployments", "repository_hooks", "organization_hooks",
+    "security_events", "secret_scanning_alerts", "dependabot_secrets", "codespaces_secrets", "email_addresses",
+})
+
 ABSCHLUSS_SKILLS = ("verification-loop",)
 ABSCHLUSS_BEFEHLE = ("quality-gate",)
 
@@ -259,6 +291,31 @@ def modell_fuer(art: str, wunsch: str | None = None) -> str:
 def sandbox_name(name: str) -> str:
     """Name einer Variablen in der Sandbox (GH_TOKEN_LESEN kommt als GH_TOKEN an)."""
     return SANDBOX_NAMEN.get(name, name)
+
+
+def github_stufe(art: str) -> str | None:
+    """GitHub-Stufe der Art ("lesen", "schreiben" oder None). KeyError bei unbekannter Art. ValueError, wenn die
+    Tabelle GITHUB_ZUGRIFF nicht zu den zugaenge der Karte passt (fail-closed, kein Token aus einer Tabelle,
+    die gegen die Karte verstößt)."""
+    zugaenge = KARTEN[art].zugaenge
+    erwartet = "schreiben" if "github" in zugaenge else "lesen" if "github_lesen" in zugaenge else None
+    stufe = GITHUB_ZUGRIFF[art]
+    if stufe != erwartet:
+        raise ValueError(f"GITHUB_ZUGRIFF[{art!r}] passt nicht zu den Zugängen der Karte")
+    return stufe
+
+
+def github_app_rechte(art: str) -> dict[str, str] | None:
+    """Rechte (permissions) für das Installations-Token eines Laufs dieser Art, oder None ohne GitHub-Zugang.
+    ValueError, wenn die Tabelle einen verbotenen oder unbekannten Bereich enthielte."""
+    stufe = github_stufe(art)
+    if stufe is None:
+        return None
+    rechte = dict(GITHUB_APP_RECHTE[stufe])
+    if set(rechte) & GITHUB_APP_RECHTE_VERBOTEN or not set(rechte) <= {"contents", "metadata", "pull_requests"} \
+            or rechte.get("metadata") != "read" or any(v not in ("read", "write") for v in rechte.values()):
+        raise ValueError(f"GITHUB_APP_RECHTE[{stufe!r}] enthält unzulässige Rechte")
+    return rechte
 
 
 def referenzierte_namen() -> dict[str, set[str]]:

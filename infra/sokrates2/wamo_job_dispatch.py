@@ -17,7 +17,8 @@ aus SSH_ORIGINAL_COMMAND und wird streng geprüft (feste Muster, keine Shell):
     approve <job> <fingerabdruck>               Freigabe für den nächsten Lauf des Auftrags
     cancel  <job>                               laufenden Auftrag beenden
 
-start: Die erste stdin-Zeile ist ein JSON-Objekt {"auftrag": "...", "system": "..."}. Danach bleibt stdin
+start: Die erste stdin-Zeile ist ein JSON-Objekt {"auftrag": "...", "system": "...", "modell": "..." (optional),
+"repo": "owner/name" (optional, Ziel-Repo für das GitHub-Token)}. Danach bleibt stdin
 offen und dient als Lebenslinie: endet sie (Auflegen, Verbindungsabbruch, Voice-Core beendet), wird der
 Auftrag sofort beendet. stdout trägt die stream-json-Ausgabe von Claude Code und eigene Zeilen
 {"type": "wamo", "ereignis": ...}; Zeilen dieses Typs aus der Sandbox werden verworfen. Ablauf je Lauf:
@@ -34,28 +35,40 @@ Auftrag sofort beendet. stdout trägt die stream-json-Ausgabe von Claude Code un
     5. Token nur der Auftragsart aus /etc/wamo/geheim.env als Umgebung (nie argv) an wamo-job.sh. Bekäme der
        Lauf ein Token, das ein früherer Lauf im selben Projekt nicht hatte, startet er nur nach einer
        Freigabe (Ereignis zugang_erweitert) oder auf einem frischen, leeren Projektordner.
+    6. GitHub im App-Modus (WAMO_GH_APP_ID, WAMO_GH_APP_INSTALLATION_ID, WAMO_GH_APP_SCHLUESSEL in geheim.env):
+       der Dispatcher signiert außerhalb der Sandbox ein JWT (RS256) mit dem privaten Schlüssel der App, holt
+       damit ein Installations-Token nur mit den Rechten der Auftragsart (Werkzeugkarte, GITHUB_ZUGRIFF) und,
+       wenn die Kopfzeile ein Repo nennt, nur für dieses Repo. Es geht als GH_TOKEN in die Sandbox und wird am
+       Laufende widerrufen (auch bei Abbruch, cancel, Fehler oder SIGTERM). Scheitert das, startet nichts
+       (Ereignis start_abgelehnt, Code 8); ein Rückfall auf GH_TOKEN aus geheim.env gibt es dann nicht.
+       Ohne diese drei Variablen gilt weiter GH_TOKEN bzw. GH_TOKEN_LESEN.
 
-Nur Standardbibliothek. Wächter und Werkzeugkarte kommen aus /opt/wamo/waechter (Kopien aus voice-core).
+Nur Standardbibliothek, im App-Modus zusätzlich das Systempaket python3-cryptography. Wächter und Werkzeugkarte
+kommen aus /opt/wamo/waechter (Kopien aus voice-core).
 """
 
 from __future__ import annotations
 
+import base64
 import errno
+import http.client
 import json
 import os
 import re
 import signal
 import socket
+import ssl
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from collections import namedtuple
 from contextlib import contextmanager
 from pathlib import Path
 
-VERSION = "3"
+VERSION = "4"
 
 HEIM = Path("/srv/wamo")
 APP = Path("/opt/wamo")  # root-eigen; Programme in bin/, Wächter in waechter/ (in der Sandbox derselbe Pfad)
@@ -84,6 +97,7 @@ EXIT_BELEGT = 4
 EXIT_KEIN_ZUGANG = 5
 EXIT_INTERN = 6
 EXIT_ZUGANG_ERWEITERT = 7
+EXIT_GITHUB_APP = 8  # App-Modus: Token nicht erzeugbar oder Konfiguration kaputt (fail-closed)
 EXIT_ZEITLIMIT = 124
 EXIT_ABGEBROCHEN = 130
 
@@ -95,6 +109,9 @@ FP_RE = re.compile(r"[0-9a-f]{64}")  # voller SHA-256 aus dev_guard.fingerprint
 ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 WORKSPACE_RE = re.compile(r"[A-Za-z0-9_-]{1,100}")
 MODELL_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,63}")
+# Ziel-Repo owner/name: genau ein Schrägstrich, Owner wie bei GitHub (Buchstaben, Ziffern, Bindestrich, bis 39),
+# Name bis 100 Zeichen aus A-Z, a-z, 0-9, Punkt, Unterstrich, Bindestrich (dieselbe Regel in dev_agent.py)
+REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
 MAX_COMMAND_CHARS = 300
 MAX_HEADER_BYTES = 256 * 1024
 MAX_TEXT_CHARS = 20000
@@ -207,21 +224,37 @@ def parse_command(raw: str | None) -> tuple[str, list[str]]:
     return name, [check(arg) for check, arg in zip(checks, args)]
 
 
-def parse_header(raw: bytes) -> tuple[str, str, str | None]:
-    """Erste stdin-Zeile von start: {"auftrag": str, "system": str, "modell": str (optional)}. Steuerzeichen
-    außer Zeilenumbruch und Tabulator fliegen heraus; beide Texte sind begrenzt. Das Modell prüft cmd_start
-    gegen die Allowlist der Werkzeugkarte."""
+def check_repo(value: object) -> str:
+    """Ziel-Repo aus der Kopfzeile: owner/name, streng (REPO_RE, genau ein Schrägstrich, kein . oder .., kein
+    .git am Ende). Es begrenzt nur das GitHub-Token; ob es zur Installation gehört, prüft die Antwort von GitHub."""
+    if not isinstance(value, str) or len(value) > 140 or not REPO_RE.fullmatch(value) or value.count("/") != 1:
+        raise Abgewiesen("Kopfzeile: repo ungültig (Form owner/name, nur A-Z, a-z, 0-9, Punkt, Unterstrich, Bindestrich)")
+    name = value.split("/", 1)[1]
+    if name in (".", "..") or name.lower().endswith(".git"):
+        raise Abgewiesen("Kopfzeile: repo ungültig (Name . oder .. oder mit .git)")
+    if name.lower() == SELF_REPO:
+        raise Abgewiesen("Das WAMO-Repo selbst ist für Aufträge gesperrt")
+    return value
+
+
+def parse_header(raw: bytes) -> tuple[str, str, str | None, str | None]:
+    """Erste stdin-Zeile von start: {"auftrag": str, "system": str, "modell": str (optional), "repo": "owner/name"
+    (optional)}. Steuerzeichen außer Zeilenumbruch und Tabulator fliegen heraus; beide Texte sind begrenzt. Das
+    Modell prüft cmd_start gegen die Allowlist der Werkzeugkarte, das Repo prüft check_repo."""
     if not raw.endswith(b"\n") or len(raw) > MAX_HEADER_BYTES:
         raise Abgewiesen("Kopfzeile fehlt oder ist zu lang")
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise Abgewiesen("Kopfzeile ist kein JSON") from None
-    if not isinstance(data, dict) or set(data) - {"auftrag", "system", "modell"}:
+    if not isinstance(data, dict) or set(data) - {"auftrag", "system", "modell", "repo"}:
         raise Abgewiesen("Kopfzeile hat unbekannte Felder")
     modell = data.get("modell")
     if modell is not None and (not isinstance(modell, str) or not MODELL_RE.fullmatch(modell)):
         raise Abgewiesen("Kopfzeile: modell ungültig")
+    repo = data.get("repo")
+    if repo is not None:
+        repo = check_repo(repo)
     auftrag, system = data.get("auftrag"), data.get("system", "")
     if not isinstance(auftrag, str) or not isinstance(system, str):
         raise Abgewiesen("Kopfzeile: auftrag und system müssen Text sein")
@@ -230,7 +263,7 @@ def parse_header(raw: bytes) -> tuple[str, str, str | None]:
         raise Abgewiesen("Auftrag ist leer")
     if len(auftrag) > MAX_TEXT_CHARS or len(system) > MAX_TEXT_CHARS:
         raise Abgewiesen("Auftrag oder Systemtext zu lang")
-    return auftrag, system, modell or None
+    return auftrag, system, modell or None, repo
 
 
 def _clean(text: str) -> str:
@@ -267,15 +300,33 @@ def basis_env() -> dict[str, str]:
             "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus"}
 
 
-def zugangs_quellen(art: str, geheim: dict[str, str]) -> set[str]:
-    """Namen in geheim.env, deren Werte ein Lauf dieser Art bekommt (für die Buchführung je Projekt)."""
+def _github_variablen() -> set[str]:
+    """Persönliche GitHub-Token aus geheim.env (GH_TOKEN, GH_TOKEN_LESEN); im App-Modus nie in der Sandbox."""
+    wk = werkzeugkarte()
+    return {*wk.ZUGANG_VARIABLEN["github"], *wk.ZUGANG_VARIABLEN["github_lesen"]}
+
+
+def zugangs_quellen(art: str, geheim: dict[str, str], app_modus: bool = False, repo: str | None = None) -> set[str]:
+    """Namen in geheim.env, deren Werte ein Lauf dieser Art bekommt (für die Buchführung je Projekt). Im
+    App-Modus steht statt GH_TOKEN bzw. GH_TOKEN_LESEN der Name GH_APP_SCHREIBEN bzw. GH_APP_LESEN, mit dem
+    Umfang des Tokens: "@owner/name" (kleingeschrieben) für ein Repo, "@*" für die ganze Installation. Ein anderes
+    oder breiteres Repo als in früheren Läufen des Projekts zählt so als neuer Zugang und braucht eine Freigabe."""
     wk = werkzeugkarte()
     claude = next((name for name in wk.CLAUDE_VARIABLEN if geheim.get(name)), None)
-    return ({claude} if claude else set()) | {n for n in wk.zugangs_variablen(art) if geheim.get(n)}
+    namen = {n for n in wk.zugangs_variablen(art) if geheim.get(n)}
+    if app_modus:
+        namen -= _github_variablen()
+        stufe = wk.github_stufe(art)
+        if stufe:
+            namen.add(f"{GH_APP_QUELLE[stufe]}@{repo.lower() if repo else '*'}")
+    return ({claude} if claude else set()) | namen
 
 
-def sandbox_env(art: str, geheim: dict[str, str]) -> dict[str, str] | None:
-    """Basis plus genau ein Claude-Zugang und die Token der Auftragsart. None ohne Claude-Zugang."""
+def sandbox_env(art: str, geheim: dict[str, str], app_modus: bool = False,
+                gh_token: str | None = None) -> dict[str, str] | None:
+    """Basis plus genau ein Claude-Zugang und die Token der Auftragsart. None ohne Claude-Zugang. Im App-Modus
+    kommt GitHub nur als gh_token (kurzlebiges Installations-Token dieses Laufs) an, nie GH_TOKEN oder
+    GH_TOKEN_LESEN aus geheim.env; die App-Variablen (WAMO_GH_APP_*) gelangen nie in die Umgebung."""
     wk = werkzeugkarte()
     claude = next((name for name in wk.CLAUDE_VARIABLEN if geheim.get(name)), None)
     if claude is None:
@@ -286,9 +337,14 @@ def sandbox_env(art: str, geheim: dict[str, str]) -> dict[str, str] | None:
     if claude == "ANTHROPIC_API_KEY" and WORKSPACE_RE.fullmatch(workspace):
         # Organisationsschlüssel ohne festen Workspace: Claude Code schickt den Header bei jeder Anfrage mit
         env["ANTHROPIC_CUSTOM_HEADERS"] = f"anthropic-workspace-id: {workspace}"
+    persoenlich = _github_variablen()
     for name in wk.zugangs_variablen(art):
+        if app_modus and name in persoenlich:
+            continue
         if geheim.get(name):
             env[wk.sandbox_name(name)] = geheim[name]
+    if app_modus and gh_token and wk.github_stufe(art):
+        env["GH_TOKEN"] = gh_token
     # Git in jedem Repo der Sandbox: keine Hooks und kein fsmonitor (Vorrang vor Repo-Konfigurationen, auch in
     # Submodulen und eingebetteten Repos, die die Entschärfung vor dem Lauf nicht erreicht)
     git = [("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false")]
@@ -300,6 +356,383 @@ def sandbox_env(art: str, geheim: dict[str, str]) -> dict[str, str] | None:
     for i, (key, value) in enumerate(git):
         env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
     return env
+
+
+# ---------------------------------------------------------------- GitHub-App: kurzlebige Token je Lauf
+GH_APP_ID = "WAMO_GH_APP_ID"
+GH_APP_INSTALLATION = "WAMO_GH_APP_INSTALLATION_ID"
+GH_APP_SCHLUESSEL = "WAMO_GH_APP_SCHLUESSEL"
+GH_APP_VARIABLEN = (GH_APP_ID, GH_APP_INSTALLATION, GH_APP_SCHLUESSEL)
+GH_APP_QUELLE = {"lesen": "GH_APP_LESEN", "schreiben": "GH_APP_SCHREIBEN"}  # Namen für die Buchführung je Projekt
+# Der private Schlüssel liegt direkt in /etc/wamo (root:wamo 0750, in der Sandbox unsichtbar; der Selbsttest prüft
+# das bei jedem Lauf). Erlaubt sind nur Dateien root:<gruppe>, nicht gruppen- oder weltschreibbar, nicht weltlesbar.
+SCHLUESSEL_ORDNER = Path("/etc/wamo")
+SCHLUESSEL_BESITZER: tuple[int, ...] = (0,)
+SCHLUESSEL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+MAX_SCHLUESSEL_BYTES = 16 * 1024
+MIN_RSA_BITS = 2048
+APP_ID_RE = re.compile(r"[1-9][0-9]{0,11}")
+INSTALLATION_RE = re.compile(r"[1-9][0-9]{0,15}")
+TOKEN_RE = re.compile(r"[A-Za-z0-9_]{20,255}")  # Form des Installations-Tokens (ghs_...), sicher als Header und Umgebung
+GITHUB_API_HOST = "api.github.com"
+GITHUB_API_VERSION = "2022-11-28"
+GITHUB_ZEITLIMIT_S = 15
+MAX_GITHUB_ANTWORT = 256 * 1024
+JWT_RUECKDATIERT_S = 60  # iat eine Minute zurück (Uhrabweichung)
+JWT_GUELTIG_S = 9 * 60   # exp höchstens 9 Minuten nach jetzt (GitHub erlaubt bis 10)
+STUFEN_RANG = {"read": 1, "write": 2}
+
+
+class GithubAppFehler(Exception):
+    """Token der GitHub-App nicht erzeugbar oder Konfiguration kaputt. Die Meldung enthält nie Schlüssel oder Token."""
+
+
+class _Beendet(BaseException):
+    """SIGTERM oder SIGHUP während eines Laufs: Sandbox stoppen, Token widerrufen, dann enden."""
+
+
+# App-Konfiguration: App-ID, Installation-ID, Dateiname des Schlüssels in SCHLUESSEL_ORDNER
+GithubApp = namedtuple("GithubApp", ("app_id", "installation_id", "schluessel_name"))
+
+
+def github_app_konfig(geheim: dict[str, str]) -> GithubApp | None:
+    """App-Modus aus geheim.env. None, wenn keine der drei Variablen gesetzt ist (Rückfall auf GH_TOKEN bzw.
+    GH_TOKEN_LESEN). Ist nur ein Teil gesetzt oder ein Wert ungültig, GithubAppFehler: wer den App-Modus
+    einrichtet, bekommt bei einem Fehler keinen stillen Rückfall auf den persönlichen Token (fail-closed)."""
+    gesetzt = [n for n in GH_APP_VARIABLEN if geheim.get(n)]
+    if not gesetzt:
+        return None
+    fehlt = [n for n in GH_APP_VARIABLEN if n not in gesetzt]
+    if fehlt:
+        raise GithubAppFehler(f"Konfiguration unvollständig, es fehlt {', '.join(fehlt)}")
+    app_id, installation, pfad = (geheim[n].strip() for n in GH_APP_VARIABLEN)
+    if not APP_ID_RE.fullmatch(app_id):
+        raise GithubAppFehler(f"{GH_APP_ID} ist keine App-ID (nur Ziffern)")
+    if not INSTALLATION_RE.fullmatch(installation):
+        raise GithubAppFehler(f"{GH_APP_INSTALLATION} ist keine Installation-ID (nur Ziffern)")
+    ordner, _, name = pfad.rpartition("/")
+    if ordner != SCHLUESSEL_ORDNER.as_posix().rstrip("/") or not SCHLUESSEL_NAME_RE.fullmatch(name):
+        raise GithubAppFehler(f"{GH_APP_SCHLUESSEL} muss eine Datei direkt in {SCHLUESSEL_ORDNER.as_posix()} sein "
+                              f"(z. B. {SCHLUESSEL_ORDNER.as_posix()}/gh-app.pem)")
+    return GithubApp(app_id, installation, name)
+
+
+def _rechte_grund(st: os.stat_result, was: str, datei: bool) -> str | None:
+    """Grund, warum Besitz oder Rechte von Schlüsseldatei bzw. -ordner nicht passen, oder None."""
+    if datei and not stat.S_ISREG(st.st_mode):
+        return f"{was} ist keine reguläre Datei"
+    if not datei and not stat.S_ISDIR(st.st_mode):
+        return f"{was} ist kein Ordner"
+    if st.st_uid not in SCHLUESSEL_BESITZER:
+        return f"{was} gehört nicht root"
+    if st.st_mode & 0o022:
+        return f"{was} ist für Gruppe oder alle beschreibbar"
+    if st.st_mode & 0o007:
+        return f"{was} ist für alle zugänglich (chmod o= nötig)"
+    return None
+
+
+def schluessel_lesen(name: str) -> bytearray:
+    """Liest den privaten Schlüssel der App, nur im Dispatcher-Prozess: Ordner und Datei ohne Links (O_NOFOLLOW,
+    Datei relativ zum geöffneten Ordner), ohne an einer FIFO zu hängen, mit Besitzer- und Rechteprüfung auf dem
+    geöffneten Deskriptor und Größenlimit. Der Inhalt landet nie im Log, in argv oder in der Sandbox; der Aufrufer
+    überschreibt den Puffer nach Gebrauch (nur best effort, Python-Kopien bleiben bis zur Speicherbereinigung)."""
+    if not SCHLUESSEL_NAME_RE.fullmatch(name):
+        raise GithubAppFehler("Name der Schlüsseldatei ungültig")
+    flags = os.O_RDONLY | O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    ordner_fd = fd = None
+    try:
+        try:
+            if O_DIRECTORY and os.open in os.supports_dir_fd:
+                ordner_fd = os.open(SCHLUESSEL_ORDNER, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+                ordner_st = os.fstat(ordner_fd)
+            else:  # nur ohne dir_fd (Windows, Tests)
+                ordner_st = os.stat(SCHLUESSEL_ORDNER)
+        except OSError as e:
+            raise GithubAppFehler(f"Schlüsselordner nicht lesbar ({errno.errorcode.get(e.errno, 'Fehler')})") from None
+        grund = _rechte_grund(ordner_st, "Schlüsselordner", datei=False)
+        if grund:
+            raise GithubAppFehler(grund)
+        try:
+            fd = os.open(name, flags, dir_fd=ordner_fd) if ordner_fd is not None else os.open(SCHLUESSEL_ORDNER / name, flags)
+            st = os.fstat(fd)
+        except OSError as e:
+            raise GithubAppFehler(f"Schlüsseldatei nicht lesbar ({errno.errorcode.get(e.errno, 'Fehler')}; "
+                                  "fehlt sie oder ist sie ein Link?)") from None
+        grund = _rechte_grund(st, "Schlüsseldatei", datei=True)
+        if grund:
+            raise GithubAppFehler(grund)
+        if st.st_size > MAX_SCHLUESSEL_BYTES:
+            raise GithubAppFehler("Schlüsseldatei ist zu groß für einen privaten Schlüssel")
+        daten = bytearray()
+        while len(daten) <= MAX_SCHLUESSEL_BYTES:
+            teil = os.read(fd, MAX_SCHLUESSEL_BYTES + 1 - len(daten))
+            if not teil:
+                break
+            daten += teil
+        if len(daten) > MAX_SCHLUESSEL_BYTES:
+            daten[:] = bytes(len(daten))
+            raise GithubAppFehler("Schlüsseldatei ist zu groß für einen privaten Schlüssel")
+        return daten
+    finally:
+        for f in (fd, ordner_fd):
+            if f is not None:
+                os.close(f)
+
+
+def _rsa_schluessel(pem: bytes):
+    """Privater RSA-Schlüssel aus PEM (ohne Passwort, mindestens 2048 Bit) über das Systempaket cryptography."""
+    try:
+        from cryptography.exceptions import UnsupportedAlgorithm
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+    except ImportError:
+        raise GithubAppFehler("Python-Paket cryptography fehlt (python3-cryptography)") from None
+    if not pem.lstrip().startswith(b"-----BEGIN "):
+        raise GithubAppFehler("Schlüsseldatei ist kein PEM-Schlüssel")
+    try:
+        schluessel = serialization.load_pem_private_key(pem, password=None)
+    except (ValueError, TypeError, UnsupportedAlgorithm):
+        raise GithubAppFehler("Schlüsseldatei ist kein lesbarer privater Schlüssel ohne Passwort") from None
+    if not isinstance(schluessel, rsa.RSAPrivateKey) or schluessel.key_size < MIN_RSA_BITS:
+        raise GithubAppFehler(f"Schlüssel ist kein RSA-Schlüssel mit mindestens {MIN_RSA_BITS} Bit")
+    return schluessel
+
+
+def _b64url(daten: bytes) -> str:
+    return base64.urlsafe_b64encode(daten).rstrip(b"=").decode("ascii")
+
+
+def jwt_erzeugen(app_id: str, pem: bytes, jetzt: float | None = None) -> str:
+    """JWT für die App (RS256): iat eine Minute zurück, exp höchstens 9 Minuten voraus, iss = App-ID."""
+    if not APP_ID_RE.fullmatch(app_id):
+        raise GithubAppFehler("App-ID ungültig")
+    schluessel = _rsa_schluessel(pem)  # meldet ein fehlendes cryptography als GithubAppFehler
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+    t = int(time.time() if jetzt is None else jetzt)
+    kopf = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    inhalt = _b64url(json.dumps({"iat": t - JWT_RUECKDATIERT_S, "exp": t + JWT_GUELTIG_S, "iss": app_id},
+                                separators=(",", ":")).encode())
+    signatur = schluessel.sign(f"{kopf}.{inhalt}".encode("ascii"), padding.PKCS1v15(), hashes.SHA256())
+    return f"{kopf}.{inhalt}.{_b64url(signatur)}"
+
+
+def _https(methode: str, pfad: str, kopf: dict[str, str], koerper: bytes | None = None) -> tuple[int, bytes]:
+    """Eine HTTPS-Anfrage an api.github.com: Zertifikat und Hostname geprüft (Systemspeicher), mindestens TLS 1.2,
+    Zeitlimit, kein Proxy aus der Umgebung, keine Weiterleitung (http.client folgt keiner; ein Token geht so nie
+    an einen anderen Host). Antwort höchstens MAX_GITHUB_ANTWORT + 1 Bytes."""
+    kontext = ssl.create_default_context()
+    kontext.minimum_version = ssl.TLSVersion.TLSv1_2
+    verbindung = http.client.HTTPSConnection(GITHUB_API_HOST, 443, timeout=GITHUB_ZEITLIMIT_S, context=kontext)
+    try:
+        verbindung.request(methode, pfad, body=koerper, headers=kopf)
+        antwort = verbindung.getresponse()
+        return antwort.status, antwort.read(MAX_GITHUB_ANTWORT + 1)
+    finally:
+        verbindung.close()
+
+
+def _github(methode: str, pfad: str, anmeldung: str, koerper: dict | None = None) -> tuple[int, object]:
+    """Anfrage an die GitHub-API mit Bearer-Anmeldung (JWT oder Token); Fehler als GithubAppFehler ohne Geheimnisse."""
+    kopf = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {anmeldung}",
+            "X-GitHub-Api-Version": GITHUB_API_VERSION, "User-Agent": "wamo-job-dispatch"}
+    daten = None
+    if koerper is not None:
+        daten = json.dumps(koerper).encode("utf-8")
+        kopf["Content-Type"] = "application/json"
+    try:
+        status, roh = _https(methode, pfad, kopf, daten)
+    except (OSError, http.client.HTTPException, ValueError) as e:
+        raise GithubAppFehler(f"GitHub nicht erreichbar ({type(e).__name__})") from None
+    if len(roh) > MAX_GITHUB_ANTWORT:
+        raise GithubAppFehler("Antwort von GitHub zu groß")
+    try:
+        obj = json.loads(roh) if roh else None
+    except (ValueError, RecursionError):
+        obj = None
+    return status, obj
+
+
+def _github_meldung(status: int, obj: object) -> str:
+    text = obj.get("message") if isinstance(obj, dict) else None
+    text = _clean(str(text)).replace("\n", " ").replace("\t", " ")[:160] if text else ""
+    hinweis = {401: "JWT abgelehnt (App-ID, Schlüssel oder Uhrzeit prüfen)",
+               403: "keine Berechtigung für diese Installation",
+               404: "Installation nicht gefunden (Installation-ID prüfen)",
+               422: "Repo oder Rechte nicht in der Installation (Repo freigegeben? Rechte der App gesetzt?)"}.get(status, "")
+    return f"GitHub antwortet {status}" + (f": {hinweis}" if hinweis else "") + (f" ({text})" if text else "")
+
+
+def _antwort_pruefen(obj: dict, rechte: dict[str, str], repo: str | None) -> str | None:
+    """Prüft die Token-Antwort: nie mehr Rechte als angefragt, mit Repo genau dieses eine Repo (Owner inklusive)."""
+    erhalten = obj.get("permissions")
+    if not isinstance(erhalten, dict):
+        return "Antwort von GitHub ohne Rechteangabe"
+    for bereich, stufe in erhalten.items():
+        if bereich not in rechte or not isinstance(stufe, str) \
+                or STUFEN_RANG.get(stufe, 99) > STUFEN_RANG[rechte[bereich]]:
+            return f"GitHub vergab mehr Rechte als angefragt ({_clean(str(bereich))[:40]})"
+    if repo:
+        repos = obj.get("repositories")
+        namen = [r.get("full_name") for r in repos if isinstance(r, dict)] if isinstance(repos, list) else []
+        if len(namen) != 1 or not isinstance(namen[0], str) or namen[0].lower() != repo.lower():
+            return f"Token gilt nicht genau für {repo} (gehört das Repo zur Installation?)"
+    return None
+
+
+def installations_token(app: GithubApp, art: str, repo: str | None) -> tuple[str, str]:
+    """Holt ein Installations-Token mit den Rechten der Art (Werkzeugkarte) und, falls bekannt, nur für das Ziel-Repo.
+    Liefert (token, ablauf). Passt die Antwort nicht, wird das Token sofort widerrufen und GithubAppFehler geworfen."""
+    try:
+        rechte = werkzeugkarte().github_app_rechte(art)
+    except (KeyError, ValueError) as e:
+        raise GithubAppFehler(f"Werkzeugkarte: {e}") from None
+    if rechte is None:
+        raise GithubAppFehler("Auftragsart ohne GitHub-Zugang")
+    koerper: dict = {"permissions": rechte}
+    if repo:
+        koerper["repositories"] = [repo.split("/", 1)[1]]
+    pem = schluessel_lesen(app.schluessel_name)
+    try:
+        jwt = jwt_erzeugen(app.app_id, bytes(pem))
+    finally:
+        pem[:] = bytes(len(pem))
+    status, obj = _github("POST", f"/app/installations/{app.installation_id}/access_tokens", jwt, koerper)
+    del jwt
+    if status != 201 or not isinstance(obj, dict):
+        raise GithubAppFehler(_github_meldung(status, obj))
+    token = obj.get("token")
+    try:  # ab hier existiert ein Token bei GitHub: jeder Fehler, auch ein unerwarteter, widerruft es
+        if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
+            raise GithubAppFehler("Antwort von GitHub ohne gültiges Token")
+        grund = _antwort_pruefen(obj, rechte, repo)
+        if grund:
+            raise GithubAppFehler(grund)
+        ablauf = obj.get("expires_at")
+        ablauf = ablauf if isinstance(ablauf, str) and re.fullmatch(r"[0-9TZ:.+-]{10,40}", ablauf) else "?"
+        return token, ablauf
+    except BaseException:
+        if isinstance(token, str) and re.fullmatch(r"[\x21-\x7e]{1,255}", token):  # als Header unbedenklich
+            token_widerrufen(token)
+        raise
+
+
+def token_widerrufen(token: str) -> bool:
+    """DELETE /installation/token mit dem Token selbst. True bei 204 (oder 401: schon ungültig). Zwei Versuche bei
+    Netzfehlern und Serverfehlern (5xx)."""
+    for _ in range(2):
+        try:
+            status, _obj = _github("DELETE", "/installation/token", token)
+        except GithubAppFehler:
+            continue
+        if status in (204, 401):
+            return True
+        if status < 500:
+            return False
+    return False
+
+
+@contextmanager
+def _signale(handler):
+    """Setzt für SIGTERM und SIGHUP vorübergehend handler (nur im Hauptthread, wo es die Signale gibt)."""
+    namen = [s for s in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)) if s is not None]
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    alt = {s: signal.signal(s, handler) for s in namen}
+    try:
+        yield
+    finally:
+        for s, h in alt.items():
+            signal.signal(s, h)
+
+
+def _als_ausnahme(signum, _frame):
+    """Handler für SIGTERM und SIGHUP: ab dem ersten Signal werden weitere ignoriert (das Aufräumen mit Stopp der
+    Sandbox und Widerruf des Tokens darf nicht ein zweites Mal unterbrochen werden), dann endet der Lauf."""
+    for s in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
+        if s is not None:
+            signal.signal(s, signal.SIG_IGN)
+    raise _Beendet(signum)
+
+
+def _signale_aufschieben():
+    """Blockiert SIGTERM und SIGHUP (sie bleiben anhängig, gehen nicht verloren). Liefert die alte Maske oder None."""
+    namen = {s for s in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)) if s is not None}
+    if not hasattr(signal, "pthread_sigmask") or threading.current_thread() is not threading.main_thread():
+        return None
+    return signal.pthread_sigmask(signal.SIG_BLOCK, namen)
+
+
+def _signale_zulassen(alt) -> None:
+    if alt is not None:
+        signal.pthread_sigmask(signal.SIG_SETMASK, alt)
+
+
+@contextmanager
+def github_token_fuer_lauf(job: str, art: str, repo: str | None, app: GithubApp | None):
+    """Kurzlebiges GitHub-Token für genau einen Lauf: liefert None ohne App-Modus oder für Arten ohne GitHub.
+    Sonst Token erzeugen (Fehler: GithubAppFehler, bevor irgendetwas startet) und es nach dem Block widerrufen,
+    auch bei Ausnahme, Abbruch oder Signal. Während der Erzeugung sind SIGTERM und SIGHUP aufgeschoben (kein Token
+    ohne Widerruf), während des Widerrufs ignoriert. Im Audit stehen nur Auftrag, Repo, Stufe und Ablaufzeit."""
+    try:
+        stufe = werkzeugkarte().github_stufe(art) if app is not None else None
+    except (KeyError, ValueError) as e:
+        raise GithubAppFehler(f"Werkzeugkarte: {e}") from None
+    if stufe is None:
+        yield None
+        return
+    maske = _signale_aufschieben()
+    try:
+        token, ablauf = installations_token(app, art, repo)
+    except BaseException:
+        _signale_zulassen(maske)
+        raise
+    try:
+        _signale_zulassen(maske)  # ein aufgeschobenes Signal kommt jetzt an und endet im finally (Widerruf)
+        log(f"gh_app_token {job} repo={repo or '*'} stufe={stufe} ablauf={ablauf}", pflicht=True)
+        yield token
+    finally:
+        ok = False
+        for _versuch in range(2):  # ein erstes Signal genau jetzt (_Beendet) überspringt den Widerruf nicht;
+            try:                   # _als_ausnahme ignoriert alle weiteren, mehr als ein Wiederholen braucht es nie
+                with _signale(signal.SIG_IGN):
+                    ok = token_widerrufen(token)
+                break
+            except _Beendet:
+                continue
+        if ok:
+            log(f"gh_app_widerruf {job} ok")
+        else:
+            log(f"gh_app_widerruf {job} FEHLGESCHLAGEN (Token läuft spätestens nach einer Stunde ab)")
+            wamo_event("gh_widerruf_fehlgeschlagen", grund="Das GitHub-Token konnte nicht widerrufen werden; "
+                       "es läuft spätestens nach einer Stunde ab")
+
+
+def github_status() -> str:
+    """Für ping: "token" (kein App-Modus), "app" (Konfiguration und Schlüssel gültig) oder "fehler: <Grund>".
+    Ohne Netz; ob GitHub das Token ausstellt, prüft wamo-job-rauchtest --app-echt."""
+    try:
+        app = github_app_konfig(lese_geheimnisse())
+        if app is None:
+            return "token"
+        pem = schluessel_lesen(app.schluessel_name)
+        try:
+            _rsa_schluessel(bytes(pem))
+        finally:
+            pem[:] = bytes(len(pem))
+        return "app"
+    except GithubAppFehler as e:
+        return f"fehler: {e}"
+
+
+def github_hinweis(repo: str | None) -> str:
+    """Zusatz zum Systemtext im App-Modus (nur für Arten mit GitHub)."""
+    ziel = f"nur für das Repo {repo}" if repo else "für die Repos der Installation"
+    return (f"- GitHub: GH_TOKEN ist ein kurzlebiges Token nur für diesen Auftrag, {ziel}, mit Rechten für Inhalte "
+            "und Pull Requests. Repos anlegen, Einstellungen, Workflows, Secrets und Löschen gehen damit nicht; "
+            "braucht der Auftrag das, im Ergebnis nennen.")
 
 
 # ---------------------------------------------------------------- MCP-Server prüfen
@@ -549,14 +982,18 @@ def claude_konfiguration(claude_dir: Path, geheim: dict[str, str]) -> None:
     (claude_dir / "settings.local.json").unlink(missing_ok=True)
 
 
-def vorbereiten(jobdir: Path, job: str, projekt: str, art: str) -> None:
-    """Legt den Auftragsordner an oder prüft die Bindung an Projekt und Art (unter der Auftragssperre)."""
+def vorbereiten(jobdir: Path, job: str, projekt: str, art: str, repo: str | None = None) -> None:
+    """Legt den Auftragsordner an oder prüft die Bindung an Projekt, Art und Ziel-Repo (unter der Auftragssperre).
+    Das Repo begrenzt das GitHub-Token; eine Fortsetzung mit einem anderen Repo wird abgewiesen."""
     meta_path = jobdir / "auftrag.json"
     meta = read_json(meta_path, None)
     if meta is None:
-        write_json_atomic(meta_path, {"job": job, "projekt": projekt, "art": art, "erstellt": int(time.time())})
+        write_json_atomic(meta_path, {"job": job, "projekt": projekt, "art": art, "repo": repo,
+                                      "erstellt": int(time.time())})
     elif not isinstance(meta, dict) or meta.get("projekt") != projekt or meta.get("art") != art:
         raise Abgewiesen("Auftrag gehört zu einem anderen Projekt oder einer anderen Art")
+    elif meta.get("repo") != repo:
+        raise Abgewiesen("Auftrag gehört zu einem anderen Ziel-Repo")
     for sub in ("claude", "zustand", "etc"):
         _no_symlink(jobdir / sub).mkdir(mode=0o700, exist_ok=True)
     claude_konfiguration(jobdir / "claude", lese_geheimnisse())
@@ -1267,7 +1704,8 @@ def egress_offen() -> bool:
 
 # ---------------------------------------------------------------- Befehle
 def cmd_ping() -> int:
-    emit({"ok": True, "version": VERSION, "runner": RUNNER.is_file(), "waechter": (WAECHTER / "dev_guard.py").is_file()})
+    emit({"ok": True, "version": VERSION, "runner": RUNNER.is_file(), "waechter": (WAECHTER / "dev_guard.py").is_file(),
+          "github": github_status()})
     return EXIT_OK
 
 
@@ -1507,7 +1945,7 @@ def _kopfzeile_lesen() -> bytes:
 
 
 def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> int:
-    auftrag, system, wunsch = parse_header(_kopfzeile_lesen())
+    auftrag, system, wunsch, repo = parse_header(_kopfzeile_lesen())
     try:
         modell = werkzeugkarte().modell_fuer(art, wunsch)
     except ValueError as e:
@@ -1520,7 +1958,7 @@ def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> i
     if not gehalten[0].versuchen():
         wamo_event("belegt", grund="Dieser Auftrag läuft bereits")
         return EXIT_BELEGT
-    vorbereiten(jobdir, job, projekt, art)
+    vorbereiten(jobdir, job, projekt, art, repo)
     gehalten.append(Sperre(sperren / f"projekt-{projekt}"))
     if not gehalten[-1].versuchen():
         wamo_event("belegt", grund="Im Projekt läuft schon ein anderer Auftrag")
@@ -1544,12 +1982,16 @@ def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> i
     wamo_event("selbsttest_ok")
 
     geheim = lese_geheimnisse()
-    env = sandbox_env(art, geheim)
+    try:
+        app = github_app_konfig(geheim)
+    except GithubAppFehler as e:
+        return _start_abgelehnt(jobdir, job, projekt, art, str(e))
+    env = sandbox_env(art, geheim, app_modus=app is not None)
     if env is None:
         wamo_event("keine_zugangsdaten", grund="ANTHROPIC_API_KEY oder CLAUDE_CODE_OAUTH_TOKEN in /etc/wamo/geheim.env fehlt")
         _status(jobdir, job, projekt, art, ergebnis="keine_zugangsdaten", code=EXIT_KEIN_ZUGANG)
         return EXIT_KEIN_ZUGANG
-    zugaenge = sorted(zugangs_quellen(art, geheim))
+    zugaenge = sorted(zugangs_quellen(art, geheim, app_modus=app is not None, repo=repo))
     snapshot = read_json(jobdir / "zustand" / "approvals.json", [])
     anfrage = zugang_pruefen(projekt, set(zugaenge), snapshot if isinstance(snapshot, list) else [])
     if anfrage is not None:
@@ -1558,12 +2000,34 @@ def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> i
         wamo_event("zugang_erweitert", **anfrage)
         _status(jobdir, job, projekt, art, ergebnis="zugang_erweitert", code=EXIT_ZUGANG_ERWEITERT)
         return EXIT_ZUGANG_ERWEITERT
+    github = "-" if werkzeugkarte().github_stufe(art) is None else "app" if app is not None else "token"
+    if github == "app":
+        system = f"{system}\n{github_hinweis(repo)}"
     argv = [str(RUNNER), "--auftrag", job, "--projekt", projekt, "--", *claude_argv(system, modell, session)]
-    log(f"start {job} {projekt} {art} {'fortsetzung' if session else 'neu'} modell={modell} "
-        f"zugaenge={','.join(zugaenge)}", pflicht=True)
-    code = _ausfuehren(argv, env, auftrag, jobdir, job, projekt, art)
+    # Ab hier lebt ggf. ein GitHub-Token: SIGTERM und SIGHUP werden zur Ausnahme, damit Sandbox-Stopp und Widerruf
+    # (finally in github_token_fuer_lauf) sicher laufen. SIGKILL lässt sich nicht abfangen: dann läuft das Token
+    # nach spätestens einer Stunde ab.
+    with _signale(_als_ausnahme):
+        try:
+            with github_token_fuer_lauf(job, art, repo, app) as gh_token:
+                if gh_token is not None:
+                    env = sandbox_env(art, geheim, app_modus=True, gh_token=gh_token)
+                log(f"start {job} {projekt} {art} {'fortsetzung' if session else 'neu'} modell={modell} "
+                    f"zugaenge={','.join(zugaenge)} github={github} repo={repo or '-'}", pflicht=True)
+                code = _ausfuehren(argv, env, auftrag, jobdir, job, projekt, art)
+        except GithubAppFehler as e:
+            return _start_abgelehnt(jobdir, job, projekt, art, str(e))
     del gehalten  # erst jetzt frei (Prozessende gibt sie ohnehin frei)
     return code
+
+
+def _start_abgelehnt(jobdir: Path, job: str, projekt: str, art: str, grund: str) -> int:
+    """App-Modus kaputt oder Token nicht erzeugbar: nichts startet, kein Rückfall auf den persönlichen Token."""
+    grund = f"GitHub-App: {grund}"[:300]
+    log(f"start_abgelehnt {job} {projekt} {art}: {grund}", pflicht=True)
+    wamo_event("start_abgelehnt", grund=grund)
+    _status(jobdir, job, projekt, art, ergebnis="start_abgelehnt", code=EXIT_GITHUB_APP)
+    return EXIT_GITHUB_APP
 
 
 def claude_argv(system: str, modell: str, session: str | None = None) -> list[str]:
@@ -1592,10 +2056,9 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
     freigabe = FreigabeServer(jobdir / "zustand" / "freigabe.sock",
                               read_json(jobdir / "zustand" / "approvals.json", []))
     freigabe.start()
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env=env, cwd="/", start_new_session=True)
     gruende: list[str] = []
     gestoppt = threading.Event()
+    proc = None  # gesetzt direkt nach dem Start unten; die folgenden Funktionen lesen es erst danach
 
     def stoppen(grund: str) -> None:
         if gestoppt.is_set():
@@ -1643,38 +2106,59 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
                     f.flush()
                     written += len(raw)
 
-    threading.Thread(target=stderr_sichern, daemon=True).start()
-    threading.Thread(target=lebenslinie, daemon=True).start()
-    threading.Thread(target=egress_wache, daemon=True).start()
-    try:
-        proc.stdin.write(auftrag.encode("utf-8"))
-        proc.stdin.close()
-    except (BrokenPipeError, OSError):
-        pass
-    wamo_event("gestartet")
-    sessions = read_json(jobdir / "sessions.json", [])
-    sessions = sessions if isinstance(sessions, list) else []
-    zaehler = Freigabezaehler(read_json(jobdir / "zustand" / "approvals.json", []))
+    # Ein GitHub-Token ist ein Geheimnis dieses Laufs: erscheint es in der Ausgabe des Agenten, wird es vor dem
+    # Weiterreichen an den PC (Canvas, Sprachmodell) geschwärzt (Defense in Depth; kodierte Formen fängt das nicht)
+    schwaerzen = [w.encode("utf-8") for w in (env.get("GH_TOKEN", ""),) if len(w) >= 8]
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            env=env, cwd="/", start_new_session=True)
     verworfen = 0
-    for raw in zeilen(proc.stdout, MAX_ZEILE_STDOUT):
-        if raw is None or ist_wamo_zeile(raw):
-            verworfen += 1
-            continue
-        if zaehler.sehen(raw):
-            log(f"freigabe_mehrfach {job}: freigegebener Aufruf öfter ausgeführt als freigegeben", pflicht=True)
-            stoppen("freigabe_mehrfach")
-        if b'"session_id"' in raw:
+    try:  # beginnt direkt nach dem Start: ein Signal ab hier stoppt immer auch die Sandbox
+        threading.Thread(target=stderr_sichern, daemon=True).start()
+        threading.Thread(target=lebenslinie, daemon=True).start()
+        threading.Thread(target=egress_wache, daemon=True).start()
+        try:
+            proc.stdin.write(auftrag.encode("utf-8"))
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        wamo_event("gestartet")
+        sessions = read_json(jobdir / "sessions.json", [])
+        sessions = sessions if isinstance(sessions, list) else []
+        zaehler = Freigabezaehler(read_json(jobdir / "zustand" / "approvals.json", []))
+        for raw in zeilen(proc.stdout, MAX_ZEILE_STDOUT):
+            if raw is None or ist_wamo_zeile(raw):
+                verworfen += 1
+                continue
+            if zaehler.sehen(raw):
+                log(f"freigabe_mehrfach {job}: freigegebener Aufruf öfter ausgeführt als freigegeben", pflicht=True)
+                stoppen("freigabe_mehrfach")
+            if b'"session_id"' in raw:
+                try:
+                    sid = json.loads(raw).get("session_id")
+                except (ValueError, AttributeError, RecursionError):
+                    sid = None
+                if isinstance(sid, str) and SESSION_RE.fullmatch(sid) and sid not in sessions:
+                    sessions.append(sid)
+                    write_json_atomic(jobdir / "sessions.json", sessions[-50:])
+            ausgabe = raw if raw.endswith(b"\n") else raw + b"\n"
+            for geheim_wert in schwaerzen:
+                ausgabe = ausgabe.replace(geheim_wert, b"[GH_TOKEN]")
+            if not emit_raw(ausgabe):
+                stoppen("verlassen")
+                break
+        rc = proc.wait()
+    except BaseException:
+        # Signal (_Beendet) oder Fehler im Dispatcher: die Sandbox nie unbeobachtet weiterlaufen lassen; der
+        # Aufrufer widerruft danach ein GitHub-Token (finally in github_token_fuer_lauf)
+        with _signale(signal.SIG_IGN):  # ein zweites SIGTERM darf das Stoppen der Sandbox nicht unterbrechen
+            stoppen("intern")
+            freigabe.stop()
             try:
-                sid = json.loads(raw).get("session_id")
-            except (ValueError, AttributeError, RecursionError):
-                sid = None
-            if isinstance(sid, str) and SESSION_RE.fullmatch(sid) and sid not in sessions:
-                sessions.append(sid)
-                write_json_atomic(jobdir / "sessions.json", sessions[-50:])
-        if not emit_raw(raw if raw.endswith(b"\n") else raw + b"\n"):
-            stoppen("verlassen")
-            break
-    rc = proc.wait()
+                _status(jobdir, job, projekt, art, ende=int(time.time()), ergebnis="abgebrochen", code=None)
+            except OSError:
+                pass
+            log(f"ende {job} intern (Dispatcher unterbrochen, Sandbox gestoppt)")
+        raise
     freigabe.stop()
     if (jobdir / "abbruch").exists():
         ergebnis, code = "abgebrochen", EXIT_ABGEBROCHEN
@@ -1736,6 +2220,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"WAMO-Auftrag abgewiesen: {e}", file=sys.stderr)
         return EXIT_ABGEWIESEN
     except BrokenPipeError:  # der Voice-Core ist weg; still enden (N2)
+        return EXIT_ABGEBROCHEN
+    except _Beendet as e:  # SIGTERM/SIGHUP während eines Laufs: Sandbox gestoppt, Token widerrufen
+        log(f"beendet durch Signal {e.args[0] if e.args else '?'}")
         return EXIT_ABGEBROCHEN
     except Exception as e:  # nichts durchreichen, aber protokollieren
         log(f"FEHLER {type(e).__name__}: {str(e)[:200]}")

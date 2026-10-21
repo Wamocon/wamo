@@ -1,11 +1,12 @@
 "use client";
 
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { ActivityTimeline, LABEL } from "@/components/ActivityFeed";
 import { CanvasBereich } from "@/components/Canvas";
 import { Auftraege, Freigaben } from "@/components/Freigaben";
 import { GemerktHinweis } from "@/components/GemerktHinweis";
 import { Kopfzeile } from "@/components/Kopfzeile";
+import { ModellZugang } from "@/components/ModellZugang";
 import { LiveCaption } from "@/components/LiveCaption";
 import type { Sitzung } from "@/components/LoginGate";
 import { Orb } from "@/components/Orb";
@@ -20,6 +21,7 @@ import {
   type Betriebsart,
 } from "@/lib/betriebsart";
 import { pcAutoSetzen, usePcAuto } from "@/lib/einstellungen";
+import type { Mikrofon } from "@/lib/mikrofon";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
 import {
@@ -67,15 +69,50 @@ const Praesenz = memo(function Praesenz() {
   );
 });
 
+/** Gerätewahl in der Mikrofon-Warnung: Liste beim Erscheinen laden, Wechsel gilt sofort und auf diesem Gerät. */
+function MikrofonWahl({ laden, waehlen }: { laden: () => Promise<Mikrofon[]>; waehlen: (id: string) => boolean }) {
+  const [liste, setListe] = useState<Mikrofon[] | null>(null);
+  const aktuell = useSelect(wamo, (s) => s.mikrofon);
+  useEffect(() => {
+    let weg = false;
+    void laden().then((l) => {
+      if (!weg) setListe(l);
+    });
+    return () => {
+      weg = true;
+    };
+  }, [laden]);
+  if (!liste || liste.length === 0) return null;
+  return (
+    <label className="mic-wahl">
+      <span>Anderes Mikrofon:</span>
+      <select defaultValue="" onChange={(e) => e.target.value && waehlen(e.target.value)}>
+        <option value="" disabled>
+          {aktuell ? `jetzt: ${aktuell}` : "wählen …"}
+        </option>
+        {liste.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 /** Fehler in Tinte mit rotem Symbol und sicherer nächster Aktion. */
 const FehlerAnzeige = memo(function FehlerAnzeige({
   onRetry,
   onAbmelden,
   onSchliessen,
+  onMikrofone,
+  onMikrofonWaehlen,
 }: {
   onRetry: () => void;
   onAbmelden: () => void;
   onSchliessen: () => void;
+  onMikrofone: () => Promise<Mikrofon[]>;
+  onMikrofonWaehlen: (id: string) => boolean;
 }) {
   const error = useSelect(wamo, (s) => s.error);
   const offline = useSelect(wamo, (s) => s.presence === "offline");
@@ -91,6 +128,7 @@ const FehlerAnzeige = memo(function FehlerAnzeige({
       <div className="error-body">
         <p>{error.text}</p>
         <div className="error-actions">
+          {error.art === "mikrofon" && <MikrofonWahl laden={onMikrofone} waehlen={onMikrofonWaehlen} />}
           {retry && (
             <button type="button" className="btn-secondary btn-small" onClick={onRetry}>
               Erneut verbinden
@@ -323,7 +361,13 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
         <div className="col-main">
           <Freigaben onDecide={aktionen.decide} />
           <Auftraege onDecide={aktionen.entscheideAuftrag} />
-          <FehlerAnzeige onRetry={retry} onAbmelden={abmelden} onSchliessen={aktionen.schliesseFehler} />
+          <FehlerAnzeige
+            onRetry={retry}
+            onAbmelden={abmelden}
+            onSchliessen={aktionen.schliesseFehler}
+            onMikrofone={aktionen.mikrofone}
+            onMikrofonWaehlen={aktionen.mikrofonWaehlen}
+          />
           <Praesenz />
           <div className="voice">
             <VoiceLine history={historyRef} />
@@ -337,6 +381,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           <ActivityTimeline />
           <PcSteuerungSchalter onSchalten={aktionen.pcSteuerung} />
           <BetriebsartWahl />
+          <ModellZugang onAnfrage={aktionen.modellzugang} />
           <Aktionen aktionen={aktionen} />
         </div>
         <section className="canvas" aria-label="Canvas">

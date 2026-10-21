@@ -1,0 +1,47 @@
+/* Modellzugang je Profil (components/ModellZugang.tsx), WMC-Farben über die Variablen aus globals.css */
+.box {
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--rule-strong);
+  border-radius: 0 4px 4px 0;
+  background: var(--bg);
+}
+.box[open] { border-left-color: var(--accent); }
+
+.kopf {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  min-height: 44px; padding: 10px 12px;
+  cursor: pointer; list-style: none;
+}
+.kopf::-webkit-details-marker { display: none; }
+.kopf::after { content: "+"; margin-left: auto; font-weight: 700; color: var(--ink-soft); }
+.box[open] > .kopf::after { content: "−"; }
+.kopf:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+.art { font: 700 16px/1.2 var(--font-wmc); color: var(--ink); }
+.art[data-art="claude"] { color: var(--accent); }
+
+.inhalt { display: grid; gap: 10px; padding: 0 12px 12px; }
+.text { margin: 0; font-size: 15px; line-height: 1.4; }
+.klein { margin: 0; font-size: 14px; color: var(--ink-soft); }
+
+.form { display: grid; gap: 10px; }
+.feld { display: grid; gap: 5px; font-size: 15px; font-weight: 700; }
+.feld input {
+  min-height: 44px; padding: 0 12px;
+  border: 1px solid var(--rule-strong); border-radius: 4px;
+  font: 400 17px var(--font-code); background: var(--bg); color: var(--ink);
+}
+.feld input:hover:not(:disabled) { border-color: var(--ink); }
+.feld input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+.mehr > summary { font-size: 14px; color: var(--ink-soft); cursor: pointer; min-height: 32px; }
+.mehr[open] > summary { margin-bottom: 6px; }
+
+.knoepfe { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.meldung { margin: 0; min-height: 1.2em; font-size: 15px; font-weight: 700; }
+.meldung[data-fehler] { color: var(--accent); }
+
+@media (max-width: 1023px) {
+  .box { order: 8; }
+}

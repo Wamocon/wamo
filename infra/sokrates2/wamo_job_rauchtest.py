@@ -6,6 +6,7 @@ Installiert als /opt/wamo/bin/wamo-job-rauchtest durch wamo-job-einrichten.sh. A
     sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest              Grenzen der Sandbox, Netz, seccomp, Entschärfen
     sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --attrappe   zusätzlich Claude Code Ende zu Ende
     sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp        zusätzlich MCP-Server mit echter Umgebung
+    sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --app-echt   zusätzlich die eingerichtete GitHub-App (echt, nur lesend)
 
 --attrappe startet in der Sandbox eine Attrappe der Messages-API (127.0.0.1:20180, nur Standardbibliothek) und
 lässt Claude Code mit einem Dummy-Schlüssel dagegen laufen. Die Attrappe verlangt den Befehl
@@ -13,8 +14,19 @@ lässt Claude Code mit einem Dummy-Schlüssel dagegen laufen. Die Attrappe verla
 nur der Wächter als Hook läuft (keine ECC-Hooks, keine Benutzer- und Projekt-Hooks), ECC-Skills und
 -Agenten da sind, das Modell der Auftragsart gilt, die Anfrage über
 "pending" sichtbar wird, eine Freigabe genau einmal wirkt, die Lebenslinie (stdin) und "cancel" den Lauf beenden.
+Zusätzlich prüft --attrappe den App-Modus für GitHub über den echten Einstiegspunkt (wamo-job-dispatch start) mit
+einer Attrappe der GitHub-API im Dispatcher-Prozess und einem Testschlüssel, ohne echte GitHub-Aufrufe: JWT,
+Rechte je Art, Repo-Begrenzung, Token als GH_TOKEN in der Sandbox, Widerruf am Ende, bei cancel, Lebenslinie und
+SIGTERM, fail-closed bei Fehlern und kaputter Konfiguration, Rückfall ohne Konfiguration, kein Schlüssel und kein
+Token in Audit-Log und argv. Statt Claude Code läuft dabei ein kurzes Prüfskript in der Sandbox.
 --mcp startet "claude mcp list" in der Sandbox mit der Umgebung der Auftragsarten datenbank und umsetzung
-(echte Token aus /etc/wamo/geheim.env, ausgegeben wird nur der Verbindungsstatus).
+(echte Token aus /etc/wamo/geheim.env, im App-Modus ein echtes, nur lesendes und danach widerrufenes App-Token;
+ausgegeben wird nur der Verbindungsstatus).
+--app-echt prüft die eingerichtete App bei GitHub, ausschließlich lesend und nur, wenn WAMO_GH_APP_* gesetzt sind:
+Rechte der Installation (nur Contents und Pull requests schreibend, Metadata lesend, sonst nichts), Auswahl der Repos
+("Only select repositories"), ein lesendes Token für die Installation (listet Repos), ein lesendes Token nur für ein
+Repo (sieht genau dieses, liest es und seine Pull Requests, ein anderes privates Repo bleibt unsichtbar), Widerruf
+und Ungültigkeit beider Token. Schreibende Token werden nie erzeugt. Der Name der App wird nie ausgegeben.
 Projekt rauchtest-sandbox und die Auftragsordner werden danach entfernt.
 """
 
@@ -457,14 +469,30 @@ def entschaerfen_und_buchfuehrung() -> None:
 
 def mcp_mit_echter_umgebung() -> None:
     geheim = D.lese_geheimnisse()
+    try:
+        app = D.github_app_konfig(geheim)
+    except D.GithubAppFehler as e:
+        pruefe("claude mcp list (GitHub-App-Konfiguration kaputt)", False, str(e))
+        return
     for art in ("datenbank", "umsetzung"):
         job, jobdir = neuer_auftrag(art)
-        env = D.sandbox_env(art, geheim)
-        if env is None:
+        if D.sandbox_env(art, geheim, app_modus=app is not None) is None:
             pruefe(f"claude mcp list für {art} (übersprungen: kein Claude-Zugang)", True)
             continue
-        out, err = text(sandbox(job, "/srv/wamo/.local/bin/claude mcp list 2>&1 | grep -E ':' | tail -n 8", env=env,
-                                timeout=300))
+        gh_token = None
+        try:
+            if app is not None:  # im App-Modus ein echtes Token, aber nur lesend (der Test schreibt nichts), danach widerrufen
+                gh_token, _ablauf = D.installations_token(app, "review", None)
+            env = D.sandbox_env(art, geheim, app_modus=app is not None, gh_token=gh_token)
+            out, err = text(sandbox(job, "/srv/wamo/.local/bin/claude mcp list 2>&1 | grep -E ':' | tail -n 8",
+                                    env=env, timeout=300))
+        except D.GithubAppFehler as e:
+            pruefe(f"claude mcp list für {art}: GitHub-App-Token", False, str(e))
+            entfernen(jobdir)
+            continue
+        finally:
+            if gh_token is not None:
+                D.token_widerrufen(gh_token)
         zeilen_ = [line.strip() for line in out.splitlines() if " - " in line]
         status = {line.split(":", 1)[0]: ("Connected" in line) for line in zeilen_}
         # verbunden sein müssen REA und die Dienste, deren Token die Art bekommt; die anderen bleiben ohne Zugang
@@ -649,9 +677,341 @@ def ausfuehren(spec_pfad: str) -> int:
                          meta["projekt"], meta["art"])
 
 
+# ---------------------------------------------------------------- GitHub-App mit Attrappe (ohne echte Aufrufe)
+GH_PRUEFSKRIPT = r'''
+h=$(printf %s "${GH_TOKEN:-}" | sha256sum | cut -c1-64)
+s=nein; [ -e "$1" ] && s=ja
+w=nein; [ -e /etc/wamo ] && w=ja
+v=$(env | grep -c '^WAMO_GH_APP' || true)
+printf '{"type":"rauchtest","gh":"%s","schluessel_sichtbar":"%s","etc_wamo":"%s","app_variablen":"%s"}\n' "$h" "$s" "$w" "$v"
+sleep "$2"
+'''
+
+
+def _jwt_pruefen(jwt: str, oeffentlich, app_id: str) -> bool:
+    """Prüft ein JWT der Attrappe: RS256-Signatur, iss, iat eine Minute zurück, exp höchstens 9 Minuten voraus."""
+    import base64
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    def b64(teil: str) -> bytes:
+        return base64.urlsafe_b64decode(teil + "=" * (-len(teil) % 4))
+    try:
+        kopf, inhalt, signatur = jwt.split(".")
+        oeffentlich.verify(b64(signatur), f"{kopf}.{inhalt}".encode(), padding.PKCS1v15(), hashes.SHA256())
+        k, c = json.loads(b64(kopf)), json.loads(b64(inhalt))
+    except (ValueError, InvalidSignature):
+        return False
+    jetzt = time.time()
+    return (k == {"alg": "RS256", "typ": "JWT"} and c.get("iss") == app_id and c["iat"] <= jetzt - 55
+            and jetzt < c["exp"] <= jetzt + 9 * 60 + 5 and c["exp"] - c["iat"] <= 600)
+
+
+def _github_attrappe(spec: dict):
+    """Ersetzt D._https im Dispatcher-Kindprozess. Protokolliert nur Prüfergebnisse, nie Token oder JWT."""
+    from cryptography.hazmat.primitives import serialization
+    oeffentlich = serialization.load_pem_public_key(Path(spec["oeffentlich"]).read_bytes())
+
+    def notieren(eintrag: dict) -> None:
+        with open(spec["protokoll"], "a", encoding="utf-8") as f:
+            f.write(json.dumps(eintrag) + "\n")
+
+    def https(methode, pfad, kopf, koerper=None):
+        anmeldung = kopf.get("Authorization", "")
+        if methode == "POST":
+            body = json.loads(koerper)
+            notieren({"methode": methode, "pfad": pfad, "koerper": body, "version": kopf.get("X-GitHub-Api-Version"),
+                      "jwt_ok": _jwt_pruefen(anmeldung.removeprefix("Bearer "), oeffentlich, spec["geheim"].get("WAMO_GH_APP_ID", ""))})
+            if spec.get("github_status", 201) != 201:
+                return spec["github_status"], b'{"message": "Attrappe: abgelehnt"}'
+            return 201, json.dumps({"token": spec["token"], "expires_at": "2026-10-21T23:59:00Z",
+                                    "permissions": body["permissions"], "repository_selection": "selected",
+                                    "repositories": [{"full_name": f"wamocon/{n}"} for n in body.get("repositories", [])]
+                                    }).encode()
+        if methode == "DELETE":
+            notieren({"methode": methode, "pfad": pfad, "token_ok": anmeldung == f"Bearer {spec['token']}"})
+            return 204, b""
+        return 404, b"{}"
+    return https
+
+
+def start_attrappe(spec_pfad: str) -> int:
+    """Kindprozess: der echte Dispatcher (main/cmd_start) mit Attrappen für geheim.env, GitHub-API und Claude Code."""
+    spec = json.loads(Path(spec_pfad).read_text())
+    D.SCHLUESSEL_ORDNER = Path(spec["ordner"])
+    D.SCHLUESSEL_BESITZER = (0, os.getuid())  # Testschlüssel gehört wamo statt root
+    D.lese_geheimnisse = lambda path=None: dict(spec["geheim"])
+    D._https = _github_attrappe(spec)
+    D.claude_argv = lambda system, modell, session=None: ["/bin/bash", "-c", GH_PRUEFSKRIPT, "pruefung",
+                                                          spec["schluessel"], str(spec["schlaf"])]
+    return D.main(["start", spec["job"], PROJEKT, spec["art"]])
+
+
+def github_app_mit_attrappe() -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    import hashlib
+    import signal
+    ordner = Path(tempfile.mkdtemp(prefix=".rauchtest-gh-", dir=D.JOBS))  # wamo-eigen, in der Sandbox unsichtbar
+    os.chmod(ordner, 0o750)
+    schluessel = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = schluessel.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+                                   serialization.NoEncryption())
+    (ordner / "gh-app.pem").write_bytes(pem)
+    os.chmod(ordner / "gh-app.pem", 0o640)
+    (ordner / "gh-app.pub").write_bytes(schluessel.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+    token = "ghs_rauchtest" + uuid.uuid4().hex
+    persoenlich = "ghp_rauchtestpersoenlich" + uuid.uuid4().hex[:12]
+    pem_zeile = pem.decode().splitlines()[3]
+    app = {"WAMO_GH_APP_ID": "424242", "WAMO_GH_APP_INSTALLATION_ID": "4711",
+           "WAMO_GH_APP_SCHLUESSEL": f"{ordner}/gh-app.pem"}
+    basis = {"ANTHROPIC_API_KEY": "rauchtest-attrappe", "GH_TOKEN": persoenlich, "GH_TOKEN_LESEN": persoenlich + "l"}
+    jobs: list[str] = []
+
+    def lauf(art: str, geheim: dict, repo: str | None = None, schlaf: int = 0, cancel_s: float | None = None,
+             lebenslinie_s: float | None = None, sigterm_s: float | None = None, waehrend=None, status: int = 201):
+        job = uuid.uuid4().hex[:16]
+        jobs.append(job)
+        for name in os.listdir(PROJ):  # leerer Projektordner: die Buchführung verlangt keine Freigabe
+            entfernen(PROJ / name) if (PROJ / name).is_dir() else (PROJ / name).unlink()
+        protokoll = ordner / f"github-{job}.jsonl"
+        spec = {"job": job, "art": art, "ordner": str(ordner), "schluessel": str(ordner / "gh-app.pem"),
+                "oeffentlich": str(ordner / "gh-app.pub"), "protokoll": str(protokoll), "token": token,
+                "geheim": geheim, "schlaf": schlaf, "github_status": status}
+        spec_pfad = ordner / f"spec-{job}.json"
+        spec_pfad.write_text(json.dumps(spec))
+        kopf = {"auftrag": "Rauchtest GitHub-App", "system": "Rauchtest"} | ({"repo": repo} if repo else {})
+        with open(ordner / "kind-stderr.log", "ab") as fehlerlog:
+            kind = subprocess.Popen([sys.executable, "-I", __file__, "--start-attrappe", str(spec_pfad)],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=fehlerlog, env=D.basis_env())
+        kind.stdin.write((json.dumps(kopf) + "\n").encode())
+        kind.stdin.flush()
+        puffer: list[bytes] = []
+        laeuft = threading.Event()  # das Prüfskript in der Sandbox hat sich gemeldet: das Token lebt
+
+        def lesen():
+            for zeile in kind.stdout:
+                puffer.append(zeile)
+                if b'"rauchtest"' in zeile:
+                    laeuft.set()
+        leser = threading.Thread(target=lesen, daemon=True)
+        leser.start()
+        for wartezeit, aktion in ((cancel_s, lambda: subprocess.run([DISPATCH, "cancel", job], capture_output=True,
+                                                                    env=D.basis_env())),
+                                  (lebenslinie_s, kind.stdin.close), (sigterm_s, lambda: kind.send_signal(signal.SIGTERM))):
+            if wartezeit is not None:
+                laeuft.wait(timeout=180)  # erst nach Selbsttest und Start der Sandbox eingreifen
+                time.sleep(wartezeit)
+                if waehrend is not None:
+                    waehrend()
+                aktion()
+        try:
+            kind.wait(timeout=300)
+        except subprocess.TimeoutExpired:
+            kind.kill()
+        leser.join(timeout=10)
+        if not kind.stdin.closed:
+            kind.stdin.close()
+        zeilen_ = []
+        for line in b"".join(puffer).decode("utf-8", "replace").splitlines():
+            try:
+                zeilen_.append(json.loads(line))
+            except ValueError:
+                pass
+        eintraege = [json.loads(z) for z in protokoll.read_text().splitlines()] if protokoll.exists() else []
+        return kind.returncode, zeilen_, eintraege, job
+
+    def ereignisse(zeilen_):
+        return [z.get("ereignis") for z in zeilen_ if z.get("type") == "wamo"]
+
+    def pruefung(zeilen_):
+        return next((z for z in zeilen_ if z.get("type") == "rauchtest"), {})
+
+    gh_hash = hashlib.sha256(token.encode()).hexdigest()
+    try:
+        # 1. schreibende Art mit Ziel-Repo: Token nur für das Repo, in der Sandbox als GH_TOKEN, am Ende widerrufen
+        rc, z, e, job = lauf("umsetzung", basis | app, repo="wamocon/rauchtest")
+        post = next((x for x in e if x["methode"] == "POST"), {})
+        weg = [x for x in e if x["methode"] == "DELETE"]
+        innen = pruefung(z)
+        pruefe("GitHub-App (Attrappe): JWT RS256 gültig, Rechte der Art (schreiben), nur das Ziel-Repo",
+               post.get("jwt_ok") is True and post.get("pfad") == "/app/installations/4711/access_tokens"
+               and post.get("koerper") == {"permissions": {"contents": "write", "pull_requests": "write", "metadata": "read"},
+                                           "repositories": ["rauchtest"]} and post.get("version") == "2022-11-28",
+               json.dumps({k: post.get(k) for k in ("jwt_ok", "pfad", "koerper")}))
+        pruefe("GitHub-App (Attrappe): Token als GH_TOKEN in der Sandbox; Schlüssel, /etc/wamo und WAMO_GH_APP_* unsichtbar",
+               innen.get("gh") == gh_hash and innen.get("schluessel_sichtbar") == "nein" and innen.get("etc_wamo") == "nein"
+               and innen.get("app_variablen") == "0", json.dumps({**innen, "gh": "passt" if innen.get("gh") == gh_hash else "falsch"}))
+        pruefe("GitHub-App (Attrappe): Lauf fertig, Token danach genau einmal widerrufen",
+               rc == 0 and ereignisse(z)[-1:] == ["ende"] and len(weg) == 1 and weg[0].get("token_ok") is True,
+               f"Exit {rc}, Ereignisse {ereignisse(z)}, Widerrufe {len(weg)}")
+
+        # 2. lesende Art ohne Repo, Abbruch per cancel; argv aller Prozesse von wamo ohne Token und Schlüssel
+        argv_funde: list[str] = []
+
+        def argv_pruefen():
+            for pid in os.listdir("/proc"):
+                if pid.isdigit():
+                    try:
+                        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace")
+                    except OSError:
+                        continue
+                    if token in cmd or pem_zeile in cmd or persoenlich in cmd:
+                        argv_funde.append(pid)
+        rc, z, e, job = lauf("review", basis | app, schlaf=120, cancel_s=2, waehrend=argv_pruefen)
+        post = next((x for x in e if x["methode"] == "POST"), {})
+        ende = next((x for x in z if x.get("ereignis") == "ende"), {})
+        pruefe("GitHub-App (Attrappe): lesende Art ohne Repo: nur Leserechte, Token für die Installation",
+               post.get("koerper") == {"permissions": {"contents": "read", "metadata": "read", "pull_requests": "read"}},
+               json.dumps(post.get("koerper")))
+        pruefe("GitHub-App (Attrappe): cancel beendet den Lauf, Token widerrufen; kein Token und Schlüssel in argv",
+               ende.get("ergebnis") == "abgebrochen" and [x["methode"] for x in e].count("DELETE") == 1
+               and not argv_funde and not einheiten(job), f"{ende}, Widerrufe {[x['methode'] for x in e].count('DELETE')}, "
+               f"argv-Funde {argv_funde}")
+
+        # 3. Lebenslinie reißt ab
+        rc, z, e, job = lauf("umsetzung", basis | app, schlaf=120, lebenslinie_s=2)
+        ende = next((x for x in z if x.get("ereignis") == "ende"), {})
+        pruefe("GitHub-App (Attrappe): Lebenslinie weg, Lauf endet, Token widerrufen",
+               ende.get("ergebnis") == "verlassen" and [x["methode"] for x in e].count("DELETE") == 1 and not einheiten(job),
+               f"{ende}, Widerrufe {[x['methode'] for x in e].count('DELETE')}")
+
+        # 4. SIGTERM an den Dispatcher: Sandbox gestoppt, Token widerrufen
+        rc, z, e, job = lauf("umsetzung", basis | app, schlaf=120, sigterm_s=2)
+        pruefe("GitHub-App (Attrappe): SIGTERM an den Dispatcher stoppt die Sandbox und widerruft das Token",
+               rc == D.EXIT_ABGEBROCHEN and [x["methode"] for x in e].count("DELETE") == 1 and not einheiten(job),
+               f"Exit {rc}, Widerrufe {[x['methode'] for x in e].count('DELETE')}, Einheiten {einheiten(job) or 'keine'}")
+
+        # 5. GitHub lehnt ab: fail-closed, nichts startet, kein Rückfall auf den persönlichen Token
+        rc, z, e, job = lauf("umsetzung", basis | app, status=401)
+        pruefe("GitHub-App (Attrappe): GitHub lehnt ab -> Start abgelehnt (Code 8), nichts gestartet",
+               rc == D.EXIT_GITHUB_APP and ereignisse(z) == ["selbsttest_ok", "start_abgelehnt"] and not pruefung(z),
+               f"Exit {rc}, Ereignisse {ereignisse(z)}")
+
+        # 6. kaputte Konfiguration (Installation-ID fehlt): fail-closed ohne Aufruf bei GitHub
+        rc, z, e, job = lauf("umsetzung", basis | {k: v for k, v in app.items() if k != "WAMO_GH_APP_INSTALLATION_ID"})
+        pruefe("GitHub-App (Attrappe): unvollständige Konfiguration -> Start abgelehnt, kein Aufruf bei GitHub",
+               rc == D.EXIT_GITHUB_APP and ereignisse(z) == ["selbsttest_ok", "start_abgelehnt"] and not e,
+               f"Exit {rc}, Ereignisse {ereignisse(z)}, Aufrufe {len(e)}")
+
+        # 7. ohne Konfiguration: Rückfall auf GH_TOKEN wie bisher
+        rc, z, e, job = lauf("umsetzung", basis)
+        innen = pruefung(z)
+        pruefe("GitHub-App (Attrappe): ohne WAMO_GH_APP_* Rückfall auf GH_TOKEN, kein Aufruf bei GitHub",
+               rc == 0 and innen.get("gh") == hashlib.sha256(persoenlich.encode()).hexdigest() and not e,
+               f"Exit {rc}, Aufrufe {len(e)}")
+
+        audit = (D.LOGS / "auftraege.log").read_text(encoding="utf-8", errors="replace")[-200_000:]
+        pruefe("GitHub-App (Attrappe): Audit nennt Repo, Stufe und Widerruf, nie Token oder Schlüssel",
+               "repo=wamocon/rauchtest stufe=schreiben" in audit and "gh_app_widerruf" in audit
+               and token not in audit and pem_zeile not in audit and "PRIVATE KEY" not in audit and persoenlich not in audit,
+               "geprüft in /srv/wamo/logs/auftraege.log")
+    finally:
+        for job in jobs:
+            entfernen(D.JOBS / job)
+        entfernen(ordner)
+
+
+# ---------------------------------------------------------------- GitHub-App echt (nach dem Einrichten)
+def github_app_echt() -> None:
+    """Prüft die eingerichtete App bei GitHub, ausschließlich lesend: Installation lesen (JWT), dann zwei Token der
+    Stufe lesen (Art review: contents, metadata und pull_requests nur lesend), eines für die ganze Installation und
+    eines nur für ein Repo, damit Repos auflisten und ein privates Repo lesen, beide widerrufen und prüfen, dass sie
+    danach ungültig sind. Schreibende Token werden nie erzeugt, nichts wird geschrieben. Gibt weder Token noch
+    Schlüssel noch den Namen der App aus. Nur wenn die drei Variablen WAMO_GH_APP_* gesetzt sind."""
+    try:
+        app = D.github_app_konfig(D.lese_geheimnisse())
+    except D.GithubAppFehler as e:
+        pruefe("GitHub-App: Konfiguration in /etc/wamo/geheim.env", False, str(e))
+        return
+    if app is None:
+        pruefe("GitHub-App: nicht eingerichtet (WAMO_GH_APP_* fehlen), übersprungen", True)
+        return
+    status = D.github_status()
+    if not pruefe("GitHub-App: Konfiguration und Schlüsseldatei (root:wamo 0640, RSA)", status == "app", status):
+        return
+    try:
+        pem = D.schluessel_lesen(app.schluessel_name)
+        try:
+            jwt = D.jwt_erzeugen(app.app_id, bytes(pem))
+        finally:
+            pem[:] = bytes(len(pem))
+        code, inst = D._github("GET", f"/app/installations/{app.installation_id}", jwt)
+    except D.GithubAppFehler as e:
+        pruefe("GitHub-App: Installation abrufbar", False, str(e))
+        return
+    rechte = inst.get("permissions") if code == 200 and isinstance(inst, dict) else None
+    if not pruefe("GitHub-App: Installation abrufbar (App-ID, Schlüssel, Installation-ID passen)", isinstance(rechte, dict),
+                  D._github_meldung(code, inst)):
+        return
+    zusaetzlich = sorted(k for k in rechte if k not in ("contents", "pull_requests", "metadata"))
+    pruefe("GitHub-App: Rechte nur Contents (schreiben), Pull requests (schreiben), Metadata (lesen)",
+           rechte.get("contents") == "write" and rechte.get("pull_requests") == "write"
+           and rechte.get("metadata") == "read" and not zusaetzlich,
+           ", ".join(f"{k}={v}" for k, v in sorted(rechte.items())) + (f"; bitte entfernen: {', '.join(zusaetzlich)}"
+                                                                        if zusaetzlich else ""))
+    pruefe("GitHub-App: nur auf ausgewählte Repos installiert (Only select repositories)",
+           inst.get("repository_selection") == "selected", str(inst.get("repository_selection")))
+
+    def lesetoken(was: str, repo: str | None, pruefung) -> None:
+        """Token der Stufe lesen holen, damit lesen, widerrufen und die Ungültigkeit prüfen."""
+        try:
+            token, ablauf = D.installations_token(app, "review", repo)
+        except D.GithubAppFehler as e:
+            pruefe(f"GitHub-App: Lesetoken {was}", False, str(e))
+            return
+        try:
+            pruefung(token, ablauf)
+        except D.GithubAppFehler as e:
+            pruefe(f"GitHub-App: Lesetoken {was}, Zugriffe", False, str(e))
+        finally:
+            widerrufen = D.token_widerrufen(token)
+        code, _ = D._github("GET", "/installation/repositories?per_page=1", token)
+        pruefe(f"GitHub-App: Lesetoken {was} widerrufen und danach ungültig", widerrufen and code == 401, f"GitHub {code}")
+
+    gesehen: list[dict] = []
+
+    def alle_repos(token: str, ablauf: str) -> None:
+        code, obj = D._github("GET", "/installation/repositories?per_page=100", token)
+        repos = [r for r in obj.get("repositories", []) if isinstance(r, dict)] \
+            if code == 200 and isinstance(obj, dict) else []
+        gesehen.extend(repos)
+        pruefe(f"GitHub-App: Lesetoken (ganze Installation, läuft ab {ablauf}) listet {len(repos)} Repos",
+               code == 200 and bool(repos), ", ".join(str(r.get("full_name")) for r in repos[:15]))
+
+    lesetoken("für die ganze Installation", None, alle_repos)
+    if not gesehen:
+        return
+    ziel = next((r for r in gesehen if r.get("private")), gesehen[0])  # bevorzugt ein privates Repo
+    name = str(ziel.get("full_name"))
+
+    def ein_repo(token: str, ablauf: str) -> None:
+        code, obj = D._github("GET", "/installation/repositories?per_page=100", token)
+        sichtbar = [r.get("full_name") for r in obj.get("repositories", [])] if code == 200 and isinstance(obj, dict) else []
+        pruefe("GitHub-App: Lesetoken nur für ein Repo sieht genau dieses eine Repo", sichtbar == [name],
+               f"{len(sichtbar)} sichtbar, Ziel {name}")
+        code, obj = D._github("GET", f"/repos/{name}", token)
+        pruefe(f"GitHub-App: Lesezugriff auf {'privates ' if ziel.get('private') else ''}Repo {name}",
+               code == 200 and isinstance(obj, dict) and obj.get("full_name") == name, f"GitHub {code}")
+        code, _ = D._github("GET", f"/repos/{name}/pulls?per_page=1&state=all", token)
+        pruefe("GitHub-App: Pull Requests lesbar (pull_requests: read)", code == 200, f"GitHub {code}")
+        # ein anderes privates Repo (ein öffentliches wäre für jeden lesbar und sagt nichts über das Token)
+        andere = next((r.get("full_name") for r in gesehen if r.get("private") and r.get("full_name") != name), None)
+        if andere:
+            code, _ = D._github("GET", f"/repos/{andere}", token)
+            pruefe("GitHub-App: ein anderes Repo der Installation bleibt mit diesem Token unsichtbar", code == 404,
+                   f"GitHub {code}")
+
+    lesetoken(f"nur für {name}", name, ein_repo)
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--ausfuehren":
         D.beenden(ausfuehren(sys.argv[2]))  # hartes Ende wie der Dispatcher (Lebenslinien-Thread)
+    if len(sys.argv) == 3 and sys.argv[1] == "--start-attrappe":
+        D.beenden(start_attrappe(sys.argv[2]))
     if os.getuid() == 0 or Path.home() != D.HEIM:
         print("Bitte als wamo ausführen: sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest", file=sys.stderr)
         return 1
@@ -666,6 +1026,9 @@ def main() -> int:
             mcp_mit_echter_umgebung()
         if "--attrappe" in sys.argv:
             ende_zu_ende()
+            github_app_mit_attrappe()
+        if "--app-echt" in sys.argv:
+            github_app_echt()
     finally:
         entfernen(PROJ)
         (D.JOBS / ".projekte" / f"{PROJEKT}.json").unlink(missing_ok=True)

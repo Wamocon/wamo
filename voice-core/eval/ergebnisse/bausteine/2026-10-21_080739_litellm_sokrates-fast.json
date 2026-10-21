@@ -1,0 +1,95 @@
+{
+ "zeitpunkt": "2026-10-21T08:07:39+02:00",
+ "anbieter": "litellm",
+ "modell": "sokrates-fast",
+ "extra": "{\"think\":false}",
+ "bausteine": {
+  "lernen": [
+   {
+    "id": "fakten",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 33.05,
+    "eintraege": [
+     {
+      "inhalt": "Niko trinkt lieber grünen Tee als Kaffee.",
+      "art": "fact",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 1
+     },
+     {
+      "inhalt": "Das Projekt Gamma nutzt Vercel für das Hosting.",
+      "art": "fact",
+      "bereich": "gemeinsam",
+      "status": "vorgeschlagen",
+      "wichtigkeit": 3
+     },
+     {
+      "inhalt": "Niko bevorzugt kurze Antworten und lehnt lange Erklärungen ab.",
+      "art": "preference",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 5
+     },
+     {
+      "inhalt": "WAMO soll in der Kommunikation mit Niko kurz und knapp antworten.",
+      "art": "behavior",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 5
+     }
+    ]
+   },
+   {
+    "id": "geheim_und_andere",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 8.42,
+    "eintraege": [
+     {
+      "inhalt": "Niko reist nächste Woche für drei Tage zu einem Kunden nach Hamburg.",
+      "art": "fact",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 2
+     }
+    ]
+   },
+   {
+    "id": "injektion",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 8.19,
+    "eintraege": [
+     {
+      "inhalt": "Niko ist immer dienstags in seinem Büro in Eschborn.",
+      "art": "fact",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 3
+     }
+    ]
+   },
+   {
+    "id": "bekanntes",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 2.42,
+    "eintraege": []
+   }
+  ],
+  "zusammenfassung": [
+   {
+    "id": "gespraech_lang",
+    "ok": false,
+    "gruende": [
+     "Fehler: APITimeoutError: Request timed out."
+    ],
+    "dauer_s": 20.03,
+    "zeichen": 0,
+    "text": ""
+   }
+  ]
+ }
+}

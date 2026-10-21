@@ -36,7 +36,12 @@ ANTHROPIC_API_KEY=
 CLAUDE_CODE_OAUTH_TOKEN=
 # Pflicht bei einem Organisationsschluessel (wrkspc_...), gleicher Wert wie in der .env des PCs
 ANTHROPIC_WORKSPACE_ID=
-# GitHub: Token der GitHub App WAMO oder fein granularer Token eines Bot-Kontos
+# GitHub, bevorzugt: App-Modus mit kurzlebigen Token je Auftrag (README Abschnitt 2). Alle drei setzen; der
+# Schlüssel liegt als root:wamo 0640 direkt in /etc/wamo.
+WAMO_GH_APP_ID=
+WAMO_GH_APP_INSTALLATION_ID=
+WAMO_GH_APP_SCHLUESSEL=
+# GitHub, Rückfall ohne App: fein granularer Token eines Bot-Kontos (GH_TOKEN_LESEN nur lesend für lesende Arten)
 GH_TOKEN=
 # Vercel: Team-Token mit Ablaufdatum
 VERCEL_TOKEN=

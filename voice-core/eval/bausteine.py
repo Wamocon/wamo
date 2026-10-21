@@ -47,6 +47,16 @@ NAME = "Niko"
 BAUSTEINE = ("lernen", "zusammenfassung", "vision")
 
 
+def _zugang():
+    """Werkzeug des Betreibers: Kandidaten im Haus laufen als haus-Zugang (nie Claude), die Claude-Referenz mit
+    ANTHROPIC_API_KEY. Welcher Anbieter gilt, steht in WAMO_PRUEF_ANBIETER (setzt main)."""
+    from llm_anbieter import Zugang
+
+    if os.getenv("WAMO_PRUEF_ANBIETER") == "litellm":
+        return Zugang.haus("betreiber", "betreiber")
+    return Zugang.betreiber()
+
+
 # --- Lernen ----------------------------------------------------------------------------------------
 
 
@@ -144,7 +154,7 @@ async def lernen_pruefen() -> list[dict]:
     for fall in LERNFAELLE:
         speicher = _Gedaechtnis(fall.bekannt)
         start = time.perf_counter()
-        await learn_from_session(speicher, list(fall.gespraech), name=NAME)
+        await learn_from_session(speicher, list(fall.gespraech), name=NAME, zugang=_zugang())
         dauer = time.perf_counter() - start
         gruende = lernen_bewerten(fall, speicher.gespeichert)
         ergebnisse.append({"id": fall.id, "ok": not gruende, "gruende": gruende, "dauer_s": round(dauer, 2),
@@ -204,7 +214,7 @@ async def zusammenfassung_pruefen(anbieter: str, modell: str) -> list[dict]:
     from pipecat.frames.frames import LLMContextSummaryRequestFrame
     from pipecat.processors.aggregators.llm_context import LLMContext
 
-    llm = gespraech_dienst(Wahl("zusammenfassung", anbieter, modell, anbieter), None)
+    llm = gespraech_dienst(Wahl("zusammenfassung", anbieter, modell, anbieter), None, _zugang(), "zusammenfassung")
     context = LLMContext(messages=[{"role": r, "content": c} for r, c in GESPRAECH_LANG])
     frame = LLMContextSummaryRequestFrame(request_id="pruefung", context=context, min_messages_to_keep=2,
                                           target_context_tokens=2000, summarization_prompt=bot.summary_prompt(NAME))
@@ -270,7 +280,7 @@ async def vision_pruefen() -> list[dict]:
     import screen
     from llm_anbieter import waehlen
 
-    modell = (await waehlen("vision")).modell  # bei Claude das Bildmodell (VISION_MODEL), nicht Haiku
+    modell = (await waehlen("vision", _zugang())).modell  # bei Claude das Bildmodell (VISION_MODEL oder Haiku)
     foto = testbild()
 
     async def falsches_foto(_pc_client):
@@ -280,8 +290,8 @@ async def vision_pruefen() -> list[dict]:
     start = time.perf_counter()
     beschreibung, gefunden, fehler = "", None, None
     try:
-        beschreibung = await screen.describe(None, "Was steht auf dem Bildschirm?")
-        gefunden, _ = await screen.locate(None, "Senden-Knopf")
+        beschreibung = await screen.describe(None, "Was steht auf dem Bildschirm?", _zugang())
+        gefunden, _ = await screen.locate(None, "Senden-Knopf", _zugang())
     except Exception as e:
         fehler = maskieren(f"{type(e).__name__}: {e}")[:200]
     dauer = time.perf_counter() - start
@@ -311,7 +321,11 @@ def speichern(anbieter: str, modell: str, ergebnisse: dict) -> Path:
     pfad = ORDNER / f"{jetzt:%Y-%m-%d_%H%M%S}_{anbieter}_{sicher}.json"
     daten = {"zeitpunkt": jetzt.isoformat(timespec="seconds"), "anbieter": anbieter, "modell": modell,
              "extra": os.getenv("WAMO_LLM_EXTRA") or "", "bausteine": ergebnisse}
-    pfad.write_text(json.dumps(daten, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    from llm_anbieter import ausblenden_text
+
+    text = ausblenden_text(json.dumps(daten, ensure_ascii=False, indent=1))  # auch in Modellantworten
+    json.loads(text)  # das Ersetzen darf die Datei nicht beschädigen
+    pfad.write_text(text + "\n", encoding="utf-8")
     return pfad
 
 
@@ -356,8 +370,13 @@ async def main() -> None:
     load_dotenv(VOICE_CORE / ".env")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    from llm_anbieter import ausblenden_text, ausgeblendet
+
     logger.remove()
+    logger.configure(patcher=lambda r: r.update(message=ausblenden_text(r["message"])))
     logger.add(sys.stderr, level="ERROR")
+    if args.modell and ausgeblendet(args.modell):
+        raise SystemExit("Dieses Modell ist über WAMO_LLM_AUSBLENDEN ausgeblendet")
     if args.bericht:
         print(bericht_schreiben())
         return
@@ -366,6 +385,7 @@ async def main() -> None:
     from llm_anbieter import claude_standardmodell
 
     modell = args.modell or claude_standardmodell("lernen")
+    os.environ["WAMO_PRUEF_ANBIETER"] = args.anbieter
     if args.anbieter == "litellm":
         _umgebung("litellm", modell)
     elif args.modell:

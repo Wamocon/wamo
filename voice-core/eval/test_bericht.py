@@ -10,7 +10,8 @@ import bewertung as bw
 JETZT = {"testsatz": "t1", "prompt": "p1", "bewertung": "b1", "pc_werkzeuge": "w1"}
 
 
-def _lauf(ordner, name, *, ok_bis=50, ttft=0.3, hashes=JETZT, sauber=True, abbruch=None, modell="qwen", flacker=False):
+def _lauf(ordner, name, *, ok_bis=50, ttft=0.3, hashes=JETZT, sauber=True, abbruch=None, modell="qwen", flacker=False,
+          anbieter="litellm"):
     zuege = []
     for i in range(50):
         ok = i < ok_bis
@@ -21,7 +22,7 @@ def _lauf(ordner, name, *, ok_bis=50, ttft=0.3, hashes=JETZT, sauber=True, abbru
          "marker_ok": sum(z["marker_ok"] for z in zuege), "werkzeug_quote": 1.0, "marker_quote": 1.0,
          "format_quote": 1.0, "inhalt_quote": None, "werkzeug_mit_aufruf": "30/30", "werkzeug_ohne_aufruf": "20/20",
          "ttft_p50_s": ttft, "ttft_p95_s": ttft, "muss_fehler": [], "infrastrukturfehler": [], "kosten_usd": None}
-    daten = {"anbieter": "litellm", "modell": modell, "hashes": hashes, "stand": {"git_sauber": sauber},
+    daten = {"anbieter": anbieter, "modell": modell, "hashes": hashes, "stand": {"git_sauber": sauber},
              "testsatz": {"zuege": 50, "hash": hashes["testsatz"]}, "abbruch": abbruch, "kennzahlen": k,
              "zuege": zuege}
     (ordner / f"{name}.json").write_text(json.dumps(daten), encoding="utf-8")
@@ -90,3 +91,19 @@ def test_alte_dateien_ohne_neue_felder(tmp_path):
     text = bericht.bericht_schreiben(tmp_path, JETZT).read_text(encoding="utf-8")
     assert "alt.json" in text and "veraltet" in text
     assert bw.FREIGABE_LAEUFE == 3
+
+
+def test_latenzschwelle_nur_fuer_hausmodelle(tmp_path):
+    """Claude ist Referenz und Rückfall: seine Zeiten zählen nicht gegen die Freigabe, Qualität schon."""
+    claude, haus = tmp_path / "claude", tmp_path / "haus"
+    claude.mkdir()
+    haus.mkdir()
+    for i in "123":
+        _lauf(claude, i, ttft=1.1, anbieter="claude", modell="claude-haiku-5-5")
+        _lauf(haus, i, ttft=1.1)
+    assert bericht.gruppen_freigabe(_gruppe(claude))[0] == "ja"
+    status, gruende, _ = bericht.gruppen_freigabe(_gruppe(haus))
+    assert status == "nein" and any("erstes Token p95" in g for g in gruende)
+    _lauf(claude, "4", ttft=1.1, ok_bis=47, anbieter="claude", modell="claude-haiku-5-5")
+    status, gruende, _ = bericht.gruppen_freigabe(_gruppe(claude))
+    assert status == "nein" and not any("erstes Token" in g for g in gruende)

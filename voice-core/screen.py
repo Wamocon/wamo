@@ -19,7 +19,7 @@ from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.services.llm_service import FunctionCallParams
 
-from llm_anbieter import Bild, anfrage, json_aus_text
+from llm_anbieter import Bild, Wahl, Zugang, anfrage, json_aus_text
 from pc_host import call_host_tool
 
 DATA_RULE = (
@@ -30,8 +30,9 @@ LOCATE_SCHEMA = {
     "type": "object",
     "properties": {
         "gefunden": {"type": "boolean"},
-        "x": {"type": "integer", "description": "Bildpixel, Mitte des Elements"},
-        "y": {"type": "integer"},
+        # number statt integer: Hausmodelle schreiben sonst bei einer Kommazahl Ziffern ohne Punkt weiter
+        "x": {"type": "number", "description": "Mitte des Elements, waagerecht (Einheit siehe Anweisung)"},
+        "y": {"type": "number", "description": "Mitte des Elements, senkrecht (Einheit siehe Anweisung)"},
         "was": {"type": "string", "description": "kurz, was dort ist"},
     },
     "required": ["gefunden", "x", "y", "was"],
@@ -78,10 +79,11 @@ async def _shot(pc_client) -> dict:
     return shot
 
 
-async def describe(pc_client, frage: str) -> str:
+async def describe(pc_client, frage: str, zugang: Zugang) -> str:
     shot = await _shot(pc_client)
     antwort = await anfrage(
         "vision",
+        zugang=zugang,
         system=f"Du beschreibst einen Bildschirm für einen Sprachassistenten. Antworte auf Deutsch in "
         f"höchstens drei kurzen Sätzen ohne Markdown. {DATA_RULE}",
         inhalt=[Bild(shot["jpeg_base64"]), frage],
@@ -90,15 +92,47 @@ async def describe(pc_client, frage: str) -> str:
     return antwort.text or "Ich erkenne nichts Eindeutiges."
 
 
-async def locate(pc_client, ziel: str) -> tuple[dict, dict]:
+NORMIERT = 1000  # Hausmodelle (Gemma, Qwen-VL) geben Bildpositionen auf 0 bis 1000 an, nicht in Pixeln
+
+
+def _locate_system(shot: dict) -> Callable[[Wahl], str]:
+    """Claude rechnet in Bildpixeln, die Hausmodelle auf der Skala 0 bis 1000. Der Text richtet sich nach dem
+    Anbieter, der tatsächlich antwortet (auch nach einem Rückfall)."""
+    def text(wahl: Wahl) -> str:
+        if wahl.anbieter == "litellm":
+            einheit = (f"auf der Skala 0 bis {NORMIERT} an (0,0 oben links, {NORMIERT},{NORMIERT} unten rechts, "
+                       "unabhängig von der Bildgröße)")
+        else:
+            einheit = f"als Bildpixel an (Bild {shot['bild_breite']}x{shot['bild_hoehe']} Pixel)"
+        return (f"Finde das beschriebene Element im Bildschirmfoto und gib die Mitte {einheit}. Ist es nicht "
+                f"eindeutig sichtbar: gefunden=false. {DATA_RULE}")
+    return text
+
+
+def in_bildpixel(found: dict, shot: dict, anbieter: str) -> dict:
+    """Antwort des Bildmodells in Bildpixeln (ganzzahlig). Unbrauchbare Werte führen zu gefunden=false, damit nie
+    an einer geratenen Stelle geklickt wird."""
+    try:
+        x, y = float(found.get("x")), float(found.get("y"))
+    except (TypeError, ValueError):
+        return {**found, "gefunden": False}
+    if anbieter == "litellm":
+        if not (0 <= x <= NORMIERT and 0 <= y <= NORMIERT):
+            return {**found, "gefunden": False}
+        x, y = x / NORMIERT * int(shot["bild_breite"]), y / NORMIERT * int(shot["bild_hoehe"])
+    breite, hoehe = int(shot["bild_breite"]), int(shot["bild_hoehe"])
+    if not (0 <= x <= breite and 0 <= y <= hoehe):
+        return {**found, "gefunden": False}
+    # nur der Rand (x == Breite) rückt ins Bild, Werte außerhalb nie
+    return {**found, "x": min(round(x), breite - 1), "y": min(round(y), hoehe - 1)}
+
+
+async def locate(pc_client, ziel: str, zugang: Zugang) -> tuple[dict, dict]:
     shot = await _shot(pc_client)
     antwort = await anfrage(
         "vision",
-        system=(
-            f"Finde das beschriebene Element im Bildschirmfoto ({shot['bild_breite']}x{shot['bild_hoehe']} "
-            f"Pixel) und gib die Mitte als Bildpixel an. Ist es nicht eindeutig sichtbar: gefunden=false. "
-            f"{DATA_RULE}"
-        ),
+        zugang=zugang,
+        system=_locate_system(shot),
         inhalt=[Bild(shot["jpeg_base64"]), f"Element: {ziel}"],
         max_tokens=400,
         json_schema=LOCATE_SCHEMA,
@@ -107,11 +141,13 @@ async def locate(pc_client, ziel: str) -> tuple[dict, dict]:
     found = json_aus_text(antwort.text or "{}")
     if not isinstance(found, dict):
         raise ValueError("Antwort des Bildmodells ist kein Objekt")
+    if found.get("gefunden"):
+        found = in_bildpixel(found, shot, antwort.wahl.anbieter)
     return found, shot
 
 
-async def _click(pc_client, ziel: str, arguments: dict) -> dict:
-    found, shot = await locate(pc_client, ziel)
+async def _click(pc_client, ziel: str, arguments: dict, zugang: Zugang) -> dict:
+    found, shot = await locate(pc_client, ziel, zugang)
     if not found.get("gefunden"):
         return {"status": "nicht_gefunden", "summary": f"{ziel} ist nicht zu sehen"}
     px, py = int(found["x"]), int(found["y"])
@@ -149,9 +185,12 @@ def register_screen_tools(
     get_pc_client,
     allowed: Callable[[], bool] = lambda: True,
     on_foreign_content: Callable[[], None] = lambda: None,
+    *,
+    zugang: Zugang,
 ) -> list[FunctionSchema]:
     """allowed: ist die PC-Steuerung dieser Sitzung an? on_foreign_content: meldet, dass
-    Bildschirminhalte ins Gespräch kamen (kein sofort wirksames gemeinsames Wissen, kein Lernen)."""
+    Bildschirminhalte ins Gespräch kamen (kein sofort wirksames gemeinsames Wissen, kein Lernen).
+    zugang: Modellzugang des Profils; das Bildmodell läuft mit dessen Schlüssel oder im Haus."""
 
     async def bildschirm_ansehen(params: FunctionCallParams):
         client = get_pc_client()
@@ -162,7 +201,7 @@ def register_screen_tools(
             await params.result_callback({"antwort": "Kein Zugriff auf den PC."})
             return
         try:
-            antwort = await describe(client, str(params.arguments.get("frage", "Was ist zu sehen?"))[:500])
+            antwort = await describe(client, str(params.arguments.get("frage", "Was ist zu sehen?"))[:500], zugang)
             on_foreign_content()
         except BildschirmGesperrt:
             await params.result_callback({"status": "locked", "antwort": GESPERRT_TEXT})
@@ -184,7 +223,7 @@ def register_screen_tools(
             return
         on_foreign_content()
         try:
-            result = await _click(client, ziel, params.arguments)
+            result = await _click(client, ziel, params.arguments, zugang)
         except BildschirmGesperrt:
             result = {"status": "locked", "summary": GESPERRT_TEXT}
         except Exception as e:  # Bildmodell, Host oder Antwort kaputt: Modell bekommt trotzdem ein Ergebnis

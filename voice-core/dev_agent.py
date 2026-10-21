@@ -94,6 +94,9 @@ ZUGANG_TOOL = "WAMO-Zugang"  # Freigabe-Anfrage des Dispatchers: mehr Zugänge a
 MAX_OFFENE_FREIGABEN = 10
 SSH_ZIEL_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9.-]{1,253}")
 REMOTE_ARG_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# Ziel-Repo für das kurzlebige GitHub-Token auf Sokrates-2 (dieselbe Regel wie REPO_RE im Dispatcher)
+REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+GITHUB_URL_RE = re.compile(r"github\.com[/:]([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})", re.IGNORECASE)
 SSH_KURZ_TIMEOUT_SECS = 30
 REMOTE_PUFFER_SECS = 300  # das harte Zeitlimit gilt auf Sokrates-2; der Voice-Core wartet etwas länger
 LOKAL_WARNUNG = (
@@ -107,6 +110,7 @@ REMOTE_EREIGNIS_STATUS = {
     "keine_zugangsdaten": "nicht gestartet (kein Claude-Zugang auf Sokrates-2)",
     "belegt": "nicht gestartet (Projekt oder Auftrag belegt)",
     "zugang_erweitert": "wartet auf Freigabe (mehr Zugänge als frühere Aufträge im Projekt)",
+    "start_abgelehnt": "nicht gestartet (GitHub-Token der App nicht erzeugt)",
 }
 REMOTE_ENDE_STATUS = {
     "fertig": "fertig", "zeitlimit": "abgebrochen (Zeitlimit)", "abgebrochen": "abgebrochen",
@@ -118,6 +122,7 @@ REMOTE_EXIT_STATUS = {
     2: "nicht gestartet (Auftrag abgewiesen)", 3: REMOTE_EREIGNIS_STATUS["selbsttest_fehlgeschlagen"],
     4: REMOTE_EREIGNIS_STATUS["belegt"], 5: REMOTE_EREIGNIS_STATUS["keine_zugangsdaten"],
     6: "fehlgeschlagen (Fehler im Dispatcher)", 7: REMOTE_EREIGNIS_STATUS["zugang_erweitert"],
+    8: REMOTE_EREIGNIS_STATUS["start_abgelehnt"],
     124: "abgebrochen (Zeitlimit)", 130: "abgebrochen",
     255: "fehlgeschlagen (SSH-Verbindung zu Sokrates-2)",
 }
@@ -290,6 +295,44 @@ def projects_dir_problem(projects_dir: Path | None = None) -> str | None:
     return None
 
 
+def repo_pruefen(value: object) -> str:
+    """Ziel-Repo owner/name (wie check_repo im Dispatcher); ValueError bei allem anderen."""
+    if not isinstance(value, str):
+        raise ValueError("Repo fehlt")
+    repo = value.strip()
+    if repo.lower().startswith(("https://github.com/", "http://github.com/", "github.com/")):
+        repo = repo.split("github.com/", 1)[1].rstrip("/")
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    name = repo.split("/", 1)[-1]
+    if len(repo) > 140 or not REPO_RE.fullmatch(repo) or repo.count("/") != 1 or name in (".", ".."):
+        raise ValueError("Repo: Form owner/name, nur A-Z, a-z, 0-9, Punkt, Unterstrich und Bindestrich")
+    if name.lower() == SELF_REPO:
+        raise ValueError("Das WAMO-Repo selbst ist für Aufträge gesperrt")
+    return repo
+
+
+def repo_aus_auftrag(auftrag: str) -> str | None:
+    """Ziel-Repo aus einer GitHub-Adresse im Auftragstext (github.com/owner/name). Keine Adresse: None, dann gilt
+    das Token für die Installation mit den Rechten der Art. Nennt der Auftrag mehrere verschiedene Repos, ValueError:
+    der Auftragstext ist nicht vertrauenswürdig, eine zweite Adresse darf den Zugriff nicht stillschweigend auf die
+    ganze Installation ausweiten; das Sprachmodell soll das Repo ausdrücklich angeben."""
+    gefunden: dict[str, str] = {}
+    for owner, name in GITHUB_URL_RE.findall(auftrag):
+        name = name.rstrip(".,;:!?)")
+        if name.lower().endswith(".git"):
+            name = name[:-4]
+        try:
+            repo = repo_pruefen(f"{owner}/{name}")
+        except ValueError:
+            continue
+        gefunden.setdefault(repo.lower(), repo)
+    if len(gefunden) > 1:
+        raise ValueError("Der Auftrag nennt mehrere GitHub-Repos; bitte das Repo, an dem gearbeitet wird, "
+                         "ausdrücklich im Feld repo angeben")
+    return next(iter(gefunden.values())) if gefunden else None
+
+
 def rules_for(name: str, ort: str = "lokal") -> str:
     rules = RULES_TEMPLATE.format(name=clean_inline(name, 60) or "einem Admin")
     return f"{rules}\n{REMOTE_RULES}" if ort == "sokrates2" else rules
@@ -443,6 +486,7 @@ class Job:
     started: bool = False
     pending: dict[str, dict] = field(default_factory=dict)
     ereignisse: dict[str, dict] = field(default_factory=dict)  # wamo-Ereignisse des Dispatchers (sokrates2)
+    repo: str | None = None  # Ziel-Repo owner/name: begrenzt das GitHub-Token auf Sokrates-2 auf dieses Repo
 
     def __post_init__(self):
         self.dir = JOBS_DIR / self.id
@@ -482,6 +526,12 @@ class DevAgent:
                 properties={
                     "auftrag": {"type": "string", "description": f"Vollständiger Auftrag in den Worten von {name}, präzisiert"},
                     "projekt": {"type": "string", "description": "Ordner-/Repo-Name, z. B. rezepte-app (a-z, 0-9, -)"},
+                    "repo": {
+                        "type": "string",
+                        "description": ("Nur wenn der Auftrag ein bestehendes GitHub-Repo nennt: owner/name, z. B. "
+                                        "wamocon/rezepte-app. Begrenzt den GitHub-Zugang des Auftrags auf dieses Repo. "
+                                        "Sonst weglassen."),
+                    },
                     "art": {
                         "type": "string",
                         "enum": list(AUFTRAGSARTEN),
@@ -520,17 +570,26 @@ class DevAgent:
         if art not in KARTEN:
             await params.result_callback({"ok": False, "fehler": f"Unbekannte Auftragsart, erlaubt: {', '.join(AUFTRAGSARTEN)}"})
             return
-        job = Job(id=uuid.uuid4().hex[:16], auftrag=auftrag, projekt=projekt, art=art)
+        repo_arg = params.arguments.get("repo")
+        try:  # ausdrücklich genannt (Werkzeugaufruf) oder eindeutig als GitHub-Adresse im Auftrag
+            repo = repo_pruefen(repo_arg) if isinstance(repo_arg, str) and repo_arg.strip() else repo_aus_auftrag(auftrag)
+        except ValueError as e:
+            await params.result_callback({"ok": False, "fehler": str(e)})
+            return
+        job = Job(id=uuid.uuid4().hex[:16], auftrag=auftrag, projekt=projekt, art=art, repo=repo)
         self._jobs[job.id] = job
-        await self._send({
-            "type": "auftrag", "job": job.id, "projekt": projekt.name, "art": art,
-            "auftrag": clean_inline(auftrag, MAX_TASK_CHARS),
-        })
+        karte = {"type": "auftrag", "job": job.id, "projekt": projekt.name, "art": art,
+                 "auftrag": clean_inline(auftrag, MAX_TASK_CHARS)}
+        if repo:
+            karte["repo"] = repo
+        await self._send(karte)
         ergebnis = {
             "ok": True, "auftrag_id": job.id, "art": KARTEN[art].titel,
             "hinweis": (f"Der Auftrag liegt als Karte in der Oberfläche. Sag kurz Auftrag und Art und dass "
                         f"{self._auftraggeber} ihn dort per Klick startet oder verwirft."),
         }
+        if repo:
+            ergebnis["repo"] = repo
         if self._ort == "lokal":
             ergebnis["neu"] = not Path(projekt).exists()
         await params.result_callback(ergebnis)
@@ -732,14 +791,16 @@ class DevAgent:
             kopf_daten = {"auftrag": prompt, "system": system_append}
             if modell_wunsch():  # sonst wählt der Dispatcher das Modell der Art (Werkzeugkarte auf Sokrates-2)
                 kopf_daten["modell"] = modell_wunsch()
+            if job.repo:  # im App-Modus gilt das GitHub-Token dann nur für dieses Repo
+                kopf_daten["repo"] = job.repo
             kopf = json.dumps(kopf_daten, ensure_ascii=False) + "\n"
             self._proc.stdin.write(kopf.encode("utf-8"))
             await self._proc.stdin.drain()  # stdin NICHT schließen: Lebenslinie des entfernten Auftrags
             await asyncio.wait_for(self._read_stream(job), JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS)
             await asyncio.wait_for(self._proc.wait(), 30)
             job.status = remote_status(self._proc.returncode, job.ereignisse)
-            # sauber: Ende gemeldet, oder der Dispatcher hat gar nicht erst gestartet (Codes 2 bis 5)
-            sauber = "ende" in job.ereignisse or self._proc.returncode in (2, 3, 4, 5, 7)
+            # sauber: Ende gemeldet, oder der Dispatcher hat gar nicht erst gestartet (Codes 2 bis 5, 7, 8)
+            sauber = "ende" in job.ereignisse or self._proc.returncode in (2, 3, 4, 5, 7, 8)
         except asyncio.TimeoutError:
             job.status = "abgebrochen (Zeitlimit)"
             job.result = job.result or "Der Auftrag hat das Zeitlimit überschritten und wurde abgebrochen."
@@ -786,6 +847,11 @@ class DevAgent:
                     job.ereignisse[name] = ev
                 if name == "selbsttest_ok":
                     job.steps.append("Wächter-Selbsttest in der Sandbox bestanden")
+                elif name == "start_abgelehnt":  # Grund nur auf dem Canvas, nie ans Sprachmodell
+                    job.steps.append(f"Start abgelehnt: {clean_inline(str(ev.get('grund') or ''), 300)}")
+                elif name == "gh_widerruf_fehlgeschlagen":
+                    job.steps.append("Achtung: Das GitHub-Token dieses Auftrags konnte nicht widerrufen werden; "
+                                     "es läuft spätestens nach einer Stunde ab")
                 elif name in REMOTE_EREIGNIS_STATUS:
                     job.steps.append(REMOTE_EREIGNIS_STATUS[name])
             elif ev.get("type") == "result":
@@ -858,6 +924,8 @@ class DevAgent:
         ordner = f"`{job.projekt}` (Sokrates-2, Sandbox)" if self._ort == "sokrates2" else f"`{job.projekt}`"
         lines = ["## Auftrag", job.auftrag, "", f"**Art:** {KARTEN[job.art].titel}",
                  f"**Status:** {job.status}", f"**Ordner:** {ordner}"]
+        if job.repo and self._ort == "sokrates2":
+            lines.append(f"**GitHub-Repo:** `{job.repo}` (Token nur für dieses Repo, wenn die App eingerichtet ist)")
         if job.cost_usd:
             lines.append(f"**Kosten bisher:** {job.cost_usd:.2f} USD")
         lines += ["", "## Schritte", *[f"- {s}" for s in job.steps[-25:]]]

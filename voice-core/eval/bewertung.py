@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass, field
 
 from faelle import Aufruf, Fall
+from llm_anbieter import ausblenden_text
 
 FERTIG = "●"
 WARTEN = ("◐", "○")
@@ -75,7 +76,9 @@ def norm(text: object) -> str:
 
 
 def maskieren(text: str) -> str:
-    """Schlüssel, Adressen und IPs aus Fehlertexten entfernen, bevor sie in Ergebnisdateien landen."""
+    """Schlüssel, Adressen, IPs und ausgeblendete Modellnamen (WAMO_LLM_AUSBLENDEN) aus Fehlertexten
+    entfernen, bevor sie in Ergebnisdateien oder auf die Konsole gelangen."""
+    text = ausblenden_text(text)
     for name in ("LITELLM_API_KEY", "ANTHROPIC_API_KEY", "SONIOX_API_KEY", "ANTHROPIC_WORKSPACE_ID"):
         if wert := (os.getenv(name) or "").strip():
             text = text.replace(wert, "<geheim>")

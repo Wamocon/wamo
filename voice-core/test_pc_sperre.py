@@ -16,6 +16,7 @@ import activity
 import pc_host
 import pc_tunnel
 import screen
+from llm_anbieter import Zugang
 from persona import build_system_prompt
 
 TOKEN = secrets.token_urlsafe(32)
@@ -158,7 +159,8 @@ async def test_bildschirm_bei_sperre(monkeypatch):
     monkeypatch.setattr(screen, "call_host_tool", gesperrt)
     llm = Llm()
     fremd: list[int] = []
-    screen.register_screen_tools(llm, lambda: object(), lambda: True, lambda: fremd.append(1))
+    screen.register_screen_tools(llm, lambda: object(), lambda: True, lambda: fremd.append(1),
+                                 zugang=Zugang.haus("0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c"))
     ansehen = Params({"frage": "Was ist offen?"})
     await llm.handler["bildschirm_ansehen"](ansehen)
     assert ansehen.result["status"] == "locked" and "gesperrt" in ansehen.result["antwort"]

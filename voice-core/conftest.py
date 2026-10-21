@@ -6,7 +6,7 @@ einem Ziel, das es nicht gibt (.invalid), statt beim Dispatcher. Tests, die SSH 
 
 Ebenso spricht kein Test mit dem LiteLLM-Gateway, mit SearXNG oder mit Anthropic: alle Bausteine stehen
 auf claude, die Suche auf anthropic, und Gateway, SearXNG und Anthropic-API zeigen auf Adressen, die es
-nicht gibt. Der gemeinsame Anthropic-Client wird je Test neu gebaut. Tests der Fabrik
+nicht gibt. Kein Profil hat einen Schlüssel oder eine Zuordnung, es sei denn, ein Test setzt sie. Tests der Fabrik
 (test_llm_anbieter.py) setzen ihre Werte selbst und mocken das Netz.
 """
 
@@ -31,11 +31,15 @@ def _kein_echtes_gateway(monkeypatch):
     monkeypatch.setenv("WAMO_SEARXNG_URL", "http://searxng.test.invalid:8080")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://anthropic.test.invalid")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-anthropic")
+    monkeypatch.delenv("WAMO_CLAUDE_SCHLUESSEL_PROFIL", raising=False)
+    monkeypatch.delenv("WAMO_SCHLUESSEL_KEK", raising=False)
+    monkeypatch.delenv("WAMO_SCHLUESSEL_KEK_ALT", raising=False)
     import llm_anbieter
+    import modellzugang
 
-    client = llm_anbieter.anthropic_client  # Original merken: Tests dürfen die Funktion ersetzen
-    client.cache_clear()
     llm_anbieter._cache_leeren()
+    llm_anbieter._claude_cache.clear()
+    modellzugang._versuche.clear()
     yield
-    client.cache_clear()
     llm_anbieter._cache_leeren()
+    llm_anbieter._claude_cache.clear()

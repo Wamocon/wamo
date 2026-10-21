@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { CanvasItem } from "@/components/Canvas";
 import { LoginGate } from "@/components/LoginGate";
 import { WamoAnsicht } from "@/components/WamoAnsicht";
+import { stilleText } from "@/lib/mikrofon";
 import type { WamoAktionen } from "@/lib/useWamo";
 import {
   HISTORY,
@@ -34,6 +35,7 @@ import {
  *   /?vorschau=1&pcsteuerung=an     PC-Steuerung dieser Sitzung an
  *   /?vorschau=1&pcauto=1           Autostart der PC-Steuerung (simuliert, ändert die Geräte-Einstellung nicht)
  *   /?vorschau=1&fehler=1           offline mit Fehlermeldung
+ *   /?vorschau=1&fehler=mikrofon    Mikrofon liefert keinen Ton (Warnung mit Gerätewahl)
  *   /?vorschau=1&rolle=mitglied     Profil als Mitglied
  *   /?vorschau=1&pc=getrennt        PC-Host getrennt (auch gesperrt, aus)
  *   /?vorschau=anmeldung            Anmeldeformular
@@ -79,6 +81,11 @@ const KEINE_AKTIONEN: WamoAktionen = {
     return true;
   },
   schliesseFehler: () => wamo.set((s) => ({ ...s, error: null })),
+  mikrofone: async () => [
+    { id: "vorschau-1", label: "Onboard MIC (Intel Smart Sound)" },
+    { id: "vorschau-2", label: "Headset-Mikrofon" },
+  ],
+  mikrofonWaehlen: () => true,
 };
 
 function param(name: string) {
@@ -95,6 +102,7 @@ function beispiel(): { state: WamoState; presence: Presence } {
   const presence: Presence = z && ZUSTAENDE.includes(z) ? z : "speaking";
   const leer = param("leer") === "1";
   const fehler = param("fehler") === "1";
+  const micStill = param("fehler") === "mikrofon";
   const pc = param("pc");
   const online = presence !== "offline" && presence !== "connecting" && !fehler;
   const botText = "Hier ist die Übersicht. Vier Testfälle sind offen, einer davon ist kritisch.";
@@ -103,7 +111,10 @@ function beispiel(): { state: WamoState; presence: Presence } {
     presence: fehler ? "offline" : presence,
     error: fehler
       ? { art: "verbindung", text: "Voice-Core unter http://localhost:7860 nicht erreichbar. Läuft bot.py?" }
-      : null,
+      : micStill
+        ? { art: "mikrofon", text: stilleText("Mikrofon (DisplayLink Audio)") }
+        : null,
+    mikrofon: online ? "Onboard MIC (Intel Smart Sound)" : null,
     caption:
       leer || !online
         ? initialState.caption

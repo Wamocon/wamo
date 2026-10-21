@@ -488,6 +488,13 @@ p, li { text-wrap: pretty; }
 }
 .error[data-art="hinweis"] { border-left-color: var(--rule-strong); }
 .error[data-art="hinweis"] .sym-warn rect { fill: var(--ink-soft); }
+/* Gerätewahl in der Mikrofon-Warnung */
+.mic-wahl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 15px; }
+.mic-wahl select {
+  min-height: 40px; max-width: 100%; padding: 0 8px;
+  background: var(--bg); border: 1px solid var(--rule-strong); border-radius: 4px;
+}
+.mic-wahl select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* Schaltflächen der Präsenzspalte */
 .actions {

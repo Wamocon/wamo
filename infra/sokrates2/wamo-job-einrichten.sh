@@ -11,7 +11,8 @@
 # Danach innerhalb von 5 Minuten mit einer NEUEN Verbindung bestätigen, dass die Anmeldung als wamocon weiter geht
 # (sonst nimmt ein Zeitschalter den sshd-Drop-in automatisch zurück):
 #   ssh sokrates2 "sudo touch /run/wamo-sshd-bestaetigt"
-# Rauchtest:  ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --attrappe"
+# Rauchtest:  ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp --attrappe"
+#             (nach dem Einrichten der GitHub-App zusätzlich --app-echt, nur lesend, README Abschnitt 2)
 #
 # Was das Skript am System ändert (nur WAMO):
 #   /usr/local/lib/wamo/bwrap            Kopie von /usr/bin/bwrap, root:wamo 0750 (nur Gruppe wamo)
@@ -74,6 +75,10 @@ for prog in /usr/bin/bwrap /usr/bin/python3 /usr/bin/systemd-run /usr/bin/prlimi
 done
 UID_WAMO=$(id -u "$WAMO_USER")
 [[ $UID_WAMO =~ ^[0-9]+$ ]] || { echo "uid von $WAMO_USER unklar" >&2; exit 1; }
+# GitHub-App-Modus (kurzlebige Token je Auftrag) signiert mit dem Systempaket python3-cryptography; ohne das Paket
+# lehnt der Dispatcher im App-Modus jeden Start mit GitHub ab (fail-closed), der Rückfall auf GH_TOKEN bleibt möglich
+/usr/bin/python3 -I -c 'import cryptography' 2>/dev/null \
+  || echo "Hinweis: python3-cryptography fehlt; der GitHub-App-Modus braucht es (apt-get install python3-cryptography)." >&2
 
 echo "== 1. bubblewrap-Kopie nur für die Gruppe wamo, AppArmor-Profil mit Benutzer-Namensräumen"
 install -d -o root -g "$WAMO_USER" -m 0750 /usr/local/lib/wamo
@@ -286,4 +291,5 @@ else
 fi
 sshd -T -C user=wamo,host=pc,addr=192.168.178.2 | grep -E '^(authorizedkeysfile|permittty|allowtcpforwarding|clientaliveinterval|passwordauthentication) '
 /usr/sbin/nft list chain inet wamo_egress ausgang | grep -E 'skuid|counter' || true
-echo "Fertig. Rauchtest: sudo -u $WAMO_USER -H $APP/bin/wamo-job-rauchtest --attrappe"
+echo "Fertig. Rauchtest: sudo -u $WAMO_USER -H $APP/bin/wamo-job-rauchtest --mcp --attrappe" \
+  "(mit eingerichteter GitHub-App zusätzlich --app-echt; \"github\" im ping oben: app, token oder fehler)"
