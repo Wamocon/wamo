@@ -1,0 +1,146 @@
+# WAMO-Gerätedienst: Bürogeräte für alle Nutzer (Vorlage). Auf Sokrates-2 als /etc/wamo-geraete/geraete.toml
+# (root:wamo-geraete 0640), installiert durch wamo-geraete-einrichten.sh, Pflege durch Niko als Admin.
+# Nach jeder Änderung: sudo bash ~/wamo-infra/wamo-geraete-einrichten.sh (prüft, erzeugt Ausgangsfilter, startet neu).
+#
+# Regeln: nur feste IPv4-Adressen im Büro-LAN (nie Namen), Ports je Treiber fest, unbekannte Schlüssel verhindern den
+# Start. Die Kennungen sind dieselben wie im Register (devices.kennung, art = gemeinsam). Zugangsdaten stehen nie hier,
+# sondern in /etc/wamo-geraete/geraete.env (sudo wamo-geraete-env setzen, Werte über stdin):
+#   WAMO_GERAETE_<ZUGANG>_BENUTZER, WAMO_GERAETE_<ZUGANG>_PASSWORT
+# Stand der Adressen: Erkundung vom 20.10.2026 (mDNS, ARP, SSDP, ohne Port-Scan). Feste Adressen in der FRITZ!Box
+# setzen (Heimnetz > Netzwerk > Gerät > "Diesem Netzwerkgerät immer die gleiche IPv4-Adresse zuweisen").
+
+[dienst]
+scan_tage = 30                # Scans bleiben 30 Tage in der Ablage je Person auf Sokrates-2
+abruf_stunden = 24            # vom NAS abgerufene Dateien 24 Stunden
+druck_seiten_tag = 50         # je Person und Tag
+druck_seiten_gesamt_tag = 200 # alle zusammen je Tag
+
+[[geraet]]
+kennung = "sokrates-2"
+name = "Sokrates-2"
+klasse = "server"
+treiber = "server-lokal"
+dienste = ["wamo-core.service", "wamo-geraete.service", "wamo-firewall.service", "docker.service"]
+
+[[geraet]]
+kennung = "sokrates-1"
+name = "Sokrates-1"
+klasse = "server"
+treiber = "server-ssh"           # als wamo-status mit Zwangsbefehl (infra/sparks/wamo-status-einrichten.sh)
+adresse = "192.168.178.75"
+litellm_port = 4000              # nur /health/liveliness
+
+[[geraet]]
+kennung = "caesar"
+name = "Caesar"
+klasse = "server"
+treiber = "server-ssh"
+adresse = "192.168.178.64"
+
+[[geraet]]
+kennung = "drucker"
+name = "Drucker Brother MFC-L3750CDW"
+klasse = "drucker"
+treiber = "ipp"                  # IPP 631, fester Pfad /ipp/print (nie ipp/faxout)
+adresse = "192.168.178.24"
+format = "pwg"                   # PWG-Raster, ein Auftrag je Dokument (Alternative: "jpeg", ein Auftrag je Seite)
+aufloesung = 600                 # der Drucker nimmt PWG-Raster nur mit 600 dpi
+farbe_erlaubt = true             # Standard ist Schwarz-Weiß, Farbe nur auf ausdrücklichen Wunsch
+
+[[geraet]]
+kennung = "scanner"
+name = "Scanner Brother MFC-L3750CDW"
+klasse = "scanner"
+treiber = "escl"                 # eSCL über HTTP 80, Glas und Einzug
+adresse = "192.168.178.24"
+
+[[geraet]]
+kennung = "router"
+name = "FRITZ!Box 7590"
+klasse = "router"
+treiber = "upnp-igd"             # Status über UPnP ohne Anmeldung (nur lesende Aktionen)
+adresse = "192.168.178.1"
+# Liste verbundener Geräte (nur Admins, F9) über TR-064, erst mit eigenem FRITZ!Box-Benutzer:
+# tr064_port = 49443
+# tls_sha256 = "AA:BB:..."       # Fingerabdruck des Zertifikats der FRITZ!Box (wamo-geraete-einrichten.sh --fritzbox-zertifikat)
+# zugang = "FRITZBOX"            # WAMO_GERAETE_FRITZBOX_BENUTZER, WAMO_GERAETE_FRITZBOX_PASSWORT
+
+[[geraet]]
+kennung = "nas-1"
+name = "WMC_NAS1"
+klasse = "nas"
+treiber = "smb"                  # Synology DSM, SMB 445
+adresse = "192.168.178.25"
+zugang = "NAS1"                  # WAMO_GERAETE_NAS1_BENUTZER, WAMO_GERAETE_NAS1_PASSWORT (nur lesen, plus Scan-Ordner)
+# freigaben = ["daten"]          # Freigaben, in denen WAMO suchen darf (Namen vom Nutzer erfragen)
+# scanziel = { freigabe = "scans", ordner = "WAMO" }   # Scans je Person nach <freigabe>/<ordner>/<Name>/
+
+[[geraet]]
+kennung = "nas-testelite"
+name = "WMC-Testelite"
+klasse = "nas"
+treiber = "smb"                  # Synology DSM, SMB 445 (AFP 548 bleibt ungenutzt)
+adresse = "192.168.178.29"
+zugang = "NAS2"
+# freigaben = ["daten"]
+
+[[geraet]]
+kennung = "fernseher"
+name = "Fernseher LG OLED 83 Zoll"
+klasse = "fernseher"
+treiber = "lg-webos"             # LG OLED83B49LA, webOS, Steuerung über wss://:3001 (Kopplung am Fernseher bestätigen)
+adresse = "192.168.178.125"
+mac = "00:a1:59:72:7a:92"        # Wake-on-LAN (am Fernseher "Einschalten über Mobilgerät/LAN" einschalten)
+max_lautstaerke = 50
+eingaenge = ["tv", "hdmi1", "hdmi2", "hdmi3", "hdmi4"]
+
+# Zweiter Fernseher "85 Zoll QLED" (AirPlay, im Oktober 2026 einmal gesehen, Adresse unbekannt, vermutlich Samsung):
+# [[geraet]]
+# kennung = "fernseher-2"
+# name = "Fernseher 85 Zoll QLED"
+# klasse = "fernseher"
+# treiber = "samsung-tv"
+# adresse = "192.168.178.x"
+# mac = "aa:bb:cc:dd:ee:ff"
+# max_lautstaerke = 50
+
+[[geraet]]
+kennung = "lautsprecher"
+name = "WMC JBL ULTIMATE"
+klasse = "lautsprecher"
+treiber = "upnp-renderer"        # JBL PartyBox Ultimate, UPnP RenderingControl
+adresse = "192.168.178.90"
+port = 49152
+steuer_pfad = "/upnp/control/rendercontrol1"
+transport_pfad = "/upnp/control/rendertransport1"
+max_lautstaerke = 70
+
+[[geraet]]
+kennung = "steckdose-1"
+name = "Steckdose 1 (0470)"
+klasse = "steckdose"
+treiber = "shelly"               # Shelly Plug S Gen3, ShellyPlugSG3-D885AC1E0470
+adresse = "192.168.178.126"
+# zugang = "SHELLY"              # sobald an den Steckdosen ein Passwort gesetzt ist: WAMO_GERAETE_SHELLY_PASSWORT
+
+[[geraet]]
+kennung = "steckdose-2"
+name = "Steckdose 2 (2F90)"
+klasse = "steckdose"
+treiber = "shelly"               # ShellyPlugSG3-9070694A2F90
+adresse = "192.168.178.143"
+
+[[geraet]]
+kennung = "steckdose-3"
+name = "Steckdose 3 (75B0)"
+klasse = "steckdose"
+treiber = "shelly"               # ShellyPlugSG3-80B54E3175B0
+adresse = "192.168.178.156"
+
+[[geraet]]
+kennung = "imac"
+name = "iMac"
+klasse = "mac"
+treiber = "anwesenheit"          # nur sichtbar oder nicht (mDNS über Avahi, ARP), kein Scan
+# mdns_name = "iMac.local"       # sobald bekannt
+# mac = "aa:bb:cc:dd:ee:ff"
