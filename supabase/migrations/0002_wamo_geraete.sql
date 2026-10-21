@@ -10,11 +10,18 @@
 -- * Persoenliches Geraet = genau ein Besitzerprofil (user_id), ein SSH-Schluessel (ed25519) und ein Tunnelplatz
 --   (tunnel_slot 1 bis 64, Unix-Benutzer wamo-t-NN auf Sokrates-2). Die Identitaet ist der Schluessel, nicht
 --   Rechnername oder Adresse; der Fingerabdruck wird hier aus dem Schluessel berechnet, nie uebernommen.
--- * Erste Bindung (geraet_binden, nur wamo_core): automatisch aktiv, wenn der Schluessel neu ist, das Profil noch
---   kein persoenliches Geraet hat und kein anderes Profil ein Geraet mit diesem Rechnernamen hat. Sonst beantragt,
---   dann entscheidet ein Admin. Jede Bindung erzeugt einen Hinweis an alle aktiven Admins.
+-- * Erste Bindung (geraet_binden, nur wamo_core): automatisch aktiv nur fuer ein Mitglied, das noch NIE ein
+--   persoenliches Geraet hatte (auch kein widerrufenes), mit neuem Schluessel und einem Rechnernamen, den kein
+--   anderes Profil hat. Admin-Profile, Geraetewechsel und alles andere: beantragt, dann entscheidet ein Admin.
+--   Jede Bindung erzeugt einen Hinweis an alle aktiven Admins.
 -- * Ein Geraet wechselt nie den Besitzer (Neubindung = widerrufen und neu binden, nur Admin).
--- * Statuswechsel nur durch einen aktiven Admin (geaendert_von), Verlauf in device_events (Trigger).
+-- * Statuswechsel nur durch einen aktiven Admin (geaendert_von), Verlauf in device_events (Trigger). Ausnahme: wird
+--   ein Profil deaktiviert, sperrt die Datenbank dessen Geraete selbst (devices_profil_deaktiviert).
+-- * Vertrag fuer alle Verbraucher (Abgleich der SSH-Schluessel auf Sokrates-2, Kern, Tunnel): gilt nur ein Geraet mit
+--   status 'aktiv' und aktivem Besitzerprofil (pc_abgleich_liste). Plaetze werden nach dem Widerruf mindestens eine
+--   Stunde nicht neu vergeben. Persoenliche Kennungen beginnen mit 'pc-', gemeinsame nie.
+-- * Die Datenbank kann den Akteur nicht pruefen (der Kern arbeitet ohne JWT): Schluesselbesitz und zweiten Faktor
+--   prueft der Kern vor geraet_binden; die Datenbank begrenzt, was ein kompromittierter Kern anrichten kann.
 
 do $$ begin
   if not exists (select 1 from __SCHEMA__.schema_migrations where version = '0001_wamo_init') then
@@ -91,11 +98,13 @@ alter table __SCHEMA__.devices
   add  constraint devices_zugang_chk check (zugang ~ '^[a-z][a-z0-9-]{1,19}$'),
   drop constraint if exists devices_kennung_chk,
   add  constraint devices_kennung_chk check (kennung ~ '^[a-z][a-z0-9-]{1,21}[a-z0-9]$' and kennung !~ '--'),
+  drop constraint if exists devices_praefix_chk,
+  add  constraint devices_praefix_chk check ((art = 'persoenlich') = (kennung like 'pc-%')),
   drop constraint if exists devices_slot_chk,
   add  constraint devices_slot_chk check (tunnel_slot is null or tunnel_slot between 1 and 64),
   drop constraint if exists devices_pubkey_chk,
   add  constraint devices_pubkey_chk check (ssh_pubkey is null
-         or ssh_pubkey ~ '^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}$'),
+         or ssh_pubkey ~ '^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-P][A-Za-z0-9+/]{42}$'),
   drop constraint if exists devices_fp_chk,
   add  constraint devices_fp_chk check (ssh_fingerprint is null or ssh_fingerprint ~ '^SHA256:[A-Za-z0-9+/]{43}$'),
   drop constraint if exists devices_hostname_chk,
@@ -154,6 +163,7 @@ create table if not exists __SCHEMA__.hinweise (
 );
 create index if not exists hinweise_empfaenger_idx on __SCHEMA__.hinweise (empfaenger, erstellt_at desc);
 create index if not exists hinweise_offen_idx on __SCHEMA__.hinweise (empfaenger, erstellt_at desc) where gelesen_at is null;
+create index if not exists hinweise_bezug_idx on __SCHEMA__.hinweise (bezug, erstellt_at desc) where bezug is not null;
 
 -- ---------- Hilfsfunktionen ----------
 -- SHA256-Fingerabdruck wie ssh-keygen -l (base64 ohne Auffuellung) aus "ssh-ed25519 <base64>"
@@ -173,6 +183,8 @@ $$;
 -- ---------- Waechter fuer devices ----------
 create or replace function __SCHEMA__.devices_guard() returns trigger
 language plpgsql set search_path = '' as $$
+declare
+  v_inaktiv boolean := false;
 begin
   if tg_op = 'INSERT' then
     if new.status not in ('beantragt','aktiv') then
@@ -186,6 +198,10 @@ begin
       raise exception 'devices: Besitzerprofil ist nicht aktiv' using errcode = '42501';
     end if;
   else
+    -- Loeschen eines Kontos (FK set null): nur mit widerrufenem Geraet
+    if new.user_id is null and old.user_id is not null and old.status <> 'widerrufen' then
+      raise exception 'devices: Das Konto hat noch ein Geraet, erst widerrufen' using errcode = '23503';
+    end if;
     -- unveraenderlich; Ausnahme: FK set null beim Loeschen eines Profils (Besitzer nur nach Widerruf)
     if new.art is distinct from old.art or new.klasse is distinct from old.klasse or new.zugang is distinct from old.zugang
        or new.kennung is distinct from old.kennung or new.ssh_pubkey is distinct from old.ssh_pubkey
@@ -209,7 +225,11 @@ begin
            or (old.status = 'gesperrt'  and new.status in ('aktiv','widerrufen'))) then
         raise exception 'devices: Statuswechsel % nach % nicht erlaubt', old.status, new.status using errcode = '23514';
       end if;
-      if not exists (select 1 from __SCHEMA__.profiles p where p.user_id = new.geaendert_von and p.aktiv and p.rolle = 'admin') then
+      -- Sperren und Widerrufen darf die Datenbank selbst, wenn das Besitzerprofil nicht mehr aktiv ist
+      v_inaktiv := new.status in ('gesperrt','widerrufen') and new.user_id is not null
+                   and not exists (select 1 from __SCHEMA__.profiles p where p.user_id = new.user_id and p.aktiv);
+      if not v_inaktiv and not exists (select 1 from __SCHEMA__.profiles p
+                                       where p.user_id = new.geaendert_von and p.aktiv and p.rolle = 'admin') then
         raise exception 'devices: Statuswechsel nur durch einen aktiven Admin (geaendert_von)' using errcode = '42501';
       end if;
     elsif new.freigegeben_von is distinct from old.freigegeben_von and new.freigegeben_von is not null then
@@ -272,10 +292,70 @@ drop trigger if exists devices_ereignis on __SCHEMA__.devices;
 create trigger devices_ereignis after insert or update on __SCHEMA__.devices
   for each row execute function __SCHEMA__.devices_ereignis();
 
+-- Wird ein Profil deaktiviert (Ausscheiden), sperrt die Datenbank dessen Geraete selbst: aktive werden gesperrt,
+-- beantragte widerrufen. Nach einer erneuten Aktivierung entsperrt ein Admin.
+create or replace function __SCHEMA__.devices_profil_deaktiviert() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  update __SCHEMA__.devices d
+     set status = case when d.status = 'aktiv' then 'gesperrt'::__SCHEMA__.geraet_status
+                       else 'widerrufen'::__SCHEMA__.geraet_status end,
+         gesperrt_grund = 'Profil deaktiviert'
+   where d.user_id = new.user_id and d.art = 'persoenlich' and d.status in ('aktiv','beantragt');
+  return null;
+end $$;
+drop trigger if exists profiles_geraete on __SCHEMA__.profiles;
+create trigger profiles_geraete after update of aktiv on __SCHEMA__.profiles
+  for each row when (old.aktiv and not new.aktiv) execute function __SCHEMA__.devices_profil_deaktiviert();
+
+-- ---------- Hinweise: Kern darf nur scan_fertig und system selbst anlegen ----------
+create or replace function __SCHEMA__.hinweise_guard() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if current_user = 'wamo_core' and new.art not in ('scan_fertig','system') then
+    raise exception 'hinweise: wamo_core darf nur scan_fertig und system anlegen' using errcode = '42501';
+  end if;
+  return new;
+end $$;
+drop trigger if exists hinweise_guard on __SCHEMA__.hinweise;
+create trigger hinweise_guard before insert on __SCHEMA__.hinweise
+  for each row execute function __SCHEMA__.hinweise_guard();
+
+-- Quittieren nur ueber diese Funktionen (Empfaenger wird geprueft; das Spaltenrecht gelesen_at entfaellt)
+create or replace function __SCHEMA__.hinweis_quittieren(p_user uuid, p_id uuid) returns boolean
+language sql security definer set search_path = '' as $$
+  with u as (update __SCHEMA__.hinweise h set gelesen_at = now()
+             where h.id = p_id and h.empfaenger = p_user and h.gelesen_at is null returning 1)
+  select exists (select 1 from u)
+$$;
+create or replace function __SCHEMA__.hinweise_alle_quittieren(p_user uuid) returns integer
+language sql security definer set search_path = '' as $$
+  with u as (update __SCHEMA__.hinweise h set gelesen_at = now()
+             where h.empfaenger = p_user and h.gelesen_at is null returning 1)
+  select count(*)::integer from u
+$$;
+
+-- ---------- Kern meldet "gesehen" nur fuer aktive Geraete und nur mit now() ----------
+create or replace function __SCHEMA__.geraet_gesehen(p_kennung text) returns void
+language sql security definer set search_path = '' as $$
+  update __SCHEMA__.devices d set last_seen_at = now() where d.kennung = p_kennung and d.status = 'aktiv'
+$$;
+
+-- ---------- Liste fuer den Abgleich auf Sokrates-2 (laeuft als postgres, nie fuer wamo_core) ----------
+create or replace function __SCHEMA__.pc_abgleich_liste()
+returns table (tunnel_slot smallint, kennung text, ssh_pubkey text, ssh_fingerprint text)
+language sql stable set search_path = '' as $$
+  select d.tunnel_slot, d.kennung, d.ssh_pubkey, d.ssh_fingerprint
+  from __SCHEMA__.devices d join __SCHEMA__.profiles p on p.user_id = d.user_id
+  where d.art = 'persoenlich' and d.status = 'aktiv' and p.aktiv
+  order by d.tunnel_slot
+$$;
+
 -- ---------- Erste Bindung eines Laptops (nur wamo_core, nach Anmeldung mit zweitem Faktor auf diesem Geraet) ----------
 -- Der Kern hat vorher Token (aal2, frische Anmeldung), Profil und die Signatur des Geraeteschluessels ueber eine
 -- Einmal-Herausforderung geprueft. Hier: Regeln des Registers, atomar und fuer alle Kerne gleich.
 -- ergebnis: neu_aktiv | neu_beantragt | bekannt | fremd | zu_viele
+-- Kennung und Platz werden nur fuer aktive Geraete zurueckgegeben (sonst null).
 create or replace function __SCHEMA__.geraet_binden(p_user_id uuid, p_pubkey text, p_hostname text, p_name text)
 returns table (device_id uuid, kennung text, tunnel_slot smallint, status __SCHEMA__.geraet_status,
                name text, ergebnis text)
@@ -295,13 +375,13 @@ begin
   if p_user_id is null or p_pubkey is null or p_hostname is null then
     raise exception 'geraet_binden: Angaben fehlen' using errcode = '22004';
   end if;
-  if p_pubkey !~ '^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}$' then
+  if p_pubkey !~ '^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-P][A-Za-z0-9+/]{42}$' then
     raise exception 'geraet_binden: nur ed25519-Schluessel' using errcode = '22023';
   end if;
   if p_hostname !~ '^[A-Za-z0-9][A-Za-z0-9-]{0,62}$' then
     raise exception 'geraet_binden: ungueltiger Rechnername' using errcode = '22023';
   end if;
-  select p.display_name, p.aktiv into v_profil from __SCHEMA__.profiles p where p.user_id = p_user_id;
+  select p.display_name, p.aktiv, p.rolle into v_profil from __SCHEMA__.profiles p where p.user_id = p_user_id;
   if not found or not v_profil.aktiv then
     raise exception 'geraet_binden: Profil ist nicht aktiv' using errcode = '42501';
   end if;
@@ -324,50 +404,68 @@ begin
       return query select null::uuid, null::text, null::smallint, null::__SCHEMA__.geraet_status, null::text, 'fremd'::text;
       return;
     end if;
-    if v_dev.status = 'aktiv' and v_dev.hostname is distinct from p_hostname then
-      update __SCHEMA__.devices d set hostname = p_hostname where d.id = v_dev.id;   -- Anzeige, keine Identitaet
+    -- Rechnername ist nur Anzeige: Wechsel (ohne Gross/Klein) hoechstens einmal je Stunde protokollieren
+    if v_dev.status = 'aktiv' and lower(v_dev.hostname) is distinct from lower(p_hostname)
+       and not exists (select 1 from __SCHEMA__.device_events e where e.device_id = v_dev.id and e.von = e.nach
+                       and e.at > now() - interval '1 hour') then
+      update __SCHEMA__.devices d set hostname = p_hostname where d.id = v_dev.id;
       insert into __SCHEMA__.device_events (device_id, von, nach, durch, grund)
       values (v_dev.id, v_dev.status, v_dev.status, null,
               left('Rechnername ' || coalesce(v_dev.hostname, '-') || ' -> ' || p_hostname, 200));
     end if;
-    return query select v_dev.id, v_dev.kennung, v_dev.tunnel_slot, v_dev.status, v_dev.name, 'bekannt'::text;
+    if v_dev.status = 'aktiv' then
+      return query select v_dev.id, v_dev.kennung, v_dev.tunnel_slot, v_dev.status, v_dev.name, 'bekannt'::text;
+    else
+      return query select v_dev.id, null::text, null::smallint, v_dev.status, v_dev.name, 'bekannt'::text;
+    end if;
     return;
   end if;
 
-  -- neuer Schluessel
+  -- neuer Schluessel: Grenzen
   if (select count(*) from __SCHEMA__.devices d where d.user_id = p_user_id and d.art = 'persoenlich'
       and d.status <> 'widerrufen') >= 3
-     or (select count(*) from __SCHEMA__.devices d where d.status = 'beantragt') >= 10 then
+     or exists (select 1 from __SCHEMA__.devices d where d.user_id = p_user_id and d.status = 'beantragt') then
     return query select null::uuid, null::text, null::smallint, null::__SCHEMA__.geraet_status, null::text, 'zu_viele'::text;
     return;
   end if;
-  select min(s)::smallint into v_slot from generate_series(1, 64) s
-    where not exists (select 1 from __SCHEMA__.devices d where d.tunnel_slot = s and d.status <> 'widerrufen');
+
+  -- Status zuerst entscheiden: automatisch nur fuer ein Mitglied ohne jedes frueheres Geraet
+  if v_profil.rolle = 'admin' then
+    v_status := 'beantragt'; v_grund := 'Admin-Profile gibt ein Admin frei';
+  elsif exists (select 1 from __SCHEMA__.devices d where d.user_id = p_user_id and d.art = 'persoenlich') then
+    v_status := 'beantragt'; v_grund := 'Das Profil hatte schon ein Gerät (Gerätewechsel)';
+  elsif exists (select 1 from __SCHEMA__.devices d where d.art = 'persoenlich' and d.status <> 'widerrufen'
+                and d.user_id is distinct from p_user_id and lower(d.hostname) = lower(p_hostname)) then
+    v_status := 'beantragt'; v_grund := 'Der Rechnername gehört schon zu einem anderen Profil';
+  else
+    v_status := 'aktiv'; v_grund := null;
+  end if;
+  -- die globale Warteschlange begrenzt nur Antraege, nie die automatische Erstbindung
+  if v_status = 'beantragt' and (select count(*) from __SCHEMA__.devices d where d.status = 'beantragt') >= 10 then
+    return query select null::uuid, null::text, null::smallint, null::__SCHEMA__.geraet_status, null::text, 'zu_viele'::text;
+    return;
+  end if;
+
+  -- Platz: nie benutzt zuerst, dann der am laengsten freie; nach einem Widerruf mindestens eine Stunde Ruhe
+  select s::smallint into v_slot from generate_series(1, 64) s
+   where not exists (select 1 from __SCHEMA__.devices d where d.tunnel_slot = s
+                     and (d.status <> 'widerrufen' or d.gesperrt_at > now() - interval '1 hour'))
+   order by (select max(d.gesperrt_at) from __SCHEMA__.devices d where d.tunnel_slot = s) nulls first, s
+   limit 1;
   if v_slot is null then
     raise exception 'geraet_binden: kein freier Tunnelplatz' using errcode = '53400';
   end if;
-  -- Kennung aus dem Rechnernamen: klein, nur a-z 0-9 -, beginnt mit Buchstaben, eindeutig fuer immer
+  -- Kennung pc-<rechnername>: klein, nur a-z 0-9 -, eindeutig fuer immer
   v_basis := regexp_replace(regexp_replace(lower(p_hostname), '[^a-z0-9]+', '-', 'g'), '(^-+|-+$)', '', 'g');
-  if v_basis !~ '^[a-z]' then v_basis := 'g-' || v_basis; end if;
-  v_basis := rtrim(left(v_basis, 19), '-');
-  if length(v_basis) < 3 then v_basis := 'geraet'; end if;
-  v_kennung := v_basis;
+  v_basis := rtrim(left(v_basis, 17), '-');
+  if length(v_basis) < 1 then v_basis := 'geraet'; end if;
+  v_kennung := 'pc-' || v_basis;
   i := 1;
   while exists (select 1 from __SCHEMA__.devices d where d.kennung = v_kennung) loop
     i := i + 1;
     if i > 99 then raise exception 'geraet_binden: keine freie Kennung' using errcode = '53400'; end if;
-    v_kennung := v_basis || '-' || i;
+    v_kennung := 'pc-' || v_basis || '-' || i;
   end loop;
-
-  if exists (select 1 from __SCHEMA__.devices d where d.user_id = p_user_id and d.art = 'persoenlich'
-             and d.status in ('beantragt','aktiv','gesperrt')) then
-    v_status := 'beantragt'; v_grund := 'Profil hat schon ein Gerät (Gerätewechsel)';
-  elsif exists (select 1 from __SCHEMA__.devices d where d.art = 'persoenlich' and d.status <> 'widerrufen'
-                and d.user_id is distinct from p_user_id and lower(d.hostname) = lower(p_hostname)) then
-    v_status := 'beantragt'; v_grund := 'Rechnername gehört schon zu einem anderen Profil';
-  else
-    v_status := 'aktiv'; v_grund := null;
-  end if;
 
   insert into __SCHEMA__.devices (user_id, name, hostname, art, klasse, zugang, status, bindung, kennung,
                                   tunnel_slot, ssh_pubkey)
@@ -380,7 +478,7 @@ begin
     perform __SCHEMA__.hinweis_an_admins('geraet_gebunden',
       'Neues Gerät gebunden: ' || v_name || ' (' || v_profil.display_name || ')',
       'Automatisch bei der Anmeldung mit zweitem Faktor gebunden. Kennung ' || v_kennung || ', Fingerabdruck ' || v_fp
-        || '. Sperren mit scripts\wamo_geraete.py sperren --kennung ' || v_kennung || '.',
+        || '. Sperren: wamo_geraete.py sperren --kennung ' || v_kennung || '.',
       v_dev.id, jsonb_build_object('kennung', v_kennung, 'profil', p_user_id, 'rechner', p_hostname,
                                    'fingerabdruck', v_fp));
     return query select v_dev.id, v_dev.kennung, v_dev.tunnel_slot, v_dev.status, v_dev.name, 'neu_aktiv'::text;
@@ -388,10 +486,10 @@ begin
     perform __SCHEMA__.hinweis_an_admins('geraet_beantragt',
       'Gerät wartet auf Freigabe: ' || v_name || ' (' || v_profil.display_name || ')',
       v_grund || '. Kennung ' || v_kennung || ', Fingerabdruck ' || v_fp
-        || '. Freigeben mit scripts\wamo_geraete.py freigeben --kennung ' || v_kennung || '.',
+        || '. Freigeben: wamo_geraete.py freigeben --kennung ' || v_kennung || '.',
       v_dev.id, jsonb_build_object('kennung', v_kennung, 'profil', p_user_id, 'rechner', p_hostname,
                                    'fingerabdruck', v_fp, 'grund', v_grund));
-    return query select v_dev.id, v_dev.kennung, v_dev.tunnel_slot, v_dev.status, v_dev.name, 'neu_beantragt'::text;
+    return query select null::uuid, null::text, null::smallint, v_dev.status, v_dev.name, 'neu_beantragt'::text;
   end if;
 end $$;
 
@@ -399,16 +497,21 @@ end $$;
 revoke all on __SCHEMA__.devices, __SCHEMA__.device_events, __SCHEMA__.hinweise
   from public, anon, authenticated, service_role;
 revoke all on function __SCHEMA__.devices_guard(), __SCHEMA__.devices_ereignis(), __SCHEMA__.ssh_fingerabdruck(text),
-  __SCHEMA__.hinweis_an_admins(text, text, text, uuid, jsonb), __SCHEMA__.geraet_binden(uuid, text, text, text)
+  __SCHEMA__.hinweis_an_admins(text, text, text, uuid, jsonb), __SCHEMA__.geraet_binden(uuid, text, text, text),
+  __SCHEMA__.devices_profil_deaktiviert(), __SCHEMA__.hinweise_guard(), __SCHEMA__.hinweis_quittieren(uuid, uuid),
+  __SCHEMA__.hinweise_alle_quittieren(uuid), __SCHEMA__.geraet_gesehen(text), __SCHEMA__.pc_abgleich_liste()
   from public, anon, authenticated, service_role;
 -- der Waechter laeuft mit den Rechten des Aufrufers und berechnet damit den Fingerabdruck
 grant execute on function __SCHEMA__.ssh_fingerabdruck(text) to wamo_core, wamo_admin;
--- Voice-Core: lesen, last_seen_at, erste Bindung ueber die Funktion; Hinweise des eigenen Profils lesen und quittieren
+-- Voice-Core: lesen, erste Bindung und "gesehen" nur ueber Funktionen; Hinweise lesen, selten anlegen, ueber Funktionen quittieren
 grant select on __SCHEMA__.devices to wamo_core;
-grant update (last_seen_at) on __SCHEMA__.devices to wamo_core;
+revoke update (last_seen_at) on __SCHEMA__.devices from wamo_core;
 grant execute on function __SCHEMA__.geraet_binden(uuid, text, text, text) to wamo_core;
+grant execute on function __SCHEMA__.geraet_gesehen(text) to wamo_core;
+grant execute on function __SCHEMA__.hinweis_quittieren(uuid, uuid) to wamo_core;
+grant execute on function __SCHEMA__.hinweise_alle_quittieren(uuid) to wamo_core;
 grant select, insert on __SCHEMA__.hinweise to wamo_core;
-grant update (gelesen_at) on __SCHEMA__.hinweise to wamo_core;
+revoke update (gelesen_at) on __SCHEMA__.hinweise from wamo_core;
 -- Verwaltung (wamo_admin.py): Register pflegen, Verlauf lesen; bindung ist nicht schreibbar (Standard admin)
 grant select on __SCHEMA__.devices to wamo_admin;
 grant insert (user_id, name, hostname, art, klasse, zugang, status, kennung, tunnel_slot, ssh_pubkey, beschreibung,

@@ -12,6 +12,14 @@ do $$ begin
   end if;
 end $$;
 drop function if exists __SCHEMA__.geraet_binden(uuid, text, text, text);
+drop function if exists __SCHEMA__.pc_abgleich_liste();
+drop function if exists __SCHEMA__.geraet_gesehen(text);
+drop function if exists __SCHEMA__.hinweise_alle_quittieren(uuid);
+drop function if exists __SCHEMA__.hinweis_quittieren(uuid, uuid);
+drop trigger if exists hinweise_guard on __SCHEMA__.hinweise;
+drop function if exists __SCHEMA__.hinweise_guard();
+drop trigger if exists profiles_geraete on __SCHEMA__.profiles;
+drop function if exists __SCHEMA__.devices_profil_deaktiviert();
 drop trigger if exists devices_ereignis on __SCHEMA__.devices;
 drop trigger if exists devices_guard on __SCHEMA__.devices;
 drop function if exists __SCHEMA__.devices_ereignis();
@@ -21,7 +29,7 @@ drop table if exists __SCHEMA__.hinweise;
 drop table if exists __SCHEMA__.device_events;
 drop policy if exists admin_all on __SCHEMA__.devices;
 revoke all on __SCHEMA__.devices from wamo_admin;
-revoke update (last_seen_at) on __SCHEMA__.devices from wamo_core;
+drop index if exists __SCHEMA__.hinweise_bezug_idx;
 drop index if exists __SCHEMA__.devices_hostname_idx, __SCHEMA__.devices_slot_idx, __SCHEMA__.devices_ein_aktives_idx,
   __SCHEMA__.devices_fp_idx, __SCHEMA__.devices_kennung_idx, __SCHEMA__.devices_aenderer_idx,
   __SCHEMA__.devices_freigeber_idx, __SCHEMA__.devices_user_idx;
@@ -33,7 +41,7 @@ alter table __SCHEMA__.devices
   drop constraint if exists devices_slot_chk, drop constraint if exists devices_pubkey_chk,
   drop constraint if exists devices_fp_chk, drop constraint if exists devices_hostname_chk,
   drop constraint if exists devices_text_chk, drop constraint if exists devices_sperre_chk,
-  drop constraint if exists devices_bindung_chk;
+  drop constraint if exists devices_bindung_chk, drop constraint if exists devices_praefix_chk;
 alter table __SCHEMA__.devices
   drop column if exists art, drop column if exists klasse, drop column if exists zugang, drop column if exists status,
   drop column if exists bindung, drop column if exists kennung, drop column if exists tunnel_slot,

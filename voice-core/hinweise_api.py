@@ -71,12 +71,10 @@ async def alle_gelesen(request: Request) -> dict:
     ich = await identitaet(request)
     db = _db()
     try:
-        status = await db.execute(
-            f"update {db.t('hinweise')} set gelesen_at = now() where empfaenger = $1::uuid and gelesen_at is null",
-            ich.user_id)
+        anzahl = await db.fetchval(f"select {db.t('hinweise_alle_quittieren')}($1::uuid)", ich.user_id)
     except (*DB_ERRORS, DatabaseUnavailable) as e:
         raise HTTPException(503, "Hinweise gerade nicht verfügbar") from e
-    return {"ok": True, "anzahl": int(status.rsplit(" ", 1)[-1]) if status else 0}
+    return {"ok": True, "anzahl": int(anzahl or 0)}
 
 
 @router.post("/hinweise/{hinweis_id}/gelesen")
@@ -87,9 +85,7 @@ async def gelesen(hinweis_id: str, request: Request) -> dict:
         raise HTTPException(404, "Unbekannter Hinweis")
     db = _db()
     try:
-        status = await db.execute(
-            f"update {db.t('hinweise')} set gelesen_at = now() "
-            "where id = $1::uuid and empfaenger = $2::uuid and gelesen_at is null", hid, ich.user_id)
+        ok = await db.fetchval(f"select {db.t('hinweis_quittieren')}($1::uuid, $2::uuid)", ich.user_id, hid)
     except (*DB_ERRORS, DatabaseUnavailable) as e:
         raise HTTPException(503, "Hinweise gerade nicht verfügbar") from e
-    return {"ok": status.endswith(" 1")}
+    return {"ok": bool(ok)}
