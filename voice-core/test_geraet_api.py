@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
@@ -97,8 +98,9 @@ class ApiTests(unittest.TestCase):
         async def identitaet(_request):
             return Identity(user_id=ICH, name="Anna", rolle=self.rolle, anrede="du", anmeldung=1.0)
 
-        datei = Path(self._testMethodName + ".pub")
-        self.addCleanup(lambda: datei.unlink(missing_ok=True))
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        datei = Path(self._tmp.name) / "hostkey.pub"
         datei.write_text(HOSTKEY + " root@spark\n", encoding="ascii")
         self.patches = [mock.patch.object(geraet_api, "identitaet", identitaet),
                         mock.patch.object(geraet_api, "_register", lambda: self.register),
@@ -192,11 +194,12 @@ class ApiTests(unittest.TestCase):
 
     def test_nonce_nur_kanonisch(self):
         n = geraet_api.nonce_erzeugen(ICH, jetzt=1000)
-        # die letzte Base64-Stelle hat freie Bits: eine andere Schreibweise derselben Bytes zählt nicht
+        # Die letzte Base64-Stelle hat 4 freie Bits: Bit 0 umzukehren ergibt eine andere Schreibweise derselben Bytes.
         alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-        zeichen = alphabet[(alphabet.index(n[-1]) + 1) % 64]
-        if base64.urlsafe_b64decode(n[:-1] + zeichen + "=" * (-len(n) % 4)) == base64.urlsafe_b64decode(n + "=" * (-len(n) % 4)):
-            self.assertFalse(geraet_api.nonce_verbrauchen(n[:-1] + zeichen, ICH, jetzt=1001))
+        andere = n[:-1] + alphabet[alphabet.index(n[-1]) ^ 1]
+        self.assertNotEqual(andere, n)
+        self.assertEqual(base64.urlsafe_b64decode(andere + "=" * (-len(andere) % 4)), base64.urlsafe_b64decode(n + "=" * (-len(n) % 4)))
+        self.assertFalse(geraet_api.nonce_verbrauchen(andere, ICH, jetzt=1001))
         self.assertTrue(geraet_api.nonce_verbrauchen(n, ICH, jetzt=1001))
 
     def test_herausforderung_nur_einmal(self):
@@ -231,8 +234,7 @@ class ApiTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"WAMO_PC_SSH_HOSTKEY_DATEI": "/nicht/da"}):
             geraet_api._hostschluessel_cache = None
             self.assertEqual(self._binden().status_code, 503)
-        datei = Path(self._testMethodName + ".kaputt")
-        self.addCleanup(lambda: datei.unlink(missing_ok=True))
+        datei = Path(self._tmp.name) / "kaputt.pub"
         datei.write_text("ssh-ed25519 zu-kurz\n", encoding="ascii")
         with mock.patch.dict("os.environ", {"WAMO_PC_SSH_HOSTKEY_DATEI": str(datei)}):
             geraet_api._hostschluessel_cache = None

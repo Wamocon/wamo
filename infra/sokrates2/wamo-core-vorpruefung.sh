@@ -27,4 +27,9 @@ esac
 eigen="$(stat -c '%U:%g:%a' /run/wamo-core 2>/dev/null || true)"
 [ "$eigen" = "wamo-core:1000:750" ] || fehler "/run/wamo-core hat $eigen statt wamo-core:1000:750 (systemd-tmpfiles --create /etc/tmpfiles.d/wamo-core.conf)"
 [ -r "${WAMO_CA_FILE:-/nicht}" ] || fehler "WAMO_CA_FILE nicht lesbar"
+if [ "${WAMO_PC_REGISTER:-aus}" = an ]; then
+  # Tunnel je Gerät: Wurzel der Geräteordner gehört root und ist nur zu betreten (0711), sonst vertraut der Kern ihr nicht
+  wurzel="$(stat -c '%U:%a' "${WAMO_PC_SOCKET_WURZEL:-/run/wamo-pc}" 2>/dev/null || true)"
+  [ "$wurzel" = "root:711" ] || fehler "${WAMO_PC_SOCKET_WURZEL:-/run/wamo-pc} hat $wurzel statt root:711 (wamo-pc-tunnel-einrichten.sh)"
+fi
 exit 0

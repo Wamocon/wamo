@@ -45,17 +45,18 @@ class Sitzung:
     lease: object = field(default_factory=object)
     abloesen: Callable[[str], Awaitable[None]] | None = None
     abgeloest: bool = False
+    geraet_id: str | None = None  # Tunnel je Gerät: die Sperre gilt je Gerät (bot.build_session setzt es früh)
 
     def pc_lease_nehmen(self) -> bool:
         """PC-Sperre nehmen; eine abgelöste Sitzung bekommt sie nie wieder."""
-        return not self.abgeloest and pc_lease_nehmen(self.lease)
+        return not self.abgeloest and pc_lease_nehmen(self.lease, self.geraet_id)
 
     def pc_lease_haelt(self) -> bool:
         """Darf diese Sitzung den PC gerade steuern? Abgelöst nie, sonst laut pc_host (lokal immer)."""
-        return not self.abgeloest and pc_lease_haelt(self.lease)
+        return not self.abgeloest and pc_lease_haelt(self.lease, self.geraet_id)
 
     def pc_lease_freigeben(self) -> None:
-        pc_lease_freigeben(self.lease)
+        pc_lease_freigeben(self.lease, self.geraet_id)
 
 
 class Sitzungen:

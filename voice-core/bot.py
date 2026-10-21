@@ -93,6 +93,7 @@ from learning import Gemerkt, learn_from_session
 from llm_anbieter import LLMNichtVerfuegbar, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
 from memory import MemoryStore, Profile, ProfileDirectory, Recall, shared_database
 from kern_dienst import runner_vorbereiten
+from pc_geraet import geraet_wache, rechnername_passt
 from pc_host import (
     call_host_tool,
     host_client,
@@ -100,6 +101,8 @@ from pc_host import (
     ist_tunnel,
     pc_host_fuer,
     pc_sperre_pruefen,
+    pc_zugang,
+    register_modus,
     sperre_aus_ergebnis,
 )
 from pc_freigaben import PcFreigaben
@@ -391,7 +394,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     eine kurze Prüfung des LiteLLM-Gateways, wenn ein Baustein darauf steht, siehe llm_anbieter.py)."""
     memory = MemoryStore.from_env(identity.user_id)
     is_admin = identity.is_admin
-    pc_enabled = pc_host_fuer(identity)  # admin; im Büro zusätzlich an diesen PC gebunden (pc_host.py)
+    # PC-Werkzeuge. Alter Weg: admin, im Büro zusätzlich an diesen PC gebunden (pc_host.py). Tunnel je Gerät
+    # (WAMO_PC_REGISTER=an): die Sitzung bekommt nur IHREN Laptop aus dem Geräteregister, sonst keine (pc_geraet.py).
+    zugang = await pc_zugang(identity) if register_modus() else None
+    pc_enabled = zugang is not None if register_modus() else pc_host_fuer(identity)
     entwicklung = is_admin and entwicklung_enabled()
     if entwicklung and (problem := entwicklung_problem()):
         logger.error("Entwicklungsaufträge aus: {}", problem)
@@ -399,11 +405,14 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # PC-Steuerung je Sitzung standardmäßig aus; nur ein Admin schaltet sie in der UI ein.
     state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
                    "client_ready": False, "live": True, "cleaned": False, "guard": None,
-                   "pc_weg": False, "pc_tools": False, "pc_waechter": None,  # pc_weg: Hinweis im Prompt
+                   "pc_weg": False, "pc_tools": False, "pc_waechter": None, "geraet_wache": None,  # pc_weg: Hinweis im Prompt
+                   "geraet_ok": zugang is None, "geraet_entzogen": False,  # Tunnel je Gerät: erst nach dem Namensabgleich, nie nach einem Entzug
                    "pc_name": None, "pc_belegt": False,
                    "pc_gesperrt": False, "sperr_probe": None}  # Bildschirm am PC gesperrt (Host: status=locked)
     # Kennung dieser Sitzung für die PC-Sperre (Sitzung.pc_lease_nehmen) und ihre Ablösung (sitzungen.py)
     sitzung = sitzung or Sitzung(identity.user_id)
+    if zugang is not None:
+        sitzung.geraet_id = zugang.geraet.device_id  # die PC-Sperre gilt je Gerät
 
     def prompt_for(recall: Recall) -> str:
         return build_system_prompt(
@@ -454,14 +463,16 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     context = LLMContext(tools=ToolsSchema(standard_tools=standard_tools))
 
     # PC-Werkzeuge nur für admin; im Hintergrund dazuholen (lokal per stdio, im Büro über den Tunnel).
-    pc_client = host_client() if pc_enabled else None
+    pc_client = host_client(zugang) if pc_enabled else None
 
     def pc_allowed() -> bool:
         # Abgelöst oder Sperre verloren (Büro): sofort keine PC-Aktionen mehr, auch vor dem Trennen
-        return bool(state["pc_steuerung"]) and sitzung.pc_lease_haelt()
+        return bool(state["pc_steuerung"]) and state["geraet_ok"] and sitzung.pc_lease_haelt()
 
     # Bildschirm sehen/klicken: Foto vom Host, Bildmodell entscheidet (siehe screen.py)
-    screen_schemas = register_screen_tools(llm, lambda: pc_client, pc_allowed, turn.taint) if pc_client else []
+    # Bildschirm sehen und klicken: Das Bild geht an das Bildmodell, deshalb nur für admin, bis die Einwilligung der
+    # Mitglieder geregelt ist (Bauplan S6)
+    screen_schemas = register_screen_tools(llm, lambda: pc_client, pc_allowed, turn.taint) if pc_client and is_admin else []
 
     learned_upto = 0  # bis zu diesem Index in transcript ist ausgewertet
     learn_task: asyncio.Task | None = None
@@ -603,7 +614,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         darf=lambda: darf_pc_freigeben(identity, pc_enabled, bool(state["pc_steuerung"]), sitzung.pc_lease_haelt()),
         pc_name=lambda: state["pc_name"],
     ) if pc_client else None
-    if freigaben is not None:
+    if freigaben is not None and is_admin:  # Mitglieder können nichts freigeben: keine Karte, die ins Leere läuft
         aktivitaet.on_freigabe = freigaben.anfrage
 
     async def refresh_prompt() -> None:
@@ -627,6 +638,19 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     async def attach_pc_tools(melde_fehler: bool = True) -> bool:
         pc = await host_tools(pc_client)
+        if pc and zugang is not None:
+            # Plausibilität: der Host meldet denselben Rechnernamen, den das Register für das Gerät führt; sonst keine
+            # Werkzeuge (fail closed, auch wenn system_info nicht antwortet)
+            gemeldet = None
+            with contextlib.suppress(Exception):
+                gemeldet = rechnername(await asyncio.wait_for(call_host_tool(pc_client, "system_info", {}), 5))
+            if not rechnername_passt(zugang.geraet, gemeldet):
+                logger.warning("WAMO-GERAET Rechnername des Hosts passt nicht zum Gerät {}: keine PC-Werkzeuge",
+                               zugang.geraet.kennung)
+                pc = None
+                state["geraet_ok"] = False
+            elif not state["geraet_entzogen"]:
+                state["geraet_ok"] = True
         if not pc and not melde_fehler:
             return False
         latenz = None
@@ -642,7 +666,26 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 if (gesperrt := sperre_aus_ergebnis("system_info", info)) is not None:
                     await set_sperre(gesperrt)
         await set_pc("verbunden" if pc else "getrennt", latenz)
+        if pc and zugang is not None:
+            _keep(asyncio.create_task(zugang.gesehen()))  # last_seen_at, höchstens einmal je Minute
         return bool(pc)
+
+    async def geraet_entzogen(grund: str) -> None:
+        """Das Gerät wurde gesperrt oder widerrufen (oder das Register ist länger nicht erreichbar): PC-Steuerung dieser
+        Sitzung endet sofort, die Sperre wird frei, WAMO sagt es."""
+        state["geraet_ok"], state["geraet_entzogen"] = False, True  # danach schaltet auch ein Klick in der Oberfläche nichts ein
+        state["pc_steuerung"] = False
+        sitzung.pc_lease_freigeben()
+        state["pc_tools"] = False
+        wachter = state["pc_waechter"]
+        if wachter is not None and wachter is not asyncio.current_task():
+            wachter.cancel()
+        if pc_client is not None:
+            with contextlib.suppress(Exception):
+                await pc_client.close()
+        with contextlib.suppress(Exception):
+            await set_pc("getrennt")
+            await melde_llm(f"Systemhinweis, bitte kurz und ruhig weitergeben: {grund} WAMO kann den Laptop jetzt nicht mehr bedienen.")
 
     async def pc_wechsel(erreichbar: bool, latenz_ms: int | None) -> None:
         """Tunnel weg oder zurück (pc_tunnel.TunnelHost.ueberwache); Werkzeuge beim ersten Erfolg anhängen."""
@@ -658,6 +701,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             await attach_pc_tools()
         if ist_tunnel(pc_client) and state["live"]:
             state["pc_waechter"] = _keep(asyncio.create_task(pc_client.ueberwache(pc_wechsel, set_sperre)))
+        if zugang is not None and state["live"]:
+            state["geraet_wache"] = _keep(asyncio.create_task(geraet_wache(zugang, geraet_entzogen)))
 
     if pc_client:
         _keep(asyncio.create_task(start_pc()))
@@ -682,7 +727,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         elif msg.type == "pc_steuerung":
             # Nur ein Admin mit eingerichtetem PC-Host darf einschalten; ausschalten geht immer.
             # Im Büro steuert höchstens eine Sitzung den PC (pc_host.pc_lease_nehmen); eine abgelöste nie wieder.
-            an = bool(data.get("an") is True and pc_enabled)
+            an = bool(data.get("an") is True and pc_enabled and state["geraet_ok"])
             state["pc_belegt"] = an and not sitzung.pc_lease_nehmen()
             if state["pc_belegt"] or not an:
                 an = False
@@ -804,7 +849,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         guard_task = state["guard"]
         if guard_task is not None and guard_task is not asyncio.current_task():
             guard_task.cancel()
-        for name in ("pc_waechter", "sperr_probe"):
+        for name in ("pc_waechter", "sperr_probe", "geraet_wache"):
             hintergrund = state[name]
             if hintergrund is not None and hintergrund is not asyncio.current_task():
                 hintergrund.cancel()
