@@ -871,7 +871,7 @@ class DevAgent:
         daten = {k: v for k, v in item.items() if k in ("kind", "title", "text")}
         daten["auftrag"] = {"job": job.id, "projekt": job.projekt.name, "art": job.art, "status": job.status[:80]}
         try:
-            if job.gespeichert_id and await eigene_fassung(self._memory, job.gespeichert_id, item["title"], daten):
+            if job.gespeichert_id and await eigene_fassung(self._memory, job.gespeichert_id, daten):
                 return
             job.gespeichert_id = await self._memory.save_canvas("document", item["title"], daten) or job.gespeichert_id
         except Exception as e:  # noqa: BLE001 (Speichern ist eine Zugabe)

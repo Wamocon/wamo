@@ -3,12 +3,19 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { TeilenKnopf } from "@/components/Teilen";
 import {
+  alsCanvasAntwort,
+  alsDateien,
+  alsEreignisse,
+  alsTeilungen,
+  DATEI_ACCEPT,
   groesseText,
   KernFehler,
   kernDateiHolen,
   kernDateiSenden,
   kernJson,
+  type CanvasAntwort,
   type DateiEintrag,
+  type Ereignis,
   type Recht,
   type Teilung,
 } from "@/lib/kernApi";
@@ -18,18 +25,13 @@ import { applyServerMessage, zeigeToast } from "@/lib/wamo";
 /**
  * "Geteilte Arbeit": was andere mit mir geteilt haben (öffnen, herunterladen, bearbeiten, zurückgeben), was ich geteilt
  * habe (Recht ändern, Protokoll, widerrufen) und meine Dateien auf Sokrates-2 (hochladen, teilen, löschen).
- * Alles läuft über den Kern (voice-core/teilen_api.py); Titel, Namen und Inhalte anderer Personen sind reiner Text.
- * Geöffnete Dokumente landen auf dem Canvas (dieselbe Prüfung wie Nachrichten des Kerns, lib/nachrichten.ts).
+ * Alles läuft über den Kern (voice-core/teilen_api.py); Antworten werden geprüft (lib/teilenHilfe.ts), Titel, Namen und
+ * Inhalte anderer Personen sind reiner Text. Geöffnete Dokumente landen auf dem Canvas (dieselbe Prüfung wie
+ * Nachrichten des Kerns, lib/nachrichten.ts). Die drei Bereiche bleiben beim Umschalten erhalten (offener Editor).
  */
 
-type Reiter = "mit_mir" | "von_mir" | "dateien";
-type Liste = { von_mir: Teilung[]; mit_mir: Teilung[] };
-type CanvasAntwort = {
-  item: Record<string, unknown> & { kind?: string; title?: string; text?: string; language?: string };
-  recht: "besitzer" | Recht;
-  besitzer: string | null;
-};
-type Ereignis = { ereignis: string; at: string | null; durch: string | null };
+type Bereich = "mit_mir" | "von_mir" | "dateien";
+type Daten = { von_mir: Teilung[]; mit_mir: Teilung[]; dateien: DateiEintrag[] };
 
 const ART_TEXT: Record<string, string> = { canvas: "Dokument", auftrag: "Projekt", datei: "Datei" };
 const EREIGNIS_TEXT: Record<string, string> = {
@@ -61,61 +63,115 @@ function aufsCanvas(antwort: CanvasAntwort) {
   else zeigeToast("Dieses Dokument lässt sich nicht anzeigen");
 }
 
-/** Zweistufiger Knopf für endgültige Schritte (widerrufen, löschen, zurückgeben). */
-function SicherKnopf({ text, frage, onJa }: { text: string; frage: string; onJa: () => Promise<void> | void }) {
+async function canvasLaden(canvasId: string): Promise<CanvasAntwort> {
+  const antwort = alsCanvasAntwort(await kernJson(`/geteilt/canvas/${encodeURIComponent(canvasId)}`));
+  if (!antwort) throw new KernFehler(0, "Unerwartete Antwort des Kerns");
+  return antwort;
+}
+
+/** Zweistufiger Knopf für endgültige Schritte (widerrufen, löschen, zurückgeben); die Rückfrage wird angesagt. */
+function SicherKnopf({
+  text,
+  frage,
+  label,
+  onJa,
+}: {
+  text: string;
+  frage: string;
+  label: string;
+  onJa: () => Promise<void> | void;
+}) {
   const [fragt, setFragt] = useState(false);
+  const [laeuft, setLaeuft] = useState(false);
   useEffect(() => {
     if (!fragt) return;
-    const uhr = setTimeout(() => setFragt(false), 6000);
+    const uhr = setTimeout(() => setFragt(false), 15_000);
     return () => clearTimeout(uhr);
   }, [fragt]);
   return (
+    <>
+      <button
+        type="button"
+        className="btn-secondary btn-small geteilt-gefahr"
+        data-fragt={fragt || undefined}
+        aria-label={fragt ? `${frage} ${label}` : `${text}: ${label}`}
+        disabled={laeuft}
+        onClick={async () => {
+          if (!fragt) {
+            setFragt(true);
+            return;
+          }
+          setFragt(false);
+          setLaeuft(true);
+          try {
+            await onJa();
+          } finally {
+            setLaeuft(false);
+          }
+        }}
+      >
+        {fragt ? frage : text}
+      </button>
+      <span className="sr-only" aria-live="polite">
+        {fragt ? `${frage} Zum Bestätigen noch einmal drücken.` : ""}
+      </span>
+    </>
+  );
+}
+
+/** Knopf mit Busy-Zustand für Downloads. */
+function LadeKnopf({ label, onKlick, children }: { label: string; onKlick: () => Promise<void>; children: ReactNode }) {
+  const [laeuft, setLaeuft] = useState(false);
+  return (
     <button
       type="button"
-      className="btn-secondary btn-small geteilt-gefahr"
-      data-fragt={fragt || undefined}
-      onClick={() => {
-        if (!fragt) setFragt(true);
-        else {
-          setFragt(false);
-          void onJa();
+      className="btn-secondary btn-small"
+      aria-label={label}
+      aria-busy={laeuft}
+      disabled={laeuft}
+      onClick={async () => {
+        setLaeuft(true);
+        try {
+          await onKlick();
+        } finally {
+          setLaeuft(false);
         }
       }}
     >
-      {fragt ? frage : text}
+      {laeuft ? "lädt …" : children}
     </button>
   );
 }
 
 export function GeteiltBereich() {
-  const [reiter, setReiter] = useState<Reiter>("mit_mir");
-  const [liste, setListe] = useState<Liste | null>(null);
-  const [dateien, setDateien] = useState<DateiEintrag[] | null>(null);
+  const [bereich, setBereich] = useState<Bereich>("mit_mir");
+  const [daten, setDaten] = useState<Daten | null>(null);
   const [fehler, setFehler] = useState<string | null>(null);
   const [laedt, setLaedt] = useState(false);
+  const runde = useRef(0); // gegen Überholen: nur die Antwort der letzten Anfrage zählt
   const id = useId();
 
   const laden = useCallback(async () => {
+    const meine = ++runde.current;
     setLaedt(true);
-    setFehler(null);
-    try {
-      const [l, d] = await Promise.all([
-        kernJson<Liste>("/teilen"),
-        kernJson<{ dateien: DateiEintrag[] }>("/dateien"),
-      ]);
-      setListe(l);
-      setDateien(d.dateien);
-    } catch (e) {
-      setFehler(fehlerText(e, "Geteilte Arbeit gerade nicht verfügbar"));
-    } finally {
-      setLaedt(false);
-    }
+    const [teilungen, dateien] = await Promise.allSettled([kernJson("/teilen"), kernJson("/dateien")]);
+    if (meine !== runde.current) return;
+    setLaedt(false);
+    const t = teilungen.status === "fulfilled" ? (teilungen.value as { von_mir?: unknown; mit_mir?: unknown }) : null;
+    const d = dateien.status === "fulfilled" ? (dateien.value as { dateien?: unknown }) : null;
+    setDaten((alt) => ({
+      von_mir: t ? alsTeilungen(t.von_mir) : (alt?.von_mir ?? []),
+      mit_mir: t ? alsTeilungen(t.mit_mir) : (alt?.mit_mir ?? []),
+      dateien: d ? alsDateien(d.dateien) : (alt?.dateien ?? []),
+    }));
+    const grund = [teilungen, dateien].find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+    setFehler(grund ? fehlerText(grund.reason, "Geteilte Arbeit gerade nicht verfügbar") : null);
   }, []);
 
-  const reiterListe: { key: Reiter; text: string; anzahl?: number }[] = [
-    { key: "mit_mir", text: "Mit mir geteilt", anzahl: liste?.mit_mir.length },
-    { key: "von_mir", text: "Von mir geteilt", anzahl: liste?.von_mir.length },
-    { key: "dateien", text: "Meine Dateien", anzahl: dateien?.length },
+  const bereiche: { key: Bereich; text: string; anzahl?: number }[] = [
+    { key: "mit_mir", text: "Mit mir geteilt", anzahl: daten?.mit_mir.length },
+    { key: "von_mir", text: "Von mir geteilt", anzahl: daten?.von_mir.length },
+    { key: "dateien", text: "Meine Dateien", anzahl: daten?.dateien.length },
   ];
 
   return (
@@ -126,31 +182,38 @@ export function GeteiltBereich() {
       }}
     >
       <summary>Geteilte Arbeit</summary>
-      <div className="geteilt-reiter" role="tablist" aria-label="Geteilte Arbeit">
-        {reiterListe.map((r) => (
+      <div className="geteilt-reiter" role="group" aria-label="Bereich wählen">
+        {bereiche.map((b) => (
           <button
-            key={r.key}
+            key={b.key}
             type="button"
-            role="tab"
-            id={`${id}-${r.key}`}
-            aria-selected={reiter === r.key}
-            aria-controls={`${id}-panel`}
-            data-an={reiter === r.key || undefined}
-            onClick={() => setReiter(r.key)}
+            aria-pressed={bereich === b.key}
+            aria-controls={`${id}-${b.key}`}
+            onClick={() => setBereich(b.key)}
           >
-            {r.text}
-            {r.anzahl !== undefined && ` (${r.anzahl})`}
+            {b.text}
+            {b.anzahl !== undefined && ` (${b.anzahl})`}
           </button>
         ))}
         <button type="button" className="geteilt-neu" onClick={() => void laden()} disabled={laedt}>
           {laedt ? "lädt …" : "Aktualisieren"}
         </button>
       </div>
-      <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${reiter}`} className="geteilt-panel">
-        {fehler && <p className="notice">{fehler}</p>}
-        {reiter === "mit_mir" && liste && <MitMir teilungen={liste.mit_mir} onAenderung={laden} />}
-        {reiter === "von_mir" && liste && <VonMir teilungen={liste.von_mir} onAenderung={laden} />}
-        {reiter === "dateien" && dateien && <MeineDateien dateien={dateien} onAenderung={laden} />}
+      {fehler && (
+        <p className="notice" role="alert">
+          {fehler}
+        </p>
+      )}
+      <div className="geteilt-panel" aria-busy={laedt}>
+        <section id={`${id}-mit_mir`} hidden={bereich !== "mit_mir"} aria-label="Mit mir geteilt">
+          {daten && <MitMir teilungen={daten.mit_mir} onAenderung={laden} />}
+        </section>
+        <section id={`${id}-von_mir`} hidden={bereich !== "von_mir"} aria-label="Von mir geteilt">
+          {daten && <VonMir teilungen={daten.von_mir} onAenderung={laden} />}
+        </section>
+        <section id={`${id}-dateien`} hidden={bereich !== "dateien"} aria-label="Meine Dateien">
+          {daten && <MeineDateien dateien={daten.dateien} onAenderung={laden} />}
+        </section>
       </div>
     </details>
   );
@@ -160,15 +223,16 @@ function Leer({ children }: { children: ReactNode }) {
   return <p className="geteilt-leer">{children}</p>;
 }
 
-function MitMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung: () => Promise<void> }) {
-  const [bearbeiten, setBearbeiten] = useState<{ id: string; antwort: CanvasAntwort } | null>(null);
-  if (!teilungen.length) return <Leer>Noch hat niemand etwas mit dir geteilt.</Leer>;
+type Bearbeitung = { canvasId: string; antwort: CanvasAntwort; ausloeser: HTMLElement | null };
 
-  const oeffnen = async (canvasId: string, alsEditor: boolean) => {
+function MitMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung: () => Promise<void> }) {
+  const [bearbeiten, setBearbeiten] = useState<Bearbeitung | null>(null);
+
+  const oeffnen = async (canvasId: string, alsEditor: HTMLElement | null) => {
     try {
-      const antwort = await kernJson<CanvasAntwort>(`/geteilt/canvas/${encodeURIComponent(canvasId)}`);
+      const antwort = await canvasLaden(canvasId);
       aufsCanvas(antwort);
-      if (alsEditor) setBearbeiten({ id: canvasId, antwort });
+      if (alsEditor) setBearbeiten({ canvasId, antwort, ausloeser: alsEditor });
     } catch (e) {
       zeigeToast(fehlerText(e, "Öffnen fehlgeschlagen"));
     }
@@ -176,16 +240,22 @@ function MitMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung:
 
   const projektOeffnen = async (t: Teilung) => {
     try {
-      const { dokumente } = await kernJson<{ dokumente: { id: string }[] }>(
-        `/teilen/${encodeURIComponent(t.id)}/dokumente`,
-      );
-      if (!dokumente.length) zeigeToast("Zu diesem Projekt gibt es noch keine Ergebnisse");
-      else await oeffnen(dokumente[0].id, false);
+      const d = (await kernJson(`/teilen/${encodeURIComponent(t.id)}/dokumente`)) as { dokumente?: unknown };
+      const erstes = Array.isArray(d?.dokumente) ? (d.dokumente[0] as { id?: unknown } | undefined) : undefined;
+      if (typeof erstes?.id !== "string") zeigeToast("Zu diesem Projekt gibt es noch keine Ergebnisse");
+      else await oeffnen(erstes.id, null);
     } catch (e) {
       zeigeToast(fehlerText(e, "Öffnen fehlgeschlagen"));
     }
   };
 
+  const editorSchliessen = () => {
+    const ausloeser = bearbeiten?.ausloeser;
+    setBearbeiten(null);
+    requestAnimationFrame(() => ausloeser?.focus());
+  };
+
+  if (!teilungen.length && !bearbeiten) return <Leer>Noch hat niemand etwas mit dir geteilt.</Leer>;
   return (
     <>
       <ul className="geteilt-liste">
@@ -199,39 +269,44 @@ function MitMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung:
             {t.hinweis && <p className="geteilt-hinweis">„{t.hinweis}“</p>}
             <div className="geteilt-aktionen">
               {t.art === "canvas" && (
-                <button type="button" className="btn-secondary btn-small" onClick={() => void oeffnen(t.objekt, false)}>
+                <LadeKnopf label={`Öffnen: ${t.titel}`} onKlick={() => oeffnen(t.objekt, null)}>
                   Öffnen
-                </button>
+                </LadeKnopf>
               )}
               {t.art === "canvas" && t.recht === "bearbeiten" && (
-                <button type="button" className="btn-secondary btn-small" onClick={() => void oeffnen(t.objekt, true)}>
+                <button
+                  type="button"
+                  className="btn-secondary btn-small"
+                  aria-label={`Bearbeiten: ${t.titel}`}
+                  onClick={(e) => void oeffnen(t.objekt, e.currentTarget)}
+                >
                   Bearbeiten
                 </button>
               )}
               {t.art === "auftrag" && (
-                <button type="button" className="btn-secondary btn-small" onClick={() => void projektOeffnen(t)}>
+                <LadeKnopf label={`Neuestes Ergebnis öffnen: ${t.titel}`} onKlick={() => projektOeffnen(t)}>
                   Neuestes Ergebnis öffnen
-                </button>
+                </LadeKnopf>
               )}
               {t.art === "datei" && (
-                <button
-                  type="button"
-                  className="btn-secondary btn-small"
-                  onClick={() =>
-                    void kernDateiHolen(`/dateien/${encodeURIComponent(t.objekt)}`, t.titel).catch((e: unknown) =>
+                <LadeKnopf
+                  label={`Herunterladen: ${t.titel}`}
+                  onKlick={() =>
+                    kernDateiHolen(`/dateien/${encodeURIComponent(t.objekt)}`, t.titel).catch((e: unknown) =>
                       zeigeToast(fehlerText(e, "Herunterladen fehlgeschlagen")),
                     )
                   }
                 >
                   Herunterladen
-                </button>
+                </LadeKnopf>
               )}
               {t.art === "datei" && t.recht === "bearbeiten" && (
-                <FassungHochladen dateiId={t.objekt} onFertig={onAenderung} />
+                <FassungHochladen dateiId={t.objekt} titel={t.titel} onFertig={onAenderung} />
               )}
               <SicherKnopf
                 text="Zurückgeben"
                 frage="Wirklich zurückgeben?"
+                label={t.titel}
                 onJa={async () => {
                   try {
                     await kernJson(`/teilen/${encodeURIComponent(t.id)}/zurueckgeben`, "POST");
@@ -247,10 +322,11 @@ function MitMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung:
       </ul>
       {bearbeiten && (
         <Editor
-          canvasId={bearbeiten.id}
+          key={bearbeiten.canvasId}
+          canvasId={bearbeiten.canvasId}
           antwort={bearbeiten.antwort}
-          onSchliessen={() => setBearbeiten(null)}
-          onGespeichert={() => void oeffnen(bearbeiten.id, false)}
+          onSchliessen={editorSchliessen}
+          onGespeichert={() => void oeffnen(bearbeiten.canvasId, null)}
         />
       )}
     </>
@@ -269,12 +345,16 @@ function Editor({
   onGespeichert: () => void;
 }) {
   const id = useId();
-  const kind = String(antwort.item.kind ?? "");
-  const [titel, setTitel] = useState(String(antwort.item.title ?? ""));
-  const [text, setText] = useState(String(antwort.item.text ?? ""));
+  const kind = typeof antwort.item.kind === "string" ? antwort.item.kind : "";
+  const titel = typeof antwort.item.title === "string" ? antwort.item.title : "Dokument";
+  const [basis, setBasis] = useState(antwort.version);
+  const [text, setText] = useState(typeof antwort.item.text === "string" ? antwort.item.text : "");
   const [laeuft, setLaeuft] = useState(false);
+  const [meldung, setMeldung] = useState<{ text: string; konflikt: boolean } | null>(null);
   const kopf = useRef<HTMLHeadingElement>(null);
-  useEffect(() => kopf.current?.focus(), []);
+  useEffect(() => {
+    kopf.current?.focus();
+  }, []);
 
   if (!TEXT_ARTEN.has(kind)) {
     return (
@@ -289,39 +369,62 @@ function Editor({
 
   const speichern = async () => {
     setLaeuft(true);
+    setMeldung(null);
     try {
       const inhalt: Record<string, string> = { text };
       if (kind === "code" && typeof antwort.item.language === "string") inhalt.language = antwort.item.language;
-      await kernJson(`/geteilt/canvas/${encodeURIComponent(canvasId)}`, "PUT", { titel, inhalt });
+      await kernJson(`/geteilt/canvas/${encodeURIComponent(canvasId)}`, "PUT", { inhalt, basis });
       zeigeToast("Neue Fassung gespeichert");
       onGespeichert();
       onSchliessen();
     } catch (e) {
-      zeigeToast(fehlerText(e, "Speichern fehlgeschlagen"));
+      const konflikt = e instanceof KernFehler && e.status === 409;
+      setMeldung({ text: fehlerText(e, "Speichern fehlgeschlagen"), konflikt });
     } finally {
       setLaeuft(false);
+    }
+  };
+
+  // Konflikt: neueste Fassung zeigen; der eigene Text bleibt im Feld, damit nichts verloren geht
+  const neuLaden = async () => {
+    try {
+      const neu = await canvasLaden(canvasId);
+      aufsCanvas(neu);
+      setBasis(neu.version);
+      setMeldung({ text: `Fassung ${neu.version} liegt jetzt auf dem Canvas. Dein Text ist noch hier.`, konflikt: false });
+    } catch (e) {
+      setMeldung({ text: fehlerText(e, "Neu laden fehlgeschlagen"), konflikt: true });
     }
   };
 
   return (
     <form
       className="geteilt-editor"
+      aria-busy={laeuft}
       onSubmit={(e) => {
         e.preventDefault();
         void speichern();
       }}
     >
       <h3 ref={kopf} tabIndex={-1}>
-        Bearbeiten (neue Fassung)
+        {titel} bearbeiten (neue Fassung)
       </h3>
-      <label htmlFor={`${id}-titel`}>Titel</label>
-      <input id={`${id}-titel`} type="text" maxLength={300} value={titel} onChange={(e) => setTitel(e.target.value)} />
       <label htmlFor={`${id}-text`}>Inhalt</label>
-      <textarea id={`${id}-text`} rows={14} value={text} onChange={(e) => setText(e.target.value)} />
+      <textarea id={`${id}-text`} rows={14} maxLength={100_000} value={text} onChange={(e) => setText(e.target.value)} />
+      {meldung && (
+        <p className="teilen-status" role="alert" data-fehler={meldung.konflikt || undefined}>
+          {meldung.text}
+        </p>
+      )}
       <div className="teilen-aktionen">
-        <button type="submit" className="btn-secondary btn-small" disabled={laeuft || !titel.trim() || !text.trim()}>
+        <button type="submit" className="btn-secondary btn-small" disabled={laeuft || !text.trim()}>
           {laeuft ? "Speichert …" : "Als neue Fassung speichern"}
         </button>
+        {meldung?.konflikt && (
+          <button type="button" className="btn-secondary btn-small" onClick={() => void neuLaden()}>
+            Neueste Fassung laden
+          </button>
+        )}
         <button type="button" className="error-close" onClick={onSchliessen}>
           Abbrechen
         </button>
@@ -330,7 +433,7 @@ function Editor({
   );
 }
 
-function FassungHochladen({ dateiId, onFertig }: { dateiId: string; onFertig: () => Promise<void> }) {
+function FassungHochladen({ dateiId, titel, onFertig }: { dateiId: string; titel: string; onFertig: () => Promise<void> }) {
   const eingabe = useRef<HTMLInputElement>(null);
   const [laeuft, setLaeuft] = useState(false);
   return (
@@ -339,6 +442,7 @@ function FassungHochladen({ dateiId, onFertig }: { dateiId: string; onFertig: ()
         ref={eingabe}
         type="file"
         hidden
+        accept={DATEI_ACCEPT}
         onChange={async (e) => {
           const datei = e.target.files?.[0];
           e.target.value = "";
@@ -358,6 +462,8 @@ function FassungHochladen({ dateiId, onFertig }: { dateiId: string; onFertig: ()
       <button
         type="button"
         className="btn-secondary btn-small"
+        aria-label={`Neue Fassung hochladen: ${titel}`}
+        aria-busy={laeuft}
         disabled={laeuft}
         onClick={() => eingabe.current?.click()}
       >
@@ -386,8 +492,8 @@ function VonMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung:
       return;
     }
     try {
-      const { ereignisse } = await kernJson<{ ereignisse: Ereignis[] }>(`/teilen/${encodeURIComponent(t.id)}/protokoll`);
-      setProtokoll({ id: t.id, ereignisse });
+      const d = (await kernJson(`/teilen/${encodeURIComponent(t.id)}/protokoll`)) as { ereignisse?: unknown };
+      setProtokoll({ id: t.id, ereignisse: alsEreignisse(d?.ereignisse) });
     } catch (e) {
       zeigeToast(fehlerText(e, "Protokoll nicht verfügbar"));
     }
@@ -407,8 +513,9 @@ function VonMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung:
               <span>Recht</span>
               <select
                 value={t.recht}
+                aria-label={`Recht für ${t.name}: ${t.titel}`}
                 disabled={t.art === "auftrag"}
-                onChange={(e) => void rechtSetzen(t, e.target.value as Recht)}
+                onChange={(e) => void rechtSetzen(t, e.target.value === "bearbeiten" ? "bearbeiten" : "lesen")}
               >
                 <option value="lesen">lesen</option>
                 <option value="bearbeiten">lesen und bearbeiten</option>
@@ -418,6 +525,7 @@ function VonMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung:
               type="button"
               className="btn-secondary btn-small"
               aria-expanded={protokoll?.id === t.id}
+              aria-label={`Protokoll: ${t.titel} mit ${t.name}`}
               onClick={() => void zeigeProtokoll(t)}
             >
               Protokoll
@@ -425,6 +533,7 @@ function VonMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung:
             <SicherKnopf
               text="Widerrufen"
               frage="Wirklich widerrufen?"
+              label={`${t.titel} für ${t.name}`}
               onJa={async () => {
                 try {
                   await kernJson(`/teilen/${encodeURIComponent(t.id)}/widerrufen`, "POST");
@@ -438,6 +547,7 @@ function VonMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung:
           </div>
           {protokoll?.id === t.id && (
             <ol className="geteilt-protokoll">
+              {protokoll.ereignisse.length === 0 && <li>Noch keine Einträge</li>}
               {protokoll.ereignisse.map((e, i) => (
                 <li key={i}>
                   {zeit(e.at)}: {EREIGNIS_TEXT[e.ereignis] ?? e.ereignis}
@@ -476,14 +586,20 @@ function MeineDateien({ dateien, onAenderung }: { dateien: DateiEintrag[]; onAen
           ref={eingabe}
           type="file"
           hidden
-          accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.md,.json,.zip,.docx,.xlsx,.pptx,.odt,.ods,.odp"
+          accept={DATEI_ACCEPT}
           onChange={(e) => {
             const datei = e.target.files?.[0];
             e.target.value = "";
             if (datei) void hochladen(datei);
           }}
         />
-        <button type="button" className="btn-secondary btn-small" disabled={laeuft} onClick={() => eingabe.current?.click()}>
+        <button
+          type="button"
+          className="btn-secondary btn-small"
+          aria-busy={laeuft}
+          disabled={laeuft}
+          onClick={() => eingabe.current?.click()}
+        >
           {laeuft ? "Lädt hoch …" : "Datei hochladen"}
         </button>
         <span className="pc-switch-hint">
@@ -505,23 +621,24 @@ function MeineDateien({ dateien, onAenderung }: { dateien: DateiEintrag[]; onAen
               </p>
               <div className="geteilt-aktionen">
                 <TeilenKnopf ziel={{ art: "datei", id: d.id, titel: d.name }} />
-                <button
-                  type="button"
-                  className="btn-secondary btn-small"
-                  onClick={() =>
-                    void kernDateiHolen(`/dateien/${encodeURIComponent(d.id)}`, d.name).catch((e: unknown) =>
+                <LadeKnopf
+                  label={`Herunterladen: ${d.name}`}
+                  onKlick={() =>
+                    kernDateiHolen(`/dateien/${encodeURIComponent(d.id)}`, d.name).catch((e: unknown) =>
                       zeigeToast(fehlerText(e, "Herunterladen fehlgeschlagen")),
                     )
                   }
                 >
                   Herunterladen
-                </button>
+                </LadeKnopf>
                 <SicherKnopf
                   text="Löschen"
                   frage="Wirklich löschen?"
+                  label={d.name}
                   onJa={async () => {
                     try {
                       await kernJson(`/dateien/${encodeURIComponent(d.id)}/loeschen`, "POST");
+                      zeigeToast(`${d.name} gelöscht; geteilte Zugriffe enden sofort`);
                       await onAenderung();
                     } catch (e) {
                       zeigeToast(fehlerText(e, "Löschen fehlgeschlagen"));

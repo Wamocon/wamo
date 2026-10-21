@@ -458,7 +458,8 @@ p, li { text-wrap: pretty; }
   transition-property: background-color, color; transition-duration: var(--dur-fast);
 }
 .betriebsart-wahl button + button { border-left: 2px solid var(--rule-strong); }
-.betriebsart-wahl button[data-an] { background: var(--accent); color: var(--on-accent); }
+/* aktiv: Tinte mit rotem Streifen (Weiß auf Rot hat bei 17 px nur 4,27:1) */
+.betriebsart-wahl button[data-an] { background: var(--ink); color: var(--bg); box-shadow: inset 0 -4px 0 var(--accent); }
 .betriebsart-wahl button:disabled { cursor: not-allowed; }
 .betriebsart-wahl button:disabled:not([data-an]) { color: var(--ink-soft); }
 .betriebsart-wahl button:focus-visible { outline: 2px solid var(--focus); outline-offset: -4px; }
@@ -755,13 +756,16 @@ p, li { text-wrap: pretty; }
 }
 .geteilt > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .geteilt-reiter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 10px; }
-.geteilt-reiter [role="tab"] {
+.geteilt-reiter button[aria-pressed] {
   min-height: 36px; padding: 0 10px;
   background: transparent; color: var(--ink); border: 2px solid var(--rule-strong); border-radius: 4px;
   font: 700 15px/1 var(--font-wmc); cursor: pointer;
 }
-.geteilt-reiter [role="tab"][data-an] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.geteilt-reiter [role="tab"]:focus-visible, .geteilt-neu:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* aktiv wie topbar-btn[aria-expanded]: Tinte statt Rot (Rot auf Weiß reicht für 15 px nicht), roter Streifen unten */
+.geteilt-reiter button[aria-pressed="true"] {
+  background: var(--ink); border-color: var(--ink); color: var(--bg); box-shadow: inset 0 -4px 0 var(--accent);
+}
+.geteilt-reiter button:focus-visible, .geteilt-neu:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .geteilt-neu {
   margin-left: auto; min-height: 36px; padding: 0 6px;
   background: none; border: 0; color: var(--ink); cursor: pointer;
@@ -808,6 +812,13 @@ p, li { text-wrap: pretty; }
 .teilen-status { margin: 0; font-size: 15px; font-weight: 700; }
 .teilen-status[data-fehler] { text-decoration: underline; text-decoration-color: var(--accent); }
 .canvas-geteilt { margin: 0; font-size: 15px; color: var(--ink-soft); }
+.teilen-hinweis { margin: 0; font-size: 14px; color: var(--ink-soft); }
+.teilen-fehler { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 15px; }
+.hinweise-fuss { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.hinweise-fuss:empty { display: none; }
+.hinweise-weitere { font-size: 14px; color: var(--ink-soft); }
+.canvas-mermaid img { display: block; height: auto; }
+.canvas-mermaid-wartet { display: grid; gap: 8px; justify-items: start; }
 
 @media (max-width: 1023px) {
   .hinweise { order: 2; }

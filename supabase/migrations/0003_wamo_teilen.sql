@@ -8,18 +8,22 @@
 -- Grundsaetze
 -- * Nur der Besitzer teilt, aendert das Recht und widerruft. Empfaenger teilen nicht weiter (sie besitzen das Objekt
 --   nicht); sie koennen eine Teilung fuer sich zurueckgeben. Widerruf ist endgueltig und wirkt sofort.
--- * Rechte: lesen (ansehen, herunterladen) oder bearbeiten (neue Fassung anlegen). Projekte von Entwicklungsauftraegen
---   werden nur lesend geteilt; die Auftraege selbst bleiben Sache der Admins.
+--   Grenze: Den Besitzer einer neuen Teilung setzt der Kern aus der geprueften Identitaet; die Datenbank prueft, dass
+--   das Objekt diesem Besitzer gehoert. Recht aendern und beenden gehen nur ueber Funktionen mit Besitzerpruefung
+--   (wamo_core hat kein update-Recht auf teilungen).
+-- * Rechte: lesen (ansehen, herunterladen) oder bearbeiten (neue Fassung anlegen). Ergebnisse von
+--   Entwicklungsauftraegen (canvas_items.data.auftrag) und ganze Projekte nur lesend.
 -- * Dateien liegen in der Datenbank (Tabelle dateien), damit jeder Kern dieselben Daten sieht (Buero-Kern auf
---   Sokrates-2 und der Kern auf einem Admin-PC). Hoechstens 25 MB je Datei, 500 MB je Profil, nur Typen aus einer
---   Liste. Groesse und Pruefsumme berechnet die Datenbank, nie der Aufrufer. Dateien sind unveraenderlich; eine
---   Bearbeitung ist eine neue Fassung (wurzel_id).
--- * Bearbeiten eines Canvas-Dokuments legt eine neue Fassung an (canvas_items mit parent_id = Wurzel, version + 1,
---   bearbeitet_von). Besitzer der Fassung bleibt der Besitzer der Wurzel.
--- * Jede Teilung, jede Rechteaenderung, jeder Widerruf, jede Bearbeitung und jeder Abruf durch Empfaenger steht in
---   teilung_events (ohne Inhalte). Empfaenger und Besitzer bekommen Hinweise (Tabelle hinweise aus 0002).
--- * Der Kern (wamo_core) prueft Identitaet und Recht im Code; die Datenbank prueft dieselben Regeln noch einmal
---   (Trigger, SECURITY-DEFINER-Funktionen mit festem search_path).
+--   Sokrates-2 und der Kern auf einem Admin-PC). Hoechstens 25 MB je Datei, 500 MB und 2000 Dateien je hochladendem
+--   Profil (Fassungen zaehlen beim Bearbeiter), 20 Fassungen je Datei, nur Typen aus einer Liste. Groesse und
+--   Pruefsumme berechnet die Datenbank. Dateien sind unveraenderlich; Loeschen ist zuerst weich (geloescht_at), nach
+--   7 Tagen endgueltig (dateien_endgueltig_loeschen, ruft der Kern taeglich auf).
+-- * Bearbeiten eines Canvas-Dokuments legt eine neue Fassung an (parent_id = Wurzel, version + 1, bearbeitet_von,
+--   Titel der Wurzel), hoechstens 100 je Wurzel; mit Basisfassung gibt es bei gleichzeitiger Bearbeitung einen
+--   Konflikt (SQLSTATE P0409) statt stillem Ueberschreiben.
+-- * Jede Teilung, jede Rechteaenderung, jeder Widerruf, jede Bearbeitung durch Empfaenger und jeder Abruf durch
+--   Empfaenger steht in teilung_events (ohne Inhalte). Empfaenger und Besitzer bekommen Hinweise (Tabelle hinweise aus
+--   0002); ungelesene Bearbeitungshinweise je Objekt werden nicht vervielfacht.
 
 do $$ begin
   if not exists (select 1 from __SCHEMA__.schema_migrations where version = '0002_wamo_geraete') then
@@ -32,7 +36,7 @@ create table if not exists __SCHEMA__.dateien (
   id              uuid primary key default gen_random_uuid(),
   user_id         uuid not null references __SCHEMA__.profiles(user_id) on delete cascade,  -- Besitzer
   wurzel_id       uuid references __SCHEMA__.dateien(id) on delete cascade,   -- nur bei Fassungen: die erste Datei
-  hochgeladen_von uuid references __SCHEMA__.profiles(user_id) on delete set null,
+  hochgeladen_von uuid references __SCHEMA__.profiles(user_id) on delete set null,      -- traegt das Kontingent
   name            text not null,
   mime            text not null,
   groesse         integer not null,
@@ -40,6 +44,7 @@ create table if not exists __SCHEMA__.dateien (
   herkunft        text not null default 'upload',
   inhalt          bytea not null,
   erstellt_at     timestamptz not null default now(),
+  geloescht_at    timestamptz,     -- weich geloescht; endgueltig nach 7 Tagen
   constraint dateien_name_chk check (length(name) between 1 and 200 and name !~ '[/\\[:cntrl:]]'
                                      and name not in ('.', '..')),
   constraint dateien_mime_chk check (mime in (
@@ -55,9 +60,12 @@ create table if not exists __SCHEMA__.dateien (
   constraint dateien_herkunft_chk check (herkunft in ('upload','scan','nas','version')),
   constraint dateien_fassung_chk check ((wurzel_id is null) = (herkunft <> 'version'))
 );
+-- Inhalte sind meist schon komprimiert (PDF, Bilder, Office): ohne Kompression speichern, das spart Rechenzeit
+alter table __SCHEMA__.dateien alter column inhalt set storage external;
 create index if not exists dateien_user_idx on __SCHEMA__.dateien (user_id, erstellt_at desc);
 create index if not exists dateien_wurzel_idx on __SCHEMA__.dateien (wurzel_id, erstellt_at desc) where wurzel_id is not null;
 create index if not exists dateien_hochgeladen_idx on __SCHEMA__.dateien (hochgeladen_von) where hochgeladen_von is not null;
+create index if not exists dateien_geloescht_idx on __SCHEMA__.dateien (geloescht_at) where geloescht_at is not null;
 
 create or replace function __SCHEMA__.dateien_guard() returns trigger
 language plpgsql set search_path = '' as $$
@@ -70,39 +78,55 @@ begin
   -- Groesse und Pruefsumme immer selbst berechnen
   new.groesse := octet_length(new.inhalt);
   new.sha256 := encode(pg_catalog.sha256(new.inhalt), 'hex');
-  new.erstellt_at := now();
+  new.erstellt_at := clock_timestamp();   -- auch innerhalb einer Transaktion eindeutig geordnet (neueste Fassung)
+  new.geloescht_at := null;
   new.hochgeladen_von := coalesce(new.hochgeladen_von, new.user_id);
-  if not exists (select 1 from __SCHEMA__.profiles p where p.user_id = new.user_id and p.aktiv) then
-    raise exception 'dateien: Besitzerprofil ist nicht aktiv' using errcode = '42501';
+  if not exists (select 1 from __SCHEMA__.profiles p where p.user_id = new.user_id and p.aktiv)
+     or not exists (select 1 from __SCHEMA__.profiles p where p.user_id = new.hochgeladen_von and p.aktiv) then
+    raise exception 'dateien: Profil ist nicht aktiv' using errcode = '42501';
   end if;
   if new.wurzel_id is not null then
-    select d.user_id, d.wurzel_id into v_wurzel from __SCHEMA__.dateien d where d.id = new.wurzel_id;
-    if not found or v_wurzel.wurzel_id is not null or v_wurzel.user_id <> new.user_id then
-      raise exception 'dateien: Fassung nur zu einer eigenen ersten Datei' using errcode = '42501';
+    select d.user_id, d.wurzel_id, d.geloescht_at into v_wurzel from __SCHEMA__.dateien d where d.id = new.wurzel_id;
+    if not found or v_wurzel.wurzel_id is not null or v_wurzel.user_id <> new.user_id
+       or v_wurzel.geloescht_at is not null then
+      raise exception 'dateien: Fassung nur zu einer vorhandenen ersten Datei desselben Besitzers' using errcode = '42501';
+    end if;
+    if (select count(*) from __SCHEMA__.dateien d where d.wurzel_id = new.wurzel_id) >= 20 then
+      raise exception 'dateien: hoechstens 20 Fassungen je Datei' using errcode = '54000';
     end if;
   end if;
-  -- Kontingent je Besitzer (nacheinander je Profil, damit zwei gleichzeitige Uploads es nicht ueberschreiten)
-  perform pg_advisory_xact_lock(hashtext('__SCHEMA__.dateien:' || new.user_id::text));
-  if (select coalesce(sum(d.groesse), 0) from __SCHEMA__.dateien d where d.user_id = new.user_id) + new.groesse
-       > 524288000 then
+  -- Kontingent je hochladendem Profil (nacheinander je Profil, damit gleichzeitige Uploads es nicht ueberschreiten)
+  perform pg_advisory_xact_lock(hashtext('__SCHEMA__.dateien:' || new.hochgeladen_von::text));
+  if (select coalesce(sum(d.groesse), 0) from __SCHEMA__.dateien d
+      where d.hochgeladen_von = new.hochgeladen_von and d.geloescht_at is null) + new.groesse > 524288000 then
     raise exception 'dateien: Kontingent von 500 MB erreicht' using errcode = '54000';
   end if;
-  if (select count(*) from __SCHEMA__.dateien d where d.user_id = new.user_id) >= 2000 then
+  if (select count(*) from __SCHEMA__.dateien d
+      where d.hochgeladen_von = new.hochgeladen_von and d.geloescht_at is null) >= 2000 then
     raise exception 'dateien: hoechstens 2000 Dateien je Profil' using errcode = '54000';
   end if;
   return new;
 end $$;
 drop trigger if exists dateien_guard on __SCHEMA__.dateien;
-create trigger dateien_guard before insert or update on __SCHEMA__.dateien
+-- nur die geschuetzten Spalten: das ON DELETE SET NULL von hochgeladen_von (Kontoloeschung) und das weiche Loeschen
+-- (geloescht_at, nur ueber datei_loeschen) bleiben moeglich
+create trigger dateien_guard before insert or update of id, user_id, wurzel_id, name, mime, groesse, sha256, herkunft,
+  inhalt, erstellt_at on __SCHEMA__.dateien
   for each row execute function __SCHEMA__.dateien_guard();
 
 -- ---------- Canvas: Fassungen geteilter Dokumente ----------
 alter table __SCHEMA__.canvas_items
   add column if not exists bearbeitet_von uuid references __SCHEMA__.profiles(user_id) on delete set null;
+alter table __SCHEMA__.canvas_items drop constraint if exists canvas_auftrag_projekt_chk;
+-- Projektname gekappt: der Ausdruck steht in einem Index (zu lange Werte sprengten die Indexzeile)
+alter table __SCHEMA__.canvas_items add constraint canvas_auftrag_projekt_chk
+  check (not (data ? 'auftrag') or length(coalesce((data -> 'auftrag') ->> 'projekt', '')) <= 100);
 create index if not exists canvas_bearbeiter_idx on __SCHEMA__.canvas_items (bearbeitet_von) where bearbeitet_von is not null;
--- Ergebnisdokumente von Entwicklungsauftraegen je Projekt (data.auftrag.projekt)
 create index if not exists canvas_auftrag_idx on __SCHEMA__.canvas_items (user_id, ((data -> 'auftrag') ->> 'projekt'))
   where data ? 'auftrag';
+-- je Wurzel jede Fassungsnummer nur einmal (zwei gleichzeitige Bearbeitungen ueberholen sich nicht)
+create unique index if not exists canvas_fassung_idx on __SCHEMA__.canvas_items (parent_id, version)
+  where parent_id is not null;
 
 -- ---------- Teilungen ----------
 create table if not exists __SCHEMA__.teilungen (
@@ -153,7 +177,7 @@ create table if not exists __SCHEMA__.teilung_events (
   empfaenger  uuid references __SCHEMA__.profiles(user_id) on delete set null,
   durch       uuid references __SCHEMA__.profiles(user_id) on delete set null,
   art         text not null check (art in ('canvas','datei','auftrag')),
-  objekt      text,          -- Kennung des Objekts (uuid oder Projektname), kein Inhalt
+  objekt      text check (objekt is null or length(objekt) <= 100),   -- Kennung des Objekts, kein Inhalt
   ereignis    text not null check (ereignis in ('geteilt','recht_geaendert','widerrufen','zurueckgegeben',
                                                 'abgerufen','bearbeitet','geloescht')),
   details     jsonb not null default '{}'::jsonb check (jsonb_typeof(details) = 'object' and pg_column_size(details) <= 1024),
@@ -165,12 +189,13 @@ create index if not exists teilung_events_empfaenger_idx on __SCHEMA__.teilung_e
 create index if not exists teilung_events_durch_idx on __SCHEMA__.teilung_events (durch) where durch is not null;
 
 -- ---------- Hilfsfunktionen ----------
--- Anzeigename des geteilten Objekts (Titel, Dateiname oder Projekt), nie Inhalt
+-- Anzeigename des geteilten Objekts (Titel, Name der neuesten Dateifassung oder Projekt), nie Inhalt
 create or replace function __SCHEMA__.teilung_objekt_titel(p_art text, p_canvas uuid, p_datei uuid, p_projekt text)
 returns text language sql stable set search_path = '' as $$
   select left(coalesce(case p_art
     when 'canvas' then (select c.title from __SCHEMA__.canvas_items c where c.id = p_canvas)
-    when 'datei'  then (select d.name from __SCHEMA__.dateien d where d.id = p_datei)
+    when 'datei'  then (select d.name from __SCHEMA__.dateien d where d.id = p_datei or d.wurzel_id = p_datei
+                        order by d.erstellt_at desc limit 1)
     when 'auftrag' then 'Projekt ' || p_projekt
   end, 'Ohne Titel'), 120)
 $$;
@@ -189,7 +214,10 @@ begin
   if v_wurzel.user_id = p_user then return 'besitzer'; end if;
   select t.recht into v_recht from __SCHEMA__.teilungen t
     where t.art = 'canvas' and t.canvas_id = v_wurzel.id and t.empfaenger = p_user and t.widerrufen_at is null;
-  if found then return v_recht; end if;
+  if found then
+    -- Ergebnisse von Entwicklungsauftraegen sind fuer andere immer nur lesbar
+    return case when v_wurzel.data ? 'auftrag' then 'lesen' else v_recht end;
+  end if;
   if v_wurzel.data ? 'auftrag' and exists (select 1 from __SCHEMA__.teilungen t
        where t.art = 'auftrag' and t.besitzer = v_wurzel.user_id and t.empfaenger = p_user
          and t.widerrufen_at is null and t.projekt = (v_wurzel.data -> 'auftrag') ->> 'projekt') then
@@ -198,7 +226,7 @@ begin
   return null;
 end $$;
 
--- Recht eines Profils an einer Datei (auch an einer Fassung): besitzer | bearbeiten | lesen | null
+-- Recht eines Profils an einer Datei (auch an einer Fassung): besitzer | bearbeiten | lesen | null; geloescht: null
 create or replace function __SCHEMA__.datei_recht(p_user uuid, p_datei uuid)
 returns text language plpgsql stable set search_path = '' as $$
 declare
@@ -207,13 +235,22 @@ declare
 begin
   select w.id, w.user_id into v_wurzel from __SCHEMA__.dateien d
     join __SCHEMA__.dateien w on w.id = coalesce(d.wurzel_id, d.id)
-    where d.id = p_datei;
+    where d.id = p_datei and w.geloescht_at is null;
   if not found or p_user is null then return null; end if;
   if v_wurzel.user_id = p_user then return 'besitzer'; end if;
   select t.recht into v_recht from __SCHEMA__.teilungen t
     where t.art = 'datei' and t.datei_id = v_wurzel.id and t.empfaenger = p_user and t.widerrufen_at is null;
   return v_recht;   -- null, wenn nicht geteilt
 end $$;
+
+-- Hinweis an den Besitzer nach einer Bearbeitung, nicht vervielfacht: solange ein ungelesener zum Objekt da ist, keiner
+create or replace function __SCHEMA__.bearbeitung_melden(p_besitzer uuid, p_bezug uuid, p_titel text, p_daten jsonb)
+returns void language sql security definer set search_path = '' as $$
+  insert into __SCHEMA__.hinweise (empfaenger, art, titel, bezug, daten)
+  select p_besitzer, 'teilung_geaendert', left(p_titel, 200), p_bezug, coalesce(p_daten, '{}'::jsonb)
+  where not exists (select 1 from __SCHEMA__.hinweise h where h.empfaenger = p_besitzer and h.bezug = p_bezug
+                    and h.art = 'teilung_geaendert' and h.gelesen_at is null)
+$$;
 
 -- ---------- Waechter fuer teilungen ----------
 create or replace function __SCHEMA__.teilungen_guard() returns trigger
@@ -231,7 +268,7 @@ begin
       raise exception 'teilungen: nur eigene Canvas-Elemente (erste Fassung) teilen' using errcode = '42501';
     end if;
     if new.art = 'datei' and not exists (select 1 from __SCHEMA__.dateien d
-         where d.id = new.datei_id and d.user_id = new.besitzer and d.wurzel_id is null) then
+         where d.id = new.datei_id and d.user_id = new.besitzer and d.wurzel_id is null and d.geloescht_at is null) then
       raise exception 'teilungen: nur eigene Dateien (erste Fassung) teilen' using errcode = '42501';
     end if;
     if new.art = 'auftrag' and not exists (select 1 from __SCHEMA__.canvas_items c
@@ -241,33 +278,38 @@ begin
     end if;
     new.erstellt_at := now(); new.geaendert_at := now();
     new.widerrufen_at := null; new.widerrufen_von := null;
-    return new;
-  end if;
-  if new.id is distinct from old.id or new.besitzer is distinct from old.besitzer
-     or new.empfaenger is distinct from old.empfaenger or new.art is distinct from old.art
-     or new.canvas_id is distinct from old.canvas_id or new.datei_id is distinct from old.datei_id
-     or new.projekt is distinct from old.projekt or new.hinweis is distinct from old.hinweis
-     or new.erstellt_at is distinct from old.erstellt_at then
-    raise exception 'teilungen: nur Recht und Widerruf sind aenderbar' using errcode = '42501';
-  end if;
-  if old.widerrufen_at is not null then
-    -- endgueltig; Ausnahme: FK set null, wenn das widerrufende Profil geloescht wird
-    if new.widerrufen_at is distinct from old.widerrufen_at or new.recht is distinct from old.recht
-       or (new.widerrufen_von is distinct from old.widerrufen_von and new.widerrufen_von is not null) then
-      raise exception 'teilungen: widerrufene Teilungen sind endgueltig' using errcode = '42501';
+  else
+    if new.id is distinct from old.id or new.besitzer is distinct from old.besitzer
+       or new.empfaenger is distinct from old.empfaenger or new.art is distinct from old.art
+       or new.canvas_id is distinct from old.canvas_id or new.datei_id is distinct from old.datei_id
+       or new.projekt is distinct from old.projekt or new.hinweis is distinct from old.hinweis
+       or new.erstellt_at is distinct from old.erstellt_at then
+      raise exception 'teilungen: nur Recht und Widerruf sind aenderbar' using errcode = '42501';
     end if;
-    return new;
-  end if;
-  if new.widerrufen_at is not null or new.widerrufen_von is not null then
-    if new.widerrufen_von is null or new.widerrufen_von not in (old.besitzer, old.empfaenger) then
-      raise exception 'teilungen: widerrufen nur durch Besitzer oder Empfaenger' using errcode = '42501';
+    if old.widerrufen_at is not null then
+      -- endgueltig; Ausnahme: FK set null, wenn das widerrufende Profil geloescht wird
+      if new.widerrufen_at is distinct from old.widerrufen_at or new.recht is distinct from old.recht
+         or (new.widerrufen_von is distinct from old.widerrufen_von and new.widerrufen_von is not null) then
+        raise exception 'teilungen: widerrufene Teilungen sind endgueltig' using errcode = '42501';
+      end if;
+      return new;
     end if;
-    if new.recht is distinct from old.recht then
-      raise exception 'teilungen: Widerruf und Rechteaenderung nicht zugleich' using errcode = '42501';
+    if new.widerrufen_at is not null or new.widerrufen_von is not null then
+      if new.widerrufen_von is null or new.widerrufen_von not in (old.besitzer, old.empfaenger) then
+        raise exception 'teilungen: widerrufen nur durch Besitzer oder Empfaenger' using errcode = '42501';
+      end if;
+      if new.recht is distinct from old.recht then
+        raise exception 'teilungen: Widerruf und Rechteaenderung nicht zugleich' using errcode = '42501';
+      end if;
+      new.widerrufen_at := now();
     end if;
-    new.widerrufen_at := now();
+    new.geaendert_at := now();
   end if;
-  new.geaendert_at := now();
+  -- Ergebnisse von Entwicklungsauftraegen nie zum Bearbeiten teilen
+  if new.art = 'canvas' and new.recht = 'bearbeiten' and new.widerrufen_at is null and exists (
+       select 1 from __SCHEMA__.canvas_items c where c.id = new.canvas_id and c.data ? 'auftrag') then
+    raise exception 'teilungen: Ergebnisse von Entwicklungsauftraegen nur zum Lesen' using errcode = '42501';
+  end if;
   return new;
 end $$;
 drop trigger if exists teilungen_guard on __SCHEMA__.teilungen;
@@ -328,7 +370,30 @@ drop trigger if exists teilungen_ereignis on __SCHEMA__.teilungen;
 create trigger teilungen_ereignis after insert or update on __SCHEMA__.teilungen
   for each row execute function __SCHEMA__.teilungen_ereignis();
 
--- ---------- Funktionen fuer den Kern (SECURITY DEFINER, pruefen das Recht selbst) ----------
+-- ---------- Funktionen fuer den Kern (SECURITY DEFINER, pruefen Besitz und Recht selbst) ----------
+-- Recht einer laufenden Teilung aendern: nur der Besitzer
+create or replace function __SCHEMA__.teilung_recht_setzen(p_user uuid, p_teilung uuid, p_recht text)
+returns boolean language plpgsql security definer set search_path = '' as $$
+begin
+  update __SCHEMA__.teilungen t set recht = p_recht
+    where t.id = p_teilung and t.besitzer = p_user and t.widerrufen_at is null and t.recht is distinct from p_recht;
+  return found or exists (select 1 from __SCHEMA__.teilungen t where t.id = p_teilung and t.besitzer = p_user
+                          and t.widerrufen_at is null);
+end $$;
+
+-- Teilung beenden: Besitzer widerruft, Empfaenger gibt zurueck. Liefert widerrufen | zurueckgegeben | null
+create or replace function __SCHEMA__.teilung_beenden(p_user uuid, p_teilung uuid)
+returns text language plpgsql security definer set search_path = '' as $$
+declare
+  t record;
+begin
+  select * into t from __SCHEMA__.teilungen x where x.id = p_teilung and x.widerrufen_at is null
+    and p_user in (x.besitzer, x.empfaenger) for update;
+  if not found then return null; end if;
+  update __SCHEMA__.teilungen x set widerrufen_at = now(), widerrufen_von = p_user where x.id = p_teilung;
+  return case when p_user = t.besitzer then 'widerrufen' else 'zurueckgegeben' end;
+end $$;
+
 -- Abruf durch einen Empfaenger protokollieren (hoechstens einmal je 5 Minuten, Teilung und Profil)
 create or replace function __SCHEMA__.teilung_abgerufen(p_user uuid, p_teilung uuid)
 returns boolean language plpgsql security definer set search_path = '' as $$
@@ -346,12 +411,18 @@ begin
   return true;
 end $$;
 
--- Neue Fassung eines Canvas-Elements durch den Besitzer oder einen Empfaenger mit Recht bearbeiten
-create or replace function __SCHEMA__.canvas_fassung_anlegen(p_user uuid, p_canvas uuid, p_titel text, p_data jsonb)
-returns uuid language plpgsql security definer set search_path = '' as $$
+-- Neue Fassung eines Canvas-Elements durch den Besitzer oder einen Empfaenger mit Recht bearbeiten. Der Titel bleibt
+-- der der Wurzel. p_basis: die Fassungsnummer, auf der die Bearbeitung beruht; ist inzwischen eine neuere da, gibt es
+-- den Konflikt P0409 (nichts wird ueberschrieben). Liefert die neue Fassung und ihre Nummer.
+create or replace function __SCHEMA__.canvas_fassung_anlegen(p_user uuid, p_canvas uuid, p_data jsonb,
+                                                             p_basis integer default null)
+returns table (fassung uuid, version integer)
+language plpgsql security definer set search_path = '' as $$
 declare
   v_recht text;
+  v_wurzel_id uuid;
   v_wurzel __SCHEMA__.canvas_items%rowtype;
+  v_aktuell integer;
   v_id uuid;
   v_name text;
   t record;
@@ -363,39 +434,47 @@ begin
   if p_data is null or jsonb_typeof(p_data) <> 'object' or pg_column_size(p_data) > 262144 then
     raise exception 'canvas_fassung_anlegen: Inhalt fehlt oder ist zu gross' using errcode = '22023';
   end if;
-  if p_titel is null or length(btrim(p_titel)) not between 1 and 300 then
-    raise exception 'canvas_fassung_anlegen: Titel fehlt oder ist zu lang' using errcode = '22023';
+  select coalesce(c.parent_id, c.id) into v_wurzel_id from __SCHEMA__.canvas_items c where c.id = p_canvas;
+  -- Wurzel sperren: Fassungen derselben Wurzel entstehen nacheinander
+  select w.* into v_wurzel from __SCHEMA__.canvas_items w where w.id = v_wurzel_id for no key update;
+  if v_wurzel.data ? 'auftrag' and p_user <> v_wurzel.user_id then
+    raise exception 'canvas_fassung_anlegen: Ergebnisse von Entwicklungsauftraegen nur zum Lesen' using errcode = '42501';
   end if;
-  select w.* into v_wurzel from __SCHEMA__.canvas_items c
-    join __SCHEMA__.canvas_items w on w.id = coalesce(c.parent_id, c.id) where c.id = p_canvas;
-  -- Zuordnung zum Projekt eines Auftrags bleibt erhalten (sonst verloere der Empfaenger eines Projekts den Zugriff)
+  select max(c.version) into v_aktuell from __SCHEMA__.canvas_items c where c.id = v_wurzel.id or c.parent_id = v_wurzel.id;
+  if p_basis is not null and p_basis <> v_aktuell then
+    raise exception 'canvas_fassung_anlegen: inzwischen gibt es eine neuere Fassung' using errcode = 'P0409';
+  end if;
+  if (select count(*) from __SCHEMA__.canvas_items c where c.parent_id = v_wurzel.id) >= 100 then
+    raise exception 'canvas_fassung_anlegen: hoechstens 100 Fassungen' using errcode = '54000';
+  end if;
+  -- Titel und Projektzuordnung der Wurzel bleiben (kein irrefuehrender Titel, kein untergeschobenes Projekt)
+  p_data := jsonb_set(p_data, '{title}', to_jsonb(v_wurzel.title));
   if v_wurzel.data ? 'auftrag' then
     p_data := jsonb_set(p_data, '{auftrag}', v_wurzel.data -> 'auftrag');
   else
     p_data := p_data - 'auftrag';
   end if;
   insert into __SCHEMA__.canvas_items (user_id, session_id, type, title, data, version, parent_id, bearbeitet_von)
-  values (v_wurzel.user_id, null, v_wurzel.type, btrim(p_titel), p_data,
-          (select coalesce(max(c.version), 1) + 1 from __SCHEMA__.canvas_items c
-            where c.id = v_wurzel.id or c.parent_id = v_wurzel.id),
-          v_wurzel.id, p_user)
+  values (v_wurzel.user_id, null, v_wurzel.type, v_wurzel.title, p_data, v_aktuell + 1, v_wurzel.id, p_user)
   returning id into v_id;
-  select t2.* into t from __SCHEMA__.teilungen t2 where t2.art = 'canvas' and t2.canvas_id = v_wurzel.id
-    and t2.empfaenger = p_user and t2.widerrufen_at is null;
-  insert into __SCHEMA__.teilung_events (teilung_id, besitzer, empfaenger, durch, art, objekt, ereignis, details)
-  values (t.id, v_wurzel.user_id, case when p_user <> v_wurzel.user_id then p_user end, p_user, 'canvas',
-          v_wurzel.id::text, 'bearbeitet', jsonb_build_object('fassung', v_id));
   if p_user <> v_wurzel.user_id then
+    select t2.* into t from __SCHEMA__.teilungen t2 where t2.art = 'canvas' and t2.canvas_id = v_wurzel.id
+      and t2.empfaenger = p_user and t2.widerrufen_at is null;
+    if found then
+      insert into __SCHEMA__.teilung_events (teilung_id, besitzer, empfaenger, durch, art, objekt, ereignis, details)
+      values (t.id, v_wurzel.user_id, p_user, p_user, 'canvas', v_wurzel.id::text, 'bearbeitet',
+              jsonb_build_object('fassung', v_id, 'version', v_aktuell + 1));
+    end if;
     select p.display_name into v_name from __SCHEMA__.profiles p where p.user_id = p_user;
-    insert into __SCHEMA__.hinweise (empfaenger, art, titel, bezug, daten)
-    values (v_wurzel.user_id, 'teilung_geaendert',
-            left(coalesce(v_name, 'Jemand') || ' hat „' || left(v_wurzel.title, 120) || '“ bearbeitet', 200),
-            v_wurzel.id, jsonb_build_object('canvas', v_wurzel.id, 'fassung', v_id));
+    perform __SCHEMA__.bearbeitung_melden(v_wurzel.user_id, v_wurzel.id,
+      coalesce(v_name, 'Jemand') || ' hat „' || left(v_wurzel.title, 120) || '“ bearbeitet',
+      jsonb_build_object('canvas', v_wurzel.id, 'fassung', v_id));
   end if;
-  return v_id;
+  return query select v_id, v_aktuell + 1;
 end $$;
 
--- Neue Fassung einer Datei durch den Besitzer oder einen Empfaenger mit Recht bearbeiten
+-- Neue Fassung einer Datei durch den Besitzer oder einen Empfaenger mit Recht bearbeiten. Gleiche Endung wie die
+-- erste Datei; die Fassung zaehlt auf das Kontingent des Bearbeiters.
 create or replace function __SCHEMA__.datei_fassung_anlegen(p_user uuid, p_datei uuid, p_name text, p_mime text,
                                                             p_inhalt bytea)
 returns uuid language plpgsql security definer set search_path = '' as $$
@@ -412,41 +491,57 @@ begin
   end if;
   select w.id, w.user_id, w.name into v_wurzel from __SCHEMA__.dateien d
     join __SCHEMA__.dateien w on w.id = coalesce(d.wurzel_id, d.id) where d.id = p_datei;
+  if lower(substring(p_name from '\.([^.]+)$')) is distinct from lower(substring(v_wurzel.name from '\.([^.]+)$')) then
+    raise exception 'datei_fassung_anlegen: die Fassung braucht dieselbe Endung' using errcode = '22023';
+  end if;
   -- groesse und sha256 setzt der Waechter aus dem Inhalt
   insert into __SCHEMA__.dateien (user_id, wurzel_id, hochgeladen_von, name, mime, groesse, sha256, herkunft, inhalt)
   values (v_wurzel.user_id, v_wurzel.id, p_user, p_name, p_mime, 1, repeat('0', 64), 'version', p_inhalt)
   returning id into v_id;
-  select t2.* into t from __SCHEMA__.teilungen t2 where t2.art = 'datei' and t2.datei_id = v_wurzel.id
-    and t2.empfaenger = p_user and t2.widerrufen_at is null;
-  insert into __SCHEMA__.teilung_events (teilung_id, besitzer, empfaenger, durch, art, objekt, ereignis, details)
-  values (t.id, v_wurzel.user_id, case when p_user <> v_wurzel.user_id then p_user end, p_user, 'datei',
-          v_wurzel.id::text, 'bearbeitet', jsonb_build_object('fassung', v_id));
   if p_user <> v_wurzel.user_id then
+    select t2.* into t from __SCHEMA__.teilungen t2 where t2.art = 'datei' and t2.datei_id = v_wurzel.id
+      and t2.empfaenger = p_user and t2.widerrufen_at is null;
+    if found then
+      insert into __SCHEMA__.teilung_events (teilung_id, besitzer, empfaenger, durch, art, objekt, ereignis, details)
+      values (t.id, v_wurzel.user_id, p_user, p_user, 'datei', v_wurzel.id::text, 'bearbeitet',
+              jsonb_build_object('fassung', v_id));
+    end if;
     select p.display_name into v_name from __SCHEMA__.profiles p where p.user_id = p_user;
-    insert into __SCHEMA__.hinweise (empfaenger, art, titel, bezug, daten)
-    values (v_wurzel.user_id, 'teilung_geaendert',
-            left(coalesce(v_name, 'Jemand') || ' hat eine neue Fassung von „' || left(v_wurzel.name, 120) || '“ abgelegt', 200),
-            v_wurzel.id, jsonb_build_object('datei', v_wurzel.id, 'fassung', v_id));
+    perform __SCHEMA__.bearbeitung_melden(v_wurzel.user_id, v_wurzel.id,
+      coalesce(v_name, 'Jemand') || ' hat eine neue Fassung von „' || left(v_wurzel.name, 120) || '“ abgelegt',
+      jsonb_build_object('datei', v_wurzel.id, 'fassung', v_id));
   end if;
   return v_id;
 end $$;
 
--- Eigene Datei samt Fassungen loeschen (Datenminimierung): laufende Teilungen werden vorher widerrufen
+-- Eigene Datei samt Fassungen loeschen (zuerst weich): laufende Teilungen werden widerrufen, nach 7 Tagen endgueltig
 create or replace function __SCHEMA__.datei_loeschen(p_user uuid, p_datei uuid)
 returns boolean language plpgsql security definer set search_path = '' as $$
 declare
   v_wurzel record;
 begin
-  select d.id, d.user_id, d.wurzel_id into v_wurzel from __SCHEMA__.dateien d where d.id = p_datei;
-  if not found or v_wurzel.user_id <> p_user or v_wurzel.wurzel_id is not null then
+  select d.id, d.user_id, d.wurzel_id, d.geloescht_at into v_wurzel from __SCHEMA__.dateien d where d.id = p_datei;
+  if not found or v_wurzel.user_id <> p_user or v_wurzel.wurzel_id is not null or v_wurzel.geloescht_at is not null then
     return false;
   end if;
   update __SCHEMA__.teilungen t set widerrufen_at = now(), widerrufen_von = p_user
     where t.datei_id = v_wurzel.id and t.widerrufen_at is null;
+  update __SCHEMA__.dateien d set geloescht_at = now() where d.id = v_wurzel.id or d.wurzel_id = v_wurzel.id;
   insert into __SCHEMA__.teilung_events (besitzer, durch, art, objekt, ereignis)
   values (p_user, p_user, 'datei', v_wurzel.id::text, 'geloescht');
-  delete from __SCHEMA__.dateien d where d.id = v_wurzel.id;   -- Fassungen und Teilungen per Kaskade
   return true;
+end $$;
+
+-- Weich geloeschte Dateien nach 7 Tagen endgueltig entfernen (Fassungen und Teilungen per Kaskade). Ruft der Kern
+-- einmal taeglich auf; liefert die Zahl der entfernten Dateien.
+create or replace function __SCHEMA__.dateien_endgueltig_loeschen()
+returns integer language plpgsql security definer set search_path = '' as $$
+declare
+  n integer;
+begin
+  delete from __SCHEMA__.dateien d where d.wurzel_id is null and d.geloescht_at < now() - interval '7 days';
+  get diagnostics n = row_count;
+  return n;
 end $$;
 
 -- ---------- Rechte ----------
@@ -454,22 +549,26 @@ revoke all on __SCHEMA__.dateien, __SCHEMA__.teilungen, __SCHEMA__.teilung_event
   from public, anon, authenticated, service_role;
 revoke all on function __SCHEMA__.dateien_guard(), __SCHEMA__.teilungen_guard(), __SCHEMA__.teilungen_ereignis(),
   __SCHEMA__.teilung_objekt_titel(text, uuid, uuid, text), __SCHEMA__.canvas_recht(uuid, uuid),
-  __SCHEMA__.datei_recht(uuid, uuid), __SCHEMA__.teilung_abgerufen(uuid, uuid),
-  __SCHEMA__.canvas_fassung_anlegen(uuid, uuid, text, jsonb),
-  __SCHEMA__.datei_fassung_anlegen(uuid, uuid, text, text, bytea), __SCHEMA__.datei_loeschen(uuid, uuid)
+  __SCHEMA__.datei_recht(uuid, uuid), __SCHEMA__.bearbeitung_melden(uuid, uuid, text, jsonb),
+  __SCHEMA__.teilung_recht_setzen(uuid, uuid, text), __SCHEMA__.teilung_beenden(uuid, uuid),
+  __SCHEMA__.teilung_abgerufen(uuid, uuid), __SCHEMA__.canvas_fassung_anlegen(uuid, uuid, jsonb, integer),
+  __SCHEMA__.datei_fassung_anlegen(uuid, uuid, text, text, bytea), __SCHEMA__.datei_loeschen(uuid, uuid),
+  __SCHEMA__.dateien_endgueltig_loeschen()
   from public, anon, authenticated, service_role;
--- Voice-Core: Dateien ablegen und lesen, teilen, Recht aendern, widerrufen; Protokoll lesen (der Kern zeigt nur das
--- eigene); Fassungen, Abruf und Loeschen nur ueber die Funktionen
+-- Voice-Core: Dateien ablegen und lesen, teilen; alles andere (Recht, Ende, Fassungen, Abruf, Loeschen) nur ueber die
+-- Funktionen mit eigener Pruefung; Protokoll lesen (der Kern zeigt nur das eigene)
 grant select on __SCHEMA__.dateien to wamo_core;
 grant insert (user_id, name, mime, groesse, sha256, herkunft, inhalt) on __SCHEMA__.dateien to wamo_core;
 grant select on __SCHEMA__.teilungen to wamo_core;
 grant insert (besitzer, empfaenger, art, canvas_id, datei_id, projekt, recht, hinweis) on __SCHEMA__.teilungen to wamo_core;
-grant update (recht, widerrufen_at, widerrufen_von) on __SCHEMA__.teilungen to wamo_core;
+revoke update on __SCHEMA__.teilungen from wamo_core;
 grant select on __SCHEMA__.teilung_events to wamo_core;
 grant execute on function __SCHEMA__.teilung_objekt_titel(text, uuid, uuid, text), __SCHEMA__.canvas_recht(uuid, uuid),
-  __SCHEMA__.datei_recht(uuid, uuid), __SCHEMA__.teilung_abgerufen(uuid, uuid),
-  __SCHEMA__.canvas_fassung_anlegen(uuid, uuid, text, jsonb),
-  __SCHEMA__.datei_fassung_anlegen(uuid, uuid, text, text, bytea), __SCHEMA__.datei_loeschen(uuid, uuid)
+  __SCHEMA__.datei_recht(uuid, uuid), __SCHEMA__.teilung_recht_setzen(uuid, uuid, text),
+  __SCHEMA__.teilung_beenden(uuid, uuid), __SCHEMA__.teilung_abgerufen(uuid, uuid),
+  __SCHEMA__.canvas_fassung_anlegen(uuid, uuid, jsonb, integer),
+  __SCHEMA__.datei_fassung_anlegen(uuid, uuid, text, text, bytea), __SCHEMA__.datei_loeschen(uuid, uuid),
+  __SCHEMA__.dateien_endgueltig_loeschen()
   to wamo_core;
 -- Verwaltung: nur Metadaten (wer hat was mit wem geteilt, Protokoll), keine Inhalte
 grant select on __SCHEMA__.teilungen, __SCHEMA__.teilung_events to wamo_admin;

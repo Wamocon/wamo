@@ -1,8 +1,8 @@
 "use client";
 
-import { Fragment, memo, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useId, useState, type ReactNode } from "react";
 import { TeilenKnopf } from "@/components/Teilen";
-import { istUuid } from "@/lib/kernApi";
+import { istUuid } from "@/lib/teilenHilfe";
 import { useSelect } from "@/lib/store";
 import { wamo } from "@/lib/wamo";
 
@@ -106,7 +106,9 @@ function CanvasTeilen({ item }: { item: CanvasItem }) {
   if (item.geteilt) return null; // fremde Arbeit teilt nur ihr Besitzer
   const id = item.teilbar?.id ?? (istUuid(item.id) ? item.id : null);
   if (!id) return null;
-  return <TeilenKnopf key={id} ziel={{ art: "canvas", id, titel: item.title, projekt: item.teilbar?.projekt }} />;
+  // Ergebnisse von Entwicklungsaufträgen (teilbar) nur zum Lesen
+  const ziel = { art: "canvas" as const, id, titel: item.title, projekt: item.teilbar?.projekt, nurLesen: Boolean(item.teilbar) };
+  return <TeilenKnopf key={id} ziel={ziel} />;
 }
 
 function CanvasBody({ item }: { item: CanvasItem }) {
@@ -139,7 +141,14 @@ function CanvasBody({ item }: { item: CanvasItem }) {
     case "dokument":
       return <div className="canvas-doc">{renderMarkdown(item.text)}</div>;
     case "mermaid":
-      return <MermaidView source={item.text} title={item.title} />;
+      return (
+        <MermaidView
+          key={item.id ?? item.title} // je Element eigener Zustand: ein Klick gilt nie für ein anderes Diagramm
+          source={item.text}
+          title={item.title}
+          geteiltVon={item.geteilt ? (item.geteilt.von ?? null) : undefined}
+        />
+      );
   }
 }
 
@@ -201,13 +210,21 @@ const MERMAID_DUNKEL = {
   noteTextColor: "#F3F3F3",
 };
 
-function MermaidView({ source, title }: { source: string; title: string }) {
-  const ref = useRef<HTMLDivElement>(null);
+/**
+ * Mermaid-Diagramm als Bild: das SVG landet nie im DOM der Oberfläche (kein innerHTML), sondern als blob:-URL in einem
+ * <img> (dort laufen weder Skripte noch Verweise). Von anderen geteilte Diagramme werden erst nach einem Klick
+ * gezeichnet.
+ */
+function MermaidView({ source, title, geteiltVon }: { source: string; title: string; geteiltVon?: string | null }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, "");
   const [error, setError] = useState<string | null>(null);
+  const [freigegeben, setFreigegeben] = useState(geteiltVon === undefined);
+  const [bild, setBild] = useState<{ url: string; breite: number | null } | null>(null);
 
   useEffect(() => {
+    if (!freigegeben) return;
     let cancelled = false;
+    let url: string | null = null;
     (async () => {
       try {
         const mermaid = (await import("mermaid")).default;
@@ -223,25 +240,44 @@ function MermaidView({ source, title }: { source: string; title: string }) {
           suppressErrorRendering: true,
         });
         const { svg } = await mermaid.render(`m${id}`, source);
-        if (!cancelled && ref.current) {
-          ref.current.innerHTML = svg;
-          setError(null);
-        }
+        if (cancelled) return;
+        const max = /max-width:\s*([\d.]+)px/.exec(svg);
+        url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+        setBild({ url, breite: max ? Number(max[1]) : null });
+        setError(null);
       } catch (e) {
         if (cancelled) return;
-        ref.current?.replaceChildren(); // halbfertige Reste entfernen
+        setBild(null);
         setError(e instanceof Error ? e.message.slice(0, 300) : "Diagramm konnte nicht gezeichnet werden.");
       }
     })();
     return () => {
       cancelled = true;
+      if (url) URL.revokeObjectURL(url);
     };
-  }, [source, id]);
+  }, [source, id, freigegeben]);
 
+  if (!freigegeben) {
+    return (
+      <div className="canvas-mermaid-wartet">
+        <p className="notice">Diagramm von {geteiltVon ?? "jemand anderem"}: wird erst nach deinem Klick gezeichnet.</p>
+        <button type="button" className="btn-secondary btn-small" onClick={() => setFreigegeben(true)}>
+          Diagramm anzeigen
+        </button>
+      </div>
+    );
+  }
   return (
     <>
       <div className="canvas-mermaid" tabIndex={0} role="region" aria-label={`Diagramm: ${title}`}>
-        <div ref={ref} role="img" aria-label={`Diagramm: ${title}`} />
+        {bild && (
+          // eslint-disable-next-line @next/next/no-img-element -- lokale blob:-URL, next/image kann sie nicht optimieren
+          <img
+            src={bild.url}
+            alt={`Diagramm: ${title}`}
+            style={{ width: "100%", maxWidth: bild.breite ? `${bild.breite}px` : undefined }}
+          />
+        )}
       </div>
       {error && (
         <>

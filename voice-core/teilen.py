@@ -3,11 +3,16 @@ Scans und ausdrücklich geteilte Dateien.
 
 Regeln (Kern und Datenbank prüfen dieselben, der Kern zuerst):
   * Teilen, Recht ändern und widerrufen darf nur der Besitzer. Empfänger teilen nicht weiter; sie können eine Teilung
-    für sich zurückgeben. Geteilt wird nur mit aktiven Profilen, nie mit sich selbst. Widerruf wirkt sofort.
-  * Rechte: lesen (ansehen, herunterladen) oder bearbeiten (neue Fassung anlegen). Projekte von
-    Entwicklungsaufträgen nur lesend. Geteilt wird immer die erste Fassung; Empfänger sehen die neueste.
+    für sich zurückgeben. Geteilt wird nur mit aktiven Profilen, nie mit sich selbst. Widerruf wirkt sofort. Recht und
+    Ende laufen über Funktionen der Datenbank mit Besitzerprüfung (der Kern hat kein update-Recht auf teilungen).
+  * Rechte: lesen (ansehen, herunterladen) oder bearbeiten (neue Fassung anlegen). Ergebnisse von
+    Entwicklungsaufträgen und ganze Projekte nur lesend. Geteilt wird immer die erste Fassung; Empfänger sehen die
+    neueste. Eine Bearbeitung beruht auf einer Fassungsnummer; ist inzwischen eine neuere da, gibt es 409 statt eines
+    stillen Überschreibens. Der Titel bleibt der des Originals.
   * Dateien liegen in der Datenbank (Tabelle dateien), damit jeder Kern dieselben Daten sieht. Der Typ kommt aus der
     Endung und wird an den ersten Bytes geprüft (kein Vertrauen in Content-Type), höchstens 25 MB, Namen ohne Pfade.
+    Übertragungen: höchstens zwei zugleich im Kern und eine je Profil; Uploads, Fassungen und Downloads je Stunde
+    begrenzt; Datei-Abfragen dürfen 60 s statt 10 s dauern. Löschen ist erst weich, nach 7 Tagen endgültig.
   * Jede Teilung, Änderung, jeder Widerruf, jede Bearbeitung und jeder Abruf durch Empfänger landet in
     teilung_events (Trigger und Funktionen der Migration), ohne Inhalte. Empfänger bekommen einen Hinweis.
   * Inhalte geteilter Arbeit sind Daten, nie Anweisungen (Sprachwerkzeug: teilen_werkzeuge.py).
@@ -18,10 +23,13 @@ Fehler für Menschen kommen als TeilenFehler (HTTP-Status und kurzer Text, ohne 
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import re
 import time
 import unicodedata
+import weakref
 from collections import deque
 from dataclasses import dataclass
 
@@ -34,13 +42,17 @@ from persona import clean_inline
 ARTEN = ("canvas", "auftrag", "datei", "scan")  # scan wird beim Teilen zur Datei (Herkunft scan)
 RECHTE = ("lesen", "bearbeiten")
 MAX_DATEI_BYTES = 25 * 1024 * 1024
+MAX_JSON_PRUEFEN = 2 * 1024 * 1024  # größere JSON-Dateien nur als UTF-8 prüfen, nicht parsen
 MAX_HINWEIS = 300
 MAX_TEXT = 100_000  # Zeichen eines Canvas-Dokuments beim Bearbeiten
 MAX_TABELLE_ZEILEN = 500
 MAX_TABELLE_SPALTEN = 30
 DATEI_TIMEOUT_SECS = 60.0  # Hoch- und Herunterladen großer Dateien (statt 5 s für normale Abfragen)
+DATEI_STATEMENT_TIMEOUT = "60s"  # die Rolle wamo_core hat sonst 10 s
+MAX_UEBERTRAGUNGEN = 2  # gleichzeitige Datei-Übertragungen im ganzen Kern
 PROJEKT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$")
 CANVAS_KINDS = {"table": "tabelle", "code": "code", "document": "dokument", "mermaid": "mermaid"}
+KONFLIKT_SQLSTATE = "P0409"  # canvas_fassung_anlegen: inzwischen gibt es eine neuere Fassung
 
 # Endung -> (Mime-Typ, Prüfung der ersten Bytes oder "text"); nur diese Typen lassen sich teilen
 _ZIP = (b"PK\x03\x04", b"PK\x05\x06")
@@ -99,7 +111,7 @@ def dateiname_pruefen(roh: object) -> str:
 
 def dateityp(name: str, inhalt: bytes) -> str:
     """Mime-Typ aus der Endung, geprüft an den ersten Bytes. Wirft TeilenFehler bei leerem, zu großem oder
-    unpassendem Inhalt."""
+    unpassendem Inhalt. Rechenaufwendig bei großen Textdateien: im Kern über asyncio.to_thread aufrufen."""
     if not inhalt:
         raise TeilenFehler(400, "Die Datei ist leer")
     if len(inhalt) > MAX_DATEI_BYTES:
@@ -112,10 +124,10 @@ def dateityp(name: str, inhalt: bytes) -> str:
             text = inhalt.decode("utf-8-sig")
         except UnicodeDecodeError as e:
             raise TeilenFehler(415, "Textdateien nur in UTF-8") from e
-        if pruefung == "json":
+        if pruefung == "json" and len(inhalt) <= MAX_JSON_PRUEFEN:
             try:
                 json.loads(text)
-            except ValueError as e:
+            except (ValueError, RecursionError) as e:
                 raise TeilenFehler(415, "Der Inhalt ist kein gültiges JSON") from e
         return mime
     if pruefung == "webp":
@@ -142,11 +154,9 @@ def hinweis_pruefen(hinweis: object) -> str | None:
     return text or None
 
 
-def canvas_inhalt(kind: str, titel: object, daten: object) -> tuple[str, dict]:
-    """Neue Fassung eines Canvas-Elements prüfen (Art bleibt die der ersten Fassung). Liefert (Titel, Daten)."""
-    titel_s = clean_inline(titel, 300) if isinstance(titel, str) else ""
-    if not titel_s:
-        raise TeilenFehler(400, "Titel fehlt")
+def canvas_inhalt(kind: str, daten: object) -> dict:
+    """Neue Fassung eines Canvas-Elements prüfen (Art und Titel bleiben die der ersten Fassung, den Titel setzt die
+    Datenbank). Liefert die Daten ohne Titel."""
     if not isinstance(daten, dict):
         raise TeilenFehler(400, "Inhalt fehlt")
     if kind == "tabelle":
@@ -158,17 +168,17 @@ def canvas_inhalt(kind: str, titel: object, daten: object) -> tuple[str, dict]:
             raise TeilenFehler(413, "Tabelle zu groß")
         spalten_s = [str(c)[:200] for c in spalten]
         zeilen_s = [[str(v)[:2000] for v in z[: len(spalten_s)]] for z in zeilen if isinstance(z, list)]
-        return titel_s, {"kind": kind, "title": titel_s, "columns": spalten_s, "rows": zeilen_s}
+        return {"kind": kind, "columns": spalten_s, "rows": zeilen_s}
     text = daten.get("text")
     if not isinstance(text, str) or not text.strip():
         raise TeilenFehler(400, "Text fehlt")
     if len(text) > MAX_TEXT:
         raise TeilenFehler(413, "Text zu lang")
-    item = {"kind": kind, "title": titel_s, "text": text.replace("\x00", "")}
+    item = {"kind": kind, "text": text.replace("\x00", "")}
     if kind == "code":
         sprache = daten.get("language")
         item["language"] = re.sub(r"[^a-z0-9+#-]", "", str(sprache or "").lower())[:20]
-    return titel_s, item
+    return item
 
 
 class Grenze:
@@ -194,8 +204,35 @@ class Grenze:
         return True
 
 
-UPLOADS = Grenze(30, 3600.0)  # Uploads und Fassungen je Profil und Stunde
+UPLOADS = Grenze(30, 3600.0)  # Uploads und Datei-Fassungen je Profil und Stunde
+DOWNLOADS = Grenze(60, 3600.0)  # Downloads je Profil und Stunde
 TEILUNGEN = Grenze(60, 3600.0)  # neue Teilungen und Rechteänderungen je Profil und Stunde
+FASSUNGEN = Grenze(60, 3600.0)  # Bearbeitungen von Canvas-Elementen je Profil und Stunde
+
+# Übertragungen: höchstens MAX_UEBERTRAGUNGEN zugleich (je Event-Loop), eine je Profil
+_LAUFEND: set[str] = set()
+_SEMAPHOREN: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _SEMAPHOREN.get(loop)
+    if sem is None:
+        sem = _SEMAPHOREN[loop] = asyncio.Semaphore(MAX_UEBERTRAGUNGEN)
+    return sem
+
+
+@contextlib.asynccontextmanager
+async def uebertragung(user_id: str):
+    """Eine Datei-Übertragung (Hochladen samt Lesen des Bodys, Herunterladen): eine je Profil, zwei im Kern."""
+    if user_id in _LAUFEND:
+        raise TeilenFehler(429, "Es läuft schon eine Übertragung, bitte kurz warten.")
+    _LAUFEND.add(user_id)
+    try:
+        async with _semaphore():
+            yield
+    finally:
+        _LAUFEND.discard(user_id)
 
 
 @dataclass(frozen=True)
@@ -212,12 +249,16 @@ def _iso(wert) -> str | None:
 
 def _db_fehler(e: BaseException, was: str) -> TeilenFehler:
     """Datenbankfehler in einen Fehler für Menschen übersetzen (Details nur als Typ ins Log)."""
+    if getattr(e, "sqlstate", None) == KONFLIKT_SQLSTATE:
+        return TeilenFehler(409, "Inzwischen gibt es eine neuere Fassung. Bitte neu laden und erneut bearbeiten.")
     if isinstance(e, asyncpg.InsufficientPrivilegeError):
         return TeilenFehler(403, "Das ist nicht erlaubt.")
     if isinstance(e, asyncpg.UniqueViolationError):
-        return TeilenFehler(409, "Das ist schon geteilt.")
+        return TeilenFehler(409, "Das ist schon geteilt oder wurde gerade geändert.")
     if isinstance(e, asyncpg.ProgramLimitExceededError):
-        return TeilenFehler(413, "Das Kontingent für geteilte Dateien ist erreicht (500 MB).")
+        return TeilenFehler(413, "Grenze erreicht (Kontingent 500 MB, 20 Fassungen je Datei, 100 je Dokument).")
+    if isinstance(e, asyncpg.QueryCanceledError):
+        return TeilenFehler(504, "Das hat zu lange gedauert, bitte noch einmal.")
     if isinstance(e, (asyncpg.CheckViolationError, asyncpg.InvalidParameterValueError,
                       asyncpg.NotNullViolationError, asyncpg.ForeignKeyViolationError)):
         return TeilenFehler(400, "Die Angaben passen nicht.")
@@ -240,22 +281,38 @@ class Teilen:
     def t(self, name: str) -> str:
         return self.db.t(name)
 
+    def f(self, name: str) -> str:
+        """Voll qualifizierter Name einer Funktion der Migration (Schema ist geprüft)."""
+        return f"{self.db.schema}.{name}"
+
     # ---------- Datenbank-Hilfen ----------
-    async def _fetch(self, was: str, sql: str, *args, timeout: float | None = None):
+    async def _fetch(self, was: str, sql: str, *args):
         try:
-            return await (await self.db.pool()).fetch(sql, *args, timeout=timeout)
+            return await (await self.db.pool()).fetch(sql, *args)
         except (*DB_ERRORS, DatabaseUnavailable) as e:
             raise _db_fehler(e, was) from e
 
-    async def _fetchrow(self, was: str, sql: str, *args, timeout: float | None = None):
+    async def _fetchrow(self, was: str, sql: str, *args):
         try:
-            return await (await self.db.pool()).fetchrow(sql, *args, timeout=timeout)
+            return await (await self.db.pool()).fetchrow(sql, *args)
         except (*DB_ERRORS, DatabaseUnavailable) as e:
             raise _db_fehler(e, was) from e
 
-    async def _fetchval(self, was: str, sql: str, *args, timeout: float | None = None):
+    async def _fetchval(self, was: str, sql: str, *args):
         try:
-            return await (await self.db.pool()).fetchval(sql, *args, timeout=timeout)
+            return await (await self.db.pool()).fetchval(sql, *args)
+        except (*DB_ERRORS, DatabaseUnavailable) as e:
+            raise _db_fehler(e, was) from e
+
+    async def _datei_abfrage(self, was: str, sql: str, *args, zeile: bool = False):
+        """Abfrage mit großen Dateien: eigene Transaktion mit längerer Zeitgrenze (60 s statt 10 s)."""
+        try:
+            pool = await self.db.pool()
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.execute(f"set local statement_timeout = '{DATEI_STATEMENT_TIMEOUT}'")
+                if zeile:
+                    return await conn.fetchrow(sql, *args, timeout=DATEI_TIMEOUT_SECS)
+                return await conn.fetchval(sql, *args, timeout=DATEI_TIMEOUT_SECS)
         except (*DB_ERRORS, DatabaseUnavailable) as e:
             raise _db_fehler(e, was) from e
 
@@ -271,7 +328,7 @@ class Teilen:
     async def liste(self) -> dict:
         """Laufende Teilungen: von mir geteilt und mit mir geteilt (ohne Inhalte)."""
         t, p = self.t("teilungen"), self.t("profiles")
-        titel = f"{self.db.schema}.teilung_objekt_titel(x.art, x.canvas_id, x.datei_id, x.projekt)"
+        titel = f"{self.f('teilung_objekt_titel')}(x.art, x.canvas_id, x.datei_id, x.projekt)"
         spalten = ("x.id::text as id, x.art, x.recht, x.hinweis, x.projekt, x.canvas_id::text as canvas_id, "
                    f"x.datei_id::text as datei_id, x.erstellt_at, x.geaendert_at, {titel} as titel")
         von_mir = await self._fetch(
@@ -287,12 +344,12 @@ class Teilen:
             objekt = r["canvas_id"] or r["datei_id"] or r["projekt"]
             return {"id": r["id"], "art": r["art"], "recht": r["recht"], "titel": clean_inline(r["titel"], 120),
                     "objekt": objekt, "person": r["person"], "name": clean_inline(r["name"], 60),
-                    "hinweis": r["hinweis"], "erstellt_at": _iso(r["erstellt_at"]),
-                    "geaendert_at": _iso(r["geaendert_at"])}
+                    "hinweis": clean_inline(r["hinweis"], MAX_HINWEIS) if r["hinweis"] else None,
+                    "erstellt_at": _iso(r["erstellt_at"]), "geaendert_at": _iso(r["geaendert_at"])}
 
         return {"von_mir": [zeile(r) for r in von_mir], "mit_mir": [zeile(r) for r in mit_mir]}
 
-    # ---------- Teilen, Recht ändern, widerrufen ----------
+    # ---------- Teilen, Recht ändern, beenden ----------
     async def teilen(self, art: object, objekt: object, empfaenger: object, recht: object = "lesen",
                      hinweis: object = None) -> dict:
         """Teilt ein eigenes Objekt mit einem aktiven Profil. Ist es schon geteilt, wird nur das Recht angepasst."""
@@ -316,7 +373,9 @@ class Teilen:
             datei_id = await self._scan_als_datei(objekt)
             art = "datei"
         elif art == "canvas":
-            canvas_id = await self._eigene_canvas_wurzel(objekt)
+            canvas_id, ist_auftrag = await self._eigene_canvas_wurzel(objekt)
+            if ist_auftrag and recht_s != "lesen":
+                raise TeilenFehler(400, "Ergebnisse von Entwicklungsaufträgen werden nur zum Lesen geteilt")
         elif art == "datei":
             datei_id = await self._eigene_datei_wurzel(objekt)
         else:  # auftrag: Ergebnisse eines Projekts, nur lesen
@@ -347,16 +406,18 @@ class Teilen:
         logger.info("Teilen: {} geteilt (Recht {})", art, recht_s)
         return {"id": neu, "art": art, "recht": recht_s, "neu": True}
 
-    async def _eigene_canvas_wurzel(self, objekt: object) -> str:
+    async def _eigene_canvas_wurzel(self, objekt: object) -> tuple[str, bool]:
+        """Wurzel eines eigenen Canvas-Elements und ob es ein Auftragsergebnis ist."""
         cid = normalize_uuid(objekt)
         if cid is None:
             raise TeilenFehler(400, "Canvas-Element fehlt")
         zeile = await self._fetchrow(
-            "Canvas", f"select w.id::text as id, w.user_id::text as besitzer from {self.t('canvas_items')} c "
-            f"join {self.t('canvas_items')} w on w.id = coalesce(c.parent_id, c.id) where c.id = $1::uuid", cid)
+            "Canvas", f"select w.id::text as id, w.user_id::text as besitzer, w.data ? 'auftrag' as auftrag "
+            f"from {self.t('canvas_items')} c join {self.t('canvas_items')} w on w.id = coalesce(c.parent_id, c.id) "
+            "where c.id = $1::uuid", cid)
         if zeile is None or zeile["besitzer"] != self.user_id:
             raise TeilenFehler(404, "Dieses Canvas-Element gibt es nicht oder es gehört dir nicht")
-        return zeile["id"]
+        return zeile["id"], bool(zeile["auftrag"])
 
     async def _eigene_datei_wurzel(self, objekt: object) -> str:
         did = normalize_uuid(objekt)
@@ -364,7 +425,8 @@ class Teilen:
             raise TeilenFehler(400, "Datei fehlt")
         zeile = await self._fetchrow(
             "Datei", f"select w.id::text as id, w.user_id::text as besitzer from {self.t('dateien')} d "
-            f"join {self.t('dateien')} w on w.id = coalesce(d.wurzel_id, d.id) where d.id = $1::uuid", did)
+            f"join {self.t('dateien')} w on w.id = coalesce(d.wurzel_id, d.id) "
+            "where d.id = $1::uuid and w.geloescht_at is null", did)
         if zeile is None or zeile["besitzer"] != self.user_id:
             raise TeilenFehler(404, "Diese Datei gibt es nicht oder sie gehört dir nicht")
         return zeile["id"]
@@ -377,12 +439,14 @@ class Teilen:
             from geraete_client import scan_holen  # Gerätedienst (nur im Büro); fehlt er, gibt es keine Scans
         except ImportError as e:
             raise TeilenFehler(503, "Scans sind hier nicht verfügbar") from e
-        try:
-            name, inhalt = await scan_holen(self.user_id, objekt)
-        except Exception as e:  # noqa: BLE001 (Dienst weg, Scan unbekannt: klare Meldung statt Ausnahme)
-            logger.warning("Teilen: Scan nicht abrufbar ({})", type(e).__name__)
-            raise TeilenFehler(404, "Diesen Scan gibt es nicht oder er ist nicht mehr da") from e
-        return await self.datei_ablegen(name if isinstance(name, str) else f"Scan-{objekt}.pdf", inhalt, "scan")
+        self.upload_vorab()
+        async with uebertragung(self.user_id):
+            try:
+                name, inhalt = await scan_holen(self.user_id, objekt)
+            except Exception as e:  # noqa: BLE001 (Dienst weg, Scan unbekannt: klare Meldung statt Ausnahme)
+                logger.warning("Teilen: Scan nicht abrufbar ({})", type(e).__name__)
+                raise TeilenFehler(404, "Diesen Scan gibt es nicht oder er ist nicht mehr da") from e
+            return await self.datei_ablegen(name if isinstance(name, str) else f"Scan-{objekt}.pdf", inhalt, "scan")
 
     async def _eigene_teilung(self, teilung_id: object, *, als: str) -> dict:
         tid = normalize_uuid(teilung_id)
@@ -390,25 +454,24 @@ class Teilen:
             raise TeilenFehler(404, "Unbekannte Teilung")
         spalte = "besitzer" if als == "besitzer" else "empfaenger"
         zeile = await self._fetchrow(
-            "Teilung", f"select id::text as id, art, recht, besitzer::text as besitzer, empfaenger::text as empfaenger, "
-            f"canvas_id::text as canvas_id, datei_id::text as datei_id, projekt from {self.t('teilungen')} "
-            f"where id = $1::uuid and {spalte} = $2::uuid and widerrufen_at is null", tid, self.user_id)
+            "Teilung", f"select x.id::text as id, x.art, x.recht, coalesce(c.data ? 'auftrag', false) as auftrag "
+            f"from {self.t('teilungen')} x left join {self.t('canvas_items')} c on c.id = x.canvas_id "
+            f"where x.id = $1::uuid and x.{spalte} = $2::uuid and x.widerrufen_at is null", tid, self.user_id)
         if zeile is None:
             raise TeilenFehler(404, "Unbekannte oder schon widerrufene Teilung")
         return dict(zeile)
 
     async def _recht_setzen(self, teilung_id: str, recht: str) -> None:
-        status = await self._fetchval(
-            "Recht", f"with u as (update {self.t('teilungen')} set recht = $3 where id = $1::uuid and besitzer = $2::uuid "
-            "and widerrufen_at is null returning 1) select count(*) from u", teilung_id, self.user_id, recht)
-        if not status:
+        ok = await self._fetchval("Recht", f"select {self.f('teilung_recht_setzen')}($1::uuid, $2::uuid, $3)",
+                                  self.user_id, teilung_id, recht)
+        if not ok:
             raise TeilenFehler(404, "Unbekannte oder schon widerrufene Teilung")
 
     async def recht_aendern(self, teilung_id: object, recht: object) -> dict:
         recht_s = recht_pruefen(recht)
         teilung = await self._eigene_teilung(teilung_id, als="besitzer")
-        if teilung["art"] == "auftrag" and recht_s != "lesen":
-            raise TeilenFehler(400, "Projekte werden nur zum Lesen geteilt")
+        if (teilung["art"] == "auftrag" or teilung["auftrag"]) and recht_s != "lesen":
+            raise TeilenFehler(400, "Ergebnisse von Entwicklungsaufträgen werden nur zum Lesen geteilt")
         if not TEILUNGEN.erlaubt(self.user_id):
             raise TeilenFehler(429, "Zu viele Änderungen in kurzer Zeit, bitte später noch einmal.")
         if teilung["recht"] != recht_s:
@@ -418,24 +481,23 @@ class Teilen:
     async def widerrufen(self, teilung_id: object) -> dict:
         """Besitzer beendet die Teilung (endgültig, sofort)."""
         teilung = await self._eigene_teilung(teilung_id, als="besitzer")
-        await self._beenden(teilung["id"], "besitzer")
+        ergebnis = await self._beenden(teilung["id"])
+        if ergebnis != "widerrufen":
+            raise TeilenFehler(404, "Unbekannte oder schon widerrufene Teilung")
         logger.info("Teilen: Teilung widerrufen")
         return {"id": teilung["id"], "widerrufen": True}
 
     async def zurueckgeben(self, teilung_id: object) -> dict:
         """Empfänger gibt eine Teilung für sich zurück (endgültig, der Besitzer erfährt es)."""
         teilung = await self._eigene_teilung(teilung_id, als="empfaenger")
-        await self._beenden(teilung["id"], "empfaenger")
+        ergebnis = await self._beenden(teilung["id"])
+        if ergebnis != "zurueckgegeben":
+            raise TeilenFehler(404, "Unbekannte oder schon widerrufene Teilung")
         return {"id": teilung["id"], "zurueckgegeben": True}
 
-    async def _beenden(self, teilung_id: str, rolle: str) -> None:
-        spalte = "besitzer" if rolle == "besitzer" else "empfaenger"
-        anzahl = await self._fetchval(
-            "Widerruf", f"with u as (update {self.t('teilungen')} set widerrufen_at = now(), widerrufen_von = $2::uuid "
-            f"where id = $1::uuid and {spalte} = $2::uuid and widerrufen_at is null returning 1) select count(*) from u",
-            teilung_id, self.user_id)
-        if not anzahl:
-            raise TeilenFehler(404, "Unbekannte oder schon widerrufene Teilung")
+    async def _beenden(self, teilung_id: str) -> str | None:
+        return await self._fetchval("Widerruf", f"select {self.f('teilung_beenden')}($1::uuid, $2::uuid)",
+                                    self.user_id, teilung_id)
 
     async def protokoll(self, teilung_id: object) -> list[dict]:
         """Verlauf einer eigenen Teilung (nur für den Besitzer): wer hat wann was getan, ohne Inhalte."""
@@ -466,7 +528,7 @@ class Teilen:
 
     # ---------- Canvas ----------
     async def _canvas_recht(self, canvas_id: str) -> str | None:
-        return await self._fetchval("Recht", f"select {self.db.schema}.canvas_recht($1::uuid, $2::uuid)",
+        return await self._fetchval("Recht", f"select {self.f('canvas_recht')}($1::uuid, $2::uuid)",
                                     self.user_id, canvas_id)
 
     async def _abruf(self, *, canvas_wurzel: str | None = None, datei_wurzel: str | None = None,
@@ -488,12 +550,13 @@ class Teilen:
             teilung = await (await self.db.pool()).fetchval(sql, *args)
             if teilung:
                 await (await self.db.pool()).fetchval(
-                    f"select {self.db.schema}.teilung_abgerufen($1::uuid, $2::uuid)", self.user_id, teilung)
+                    f"select {self.f('teilung_abgerufen')}($1::uuid, $2::uuid)", self.user_id, teilung)
         except (*DB_ERRORS, DatabaseUnavailable) as e:  # das Protokoll darf das Lesen nicht verhindern
             logger.warning("Teilen: Abruf nicht protokolliert ({})", type(e).__name__)
 
     async def canvas_lesen(self, canvas_id: object) -> dict:
-        """Neueste Fassung eines eigenen oder geteilten Canvas-Elements. Liefert Element, Recht und Besitzer."""
+        """Neueste Fassung eines eigenen oder geteilten Canvas-Elements. Liefert Element, Recht, Besitzer und die
+        Fassungsnummer (Basis für eine Bearbeitung)."""
         cid = normalize_uuid(canvas_id)
         if cid is None:
             raise TeilenFehler(404, "Unbekanntes Canvas-Element")
@@ -532,22 +595,28 @@ class Teilen:
                 "bearbeitet_von": clean_inline(zeile["bearbeiter"], 60) if zeile["bearbeiter"] else None,
                 "geaendert_at": _iso(zeile["created_at"])}
 
-    async def canvas_bearbeiten(self, canvas_id: object, titel: object, daten: object) -> dict:
-        """Neue Fassung (Besitzer oder Empfänger mit Recht bearbeiten)."""
+    async def canvas_bearbeiten(self, canvas_id: object, daten: object, basis: object = None) -> dict:
+        """Neue Fassung (Besitzer oder Empfänger mit Recht bearbeiten). basis: Fassungsnummer, auf der die Bearbeitung
+        beruht; ist inzwischen eine neuere da, gibt es 409."""
         cid = normalize_uuid(canvas_id)
         if cid is None:
             raise TeilenFehler(404, "Unbekanntes Canvas-Element")
+        if basis is not None and (isinstance(basis, bool) or not isinstance(basis, int) or basis < 1):
+            raise TeilenFehler(400, "Basisfassung ungültig")
         recht = await self._canvas_recht(cid)
         if recht not in ("besitzer", "bearbeiten"):
             raise TeilenFehler(403, "Du darfst dieses Element nur lesen" if recht else "Unbekanntes Canvas-Element")
+        if not FASSUNGEN.erlaubt(self.user_id):
+            raise TeilenFehler(429, "Zu viele Bearbeitungen in kurzer Zeit, bitte später noch einmal.")
         typ = await self._fetchval(
             "Canvas", f"select w.type::text from {self.t('canvas_items')} c join {self.t('canvas_items')} w "
             "on w.id = coalesce(c.parent_id, c.id) where c.id = $1::uuid", cid)
-        titel_s, item = canvas_inhalt(CANVAS_KINDS.get(typ, "dokument"), titel, daten)
-        fassung = await self._fetchval(
-            "Bearbeiten", f"select {self.db.schema}.canvas_fassung_anlegen($1::uuid, $2::uuid, $3, $4::jsonb)::text",
-            self.user_id, cid, titel_s, json.dumps(item, ensure_ascii=False))
-        return {"fassung": fassung}
+        item = canvas_inhalt(CANVAS_KINDS.get(typ, "dokument"), daten)
+        zeile = await self._fetchrow(
+            "Bearbeiten", f"select fassung::text as fassung, version from "
+            f"{self.f('canvas_fassung_anlegen')}($1::uuid, $2::uuid, $3::jsonb, $4::integer)",
+            self.user_id, cid, json.dumps(item, ensure_ascii=False), basis)
+        return {"fassung": zeile["fassung"], "version": zeile["version"]}
 
     async def projekt_dokumente(self, teilung_id: object) -> list[dict]:
         """Ergebnisdokumente eines geteilten Projekts (für Empfänger einer Projekt-Teilung, oder den Besitzer)."""
@@ -569,47 +638,54 @@ class Teilen:
                 for r in zeilen]
 
     # ---------- Dateien ----------
-    async def datei_ablegen(self, name: object, inhalt: bytes, herkunft: str = "upload") -> str:
-        """Eigene Datei in der Datenbank ablegen (nach Sokrates-2 kopiert). Liefert die id."""
-        if herkunft not in ("upload", "scan", "nas"):
-            raise TeilenFehler(400, "Unbekannte Herkunft")
-        name_s = dateiname_pruefen(name)
-        mime = dateityp(name_s, inhalt)
+    def upload_vorab(self) -> None:
+        """Vor dem Lesen eines Uploads: Ratengrenze (keine 25 MB lesen, die dann abgewiesen werden)."""
         if not UPLOADS.erlaubt(self.user_id):
             raise TeilenFehler(429, "Zu viele Dateien in kurzer Zeit, bitte später noch einmal.")
-        datei_id = await self._fetchval(
-            "Ablegen", f"insert into {self.t('dateien')} (user_id, name, mime, groesse, sha256, herkunft, inhalt) "
-            "values ($1::uuid, $2, $3, 1, repeat('0', 64), $4, $5) returning id::text",
-            self.user_id, name_s, mime, herkunft, inhalt, timeout=DATEI_TIMEOUT_SECS)
-        logger.info("Teilen: Datei abgelegt ({}, {} Bytes)", mime, len(inhalt))
-        return datei_id
 
-    async def datei_fassung(self, datei_id: object, name: object, inhalt: bytes) -> str:
-        """Neue Fassung einer eigenen Datei oder einer mit Recht bearbeiten geteilten Datei."""
+    async def fassung_vorab(self, datei_id: object) -> str:
+        """Vor dem Lesen einer neuen Fassung: Recht (besitzer oder bearbeiten) und Ratengrenze. Liefert die id."""
         did = normalize_uuid(datei_id)
         if did is None:
             raise TeilenFehler(404, "Unbekannte Datei")
-        recht = await self._fetchval("Recht", f"select {self.db.schema}.datei_recht($1::uuid, $2::uuid)",
-                                     self.user_id, did)
+        recht = await self._fetchval("Recht", f"select {self.f('datei_recht')}($1::uuid, $2::uuid)", self.user_id, did)
         if recht not in ("besitzer", "bearbeiten"):
             raise TeilenFehler(403, "Du darfst diese Datei nur lesen" if recht else "Unbekannte Datei")
+        self.upload_vorab()
+        return did
+
+    async def datei_ablegen(self, name: object, inhalt: bytes, herkunft: str = "upload") -> str:
+        """Eigene Datei in der Datenbank ablegen (nach Sokrates-2 kopiert). Liefert die id. Die Ratengrenze prüft
+        upload_vorab (vor dem Lesen des Bodys)."""
+        if herkunft not in ("upload", "scan", "nas"):
+            raise TeilenFehler(400, "Unbekannte Herkunft")
         name_s = dateiname_pruefen(name)
-        mime = dateityp(name_s, inhalt)
-        if not UPLOADS.erlaubt(self.user_id):
-            raise TeilenFehler(429, "Zu viele Dateien in kurzer Zeit, bitte später noch einmal.")
-        return await self._fetchval(
-            "Fassung", f"select {self.db.schema}.datei_fassung_anlegen($1::uuid, $2::uuid, $3, $4, $5)::text",
-            self.user_id, did, name_s, mime, inhalt, timeout=DATEI_TIMEOUT_SECS)
+        mime = await asyncio.to_thread(dateityp, name_s, inhalt)
+        datei_id = await self._datei_abfrage(
+            "Ablegen", f"insert into {self.t('dateien')} (user_id, name, mime, groesse, sha256, herkunft, inhalt) "
+            "values ($1::uuid, $2, $3, 1, repeat('0', 64), $4, $5) returning id::text",
+            self.user_id, name_s, mime, herkunft, inhalt)
+        logger.info("Teilen: Datei abgelegt ({}, {} Bytes)", mime, len(inhalt))
+        return datei_id
+
+    async def datei_fassung(self, datei_id: str, name: object, inhalt: bytes) -> str:
+        """Neue Fassung (Recht vorher mit fassung_vorab prüfen; die Datenbank prüft es noch einmal)."""
+        name_s = dateiname_pruefen(name)
+        mime = await asyncio.to_thread(dateityp, name_s, inhalt)
+        return await self._datei_abfrage(
+            "Fassung", f"select {self.f('datei_fassung_anlegen')}($1::uuid, $2::uuid, $3, $4, $5)::text",
+            self.user_id, datei_id, name_s, mime, inhalt)
 
     async def dateien(self) -> list[dict]:
-        """Eigene Dateien (erste Fassungen) mit Angaben zur neuesten Fassung, ohne Inhalt."""
+        """Eigene Dateien (erste Fassungen, nicht gelöscht) mit Angaben zur neuesten Fassung, ohne Inhalt."""
         d = self.t("dateien")
         zeilen = await self._fetch(
             "Dateien", f"select w.id::text as id, n.name, n.mime, n.groesse, w.herkunft, w.erstellt_at, "
             f"n.erstellt_at as geaendert_at, (select count(*) from {d} v where v.wurzel_id = w.id) as fassungen "
             f"from {d} w join lateral (select name, mime, groesse, erstellt_at from {d} x "
             f"  where x.id = w.id or x.wurzel_id = w.id order by x.erstellt_at desc limit 1) n on true "
-            "where w.user_id = $1::uuid and w.wurzel_id is null order by w.erstellt_at desc limit 500", self.user_id)
+            "where w.user_id = $1::uuid and w.wurzel_id is null and w.geloescht_at is null "
+            "order by w.erstellt_at desc limit 500", self.user_id)
         return [{"id": r["id"], "name": r["name"], "mime": r["mime"], "groesse": r["groesse"],
                  "herkunft": r["herkunft"], "erstellt_at": _iso(r["erstellt_at"]),
                  "geaendert_at": _iso(r["geaendert_at"]), "fassungen": int(r["fassungen"]) + 1} for r in zeilen]
@@ -619,16 +695,17 @@ class Teilen:
         did = normalize_uuid(datei_id)
         if did is None:
             raise TeilenFehler(404, "Unbekannte Datei")
-        recht = await self._fetchval("Recht", f"select {self.db.schema}.datei_recht($1::uuid, $2::uuid)",
-                                     self.user_id, did)
+        recht = await self._fetchval("Recht", f"select {self.f('datei_recht')}($1::uuid, $2::uuid)", self.user_id, did)
         if recht is None:
             raise TeilenFehler(404, "Diese Datei gibt es nicht oder sie ist nicht mit dir geteilt")
+        if not DOWNLOADS.erlaubt(self.user_id):
+            raise TeilenFehler(429, "Zu viele Downloads in kurzer Zeit, bitte später noch einmal.")
         d = self.t("dateien")
-        zeile = await self._fetchrow(
+        zeile = await self._datei_abfrage(
             "Lesen", f"with w as (select coalesce(wurzel_id, id) as id from {d} where id = $1::uuid) "
             f"select w.id::text as wurzel, n.name, n.mime, n.inhalt from w join lateral "
             f"(select name, mime, inhalt from {d} x where x.id = w.id or x.wurzel_id = w.id "
-            " order by x.erstellt_at desc limit 1) n on true", did, timeout=DATEI_TIMEOUT_SECS)
+            " order by x.erstellt_at desc limit 1) n on true", did, zeile=True)
         if zeile is None:
             raise TeilenFehler(404, "Unbekannte Datei")
         if recht != "besitzer":
@@ -636,11 +713,11 @@ class Teilen:
         return Datei(id=zeile["wurzel"], name=zeile["name"], mime=zeile["mime"], inhalt=bytes(zeile["inhalt"]))
 
     async def datei_loeschen(self, datei_id: object) -> bool:
+        """Eigene Datei löschen (erst weich, laufende Teilungen enden sofort, nach 7 Tagen endgültig)."""
         did = normalize_uuid(datei_id)
         if did is None:
             raise TeilenFehler(404, "Unbekannte Datei")
-        ok = await self._fetchval("Löschen", f"select {self.db.schema}.datei_loeschen($1::uuid, $2::uuid)",
-                                  self.user_id, did)
+        ok = await self._fetchval("Löschen", f"select {self.f('datei_loeschen')}($1::uuid, $2::uuid)", self.user_id, did)
         if not ok:
             raise TeilenFehler(404, "Diese Datei gibt es nicht oder sie gehört dir nicht")
         return True
@@ -649,7 +726,7 @@ class Teilen:
 def _canvas_item_aus(daten: object, kind: str, titel: str) -> dict:
     """Canvas-Element für die Oberfläche aus den gespeicherten Daten, nur bekannte Felder."""
     d = daten if isinstance(daten, dict) else {}
-    title = clean_inline(d.get("title") or titel, 300) or "Ohne Titel"
+    title = clean_inline(titel or d.get("title"), 300) or "Ohne Titel"
     if kind == "tabelle":
         spalten = [str(c) for c in d.get("columns") or []][:MAX_TABELLE_SPALTEN]
         zeilen = [[str(v) for v in z] for z in (d.get("rows") or [])[:MAX_TABELLE_ZEILEN] if isinstance(z, list)]
@@ -660,16 +737,26 @@ def _canvas_item_aus(daten: object, kind: str, titel: str) -> dict:
     return item
 
 
-async def eigene_fassung(memory, canvas_id: str, titel: str, daten: dict) -> str | None:
+async def eigene_fassung(memory, canvas_id: str, daten: dict) -> str | None:
     """Neue Fassung eines eigenen Canvas-Elements (z. B. das Ergebnis eines Entwicklungsauftrags nach einem weiteren
-    Lauf). Ohne Datenbank oder ohne Migration 0003: None (der Aufrufer legt dann ein neues Element an)."""
+    Lauf; der Titel bleibt der des Originals). Ohne Datenbank oder ohne Migration 0003: None (der Aufrufer legt dann
+    ein neues Element an)."""
     if not getattr(memory, "enabled", False):
         return None
     db = memory.db
     try:
         return await db.fetchval(
-            f"select {db.schema}.canvas_fassung_anlegen($1::uuid, $2::uuid, $3, $4::jsonb)::text",
-            memory.user_id, canvas_id, clean_inline(titel, 300) or "Ergebnis", json.dumps(daten, ensure_ascii=False))
+            f"select fassung::text from {db.schema}.canvas_fassung_anlegen($1::uuid, $2::uuid, $3::jsonb)",
+            memory.user_id, canvas_id, json.dumps(daten, ensure_ascii=False))
     except (*DB_ERRORS, DatabaseUnavailable) as e:
         logger.warning("Teilen: Fassung nicht gespeichert ({})", type(e).__name__)
         return None
+
+
+async def dateien_aufraeumen(db: Database) -> int:
+    """Weich gelöschte Dateien nach 7 Tagen endgültig entfernen (Funktion der Migration). Liefert die Anzahl."""
+    pool = await db.pool()
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(f"set local statement_timeout = '{DATEI_STATEMENT_TIMEOUT}'")
+        return int(await conn.fetchval(f"select {db.schema}.dateien_endgueltig_loeschen()", timeout=DATEI_TIMEOUT_SECS)
+                   or 0)
