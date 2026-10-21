@@ -5,6 +5,7 @@ import { PipecatClient, RTVIError } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
 import { pcAutoLesen } from "@/lib/einstellungen";
+import type { GeraetBruecke } from "@/lib/geraet";
 import { parseServerMessage, type Auftrag } from "@/lib/nachrichten";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
@@ -51,6 +52,8 @@ declare global {
       betriebsart?: BetriebsartBruecke;
       /** Rechnername dieses PCs (Autostart der PC-Steuerung nur, wenn der Kern genau diesen PC steuert) */
       rechnername?: () => Promise<unknown>;
+      /** Einrichtung des Laptops bei der Anmeldung (nur Büro; lib/geraet.ts) */
+      geraet?: GeraetBruecke;
     };
   }
 }

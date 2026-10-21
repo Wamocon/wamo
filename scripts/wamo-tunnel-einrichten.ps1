@@ -1,6 +1,11 @@
 ﻿# Richtet auf diesem PC den WAMO-Tunnel ein (Betriebsart Büro), nur für den aktuellen Benutzer, ohne Adminrechte.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1 [-Starten] [-TokenNeu] [-FreigabeNeu]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1 -Geraet [-Starten]
+#
+# -Geraet ist der Weg der Desktop-App (Anmeldung, Bindung des Laptops an das Profil): Der Schlüssel liegt dann schon
+# (id_ed25519_wamo_pc, von der App erzeugt), Token und Freigabe-Schlüssel erzeugt der Überwacher bei jedem Host-Start
+# selbst. Das Skript härtet nur die Rechte (Ordner, scripts, host) und legt die geplante Aufgabe an.
 #
 # Was das Skript anlegt (Rückweg: scripts\wamo-tunnel-entfernen.ps1 [-Alles]):
 #   %LOCALAPPDATA%\WAMO                 Ordner nur für diesen Benutzer (Vererbung aus, nur eine Regel)
@@ -16,6 +21,7 @@
 #   laufenden Überwacher neu (der Host liest beides nur beim Start)
 # Danach auf Sokrates-2 (Schlüssel) und für den Kern (Token) weiter, siehe Ausgabe am Ende.
 param(
+  [switch]$Geraet,
   [switch]$Starten,
   [switch]$TokenNeu,
   [switch]$FreigabeNeu
@@ -68,60 +74,65 @@ function NeuesGeheimnis([string]$Datei) {
   Remove-Variable wert, bytes
 }
 
-Write-Host "== 2. Host-Token"
-if ($TokenNeu -or -not (Test-Path $TokenDatei)) {
-  NeuesGeheimnis $TokenDatei
-  Write-Host "  neues Token erzeugt (nicht angezeigt). Danach: python scripts\wamo_kern_sokrates2.py token"
+if ($Geraet) {
+  Write-Host "== 2 bis 4 entfallen im Gerätebetrieb (Schlüssel, Hostschlüssel und Geheimnisse liefern die Desktop-App und der Überwacher)"
 } else {
-  Write-Host "  vorhanden, unverändert (neu mit -TokenNeu)"
-}
-NurIch $TokenDatei $false
+  Write-Host "== 2. Host-Token"
+  if ($TokenNeu -or -not (Test-Path $TokenDatei)) {
+    NeuesGeheimnis $TokenDatei
+    Write-Host "  neues Token erzeugt (nicht angezeigt). Danach: python scripts\wamo_kern_sokrates2.py token"
+  } else {
+    Write-Host "  vorhanden, unverändert (neu mit -TokenNeu)"
+  }
+  NurIch $TokenDatei $false
 
-Write-Host "== 2b. Freigabe-Schlüssel (zweites Geheimnis für Freigaben kritischer PC-Aktionen)"
-if ($TokenNeu -or $FreigabeNeu -or -not (Test-Path $FreigabeDatei)) {
-  NeuesGeheimnis $FreigabeDatei
-  Write-Host "  neuer Freigabe-Schlüssel erzeugt (nicht angezeigt). Danach: python scripts\wamo_kern_sokrates2.py token"
-} else {
-  Write-Host "  vorhanden, unverändert (neu mit -FreigabeNeu)"
-}
-NurIch $FreigabeDatei $false
+  Write-Host "== 2b. Freigabe-Schlüssel (zweites Geheimnis für Freigaben kritischer PC-Aktionen)"
+  if ($TokenNeu -or $FreigabeNeu -or -not (Test-Path $FreigabeDatei)) {
+    NeuesGeheimnis $FreigabeDatei
+    Write-Host "  neuer Freigabe-Schlüssel erzeugt (nicht angezeigt). Danach: python scripts\wamo_kern_sokrates2.py token"
+  } else {
+    Write-Host "  vorhanden, unverändert (neu mit -FreigabeNeu)"
+  }
+  NurIch $FreigabeDatei $false
 
-Write-Host "== 3. SSH-Schlüssel nur für den Tunnel"
-New-Item -ItemType Directory -Force -Path $SshDir | Out-Null
-if (-not (Test-Path $Schluessel)) {
-  # '""' übergibt eine leere Passphrase (Windows PowerShell 5.1 verwirft sonst das leere Argument)
-  & $SshKeygen -q -t ed25519 -N '""' -C "wamo-tunnel@$env:COMPUTERNAME" -f $Schluessel
-  if ($LASTEXITCODE -ne 0) { throw "ssh-keygen fehlgeschlagen" }
-  Write-Host "  neu: $Schluessel"
-} else {
-  Write-Host "  vorhanden: $Schluessel"
-}
-# Die Rechte des privaten Schlüssels setzt ssh-keygen selbst (ssh verweigert sonst den Schlüssel); hier nur prüfen,
-# dass kein normales Konto außer diesem Benutzer Zugriff hat (SYSTEM und Administratoren sind für ssh zulässig).
-$erlaubt = @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value, "S-1-5-18", "S-1-5-32-544")
-foreach ($regel in (Get-Acl $Schluessel).Access) {
-  $sid = $regel.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-  if ($regel.AccessControlType -eq "Allow" -and $erlaubt -notcontains $sid) { throw "Schlüssel ist für $($regel.IdentityReference) lesbar, Abbruch." }
-}
+  Write-Host "== 3. SSH-Schlüssel nur für den Tunnel"
+  New-Item -ItemType Directory -Force -Path $SshDir | Out-Null
+  if (-not (Test-Path $Schluessel)) {
+    # '""' übergibt eine leere Passphrase (Windows PowerShell 5.1 verwirft sonst das leere Argument)
+    & $SshKeygen -q -t ed25519 -N '""' -C "wamo-tunnel@$env:COMPUTERNAME" -f $Schluessel
+    if ($LASTEXITCODE -ne 0) { throw "ssh-keygen fehlgeschlagen" }
+    Write-Host "  neu: $Schluessel"
+  } else {
+    Write-Host "  vorhanden: $Schluessel"
+  }
+  # Die Rechte des privaten Schlüssels setzt ssh-keygen selbst (ssh verweigert sonst den Schlüssel); hier nur prüfen,
+  # dass kein normales Konto außer diesem Benutzer Zugriff hat (SYSTEM und Administratoren sind für ssh zulässig).
+  $erlaubt = @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value, "S-1-5-18", "S-1-5-32-544")
+  foreach ($regel in (Get-Acl $Schluessel).Access) {
+    $sid = $regel.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    if ($regel.AccessControlType -eq "Allow" -and $erlaubt -notcontains $sid) { throw "Schlüssel ist für $($regel.IdentityReference) lesbar, Abbruch." }
+  }
 
-Write-Host "== 4. Hostschlüssel von Sokrates-2"
-$zeile = $null
-if (Test-Path $KnownHostsAuftraege) {
-  $zeile = Get-Content $KnownHostsAuftraege | Where-Object { $_ -match "^$([regex]::Escape($ServerIp)) ssh-ed25519 " } | Select-Object -First 1
+  Write-Host "== 4. Hostschlüssel von Sokrates-2"
+  $zeile = $null
+  if (Test-Path $KnownHostsAuftraege) {
+    $zeile = Get-Content $KnownHostsAuftraege | Where-Object { $_ -match "^$([regex]::Escape($ServerIp)) ssh-ed25519 " } | Select-Object -First 1
+  }
+  if (-not $zeile) {
+    $zeile = & $SshKeyscan -t ed25519 $ServerIp 2>$null | Where-Object { $_ -match "^$([regex]::Escape($ServerIp)) ssh-ed25519 " } | Select-Object -First 1
+  }
+  if (-not $zeile) { throw "Hostschlüssel von $ServerIp nicht gefunden (Büro-LAN?)" }
+  $tmp = "$KnownHosts.neu"
+  Set-Content -Path $tmp -Value $zeile -Encoding ascii
+  $fp = (& $SshKeygen -l -f $tmp) -split " " | Select-Object -Index 1
+  if ($fp -ne $ErwarteterFingerabdruck) {
+    Remove-Item -Force $tmp
+    throw "Hostschlüssel von $ServerIp passt nicht ($fp statt $ErwarteterFingerabdruck). Abbruch."
+  }
+  Move-Item -Force $tmp $KnownHosts
+  Write-Host "  $KnownHosts ($fp)"
+
 }
-if (-not $zeile) {
-  $zeile = & $SshKeyscan -t ed25519 $ServerIp 2>$null | Where-Object { $_ -match "^$([regex]::Escape($ServerIp)) ssh-ed25519 " } | Select-Object -First 1
-}
-if (-not $zeile) { throw "Hostschlüssel von $ServerIp nicht gefunden (Büro-LAN?)" }
-$tmp = "$KnownHosts.neu"
-Set-Content -Path $tmp -Value $zeile -Encoding ascii
-$fp = (& $SshKeygen -l -f $tmp) -split " " | Select-Object -Index 1
-if ($fp -ne $ErwarteterFingerabdruck) {
-  Remove-Item -Force $tmp
-  throw "Hostschlüssel von $ServerIp passt nicht ($fp statt $ErwarteterFingerabdruck). Abbruch."
-}
-Move-Item -Force $tmp $KnownHosts
-Write-Host "  $KnownHosts ($fp)"
 
 Write-Host "== 5. Schreibrechte auf scripts und host (die Aufgabe startet von dort Code mit Token und Schlüssel)"
 # Das Laufwerk vererbt "Authentifizierte Benutzer: Ändern". Für die beiden Ordner gilt danach: dieser Benutzer und
@@ -145,7 +156,12 @@ $konto = "$env:USERDOMAIN\$env:USERNAME"
 $aktion = New-ScheduledTaskAction -Execute "powershell.exe" `
   -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Skript`"" `
   -WorkingDirectory $Repo
-$ausloeser = New-ScheduledTaskTrigger -AtLogOn -User $konto
+# Zwei Auslöser: bei der Anmeldung und danach alle 5 Minuten. Endet der Überwacher unbemerkt (0xC000013A beim Abmelden
+# oder Schließen der Konsole), startet ihn die Aufgabe spätestens nach 5 Minuten neu; läuft er noch, ignoriert die
+# Aufgabe den Aufruf (MultipleInstances IgnoreNew, dazu der Mutex im Überwacher).
+$ausloeserLogon = New-ScheduledTaskTrigger -AtLogOn -User $konto
+$ausloeserWiederkehr = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+$ausloeser = @($ausloeserLogon, $ausloeserWiederkehr)
 $prinzipal = New-ScheduledTaskPrincipal -UserId $konto -LogonType Interactive -RunLevel Limited
 $einstellungen = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
   -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
@@ -153,7 +169,7 @@ Register-ScheduledTask -TaskName $Aufgabe -Action $aktion -Trigger $ausloeser -P
   -Description "WAMO: Host und SSH-Rücktunnel zu Sokrates-2 (scripts\wamo-tunnel.ps1). Entfernen: scripts\wamo-tunnel-entfernen.ps1" `
   -Force | Out-Null
 Write-Host "  eingerichtet"
-if (($TokenNeu -or $FreigabeNeu) -and (Get-ScheduledTask -TaskName $Aufgabe).State -eq "Running") {
+if (-not $Geraet -and ($TokenNeu -or $FreigabeNeu) -and (Get-ScheduledTask -TaskName $Aufgabe).State -eq "Running") {
   # Der laufende Host liest Token und Freigabe-Schlüssel nur beim Start: über die Stop-Datei beenden und neu starten
   New-Item -ItemType File -Force -Path (Join-Path $Daten "tunnel.stop") | Out-Null
   for ($i = 0; $i -lt 30 -and (Get-ScheduledTask -TaskName $Aufgabe).State -eq "Running"; $i++) { Start-Sleep -Seconds 1 }
@@ -166,6 +182,7 @@ if ($Starten) {
 }
 
 Write-Host ""
+if ($Geraet) { Write-Host "Gerätebetrieb eingerichtet. Log: $Daten\logs\tunnel.log, Herzschlag: $Daten\tunnel.status"; exit 0 }
 Write-Host "Weiter:"
 Write-Host "  1. Öffentlichen Schlüssel nach Sokrates-2: scp `"$Schluessel.pub`" sokrates2:wamo-infra/wamo-tunnel.pub"
 Write-Host "     dann: ssh sokrates2 `"sudo bash ~/wamo-infra/wamo-tunnel-einrichten.sh`""

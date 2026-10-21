@@ -4,8 +4,8 @@
 #
 # Der Überwacher wird nur über seine Stop-Datei beendet; er beendet dann selbst seinen Host und seinen ssh (beide in
 # seinen Job-Objekten). Andere Prozesse fasst dieses Skript nicht an.
-# -Alles löscht zusätzlich %LOCALAPPDATA%\WAMO (Token, Freigabe-Schlüssel, Logs), den Tunnel-Schlüssel und
-# known_hosts_wamo_tunnel.
+# -Alles löscht zusätzlich %LOCALAPPDATA%\WAMO (Token, Freigabe-Schlüssel, geraet.json, Logs), die Schlüssel und
+# known_hosts-Dateien von Alt- und Gerätebetrieb (id_ed25519_wamo_tunnel, id_ed25519_wamo_pc, known_hosts_wamo_*).
 param([switch]$Alles)
 
 Set-StrictMode -Version 3
@@ -48,11 +48,13 @@ if ($t) {
 
 if ($Alles) {
   $ssh = Join-Path $env:USERPROFILE ".ssh"
-  foreach ($d in @("$ssh\id_ed25519_wamo_tunnel", "$ssh\id_ed25519_wamo_tunnel.pub", "$ssh\known_hosts_wamo_tunnel")) {
+  foreach ($d in @("$ssh\id_ed25519_wamo_tunnel", "$ssh\id_ed25519_wamo_tunnel.pub", "$ssh\known_hosts_wamo_tunnel",
+    "$ssh\id_ed25519_wamo_pc", "$ssh\id_ed25519_wamo_pc.pub", "$ssh\known_hosts_wamo_pc")) {
     if (Test-Path $d) { Remove-Item -Force $d; Write-Host "gelöscht: $d" }
   }
   if (Test-Path $Daten) { Remove-Item -Recurse -Force $Daten; Write-Host "gelöscht: $Daten (Token, Freigabe-Schlüssel, Logs)" }
   Write-Host ""
-  Write-Host "Auf Sokrates-2 außerdem: ssh sokrates2 `"sudo bash ~/wamo-infra/wamo-tunnel-rueckweg.sh`""
+  Write-Host "Auf Sokrates-2 außerdem: ssh sokrates2 `"sudo bash ~/wamo-infra/wamo-tunnel-rueckweg.sh`" (Altbetrieb)"
+  Write-Host "Das Gerät im Register widerruft ein Admin; dann entfernt der Abgleich auf Sokrates-2 Benutzer und Schlüssel."
   Write-Host "und Token und Freigabe-Schlüssel im Kern löschen: ssh sokrates2 `"sudo /usr/local/sbin/wamo-core-env loeschen WAMO_PC_HOST_TOKEN WAMO_PC_HOST_FREIGABE`""
 }

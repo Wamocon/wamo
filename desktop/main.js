@@ -19,6 +19,9 @@
 //   bekommt nur den Namen der Betriebsart; die Adressen stehen in ihrer Build-Konfiguration (und CSP). Der Kern im
 //   Büro läuft über HTTPS mit der WAMO-CA, der Chromium der App vertraut ihr über den Windows-Speicher.
 //
+// * Einrichtung des Laptops bei der Anmeldung (geraet.js, nur Büro): eigener Geräteschlüssel, Bindung an das Profil über
+//   den Kern, Tunnel zu Sokrates-2; ein Wächter stößt die Aufgabe "WAMO Tunnel" an, wenn ihr Überwacher schweigt.
+//
 // Umgebung: WAMO_UI_URL, WAMO_VOICE_CORE_URL (http oder https), WAMO_MANAGE_SERVICES, WAMO_UI_DEV,
 // WAMO_VEIL_CM, WAMO_LOG_LEVEL (an den Voice-Core; Standard INFO, nie DEBUG), WAMO_VOLLBILD_LOG=1 (Rohwerte des
 // Vollbild-Wächters in logs/vollbild.log).
@@ -47,6 +50,7 @@ const http = require("node:http");
 const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
+const { GeraetFehler, erzeugeGeraet } = require("./geraet");
 const { powershellPfad, starteVollbildWaechter } = require("./vollbild");
 
 // Zweite Instanz: sofort zurückkehren, bevor irgendetwas registriert oder gestartet wird. Sonst würde
@@ -61,6 +65,7 @@ const UI_URL = process.env.WAMO_UI_URL || "http://localhost:3000";
 const VOICE_CORE_URL = process.env.WAMO_VOICE_CORE_URL || "http://localhost:7860";
 const REPO = path.resolve(__dirname, "..");
 const UI_DIR = path.join(REPO, "ui");
+const geraet = erzeugeGeraet({ repo: REPO, log: (text) => console.log(`[Gerät] ${text}`) }); // geraet.js
 const UI_ORIGIN = new URL(UI_URL).origin;
 const LOG_DIR = path.join(__dirname, "logs");
 const LOG_MAX_BYTES = 5 * 1024 * 1024; // je Logdatei höchstens 5 MB
@@ -676,6 +681,35 @@ ipcMain.handle("betriebsart:setzen", async (event, art) => {
 // genau diesen PC steuert
 ipcMain.handle("rechnername", (event) => (fromMainUi(event) ? os.hostname() : null));
 
+// Einrichtung des Laptops (geraet.js): nur das Hauptfenster mit der eigenen Oberfläche und nur in der Betriebsart Büro.
+// Der private Geräteschlüssel bleibt in diesem Prozess; signiert wird nur die feste Bindungsnachricht. Fehler kommen als
+// { ok: false, text } mit einem Text, den die Oberfläche anzeigen darf.
+function geraetHandler(arbeit, nurBuero = true) {
+  return async (event, ...args) => {
+    if (!fromMainUi(event)) return { ok: false, text: "Nicht erlaubt." };
+    if (nurBuero && betriebsart !== "buero") {
+      return { ok: false, text: "Die Einrichtung des Laptops läuft nur in der Betriebsart Büro." };
+    }
+    try {
+      return await arbeit(...args);
+    } catch (err) {
+      if (err instanceof GeraetFehler) return { ok: false, text: err.text };
+      console.error(`Gerät: ${err.message}`);
+      return { ok: false, text: "Die Einrichtung des Laptops ist fehlgeschlagen." };
+    }
+  };
+}
+ipcMain.handle("geraet:vorbereiten", geraetHandler(async () => ({ ok: true, ...(await geraet.vorbereiten()) })));
+ipcMain.handle(
+  "geraet:signieren",
+  geraetHandler(async (anfrage) => ({
+    ok: true,
+    signatur: await geraet.signiere({ nonce: anfrage?.nonce, userId: anfrage?.userId }),
+  })),
+);
+ipcMain.handle("geraet:aktivieren", geraetHandler((antwort) => geraet.aktivieren(antwort)));
+ipcMain.handle("geraet:status", geraetHandler(async () => ({ ok: true, ...geraet.status() }), false));
+
 // Zustände, die der Rand kennt (alles andere wird "idle")
 const ZUSTAENDE = new Set(["offline", "idle", "listening", "thinking", "speaking", "acting", "approval"]);
 
@@ -784,10 +818,12 @@ app.whenReady().then(async () => {
   screen.on("display-added", overlaysSpaeter);
   screen.on("display-removed", overlaysSpaeter);
   screen.on("display-metrics-changed", overlaysSpaeter);
+  if (process.platform === "win32") geraet.starteWaechter(); // Tunnel-Aufgabe anstoßen, wenn der Überwacher schweigt
 });
 
 app.on("before-quit", () => {
   quitting = true;
+  geraet.stoppe();
   vollbildWaechter?.stop();
   vollbildWaechter = null;
   energieschutz(false);
