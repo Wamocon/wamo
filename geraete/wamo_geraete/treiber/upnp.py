@@ -112,6 +112,16 @@ async def router_status(geraet: Geraet) -> dict:
     }
 
 
+def _items(text: str, maximum: int = 300) -> list[str]:
+    """Inhalte der <Item>-Blöcke einer Geräteliste, linear (split statt Regex mit Rücksprung auf ungeschlossenen Blöcken)."""
+    erg: list[str] = []
+    for stueck in text.split("<Item>")[1:maximum + 1]:
+        ende = stueck.find("</Item>")
+        if ende >= 0:
+            erg.append(stueck[:ende])
+    return erg
+
+
 async def router_geraete(geraet: Geraet, konfig: Konfig) -> list[dict]:
     """Verbundene Geräte über TR-064 (HTTPS 49443, Digest, festgehaltenes Zertifikat). Nur für Admins; das Ergebnis
     geht im Kern direkt an die Oberfläche (personenbezogen: zeigt, wer im Büro ist)."""
@@ -133,7 +143,7 @@ async def router_geraete(geraet: Geraet, konfig: Konfig) -> list[dict]:
         raise GeraetFehler(f"Geräteliste: HTTP {antwort.status}")
     text = antwort.rumpf.decode("utf-8", "replace")
     liste = []
-    for item in re.findall(r"<Item>(.*?)</Item>", text, re.S)[:300]:
+    for item in _items(text):
         def feld(tag: str) -> str:
             m = re.search(rf"<{tag}>([^<]{{0,100}})</{tag}>", item)
             return m.group(1) if m else ""

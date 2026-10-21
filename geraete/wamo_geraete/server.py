@@ -14,6 +14,7 @@ Ausgang: Beim Start prüft der Dienst, dass eine nicht erlaubte Adresse (9.9.9.9
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -33,6 +34,9 @@ ZUSTAND = os.getenv("WAMO_GERAETE_ZUSTAND") or "/var/lib/wamo-geraete"
 KERN_BENUTZER = os.getenv("WAMO_GERAETE_KERN_BENUTZER") or "wamo-core"
 MAX_ANFRAGE = 512 * 1024
 GLEICHZEITIG = 16
+ANHAENGE_GLEICHZEITIG = 2  # Dateien (ablage_holen) höchstens zwei zugleich: jede liegt bis 30 MB im Speicher
+SENDEN_SECS = 60.0  # ein langsamer Leser hält weder Speicher noch Platz im Dienst fest
+BLOCK = 256 * 1024
 SELBSTTEST_ZIEL = ("9.9.9.9", 443)
 
 
@@ -60,6 +64,7 @@ class Server:
         self.dienst = dienst
         self.kern_uid = kern_uid
         self._grenze = asyncio.Semaphore(GLEICHZEITIG)
+        self._anhaenge = asyncio.Semaphore(ANHAENGE_GLEICHZEITIG)
 
     async def verbindung(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         sock = writer.get_extra_info("socket")
@@ -75,12 +80,14 @@ class Server:
                     return
                 try:
                     anfrage = json.loads(zeile.decode("utf-8"))
-                except (UnicodeDecodeError, ValueError):
+                except (UnicodeDecodeError, ValueError, RecursionError):  # RecursionError: tief verschachteltes JSON
                     await self._senden(writer, {"status": "rejected", "summary": "Anfrage ist kein JSON"})
                     return
-                antwort, anhang = await self.dienst.bearbeiten(anfrage)
-                await self._senden(writer, antwort, anhang)
-        except (ConnectionError, OSError):
+                liefert_datei = isinstance(anfrage, dict) and anfrage.get("werkzeug") == "ablage_holen"
+                async with self._anhaenge if liefert_datei else contextlib.nullcontext():
+                    antwort, anhang = await self.dienst.bearbeiten(anfrage)
+                    await self._senden(writer, antwort, anhang)
+        except (ConnectionError, OSError, TimeoutError):
             pass
         finally:
             writer.close()
@@ -91,8 +98,13 @@ class Server:
 
     @staticmethod
     async def _senden(writer: asyncio.StreamWriter, antwort: dict, anhang: bytes = b"") -> None:
-        writer.write(json.dumps(antwort, ensure_ascii=False).encode("utf-8") + b"\n" + anhang)
-        await writer.drain()
+        """Kopfzeile zuerst, dann der Anhang in Blöcken; das Ganze mit Zeitgrenze (ein stehender Leser hält nichts fest)."""
+        async with asyncio.timeout(SENDEN_SECS):
+            writer.write(json.dumps(antwort, ensure_ascii=False).encode("utf-8") + b"\n")
+            await writer.drain()
+            for i in range(0, len(anhang), BLOCK):
+                writer.write(anhang[i:i + BLOCK])
+                await writer.drain()
 
 
 def _socket_vorbereiten(pfad: str) -> None:

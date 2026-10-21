@@ -5,6 +5,7 @@
   Drucken      10 Aufträge je Stunde und Profil; Seiten je Tag und Profil und gesamt aus geraete.toml
   Scannen      20 je Stunde und Profil, ein Auftrag zugleich je Scanner
   NAS          30 Suchen oder Abrufe je Minute und Profil
+  Ablage       30 Aufrufe je Minute und Profil (Liste, Holen, Löschen)
 Die Zähler für Druckseiten überleben einen Neustart (zaehler.json im StateDirectory), die übrigen nicht.
 """
 
@@ -23,6 +24,7 @@ FENSTER = {
     "scan": (3600.0, 20, 60),
     "nas": (60.0, 30, 60),
     "router": (60.0, 6, 12),
+    "ablage": (60.0, 30, 90),
 }
 
 
@@ -80,6 +82,26 @@ class Grenzen:
         heute = self._heute().isoformat()
         if self._tag != heute:
             self._tag, self._seiten = heute, {}
+
+    def seiten_reservieren(self, user_id: str, seiten: int, je_profil: int, gesamt: int) -> str | None:
+        """Seiten vor dem Senden reservieren (prüfen und buchen in einem Schritt, damit zwei gleichzeitige Aufträge das
+        Tageslimit nicht gemeinsam überschreiten). Liefert die Tagesmarke für seiten_zurueck() oder None, wenn das
+        Limit erreicht wäre."""
+        if not self.seiten_frei(user_id, seiten, je_profil, gesamt):
+            return None
+        self.seiten_buchen(user_id, seiten)
+        return self._tag
+
+    def seiten_zurueck(self, user_id: str, seiten: int, tag: str) -> None:
+        """Reservierung zurücknehmen, wenn der Druck gescheitert ist (nur am selben Tag)."""
+        if tag != self._tag:
+            return
+        rest = self._seiten.get(user_id, 0) - seiten
+        if rest > 0:
+            self._seiten[user_id] = rest
+        else:
+            self._seiten.pop(user_id, None)
+        self._speichern()
 
     def seiten_frei(self, user_id: str, seiten: int, je_profil: int, gesamt: int) -> bool:
         self._tag_pruefen()

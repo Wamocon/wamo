@@ -3,7 +3,10 @@
 Status: Switch.GetStatus (an/aus, Leistung, Spannung, Temperatur, Energie). Steuern (change): Switch.Set an oder aus.
 Ist an der Steckdose ein Passwort gesetzt (auth_en), kommt es aus geraete.env (WAMO_GERAETE_<ZUGANG>_PASSWORT,
 Benutzer immer admin, Digest SHA-256). Am 20.10.2026 hatten alle drei Steckdosen keinen Schutz (auth_en false):
-Im Bericht empfohlen, ein Passwort zu setzen."""
+Im Bericht empfohlen, ein Passwort zu setzen.
+
+Optionen je Steckdose (geraete.toml): schutz = true (der Kern schaltet nur nach einer Freigabe-Karte; der Dienst lehnt
+ohne freigegeben=true ab), max_laufzeit_s (Selbstabschaltung nach dem Einschalten, z. B. für Heizgeräte)."""
 
 from __future__ import annotations
 
@@ -54,7 +57,16 @@ async def status(geraet: Geraet, konfig: Konfig) -> dict:
 
 
 async def steuern(geraet: Geraet, konfig: Konfig, aktion: str) -> dict:
+    """an oder aus. Ist max_laufzeit_s gesetzt, schaltet die Steckdose beim Einschalten von selbst wieder aus
+    (Shelly: toggle_after), auch wenn WAMO oder das Netz danach ausfällt."""
     if aktion not in ("an", "aus"):
         raise Abgelehnt("Steckdosen kennen nur an und aus")
-    d = await _rpc(geraet, konfig, f"/rpc/Switch.Set?id=0&on={'true' if aktion == 'an' else 'false'}")
-    return {"an": aktion == "an", "vorher_an": d.get("was_on") is True}
+    pfad = f"/rpc/Switch.Set?id=0&on={'true' if aktion == 'an' else 'false'}"
+    laufzeit = geraet.opt("max_laufzeit_s")
+    if aktion == "an" and laufzeit:
+        pfad += f"&toggle_after={int(laufzeit)}"
+    d = await _rpc(geraet, konfig, pfad)
+    erg = {"an": aktion == "an", "vorher_an": d.get("was_on") is True}
+    if aktion == "an" and laufzeit:
+        erg["schaltet_aus_nach_s"] = int(laufzeit)
+    return erg

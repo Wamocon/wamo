@@ -4,8 +4,16 @@ Eingabe ist ein WAMO-Canvas-Inhalt (dokument, code, mermaid als Text, tabelle). 
 gezeichnet: WMC-Kopf (Anschrift links, Logo rechts), Inhalt, Fußzeile mit Seitenzahl. Ausgabe als PWG-Raster
 (image/pwg-raster, mehrseitig in einem Auftrag; der Brother nimmt 600 dpi, sgray_8 und srgb_8) oder JPEG je Seite.
 
+Zwei Schritte, damit Speicher und Rechenzeit begrenzt bleiben:
+  1. layout(): bricht den Text um und verteilt ihn auf Seiten (nur Text, wenige KB). Lehnt Dokumente ab, die nicht in
+     MAX_SEITEN Seiten passen, bevor Pillow etwas zeichnet.
+  2. Layout.zeichne(n) / Layout.seiten(): zeichnet jeweils eine Seite (bei 600 dpi 35 MB grau, 104 MB Farbe). Der
+     Aufrufer kodiert sie sofort und gibt sie frei (pwg_raster verbraucht einen Generator Seite für Seite).
+Rechenzeit: Jeder Schritt hat eine Frist (Frist, Standard 60 s); danach Abgelehnt. Wörter werden vor dem Messen in
+Stücke von höchstens MAX_WORT Zeichen zerlegt, Zeilen sind auf MAX_ZEILE, Zellen auf MAX_ZELLE Zeichen begrenzt.
+
 Schrift: Liberation Sans Narrow (F18), falls vorhanden (/opt/wamo-geraete/schriften oder Systemschriften), sonst
-DejaVu Sans Condensed, sonst Liberation Sans. Höchstens 20 Seiten; mehr lehnt seiten() vor dem Druck ab.
+DejaVu Sans Condensed, sonst Liberation Sans. Höchstens 20 Seiten.
 """
 
 from __future__ import annotations
@@ -14,6 +22,9 @@ import io
 import os
 import re
 import struct
+import threading
+import time
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 
 from PIL import Image, ImageDraw, ImageFont
@@ -21,10 +32,15 @@ from PIL import Image, ImageDraw, ImageFont
 from .treiber import Abgelehnt
 
 MAX_SEITEN = 20
-MAX_TEXT = 200_000
+MAX_TEXT = 60_000
+MAX_ZEILE = 2000  # Zeichen je Textzeile; längere Zeilen werden an Leerzeichen geteilt
+MAX_WORT = 120  # Wörter werden vor dem Messen in Stücke dieser Länge zerlegt
 MAX_SPALTEN = 20
 MAX_ZEILEN = 2000
-MAX_ZELLE = 500
+MAX_ZELLE = 120
+MAX_AUSGABE = 100 * 1024 * 1024  # kodiertes Raster höchstens
+FRIST_LAYOUT_SECS = 60.0
+FRIST_ZEICHNEN_SECS = 90.0
 ANSCHRIFT = "WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn"
 LOGO = os.path.join(os.path.dirname(__file__), "assets", "wmc-logo.png")
 SCHRIFT_ORDNER = [
@@ -41,6 +57,22 @@ SCHRIFTEN = {
 }
 ARTEN = ("dokument", "code", "mermaid", "tabelle")
 _UNSICHTBAR = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+# Seitenmaße in mm (Ränder wie in layout()); daraus die untere Grenze für den Platzbedarf
+SEITE_MM = (210.0, 297.0)
+RAND_MM = (20.0, 20.0, 38.0, 22.0)  # links, rechts, oben, unten
+ZEILENFAKTOR = 1.35
+
+
+class Frist:
+    """Zeitgrenze für Schleifen in einem Arbeitsthread (ein Thread lässt sich nicht abbrechen)."""
+
+    def __init__(self, secs: float, uhr=time.monotonic):
+        self._uhr = uhr
+        self._ende = uhr() + secs
+
+    def pruefen(self) -> None:
+        if self._uhr() > self._ende:
+            raise Abgelehnt("Das Dokument ist zu aufwendig zum Drucken")
 
 
 @dataclass
@@ -54,6 +86,22 @@ class Dokument:
 
 def _sauber(t: object, grenze: int) -> str:
     return _UNSICHTBAR.sub("", t if isinstance(t, str) else "")[:grenze]
+
+
+def _lange_zeilen_teilen(text: str) -> str:
+    """Zeilen über MAX_ZEILE Zeichen an einem Leerzeichen teilen (sonst hart), damit kein Absatz die Umbrechung
+    ausbremst."""
+    if len(text) <= MAX_ZEILE and "\n" not in text:
+        return text
+    aus: list[str] = []
+    for zeile in text.split("\n"):
+        while len(zeile) > MAX_ZEILE:
+            schnitt = zeile.rfind(" ", MAX_ZEILE // 2, MAX_ZEILE)
+            schnitt = schnitt if schnitt > 0 else MAX_ZEILE
+            aus.append(zeile[:schnitt])
+            zeile = zeile[schnitt:].lstrip(" ")
+        aus.append(zeile)
+    return "\n".join(aus)
 
 
 def dokument_aus(roh: object) -> Dokument:
@@ -75,19 +123,30 @@ def dokument_aus(roh: object) -> Dokument:
     text = roh.get("text")
     if not isinstance(text, str) or len(text) > MAX_TEXT:
         raise Abgelehnt("Text fehlt oder ist zu lang")
-    return Dokument(art, titel, text=_sauber(text, MAX_TEXT))
+    return Dokument(art, titel, text=_lange_zeilen_teilen(_sauber(text, MAX_TEXT)))
+
+
+_lokal = threading.local()  # FreeType-Schriften sind nicht thread-sicher: je Arbeitsthread eine eigene Kopie
 
 
 def _schrift(art: str, groesse: int) -> ImageFont.ImageFont:
+    cache = _lokal.__dict__.setdefault("schriften", {})
+    if (art, groesse) in cache:
+        return cache[(art, groesse)]
+    schrift = None
     for ordner in SCHRIFT_ORDNER:
         for datei in SCHRIFTEN[art]:
             pfad = os.path.join(ordner, datei)
-            if os.path.isfile(pfad):
+            if schrift is None and os.path.isfile(pfad):
                 try:
-                    return ImageFont.truetype(pfad, groesse)
+                    schrift = ImageFont.truetype(pfad, groesse)
                 except OSError:
                     continue
-    return ImageFont.load_default(groesse)
+    schrift = schrift or ImageFont.load_default(groesse)
+    if len(cache) >= 32:
+        cache.clear()
+    cache[(art, groesse)] = schrift
+    return schrift
 
 
 def schrift_name() -> str:
@@ -106,7 +165,6 @@ class _Zeile:
     pt: float = 10.5
     einzug_mm: float = 0
     abstand_vor: float = 0  # in Zeilenhöhen
-    linie: bool = False  # Trennlinie unter der Zeile (Tabellen)
     zellen: list[str] | None = None
 
 
@@ -114,8 +172,8 @@ def _bloecke(dok: Dokument) -> list[_Zeile]:
     """Rohzeilen mit Stil (vor dem Umbruch)."""
     zeilen = [_Zeile(dok.titel, "fett", 15, abstand_vor=0)]
     if dok.art == "tabelle":
-        zeilen.append(_Zeile("", zellen=dok.spalten, schrift="fett", pt=9.5, linie=True, abstand_vor=0.6))
-        zeilen += [_Zeile("", zellen=z, pt=9.5, linie=True) for z in dok.zeilen]
+        zeilen.append(_Zeile("", zellen=dok.spalten, schrift="fett", pt=9.5, abstand_vor=0.6))
+        zeilen += [_Zeile("", zellen=z, pt=9.5) for z in dok.zeilen]
         return zeilen
     if dok.art in ("code", "mermaid"):
         zeilen += [_Zeile(z.rstrip() or " ", "mono", 8.5) for z in dok.text.replace("\t", "    ").splitlines()]
@@ -143,21 +201,33 @@ def _bloecke(dok: Dokument) -> list[_Zeile]:
     return zeilen
 
 
-def _umbrechen(text: str, schrift, breite: int) -> list[str]:
+def _woerter(absatz: str) -> Iterator[tuple[str, bool]]:
+    """Wörter eines Absatzes; lange Wörter in Stücke zu MAX_WORT Zeichen (fortsetzung=True: ohne Leerzeichen davor)."""
+    for wort in absatz.split(" "):
+        if len(wort) <= MAX_WORT:
+            yield wort, False
+            continue
+        for i in range(0, len(wort), MAX_WORT):
+            yield wort[i:i + MAX_WORT], i > 0
+
+
+def _umbrechen(text: str, schrift, breite: int, frist: Frist | None = None) -> list[str]:
     if not text:
         return [""]
     erg: list[str] = []
     for absatz in text.split("\n"):
-        woerter = absatz.split(" ")
         akt = ""
-        for w in woerter:
-            versuch = f"{akt} {w}" if akt else w
+        for w, fortsetzung in _woerter(absatz):
+            if frist is not None:
+                frist.pruefen()
+            trenner = "" if fortsetzung or not akt else " "
+            versuch = f"{akt}{trenner}{w}"
             if schrift.getlength(versuch) <= breite:
                 akt = versuch
                 continue
             if akt:
                 erg.append(akt)
-            # überlanges Wort hart trennen
+            # Stück, das allein nicht passt, hart trennen (höchstens MAX_WORT Zeichen, also wenige Messungen)
             while schrift.getlength(w) > breite and len(w) > 1:
                 teil = len(w)
                 while teil > 1 and schrift.getlength(w[:teil]) > breite:
@@ -169,37 +239,117 @@ def _umbrechen(text: str, schrift, breite: int) -> list[str]:
     return erg
 
 
-def seiten(dok: Dokument, *, dpi: int = 600, farbe: bool = False) -> list[Image.Image]:
-    """A4-Seiten zeichnen. Wirft Abgelehnt, wenn mehr als MAX_SEITEN entstehen."""
+class Layout:
+    """Auf Seiten verteilter Text eines Dokuments. zeichne() malt eine einzelne Seite."""
+
+    def __init__(self, dok: Dokument, dpi: int, farbe: bool, gesetzt: list[list[tuple]], breite: int, hoehe: int):
+        self.dok, self.dpi, self.farbe = dok, dpi, farbe
+        self._gesetzt = gesetzt
+        self.breite, self.hoehe = breite, hoehe
+        self._logo: Image.Image | None = None
+
+    @property
+    def seitenzahl(self) -> int:
+        return len(self._gesetzt)
+
+    def _px(self, mm: float) -> int:
+        return round(mm / 25.4 * self.dpi)
+
+    def _pt(self, p: float) -> int:
+        return max(1, round(p * self.dpi / 72))
+
+    def _logo_bild(self) -> Image.Image | None:
+        if self._logo is None and os.path.isfile(LOGO):
+            with Image.open(LOGO) as roh:
+                roh.load()
+                logo_h = self._px(11)
+                self._logo = roh.convert("RGBA").resize((max(1, round(roh.width * logo_h / roh.height)), logo_h),
+                                                        Image.LANCZOS)
+        return self._logo
+
+    def zeichne(self, nummer: int, frist: Frist | None = None) -> Image.Image:
+        """Seite nummer (1 bis seitenzahl) als Bild: grau (L) oder Farbe (RGB)."""
+        if not 1 <= nummer <= self.seitenzahl:
+            raise ValueError("Seite gibt es nicht")
+        px, pt = self._px, self._pt
+        links, rechts = px(RAND_MM[0]), px(RAND_MM[1])
+        nutzbar = self.breite - links - rechts
+        modus = "RGB" if self.farbe else "L"
+        weiss = (255, 255, 255) if self.farbe else 255
+        schwarz = (0, 0, 0) if self.farbe else 0
+        grau = (107, 107, 107) if self.farbe else 107
+        rot = (244, 14, 14) if self.farbe else 60
+        bild = Image.new(modus, (self.breite, self.hoehe), weiss)
+        d = ImageDraw.Draw(bild)
+        kopf = _schrift("normal", pt(8.5))
+        d.text((links, px(14)), ANSCHRIFT, font=kopf, fill=grau)
+        if (logo := self._logo_bild()) is not None:
+            ziel = logo if self.farbe else logo.convert("LA")
+            bild.paste(ziel.convert(modus), (self.breite - rechts - logo.width, px(10)), ziel.getchannel("A"))
+        d.line([(links, px(27)), (self.breite - rechts, px(27))], fill=rot, width=max(1, px(0.35)))
+        seite_text = f"Seite {nummer} von {self.seitenzahl}"
+        d.text((self.breite - rechts - kopf.getlength(seite_text), self.hoehe - px(14)), seite_text, font=kopf, fill=grau)
+        for z, inhalt, y0 in self._gesetzt[nummer - 1]:
+            if frist is not None:
+                frist.pruefen()
+            schrift = _schrift(z.schrift, pt(z.pt))
+            zeilenhoehe = round(pt(z.pt) * ZEILENFAKTOR)
+            if z.zellen is not None:
+                n = max(1, len(self.dok.spalten))
+                spaltenbreite = nutzbar // n
+                for i, zelle in enumerate(inhalt):
+                    for k, zeile in enumerate(zelle):
+                        d.text((links + i * spaltenbreite, y0 + k * zeilenhoehe), zeile, font=schrift, fill=schwarz)
+                unten_block = y0 + max(len(c) for c in inhalt) * zeilenhoehe + px(0.5)
+                d.line([(links, unten_block), (self.breite - rechts, unten_block)], fill=grau, width=max(1, px(0.15)))
+            else:
+                for k, zeile in enumerate(inhalt):
+                    d.text((links + px(z.einzug_mm), y0 + k * zeilenhoehe), zeile, font=schrift, fill=schwarz)
+        return bild
+
+    def seiten(self, frist: Frist | None = None) -> Iterator[Image.Image]:
+        """Seiten nacheinander; jede nur so lange im Speicher, wie der Aufrufer sie hält."""
+        for nummer in range(1, self.seitenzahl + 1):
+            yield self.zeichne(nummer, frist)
+
+
+def _mindesthoehe_mm(bloecke: list[_Zeile]) -> float:
+    """Untere Grenze des Platzbedarfs: jeder Block braucht mindestens eine Zeile seiner Schrift."""
+    return sum(z.pt * ZEILENFAKTOR / 72 * 25.4 for z in bloecke)
+
+
+def layout(dok: Dokument, *, dpi: int = 600, farbe: bool = False, frist: Frist | None = None) -> Layout:
+    """Text umbrechen und auf Seiten verteilen. Wirft Abgelehnt bei mehr als MAX_SEITEN Seiten oder abgelaufener Frist."""
+    frist = frist or Frist(FRIST_LAYOUT_SECS)
+    bloecke = _bloecke(dok)
+    nutzbar_mm = SEITE_MM[1] - RAND_MM[2] - RAND_MM[3]
+    if _mindesthoehe_mm(bloecke) > MAX_SEITEN * nutzbar_mm:  # bevor etwas gemessen wird
+        raise Abgelehnt(f"Das Dokument hätte mehr als {MAX_SEITEN} Seiten")
+
     def px(mm: float) -> int:
         return round(mm / 25.4 * dpi)
 
     def pt(p: float) -> int:
         return max(1, round(p * dpi / 72))
 
-    breite, hoehe = px(210), px(297)
-    links, rechts, oben, unten = px(20), px(20), px(38), px(22)
+    breite, hoehe = px(SEITE_MM[0]), px(SEITE_MM[1])
+    links, rechts, oben, unten = px(RAND_MM[0]), px(RAND_MM[1]), px(RAND_MM[2]), px(RAND_MM[3])
     nutzbar = breite - links - rechts
-    modus = "RGB" if farbe else "L"
-    weiss = (255, 255, 255) if farbe else 255
-    schwarz = (0, 0, 0) if farbe else 0
-    grau = (107, 107, 107) if farbe else 107
-    rot = (244, 14, 14) if farbe else 60
-
-    # Layout: Zeilen umbrechen und auf Seiten verteilen
-    gesetzt: list[list[tuple[_Zeile, list[str] | list[list[str]], int]]] = [[]]
+    gesetzt: list[list[tuple]] = [[]]
     y = oben
-    for z in _bloecke(dok):
+    for z in bloecke:
+        frist.pruefen()
         schrift = _schrift(z.schrift, pt(z.pt))
-        zeilenhoehe = round(pt(z.pt) * 1.35)
+        zeilenhoehe = round(pt(z.pt) * ZEILENFAKTOR)
         if z.zellen is not None:
             n = max(1, len(dok.spalten))
             spaltenbreite = nutzbar // n
-            zellen = [_umbrechen(" ".join(c.split()), schrift, spaltenbreite - px(2)) for c in (z.zellen + [""] * n)[:n]]
+            zellen = [_umbrechen(" ".join(c.split()), schrift, spaltenbreite - px(2), frist)
+                      for c in (z.zellen + [""] * n)[:n]]
             hoehe_block = max(len(c) for c in zellen) * zeilenhoehe + px(1.5)
             inhalt: list = zellen
         else:
-            inhalt = _umbrechen(z.text, schrift, nutzbar - px(z.einzug_mm))
+            inhalt = _umbrechen(z.text, schrift, nutzbar - px(z.einzug_mm), frist)
             hoehe_block = len(inhalt) * zeilenhoehe
         vor = round(z.abstand_vor * zeilenhoehe) if gesetzt[-1] else 0
         if y + vor + hoehe_block > hoehe - unten and gesetzt[-1]:
@@ -209,45 +359,13 @@ def seiten(dok: Dokument, *, dpi: int = 600, farbe: bool = False) -> list[Image.
                 raise Abgelehnt(f"Das Dokument hätte mehr als {MAX_SEITEN} Seiten")
         gesetzt[-1].append((z, inhalt, y + vor))
         y += vor + hoehe_block
+    return Layout(dok, dpi, farbe, gesetzt, breite, hoehe)
 
-    logo = None
-    if os.path.isfile(LOGO):
-        with Image.open(LOGO) as roh:
-            roh.load()
-            logo_h = px(11)
-            logo = roh.convert("RGBA").resize((max(1, round(roh.width * logo_h / roh.height)), logo_h), Image.LANCZOS)
 
-    bilder = []
-    gesamt = len(gesetzt)
-    for nummer, inhalt_seite in enumerate(gesetzt, 1):
-        bild = Image.new(modus, (breite, hoehe), weiss)
-        d = ImageDraw.Draw(bild)
-        kopf = _schrift("normal", pt(8.5))
-        d.text((links, px(14)), ANSCHRIFT, font=kopf, fill=grau)
-        if logo is not None:
-            ziel = logo if farbe else logo.convert("LA")
-            maske = ziel.getchannel("A")
-            bild.paste(ziel.convert(modus), (breite - rechts - logo.width, px(10)), maske)
-        d.line([(links, px(27)), (breite - rechts, px(27))], fill=rot, width=max(1, px(0.35)))
-        fuss = _schrift("normal", pt(8.5))
-        seite_text = f"Seite {nummer} von {gesamt}"
-        d.text((breite - rechts - fuss.getlength(seite_text), hoehe - px(14)), seite_text, font=fuss, fill=grau)
-        for z, inhalt, y0 in inhalt_seite:
-            schrift = _schrift(z.schrift, pt(z.pt))
-            zeilenhoehe = round(pt(z.pt) * 1.35)
-            if z.zellen is not None:
-                n = max(1, len(dok.spalten))
-                spaltenbreite = nutzbar // n
-                for i, zelle in enumerate(inhalt):
-                    for k, zeile in enumerate(zelle):
-                        d.text((links + i * spaltenbreite, y0 + k * zeilenhoehe), zeile, font=schrift, fill=schwarz)
-                unten_block = y0 + max(len(c) for c in inhalt) * zeilenhoehe + px(0.5)
-                d.line([(links, unten_block), (breite - rechts, unten_block)], fill=grau, width=max(1, px(0.15)))
-            else:
-                for k, zeile in enumerate(inhalt):
-                    d.text((links + px(z.einzug_mm), y0 + k * zeilenhoehe), zeile, font=schrift, fill=schwarz)
-        bilder.append(bild)
-    return bilder
+def seiten(dok: Dokument, *, dpi: int = 600, farbe: bool = False) -> list[Image.Image]:
+    """Alle Seiten auf einmal (nur für kleine Dokumente und Tests; der Dienst nutzt layout() und Layout.seiten())."""
+    lay = layout(dok, dpi=dpi, farbe=farbe)
+    return list(lay.seiten())
 
 
 # ---------- PWG-Raster (PWG 5102.4) ----------
@@ -303,24 +421,41 @@ def _zeile_kodieren(zeile: bytes, pixel: int) -> bytes:
     return bytes(aus)
 
 
-def pwg_raster(bilder: list[Image.Image], dpi: int, farbe: bool) -> bytes:
+def pwg_raster(bilder: Iterable[Image.Image], dpi: int, farbe: bool, gesamt: int | None = None,
+               frist: Frist | None = None) -> bytes:
+    """PWG-Raster aus Seiten. bilder darf ein Generator sein (dann gesamt angeben): jede Seite wird sofort kodiert und
+    freigegeben. Wirft Abgelehnt, wenn die Ausgabe MAX_AUSGABE überschreitet oder die Frist abläuft."""
+    if gesamt is None:
+        bilder = list(bilder)
+        gesamt = len(bilder)
     teile = [b"RaS2"]
+    groesse = 4
     pixel = 3 if farbe else 1
     for bild in bilder:
         bild = bild.convert("RGB" if farbe else "L")
         breite, hoehe = bild.size
-        teile.append(_pwg_kopf(breite, hoehe, dpi, farbe, len(bilder)))
+        kopf = _pwg_kopf(breite, hoehe, dpi, farbe, gesamt)
+        teile.append(kopf)
+        groesse += len(kopf)
         roh = bild.tobytes()
+        del bild
         zeilenlaenge = breite * pixel
         y = 0
         while y < hoehe:
+            if frist is not None and y % 64 == 0:
+                frist.pruefen()
             zeile = roh[y * zeilenlaenge:(y + 1) * zeilenlaenge]
             wiederholung = 1
             while wiederholung < 256 and y + wiederholung < hoehe and \
                     roh[(y + wiederholung) * zeilenlaenge:(y + wiederholung + 1) * zeilenlaenge] == zeile:
                 wiederholung += 1
-            teile.append(bytes([wiederholung - 1]) + _zeile_kodieren(zeile, pixel))
+            kodiert = bytes([wiederholung - 1]) + _zeile_kodieren(zeile, pixel)
+            teile.append(kodiert)
+            groesse += len(kodiert)
+            if groesse > MAX_AUSGABE:
+                raise Abgelehnt("Das Dokument ist zu umfangreich zum Drucken")
             y += wiederholung
+        del roh
     return b"".join(teile)
 
 

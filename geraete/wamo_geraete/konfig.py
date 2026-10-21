@@ -46,7 +46,7 @@ TREIBER: dict[str, dict[str, Any]] = {
                  "optionen": {"tr064_port", "tls_sha256", "zugang"}},
     "upnp-renderer": {"klassen": ("lautsprecher",), "port": 49152, "ports": (49152, 49153, 49154, 9197),
                       "optionen": {"steuer_pfad", "transport_pfad", "max_lautstaerke"}},
-    "shelly": {"klassen": ("steckdose",), "port": 80, "ports": (80,), "optionen": {"zugang"}},
+    "shelly": {"klassen": ("steckdose",), "port": 80, "ports": (80,), "optionen": {"zugang", "schutz", "max_laufzeit_s"}},
     "samsung-tv": {"klassen": ("fernseher",), "port": 8001, "ports": (8001,),
                    "optionen": {"mac", "max_lautstaerke", "eingaenge"}},
     "lg-webos": {"klassen": ("fernseher",), "port": 3001, "ports": (3001,),
@@ -161,10 +161,12 @@ def _optionen(treiber: str, kennung: str, roh: dict[str, Any]) -> dict[str, Any]
             if v not in ("pwg", "jpeg"):
                 raise KonfigFehler(f"{was}: pwg oder jpeg")
             o[k] = v
-        elif k == "farbe_erlaubt":
+        elif k in ("farbe_erlaubt", "schutz"):
             if not isinstance(v, bool):
                 raise KonfigFehler(f"{was}: true oder false")
             o[k] = v
+        elif k == "max_laufzeit_s":
+            o[k] = _ganz(v, was, 10, 86400)
         elif k == "aufloesung":
             if v not in (300, 600):
                 raise KonfigFehler(f"{was}: 300 oder 600")

@@ -3,8 +3,10 @@
 Nur lesen: Dateien in den freigegebenen Freigaben (geraete.toml: freigaben) finden und abrufen (höchstens 25 MB).
 Einzige Schreibstelle: Scans in den Scan-Ordner der Person (scanziel), sobald WMC_NAS1 dafür eingerichtet ist.
 Zugangsdaten nur aus geraete.env (WAMO_GERAETE_<ZUGANG>_BENUTZER und _PASSWORT); fehlen sie, melden alle Werkzeuge
-"nicht eingerichtet". SMB 3 mit Verschlüsselung, wenn der NAS sie anbietet. Pfade nur relativ, ohne "..", ohne
-Laufwerk, ohne Doppelpunkt; Dateinamen vom NAS sind Daten (bereinigt, gekürzt).
+"nicht eingerichtet". SMB 3 immer verschlüsselt (encrypt=True; bietet ein NAS das nicht an, scheitert die Verbindung).
+Pfade nur relativ, ohne "..", ohne Laufwerk, ohne Doppelpunkt, Teile ohne Punkt oder Leerzeichen am Ende (Windows und
+SMB bilden "name." auf "name" ab); Dateinamen vom NAS sind Daten (bereinigt, gekürzt). Der Kern gibt dem Sprachmodell
+keine Pfade und Namen, sondern Treffernummern (geraete_werkzeuge.py).
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import re
 import time
 
 from ..konfig import Geraet, Konfig
-from ..text import _UNSICHTBAR, dateiname, name
+from ..text import _UNSICHTBAR, dateiname
 from . import Abgelehnt, GeraetFehler, NichtEingerichtet
 
 MAX_DATEI = 25 * 1024 * 1024
@@ -38,7 +40,8 @@ def pfad_teile(pfad: str) -> list[str]:
     if not isinstance(pfad, str) or len(pfad) > 1000:
         raise Abgelehnt("Pfad ungültig")
     teile = [t for t in re.split(r"[\\/]+", pfad.strip()) if t]
-    if not teile or any(t in (".", "..") or not _TEIL_RE.fullmatch(t) for t in teile):
+    if not teile or any(t in (".", "..") or not _TEIL_RE.fullmatch(t) or t.endswith((".", " ")) or t != t.strip()
+                        for t in teile):
         raise Abgelehnt("Pfad ungültig")
     return teile
 
@@ -51,7 +54,7 @@ def _sitzung(geraet: Geraet, benutzer: str, passwort: str):
     import smbclient  # smbprotocol, erst hier geladen
 
     smbclient.register_session(geraet.adresse, username=benutzer, password=passwort, port=geraet.port or 445,
-                               connection_timeout=5, encrypt=None)
+                               connection_timeout=5, encrypt=True)
     return smbclient
 
 
@@ -89,7 +92,7 @@ def _suchen_sync(geraet: Geraet, benutzer: str, passwort: str, begriff: str, fre
                 besucht += 1
                 if e.name.startswith(".") or e.name in ("#recycle", "@eaDir", "#snapshot"):
                     continue
-                if not _TEIL_RE.fullmatch(e.name) or _UNSICHTBAR.search(e.name):
+                if not _TEIL_RE.fullmatch(e.name) or _UNSICHTBAR.search(e.name) or e.name.endswith((".", " ")):
                     continue  # unsichtbare Zeichen im Namen: nicht anzeigen (Daten für das Sprachmodell)
                 ist_ordner = e.is_dir()
                 if begriff_k in e.name.casefold():
@@ -164,13 +167,16 @@ def _ablegen_sync(geraet: Geraet, benutzer: str, passwort: str, freigabe: str, o
     return "/".join([freigabe, ordner, person, dateiname_])
 
 
-async def scan_ablegen(geraet: Geraet, konfig: Konfig, person: str, dateiname_: str, daten: bytes) -> str | None:
-    """Scan in den Ordner der Person auf dem NAS legen (scanziel). None, wenn das NAS kein Scanziel ist."""
+async def scan_ablegen(geraet: Geraet, konfig: Konfig, person_name: str, user_id: str, dateiname_: str,
+                      daten: bytes) -> str | None:
+    """Scan in den Ordner der Person auf dem NAS legen (scanziel). None, wenn das NAS kein Scanziel ist. Der Ordner heißt
+    <Name>-<erste 8 Zeichen der user_id>: zwei Personen mit gleichem Namen teilen sich nie einen Ordner."""
     ziel = geraet.opt("scanziel")
     if not ziel:
         return None
     benutzer, passwort = _zugang(geraet, konfig)
-    person = name(person, 40) or "Unbekannt"
+    schoen = dateiname(person_name, 40).rstrip(" .")
+    person = f"{schoen}-{str(user_id)[:8]}"
     try:
         return await asyncio.wait_for(asyncio.to_thread(
             _ablegen_sync, geraet, benutzer, passwort, ziel["freigabe"], ziel["ordner"], person, dateiname_, daten), 60)

@@ -2,8 +2,9 @@
 
 Status: ScannerStatus (Zustand, Einzug). Scannen: ScanJobs mit festen Einstellungen (A4, Glas oder Einzug,
 Graustufen oder Farbe, 150 oder 300 dpi, JPEG je Seite), danach NextDocument bis 404. Die Location muss auf demselben
-Gerät unter /eSCL/ScanJobs/ liegen, sonst wird nichts nachgeladen. Aus den Seiten baut Pillow ein PDF; die Bilder
-werden dabei dekodiert (Grenze 40 Megapixel je Seite, 50 Seiten). Der Inhalt geht nie an das Sprachmodell.
+Gerät unter /eSCL/ScanJobs/ liegen, sonst wird nichts nachgeladen. Aus den Seiten entsteht ein PDF, das die
+JPEG-Bytes unverändert einbettet (DCTDecode); Pillow dekodiert jede Seite nur einmal zur Prüfung (nur JPEG, höchstens
+12 Megapixel je Seite, 400 Megapixel und 30 MB insgesamt, 50 Seiten). Der Inhalt geht nie an das Sprachmodell.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import asyncio
 import io
 import re
 import time
+import warnings
 from urllib.parse import urlsplit
 
 from PIL import Image
@@ -20,9 +22,12 @@ from ..http_klein import HttpFehler, anfrage
 from ..konfig import Geraet
 from . import Abgelehnt, GeraetFehler, NichtEingerichtet
 
-Image.MAX_IMAGE_PIXELS = 40_000_000
+MAX_SEITE_PIXEL = 12_000_000  # A4 mit 300 dpi sind 8,7 Millionen; Pillow warnt ab dieser Zahl (hier ein Fehler)
+Image.MAX_IMAGE_PIXELS = MAX_SEITE_PIXEL
+PIXEL_BUDGET = 400_000_000  # alle Seiten eines Scans zusammen (50 Seiten mit 300 dpi)
 MAX_SEITEN = 50
 MAX_SEITE_BYTES = 25 * 1024 * 1024
+MAX_GESAMT_BYTES = 30 * 1024 * 1024  # wie ablage.MAX_DATEI: ein größerer Scan ließe sich nicht ablegen
 SCAN_ZEIT_SECS = 300.0
 JOB_RE = re.compile(r"^/eSCL/ScanJobs/[A-Za-z0-9-]{1,64}$")
 QUELLEN = {"glas": "Platen", "einzug": "Feeder"}
@@ -78,29 +83,86 @@ def einstellungen(quelle: str, farbe: bool, aufloesung: int) -> bytes:
 def job_pfad(location: str, adresse: str) -> str:
     """Pfad des Scan-Auftrags aus dem Location-Kopf: relativ oder absolut auf genau diesem Gerät (IP), nur unter
     /eSCL/ScanJobs/. Alles andere wird abgelehnt (der Scanner darf uns nirgendwohin schicken)."""
-    teile = urlsplit(location.strip())
-    if teile.scheme or teile.netloc:
-        if teile.scheme != "http" or teile.hostname != adresse or (teile.port not in (None, 80)):
-            raise GeraetFehler("Scanner nennt einen fremden Ort für den Auftrag")
-    pfad = teile.path.rstrip("/")
-    if not JOB_RE.fullmatch(pfad) or teile.query or teile.fragment:
-        raise GeraetFehler("Scanner nennt einen unerwarteten Ort für den Auftrag")
+    try:
+        teile = urlsplit(location.strip())
+        if teile.scheme or teile.netloc:
+            if teile.scheme != "http" or teile.hostname != adresse or (teile.port not in (None, 80)):
+                raise GeraetFehler("Scanner nennt einen fremden Ort für den Auftrag")
+        pfad = teile.path.rstrip("/")
+        if not JOB_RE.fullmatch(pfad) or teile.query or teile.fragment:
+            raise GeraetFehler("Scanner nennt einen unerwarteten Ort für den Auftrag")
+    except ValueError as e:  # urlsplit und .port werfen bei kaputten Adressen ("Invalid IPv6 URL", Port 99999)
+        raise GeraetFehler("Scanner nennt einen ungültigen Ort für den Auftrag") from e
     return pfad
 
 
+def _seite_pruefen(daten: bytes) -> tuple[int, int, str]:
+    """(Breite, Höhe, Modus) einer gescannten JPEG-Seite. Nur JPEG in Graustufen oder RGB, höchstens MAX_SEITE_PIXEL;
+    die Seite wird einmal vollständig dekodiert (prüft, dass sie wirklich ein JPEG ist) und sofort freigegeben.
+    Eine Dekompressionsbombe (Warnung oder Fehler von Pillow) ist ein Fehler."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        try:
+            with Image.open(io.BytesIO(daten), formats=["JPEG"]) as im:
+                breite, hoehe = im.size
+                if breite * hoehe > MAX_SEITE_PIXEL or breite < 1 or hoehe < 1:
+                    raise GeraetFehler("Eine gescannte Seite ist größer als erlaubt")
+                if im.mode not in ("L", "RGB"):
+                    raise GeraetFehler("Scanner liefert ein JPEG in einem unerwarteten Farbmodus")
+                modus = im.mode
+                im.load()
+        except GeraetFehler:
+            raise
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning, OSError, SyntaxError, ValueError,
+                MemoryError) as e:  # OSError enthält UnidentifiedImageError
+            raise GeraetFehler("Scanner liefert kein gültiges JPEG") from e
+    return breite, hoehe, modus
+
+
 def pdf_aus_seiten(seiten: list[bytes], aufloesung: int) -> bytes:
-    bilder = []
-    for daten in seiten:
-        with Image.open(io.BytesIO(daten)) as roh:
-            if roh.format != "JPEG":
-                raise GeraetFehler("Scanner liefert kein JPEG")
-            roh.load()
-            bilder.append(roh.convert("RGB" if roh.mode not in ("L", "RGB") else roh.mode))
-    if not bilder:
+    """PDF aus JPEG-Seiten, ohne sie neu zu kodieren: jede Seite ist ein DCT-Bild in einem eigenen Seitenobjekt.
+    Speicher: eine Seite zugleich dekodiert (zur Prüfung), sonst nur die Rohbytes. Pixelbudget über alle Seiten."""
+    if not seiten:
         raise GeraetFehler("Keine Seite gescannt")
-    puffer = io.BytesIO()
-    bilder[0].save(puffer, "PDF", save_all=True, append_images=bilder[1:], resolution=float(aufloesung))
-    return puffer.getvalue()
+    infos: list[tuple[int, int, str]] = []
+    pixel = 0
+    for daten in seiten:
+        info = _seite_pruefen(daten)
+        pixel += info[0] * info[1]
+        if pixel > PIXEL_BUDGET:
+            raise GeraetFehler("Der Scan ist insgesamt zu groß")
+        infos.append(info)
+    teile = [b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"]
+    stand = len(teile[0])
+    versatz: dict[int, int] = {}
+
+    def objekt(nr: int, rumpf: bytes) -> None:
+        nonlocal stand
+        versatz[nr] = stand
+        stueck = f"{nr} 0 obj\n".encode("ascii") + rumpf + b"\nendobj\n"
+        teile.append(stueck)
+        stand += len(stueck)
+
+    n = len(seiten)
+    kinder = " ".join(f"{3 + 3 * i} 0 R" for i in range(n))
+    objekt(1, b"<< /Type /Catalog /Pages 2 0 R >>")
+    objekt(2, f"<< /Type /Pages /Kids [{kinder}] /Count {n} >>".encode("ascii"))
+    for i, (daten, (w, h, modus)) in enumerate(zip(seiten, infos)):
+        seite, inhalt_nr, bild_nr = 3 + 3 * i, 4 + 3 * i, 5 + 3 * i
+        bw, bh = w / aufloesung * 72, h / aufloesung * 72
+        objekt(seite, (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {bw:.2f} {bh:.2f}] /Resources << /XObject "
+                       f"<< /Im0 {bild_nr} 0 R >> >> /Contents {inhalt_nr} 0 R >>").encode("ascii"))
+        inhalt = f"q {bw:.2f} 0 0 {bh:.2f} 0 0 cm /Im0 Do Q".encode("ascii")
+        objekt(inhalt_nr, f"<< /Length {len(inhalt)} >>\nstream\n".encode("ascii") + inhalt + b"\nendstream")
+        farbraum = "/DeviceGray" if modus == "L" else "/DeviceRGB"
+        objekt(bild_nr, (f"<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace {farbraum} "
+                         f"/BitsPerComponent 8 /Filter /DCTDecode /Length {len(daten)} >>\nstream\n").encode("ascii")
+               + daten + b"\nendstream")
+    anzahl = 3 + 3 * n
+    xref = [f"xref\n0 {anzahl}\n".encode("ascii"), b"0000000000 65535 f \n"]
+    xref += [f"{versatz[nr]:010d} 00000 n \n".encode("ascii") for nr in range(1, anzahl)]
+    ende = f"trailer\n<< /Size {anzahl} /Root 1 0 R >>\nstartxref\n{stand}\n%%EOF\n".encode("ascii")
+    return b"".join(teile + xref + [ende])
 
 
 async def scannen(geraet: Geraet, quelle: str, farbe: bool, aufloesung: int) -> tuple[bytes, int]:
@@ -119,6 +181,7 @@ async def scannen(geraet: Geraet, quelle: str, farbe: bool, aufloesung: int) -> 
         raise GeraetFehler(f"Scanner nimmt den Auftrag nicht an (HTTP {antwort.status})")
     pfad = job_pfad(antwort.kopf["location"], geraet.adresse)
     seiten: list[bytes] = []
+    gesamt = 0
     ende = time.monotonic() + SCAN_ZEIT_SECS
     try:
         while len(seiten) < MAX_SEITEN:
@@ -137,6 +200,9 @@ async def scannen(geraet: Geraet, quelle: str, farbe: bool, aufloesung: int) -> 
             if seite.status != 200:
                 raise GeraetFehler(f"Scanner meldet HTTP {seite.status}")
             seiten.append(seite.rumpf)
+            gesamt += len(seite.rumpf)
+            if gesamt > MAX_GESAMT_BYTES:
+                raise GeraetFehler("Der Scan ist zu groß (mehr als 30 MB). Bitte weniger Seiten oder 150 dpi.")
             if quelle == "glas" and len(seiten) > 1:
                 raise GeraetFehler("Scanner liefert vom Glas mehr als eine Seite")
     except BaseException:

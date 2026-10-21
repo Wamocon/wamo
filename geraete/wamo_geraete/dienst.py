@@ -63,9 +63,9 @@ WERKZEUGE: dict[str, Werkzeug] = {
     "steuern": Werkzeug("change", ROLLEN, "steuern", tuple(STEUER_AKTIONEN), 15),
     "drucken": Werkzeug("critical", ROLLEN, "druck_auftrag", ("drucker",), 150),
     "scannen": Werkzeug("change", ROLLEN, "scan", ("scanner",), 360),
-    "ablage_liste": Werkzeug("read", ROLLEN, None, None, 5),
-    "ablage_holen": Werkzeug("read", ROLLEN, None, None, 10),
-    "ablage_loeschen": Werkzeug("change", ROLLEN, None, None, 5),
+    "ablage_liste": Werkzeug("read", ROLLEN, "ablage", None, 5),
+    "ablage_holen": Werkzeug("read", ROLLEN, "ablage", None, 10),
+    "ablage_loeschen": Werkzeug("change", ROLLEN, "ablage", None, 5),
     "nas_suchen": Werkzeug("read", ROLLEN, "nas", ("nas",), 30),
     "nas_abrufen": Werkzeug("read", ROLLEN, "nas", ("nas",), 75),
     "router_geraete": Werkzeug("read", frozenset({"admin"}), "router", ("router",), 20),
@@ -178,11 +178,13 @@ class Dienst:
         except Exception as e:  # noqa: BLE001 (ein Treiberfehler darf den Dienst nie beenden)
             logger.warning("Werkzeug %s fehlgeschlagen (%s)", werkzeug_name, type(e).__name__)
             antwort, anhang = {"status": "error", "summary": "Interner Fehler im Gerätedienst"}, b""
-        self.audit.schreiben({"werkzeug": werkzeug_name[:30], "geraet": kennung if isinstance(kennung, str) else None,
+        # Felder kürzt das Audit selbst (64 Zeichen); abgelehnte Anfragen und Grenzen schreibt es gedrosselt
+        self.audit.schreiben({"werkzeug": werkzeug_name, "geraet": kennung if isinstance(kennung, str) else None,
                               "profil": kontext.user_id if kontext else None, "rolle": kontext.rolle if kontext else None,
                               "sitzung": kontext.session_id if kontext else None,
                               "risiko": WERKZEUGE[werkzeug_name].risiko if werkzeug_name in WERKZEUGE else None,
-                              "ergebnis": antwort["status"], "ms": round((self._uhr() - start) * 1000)})
+                              "ergebnis": antwort["status"], "ms": round((self._uhr() - start) * 1000)},
+                             drosseln=antwort["status"] in ("rejected", "grenze"))
         if anhang:
             antwort["anhang"] = len(anhang)
         return antwort, anhang
@@ -196,6 +198,7 @@ class Dienst:
                                  "eingerichtet": bool(x.adresse) or x.treiber in ("server-lokal", "anwesenheit"),
                                  "faehigkeiten": [f for f in faehigkeiten(x) if k.rolle == "admin" or f != "router_geraete"],
                                  **({"aktionen": list(STEUER_AKTIONEN[x.klasse])} if x.klasse in STEUER_AKTIONEN else {}),
+                                 **({"schutz": True} if x.opt("schutz") else {}),
                                  **({"eingaenge": list(x.opt("eingaenge", ("tv", "hdmi1", "hdmi2", "hdmi3", "hdmi4")))}
                                     if x.klasse == "fernseher" else {})}
                                 for x in self.konfig.geraete.values()]}, b""
@@ -271,6 +274,9 @@ class Dienst:
         aktion = a.get("aktion")
         if aktion not in STEUER_AKTIONEN.get(g.klasse, ()):
             raise Abgelehnt(f"Für {g.name} gibt es: {', '.join(STEUER_AKTIONEN.get(g.klasse, ()))}")
+        if g.opt("schutz") and a.get("freigegeben") is not True:
+            # geschützte Geräte schaltet der Kern nur nach einer Freigabe-Karte (er setzt freigegeben erst danach)
+            raise Abgelehnt(f"{g.name} ist geschützt und wird nur nach einer Freigabe geschaltet")
         wert = a.get("wert")
         wert = wert if isinstance(wert, int) and not isinstance(wert, bool) else None
         self.cache.vergessen(g.kennung)
@@ -295,24 +301,32 @@ class Dienst:
         if farbe and not g.opt("farbe_erlaubt", True):
             raise Abgelehnt("Farbdruck ist für diesen Drucker aus")
         dpi = int(g.opt("aufloesung", 600))
-        bilder = await asyncio.to_thread(raster.seiten, dok, dpi=dpi, farbe=farbe)
-        seiten = len(bilder) * kopien
-        if not self.grenzen.seiten_frei(k.user_id, seiten, self.konfig.druck_seiten_tag,
-                                        self.konfig.druck_seiten_gesamt_tag):
+        # 1. Text umbrechen (Frist 60 s, bricht Dokumente über 20 Seiten ab, bevor gezeichnet wird)
+        lay = await asyncio.to_thread(raster.layout, dok, dpi=dpi, farbe=farbe)
+        seiten = lay.seitenzahl * kopien
+        # 2. Seiten vor dem Senden reservieren; bei einem Fehler wieder zurückbuchen
+        tag = self.grenzen.seiten_reservieren(k.user_id, seiten, self.konfig.druck_seiten_tag,
+                                              self.konfig.druck_seiten_gesamt_tag)
+        if tag is None:
             raise Antwort("grenze", "Das Tageslimit für Druckseiten ist erreicht")
-        if g.opt("format", "pwg") == "pwg":
-            daten = await asyncio.to_thread(raster.pwg_raster, bilder, dpi, farbe)
-            ergebnis = await ipp.drucken(g, daten, "image/pwg-raster", titel=dok.titel, kopien=kopien, farbe=farbe)
-            auftraege = [ergebnis["auftrag"]]
-        else:
-            auftraege = []
-            for bild in bilder:
-                daten = await asyncio.to_thread(raster.jpeg, bild)
-                ergebnis = await ipp.drucken(g, daten, "image/jpeg", titel=dok.titel, kopien=kopien, farbe=farbe)
-                auftraege.append(ergebnis["auftrag"])
-        self.grenzen.seiten_buchen(k.user_id, seiten)
+        try:
+            frist = raster.Frist(raster.FRIST_ZEICHNEN_SECS)
+            if g.opt("format", "pwg") == "pwg":
+                # Seite für Seite zeichnen und kodieren (im Arbeitsthread), nie alle Seiten zugleich im Speicher
+                daten = await asyncio.to_thread(raster.pwg_raster, lay.seiten(frist), dpi, farbe, lay.seitenzahl, frist)
+                ergebnis = await ipp.drucken(g, daten, "image/pwg-raster", titel=dok.titel, kopien=kopien, farbe=farbe)
+                auftraege = [ergebnis["auftrag"]]
+            else:
+                auftraege = []
+                for nummer in range(1, lay.seitenzahl + 1):
+                    daten = await asyncio.to_thread(lambda n=nummer: raster.jpeg(lay.zeichne(n, frist)))
+                    ergebnis = await ipp.drucken(g, daten, "image/jpeg", titel=dok.titel, kopien=kopien, farbe=farbe)
+                    auftraege.append(ergebnis["auftrag"])
+        except BaseException:
+            self.grenzen.seiten_zurueck(k.user_id, seiten, tag)
+            raise
         self.cache.vergessen(g.kennung)
-        return {"geraet": g.kennung, "seiten": len(bilder), "kopien": kopien, "farbe": farbe, "auftraege": auftraege,
+        return {"geraet": g.kennung, "seiten": lay.seitenzahl, "kopien": kopien, "farbe": farbe, "auftraege": auftraege,
                 "zustand": ergebnis.get("zustand", "angenommen"), "schrift": raster.schrift_name()}
 
     async def _scannen(self, g: Geraet, a: dict, k: Kontext) -> dict:
@@ -332,7 +346,7 @@ class Dienst:
         for ziel in self.konfig.geraete.values():
             if ziel.klasse == "nas" and ziel.opt("scanziel"):
                 try:
-                    nas_ziel = await nas.scan_ablegen(ziel, self.konfig, k.name or k.user_id[:8], eintrag.name, pdf)
+                    nas_ziel = await nas.scan_ablegen(ziel, self.konfig, k.name, k.user_id, eintrag.name, pdf)
                 except (NichtEingerichtet, GeraetFehler) as e:
                     nas_ziel = f"nicht abgelegt: {str(e)[:80]}"
                 break
