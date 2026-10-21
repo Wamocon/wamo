@@ -66,12 +66,28 @@ Datei `/etc/wamo/geheim.env` (Rechte 640, root:wamo). Nie ins Repository.
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` oder `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code ohne Bildschirm | Firmen-API-Schlüssel mit Ausgabenlimit, oder Abo-Token aus `claude setup-token` |
 | `ANTHROPIC_WORKSPACE_ID` | Pflicht bei einem Organisationsschlüssel (`wrkspc_…`), wird als Header `anthropic-workspace-id` mitgeschickt | derselbe Wert wie in der `.env` des PCs |
-| `GH_TOKEN` | gh, git push, Pull Requests | GitHub App „WAMO“ (kurzlebige Tokens, je Repository freigegeben). Übergang: fein granularer Token eines Bot-Kontos, nur ausgewählte Repos, Ablaufdatum |
+| `GH_TOKEN` | gh, git push, Pull Requests | fein granularer Token eines Bot-Kontos, nur ausgewählte Repos, Ablaufdatum. Geplant: kurzlebige Tokens einer GitHub App je Lauf |
 | `GH_TOKEN_LESEN` | GitHub nur lesend für die Arten planung, review, analyse, sicherheit, reverse_engineering und dokumentation (kommt in der Sandbox als `GH_TOKEN` an) | fein granularer Token, nur „Contents: Read“ und „Metadata: Read“ auf die nötigen Repos, Ablaufdatum. Fehlt er, bekommen diese Arten gar kein GitHub-Token |
 | `VERCEL_TOKEN`, `VERCEL_ORG_ID` | Vercel-CLI (Preview-Deployments, Logs) | Team-Token mit Ablaufdatum; Produktion nur nach Freigabe (dev_guard) |
 | `SUPABASE_ACCESS_TOKEN` | Supabase-CLI und MCP für Cloud-Projekte | Persönlicher Token eines Service-Kontos; MCP standardmäßig `--read-only` und mit `--project-ref` |
-| `JIRA_API_KEY`, `JIRA_EMAIL` | Jira-MCP (`wamocon.atlassian.net`), nur lesend | API-Token eines Kontos mit Leserechten auf die nötigen Projekte; `JIRA_EMAIL` ist die Anmeldeadresse dieses Kontos |
+| `JIRA_API_KEY`, `JIRA_EMAIL` | Jira-MCP (`wamocon.atlassian.net`), nur lesend | API-Token eines technischen Benutzers mit „Browse Projects“ auf die nötigen Projekte (Anleitung unten); `JIRA_EMAIL` ist dessen Anmeldeadresse |
 | `SONIOX_API_KEY`, `LITELLM_API_KEY` | Sprachkern auf Sokrates-2 (Phase P3) | eigener LiteLLM-Schlüssel nur für WAMO; gelangen nie in die Auftrags-Sandbox |
+
+### Jira: technischer Benutzer statt persönlichem Schlüssel
+
+Der Jira-Konnektor läuft im Nur-Lese-Modus (`READ_ONLY_MODE=true`) und braucht deshalb nur Leserechte. Umstellung:
+
+1. In der Atlassian-Verwaltung einen eigenen Benutzer für WAMO anlegen (eigene Postfachadresse, nicht die eines
+   Mitarbeiters) und ihm Zugriff auf das Produkt Jira geben, keine Administratorrolle.
+2. In Jira je Projekt, das Aufträge lesen sollen, dem Benutzer (oder einer Gruppe, in der nur er steht) die Berechtigung
+   „Browse Projects“ geben, über das Berechtigungsschema oder eine Projektrolle. Mehr ist nicht nötig: kein Anlegen,
+   Bearbeiten, Kommentieren oder Löschen. Projekte ohne diese Berechtigung bleiben für Aufträge unsichtbar.
+3. Als dieser Benutzer unter id.atlassian.com, Sicherheit, ein API-Token mit Ablaufdatum erzeugen.
+4. Auf Sokrates-2 in `/etc/wamo/geheim.env` die beiden Werte ersetzen (Datei bleibt root:wamo 0640):
+   `JIRA_EMAIL=<Adresse des technischen Benutzers>` und `JIRA_API_KEY=<neues API-Token>`. Ein Neustart ist nicht
+   nötig, jeder Auftrag liest `geheim.env` beim Start.
+5. Prüfen: `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp"` meldet jira als verbunden (Art
+   umsetzung). Danach das alte persönliche API-Token unter id.atlassian.com widerrufen.
 
 ## 3. Konnektoren für Claude Code (als `wamo`)
 
@@ -277,11 +293,19 @@ Rauchtest danach immer: `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-r
 | Dispatcher | `/opt/wamo/bin/wamo-job-dispatch` (root:wamo) | Forced Command des Schlüssels `wamo-jobs`: nur `ping`, `start`, `status`, `pending`, `approve`, `cancel`; Selbsttest mit Kanarienvögeln je Lauf; vergibt Freigaben atomar über einen Unix-Socket; räumt alte Caches als `wamo` auf |
 | Läufer | `/opt/wamo/bin/wamo-job.sh` | bubblewrap-Sandbox, Landlock (connect und bind), seccomp, systemd-Grenzen, Zeitlimit |
 | Wächter | `/opt/wamo/waechter`, in der Sandbox unter demselben Pfad schreibgeschützt | Freigaben (per Socket reserviert und bestätigt), Sperrliste, seccomp-Filter |
-| Managed-Settings | `/opt/wamo/claude-code/managed-settings.json`, in der Sandbox `/etc/claude-code` | nur verwaltete Hooks (Wächter, ECC-Plugin bleibt), keine Projekt-MCP-Server; `strictPluginOnlyCustomization` für `agents` und `mcp` |
+| Managed-Settings | `/opt/wamo/claude-code/managed-settings.json`, in der Sandbox `/etc/claude-code` | nur verwaltete Hooks (allein der Wächter), keine Projekt-MCP-Server; `strictPluginOnlyCustomization` für `agents` und `mcp`; Marktplatz `ecc` ist die lokale Kopie ohne Hooks |
+| ECC ohne Hooks | `/opt/wamo/claude-plugins` (root:wamo), in der Sandbox `/srv/wamo/.claude/plugins` | Kopie des ECC-Plugins von wamo ohne `hooks/`, `scripts/hooks/` und `.mcp.json`, als lokaler Marktplatz `ecc`; Skills, Agenten und Befehle heißen gleich (`ecc:verification-loop`). Erzeugt von `wamo-job-ecc.py`, nach jedem ECC-Update `wamo-job-einrichten.sh` erneut ausführen |
 | Managed-MCP | `/opt/wamo/claude-code/managed-mcp.json` | die MCP-Server (rea, github, supabase, jira) kommen allein von hier (ersetzt Benutzer-Einträge); Token über `${…:-}` aus der Umgebung |
 | Ausgangsfilter | `/etc/wamo/egress.nft`, `wamo-egress.service` | nft-Tabelle `inet wamo_egress`, nur für uid `wamo` |
 | SSH | `/etc/ssh/authorized_keys.d/wamo`, `/etc/ssh/sshd_config.d/wamo.conf` | Schlüssel mit `restrict,from="192.168.178.0/24",command=...`; `Match User wamo` mit `ForceCommand`, nur Public Key, keine Weiterleitungen, kein TTY, `PermitUserRC no`, `MaxSessions 2` |
 | Version | `CLAUDE_VERSION` in `/opt/wamo/wamo-job.conf` | nach einem Update von Claude Code startet nichts, bis das Einrichtungsskript und der Rauchtest liefen |
+| Modell | `modell` je Karte in `voice-core/werkzeugkarte.py` | Standard für alle Arten `claude-haiku-5-5` (Sonnet kostet etwa das Dreifache); `claude-sonnet-5-5` oder `claude-opus-5-5` nur über `WAMO_ENTWICKLUNG_MODELL` in der `.env` des PCs (nur Namen aus `MODELLE_ERLAUBT`, über die Kopfzeile an den Dispatcher) |
+
+GitHub-CLI im Auftrag: ohne Karte nur lesende Befehle (`gh repo view/list/clone`, `gh pr view/list/diff/checks/status/
+checkout`, `gh issue view/list/status`, `gh run`, `gh workflow`, `gh release` lesend, `gh label list`, `gh gist view/list`,
+`gh search`, `gh status`, `gh api` ohne schreibende Optionen). Jeder andere gh-Befehl (etwa `gh repo create`, `gh repo
+edit --visibility public`, `gh issue create`, `gh pr comment`, `gh workflow run`) braucht eine Freigabe; `gh alias`,
+`gh extension`, `gh auth`, `gh secret`, `gh variable`, `gh codespace` sowie Löschen und Archivieren sind gesperrt.
 
 Vor jedem Lauf entschärft der Dispatcher den Projektordner (außerhalb der Sandbox, ohne Links zu folgen): `.mcp.json`,
 das ganze projekteigene `.claude/`, Git-Hooks und `config.worktree` in jedem `.git` im Baum (auch eingebettet oder als

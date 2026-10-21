@@ -5,12 +5,14 @@ Prompt, gilt die Freigabe-Tabelle:
 
   sofort     Code schreiben im Projektordner, Tests, lokale Commits, Preview-Deploys per CLI,
              lesende Werkzeuge (Read/Grep/Glob, lesende MCP-Werkzeuge von Supabase, Vercel,
-             GitHub, Jira und REA)
-  Freigabe   git push, Veröffentlichen (npm, Docker, PyPI, GitHub-Release, gh repo create --push),
-             Produktions-Deploys, schreibende gh-api-Aufrufe, Uploads an fremde Server,
+             GitHub, Jira und REA), lesende gh-Befehle aus GH_LESEND (view, list, diff, clone, ...)
+  Freigabe   git push, jeder andere gh-Befehl (repo create/edit/fork, issue create, pr comment,
+             workflow run, label create, gist create, unbekannte), Veröffentlichen (npm, Docker,
+             PyPI, GitHub-Release), Produktions-Deploys, schreibende gh-api-Aufrufe, Uploads an fremde Server,
              WebFetch/WebSearch, jedes schreibende oder unbekannte MCP-Werkzeug, unbekannte
              Werkzeuge, REA-Werkzeuge mit Wirkung auf Geräte, Prozesse oder Dateien
-  gesperrt   Löschen von Repos/Projekten/Datenbanken, Secrets und Env-Variablen, Force-Push,
+  gesperrt   Löschen von Repos/Projekten/Datenbanken, Secrets und Env-Variablen, Force-Push, gh alias,
+             gh extension, gh auth, gh secret/variable, gh codespace,
              Zugangsdaten und Schlüsseldateien (.env, *.pem, *.key, id_*, ...), das WAMO-Repo
              selbst (über aufgelöste Pfade gegen REPO_ROOT), Freigabedaten und Umgebungsvariablen
 
@@ -173,6 +175,109 @@ def decide_git(cmd: str) -> tuple[str, str] | None:
     if GIT_PUSH_RE.search(cmd):
         return "approval", "git push"
     return None
+
+
+# ---------- GitHub-CLI (Allowlist lesender Unterbefehle, fail-safe) ----------
+# Ohne Karte nur, was GitHub nicht verändert. Alles andere (repo create/edit/fork, issue create, pr comment,
+# workflow run, label create, gist create, unbekannte Unterbefehle, ...) braucht eine Freigabe. None heißt:
+# jeder Unterbefehl; gh api fällt danach unter die SHELL_APPROVAL-Regeln für schreibende API-Aufrufe.
+GH_LESEND: dict[str, set[str] | None] = {
+    "repo": {"view", "list", "clone"},
+    "pr": {"view", "list", "diff", "checks", "status", "checkout"},
+    "issue": {"view", "list", "status"},
+    "run": {"view", "list", "watch", "download"},
+    "workflow": {"view", "list"},
+    "release": {"view", "list", "download"},
+    "label": {"list"},
+    "gist": {"view", "list"},
+    "search": None,
+    "status": None,
+    "api": None,
+}
+GH_GESPERRT_GRUPPEN = {
+    "secret": "Secrets und Zugänge sind gesperrt", "variable": "Secrets und Zugänge sind gesperrt",
+    "auth": "Secrets und Zugänge sind gesperrt", "ssh-key": "Secrets und Zugänge sind gesperrt",
+    "gpg-key": "Secrets und Zugänge sind gesperrt",
+    "alias": "gh-Aliase sind gesperrt (verstecken Befehle)",
+    "extension": "gh-Erweiterungen sind gesperrt (führen fremden Code aus)",
+    "codespace": "Codespaces sind gesperrt (Rechner außerhalb der Sandbox)",
+}
+GH_GESPERRT_BEFEHLE = {
+    ("repo", "delete"): "Repos löschen/archivieren ist gesperrt",
+    ("repo", "archive"): "Repos löschen/archivieren ist gesperrt",
+    ("repo", "deploy-key"): "Secrets und Zugänge sind gesperrt",
+    ("release", "delete"): "Releases löschen ist gesperrt",
+}
+GH_GRUENDE = {
+    ("pr", "merge"): "Pull Request mergen",
+    ("pr", "create"): "Pull Request anlegen (pusht den Branch)",
+    ("repo", "create"): "Repo anlegen",
+    ("repo", "edit"): "Repo-Einstellungen ändern (etwa die Sichtbarkeit)",
+    ("repo", "fork"): "Repo forken",
+    ("release", "create"): "GitHub-Release veröffentlichen",
+    ("release", "upload"): "GitHub-Release veröffentlichen",
+    ("release", "edit"): "GitHub-Release veröffentlichen",
+}
+GH_WERT_OPTIONEN = {"-R", "--repo", "--hostname"}
+
+
+SHELL_CODE_OPTIONEN = {"-c", "-lc", "-ic", "-ec", "-command", "/c", "/k"}
+
+
+def gh_invocations(cmd: str, tiefe: int = 0) -> Iterator[tuple[str | None, str | None, list[str]]]:
+    """(Gruppe, Unterbefehl, restliche Argumente) für jeden gh-Aufruf. Shell-Code als Argument (bash -c "...",
+    pwsh -Command "...", cmd /c "...", eval "...") wird erneut zerlegt, damit verschachtelte Aufrufe nicht
+    durchrutschen; gewöhnliche Texte (etwa eine Commit-Nachricht, die gh erwähnt) nicht."""
+    for segment in _SEGMENTS.split(cmd):
+        tokens = _tokens(segment)
+        for i, tok in enumerate(tokens):
+            vorher = tokens[i - 1] if i else ""
+            if tiefe < 3 and i and (vorher.lower() in SHELL_CODE_OPTIONEN or _program(vorher) == "eval"):
+                yield from gh_invocations(tok, tiefe + 1)
+            if _program(tok) != "gh":
+                continue
+            rest, j = [], i + 1
+            positional: list[str] = []
+            while j < len(tokens):
+                t = tokens[j]
+                if t in GH_WERT_OPTIONEN:
+                    j += 2
+                    continue
+                if t.startswith("-"):
+                    rest.append(t)
+                    j += 1
+                    continue
+                if len(positional) < 2:
+                    positional.append(t.lower())
+                else:
+                    rest.append(t)
+                j += 1
+            gruppe = positional[0] if positional else None
+            unter = positional[1] if len(positional) > 1 else None
+            yield gruppe, unter, rest
+
+
+def decide_gh(cmd: str) -> tuple[str, str] | None:
+    """Sperre, Freigabe oder None (lesend, weiter mit den übrigen Regeln) für gh-Aufrufe."""
+    ergebnis: tuple[str, str] | None = None
+    for gruppe, unter, rest in gh_invocations(cmd):
+        if gruppe is None:  # gh, gh --version, gh --help
+            continue
+        if gruppe in GH_GESPERRT_GRUPPEN:
+            return "block", GH_GESPERRT_GRUPPEN[gruppe]
+        if (gruppe, unter) in GH_GESPERRT_BEFEHLE:
+            return "block", GH_GESPERRT_BEFEHLE[(gruppe, unter)]
+        erlaubt = GH_LESEND.get(gruppe, set())
+        if gruppe in GH_LESEND and (erlaubt is None or unter is None or unter in erlaubt):
+            continue
+        grund = GH_GRUENDE.get((gruppe, unter), f"gh {gruppe} {unter or ''}".strip() + " verändert GitHub oder ist unbekannt")
+        if (gruppe, unter) == ("repo", "create") and "--push" in rest:
+            grund = "Repo anlegen und pushen"
+        if gruppe == "repo" and any(a.startswith("--public") or a == "--visibility=public" for a in rest) \
+                or ("--visibility" in rest and "public" in [a.lower() for a in rest]):
+            grund += " (öffentlich!)"
+        ergebnis = ergebnis or ("approval", grund)
+    return ergebnis
 
 
 # ---------- Uploads an fremde Server ----------
@@ -502,6 +607,9 @@ def decide_shell(cmd: str, project_dir: Path | None = None) -> tuple[str, str]:
     git = decide_git(cmd)
     if git is not None:
         return git
+    gh = decide_gh(cmd)
+    if gh is not None:
+        return gh
     for pattern, why in SHELL_APPROVAL:
         if re.search(pattern, cmd, re.IGNORECASE):
             return "approval", why

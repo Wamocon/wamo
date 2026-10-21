@@ -94,6 +94,7 @@ SESSION_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 FP_RE = re.compile(r"[0-9a-f]{64}")  # voller SHA-256 aus dev_guard.fingerprint
 ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 WORKSPACE_RE = re.compile(r"[A-Za-z0-9_-]{1,100}")
+MODELL_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,63}")
 MAX_COMMAND_CHARS = 300
 MAX_HEADER_BYTES = 256 * 1024
 MAX_TEXT_CHARS = 20000
@@ -120,7 +121,8 @@ CLAUDE_JSON_KEYS = (
     "migrationVersion", "opusProMigrationComplete", "sonnet1m45MigrationComplete",
     "hasResetAutoModeOptInForDefaultOffer", "autoUpdatesProtectedForNative",
 )
-SETTINGS_KEYS = ("enabledPlugins", "extraKnownMarketplaces")  # Rest (Hooks, Helfer, statusLine) nie übernehmen
+SETTINGS_KEYS = ("enabledPlugins",)  # Rest (Hooks, Helfer, statusLine, Marktplätze) nie übernehmen; den
+# Marktplatz ecc deklariert allein managed-settings.json (lokale Kopie ohne Hooks, wamo-job-ecc.py)
 
 
 class Abgewiesen(Exception):
@@ -205,17 +207,21 @@ def parse_command(raw: str | None) -> tuple[str, list[str]]:
     return name, [check(arg) for check, arg in zip(checks, args)]
 
 
-def parse_header(raw: bytes) -> tuple[str, str]:
-    """Erste stdin-Zeile von start: {"auftrag": str, "system": str}. Steuerzeichen außer Zeilenumbruch
-    und Tabulator fliegen heraus; beide Texte sind begrenzt."""
+def parse_header(raw: bytes) -> tuple[str, str, str | None]:
+    """Erste stdin-Zeile von start: {"auftrag": str, "system": str, "modell": str (optional)}. Steuerzeichen
+    außer Zeilenumbruch und Tabulator fliegen heraus; beide Texte sind begrenzt. Das Modell prüft cmd_start
+    gegen die Allowlist der Werkzeugkarte."""
     if not raw.endswith(b"\n") or len(raw) > MAX_HEADER_BYTES:
         raise Abgewiesen("Kopfzeile fehlt oder ist zu lang")
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise Abgewiesen("Kopfzeile ist kein JSON") from None
-    if not isinstance(data, dict) or set(data) - {"auftrag", "system"}:
+    if not isinstance(data, dict) or set(data) - {"auftrag", "system", "modell"}:
         raise Abgewiesen("Kopfzeile hat unbekannte Felder")
+    modell = data.get("modell")
+    if modell is not None and (not isinstance(modell, str) or not MODELL_RE.fullmatch(modell)):
+        raise Abgewiesen("Kopfzeile: modell ungültig")
     auftrag, system = data.get("auftrag"), data.get("system", "")
     if not isinstance(auftrag, str) or not isinstance(system, str):
         raise Abgewiesen("Kopfzeile: auftrag und system müssen Text sein")
@@ -224,7 +230,7 @@ def parse_header(raw: bytes) -> tuple[str, str]:
         raise Abgewiesen("Auftrag ist leer")
     if len(auftrag) > MAX_TEXT_CHARS or len(system) > MAX_TEXT_CHARS:
         raise Abgewiesen("Auftrag oder Systemtext zu lang")
-    return auftrag, system
+    return auftrag, system, modell or None
 
 
 def _clean(text: str) -> str:
@@ -1501,7 +1507,11 @@ def _kopfzeile_lesen() -> bytes:
 
 
 def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> int:
-    auftrag, system = parse_header(_kopfzeile_lesen())
+    auftrag, system, wunsch = parse_header(_kopfzeile_lesen())
+    try:
+        modell = werkzeugkarte().modell_fuer(art, wunsch)
+    except ValueError as e:
+        raise Abgewiesen(str(e)) from None
     aufraeumen()  # N5: alte Caches als wamo entfernen
     sperren = sperren_ordner()
     jobdir = job_ordner(job)
@@ -1548,15 +1558,21 @@ def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> i
         wamo_event("zugang_erweitert", **anfrage)
         _status(jobdir, job, projekt, art, ergebnis="zugang_erweitert", code=EXIT_ZUGANG_ERWEITERT)
         return EXIT_ZUGANG_ERWEITERT
-    argv = [str(RUNNER), "--auftrag", job, "--projekt", projekt, "--", str(CLAUDE), "-p",
-            "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions",
-            "--settings", PLUGIN_SETTINGS, "--append-system-prompt", system]
-    if session:
-        argv += ["--resume", session]
-    log(f"start {job} {projekt} {art} {'fortsetzung' if session else 'neu'} zugaenge={','.join(zugaenge)}", pflicht=True)
+    argv = [str(RUNNER), "--auftrag", job, "--projekt", projekt, "--", *claude_argv(system, modell, session)]
+    log(f"start {job} {projekt} {art} {'fortsetzung' if session else 'neu'} modell={modell} "
+        f"zugaenge={','.join(zugaenge)}", pflicht=True)
     code = _ausfuehren(argv, env, auftrag, jobdir, job, projekt, art)
     del gehalten  # erst jetzt frei (Prozessende gibt sie ohnehin frei)
     return code
+
+
+def claude_argv(system: str, modell: str, session: str | None = None) -> list[str]:
+    """Aufruf von Claude Code in der Sandbox (auch vom Rauchtest genutzt)."""
+    argv = [str(CLAUDE), "-p", "--output-format", "stream-json", "--verbose", "--permission-mode",
+            "bypassPermissions", "--model", modell, "--settings", PLUGIN_SETTINGS, "--append-system-prompt", system]
+    if session:
+        argv += ["--resume", session]
+    return argv
 
 
 def _status(jobdir: Path, job: str, projekt: str, art: str, **fields) -> None:
@@ -1712,7 +1728,7 @@ def main(argv: list[str] | None = None) -> int:
         raw = " ".join(sys.argv[1:] if argv is None else argv)
     try:
         name, args = parse_command(raw)
-        if name not in ("ping", "status", "pending"):
+        if name == "start":  # Eingang; approve und cancel protokollieren selbst (Pflichtzeile), sonst doppelt
             log(f"{name} {' '.join(args)}")
         return HANDLER[name](*args)
     except Abgewiesen as e:

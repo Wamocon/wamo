@@ -73,7 +73,7 @@ from pipecat.services.llm_service import FunctionCallParams
 
 from dev_guard import REPO_ROOT, SELF_REPO, _skript_befehl, decide, fingerprint, write_json_atomic
 from persona import clean_inline
-from werkzeugkarte import AUFTRAGSARTEN, KARTEN, anweisungsblock, art_beschreibung
+from werkzeugkarte import AUFTRAGSARTEN, KARTEN, MODELLE_ERLAUBT, anweisungsblock, art_beschreibung, modell_fuer
 
 PROJECTS_DIR = Path(os.getenv("WAMO_PROJECTS_DIR") or (Path.home() / "Projekte"))
 JOBS_DIR = Path(__file__).resolve().parent / ".jobs"
@@ -218,11 +218,19 @@ def lokal_problem() -> str | None:
     return projects_dir_problem()
 
 
+def modell_wunsch() -> str | None:
+    """WAMO_ENTWICKLUNG_MODELL übersteuert das Modell der Auftragsart (nur Namen aus MODELLE_ERLAUBT)."""
+    return (os.getenv("WAMO_ENTWICKLUNG_MODELL") or "").strip() or None
+
+
 def entwicklung_problem() -> str | None:
     """Grund, warum Entwicklungsaufträge in der gewählten Betriebsart nicht gehen, oder None."""
     ort = entwicklung_ort()
     if ort is None:
         return "WAMO_ENTWICKLUNG_ORT ist ungültig (erlaubt: sokrates2, lokal)"
+    wunsch = modell_wunsch()
+    if wunsch and wunsch not in MODELLE_ERLAUBT:
+        return f"WAMO_ENTWICKLUNG_MODELL ist ungültig (erlaubt: {', '.join(MODELLE_ERLAUBT)})"
     return lokal_problem() if ort == "lokal" else ssh_problem()
 
 
@@ -559,7 +567,9 @@ class DevAgent:
         if self._running and not self._running.done():
             await self._notify(f"Entwicklungsauftrag {job.projekt.name} wartet: es läuft schon ein Auftrag.")
             return
-        problem = lokal_problem() if self._ort == "lokal" else ssh_problem()
+        wunsch = modell_wunsch()
+        problem = (f"WAMO_ENTWICKLUNG_MODELL {wunsch!r} ist nicht erlaubt" if wunsch and wunsch not in MODELLE_ERLAUBT
+                   else lokal_problem() if self._ort == "lokal" else ssh_problem())
         if problem:
             logger.error("Entwicklungsauftrag {} nicht gestartet: {}", job.id, problem)
             return
@@ -638,8 +648,8 @@ class DevAgent:
         try:
             settings_file.write_text(json.dumps(job_settings(job.projekt, job.dir)), encoding="utf-8")
             args = [claude_exe(), "-p", "--output-format", "stream-json", "--verbose",
-                    "--permission-mode", "bypassPermissions", "--settings", str(settings_file),
-                    "--append-system-prompt", system_append]
+                    "--permission-mode", "bypassPermissions", "--model", modell_fuer(job.art, modell_wunsch()),
+                    "--settings", str(settings_file), "--append-system-prompt", system_append]
             if resume and job.session_id:
                 args += ["--resume", job.session_id]
             self._proc = await asyncio.create_subprocess_exec(
@@ -719,7 +729,10 @@ class DevAgent:
                 start_new_session=sys.platform != "win32",
             )
             stderr_task = asyncio.create_task(_drain(self._proc.stderr, stderr_tail))
-            kopf = json.dumps({"auftrag": prompt, "system": system_append}, ensure_ascii=False) + "\n"
+            kopf_daten = {"auftrag": prompt, "system": system_append}
+            if modell_wunsch():  # sonst wählt der Dispatcher das Modell der Art (Werkzeugkarte auf Sokrates-2)
+                kopf_daten["modell"] = modell_wunsch()
+            kopf = json.dumps(kopf_daten, ensure_ascii=False) + "\n"
             self._proc.stdin.write(kopf.encode("utf-8"))
             await self._proc.stdin.drain()  # stdin NICHT schließen: Lebenslinie des entfernten Auftrags
             await asyncio.wait_for(self._read_stream(job), JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS)

@@ -10,7 +10,8 @@ Installiert als /opt/wamo/bin/wamo-job-rauchtest durch wamo-job-einrichten.sh. A
 --attrappe startet in der Sandbox eine Attrappe der Messages-API (127.0.0.1:20180, nur Standardbibliothek) und
 lässt Claude Code mit einem Dummy-Schlüssel dagegen laufen. Die Attrappe verlangt den Befehl
 "git push origin main"; geprüft wird, dass der Wächter-Hook aus managed-settings.json in der Sandbox greift,
-nur verwaltete Hooks laufen (ECC als verwaltetes Plugin ja, Benutzer- und Projekt-Hooks nein), die Anfrage über
+nur der Wächter als Hook läuft (keine ECC-Hooks, keine Benutzer- und Projekt-Hooks), ECC-Skills und
+-Agenten da sind, das Modell der Auftragsart gilt, die Anfrage über
 "pending" sichtbar wird, eine Freigabe genau einmal wirkt, die Lebenslinie (stdin) und "cancel" den Lauf beenden.
 --mcp startet "claude mcp list" in der Sandbox mit der Umgebung der Auftragsarten datenbank und umsetzung
 (echte Token aus /etc/wamo/geheim.env, ausgegeben wird nur der Verbindungsstatus).
@@ -22,6 +23,7 @@ from __future__ import annotations
 import importlib.machinery
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -513,11 +515,11 @@ def lauf_mit_attrappe(job: str, jobdir: Path, session: str | None = None, pause:
         (jobdir / "claude" / "settings.json").write_text(json.dumps(haken("hook-benutzer")))
         (PROJ / ".claude").mkdir(exist_ok=True)
         (PROJ / ".claude" / "settings.json").write_text(json.dumps(haken("hook-projekt")))
-    resume = f" --resume {session}" if session else ""
+    art = json.loads((jobdir / "auftrag.json").read_text())["art"]
+    claude = shlex.join(D.claude_argv("Rauchtest", D.werkzeugkarte().modell_fuer(art), session))  # wie der Dispatcher
     innen = (f"ATTRAPPE_PAUSE={pause} python3 -I {PROJ}/.rauchtest/attrappe.py {PORT_ATTRAPPE} </dev/null >/dev/null 2>&1 & "
              f"for i in $(seq 100); do (exec 3<>/dev/tcp/127.0.0.1/{PORT_ATTRAPPE}) 2>/dev/null && break; sleep 0.1; done; "
-             f"exec {D.CLAUDE} -p --output-format stream-json --verbose --permission-mode bypassPermissions "
-             f"--settings '{D.PLUGIN_SETTINGS}' --append-system-prompt Rauchtest{resume}")
+             f"exec {claude}")
     spec = {"argv": [str(D.RUNNER), "--auftrag", job, "--projekt", PROJEKT, "--zeitlimit", "300", "--",
                      "/bin/bash", "-c", innen],
             "env": {**D.basis_env(), "ANTHROPIC_API_KEY": "rauchtest-attrappe",
@@ -572,6 +574,19 @@ def ende_zu_ende() -> None:
     pruefe("nur verwaltete Hooks: Benutzer- und Projekt-Hook liefen nicht",
            not (PROJ / "hook-benutzer").exists() and not (PROJ / "hook-projekt").exists(),
            ", ".join(m for m in ("hook-benutzer", "hook-projekt") if (PROJ / m).exists()) or "keiner lief")
+    init = next((z for z in zeilen_ if z.get("type") == "system" and z.get("subtype") == "init"), {})
+    skills, agenten = set(init.get("skills") or []), set(init.get("agents") or [])
+    ecc = next((p for p in init.get("plugins") or [] if isinstance(p, dict) and p.get("name") == "ecc"), {})
+    pruefe("ECC-Skills und -Agenten verfügbar (ecc:verification-loop, ecc:code-reviewer), aus der Kopie ohne Hooks",
+           "ecc:verification-loop" in skills and "ecc:code-reviewer" in agenten
+           and str(ecc.get("path", "")).endswith("/cache/ecc/ecc/ohne-hooks"),
+           f"{len(skills)} Skills, {len(agenten)} Agenten, Plugin-Pfad {ecc.get('path', '?')}")
+    hooks = [z for z in zeilen_ if z.get("type") == "system" and str(z.get("subtype", "")).startswith("hook_")]
+    gate = [e for e in ergebnis1 if "Fact-Forcing Gate" in e]
+    pruefe("kein ECC-Hook läuft (kein SessionStart-Hook, kein Fact-Forcing Gate)", not hooks and not gate,
+           ", ".join(sorted({str(h.get("hook_name")) for h in hooks})) or ("Gate" if gate else "keiner"))
+    pruefe("Modell der Auftragsart (Standard claude-haiku-5-5)", init.get("model") == "claude-haiku-5-5",
+           str(init.get("model")))
     p = subprocess.run([DISPATCH, "pending", job], capture_output=True, text=True, env=D.basis_env())
     anfragen = [json.loads(line) for line in p.stdout.splitlines() if line.strip()]
     pruefe("pending liefert die geprüfte Anfrage (Fingerabdruck 64 Zeichen)", len(anfragen) == 1

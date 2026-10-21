@@ -79,11 +79,16 @@ class CommandValidationTests(unittest.TestCase):
                 self.assertEqual(D.main([]), D.EXIT_ABGEWIESEN)
 
     def test_header(self):
-        auftrag, system = D.parse_header(json.dumps({"auftrag": "Baue\u0007 eine App\nmit Login", "system": "x"}).encode() + b"\n")
+        auftrag, system, modell = D.parse_header(
+            json.dumps({"auftrag": "Baue\u0007 eine App\nmit Login", "system": "x"}).encode() + b"\n")
         self.assertEqual(auftrag, "Baue eine App\nmit Login")
         self.assertEqual(system, "x")
+        self.assertIsNone(modell)
+        self.assertEqual(D.parse_header(b'{"auftrag": "x", "modell": "claude-opus-5-5"}\n')[2], "claude-opus-5-5")
         for raw in [b'{"auftrag": "x"}', b'kein json\n', b'[]\n', b'{"auftrag": "x", "befehl": "id"}\n',
                     b'{"auftrag": 1}\n', b'{"auftrag": "   "}\n', b"[" * 5000 + b"\n",
+                    b'{"auftrag": "x", "modell": 5}\n', b'{"auftrag": "x", "modell": "--dangerously"}\n',
+                    b'{"auftrag": "x", "modell": "a b"}\n',
                     json.dumps({"auftrag": "x" * (D.MAX_TEXT_CHARS + 1)}).encode() + b"\n"]:
             with self.subTest(raw=raw[:40]), self.assertRaises(D.Abgewiesen):
                 D.parse_header(raw)
@@ -574,6 +579,117 @@ class GitConfigTests(unittest.TestCase):
                                     "branch.main.remote", "user.name"})
 
 
+E = _load("wamo_job_ecc", "wamo-job-ecc.py")
+
+
+class EccKopieTests(unittest.TestCase):
+    """Punkt 2: ECC für die Sandbox ohne Hooks, Namen bleiben gleich."""
+
+    def _plugin(self, wurzel: Path) -> Path:
+        cache = wurzel / "cache" / "ecc" / "ecc" / "2.2.3"
+        for rel, inhalt in {
+            ".claude-plugin/plugin.json": json.dumps({"name": "ecc", "version": "2.2.3", "skills": ["./skills/"],
+                                                      "hooks": "./hooks/hooks.json", "mcpServers": {"x": {}},
+                                                      "userConfig": {"hooks_enabled": {}, "anders": {}}}),
+            ".claude-plugin/marketplace.json": json.dumps({"name": "ecc", "plugins": [
+                {"name": "ecc", "source": "./", "hooks": "x", "version": "2.2.3"}, {"name": "fremd", "source": "./f"}]}),
+            "hooks/hooks.json": '{"hooks": {"SessionStart": []}}',
+            "scripts/hooks/session-start.js": "x", "scripts/lib/x.js": "y", ".mcp.json": "{}", ".in_use/1": "",
+            "skills/verification-loop/SKILL.md": "# v", "agents/code-reviewer.md": "# a", "commands/plan.md": "# p",
+        }.items():
+            (cache / rel).parent.mkdir(parents=True, exist_ok=True)
+            (cache / rel).write_text(inhalt, encoding="utf-8")
+        (wurzel / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {"ecc@ecc": [
+            {"scope": "user", "installPath": str(cache), "version": "2.2.3"}]}}), encoding="utf-8")
+        return cache
+
+    def test_kopie_ohne_hooks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            quelle, ziel = Path(tmp) / "quelle", Path(tmp) / "opt" / "claude-plugins"
+            ziel.parent.mkdir()
+            self._plugin(quelle)
+            info = E.erzeugen(quelle, ziel, PurePosixPathLike("/srv/wamo"))
+            self.assertEqual((info["skills"], info["agenten"], info["version"]), (1, 1, "2.2.3"))
+            plugin = ziel / "cache" / "ecc" / "ecc" / "ohne-hooks"
+            for weg in ("hooks", "scripts/hooks", ".mcp.json", ".in_use"):
+                self.assertFalse((plugin / weg).exists(), weg)
+            for bleibt in ("skills/verification-loop/SKILL.md", "agents/code-reviewer.md", "commands/plan.md",
+                           "scripts/lib/x.js"):
+                self.assertTrue((plugin / bleibt).is_file(), bleibt)
+            meta = json.loads((plugin / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["name"], "ecc")
+            self.assertNotIn("hooks", meta)
+            self.assertEqual(meta["mcpServers"], {})
+            self.assertNotIn("hooks_enabled", meta["userConfig"])
+            markt = json.loads((plugin / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+            self.assertEqual([p["name"] for p in markt["plugins"]], ["ecc"])
+            self.assertNotIn("hooks", markt["plugins"][0])
+            inst = json.loads((ziel / "installed_plugins.json").read_text(encoding="utf-8"))
+            self.assertEqual(inst["plugins"]["ecc@ecc"][0]["installPath"],
+                             "/srv/wamo/.claude/plugins/cache/ecc/ecc/ohne-hooks")  # Pfad, wie die Sandbox ihn sieht
+            markets = json.loads((ziel / "known_marketplaces.json").read_text(encoding="utf-8"))
+            self.assertEqual(markets["ecc"]["source"], {"source": "directory",
+                                                        "path": "/srv/wamo/.claude/plugins/cache/ecc/ecc/ohne-hooks"})
+            self.assertTrue((ziel / "data").is_dir())
+            E.erzeugen(quelle, ziel, PurePosixPathLike("/srv/wamo"))  # wiederholbar (nach ECC-Updates)
+            self.assertFalse(ziel.with_name("claude-plugins.alt").exists())
+
+    def test_quelle_ausserhalb_des_caches_abgewiesen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            quelle = Path(tmp) / "quelle"
+            self._plugin(quelle)
+            (quelle / "installed_plugins.json").write_text(json.dumps({"plugins": {"ecc@ecc": [
+                {"installPath": tmp}]}}), encoding="utf-8")
+            with self.assertRaises(E.Fehler):
+                E.erzeugen(quelle, Path(tmp) / "ziel", PurePosixPathLike("/srv/wamo"))
+
+    @unittest.skipUnless(LINUX, "symbolische Links")
+    def test_links_werden_nicht_kopiert(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            quelle = Path(tmp) / "quelle"
+            cache = self._plugin(quelle)
+            os.symlink("/etc/passwd", cache / "skills" / "verification-loop" / "geheim")
+            E.erzeugen(quelle, Path(tmp) / "ziel", PurePosixPathLike("/srv/wamo"))
+            self.assertFalse((Path(tmp) / "ziel" / "cache/ecc/ecc/ohne-hooks/skills/verification-loop/geheim").exists())
+
+
+def PurePosixPathLike(text: str):  # noqa: N802  (Heim-Pfad der Sandbox, auch unter Windows als POSIX)
+    from pathlib import PurePosixPath
+    return PurePosixPath(text)
+
+
+class ModellTests(unittest.TestCase):
+    """Kosten: Modell je Auftragsart, übersteuerbar nur mit einem erlaubten Namen."""
+
+    def test_modell_je_art(self):
+        for art in wk.AUFTRAGSARTEN:  # Standard für alle Arten: Haiku (Kosten)
+            with self.subTest(art=art):
+                self.assertEqual(wk.modell_fuer(art), "claude-haiku-5-5")
+        self.assertEqual(wk.MODELLE_ERLAUBT, ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"))
+        self.assertEqual(wk.modell_fuer("umsetzung", "claude-opus-5-5"), "claude-opus-5-5")  # nur ausdrücklich
+        self.assertEqual(wk.modell_fuer("planung", "claude-sonnet-5-5"), "claude-sonnet-5-5")
+        with self.assertRaises(ValueError):
+            wk.modell_fuer("umsetzung", "claude-irgendwas")
+
+    def test_claude_argv(self):
+        argv = D.claude_argv("Regeln", "claude-haiku-5-5")
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-haiku-5-5")
+        self.assertNotIn("--resume", argv)
+        self.assertEqual(D.claude_argv("R", "claude-opus-5-5", SID)[-2:], ["--resume", SID])
+
+
+class AuditTests(unittest.TestCase):
+    def test_cancel_und_approve_nur_einmal_im_audit(self):
+        zeilen = []
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(D, "JOBS", Path(tmp)), \
+             mock.patch.object(D, "log", side_effect=lambda t, pflicht=False: zeilen.append(t)), \
+             mock.patch.object(D, "stop_units"), mock.patch.object(D, "emit"), mock.patch.dict(os.environ):
+            os.environ.pop("SSH_CONNECTION", None)
+            os.environ.pop("SSH_ORIGINAL_COMMAND", None)
+            self.assertEqual(D.main(["cancel", JOB]), D.EXIT_OK)
+        self.assertEqual([z for z in zeilen if z.startswith("cancel")], [f"cancel {JOB}"])
+
+
 class StreamTests(unittest.TestCase):
     def test_sandbox_lines_claiming_to_be_dispatcher_events_are_dropped(self):
         self.assertTrue(D.ist_wamo_zeile(b'{"type": "wamo", "ereignis": "ende", "ergebnis": "fertig"}\n'))
@@ -711,6 +827,10 @@ class ConsistencyTests(unittest.TestCase):
             nach = settings["hooks"][event][0]["hooks"][0]["command"]
             self.assertIn("--nachher", nach)
             self.assertIn("--freigabe-socket /run/wamo/zustand/freigabe.sock", nach)
+        # Punkt 2: der Marktplatz ecc ist die root-eigene Kopie ohne Hooks (wamo-job-ecc.py)
+        self.assertEqual(settings["extraKnownMarketplaces"]["ecc"]["source"],
+                         {"source": "directory", "path": "/srv/wamo/.claude/plugins/cache/ecc/ecc/ohne-hooks"})
+        self.assertEqual(D.SETTINGS_KEYS, ("enabledPlugins",))
         mcp = json.loads((INFRA / "claude-code" / "managed-mcp.json").read_text(encoding="utf-8"))["mcpServers"]
         self.assertEqual(set(mcp), {"rea", "github", "supabase", "jira"})  # enterprise MCP, ersetzt Benutzer-Einträge
         self.assertEqual(mcp["github"]["headers"]["Authorization"], "Bearer ${GH_TOKEN:-}")
@@ -720,7 +840,8 @@ class ConsistencyTests(unittest.TestCase):
         for mount in ("/run/wamo/zustand", "/run/wamo/projekt", '"$APP/claude-code" /etc/claude-code',
                       '"$APP/waechter" "$WAECHTER_INNEN"', "WAECHTER_INNEN=/opt/wamo/waechter", "--remount-ro /",
                       '--remount-ro "$PROJEKTE"', "--seccomp 9", '9<"$SECCOMP"', "--tmpfs /usr/local/lib/wamo",
-                      "APP=/opt/wamo"):
+                      "APP=/opt/wamo", 'PLUGINS=$APP/claude-plugins', '--ro-bind "$PLUGINS" "$HEIM/.claude/plugins"',
+                      '--bind "$JOBDIR/plugin-daten" "$HEIM/.claude/plugins/data"'):
             self.assertIn(mount, runner)
         # Wächter in /opt/wamo/waechter: REPO_ROOT ist dort /opt/wamo (die Installation), nicht der Projekte-Ordner
         self.assertEqual(Path("/opt/wamo/waechter/dev_guard.py").parent.parent.as_posix(), "/opt/wamo")

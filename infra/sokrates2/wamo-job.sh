@@ -17,7 +17,8 @@
 #     .local/share/uv/tools .fnm .npm-global nur lesbar (mcp-atlassian, Node, MCP-Server aus npm -g)
 #     .gitconfig                             nur lesbar
 #     .npm .cache                            je Auftrag eigener Ordner auf der Platte
-#     .claude                                je Auftrag (Sitzungen für --resume); Plugins nur lesbar,
+#     .claude                                je Auftrag (Sitzungen für --resume); Plugins aus
+#                                            /opt/wamo/claude-plugins (ECC ohne Hooks, root-eigen, nur lesbar),
 #                                            Plugin-Daten je Auftrag
 #     projekte                               eigenes, schreibgeschütztes tmpfs; darin nur projekte/<projekt>,
 #                                            beschreibbar, der einzige dauerhafte Arbeitsort
@@ -60,6 +61,7 @@ BWRAP=/usr/local/lib/wamo/bwrap
 KONF=$APP/wamo-job.conf
 WAECHTER_INNEN=/opt/wamo/waechter
 SECCOMP=$APP/waechter/seccomp.bpf
+PLUGINS=$APP/claude-plugins
 
 # Standardwerte; wamo-job.conf (root:wamo 0640) darf sie überschreiben
 ZEITLIMIT_S=1800
@@ -114,6 +116,7 @@ done
 [ -x "$BWRAP" ] || fehler "$BWRAP fehlt (wamo-job-einrichten.sh ausführen)"
 [ -r "$APP/claude-code/managed-settings.json" ] || fehler "managed-settings.json fehlt"
 [ -s "$SECCOMP" ] || fehler "seccomp-Filter $SECCOMP fehlt (wamo-job-einrichten.sh ausführen)"
+[ -f "$PLUGINS/installed_plugins.json" ] && [ -d "$PLUGINS/data" ] && [ ! -e "$PLUGINS/cache/ecc/ecc/ohne-hooks/hooks" ]   || fehler "ECC-Kopie ohne Hooks in $PLUGINS fehlt (wamo-job-einrichten.sh ausführen)"
 case "$ABSCHOTTUNG" in an|aus) ;; *) fehler "wamo-job.conf: ABSCHOTTUNG muss an oder aus sein" ;; esac
 CLAUDE_ECHT=$(readlink -f "$HEIM/.local/bin/claude" || true)
 [[ -n $CLAUDE_VERSION && $CLAUDE_ECHT == "$HEIM/.local/share/claude/versions/$CLAUDE_VERSION" ]] \
@@ -185,7 +188,8 @@ ARGS+=(
   --bind "$JOBDIR/claude" "$HEIM/.claude"
 )
 # Caches und Plugin-Daten je Auftrag auf der Platte (kein gemeinsamer, vergiftbarer Cache zwischen
-# Aufträgen); die Plugins selbst nur lesbar. MCP-Server aus npx laufen aus .npm-global (Dispatcher).
+# Aufträgen). Plugins: nicht die von wamo, sondern die root-eigene Kopie des ECC-Plugins ohne Hooks
+# (wamo-job-ecc.py); Skills, Agenten und Befehle heißen gleich, Hooks laufen keine.
 for teil in npm cache plugin-daten; do
   [ ! -L "$JOBDIR/$teil" ] || fehler "$teil ist ein Link"
   mkdir -p "$JOBDIR/$teil"
@@ -193,7 +197,7 @@ done
 ARGS+=(
   --bind "$JOBDIR/npm" "$HEIM/.npm"
   --bind "$JOBDIR/cache" "$HEIM/.cache"
-  --ro-bind "$HEIM/.claude/plugins" "$HEIM/.claude/plugins"
+  --ro-bind "$PLUGINS" "$HEIM/.claude/plugins"
   --bind "$JOBDIR/plugin-daten" "$HEIM/.claude/plugins/data"
 )
 

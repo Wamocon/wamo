@@ -299,6 +299,7 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kopf["auftrag"], "Baue eine Rezepte-App und pushe sie")
         self.assertIn("Sandbox", kopf["system"])
         self.assertIn("Werkzeugkarte für diesen Auftrag (Art: Umsetzung)", kopf["system"])
+        self.assertNotIn("modell", kopf)  # ohne WAMO_ENTWICKLUNG_MODELL wählt der Dispatcher das Modell der Art
         self.assertTrue(proc.stdin_offen_beim_warten)  # Lebenslinie bleibt offen, bis der Lauf endet
         self.assertTrue(proc.stdin.closed)
         self.assertEqual(job.status, "fertig")
@@ -315,6 +316,18 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sokrates-2, Sandbox", canvas["item"]["text"])
         texte = self.task.llm_texts()
         self.assertNotIn("Push braucht", texte[-1])  # Ergebnistext nur auf dem Canvas
+
+    async def test_modell_override_goes_in_header(self):
+        proc = FakeProc(stream())
+        self.start_procs.append(proc)
+        with mock.patch.dict(os.environ, {"WAMO_ENTWICKLUNG_MODELL": "claude-opus-5-5"}):
+            await self.prepare_and_start()
+        kopf = json.loads(proc.stdin.data.decode("utf-8").splitlines()[0])
+        self.assertEqual(kopf["modell"], "claude-opus-5-5")
+
+    async def test_invalid_modell_override_blocks_start(self):
+        with mock.patch.dict(os.environ, {"WAMO_ENTWICKLUNG_MODELL": "claude-irgendwas"}):
+            self.assertIn("WAMO_ENTWICKLUNG_MODELL", dev_agent.entwicklung_problem() or "")
 
     async def test_approval_goes_over_ssh_and_resumes(self):
         self.start_procs += [FakeProc(stream()), FakeProc(stream(tool=False))]

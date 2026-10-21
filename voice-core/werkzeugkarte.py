@@ -2,7 +2,8 @@
 REA-Werkzeuge Claude Code für welche Auftragsart zuerst nutzen soll.
 
 Claude-Code-Läufe aus dev_agent.py erben die Installation auf Benutzerebene: das Plugin ecc@ecc
-(Skills, Befehle, Agenten, Hooks) und den MCP-Server rea (Werkzeuge mcp__rea__*). Die Namen hier
+(Skills, Befehle, Agenten; auf Sokrates-2 als Kopie ohne Hooks) und den MCP-Server rea (Werkzeuge mcp__rea__*).
+Je Art legt die Karte auch das Modell fest (modell, Standard MODELL_STANDARD). Die Namen hier
 sind gegen ECC 2.2.3 geprüft (test_werkzeugkarte.py vergleicht sie mit dem Plugin-Ordner) und gegen
 die REA-Liste in dev_guard.py. REA-Werkzeuge stehen hier nur, wenn sie lesend arbeiten; was Geräte,
 Prozesse oder Dateien verändert, gibt der Wächter erst nach Freigabe frei.
@@ -17,6 +18,13 @@ from dataclasses import dataclass
 
 ECC_PREFIX = "ecc:"
 
+# Modell je Auftrag (Kosten): Standard ist Haiku für alle Arten (Sonnet kostet etwa das Dreifache). Sonnet und Opus
+# nur, wenn WAMO_ENTWICKLUNG_MODELL sie ausdrücklich setzt (dev_agent.py), und nur mit einem Namen aus MODELLE_ERLAUBT.
+MODELL_STANDARD = "claude-haiku-5-5"
+MODELL_SONNET = "claude-sonnet-5-5"
+MODELL_OPUS = "claude-opus-5-5"
+MODELLE_ERLAUBT: tuple[str, ...] = (MODELL_STANDARD, MODELL_SONNET, MODELL_OPUS)
+
 
 @dataclass(frozen=True)
 class Karte:
@@ -28,6 +36,7 @@ class Karte:
     rea: tuple[str, ...] = ()  # nur lesende REA-Werkzeuge (ohne Präfix mcp__rea__)
     hinweis: str = ""
     zugaenge: tuple[str, ...] = ()  # Dienste, deren Token der Auftrag auf Sokrates-2 bekommt (ZUGANG_VARIABLEN)
+    modell: str = MODELL_STANDARD  # Claude-Modell für diese Art (MODELLE_ERLAUBT); derzeit überall Haiku
 
 
 # Token-Allowlist für Aufträge auf Sokrates-2 (infra/sokrates2/wamo_job_dispatch.py liest /etc/wamo/geheim.env
@@ -235,6 +244,16 @@ def zugangs_variablen(art: str) -> tuple[str, ...]:
     """Namen der Dienst-Token in geheim.env, die ein Auftrag dieser Art bekommt (ohne Claude). KeyError bei
     unbekannter Art. In der Sandbox heißen sie wie sandbox_name() sagt."""
     return tuple(name for dienst in KARTEN[art].zugaenge for name in ZUGANG_VARIABLEN[dienst])
+
+
+def modell_fuer(art: str, wunsch: str | None = None) -> str:
+    """Modell für einen Auftrag: der Wunsch (WAMO_ENTWICKLUNG_MODELL), wenn erlaubt, sonst das der Art.
+    ValueError bei einem Wunsch außerhalb der Allowlist (kein stilles Ausweichen auf ein teures Modell)."""
+    if wunsch:
+        if wunsch not in MODELLE_ERLAUBT:
+            raise ValueError(f"Modell {wunsch!r} ist nicht erlaubt (erlaubt: {', '.join(MODELLE_ERLAUBT)})")
+        return wunsch
+    return KARTEN[art].modell
 
 
 def sandbox_name(name: str) -> str:

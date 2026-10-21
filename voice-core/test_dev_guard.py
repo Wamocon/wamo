@@ -27,7 +27,7 @@ def bash(cmd):
 class BashTests(unittest.TestCase):
     def test_allowed(self):
         for cmd in ["npm install", "npx create-next-app@latest .", "git init", "git add -A",
-                    "git commit -m 'init'", "npm test", "gh repo create rezepte --private",
+                    "git commit -m 'init'", "npm test", "gh pr list",
                     "vercel deploy", "git status", "git log --grep push", "git commit -m 'push later'",
                     "git commit -m \"Fix für WAMO\"", "npx create-next-app wamocon-site", "cd wamo-ui-demo",
                     "cd wamo", "cat ../wamo/README.md", "cp .env.example .env.sample", "ls src/**/*.ts",
@@ -42,6 +42,41 @@ class BashTests(unittest.TestCase):
                     "supabase db push"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(bash(cmd), "approval")
+
+    def test_gh_lese_allowlist(self):
+        """Pilot: gh-Befehle, die GitHub verändern, brauchen eine Freigabe (fail-safe: alles außer der Lese-Liste)."""
+        for cmd in ["gh repo create rezepte --private", "gh repo create x --public", "gh repo edit --visibility public",
+                    "gh repo edit o/r --visibility=public", "gh repo fork o/r", "gh repo rename neu", "gh issue create -t x",
+                    "gh issue comment 3 -b x", "gh issue close 3", "gh pr comment 3 -b hi", "gh pr review 3 --approve",
+                    "gh pr close 3", "gh workflow run ci.yml", "gh workflow enable ci.yml", "gh run rerun 1",
+                    "gh run cancel 1", "gh label create bug", "gh label delete bug", "gh gist create f.txt",
+                    "gh gist edit x", "gh config set editor vim", "gh browse", "gh project create", "gh org list",
+                    "gh unbekannt", "bash -c \"gh repo create x --public\"", "sh -lc 'gh issue create -t x'",
+                    "eval \"gh label create a\"", "pwsh -Command \"gh repo fork o/r\"", "cmd /c \"gh gist create a\"",
+                    "gh pr list && gh repo edit --visibility public", "GH_REPO=o/r gh issue create -t x",
+                    "/usr/bin/gh repo create x"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(bash(cmd), "approval")
+        self.assertIn("öffentlich", g.decide("Bash", {"command": "gh repo create x --public"}, PROJECT)[1])
+        self.assertIn("öffentlich", g.decide("Bash", {"command": "gh repo edit --visibility public"}, PROJECT)[1])
+        for cmd in ["gh repo view o/r", "gh repo list", "gh repo clone o/r", "gh pr view 3", "gh pr list --state open",
+                    "gh pr diff 3", "gh pr checks 3", "gh pr status", "gh pr checkout 3", "gh issue view 3",
+                    "gh issue list", "gh issue status", "gh run view 1", "gh run list", "gh run watch 1",
+                    "gh workflow view ci.yml", "gh workflow list", "gh release view v1", "gh release list",
+                    "gh label list", "gh gist view x", "gh gist list", "gh search repos wamo", "gh search issues x",
+                    "gh status", "gh api repos/o/r", "gh --version", "gh pr --help", "gh -R o/r pr view 3",
+                    "git commit -m 'fix gh label handling and gh repo create'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(bash(cmd), "allow")
+        for cmd in ["gh alias set co 'pr checkout'", "gh alias list", "gh alias import a.yml",
+                    "gh extension install o/gh-x", "gh extension exec x", "gh extension list",
+                    "gh secret list", "gh secret set X", "gh variable set X", "gh variable list", "gh auth status",
+                    "gh auth token", "gh auth login", "gh auth setup-git", "gh repo delete o/r --yes",
+                    "gh repo archive o/r", "gh -R o/r repo delete", "gh --repo o/r secret set X",
+                    "gh repo deploy-key add k.pub", "gh release delete v1", "gh ssh-key add k.pub", "gh gpg-key list",
+                    "gh codespace create", "bash -c 'gh secret set X'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(bash(cmd), "block")
 
     def test_publish_and_production_need_approval(self):
         """H1 aus dem Security-Review: Veröffentlichen, Produktion, schreibende APIs, Uploads."""

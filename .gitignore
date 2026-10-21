@@ -20,3 +20,4 @@ desktop/logs/
 *.pfx
 *.p12
 .claude/settings.local.json
+.claude/worktrees/
