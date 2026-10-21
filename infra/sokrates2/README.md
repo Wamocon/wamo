@@ -11,7 +11,9 @@ Supabase und Jira eingerichtet und in der Auftrags-Sandbox geprüft (Abschnitt 3
 Seit 19.10.2026 zusätzlich: HTTPS und Datenbank-TLS mit eigener CA (Abschnitt 5) und Firewall für die WAMO-Ports
 (Abschnitt 6). CA auf dem PC WMC-H-04-NS importiert, Stufe 2 seit 19.10.2026 aktiv (Abschnitt 7). Weitere PCs
 brauchen nur den Import (Abschnitt 5.2). Seit 19.10.2026 abends läuft der Voice-Core zusätzlich als Dienst `wamo-core`
-auf Sokrates-2, die PC-Werkzeuge kommen über einen SSH-Rücktunnel (Phase P3, Abschnitt 10).
+auf Sokrates-2, die PC-Werkzeuge kommen über einen SSH-Rücktunnel (Phase P3, Abschnitt 10). Seit 21.10.2026 läuft auch die
+Oberfläche als Container `wamo-ui` auf Sokrates-2 (HTTPS 55445), damit WAMO im Browser jedes Büro-Geräts nutzbar ist
+(Abschnitt 12).
 
 ## 0. Eigener Supabase-Stack (eingerichtet am 19.10.2026)
 
@@ -301,6 +303,7 @@ Andere Ports und Dienste auf Sokrates-2 bleiben unberührt.
 | 55321 | API und Auth über HTTP (Envoy) | 127.0.0.0/8, 172.24.0.0/24 (Caddy, nur über eine Docker-Bridge), 192.168.178.0/24 | ohne Büro-LAN |
 | 55443 | API und Auth über HTTPS (Caddy) | 127.0.0.0/8, 192.168.178.0/24 | unverändert |
 | 55444 | WAMO-Kern über HTTPS (Caddy vor dem Unix-Socket, Abschnitt 10) | 127.0.0.0/8, 192.168.178.0/24 | unverändert |
+| 55445 | WAMO-Oberfläche über HTTPS (Caddy vor dem Container `wamo-ui`, Abschnitt 12) | 127.0.0.0/8, 192.168.178.0/24 | unverändert |
 | 55322 | Postgres Session (Supavisor, TLS) | 127.0.0.0/8, 192.168.178.0/24 | unverändert |
 | 56543 | Postgres Transaktion (Supavisor, TLS) | 127.0.0.0/8, 192.168.178.0/24 | unverändert |
 
@@ -362,6 +365,7 @@ Prüfen vom PC: `curl -s -m 5 http://192.168.178.136:55321/auth/v1/health` läuf
 | sshd-Drop-in für wamo zurücknehmen | `ssh sokrates2 "sudo rm /etc/ssh/sshd_config.d/wamo.conf && sudo sshd -t && sudo systemctl reload ssh"`; ohne Drop-in sucht sshd den Schlüssel wieder unter `/srv/wamo/.ssh`, der Auftragsschlüssel geht dann nicht mehr |
 | Kern auf Sokrates-2 abschalten | `ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-rueckweg.sh"` (Dienst aus, Rolle `wamo_core_s2` nologin); mit `--entfernen` auch Code, venv, `core.env`, Benutzer, Rolle |
 | HTTPS 55444 zurücknehmen | `ssh sokrates2 "bash ~/wamo-infra/wamo-core-caddy.sh --zurueck"` (Site-Datei weg, `caddy reload`; Port und Mount bleiben im Compose, ohne Site lauscht Caddy dort nicht) |
+| Oberfläche abschalten | `ssh sokrates2 "bash ~/wamo-infra/wamo-ui-rueckweg.sh"` (Container, Caddy-Site und Drop-in weg; mit `--neustart` startet wamo-core ohne Sitzung neu, mit `--entfernen` auch Images, Einstellungen, Quellen). Port 55445 bleibt im Compose von `wamo-caddy` und in der Firewall (ohne Site lauscht Caddy dort nicht) |
 | Tunnel abschalten | `ssh sokrates2 "sudo bash ~/wamo-infra/wamo-tunnel-rueckweg.sh"` (Schlüssel und Drop-in weg, `sshd -t`, Sitzungen beendet); mit `--entfernen` auch Benutzer `wamo-tunnel`. Auf dem PC: `scripts\wamo-tunnel-entfernen.ps1 [-Alles]` |
 
 Die Sicherungen in `/var/backups/wamo-firewall` dienen zum Nachsehen. Nicht blind mit `iptables-restore` einspielen,
@@ -532,6 +536,108 @@ python scripts/wamo_kern_sokrates2.py token --neustart
 ssh sokrates2 "NUR_SITZUNGSGRENZEN=1 bash ~/wamo-infra/supabase-wamo-einrichten.sh"
 python scripts/wamo_kern_sokrates2.py status                     # WAMO_PC_HOST_FREIGABE: gesetzt
 ```
+
+## 12. Oberfläche im Browser auf Sokrates-2 (Variante A, eingerichtet am 21.10.2026)
+
+WAMO läuft damit im Browser jedes Geräts im Büronetz (oder über WireGuard), nicht nur in der Desktop-App auf Nikos PC.
+Der Browser dort kennt nur die Betriebsart Büro (Kern auf Sokrates-2); PC-Werkzeuge gehören zur Desktop-App, die
+Oberfläche zeigt „nur in der Desktop-App verfügbar“.
+
+```text
+Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000, Netz wamo-ui-netz (internal)──> wamo-ui (Next.js, Standalone)
+   ├──HTTPS 55443──> wamo-caddy ──> Envoy (Anmeldung, Supabase)
+   └──HTTPS 55444──> wamo-caddy ──> wamo-core (Kern, Unix-Socket); Medien als WebRTC direkt (UDP)
+```
+
+### 12.1 Bausteine
+
+| Baustein | Ort | Zweck |
+| --- | --- | --- |
+| Image und Container | `infra/sokrates2/wamo-ui/Dockerfile`, `docker-compose.yml`; auf dem Server `/home/wamocon/wamo-ui` | `npm ci`, `next build` (Standalone), Laufzeit `node:22-bookworm-slim` über Digest, arm64. Container: Benutzer `node`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, 512 MB, 1 CPU, 128 Prozesse, `restart: unless-stopped`, Healthcheck, kein veröffentlichter Port |
+| Netz | `wamo-ui-netz` (172.25.0.0/24), angelegt vom Compose von `wamo-caddy` | `internal` und ohne Adresse auf der Bridge (`inhibit_ipv4`): Der Container erreicht weder Internet noch Büro-LAN noch Dienste des Hosts (in `pruefen` geprüft: Gateway, Router, Internet, Host). Nur `wamo-caddy` hängt zusätzlich darin |
+| Caddy-Site | `wamo-ui/wamo-ui.caddy.vorlage`, installiert als `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui.caddy` | `https://192.168.178.136:55445` mit Zertifikat der WAMO-CA (`tls internal`), nur GET und HEAD, Body höchstens 1 KB, `encode`, ohne `Server` und `X-Powered-By`, COOP und CORP `same-origin`. Die übrigen Header (CSP, Referrer-Policy, nosniff, X-Frame-Options, Permissions-Policy) setzt Next.js. Kein HSTS: Browser ignorieren ihn bei einer IP-Adresse |
+| Einstellungen | `/home/wamocon/wamo-ui/wamo-ui.conf` (Vorlage `wamo-ui/wamo-ui.conf.beispiel`) | `WAMO_UI_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_WAMO_KERN_BUERO`, `WAMO_UI_TLS`, `WAMO_UI_HSTS`, Anmeldedauer im Browser. Hier und nur hier stehen Adresse und Zertifikatsart; im Code der Oberfläche steht keine feste IP. Werte sind öffentlich (stehen im JavaScript), keine Geheimnisse |
+| Publishable Key | liest das Skript auf dem Server aus `/home/wamocon/supabase-wamo/.env` | als Build-Argument ohne Wert in der Befehlszeile; abgelehnt wird alles außer `sb_publishable_…` (oder ein JWT mit Rolle `anon`), nie `service_role` |
+| Firewall | Port 55445 in `WAMO-FW-LAN` (`wamo-firewall.sh`) | Loopback und Büro-LAN, übernommen per `systemctl reload wamo-firewall` ohne Lücke |
+| Erlaubte Herkunft | Drop-in `/etc/systemd/system/wamo-core.service.d/wamo-ui.conf` | ergänzt `PIPECAT_ALLOWED_ORIGINS` um `WAMO_UI_URL` (Basis ist die Liste aus `wamo-core.service`); `wamo-core.service` selbst bleibt unberührt. Wirksam nach einem Neustart von wamo-core |
+| Skripte | `wamo-ui-einrichten.sh`, `wamo-ui-rueckweg.sh`, vom PC `scripts/wamo_ui_sokrates2.py` | alle wiederholbar; prüfen den Ablageort in `~/wamo-infra` wie die übrigen Skripte |
+
+Supabase braucht nichts Neues: Der Envoy des Stacks antwortet auf Preflight-Anfragen mit der Herkunft der Anfrage
+(geprüft für `https://192.168.178.136:55445`). Anmeldung mit Passwort und TOTP kennt keine Weiterleitung;
+`SITE_URL` und `ADDITIONAL_REDIRECT_URLS` in GoTrue (`http://localhost:3000`) werden nur für E-Mail-Links gebraucht
+(Passwort vergessen, Magic Link), die WAMO nicht nutzt. Käme das einmal dazu, gehört die neue Adresse in
+`ADDITIONAL_REDIRECT_URLS` (erstellt nur den Auth-Container neu).
+
+### 12.2 Einrichten und aktualisieren
+
+```bash
+# vom PC, Repo-Wurzel
+python scripts/wamo_ui_sokrates2.py verteilen --mit-firewall-und-caddy   # Quellen von ui/ (ohne node_modules, .next, .env*) und Skripte
+python scripts/wamo_ui_sokrates2.py einrichten                            # Firewall, Caddy, Image, Container, Herkunft, Prüfung
+python scripts/wamo_ui_sokrates2.py einrichten --neustart                 # zusätzlich wamo-core neu starten, aber nur ohne Sitzung
+python scripts/wamo_ui_sokrates2.py bauen                                 # nach einer Änderung an ui/: nur Image und Container
+python scripts/wamo_ui_sokrates2.py status                                # lesend; pruefen = Header, TLS, Härtung, Isolation, Ladezeit
+```
+
+- `verteilen` ersetzt nur `~/wamo-infra/ui` und `~/wamo-infra/wamo-ui` (und mit dem Schalter die drei gemeinsamen Dateien
+  `wamo-firewall.sh`, `wamo-firewall.service`, `wamo-caddy/docker-compose.yml`). `wamo_kern_sokrates2.py verteilen` löscht
+  dagegen ganz `~/wamo-infra`: danach `wamo_ui_sokrates2.py verteilen` erneut ausführen.
+- Das erste `einrichten` legt `wamo-caddy` neu an (Port 55445 und das Netz `wamo-ui-netz` kommen hinzu): 55443 und 55444
+  sind dann wenige Sekunden weg. Das Skript tut das nur, wenn keine Sitzung läuft (keine UDP-Sockets des Kerns, keine
+  Journalzeile außer abgewiesenen Anfragen in den letzten 5 Minuten), sonst bricht es mit einem Hinweis ab.
+- Den Neustart von wamo-core macht nur `herkunft --neustart` und auch nur ohne Sitzung (gleiche Prüfung); sonst bleibt er ein
+  offener Schritt: `ssh sokrates2 "bash ~/wamo-infra/wamo-ui-einrichten.sh herkunft --neustart"`.
+- Nach einem Update von `ui/` genügt `bauen`. Das vorige Image bleibt als `wamo-ui:vorher`, zurück geht es mit
+  `python scripts/wamo_ui_sokrates2.py zurueck`.
+- Rückweg: Abschnitt 8.
+
+### 12.3 Ein weiterer Windows-PC (Browser, Schritt für Schritt)
+
+Voraussetzung: Der PC ist im Büronetz oder über WireGuard verbunden und die Person hat ein WAMO-Konto (`scripts/wamo_nutzer.py`).
+
+1. **WAMO-CA importieren** (einmal je PC, ohne Administratorrechte). Die Datei `wamo-ca.crt` aus `infra/sokrates2/` auf den PC
+   legen, dann in einer Eingabeaufforderung im Ordner der Datei:
+
+   ```bat
+   certutil -user -addstore Root wamo-ca.crt
+   ```
+
+   Die Sicherheitswarnung von Windows bestätigen, aber vorher den angezeigten Fingerabdruck (sha1) mit
+   `9F5DE37F 855FD083 142E9E14 8A0954EA B2817200` vergleichen. Die CA gilt nur für die Adressen von Sokrates-2 (Abschnitt 5).
+   Chrome und Edge nutzen den Windows-Speicher; Firefox nur mit `security.enterprise_roots.enabled = true`.
+   Danach den Browser komplett schließen und neu öffnen.
+2. **Adresse öffnen:** `https://192.168.178.136:55445`. Ohne Warnseite erscheint die Anmeldemaske; die Warnung „Verbindung nicht
+   privat“ heißt, dass der Import fehlt oder der Browser nicht neu gestartet wurde.
+3. **Anmelden** mit E-Mail und Passwort und dem Code der Authenticator-App (beim ersten Mal richtet die Oberfläche die App ein,
+   QR-Code scannen). Im Browser gilt die Anmeldung 24 Stunden; „Angemeldet bleiben“ erhält sie bis dahin über das Schließen hinaus.
+4. **Mikrofon erlauben:** Beim ersten „Gespräch starten“ fragt der Browser, dann „Zulassen“. Dauerhaft: Schloss links in der
+   Adresszeile, Website-Einstellungen, Mikrofon auf „Zulassen“. Bleibt es stumm, in den Windows-Einstellungen unter
+   Datenschutz und Sicherheit, Mikrofon, den Zugriff für Desktop-Apps und den Browser zulassen.
+5. **Lesezeichen oder App-Fenster:** Strg+D legt ein Lesezeichen an. Als eigenes Fenster ohne Drosselung im Hintergrund:
+   `scripts\wamo-app.cmd https://192.168.178.136:55445` (eigenes Chrome-Profil `%LOCALAPPDATA%\wamo-chrome`, das Mikrofon
+   wird dort einmal erlaubt und gemerkt).
+
+Grenzen: Im Browser gibt es nur die Betriebsart Büro und keine PC-Steuerung (dafür die Desktop-App auf dem jeweiligen PC).
+Außerhalb des Büronetzes zuerst WireGuard verbinden.
+
+### 12.4 Später: Variante B (eigene Domain, öffentlich vertrautes Zertifikat)
+
+Ziel: Geräte brauchen keinen CA-Import mehr. Der Name (z. B. `wamo.firma.de`) wird nur im Büronetz aufgelöst (Fritzbox oder
+DNS-Server des Büros, Ziel 192.168.178.136); das Zertifikat stammt von einer öffentlich vertrauten Stelle, die ohne erreichbaren Server prüft
+(DNS-Challenge). Es ändern sich genau diese Stellen:
+
+| Stelle | Änderung |
+| --- | --- |
+| `/home/wamocon/wamo-ui/wamo-ui.conf` | `WAMO_UI_URL=https://wamo.firma.de:55445`; `NEXT_PUBLIC_SUPABASE_URL` und `NEXT_PUBLIC_WAMO_KERN_BUERO` auf Adressen derselben Domain (`:55443`, `:55444`); `WAMO_UI_TLS=automatisch` (Caddy besorgt das Zertifikat; im Büronetz geht das nur mit DNS-Challenge, dafür braucht der Caddy ein Image mit dem DNS-Plugin des Anbieters, oder ein extern erneuertes Zertifikat, das als Datei eingehängt wird: eine Volume-Zeile im Compose von `wamo-caddy` und eine `tls`-Zeile in `wamo-ui.caddy.vorlage`); `WAMO_UI_HSTS=ja` |
+| Caddy | die Sites für 55443 (`wamo-caddy/Caddyfile`) und 55444 (`wamo-caddy/kern/wamo-core.caddy`) bekommen den Domainnamen und dasselbe Zertifikat statt `tls internal`; der Wert `default_sni` im Caddyfile entfällt oder zeigt auf den Domainnamen |
+| Build-Argumente | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_WAMO_KERN_BUERO` kommen aus `wamo-ui.conf`; neu bauen mit `python scripts/wamo_ui_sokrates2.py bauen` |
+| CSP | nichts von Hand: `ui/next.config.ts` liest dieselben Adressen beim Build und trägt sie in `connect-src` ein. Der Test `pruefen` prüft, dass beide Adressen in der CSP stehen |
+| `PIPECAT_ALLOWED_ORIGINS` | das Skript schreibt das Drop-in aus `WAMO_UI_URL` neu: `python scripts/wamo_ui_sokrates2.py einrichten --neustart` (alte Herkunft bleibt nicht stehen, weil das Drop-in komplett ersetzt wird) |
+| Token-Aussteller | GoTrue `API_EXTERNAL_URL` und `SUPABASE_PUBLIC_URL` (Abschnitt 5) und im Kern `SUPABASE_URL` (Unit) auf die Domain, sonst stimmt `iss` der Tokens nicht; danach melden sich alle Personen neu an |
+| Geräte | der CA-Import entfällt; die Desktop-App und der Voice-Core auf dem PC brauchen `WAMO_CA_FILE` nur noch für die IP-Adressen, die sie noch benutzen |
+| Firewall | unverändert (Ports bleiben); Namensauflösung im Büro ist die einzige neue Voraussetzung |
+
+Die WAMO-CA kann bleiben (Desktop-App im Notfall über die IP), sollte aber nicht mehr auf neuen Geräten importiert werden.
 
 ---
 

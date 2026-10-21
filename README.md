@@ -6,7 +6,7 @@ gemeinsamem Gedächtnis.
 
 | Ordner | Was | Läuft auf |
 | --- | --- | --- |
-| `ui/` | Next.js 16: Präsenzkern, Live-Untertitel, Stimmlinie, Werkzeug-Zeitleiste, Canvas, Freigabe-Karten, Anmeldung mit zweitem Faktor | PC (Desktop-App oder Browser) |
+| `ui/` | Next.js 16: Präsenzkern, Live-Untertitel, Stimmlinie, Werkzeug-Zeitleiste, Canvas, Freigabe-Karten, Anmeldung mit zweitem Faktor | PC (Desktop-App oder Browser) oder als Container `wamo-ui` auf Sokrates-2 (Browser jedes Büro-Geräts) |
 | `voice-core/` | Pipecat 1.12: Soniox STT, Claude Haiku 5.5, Soniox TTS; Mehrprofil-Anmeldung, Gedächtnis, Werkzeugkarte für ECC und REA | PC (Unterwegs) oder Sokrates-2 als Dienst `wamo-core` (Büro) |
 | `host/` | MCP-Werkzeugserver für Windows mit Risikoklassen und Audit-Log; lokal über stdio, im Büro über den SSH-Rücktunnel mit Bearer-Token | PC (angemeldete Sitzung) |
 | `desktop/` | Electron 44: App-Fenster, roter Stimmen-Rand je Monitor, Tray, Autostart, Betriebsart Büro/Unterwegs | PC |
@@ -55,6 +55,14 @@ gemeinsamem Gedächtnis.
   der Datenbank, Standard Haiku) oder nur Hausmodelle über LiteLLM und SearXNG ohne Rückfall auf Claude; Migration 0010
   in `wamo_dev` und `wamo_test` angewendet.
 
+- Browser-Betrieb (21.10.2026, Variante A): Die Oberfläche läuft als Container `wamo-ui` auf Sokrates-2 hinter
+  `wamo-caddy` unter `https://192.168.178.136:55445` (Zertifikat der WAMO-CA, nur Büro-LAN und Loopback). Jedes
+  Gerät im Büro öffnet WAMO im Browser, nach dem einmaligen Import der WAMO-CA; der Browser dort kennt nur die
+  Betriebsart Büro, PC-Steuerung gibt es nur in der Desktop-App. Test mit Chromium: Seite in 0,23 s geladen, Anmeldung mit
+  zweitem Faktor, Verbindung nach 0,9 s, Begrüßung nach 4,0 s, Frage erkannt und beantwortet, keine CSP-Verstöße.
+  Einzelheiten und die Umstellung auf Variante B (eigene Domain, öffentliches Zertifikat):
+  `infra/sokrates2/README.md`, Abschnitt 12.
+
 ### Offen
 
 - Modellzugang ausrollen: `WAMO_SCHLUESSEL_KEK` erzeugen und in `core.env` setzen, Schlüssel der Person zuordnen
@@ -68,7 +76,7 @@ gemeinsamem Gedächtnis.
 - Soniox: Der Schlüssel gehört zu einem US-Projekt, die Spracherkennung läuft deshalb vorerst über den US-Endpunkt.
   Für EU-Datenhaltung EU-Schlüssel anlegen und `SONIOX_STT_URL` und `SONIOX_TTS_URL` auf `*.eu.soniox.com` stellen.
 - Weitere PCs: `infra/sokrates2/wamo-ca.crt` importieren (ein `certutil`-Befehl, siehe `infra/sokrates2/README.md`,
-  Abschnitt 5.2). Seit 19.10.2026 gilt Stufe 2: HTTP 55321 ist im LAN geschlossen, nur noch HTTPS 55443.
+  Abschnitt 5.2 und die Anleitung für den Browser in Abschnitt 12.3). Seit 19.10.2026 gilt Stufe 2: HTTP 55321 ist im LAN geschlossen, nur noch HTTPS 55443.
 - Zugangsschlüssel auf Sokrates-2 enger fassen (Repo-gebundene GitHub-Token, Lese-Token, Jira-Konto nur lesend),
   bevor Entwicklungsaufträge eingeschaltet werden.
 - P3: Den PC an das eigene Admin-Profil binden, sobald das Konto angelegt ist
@@ -114,6 +122,22 @@ python scripts\wamo_kern_sokrates2.py verteilen                                 
 # Server einrichten: infra/sokrates2/README.md, Abschnitt 10
 python scripts\wamo_kern_sokrates2.py alles --email vorname.nachname@wamocon.com         # Werte nur über stdin
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1 -Starten
+```
+
+#### Browser auf Sokrates-2
+
+Die Oberfläche gibt es zusätzlich als Dienst auf Sokrates-2 (`https://192.168.178.136:55445`). Gebaut wird sie mit
+`NEXT_PUBLIC_WAMO_NUR_BUERO=ja` (Build-Argument, `infra/sokrates2/wamo-ui/Dockerfile`); ein solcher Build kennt keinen
+lokalen Kern, nennt ihn auch nicht in der CSP und bietet im Browser nur die Betriebsart Büro an. Die Umschaltung
+Büro/Unterwegs entfällt dort, bei der PC-Steuerung steht „nur in der Desktop-App verfügbar“. Erkannt wird die Desktop-App an
+`window.wamoDesktop` (`ui/src/lib/geraet.ts`), nie an der Adresse. Die Anmeldung gilt im Browser 24 Stunden
+(`NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER`). Adresse und Zertifikat stehen nur in `/home/wamocon/wamo-ui/wamo-ui.conf`
+auf dem Server, nicht im Code.
+
+```powershell
+python scripts\wamo_ui_sokrates2.py verteilen        # Quellen der Oberfläche und Skripte nach ~/wamo-infra (ohne .env, node_modules, .next)
+python scripts\wamo_ui_sokrates2.py einrichten       # Firewall, Caddy, Image bauen, Container, erlaubte Herkunft des Kerns, Prüfung
+python scripts\wamo_ui_sokrates2.py status           # Zustand; bauen = nur Image und Container, pruefen = Header, TLS, Härtung
 ```
 
 Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo-tunnel.ps1`: Host und Tunnel laufen damit
