@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { serverBrowser } from "@/lib/geraet";
 
 /**
  * Gerätebezogene Einstellungen (nur dieser Browser bzw. diese Desktop-App), gespeichert in
@@ -17,6 +18,7 @@ const hoerer = new Set<() => void>();
 
 export function pcAutoLesen(): boolean {
   if (typeof window === "undefined") return false;
+  if (serverBrowser()) return false; // PC-Steuerung nur in der Desktop-App (lib/geraet.ts)
   try {
     return window.localStorage.getItem(PC_AUTO) === "an";
   } catch {

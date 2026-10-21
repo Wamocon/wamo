@@ -21,6 +21,7 @@ import {
   type Betriebsart,
 } from "@/lib/betriebsart";
 import { pcAutoSetzen, usePcAuto } from "@/lib/einstellungen";
+import { useServerBrowser } from "@/lib/geraet";
 import type { Mikrofon } from "@/lib/mikrofon";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
@@ -213,8 +214,17 @@ const PcSteuerungSchalter = memo(function PcSteuerungSchalter({
   const pcName = useSelect(wamo, (s) => s.betrieb?.pcName ?? null);
   const [ziel, setZiel] = useState<boolean | null>(null);
   const auto = usePcAuto();
+  const serverBrowser = useServerBrowser();
   const ausstehend = ziel !== null && ziel !== an && !belegt;
   if (!admin) return null;
+  if (serverBrowser) {
+    // Browser auf dem Server: die PC-Werkzeuge gehören zur Desktop-App (lib/geraet.ts)
+    return (
+      <div className="pc-steuerung">
+        <p className="pc-switch-hint">PC-Steuerung: nur in der Desktop-App verfügbar</p>
+      </div>
+    );
+  }
   const hinweis = ausstehend
     ? "wird geschaltet …"
     : belegt
@@ -279,7 +289,8 @@ const BetriebsartWahl = memo(function BetriebsartWahl() {
   const art = useBetriebsart();
   const offline = useSelect(wamo, (s) => s.presence === "offline");
   const [laeuft, setLaeuft] = useState(false);
-  if (!BUERO_VERFUEGBAR) return null;
+  const serverBrowser = useServerBrowser();
+  if (!BUERO_VERFUEGBAR || serverBrowser) return null; // Browser auf dem Server: nur Büro, nichts zu wählen
   const waehle = (neu: Betriebsart) => {
     if (neu === art || !offline || laeuft) return;
     setLaeuft(true);
