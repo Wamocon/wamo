@@ -15,6 +15,7 @@ services:
     image: wamo-ui:aktuell
     pull_policy: never
     container_name: wamo-ui
+    init: true
     restart: unless-stopped
     # Benutzer node des Images (1000), ohne Linux-Capabilities, ohne neue Rechte, Dateisystem schreibgeschützt
     read_only: true

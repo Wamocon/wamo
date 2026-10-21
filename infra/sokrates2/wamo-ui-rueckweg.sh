@@ -53,8 +53,8 @@ echo "== 2. Caddy-Site"
 if [ -f "$SITE_DATEI" ]; then
   rm -f "$SITE_DATEI"
   if [ -n "$(docker ps -q -f name=^wamo-caddy$)" ]; then
-    docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
-    echo "  Site entfernt, Caddy neu geladen"
+    # Schlägt der Reload fehl, geht der Rückweg trotzdem weiter (Site ist weg, Caddy übernimmt sie beim nächsten Laden)
+    docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile       && echo "  Site entfernt, Caddy neu geladen" || echo "  WARNUNG: caddy reload fehlgeschlagen, Site-Datei ist entfernt" >&2
   fi
 else
   echo "  keine Site vorhanden"
@@ -67,10 +67,15 @@ if sudo -n test -f "$DROPIN"; then
   sudo -n systemctl daemon-reload
   echo "  Drop-in entfernt (der laufende Kern kennt die Herkunft bis zu seinem nächsten Start weiter)"
   if [ "$NEUSTART" = ja ]; then
+    # Fail-closed wie in wamo-ui-einrichten.sh: Nur wenn sich der Zustand sicher lesen lässt und keine Sitzung läuft
     pid="$(systemctl show wamo-core -p MainPID --value)"
-    udp="$(sudo -n ss -uanpH 2>/dev/null | grep -c "pid=$pid," || true)"
-    log="$(sudo -n journalctl -u wamo-core --since '-5 min' --no-pager -q 2>/dev/null | grep -vE 'Zugang abgelehnt|401 Unauthorized' | wc -l)"
-    if [ "${udp:-0}" = 0 ] && [ "${log:-0}" = 0 ]; then
+    ruhig=nein
+    if sudo -n true 2>/dev/null && roh_ss="$(sudo -n ss -uanpH 2>/dev/null)"         && roh_log="$(sudo -n journalctl -u wamo-core --since '-5 min' --no-pager -q 2>/dev/null)"; then
+      udp="$(grep -c "pid=$pid," <<<"$roh_ss" || true)"
+      log="$(grep -vE 'Zugang abgelehnt|401 Unauthorized|^$' <<<"$roh_log" | wc -l || true)"
+      if [ "${udp:-0}" = 0 ] && [ "${log:-0}" = 0 ]; then ruhig=ja; fi
+    fi
+    if [ "$ruhig" = ja ]; then
       sudo -n systemctl restart wamo-core
       sleep 5
       systemctl is-active --quiet wamo-core && echo "  wamo-core neu gestartet" || { echo "  wamo-core läuft nicht!" >&2; exit 1; }

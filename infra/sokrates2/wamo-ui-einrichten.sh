@@ -59,7 +59,8 @@ pruefe_herkunft() {
 
 fehler() { echo "$*" >&2; exit 1; }
 ARBEIT=""
-trap 'rm -rf "${ARBEIT:-}"' EXIT
+BAULOG=""
+trap 'rm -rf "${ARBEIT:-}"; rm -f "${BAULOG:-}"' EXIT
 
 [ "$(id -un)" = wamocon ] || fehler "Bitte als wamocon ausführen (nicht mit sudo)."
 pruefe_herkunft
@@ -106,6 +107,9 @@ lies_konfig() {
     [[ "$url" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] \
       || fehler "$KONF: Adresse '$url' ungültig (nur https://Host:Port, ohne Pfad)."
   done
+  local besitzer modus
+  read -r besitzer modus < <(stat -c '%U %a' "$KONF")
+  { [ "$besitzer" = wamocon ] && (( ! (8#$modus & 8#022) )); }     || fehler "$KONF gehört nicht wamocon oder ist für Gruppe/alle beschreibbar ($besitzer, $modus)."
   UI_ORIGIN="$WAMO_UI_URL"
   UI_HOST="${WAMO_UI_URL#https://}"
   [ "${UI_HOST##*:}" = "$UI_PORT_ERLAUBT" ] && [[ "$UI_HOST" == *:* ]] \
@@ -119,6 +123,13 @@ lies_konfig() {
   if [ "$WAMO_UI_TLS" = intern ] && ! [[ "$UI_HOST" =~ ^(192\.168\.178\.136|sokrates2|spark-651f\.local)$ ]]; then
     fehler "$KONF: Die WAMO-CA stellt nur Zertifikate für 192.168.178.136, sokrates2 und spark-651f.local aus (Name Constraints)."
   fi
+  # Supabase und Büro-Kern gehören zur selben Domain wie die Oberfläche oder zu den Adressen der WAMO-CA; sonst käme ein
+  # fremder Host in CSP und JavaScript
+  local h
+  for url in "$NEXT_PUBLIC_SUPABASE_URL" "$NEXT_PUBLIC_WAMO_KERN_BUERO"; do
+    h="${url#https://}"; h="${h%%:*}"
+    [[ "$h" == "$UI_HOST" || "$h" =~ ^(192\.168\.178\.136|sokrates2|spark-651f\.local)$ ]]       || fehler "$KONF: Host '$h' ($url) passt weder zu WAMO_UI_URL noch zu den Adressen von Sokrates-2."
+  done
   [[ "$NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER" =~ ^([0-9]{1,3})?$ ]] \
     || fehler "$KONF: NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER muss leer oder eine ganze Zahl sein."
 }
@@ -136,12 +147,17 @@ kern_herkuenfte() {
 }
 
 kern_ruhig() {
-  local pid udp log
+  local pid udp log roh
   pid="$(systemctl show wamo-core -p MainPID --value 2>/dev/null || echo 0)"
   if [ -z "$pid" ] || [ "$pid" = 0 ]; then return 0; fi
-  udp="$(sudo -n ss -uanpH 2>/dev/null | grep -c "pid=$pid," || true)"
+  # Fail-closed: Lässt sich der Zustand nicht lesen (kein sudo, ss oder journalctl fehlgeschlagen), gilt der Kern als nicht ruhig
+  sudo -n true 2>/dev/null || { echo "  Kern nicht prüfbar: sudo -n nicht verfügbar" >&2; return 1; }
+  roh="$(sudo -n ss -uanpH 2>/dev/null)" || { echo "  Kern nicht prüfbar: ss fehlgeschlagen" >&2; return 1; }
+  udp="$(grep -c "pid=$pid," <<<"$roh" || true)"
+  roh="$(sudo -n journalctl -u wamo-core --since '-5 min' --no-pager -q 2>/dev/null)" \
+    || { echo "  Kern nicht prüfbar: journalctl fehlgeschlagen" >&2; return 1; }
   # abgewiesene Anfragen ohne Anmeldung (401) sind keine Sitzung
-  log="$(sudo -n journalctl -u wamo-core --since '-5 min' --no-pager -q 2>/dev/null | grep -vE 'Zugang abgelehnt|401 Unauthorized' | wc -l)"
+  log="$(grep -vE 'Zugang abgelehnt|401 Unauthorized|^$' <<<"$roh" | wc -l || true)"
   if [ "${udp:-0}" != 0 ] || [ "${log:-0}" != 0 ]; then
     echo "  Kern nicht ruhig: UDP-Sockets $udp, Journalzeilen der letzten 5 Minuten $log" >&2
     return 1
@@ -190,10 +206,15 @@ bauen() {
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY="$(publishable_key)"
   export NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_WAMO_KERN_BUERO NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER \
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-  if docker image inspect wamo-ui:aktuell >/dev/null 2>&1; then docker tag wamo-ui:aktuell wamo-ui:vorher; fi
-  local tag log
+  # Das laufende Image wird erst nach einem gesunden Start der neuen Fassung zu "vorher" (und nur, wenn es selbst gesund war)
+  local alt_id="" tag log
+  if [ "$(docker inspect -f '{{.State.Health.Status}}' wamo-ui 2>/dev/null || true)" = healthy ]; then
+    alt_id="$(docker image inspect -f '{{.Id}}' wamo-ui:aktuell 2>/dev/null || true)"
+  fi
   tag="wamo-ui:$(date +%Y%m%d-%H%M%S)"
+  install -d -m 755 "$BASIS"
   log="$(mktemp "$BASIS/.bau.XXXXXX")"
+  BAULOG="$log"
   # Build-Argumente ohne Wert in der Befehlszeile: Docker nimmt sie aus der Umgebung dieses Prozesses
   if ! docker build --platform linux/arm64 --progress=plain -f "$HERE/wamo-ui/Dockerfile" \
       --build-arg NEXT_PUBLIC_SUPABASE_URL --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \
@@ -201,11 +222,9 @@ bauen() {
       -t "$tag" -t wamo-ui:aktuell "$UI" >"$log" 2>&1; then
     echo "Bau fehlgeschlagen, Ende des Protokolls:" >&2
     tail -n 40 "$log" >&2
-    rm -f "$log"
     exit 1
   fi
   tail -n 4 "$log" | sed 's/^/  /'
-  rm -f "$log"
   unset NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
   echo "  Image $tag (auch als wamo-ui:aktuell)"
   # Alte Abzüge entfernen: die letzten 3 datierten Tags bleiben
@@ -218,6 +237,10 @@ bauen() {
   ( cd "$BASIS" && docker compose up -d --force-recreate )
   health_warten
   echo "  wamo-ui gesund"
+  if [ -n "$alt_id" ] && [ "$alt_id" != "$(docker image inspect -f '{{.Id}}' wamo-ui:aktuell)" ]; then
+    docker tag "$alt_id" wamo-ui:vorher
+    echo "  vorige Fassung als wamo-ui:vorher gesichert"
+  fi
 }
 
 zurueck() {
@@ -261,7 +284,9 @@ caddy() {
   site_erzeugen > "$tmp/etc/kern/wamo-ui.caddy"
   chmod 755 "$tmp" "$tmp/etc" "$tmp/etc/kern"
   chmod 644 "$tmp/etc/kern/"* "$tmp/etc/Caddyfile"
-  docker run --rm -v "$tmp/etc:/etc/caddy:ro" "$CADDY_IMAGE" caddy adapt --config /etc/caddy/Caddyfile >/dev/null
+  # NET_BIND_SERVICE: Das Image versieht caddy mit dieser Fähigkeit, ohne sie im Begrenzungssatz startet das Programm nicht
+  docker run --rm --network none --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --security-opt no-new-privileges:true \
+    -v "$tmp/etc:/etc/caddy:ro" "$CADDY_IMAGE" caddy adapt --config /etc/caddy/Caddyfile >/dev/null
   echo "  Konfiguration gültig"
 
   local compose_neu=nein
@@ -270,14 +295,28 @@ caddy() {
     # Neuanlage von wamo-caddy: 55443 und 55444 sind wenige Sekunden weg. Nur in einer ruhigen Minute.
     kern_ruhig || fehler "Abbruch: Gerade läuft eine Sitzung. wamo-caddy wird neu angelegt, sobald niemand spricht (Skript erneut ausführen)."
   fi
+  # Rückweg bei einem Fehler: alte Site-Datei (oder keine) und altes Compose wiederherstellen, Caddy neu laden
+  local site_alt="$tmp/site.vorher" compose_alt="$tmp/compose.vorher"
+  if [ -f "$SITE_DATEI" ]; then cp -a "$SITE_DATEI" "$site_alt"; fi
+  if [ -f "$CADDY_DIR/docker-compose.yml" ]; then cp -a "$CADDY_DIR/docker-compose.yml" "$compose_alt"; fi
+  zuruecksetzen() {
+    echo "  FEHLER: Caddy-Änderung wird zurückgenommen" >&2
+    if [ -f "$site_alt" ]; then install -m 644 "$site_alt" "$SITE_DATEI"; else rm -f "$SITE_DATEI"; fi
+    if [ "$compose_neu" = ja ] && [ -f "$compose_alt" ]; then
+      install -m 644 "$compose_alt" "$CADDY_DIR/docker-compose.yml"
+      ( cd "$CADDY_DIR" && docker compose up -d ) >&2 || true
+    else
+      caddy_neu_laden >&2 || true
+    fi
+    fehler "Zurückgenommen. Bitte Protokoll prüfen (docker logs wamo-caddy)."
+  }
   install -m 644 "$tmp/etc/kern/wamo-ui.caddy" "$SITE_DATEI"
   if [ "$compose_neu" = ja ]; then
-    cp -a "$CADDY_DIR/docker-compose.yml" "$CADDY_DIR/docker-compose.yml.vorher"
     install -m 644 "$HERE/wamo-caddy/docker-compose.yml" "$CADDY_DIR/docker-compose.yml"
     echo "  Compose von wamo-caddy geändert (Port $UI_PORT_ERLAUBT, Netz wamo-ui-netz): Container wird neu angelegt"
-    ( cd "$CADDY_DIR" && docker compose up -d )
+    ( cd "$CADDY_DIR" && docker compose up -d ) || zuruecksetzen
   else
-    caddy_neu_laden
+    caddy_neu_laden || zuruecksetzen
     echo "  Caddy neu geladen"
   fi
   local i code=000
@@ -287,6 +326,7 @@ caddy() {
     sleep 2
   done
   echo "  55443 (API): HTTP $code"
+  [ "$code" != 000 ] || zuruecksetzen
 }
 
 # ---------- Firewall
@@ -297,7 +337,7 @@ firewall() {
     return 0
   fi
   grep -q "$UI_PORT_ERLAUBT" "$HERE/wamo-firewall.sh" || fehler "$HERE/wamo-firewall.sh ohne Port $UI_PORT_ERLAUBT (verteilen --mit-firewall-und-caddy)."
-  sudo -n bash "$HERE/wamo-firewall-einrichten.sh" | grep -E '^(==|  )' | head -20
+  sudo -n bash "$HERE/wamo-firewall-einrichten.sh" | grep -E '^(==|  )' | sed -n '1,20p'
   sudo -n iptables -w 5 -S WAMO-FW 2>/dev/null | grep -q "ctorigdstport $UI_PORT_ERLAUBT" \
     || fehler "Firewall-Regel für $UI_PORT_ERLAUBT ist nicht aktiv."
   echo "  Regel aktiv (per systemctl reload, ohne Lücke)"
@@ -324,6 +364,9 @@ herkunft() {
     sudo -n chmod 644 "$DROPIN"
     sudo -n systemctl daemon-reload
     echo "  Drop-in $DROPIN geschrieben"
+  fi
+  if sudo -n grep -q '^PIPECAT_ALLOWED_ORIGINS=' /etc/wamo/core.env 2>/dev/null; then
+    echo "  WARNUNG: /etc/wamo/core.env setzt PIPECAT_ALLOWED_ORIGINS selbst und hätte Vorrang vor dem Drop-in" >&2
   fi
   laufend="$(kern_herkuenfte)"
   if [ "$laufend" = "$neu" ]; then
@@ -397,9 +440,16 @@ pruefen() {
   iso="$(docker exec wamo-ui node -e "
 const net=require('net');
 const t=(h,p)=>new Promise(r=>{const s=net.connect({host:h,port:p,timeout:2000});s.on('connect',()=>{s.destroy();r('ERREICHBAR')});s.on('timeout',()=>{s.destroy();r('gesperrt')});s.on('error',()=>r('gesperrt'))});
-(async()=>{for(const [h,p] of [['172.25.0.1',22],['192.168.178.1',80],['1.1.1.1',443],['host.docker.internal',55321]])console.log('    '+h+':'+p+' '+await t(h,p))})()")"
+(async()=>{for(const [h,p] of [['172.25.0.1',22],['192.168.178.1',80],['1.1.1.1',443],['192.168.178.136',55321],['192.168.178.136',22]])console.log('    '+h+':'+p+' '+await t(h,p))})()")"
   echo "$iso"
   if grep -q ERREICHBAR <<<"$iso"; then echo "  FEHLER: Container erreicht etwas außerhalb seines Netzes" >&2; return 1; fi
+  # Bekannte Grenze: wamo-caddy hängt im selben Netz und nimmt auf allen Schnittstellen an (README, Abschnitt 12.5)
+  local caddy_info
+  caddy_info="$(docker exec wamo-ui node -e "
+const net=require('net');
+const t=(h,p)=>new Promise(r=>{const s=net.connect({host:h,port:p,timeout:2000});s.on('connect',()=>{s.destroy();r('erreichbar')});s.on('timeout',()=>{s.destroy();r('gesperrt')});s.on('error',()=>r('gesperrt'))});
+Promise.all([55443,55444].map(p=>t('wamo-caddy',p))).then(a=>console.log('55443 '+a[0]+', 55444 '+a[1]))" 2>/dev/null || true)"
+  echo "  Bekannte Grenze: wamo-caddy aus dem Container: ${caddy_info:-nicht prüfbar} (wie ein LAN-Gerät ohne Anmeldung)"
   echo "  Alles bestanden."
 }
 

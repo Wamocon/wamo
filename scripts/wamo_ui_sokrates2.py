@@ -88,8 +88,12 @@ def _text(pfad: Path) -> bytes:
 
 
 def ui_dateien() -> list[Path]:
+    """Nur von Git verfolgte Dateien unter ui/ (Positivliste), zusätzlich ohne die Ausschlüsse oben. Ungeprüfte Dateien
+    wie .npmrc, Schlüssel oder Editor-Ordner, die nur lokal liegen, gelangen so nie auf den Server."""
+    r = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", "--cached", "--", "ui"], capture_output=True, check=True)
     dateien = []
-    for pfad in sorted(UI.rglob("*")):
+    for name in sorted(n for n in r.stdout.decode("utf-8").split("\0") if n):
+        pfad = ROOT / name
         rel = pfad.relative_to(UI)
         if any(teil in UI_AUSGESCHLOSSEN_ORDNER for teil in rel.parts) or not pfad.is_file():
             continue
@@ -144,7 +148,9 @@ def auf_server(*teile: str) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="WAMO-Oberfläche auf Sokrates-2 (Browser-Betrieb)")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    parser =argparse.ArgumentParser(description="WAMO-Oberfläche auf Sokrates-2 (Browser-Betrieb)")
     parser.add_argument("befehl", choices=["verteilen", "bauen", "einrichten", "pruefen", "status", "zurueck"])
     parser.add_argument("--mit-firewall-und-caddy", action="store_true",
                         help="verteilen: auch wamo-firewall.sh/.service und wamo-caddy/docker-compose.yml")

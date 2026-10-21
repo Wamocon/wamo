@@ -13,6 +13,10 @@ import { useSyncExternalStore } from "react";
  *
  * Erkannt wird die Desktop-App an window.wamoDesktop (preload.js), nie an der Adresse: Dieselbe Adresse kann in
  * Zukunft von einer Domain bedient werden (Variante B), ohne dass sich hier etwas ändert.
+ *
+ * Grenze: Das ist eine Entscheidung der Oberfläche, kein Schutz. Die Seite kann window.wamoDesktop selbst setzen, und der
+ * Kern nimmt den Wunsch nach PC-Steuerung von jeder Admin-Sitzung an. Maßgeblich bleibt dort die Bindung des PCs an
+ * genau ein Profil (WAMO_PC_HOST_PROFILE), die PC-Sperre je Sitzung und die Freigabe-Karten.
  */
 
 /** Wahr im Build für Sokrates-2 (Build-Konstante, auf Server und Client gleich). */

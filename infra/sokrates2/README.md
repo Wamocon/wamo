@@ -639,6 +639,22 @@ DNS-Server des Büros, Ziel 192.168.178.136); das Zertifikat stammt von einer ö
 
 Die WAMO-CA kann bleiben (Desktop-App im Notfall über die IP), sollte aber nicht mehr auf neuen Geräten importiert werden.
 
+### 12.5 Bekannte Grenzen
+
+- **Container und Caddy im selben Netz:** `wamo-ui` erreicht Internet, Büro-LAN und Host nicht, aber `wamo-caddy` und damit
+  dessen Ports 55443 und 55444 (wie ein Büro-Gerät ohne Anmeldung; Docker filtert Verkehr innerhalb einer Bridge nicht).
+  Der Container hält keine Geheimnisse, Tokens liegen nur in den Browsern. Wer das schließen will, setzt in der Site 55443
+  (`wamo-caddy/Caddyfile`) und in `wamo-caddy/kern/wamo-core.caddy` als erste Anweisung `@ui_netz remote_ip 172.25.0.0/24`
+  und `abort @ui_netz`. Das ändert zwei gemeinsam genutzte Dateien und gehört in die Übernahme der Geräte-Änderungen.
+- **PC-Steuerung „nur in der Desktop-App“** ist eine Entscheidung der Oberfläche, kein Schutz: Der Kern nimmt den Wunsch von
+  jeder Admin-Sitzung an. Maßgeblich bleiben die Bindung des PCs an ein Profil (`WAMO_PC_HOST_PROFILE`), die PC-Sperre je
+  Sitzung und die Freigabe-Karten. Eine Erzwingung im Kern (Herkunft der Oberfläche gleich PC-Steuerung aus) ist möglich und offen.
+- **CSP mit `'unsafe-inline'`** für Skripte und Stile, weil Next.js Inline-Skripte zur Hydration setzt; eine Nonce-CSP wäre
+  der nächste Schritt. Caddy führt kein Zugriffslog für die Oberfläche und setzt keine Timeouts für langsame Clients
+  (globaler Block `timeouts` im Caddyfile, gemeinsam genutzt).
+- **HSTS** gilt bei Variante B für die ganze Domain und ein Jahr; vorher klären, ob andere Dienste unter derselben Domain
+  ohne HTTPS laufen.
+
 ---
 
 WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn
