@@ -1,0 +1,12 @@
+# Kontext für den Image-Bau auf Sokrates-2 (infra/sokrates2/wamo-ui/Dockerfile): nichts Lokales, nichts Geheimes
+node_modules
+.next
+out
+coverage
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+.git
+.vscode

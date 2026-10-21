@@ -1,0 +1,28 @@
+# Einstellungen der WAMO-Oberfläche auf Sokrates-2. Vorlage; wamo-ui-einrichten.sh legt daraus beim ersten Lauf
+# /home/wamocon/wamo-ui/wamo-ui.conf an und lässt eine vorhandene Datei unverändert. Nur KEY=VALUE, keine Geheimnisse
+# (alle Werte stehen später im JavaScript, das der Browser lädt). Nach einer Änderung das Skript erneut ausführen.
+#
+# Variante A (jetzt): IP-Adresse des Servers, Zertifikat der WAMO-CA. Auf den Geräten ist die CA importiert
+#   (infra/sokrates2/README.md, Abschnitt 5.2 und 12).
+# Variante B (später): eigener Domainname mit öffentlich vertrautem Zertifikat, nur im Büronetz aufgelöst.
+#   Dann ändern sich WAMO_UI_URL, die beiden Adressen darunter (sie müssen zur Domain passen, sonst blockiert die CSP),
+#   WAMO_UI_TLS und WAMO_UI_HSTS (siehe README, Abschnitt 12.4).
+
+# Adresse, unter der die Browser WAMO öffnen. Wird zur Caddy-Site, zum Port am Container wamo-caddy (nur 55445 ist
+# veröffentlicht und in der Firewall offen) und zur erlaubten Herkunft des Kerns (PIPECAT_ALLOWED_ORIGINS).
+WAMO_UI_URL=https://192.168.178.136:55445
+
+# Adressen, die die Oberfläche anspricht (Build-Argumente, stehen in der CSP): Anmeldung (Supabase) und Büro-Kern.
+NEXT_PUBLIC_SUPABASE_URL=https://192.168.178.136:55443
+NEXT_PUBLIC_WAMO_KERN_BUERO=https://192.168.178.136:55444
+
+# Zertifikat: intern = Zertifikat der WAMO-CA (Caddy "tls internal"); automatisch = keine tls-Zeile, Caddy besorgt das
+# Zertifikat selbst (Domainname nötig; im Büronetz nur mit eigener ACME-Stelle oder DNS-Challenge, siehe README).
+WAMO_UI_TLS=intern
+
+# Strict-Transport-Security: nein bei einer IP-Adresse (Browser ignorieren den Header dort, das Skript lehnt ja ab),
+# ja bei einem Domainnamen (Variante B).
+WAMO_UI_HSTS=nein
+
+# Höchstalter der Anmeldung im Browser in ganzen Stunden (1 bis 168, leer = 24); die Desktop-App gilt 7 Tage.
+NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER=

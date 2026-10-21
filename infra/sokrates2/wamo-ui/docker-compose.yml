@@ -1,0 +1,57 @@
+# WAMO-Oberfläche auf Sokrates-2 (Container wamo-ui, eigenes Compose-Projekt, getrennt von supabase-wamo und wamo-caddy).
+# Eingerichtet durch infra/sokrates2/wamo-ui-einrichten.sh, auf dem Server in /home/wamocon/wamo-ui.
+#
+#   Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000 (Netz wamo-ui-netz)──> wamo-ui
+#
+# Der Container veröffentlicht keinen Port. Er hängt nur im Netz wamo-ui-netz (internal: kein Weg ins Internet, ins
+# Büro-LAN oder zu Diensten des Hosts). Das Netz legt das Compose-Projekt wamo-caddy an (infra/sokrates2/wamo-caddy/
+# docker-compose.yml), weil nur Caddy hineinmuss. Der Container braucht keine Verbindung nach außen: Anmeldung und
+# Kern spricht der Browser selbst an.
+name: wamo-ui
+
+services:
+  ui:
+    # Das Image baut das Einrichtungsskript (docker build); "aktuell" ist der laufende Stand, "vorher" der vorige
+    image: wamo-ui:aktuell
+    pull_policy: never
+    container_name: wamo-ui
+    restart: unless-stopped
+    # Benutzer node des Images (1000), ohne Linux-Capabilities, ohne neue Rechte, Dateisystem schreibgeschützt
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Grenzen: die Oberfläche liefert nur Seiten aus, 512 MB und eine CPU reichen weit
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    ulimits:
+      nofile: 4096
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+      - /app/.next/cache:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXT_TELEMETRY_DISABLED: "1"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - ui
+
+networks:
+  ui:
+    name: wamo-ui-netz
+    external: true

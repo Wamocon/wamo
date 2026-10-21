@@ -51,6 +51,10 @@ const csp = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  // Image für Sokrates-2 (infra/sokrates2/wamo-ui/Dockerfile): eigenständiger Server mit nur den nötigen Dateien.
+  // Nur dort gesetzt, damit "next build" und "next start" auf dem PC unverändert bleiben.
+  ...(process.env.WAMO_UI_STANDALONE === "1" ? { output: "standalone" as const } : {}),
+  poweredByHeader: false,
   cacheComponents: true,
   partialPrefetching: true,
   // Version für die Fußzeile der Anmeldeseite (zur Build-Zeit eingesetzt)

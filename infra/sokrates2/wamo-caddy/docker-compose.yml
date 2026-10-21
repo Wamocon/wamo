@@ -3,6 +3,7 @@
 #
 #   https://192.168.178.136:55443  ->  Envoy des WAMO-Stacks (http, Port 55321)
 #   https://192.168.178.136:55444  ->  WAMO-Kern (wamo-core.service) über den Unix-Socket /run/wamo-core/core.sock
+#   https://192.168.178.136:55445  ->  WAMO-Oberfläche (Container wamo-ui über das interne Netz wamo-ui-netz)
 #
 # Der Container läuft als wamocon (1000:1000) ohne Linux-Capabilities und mit schreibgeschütztem Dateisystem.
 # Schreiben darf er nur in data/ (Serverzertifikate) und config/. Unter /ca sieht er nur Root-Zertifikat und
@@ -30,6 +31,11 @@ services:
       - "0.0.0.0:55443:55443"
       # Kern (Phase P3); ohne Site-Datei in etc/kern lauscht Caddy hier nicht
       - "0.0.0.0:55444:55444"
+      # Oberfläche (Browser-Betrieb, wamo-ui-einrichten.sh); ohne Site-Datei lauscht Caddy hier nicht
+      - "0.0.0.0:55445:55445"
+    networks:
+      - default
+      - ui
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -59,3 +65,10 @@ networks:
       config:
         # Festes Netz: Die WAMO-Firewall erlaubt Port 55321 nur aus diesem Netz (und Loopback)
         - subnet: 172.24.0.0/24
+  # Netz zur Oberfläche (Container wamo-ui): internal, also ohne Weg nach außen; nur Caddy und wamo-ui hängen darin
+  ui:
+    name: wamo-ui-netz
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.25.0.0/24
