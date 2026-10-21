@@ -410,6 +410,32 @@ ssh sokrates2 "journalctl -u wamo-pc-abgleich -u wamo-pc-streuner --since -1h | 
 ssh sokrates2 "cd ~/wamo-infra && sudo PYTHONDONTWRITEBYTECODE=1 WAMO_INFRA=\$HOME/wamo-infra python3 -m unittest test_pc_server"
 ```
 
+### 12.1 Einrichtung am Laptop (ohne Handarbeit) und Zuordnung im Kern
+
+1. Anmeldung in der Desktop-App (Betriebsart Büro, zweiter Faktor). Die App erzeugt einmalig `%USERPROFILE%\.ssh\id_ed25519_wamo_pc`,
+   holt vom Büro-Kern eine Einmal-Herausforderung (`GET /wamo/api/geraet/herausforderung`), signiert sie samt `user_id` und
+   Rechnername und bindet das Gerät (`POST /wamo/api/geraet/binden`, voice-core/geraet_api.py). Erstbindung ist
+   automatisch aktiv nur für ein Mitglied ohne früheres Gerät; Admins, Gerätewechsel und doppelte Rechnernamen warten auf
+   einen Admin, der einen Hinweis bekommt. Tunnelziel und Fingerabdruck des SSH-Hostschlüssels sind in der App festgehalten
+   (`SHA256:FI+Dtt+vY0zJgLOwu7IajO50ywDaPwznZ9UgwJLN4lQ`, geprüft am 21.10.2026), IP und Rechnername sind nur Anzeige.
+2. Die App schreibt `%LOCALAPPDATA%\WAMO\geraet.json` und ruft `scripts\wamo-tunnel-einrichten.ps1 -Geraet -Starten`
+   (Rechte von `scripts` und `host`, geplante Aufgabe "WAMO Tunnel" mit zwei Auslösern: Anmeldung und alle 5 Minuten).
+   Der Überwacher `scripts\wamo-tunnel.ps1` erzeugt bei jedem Host-Start neues Token und neuen Freigabe-Schlüssel, startet
+   den Host angehalten im Job-Objekt und schickt beide über stdin an den Zwangsbefehl. Herzschlag: `tunnel.status`.
+3. Der Abgleich auf Sokrates-2 richtet binnen 10 s Benutzer, Schlüssel und Ordner ein (aus `<schema>.pc_abgleich_liste()`).
+   Test der Laptop-Seite ohne Server: `scripts\test-tunnel-geraet.ps1` und `scripts\test-tunnel-alt.ps1`.
+4. Zuordnung im Kern (`WAMO_PC_REGISTER=an`, fest in `wamo-core.service`, Standard `aus`): `voice-core/pc_geraet.py`. Das
+   Gerät ergibt sich nur aus dem Profil der Sitzung (aktives persönliches Gerät). Der Kern liest Token, Freigabe-Schlüssel
+   und Fingerabdruck wettlauffrei aus `/run/wamo-pc/tNN/` (O_PATH und O_NOFOLLOW, Besitzer `wamo-t-NN`, Rechte 2750 und
+   0640), verbindet nur mit `/run/wamo-pc/tNN/pc.sock` und prüft nach dem Verbinden per `SO_PEERCRED`, dass `wamo-t-NN`
+   lauscht, bevor ein Byte gesendet wird. Jede Anfrage trägt `X-WAMO-Geraet` und `X-WAMO-Profil` (der Host prüft sie gegen
+   `geraet.json`). Der Rechnername des Hosts muss zum Register passen, sonst keine Werkzeuge. Alle 60 s (erste Prüfung nach
+   15 s) prüft eine Wache, ob das Gerät noch aktiv ist; gesperrt, widerrufen oder drei Ausfälle des Registers beenden die
+   PC-Steuerung der Sitzung. Mitglieder bekommen Werkzeuge nur mit `WAMO_PC_MITGLIEDER=an` (Standard aus; vor der
+   Einwilligung für Bildschirmfotos und den Rechten auf dem eigenen Laptop nicht setzen). Ablehnungen stehen mit Präfix
+   `WAMO-GERAET` im Journal. Umstellen: erst Rauchtest, dann in der Unit `WAMO_PC_REGISTER=an`, `daemon-reload`, Neustart
+   des Kerns (nur wenn laut Journal keine Sitzung läuft); zurück mit `aus`.
+
 Der Rauchtest läuft nach jedem Update von `openssh-server` erneut: Die Pfadfreiheit von OpenSSH bei Rückweiterleitungen
 beruht auf einem offenen Punkt im Quelltext (`channels.c`: „XXX add ACLs for streamlocal“). Er prüft neben dem
 Positivfall (eigener Socket, Dateirechte, Fingerabdruck) auch die Neinfälle samt Ablehnungsgrund im sshd-Journal
