@@ -137,7 +137,8 @@ function seite({ modus, echoPegel }) {
     }
     return false;
   }
-  const botAktiv = () => jetzt() - S.botLetzt < 0.4;
+  const LUECKE = 0.8; // Pausen bis dahin (Satzpausen der Stimme liegen bei 0,4 bis 0,65 s) gehören zur selben Rede
+  const botAktiv = () => jetzt() - S.botLetzt < LUECKE;
   const botSeit = () => (botAktiv() ? jetzt() - S.botBegin : 0);
   const botStille = () => jetzt() - S.botLetzt;
 
@@ -169,7 +170,7 @@ function seite({ modus, echoPegel }) {
         ziel.push(e.data);
         const t = e.data.start / ac.sampleRate;
         if (rms(e.data.data) > SCHWELLE) {
-          if (bot) { if (t - S.botLetzt > 0.4) S.botBegin = t; S.botLetzt = t + e.data.data.length / ac.sampleRate; }
+          if (bot) { if (t - S.botLetzt > LUECKE) S.botBegin = t; S.botLetzt = t + e.data.data.length / ac.sampleRate; }
           else S.micLetzt = t;
         }
       };
@@ -240,16 +241,16 @@ function seite({ modus, echoPegel }) {
     q.connect(g); g.connect(S.micBus);
     const t0 = opt.bei ?? S.ac.currentTime + 0.03;
     q.start(t0);
-    S.events.push({ typ: "clip", name, t0, dauer: buf.duration, rolle: opt.rolle || "", rep: S.rep, botSeit: botSeit() });
+    S.events.push({ typ: "clip", name, t0, dauer: buf.duration, rolle: opt.rolle || "", rep: S.rep, botSeit: botSeit(), wall: Date.now(), jetzt: S.ac.currentTime });
     return { t0, dauer: buf.duration, ende: t0 + buf.duration };
   }
   // wartet, bis WAMO nach "ab" zu sprechen beginnt (höchstens startS) und danach 3 s schweigt (höchstens gesamtS)
-  async function warteAntwort(ab, startS = 20, gesamtS = 70) {
+  async function warteAntwort(ab, startS = 20, gesamtS = 70, stilleS = 3.0) {
     const t0 = performance.now();
     const gestartet = await warteBis(() => botAktiv() && S.botBegin > ab - 0.1, startS);
     if (!gestartet) return { gestartet: false };
     const rest = Math.max(1, gesamtS - (performance.now() - t0) / 1000);
-    const fertig = await warteBis(() => botStille() >= 3.0, rest);
+    const fertig = await warteBis(() => botStille() >= stilleS, rest);
     return { gestartet: true, fertig };
   }
   const FRAGEN = ["frage_lang_1", "frage_lang_2", "frage_lang_3"];
@@ -321,7 +322,7 @@ function seite({ modus, echoPegel }) {
       const b = sprich("pause_b", { rolle: "pause_b", bei: a.ende + luecke });
       return { ...(await warteAntwort(b.ende, 25, 70)), ok: true, luecke };
     },
-    async werkzeug() { const q = sprich("frage_suche", { rolle: "frage" }); return { ...(await warteAntwort(q.ende, 30, 90)), ok: true }; },
+    async werkzeug() { const q = sprich("frage_suche", { rolle: "frage" }); return { ...(await warteAntwort(q.ende, 30, 120, 9.0)), ok: true }; },
   };
   window.__begruessung = async () => {
     await warteBis(() => botAktiv(), 25);

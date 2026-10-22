@@ -456,8 +456,9 @@ export function applyServerMessage(msg: ServerMessage) {
       return;
     }
     case "leiser_stopp":
+    case "stimme_leiser":
     case "mikrofon":
-      return; // behandelt useWamo (weicher Stopp der Wiedergabe, Stille-Warnung abhängig vom Mikrofonschalter)
+      return; // behandelt useWamo (weicher Stopp und Dämpfen der Wiedergabe, Stille-Warnung abhängig vom Mikrofonschalter)
     default: {
       const unbekannt: never = msg; // neue Nachrichtentypen müssen hier behandelt werden
       void unbekannt;

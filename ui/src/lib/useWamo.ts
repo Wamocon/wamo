@@ -35,7 +35,16 @@ import {
   type Mikrofon,
 } from "@/lib/mikrofon";
 import { getSupabase } from "@/lib/supabase";
-import { sollAusblenden, type SoftStop } from "@/lib/weicherStopp";
+import {
+  AUSBLENDEN_MS,
+  DAEMPFEN_MAX_MS,
+  DAEMPFEN_MS,
+  ENTDAEMPFEN_MS,
+  GEDAEMPFT,
+  sollAusblenden,
+  verlauf,
+  type SoftStop,
+} from "@/lib/weicherStopp";
 import {
   HISTORY,
   applyServerMessage,
@@ -125,17 +134,29 @@ function senden(client: PipecatClient, msg: ClientMessage) {
   client.sendClientMessage(msg.type, msg.data);
 }
 
-/** WAMOs Stimme in 140 ms ausblenden (weicher Stopp bei Unterbrechung). */
+/** Zählt die Lautstärkeverläufe: ein neuer macht den laufenden ungültig (Dämpfen, Entdämpfen, Ausblenden). */
+let rampeNr = 0;
+
+/** Lautstärke von WAMOs Stimme in dauerMs linear auf ziel, ausgehend vom aktuellen Wert. */
+function rampe(audio: HTMLAudioElement | null, ziel: number, dauerMs: number) {
+  const nr = ++rampeNr;
+  if (!audio) return;
+  const von = audio.volume;
+  const start = performance.now();
+  const step = () => {
+    if (nr !== rampeNr) return;
+    const v = verlauf(von, ziel, dauerMs, performance.now() - start);
+    audio.volume = v;
+    if (v !== ziel) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+/** WAMOs Stimme in 140 ms ausblenden (weicher Stopp bei Unterbrechung), auch aus einer Dämpfung heraus. */
 function fadeOutAudio(audio: HTMLAudioElement | null, state: SoftStop) {
   state.fading = true;
   if (!audio) return;
-  const start = performance.now();
-  const step = () => {
-    const t = Math.min(1, (performance.now() - start) / 140);
-    audio.volume = 1 - t;
-    if (t < 1 && state.fading) requestAnimationFrame(step);
-  };
-  requestAnimationFrame(step);
+  rampe(audio, 0, AUSBLENDEN_MS);
   // Sicherheitsnetz: nie dauerhaft stumm bleiben
   setTimeout(() => {
     if (state.fading) restoreAudio(audio, state);
@@ -145,7 +166,20 @@ function fadeOutAudio(audio: HTMLAudioElement | null, state: SoftStop) {
 function restoreAudio(audio: HTMLAudioElement | null, state: SoftStop) {
   state.armedAt = null;
   state.fading = false;
+  rampeNr++; // laufenden Verlauf beenden
   if (audio) audio.volume = 1;
+}
+
+/** Vorsorgliches Dämpfen (an) und Zurücknehmen (aus), solange kein Stopp läuft. */
+function stimmeLeiser(audio: HTMLAudioElement | null, an: boolean, state: SoftStop) {
+  if (state.fading) return;
+  rampe(audio, an ? GEDAEMPFT : 1, an ? DAEMPFEN_MS : ENTDAEMPFEN_MS);
+  if (!an) return;
+  // Sicherheitsnetz: bleibt die Entwarnung aus (Kern weg, Nachricht verloren), nie dauerhaft leise bleiben
+  const meine = rampeNr;
+  setTimeout(() => {
+    if (rampeNr === meine && !state.fading) rampe(audio, 1, ENTDAEMPFEN_MS);
+  }, DAEMPFEN_MAX_MS);
 }
 
 function setPresence(p: Presence) {
@@ -720,7 +754,11 @@ export function useWamo(): WamoAktionen {
             if (!aktuell()) return;
             const msg = parseServerMessage(data);
             if (!msg) return; // unbekannte oder unvollständige Nachricht: ignorieren
-            if (msg.type === "leiser_stopp") softStop.current.armedAt = performance.now();
+            if (msg.type === "leiser_stopp") {
+              softStop.current.armedAt = performance.now();
+              // sofort: der Kern hat die Grenze schon gewählt, die Stimme verstummt jetzt (keine Wortpause abwarten)
+              if (msg.sofort) fadeOutAudio(audioRef.current, softStop.current);
+            } else if (msg.type === "stimme_leiser") stimmeLeiser(audioRef.current, msg.an, softStop.current);
             else if (msg.type === "mikrofon") {
               kernStille.current = msg.zustand !== "ok";
               const st = wamo.get();

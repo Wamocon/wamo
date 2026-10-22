@@ -32,13 +32,14 @@ from __future__ import annotations
 
 import asyncio
 import difflib
-import os
 import re
 import time
 from collections import deque
 from collections.abc import Callable
 
 from loguru import logger
+
+from env_schalter import schalter_an
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -50,6 +51,8 @@ from pipecat.frames.frames import (
     TTSStartedFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
@@ -66,15 +69,76 @@ BACKCHANNEL_WORDS = frozenset(
         "mhm", "mhmm", "mm", "hm", "hmm", "ähm", "äh", "aha", "ah", "oh", "ok", "okay",
         "ja", "jaja", "jo", "genau", "stimmt", "richtig", "klar", "super", "gut", "cool",
         "achso", "ach", "so", "verstehe", "uh", "huh",
+        # erweitert (WAMO_RUECKMELDUNG): Schreibweisen der Erkennung für "mhm" und weitere Zustimmung
+        "mmh", "mmhm", "mmhmm", "hmhm", "mhmh", "ahja", "achja", "joa", "jup", "yep", "yes", "yeah", "mja",
+        "prima", "schön", "toll", "interessant", "natürlich",
+    }
+)
+# Wendungen, die nur als ganze Äußerung eine Rückmeldung sind ("alles klar", aber "alles" allein oder "na" allein nicht)
+BACKCHANNEL_PHRASES = frozenset(
+    {
+        "ich verstehe", "alles klar", "na klar", "ach so", "ach ja", "ja klar", "ja genau", "ganz genau", "sehr gut",
+        "ja okay", "ah ok", "oh okay", "na gut", "schon klar", "ja sicher", "ja natürlich", "ja stimmt", "ja richtig",
+        "ja ja", "mm hmm", "mm hm", "uh huh", "ach so ja", "sehr schön", "ganz klar", "okay gut", "ja gut", "oh ja",
+    }
+)
+RUECKMELDUNG_ZEICHEN = ".,!?…:;-–—\"'"
+
+
+def rueckmeldung_an(wert: str | None = None) -> bool:
+    """WAMO_RUECKMELDUNG: erweiterte Erkennung kurzer Zustimmung (Standard an), aus = nur die ursprüngliche Wortliste."""
+    return schalter_an("WAMO_RUECKMELDUNG", wert)
+
+
+_URSPRUENGLICH = frozenset(
+    {
+        "mhm", "mhmm", "mm", "hm", "hmm", "ähm", "äh", "aha", "ah", "oh", "ok", "okay", "ja", "jaja", "jo", "genau",
+        "stimmt", "richtig", "klar", "super", "gut", "cool", "achso", "ach", "so", "verstehe", "uh", "huh",
     }
 )
 
 
-def meaningful_word_count(text: str) -> int:
+def _rueckmeldung_woerter(text: str, erweitert: bool) -> list[str]:
+    """Wörter des Textes ohne Satzzeichen; Bindestriche trennen ("Mm-hmm" sind zwei Laute)."""
+    if not erweitert:
+        return [w.strip(".,!?…:;-\"'").lower() for w in text.split()]
+    roh = re.sub(r"[-–—]+", " ", text)
+    return [w.strip(RUECKMELDUNG_ZEICHEN).lower() for w in roh.split()]
+
+
+def ist_rueckmeldung(text: str, erweitert: bool | None = None) -> bool:
+    """Besteht der Text nur aus Rückmeldelauten ("mhm", "ja genau", "ach so, ja")? Leerer Text und einzelne Buchstaben
+    (Bruchstücke der Live-Erkennung) sind keine Rückmeldung, sie sind noch unentschieden."""
+    erweitert = rueckmeldung_an() if erweitert is None else erweitert
+    woerter = [w for w in _rueckmeldung_woerter(text, erweitert) if w]
+    if not woerter:
+        return False
+    if erweitert and " ".join(woerter) in BACKCHANNEL_PHRASES:
+        return True
+    menge = BACKCHANNEL_WORDS if erweitert else _URSPRUENGLICH
+    gueltig = [w for w in woerter if len(w) >= 2]  # einzelne Buchstaben sind Bruchstücke
+    return bool(gueltig) and all(w in menge for w in gueltig)
+
+
+def _anfang_eines_lauts(wort: str, menge: frozenset[str]) -> bool:
+    """Ist wort der Anfang eines Rückmeldelauts ("Gen" vor "Genau")? Die Live-Erkennung meldet Wörter stückweise."""
+    return len(wort) >= 2 and wort not in menge and any(m.startswith(wort) and len(m) > len(wort) for m in menge)
+
+
+def meaningful_word_count(text: str, erweitert: bool | None = None, interim: bool = False) -> int:
     """Zaehlt echte Woerter. Einzelne Buchstaben sind Bruchstuecke der Live-Erkennung
-    ("J" vor "Ja", "H" vor "Hi") und zaehlen nicht."""
-    words = (w.strip(".,!?…:;-\"'").lower() for w in text.split())
-    return sum(1 for w in words if len(w) >= 2 and w not in BACKCHANNEL_WORDS)
+    ("J" vor "Ja", "H" vor "Hi") und zaehlen nicht. Rückmeldelaute zählen nicht (ist_rueckmeldung).
+    interim: Zwischenstand der Erkennung; ein letztes Wort, das erst der Anfang eines Rückmeldelauts ist ("Gen" vor
+    "Genau"), zählt noch nicht (mit der erweiterten Erkennung, WAMO_RUECKMELDUNG)."""
+    erweitert = rueckmeldung_an() if erweitert is None else erweitert
+    woerter = [w for w in _rueckmeldung_woerter(text, erweitert) if w]
+    if erweitert and (" ".join(woerter) in BACKCHANNEL_PHRASES):
+        return 0
+    menge = BACKCHANNEL_WORDS if erweitert else _URSPRUENGLICH
+    zaehlen = [w for w in woerter if len(w) >= 2 and w not in menge]
+    if erweitert and interim and zaehlen and woerter[-1] == zaehlen[-1] and _anfang_eines_lauts(zaehlen[-1], menge):
+        zaehlen = zaehlen[:-1]
+    return len(zaehlen)
 
 
 # Wer eines dieser Wörter sagt, will WAMO anhalten, etwas wissen oder widersprechen: nie Echo, sofort ein Einwurf
@@ -102,8 +166,7 @@ ECHO_LUECKE = 1  # so viele gespielte Wörter darf die Erkennung zwischen zwei e
 
 
 def echo_filter_an(wert: str | None = None) -> bool:
-    w = os.getenv("WAMO_ECHO_FILTER") if wert is None else wert
-    return (w or "an").strip().lower() not in ("aus", "0", "nein", "false")
+    return schalter_an("WAMO_ECHO_FILTER", wert)
 
 
 def _wort(w: str) -> str:
@@ -179,7 +242,8 @@ def echo_urteil(text: str, kurz: list[str], lang: list[str] | None = None) -> st
     erkannt = [w for w in (_wort(x) for x in text.split()) if w]
     if len(erkannt) > 1 and len(erkannt[-1]) <= 2 and not _ist_ziffer(erkannt[-1]):
         erkannt = erkannt[:-1]  # Bruchstück am Ende ("Gern, ich z"): das Wort ist noch nicht zu Ende gesprochen
-    bedeutsam = [w for w in erkannt if (len(w) >= 2 or _ist_ziffer(w)) and w not in BACKCHANNEL_WORDS]
+    laute = BACKCHANNEL_WORDS if rueckmeldung_an() else _URSPRUENGLICH
+    bedeutsam = [w for w in erkannt if (len(w) >= 2 or _ist_ziffer(w)) and w not in laute]
     if not bedeutsam or not lang:
         return "einwurf"
     if len(bedeutsam) >= ECHO_LANG:
@@ -211,11 +275,22 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
     Stimme und zählt nicht (echo_urteil).
     """
 
-    def __init__(self, *, gesprochen: Callable[[float], list[str]] | None = None, **kwargs):
+    def __init__(
+        self,
+        *,
+        gesprochen: Callable[[float], list[str]] | None = None,
+        beurteilt: Callable[[str], None] | None = None,
+        **kwargs,
+    ):
+        """beurteilt: wird mit "rueckmeldung" oder "echo" gerufen, wenn der erkannte Text kein Einwurf ist (das Gate
+        nimmt dann die vorsorglich gedämpfte Stimme wieder zurück)."""
         super().__init__(**kwargs)
         self._gesprochen = gesprochen
+        self._beurteilt = beurteilt
         self.echo_verworfen = 0  # für Tests und das Log
         self._echo_gemeldet = 0.0
+        self.rueckmeldungen = 0
+        self._rueckmeldung_gemeldet = 0.0
 
     def _urteil(self, text: str) -> str:
         if self._gesprochen is None:
@@ -225,7 +300,7 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
     async def _handle_transcription(self, frame) -> ProcessFrameResult:
         if not self._bot_speaking:
             return await super()._handle_transcription(frame)
-        count = meaningful_word_count(frame.text)
+        count = meaningful_word_count(frame.text, interim=isinstance(frame, InterimTranscriptionFrame))
         if count >= self._min_words:
             urteil = self._urteil(frame.text)
             if urteil == "echo":
@@ -234,6 +309,8 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
                 if jetzt - self._echo_gemeldet > 5.0:  # höchstens alle 5 s, ohne Inhalt
                     self._echo_gemeldet = jetzt
                     logger.info(f"{self}: Echo der eigenen Stimme verworfen ({count} Wörter, insgesamt {self.echo_verworfen})")
+                if self._beurteilt is not None:
+                    self._beurteilt("echo")
                 await self.trigger_reset_aggregation()
                 return ProcessFrameResult.CONTINUE
             if urteil == "unklar" and isinstance(frame, InterimTranscriptionFrame):
@@ -242,15 +319,55 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
             logger.debug(f"{self}: Einwurf erkannt ({frame.text!r})")
             await self.trigger_user_turn_started()
             return ProcessFrameResult.STOP
+        if ist_rueckmeldung(frame.text):
+            self.rueckmeldungen += 1
+            jetzt = time.monotonic()
+            if jetzt - self._rueckmeldung_gemeldet > 2.0:  # ohne Inhalt, höchstens alle 2 s
+                self._rueckmeldung_gemeldet = jetzt
+                logger.info(f"{self}: Rückmeldung erkannt, WAMO redet weiter (insgesamt {self.rueckmeldungen})")
+            if self._beurteilt is not None:
+                self._beurteilt("rueckmeldung")
         await self.trigger_reset_aggregation()
         return ProcessFrameResult.CONTINUE
 
 
 ASSISTANT_RECORD_TIMEOUT_SECS = 1.0
 
+# Stopp an der nächsten hörbaren Wortgrenze (WAMO_STOPP_GRENZE) und vorsorgliches Dämpfen (WAMO_DUCKEN)
+STOPP_FADE_SECS = 0.14  # so lange blendet die Oberfläche aus (ui/src/lib/useWamo.ts fadeOutAudio)
+STOPP_VORLAUF_SECS = 0.05  # Weg der Servernachricht zur Oberfläche
+STOPP_SATZ_VORZUG_SECS = 0.30  # ein Satz- oder Kommaende, das höchstens so viel später liegt als die früheste Grenze, geht vor
+DUCK_VERZOEGERUNG_SECS = 0.12  # Sprache der Person so lange (nach der Meldung der Spracherkennung), bevor gedämpft wird
+DUCK_NACH_VAD_ENDE_SECS = 1.0  # ohne bestätigten Einwurf so lange nach dem Ende der Sprache wieder normal (Pausen, Verzug der Erkennung)
+DUCK_SPERRE_SECS = 8.0  # nach einer Entwarnung (Rückmeldung, Echo, Höchstdauer) so lange nicht wieder dämpfen
+DUCK_SPERRE_KURZ_SECS = 1.5  # nach dem Ende der Sprache ohne Urteil der Erkennung nur kurz
+DUCK_BEURTEILT_SECS = 0.5  # Rückmeldung oder Echo erkannt: so lange warten, ob doch ein Einwurf folgt ("Ja, aber ...")
+DUCK_MAX_SECS = 3.0  # spätestens nach dieser Zeit ohne bestätigten Einwurf wieder normal (Echo hält die Sprachaktivität an)
+
+
+def stopp_grenze_an(wert: str | None = None) -> bool:
+    """WAMO_STOPP_GRENZE: Unterbrechung an der nächsten hörbaren Wortgrenze statt nach bis zu drei weiteren Wörtern."""
+    return schalter_an("WAMO_STOPP_GRENZE", wert)
+
+
+def ducken_an(wert: str | None = None) -> bool:
+    """WAMO_DUCKEN: Stimme sofort leiser, sobald die Person zu sprechen beginnt; endgültig nur bei einem echten Einwurf."""
+    return schalter_an("WAMO_DUCKEN", wert)
+
 
 class SoftInterruptGate(FrameProcessor):
-    """Verzoegert Unterbrechungen bis zur naechsten hoerbaren Satz- bzw. Wortgrenze."""
+    """Verzoegert Unterbrechungen bis zur naechsten hoerbaren Satz- bzw. Wortgrenze.
+
+    grenze=True: Die Wort-Zeitstempel (Tracker-Uhr) laufen dem hörbaren Ton um playback_lag_secs voraus. Eine Wortgrenze,
+    die der Tracker schon gemeldet hat, ist für die Person also noch nicht zu hören. Das Gate wählt die früheste dieser
+    Grenzen, die noch zu erreichen ist (Satz- oder Kommaende bis STOPP_SATZ_VORZUG_SECS später geht vor), lässt die
+    Oberfläche so ausblenden, dass die Stimme genau dort verstummt, und bricht erst dann serverseitig ab. Wörter ab der
+    Grenze gelten als nicht gehört (ungehoerte_woerter). Ohne Wortzeiten greift weiter die Zeitgrenze.
+
+    ducken=True: Beginnt die Person zu sprechen, während WAMO redet, dämpft die Oberfläche die Stimme vorsorglich
+    (Nachricht stimme_leiser). Bestätigt die Spracherkennung einen Einwurf, folgt der Stopp; sind es nur Rückmeldelaute,
+    Echo oder Geräusche, nimmt das Gate die Dämpfung zurück und dämpft in den nächsten DUCK_SPERRE_SECS nicht erneut.
+    """
 
     def __init__(
         self,
@@ -259,11 +376,25 @@ class SoftInterruptGate(FrameProcessor):
         playback_lag_secs: float = 0.5,
         max_wait_secs: float = 1.5,
         uhr: Callable[[], float] = time.monotonic,
+        grenze: bool = False,
+        ducken: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._uhr = uhr
-        self._woerter: deque[tuple[float, str]] = deque(maxlen=400)  # zuletzt gespielte Wörter (für den Echo-Filter)
+        self._grenze_modus = grenze
+        self._ducken = ducken
+        self._grenzen: deque[tuple[float, bool]] = deque(maxlen=200)  # (Tracker-Zeit des Wortbeginns, Satz- oder Kommaende davor)
+        self._ungehoert = 0  # so viele bereits gemeldete Wörter liegen hinter der Grenze
+        self._duckt = False
+        self._duck_task: asyncio.Task | None = None
+        self._duck_ende_task: asyncio.Task | None = None  # Sprachende ohne bestätigten Einwurf
+        self._duck_max_task: asyncio.Task | None = None  # Höchstdauer der Dämpfung
+        self._vad_spricht = False
+        self._duck_gesperrt_bis = 0.0
+        # zuletzt gespielte Wörter (Zeit, Wort, steht im Verlauf): für den Echo-Filter und das Kürzen des Verlaufs
+        self._woerter: deque[tuple[float, str, bool]] = deque(maxlen=400)
+        self._kurzlebig: set[asyncio.Task] = set()  # Entdämpfen-Aufgaben, die cleanup beenden muss
         self._tts_offen = False  # ein Sprachabschnitt läuft, dessen Text noch nicht im Verlauf steht
         self._max_words = max_words
         self._playback_lag_secs = playback_lag_secs
@@ -274,6 +405,7 @@ class SoftInterruptGate(FrameProcessor):
         self._pending = False  # die Person spricht, Unterbrechung steht aus
         self._firing = False  # Grenze gefunden, Unterbrechung laeuft
         self._last_word_ended_sentence = False
+        self._last_word_ended_phrase = False  # Satz- oder Kommaende
         self._words_left = 0  # so viele Wörter darf WAMO nach dem Einwurf noch sprechen
         self._held: list[Frame] = []
         self._held_user_msgs: list[dict] = []
@@ -284,11 +416,13 @@ class SoftInterruptGate(FrameProcessor):
     def kuerzlich_gesprochen(self, sekunden: float = ECHO_FENSTER_KURZ_SECS) -> list[str]:
         """Wörter, die WAMO in den letzten Sekunden gespielt hat, in der Reihenfolge (klein, ohne Satzzeichen)."""
         grenze = self._uhr() - sekunden
-        return [w for t, w in self._woerter if t >= grenze]
+        return [w for t, w, _ in self._woerter if t >= grenze]
 
     def antwort_beginnt(self):
         """Vom PlaybackTracker aufgerufen: ein neuer Sprachabschnitt beginnt, sein Text kommt erst später in den Verlauf."""
         self._tts_offen = True
+        if not self._firing:
+            self._ungehoert = 0  # ein nicht abgeholter Wert gehört zur vorigen Antwort
 
     def assistant_turn_recorded(self):
         """Aus on_assistant_turn_stopped aufrufen: der Text von WAMO steht jetzt im Verlauf."""
@@ -296,14 +430,103 @@ class SoftInterruptGate(FrameProcessor):
         self._tts_offen = False
         self._turn_recorded.set()
 
+    def ungehoerte_woerter(self) -> int:
+        """Wie viele der zuletzt gemeldeten Wörter liegen hinter der Stoppgrenze (nie zu hören waren)? Einmal abholen:
+        steht danach wieder bei 0. Der Aufrufer kürzt damit den Verlauf auf das tatsächlich Gehörte."""
+        n, self._ungehoert = self._ungehoert, 0
+        return n
+
+    def beurteilt(self, grund: str):
+        """Von der Start-Strategie gerufen: der Einwurf war nur eine Rückmeldung ("rueckmeldung") oder Echo ("echo").
+        Die vorsorgliche Dämpfung wird nach DUCK_BEURTEILT_SECS zurückgenommen und dann eine Weile nicht wiederholt.
+        Die Frist fängt Zwischenstände ab: ein echter Einwurf beginnt oft mit "Ja, aber", und das Wort nach dem "Ja"
+        bestätigt ihn (_arm bricht die Frist ab), ohne dass die Stimme erst lauter und dann leiser wird."""
+        if not self._ducken:
+            return
+        if self._duck_task and not self._duck_task.done():
+            self._duck_task.cancel()  # noch nicht gedämpft: in dieser Sprachphase gar nicht erst dämpfen
+            self._duck_gesperrt_bis = max(self._duck_gesperrt_bis, self._uhr() + DUCK_SPERRE_KURZ_SECS)
+        if self._duckt and not (self._pending or self._firing):
+            self._frist("_duck_ende_task", DUCK_BEURTEILT_SECS, grund, DUCK_SPERRE_SECS)
+
+    def _kurz(self, coro, name: str):
+        """Kurze Hintergrundaufgabe, die cleanup noch beenden kann."""
+        task = self.create_task(coro, name=name)
+        self._kurzlebig.add(task)
+        task.add_done_callback(self._kurzlebig.discard)
+        return task
+
+    def _duck_planen(self):
+        if (
+            not self._ducken
+            or self._duckt
+            or self._pending
+            or self._firing
+            or self._uhr() < self._duck_gesperrt_bis
+            or (self._duck_task and not self._duck_task.done())
+        ):
+            return
+        self._duck_task = self.create_task(self._duck_nach(), name="soft_interrupt_ducken")
+
+    async def _duck_nach(self):
+        await asyncio.sleep(DUCK_VERZOEGERUNG_SECS)
+        if not (self._vad_spricht and self._bot_speaking) or self._duckt or self._firing:
+            return
+        self._duckt = True
+        logger.info(f"{self}: Stimme gedämpft")
+        await self.push_frame(RTVIServerMessageFrame(data={"type": "stimme_leiser", "an": True}))
+        self._frist("_duck_max_task", DUCK_MAX_SECS, "Zeit", DUCK_SPERRE_SECS)
+
+    def _frist(self, attribut: str, sekunden: float, grund: str, sperre: float):
+        """Dämpfung nach sekunden zurücknehmen, wenn bis dahin kein Einwurf bestätigt ist (ersetzt einen früheren Termin)."""
+        alt = getattr(self, attribut)
+        if alt and not alt.done():
+            alt.cancel()
+        setattr(self, attribut, self.create_task(self._entduck_nach(sekunden, grund, sperre), name="soft_interrupt" + attribut))
+
+    def _fristen_abbrechen(self, *attribute: str):
+        for attribut in attribute or ("_duck_ende_task", "_duck_max_task"):
+            task = getattr(self, attribut)
+            if task and not task.done() and task is not asyncio.current_task():
+                task.cancel()
+
+    async def _entduck_nach(self, sekunden: float, grund: str, sperre: float):
+        await asyncio.sleep(sekunden)
+        if self._duckt and not (self._pending or self._firing):
+            self._duck_gesperrt_bis = self._uhr() + sperre
+            await self._entducken(grund)
+
+    async def _entducken(self, grund: str):
+        if not self._duckt:
+            return
+        self._duckt = False
+        self._fristen_abbrechen()
+        logger.info(f"{self}: Stimme wieder normal ({grund})")
+        await self.push_frame(RTVIServerMessageFrame(data={"type": "stimme_leiser", "an": False}))
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
             self._last_word_ended_sentence = False
+        elif isinstance(frame, VADUserStartedSpeakingFrame) and direction == FrameDirection.DOWNSTREAM:
+            await self.push_frame(frame, direction)
+            self._vad_spricht = True
+            self._fristen_abbrechen("_duck_ende_task")  # die Person redet weiter: Pause in der Rede, kein Ende
+            if self._bot_speaking:
+                self._duck_planen()
+            return
+        elif isinstance(frame, VADUserStoppedSpeakingFrame) and direction == FrameDirection.DOWNSTREAM:
+            await self.push_frame(frame, direction)
+            self._vad_spricht = False
+            if self._duckt and not (self._pending or self._firing):
+                self._frist("_duck_ende_task", DUCK_NACH_VAD_ENDE_SECS, "Sprache zu Ende", DUCK_SPERRE_KURZ_SECS)
+            return
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            if self._duckt and not (self._pending or self._firing):
+                self._kurz(self._entducken("Antwort zu Ende"), "soft_interrupt_entducken")
             if self._pending:
                 await self.push_frame(frame, direction)
                 self._start_fire("Antwort zu Ende", interrupt=False)
@@ -335,7 +558,7 @@ class SoftInterruptGate(FrameProcessor):
 
         await self.push_frame(frame, direction)
 
-    def on_word_played(self, text: str) -> bool:
+    def on_word_played(self, text: str, im_verlauf: bool = True) -> bool:
         """Vom PlaybackTracker aufgerufen, wenn laut Zeitstempel ein neues Wort beginnt.
 
         Beginnt ein neues Wort, ist das vorige fertig: hier liegt eine Wortgrenze.
@@ -343,7 +566,12 @@ class SoftInterruptGate(FrameProcessor):
         """
         if self._firing:
             return True
-        if self._pending:
+        jetzt = self._uhr()
+        if self._grenze_modus:
+            self._grenzen.append((jetzt, self._last_word_ended_phrase))
+            if self._pending and self._plane_grenze(jetzt):
+                return True
+        elif self._pending:
             if self._last_word_ended_sentence:
                 self._start_fire("Satzende")
                 return True
@@ -352,20 +580,55 @@ class SoftInterruptGate(FrameProcessor):
                 return True
             self._words_left -= 1
         self._last_word_ended_sentence = text.rstrip().endswith(SENTENCE_END)
-        jetzt = self._uhr()
+        self._last_word_ended_phrase = text.rstrip().endswith(SENTENCE_END + (",", ";"))
         for w in text.split():  # das Haus-TTS liefert ganze Sätze, Soniox einzelne Wörter
             if wort := _wort(w):
-                self._woerter.append((jetzt, wort))
+                self._woerter.append((jetzt, wort, im_verlauf))
         return False
+
+    def _naechste_grenze(self, jetzt: float) -> tuple[float, bool] | None:
+        """Früheste Wortgrenze (Tracker-Zeit), an der die Stimme noch rechtzeitig zu stoppen ist. Das Ausblenden dauert
+        STOPP_FADE_SECS plus Weg zur Oberfläche, der Ton läuft dem Tracker um playback_lag_secs hinterher: eine Grenze b
+        ist erreichbar, wenn b + lag - fade - vorlauf noch nicht vorbei ist. Ein Satz- oder Kommaende bis
+        STOPP_SATZ_VORZUG_SECS nach der frühesten Grenze geht vor."""
+        frueh = jetzt - self._playback_lag_secs + STOPP_FADE_SECS + STOPP_VORLAUF_SECS
+        kandidaten = [(t, satz) for t, satz in self._grenzen if t >= frueh]
+        if not kandidaten:
+            return None
+        erste = kandidaten[0]
+        for t, satz in kandidaten:
+            if t > erste[0] + STOPP_SATZ_VORZUG_SECS:
+                break
+            if satz:
+                return t, True
+        return erste
+
+    def _plane_grenze(self, jetzt: float) -> bool:
+        """Grenze wählen und den Stopp dorthin legen. False, wenn es noch keine Grenze gibt (das nächste Wort bringt eine)."""
+        wahl = self._naechste_grenze(jetzt)
+        if wahl is None:
+            return False
+        t, satz = wahl
+        self._ungehoert = sum(1 for tw, _, verlauf in self._woerter if tw >= t and verlauf)
+        self._pending = False
+        self._firing = True
+        self._fire_task = self.create_task(
+            self._fire_grenze(t, "Satzende" if satz else "Wortgrenze"), name="soft_interrupt_fire"
+        )
+        return True
 
     def _arm(self):
         if self._pending or self._firing:
             return
         self._pending = True
         self._words_left = self._max_words
+        self._ungehoert = 0
         self._arm_count += 1
+        self._fristen_abbrechen()  # der Einwurf ist bestätigt: die Dämpfung geht in den Stopp über
         if self._max_wait_secs > 0:
             self._grenze_task = self.create_task(self._zeitgrenze(self._arm_count), name="soft_interrupt_zeitgrenze")
+        if self._grenze_modus:
+            self._plane_grenze(self._uhr())  # schon gemeldete, noch nicht hörbare Grenzen gelten sofort
         logger.debug(f"{self}: Person spricht, WAMO beendet erst den Satz")
 
     async def _zeitgrenze(self, arm: int):
@@ -398,12 +661,37 @@ class SoftInterruptGate(FrameProcessor):
             await self._wait_for_assistant_turn()
             self._move_held_user_messages_to_end()
         finally:
-            self._firing = False
-            self._fire_task = None
-            held, self._held = self._held, []
-            self._held_user_msgs = []
-            for frame in held:
-                await self.push_frame(frame)
+            await self._fire_ende()
+
+    async def _warte_bis(self, tracker_zeit: float):
+        rest = tracker_zeit - self._uhr()
+        if rest > 0:
+            await asyncio.sleep(rest)
+
+    async def _fire_grenze(self, grenze: float, grund: str):
+        """Stopp an der gewählten Grenze: die Oberfläche beginnt so, dass die Stimme an der Grenze verstummt, der Server
+        bricht ab, wenn die Person die Grenze hört (vorher würde er Ton wegnehmen, den sie noch hören soll)."""
+        try:
+            ton = grenze + self._playback_lag_secs  # so spät kommt die Grenze bei der Person an
+            await self._warte_bis(ton - STOPP_FADE_SECS - STOPP_VORLAUF_SECS)
+            await self.push_frame(RTVIServerMessageFrame(data={"type": "leiser_stopp", "sofort": True}))
+            await self._warte_bis(ton)
+            logger.info(f"{self}: weiche Unterbrechung ({grund})")
+            await self.push_frame(InterruptionFrame())
+            await self._wait_for_assistant_turn()
+            self._move_held_user_messages_to_end()
+        finally:
+            await self._fire_ende()
+
+    async def _fire_ende(self):
+        self._firing = False
+        self._duckt = False  # die Oberfläche setzt die Lautstärke mit der nächsten Antwort zurück
+        self._ungehoert = 0  # kam kein Abschlussereignis der Antwort (Text schon im Verlauf), bleibt nichts für später stehen
+        self._fire_task = None
+        held, self._held = self._held, []
+        self._held_user_msgs = []
+        for frame in held:
+            await self.push_frame(frame)
 
     async def _wait_for_assistant_turn(self):
         """Wartet, bis der Text des laufenden Sprachabschnitts im Verlauf steht, höchstens ASSISTANT_RECORD_TIMEOUT_SECS."""
@@ -438,9 +726,41 @@ class SoftInterruptGate(FrameProcessor):
         if self._fire_task:
             await self.cancel_task(self._fire_task)
             self._fire_task = None
+        for task in (self._duck_task, self._duck_ende_task, self._duck_max_task, *self._kurzlebig):
+            if task and not task.done():
+                await self.cancel_task(task)
         if self._grenze_task and not self._grenze_task.done():
             await self.cancel_task(self._grenze_task)
         self._grenze_task = None
+
+
+def ohne_letzte_woerter(text: str, n: int) -> str:
+    """Text ohne die letzten n Wörter (Leerraum und Satzzeichen am neuen Ende bleiben sauber)."""
+    if n <= 0:
+        return text
+    teile = re.findall(r"\S+\s*", text)
+    return "".join(teile[:-n]).rstrip() if n < len(teile) else ""
+
+
+def kuerze_auf_gehoertes(context, n: int) -> bool:
+    """Nimmt die letzten n Wörter aus der zuletzt hinzugefügten Antwort von WAMO im Verlauf. Bleibt nichts übrig, fällt die
+    Nachricht weg (eine leere Antwort lehnt das Sprachmodell ab). False, wenn der Verlauf nicht mit einer Antwort aus Text
+    endet (dann bleibt alles, wie es ist)."""
+    nachrichten = list(context.messages)
+    if not nachrichten or not isinstance(nachrichten[-1], dict) or nachrichten[-1].get("role") != "assistant":
+        logger.debug("Verlauf nicht gekürzt: die letzte Nachricht ist keine Antwort von WAMO")
+        return False
+    letzte = nachrichten[-1]
+    inhalt = letzte.get("content")
+    if not isinstance(inhalt, str):
+        logger.debug("Verlauf nicht gekürzt: die Antwort besteht nicht aus einfachem Text")
+        return False
+    kurz = ohne_letzte_woerter(inhalt, n)
+    if kurz.replace("●", "").replace("◐", "").replace("○", "").strip():
+        letzte["content"] = kurz
+    else:
+        context.set_messages(nachrichten[:-1])
+    return True
 
 
 class PlaybackTracker(FrameProcessor):
@@ -456,6 +776,6 @@ class PlaybackTracker(FrameProcessor):
             if getattr(frame, "append_to_context", True):
                 self._gate.antwort_beginnt()
         elif isinstance(frame, TTSTextFrame) and direction == FrameDirection.DOWNSTREAM:
-            if self._gate.on_word_played(frame.text):
+            if self._gate.on_word_played(frame.text, getattr(frame, "append_to_context", True)):
                 return  # abgeschnitten -> nicht in den Gespraechsverlauf
         await self.push_frame(frame, direction)

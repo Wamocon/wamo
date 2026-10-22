@@ -184,7 +184,16 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   sich der Rand aus, erst nach zwei gleichen Werten. Wert 7 (Store-App) zählt nicht, weil Store-Apps unter Windows 10
   und 11 auch im Fenster laufen. Der Wächter endet mit der App und startet nach einem Absturz nach 5 s neu.
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
-  spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel).
+  spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel). Mit
+  `WAMO_STOPP_GRENZE` (Standard an) wählt der Kern die Wortgrenze selbst und schickt `leiser_stopp` mit `sofort`.
+- **Stimme und Sprachverhalten** (22.10.2026, Messweg `scripts/wamo_stimme.py` und `scripts/wamo-stimme-messen.cjs`,
+  Befunde und Zahlen: Abschnitt „Stimme messen“ unten). Schalter im Kern, jeder einzeln abschaltbar:
+  `WAMO_STOPP_GRENZE` (Stopp an der ersten noch erreichbaren hörbaren Wortgrenze, Satz- oder Kommaende bis 0,3 s später
+  geht vor, der Verlauf wird auf das Gehörte gekürzt), `WAMO_DUCKEN` (Stimme sofort leiser, sobald die Person spricht,
+  Nachricht `stimme_leiser`; bei Rückmeldelaut, Echo oder Geräusch wieder normal und 8 s keine neue Dämpfung),
+  `WAMO_RUECKMELDUNG` (erweiterte Erkennung von „mhm“, „mm-hmm“, „alles klar“), `WAMO_WARTESATZ` und
+  `WAMO_WARTESATZ_SECS` (kurzer Satz bei einem Werkzeugaufruf, der länger als 0,9 s dauert und bei dem WAMO sonst
+  schweigt, `voice-core/wartesatz.py`).
 - **Mikrofon-Wächter** (`ui/src/lib/mikrofon.ts`, `voice-core/audio_monitor.py`): Die Oberfläche misst die eigene Spur und
   warnt nach 3 s digitaler Stille, bei einer beendeten Spur ohne Ersatz, ohne Spur 5 s nach „Bot bereit“ und bei
   Mikrofonsperre durch Windows (Datenschutz für Desktop-Apps, `systemPreferences.getMediaAccessStatus`), jeweils mit

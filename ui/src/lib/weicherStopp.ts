@@ -19,3 +19,19 @@ export function sollAusblenden(stop: SoftStop, pegel: number, jetzt: number): bo
   if (stop.armedAt === null || stop.fading) return false;
   return pegel < LEISE_PEGEL || jetzt - stop.armedAt > SPAETESTENS_MS;
 }
+
+/** Ausblenden beim Stopp (Servernachricht leiser_stopp, der Kern rechnet damit: Kern/soft_interrupt.py STOPP_FADE_SECS). */
+export const AUSBLENDEN_MS = 140;
+/** Vorsorgliches Dämpfen, sobald die Person zu sprechen beginnt (Servernachricht stimme_leiser): Zielpegel und Zeiten. */
+export const GEDAEMPFT = 0.3;
+export const DAEMPFEN_MS = 90;
+export const ENTDAEMPFEN_MS = 250;
+/** Längste Dämpfung ohne Entwarnung des Kerns (der Kern nimmt sie nach 3 s selbst zurück). */
+export const DAEMPFEN_MAX_MS = 4000;
+
+/** Lautstärke eines linearen Verlaufs von von nach nach nach vergangenMs von dauerMs. Ungültige Werte ergeben das Ziel. */
+export function verlauf(von: number, nach: number, dauerMs: number, vergangenMs: number): number {
+  if (![von, nach, dauerMs, vergangenMs].every(Number.isFinite) || dauerMs <= 0 || vergangenMs >= dauerMs) return nach;
+  const t = Math.max(0, vergangenMs / dauerMs); // am Ende genau das Ziel (sonst liefe die Animation bei Rundungsfehlern weiter)
+  return von + (nach - von) * t;
+}

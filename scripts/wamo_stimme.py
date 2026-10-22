@@ -334,12 +334,26 @@ def _aktiv_maske(segs: list[tuple[float, float]], n: int) -> np.ndarray:
     return maske
 
 
+def wanduhr(sz: dict):
+    """Zuordnung AudioContext-Zeit -> Wanduhr (Sekunden seit 1970, wie das Kern-Log). Die Uhr des AudioContext läuft gegen
+    die Wanduhr minimal anders (bis zu einer Sekunde je Viertelstunde): jede Zeit wird am nächsten Ereignis mit
+    Wanduhrstempel (Beginn einer Wiederholung, Sprechprobe) festgemacht, nicht am Ende des Blocks."""
+    stempel = sorted((e.get("jetzt", e["t0"]), e["wall"] / 1000.0) for e in sz["events"] if e.get("wall"))
+
+    def wall(t: float) -> float:
+        if not stempel:
+            return t + sz["wallDiff"] / 1000.0
+        ref, w0 = min(stempel, key=lambda p: abs(p[0] - t))
+        return w0 + (t - ref)
+
+    return wall
+
+
 def analysiere_szenario(sz: dict, bot: np.ndarray, mic: np.ndarray, kern: list[dict]) -> list[dict]:
     """Kennzahlen je Wiederholung eines Szenarios. bot/mic: Aufnahme ab sz["von"], sz["sr"] Proben je Sekunde."""
     rate, von = sz["sr"], sz["von"]
 
-    def wall(t):  # AudioContext-Zeit -> Wanduhr in Sekunden
-        return t + sz["wallDiff"] / 1000.0
+    wall = wanduhr(sz)
 
     def rel(t):  # AudioContext-Zeit -> Sekunden seit Aufnahmebeginn
         return t - von
@@ -409,6 +423,14 @@ def analysiere_szenario(sz: dict, bot: np.ndarray, mic: np.ndarray, kern: list[d
             r["unterbrechungen"] = len(im_fenster(kern, ("weiche_unterbrechung",), wa, wb))
             r["echo_verworfen"] = len(im_fenster(kern, ("echo_verworfen",), wa, wb))
             r["antwort_s"] = round(sum(e - s for s, e in antwortbloecke(sh, a, b)), 1)
+            dip = lautstaerke_dip(sz["vol"], von + a, von + b)  # Dämpfen durch Echo (Pumpen)
+            r["gedaempft_ms"], r["vol_min"] = round(dip["dauer"] * 1000), round(dip["min"], 2)
+        if sz["name"] == "werkzeug":
+            bl = antwortbloecke(sh, rel(clips[0]["t0"] + clips[0]["dauer"]), b, trenner=1.2)
+            r["bloecke"] = len(bl)
+            stille = [round((b2[0] - b1[1]) * 1000) for b1, b2 in zip(bl, bl[1:])]
+            r["stille_zwischen_ms"] = max(stille) if stille else 0  # längste Stille zwischen Füllsatz und Ergebnis
+            r["fuellsatz"] = len(bl) > 1 and (bl[0][1] - bl[0][0]) < 3.5  # kurzer erster Block vor dem Ergebnis
         if sz["name"] == "schnell":
             r["antworten"] = len(antwortbloecke(sh, rel(clips[0]["t0"]) + 0.2, b))
             n = min(len(em), len(eh))
@@ -472,6 +494,11 @@ def zusammenfassen(daten: dict[str, list[dict]]) -> dict:
     z["echo_laeufe"] = len([r for r in ec if r.get("ok")])
     z["echo_unterbrechungen"] = sum(r.get("unterbrechungen", 0) for r in ec)
     z["echo_verworfen"] = sum(r.get("echo_verworfen", 0) for r in ec)
+    z["echo_gedaempft_ms"] = [r["gedaempft_ms"] for r in ec if r.get("ok") and "gedaempft_ms" in r]
+    z["echo_antwort_s"] = [r["antwort_s"] for r in ec if r.get("ok") and "antwort_s" in r]
+    wz = [r for r in daten.get("werkzeug", []) if r.get("ok")]
+    z["werkzeug_stille_ms"] = [r["stille_zwischen_ms"] for r in wz if "stille_zwischen_ms" in r]
+    z["werkzeug_fuellsatz"] = [bool(r.get("fuellsatz")) for r in wz]
     sc = [r for r in daten.get("schnell", []) if r.get("ok")]
     z["schnell_antworten"] = [r["antworten"] for r in sc if "antworten" in r]
     z["schnell_ueberlappung_ms"] = [r["ueberlappung_ms"] for r in sc if "ueberlappung_ms" in r]
@@ -499,7 +526,10 @@ def drucken(name: str, z: dict) -> None:
             print(f"  {n:11} {z[f'{n}_ereignisse']} Ereignisse | falsch unterbrochen (Log) {z[f'{n}_falsch_log']}, (Ton) {z[f'{n}_falsch_audio']}"
                   f" | Stimme gedämpft {len(dauer)}x{leiser}")
     if z.get("echo_laeufe"):
-        print(f"  Echo        {z['echo_laeufe']} Läufe | Unterbrechungen durch Echo {z['echo_unterbrechungen']} | als Echo verworfen {z['echo_verworfen']}")
+        print(f"  Echo        {z['echo_laeufe']} Läufe | Unterbrechungen durch Echo {z['echo_unterbrechungen']} | als Echo verworfen {z['echo_verworfen']}"
+              f" | Stimme gedämpft ms je Lauf {z['echo_gedaempft_ms']} | Antwortdauer s {z['echo_antwort_s']}")
+    if z.get("werkzeug_fuellsatz"):
+        print(f"  werkzeug    Stille zwischen Füllsatz und Ergebnis ms {_verteilung(z['werkzeug_stille_ms'])} | Füllsatz vorab {_anteil(z['werkzeug_fuellsatz'])}")
     if z.get("schnell_antworten"):
         print(f"  schnell     Antworten je Doppelfrage {z['schnell_antworten']} | Überlappung ms {_verteilung(z['schnell_ueberlappung_ms'])}")
     for luecke in (1.5, 2.5):

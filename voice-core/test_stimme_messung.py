@@ -220,6 +220,20 @@ class SzenarioTest(unittest.TestCase):
         self.assertAlmostEqual(r["dazwischen_nach_ms"], 1500, delta=60)
 
 
+class WanduhrTest(unittest.TestCase):
+    def test_zeit_haengt_am_naechsten_stempel(self):
+        sz = {"wallDiff": 5000.0, "events": [
+            {"typ": "rep", "rep": 0, "t0": 100.0, "wall": 2_000_000},  # 2000 s bei 100 s Kontextzeit
+            {"typ": "clip", "t0": 130.03, "jetzt": 130.0, "wall": 2_030_100},  # die Uhren laufen um 0,1 s auseinander
+        ]}
+        wall = w.wanduhr(sz)
+        self.assertAlmostEqual(wall(101.0), 2001.0)
+        self.assertAlmostEqual(wall(131.0), 2031.1, msg="am Stempel der Sprechprobe, nicht am Beginn der Wiederholung")
+
+    def test_ohne_stempel_wallDiff(self):
+        self.assertAlmostEqual(w.wanduhr({"wallDiff": 5000.0, "events": []})(10.0), 15.0)
+
+
 class ClipsTest(unittest.TestCase):
     def test_zuschneiden(self):
         x = np.concatenate([np.zeros(RATE), np.ones(100) * 0.5, np.zeros(RATE)]).astype(np.float32)
