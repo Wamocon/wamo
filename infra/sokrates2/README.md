@@ -1017,6 +1017,117 @@ systemd-Test auf Sokrates-2 geschrieben und ist durch `systemd-analyze verify` i
 wamo-anker` und den Rauchtest zu bestätigen; startet sie nicht, sind `MemoryDenyWriteExecute` und `SystemCallFilter` die ersten
 Verdächtigen.
 
+## 15. Release-Dienst der Selbstüberarbeitung (Schritt 0.3, Gerüst, vorbereitet am 22.10.2026, noch nicht ausgerollt)
+
+**Zweck.** `wamo-release` (Konzept `docs/selbstueberarbeitung.md`, Abschnitt D) führt eine Release-Anfrage durch einen
+Zustandsautomaten. Er läuft unprivilegiert (Benutzer `wamo-release`, ohne Capabilities, nur Unix-Sockets) und schaltet nie
+selbst: Alles Schaltende liegt beim Notanker, den er nur über dessen Socket mit `status`, `rueckweg` und `sperre an` erreicht
+(nie `sperre aus`). In diesem Schritt sind die Stufen (Übernehmen, Prüfstrecke, Review, Refactor, Veröffentlichen,
+Bereitstellen) Schnittstellen ohne Inhalt (`release/release_stufen.py`, Stufe 1 bis 3 füllen sie), es gibt keine
+Datenbankverbindung (`release/release_db.py`, Stufe 1), keinen Aufruf eines Modells, kein Netz und kein GitHub. Der Dienst
+im Betrieb lehnt `anfordern` deshalb ehrlich ab (`datenbank_fehlt`, solange die Sperre des Ankers steht `gesperrt`). Voll
+getestet sind Socket, Audit-Kette, Zustandsautomat, Wiederaufnahme, Zeitgrenzen, Sperre und Rückweg. Quelltext:
+`infra/sokrates2/release/`.
+
+| Befehl (`sudo wamo-release ...`) | Wirkung |
+| --- | --- |
+| `status` | offene Anfrage, letzte Anfragen, Sperre des Ankers, Datenbank, Audit-Kette, Spiegel, Prüfsumme der Installation |
+| `anfordern main <profil>` | legt eine Anfrage an: nur für einen aktiven Admin laut Datenbank, nur wenn der Anker erreichbar und nicht gesperrt ist, höchstens eine offene, höchstens drei je Admin und Tag. Die Quelle `selbst` ist erst mit Stufe 3 freigeschaltet |
+| `abbrechen <anfrage>` | beendet die offene Anfrage, solange nichts umgeschaltet ist; ab `veroeffentlicht` (der Anker kann schon begonnen haben) erst nach einem gelungenen Rückweg, ab `bereitgestellt` nur über `zurueck` |
+| `zurueck ui`, `kern`, `alles` [`--trocken`] | Rückweg über den Anker; beendet auch die offene Anfrage (vor `veroeffentlicht` und in `veroeffentlicht` mit `abgebrochen`, ab `bereitgestellt` mit `zurueckgenommen`, hier nur bei `alles`: ein Teilrückweg lässt sie offen). Geht aus jedem Zustand, auch bei defekter Zustandsdatei, nicht beschreibbarem Protokoll und hängendem Schloss |
+| `freigeben`, `diff` | gibt es hier nie: Freigaben schreibt nur der Freigabe-Dienst des Ankers (Stufe 1.4), die Diff-Ansicht kommt mit Stufe 1.5 |
+
+**Wer darf.** Socket `/run/wamo-release/ctl.sock` (Ordner 2750 `wamo-release:wamo-core`, Socket 0660) und `SO_PEERCRED`
+vor dem ersten gelesenen Byte: `root` darf alle vier Befehle, `wamo-core` (der Kern) nur `status` und `anfordern`, nie
+Freigabe, Rückweg oder Abbruch. Menschen kommen über `sudo`. Der Socket für Personen mit Token (`api.sock`, Prüfung von Token,
+aal2 und Rolle) kommt mit Stufe 1.4; bis dahin kann der Kern eine Anfrage im Namen eines beliebigen Admin-Profils stellen (die
+Datenbank prüft, dass es ein aktiver Admin ist; die Person, die den Kern bedient, prüft der Kern). Eingaben: eine ASCII-Zeile bis
+160 Bytes, Regex je Feld, jede Kennung nur einmal. Grenzen gegen Dauerfeuer: der Kern darf 10 ändernde Anfragen je Minute und
+protokolliert nur bis 75 Prozent Füllgrad, root 30 und bis 90 Prozent, der Rückweg bis zum Ende; `status` höchstens 120 je Minute
+und Benutzer; getrennte Verbindungstöpfe (8 für root, 4 für den Kern), damit der Kern den Rückweg nicht aushungern kann.
+
+**Zustände.** Es sind die der Datenbank (Migration 0013), 17 Zustände und 30 erlaubte Übergänge; die Quelle `main` überspringt
+`arbeit`, `review`, `refactor` und `pruefung2`. Fehler, Zeitüberschreitung und Abbruch führen nach `abgebrochen` (mit Grund);
+ab `veroeffentlicht` (dort ruft der Dienst den Anker) geschieht das erst nach einem gelungenen Rückweg, ab `bereitgestellt`
+heißt das Ende `zurueckgenommen`. Gelingt der Rückweg nicht, bleibt die Anfrage offen, der Anker bekommt `sperre an`, und die
+Wache versucht es alle 60 Sekunden bis zu fünfmal (`status` zeigt `rueckweg_offen`, danach Handarbeit mit `wamo-anker rueckweg
+alles`). Eine Stufe, die auf einen Menschen wartet (zum Beispiel die Wahl der Version), verbraucht keine Versuche. Die Zustände ab `freigegeben` außer `veroeffentlicht`
+setzt nur der Anker oder der Freigabe-Dienst in der Datenbank; der Dienst beobachtet sie nur und prüft bei der Freigabe
+Commit-ID und Tree-ID gegen seine eigenen Werte (Abweichung: Abbruch und `sperre an`).
+
+| Zustand | Arbeit | Zeitgrenze |
+| --- | --- | --- |
+| `angefragt` | Anfrage steht | 15 Min |
+| `arbeit` (selbst) | Agent in der Arbeitskopie | 60 Min |
+| `uebernommen` | Quelle als Commit C1 festhalten | 10 Min |
+| `pruefung1` | bauen, testen, scannen | 45 Min |
+| `review`, `refactor` (selbst) | lesende Agenten, Refactor als Commit R | je 30 Min |
+| `pruefung2` (selbst) | Prüfstrecke auf R | 45 Min |
+| `versionswahl` | Vorschlag, Wahl des Admins, Release-Commit V | 24 Std |
+| `pruefung3` | schnelle Prüfung auf V, Klassifizierung durch den Anker | 15 Min |
+| `wartet_freigabe` | wartet auf die Freigabe (Datenbank) | 24 Std |
+| `freigegeben` | veröffentlichen | 15 Min |
+| `veroeffentlicht`, `bereitgestellt` | der Anker stellt bereit und schaltet um | 30 und 15 Min, danach Rückweg |
+| `umgeschaltet` | Bewährung (30 Minuten, Anker) | 60 Min, danach Rückweg |
+
+Zum Wortlaut der Konzeptskizze: angefordert heißt `angefragt`, Quelle geholt `uebernommen`, gebaut und getestet `pruefung1`,
+geprüft `review`, refaktoriert `refactor`, nachgetestet `pruefung2`, Version vorgeschlagen `versionswahl`. Insgesamt darf eine
+Anfrage drei Tage offen sein. Jede Stufe prüft ihr Ergebnis an einem Tor (Pflichtzeilen des Prüfstands, Commit-IDs,
+Version nie unter dem Vorschlag, Klasse der Schutzschicht): `gesperrt` beendet die Anfrage immer, `sonder` verlangt mindestens zwei
+aktive Admins (sonst endet sie mit `zweiter_admin_noetig`; heute gibt es einen, die Schutzschicht bleibt also gesperrt) und ist
+für die Quelle `selbst` bis Stufe 4 ganz gesperrt. Ein anderer Admin als der Beauftragte gibt `sonder` frei, das setzt die
+Datenbank durch (Trigger der Migration 0013).
+
+**Audit und Wiederaufnahme.** `audit.jsonl` mit Hashkette (wie beim Anker, `chattr +a`) ist zugleich das Write-Ahead-Log:
+Eine Zustandsänderung gilt erst, wenn ihre Zeile steht; `zustand.json` ist ein Zwischenspeicher davon. Nach einem Absturz
+zieht der Dienst die Zeilen hinter dem Stand der Datei nach (auch ohne die Datei). Die Datei ist an die Kette gebunden (Hash der
+Zeile `audit_n`, Position des Spiegelstands): Ein zurückgespielter Stand, der über das Ende des Protokolls hinausreicht, oder ein
+rotiertes Protokoll macht den Dienst defekt (er beginnt nichts Neues; `zurueck` geht weiter). Eine Stufe, die beim Absturz lief,
+läuft höchstens dreimal. Die Zeilen werden in `release_ereignisse` gespiegelt (in Reihenfolge, nach einem Ausfall der Datenbank
+nachgeholt, jede Zeile einzeln festgehalten; doppelt höchstens bei einem Absturz zwischen Datenbank und Merken, erkennbar an
+`quelle_n`); wird der Zustand ohne Datei aus dem Protokoll neu aufgebaut, gilt der Spiegel als erledigt. `status` zeigt den
+Rückstand. Hält der Anker die Sperre oder ist er nicht erreichbar, beginnt keine neue Anfrage und keine Stufe läuft weiter.
+**Protokoll voll (32 MiB)** oder bewusst rotieren, nur ohne offene Anfrage: `sudo systemctl stop wamo-release`, `sudo chattr -a
+/var/log/wamo-release/audit.jsonl`, Protokoll und `zustand.json` nach `/var/backups/wamo-release` verschieben, `sudo systemctl
+start wamo-release`, danach `sudo chattr +a /var/log/wamo-release/audit.jsonl` (der Dienst legt die neue Datei an; die Zähler
+der Anfragen des Tages beginnen dabei von vorn).
+
+| Ort | Inhalt |
+| --- | --- |
+| `/opt/wamo-release/app` (root, 0755) | Module, `wamo-release.sh`, `release_rauchtest.py`, `SHA256SUMS` (`ExecStartPre` prüft sie) |
+| `/var/lib/wamo-release` (wamo-release, 0700) | `zustand.json` (atomar, die Vorgängerin als `.vorher`) |
+| `/var/log/wamo-release` (wamo-release, 0750) | `audit.jsonl` (Zeile höchstens 2 KiB, bei 32 MiB voll) |
+| `/run/wamo-release` | `ctl.sock` |
+
+**Einrichten (von Hand, wiederholbar, Voraussetzung: der Anker ist eingerichtet).**
+
+```bash
+ssh sokrates2 "rm -rf ~/wamo-infra" && scp -r infra/sokrates2 sokrates2:wamo-infra && ssh sokrates2 "chmod -R go-w ~/wamo-infra"
+ssh sokrates2 "sudo bash ~/wamo-infra/release-einrichten.sh --trocken"                  # zeigt nur, was geschähe
+ssh sokrates2 "sudo bash ~/wamo-infra/release-einrichten.sh"
+ssh sokrates2 "sudo wamo-release status"
+ssh sokrates2 "sudo python3 -E -s /opt/wamo-release/app/release_rauchtest.py --produktiv"
+```
+
+Probelauf ohne root: `WAMO_RELEASE_WURZEL=/tmp/release-probe bash release-einrichten.sh`. Tests im Ordner `voice-core`:
+`uv run python -m pytest -q test_release.py test_release_socket.py test_release_skripte.py` (die Socket-Tests laufen nur unter
+Linux). **Rückweg:** `sudo bash ~/wamo-infra/release-rueckweg.sh` stoppt den Dienst (der Anker und die Produktion bleiben
+unberührt), mit `--entfernen` verschwindet er, Audit-Protokoll und Zustand werden nach `/var/backups/wamo-release`
+gesichert; beide Skripte kennen `--trocken`.
+
+**Grenzen und Prüfpunkte.** (a) Zum Anker kommt der Dienst über die Zusatzgruppe `wamocon` (dessen Ordner ist 2750
+`root:wamocon`). Das gibt ihm die Gruppenrechte an Dateien außerhalb von `/home` (die Unit verbirgt das Home und die Geheimnisordner
+anderer Dienste); besser wäre eine eigene Gruppe oder eine ACL nur für den Socket, eine Änderung am Anker. Außerdem erlaubt der
+Anker dem Benutzer `wamo-release` heute schon alle Vorwärtsbefehle (nur die Sperre bremst sie, und ihre Schritt-Skripte fehlen
+noch): Der Riegel gegen `sperre aus` und die Vorwärtsbefehle ist in diesem Schritt allein der Client (`release_anker.py`); für
+Schritt 0.5 gehört `ERLAUBT["wamo-release"]` im Anker bis Stufe 1 auf `status`, `rueckweg` und `sperre:an`. (b) Die Unit ist auf Sokrates-2 nicht erprobt: `systemd-analyze verify` läuft im
+Einrichtungsskript, `systemd-analyze security wamo-release` und der Rauchtest sind zu prüfen; `MemoryDenyWriteExecute` wurde mit einem
+nachgebauten Seccomp-Filter gegen Tests und Rauchtest (Teil A) geprüft. (c) Ein Stufenaufruf, der nicht zurückkehrt, wird nach
+etwa zwei Stunden erkannt: Der Dienst beendet sich mit Fehler, systemd startet ihn neu, die Wiederaufnahme übernimmt. (d) Wer root
+hat, kann das Protokoll samt Kette neu rechnen (wie beim Anker). (e) Offen für 0.5: Anker-Befehle `klassifiziere`, `bereitstellen`,
+`migrieren`, `umschalten` (die Liste in `release_anker.py` muss dann bewusst erweitert werden), echte Datenbank mit
+`wamo_release`, Socket für Personen mit Token.
+
 ---
 
 WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn

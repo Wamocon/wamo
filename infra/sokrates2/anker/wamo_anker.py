@@ -176,11 +176,13 @@ BEFEHLE = {
 }
 _ALLE = frozenset((set(BEFEHLE) - {"sperre"}) | {"sperre:an", "sperre:aus"})  # Rechte; "sperre" zählt je Argument
 # Wer darf was. Namen werden bei jeder Verbindung zu uid aufgelöst; ein fehlender Benutzer passt auf niemanden.
-# wamo-release (Schritt 0.3) darf die Sperre nie lösen. Weitere Benutzer ergänzt nur eine neue Version des Ankers.
+# wamo-release (Schritt 0.3) darf die Sperre nie lösen und bis Stufe 1 nur lesen, zurückrollen und sperren: Die
+# Vorwärtsbefehle (bereitstellen, migrieren, umschalten) bekommt er mit der neuen Version des Ankers, die sie füllt.
+# Weitere Benutzer ergänzt nur eine neue Version des Ankers.
 ERLAUBT = {
     "root": _ALLE,
     "wamocon": _ALLE,
-    "wamo-release": _ALLE - {"sperre:aus"},
+    "wamo-release": frozenset({"status", "rueckweg", "sperre:an", "pruefe-sonder"}),
 }
 
 GRUENDE = {

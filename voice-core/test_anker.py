@@ -346,7 +346,8 @@ class RechteTests(AnkerTest):
         alle = {"sperre:an", "sperre:aus"} | {n for n in A.BEFEHLE if n != "sperre"}  # unabhängig aus der Tabelle abgeleitet
         self.assertEqual(set(A.ERLAUBT["root"]), alle)
         self.assertEqual(set(A.ERLAUBT["wamocon"]), alle)
-        self.assertEqual(set(A.ERLAUBT["wamo-release"]), alle - {"sperre:aus"})
+        # bis Stufe 1 nur lesen, zurückrollen, sperren und die (immer ablehnende) Prüfung der Sonderfreigabe
+        self.assertEqual(set(A.ERLAUBT["wamo-release"]), {"status", "rueckweg", "sperre:an", "pruefe-sonder"})
 
     def test_jeder_fehlercode_hat_einen_text(self):
         """Ein fehlender Text löste früher einen KeyError im Fehlerzweig aus und ließ den Client ohne Antwort."""
@@ -898,7 +899,8 @@ class SperreTests(AnkerTest):
                 for zusatz in ("", " --trocken"):
                     with self.subTest(befehl=befehl, name=name, zusatz=zusatz):
                         antwort = self.sende(befehl + zusatz, name)
-                        self.assertEqual(antwort["grund"], "gesperrt")
+                        # wamo-release darf die Vorwärtsbefehle bis Stufe 1 gar nicht erst: "recht" vor "gesperrt"
+                        self.assertEqual(antwort["grund"], "recht" if name == "wamo-release" else "gesperrt")
                         self.assertFalse(antwort["ok"])
 
     def test_alle_schreibenden_vorwaertsbefehle_sind_in_der_tabelle_markiert(self):
