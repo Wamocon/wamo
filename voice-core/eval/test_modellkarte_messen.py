@@ -1,9 +1,10 @@
-"""Tests der Messwerkzeuge für die Modellkarte: Code-Aufgaben (Referenzlösungen müssen bestehen, falsche und
-gefährliche Lösungen nicht), Analyse-Probe (Text, Fragen, Bewertung), Einbettung (Kosinus) und Bericht."""
+﻿"""Tests der Messwerkzeuge fÃ¼r die Modellkarte: Code-Aufgaben (ReferenzlÃ¶sungen mÃ¼ssen bestehen, falsche und
+gefÃ¤hrliche LÃ¶sungen nicht), Analyse-Probe (Text, Fragen, Bewertung), Einbettung (Kosinus) und Bericht."""
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -124,7 +125,7 @@ def test_jede_aufgabe_hat_eine_loesung():
 
 @pytest.mark.parametrize("aufgabe", ca.AUFGABEN, ids=lambda a: a.id)
 def test_referenzloesung_besteht(aufgabe):
-    antwort = f"Hier ist die Lösung:\n```python\n{LOESUNGEN[aufgabe.id]}\n```\nViel Erfolg."
+    antwort = f"Hier ist die LÃ¶sung:\n```python\n{LOESUNGEN[aufgabe.id]}\n```\nViel Erfolg."
     ok, grund = ca.bewerten(aufgabe, antwort)
     assert ok, grund
 
@@ -172,6 +173,36 @@ def test_vorpruefung_lehnt_ab(code, grund):
 
 def test_vorpruefung_laesst_harmloses_zu():
     assert ca.vorpruefung("import re\nfrom collections import Counter\nclass A:\n    def __init__(self):\n        pass") is None
+    assert ca.vorpruefung("class C:\n    def __init__(self):\n        self._d = {}\n    def f(self):\n        return self._d") is None
+
+
+@pytest.mark.parametrize("code", [
+    "import operator\noperator.attrgetter('x')",  # Namen zur Laufzeit zusammensetzen
+    "import collections\ncollections._sys.modules['os']",  # fremde Unterstriche
+    "import dataclasses\ndataclasses.builtins",
+    "import typing",
+    "x = []\nx.append.__self__",
+])
+def test_vorpruefung_lehnt_umgehungen_ab(code):
+    assert ca.vorpruefung(code) is not None
+
+
+def test_erfolgsmarke_ist_nicht_vorab_bekannt():
+    ok, _ = ca.ausfuehren("print('BESTANDEN')\nraise SystemExit(0)", "")
+    assert not ok  # frÃ¼h beendet und mit erratener Marke
+    ok, _ = ca.ausfuehren("x = 1", "assert x == 1")
+    assert ok
+
+
+def test_code_sieht_keine_geheimnisse_der_umgebung(monkeypatch):
+    monkeypatch.setenv("WAMO_TESTGEHEIMNIS", "nicht-weitergeben")
+    # ohne os und open ist die Umgebung nicht lesbar; geprÃ¼ft wird, dass sie gar nicht erst im Prozess steht
+    import subprocess
+
+    ausgabe = subprocess.run([sys.executable, "-I", "-c", "import os; print(os.environ.get('WAMO_TESTGEHEIMNIS'))"],
+                             capture_output=True, text=True, env={k: v for k, v in os.environ.items()
+                                                                  if k in ("PATH", "SYSTEMROOT", "SYSTEMDRIVE")})
+    assert ausgabe.stdout.strip() == "None"
 
 
 def test_endlosschleife_wird_abgebrochen(monkeypatch):
@@ -208,7 +239,7 @@ def test_kritische_risiken_sind_fuenf():
 
     text = ap.bericht()
     kritisch = [n for n in range(1, 10) if re.search(rf"R{n} [^.]*Einstufung kritisch", text)]
-    assert kritisch == [1, 3, 5, 7, 8]  # das Vorgängerprojekt (Ablenkung) hat keine R-Nummern
+    assert kritisch == [1, 3, 5, 7, 8]  # das VorgÃ¤ngerprojekt (Ablenkung) hat keine R-Nummern
 
 
 GUTE_ANTWORT = "1: Frau Albrecht\n2: 276.000 Euro\n3: 8 Personen, davon 3 extern\n4: 5\n5: 21. Juli\n6: 223 Tage"

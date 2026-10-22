@@ -102,7 +102,8 @@ def test_down_prod_sperre_und_vollstaendig():
     assert "delete from __SCHEMA__.schema_migrations where version = '0011_modellmodus_und_codetoken'" in code
     assert "drop constraint if exists model_access_nur_haus_ohne_codetoken" in code
     # der Wächter geht zurück auf den Stand von 0010 (ohne Token)
-    assert "claude_code_token" not in code.split("create or replace function")[1].split("$$;")[0] if "$$;" in code else True
+    funktion = code.split("create or replace function")[1].split("end $$;")[0]
+    assert "claude_code_token" not in funktion and "wamo_admin darf keinen Claude-Schlüssel setzen" in funktion
 
 
 def test_sql_test_laeuft_in_einer_zurueckgerollten_transaktion_und_nie_in_prod():

@@ -5,8 +5,10 @@ Aufgabe bestehen (Ausführen, kein Vergleich von Text). Der Code des Modells lä
 (-I, eigener Ordner, Zeitgrenze) und erst nach einer Vorprüfung:
   * nur Importe aus einer kurzen Liste harmloser Standardmodule,
   * kein open, exec, eval, compile, __import__, input, breakpoint, globals, locals, vars, getattr, setattr,
-  * kein Zugriff auf Attribute mit doppeltem Unterstrich (außer beim Definieren eigener Methoden).
-Das ist eine Schutzschicht gegen Versehen bei vertrauten Hausmodellen, kein Sandkasten für fremden Code.
+  * kein Zugriff auf Attribute mit Unterstrich außer an self und cls (verhindert collections._sys, x.__class__),
+  * minimale Umgebung für den Prozess (keine Schlüssel), Zufallsmarker für den Erfolg.
+Das ist eine Schutzschicht gegen Versehen bei vertrauten Hausmodellen, kein Sandkasten für fremden Code. Nie für
+Aufgaben von Nutzern verwenden.
 
 Die Prüfungen stehen hier; die Referenzlösungen, die sie bestehen müssen, stehen in test_modellkarte_messen.py.
 """
@@ -14,7 +16,9 @@ Die Prüfungen stehen hier; die Referenzlösungen, die sie bestehen müssen, ste
 from __future__ import annotations
 
 import ast
+import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -23,8 +27,8 @@ from pathlib import Path
 
 ERLAUBTE_MODULE = frozenset({
     "math", "re", "itertools", "collections", "functools", "heapq", "bisect", "string", "decimal", "fractions",
-    "datetime", "typing", "dataclasses", "operator", "unicodedata", "statistics", "enum", "textwrap", "json",
-})
+    "datetime", "unicodedata", "statistics", "enum", "textwrap", "json",
+})  # ohne operator, typing und dataclasses: Über sie lassen sich Namen und Attribute zur Laufzeit zusammensetzen
 VERBOTENE_NAMEN = frozenset({
     "open", "exec", "eval", "compile", "__import__", "input", "breakpoint", "globals", "locals", "vars", "getattr",
     "setattr", "delattr", "__builtins__", "exit", "quit",
@@ -222,8 +226,11 @@ def vorpruefung(code: str) -> str | None:
                 return f"Import nicht erlaubt: {name or '.'}"
         if isinstance(knoten, ast.Name) and knoten.id in VERBOTENE_NAMEN:
             return f"Name nicht erlaubt: {knoten.id}"
-        if isinstance(knoten, ast.Attribute) and knoten.attr.startswith("__") and knoten.attr.endswith("__"):
-            return f"Attribut nicht erlaubt: {knoten.attr}"
+        if isinstance(knoten, ast.Attribute) and knoten.attr.startswith("_"):
+            # eigene Attribute der Klasse (self._cache) sind erlaubt, Zugriffe auf fremde Unterstriche (collections._sys,
+            # x.__class__) nicht
+            if not (isinstance(knoten.value, ast.Name) and knoten.value.id in ("self", "cls")):
+                return f"Attribut nicht erlaubt: {knoten.attr}"
     return None
 
 
@@ -231,15 +238,20 @@ def ausfuehren(code: str, pruefung: str) -> tuple[bool, str]:
     """(bestanden, Grund). Der Code läuft nur nach der Vorprüfung, in einem eigenen Prozess mit Zeitgrenze."""
     if grund := vorpruefung(code):
         return False, grund
+    marke = "BESTANDEN-" + secrets.token_hex(8)  # zufällig: der Code des Modells kann sie nicht vorab ausgeben
+    # Minimale Umgebung: keine Schlüssel, keine Adressen aus der .env des Messlaufs
+    umgebung = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "SYSTEMDRIVE") if k in os.environ}
     with tempfile.TemporaryDirectory(prefix="wamo-code-") as ordner:
         datei = Path(ordner) / "lauf.py"
-        datei.write_text(code + "\n\n" + pruefung + "\nprint('BESTANDEN')\n", encoding="utf-8")
+        datei.write_text(code + "\n\n" + pruefung + f"\nprint({marke!r})\n", encoding="utf-8")
+        umgebung["TEMP"] = umgebung["TMP"] = ordner
         try:
             r = subprocess.run([sys.executable, "-I", str(datei)], cwd=ordner, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=LAUF_TIMEOUT_SECS, stdin=subprocess.DEVNULL)
+                               encoding="utf-8", errors="replace", timeout=LAUF_TIMEOUT_SECS, stdin=subprocess.DEVNULL,
+                               env=umgebung)
         except subprocess.TimeoutExpired:
             return False, f"Zeitgrenze von {LAUF_TIMEOUT_SECS:.0f} s überschritten"
-    if r.returncode == 0 and "BESTANDEN" in r.stdout:
+    if r.returncode == 0 and marke in r.stdout:
         return True, ""
     letzte = [z for z in (r.stderr or "").strip().splitlines() if z.strip()]
     return False, (letzte[-1] if letzte else f"Exit-Code {r.returncode}")[:160]

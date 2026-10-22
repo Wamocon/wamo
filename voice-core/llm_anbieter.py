@@ -86,6 +86,7 @@ CLAUDE_PRUEF_TTL_SECS = 60.0
 ANFRAGE_TIMEOUT_SECS = {"lernen": 45.0, "vision": 12.0, "zusammenfassung": 60.0, "gespraech": 20.0}
 VERBINDUNG_TIMEOUT_SECS = 3.0
 GESPRAECH_LESE_TIMEOUT_SECS = 20.0  # längste Pause im Stream, bevor das Gespräch die Anfrage aufgibt
+ANTHROPIC_WOERTER = ("claude", "anthropic", "haiku", "sonnet", "opus")
 _CLAUDE_MODELL = re.compile(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?")
 _ALLE = "*"  # Cache-Schlüssel für "Gateway ganz weg", gilt für jedes Modell
 
@@ -101,7 +102,10 @@ class LLMFehler(Exception):
 
 
 class LLMNichtVerfuegbar(LLMFehler):
-    """Kein erlaubter Anbieter ist für den Baustein nutzbar (bei haus-Profilen nie ein Rückfall auf Claude)."""
+    """Kein erlaubter Anbieter ist für den Baustein nutzbar (bei haus-Profilen nie ein Rückfall auf Claude).
+    gruende: bei der Wahl des Boss die Gründe je übersprungenem Kandidaten (ohne Vorspann), sonst leer."""
+
+    gruende: str = ""
 
 
 @dataclass(frozen=True, eq=False)
@@ -119,7 +123,7 @@ class Zugang:
     tts: str = "soniox"
     hinweis: str | None = None
     # Hat die Person einen Claude-Code-Token hinterlegt? Nur dieses Merkmal, nie der Token selbst (den liefert
-    # modellzugang.claude_code_token_laden kurz vor einem Entwicklungslauf). Er berührt das Gespräch nicht.
+    # modellzugang.claude_code_zugang_fuer kurz vor einem Entwicklungslauf). Er berührt das Gespräch nicht.
     claude_code: bool = False
     _client: list = field(default_factory=list, repr=False, init=False)  # einmal je Zugang gebaut
     _zu: list = field(default_factory=list, repr=False, init=False)  # gefüllt, sobald die Sitzung schloss
@@ -508,6 +512,14 @@ async def claude_problem(zugang: Zugang) -> str | None:
     return problem
 
 
+def claude_bekannt_weg(zugang: Zugang) -> str | None:
+    """Ein jüngst bekannter Ausfall von Claude für den Schlüssel dieses Zugangs (ohne neue Anfrage), sonst None."""
+    eintrag = _claude_cache.get(_claude_kennung(zugang))
+    if eintrag and time.monotonic() - eintrag[0] < CLAUDE_PRUEF_TTL_SECS:
+        return eintrag[1]
+    return None
+
+
 def _claude_ausgefallen(zugang: Zugang, problem: str) -> None:
     _claude_cache[_claude_kennung(zugang)] = (time.monotonic(), problem)
 
@@ -533,7 +545,8 @@ def anthropic_ziel(modell: str | None) -> str | None:
     """Grund, wenn ein "Hausmodell" in Wahrheit zu Anthropic führen würde (Claude-Modellname, Anthropic-Alias auf
     dem Gateway oder ein Gateway auf einem Anthropic-Host). Haus-Profile lehnen das ab."""
     klein = (modell or "").lower()
-    if klein.startswith(("claude", "anthropic")) or "/claude" in klein or "anthropic/" in klein:
+    # Teilstrings statt Anfang: auch "bedrock/anthropic.claude-…", "us.anthropic.…" und die Modellfamilien Haiku, Sonnet, Opus
+    if any(wort in klein for wort in ANTHROPIC_WOERTER):
         return f"Das Modell {modell!r} führt zu Anthropic"
     host = (urlparse(litellm_basis()).hostname or "").lower()
     if host == "anthropic.com" or host.endswith(".anthropic.com"):
@@ -552,7 +565,9 @@ async def _haus_wahl(baustein: str, zugang: Zugang, gewuenscht: Anbieter, grund:
         wahl = await boss.waehlen(boss.BAUSTEIN_KLASSE[baustein], Zugang.haus(zugang.user_id), baustein=baustein,
                                   bevorzugt=("litellm", vorgabe_modell) if vorgabe_modell else None)
     except LLMNichtVerfuegbar as e:
-        raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {str(e).split(': ', 1)[-1]}") from None
+        fehler = LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {e.gruende or e}")
+        fehler.gruende = e.gruende
+        raise fehler from None
     if gewuenscht != wahl.gewuenscht or grund:
         return Wahl(wahl.baustein, wahl.anbieter, wahl.modell, gewuenscht, "; ".join(x for x in (grund, wahl.grund) if x) or None)
     return wahl
@@ -565,7 +580,7 @@ async def waehlen(baustein: str, zugang: Zugang) -> Wahl:
 
     if zugang.art == "haus":
         return await _haus_wahl(baustein, zugang, "litellm")
-    anbieter_vorgabe, modell_vorgabe = vorgabe(baustein, zugang)
+    anbieter_vorgabe, _modell_vorgabe = vorgabe(baustein, zugang)
     if anbieter_vorgabe is None:
         return await boss.waehlen(boss.BAUSTEIN_KLASSE[baustein], zugang, baustein=baustein)
     anbieter, modell = konfiguration(baustein, zugang)

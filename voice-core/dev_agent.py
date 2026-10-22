@@ -61,6 +61,7 @@ import tempfile
 import time
 import uuid
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -73,6 +74,7 @@ from pipecat.services.llm_service import FunctionCallParams
 
 from dev_guard import REPO_ROOT, SELF_REPO, _skript_befehl, decide, fingerprint, write_json_atomic
 from persona import clean_inline
+from schluessel import schwaerzen
 from teilen import eigene_fassung
 from werkzeugkarte import AUFTRAGSARTEN, KARTEN, MODELLE_ERLAUBT, anweisungsblock, art_beschreibung, modell_fuer
 
@@ -501,11 +503,13 @@ class Job:
 class DevAgent:
     """Ein Objekt pro Gespräch. Braucht den PipelineTask, um Karten, Canvas und Meldungen zu senden."""
 
-    def __init__(self, memory, auftraggeber: str, ort: str | None = None, token_quelle=None):
-        """token_quelle: optional, async ohne Argumente, liefert den Claude-Code-Token des Profils dieser Sitzung (bot.py
-        bindet modellzugang.claude_code_token_laden an die Profil-ID) oder None. Ist sie gesetzt, startet ein Lauf
-        auf Sokrates-2 nur MIT Token (der Token geht als zweite stdin-Zeile an den Dispatcher, siehe _run_remote),
-        nie still mit dem Zugang der Sandbox. Ohne token_quelle gilt der Zugang der Sandbox wie bisher."""
+    def __init__(self, memory, auftraggeber: str, ort: str | None = None,
+                 token_quelle: Callable[[], Awaitable[dict[str, str] | None]] | None = None):
+        """token_quelle: optional, async ohne Argumente, liefert den Zugang des Profils dieser Sitzung als
+        {"typ": "oauth" | "api", "wert": ...} oder None (bot.py bindet modellzugang.claude_code_zugang_fuer an die
+        Profil-ID). Ist sie gesetzt, startet ein Lauf auf Sokrates-2 nur MIT diesem Zugang (er geht als zweite
+        stdin-Zeile an den Dispatcher, siehe _run_remote), nie still mit dem Zugang der Sandbox. Ohne token_quelle
+        gilt der Zugang der Sandbox wie bisher."""
         self._memory = memory
         self._token_quelle = token_quelle
         self._auftraggeber = clean_inline(auftraggeber, 60) or "Admin"
@@ -786,16 +790,24 @@ class DevAgent:
         """Auftrag auf Sokrates-2: ssh ... "start <job> <projekt> <art> [<session>]", Auftrag als JSON-Zeile
         über stdin, stdin bleibt als Lebenslinie offen, stdout ist stream-json wie lokal."""
         system_append = f"{rules_for(self._auftraggeber, 'sokrates2')}\n\n{anweisungsblock(job.art)}"
-        token = await self._token_quelle() if self._token_quelle is not None else None
-        if self._token_quelle is not None and not token:
-            # Kein Token (gelöscht, nur Hausmodelle gewählt, nicht lesbar): kein Lauf, und nie ein Rückfall auf den
-            # Zugang der Sandbox, der einer anderen Person gehört
-            job.status = "nicht gestartet (kein nutzbarer Claude-Code-Token)"
-            job.result = ("Der Auftrag wurde nicht gestartet: Für dieses Profil ist kein nutzbarer Claude-Code-Token "
-                          "hinterlegt. Er lässt sich im Bereich Modellzugang eintragen.")
-            await self._canvas(job)
-            await self._announce(job)
-            return
+        zugang, modell = None, None
+        if self._token_quelle is not None:
+            # Zugang des Profils für diesen einen Lauf (modellzugang.claude_code_zugang_fuer): {"typ", "wert"}. Fehlt er
+            # (gelöscht, nur Hausmodelle gewählt, nicht lesbar), startet nichts, und nie fällt der Lauf auf den
+            # Zugang der Sandbox zurück, der einer anderen Person gehört.
+            try:
+                zugang = await self._token_quelle()
+                modell = modell_fuer(job.art, modell_wunsch(), abo=bool(zugang) and zugang.get("typ") == "oauth")
+            except Exception as e:  # noqa: BLE001 (Datenbank, Modellwunsch: der Lauf endet sauber statt im Hintergrund)
+                logger.error("Entwicklungsauftrag {}: Zugang nicht ermittelt ({})", job.id, type(e).__name__)
+                zugang = None
+            if not zugang:
+                job.status = "nicht gestartet (kein nutzbarer Zugang für Claude Code)"
+                job.result = ("Der Auftrag wurde nicht gestartet: Für dieses Profil ist kein nutzbarer Claude-Code-Token "
+                              "oder API-Schlüssel hinterlegt. Beides lässt sich im Bereich Modellzugang eintragen.")
+                await self._canvas(job)
+                await self._announce(job)
+                return
         args = ["start", job.id, job.projekt.name, job.art]
         if resume and job.session_id:
             args.append(job.session_id)
@@ -816,24 +828,24 @@ class DevAgent:
             )
             stderr_task = asyncio.create_task(_drain(self._proc.stderr, stderr_tail))
             kopf_daten = {"auftrag": prompt, "system": system_append}
-            if token:
-                # Eigener Claude-Code-Token (Max-Tarif, Kontingent des Abos): Standard Sonnet, außer WAMO_ENTWICKLUNG_MODELL
-                kopf_daten["modell"] = modell_fuer(job.art, modell_wunsch(), abo=True)
+            if modell:
+                # Eigener Zugang: Sonnet mit dem Claude-Code-Token (Kontingent des Abos), Haiku mit dem API-Schlüssel
+                # (Guthaben), außer WAMO_ENTWICKLUNG_MODELL (werkzeugkarte.modell_fuer)
+                kopf_daten["modell"] = modell
             elif modell_wunsch():  # sonst wählt der Dispatcher das Modell der Art (Werkzeugkarte auf Sokrates-2, Haiku)
                 kopf_daten["modell"] = modell_wunsch()
             if job.repo:  # im App-Modus gilt das GitHub-Token dann nur für dieses Repo
                 kopf_daten["repo"] = job.repo
-            if token:
-                kopf_daten["token_folgt"] = True  # der Dispatcher liest genau eine weitere Zeile (siehe unten)
+            if zugang:
+                kopf_daten["zugang_folgt"] = True  # der Dispatcher liest genau eine weitere Zeile (siehe unten)
             kopf = json.dumps(kopf_daten, ensure_ascii=False) + "\n"
-            if token:
-                # Zweite stdin-Zeile: {"claude_code_token": "<Token der Person>"}. Nur über stdin, nie in argv, Umgebung
-                # dieses Prozesses, Log oder Job-Datei; der Dispatcher setzt ihn als CLAUDE_CODE_OAUTH_TOKEN in die
-                # Sandbox dieses einen Laufs (statt des Zugangs aus geheim.env) und schwärzt ihn in der Ausgabe.
-                kopf += json.dumps({"claude_code_token": token}) + "\n"
-            token = None  # nicht länger als nötig im Speicher halten
+            if zugang:
+                # Zweite stdin-Zeile: {"typ": "oauth" | "api", "wert": "<Token oder Schlüssel der Person>"}. Nur über
+                # stdin, nie in argv, Umgebung dieses Prozesses, Log oder Job-Datei; der Dispatcher setzt oauth als
+                # CLAUDE_CODE_OAUTH_TOKEN, api als ANTHROPIC_API_KEY in die Sandbox dieses einen Laufs (statt des Zugangs
+                # aus geheim.env) und schwärzt den Wert in der Ausgabe.
+                kopf += json.dumps({"typ": zugang["typ"], "wert": zugang["wert"]}) + "\n"
             self._proc.stdin.write(kopf.encode("utf-8"))
-            kopf = ""
             await self._proc.stdin.drain()  # stdin NICHT schließen: Lebenslinie des entfernten Auftrags
             await asyncio.wait_for(self._read_stream(job), JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS)
             await asyncio.wait_for(self._proc.wait(), 30)
@@ -975,8 +987,10 @@ class DevAgent:
             lines += ["", "## Ergebnis", job.result]
         if job.pending:
             lines += ["", "## Wartet auf Freigabe", *[f"- {p['grund']}" for p in job.pending.values()]]
+        # Ausgabe von Claude Code kann einen Schlüssel oder Token enthalten (Prompt Injection im Repo): schwärzen, bevor
+        # sie auf das Canvas, in die Datenbank oder ins Teilen geht
         item = {"id": f"dev-{job.id}", "kind": "dokument", "title": f"Entwicklung: {job.projekt.name}",
-                "text": "\n".join(lines)}
+                "text": schwaerzen("\n".join(lines))}
         if job.gespeichert_id:  # gespeichert: die Oberfläche kann es teilen (Dokument oder ganzes Projekt)
             item["teilbar_id"] = job.gespeichert_id
             item["teilbar_projekt"] = job.projekt.name

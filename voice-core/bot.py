@@ -94,14 +94,15 @@ from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
 from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
-from llm_anbieter import LLMNichtVerfuegbar, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
+from llm_anbieter import LLMNichtVerfuegbar, ausblenden_text, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
 from memory import MemoryStore, Profile, ProfileDirectory, Recall, shared_database
-from modellzugang import claude_code_token_laden, modellzugang_nachricht, zugang_laden
+from modellzugang import claude_code_zugang_fuer, modellzugang_nachricht, zugang_laden
 from boss import Boss, entwicklung_quelle, modus_wirksam
 from kern_dienst import runner_vorbereiten
 from cache_waerme import vorwaermen
 from latenz import LatenzObserver, api_messen, latenz_log_an
 from pc_geraet import geraet_wache, rechnername_passt
+from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from turn_wache import TurnWache
 from pc_host import (
@@ -306,6 +307,16 @@ def betrieb_message(
     return message
 
 
+def kein_modell_text(fehler: Exception, admin: bool = False) -> str:
+    """Meldung an die Person, wenn kein Gesprächsmodell nutzbar ist. Die Einzelheiten (Namen von Modellen und
+    Einstellungen, Gateway-Meldungen) bekommt nur ein Admin; sie stehen immer im Log. Der Text von LLMNichtVerfuegbar
+    enthält nie Schlüssel oder Inhalte; ausgeblendete Namen ersetzt ausblenden_text."""
+    text = "Kein Gesprächsmodell erreichbar. Bitte in ein paar Minuten noch einmal versuchen."
+    if admin:
+        text += f" ({ausblenden_text(' '.join(str(fehler).split()))[:180]})"
+    return text
+
+
 def darf_pc_freigeben(identity: Identity, pc_enabled: bool, steuerung_an: bool, haelt_sperre: bool) -> bool:
     """Darf diese Sitzung eine kritische PC-Aktion freigeben? Nur admin mit PC-Werkzeugen, eingeschalteter
     PC-Steuerung und gehaltener PC-Sperre (eine abgelöste Sitzung hält sie nie)."""
@@ -488,9 +499,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     zugang = await zugang_laden(identity.user_id)
     dev_quelle = entwicklung_quelle(zugang)
     if entwicklung and dev_quelle == "keine":
-        # Claude Code läuft über Anthropic, mit dem Claude-Code-Token der Person (boss.entwicklung_quelle): ohne ihn,
-        # oder bei nur Hausmodellen, startet kein Entwicklungsauftrag
-        logger.warning("Entwicklungsaufträge aus: Profil {} hat keinen Claude-Code-Token oder nutzt nur Hausmodelle",
+        # Claude Code läuft über Anthropic, mit dem Zugang der Person (boss.entwicklung_quelle): Claude-Code-Token oder
+        # eigener API-Schlüssel. Ohne beides, oder bei nur Hausmodellen, startet kein Entwicklungsauftrag
+        logger.warning("Entwicklungsaufträge aus: Profil {} hat keinen eigenen Zugang für Claude Code oder nutzt nur Hausmodelle",
                        zugang.kennung)
         entwicklung = False
     try:
@@ -504,7 +515,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Spracherkennung und Sprachausgabe je Profil (Zugang.stt/tts) oder für alle (WAMO_STT_ANBIETER/WAMO_TTS_ANBIETER):
     # Soniox oder im Haus über LiteLLM, mit Rückfall auf Soniox (sprache_anbieter.py)
     sprache = await sprach_wahl(zugang)
-    stt = haus_stt(sprache.stt, STT_TERMS) if sprache.stt.anbieter == "haus" else soniox_stt()
+    # Ein Schlüssel im Gesagten wird vor allem anderen entfernt (schluessel_filter.py): Verlauf, Modell, Gedächtnis, Untertitel
+    stt = absichern(haus_stt(sprache.stt, STT_TERMS) if sprache.stt.anbieter == "haus" else soniox_stt())
     tts = haus_tts(sprache.tts) if sprache.tts.anbieter == "haus" else soniox_tts()
 
     transcript: list[tuple[str, str]] = []  # fürs Lernen
@@ -515,10 +527,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     dev: DevAgent | None = None
     if entwicklung:
         # Entwicklungsaufträge an Claude Code; Start und Freigaben per Klick in der UI (dev_agent.py). Mit eigenem
-        # Claude-Code-Token läuft der Auftrag auf dem Token dieses Profils (nur für diesen Lauf entschlüsselt).
+        # Zugang läuft der Auftrag auf dem Token oder Schlüssel dieses Profils (nur für diesen Lauf entschlüsselt).
         dev = DevAgent(
             memory, auftraggeber=identity.name,
-            token_quelle=(lambda: claude_code_token_laden(identity.user_id)) if dev_quelle == "token" else None,
+            token_quelle=(lambda: claude_code_zugang_fuer(identity.user_id)) if dev_quelle in ("token", "api") else None,
         )
         dev.on_result = turn.taint
         dev.register(llm)
@@ -546,7 +558,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         return await screen_foto(pc_client)
 
     boss = Boss(zugang, senden=lambda d: send(d), melden=lambda t: melde_llm(t), fremdinhalt=turn.taint,
-                auftraggeber=identity.name, canvas=lambda item: canvas_legen(item),
+                gefaerbt=lambda: turn.tainted, auftraggeber=identity.name, canvas=lambda item: canvas_legen(item),
                 bild_quelle=bildschirm_foto if (pc_client and is_admin) else None)
     boss.register(llm)
     standard_tools += boss.schemas()
@@ -620,6 +632,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             transport.input(),
             AudioInputMonitor(),  # Diagnose: Lücken und Pegel des Browser-Mikrofons, Stille-Wächter
             stt,
+            SchluesselFilter(),  # zweite Stufe: auch Text, der nicht aus der Spracherkennung kommt
             SpeakerTracker(),  # wer spricht -> Farbe im Stimmen-Rand
             user_agg,
             soft_gate,
@@ -972,9 +985,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         if cancel_task:
             with contextlib.suppress(Exception):
                 await task.cancel()
+        with contextlib.suppress(Exception):
+            await boss.schliessen()  # laufende Aufgaben der Spezialisten abbrechen
         if dev:
             await dev.close()  # laufenden Entwicklungsauftrag beim Auflegen beenden
-        await boss.schliessen()  # laufende Aufgaben der Spezialisten abbrechen
         if freigaben is not None:
             # offene PC-Freigaben ablehnen: keine Eingabesperre am PC und keine offene Zeile in actions zurücklassen
             with contextlib.suppress(Exception):
@@ -1041,6 +1055,12 @@ async def bot(runner_args: RunnerArguments):
         # statt die Verbindung ohne Pipeline offen zu lassen.
         logger.error("Sitzung beendet, kein Gesprächsmodell: {}", e)
         if connection is not None:
+            # Der Person klar sagen, warum die Verbindung endet (Datenkanal, noch ohne Pipeline); die Oberfläche zeigt
+            # die Meldung wie jedes "Sitzung beendet"
+            with contextlib.suppress(Exception):
+                connection.send_app_message({"label": "rtvi-ai", "type": "server-message", "data": {
+                    "type": "sitzung_beendet", "grund": kein_modell_text(e, identity.is_admin)}})
+                await asyncio.sleep(ENDE_MELDUNG_SECS * 2)
             with contextlib.suppress(Exception):
                 await connection.disconnect()
     finally:

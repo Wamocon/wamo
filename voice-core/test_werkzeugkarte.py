@@ -289,10 +289,6 @@ class DevAgentFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(await dev_agent.guard_selftest(Path(tmp) / "projekt", Path(tmp)))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ModellJeZugangTests(unittest.TestCase):
     """Modell für Entwicklungsaufträge je Zugang: Abo (Claude-Code-Token) Sonnet, API-Schlüssel Haiku."""
 
@@ -318,3 +314,7 @@ class ModellJeZugangTests(unittest.TestCase):
         import werkzeugkarte as wk
 
         self.assertEqual(llm_anbieter.STANDARD_CLAUDE, wk.MODELL_STANDARD)
+
+
+if __name__ == "__main__":
+    unittest.main()

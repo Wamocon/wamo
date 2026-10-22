@@ -10,7 +10,7 @@ Zwei Schlüsseltypen, getrennt gespeichert und verwendet:
   API-Schlüssel      sk-ant-api…  Gespräch, Lernen, Bildschirm (Anthropic Messages API, bezahlt nach Verbrauch).
   Claude-Code-Token  sk-ant-oat…  aus `claude setup-token` (Max-Tarif); gilt nur für Entwicklungsaufträge mit Claude
                      Code, die Messages-API nimmt ihn nicht. Er wird nur auf sein Format geprüft (eine Testanfrage
-                     würde Verbrauch des Max-Kontingents erzeugen) und über claude_code_token_laden() nur dem
+                     würde Verbrauch des Max-Kontingents erzeugen) und über claude_code_zugang_fuer() nur dem
                      Entwicklungs-Agenten dieser Sitzung für genau einen Lauf übergeben.
 
 Der Schlüssel des Kerns (ANTHROPIC_API_KEY) gehört einer Person. Er gilt nur für das Profil in
@@ -48,7 +48,7 @@ from loguru import logger
 
 from llm_anbieter import STANDARD_CLAUDE, Zugang, lesbarer_modellname
 from memory import DB_ERRORS, Database, DatabaseUnavailable, admin_database, normalize_uuid, shared_database
-from schluessel import CODE_TOKEN, SchluesselFehler, Tresor, ende, format_pruefen, token_format_pruefen
+from schluessel import CODE_TOKEN, SCHLUESSEL, SchluesselFehler, Tresor, ende, format_pruefen, token_format_pruefen
 
 ZUORDNUNG_ENV = "WAMO_CLAUDE_SCHLUESSEL_PROFIL"
 TEST_TIMEOUT_SECS = 10.0
@@ -60,7 +60,7 @@ _WORKSPACE = re.compile(r"wrkspc_[A-Za-z0-9]{6,60}")
 _SPALTEN_ALT = ("nur_haus, claude_schluessel, claude_schluessel_ende, claude_workspace, claude_modell, "
                 "claude_geprueft_at, stt, tts")
 # Ab Migration 0011: Wahl der Person und Angaben zum Claude-Code-Token (das Chiffrat selbst liest nur
-# claude_code_token_laden, nie diese Abfrage)
+# claude_code_zugang_fuer, nie diese Abfrage)
 _SPALTEN = _SPALTEN_ALT + ", modell_modus, claude_code_token_ende, claude_code_token_at"
 _versuche: dict[str, list[float]] = {}
 
@@ -113,6 +113,11 @@ async def _zeile(db: Database, user_id: str):
         # werfen. Ohne die Spalten gilt der Stand von 0010 (keine Wahl der Person, kein Claude-Code-Token).
         logger.warning("model_access ohne Migration 0011: Wahl der Person und Claude-Code-Token stehen nicht zur Verfügung")
         return await db.fetchrow(f"select {_SPALTEN_ALT} from {db.t('model_access')} where user_id = $1::uuid", user_id)
+
+
+def _verletzt(fehler: Exception, constraint: str) -> bool:
+    """Hat die Datenbank genau diese Prüfung (check constraint) abgelehnt?"""
+    return constraint == (getattr(fehler, "constraint_name", None) or "") or constraint in str(fehler)
 
 
 def _modus(zeile) -> str:
@@ -215,11 +220,14 @@ async def schluessel_testen(schluessel: str, workspace: str | None = None) -> st
                                      messages=[{"role": "user", "content": "ping"}])
         return None
     except anthropic.AuthenticationError:
-        return "Anthropic lehnt den Schlüssel ab"
+        return ("Anthropic lehnt den Schlüssel ab (401): Er ist ungültig, widerrufen oder gehört zu einem anderen "
+                "Konto. Bitte in der Anthropic-Konsole prüfen oder einen neuen erzeugen")
     except anthropic.PermissionDeniedError:
-        return "Der Schlüssel darf dieses Modell nicht nutzen (Workspace oder Berechtigung prüfen)"
+        return "Der Schlüssel darf dieses Modell nicht nutzen (403): Workspace oder Berechtigung prüfen"
     except anthropic.APIStatusError as e:
         return f"Anthropic antwortet mit HTTP {e.status_code}"
+    except anthropic.APITimeoutError:
+        return f"Anthropic hat nicht rechtzeitig geantwortet (Zeitüberschreitung nach {TEST_TIMEOUT_SECS:.0f} s)"
     except anthropic.APIConnectionError:
         return "Anthropic ist gerade nicht erreichbar"
     except anthropic.APIError as e:
@@ -241,6 +249,7 @@ def _versuch_erlaubt(uid: str, jetzt: float | None = None) -> bool:
 async def hinterlegen(user_id: str, schluessel_roh: object, workspace_roh: object = None, *,
                       db: Database | None = None, tresor: Tresor | None = None,
                       testen: Callable[[str, str | None], Awaitable[str | None]] = schluessel_testen) -> Stand:
+    # Ein Claude-Code-Token gehört ins andere Feld: format_pruefen sagt es der Person in einem Satz
     """Prüft, verschlüsselt und speichert den eigenen Schlüssel. Wirft ZugangFehler mit einem Grund für die
     Person. Der Schlüssel verlässt diese Funktion nur als Chiffrat."""
     uid = normalize_uuid(user_id)
@@ -276,9 +285,11 @@ async def hinterlegen(user_id: str, schluessel_roh: object, workspace_roh: objec
             "claude_geprueft_at = excluded.claude_geprueft_at",
             uid, chiffre, ende(schluessel), workspace,
         )
-    except asyncpg.CheckViolationError:
-        # Ein Admin hat das Profil zwischen Prüfung und Speichern auf nur Hausmodelle festgelegt
-        raise ZugangFehler("Ein Admin hat dieses Profil auf nur Hausmodelle festgelegt") from None
+    except asyncpg.CheckViolationError as e:
+        if _verletzt(e, "model_access_nur_haus_ohne_schluessel"):
+            # Ein Admin hat das Profil zwischen Prüfung und Speichern auf nur Hausmodelle festgelegt
+            raise ZugangFehler("Ein Admin hat dieses Profil auf nur Hausmodelle festgelegt") from None
+        raise ZugangFehler("Die Datenbank hat den Schlüssel abgelehnt (Länge, Format oder Workspace)") from None
     logger.info("Claude-Schlüssel für Profil {} hinterlegt", uid[:8])  # nie auch nur Teile des Schlüssels loggen
     return await stand_laden(uid, db=db)
 
@@ -329,8 +340,10 @@ async def code_token_hinterlegen(user_id: str, token_roh: object, *, db: Databas
             "claude_code_token_at = excluded.claude_code_token_at",
             uid, chiffre, ende(token),
         )
-    except asyncpg.CheckViolationError:
-        raise ZugangFehler("Ein Admin hat dieses Profil auf nur Hausmodelle festgelegt") from None
+    except asyncpg.CheckViolationError as e:
+        if _verletzt(e, "model_access_nur_haus_ohne_codetoken"):
+            raise ZugangFehler("Ein Admin hat dieses Profil auf nur Hausmodelle festgelegt") from None
+        raise ZugangFehler("Die Datenbank hat den Token abgelehnt (Länge oder Format)") from None
     except asyncpg.UndefinedColumnError:
         raise ZugangFehler("Der Claude-Code-Token ist in dieser Datenbank noch nicht vorgesehen (Migration 0011)") from None
     logger.info("Claude-Code-Token für Profil {} hinterlegt", uid[:8])  # nie auch nur Teile des Tokens loggen
@@ -379,12 +392,17 @@ async def modus_setzen(user_id: str, modus_roh: object, *, db: Database | None =
     return await stand_laden(uid, db=db)
 
 
-async def claude_code_token_laden(user_id: str, *, db: Database | None = None, tresor: Tresor | None = None) -> str | None:
-    """Der entschlüsselte Claude-Code-Token des Profils für GENAU EINEN Lauf eines Entwicklungsauftrags, sonst None.
-    Aufruf nur durch den Entwicklungs-Agenten der Sitzung dieses Profils (bot.py bindet die Profil-ID fest), kurz vor
-    dem Start des Laufs; der Wert wird nicht im Zugang, nicht in einem Objekt und nicht im Log gehalten. None, wenn
-    kein Token da ist, der Admin oder die Person nur Hausmodelle verlangt (nichts geht in die Cloud), der Hauptschlüssel
-    fehlt oder das Chiffrat nicht lesbar ist: dann startet kein Lauf mit dem Token."""
+async def claude_code_zugang_fuer(user_id: str, *, db: Database | None = None,
+                                  tresor: Tresor | None = None) -> dict[str, str] | None:
+    """Der Zugang des Profils für GENAU EINEN Lauf eines Entwicklungsauftrags mit Claude Code, entschlüsselt:
+    {"typ": "oauth" | "api", "wert": "<Token oder Schlüssel>"}, sonst None.
+      oauth  Der Claude-Code-Token (Max-Tarif, Kontingent des Abos, Standardmodell Sonnet). Hat Vorrang.
+      api    Der eigene API-Schlüssel (geht vom Guthaben ab, Standardmodell Haiku), wenn kein Token hinterlegt ist.
+    Aufruf nur im Kern und nur durch den Entwicklungs-Agenten der Sitzung dieses Profils (bot.py bindet die Profil-ID
+    fest), kurz vor dem Start eines Laufs; der Wert wird nicht im Zugang, in keinem Objekt und nie im Log gehalten.
+    None, wenn nichts hinterlegt ist, der Admin oder die Person nur Hausmodelle verlangt (nichts geht in die Cloud),
+    der Hauptschlüssel fehlt oder ein Chiffrat nicht lesbar ist: dann startet kein Lauf. Der Schlüssel des Kerns
+    (ANTHROPIC_API_KEY) gehört nicht dazu: Das Profil mit der Zuordnung nutzt weiter den Zugang der Sandbox."""
     uid = normalize_uuid(user_id)
     if uid is None:
         return None
@@ -393,23 +411,29 @@ async def claude_code_token_laden(user_id: str, *, db: Database | None = None, t
         return None
     try:
         zeile = await db.fetchrow(
-            f"select nur_haus, modell_modus, claude_code_token from {db.t('model_access')} where user_id = $1::uuid", uid)
+            f"select nur_haus, modell_modus, claude_code_token, claude_schluessel from {db.t('model_access')} "
+            "where user_id = $1::uuid", uid)
     except asyncpg.UndefinedColumnError:
         return None
     except (DatabaseUnavailable, *DB_ERRORS) as e:
-        logger.error("Claude-Code-Token von Profil {} nicht lesbar ({})", uid[:8], type(e).__name__)
+        logger.error("Zugang für Entwicklungsauftrag von Profil {} nicht lesbar ({})", uid[:8], type(e).__name__)
         return None
-    if not zeile or zeile["claude_code_token"] is None or zeile["nur_haus"] or _modus(zeile) == "nur_haus":
+    if not zeile or zeile["nur_haus"] or _modus(zeile) == "nur_haus":
         return None
     tresor = tresor if tresor is not None else _tresor_oder_none()
     if tresor is None:
-        logger.error("WAMO_SCHLUESSEL_KEK fehlt: Claude-Code-Token von Profil {} nicht nutzbar", uid[:8])
+        logger.error("WAMO_SCHLUESSEL_KEK fehlt: Zugang von Profil {} für Entwicklungsaufträge nicht nutzbar", uid[:8])
         return None
-    try:
-        return tresor.entschluesseln(uid, zeile["claude_code_token"], CODE_TOKEN)
-    except SchluesselFehler as e:
-        logger.error("Claude-Code-Token von Profil {} nicht lesbar ({})", uid[:8], e)
-        return None
+    for typ, spalte, zweck in (("oauth", "claude_code_token", CODE_TOKEN), ("api", "claude_schluessel", SCHLUESSEL)):
+        if zeile[spalte] is None:
+            continue
+        try:
+            return {"typ": typ, "wert": tresor.entschluesseln(uid, zeile[spalte], zweck)}
+        except SchluesselFehler as e:
+            # nicht stillschweigend auf den anderen Typ ausweichen: ein kaputtes Chiffrat soll auffallen
+            logger.error("Zugang ({}) von Profil {} nicht lesbar ({})", typ, uid[:8], e)
+            return None
+    return None
 
 
 Pruefer = Callable[[str, str | None], Awaitable[str | None]]

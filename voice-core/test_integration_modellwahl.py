@@ -66,7 +66,7 @@ class ModellwahlDatenbankTests(_SchemaTest):
                 str(uuid.uuid4()))
 
     async def test_kein_token_fuer_eine_unbekannte_person(self):
-        self.assertIsNone(await mz.claude_code_token_laden(self.user, db=self.db))
+        self.assertIsNone(await mz.claude_code_zugang_fuer(self.user, db=self.db))
 
 
 if __name__ == "__main__":

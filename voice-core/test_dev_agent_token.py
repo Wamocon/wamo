@@ -16,6 +16,7 @@ import dev_agent
 from test_dev_agent_sokrates2 import FakeProc, RemoteFlowTests, stream
 
 TOKEN = "sk-ant-oat01-GEHEIMgeheim-0123456789abcdefghijklmnop-Zz99"
+API = "sk-ant-api03-GEHEIMgeheim-0123456789abcdefghijklmnop-Zz99"
 
 
 class TokenFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -25,12 +26,12 @@ class TokenFlowTests(unittest.IsolatedAsyncioTestCase):
     remote = RemoteFlowTests.remote
     prepare_and_start = RemoteFlowTests.prepare_and_start
 
-    def agent_mit_token(self, token=TOKEN):
+    def agent_mit_token(self, wert=TOKEN, typ="oauth"):
         self.token_aufrufe = 0
 
         async def quelle():
             self.token_aufrufe += 1
-            return token
+            return {"typ": typ, "wert": wert} if wert else None
 
         self.agent = dev_agent.DevAgent(memory=self.memory, auftraggeber="Erika", token_quelle=quelle)
         self.agent.attach(self.task)
@@ -48,9 +49,9 @@ class TokenFlowTests(unittest.IsolatedAsyncioTestCase):
         zeilen = proc.stdin.data.decode("utf-8").splitlines()
         self.assertEqual(len(zeilen), 2)
         kopf, token = json.loads(zeilen[0]), json.loads(zeilen[1])
-        self.assertIs(kopf["token_folgt"], True)
-        self.assertEqual(token, {"claude_code_token": TOKEN})
-        self.assertNotIn("claude_code_token", kopf)
+        self.assertIs(kopf["zugang_folgt"], True)
+        self.assertEqual(token, {"typ": "oauth", "wert": TOKEN})
+        self.assertNotIn("wert", kopf)
         self.assertNotIn(TOKEN, zeilen[0])
         self.assertEqual(kopf["modell"], "claude-sonnet-5-5")  # Abo: Standard Sonnet
         self.assertEqual(self.token_aufrufe, 1)  # je Lauf einmal geholt
@@ -61,6 +62,38 @@ class TokenFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(TOKEN, gesamt)
         self.assertNotIn(TOKEN[:20], gesamt)
 
+    async def test_api_schluessel_laeuft_mit_haiku(self):
+        self.agent_mit_token(wert=API, typ="api")
+        proc = FakeProc(stream())
+        self.start_procs.append(proc)
+        await self.prepare_and_start()
+        zeilen = proc.stdin.data.decode("utf-8").splitlines()
+        self.assertEqual(json.loads(zeilen[1]), {"typ": "api", "wert": API})
+        self.assertEqual(json.loads(zeilen[0])["modell"], "claude-haiku-5-5")  # Guthaben: Standard Haiku
+
+    async def test_fehler_beim_holen_des_zugangs_beendet_den_auftrag_sauber(self):
+        async def kaputt():
+            raise RuntimeError("Datenbank weg")
+
+        self.agent = dev_agent.DevAgent(memory=self.memory, auftraggeber="Erika", token_quelle=kaputt)
+        self.agent.attach(self.task)
+        self.start_procs.append(FakeProc(stream()))
+        job = await self.prepare_and_start()
+        self.assertIn("nicht gestartet", job.status)
+        self.assertEqual(self.remote("start"), [])
+
+    async def test_ausgabe_von_claude_code_wird_geschwaerzt(self):
+        self.agent_mit_token()
+        zeilen = stream()
+        zeilen[-2] = {"type": "result", "result": f"Der Token ist {TOKEN} und der Schluessel {API}", "total_cost_usd": 0.1,
+                      "session_id": "754fb6bb-4880-4fc6-bc55-ed512941f3d3"}
+        self.start_procs.append(FakeProc(zeilen))
+        await self.prepare_and_start()
+        canvas = [m for m in self.task.messages() if m.get("type") == "canvas"][-1]["item"]["text"]
+        self.assertNotIn(TOKEN, canvas)
+        self.assertNotIn(API, canvas)
+        self.assertNotIn("sk-ant-oat01-GEHEIM", canvas)
+
     async def test_wunsch_des_betriebs_geht_dem_standard_vor(self):
         self.agent_mit_token()
         proc = FakeProc(stream())
@@ -70,7 +103,7 @@ class TokenFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(proc.stdin.data.decode("utf-8").splitlines()[0])["modell"], "claude-opus-5-5")
 
     async def test_ohne_nutzbaren_token_startet_nichts(self):
-        self.agent_mit_token(token=None)
+        self.agent_mit_token(wert=None)
         proc = FakeProc(stream())
         self.start_procs.append(proc)
         job = await self.prepare_and_start()
@@ -89,7 +122,7 @@ class TokenFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.prepare_and_start()  # self.agent aus asyncSetUp: kein token_quelle (Übergang)
         zeilen = proc.stdin.data.decode("utf-8").splitlines()
         self.assertEqual(len(zeilen), 1)
-        self.assertNotIn("token_folgt", json.loads(zeilen[0]))
+        self.assertNotIn("zugang_folgt", json.loads(zeilen[0]))
         self.assertNotIn("modell", json.loads(zeilen[0]))  # der Dispatcher wählt das Modell der Art (Haiku)
 
     async def test_lokal_gilt_der_token_nicht(self):

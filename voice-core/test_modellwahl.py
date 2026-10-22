@@ -53,7 +53,10 @@ class FakeDb:
         if self.ohne_0011 and ("modell_modus" in sql or "claude_code_token" in sql):
             raise asyncpg.UndefinedColumnError("column does not exist")
         z = self.zeilen.setdefault(args[0], _zeile())
-        if sql.startswith("insert") and "modell_modus" in sql:
+        if sql.startswith("insert") and "claude_schluessel," in sql:
+            z.update(claude_schluessel=args[1], claude_schluessel_ende=args[2], claude_workspace=args[3],
+                     claude_geprueft_at=datetime(2026, 10, 22, 8, 30, tzinfo=UTC))
+        elif sql.startswith("insert") and "modell_modus" in sql:
             z["modell_modus"] = args[1]
         elif sql.startswith("insert") and "claude_code_token" in sql:
             z.update(claude_code_token=args[1], claude_code_token_ende=args[2],
@@ -261,33 +264,56 @@ async def test_wahl_nur_haus_nimmt_dem_zugang_auch_das_claude_code_merkmal(db, t
     await mz.modus_setzen(NIKO, "nur_haus", db=db)
     z = await mz.zugang_laden(NIKO, db=db, tresor=tresor)
     assert (z.art, z.claude_code) == ("haus", False)
-    assert await mz.claude_code_token_laden(NIKO, db=db, tresor=tresor) is None
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor) is None
 
 
-async def test_token_fuer_den_lauf(db, tresor, log):
-    assert await mz.claude_code_token_laden(NIKO, db=db, tresor=tresor) is None  # keiner da
+async def test_zugang_fuer_den_lauf_token_hat_vorrang(db, tresor, log):
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor) is None  # keiner da
     await mz.code_token_hinterlegen(NIKO, TOKEN, db=db, tresor=tresor)
-    assert await mz.claude_code_token_laden(NIKO, db=db, tresor=tresor) == TOKEN
-    assert await mz.claude_code_token_laden(ANDERE, db=db, tresor=tresor) is None  # nur das eigene Profil
-    assert await mz.claude_code_token_laden("kein-uuid", db=db, tresor=tresor) is None
-    assert await mz.claude_code_token_laden(NIKO, db=db, tresor=None) is None  # ohne Hauptschlüssel
-    assert all(TOKEN not in z and TOKEN[:20] not in z for z in log)
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor) == {"typ": "oauth", "wert": TOKEN}
+    assert await mz.claude_code_zugang_fuer(ANDERE, db=db, tresor=tresor) is None  # nur das eigene Profil
+    assert await mz.claude_code_zugang_fuer("kein-uuid", db=db, tresor=tresor) is None
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=None) is None  # ohne Hauptschlüssel
+    # mit zusätzlichem API-Schlüssel gilt weiter der Token (Abo-Kontingent vor Guthaben)
+    db.zeilen[NIKO]["claude_schluessel"] = tresor.verschluesseln(NIKO, API, SCHLUESSEL)
+    assert (await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor))["typ"] == "oauth"
+    assert all(TOKEN not in z and TOKEN[:20] not in z and API not in z for z in log)
+
+
+async def test_zugang_fuer_den_lauf_api_schluessel_ohne_token(db, tresor):
+    _mit_api_schluessel(db, tresor)
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor) == {"typ": "api", "wert": API}
+    assert await mz.claude_code_zugang_fuer(ANDERE, db=db, tresor=tresor) is None
+
+
+async def test_zugang_fuer_den_lauf_nicht_bei_wahl_nur_haus(db, tresor):
+    _mit_api_schluessel(db, tresor, modell_modus="nur_haus")
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor) is None
+    await mz.code_token_hinterlegen(NIKO, TOKEN, db=db, tresor=tresor)
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor) is None
+
+
+async def test_zugang_fuer_den_lauf_kaputtes_chiffrat_faellt_nicht_auf_den_anderen_typ(db, tresor):
+    _mit_api_schluessel(db, tresor)
+    db.zeilen[NIKO] |= {"claude_code_token": tresor.verschluesseln(ANDERE, TOKEN, CODE_TOKEN),
+                        "claude_code_token_ende": "Zz99", "claude_code_token_at": datetime(2026, 10, 22, tzinfo=UTC)}
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor) is None  # nicht still der API-Schlüssel
 
 
 async def test_token_fuer_den_lauf_nicht_bei_zwang_des_admins(db, tresor):
     await mz.code_token_hinterlegen(NIKO, TOKEN, db=db, tresor=tresor)
     db.zeilen[NIKO]["nur_haus"] = True  # (die Datenbank räumt ihn dabei, hier zählt die zweite Sperre im Kern)
-    assert await mz.claude_code_token_laden(NIKO, db=db, tresor=tresor) is None
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor) is None
 
 
 async def test_token_fuer_den_lauf_chiffrat_eines_anderen_profils(db, tresor):
     db.zeilen[NIKO] = _zeile(claude_code_token=tresor.verschluesseln(ANDERE, TOKEN, CODE_TOKEN),
                              claude_code_token_ende="Zz99", claude_code_token_at=datetime(2026, 10, 22, tzinfo=UTC))
-    assert await mz.claude_code_token_laden(NIKO, db=db, tresor=tresor) is None
+    assert await mz.claude_code_zugang_fuer(NIKO, db=db, tresor=tresor) is None
 
 
 async def test_token_fuer_den_lauf_ohne_migration():
-    assert await mz.claude_code_token_laden(NIKO, db=FakeDb(ohne_0011=True)) is None
+    assert await mz.claude_code_zugang_fuer(NIKO, db=FakeDb(ohne_0011=True)) is None
 
 
 # --- Nachrichten der Oberfläche -----------------------------------------------------------------------------

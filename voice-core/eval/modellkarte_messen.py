@@ -128,7 +128,10 @@ class Kosten:
         self.summe, self.deckel = 0.0, deckel
 
     def add(self, modell: str, ein: int, aus: int) -> None:
-        self.summe += kosten_usd(modell, ein, aus, 0, 0) or 0.0
+        preis = kosten_usd(modell, ein, aus, 0, 0)
+        if preis is None:  # ein Claude-Modell ohne bekannten Preis: lieber abbrechen als den Deckel wirkungslos lassen
+            raise SystemExit(f"Kein Preis für {modell} in eval/bewertung.py (PREISE_USD): Kostendeckel nicht möglich")
+        self.summe += preis
         if self.summe > self.deckel:
             raise SystemExit(f"Kostendeckel von {self.deckel:.2f} US-Dollar erreicht")
 
@@ -285,13 +288,16 @@ async def _strom_messen(modell: str, nachrichten: list[dict], tools: list[dict] 
     params.update(litellm_extra())
     try:
         strom = await litellm_client().chat.completions.create(**params)
-        async for stueck in strom:
-            if not stueck.choices:
-                continue
-            delta = stueck.choices[0].delta
-            if (delta.content or delta.tool_calls) and erstes is None:
-                erstes = time.perf_counter() - start
-            text += len(delta.content or "")
+        try:
+            async for stueck in strom:
+                if not stueck.choices:
+                    continue
+                delta = stueck.choices[0].delta
+                if (delta.content or delta.tool_calls) and erstes is None:
+                    erstes = time.perf_counter() - start
+                text += len(delta.content or "")
+        finally:
+            await strom.close()
     except openai.APIError as e:
         fehler = type(e).__name__
     gesamt = time.perf_counter() - start
