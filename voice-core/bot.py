@@ -122,6 +122,7 @@ from soft_interrupt import (
     MeaningfulWordsUserTurnStartStrategy,
     PlaybackTracker,
     SoftInterruptGate,
+    echo_filter_an,
 )
 from soniox_tts import LazySonioxTTSService
 from tools import TurnState, gemerkt_message, register_tools
@@ -172,10 +173,13 @@ LEARN_OVERLAP = 4  # so viele frühere Zeilen als Kontext mitgeben
 SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS") or 60000)
 SUMMARY_TARGET_TOKENS = int(os.getenv("SUMMARY_TARGET_TOKENS") or 25000)
 DEFAULT_GREETING = "Hallo {name}, WAMO ist bereit."
-# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält (Standard von Pipecat 0,2 s)
-VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.2)
-# Hält Claude einen Satz für unvollständig, wartet WAMO so lange auf den Rest (Sekunden).
-SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 1.0)
+# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält (Standard von Pipecat 0,2 s).
+# 0,15 s spart 50 ms bis zum Transkript (gemessen am 21.10.2026: 308 gegen 356 ms) und trennt Sätze mit Pausen nicht
+# häufiger; Pipecat meldet einmal je Sitzung, dass der Wert vom Standard abweicht (Warnung im Log, harmlos).
+VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.15)
+# Hält Smart-Turn einen Satz für unvollständig, wartet WAMO so lange (Sekunden Stille) auf den Rest; danach entscheidet
+# Claude mit dem Satzende-Marker. Jeder unvollständige Befund kostete bis zu 0,85 s (früher 1,0 s).
+SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.5)
 TURN_INCOMPLETE_SHORT_SECS = float(os.getenv("TURN_INCOMPLETE_SHORT_SECS") or 1.5)
 TURN_INCOMPLETE_LONG_SECS = float(os.getenv("TURN_INCOMPLETE_LONG_SECS") or 3.0)  # 8 s wirkten wie ein Hänger
 # Weiche Unterbrechung: nach einem Einwurf spricht WAMO den Satz zu Ende, höchstens aber das
@@ -524,6 +528,11 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     learn_task: asyncio.Task | None = None
     pause_short, pause_long = pause_prompts(identity.name)
 
+    soft_gate = SoftInterruptGate(
+        max_words=SOFT_INTERRUPT_MAX_WORDS,
+        playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
+    )
+
     user_agg, assistant_agg = LLMContextAggregatorPair(
         context,
         # Lange Gespräche zusammenfassen, bevor der Prompt teuer wird
@@ -547,7 +556,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 # Unterbrechen entscheidet das SoftInterruptGate, nicht die Strategie.
                 start=[
                     MeaningfulWordsUserTurnStartStrategy(
-                        min_words=MIN_INTERRUPT_WORDS, enable_interruptions=False
+                        min_words=MIN_INTERRUPT_WORDS,
+                        enable_interruptions=False,
+                        # Echo der eigenen Stimme am Mikrofon löst keine Unterbrechung aus (soft_interrupt.ist_echo)
+                        gesprochen=soft_gate.kuerzlich_gesprochen if echo_filter_an() else None,
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.
@@ -573,11 +585,6 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 ],
             ),
         ),
-    )
-
-    soft_gate = SoftInterruptGate(
-        max_words=SOFT_INTERRUPT_MAX_WORDS,
-        playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
     )
 
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
