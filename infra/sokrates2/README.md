@@ -150,10 +150,16 @@ Hinweise zum Betrieb:
 - Fehlt beim Auftrag das Ziel-Repo, gilt das Token für alle Repos der Installation (mit den Rechten der Art). Das
   Sprachmodell setzt `repo`, wenn der Auftrag ein Repo nennt; nennt der Auftragstext mehrere Repos, fragt WAMO nach.
 - `contents: write` erlaubt Push in die Zielrepos, `pull_requests: write` auch das Mergen eines Pull Requests über die
-  API. In jedem Zielrepo deshalb ein Ruleset für den Standardbranch einrichten und verbindlich so setzen: kein direkter
-  Push, Pull Request Pflicht, mindestens eine Genehmigung durch einen Menschen, die App nicht als „Bypass actor“
-  eintragen. Ohne diese Regel kann ein Auftrag seinen eigenen Pull Request mergen. Der Wächter verlangt für `git push`
-  ohnehin eine Freigabe, das Token selbst bleibt aber in der Sandbox nutzbar (der Ausgangsfilter lässt Port 443 offen).
+  API. Der stärkste Schutz ist ein Ruleset für den Standardbranch jedes Zielrepos: kein direkter Push, Pull Request
+  Pflicht, mindestens eine Genehmigung durch einen Menschen, die App nicht als „Bypass actor“ eintragen. Ohne diese Regel
+  kann ein Auftrag seinen eigenen Pull Request mergen. Der Wächter verlangt für `git push` ohnehin eine Freigabe, das
+  Token selbst bleibt aber in der Sandbox nutzbar (der Ausgangsfilter lässt Port 443 offen).
+  **Voraussetzung:** Rulesets und Branch-Schutz gibt es für private Repos erst ab dem Tarif GitHub Team (Stand
+  22.10.2026: die Organisation Wamocon nutzt den kostenlosen Tarif, GitHub antwortet mit „Upgrade to GitHub Pro“).
+  Ohne Upgrade bleibt das Restrisiko: Ein gekaperter Auftrag könnte in den Zielrepos direkt auf den Standardbranch
+  pushen. Abmildern: die App nur auf die Repos installieren, die WAMO braucht, schreibende Auftragsarten nur nach
+  Freigabe starten, Pushes und Merges in den Zielrepos regelmäßig prüfen (GitHub, Aktivität) und bei Auffälligkeiten
+  die Installation der App sofort entfernen.
 - Der Schlüssel ist das eigentliche Geheimnis (er stellt Token für alle Rechte der App aus): nur in `/etc/wamo`, nie in
   die Sandbox, nie in ein Repository, bei Verdacht in GitHub löschen und neu erzeugen.
 - Der GitHub-MCP-Server in der Sandbox verbindet sich mit dem App-Token. Meldet `--mcp` github als nicht verbunden,
