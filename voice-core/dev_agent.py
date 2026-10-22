@@ -15,6 +15,13 @@ Betriebsart (WAMO_ENTWICKLUNG_ORT)
      Anfragen liegen auf Sokrates-2 im Auftragsordner, approve und pending gehen über denselben Weg.
      Meldet der Dispatcher zugang_erweitert (mehr Token als frühere Läufe im Projekt), wird daraus eine
      Freigabekarte; nach dem Klick startet der Auftrag neu.
+     Claude-Zugang je Lauf: Hat das Profil einen eigenen Zugang (Max-Token aus `claude setup-token` oder API-Schlüssel,
+     modellzugang.claude_code_zugang_fuer), geht er nach der Kopfzeile als zweite stdin-Zeile an den Dispatcher
+     (nie per argv oder Umgebung; bei jedem Lauf neu, auch nach einer Freigabe; der Dispatcher speichert ihn nicht). Ohne
+     eigenen Zugang gilt der Zugang aus geheim.env nur für das Profil, das dafür vorgesehen ist
+     (WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL, sonst WAMO_CLAUDE_SCHLUESSEL_PROFIL); für alle anderen startet nichts, mit klarer
+     Meldung. Das Kontingent des Max-Abos (Ereignis kontingent des Dispatchers, kontingent.py) wird je Profil gespeichert
+     und als Servernachricht kontingent an die Oberfläche geschickt.
   lokal: der frühere Weg, Claude Code als Windows-Benutzer auf diesem PC. Nur mit zusätzlich
      WAMO_ENTWICKLUNG_LOKAL_BESTAETIGT=ja, mit deutlicher Warnung im Log; der Wächter ist dort nur eine Bremse.
 
@@ -52,6 +59,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import os
 import re
@@ -61,7 +69,6 @@ import tempfile
 import time
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -72,11 +79,22 @@ from pipecat.frames.frames import LLMMessagesAppendFrame
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.services.llm_service import FunctionCallParams
 
+import kontingent as kt
 from dev_guard import REPO_ROOT, SELF_REPO, _skript_befehl, decide, fingerprint, write_json_atomic
+from memory import normalize_uuid, shared_database
 from persona import clean_inline
 from schluessel import schwaerzen
 from teilen import eigene_fassung
 from werkzeugkarte import AUFTRAGSARTEN, KARTEN, MODELLE_ERLAUBT, anweisungsblock, art_beschreibung, modell_fuer
+
+try:  # liefert der Modellzugang (Karte "Modellzugang"): {"typ": "oauth" | "api", "wert": str[, "workspace"]} oder None
+    from modellzugang import claude_code_zugang_fuer
+except ImportError as _fehler:  # noch nicht vorhanden: kein persönlicher Zugang (Tests ersetzen die Funktion)
+    logger.warning("modellzugang.claude_code_zugang_fuer fehlt ({}): Aufträge starten nur mit dem Serverzugang des "
+                   "vorgesehenen Profils", _fehler.__class__.__name__)
+
+    def claude_code_zugang_fuer(user_id):
+        return None
 
 PROJECTS_DIR = Path(os.getenv("WAMO_PROJECTS_DIR") or (Path.home() / "Projekte"))
 JOBS_DIR = Path(__file__).resolve().parent / ".jobs"
@@ -101,6 +119,12 @@ REMOTE_ARG_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
 GITHUB_URL_RE = re.compile(r"github\.com[/:]([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})", re.IGNORECASE)
 SSH_KURZ_TIMEOUT_SECS = 30
+SERVERZUGANG_ENV = "WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL"  # Profil, das den Zugang aus geheim.env nutzen darf
+KEIN_ZUGANG_STATUS = "nicht gestartet (kein Claude-Zugang: Max-Token oder API-Schlüssel in der Karte Modellzugang hinterlegen)"
+KONTINGENT_SENDEN_SECS = 2.0  # höchstens alle 2 s eine Servernachricht, höchstens alle 60 s ein Schreiben in die Datenbank
+KONTINGENT_SPEICHERN_SECS = 60.0
+AUTH_FEHLER = ("invalid api key", "invalid x-api-key", "authentication_error", "invalid bearer token",
+               "oauth token has expired", "oauth token revoked", "invalid authentication credentials")
 REMOTE_PUFFER_SECS = 300  # das harte Zeitlimit gilt auf Sokrates-2; der Voice-Core wartet etwas länger
 LOKAL_WARNUNG = (
     "WARNUNG: Entwicklungsaufträge laufen LOKAL (WAMO_ENTWICKLUNG_ORT=lokal, WAMO_ENTWICKLUNG_LOKAL_BESTAETIGT=ja) "
@@ -114,6 +138,7 @@ REMOTE_EREIGNIS_STATUS = {
     "belegt": "nicht gestartet (Projekt oder Auftrag belegt)",
     "zugang_erweitert": "wartet auf Freigabe (mehr Zugänge als frühere Aufträge im Projekt)",
     "start_abgelehnt": "nicht gestartet (GitHub-Token der App nicht erzeugt)",
+    "zugang_ungueltig": "nicht gestartet (Claude-Zugang ungültig, bitte in der Karte Modellzugang neu hinterlegen)",
 }
 REMOTE_ENDE_STATUS = {
     "fertig": "fertig", "zeitlimit": "abgebrochen (Zeitlimit)", "abgebrochen": "abgebrochen",
@@ -229,6 +254,46 @@ def lokal_problem() -> str | None:
 def modell_wunsch() -> str | None:
     """WAMO_ENTWICKLUNG_MODELL übersteuert das Modell der Auftragsart (nur Namen aus MODELLE_ERLAUBT)."""
     return (os.getenv("WAMO_ENTWICKLUNG_MODELL") or "").strip() or None
+
+
+def serverzugang_erlaubt(user_id: object) -> bool:
+    """Darf dieses Profil ohne eigenen Zugang den Claude-Zugang aus /etc/wamo/geheim.env auf Sokrates-2 nutzen? Nur das
+    eine Profil, dem er gehört (WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL, ersatzweise das des Kernschlüssels
+    WAMO_CLAUDE_SCHLUESSEL_PROFIL); für alle anderen nie, damit niemand auf fremde Kosten oder fremdes Kontingent arbeitet."""
+    ziel = normalize_uuid(os.getenv(SERVERZUGANG_ENV) or os.getenv("WAMO_CLAUDE_SCHLUESSEL_PROFIL") or "")
+    uid = normalize_uuid(user_id) if user_id else None
+    return bool(ziel and uid and ziel == uid)
+
+
+async def persoenlicher_zugang(user_id: object) -> dict | None:
+    """Eigener Claude-Zugang des Profils für Claude Code, frisch für jeden Lauf: {"typ": "oauth" | "api", "wert": str,
+    ["workspace": str]} oder None (kein Zugang, ein Fehler beim Lesen oder eine Form, die nicht passt). Der Wert wird nie
+    geloggt; bei einem Fehler steht nur die Art der Ausnahme im Log."""
+    if not user_id or not normalize_uuid(user_id):
+        return None
+    try:
+        zugang = claude_code_zugang_fuer(user_id)
+        if inspect.isawaitable(zugang):
+            zugang = await zugang
+    except Exception as e:  # noqa: BLE001 (Datenbank, Entschlüsseln: ohne Zugang geht es weiter wie ohne)
+        logger.error("Claude-Zugang von Profil {} nicht lesbar ({})", str(user_id)[:8], type(e).__name__)
+        return None
+    if not isinstance(zugang, dict) or zugang.get("typ") not in ("oauth", "api") \
+            or not isinstance(zugang.get("wert"), str) or not zugang["wert"]:
+        return None
+    out = {"typ": zugang["typ"], "wert": zugang["wert"]}
+    if isinstance(zugang.get("workspace"), str) and zugang["workspace"]:
+        out["workspace"] = zugang["workspace"]
+    return out
+
+
+def _kontingent_db():
+    """Datenbank für das Kontingent (Tabelle model_access); None, wenn sie nicht konfiguriert ist. Tests ersetzen das."""
+    try:
+        db = shared_database()
+    except ValueError:
+        return None
+    return db if db.configured else None
 
 
 def entwicklung_problem() -> str | None:
@@ -503,15 +568,8 @@ class Job:
 class DevAgent:
     """Ein Objekt pro Gespräch. Braucht den PipelineTask, um Karten, Canvas und Meldungen zu senden."""
 
-    def __init__(self, memory, auftraggeber: str, ort: str | None = None,
-                 token_quelle: Callable[[], Awaitable[dict[str, str] | None]] | None = None):
-        """token_quelle: optional, async ohne Argumente, liefert den Zugang des Profils dieser Sitzung als
-        {"typ": "oauth" | "api", "wert": ...} oder None (bot.py bindet modellzugang.claude_code_zugang_fuer an die
-        Profil-ID). Ist sie gesetzt, startet ein Lauf auf Sokrates-2 nur MIT diesem Zugang (er geht als zweite
-        stdin-Zeile an den Dispatcher, siehe _run_remote), nie still mit dem Zugang der Sandbox. Ohne token_quelle
-        gilt der Zugang der Sandbox wie bisher."""
+    def __init__(self, memory, auftraggeber: str, ort: str | None = None):
         self._memory = memory
-        self._token_quelle = token_quelle
         self._auftraggeber = clean_inline(auftraggeber, 60) or "Admin"
         self._ort = ort or entwicklung_ort() or "sokrates2"
         if self._ort == "lokal":
@@ -523,6 +581,16 @@ class DevAgent:
         self._run_lock = asyncio.Lock()  # nie zwei Claude-Code-Läufe gleichzeitig
         self._proc: asyncio.subprocess.Process | None = None
         self.on_result = None  # optional: Rückruf, wenn ein Ergebnis eintrifft (z. B. für M4 im Bot)
+        # Kontingent des Max-Abos dieses Profils (kontingent.py); None = noch nicht aus der Datenbank geladen
+        self._kontingent: list[dict] = []
+        self._kontingent_stand: str | None = None
+        self._kontingent_geladen = False  # der gespeicherte Stand ist eingelesen (sonst wird nichts gespeichert)
+        self._kontingent_lock = asyncio.Lock()
+        self._kontingent_offen = False  # neue Beobachtung, noch nicht gespeichert
+        self._kontingent_ungesendet = False  # neue Beobachtung, noch nicht an die Oberfläche geschickt
+        self._kontingent_gesendet = float("-inf")
+        self._kontingent_gespeichert = float("-inf")
+        self._eigener_zugang = False  # der laufende Lauf nutzt den Zugang des Profils (nur dann gilt sein Kontingent)
 
     def attach(self, pipeline_task) -> None:
         self._task = pipeline_task
@@ -629,6 +697,9 @@ class DevAgent:
             await self._auftrag_start(data)
         elif msg_type == "freigabe":
             await self._freigabe(data)
+        elif msg_type == "kontingent":  # Anzeige fragt den gespeicherten Stand ab (ohne Lauf, ohne Anfrage an Anthropic)
+            await self._kontingent_laden()
+            await self._kontingent_senden()
 
     async def _auftrag_start(self, data: dict) -> None:
         job = self._jobs.get(str(data.get("job", "")))
@@ -698,12 +769,6 @@ class DevAgent:
     async def _run_locked(self, job: Job, prompt: str, resume: bool) -> None:
         if self._ort == "sokrates2":
             await self._run_remote(job, prompt, resume)
-            return
-        if self._token_quelle is not None:  # der Token der Person gilt nur in der Sandbox auf Sokrates-2
-            job.status = "nicht gestartet (der Claude-Code-Token gilt nur auf Sokrates-2)"
-            job.result = "Der Auftrag wurde nicht gestartet: Mit dem eigenen Claude-Code-Token laufen Aufträge nur auf Sokrates-2."
-            await self._canvas(job)
-            await self._announce(job)
             return
         logger.warning(LOKAL_WARNUNG)
         job.dir.mkdir(parents=True, exist_ok=True)
@@ -788,29 +853,26 @@ class DevAgent:
 
     async def _run_remote(self, job: Job, prompt: str, resume: bool) -> None:
         """Auftrag auf Sokrates-2: ssh ... "start <job> <projekt> <art> [<session>]", Auftrag als JSON-Zeile
-        über stdin, stdin bleibt als Lebenslinie offen, stdout ist stream-json wie lokal."""
+        über stdin, danach (mit eigenem Zugang des Profils) der Claude-Zugang als zweite Zeile, stdin bleibt als
+        Lebenslinie offen, stdout ist stream-json wie lokal. Der Zugang wird bei jedem Lauf frisch gelesen und gesendet,
+        auch nach einer Freigabe und beim Fortsetzen; der Dispatcher speichert ihn nicht."""
         system_append = f"{rules_for(self._auftraggeber, 'sokrates2')}\n\n{anweisungsblock(job.art)}"
-        zugang, modell = None, None
-        if self._token_quelle is not None:
-            # Zugang des Profils für diesen einen Lauf (modellzugang.claude_code_zugang_fuer): {"typ", "wert"}. Fehlt er
-            # (gelöscht, nur Hausmodelle gewählt, nicht lesbar), startet nichts, und nie fällt der Lauf auf den
-            # Zugang der Sandbox zurück, der einer anderen Person gehört.
-            try:
-                zugang = await self._token_quelle()
-                modell = modell_fuer(job.art, modell_wunsch(), abo=bool(zugang) and zugang.get("typ") == "oauth")
-            except Exception as e:  # noqa: BLE001 (Datenbank, Modellwunsch: der Lauf endet sauber statt im Hintergrund)
-                logger.error("Entwicklungsauftrag {}: Zugang nicht ermittelt ({})", job.id, type(e).__name__)
-                zugang = None
-            if not zugang:
-                job.status = "nicht gestartet (kein nutzbarer Zugang für Claude Code)"
-                job.result = ("Der Auftrag wurde nicht gestartet: Für dieses Profil ist kein nutzbarer Claude-Code-Token "
-                              "oder API-Schlüssel hinterlegt. Beides lässt sich im Bereich Modellzugang eintragen.")
-                await self._canvas(job)
-                await self._announce(job)
-                return
         args = ["start", job.id, job.projekt.name, job.art]
         if resume and job.session_id:
             args.append(job.session_id)
+        zugang = await self._remote_zugang()
+        if zugang is None:  # nie mit dem Zugang eines anderen starten: lieber nicht starten, mit klarer Meldung
+            job.ereignisse = {}
+            job.status = KEIN_ZUGANG_STATUS
+            job.steps.append("Kein Claude-Zugang für dieses Profil. In der Karte Modellzugang den Max-Token "
+                             "(claude setup-token) oder einen API-Schlüssel hinterlegen und den Auftrag danach neu stellen.")
+            logger.warning("Entwicklungsauftrag {} nicht gestartet: kein Claude-Zugang für Profil {}", job.id,
+                           str(getattr(self._memory, "user_id", None) or "?")[:8])
+            await self._canvas(job)
+            await self._announce(job)
+            return
+        zugang_kopf, zugang_zeile = zugang
+        self._eigener_zugang = zugang_kopf.get("zugang") == "folgt"
         job.ereignisse = {}
         job.status = "läuft"
         job.steps.append("Weiter nach Freigabe" if resume else f"Start auf Sokrates-2 in {job.projekt} ({KARTEN[job.art].titel})")
@@ -828,24 +890,17 @@ class DevAgent:
             )
             stderr_task = asyncio.create_task(_drain(self._proc.stderr, stderr_tail))
             kopf_daten = {"auftrag": prompt, "system": system_append}
-            if modell:
-                # Eigener Zugang: Sonnet mit dem Claude-Code-Token (Kontingent des Abos), Haiku mit dem API-Schlüssel
-                # (Guthaben), außer WAMO_ENTWICKLUNG_MODELL (werkzeugkarte.modell_fuer)
-                kopf_daten["modell"] = modell
-            elif modell_wunsch():  # sonst wählt der Dispatcher das Modell der Art (Werkzeugkarte auf Sokrates-2, Haiku)
+            if modell_wunsch():  # sonst wählt der Dispatcher das Modell der Art (Werkzeugkarte auf Sokrates-2, Haiku)
                 kopf_daten["modell"] = modell_wunsch()
             if job.repo:  # im App-Modus gilt das GitHub-Token dann nur für dieses Repo
                 kopf_daten["repo"] = job.repo
-            if zugang:
-                kopf_daten["zugang_folgt"] = True  # der Dispatcher liest genau eine weitere Zeile (siehe unten)
-            kopf = json.dumps(kopf_daten, ensure_ascii=False) + "\n"
-            if zugang:
-                # Zweite stdin-Zeile: {"typ": "oauth" | "api", "wert": "<Token oder Schlüssel der Person>"}. Nur über
-                # stdin, nie in argv, Umgebung dieses Prozesses, Log oder Job-Datei; der Dispatcher setzt oauth als
-                # CLAUDE_CODE_OAUTH_TOKEN, api als ANTHROPIC_API_KEY in die Sandbox dieses einen Laufs (statt des Zugangs
-                # aus geheim.env) und schwärzt den Wert in der Ausgabe.
-                kopf += json.dumps({"typ": zugang["typ"], "wert": zugang["wert"]}) + "\n"
-            self._proc.stdin.write(kopf.encode("utf-8"))
+            kopf_daten.update(zugang_kopf)  # nur "zugang" und "profil"; der Wert steht nie in der Kopfzeile
+            daten = (json.dumps(kopf_daten, ensure_ascii=False) + "\n").encode("utf-8")
+            if zugang_zeile is not None:
+                daten += zugang_zeile  # zweite Zeile, nur über stdin (nicht in argv, nicht in der Umgebung von ssh)
+            zugang_zeile = None
+            self._proc.stdin.write(daten)
+            del daten
             await self._proc.stdin.drain()  # stdin NICHT schließen: Lebenslinie des entfernten Auftrags
             await asyncio.wait_for(self._read_stream(job), JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS)
             await asyncio.wait_for(self._proc.wait(), 30)
@@ -873,9 +928,96 @@ class DevAgent:
             if proc is not None and proc.returncode not in (0, None) and stderr_tail:
                 logger.warning("Sokrates-2 meldete: {}", " | ".join(stderr_tail)[-1500:])
 
+        await self._kontingent_abschliessen()
         await self._collect_pending(job, None)
         await self._canvas(job)
         await self._announce(job)
+
+    async def _remote_zugang(self) -> tuple[dict, bytes | None] | None:
+        """Felder der Kopfzeile und, mit eigenem Zugang, die zweite Zeile für den Dispatcher; None ohne erlaubten Zugang.
+        Eigener Zugang des Profils (Max-Token oder API-Schlüssel) hat Vorrang. Ohne ihn gilt der Zugang aus geheim.env nur,
+        wenn das Profil dafür vorgesehen ist (serverzugang_erlaubt)."""
+        user_id = getattr(self._memory, "user_id", None)
+        kennung = normalize_uuid(user_id) if user_id else None
+        if not kennung:
+            return None
+        profil = kennung.replace("-", "")[:8]  # nur zur Zuordnung im Audit und in der Buchführung des Dispatchers
+        eigener = await persoenlicher_zugang(user_id)
+        if eigener is not None:
+            return ({"zugang": "folgt", "profil": profil},
+                    (json.dumps(eigener, ensure_ascii=False) + "\n").encode("utf-8"))
+        if serverzugang_erlaubt(user_id):
+            return {"zugang": "server", "profil": profil}, None
+        return None
+
+    # ---------- Kontingent des Max-Abos ----------
+    async def _kontingent_laden(self) -> None:
+        """Gespeicherten Stand des Profils einmal je Sitzung aus der Datenbank holen und unter die Beobachtungen legen,
+        die inzwischen eingetroffen sind. Schlägt es fehl, bleibt der Stand ungeladen (nächster Versuch beim nächsten
+        Aufruf) und es wird nichts gespeichert, damit nichts Bekanntes überschrieben wird."""
+        if self._kontingent_geladen:
+            return
+        async with self._kontingent_lock:
+            if self._kontingent_geladen:
+                return
+            user_id, db = getattr(self._memory, "user_id", None), _kontingent_db()
+            if not user_id or db is None:
+                self._kontingent_geladen = True  # nichts zu laden, und es gibt auch nichts zu speichern
+                return
+            try:
+                alt, stand = await kt.laden(db, user_id)
+            except Exception as e:  # noqa: BLE001 (Anzeige ist eine Zugabe: Tabelle fehlt, Datenbank weg)
+                logger.warning("Kontingent von Profil {} nicht lesbar ({})", str(user_id)[:8], type(e).__name__)
+                return
+            self._kontingent = kt.zusammenfuehren(alt, self._kontingent)
+            self._kontingent_stand = self._kontingent_stand or stand
+            self._kontingent_geladen = True
+
+    async def _kontingent_senden(self) -> None:
+        """Servernachricht kontingent: nur geprüfte Felder (kt.nachricht); ohne Daten ist der Zustand unbekannt."""
+        self._kontingent_gesendet = time.monotonic()
+        self._kontingent_ungesendet = False
+        await self._send(kt.nachricht(self._kontingent, self._kontingent_stand))
+
+    async def _kontingent_aufnehmen(self, ereignis: dict) -> None:
+        """Ereignis kontingent des Dispatchers: erneut geprüft, über den bekannten Stand gelegt, an die Oberfläche
+        geschickt (höchstens alle 2 s) und gespeichert (höchstens alle 60 s, am Laufende immer). Nur für Läufe mit dem
+        eigenen Zugang des Profils: das Kontingent des Serverzugangs gehört nicht in dessen Zeile."""
+        limits = kt.pruefen_ereignis(ereignis)
+        if not limits or not self._eigener_zugang:
+            return
+        await self._kontingent_laden()
+        self._kontingent = kt.zusammenfuehren(self._kontingent, limits)
+        self._kontingent_stand = kt.jetzt_iso()
+        self._kontingent_offen = self._kontingent_ungesendet = True
+        if time.monotonic() - self._kontingent_gesendet >= KONTINGENT_SENDEN_SECS:
+            await self._kontingent_senden()
+        await self._kontingent_speichern()
+
+    async def _kontingent_speichern(self, erzwingen: bool = False) -> None:
+        if not self._kontingent_offen:
+            return
+        if not erzwingen and time.monotonic() - self._kontingent_gespeichert < KONTINGENT_SPEICHERN_SECS:
+            return
+        await self._kontingent_laden()
+        if not self._kontingent_geladen:
+            return  # Stand unlesbar: nicht speichern (sonst gingen die bekannten Limits verloren); später erneut
+        user_id, db = getattr(self._memory, "user_id", None), _kontingent_db()
+        if not user_id or db is None:
+            self._kontingent_offen = False
+            return
+        self._kontingent_gespeichert = time.monotonic()
+        try:
+            await kt.speichern(db, user_id, self._kontingent)
+            self._kontingent_offen = False
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Kontingent von Profil {} nicht gespeichert ({})", str(user_id)[:8], type(e).__name__)
+
+    async def _kontingent_abschliessen(self) -> None:
+        """Am Ende eines Laufs (oder beim Auflegen): der letzte Stand geht immer an die Oberfläche und in die Datenbank."""
+        if self._kontingent_ungesendet:
+            await self._kontingent_senden()
+        await self._kontingent_speichern(erzwingen=True)
 
     async def _read_stream(self, job: Job) -> None:
         last_canvas = 0.0
@@ -894,12 +1036,17 @@ class DevAgent:
                         job.steps.append(_describe(block.get("name", ""), block.get("input") or {}))
             elif ev.get("type") == "wamo":  # Ereignisse des Dispatchers auf Sokrates-2
                 name = str(ev.get("ereignis") or "")
+                if name == "kontingent":  # Limits des Max-Abos: kein Schritt, nur Anzeige und Speicher
+                    await self._kontingent_aufnehmen(ev)
+                    continue
                 if name:
                     job.ereignisse[name] = ev
                 if name == "selbsttest_ok":
                     job.steps.append("Wächter-Selbsttest in der Sandbox bestanden")
                 elif name == "start_abgelehnt":  # Grund nur auf dem Canvas, nie ans Sprachmodell
                     job.steps.append(f"Start abgelehnt: {clean_inline(str(ev.get('grund') or ''), 300)}")
+                elif name == "zugang_ungueltig":  # der Dispatcher nennt nie den Zugang selbst, nur was am Format nicht passt
+                    job.steps.append(f"Claude-Zugang abgelehnt: {clean_inline(str(ev.get('grund') or ''), 200)}")
                 elif name == "gh_widerruf_fehlgeschlagen":
                     job.steps.append("Achtung: Das GitHub-Token dieses Auftrags konnte nicht widerrufen werden; "
                                      "es läuft spätestens nach einer Stunde ab")
@@ -909,6 +1056,9 @@ class DevAgent:
                 job.result = str(ev.get("result") or "")
                 job.cost_usd += float(ev.get("total_cost_usd") or 0)
                 job.session_id = ev.get("session_id") or job.session_id
+                if ev.get("is_error") and any(k in job.result.lower() for k in AUTH_FEHLER):
+                    job.steps.append("Anthropic hat den Claude-Zugang abgelehnt (abgelaufen oder widerrufen?). "
+                                     "In der Karte Modellzugang neu hinterlegen.")
             if time.monotonic() - last_canvas > 1.5:
                 last_canvas = time.monotonic()
                 await self._canvas(job)
@@ -1038,6 +1188,8 @@ class DevAgent:
             await _kill_tree(self._proc)
         if self._ort == "sokrates2" and running_job is not None:
             await self._ssh_kurz(["cancel", running_job.id], timeout=10)
+        with contextlib.suppress(Exception, asyncio.TimeoutError):  # der Abbruch unten lässt das Endspeichern des Laufs aus
+            await asyncio.wait_for(self._kontingent_abschliessen(), 5)
         if self._running and not self._running.done():
             self._running.cancel()
 

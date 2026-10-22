@@ -96,7 +96,7 @@ from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
 from llm_anbieter import LLMNichtVerfuegbar, ausblenden_text, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
 from memory import MemoryStore, Profile, ProfileDirectory, Recall, shared_database
-from modellzugang import claude_code_zugang_fuer, modellzugang_nachricht, zugang_laden
+from modellzugang import modellzugang_nachricht, zugang_laden
 from boss import Boss, entwicklung_quelle, modus_wirksam
 from kern_dienst import runner_vorbereiten
 from cache_waerme import vorwaermen
@@ -531,11 +531,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     dev: DevAgent | None = None
     if entwicklung:
         # Entwicklungsaufträge an Claude Code; Start und Freigaben per Klick in der UI (dev_agent.py). Mit eigenem
-        # Zugang läuft der Auftrag auf dem Token oder Schlüssel dieses Profils (nur für diesen Lauf entschlüsselt).
-        dev = DevAgent(
-            memory, auftraggeber=identity.name,
-            token_quelle=(lambda: claude_code_zugang_fuer(identity.user_id)) if dev_quelle in ("token", "api") else None,
-        )
+        # Zugang läuft der Auftrag auf dem Token oder Schlüssel dieses Profils (je Lauf frisch entschlüsselt, siehe
+        # dev_agent.persoenlicher_zugang), ohne ihn nur das Profil des Kernschlüssels.
+        dev = DevAgent(memory, auftraggeber=identity.name)
         dev.on_result = turn.taint
         dev.register(llm)
         standard_tools += dev.schemas()

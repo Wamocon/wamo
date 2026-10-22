@@ -19,11 +19,9 @@ ENV = {**smoke.DUMMY_ENV, "LITELLM_BASE_URL": "http://gateway.test.invalid:4000/
 
 
 class BossSitzungTests(unittest.IsolatedAsyncioTestCase):
-    async def build(self, zugang, rolle="admin", token_laden=None):
-        token = token_laden or mock.AsyncMock(return_value={"typ": "oauth", "wert": "sk-ant-oat01-TESTtest-0123456789abcdefghijklmnop-Zz99"})
+    async def build(self, zugang, rolle="admin"):
         with mock.patch.dict(os.environ, ENV), \
              mock.patch.object(bot, "zugang_laden", mock.AsyncMock(return_value=zugang)), \
-             mock.patch.object(bot, "claude_code_zugang_fuer", token), \
              mock.patch.object(bot, "DevAgent", wraps=bot.DevAgent) as dev, \
              mock.patch.object(bot, "Boss", wraps=bot.Boss) as boss, \
              mock.patch.object(bot, "entwicklung_problem", return_value=None), \
@@ -31,45 +29,37 @@ class BossSitzungTests(unittest.IsolatedAsyncioTestCase):
              mock.patch("llm_anbieter.claude_problem", mock.AsyncMock(return_value=None)):
             session = await bot.build_session(smoke.FakeTransport(), Identity(USER, "Erika", rolle, "du"))
         await session.cleanup()
-        return dev, boss, token
+        return dev, boss
 
     async def test_jede_sitzung_hat_den_boss_und_seine_werkzeuge(self):
         for zugang in (Zugang.haus(USER), Zugang(USER, "claude", "profil", claude_schluessel=KEY)):
-            _dev, boss, _ = await self.build(zugang, rolle="mitglied")
+            _dev, boss = await self.build(zugang, rolle="mitglied")
             self.assertEqual(boss.call_count, 1)
             self.assertIs(boss.call_args.args[0], zugang)
             self.assertIsNone(boss.call_args.kwargs["bild_quelle"])  # ohne PC-Steuerung keine Bildbeschreibung
 
     async def test_ohne_eigenen_zugang_kein_entwicklungsauftrag(self):
-        dev, _, _ = await self.build(Zugang.haus(USER, "keiner"))
+        dev, _ = await self.build(Zugang.haus(USER, "keiner"))
         self.assertFalse(dev.called)
 
     async def test_eigener_api_schluessel_reicht_fuer_entwicklungsauftraege(self):
-        dev, _, token = await self.build(Zugang(USER, "claude", "profil", claude_schluessel=KEY))
-        self.assertTrue(dev.called)
-        self.assertIsNotNone(dev.call_args.kwargs["token_quelle"])  # Guthaben, Standardmodell Haiku
+        dev, _ = await self.build(Zugang(USER, "claude", "profil", claude_schluessel=KEY))
+        self.assertTrue(dev.called)  # Guthaben, Standardmodell Haiku; den Zugang holt der Auftrag erst beim Lauf
 
     async def test_nur_hausmodelle_gewaehlt_oder_festgelegt_keine_entwicklung_auch_mit_token(self):
         for quelle in ("wahl", "festgelegt"):
-            dev, _, _ = await self.build(Zugang.haus(USER, quelle, claude_code=True))
+            dev, _ = await self.build(Zugang.haus(USER, quelle, claude_code=True))
             self.assertFalse(dev.called, quelle)
 
-    async def test_mit_token_laeuft_der_auftrag_mit_dem_token_dieser_sitzung(self):
+    async def test_mit_token_gibt_es_entwicklungsauftraege(self):
         for zugang in (Zugang.haus(USER, "keiner", claude_code=True),
                        Zugang(USER, "claude", "profil", claude_schluessel=KEY, claude_code=True)):
-            dev, _, token = await self.build(zugang)
+            dev, _ = await self.build(zugang)
             self.assertTrue(dev.called)
-            quelle = dev.call_args.kwargs["token_quelle"]
-            self.assertIsNotNone(quelle)
-            with mock.patch.object(bot, "claude_code_zugang_fuer", token):  # die Quelle schlägt erst beim Lauf nach
-                self.assertTrue((await quelle())["wert"].startswith("sk-ant-oat01-"))
-            token.assert_awaited_once_with(USER)  # gebunden an die Profil-ID dieser Sitzung
 
     async def test_uebergang_fuer_das_profil_des_kernschluessels(self):
-        dev, _, token = await self.build(Zugang(USER, "claude", "zuordnung", claude_schluessel=KEY))
-        self.assertTrue(dev.called)
-        self.assertIsNone(dev.call_args.kwargs["token_quelle"])  # Zugang der Sandbox wie bisher
-        token.assert_not_awaited()
+        dev, _ = await self.build(Zugang(USER, "claude", "zuordnung", claude_schluessel=KEY))
+        self.assertTrue(dev.called)  # Zugang der Sandbox, solange dev_agent.serverzugang_erlaubt gilt
 
     def test_betrieb_meldung_mit_modus_quelle_und_hinweis(self):
         m = bot.betrieb_message("aus", modell_modus="nur_haus", modell_quelle="wahl",

@@ -20,9 +20,11 @@ ECC_PREFIX = "ecc:"
 
 # Modell je Auftrag (Kosten): Läuft der Auftrag über einen API-Schlüssel und geht vom Guthaben ab, ist der Standard
 # Haiku für alle Arten (Sonnet kostet etwa das Dreifache). Läuft er mit dem Claude-Code-Token eines Max-Tarifs
-# (Kontingent des Abos, keine Kosten je Anfrage), ist der Standard Sonnet (MODELL_ABO, modell_fuer(abo=True)). Opus und
-# jede Abweichung nur, wenn WAMO_ENTWICKLUNG_MODELL sie ausdrücklich setzt (dev_agent.py), und nur mit einem Namen aus
-# MODELLE_ERLAUBT. Das Gesprächsmodell bleibt in jedem Fall Haiku (llm_anbieter.py).
+# (Kontingent des Abos, keine Kosten je Anfrage), ist der Standard Sonnet (MODELL_ABO, modell_fuer(abo=True)). Auf
+# Sokrates-2 wählt der Dispatcher diesen Standard nach der Zugangsart selbst (modell_waehlen in
+# infra/sokrates2/wamo_job_dispatch.py), solange WAMO_ENTWICKLUNG_MODELL nichts setzt. Opus und jede Abweichung nur,
+# wenn WAMO_ENTWICKLUNG_MODELL sie ausdrücklich setzt (dev_agent.py), und nur mit einem Namen aus MODELLE_ERLAUBT. Das
+# Gesprächsmodell bleibt in jedem Fall Haiku (llm_anbieter.py).
 MODELL_STANDARD = "claude-haiku-5-5"
 MODELL_SONNET = "claude-sonnet-5-5"
 MODELL_OPUS = "claude-opus-5-5"
