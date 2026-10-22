@@ -203,6 +203,8 @@ class Antwort:
     text: str
     ende: Ende
     wahl: Wahl
+    eingabe: int = 0  # Tokens laut Anbieter (0, wenn er sie nicht meldet)
+    ausgabe: int = 0
 
 
 def lesbarer_modellname(model: str) -> str:
@@ -763,13 +765,15 @@ async def _claude_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
         raise LLMFehler("Claude: Zeitüberschreitung", verbindung=True, zeitlimit=True) from None
     except anthropic.APIConnectionError:
         raise LLMFehler("Claude: keine Verbindung", verbindung=True) from None
+    ein = aus = 0
     if (u := getattr(r, "usage", None)) is not None:
-        verbrauch_loggen(zugang, "claude", wahl.modell, a.baustein, eingabe=u.input_tokens or 0,
-                         ausgabe=u.output_tokens or 0, cache_lesen=getattr(u, "cache_read_input_tokens", 0) or 0,
+        ein, aus = u.input_tokens or 0, u.output_tokens or 0
+        verbrauch_loggen(zugang, "claude", wahl.modell, a.baustein, eingabe=ein, ausgabe=aus,
+                         cache_lesen=getattr(u, "cache_read_input_tokens", 0) or 0,
                          cache_schreiben=getattr(u, "cache_creation_input_tokens", 0) or 0)
     ende: Ende = {"refusal": "abgelehnt", "max_tokens": "zu_lang"}.get(r.stop_reason or "", "fertig")
     text = " ".join(b.text.strip() for b in r.content if b.type == "text").strip()
-    return Antwort(text, ende, wahl)
+    return Antwort(text, ende, wahl, ein, aus)
 
 
 async def _litellm_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
@@ -797,12 +801,13 @@ async def _litellm_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
         raise LLMFehler("LiteLLM: ungültige Anfrage-Parameter (WAMO_LLM_EXTRA prüfen)") from None
     if not r.choices:
         raise LLMFehler("LiteLLM: leere Antwort")
+    ein = aus = 0
     if (u := getattr(r, "usage", None)) is not None:
-        verbrauch_loggen(zugang, "litellm", wahl.modell, a.baustein, eingabe=getattr(u, "prompt_tokens", 0) or 0,
-                         ausgabe=getattr(u, "completion_tokens", 0) or 0)
+        ein, aus = getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0
+        verbrauch_loggen(zugang, "litellm", wahl.modell, a.baustein, eingabe=ein, ausgabe=aus)
     grund = r.choices[0].finish_reason or ""
     ende: Ende = {"content_filter": "abgelehnt", "length": "zu_lang"}.get(grund, "fertig")
-    return Antwort((r.choices[0].message.content or "").strip(), ende, wahl)
+    return Antwort((r.choices[0].message.content or "").strip(), ende, wahl, ein, aus)
 
 
 async def anfrage(
@@ -845,6 +850,39 @@ async def anfrage(
         ersatz = await _haus_wahl(baustein, zugang, "claude", str(e))
         logger.warning("Claude für {} nicht nutzbar ({}): einmal mit dem Hausmodell {}", baustein, e, ersatz.modell)
         return await _litellm_anfrage(ersatz, auftrag, zugang)
+
+
+async def modell_anfrage(
+    wahl: Wahl,
+    *,
+    zugang: Zugang,
+    system: System,
+    inhalt: str | list[str | Bild],
+    max_tokens: int,
+    timeout: float,
+    baustein: str,
+    json_schema: dict | None = None,
+    schema_name: str = "antwort",
+) -> Antwort:
+    """Ein Aufruf genau dieser Wahl, ohne Rückfall (den Rückfall entscheidet der Boss, boss.py). Zwei Sperren, die
+    unabhängig von der Auswahl gelten: ein haus-Profil ruft nie Claude auf, und ein "Hausmodell", das zu Anthropic
+    führt, wird abgelehnt. Wirft LLMFehler."""
+    if wahl.anbieter == "claude" and zugang.art != "claude":
+        raise LLMNichtVerfuegbar("Dieses Profil nutzt nur Hausmodelle, Anthropic ist gesperrt")
+    if wahl.anbieter == "litellm" and (ziel := anthropic_ziel(wahl.modell)):
+        raise LLMNichtVerfuegbar(f"Hausmodell {wahl.modell!r} nicht nutzbar: {ziel}")
+    auftrag = _Auftrag(baustein, system, inhalt, max_tokens, json_schema, schema_name, timeout)
+    try:
+        if wahl.anbieter == "litellm":
+            return await _litellm_anfrage(wahl, auftrag, zugang)
+        return await _claude_anfrage(wahl, auftrag, zugang)
+    except LLMFehler as e:
+        if e.verbindung and not e.zeitlimit:  # eine langsame Anfrage sperrt weder das Gateway noch andere Sitzungen
+            if wahl.anbieter == "litellm":
+                _litellm_ausgefallen(str(e), None if e.gateway_weg else wahl.modell)
+            else:
+                _claude_ausgefallen(zugang, str(e))
+        raise
 
 
 _ZAUN = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
