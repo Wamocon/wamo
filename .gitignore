@@ -27,3 +27,4 @@ konto.json
 *-bot.wav
 *-mic.wav
 *.metriken.json
+.playwright-mcp/

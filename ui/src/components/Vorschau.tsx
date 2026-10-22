@@ -50,7 +50,36 @@ import {
  *   /?vorschau=1&gemerkt=gemeinsam  zusätzlich ein gemeinsamer Gedächtniseintrag
  *   /?vorschau=1&sitzung=45         Gespräch läuft seit 45 Minuten (Sitzungsfortschritt)
  *   /?vorschau=1&text=aus           Texteingabe gesperrt (ohne Sendefunktion, so ist der heutige Stand)
+ *
+ * Einstellungen (Adresse mit Hash, zum Beispiel /?vorschau=1&rolle=admin#einstellungen/verbrauch):
+ *   &kontingent=beispiel            Kontingent mit drei Limits (sonst leer: noch keine Angaben)
+ *   &kontingent=alt                 Kontingent, dessen Fenster schon vorbei ist
+ *   &zugang=beide                   Claude-Schlüssel und Claude-Code-Token hinterlegt (sonst nichts hinterlegt)
  */
+
+/** ISO-Zeitpunkt in UTC (YYYY-MM-DDTHH:MM:SSZ) relativ zu jetzt, wie ihn der Kern schickt. */
+const iso = (versatzMs: number) => new Date(Date.now() + versatzMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+const MIN = 60_000;
+const STUNDE = 60 * MIN;
+
+/** Beispiel für die Servernachricht kontingent; ob das Format stimmt, ist an keinem echten Token geprüft. */
+function beispielKontingent(art: string | null): WamoState["kontingent"] {
+  if (art === "beispiel") {
+    return {
+      zustand: "bekannt",
+      stand: iso(-90_000),
+      limits: [
+        { art: "sitzung", prozent: 42, endet: iso(3 * STUNDE + 5 * MIN), status: "ok" },
+        { art: "woche", prozent: 13.4, endet: iso(3 * 24 * STUNDE + 22 * STUNDE) },
+        { art: "fable", prozent: 104, endet: iso(5 * 24 * STUNDE), status: "erreicht" },
+      ],
+    };
+  }
+  if (art === "alt") {
+    return { zustand: "bekannt", stand: iso(-6 * STUNDE), limits: [{ art: "sitzung", prozent: 90, endet: iso(-45 * MIN), status: "warnung" }] };
+  }
+  return null;
+}
 
 const ZUSTAENDE: Presence[] = ["offline", "connecting", "idle", "listening", "thinking", "speaking"];
 
@@ -132,7 +161,24 @@ function beispiel(): { state: WamoState; presence: Presence } {
         : null,
     mikrofon: online ? "Onboard MIC (Intel Smart Sound)" : null,
     // Beispielstand, damit die Karte Modellzugang in der Vorschau keinen echten Kern abfragt
-    modellzugang: { aktion: "status", art: "haus", quelle: "keiner", hinterlegt: false, festgelegt: false, codeHinterlegt: false, modus: "automatisch" },
+    modellzugang:
+      param("zugang") === "beide"
+        ? {
+            aktion: "status",
+            art: "claude",
+            quelle: "profil",
+            hinterlegt: true,
+            ende: "ab12",
+            geprueft: iso(-26 * STUNDE),
+            festgelegt: false,
+            modell: "Claude Haiku 5.5",
+            codeHinterlegt: true,
+            codeEnde: "cd34",
+            codeGesetzt: iso(-5 * 24 * STUNDE),
+            modus: "automatisch",
+          }
+        : { aktion: "status", art: "haus", quelle: "keiner", hinterlegt: false, festgelegt: false, codeHinterlegt: false, modus: "automatisch" },
+    kontingent: beispielKontingent(param("kontingent")),
     caption:
       leer || !online
         ? initialState.caption

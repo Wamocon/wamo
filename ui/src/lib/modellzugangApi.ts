@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { KernFehler, kernJson } from "@/lib/kernApi";
 import { fehlerStand, fehlerText, standAusAntwort, STATUS_MS } from "@/lib/modellzugangHilfe";
+import { useSelect } from "@/lib/store";
 import type { ModellzugangAnfrage } from "@/lib/useWamo";
 import { applyServerMessage, istOnline, wamo, wamoEpoche } from "@/lib/wamo";
 
@@ -53,4 +54,25 @@ export function useModellzugangSenden(onAnfrage?: (anfrage: ModellzugangAnfrage)
     },
     [onAnfrage],
   );
+}
+
+/**
+ * Hält den Stand des Modellzugangs im Speicher: fehlt er (Start, nach dem Ende eines Gesprächs, nach "Erneut
+ * versuchen"), wird er genau einmal je Lücke abgefragt. Die Hauptansicht ruft das einmal auf, damit die Seitenleiste ihre
+ * Kurzzeile und die Einstellungsseite ihren Stand haben, auch wenn die Karte Modellzugang gerade nicht offen ist. Die
+ * Karte selbst fragt nicht mehr; sie setzt zum erneuten Versuch den Stand auf null zurück.
+ */
+export function useModellzugangStandHalten(onAnfrage?: (anfrage: ModellzugangAnfrage) => boolean) {
+  const sende = useModellzugangSenden(onAnfrage);
+  const zugang = useSelect(wamo, (s) => s.modellzugang);
+  const angefragt = useRef(false);
+  useEffect(() => {
+    if (zugang) {
+      angefragt.current = false;
+      return;
+    }
+    if (angefragt.current) return;
+    angefragt.current = true;
+    sende({ aktion: "status" });
+  }, [zugang, sende]);
 }

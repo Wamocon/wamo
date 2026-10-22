@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useRahmen } from "@/components/kommando/rahmenKontext";
 import { TeilenKnopf } from "@/components/Teilen";
 import {
   alsCanvasAntwort,
@@ -19,6 +20,7 @@ import {
   type Recht,
   type Teilung,
 } from "@/lib/kernApi";
+import { einstellungenSchliessen } from "@/lib/einstellungenHash";
 import { parseServerMessage } from "@/lib/nachrichten";
 import { applyServerMessage, zeigeToast } from "@/lib/wamo";
 
@@ -28,6 +30,7 @@ import { applyServerMessage, zeigeToast } from "@/lib/wamo";
  * Alles läuft über den Kern (voice-core/teilen_api.py); Antworten werden geprüft (lib/teilenHilfe.ts), Titel, Namen und
  * Inhalte anderer Personen sind reiner Text. Geöffnete Dokumente landen auf dem Canvas (dieselbe Prüfung wie
  * Nachrichten des Kerns, lib/nachrichten.ts). Die drei Bereiche bleiben beim Umschalten erhalten (offener Editor).
+ * Steht als Abschnitt Teilen auf der Einstellungsseite und lädt beim Öffnen.
  */
 
 type Bereich = "mit_mir" | "von_mir" | "dateien";
@@ -147,13 +150,12 @@ export function GeteiltBereich() {
   const [bereich, setBereich] = useState<Bereich>("mit_mir");
   const [daten, setDaten] = useState<Daten | null>(null);
   const [fehler, setFehler] = useState<string | null>(null);
-  const [laedt, setLaedt] = useState(false);
+  const [laedt, setLaedt] = useState(true); // der erste Abruf läuft schon beim Öffnen
   const runde = useRef(0); // gegen Überholen: nur die Antwort der letzten Anfrage zählt
   const id = useId();
 
-  const laden = useCallback(async () => {
+  const abrufen = useCallback(async () => {
     const meine = ++runde.current;
-    setLaedt(true);
     const [teilungen, dateien] = await Promise.allSettled([kernJson("/teilen"), kernJson("/dateien")]);
     if (meine !== runde.current) return;
     setLaedt(false);
@@ -168,20 +170,28 @@ export function GeteiltBereich() {
     setFehler(grund ? fehlerText(grund.reason, "Geteilte Arbeit gerade nicht verfügbar") : null);
   }, []);
 
+  const laden = useCallback(async () => {
+    setLaedt(true);
+    await abrufen();
+  }, [abrufen]);
+
   const bereiche: { key: Bereich; text: string; anzahl?: number }[] = [
     { key: "mit_mir", text: "Mit mir geteilt", anzahl: daten?.mit_mir.length },
     { key: "von_mir", text: "Von mir geteilt", anzahl: daten?.von_mir.length },
     { key: "dateien", text: "Meine Dateien", anzahl: daten?.dateien.length },
   ];
 
+  // Beim Öffnen des Abschnitts frisch laden (der Abschnitt gehört der Einstellungsseite und ist beim Wechsel weg)
+  useEffect(() => {
+    const lauf = runde;
+    void abrufen();
+    return () => {
+      lauf.current++; // eine noch laufende Antwort darf nach dem Schließen nichts mehr eintragen
+    };
+  }, [abrufen]);
+
   return (
-    <details
-      className="geteilt"
-      onToggle={(e) => {
-        if (e.currentTarget.open) void laden(); // beim Aufklappen frisch laden
-      }}
-    >
-      <summary>Geteilte Arbeit</summary>
+    <div className="geteilt">
       <div className="geteilt-reiter" role="group" aria-label="Bereich wählen">
         {bereiche.map((b) => (
           <button
@@ -215,7 +225,7 @@ export function GeteiltBereich() {
           {daten && <MeineDateien dateien={daten.dateien} onAenderung={laden} />}
         </section>
       </div>
-    </details>
+    </div>
   );
 }
 
@@ -227,12 +237,15 @@ type Bearbeitung = { canvasId: string; antwort: CanvasAntwort; ausloeser: HTMLEl
 
 function MitMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung: () => Promise<void> }) {
   const [bearbeiten, setBearbeiten] = useState<Bearbeitung | null>(null);
+  const { zeigeCanvas } = useRahmen();
 
   const oeffnen = async (canvasId: string, alsEditor: HTMLElement | null) => {
     try {
       const antwort = await canvasLaden(canvasId);
       aufsCanvas(antwort);
       if (alsEditor) setBearbeiten({ canvasId, antwort, ausloeser: alsEditor });
+      // Das Canvas liegt in der Kommandozentrale: Zum Ansehen geht die Einstellungsseite zu und das Canvas kommt in den Blick
+      else einstellungenSchliessen(zeigeCanvas);
     } catch (e) {
       zeigeToast(fehlerText(e, "Öffnen fehlgeschlagen"));
     }
@@ -391,7 +404,7 @@ function Editor({
       const neu = await canvasLaden(canvasId);
       aufsCanvas(neu);
       setBasis(neu.version);
-      setMeldung({ text: `Fassung ${neu.version} liegt jetzt auf dem Canvas. Dein Text ist noch hier.`, konflikt: false });
+      setMeldung({ text: `Fassung ${neu.version} liegt jetzt auf dem Canvas im Gespräch. Dein Text ist noch hier.`, konflikt: false });
     } catch (e) {
       setMeldung({ text: fehlerText(e, "Neu laden fehlgeschlagen"), konflikt: true });
     }
@@ -406,9 +419,9 @@ function Editor({
         void speichern();
       }}
     >
-      <h3 ref={kopf} tabIndex={-1}>
+      <h5 ref={kopf} tabIndex={-1}>
         {titel} bearbeiten (neue Fassung)
-      </h3>
+      </h5>
       <label htmlFor={`${id}-text`}>Inhalt</label>
       <textarea id={`${id}-text`} rows={14} maxLength={100_000} value={text} onChange={(e) => setText(e.target.value)} />
       {meldung && (

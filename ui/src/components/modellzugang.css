@@ -1,0 +1,82 @@
+/* Modellzugang je Profil (components/ModellZugang.tsx, ModellWahl.tsx), WMC-Farben über die Variablen aus globals.css.
+   Globale Regeln mit Präfix .mz-: Die Turbopack-Regel für *.css (next.config.ts) lässt CSS-Module nicht als Module gelten.
+   Den Abschnitt mit Überschrift liefert components/einstellungen/Einstellungen.tsx; hier steht nur der Inhalt in drei
+   Blöcken (Gespräch, Entwicklungsaufträge, Modus). */
+.mz-inhalt { display: grid; gap: 16px; }
+
+.mz-statuszeile { margin: 0; }
+.mz-art { font: 700 17px/1.2 var(--font-wmc); color: var(--ink); }
+.mz-art[data-art="claude"] { padding-left: 8px; border-left: 4px solid var(--accent); }
+
+/* Hinweis ohne laufendes Gespräch, und Meldung samt Knopf bei falschem Feld oder nicht lesbarem Stand */
+.mz-offline { margin: 0; padding: 8px 10px; border-left: 4px solid var(--rule-strong); background: var(--surface); font-size: 15px; line-height: 1.4; }
+.mz-falsch { display: grid; gap: 8px; justify-items: start; padding: 8px 10px; border-left: 4px solid var(--accent); }
+.mz-falsch .mz-meldung[data-fehler] { padding-left: 0; border-left: 0; }
+
+/* Umschalter Automatisch oder Nur Hausmodelle (components/ModellWahl.tsx); die Knöpfe nutzen .betriebsart-wahl */
+.mz-wahl { display: grid; gap: 6px; }
+.mz-wahlLabel { margin: 0; font-size: 15px; font-weight: 700; }
+.mz-wahlGruppe { justify-self: start; }
+
+/* Ein Block: Schlüsseltyp (API-Schlüssel oder Claude-Code-Token) oder Modus, als Karte mit roter Kante */
+.mz-abschnitt {
+  display: grid; gap: 10px; min-width: 0;
+  padding: 16px 18px 18px;
+  border: 1px solid var(--rule); border-radius: 12px;
+  background: color-mix(in srgb, var(--kz-karte, var(--bg)) 78%, transparent);
+}
+.mz-ueberschrift {
+  margin: 0; display: flex; align-items: center; gap: 8px;
+  font: 700 12px/1.2 var(--font-wmc); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft);
+}
+.mz-ueberschrift::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+.mz-zweck { margin: 0; font-size: 16px; line-height: 1.4; }
+/* Stand: Marke und Wort, nie nur Farbe (ausgefüllt mit Häkchen oder leer) */
+.mz-status { margin: 0; display: flex; align-items: flex-start; gap: 10px; font-size: 16px; line-height: 1.4; }
+.mz-marke {
+  flex: none; width: 16px; height: 16px; margin-top: 3px; border-radius: 50%;
+  box-shadow: inset 0 0 0 2px var(--rule-strong);
+}
+.mz-status[data-hinterlegt] .mz-marke { background: var(--accent); box-shadow: none; position: relative; }
+.mz-status[data-hinterlegt] .mz-marke::after {
+  content: ""; position: absolute; left: 5px; top: 2px; width: 4px; height: 8px;
+  border: solid #ffffff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.mz-abschnitt code { font-family: var(--font-code); font-size: 14px; }
+.mz-text { margin: 0; font-size: 15px; line-height: 1.4; }
+.mz-klein { margin: 0; font-size: 14px; color: var(--ink-soft); }
+
+.mz-form { display: grid; gap: 10px; }
+.mz-feld { display: grid; gap: 5px; font-size: 15px; font-weight: 700; }
+.mz-feld input {
+  min-height: 44px; padding: 0 12px;
+  border: 1px solid var(--rule-strong); border-radius: 4px;
+  font: 400 17px var(--font-code); background: var(--bg); color: var(--ink);
+}
+.mz-feld input:hover:not(:disabled) { border-color: var(--ink); }
+.mz-feld input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+.mz-mehr > summary { font-size: 14px; color: var(--ink-soft); cursor: pointer; min-height: 32px; }
+.mz-mehr[open] > summary { margin-bottom: 6px; }
+.mz-mehr > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Nummerierte Schritte der geführten Anleitung */
+.mz-schritte { margin: 0 0 10px; padding-left: 22px; display: grid; gap: 6px; font-size: 15px; line-height: 1.4; }
+.mz-schritte a { color: var(--ink); font-weight: 700; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+.mz-schritte a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.mz-schritte code { font-family: var(--font-code); font-size: 14px; background: var(--rule); padding: 1px 6px; border-radius: 3px; }
+
+.mz-knoepfe { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Gesperrte Knöpfe behalten den Fokus (aria-disabled statt disabled) und sehen aus wie gesperrt, auch beim Überfahren */
+.mz-knoepfe button[aria-disabled="true"],
+.mz-falsch button[aria-disabled="true"] { opacity: 0.55; cursor: progress; }
+.mz-knoepfe button.btn-primary[aria-disabled="true"]:hover { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.mz-knoepfe button.btn-secondary[aria-disabled="true"]:hover,
+.mz-falsch button.btn-secondary[aria-disabled="true"]:hover { background: transparent; color: var(--ink); }
+
+/* Fehler in Schwarz auf Weiß (Rot als Schrift hat nur 4,3:1), die rote Kante und das Wort "Fehler" tragen die Warnung */
+.mz-meldung { margin: 0; min-height: 1.2em; font-size: 15px; font-weight: 700; }
+/* Die Statusregion bleibt im DOM (Ansage), nimmt leer aber keinen Platz */
+.mz-abschnitt > .mz-meldung:empty { min-height: 0; margin-top: -10px; }
+.mz-meldung[data-fehler] { color: var(--ink); padding-left: 8px; border-left: 4px solid var(--accent); }

@@ -2,7 +2,15 @@
 // Ausführen im Ordner ui/:  npm test   (node:test, Node lädt TypeScript selbst)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DARSTELLUNG_SCHLUESSEL, darstellungLesen, darstellungSchreiben, istDarstellung } from "./darstellung.ts";
+import {
+  DARSTELLUNGEN,
+  DARSTELLUNG_BESCHREIBUNG,
+  DARSTELLUNG_SCHLUESSEL,
+  DARSTELLUNG_TEXT,
+  darstellungLesen,
+  darstellungSchreiben,
+  istDarstellung,
+} from "./darstellung.ts";
 
 function speicher(start: Record<string, string> = {}) {
   const daten = new Map(Object.entries(start));
@@ -43,4 +51,12 @@ test("schreiben und wieder lesen", () => {
   const sp = speicher();
   assert.equal(darstellungSchreiben(sp, "zentrale"), true);
   assert.equal(darstellungLesen(sp), "zentrale");
+});
+
+test("jede Darstellung hat Name und Beschreibung für die Einstellungsseite, ohne Gedankenstrich", () => {
+  for (const d of DARSTELLUNGEN) {
+    assert.ok(DARSTELLUNG_TEXT[d].length > 0, d);
+    assert.ok(DARSTELLUNG_BESCHREIBUNG[d].length > 0, d);
+    assert.ok(!/[–—]/.test(DARSTELLUNG_BESCHREIBUNG[d]), d);
+  }
 });

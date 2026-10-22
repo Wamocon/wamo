@@ -43,6 +43,11 @@ export function serverBrowser(): boolean {
 
 const keinAbo = () => () => {};
 
+/** Läuft die Oberfläche in der Desktop-App? (window.wamoDesktop kommt aus preload.js; im Server-Rendering: nein.) */
+export function useDesktopApp(): boolean {
+  return useSyncExternalStore(keinAbo, () => typeof window !== "undefined" && Boolean(window.wamoDesktop?.isDesktop), () => false);
+}
+
 /**
  * Für die Oberfläche. Der Server kann die Desktop-App nicht erkennen und nimmt im Build für Sokrates-2 den Browser
  * an; eine Desktop-App stellt das beim ersten Rendern auf dem Client richtig.
