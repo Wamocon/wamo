@@ -44,6 +44,36 @@ export const TOKEN_ANLEITUNG: Anleitung = {
     "WAMO prüft nur das Format, damit dein Kontingent nicht verbraucht wird.",
 };
 
+export type SchluesselArt = "api" | "code";
+
+/**
+ * Welche Art Schlüssel ein eingefügter Wert ist, allein am Anfang (nie wird der Wert weitergegeben):
+ * sk-ant-oat… ist ein Claude-Code-Token, sk-ant-… sonst ein API-Schlüssel, alles andere null.
+ */
+export function erkenneSchluesselart(wert: string): SchluesselArt | null {
+  const w = wert.trim();
+  if (/^sk-ant-oat/i.test(w)) return "code";
+  if (/^sk-ant-/i.test(w)) return "api";
+  return null;
+}
+
+/** Hinweis, wenn ein Wert im falschen Feld steht (ohne den Wert zu nennen). null: passt oder nicht erkennbar. */
+export function falschesFeld(feld: SchluesselArt, wert: string): { richtig: SchluesselArt; text: string; knopf: string } | null {
+  const erkannt = erkenneSchluesselart(wert);
+  if (!erkannt || erkannt === feld) return null;
+  return erkannt === "code"
+    ? {
+        richtig: "code",
+        text: "Das ist ein Claude-Code-Token, kein API-Schlüssel. Er gehört in das Feld Claude-Code-Token.",
+        knopf: "Als Claude-Code-Token hinterlegen",
+      }
+    : {
+        richtig: "api",
+        text: "Das ist ein API-Schlüssel, kein Claude-Code-Token. Er gehört in das Feld Claude-API-Schlüssel.",
+        knopf: "Als API-Schlüssel hinterlegen",
+      };
+}
+
 /** Satz, der ausdrücklich sagt, dass WAMO nichts selbst erzeugt. */
 export const NICHT_AUTOMATISCH =
   "WAMO kann das nicht für dich erledigen: Schlüssel und Token entstehen nur mit deiner eigenen Anmeldung.";

@@ -318,7 +318,11 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
       };
     case "modellzugang": {
       if (!oneOf(m.aktion, ["status", "hinterlegen", "loeschen", "modus"] as const)) return null;
-      const zeit = (v: unknown) => (isStr(v) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v) ? v.slice(0, 16) : undefined);
+      // Minutengenau, mit Zeitzone (der Kern liefert UTC mit +00:00): ohne sie läse der Browser den Wert als Ortszeit
+      const zeit = (v: unknown) => {
+        const t = isStr(v) ? /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?/.exec(v) : null;
+        return t ? t[1] + (t[2] ?? "") : undefined;
+      };
       const vier = (v: unknown) => (isStr(v) && /^[A-Za-z0-9_-]{4}$/.test(v) ? v : undefined);
       return {
         type: "modellzugang",
@@ -338,7 +342,11 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         codeEnde: vier(m.code_ende),
         codeGesetzt: zeit(m.code_gesetzt),
         wirksam: isStr(m.wirksam) ? sauber(m.wirksam, 60, false) : undefined,
-        fehler: isStr(m.fehler) && m.fehler.trim() ? sauber(m.fehler.trim(), 200, false) : undefined,
+        // Absicherung: auch wenn der Kern je einen Schlüssel in einen Fehlertext schriebe, zeigt die Oberfläche ihn nicht
+        fehler:
+          isStr(m.fehler) && m.fehler.trim()
+            ? sauber(m.fehler.trim(), 200, false).replace(/sk-ant-[A-Za-z0-9_-]*/gi, "[Schlüssel entfernt]")
+            : undefined,
       };
     }
     case "mikrofon": {

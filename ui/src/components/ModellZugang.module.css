@@ -1,31 +1,20 @@
-/* Modellzugang je Profil (components/ModellZugang.tsx), WMC-Farben über die Variablen aus globals.css */
-.box {
-  border: 1px solid var(--rule);
-  border-left: 4px solid var(--rule-strong);
-  border-radius: 0 4px 4px 0;
-  background: var(--bg);
-}
-.box[open] { border-left-color: var(--accent); }
+/* Modellzugang je Profil (components/ModellZugang.tsx), WMC-Farben über die Variablen aus globals.css.
+   Die Karte mit Überschrift liefert kommando/Seitenleisten.tsx (kz-karte); hier steht nur der Inhalt. */
+.inhalt { display: grid; gap: 10px; }
 
-.kopf {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  min-height: 44px; padding: 10px 12px;
-  cursor: pointer; list-style: none;
-}
-.kopf::-webkit-details-marker { display: none; }
-.kopf::after { content: "+"; margin-left: auto; font-weight: 700; color: var(--ink-soft); }
-.box[open] > .kopf::after { content: "−"; }
-.kopf:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-
+.statuszeile { margin: 0; }
 .art { font: 700 16px/1.2 var(--font-wmc); color: var(--ink); }
-.art[data-art="claude"] { color: var(--accent); }
+.art[data-art="claude"] { padding-left: 8px; border-left: 4px solid var(--accent); }
 
-.inhalt { display: grid; gap: 10px; padding: 0 12px 12px; }
+/* Hinweis ohne laufendes Gespräch, und Meldung samt Knopf bei falschem Feld oder nicht lesbarem Stand */
+.offline { margin: 0; padding: 8px 10px; border-left: 4px solid var(--rule-strong); background: var(--surface); font-size: 15px; line-height: 1.4; }
+.falsch { display: grid; gap: 8px; justify-items: start; padding: 8px 10px; border-left: 4px solid var(--accent); }
+.falsch .meldung[data-fehler] { padding-left: 0; border-left: 0; }
 
 /* Umschalter Automatisch oder Nur Hausmodelle (components/ModellWahl.tsx); die Knöpfe nutzen .betriebsart-wahl */
 .wahl { display: grid; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
 .wahlLabel { margin: 0; font-size: 15px; font-weight: 700; }
-.wahl :global(.betriebsart-wahl) { justify-self: start; }
+.wahlGruppe { justify-self: start; }
 
 /* Ein Schlüsseltyp (API-Schlüssel oder Claude-Code-Token) */
 .abschnitt { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--rule); }
@@ -50,15 +39,19 @@
 
 /* Nummerierte Schritte der geführten Anleitung */
 .schritte { margin: 0 0 10px; padding-left: 22px; display: grid; gap: 6px; font-size: 15px; line-height: 1.4; }
-.schritte a { color: var(--accent); font-weight: 700; }
+.schritte a { color: var(--ink); font-weight: 700; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
 .schritte a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .schritte code { font-family: var(--font-code); font-size: 14px; background: var(--rule); padding: 1px 6px; border-radius: 3px; }
 
 .knoepfe { display: flex; gap: 8px; flex-wrap: wrap; }
 
-.meldung { margin: 0; min-height: 1.2em; font-size: 15px; font-weight: 700; }
-.meldung[data-fehler] { color: var(--accent); }
+/* Gesperrte Knöpfe behalten den Fokus (aria-disabled statt disabled) und sehen aus wie gesperrt, auch beim Überfahren */
+.knoepfe button[aria-disabled="true"],
+.falsch button[aria-disabled="true"] { opacity: 0.55; cursor: progress; }
+.knoepfe button.btn-primary[aria-disabled="true"]:hover { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.knoepfe button.btn-secondary[aria-disabled="true"]:hover,
+.falsch button.btn-secondary[aria-disabled="true"]:hover { background: transparent; color: var(--ink); }
 
-@media (max-width: 1023px) {
-  .box { order: 8; }
-}
+/* Fehler in Schwarz auf Weiß (Rot als Schrift hat nur 4,3:1), die rote Kante und das Wort "Fehler" tragen die Warnung */
+.meldung { margin: 0; min-height: 1.2em; font-size: 15px; font-weight: 700; }
+.meldung[data-fehler] { color: var(--ink); padding-left: 8px; border-left: 4px solid var(--accent); }

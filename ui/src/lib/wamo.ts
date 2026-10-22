@@ -316,8 +316,13 @@ function planeAblauf(a: Approval) {
   );
 }
 
+// Zählt die Zurücksetzungen: Antworten auf Aufrufe, die vor dem Abmelden starteten, gehören nicht mehr in den Store
+let epoche = 0;
+export const wamoEpoche = () => epoche;
+
 /** Alle Timer stoppen und den Zustand zurücksetzen (Abmelden, Vorschau). */
 export function resetWamo(state: WamoState = initialState) {
+  epoche += 1;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = null;
   for (const t of ablaufTimer.values()) clearTimeout(t);

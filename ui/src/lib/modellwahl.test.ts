@@ -96,7 +96,7 @@ test("Servernachricht modellzugang: Wahl und Claude-Code-Token ohne Geheimnis", 
   assert.equal(m.modus, "nur_haus");
   assert.equal(m.codeHinterlegt, true);
   assert.equal(m.codeEnde, "Zz99");
-  assert.equal(m.codeGesetzt, "2026-10-22T08:30");
+  assert.equal(m.codeGesetzt, "2026-10-22T08:30+00:00");
   assert.ok(!JSON.stringify(m).includes("sk-ant-"));
   // ein mitgeschickter Token als "Ende" wird verworfen (nur genau vier Zeichen)
   const ende = parseServerMessage({ type: "modellzugang", aktion: "status", code_hinterlegt: true, code_ende: token });

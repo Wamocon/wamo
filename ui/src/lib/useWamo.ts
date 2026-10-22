@@ -7,6 +7,7 @@ import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type Betriebsart
 import { pcAutoLesen } from "@/lib/einstellungen";
 import type { GeraetBruecke } from "@/lib/geraet";
 import { parseServerMessage, type Auftrag, type ModellModus } from "@/lib/nachrichten";
+import type { SchluesselArt } from "@/lib/schluesselhilfe";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
 import {
@@ -111,7 +112,7 @@ export type WamoAktionen = {
 /** Der Schlüssel geht nur in dieser einen Nachricht an den eigenen Kern und wird im Browser nicht gespeichert.
  *  schluesselart: api (Anthropic-API-Schlüssel, Gespräch) oder code (Claude-Code-Token, Entwicklungsaufträge);
  *  ohne Angabe gilt api. modus: die Wahl der Person, gilt ab der nächsten Sitzung. */
-export type SchluesselArt = "api" | "code";
+export type { SchluesselArt };
 export type ModellzugangAnfrage =
   | { aktion: "status" }
   | { aktion: "loeschen"; schluesselart?: SchluesselArt }

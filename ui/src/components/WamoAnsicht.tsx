@@ -356,12 +356,12 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
       canvas={<CanvasBereich />}
       hinweise={
         <Hinweise
+          modellzugang={<ModellZugang onAnfrage={aktionen.modellzugang} />}
           geraete={
             <>
               <StatusDetails kompakt={false} />
               <PcSteuerungSchalter onSchalten={aktionen.pcSteuerung} />
               <BetriebsartWahl />
-              <ModellZugang onAnfrage={aktionen.modellzugang} />
               <GeteiltBereich />
             </>
           }

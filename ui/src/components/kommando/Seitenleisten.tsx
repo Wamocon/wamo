@@ -77,7 +77,14 @@ function Eintrag({ m }: { m: Memo }) {
  * Canvas, Entwicklung) und Geräte-Status. Alles aus vorhandenen Daten; ohne Inhalt steht ein freundlicher Text.
  * Der Geräte-Block (Status, PC-Steuerung, Betriebsart) kommt von außen, weil er Schalter der Hauptansicht enthält.
  */
-export const Hinweise = memo(function Hinweise({ geraete }: { geraete: ReactNode }) {
+export const Hinweise = memo(function Hinweise({
+  geraete,
+  modellzugang,
+}: {
+  geraete: ReactNode;
+  /** Karte Modellzugang (Modelle, API-Schlüssel, Claude-Code-Token); eigene Karte mit Überschrift, auch ohne Gespräch */
+  modellzugang: ReactNode;
+}) {
   const gemerkt = useGemerktSitzung();
   const persoenlich = gemerkt.filter((m) => m.bereich === "persoenlich");
   const gemeinsam = gemerkt.filter((m) => m.bereich === "gemeinsam");
@@ -129,6 +136,13 @@ export const Hinweise = memo(function Hinweise({ geraete }: { geraete: ReactNode
             <dd>{entwicklung === "aus" ? "gesperrt" : entwicklung === "an" ? "freigegeben" : "unbekannt"}</dd>
           </div>
         </dl>
+      </section>
+
+      <section className="kz-karte" aria-labelledby="kz-h-modellzugang">
+        <h2 id="kz-h-modellzugang" className="kz-karte-titel">
+          Modellzugang
+        </h2>
+        {modellzugang}
       </section>
 
       <section className="kz-karte" aria-labelledby="kz-h-geraete">
