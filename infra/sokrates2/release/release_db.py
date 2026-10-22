@@ -3,7 +3,7 @@
 Hier steht nur die Schnittstelle und zwei Fassungen: OhneDatenbank (Betrieb von Schritt 0.3: keine Verbindung, jede Frage
 scheitert ehrlich mit DatenbankFehlt, der Dienst lehnt dann das Anfordern ab) und AttrappeDatenbank (Tests und Rauchtest, mit
 den Regeln der Trigger aus der Migration im Kleinen nachgebaut). Die echte Fassung (Rolle wamo_release, Verbindung über eine
-root-eigene Datei, TLS) folgt in Stufe 1. Sie braucht AF_INET; die Unit erlaubt in diesem Schritt nur AF_UNIX.
+root-eigene Datei, TLS) folgt in Stufe 1. Sie braucht ein Netz; die Unit erlaubt in diesem Schritt nur Unix-Sockets.
 
 Die Rolle wamo_release darf (Migration 0013): Anfragen anlegen (angefordert_von, quelle), die Zustände bis wartet_freigabe,
 veroeffentlicht und abgebrochen setzen, die Werte basis_commit, c1_commit, r_commit, v_commit, tree_id, bump,

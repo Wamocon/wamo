@@ -109,7 +109,10 @@ class AnkerClient:
         self.uhr = uhr
 
     def _senden(self, zeile: bytes, zeitlimit: float) -> Antwort:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        familie = getattr(socket, "AF_UNIX", None)
+        if familie is None:  # Plattform ohne Unix-Sockets (die Tests unter Windows): es gibt keinen Anker
+            raise AnkerFehler("nicht_erreichbar")
+        s = socket.socket(familie, socket.SOCK_STREAM)
         s.settimeout(zeitlimit)
         ende = self.uhr() + zeitlimit
         try:

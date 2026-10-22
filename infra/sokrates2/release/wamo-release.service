@@ -1,0 +1,78 @@
+# WAMO-Release-Dienst auf Sokrates-2 (Schritt 0.3 der Selbstüberarbeitung: Gerüst). Installiert durch
+# infra/sokrates2/release-einrichten.sh, Rückweg: release-rueckweg.sh.
+#
+# Läuft als unprivilegierter Systembenutzer wamo-release, ohne jede Capability und ohne Netz (nur Unix-Sockets).
+# Lauscht auf /run/wamo-release/ctl.sock (Ordner 2750 wamo-release:wamo-core, Socket 0660; zusätzlich SO_PEERCRED im
+# Programm: nur root und wamo-core). Spricht mit dem Notanker nur über /run/wamo-anker/anker.sock (status, rueckweg,
+# sperre an; nie sperre aus). Schreibt nur nach /var/lib/wamo-release, /var/log/wamo-release und /run/wamo-release.
+# Der Code liegt root-eigen unter /opt/wamo-release/app; vor jedem Start prüft ExecStartPre seine Prüfsummen (fail closed).
+#
+# Zugang zum Anker: Dessen Ordner /run/wamo-anker ist 2750 root:wamocon und der Socket 0660. Dieser Dienst bekommt dafür
+# die Zusatzgruppe wamocon. Das ist die kleinste Lösung ohne Änderung am Anker; sie gibt dem Dienst die Rechte der Gruppe
+# an Dateien außerhalb von /home (ProtectHome=yes verbirgt das Home). Besser wäre eine eigene Gruppe oder eine ACL nur für
+# den Socket (eine Änderung am Anker, Prüfpunkt für Schritt 0.5).
+#
+# Prüfpunkte, weil die Unit auf Sokrates-2 noch nicht erprobt wurde: systemd-analyze verify (macht das Einrichtungsskript),
+# systemd-analyze security wamo-release, release_rauchtest.py --produktiv. Startet der Dienst nicht, sind
+# MemoryDenyWriteExecute und SystemCallFilter die ersten Verdächtigen (journalctl -u wamo-release). MemoryDenyWriteExecute
+# ist mit einem Seccomp-Filter, der mmap und mprotect mit PROT_WRITE und PROT_EXEC verbietet, im Container mit Python 3.12
+# gegen die Tests geprüft worden (ohne systemd, andere Architektur).
+[Unit]
+Description=WAMO-Release-Dienst (Gerüst: Zustandsautomat, Audit-Kette, Zugang zum Notanker)
+Requires=wamo-anker.service
+After=wamo-anker.service
+PartOf=wamo-anker.service
+ConditionPathExists=/opt/wamo-release/app/SHA256SUMS
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=wamo-release
+Group=wamo-release
+SupplementaryGroups=wamocon
+ExecStartPre=/usr/bin/python3 -E -s -B /opt/wamo-release/app/wamo_release.py selbstpruefung
+ExecStart=/usr/bin/python3 -E -s -B /opt/wamo-release/app/wamo_release.py dienst
+Restart=on-failure
+RestartSec=5
+# SIGTERM wartet einen laufenden Rückweg ab (längstes Limit des Ankers: alles = 330 Sekunden), erst danach beendet systemd
+TimeoutStopSec=360
+WorkingDirectory=/
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUTF8=1
+UMask=0077
+
+ReadWritePaths=/var/lib/wamo-release /run/wamo-release /var/log/wamo-release
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=256
+
+[Install]
+WantedBy=multi-user.target

@@ -787,7 +787,7 @@ class Dienst:
     # --- Arbeiter
     def _sperre_gecached(self) -> str:
         jetzt = time.monotonic()
-        if jetzt - self._tor_stand[0] > self.tor_zeit:
+        if jetzt - self._tor_stand[0] >= self.tor_zeit:
             self._tor_stand = (jetzt, self.anker.sperre_zustand())
         return self._tor_stand[1]
 
@@ -1115,10 +1115,9 @@ class Dienst:
                         return
                     except DatenbankAbgelehnt as e:
                         self.protokolliere("spiegel_abgelehnt", 1.0, zeile=n, code=sauber(e.code, 8))
-                    with self._lock:
+                    with self._lock:  # jede Zeile einzeln festhalten: nach einem Absturz geht nichts doppelt hinaus
                         self._z["spiegel_n"], self._z["spiegel_offset"] = n, ende
-                with self._lock:
-                    self._speichern()
+                        self._speichern()
         finally:
             self._spiegel_laeuft.release()
 
