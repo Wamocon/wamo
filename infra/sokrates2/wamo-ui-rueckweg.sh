@@ -14,6 +14,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 BASIS=/home/wamocon/wamo-ui
 CADDY_DIR=/home/wamocon/wamo-tls/caddy
 SITE_DATEI="$CADDY_DIR/etc/kern/wamo-ui.caddy"
+INCLUDE_DATEI="$CADDY_DIR/etc/kern/wamo-ui-aktiv.inc"
 DROPIN_DIR=/etc/systemd/system/wamo-core.service.d
 DROPIN="$DROPIN_DIR/wamo-ui.conf"
 
@@ -41,17 +42,17 @@ for arg in "$@"; do
   esac
 done
 
-echo "== 1. Container wamo-ui"
+echo "== 1. Container wamo-ui-blau, wamo-ui-gruen und wamo-ui (frühere Fassung)"
 if [ -f "$BASIS/docker-compose.yml" ]; then
-  ( cd "$BASIS" && docker compose down )
-else
-  docker rm -f wamo-ui >/dev/null 2>&1 || true
+  ( cd "$BASIS" && docker compose down --remove-orphans )
 fi
+docker rm -f wamo-ui-blau wamo-ui-gruen wamo-ui >/dev/null 2>&1 || true
 echo "  entfernt"
 
-echo "== 2. Caddy-Site"
-if [ -f "$SITE_DATEI" ]; then
-  rm -f "$SITE_DATEI"
+echo "== 2. Caddy-Site und Include-Datei"
+if [ -f "$SITE_DATEI" ] || [ -f "$INCLUDE_DATEI" ]; then
+  # Erst die Site (sie bindet die Include-Datei ein), dann die Include-Datei
+  rm -f "$SITE_DATEI" "$INCLUDE_DATEI"
   if [ -n "$(docker ps -q -f name=^wamo-caddy$)" ]; then
     # Schlägt der Reload fehl, geht der Rückweg trotzdem weiter (Site ist weg, Caddy übernimmt sie beim nächsten Laden)
     docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile       && echo "  Site entfernt, Caddy neu geladen" || echo "  WARNUNG: caddy reload fehlgeschlagen, Site-Datei ist entfernt" >&2

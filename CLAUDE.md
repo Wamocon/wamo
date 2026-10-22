@@ -20,6 +20,7 @@ Monorepo: `ui/` (Next.js 16), `voice-core/` (Python, Pipecat 1.x), `host/` (Pyth
 | Overlay-Fenstertitel | `WAMO Stimmen-Rand` (desktop/overlay.html und Filter in host/windows_control.py) |
 | UI-Hook | `ui/src/lib/useWamo.ts`, Komponente `Wamo` |
 | Skripte | `scripts/wamo-desktop.cmd`, `scripts/wamo-app.cmd`, Chrome-Profil `%LOCALAPPDATA%\wamo-chrome` |
+| Oberfläche auf Sokrates-2 | Container `wamo-ui-blau` und `wamo-ui-gruen` (Images `wamo-ui:blau`, `wamo-ui:gruen`), Farbe in `etc/kern/wamo-ui-aktiv.inc`, Skript `wamo-ui-umschalten.sh`, Gesundheitsprobe `GET /version.json` |
 | TOTP-Aussteller | `WAMO` |
 | Repo-Selbstschutz | `SELF_REPO = "wamo"` in voice-core/dev_guard.py |
 | Geräte | Register `devices` (Kennung `pc-<name>` für Laptops), Gerätedienst `wamo-geraete` (Benutzer, Socket `/run/wamo-geraete/geraete.sock`), Lesekonto `wamo-status` auf den Sparks |

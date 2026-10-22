@@ -1,7 +1,8 @@
-# WAMO-Oberfläche (Container wamo-ui auf Sokrates-2) über HTTPS. Vorlage: wamo-ui-einrichten.sh setzt die Platzhalter
-# aus /home/wamocon/wamo-ui/wamo-ui.conf ein und installiert das Ergebnis als wamo-ui.caddy nach
+# WAMO-Oberfläche (Container wamo-ui-blau und wamo-ui-gruen auf Sokrates-2) über HTTPS. Vorlage: wamo-ui-einrichten.sh setzt
+# die Platzhalter aus /home/wamocon/wamo-ui/wamo-ui.conf ein und installiert das Ergebnis als wamo-ui.caddy nach
 # /home/wamocon/wamo-tls/caddy/etc/kern/ (die Datei wird vom Caddyfile über "import /etc/caddy/kern/*.caddy" geladen).
-# Rückweg: wamo-ui-rueckweg.sh (Datei weg, caddy reload).
+# Die Datei wamo-ui-aktiv.inc im selben Ordner (Endung .inc, damit der Import sie nicht als Site lädt) legt die Farbe fest.
+# Rückweg: wamo-ui-rueckweg.sh (Dateien weg, caddy reload).
 #
 # Platzhalter (nie von Hand ändern, sondern in wamo-ui.conf und das Skript neu ausführen):
 #   __ADRESSE__   Site-Adresse, z. B. https://192.168.178.136:55445 (Variante A) oder https://wamo.example.org:55445
@@ -13,9 +14,6 @@
 __ADRESSE__ {
 	__TLS__
 	encode zstd gzip
-	# Die Oberfläche wird nur gelesen. Alles andere (Server Actions, POST) gibt es nicht.
-	@schreibend not method GET HEAD
-	respond @schreibend "Methode nicht erlaubt" 405
 	request_body {
 		max_size 1KB
 	}
@@ -26,10 +24,14 @@ __ADRESSE__ {
 		Cross-Origin-Resource-Policy "same-origin"
 		__HSTS__
 	}
-	reverse_proxy wamo-ui:3000 {
-		transport http {
-			dial_timeout 3s
-			response_header_timeout 30s
-		}
+	# Die Oberfläche wird nur gelesen. Alles andere (Server Actions, POST) gibt es nicht und wird abgewiesen, bevor ein
+	# Upstream erreicht wird. Die Reihenfolge steht in einem route-Block fest: Ohne ihn ordnet Caddy die handle-Blöcke der
+	# Include-Datei vor das respond, und POST käme durch (mit dem Rauchtest belegt).
+	# Welche Farbe (wamo-ui-blau oder wamo-ui-gruen) live ist, die Gesundheitsprobe und die Rückfallebene für statische Dateien
+	# stehen in der Include-Datei. Sie erzeugt wamo-ui-umschalten.sh; "caddy reload" schaltet um, nichts wird neu angelegt.
+	route {
+		@schreibend not method GET HEAD
+		respond @schreibend "Methode nicht erlaubt" 405
+		import /etc/caddy/kern/wamo-ui-aktiv.inc
 	}
 }

@@ -1,7 +1,8 @@
 # check=skip=SecretsUsedInArgOrEnv
-# WAMO-Oberfläche (Next.js 16) als Container auf Sokrates-2. Gebaut von infra/sokrates2/wamo-ui-einrichten.sh:
-#   docker build --platform linux/arm64 -f wamo-ui/Dockerfile --build-arg NEXT_PUBLIC_... ~/wamo-infra/ui
-# Der Kontext ist der Ordner ui/ (ohne node_modules, .next und .env*; ui/.dockerignore).
+# WAMO-Oberfläche (Next.js 16) als Container auf Sokrates-2. Gebaut von infra/sokrates2/wamo-ui-umschalten.sh:
+#   docker build --platform linux/arm64 -f wamo-ui/Dockerfile --build-arg NEXT_PUBLIC_... --build-arg WAMO_COMMIT=... ~/wamo-infra/ui
+# Der Kontext ist der Ordner ui/ (ohne node_modules, .next und .env*; ui/.dockerignore). Je Farbe (blau, gruen) läuft
+# ein Container aus einem eigenen Image-Tag (wamo-ui:blau, wamo-ui:gruen); Archiv-Tags tragen Version und Commit.
 #
 # Die NEXT_PUBLIC_*-Werte stehen nach dem Build im JavaScript, das jeder Browser lädt. Hier gehören deshalb nur
 # öffentliche Werte hinein (Adressen, Publishable Key), nie ein Geheimnis und nie der service_role-Schlüssel.
@@ -39,10 +40,21 @@ RUN test -n "$NEXT_PUBLIC_SUPABASE_URL" && test -n "$NEXT_PUBLIC_SUPABASE_PUBLIS
 
 # ---- 3. Laufzeit: nur der Standalone-Server, Benutzer node (1000), kein Paketmanager im Betrieb nötig
 FROM ${NODE_IMAGE} AS laufzeit
+# Angaben für GET /version.json (ui/src/app/version.json/route.ts, ui/src/lib/buildInfo.ts): Commit-ID, Bauzeit und
+# ob der Stand unverändert aus Git stammt. Sie stehen bewusst erst in dieser Stufe: Ein anderer Commit ändert dann nur
+# diese kleinen Schichten, nicht den Bau der Oberfläche. Die Version kommt aus package.json (next.config.ts). Das
+# Umschalten (wamo-ui-umschalten.sh) prüft sie am neuen Container, bevor Caddy umgestellt wird. Keine Geheimnisse.
+ARG WAMO_COMMIT=unbekannt
+ARG WAMO_BAUZEIT=unbekannt
+ARG WAMO_SAUBER=nein
 ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0 \
-    NEXT_TELEMETRY_DISABLED=1
+    NEXT_TELEMETRY_DISABLED=1 \
+    WAMO_COMMIT=${WAMO_COMMIT} \
+    WAMO_BAUZEIT=${WAMO_BAUZEIT} \
+    WAMO_SAUBER=${WAMO_SAUBER}
+LABEL wamo.commit=${WAMO_COMMIT} wamo.bauzeit=${WAMO_BAUZEIT} wamo.komponente=ui
 WORKDIR /app
 COPY --from=bauen --chown=root:root /app/.next/standalone ./
 COPY --from=bauen --chown=root:root /app/.next/static ./.next/static
@@ -55,6 +67,6 @@ RUN mkdir -p /app/.next/cache && chown node:node /app/.next/cache \
     /usr/local/bin/corepack /opt/yarn-* /usr/local/bin/yarn /usr/local/bin/yarnpkg
 USER node
 EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/version.json').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 CMD ["node", "server.js"]

@@ -1,47 +1,49 @@
 #!/usr/bin/env bash
-# WAMO-Oberfläche auf Sokrates-2: Image bauen, Container wamo-ui starten, HTTPS 55445 über wamo-caddy, Firewall,
-# erlaubte Herkunft des Kerns. Als wamocon ausführen (Docker-Gruppe, Dateien in /home/wamocon), nicht mit sudo; für
-# Firewall und Kern-Herkunft ruft das Skript selbst "sudo -n" auf. Wiederholbar (idempotent).
+# WAMO-Oberfläche auf Sokrates-2: Image bauen, Container wamo-ui-blau und wamo-ui-gruen betreiben, HTTPS 55445 über
+# wamo-caddy, Firewall, erlaubte Herkunft des Kerns. Als wamocon ausführen (Docker-Gruppe, Dateien in /home/wamocon), nicht
+# mit sudo; für Firewall und Kern-Herkunft ruft das Skript selbst "sudo -n" auf. Wiederholbar (idempotent). Bauen, Umschalten
+# und Rückweg der Farben macht wamo-ui-umschalten.sh; dieses Skript ruft es nur auf (und legt dessen Include-Datei für Caddy an).
 #
 # Ablage: Der Ordner liegt im Home von wamocon, nie in /tmp (dort könnte ein anderer Benutzer Dateien vorab anlegen
 # oder austauschen). Vom PC aus, mit der Oberfläche als Quelle in ~/wamo-infra/ui:
 #   python scripts/wamo_ui_sokrates2.py verteilen     # Quellen und diese Skripte nach ~/wamo-infra
 #   python scripts/wamo_ui_sokrates2.py einrichten    # alles unten (ohne Neustart des Kerns)
 # oder auf dem Server:
-#   bash ~/wamo-infra/wamo-ui-einrichten.sh [alles|bauen|caddy|firewall|herkunft|pruefen|status|zurueck] [--neustart]
+#   bash ~/wamo-infra/wamo-ui-einrichten.sh [alles|bauen|umschalten|caddy|firewall|herkunft|pruefen|status|zurueck] [--neustart]
 #
-#   alles      bauen, Caddy, Firewall, Herkunft, Prüfung (Standard)
-#   bauen      Image bauen und Container starten (sonst nichts; kein sudo)
-#   caddy      Site-Datei erzeugen und prüfen, Compose von wamo-caddy anwenden, Caddy neu laden
+#   alles      Firewall, Caddy, Umschalten (neue Fassung bauen und live setzen), Herkunft, Prüfung (Standard)
+#   bauen      neue Fassung in der inaktiven Farbe bauen und starten, ohne umzuschalten (wamo-ui-umschalten.sh bauen)
+#   umschalten bauen, prüfen, ohne Lücke umschalten, bewähren (wamo-ui-umschalten.sh umschalten). Das erste Mal löst es
+#              den einzelnen Container wamo-ui der früheren Fassung ohne Lücke durch wamo-ui-blau ab
+#   caddy      Site-Datei und Include-Datei erzeugen und prüfen, Compose von wamo-caddy anwenden, Caddy neu laden
 #   firewall   Port 55445 in der WAMO-Firewall (wamo-firewall-einrichten.sh, per systemctl reload)
 #   herkunft   Drop-in für wamo-core: PIPECAT_ALLOWED_ORIGINS um die Herkunft der Oberfläche ergänzen
 #              (mit --neustart startet wamo-core neu, aber nur, wenn gerade keine Sitzung läuft)
 #   pruefen    Zertifikatskette, Header, Container-Härtung, Netz-Isolation, Ladezeit
 #   status     nur anzeigen
-#   zurueck    das vorige Image (wamo-ui:vorher) wieder starten
+#   zurueck    auf die vorige Farbe zurückschalten (wamo-ui-umschalten.sh zurueck)
 #
 # Einstellungen: /home/wamocon/wamo-ui/wamo-ui.conf (aus wamo-ui/wamo-ui.conf.beispiel, bleibt unverändert, wenn sie
 # existiert). Adresse und Zertifikat stehen nur dort, nicht im Code der Oberfläche (Variante B: README, Abschnitt 12.4).
 #
-# Veröffentlicht wird genau ein Port, 55445 am Container wamo-caddy. Der Container wamo-ui selbst hat keinen Port, hängt
-# nur im internen Netz wamo-ui-netz (kein Weg nach außen) und bekommt nur öffentliche Werte als Build-Argumente
+# Veröffentlicht wird genau ein Port, 55445 am Container wamo-caddy. Die Container wamo-ui-blau und wamo-ui-gruen haben
+# keinen Port, hängen nur im internen Netz wamo-ui-netz (kein Weg nach außen) und bekommen nur öffentliche Werte als Build-Argumente
 # (Adressen, Publishable Key). Der Publishable Key kommt aus /home/wamocon/supabase-wamo/.env, ohne Ausgabe; nie ein
 # Schlüssel mit der Rolle service_role (wird geprüft).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-UI="$HERE/ui"
 BASIS=/home/wamocon/wamo-ui
 KONF="$BASIS/wamo-ui.conf"
 CADDY_DIR=/home/wamocon/wamo-tls/caddy
 CA=/home/wamocon/wamo-tls/ca/wamo-ca.crt
-SUPABASE_ENV=/home/wamocon/supabase-wamo/.env
 CADDY_IMAGE=caddy:2.11.2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d
 UNIT=/etc/systemd/system/wamo-core.service
 DROPIN_DIR=/etc/systemd/system/wamo-core.service.d
 DROPIN="$DROPIN_DIR/wamo-ui.conf"
 UI_PORT_ERLAUBT=55445
 SITE_DATEI="$CADDY_DIR/etc/kern/wamo-ui.caddy"
+INCLUDE_DATEI="$CADDY_DIR/etc/kern/wamo-ui-aktiv.inc"   # legt die live gesetzte Farbe fest (wamo-ui-umschalten.sh)
 
 # Schutz gegen untergeschobene Dateien (wie in den übrigen Einrichtungsskripten): Der Ordner dieses Skripts, sein
 # Elternordner und alles darin (auch die Quellen der Oberfläche) gehören dem Aufrufer oder root und sind weder für
@@ -69,9 +71,9 @@ BEFEHL=alles
 NEUSTART=nein
 for arg in "$@"; do
   case "$arg" in
-    alles|bauen|caddy|firewall|herkunft|pruefen|status|zurueck) BEFEHL="$arg" ;;
+    alles|bauen|umschalten|caddy|firewall|herkunft|pruefen|status|zurueck) BEFEHL="$arg" ;;
     --neustart) NEUSTART=ja ;;
-    *) fehler "Aufruf: $0 [alles|bauen|caddy|firewall|herkunft|pruefen|status|zurueck] [--neustart]" ;;
+    *) fehler "Aufruf: $0 [alles|bauen|umschalten|caddy|firewall|herkunft|pruefen|status|zurueck] [--neustart]" ;;
   esac
 done
 
@@ -167,88 +169,28 @@ kern_ruhig() {
 
 caddy_neu_laden() { docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; }
 
-health_warten() {
-  local i status
-  for i in $(seq 1 45); do
-    status="$(docker inspect -f '{{.State.Health.Status}}' wamo-ui 2>/dev/null || echo fehlt)"
-    [ "$status" = healthy ] && return 0
-    sleep 2
-  done
-  echo "  wamo-ui nicht gesund (Status $status):" >&2
-  docker logs --tail 20 wamo-ui >&2 || true
-  return 1
+# ---------- bauen, umschalten, zurück: alles Weitere steht in wamo-ui-umschalten.sh (Farben blau und grün)
+umschalter() {
+  [ -f "$HERE/wamo-ui-umschalten.sh" ] || fehler "$HERE/wamo-ui-umschalten.sh fehlt (python scripts/wamo_ui_sokrates2.py verteilen)."
+  bash "$HERE/wamo-ui-umschalten.sh" "$@"
 }
 
-# ---------- bauen
-publishable_key() {
-  local wert rolle
-  [ -r "$SUPABASE_ENV" ] || fehler "$SUPABASE_ENV nicht lesbar."
-  wert="$(grep -m1 '^SUPABASE_PUBLISHABLE_KEY=' "$SUPABASE_ENV" | cut -d= -f2- | tr -d "\"'" || true)"
-  [ -n "$wert" ] || fehler "SUPABASE_PUBLISHABLE_KEY fehlt in $SUPABASE_ENV."
-  if [[ "$wert" =~ ^sb_publishable_[A-Za-z0-9_-]+$ ]]; then
-    :
-  elif [[ "$wert" =~ ^eyJ[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+$ ]]; then
-    # Alter Stil (JWT): nur die Rolle anon ist für den Browser bestimmt
-    rolle="$(python3 -c 'import base64,json,sys; p=sys.argv[1]; p+="="*(-len(p)%4); print(json.loads(base64.urlsafe_b64decode(p)).get("role",""))' "${BASH_REMATCH[1]}" 2>/dev/null || true)"
-    [ "$rolle" = anon ] || fehler "Der Schlüssel in $SUPABASE_ENV hat die Rolle '$rolle', erwartet anon. Abbruch."
-  else
-    fehler "SUPABASE_PUBLISHABLE_KEY hat kein erwartetes Format (sb_publishable_... oder JWT mit Rolle anon). Abbruch."
-  fi
-  printf '%s' "$wert"
-}
+bauen() { umschalter bauen; }
 
-bauen() {
-  echo "== Image bauen"
-  [ -f "$UI/package.json" ] && [ -f "$UI/package-lock.json" ] || fehler "$UI fehlt (python scripts/wamo_ui_sokrates2.py verteilen)."
-  [ -f "$HERE/wamo-ui/Dockerfile" ] && [ -f "$HERE/wamo-ui/docker-compose.yml" ] || fehler "$HERE/wamo-ui/ unvollständig."
-  docker network inspect wamo-ui-netz >/dev/null 2>&1 \
-    || fehler "Netz wamo-ui-netz fehlt (zuerst der Schritt caddy: Compose von wamo-caddy legt es an)."
-  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY="$(publishable_key)"
-  export NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_WAMO_KERN_BUERO NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER \
-    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-  # Das laufende Image wird erst nach einem gesunden Start der neuen Fassung zu "vorher" (und nur, wenn es selbst gesund war)
-  local alt_id="" tag log
-  if [ "$(docker inspect -f '{{.State.Health.Status}}' wamo-ui 2>/dev/null || true)" = healthy ]; then
-    alt_id="$(docker image inspect -f '{{.Id}}' wamo-ui:aktuell 2>/dev/null || true)"
-  fi
-  tag="wamo-ui:$(date +%Y%m%d-%H%M%S)"
-  install -d -m 755 "$BASIS"
-  log="$(mktemp "$BASIS/.bau.XXXXXX")"
-  BAULOG="$log"
-  # Build-Argumente ohne Wert in der Befehlszeile: Docker nimmt sie aus der Umgebung dieses Prozesses
-  if ! docker build --platform linux/arm64 --progress=plain -f "$HERE/wamo-ui/Dockerfile" \
-      --build-arg NEXT_PUBLIC_SUPABASE_URL --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \
-      --build-arg NEXT_PUBLIC_WAMO_KERN_BUERO --build-arg NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER \
-      -t "$tag" -t wamo-ui:aktuell "$UI" >"$log" 2>&1; then
-    echo "Bau fehlgeschlagen, Ende des Protokolls:" >&2
-    tail -n 40 "$log" >&2
-    exit 1
-  fi
-  tail -n 4 "$log" | sed 's/^/  /'
-  unset NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-  echo "  Image $tag (auch als wamo-ui:aktuell)"
-  # Alte Abzüge entfernen: die letzten 3 datierten Tags bleiben
-  docker image ls wamo-ui --format '{{.Tag}}' | grep -E '^[0-9]{8}-[0-9]{6}$' | sort -r | tail -n +4 \
-    | while read -r alt; do docker image rm "wamo-ui:$alt" >/dev/null 2>&1 || true; done
+umschalten() { umschalter umschalten; }
 
-  echo "== Container starten"
-  install -d -m 755 "$BASIS"
-  install -m 644 "$HERE/wamo-ui/docker-compose.yml" "$BASIS/docker-compose.yml"
-  ( cd "$BASIS" && docker compose up -d --force-recreate )
-  health_warten
-  echo "  wamo-ui gesund"
-  if [ -n "$alt_id" ] && [ "$alt_id" != "$(docker image inspect -f '{{.Id}}' wamo-ui:aktuell)" ]; then
-    docker tag "$alt_id" wamo-ui:vorher
-    echo "  vorige Fassung als wamo-ui:vorher gesichert"
-  fi
-}
+zurueck() { umschalter zurueck; }
 
-zurueck() {
-  docker image inspect wamo-ui:vorher >/dev/null 2>&1 || fehler "Kein Image wamo-ui:vorher vorhanden."
-  docker tag wamo-ui:vorher wamo-ui:aktuell
-  ( cd "$BASIS" && docker compose up -d --force-recreate )
-  health_warten
-  echo "Vorige Fassung läuft wieder."
+# Name des Containers, der gerade live ist (aus der Kopfzeile der Include-Datei); leer, wenn es noch keinen gibt
+live_container() {
+  local kopf
+  kopf="$(sed -n '1p' "$INCLUDE_DATEI" 2>/dev/null || true)"
+  case "$kopf" in
+    "# live=blau "*) echo wamo-ui-blau ;;
+    "# live=gruen "*) echo wamo-ui-gruen ;;
+    "# live=alt "*) echo wamo-ui ;;
+    *) echo "" ;;
+  esac
 }
 
 # ---------- Caddy
@@ -273,6 +215,11 @@ caddy() {
   fi
   sudo -n iptables -w 5 -S WAMO-FW 2>/dev/null | grep -q "ctorigdstport $UI_PORT_ERLAUBT" \
     || fehler "Firewall-Regel für $UI_PORT_ERLAUBT ist nicht aktiv (zuerst der Schritt firewall)."
+
+  # Die Site bindet die Include-Datei mit der live gesetzten Farbe ein, sie muss also vorher da sein. Beim ersten Mal bleibt
+  # der bisherige einzelne Container wamo-ui live; "umschalten" löst ihn ohne Lücke durch wamo-ui-blau ab. Die Datei hat die
+  # Endung .inc und wird vom Import "kern/*.caddy" nicht als Site geladen.
+  umschalter include-anlegen
 
   umask 077
   local tmp
@@ -429,15 +376,30 @@ pruefen() {
   echo "  TLS: Kette und Adresse geprüft ($(grep -m1 '^Protocol version' <<<"$ergebnis" | sed 's/^Protocol version: *//'))"
   ipv6="$(ss -tlnH "sport = :$UI_PORT_ERLAUBT" | awk '{print $4}' | grep -F '[' || true)"
   [ -z "$ipv6" ] || { echo "  FEHLER: $UI_PORT_ERLAUBT lauscht auf IPv6: $ipv6" >&2; return 1; }
-  [ -z "$(docker port wamo-ui 2>/dev/null)" ] || { echo "  FEHLER: wamo-ui veröffentlicht einen Port" >&2; return 1; }
-  info="$(docker inspect -f 'readonly={{.HostConfig.ReadonlyRootfs}} capdrop={{.HostConfig.CapDrop}} sec={{.HostConfig.SecurityOpt}} mem={{.HostConfig.Memory}} cpu={{.HostConfig.NanoCpus}} pids={{.HostConfig.PidsLimit}} restart={{.HostConfig.RestartPolicy.Name}} user={{.Config.User}} health={{.State.Health.Status}} netz={{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' wamo-ui)"
-  echo "  Container: $info"
-  grep -q 'readonly=true' <<<"$info" && grep -q 'capdrop=\[ALL\]' <<<"$info" && grep -q 'no-new-privileges' <<<"$info" \
-    && grep -q 'user=node' <<<"$info" && grep -q 'netz=wamo-ui-netz $' <<<"$info" \
-    || { echo "  FEHLER: Härtung des Containers unvollständig" >&2; return 1; }
+  # Alle vorhandenen Container der Oberfläche (blau, grün und der einzelne der früheren Fassung) müssen gleich gehärtet sein;
+  # die live gesetzte Farbe muss laufen und gesund sein.
+  local live c
+  live="$(live_container)"
+  [ -n "$live" ] || { echo "  FEHLER: keine live gesetzte Farbe (Include-Datei $INCLUDE_DATEI fehlt oder ist ungültig)" >&2; return 1; }
+  for c in wamo-ui wamo-ui-blau wamo-ui-gruen; do
+    docker inspect "$c" >/dev/null 2>&1 || continue
+    [ -z "$(docker port "$c" 2>/dev/null)" ] || { echo "  FEHLER: $c veröffentlicht einen Port" >&2; return 1; }
+    info="$(docker inspect -f 'readonly={{.HostConfig.ReadonlyRootfs}} capdrop={{.HostConfig.CapDrop}} sec={{.HostConfig.SecurityOpt}} mem={{.HostConfig.Memory}} cpu={{.HostConfig.NanoCpus}} pids={{.HostConfig.PidsLimit}} restart={{.HostConfig.RestartPolicy.Name}} user={{.Config.User}} health={{.State.Health.Status}} netz={{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$c")"
+    echo "  Container $c: $info"
+    if grep -q 'readonly=true' <<<"$info" && grep -q 'capdrop=\[ALL\]' <<<"$info" && grep -q 'no-new-privileges' <<<"$info" \
+      && grep -q 'user=node' <<<"$info" && grep -q 'netz=wamo-ui-netz $' <<<"$info"; then
+      :
+    else
+      echo "  FEHLER: Härtung von $c unvollständig" >&2
+      return 1
+    fi
+  done
+  grep -q 'health=healthy' <<<"$(docker inspect -f 'health={{.State.Health.Status}}' "$live")" \
+    || { echo "  FEHLER: live gesetzter Container $live ist nicht gesund" >&2; return 1; }
+  echo "  live: $live"
   echo "  Netz-Isolation (aus dem Container: Gateway, Router, Internet, Host):"
   local iso
-  iso="$(docker exec wamo-ui node -e "
+  iso="$(docker exec "$live" node -e "
 const net=require('net');
 const t=(h,p)=>new Promise(r=>{const s=net.connect({host:h,port:p,timeout:2000});s.on('connect',()=>{s.destroy();r('ERREICHBAR')});s.on('timeout',()=>{s.destroy();r('gesperrt')});s.on('error',()=>r('gesperrt'))});
 (async()=>{for(const [h,p] of [['172.25.0.1',22],['192.168.178.1',80],['1.1.1.1',443],['192.168.178.136',55321],['192.168.178.136',22]])console.log('    '+h+':'+p+' '+await t(h,p))})()")"
@@ -445,7 +407,7 @@ const t=(h,p)=>new Promise(r=>{const s=net.connect({host:h,port:p,timeout:2000})
   if grep -q ERREICHBAR <<<"$iso"; then echo "  FEHLER: Container erreicht etwas außerhalb seines Netzes" >&2; return 1; fi
   # Bekannte Grenze: wamo-caddy hängt im selben Netz und nimmt auf allen Schnittstellen an (README, Abschnitt 12.5)
   local caddy_info
-  caddy_info="$(docker exec wamo-ui node -e "
+  caddy_info="$(docker exec "$live" node -e "
 const net=require('net');
 const t=(h,p)=>new Promise(r=>{const s=net.connect({host:h,port:p,timeout:2000});s.on('connect',()=>{s.destroy();r('erreichbar')});s.on('timeout',()=>{s.destroy();r('gesperrt')});s.on('error',()=>r('gesperrt'))});
 Promise.all([55443,55444].map(p=>t('wamo-caddy',p))).then(a=>console.log('55443 '+a[0]+', 55444 '+a[1]))" 2>/dev/null || true)"
@@ -457,9 +419,10 @@ status() {
   echo "== Status"
   lies_konfig
   echo "  Adresse: $WAMO_UI_URL (TLS $WAMO_UI_TLS, HSTS $WAMO_UI_HSTS)"
-  docker ps -a --filter name=^wamo-ui$ --format '  Container: {{.Names}} {{.Status}} ({{.Image}})'
+  docker ps -a --filter 'name=^wamo-ui(-blau|-gruen)?$' --format '  Container: {{.Names}} {{.Status}} ({{.Image}})'
   docker image ls wamo-ui --format '  Image: {{.Repository}}:{{.Tag}} {{.CreatedSince}} {{.Size}}'
   [ -f "$SITE_DATEI" ] && echo "  Caddy-Site: vorhanden" || echo "  Caddy-Site: fehlt"
+  [ -f "$INCLUDE_DATEI" ] && echo "  Farbe: $(sed -n '1p' "$INCLUDE_DATEI" | sed 's/^# //')" || echo "  Farbe: Include-Datei fehlt"
   sudo -n iptables -w 5 -S WAMO-FW 2>/dev/null | grep -q "ctorigdstport $UI_PORT_ERLAUBT" \
     && echo "  Firewall: Port $UI_PORT_ERLAUBT offen für Loopback und Büro-LAN" || echo "  Firewall: Regel für $UI_PORT_ERLAUBT fehlt"
   [ -f "$DROPIN" ] && echo "  Herkunft: Drop-in vorhanden" || echo "  Herkunft: Drop-in fehlt"
@@ -472,6 +435,7 @@ case "$BEFEHL" in
   status) status ;;
   zurueck) zurueck ;;
   bauen) bauen ;;
+  umschalten) umschalten ;;
   caddy) caddy ;;
   firewall) firewall ;;
   herkunft) herkunft ;;
@@ -479,7 +443,7 @@ case "$BEFEHL" in
   alles)
     firewall
     caddy
-    bauen
+    umschalten
     rc=0
     herkunft || rc=$?
     pruefen

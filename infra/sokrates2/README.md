@@ -645,23 +645,28 @@ Der Browser dort kennt nur die Betriebsart Büro (Kern auf Sokrates-2); PC-Werkz
 Oberfläche zeigt „nur in der Desktop-App verfügbar“.
 
 ```text
-Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000, Netz wamo-ui-netz (internal)──> wamo-ui (Next.js, Standalone)
+Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000, Netz wamo-ui-netz (internal)──> wamo-ui-blau  oder  wamo-ui-gruen (Next.js, Standalone)
    ├──HTTPS 55443──> wamo-caddy ──> Envoy (Anmeldung, Supabase)
    └──HTTPS 55444──> wamo-caddy ──> wamo-core (Kern, Unix-Socket); Medien als WebRTC direkt (UDP)
 ```
+
+Seit Schritt 1.1 der Selbstüberarbeitung (`docs/selbstueberarbeitung.md`, Abschnitt B) läuft die Oberfläche als zwei Container,
+von denen genau einer live ist; ein Release schaltet ohne Lücke um, der Rückweg dauert eine Sekunde (Abschnitt 12.6).
 
 ### 12.1 Bausteine
 
 | Baustein | Ort | Zweck |
 | --- | --- | --- |
-| Image und Container | `infra/sokrates2/wamo-ui/Dockerfile`, `docker-compose.yml`; auf dem Server `/home/wamocon/wamo-ui` | `npm ci`, `next build` (Standalone), Laufzeit `node:22-bookworm-slim` über Digest, arm64. Container: Benutzer `node`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, 512 MB, 1 CPU, 128 Prozesse, `restart: unless-stopped`, Healthcheck, kein veröffentlichter Port |
+| Image und Container | `infra/sokrates2/wamo-ui/Dockerfile`, `docker-compose.yml`; auf dem Server `/home/wamocon/wamo-ui` | `npm ci`, `next build` (Standalone), Laufzeit `node:22-bookworm-slim` über Digest, arm64. Zwei Container `wamo-ui-blau` und `wamo-ui-gruen` (je Farbe ein Image-Tag `wamo-ui:blau` und `wamo-ui:gruen`, dazu ein Archiv-Tag `wamo-ui:vX.Y.Z-<Commit, 12 Zeichen>`, die drei neuesten bleiben). Beide: Benutzer `node`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, 512 MB, 1 CPU, 128 Prozesse, `restart: unless-stopped`, Healthcheck auf `/version.json`, kein veröffentlichter Port |
+| Gesundheitsprobe | `ui/src/app/version.json/route.ts`, `ui/src/lib/buildInfo.ts` | `GET /version.json` liefert `{"name","version","commit","gebaut","sauber"}`: Version aus `ui/package.json`, Commit-ID, Bauzeit und der Vermerk „unverändert aus Git“ aus den Build-Argumenten (`WAMO_COMMIT`, `WAMO_BAUZEIT`, `WAMO_SAUBER`). Jeder Wert wird gegen ein enges Muster geprüft, nie ein Geheimnis. Antwort mit `Cache-Control: no-store`, bei jeder Anfrage frisch berechnet |
 | Netz | `wamo-ui-netz` (172.25.0.0/24), angelegt vom Compose von `wamo-caddy` | `internal` und ohne Adresse auf der Bridge (`inhibit_ipv4`): Der Container erreicht weder Internet noch Büro-LAN noch Dienste des Hosts (in `pruefen` geprüft: Gateway, Router, Internet, Host). Nur `wamo-caddy` hängt zusätzlich darin |
-| Caddy-Site | `wamo-ui/wamo-ui.caddy.vorlage`, installiert als `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui.caddy` | `https://192.168.178.136:55445` mit Zertifikat der WAMO-CA (`tls internal`), nur GET und HEAD, Body höchstens 1 KB, `encode`, ohne `Server` und `X-Powered-By`, COOP und CORP `same-origin`. Die übrigen Header (CSP, Referrer-Policy, nosniff, X-Frame-Options, Permissions-Policy) setzt Next.js. Kein HSTS: Browser ignorieren ihn bei einer IP-Adresse |
+| Caddy-Site | `wamo-ui/wamo-ui.caddy.vorlage`, installiert als `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui.caddy` | `https://192.168.178.136:55445` mit Zertifikat der WAMO-CA (`tls internal`), nur GET und HEAD, Body höchstens 1 KB, `encode`, ohne `Server` und `X-Powered-By`, COOP und CORP `same-origin`. Die übrigen Header (CSP, Referrer-Policy, nosniff, X-Frame-Options, Permissions-Policy) setzt Next.js. Kein HSTS: Browser ignorieren ihn bei einer IP-Adresse. Den Upstream bindet die Site über `import /etc/caddy/kern/wamo-ui-aktiv.inc` ein |
+| Include-Datei | `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui-aktiv.inc`, erzeugt von `wamo-ui-umschalten.sh` | legt fest, welche Farbe live ist (Kopfzeilen `# live=… vorige=…` und `# seit=…`), die Gesundheitsprobe und die Rückfallebene für statische Dateien. Endung `.inc`, damit der Import `kern/*.caddy` sie nicht als Site lädt. Nie von Hand ändern |
 | Einstellungen | `/home/wamocon/wamo-ui/wamo-ui.conf` (Vorlage `wamo-ui/wamo-ui.conf.beispiel`) | `WAMO_UI_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_WAMO_KERN_BUERO`, `WAMO_UI_TLS`, `WAMO_UI_HSTS`, Anmeldedauer im Browser. Hier und nur hier stehen Adresse und Zertifikatsart; im Code der Oberfläche steht keine feste IP. Werte sind öffentlich (stehen im JavaScript), keine Geheimnisse |
 | Publishable Key | liest das Skript auf dem Server aus `/home/wamocon/supabase-wamo/.env` | als Build-Argument ohne Wert in der Befehlszeile; abgelehnt wird alles außer `sb_publishable_…` (oder ein JWT mit Rolle `anon`), nie `service_role` |
 | Firewall | Port 55445 in `WAMO-FW-LAN` (`wamo-firewall.sh`) | Loopback und Büro-LAN, übernommen per `systemctl reload wamo-firewall` ohne Lücke |
 | Erlaubte Herkunft | Drop-in `/etc/systemd/system/wamo-core.service.d/wamo-ui.conf` | ergänzt `PIPECAT_ALLOWED_ORIGINS` um `WAMO_UI_URL` (Basis ist die Liste aus `wamo-core.service`); `wamo-core.service` selbst bleibt unberührt. Wirksam nach einem Neustart von wamo-core |
-| Skripte | `wamo-ui-einrichten.sh`, `wamo-ui-rueckweg.sh`, vom PC `scripts/wamo_ui_sokrates2.py` | alle wiederholbar; prüfen den Ablageort in `~/wamo-infra` wie die übrigen Skripte |
+| Skripte | `wamo-ui-umschalten.sh` (Bauen, Umschalten, Rückweg, Schnittstelle zum Notanker), `wamo-ui-einrichten.sh`, `wamo-ui-rueckweg.sh`, vom PC `scripts/wamo_ui_sokrates2.py` | alle wiederholbar; prüfen den Ablageort in `~/wamo-infra` wie die übrigen Skripte |
 
 Supabase braucht nichts Neues: Der Envoy des Stacks antwortet auf Preflight-Anfragen mit der Herkunft der Anfrage
 (geprüft für `https://192.168.178.136:55445`). Anmeldung mit Passwort und TOTP kennt keine Weiterleitung;
@@ -674,9 +679,10 @@ Supabase braucht nichts Neues: Der Envoy des Stacks antwortet auf Preflight-Anfr
 ```bash
 # vom PC, Repo-Wurzel
 python scripts/wamo_ui_sokrates2.py verteilen --mit-firewall-und-caddy   # Quellen von ui/ (ohne node_modules, .next, .env*) und Skripte
-python scripts/wamo_ui_sokrates2.py einrichten                            # Firewall, Caddy, Image, Container, Herkunft, Prüfung
+python scripts/wamo_ui_sokrates2.py einrichten                            # Firewall, Caddy, Umschalten, Herkunft, Prüfung
 python scripts/wamo_ui_sokrates2.py einrichten --neustart                 # zusätzlich wamo-core neu starten, aber nur ohne Sitzung
-python scripts/wamo_ui_sokrates2.py bauen                                 # nach einer Änderung an ui/: nur Image und Container
+python scripts/wamo_ui_sokrates2.py verteilen && python scripts/wamo_ui_sokrates2.py umschalten   # nach einer Änderung an ui/: Release ohne Lücke
+python scripts/wamo_ui_sokrates2.py zurueck                               # Rückweg auf die vorige Farbe (eine Sekunde)
 python scripts/wamo_ui_sokrates2.py status                                # lesend; pruefen = Header, TLS, Härtung, Isolation, Ladezeit
 ```
 
@@ -688,9 +694,10 @@ python scripts/wamo_ui_sokrates2.py status                                # lese
   Journalzeile außer abgewiesenen Anfragen in den letzten 5 Minuten), sonst bricht es mit einem Hinweis ab.
 - Den Neustart von wamo-core macht nur `herkunft --neustart` und auch nur ohne Sitzung (gleiche Prüfung); sonst bleibt er ein
   offener Schritt: `ssh sokrates2 "bash ~/wamo-infra/wamo-ui-einrichten.sh herkunft --neustart"`.
-- Nach einem Update von `ui/` genügt `bauen`. Das vorige Image bleibt als `wamo-ui:vorher`, zurück geht es mit
-  `python scripts/wamo_ui_sokrates2.py zurueck`.
-- Rückweg: Abschnitt 8.
+- Nach einem Update von `ui/` genügt `verteilen` und `umschalten` (Abschnitt 12.6). Die alte Farbe läuft weiter, zurück geht es
+  mit `python scripts/wamo_ui_sokrates2.py zurueck`. `verteilen` schreibt dazu `wamo-ui/bau.info` (Commit-ID von HEAD und den
+  Vermerk, ob `ui/` und `infra/sokrates2` unverändert sind); die Oberfläche meldet beides in `/version.json`.
+- Rückweg der ganzen Oberfläche (abschalten): Abschnitt 8.
 
 ### 12.3 Ein weiterer Windows-PC (Browser, Schritt für Schritt)
 
@@ -755,6 +762,101 @@ Die WAMO-CA kann bleiben (Desktop-App im Notfall über die IP), sollte aber nich
   (globaler Block `timeouts` im Caddyfile, gemeinsam genutzt).
 - **HSTS** gilt bei Variante B für die ganze Domain und ein Jahr; vorher klären, ob andere Dienste unter derselben Domain
   ohne HTTPS laufen.
+
+### 12.6 Release ohne Lücke: blau/grün, Umschalten, Rückweg (Schritt 1.1, vorbereitet am 22.10.2026, noch nicht ausgerollt)
+
+**Prinzip.** Zwei Container, einer ist live. Ein Release baut die Fassung in die andere Farbe, prüft sie dort, setzt die
+Include-Datei um und lädt Caddy neu (`caddy reload`, kein Neustart, kein neues Anlegen von `wamo-caddy`). Die alte Farbe läuft
+weiter und wird erst beim nächsten Release ersetzt. Der Kern (WebRTC, Medien), die Anmeldung und die Sitzungen bleiben unberührt:
+Die Oberfläche hält keinen Serverzustand, Browser sprechen Kern und Anmeldung selbst an.
+
+```bash
+python scripts/wamo_ui_sokrates2.py verteilen                      # Quellen und Skripte, dazu wamo-ui/bau.info (Commit von HEAD)
+python scripts/wamo_ui_sokrates2.py umschalten --trocken           # zeigt den Plan, ändert nichts
+python scripts/wamo_ui_sokrates2.py umschalten                     # bauen, prüfen, umschalten, bewähren (30 Sekunden), sonst zurück
+python scripts/wamo_ui_sokrates2.py umschalten --bewaehrung 120 --fehlerquote 5     # strenger und länger
+python scripts/wamo_ui_sokrates2.py bauen && python scripts/wamo_ui_sokrates2.py umschalten --ohne-bau   # in zwei Schritten
+python scripts/wamo_ui_sokrates2.py zurueck                        # Rückweg auf die vorige Farbe, ebenso wieder vorwärts
+python scripts/wamo_ui_sokrates2.py eintrag                        # Eintrag "letzte gute Version" für den Notanker (JSON)
+ssh sokrates2 "bash ~/wamo-infra/wamo-ui-umschalten.sh status"     # Farbe, Fassungen, öffentliche Antwort
+```
+
+**Ablauf von `umschalten`.**
+
+| Schritt | Was geschieht | Bei einem Fehler |
+| --- | --- | --- |
+| 1 Bauen | Image `wamo-ui:vX.Y.Z-<Commit>` und `wamo-ui:<Farbe>`, `docker compose up -d --no-deps --force-recreate <Farbe>`; die live gesetzte Farbe wird nie angefasst. Nur ein sauberer Stand (aus unverändertem Git) bekommt den Archiv-Tag, alles andere `…-lokal-<Zeit>` | Rückgabewert 1, nichts geändert |
+| 2 Prüfen | am neuen Container aus dem Netz von Caddy: `/version.json` mit der erwarteten Version und dem erwarteten Commit, Startseite 200, `nosniff`, die CSP nennt Anmeldung und Büro-Kern (nur dann zeigt der Build auf die richtigen Adressen); der Kern antwortet ohne Anmeldung auf `POST /start` mit 401 (nicht erreichbar: Hinweis, kein Abbruch; jeder andere Status: Abbruch) | Rückgabewert 3, der neue Container wird angehalten, die alte Farbe bleibt live |
+| 3 Schalten | neue Include-Datei aus der Vorlage im Skript, Prüfung der ganzen Konfiguration in einem Wegwerf-Container ohne Netz (`caddy adapt`), atomarer Tausch (`mv`), `caddy reload` | alte Datei kommt zurück, Rückgabewert 3 |
+| 4 Wirkung | wartet (höchstens 20 s), bis `GET /version.json` über die öffentliche Adresse die neue Fassung liefert | automatischer Rückweg, Rückgabewert 4 |
+| 5 Bewährung | zwei Proben je Sekunde über die öffentliche Adresse, Standard 30 Sekunden (`--bewaehrung 0` bis 1800) | drei Fehler in Folge oder mehr als `--fehlerquote` Prozent (Standard 10) lösen den automatischen Rückweg aus, Rückgabewert 4 |
+| 6 Aufräumen | der Container `wamo-ui` aus der Zeit vor blau/grün wird abgeräumt, sobald er nicht mehr die vorige Farbe ist; die drei neuesten Archiv-Tags bleiben | |
+
+Der automatische Rückweg setzt die Include-Datei auf die alte Farbe zurück und hält die fehlerhafte Farbe an (Protokoll mit
+`docker logs wamo-ui-<farbe>`). Rückgabewert 5 heißt, dass auch der Rückweg nicht gelang: Dann zuerst `docker exec wamo-caddy caddy
+reload --config /etc/caddy/Caddyfile --adapter caddyfile` und `status`. Ein zweiter Lauf zugleich wird mit einer Sperre
+(`flock` auf `~/wamo-ui/.umschalten.lock`) abgewiesen.
+
+**Die Include-Datei** `etc/kern/wamo-ui-aktiv.inc` ist der einzige Zustand: Kopfzeilen `# live=… vorige=…` und `# seit=…`, darunter
+zwei `handle`-Blöcke. Erster Upstream ist die live gesetzte Farbe, zweiter die vorige. Fällt der erste aus (Verbindungsfehler oder
+die Gesundheitsprobe `/version.json` alle 2 Sekunden), nimmt Caddy ohne Eingriff den zweiten; bei einer Wahl, die nicht antwortet,
+versucht es bis zu 5 Sekunden weiter (`lb_try_duration`), Wählen dauert höchstens 1 Sekunde. Für `/_next/static/*` fragt Caddy
+die live gesetzte Farbe und gibt bei 404 die Antwort der vorigen weiter (`handle_response`): Jeder Build hat eigene Dateinamen,
+und eine offene Seite der alten Fassung lädt ihre Chunks weiter. Dasselbe gilt nach dem Rückweg in die andere Richtung. Die Site
+weist alles außer GET und HEAD mit 405 ab, bevor ein Upstream etwas sieht (Block `route`, die Reihenfolge steht dort fest).
+Von Hand ändern gilt nicht: Das nächste Schalten erzeugt die Datei neu.
+
+**Erstumstellung (einmalig).** Heute läuft der einzelne Container `wamo-ui`. Reihenfolge ohne Lücke:
+
+1. `verteilen --mit-firewall-und-caddy` aus einem sauberen Stand (`git status` ohne Änderungen in `ui/` und `infra/sokrates2`),
+   sonst bekommt die Fassung `sauber: false` und der Notanker nimmt sie nicht als Ziel an.
+2. `python scripts/wamo_ui_sokrates2.py einrichten` legt nur die Include-Datei (live ist zunächst der alte Container `wamo-ui`) und
+   die neue Site an und lädt Caddy neu; `wamo-caddy` selbst wird nicht neu angelegt, weil sich sein Compose nicht ändert. Die Site
+   wirkt wie vorher, nur über die Include-Datei.
+3. `python scripts/wamo_ui_sokrates2.py umschalten` baut `wamo-ui-blau`, prüft es neben dem alten Container, schaltet um und
+   bewährt es. Der alte Container bleibt als vorige Farbe (`alt`) laufen: Der Rückweg geht auch jetzt in einer Sekunde, und
+   die Chunks offener Seiten bleiben erreichbar. Er wird beim nächsten Release abgeräumt, die alten Images `wamo-ui:aktuell`,
+   `:vorher` und die Zeitstempel-Tags bleiben liegen (von Hand mit `docker image rm`, wenn sie nicht mehr gebraucht werden).
+4. Danach `python scripts/wamo_ui_sokrates2.py eintrag` ausgeben und als `komponenten.ui.aktiv` und `letzte_gute` in die
+   `stand.json` des Ankers eintragen (root, die Datei prüft der Anker streng; der Anker schreibt sie später selbst).
+
+**Notanker.** Der Anker ruft als root ein festes Schritt-Skript `schritte/rueckweg-ui <Version> <Commit> <Ziel>` aus seiner
+Zustandsdatei auf (Abschnitt 14). `wamo-ui-umschalten.sh` ist genau dafür gebaut: Als `rueckweg-ui` kopiert (Name entscheidet),
+bedient es den Befehl `anker-rueckweg`. Es ist idempotent (schon aktiv: Exit 0, nach einem Abbruch zwischen Tausch und Reload lädt
+es Caddy neu), prüft jeden Parameter streng (nur `vX.Y.Z`, 40 Hexzeichen, `blau` oder `gruen`), startet die Zielfarbe bei Bedarf aus
+dem Archiv-Image und geht nur auf saubere Stände. Das Einbinden (Datei nach `anker/schritte/` kopieren, Prüfsumme im Manifest) ist ein
+Handgriff in der Anker-Einrichtung und gehört zu Schritt 1.6; dieser Schritt ändert den Anker nicht. Läuft das Skript als root, legt es
+Dateien im Home von `wamocon` mit dem Besitzer des Ordners an.
+
+**Messung (Rauchtest `wamo_ui_rauchtest.py`, Attrappen und echtes Caddy 2.11.2, 20 Anfragen je Sekunde, Stand 22.10.2026).** Null
+Fehler bei Erstumstellung, Release, Rückweg, Weg vorwärts, Rückweg des Ankers, Ausfall der live Farbe (`docker kill`) und Prüfungen,
+die vor dem Umschalten scheitern (1212 Anfragen, 0 Fehler). Das Prüfen der Konfiguration, der Tausch der Datei und das Neuladen von Caddy
+dauern zusammen 0,3 bis 0,4 Sekunden; die neue Fassung antwortet 0,3 bis 0,6 Sekunden nach Beginn des Schaltens über Caddy. `zurueck`
+ist nach 0,5 Sekunden fertig, vom Aufruf bis zur ersten Antwort der alten Fassung vergehen 0,6 Sekunden (Ziel: unter 30 Sekunden).
+Ein Release dauert mit Attrappe und 6 Sekunden Bewährung etwa 8 Sekunden. Je Umschalten bricht eine Ruhe-Verbindung ab, weil Caddy sie
+beim Neuladen schließt; ein Browser wiederholt die GET-Anfrage unbemerkt, der Rauchtest tut es ebenso und zählt es getrennt.
+Eine Bewährung, die durchfällt (Absturz der neuen Fassung nach dem Umschalten), schaltet automatisch zurück (Rückgabewert 4): bei einem
+Absturz 0 Fehler, bei Fehlerantworten 500 der neuen Fassung 9 Fehler in 17 Sekunden, bis die Gesundheitsprobe sie aus dem Pool nimmt.
+
+**Grenzen.**
+
+- Offene Seiten, die zwei Releases zurückliegen, verlieren nachgeladene Chunks (die Farbe, die das nächste Release ersetzt, trug
+  die älteste Fassung) und brauchen ein Neuladen. Der Hinweis „Neue Version, bitte neu laden“ in der Oberfläche folgt mit Schritt 1.5.
+- Antwortet die neue Fassung nach dem Umschalten mit Fehlerstatus 500 statt mit Verbindungsfehlern, erreichen diese Antworten
+  Nutzer, bis die Gesundheitsprobe sie aus dem Pool nimmt (zwei Sekunden) und die Bewährung zurückschaltet. Verbindungsfehler
+  und Abstürze fängt Caddy ab.
+- Fällt die live gesetzte Farbe aus, geht der Verkehr zehn Sekunden lang (`fail_duration`) an die vorige, auch wenn sie älter ist.
+- Das Skript folgt als root keinen Links (Sperrdatei, Include-Datei und Compose-Datei werden abgelehnt, wenn sie welche sind),
+  verlässt sich aber auf die Dateien im Home von `wamocon`; wer dort schreiben darf, hat ohnehin `sudo` und `docker`
+  (Grenze des Ankers, Abschnitt 14).
+- Ein Rückweg über das Archiv startet die Zielfarbe neu. Hat Caddy sie zuvor als ausgefallen vermerkt, verwendet es sie erst nach
+  `fail_duration` (10 Sekunden) wieder; das Skript wartet darauf und meldet erst dann Erfolg (gemessen 13 Sekunden insgesamt, ohne
+  Fehler, die vorige Fassung bedient solange weiter). Das Zeitlimit des Ankers beträgt 120 Sekunden für die Oberfläche.
+
+**Tests.** `uv run python -m pytest ../scripts/test_wamo_ui_sokrates2.py` im Ordner `voice-core` (Syntax, feste Regeln, rund 90
+Verbotsproben der Parameter ohne Aufruf von docker, Verteil-Werkzeug); `npm test` in `ui/` (Route und Vertrag mit dem Muster des
+Skripts); `python infra/sokrates2/wamo_ui_rauchtest.py` (braucht nur Docker; legt ausschließlich Container, Netze, Volumes und Images
+mit dem Namen `wamo-test-rauch-…` an und räumt sie wieder ab; `--nur kurz` lässt Absturz und Ausfall weg).
 
 ## 13. Rücktunnel je Gerät (Laptops, vorbereitet am 21.10.2026)
 
