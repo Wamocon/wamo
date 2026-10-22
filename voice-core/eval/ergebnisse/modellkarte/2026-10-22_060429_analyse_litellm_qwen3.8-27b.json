@@ -1,0 +1,29 @@
+{
+ "zeitpunkt": "2026-10-22T06:04:29+02:00",
+ "anbieter": "litellm",
+ "modell": "qwen3.8-27b",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "analyse",
+ "laeufe": [
+  {
+   "lauf": 1,
+   "richtig": 5,
+   "von": 6,
+   "dauer_s": 8.38,
+   "gruende": [
+    "Frage 4: falsch (6)"
+   ],
+   "eingabe_tokens": 5510,
+   "ausgabe_tokens": 51
+  },
+  {
+   "lauf": 2,
+   "richtig": 6,
+   "von": 6,
+   "dauer_s": 1.66,
+   "gruende": [],
+   "eingabe_tokens": 5510,
+   "ausgabe_tokens": 51
+  }
+ ]
+}

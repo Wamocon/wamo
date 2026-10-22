@@ -1,0 +1,66 @@
+{
+ "zeitpunkt": "2026-10-22T06:03:14+02:00",
+ "anbieter": "claude",
+ "modell": "claude-haiku-5-5",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "code",
+ "faelle": [
+  {
+   "id": "roemisch",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 2.02,
+   "ausgabe_tokens": 269
+  },
+  {
+   "id": "dauer",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 1.61,
+   "ausgabe_tokens": 328
+  },
+  {
+   "id": "intervalle",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 1.47,
+   "ausgabe_tokens": 234
+  },
+  {
+   "id": "luhn",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 1.07,
+   "ausgabe_tokens": 176
+  },
+  {
+   "id": "lru",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 1.22,
+   "ausgabe_tokens": 250
+  },
+  {
+   "id": "flach",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 2.04,
+   "ausgabe_tokens": 119
+  },
+  {
+   "id": "woerter",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 1.1,
+   "ausgabe_tokens": 131
+  },
+  {
+   "id": "iban",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 1.17,
+   "ausgabe_tokens": 155
+  }
+ ],
+ "kosten_usd": 0.001
+}

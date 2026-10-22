@@ -413,6 +413,9 @@ export function applyServerMessage(msg: ServerMessage) {
         entwicklung: msg.entwicklung,
         pcName: msg.pcName,
         pcBelegt: msg.pcBelegt,
+        modellModus: msg.modellModus,
+        modellQuelle: msg.modellQuelle,
+        modellHinweis: msg.modellHinweis,
       };
       const vorher = wamo.get().betrieb;
       wamo.set((s) => ({
@@ -424,6 +427,9 @@ export function applyServerMessage(msg: ServerMessage) {
       if (vorher && vorher.pc === "verbunden" && betrieb.pc === "getrennt") zeigeToast("PC nicht erreichbar");
       if (vorher && vorher.pc !== "gesperrt" && betrieb.pc === "gesperrt") zeigeToast("Bildschirm am PC gesperrt");
       if (betrieb.pcBelegt && !vorher?.pcBelegt) zeigeToast("Eine andere Sitzung steuert diesen PC gerade");
+      // Der Boss musste ein anderes Gesprächsmodell nehmen als das beste (zu langsam, nicht erreichbar): klar sagen
+      if (betrieb.modellHinweis && betrieb.modellHinweis !== vorher?.modellHinweis)
+        zeigeToast(`Gesprächsmodell ${betrieb.modelle.llm ?? ""}: ${betrieb.modellHinweis}`.replace("  ", " "));
       return;
     }
     case "gemerkt":

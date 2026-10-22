@@ -111,13 +111,16 @@ class Zugang:
 
     user_id: str
     art: Art
-    quelle: str = "keiner"  # profil | zuordnung | betreiber | festgelegt | keiner | fehler
+    quelle: str = "keiner"  # profil | zuordnung | betreiber | festgelegt (Admin) | wahl (Person) | keiner | fehler
     claude_modell: str | None = None
     claude_schluessel: str | None = field(default=None, repr=False)
     claude_workspace: str | None = None
     stt: str = "soniox"
     tts: str = "soniox"
     hinweis: str | None = None
+    # Hat die Person einen Claude-Code-Token hinterlegt? Nur dieses Merkmal, nie der Token selbst (den liefert
+    # modellzugang.claude_code_token_laden kurz vor einem Entwicklungslauf). Er berührt das Gespräch nicht.
+    claude_code: bool = False
     _client: list = field(default_factory=list, repr=False, init=False)  # einmal je Zugang gebaut
     _zu: list = field(default_factory=list, repr=False, init=False)  # gefüllt, sobald die Sitzung schloss
 
@@ -129,8 +132,8 @@ class Zugang:
 
     @classmethod
     def haus(cls, user_id: str, quelle: str = "keiner", hinweis: str | None = None, *, stt: str = "soniox",
-             tts: str = "soniox") -> Zugang:
-        return cls(user_id, "haus", quelle, stt=stt, tts=tts, hinweis=hinweis)
+             tts: str = "soniox", claude_code: bool = False) -> Zugang:
+        return cls(user_id, "haus", quelle, stt=stt, tts=tts, hinweis=hinweis, claude_code=claude_code)
 
     @classmethod
     def betreiber(cls) -> Zugang:
@@ -292,21 +295,40 @@ def rueckfall_erlaubt(baustein: str) -> bool:
     return baustein in {teil.strip() for teil in wert.split(",")}
 
 
-def konfiguration(baustein: str, zugang: Zugang | None = None) -> tuple[Anbieter, str | None]:
-    """(Anbieter, Modell) aus der Umgebung. Für haus-Profile ist der Anbieter immer litellm."""
+def vorgabe(baustein: str, zugang: Zugang | None = None) -> tuple[Anbieter | None, str | None]:
+    """Was der Betrieb in der Umgebung vorgibt (Übersteuerung der Modellkarte): (Anbieter, Modell). Anbieter None heißt:
+    nicht gesetzt, dann wählt der Boss. Für haus-Profile ist der Anbieter immer litellm."""
     if baustein not in _ENV:
         raise ValueError(f"unbekannter Baustein {baustein!r}")
     anbieter_env, modell_env = _ENV[baustein]
     haus = zugang is not None and zugang.art == "haus"
-    wert = "litellm" if haus else (_env(anbieter_env).lower() or "claude")
-    if wert not in ANBIETER:
+    wert = "litellm" if haus else _env(anbieter_env).lower()
+    if wert and wert not in ANBIETER:
         logger.error("{}={!r} ist unbekannt (erlaubt: claude, litellm), nutze claude", anbieter_env, wert)
         wert = "claude"
-    anbieter: Anbieter = "litellm" if wert == "litellm" else "claude"
+    anbieter: Anbieter | None = ("litellm" if wert == "litellm" else "claude") if wert else None
     modell = _env(modell_env) or None
     gespraech_im_haus = haus or _env("WAMO_LLM_ANBIETER").lower() == "litellm"
     if anbieter == "litellm" and not modell and baustein in ("lernen", "zusammenfassung") and gespraech_im_haus:
         modell = _env("WAMO_LLM_MODELL") or None  # dasselbe Modell wie das Gespräch
+    return anbieter, modell
+
+
+def konfiguration(baustein: str, zugang: Zugang | None = None) -> tuple[Anbieter, str | None]:
+    """(Anbieter, Modell): die Vorgabe des Betriebs aus der Umgebung, sonst der Standard aus der Modellkarte (Boss).
+    Für haus-Profile ist der Anbieter immer litellm und das Modell das beste Hausmodell der Karte; für ein Profil mit
+    Claude-Schlüssel ist es das Modell mit den besten Punkten, im Gespräch also Claude Haiku."""
+    import boss
+
+    anbieter, modell = vorgabe(baustein, zugang)
+    klasse = boss.BAUSTEIN_KLASSE[baustein]
+    if anbieter is None:  # der Betrieb legt nichts fest: Modellkarte
+        liste = boss.rangliste(klasse, claude_erlaubt=zugang is None or zugang.art == "claude")
+        if liste and liste[0].anbieter == "litellm":
+            return "litellm", liste[0].alias
+        return "claude", None
+    if anbieter == "litellm" and not modell:
+        modell = boss.hausstandard(klasse)
     return anbieter, modell
 
 
@@ -520,20 +542,32 @@ def anthropic_ziel(modell: str | None) -> str | None:
 
 
 async def _haus_wahl(baustein: str, zugang: Zugang, gewuenscht: Anbieter, grund: str | None = None) -> Wahl:
-    """Hausmodell für den Baustein; LLMNichtVerfuegbar, wenn es nicht nutzbar ist."""
-    _anbieter, modell = konfiguration(baustein, Zugang.haus(zugang.user_id))
-    if ziel := anthropic_ziel(modell):
-        raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {ziel}")
-    if problem := await litellm_problem(modell):
-        raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {problem}")
-    assert modell is not None  # litellm_problem prüft das
-    return Wahl(baustein, "litellm", modell, gewuenscht, grund)
+    """Bestes nutzbares Hausmodell für den Baustein (Boss): zuerst die Vorgabe des Betriebs, dann die Modellkarte der
+    Reihe nach; für das Gespräch zusätzlich mit Probe, ob das Modell jetzt schnell genug antwortet. LLMNichtVerfuegbar,
+    wenn keines nutzbar ist (nie ein Ersatz durch Claude)."""
+    import boss
+
+    _anbieter, vorgabe_modell = vorgabe(baustein, Zugang.haus(zugang.user_id))
+    try:
+        wahl = await boss.waehlen(boss.BAUSTEIN_KLASSE[baustein], Zugang.haus(zugang.user_id), baustein=baustein,
+                                  bevorzugt=("litellm", vorgabe_modell) if vorgabe_modell else None)
+    except LLMNichtVerfuegbar as e:
+        raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {str(e).split(': ', 1)[-1]}") from None
+    if gewuenscht != wahl.gewuenscht or grund:
+        return Wahl(wahl.baustein, wahl.anbieter, wahl.modell, gewuenscht, "; ".join(x for x in (grund, wahl.grund) if x) or None)
+    return wahl
 
 
 async def waehlen(baustein: str, zugang: Zugang) -> Wahl:
-    """Anbieter und Modell für einen Baustein nach dem Zugang des Profils."""
+    """Anbieter und Modell für einen Baustein nach dem Zugang des Profils. Der Boss (boss.py) wählt aus der
+    Modellkarte, es sei denn, der Betrieb legt den Anbieter in der Umgebung fest (WAMO_LLM_*)."""
+    import boss
+
     if zugang.art == "haus":
         return await _haus_wahl(baustein, zugang, "litellm")
+    anbieter_vorgabe, modell_vorgabe = vorgabe(baustein, zugang)
+    if anbieter_vorgabe is None:
+        return await boss.waehlen(boss.BAUSTEIN_KLASSE[baustein], zugang, baustein=baustein)
     anbieter, modell = konfiguration(baustein, zugang)
     if anbieter == "claude":
         if modell and not modell.startswith("claude-"):
@@ -545,6 +579,8 @@ async def waehlen(baustein: str, zugang: Zugang) -> Wahl:
         return Wahl(baustein, "claude", zugang.claude_modell or modell or claude_standardmodell(baustein, zugang),
                     "claude")
     problem = await litellm_problem(modell)
+    if not problem and baustein == "gespraech" and boss.probe_an():
+        problem = await boss.live_problem(modell or "")
     if problem or not modell:
         return _rueckfall_auf_claude(baustein, modell, problem or "kein Modell gesetzt", zugang)
     return Wahl(baustein, "litellm", modell, "litellm")

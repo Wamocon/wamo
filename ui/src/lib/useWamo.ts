@@ -6,7 +6,7 @@ import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
 import { pcAutoLesen } from "@/lib/einstellungen";
 import type { GeraetBruecke } from "@/lib/geraet";
-import { parseServerMessage, type Auftrag } from "@/lib/nachrichten";
+import { parseServerMessage, type Auftrag, type ModellModus } from "@/lib/nachrichten";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
 import {
@@ -108,10 +108,15 @@ export type WamoAktionen = {
   modellzugang?: (anfrage: ModellzugangAnfrage) => boolean;
 };
 
-/** Der Schlüssel geht nur in dieser einen Nachricht an den eigenen Kern und wird im Browser nicht gespeichert. */
+/** Der Schlüssel geht nur in dieser einen Nachricht an den eigenen Kern und wird im Browser nicht gespeichert.
+ *  schluesselart: api (Anthropic-API-Schlüssel, Gespräch) oder code (Claude-Code-Token, Entwicklungsaufträge);
+ *  ohne Angabe gilt api. modus: die Wahl der Person, gilt ab der nächsten Sitzung. */
+export type SchluesselArt = "api" | "code";
 export type ModellzugangAnfrage =
-  | { aktion: "status" | "loeschen" }
-  | { aktion: "hinterlegen"; schluessel: string; workspace?: string };
+  | { aktion: "status" }
+  | { aktion: "loeschen"; schluesselart?: SchluesselArt }
+  | { aktion: "hinterlegen"; schluessel: string; workspace?: string; schluesselart?: SchluesselArt }
+  | { aktion: "modus"; modus: ModellModus };
 
 /** Nachrichten an den Voice-Core: feste Liste statt freier Typen. */
 type ClientMessage =

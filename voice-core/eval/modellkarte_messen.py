@@ -236,7 +236,9 @@ async def einbettung_messen(modell: str, pause: float) -> dict:
 
     async def einbetten(texte: list[str]) -> tuple[list[list[float]], float]:
         start = time.perf_counter()
-        r = await client.embeddings.create(model=modell, input=texte, timeout=LATENZ_TIMEOUT_SECS)
+        # float: das SDK fragt sonst base64 an, das Ollama hinter dem Gateway nicht kennt
+        r = await client.embeddings.create(model=modell, input=texte, encoding_format="float",
+                                           timeout=LATENZ_TIMEOUT_SECS)
         return [d.embedding for d in r.data], time.perf_counter() - start
 
     zeiten = []

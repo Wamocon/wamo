@@ -5,8 +5,9 @@ Der Hauptschlüssel WAMO_SCHLUESSEL_KEK (32 Byte, Base64url) liegt nur in der Um
 
     b"w1" | Kennung des Hauptschlüssels (4 Byte) | Nonce (12 Byte) | GCM-Chiffrat mit Prüfsumme
 
-Zusätzliche Daten (AAD) sind die Profil-ID: ein Chiffrat aus der Zeile eines anderen Profils lässt sich nicht
-entschlüsseln, auch nicht von jemandem mit Schreibrecht auf die Tabelle. Für einen Wechsel des Hauptschlüssels
+Zusätzliche Daten (AAD) sind die Profil-ID und der Zweck (API-Schlüssel oder Claude-Code-Token): ein Chiffrat aus
+der Zeile eines anderen Profils oder aus der Spalte des anderen Zwecks lässt sich nicht entschlüsseln, auch nicht von
+jemandem mit Schreibrecht auf die Tabelle. Für einen Wechsel des Hauptschlüssels
 liest WAMO_SCHLUESSEL_KEK_ALT (kommagetrennt) die alten Chiffrate weiter; neue entstehen immer mit dem aktuellen.
 
 Kein Text dieses Moduls (Fehler, Logs) enthält je einen Schlüssel; Fehler nennen nur die Art des Problems.
@@ -31,7 +32,13 @@ KOPF = b"w1"
 _KENNUNG_LAENGE = 4
 _NONCE_LAENGE = 12
 _AAD_PRAEFIX = b"wamo-claude-schluessel:"
+# Zwecke der Chiffrate: Der Zweck gehört zu den zusätzlichen Daten, ein Chiffrat des einen Zwecks lässt sich so nicht
+# als das des anderen entschlüsseln (auch nicht, wenn jemand mit Schreibrecht die Spalten vertauscht).
+SCHLUESSEL = "schluessel"  # Anthropic-API-Schlüssel (Gespräch, bezahlt nach Verbrauch)
+CODE_TOKEN = "codetoken"  # Claude-Code-Token aus `claude setup-token` (nur Entwicklungsaufträge)
+_AAD_ZWECK = {SCHLUESSEL: _AAD_PRAEFIX, CODE_TOKEN: b"wamo-claude-code-token:"}
 _FORMAT = re.compile(r"sk-ant-[A-Za-z0-9_-]{20,250}")
+_TOKEN_FORMAT = re.compile(r"sk-ant-oat\d{2}-[A-Za-z0-9_-]{20,400}")
 # Alles, was wie ein Anthropic-Schlüssel aussieht, in jeder Log-Zeile schwärzen (auch Teile ab 8 Zeichen)
 _IM_TEXT = re.compile(r"sk-ant-[A-Za-z0-9_-]{8,}")
 
@@ -60,9 +67,12 @@ def _kennung(kek: bytes) -> bytes:
     return hashlib.sha256(b"wamo-kek:" + kek).digest()[:_KENNUNG_LAENGE]
 
 
-def _aad(user_id: str) -> bytes:
+def _aad(user_id: str, zweck: str = SCHLUESSEL) -> bytes:
+    praefix = _AAD_ZWECK.get(zweck)
+    if praefix is None:
+        raise SchluesselFehler("unbekannter Zweck des Chiffrats")
     try:
-        return _AAD_PRAEFIX + str(uuid.UUID(str(user_id))).encode("ascii")
+        return praefix + str(uuid.UUID(str(user_id))).encode("ascii")
     except ValueError:
         raise SchluesselFehler("Profil-ID ist keine UUID") from None
 
@@ -87,12 +97,12 @@ class Tresor:
     def kennung(self) -> str:
         return _kennung(self._aktuell).hex()
 
-    def verschluesseln(self, user_id: str, klartext: str) -> bytes:
+    def verschluesseln(self, user_id: str, klartext: str, zweck: str = SCHLUESSEL) -> bytes:
         nonce = secrets.token_bytes(_NONCE_LAENGE)
-        chiffre = AESGCM(self._aktuell).encrypt(nonce, klartext.encode("utf-8"), _aad(user_id))
+        chiffre = AESGCM(self._aktuell).encrypt(nonce, klartext.encode("utf-8"), _aad(user_id, zweck))
         return KOPF + _kennung(self._aktuell) + nonce + chiffre
 
-    def entschluesseln(self, user_id: str, daten: bytes) -> str:
+    def entschluesseln(self, user_id: str, daten: bytes, zweck: str = SCHLUESSEL) -> str:
         daten = bytes(daten or b"")
         kopf_ende = len(KOPF) + _KENNUNG_LAENGE
         if len(daten) < kopf_ende + _NONCE_LAENGE + 16 or not daten.startswith(KOPF):
@@ -102,16 +112,30 @@ class Tresor:
             raise SchluesselFehler("Chiffrat stammt von einem unbekannten Hauptschlüssel")
         nonce, chiffre = daten[kopf_ende:kopf_ende + _NONCE_LAENGE], daten[kopf_ende + _NONCE_LAENGE:]
         try:
-            return AESGCM(kek).decrypt(nonce, chiffre, _aad(user_id)).decode("utf-8")
+            return AESGCM(kek).decrypt(nonce, chiffre, _aad(user_id, zweck)).decode("utf-8")
         except (InvalidTag, UnicodeDecodeError):
             raise SchluesselFehler("Chiffrat ist beschädigt oder gehört zu einem anderen Profil") from None
 
 
 def format_pruefen(schluessel: object) -> str:
-    """Der Schlüssel ohne Rand, wenn er wie ein Anthropic-API-Schlüssel aussieht; sonst SchluesselFehler."""
+    """Der Schlüssel ohne Rand, wenn er wie ein Anthropic-API-Schlüssel aussieht; sonst SchluesselFehler.
+    Ein Claude-Code-Token (sk-ant-oat…) ist kein API-Schlüssel und wird hier mit einem Hinweis abgelehnt."""
     wert = str(schluessel or "").strip()
+    if _TOKEN_FORMAT.fullmatch(wert):
+        raise SchluesselFehler("Das ist ein Claude-Code-Token, kein API-Schlüssel. Bitte im Feld Claude-Code-Token eintragen")
     if not _FORMAT.fullmatch(wert):
         raise SchluesselFehler("Das ist kein Anthropic-API-Schlüssel (er beginnt mit sk-ant-)")
+    return wert
+
+
+def token_format_pruefen(token: object) -> str:
+    """Der Claude-Code-Token ohne Rand, wenn er wie die Ausgabe von `claude setup-token` aussieht (sk-ant-oat…);
+    sonst SchluesselFehler. Mehr wird nicht geprüft: Eine Testanfrage würde Verbrauch des Max-Kontingents erzeugen."""
+    wert = str(token or "").strip()
+    if _FORMAT.fullmatch(wert) and not _TOKEN_FORMAT.fullmatch(wert):
+        raise SchluesselFehler("Das ist ein API-Schlüssel, kein Claude-Code-Token. Bitte im Feld API-Schlüssel eintragen")
+    if not _TOKEN_FORMAT.fullmatch(wert):
+        raise SchluesselFehler("Das ist kein Claude-Code-Token (er beginnt mit sk-ant-oat und stammt aus `claude setup-token`)")
     return wert
 
 

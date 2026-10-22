@@ -501,8 +501,13 @@ class Job:
 class DevAgent:
     """Ein Objekt pro Gespräch. Braucht den PipelineTask, um Karten, Canvas und Meldungen zu senden."""
 
-    def __init__(self, memory, auftraggeber: str, ort: str | None = None):
+    def __init__(self, memory, auftraggeber: str, ort: str | None = None, token_quelle=None):
+        """token_quelle: optional, async ohne Argumente, liefert den Claude-Code-Token des Profils dieser Sitzung (bot.py
+        bindet modellzugang.claude_code_token_laden an die Profil-ID) oder None. Ist sie gesetzt, startet ein Lauf
+        auf Sokrates-2 nur MIT Token (der Token geht als zweite stdin-Zeile an den Dispatcher, siehe _run_remote),
+        nie still mit dem Zugang der Sandbox. Ohne token_quelle gilt der Zugang der Sandbox wie bisher."""
         self._memory = memory
+        self._token_quelle = token_quelle
         self._auftraggeber = clean_inline(auftraggeber, 60) or "Admin"
         self._ort = ort or entwicklung_ort() or "sokrates2"
         if self._ort == "lokal":
@@ -690,6 +695,12 @@ class DevAgent:
         if self._ort == "sokrates2":
             await self._run_remote(job, prompt, resume)
             return
+        if self._token_quelle is not None:  # der Token der Person gilt nur in der Sandbox auf Sokrates-2
+            job.status = "nicht gestartet (der Claude-Code-Token gilt nur auf Sokrates-2)"
+            job.result = "Der Auftrag wurde nicht gestartet: Mit dem eigenen Claude-Code-Token laufen Aufträge nur auf Sokrates-2."
+            await self._canvas(job)
+            await self._announce(job)
+            return
         logger.warning(LOKAL_WARNUNG)
         job.dir.mkdir(parents=True, exist_ok=True)
         job.projekt.mkdir(parents=True, exist_ok=True)
@@ -775,6 +786,16 @@ class DevAgent:
         """Auftrag auf Sokrates-2: ssh ... "start <job> <projekt> <art> [<session>]", Auftrag als JSON-Zeile
         über stdin, stdin bleibt als Lebenslinie offen, stdout ist stream-json wie lokal."""
         system_append = f"{rules_for(self._auftraggeber, 'sokrates2')}\n\n{anweisungsblock(job.art)}"
+        token = await self._token_quelle() if self._token_quelle is not None else None
+        if self._token_quelle is not None and not token:
+            # Kein Token (gelöscht, nur Hausmodelle gewählt, nicht lesbar): kein Lauf, und nie ein Rückfall auf den
+            # Zugang der Sandbox, der einer anderen Person gehört
+            job.status = "nicht gestartet (kein nutzbarer Claude-Code-Token)"
+            job.result = ("Der Auftrag wurde nicht gestartet: Für dieses Profil ist kein nutzbarer Claude-Code-Token "
+                          "hinterlegt. Er lässt sich im Bereich Modellzugang eintragen.")
+            await self._canvas(job)
+            await self._announce(job)
+            return
         args = ["start", job.id, job.projekt.name, job.art]
         if resume and job.session_id:
             args.append(job.session_id)
@@ -799,8 +820,17 @@ class DevAgent:
                 kopf_daten["modell"] = modell_wunsch()
             if job.repo:  # im App-Modus gilt das GitHub-Token dann nur für dieses Repo
                 kopf_daten["repo"] = job.repo
+            if token:
+                kopf_daten["token_folgt"] = True  # der Dispatcher liest genau eine weitere Zeile (siehe unten)
             kopf = json.dumps(kopf_daten, ensure_ascii=False) + "\n"
+            if token:
+                # Zweite stdin-Zeile: {"claude_code_token": "<Token der Person>"}. Nur über stdin, nie in argv, Umgebung
+                # dieses Prozesses, Log oder Job-Datei; der Dispatcher setzt ihn als CLAUDE_CODE_OAUTH_TOKEN in die
+                # Sandbox dieses einen Laufs (statt des Zugangs aus geheim.env) und schwärzt ihn in der Ausgabe.
+                kopf += json.dumps({"claude_code_token": token}) + "\n"
+            token = None  # nicht länger als nötig im Speicher halten
             self._proc.stdin.write(kopf.encode("utf-8"))
+            kopf = ""
             await self._proc.stdin.drain()  # stdin NICHT schließen: Lebenslinie des entfernten Auftrags
             await asyncio.wait_for(self._read_stream(job), JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS)
             await asyncio.wait_for(self._proc.wait(), 30)
