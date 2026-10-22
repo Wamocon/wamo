@@ -134,6 +134,7 @@ QUELLE="$HERE"                # enthält ui/ und wamo-ui/ (verteilt nach ~/wamo-
 BAUDATEI=""                   # leer: wamo-ui/Dockerfile
 BAUKONTEXT=""                 # leer: ui/
 PLATTFORM=linux/arm64
+BEREIT_S=90                   # so lange darf ein neuer Container zum Starten brauchen
 CADDY_IMAGE=caddy:2.11.2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d
 if [ "$TESTMODUS" = ja ]; then
   pfad_pruefen() {
@@ -148,6 +149,10 @@ if [ "$TESTMODUS" = ja ]; then
   BAUDATEI="${WAMO_UI_BAUDATEI:-}"
   BAUKONTEXT="${WAMO_UI_BAUKONTEXT:-}"
   PLATTFORM=""
+  if [ -n "${WAMO_UI_BEREIT_S:-}" ]; then
+    [[ "$WAMO_UI_BEREIT_S" =~ ^[0-9]{1,3}$ ]] || aufruf_fehler "WAMO_UI_BEREIT_S ist ungültig."
+    BEREIT_S="$((10#$WAMO_UI_BEREIT_S))"
+  fi
 fi
 KONF="$BASIS/wamo-ui.conf"
 COMPOSE="$BASIS/docker-compose.yml"
@@ -704,7 +709,7 @@ cmd_bauen() {
   schloss
   caddy_laeuft || fehler "$C_CADDY läuft nicht."
   bauen_und_starten "$ziel"
-  bereit_warten "$(host_von "$ziel")" "$ERW_VERSION" "$ERW_COMMIT" 90 || { farbe_anhalten "$ziel"; exit 3; }
+  bereit_warten "$(host_von "$ziel")" "$ERW_VERSION" "$ERW_COMMIT" "$BEREIT_S" || { farbe_anhalten "$ziel"; exit 3; }
   fassung_pruefen "$(host_von "$ziel")" || { farbe_anhalten "$ziel"; exit 3; }
   echo "BEREIT farbe=$ziel version=$ERW_VERSION commit=$ERW_COMMIT"
 }
@@ -748,7 +753,7 @@ cmd_umschalten() {
     bauen_und_starten "$ziel"
   fi
   echo "== Prüfung des neuen Containers $host"
-  if ! { bereit_warten "$host" "$ERW_VERSION" "$ERW_COMMIT" 90 && fassung_pruefen "$host" && kern_pruefen; }; then
+  if ! { bereit_warten "$host" "$ERW_VERSION" "$ERW_COMMIT" "$BEREIT_S" && fassung_pruefen "$host" && kern_pruefen; }; then
     farbe_anhalten "$ziel"
     echo "Prüfung fehlgeschlagen, nichts umgeschaltet ($alt_live bleibt live)." >&2
     exit 3
@@ -873,7 +878,7 @@ cmd_anker_rueckweg() {
     echo "== $host aus $archiv starten"
     docker tag "$archiv" "$BILD:$ziel"
     farbe_starten "$ziel"
-    bereit_warten "$host" "$ver" "$com" 60 || { farbe_anhalten "$ziel"; exit 6; }
+    bereit_warten "$host" "$ver" "$com" "$BEREIT_S" || { farbe_anhalten "$ziel"; exit 6; }
   fi
   echo "ZEIT schalten_beginn=$(zeit)"
   include_setzen "$ziel" "$LIVE" || { echo "Rückweg ließ sich nicht schalten." >&2; exit 5; }

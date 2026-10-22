@@ -20,10 +20,13 @@ const info = {
   gebaut: env.WAMO_BAUZEIT || "unbekannt",
   sauber: env.WAMO_SAUBER === "ja",
 };
+// Modus "ohne-csp": der Build kennt Anmeldung und Kern nicht (falsche Adressen), die Prüfung vor dem Umschalten muss das erkennen
 const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
-  `connect-src 'self' ${env.NEXT_PUBLIC_SUPABASE_URL || ""} ${env.NEXT_PUBLIC_WAMO_KERN_BUERO || ""}`.trim(),
+  MODUS === "ohne-csp"
+    ? "connect-src 'self'"
+    : `connect-src 'self' ${env.NEXT_PUBLIC_SUPABASE_URL || ""} ${env.NEXT_PUBLIC_WAMO_KERN_BUERO || ""}`.trim(),
 ].join("; ");
 const kopf = {
   "Content-Security-Policy": csp,
@@ -45,7 +48,8 @@ http
       return;
     }
     const url = new URL(req.url, "http://x");
-    if (url.pathname === "/version.json") {
+    // Modus "alt": die Fassung vor der Umstellung auf blau/grün kennt /version.json nicht
+    if (url.pathname === "/version.json" && MODUS !== "alt") {
       res.writeHead(200, { ...kopf, "Content-Type": "application/json", "Cache-Control": "no-store" });
       res.end(JSON.stringify(info));
       return;
