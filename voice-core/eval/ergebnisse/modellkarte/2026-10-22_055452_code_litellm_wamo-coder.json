@@ -1,0 +1,65 @@
+{
+ "zeitpunkt": "2026-10-22T05:54:52+02:00",
+ "anbieter": "litellm",
+ "modell": "wamo-coder",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "code",
+ "faelle": [
+  {
+   "id": "roemisch",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 28.65,
+   "ausgabe_tokens": 303
+  },
+  {
+   "id": "dauer",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 6.52,
+   "ausgabe_tokens": 225
+  },
+  {
+   "id": "intervalle",
+   "ok": false,
+   "grund": "AssertionError",
+   "dauer_s": 5.08,
+   "ausgabe_tokens": 160
+  },
+  {
+   "id": "luhn",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 7.95,
+   "ausgabe_tokens": 283
+  },
+  {
+   "id": "lru",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 8.69,
+   "ausgabe_tokens": 292
+  },
+  {
+   "id": "flach",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 2.44,
+   "ausgabe_tokens": 68
+  },
+  {
+   "id": "woerter",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 5.83,
+   "ausgabe_tokens": 195
+  },
+  {
+   "id": "iban",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 10.14,
+   "ausgabe_tokens": 369
+  }
+ ]
+}

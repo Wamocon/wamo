@@ -1,0 +1,27 @@
+{
+ "zeitpunkt": "2026-10-22T06:38:36+02:00",
+ "anbieter": "litellm",
+ "modell": "wamo-allgemein",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "analyse",
+ "laeufe": [
+  {
+   "lauf": 1,
+   "richtig": 6,
+   "von": 6,
+   "dauer_s": 1.96,
+   "gruende": [],
+   "eingabe_tokens": 5510,
+   "ausgabe_tokens": 53
+  },
+  {
+   "lauf": 2,
+   "richtig": 6,
+   "von": 6,
+   "dauer_s": 1.66,
+   "gruende": [],
+   "eingabe_tokens": 5510,
+   "ausgabe_tokens": 49
+  }
+ ]
+}

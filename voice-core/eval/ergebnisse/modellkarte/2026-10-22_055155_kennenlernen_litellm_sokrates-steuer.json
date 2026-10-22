@@ -1,0 +1,10 @@
+{
+ "zeitpunkt": "2026-10-22T05:51:55+02:00",
+ "anbieter": "litellm",
+ "modell": "sokrates-steuer",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "kennenlernen",
+ "antwort": "Ich bin für die Beantwortung von Fragen und das Lösen von Problemen gedacht.",
+ "dauer_s": 10.47,
+ "fehler": null
+}

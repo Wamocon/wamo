@@ -1,7 +1,16 @@
 import type { BotOutputData } from "@pipecat-ai/client-js";
 import type { CanvasItem } from "@/components/Canvas";
 import type { Betriebsart } from "@/lib/betriebsart";
-import type { Activity, Auftrag, Betrieb, Gemerkt, Modellzugang, Profil, ServerMessage } from "@/lib/nachrichten";
+import type {
+  Activity,
+  Auftrag,
+  Betrieb,
+  Gemerkt,
+  Kontingent,
+  Modellzugang,
+  Profil,
+  ServerMessage,
+} from "@/lib/nachrichten";
 import { createStore } from "@/lib/store";
 
 /**
@@ -94,6 +103,8 @@ export type WamoState = {
   profil: Profil | null;
   /** Modellzugang des Profils (eigener Claude-Schlüssel oder Hausmodelle), null bis der Kern ihn meldet */
   modellzugang: Modellzugang | null;
+  /** Kontingent des Max-Abos (Sitzungs-, Wochen- und Modell-Wochenlimit), null bis der Kern es meldet; die Anzeige folgt */
+  kontingent: Kontingent | null;
   memos: Memo[];
   micOn: boolean;
   /** Name des Mikrofons der laufenden Verbindung (aus der Spur), null ohne Verbindung */
@@ -128,6 +139,7 @@ export const initialState: WamoState = {
   kern: null,
   profil: null,
   modellzugang: null,
+  kontingent: null,
   memos: [],
   micOn: true,
   mikrofon: null,
@@ -316,8 +328,13 @@ function planeAblauf(a: Approval) {
   );
 }
 
+// Zählt die Zurücksetzungen: Antworten auf Aufrufe, die vor dem Abmelden starteten, gehören nicht mehr in den Store
+let epoche = 0;
+export const wamoEpoche = () => epoche;
+
 /** Alle Timer stoppen und den Zustand zurücksetzen (Abmelden, Vorschau). */
 export function resetWamo(state: WamoState = initialState) {
+  epoche += 1;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = null;
   for (const t of ablaufTimer.values()) clearTimeout(t);
@@ -413,6 +430,9 @@ export function applyServerMessage(msg: ServerMessage) {
         entwicklung: msg.entwicklung,
         pcName: msg.pcName,
         pcBelegt: msg.pcBelegt,
+        modellModus: msg.modellModus,
+        modellQuelle: msg.modellQuelle,
+        modellHinweis: msg.modellHinweis,
       };
       const vorher = wamo.get().betrieb;
       wamo.set((s) => ({
@@ -424,6 +444,9 @@ export function applyServerMessage(msg: ServerMessage) {
       if (vorher && vorher.pc === "verbunden" && betrieb.pc === "getrennt") zeigeToast("PC nicht erreichbar");
       if (vorher && vorher.pc !== "gesperrt" && betrieb.pc === "gesperrt") zeigeToast("Bildschirm am PC gesperrt");
       if (betrieb.pcBelegt && !vorher?.pcBelegt) zeigeToast("Eine andere Sitzung steuert diesen PC gerade");
+      // Der Boss musste ein anderes Gesprächsmodell nehmen als das beste (zu langsam, nicht erreichbar): klar sagen
+      if (betrieb.modellHinweis && betrieb.modellHinweis !== vorher?.modellHinweis)
+        zeigeToast(`Gesprächsmodell ${betrieb.modelle.llm ?? ""}: ${betrieb.modellHinweis}`.replace("  ", " "));
       return;
     }
     case "gemerkt":
@@ -453,6 +476,12 @@ export function applyServerMessage(msg: ServerMessage) {
         // Ohne lesbaren Stand (nur Fehler) bleibt der letzte bekannte Stand stehen, mit dem Fehler daran
         modellzugang: stand.art ? stand : s.modellzugang ? { ...s.modellzugang, aktion: stand.aktion, fehler: stand.fehler } : stand,
       }));
+      return;
+    }
+    case "kontingent": {
+      const { type: _typ, ...stand } = msg;
+      void _typ;
+      wamo.set((s) => ({ ...s, kontingent: stand }));
       return;
     }
     case "leiser_stopp":

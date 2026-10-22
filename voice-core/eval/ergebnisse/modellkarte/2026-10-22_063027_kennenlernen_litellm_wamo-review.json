@@ -1,0 +1,10 @@
+{
+ "zeitpunkt": "2026-10-22T06:30:27+02:00",
+ "anbieter": "litellm",
+ "modell": "wamo-review",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "kennenlernen",
+ "antwort": "Ich bin ein KI-Assistent, der darauf ausgelegt ist, Fragen zu beantworten, Informationen bereitzustellen und bei verschiedenen Aufgaben zu helfen.",
+ "dauer_s": 12.47,
+ "fehler": null
+}

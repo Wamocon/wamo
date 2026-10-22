@@ -67,6 +67,7 @@ Datei `/etc/wamo/geheim.env` (Rechte 640, root:wamo). Nie ins Repository.
 | Variable | Wofür | Empfehlung für minimale Rechte |
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` oder `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code ohne Bildschirm | Firmen-API-Schlüssel mit Ausgabenlimit, oder Abo-Token aus `claude setup-token` |
+| `WAMO_SERVERZUGANG` | `aus` sperrt den Rückfall auf den Claude-Zugang dieser Datei für Läufe ohne persönlichen Zugang (Standard `an`); Abschnitt 9, Persönlicher Claude-Zugang | `aus`, sobald jedes Profil seinen eigenen Zugang hinterlegt hat |
 | `ANTHROPIC_WORKSPACE_ID` | Pflicht bei einem Organisationsschlüssel (`wrkspc_…`), wird als Header `anthropic-workspace-id` mitgeschickt | derselbe Wert wie in der `.env` des PCs |
 | `WAMO_GH_APP_ID` | App-ID der GitHub-App (nur Ziffern); schaltet zusammen mit den beiden folgenden den App-Modus ein | Anleitung unten |
 | `WAMO_GH_APP_INSTALLATION_ID` | Installation-ID der App in der Organisation (nur Ziffern) | Anleitung unten |
@@ -150,10 +151,16 @@ Hinweise zum Betrieb:
 - Fehlt beim Auftrag das Ziel-Repo, gilt das Token für alle Repos der Installation (mit den Rechten der Art). Das
   Sprachmodell setzt `repo`, wenn der Auftrag ein Repo nennt; nennt der Auftragstext mehrere Repos, fragt WAMO nach.
 - `contents: write` erlaubt Push in die Zielrepos, `pull_requests: write` auch das Mergen eines Pull Requests über die
-  API. In jedem Zielrepo deshalb ein Ruleset für den Standardbranch einrichten und verbindlich so setzen: kein direkter
-  Push, Pull Request Pflicht, mindestens eine Genehmigung durch einen Menschen, die App nicht als „Bypass actor“
-  eintragen. Ohne diese Regel kann ein Auftrag seinen eigenen Pull Request mergen. Der Wächter verlangt für `git push`
-  ohnehin eine Freigabe, das Token selbst bleibt aber in der Sandbox nutzbar (der Ausgangsfilter lässt Port 443 offen).
+  API. Der stärkste Schutz ist ein Ruleset für den Standardbranch jedes Zielrepos: kein direkter Push, Pull Request
+  Pflicht, mindestens eine Genehmigung durch einen Menschen, die App nicht als „Bypass actor“ eintragen. Ohne diese Regel
+  kann ein Auftrag seinen eigenen Pull Request mergen. Der Wächter verlangt für `git push` ohnehin eine Freigabe, das
+  Token selbst bleibt aber in der Sandbox nutzbar (der Ausgangsfilter lässt Port 443 offen).
+  **Voraussetzung:** Rulesets und Branch-Schutz gibt es für private Repos erst ab dem Tarif GitHub Team (Stand
+  22.10.2026: die Organisation Wamocon nutzt den kostenlosen Tarif, GitHub antwortet mit „Upgrade to GitHub Pro“).
+  Ohne Upgrade bleibt das Restrisiko: Ein gekaperter Auftrag könnte in den Zielrepos direkt auf den Standardbranch
+  pushen. Abmildern: die App nur auf die Repos installieren, die WAMO braucht, schreibende Auftragsarten nur nach
+  Freigabe starten, Pushes und Merges in den Zielrepos regelmäßig prüfen (GitHub, Aktivität) und bei Auffälligkeiten
+  die Installation der App sofort entfernen.
 - Der Schlüssel ist das eigentliche Geheimnis (er stellt Token für alle Rechte der App aus): nur in `/etc/wamo`, nie in
   die Sandbox, nie in ein Repository, bei Verdacht in GitHub löschen und neu erzeugen.
 - Der GitHub-MCP-Server in der Sandbox verbindet sich mit dem App-Token. Meldet `--mcp` github als nicht verbunden,
@@ -388,7 +395,8 @@ Rauchtest danach immer: `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-r
 | Ausgangsfilter | `/etc/wamo/egress.nft`, `wamo-egress.service` | nft-Tabelle `inet wamo_egress`, nur für uid `wamo` |
 | SSH | `/etc/ssh/authorized_keys.d/wamo`, `/etc/ssh/sshd_config.d/wamo.conf` | Schlüssel mit `restrict,from="192.168.178.0/24",command=...`; `Match User wamo` mit `ForceCommand`, nur Public Key, keine Weiterleitungen, kein TTY, `PermitUserRC no`, `MaxSessions 2` |
 | Version | `CLAUDE_VERSION` in `/opt/wamo/wamo-job.conf` | nach einem Update von Claude Code startet nichts, bis das Einrichtungsskript und der Rauchtest liefen |
-| Modell | `modell` je Karte in `voice-core/werkzeugkarte.py` | Standard für alle Arten `claude-haiku-5-5` (Sonnet kostet etwa das Dreifache); `claude-sonnet-5-5` oder `claude-opus-5-5` nur über `WAMO_ENTWICKLUNG_MODELL` in der `.env` des PCs (nur Namen aus `MODELLE_ERLAUBT`, über die Kopfzeile an den Dispatcher) |
+| Modell | `modell` je Karte in `voice-core/werkzeugkarte.py`, Wahl nach Zugangsart in `modell_waehlen` (Dispatcher) | Mit API-Schlüssel (Guthaben) Standard für alle Arten `claude-haiku-5-5` (Sonnet kostet etwa das Dreifache), mit Abo-Zugang (Max-Token) `claude-sonnet-5-5`; `claude-opus-5-5` oder ein anderes Modell nur über `WAMO_ENTWICKLUNG_MODELL` in der `.env` des PCs (nur Namen aus `MODELLE_ERLAUBT`, über die Kopfzeile an den Dispatcher) |
+| Claude-Zugang | zweite stdin-Zeile von `start`, `WAMO_SERVERZUGANG` in `geheim.env` | persönlicher Zugang des Profils für genau einen Lauf, Rückfall auf `geheim.env` nur wenn erlaubt (unten) |
 | GitHub-Zugang | `GITHUB_ZUGRIFF` und `GITHUB_APP_RECHTE` in `voice-core/werkzeugkarte.py`, Schlüssel `/etc/wamo/gh-app.pem` | im App-Modus je Lauf ein kurzlebiges Installations-Token mit den Rechten der Art, auf Wunsch nur für ein Repo, am Laufende widerrufen (unten) |
 
 GitHub-CLI im Auftrag: ohne Karte nur lesende Befehle (`gh repo view/list/clone`, `gh pr view/list/diff/checks/status/
@@ -444,6 +452,98 @@ Sandbox:
 `wamo-job-dispatch ping` meldet `"github": "app"`, `"token"` (Rückfall) oder `"fehler: <Grund>"`, ohne Netz. Der Rauchtest
 prüft den App-Modus mit `--attrappe` ohne echte GitHub-Aufrufe und mit `--app-echt` gegen die eingerichtete App
 (nur lesend).
+
+### Persönlicher Claude-Zugang je Profil und Kontingent des Max-Abos (eingerichtet am 22.10.2026)
+
+Jeder Lauf nutzt den Claude-Zugang des Profils, das den Auftrag stellt: den Max-Token aus `claude setup-token` (Kontingent
+des Abos) oder einen Anthropic-API-Schlüssel (monatliches Guthaben). Beide hinterlegt der Kollege selbst, verschlüsselt, in der
+Karte Modellzugang. Der Zugang in `geheim.env` (Nikos Schlüssel) bleibt nur als Rückfall für genau ein Profil.
+
+Ablauf je Lauf (Kern in `voice-core/dev_agent.py`, Dispatcher in `wamo_job_dispatch.py`):
+
+1. Der Kern holt den Zugang frisch (`modellzugang.claude_code_zugang_fuer`) und sendet ihn nach der Kopfzeile als zweite
+   stdin-Zeile `{"typ": "oauth" | "api", "wert": "…", "workspace": "wrkspc_…" (nur api, optional)}` per SSH. Die Kopfzeile
+   trägt nur `"zugang": "folgt"` und `"profil"` (die ersten 8 Zeichen der Profil-UUID, nur zur Zuordnung), nie den Wert. Der
+   Wert steht nie in argv, in der Umgebung des ssh-Prozesses, im Log, im Audit, in Ereignissen oder in Fehlertexten. Nach
+   `approve` und beim Fortsetzen sendet der Kern ihn erneut, der Dispatcher speichert nichts.
+2. Der Dispatcher liest die Zeile vor Sperren und Selbsttest (höchstens 2 KiB, 30 Sekunden) und prüft streng: nur die
+   Felder `typ`, `wert`, `workspace`; `oauth` verlangt `sk-ant-oat…`, `api` verlangt `sk-ant-api…` (Admin- und Sitzungsschlüssel
+   passen auf keins von beiden); `folgt` ohne `profil` wird abgewiesen. Bei einem Fehler endet der Start mit Code 2 und dem
+   Ereignis `zugang_ungueltig`, der Text nennt nie etwas aus der Zeile.
+3. In der Sandbox steht genau eine Claude-Variable: `CLAUDE_CODE_OAUTH_TOKEN` (oauth) oder `ANTHROPIC_API_KEY` (api). Aus
+   `geheim.env` kommt dann nichts dazu, auch nicht der Workspace-Header des Organisationsschlüssels (kein Mischen mit einem
+   fremden Schlüssel). Die Dienst-Token der Auftragsart (GitHub, Vercel …) bleiben wie bisher.
+4. Rückfall auf `geheim.env`: nur mit `"zugang": "server"` oder ohne das Feld (ältere Kerne). Der Kern erlaubt das nur dem
+   Profil in `WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL` (leer: `WAMO_CLAUDE_SCHLUESSEL_PROFIL`). Alle anderen bekommen ohne eigenen
+   Zugang die Meldung „kein Claude-Zugang“ und es startet nichts. `WAMO_SERVERZUGANG=aus` in `geheim.env` sperrt den Rückfall im
+   Dispatcher ganz (Code 5, Ereignis `keine_zugangsdaten`); jeder andere Wert als `an`, `ja`, `1`, `true`, `on` und jeder
+   Tippfehler im Namen (`WAMO_SERVER…`) sperrt ebenfalls. `ping` meldet `"serverzugang": true|false`.
+5. Buchführung je Projekt: ein persönlicher Zugang heißt `CLAUDE_CODE_OAUTH_TOKEN@<profil>` bzw. `ANTHROPIC_API_KEY@<profil>`
+   (nie der Wert). Kommt in einem Projekt mit Inhalt der Zugang einer anderen Person (oder der Serverzugang) dazu, verlangt der
+   Dispatcher wie bei jedem neuen Token eine Freigabe (Karte „mehr Zugänge“).
+6. Modell nach Zugangsart (`modell_waehlen`): Abo-Zugang (oauth) `claude-sonnet-5-5`, API-Schlüssel das Modell der Art (derzeit
+   `claude-haiku-5-5`). Übersteuerung nur über `WAMO_ENTWICKLUNG_MODELL` bzw. das Kopfzeilenfeld `modell`, nur mit Namen aus
+   `MODELLE_ERLAUBT`.
+7. Schwärzung: Der Wert und jeder `sk-ant-…`-Schlüssel wird in der Ausgabe zum PC, im Protokoll `lauf.log` und nach dem Lauf in
+   allen Dateien unter `claude/` (Sitzungen für `--resume`) durch `[CLAUDE_ZUGANG]` ersetzt. Bleibt etwas offen (nicht lesbar,
+   Grenzen überschritten), löscht der Dispatcher `claude/projects` und schreibt `schwaerzen_unvollstaendig` ins Audit. Kodierte
+   Formen (etwa Base64) fängt das nicht. Das Audit nennt nur `claude=persoenlich-oauth|persoenlich-api|server` und die Kennung
+   `…@<profil>`.
+
+Risiko, bewusst akzeptiert: Der Token liegt für die Dauer des Laufs in der Umgebung der Sandbox, genau wie `GH_TOKEN`. Ein
+gekaperter Auftrag (Prompt-Injection über Webseiten oder Dateien) könnte ihn lesen und über Port 443 abfließen lassen.
+Gegenmittel: (a) Tokens aus `claude setup-token` gelten nur für Claude Code (reine Inferenz, Umfang `user:inference`; Claude Code
+2.1.303 beschreibt sie selbst als „limited to inference-only“), nicht für Konto, Verwaltung oder Chats; (b) der Kollege kann den
+Token jederzeit in seinem Claude-Konto widerrufen und in der Karte Modellzugang löschen (die genaue Stelle im Claude-Konto beim
+ersten echten Test prüfen und hier eintragen); (c) der Wächter `dev_guard.py` sperrt Befehle, die die Variablen nennen, sowie
+`env`, `printenv` und `environ`; (d) Schwärzung wie oben; (e) höchstens ein Auftrag gleichzeitig, Zeitlimit je Lauf. Nicht
+einsetzbar: `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` würde Anthropic-Zugänge aus Unterprozessen entfernen, erzwingt in Claude Code
+2.1.303 aber den Berechtigungsmodus `default` und passt damit nicht zu `bypassPermissions` (im Versuch mit der Attrappe
+bestätigt). Empfehlung: den Token nur für WAMO erzeugen, nicht für andere Zwecke mitnutzen.
+
+Kontingent des Max-Abos (Sitzungslimit, Wochenlimit, Modell-Wochenlimit):
+
+- Quelle ist das Ereignis `rate_limit_event` im stream-json von Claude Code (geprüft gegen Version 2.1.303 mit der API-Attrappe
+  des Rauchtests, die die Kopfzeilen `anthropic-ratelimit-unified-*` schickt). Es erscheint nur bei einem Abo-Zugang: API-Schlüssel
+  tragen diese Kopfzeilen nicht. Felder in `rate_limit_info`: `status` (`allowed`, `allowed_warning`, `rejected`), `rateLimitType`,
+  `resetsAt` (Unix-Sekunden), `utilization` (Bruchteil) und `unifiedWindows` mit `five_hour` (Sitzungslimit, 5 Stunden), `seven_day`
+  (Wochenlimit, alle Modelle) und `seven_day_overage_included` (modellbezogenes Wochenlimit, in Claude Code „Fable limit“), je mit
+  `utilization` und `resetsAt`. Ältere Namen: `seven_day_opus`, `seven_day_sonnet`.
+- Der Dispatcher gibt daraus (nur Felder einer festen Allowlist, Wertebereich geprüft, Zeilen aus der Sandbox sind nicht
+  vertrauenswürdig, `voice-core/kontingent.py`) das Ereignis `{"type": "wamo", "ereignis": "kontingent", "quelle":
+  "rate_limit_event", "limits": [{"art": "sitzung" | "woche" | "opus" | "sonnet" | "fable", "prozent": 42.0, "endet":
+  "2026-10-22T15:00:00Z", "status": "ok" | "warnung" | "erreicht"}]}` weiter, höchstens alle 2 Sekunden und nur bei geänderten Werten.
+- Der Kern prüft es erneut, legt es über den bekannten Stand (abgelaufene Fenster fallen weg), speichert es je Profil
+  (`model_access.kontingent`, `kontingent_stand`, Migration 0012, nur der Kern hat Rechte darauf) und schickt die Servernachricht
+  `{"type": "kontingent", "zustand": "bekannt" | "unbekannt", "stand": "…", "limits": [...]}` an die Oberfläche (`ui/src/lib/
+  nachrichten.ts`, Zustand `kontingent`). Die Client-Nachricht `{"type": "kontingent"}` fragt den gespeicherten Stand ab. Ohne
+  Daten ist der Zustand „unbekannt“. Das Kontingent des Serverzugangs wird nicht gespeichert (es gehört nicht dem Profil).
+- Ohne laufenden Auftrag lässt sich das Kontingent mit diesem Token nicht abfragen: `/usage` und `GET /api/oauth/usage` brauchen
+  den Umfang `user:profile`, den Tokens aus `claude setup-token` nicht haben, und der Token darf nur von Claude Code verwendet
+  werden. Die Anzeige zeigt deshalb den Stand des letzten Laufs mit Zeitangabe. Möglich wäre ein Mini-Lauf (eine Antwort mit
+  Haiku, wenige Token): er kostet etwas Kontingent und kann ein neues 5-Stunden-Fenster beginnen, deshalb ist er nicht gebaut.
+- Der Name des modellbezogenen Limits („Fable“) kommt in Claude Code nur aus `/usage`; aus dem Ereignis ist nur die Art
+  `fable` (`seven_day_overage_included`) bekannt. Beim ersten echten Test prüfen, ob die Prozentwerte zur Anzeige in Claude Code
+  passen.
+- Beim API-Schlüssel gibt es kein Kontingent; die Kosten je Auftrag stehen auf dem Canvas (`total_cost_usd`).
+
+Schritt für Schritt, was ein Kollege tut:
+
+1. Auf dem eigenen Rechner, angemeldet mit dem eigenen Max-Abo, `claude setup-token` ausführen und den Token (`sk-ant-oat01-…`,
+   wird nur einmal angezeigt) kopieren. Alternativ im Anthropic-Konto einen API-Schlüssel (`sk-ant-api03-…`) für das monatliche
+   Guthaben erzeugen.
+2. In WAMO die Karte Modellzugang öffnen, den Token bzw. Schlüssel einfügen und speichern (er wird verschlüsselt abgelegt und
+   nie wieder angezeigt, nur die letzten vier Zeichen).
+3. Einen Entwicklungsauftrag stellen und starten. Mit dem Token läuft er mit Sonnet auf dem Kontingent des Abos, mit dem
+   API-Schlüssel mit Haiku auf dem Guthaben. Nach dem ersten Lauf erscheint das Kontingent.
+4. Zum Wechseln oder bei Verdacht: Token im Claude-Konto widerrufen, in der Karte Modellzugang löschen, neu erzeugen.
+
+Betrieb (Niko): Zuerst den Dispatcher ausrollen (`ping` meldet `"version": "5"`), erst danach den Kern neu starten, sonst
+weist ein alter Dispatcher die neuen Kopfzeilenfelder ab. Migration 0012 auf `wamo_dev` und `wamo_test` ist angewendet, für
+`wamo_prod` nach 0010 und 0011 anwenden (Reihenfolge einhalten, nach jedem erneuten Lauf von 0010 oder 0011 auch 0012 erneut).
+`WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL` in der `.env` des Kerns setzen (oder `WAMO_CLAUDE_SCHLUESSEL_PROFIL` beibehalten).
+Haben alle Kollegen ihren eigenen Zugang, in `geheim.env` `WAMO_SERVERZUGANG=aus` setzen. Rauchtest mit den Attrappen:
+`ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp --attrappe --token-attrappe"`.
 
 Ausgangsfilter: Für Sockets des Benutzers `wamo` gilt nur Internet auf TCP 80 und 443, DNS an `127.0.0.53` und auf
 Loopback `127.0.0.1:20000-20999` für eigene Entwicklungsserver eines Auftrags. IPv6, LAN, Docker-Netze, private

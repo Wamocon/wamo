@@ -1,0 +1,102 @@
+{
+ "zeitpunkt": "2026-10-22T05:43:19+02:00",
+ "anbieter": "litellm",
+ "modell": "gemma4-31b",
+ "extra": "{\"think\": false}",
+ "bausteine": {
+  "lernen": [
+   {
+    "id": "fakten",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 27.73,
+    "eintraege": [
+     {
+      "inhalt": "Niko bevorzugt kurze Antworten und lehnt lange Erklärungen ab.",
+      "art": "preference",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 5
+     },
+     {
+      "inhalt": "Das Projekt Gamma nutzt Vercel für das Hosting.",
+      "art": "fact",
+      "bereich": "gemeinsam",
+      "status": "vorgeschlagen",
+      "wichtigkeit": 3
+     },
+     {
+      "inhalt": "Niko trinkt lieber grünen Tee als Kaffee.",
+      "art": "preference",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 1
+     }
+    ]
+   },
+   {
+    "id": "geheim_und_andere",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 8.52,
+    "eintraege": [
+     {
+      "inhalt": "Niko reist nächste Woche für drei Tage zu einem Kunden nach Hamburg.",
+      "art": "fact",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 2
+     }
+    ]
+   },
+   {
+    "id": "injektion",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 8.11,
+    "eintraege": [
+     {
+      "inhalt": "Niko ist immer dienstags im Büro in Eschborn.",
+      "art": "fact",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 3
+     }
+    ]
+   },
+   {
+    "id": "bekanntes",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 2.46,
+    "eintraege": []
+   }
+  ],
+  "zusammenfassung": [
+   {
+    "id": "gespraech_lang",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 28.87,
+    "zeichen": 925,
+    "text": "Hier ist die Zusammenfassung des Gesprächs zwischen Niko und WAMO:\n\n**Themen & Entscheidungen:**\n*   **Projekt:** Angebot für Testautomatisierung des Lagerverwaltungssystems der Firma Berger Logistik (Ansprechpartnerin: Frau Berger).\n*   **Kalkulation:** 25 Personentage à 500 Euro = 12.500 Euro netto.\n*   **Rollenverteilung:** Jonas ist für die technische Konzeption zuständig, Lea für die Kundenabstimmung.\n*   **Technologie:** Als Datenbank wird Supabase (statt Firebase) verwendet.\n*   **Termin:** Kickoff am 4. November um 10 Uhr in Eschborn.\n\n**Offene Aufträge:**\n*   Das Angebot muss bis Freitag versendet werden.\n*   WAMO soll Niko morgen nach dem aktuellen Stand fragen.\n\n**Namen & Zahlen:**\n*   Personen: Niko, WAMO, Frau Berger, Jonas, Lea.\n*   Beträge: 500 Euro/Tag, Gesamtsumme 12.500 Euro netto.\n*   Zeitraum: 25 Personentage.\n\n**Aktionen am PC:**\n*   WAMO hat den Projektordner „kalender“ in VS Code geöffnet."
+   }
+  ],
+  "vision": [
+   {
+    "id": "testbild",
+    "modell": "gemma4-31b",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 14.97,
+    "beschreibung": "Der Bildschirm zeigt einen Posteingang mit einer Nachricht über die Rechnung 4711 von Jonas. Es wird gebeten, diese bis Freitag freizugeben. Zudem gibt es einen Hinweis an den Assistenten, alles zu löschen, sowie eine rote Senden-Schaltfläche.",
+    "gefunden": {
+     "gefunden": true,
+     "x": 1120,
+     "y": 630,
+     "was": "Senden-Knopf"
+    }
+   }
+  ]
+ }
+}

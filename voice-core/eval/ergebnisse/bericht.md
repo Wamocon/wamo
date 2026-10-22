@@ -13,6 +13,7 @@ Erzeugt von `voice-core/eval/abnahme.py`. Testsatz `78bbdc4a4f8c`, Prompt `9c67a
 | litellm | qwen3.6-35b | 3 | 78 % | 23/31 / 17/20 | 69 % | 2 / 9 | 94 % | 79 % | ok | 2,69 s / 2,73 s | 2,74 s | 2,81 s | 74 | – | nein |
 | litellm | qwen3.8-27b | 3 | 76 % | 20/31 / 19/20 | 53 % | 2 / 29 | 96 % | 88 % | ok | 1,41 s / 1,59 s | 1,57 s | 1,28 s | 24 | – | nein |
 | litellm | sokrates-fast | 3 | 88 % | 26/31 / 19/20 | 96 % | 2 / 0 | 100 % | 88 % | n02 | 0,64 s / 3,07 s | 0,81 s | 2,00 s | 9 | – | nein |
+| litellm | wamo-allgemein | 1 | 82 % | 22/31 / 20/20 | 51 % | 3 / 23 | 98 % | 79 % | v03 | 1,44 s / 1,52 s | 1,64 s | 2,15 s | 25 | – | offen (1 von 3 Läufen) |
 
 ## Gründe und Auffälligkeiten
 
@@ -65,6 +66,11 @@ Erzeugt von `voice-core/eval/abnahme.py`. Testsatz `78bbdc4a4f8c`, Prompt `9c67a
   - 2026-10-20_1629: Muss-Fälle nicht bestanden: n02
   - erstes Token p95 über 3 Läufe 4,28 s statt höchstens 0,60 s
   - Wechselnde Ergebnisse zwischen den Läufen: c01, c03, i04, m03, n02, p08, v03, v04, w01
+- litellm wamo-allgemein: offen (1 von 3 Läufen).
+  - Werkzeug 42/51 statt mindestens 49 (95 %)
+  - Marker 26/51 statt mindestens 50 (98 %)
+  - erstes Token p95 1,52 s statt höchstens 0,60 s
+  - Muss-Fälle nicht bestanden: v03
 
 ## Alle Läufe
 
@@ -90,6 +96,7 @@ Erzeugt von `voice-core/eval/abnahme.py`. Testsatz `78bbdc4a4f8c`, Prompt `9c67a
 | `2026-10-21_073826_litellm_qwen3.8-27b.json` | qwen3.8-27b | 80 % | 61 % | 100 % | 1,51 s | – | 78bbdc4a4f8c | 9c67aba6e1ae | ja | Hausmodell, think=false |
 | `2026-10-21_074308_litellm_qwen3.8-27b.json` | qwen3.8-27b | 76 % | 53 % | 96 % | 1,59 s | – | 78bbdc4a4f8c | 9c67aba6e1ae | ja | Hausmodell, think=false |
 | `2026-10-21_074542_claude_claude-haiku-5-5.json` | claude-haiku-5-5 | 96 % | 88 % | 98 % | 1,04 s | 0,0633 USD | 78bbdc4a4f8c | 9c67aba6e1ae | ja | Referenz auf aktuellem Testsatz (51 Züge) |
+| `2026-10-22_064337_litellm_wamo-allgemein.json` | wamo-allgemein | 82 % | 51 % | 98 % | 1,52 s | – | 78bbdc4a4f8c | 9c67aba6e1ae | ja | Hausmodell, think=false |
 
 ---
 
