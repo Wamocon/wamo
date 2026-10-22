@@ -186,3 +186,29 @@ async def test_speichern_und_laden_je_profil():
     assert await kt.laden(db, uid) == ([], "2026-10-22T11:59:00Z")
     db.zeilen[uid]["kontingent"] = [{"art": "x", "prozent": 3}]
     assert (await kt.laden(db, uid))[0] == []
+
+
+class KaputteDb(FakeDb):
+    async def fetchrow(self, sql: str, *args):
+        raise RuntimeError("Datenbank weg")
+
+
+async def test_gespeicherter_stand_fuer_die_anzeige():
+    """Sitzungen ohne Entwicklungsaufträge lesen den Stand selbst (Client-Nachricht kontingent in bot.py)."""
+    db, uid = FakeDb(), "0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c"
+    leer = await kt.gespeichert_nachricht(db, uid)
+    assert leer == {"type": "kontingent", "zustand": "unbekannt", "stand": None, "limits": []}
+    weit = [{"art": "sitzung", "prozent": 12.0, "endet": "2099-01-01T00:00:00Z", "status": "ok"}]
+    await kt.speichern(db, uid, weit)
+    bekannt = await kt.gespeichert_nachricht(db, uid)
+    assert bekannt["type"] == "kontingent" and bekannt["zustand"] == "bekannt"
+    assert [l["art"] for l in bekannt["limits"]] == ["sitzung"] and bekannt["stand"] == "2026-10-22T11:59:00Z"
+    # fremdes Profil bekommt nie den Stand eines anderen
+    assert (await kt.gespeichert_nachricht(db, "11111111-2222-4333-8444-555555555555"))["zustand"] == "unbekannt"
+
+
+async def test_gespeicherter_stand_ohne_datenbank_profil_oder_bei_fehler_ist_unbekannt():
+    unbekannt = {"type": "kontingent", "zustand": "unbekannt", "stand": None, "limits": []}
+    assert await kt.gespeichert_nachricht(None, "0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c") == unbekannt
+    assert await kt.gespeichert_nachricht(FakeDb(), None) == unbekannt
+    assert await kt.gespeichert_nachricht(KaputteDb(), "0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c") == unbekannt

@@ -200,6 +200,19 @@ async def laden(db, user_id: str) -> tuple[list[dict], str | None]:
     return limits, jetzt_iso(stand.astimezone(timezone.utc)) if hasattr(stand, "astimezone") else None
 
 
+async def gespeichert_nachricht(db, user_id: str | None) -> dict:
+    """Servernachricht kontingent aus dem gespeicherten Stand, für Sitzungen ohne Entwicklungsaufträge (die Anzeige fragt
+    beim Verbinden danach). Ohne Datenbank, Profil oder Daten und bei einem Lesefehler ist der Zustand "unbekannt";
+    die Anzeige ist eine Zugabe und darf das Gespräch nie stören."""
+    if db is None or not user_id:
+        return nachricht([], None)
+    try:
+        limits, stand = await laden(db, user_id)
+    except Exception:  # noqa: BLE001 (Tabelle fehlt, Datenbank weg: ehrlich "unbekannt")
+        return nachricht([], None)
+    return nachricht(limits, stand)
+
+
 async def speichern(db, user_id: str, limits: list[dict]) -> None:
     """Legt den Stand für das Profil ab (die Zeile entsteht bei Bedarf; Schlüssel und Modellwahl bleiben unberührt)."""
     sauber = limits_pruefen(limits)

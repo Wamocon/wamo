@@ -94,6 +94,7 @@ from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
 from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
+import kontingent
 from llm_anbieter import LLMNichtVerfuegbar, ausblenden_text, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
 from memory import MemoryStore, Profile, ProfileDirectory, Recall, shared_database
 from modellzugang import modellzugang_nachricht, zugang_laden
@@ -884,6 +885,16 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             # Eigener Claude-Schlüssel: hinterlegen, ersetzen, löschen, Stand (gilt ab der nächsten Sitzung).
             # Der Inhalt dieser Nachricht wird nie geloggt und nie zurückgeschickt.
             await modellzugang_nachricht(identity.user_id, data, send)
+        elif msg.type == "kontingent" and not dev:
+            # Anzeige "Verbrauch": gespeicherter Stand des Max-Abos dieses Profils. Mit Entwicklungsaufträgen in der
+            # Sitzung antwortet der DevAgent (er legt Beobachtungen des laufenden Auftrags darüber), sonst liest ihn der Kern.
+            try:
+                kontingent_db = shared_database()
+            except ValueError:
+                kontingent_db = None
+            if kontingent_db is not None and not kontingent_db.configured:
+                kontingent_db = None
+            await send(await kontingent.gespeichert_nachricht(kontingent_db, identity.user_id))
         elif dev:
             await dev.on_client_message(msg.type, data)
 

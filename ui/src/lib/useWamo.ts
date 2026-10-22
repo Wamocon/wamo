@@ -134,7 +134,8 @@ type ClientMessage =
   | { type: "vergessen"; data: { id: string } }
   | { type: "auftrag_start"; data: { job: string; entscheidung: "ja" | "nein" } }
   | { type: "pc_steuerung"; data: { an: boolean } }
-  | { type: "modellzugang"; data: ModellzugangAnfrage };
+  | { type: "modellzugang"; data: ModellzugangAnfrage }
+  | { type: "kontingent"; data: Record<string, never> };
 
 function senden(client: PipecatClient, msg: ClientMessage) {
   client.sendClientMessage(msg.type, msg.data);
@@ -939,6 +940,30 @@ export function useWamo(): WamoAktionen {
       return false;
     }
     return true;
+  }, []);
+
+  // Kontingent des Max-Abos (Einstellungen, Abschnitt Verbrauch): den gespeicherten Stand einmal je Verbindung beim
+  // Kern abfragen. Er antwortet mit der Servernachricht kontingent; ohne Daten ist der Zustand "unbekannt".
+  useEffect(() => {
+    let abgefragt: unknown = null;
+    const pruefe = () => {
+      const s = wamo.get();
+      if (!istOnline(s)) {
+        abgefragt = null;
+        return;
+      }
+      // erst nach der Betriebsmeldung: sie sendet der Kern, sobald der Client bereit ist
+      const client = clientRef.current;
+      if (!s.betrieb || !client || abgefragt === client) return;
+      abgefragt = client;
+      try {
+        senden(client, { type: "kontingent", data: {} });
+      } catch {
+        // die Anzeige ist eine Zugabe: ohne Antwort bleibt es beim Leerzustand
+      }
+    };
+    pruefe();
+    return wamo.subscribe(pruefe);
   }, []);
 
   // Autostart der PC-Steuerung: Einstellung an, Profil admin, PC-Host verbunden und Steuerung aus
