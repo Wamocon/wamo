@@ -7,7 +7,6 @@ import type { ModellModus } from "@/lib/nachrichten";
 import { useSelect } from "@/lib/store";
 import type { ModellzugangAnfrage } from "@/lib/useWamo";
 import { wamo } from "@/lib/wamo";
-import styles from "./ModellZugang.module.css";
 
 /**
  * Umschalter "Modelle: Automatisch | Nur Hausmodelle" in der Karte Modellzugang. Die Wahl gehört der Person und
@@ -72,11 +71,11 @@ export const ModellWahl = memo(function ModellWahl({ senden }: { senden: (anfrag
 
   const angezeigt = wartet ?? aktiv;
   return (
-    <div className={styles.wahl}>
-      <p id="modellwahl-label" className={styles.wahlLabel}>
+    <div className="mz-wahl">
+      <p id="modellwahl-label" className="mz-wahlLabel">
         Modelle
       </p>
-      <div className={`betriebsart-wahl ${styles.wahlGruppe}`} role="radiogroup" aria-labelledby="modellwahl-label" aria-describedby="modellwahl-text">
+      <div className="betriebsart-wahl mz-wahlGruppe" role="radiogroup" aria-labelledby="modellwahl-label" aria-describedby="modellwahl-text">
         {MODI.map((m, i) => (
           <button
             key={m.id}
@@ -96,14 +95,14 @@ export const ModellWahl = memo(function ModellWahl({ senden }: { senden: (anfrag
           </button>
         ))}
       </div>
-      <p id="modellwahl-text" className={styles.klein}>
+      <p id="modellwahl-text" className="mz-klein">
         {modusErklaerung(angezeigt, Boolean(zugang?.hinterlegt) || zugang?.quelle === "zuordnung")}
       </p>
-      <p className={styles.klein} role="status">
+      <p className="mz-klein" role="status">
         {wartet ? "Wird gespeichert …" : wirksamText(zugang, betrieb)}
       </p>
       {fehler && (
-        <p className={styles.meldung} role="alert" data-fehler>
+        <p className="mz-meldung" role="alert" data-fehler>
           {fehler}
         </p>
       )}

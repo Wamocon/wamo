@@ -1,0 +1,203 @@
+/* =====================================================================
+   WAMO Einstellungen (Oberfläche, WMC-Corporate-Design)
+   Eingebunden über globals.css. Die Seite steht in der Wurzel .kz der Kommandozentrale und nutzt deren Farben:
+   Rot #F40E0E als einziger Akzent, Weiß, Schwarz, Grau #F3F3F3, #D9D9D9, #6B6B6B (dunkel die Grundtöne aus
+   globals.css). Kein Blau. Schrift Arial Narrow.
+   Kontrast: Rot nur für Flächen, Linien und Marken, nie für kleine Schrift. Zustand steht immer auch als Text da.
+   Ab 860 px zwei Spalten (Gliederung links, Abschnitt rechts), darunter eine Liste, die in den Abschnitt führt.
+   ===================================================================== */
+
+/* Die Kommandozentrale ist bei offenen Einstellungen nur verborgen, nicht ausgehängt */
+.kz-main[hidden] { display: none; }
+
+/* ---------- Zahnrad in der Kopfzeile, Link in der Seitenleiste ---------- */
+a.topbar-btn { text-decoration: none; color: var(--ink); }
+.einstellungen-btn { width: 44px; padding: 0; }
+.einstellungen-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
+.topbar-btn.einstellungen-btn[aria-current="page"] {
+  background: var(--ink); color: var(--bg); border-color: var(--ink); box-shadow: inset 0 -3px 0 var(--accent);
+}
+/* schmales Handy: das Zahnrad nimmt der Statuszeile so wenig Platz wie möglich */
+@media (max-width: 520px) {
+  .topbar-end { gap: 4px; }
+  .topbar-btn.einstellungen-btn, .kz .menu-btn { width: 40px; }
+}
+.kz-link {
+  align-self: flex-start; min-height: 40px; display: inline-flex; align-items: center;
+  color: var(--ink); font: 700 16px/1 var(--font-wmc);
+  text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 4px;
+}
+
+/* ---------- Rahmen ---------- */
+.ez {
+  position: relative; flex: none; min-height: 0;
+  height: calc(100dvh - var(--top));
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  background: radial-gradient(ellipse 80% 70% at 50% 40%, var(--kz-grund-innen), var(--kz-grund-aussen) 78%);
+}
+.ez-gitter {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: minmax(250px, 320px) minmax(0, 1fr);
+}
+
+/* Hinweis, wenn eine Entscheidung wartet: Freigaben erscheinen nur in der Kommandozentrale */
+.ez-meldung {
+  flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 20px 10px 16px;
+  background: var(--kz-karte); border-bottom: 1px solid var(--kz-akzent-rand); box-shadow: inset 4px 0 0 var(--accent);
+}
+.ez-meldung p { margin: 0; flex: 1 1 240px; font-weight: 700; }
+
+/* ---------- Gliederung (links) ---------- */
+.ez-seite {
+  min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 18px 16px 28px;
+  border-right: 1px solid var(--rule);
+}
+.ez-kopf { display: flex; align-items: center; justify-content: space-between; gap: 10px 12px; flex-wrap: wrap; padding-left: 6px; }
+.ez-titel { margin: 0; font: 700 15px/1.2 var(--font-wmc); letter-spacing: 0.42em; text-transform: uppercase; }
+.ez-titel, .ez-abschnitt-titel { justify-self: start; }
+.ez-titel:focus-visible, .ez-abschnitt-titel:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+.ez-zumgespraech { border-radius: 999px; min-height: 36px; font-size: 15px; }
+.ez-nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.ez-nav-link {
+  position: relative; display: grid; gap: 2px;
+  padding: 10px 12px 10px 14px;
+  border-left: 3px solid transparent; border-radius: 0 8px 8px 0;
+  color: var(--ink); text-decoration: none;
+  transition-property: background-color, border-color; transition-duration: var(--dur-fast);
+}
+.ez-nav-link:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.ez-nav-link[aria-current="page"] { border-left-color: var(--accent); background: color-mix(in srgb, var(--ink) 11%, transparent); }
+.ez-nav-link:focus-visible { outline-offset: -3px; }
+.ez-nav-titel { font: 700 17px/1.2 var(--font-wmc); }
+.ez-nav-kurz { font-size: 14px; line-height: 1.3; color: var(--ink-soft); }
+
+/* ---------- Abschnitt (rechts) ---------- */
+.ez-inhalt {
+  position: relative; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: 22px 28px 56px;
+}
+.ez-inhalt > .hinweis-toast { max-width: 760px; margin: 0 auto 14px; background: var(--kz-karte); border-radius: 12px; }
+.ez-abschnitt { max-width: 760px; margin: 0 auto; }
+.ez-abschnitt-kopf { display: grid; gap: 6px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--rule); }
+.ez-abschnitt-titel {
+  position: relative; margin: 0; padding-top: 16px;
+  font: 700 clamp(26px, 3vw, 34px)/1.1 var(--font-wmc);
+}
+.ez-abschnitt-titel::before { content: ""; position: absolute; top: 0; left: 0; width: 36px; height: 4px; border-radius: 2px; background: var(--accent); }
+.ez-abschnitt-kurz { margin: 0; font-size: 16px; color: var(--ink-soft); }
+.ez-abschnitt-inhalt { display: grid; gap: 16px; min-width: 0; }
+.ez-wege { display: none; justify-content: space-between; align-items: center; gap: 8px; margin: 0 0 6px -4px; }
+.ez-zurueck {
+  min-height: 44px; padding: 0 4px; display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: 0; color: var(--ink); cursor: pointer;
+  font: 700 16px/1 var(--font-wmc);
+  text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 4px;
+}
+.ez-zurueck svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---------- Blöcke: Karten wie in der Seitenleiste ---------- */
+.ez-block {
+  min-width: 0;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 16px 18px 18px;
+  border: 1px solid var(--rule); border-radius: 12px;
+  background: color-mix(in srgb, var(--kz-karte) 78%, transparent);
+}
+.ez-block-titel {
+  margin: 0; display: flex; align-items: center; gap: 8px;
+  font: 700 12px/1.2 var(--font-wmc); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft);
+}
+.ez-block-titel::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+.ez-text { margin: 0; font-size: 16px; line-height: 1.45; }
+.ez-klein { margin: 0; font-size: 14px; line-height: 1.4; color: var(--ink-soft); }
+.ez-klein:empty { display: none; }
+.ez-leer { margin: 0; padding: 12px 14px; border-left: 4px solid var(--kz-rand); background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 0 8px 8px 0; font-size: 16px; }
+.ez-daten { margin: 0; display: grid; gap: 8px; font-size: 16px; }
+.ez-daten > div { display: flex; justify-content: space-between; gap: 4px 16px; flex-wrap: wrap; }
+.ez-daten dt { color: var(--ink-soft); }
+.ez-daten dd { margin: 0; font-weight: 700; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.ez-adresse { font: 400 14px/1.4 var(--font-code); }
+.ez-stand[data-zustand="fehler"], .ez-stand[data-zustand="wartet"] { padding-left: 10px; border-left: 4px solid var(--accent); }
+
+.ez-feld { display: grid; gap: 6px; }
+.ez-feld label { font-size: 15px; font-weight: 700; }
+.ez-feld select {
+  min-height: 44px; max-width: 100%; padding: 0 10px;
+  background: var(--bg); color: var(--ink); border: 1px solid var(--rule-strong); border-radius: 4px;
+  font: 400 17px var(--font-wmc);
+}
+.ez-feld select:hover:not(:disabled) { border-color: var(--ink); }
+.ez-feld select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ez-feld select:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Darstellung: Auswahl als Karten mit Beschreibung (echte Radiobuttons, Pfeiltasten wählen) */
+.ez-radios { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; gap: 10px; }
+.ez-radio {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--rule); border-radius: 10px; cursor: pointer;
+}
+.ez-radio:hover { border-color: var(--rule-strong); }
+.ez-radio[data-an] { border-color: var(--kz-akzent-rand); box-shadow: inset 4px 0 0 var(--accent); }
+.ez-radio:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ez-radio input { flex: none; width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--accent); cursor: pointer; }
+.ez-radio-text { display: grid; gap: 2px; min-width: 0; }
+.ez-radio-name { font: 700 17px/1.2 var(--font-wmc); }
+.ez-radio-beschr { font-size: 15px; line-height: 1.35; color: var(--ink-soft); }
+
+/* Verbrauch: Balken als Anschauung, die Werte stehen als Text daneben */
+.ez-limits { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.ez-limit { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.ez-limit:first-child { padding-top: 0; border-top: 0; }
+.ez-limit-kopf { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.ez-limit-titel { margin: 0; font: 700 18px/1.2 var(--font-wmc); }
+.ez-limit-art { font-size: 14px; color: var(--ink-soft); }
+.ez-limit:not([data-gemeldet]) .ez-limit-titel { color: var(--ink-soft); }
+.ez-bahn { height: 10px; border-radius: 5px; background: var(--rule); overflow: hidden; }
+.ez-bahn span { display: block; height: 100%; border-radius: 5px; background: var(--accent); transition: width 600ms var(--ease-out); }
+.ez-limit-daten { font-size: 15px; gap: 4px; }
+.ez-limit[data-status="warnung"], .ez-limit[data-status="erreicht"] { padding-left: 12px; box-shadow: inset 4px 0 0 var(--accent); }
+.ez-limit-status { font-weight: 400; }
+
+/* Hinweise an Admins (Info) */
+.ez .hinweise { gap: 10px; }
+.ez .hinweis-karte { background: var(--kz-karte); border-radius: 0 8px 8px 0; }
+
+/* Inhalte, die schon eigene Stile mitbringen */
+.ez .geteilt { border-top: 0; padding-top: 0; }
+.ez .status-list { font-size: 16px; gap: 8px 16px; }
+.ez .pc-steuerung { gap: 12px; }
+
+/* ---------- Handy und schmale Fenster: Liste, dann Abschnitt ---------- */
+@media (max-width: 859px) {
+  .ez { height: auto; min-height: calc(100dvh - var(--top)); flex: 1 0 auto; overflow: visible; background: var(--bg); }
+  .ez-gitter { display: block; }
+  .ez-seite { overflow: visible; padding: 16px 16px 28px; border-right: 0; }
+  .ez-inhalt { overflow: visible; padding: 12px 16px 40px; }
+  .ez[data-ansicht="liste"] .ez-inhalt, .ez[data-ansicht="abschnitt"] .ez-seite { display: none; }
+  .ez-wege { display: flex; }
+  .ez-abschnitt-titel { font-size: 28px; }
+  .ez-nav ul { gap: 8px; }
+  .ez-nav-link {
+    min-height: 60px; padding: 12px 40px 12px 16px;
+    border: 1px solid var(--rule); border-left: 3px solid var(--kz-rand); border-radius: 10px;
+    background: color-mix(in srgb, var(--kz-karte) 78%, transparent);
+  }
+  .ez-nav-link::after {
+    content: ""; position: absolute; right: 18px; top: 50%; width: 9px; height: 9px;
+    border: solid var(--ink-soft); border-width: 2px 2px 0 0; transform: translateY(-50%) rotate(45deg);
+  }
+  .ez-zumgespraech { min-height: 44px; }
+  .ez-block { padding: 14px 14px 16px; }
+  .ez-meldung { padding: 10px 16px; }
+  .ez-daten > div { flex-direction: column; }
+  .ez-daten dd { text-align: left; }
+  .ez .pc-switch, .ez .betriebsart-wahl button { min-height: 48px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ez-bahn span { transition: none; }
+}
