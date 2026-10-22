@@ -1,7 +1,16 @@
 import type { BotOutputData } from "@pipecat-ai/client-js";
 import type { CanvasItem } from "@/components/Canvas";
 import type { Betriebsart } from "@/lib/betriebsart";
-import type { Activity, Auftrag, Betrieb, Gemerkt, Modellzugang, Profil, ServerMessage } from "@/lib/nachrichten";
+import type {
+  Activity,
+  Auftrag,
+  Betrieb,
+  Gemerkt,
+  Kontingent,
+  Modellzugang,
+  Profil,
+  ServerMessage,
+} from "@/lib/nachrichten";
 import { createStore } from "@/lib/store";
 
 /**
@@ -94,6 +103,8 @@ export type WamoState = {
   profil: Profil | null;
   /** Modellzugang des Profils (eigener Claude-Schlüssel oder Hausmodelle), null bis der Kern ihn meldet */
   modellzugang: Modellzugang | null;
+  /** Kontingent des Max-Abos (Sitzungs-, Wochen- und Modell-Wochenlimit), null bis der Kern es meldet; die Anzeige folgt */
+  kontingent: Kontingent | null;
   memos: Memo[];
   micOn: boolean;
   /** Name des Mikrofons der laufenden Verbindung (aus der Spur), null ohne Verbindung */
@@ -128,6 +139,7 @@ export const initialState: WamoState = {
   kern: null,
   profil: null,
   modellzugang: null,
+  kontingent: null,
   memos: [],
   micOn: true,
   mikrofon: null,
@@ -453,6 +465,12 @@ export function applyServerMessage(msg: ServerMessage) {
         // Ohne lesbaren Stand (nur Fehler) bleibt der letzte bekannte Stand stehen, mit dem Fehler daran
         modellzugang: stand.art ? stand : s.modellzugang ? { ...s.modellzugang, aktion: stand.aktion, fehler: stand.fehler } : stand,
       }));
+      return;
+    }
+    case "kontingent": {
+      const { type: _typ, ...stand } = msg;
+      void _typ;
+      wamo.set((s) => ({ ...s, kontingent: stand }));
       return;
     }
     case "leiser_stopp":

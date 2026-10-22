@@ -57,6 +57,27 @@ export type Modellzugang = {
   fehler?: string;
 };
 
+/**
+ * Kontingent des Max-Abos (voice-core/kontingent.py, aus rate_limit_event von Claude Code): sitzung = 5-Stunden-Fenster,
+ * woche = Wochenlimit (alle Modelle), fable = Wochenlimit des größten Modells (in Claude Code "Fable limit"), opus und
+ * sonnet = ältere modellbezogene Wochenlimits. Jedes Feld außer art kann fehlen. Ohne Daten ist der Zustand "unbekannt".
+ */
+export const KONTINGENT_ARTEN = ["sitzung", "woche", "opus", "sonnet", "fable"] as const;
+export type KontingentLimit = {
+  art: (typeof KONTINGENT_ARTEN)[number];
+  /** genutzter Anteil in Prozent (0 bis 1000; über 100 kommt vor), eine Nachkommastelle */
+  prozent?: number;
+  /** Ende des Fensters, ISO 8601 in UTC (YYYY-MM-DDTHH:MM:SSZ) */
+  endet?: string;
+  status?: "ok" | "warnung" | "erreicht";
+};
+export type Kontingent = {
+  zustand: "unbekannt" | "bekannt";
+  /** wann der Kern den Stand zuletzt gespeichert hat (ISO 8601, UTC) */
+  stand?: string;
+  limits: KontingentLimit[];
+};
+
 /** wartet: kritische PC-Aktion, die auf eine Freigabe in der Oberfläche wartet */
 export type ActivityStatus = "laeuft" | "fertig" | "abgelehnt" | "fehler" | "wartet";
 
@@ -99,6 +120,7 @@ export type ServerMessage =
   | ({ type: "auftrag" } & Auftrag)
   | { type: "sitzung_beendet"; grund: string; anmelden?: boolean }
   | ({ type: "modellzugang" } & Modellzugang)
+  | ({ type: "kontingent" } & Kontingent)
   /** Kern: still = seit `sekunden` nur digitale Stille vom Mikrofon, ok = wieder Ton (voice-core/audio_monitor.py) */
   | { type: "mikrofon"; zustand: "still" | "fehlt" | "ok"; sekunden: number };
 
@@ -125,6 +147,25 @@ export function sauber(text: string, max: number, zeilen = true): string {
   let t = text.replace(STEUER, "");
   if (!zeilen) t = t.replace(/[\r\n\t]+/g, " ");
   return t.length > max ? `${t.slice(0, max)} … (gekürzt)` : t;
+}
+
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+/** Limits des Kontingents prüfen: nur bekannte Arten, Zahlen im Wertebereich, ISO-Zeiten; Doppelte zählen einmal. */
+function kontingentLimits(roh: unknown): KontingentLimit[] {
+  if (!Array.isArray(roh)) return [];
+  const gefunden = new Map<string, KontingentLimit>();
+  for (const e of roh.slice(0, 10)) {
+    if (!isObj(e) || !oneOf(e.art, KONTINGENT_ARTEN) || gefunden.has(e.art)) continue;
+    const l: KontingentLimit = { art: e.art };
+    if (typeof e.prozent === "number" && Number.isFinite(e.prozent) && e.prozent >= 0 && e.prozent <= 1000) {
+      l.prozent = Math.round(e.prozent * 10) / 10;
+    }
+    if (isStr(e.endet) && ISO_UTC.test(e.endet)) l.endet = e.endet;
+    if (oneOf(e.status, ["ok", "warnung", "erreicht"] as const)) l.status = e.status;
+    if (Object.keys(l).length > 1) gefunden.set(e.art, l);
+  }
+  return KONTINGENT_ARTEN.flatMap((a) => gefunden.get(a) ?? []);
 }
 
 const AKTIVITAET_STATUS = ["laeuft", "fertig", "abgelehnt", "fehler", "wartet"] as const;
@@ -306,6 +347,16 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         modell: isStr(m.modell) ? sauber(m.modell, 60, false) : undefined,
         wirksam: isStr(m.wirksam) ? sauber(m.wirksam, 60, false) : undefined,
         fehler: isStr(m.fehler) && m.fehler.trim() ? sauber(m.fehler.trim(), 200, false) : undefined,
+      };
+    }
+    case "kontingent": {
+      if (!oneOf(m.zustand, ["unbekannt", "bekannt"] as const)) return null;
+      const limits = m.zustand === "bekannt" ? kontingentLimits(m.limits) : [];
+      return {
+        type: "kontingent",
+        zustand: limits.length > 0 ? "bekannt" : "unbekannt", // ohne gültige Limits bleibt es unbekannt
+        stand: limits.length > 0 && isStr(m.stand) && ISO_UTC.test(m.stand) ? m.stand : undefined,
+        limits,
       };
     }
     case "mikrofon": {
