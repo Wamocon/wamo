@@ -182,8 +182,8 @@ if [ "$TESTMODUS" = nein ]; then
 fi
 
 # ---------- Einstellungen lesen (nie sourcen): nur die Schlüssel von wamo-ui.conf, mit denselben Prüfungen wie wamo-ui-einrichten.sh
-# shellcheck disable=SC2034  # TLS und HSTS gehören zu wamo-ui-einrichten.sh, hier nur als bekannte Schlüssel gelesen
-WAMO_UI_URL=""; NEXT_PUBLIC_SUPABASE_URL=""; NEXT_PUBLIC_WAMO_KERN_BUERO=""; WAMO_UI_TLS=""; WAMO_UI_HSTS=""
+# (WAMO_UI_TLS und WAMO_UI_HSTS gehören zu wamo-ui-einrichten.sh; hier sind es nur bekannte Schlüssel)
+WAMO_UI_URL=""; NEXT_PUBLIC_SUPABASE_URL=""; NEXT_PUBLIC_WAMO_KERN_BUERO=""
 NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER=""
 
 lies_konfig() {
@@ -259,7 +259,7 @@ caddy_adapt_pruefen() {   # $1 = Ordner "etc" (Caddyfile, kern/)
 # Aufbau: zwei Kopfzeilen mit dem Zustand (live, vorige, seit), dann die Anweisungen. Erster Upstream ist die live gesetzte
 # Farbe, zweiter die vorige. Weitere Hinweise stehen im Text selbst.
 include_text() {   # $1 live, $2 vorige, $3 seit
-  local live="$1" vorige="$2" seit="$3" h1 h2
+  local live="$1" vorige="$2" seit="$3" h1 h2 gesundheit
   if [ "$live" = keine ]; then
     cat <<EOF
 # live=keine vorige=keine
@@ -273,6 +273,10 @@ EOF
   fi
   h1="$(host_von "$live")"
   if [ "$vorige" = keine ]; then h2="$h1"; else h2="$(host_von "$vorige")"; fi
+  # Der Container der früheren Fassung (alt) kennt /version.json nicht: Solange er live ist, prüft Caddy die Startseite.
+  # Steht er nur als vorige Farbe da, gilt er als nicht gesund und ist keine automatische Rückfallebene (Rückweg von Hand geht).
+  gesundheit=/version.json
+  if [ "$live" = alt ]; then gesundheit=/; fi
   cat <<EOF
 # live=$live vorige=$vorige
 # seit=$seit
@@ -288,7 +292,7 @@ handle /_next/static/* {
 		lb_policy first
 		lb_try_duration 3s
 		lb_try_interval 250ms
-		health_uri /version.json
+		health_uri $gesundheit
 		health_interval 2s
 		health_timeout 2s
 		fail_duration 10s
@@ -312,7 +316,7 @@ handle {
 		lb_policy first
 		lb_try_duration 3s
 		lb_try_interval 250ms
-		health_uri /version.json
+		health_uri $gesundheit
 		health_interval 2s
 		health_timeout 2s
 		fail_duration 10s
@@ -446,6 +450,19 @@ wirkung_abwarten() {   # $1 Version, $2 Commit, $3 Sekunden: wartet, bis die öf
 
 # Bewährung: Proben über die öffentliche Adresse, zwei je Sekunde. Drei Fehler in Folge oder mehr Fehler als die Quote
 # erlaubt (Prozent aller Proben) bedeuten durchgefallen. Ein Fehler ist alles außer "Antwort mit der erwarteten Fassung".
+# Rückweg auf den Container der früheren Fassung (alt): Er kennt /version.json nicht. Die Wirkung zeigt sich daran, dass die
+# Startseite antwortet und /version.json 404 liefert (die neue Fassung hat sie).
+wirkung_alt() {   # $1 Sekunden
+  local ende=$((SECONDS + $1)) c_start c_ver
+  while (( SECONDS < ende )); do
+    c_start="$(curl "${CURL_OPT[@]}" -o /dev/null -w '%{http_code}' "$WAMO_UI_URL/" 2>/dev/null || true)"
+    c_ver="$(curl "${CURL_OPT[@]}" -o /dev/null -w '%{http_code}' "$WAMO_UI_URL/version.json" 2>/dev/null || true)"
+    if [ "$c_start" = 200 ] && [ "$c_ver" = 404 ]; then return 0; fi
+    sleep 0.2
+  done
+  return 1
+}
+
 bewaehren() {   # $1 Version, $2 Commit, $3 Sekunden, $4 Fehlerquote in Prozent
   local ende=$((SECONDS + $3)) n=0 f=0 folge=0 body
   if [ "$3" -eq 0 ]; then echo "  Bewährung übersprungen (0 Sekunden)"; return 0; fi
@@ -598,6 +615,9 @@ auto_rueckweg() {   # $1 bisher live (Farbe), $2 neue (fehlerhafte) Farbe
     return 1
   fi
   farbe_anhalten "$2"
+  if [ "$1" = alt ]; then
+    wirkung_alt 20 || echo "  Hinweis: $WAMO_UI_URL liefert die frühere Fassung noch nicht: $0 status" >&2
+  fi
   echo "ZEIT rueckweg_ende=$(zeit)"
   echo "  $1 ist wieder live, $2 ist angehalten (Protokoll: docker logs $(host_von "$2"))" >&2
   return 0
@@ -607,6 +627,7 @@ auto_rueckweg() {   # $1 bisher live (Farbe), $2 neue (fehlerhafte) Farbe
 fassung_text() {   # $1 Containername -> "Version, Commit, gebaut" oder Grund
   local body
   if ! laeuft "$1"; then echo "läuft nicht"; return 0; fi
+  if [ "$1" = "$C_ALT" ]; then echo "läuft (Fassung vor der Umstellung, ohne /version.json)"; return 0; fi
   if body="$(version_von_container "$1")" && parse_version "$body"; then echo "Version $P_VERSION, Commit ${P_COMMIT:0:12}, gebaut $P_GEBAUT, sauber $P_SAUBER"
   else echo "läuft, antwortet nicht gültig"; fi
 }
@@ -787,18 +808,29 @@ cmd_zurueck() {
     docker start "$host_v" >/dev/null || { echo "  Start fehlgeschlagen." >&2; exit 6; }
   fi
   # Erwartet wird, was die vorige Farbe selbst meldet; ein Container, der nicht antwortet, wird nicht live gesetzt.
+  # Der Container der früheren Fassung (alt) hat keine /version.json: Für ihn zählt die Startseite.
   local ende=$((SECONDS + 40)) ok=nein
   while (( SECONDS < ende )); do
-    if body="$(version_von_container "$host_v")" && parse_version "$body"; then ok=ja; break; fi
+    if [ "$VORIGE" = alt ]; then
+      if docker exec "$C_CADDY" wget -q -O /dev/null -T 3 "http://$host_v:3000/" 2>/dev/null; then ok=ja; break; fi
+    elif body="$(version_von_container "$host_v")" && parse_version "$body"; then
+      ok=ja; break
+    fi
     sleep 1
   done
   [ "$ok" = ja ] || { echo "  $host_v antwortet nicht: kein Rückweg." >&2; exit 6; }
   erw_ver="$P_VERSION"; erw_com="$P_COMMIT"
-  local ziel="$VORIGE" bisher="$LIVE"
+  local ziel="$VORIGE" bisher="$LIVE" wirkt=nein
   echo "ZEIT schalten_beginn=$(zeit)"
   include_setzen "$ziel" "$bisher" || { echo "Rückweg ließ sich nicht schalten." >&2; exit 5; }
   echo "ZEIT schalten_ende=$(zeit)"
-  if wirkung_abwarten "$erw_ver" "$erw_com" 20; then
+  if [ "$ziel" = alt ]; then
+    if wirkung_alt 20; then wirkt=ja; fi
+    erw_ver="der früheren Fassung"; erw_com="$C_ALT"
+  elif wirkung_abwarten "$erw_ver" "$erw_com" 20; then
+    wirkt=ja
+  fi
+  if [ "$wirkt" = ja ]; then
     echo "ZEIT wirkung=$(zeit)"
     echo "Rückweg fertig: $ziel ist live (Version $erw_ver, Commit ${erw_com:0:12}), $bisher läuft als vorige weiter."
   else
