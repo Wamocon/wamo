@@ -10,7 +10,7 @@ in den Verlauf) an die Sprachausgabe. Schnelle Werkzeuge (Uhrzeit, Merken) sind 
 lösen nichts aus. Kein Dauergeschwätz: höchstens ein Wartesatz je Zug, nie zwei gleiche hintereinander, und eine
 Unterbrechung der Person verwirft ihn.
 
-Schalter: WAMO_WARTESATZ (an/aus, Standard an), WAMO_WARTESATZ_SECS (Standard 0,9).
+Schalter: WAMO_WARTESATZ (an/aus, Standard aus), WAMO_WARTESATZ_SECS (Standard 0,9).
 """
 
 from __future__ import annotations
@@ -50,7 +50,9 @@ WERKZEUG_SAETZE = {
 
 
 def wartesatz_an(wert: str | None = None) -> bool:
-    return schalter_an("WAMO_WARTESATZ", wert)
+    """WAMO_WARTESATZ, Standard aus: In der Messung (22.10.2026) sagte das Modell den Füllsatz vor der Websuche selbst
+    (4 von 5 Aufrufen), der Wächter löste nie aus. Wer ein Modell nutzt, das vor Werkzeugen schweigt, schaltet ihn an."""
+    return schalter_an("WAMO_WARTESATZ", wert, standard=False)
 
 
 def wartesatz_secs(wert: str | None = None) -> float:

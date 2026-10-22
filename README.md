@@ -203,10 +203,15 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Befunde und Zahlen: Abschnitt „Stimme messen“ unten). Schalter im Kern, jeder einzeln abschaltbar:
   `WAMO_STOPP_GRENZE` (Stopp an der ersten noch erreichbaren hörbaren Wortgrenze, Satz- oder Kommaende bis 0,3 s später
   geht vor, der Verlauf wird auf das Gehörte gekürzt), `WAMO_DUCKEN` (Stimme sofort leiser, sobald die Person spricht,
-  Nachricht `stimme_leiser`; bei Rückmeldelaut, Echo oder Geräusch wieder normal und 8 s keine neue Dämpfung),
-  `WAMO_RUECKMELDUNG` (erweiterte Erkennung von „mhm“, „mm-hmm“, „alles klar“), `WAMO_WARTESATZ` und
-  `WAMO_WARTESATZ_SECS` (kurzer Satz bei einem Werkzeugaufruf, der länger als 0,9 s dauert und bei dem WAMO sonst
-  schweigt, `voice-core/wartesatz.py`).
+  Nachricht `stimme_leiser`; bei Rückmeldelaut oder Geräusch nach 0,3 s wieder normal und 8 s keine neue Dämpfung, bei
+  Echo 30 s), `WAMO_RUECKMELDUNG` (erweiterte Erkennung von „mhm“, „mm-hmm“, „alles klar“, Wortanfänge wie „Gen“ vor
+  „Genau“ zählen im Zwischenstand nicht), `WAMO_ECHO_MODUS` (hört WAMO sich erkennbar selbst, mindestens zwei
+  Echo-Urteile in 20 s, unterbricht nur noch ein Stoppwort wie „Stopp“, „Moment“, „Was“, „Nein“; wirkt nur mit
+  `WAMO_ECHO_FILTER`), `WAMO_WARTESATZ` und `WAMO_WARTESATZ_SECS` (kurzer Satz bei einem Werkzeugaufruf, der länger als
+  0,9 s dauert und bei dem WAMO sonst schweigt, `voice-core/wartesatz.py`). Standard: alle an, nur `WAMO_WARTESATZ` aus
+  (in der Messung sagte das Modell den Füllsatz selbst, der Wächter löste nie aus). Abschalten mit `aus`, `0`, `nein`;
+  ein unbekannter Wert gilt als an und wird einmal gewarnt (`voice-core/env_schalter.py`). Auf Sokrates-2 stehen alle
+  Namen in der Liste erlaubter Werte (`infra/sokrates2/wamo_core_env.py`).
 - **Mikrofon-Wächter** (`ui/src/lib/mikrofon.ts`, `voice-core/audio_monitor.py`): Die Oberfläche misst die eigene Spur und
   warnt nach 3 s digitaler Stille, bei einer beendeten Spur ohne Ersatz, ohne Spur 5 s nach „Bot bereit“ und bei
   Mikrofonsperre durch Windows (Datenschutz für Desktop-Apps, `systemPreferences.getMediaAccessStatus`), jeweils mit
@@ -249,7 +254,26 @@ python scripts\wamo_stimme.py hoerprobe D:\tmp\wamo-stimme2 vorher D:\tmp\stimme
 
 Kennzahlen: Zeit von der Frage bis zum ersten Ton, größte Stille innerhalb einer Antwort, Anteil falscher Unterbrechungen
 (Rückmeldelaute, Geräusche, Echo), verpasste echte Einwürfe, Zeit bis zum Verstummen, hartes Abschneiden, erste Reaktion
-der Oberfläche (Dämpfen). Befunde, die den Entwurf bestimmt haben:
+der Oberfläche (Dämpfen).
+
+Ergebnis (Unterwegs, Lauf `vorher2` mit allen Schaltern aus gegen `nachher2` mit den Standardwerten; Zahlen sind Median
+und 95. Perzentil bei 5 bis 8 Wiederholungen, die Stichproben sind klein):
+
+| Kennzahl | vorher | nachher |
+| --- | --- | --- |
+| Zeit bis zum Verstummen nach echtem Einwurf | 2285 / 2800 ms | 1245 / 2040 ms |
+| Erste hörbare Reaktion auf den Einwurf | 2241 / 2750 ms | 757 / 780 ms (Dämpfen) |
+| Verpasste Einwürfe | 0 von 8 | 0 von 8 |
+| Hart abgeschnitten (Auslauf unter 35 ms) | 1 von 8 | 0 von 8 |
+| Falsche Unterbrechung durch „mhm“, „ja genau“, „aha“ (Log) | 3 von 12 | 0 von 16 |
+| Falsche Unterbrechung durch Husten, Klopfen | 0 von 8 | 0 von 10 |
+| Unterbrechungen durch Echo (4 Läufe, Echopegel 0,5) | 11 | 3 |
+| Größte Stille innerhalb einer Antwort | 1410 ms (p95), einmalige Stockung | 660 ms (p95) |
+| Erster Ton nach Faktenfrage | 2101 / 2314 ms | 2058 / 2924 ms (innerhalb der Streuung) |
+
+Nicht messbar verbessert: die Stille innerhalb von Antworten (Satzpausen 0,5 bis 0,65 s sind die Stimme selbst, die
+Stockung von 1,4 s im Lauf `vorher2` trat im Endstand nicht mehr auf, Ursache offen) und die Wartezeit bei Werkzeugen
+(Websuche 6 bis 10 s, das Modell sagt vorher selbst „Moment“). Befunde, die den Entwurf bestimmt haben:
 
 - Soniox-TTS hält das Ende des Textes zurück, bis weiterer Text oder `text_end` kommt (Messung: der Rest eines Satzes
   erklingt erst, wenn der nächste eintrifft). Lücken in laufenden Antworten entstehen deshalb nur, wenn das Modell langsamer

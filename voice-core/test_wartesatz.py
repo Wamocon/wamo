@@ -115,7 +115,7 @@ class WartesatzTest(unittest.IsolatedAsyncioTestCase):
 
     def test_schalter(self):
         self.assertTrue(wartesatz_an("an"))
-        self.assertTrue(wartesatz_an(""))
+        self.assertFalse(wartesatz_an(""), "Standard aus")
         self.assertFalse(wartesatz_an("aus"))
         self.assertEqual(wartesatz_secs("1.5"), 1.5)
         self.assertEqual(wartesatz_secs("x"), 0.9)
