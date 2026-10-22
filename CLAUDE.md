@@ -24,6 +24,7 @@ Monorepo: `ui/` (Next.js 16), `voice-core/` (Python, Pipecat 1.x), `host/` (Pyth
 | Repo-Selbstschutz | `SELF_REPO = "wamo"` in voice-core/dev_guard.py |
 | Geräte | Register `devices` (Kennung `pc-<name>` für Laptops), Gerätedienst `wamo-geraete` (Benutzer, Socket `/run/wamo-geraete/geraete.sock`), Lesekonto `wamo-status` auf den Sparks |
 | Tunnel je Laptop | Benutzer `wamo-t-NN` (NN = `tunnel_slot` 01 bis 64), Ordner `/run/wamo-pc/tNN/`, Kern-Schalter `WAMO_PC_REGISTER`, Header `X-WAMO-Geraet` und `X-WAMO-Profil`, Laptop-Dateien `%LOCALAPPDATA%\WAMO\geraet.json`, `tunnel.status`, Schlüssel `id_ed25519_wamo_pc` |
+| Anker und Release-Dienst | Anker (root, außerhalb von `/opt/wamo*`): Dienst `wamo-anker`, Code `/usr/local/lib/wamo-anker`, Socket `/run/wamo-anker/anker.sock`, Sperre `/etc/wamo-anker/selbstaenderung.aus`. Release-Dienst (kein root): Benutzer `wamo-release`, Code `/opt/wamo-release/app`, Daten `/var/lib/wamo-release`, Protokoll `/var/log/wamo-release/audit.jsonl`, Socket `/run/wamo-release/ctl.sock`; DB-Rollen `wamo_release` und `wamo_anker`, Env `WAMO_RELEASE_*` (derzeit keine) |
 | Weckwort (später) | „Hey WAMO“, DB-Standard `wake_word = 'wamo'` |
 
 ## Architektur-Entscheidungen (19.10.2026)

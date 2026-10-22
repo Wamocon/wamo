@@ -221,7 +221,7 @@ def teil_a(M, benutzer: list[str], root: bool) -> None:
         p = R.Pfade.unter(tmp)
         for ordner in (p.lib, p.zustand, p.log, p.lauf):
             os.makedirs(ordner, exist_ok=True)
-            os.chmod(ordner, 0o700)
+            os.chmod(ordner, 0o755 if ordner == p.lauf else 0o700)  # offen bis zum Socket: dann zählt nur noch SO_PEERCRED
         anker, db, stufen = attrappen(M)
         eigene_uid = os.getuid()
         zeit = [time.time()]
