@@ -228,7 +228,7 @@ class SocketTests(T.ReleaseTest):
         self.assertEqual(self.audit()[-1]["grund"], "socket_weg")
 
     def test_haengender_arbeiter_beendet_den_dienst_mit_fehler(self):
-        server = self.starte()
+        self.starte()
         self.dienst.haenger = True
         self.faden.join(5)
         self.assertFalse(self.faden.is_alive())
