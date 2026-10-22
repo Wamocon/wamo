@@ -1,0 +1,63 @@
+# WAMO-Notanker auf Sokrates-2 (Schritt 0.1 der Selbstüberarbeitung). Installiert durch infra/sokrates2/anker-einrichten.sh.
+#
+# Läuft als root, aber ohne jede Capability (CapabilityBoundingSet leer): Der Anker schreibt nur in Dateien, die root
+# gehören, und ruft feste Skripte unter /usr/local/lib/wamo-anker/schritte. Lauscht nur auf dem Unix-Socket
+# /run/wamo-anker/anker.sock (2750 root:wamocon, Socket 0660; zusätzlich SO_PEERCRED im Programm).
+# Spätere Schritte (1.1 UI, 2.4 Kern) erweitern ReadWritePaths, Capabilities und Adressfamilien nur dort, wo ihr Skript
+# es braucht (zum Beispiel CAP_DAC_OVERRIDE für den Docker-Socket). Jede Erweiterung ist eine Änderung am Anker.
+# Vor dem Start prüft ExecStartPre die Prüfsummen der installierten Dateien (fail closed).
+# Startet der Dienst auf dem Server wider Erwarten nicht, sind MemoryDenyWriteExecute und SystemCallFilter die ersten
+# Verdächtigen (journalctl -u wamo-anker); die Unit wurde auf Sokrates-2 noch nicht erprobt.
+[Unit]
+Description=WAMO-Notanker (Rückweg, Sperre, Sonderfreigabe-Prüfung)
+After=local-fs.target
+ConditionPathExists=/usr/local/lib/wamo-anker/SHA256SUMS
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/usr/bin/python3 -I /usr/local/lib/wamo-anker/wamo_anker.py selbstpruefung
+ExecStart=/usr/bin/python3 -I /usr/local/lib/wamo-anker/wamo_anker.py dienst
+Restart=on-failure
+RestartSec=5
+# SIGTERM wartet einen laufenden Rückweg ab (längstes Limit: rueckweg alles = 120 + 180 Sekunden), erst danach beendet systemd
+TimeoutStopSec=330
+WorkingDirectory=/
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+
+ReadWritePaths=/run/wamo-anker /var/lib/wamo-anker /var/log/wamo-anker /etc/wamo-anker
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+MemoryMax=128M
+TasksMax=64
+LimitNOFILE=256
+
+[Install]
+WantedBy=multi-user.target
