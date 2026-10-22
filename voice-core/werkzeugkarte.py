@@ -20,6 +20,8 @@ ECC_PREFIX = "ecc:"
 
 # Modell je Auftrag (Kosten): Standard ist Haiku für alle Arten (Sonnet kostet etwa das Dreifache). Sonnet und Opus
 # nur, wenn WAMO_ENTWICKLUNG_MODELL sie ausdrücklich setzt (dev_agent.py), und nur mit einem Namen aus MODELLE_ERLAUBT.
+# Mit Abo-Zugang (Max, CLAUDE_CODE_OAUTH_TOKEN) wählt der Dispatcher ohne Wunsch Sonnet (modell_waehlen in
+# infra/sokrates2/wamo_job_dispatch.py); dieser Standard gilt für API-Schlüssel (Guthaben).
 MODELL_STANDARD = "claude-haiku-5-5"
 MODELL_SONNET = "claude-sonnet-5-5"
 MODELL_OPUS = "claude-opus-5-5"

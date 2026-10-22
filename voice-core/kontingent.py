@@ -1,8 +1,8 @@
 """Kontingent eines Max-Abos aus den Ereignissen von Claude Code (Sitzungslimit, Wochenlimit, Modell-Wochenlimit).
 
-Quelle ist das Ereignis `rate_limit_event` im stream-json von Claude Code (geprÃ¼ft gegen Version 2.1.303 mit einer
+Quelle ist das Ereignis `rate_limit_event` im stream-json von Claude Code (geprüft gegen Version 2.1.303 mit einer
 API-Attrappe). Es erscheint nur bei einem Abo-Zugang (CLAUDE_CODE_OAUTH_TOKEN aus `claude setup-token`), nie bei einem
-API-SchlÃ¼ssel, und nur, wenn eine Antwort der API die Kopfzeilen anthropic-ratelimit-unified-* trÃ¤gt:
+API-Schlüssel, und nur, wenn eine Antwort der API die Kopfzeilen anthropic-ratelimit-unified-* trägt:
 
     {"type": "rate_limit_event", "uuid": "...", "session_id": "...", "rate_limit_info": {
        "status": "allowed" | "allowed_warning" | "rejected", "rateLimitType": "five_hour" | "seven_day" | ...,
@@ -10,16 +10,16 @@ API-SchlÃ¼ssel, und nur, wenn eine Antwort der API die Kopfzeilen anthropic-ra
        "unifiedWindows": {"five_hour": {"utilization": 0.42, "resetsAt": ...}, "seven_day": {...},
                           "seven_day_overage_included": {...}}}}
 
-Das Modell-Wochenlimit heiÃŸt in Claude Code "Fable limit" (seven_day_overage_included). Den Namen des Modells liefert
+Das Modell-Wochenlimit heißt in Claude Code "Fable limit" (seven_day_overage_included). Den Namen des Modells liefert
 nur /usage (Abrufrecht user:profile), das Tokens aus `setup-token` nicht haben; deshalb bleibt es hier bei der Art.
 
-Dieses Modul kennt nur die Standardbibliothek: der Dispatcher auf Sokrates-2 lÃ¤dt eine Kopie aus /opt/wamo/waechter
-(Zeilen aus der Sandbox sind nicht vertrauenswÃ¼rdig, also nur Felder aus einer festen Allowlist und mit Wertebereich),
-der Kern prÃ¼ft das Ereignis des Dispatchers noch einmal mit denselben Regeln, speichert es je Profil und schickt es
-als Servernachricht {"type": "kontingent", ...} an die OberflÃ¤che.
+Dieses Modul kennt nur die Standardbibliothek: der Dispatcher auf Sokrates-2 lädt eine Kopie aus /opt/wamo/waechter
+(Zeilen aus der Sandbox sind nicht vertrauenswürdig, also nur Felder aus einer festen Allowlist und mit Wertebereich),
+der Kern prüft das Ereignis des Dispatchers noch einmal mit denselben Regeln, speichert es je Profil und schickt es
+als Servernachricht {"type": "kontingent", ...} an die Oberfläche.
 
 Ein Limit: {"art": sitzung | woche | opus | sonnet | fable, "prozent": 0..1000, "endet": "YYYY-MM-DDTHH:MM:SSZ",
-"status": ok | warnung | erreicht}. Jedes Feld auÃŸer art kann fehlen. Ohne Daten ist der Zustand "unbekannt".
+"status": ok | warnung | erreicht}. Jedes Feld außer art kann fehlen. Ohne Daten ist der Zustand "unbekannt".
 """
 
 from __future__ import annotations
@@ -31,11 +31,11 @@ from datetime import datetime, timezone
 
 ARTEN = ("sitzung", "woche", "opus", "sonnet", "fable")
 STATI = ("ok", "warnung", "erreicht")
-# Namen von Claude Code (rateLimitType und SchlÃ¼ssel in unifiedWindows) -> Art
+# Namen von Claude Code (rateLimitType und Schlüssel in unifiedWindows) -> Art
 FENSTER = {"five_hour": "sitzung", "seven_day": "woche", "seven_day_opus": "opus", "seven_day_sonnet": "sonnet",
            "seven_day_overage_included": "fable"}
 STATUS = {"allowed": "ok", "allowed_warning": "warnung", "rejected": "erreicht"}
-MAX_PROZENT = 1000.0  # Ã¼ber 100 kommt vor (Nutzung lÃ¤uft Ã¼ber die Grenze); alles darÃ¼ber ist Unsinn
+MAX_PROZENT = 1000.0  # über 100 kommt vor (Nutzung läuft über die Grenze); alles darüber ist Unsinn
 MAX_LIMITS = len(ARTEN)
 MIN_EPOCHE, MAX_EPOCHE = 1_577_836_800, 4_102_444_800  # 2020-01-01 bis 2100-01-01
 ZEIT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -49,7 +49,7 @@ def _zahl(wert: object) -> float | None:
 
 
 def _prozent(bruchteil: object) -> float | None:
-    """Bruchteil des Fensters (0.42) als Prozent mit einer Nachkommastelle; None auÃŸerhalb von 0 bis MAX_PROZENT."""
+    """Bruchteil des Fensters (0.42) als Prozent mit einer Nachkommastelle; None außerhalb von 0 bis MAX_PROZENT."""
     z = _zahl(bruchteil)
     if z is None or z < 0 or z * 100 > MAX_PROZENT:
         return None
@@ -90,7 +90,7 @@ def aus_rate_limit_info(info: object) -> list[dict]:
                 eintraege[art] = _limit(art, _prozent(daten.get("utilization")), _zeit(daten.get("resetsAt")), None)
     typ = info.get("rateLimitType")
     art = FENSTER.get(typ) if isinstance(typ, str) else None
-    if art:  # das gerade begrenzende Fenster: Status der Antwort, Werte nur ergÃ¤nzen
+    if art:  # das gerade begrenzende Fenster: Status der Antwort, Werte nur ergänzen
         status = info.get("status")
         alt = eintraege.get(art, {})
         eintraege[art] = _limit(art, alt.get("prozent", _prozent(info.get("utilization"))),
@@ -109,8 +109,8 @@ def ereignis_aus_zeile(zeile: object) -> dict | None:
 
 
 def limits_pruefen(limits: object) -> list[dict]:
-    """PrÃ¼ft eine Liste fertiger Limits streng (fÃ¼r Ereignisse des Dispatchers und Werte aus der Datenbank). Was nicht
-    passt, fÃ¤llt weg; doppelte Arten zÃ¤hlen einmal; Reihenfolge wie ARTEN."""
+    """Prüft eine Liste fertiger Limits streng (für Ereignisse des Dispatchers und Werte aus der Datenbank). Was nicht
+    passt, fällt weg; doppelte Arten zählen einmal; Reihenfolge wie ARTEN."""
     if not isinstance(limits, list):
         return []
     gefunden: dict[str, dict] = {}
@@ -130,7 +130,7 @@ def limits_pruefen(limits: object) -> list[dict]:
 
 
 def pruefen_ereignis(ereignis: object) -> list[dict]:
-    """Limits aus einem wamo-Ereignis "kontingent" des Dispatchers (nochmals geprÃ¼ft); leer, wenn es nicht passt."""
+    """Limits aus einem wamo-Ereignis "kontingent" des Dispatchers (nochmals geprüft); leer, wenn es nicht passt."""
     if not isinstance(ereignis, dict) or ereignis.get("ereignis") != "kontingent":
         return []
     return limits_pruefen(ereignis.get("limits"))
@@ -141,9 +141,9 @@ def jetzt_iso(jetzt: datetime | None = None) -> str:
 
 
 def zusammenfuehren(alt: list[dict], neu: list[dict], jetzt: datetime | None = None) -> list[dict]:
-    """Neue Beobachtungen Ã¼ber die bisherigen legen. Je Art zÃ¤hlt die neue Angabe; fehlt ihr der Prozentwert und
-    endet das Fenster spÃ¤ter als das alte, ist der alte Wert veraltet. Abgelaufene Fenster fallen weg (Claude Code
-    verwirft sie ebenso): ihr Stand ist unbekannt, bis der nÃ¤chste Lauf sie wieder meldet."""
+    """Neue Beobachtungen über die bisherigen legen. Je Art zählt die neue Angabe; fehlt ihr der Prozentwert und
+    endet das Fenster später als das alte, ist der alte Wert veraltet. Abgelaufene Fenster fallen weg (Claude Code
+    verwirft sie ebenso): ihr Stand ist unbekannt, bis der nächste Lauf sie wieder meldet."""
     stand = {e["art"]: dict(e) for e in limits_pruefen(alt)}
     for e in limits_pruefen(neu):
         vorher = stand.get(e["art"], {})
@@ -155,7 +155,7 @@ def zusammenfuehren(alt: list[dict], neu: list[dict], jetzt: datetime | None = N
 
 
 def nachricht(limits: object, stand: str | None = None, jetzt: datetime | None = None) -> dict:
-    """Servernachricht an die OberflÃ¤che. Ohne (noch gÃ¼ltige) Daten ist der Zustand "unbekannt"."""
+    """Servernachricht an die Oberfläche. Ohne (noch gültige) Daten ist der Zustand "unbekannt"."""
     gueltig = zusammenfuehren([], limits if isinstance(limits, list) else [], jetzt)
     return {"type": "kontingent", "zustand": "bekannt" if gueltig else "unbekannt",
             "stand": stand if isinstance(stand, str) and ZEIT_RE.fullmatch(stand) and gueltig else None,
@@ -180,7 +180,7 @@ async def laden(db, user_id: str) -> tuple[list[dict], str | None]:
 
 
 async def speichern(db, user_id: str, limits: list[dict]) -> None:
-    """Legt den Stand fÃ¼r das Profil ab (die Zeile entsteht bei Bedarf; SchlÃ¼ssel und Modellwahl bleiben unberÃ¼hrt)."""
+    """Legt den Stand für das Profil ab (die Zeile entsteht bei Bedarf; Schlüssel und Modellwahl bleiben unberührt)."""
     sauber = limits_pruefen(limits)
     await db.execute(
         f"insert into {db.t('model_access')} (user_id, kontingent, kontingent_stand) "
