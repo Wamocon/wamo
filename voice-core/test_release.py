@@ -50,6 +50,7 @@ class FakeAnker:
         self.erreichbar = True
         self.aufrufe = []
         self.rueckweg_ok = True
+        self.rueckweg_grund = "schritt_fehlgeschlagen"
         self.waehrend_rueckweg = None
         self.sperre_an_ok = True
 
@@ -64,7 +65,7 @@ class FakeAnker:
         if self.waehrend_rueckweg:
             self.waehrend_rueckweg()
         ok = self.rueckweg_ok
-        return RA.Antwort(ok, None if ok else "schritt_fehlgeschlagen",
+        return RA.Antwort(ok, None if ok else self.rueckweg_grund,
                           {"ok": ok, "teile": [{"komponente": komponente, "ok": ok}]})
 
     def sperre_an(self, trocken=False):
@@ -866,6 +867,7 @@ class ZustandsdateiTests(ReleaseTest):
         ziel = os.path.join(self.tmp.name, "fremd.json")
         Path(ziel).write_text(json.dumps(AU.leerer_zustand()))
         os.chmod(ziel, 0o600)
+        os.unlink(self.p.zustand_datei)
         os.symlink(ziel, self.p.zustand_datei)
         self.assertEqual(self.neu()._defekt, "zustand_defekt")
 
@@ -1486,11 +1488,10 @@ class SperreTests(ReleaseTest):
 
     def test_rueckweg_geht_unter_der_sperre(self):
         self.anker.sperre = "an"
-        self.anfordern_unter_sperre = None
         r = self.sende("zurueck alles")
         self.assertTrue(r["ok"], r)
         self.assertTrue(self.sende("status")["ok"])
-        self.assertTrue(self.sende(f"abbrechen {ADMIN}").get("grund") == "keine_anfrage")
+        self.assertEqual(self.sende(f"abbrechen {ADMIN}").get("grund"), "keine_anfrage")
 
     def test_der_dienst_loest_die_sperre_nie(self):
         """Weder die Befehle noch der Client noch die automatischen Wege senden jemals sperre aus."""
@@ -2006,6 +2007,338 @@ class ClientTests(ReleaseTest):
     def test_main(self):
         self.assertEqual(R.main(["x", "reboot"]), 2)
         self.assertEqual(R.main(["x", "dienst"]) if not sys.platform.startswith("linux") else 1, 1)
+
+
+# ==================================================================== Funde aus den Reviews (Schritt 0.3)
+class RueckwegAbVeroeffentlichtTests(ReleaseTest):
+    """Ab veroeffentlicht kann der Anker schon etwas getan haben: Jedes Ende verlangt zuerst einen gelungenen Rückweg."""
+
+    def test_stufenfehler_ab_bereitgestellt_geht_ueber_den_rueckweg_und_zerstoert_den_dienst_nicht(self):
+        self.bringe_nach("bereitgestellt")
+        self.stufen.setze("umschalten", ST.Ergebnis.fehler("kaputt"))
+        self.d.arbeite_einmal()
+        self.assertIsNone(self.d._defekt)
+        self.assertEqual(self.endgrund(), ("zurueckgenommen", "stufe_fehler"))
+        self.assertEqual(self.anker.aufrufe[-1], ("rueckweg", "alles", False))
+
+    def test_stufenfehler_in_veroeffentlicht_rollt_zurueck_und_endet_als_abgebrochen(self):
+        self.bringe_nach("veroeffentlicht")
+        self.stufen.setze("bereitstellen", ST.Ergebnis.fehler("kaputt"))
+        self.d.arbeite_einmal()
+        self.assertEqual(self.endgrund(), ("abgebrochen", "stufe_fehler"))
+        self.assertEqual(self.anker.aufrufe[-1], ("rueckweg", "alles", False))
+        self.assertEqual(self.db.verstoesse, [])
+
+    def test_scheitert_der_rueckweg_bleibt_die_anfrage_offen_und_der_anker_gesperrt(self):
+        self.bringe_nach("veroeffentlicht")
+        self.stufen.setze("bereitstellen", ST.Ergebnis.fehler("kaputt"))
+        self.anker.rueckweg_ok = False
+        self.d.arbeite_einmal()
+        self.assertEqual(self.anfrage()["status"], "veroeffentlicht")
+        self.assertEqual(self.anker.sperre, "an")
+        self.assertTrue(self.sende("status")["rueckweg_offen"])
+        self.anker.rueckweg_ok = True
+        self.zeit[0] += R.RUECKWEG_WIEDERHOLUNG_S + 1
+        self.d.wache()
+        self.assertEqual(self.endgrund(), ("abgebrochen", "stufe_fehler"))
+
+    def test_abbrechen_in_veroeffentlicht_geht_nur_mit_rueckweg(self):
+        self.bringe_nach("veroeffentlicht")
+        kennung = self.anfrage()["id"]
+        self.anker.rueckweg_ok = False
+        self.assertEqual(self.sende(f"abbrechen {kennung}")["grund"], "rueckweg_fehlgeschlagen")
+        self.assertEqual(self.anfrage()["status"], "veroeffentlicht")
+        self.anker.rueckweg_ok = True
+        self.d._rueckweg_offen = None
+        self.assertTrue(self.sende(f"abbrechen {kennung}")["ok"])
+        self.assertEqual(self.endgrund(), ("abgebrochen", "abbruch_person"))
+
+    def test_ab_bereitgestellt_ist_abbrechen_nicht_mehr_moeglich(self):
+        self.bringe_nach("bereitgestellt")
+        self.assertEqual(self.sende(f"abbrechen {self.anfrage()['id']}")["grund"], "nicht_abbrechbar")
+
+    def test_zustand_hat_sich_inzwischen_geaendert_dann_kein_rueckweg(self):
+        self.bringe_nach("umgeschaltet")
+        alt = copy.deepcopy(self.anfrage())
+        self.assertTrue(self.d._uebergang(alt, "bewaehrt", "datenbank"))  # inzwischen bewährt
+        aufrufe = len(self.anker.aufrufe)
+        self.assertFalse(self.d._mit_rueckweg_beenden(alt, "zeitlimit"))
+        self.assertEqual(len(self.anker.aufrufe), aufrufe)  # eine gute Version wird nicht zurückgerollt
+
+    def test_belegt_vom_anker_ist_kein_fehlschlag_der_sperrt(self):
+        self.bringe_nach("umgeschaltet")
+        self.anker.rueckweg_ok, self.anker.rueckweg_grund = False, "belegt"
+        self.zeit[0] += AU.FRIST_S["umgeschaltet"] + 1
+        self.d.wache()
+        self.assertEqual(self.anker.sperre, "aus")
+        self.assertEqual(self.anfrage()["status"], "umgeschaltet")
+        self.anker.rueckweg_ok = True
+        self.zeit[0] += R.RUECKWEG_WIEDERHOLUNG_S + 1
+        self.d.wache()
+        self.assertEqual(self.endgrund()[0], "zurueckgenommen")
+
+    def test_gelungener_rueckweg_mit_nicht_festhaltbarem_ende_wird_nicht_im_sekundentakt_wiederholt(self):
+        self.bringe_nach("umgeschaltet")
+        original = self.d.audit.anhaengen
+
+        def kaputt(ereignis, *a, **kw):
+            if ereignis == "uebergang":
+                raise K.AuditFehler("voll")
+            return original(ereignis, *a, **kw)
+
+        self.d.audit.anhaengen = kaputt
+        self.zeit[0] += AU.FRIST_S["umgeschaltet"] + 1
+        for _ in range(5):
+            self.d.wache()
+        self.assertEqual(self.anker.namen().count("rueckweg"), 1)
+
+    def test_zurueck_ohne_beschreibbares_protokoll_haelt_die_anfrage_an(self):
+        self.anfordern()
+        self.d.arbeite_einmal()
+        original = self.d.audit.anhaengen
+        self.d.audit.anhaengen = lambda *a, **kw: (_ for _ in ()).throw(K.AuditFehler("voll"))
+        self.assertTrue(self.sende("zurueck alles")["ok"])
+        self.assertEqual(self.anfrage()["status"], "uebernommen")  # das Ende ließ sich nicht festhalten
+        self.assertEqual(self.anker.sperre, "an")
+        self.d.audit.anhaengen = original
+        self.anker.sperre = "aus"  # ein Mensch hebt die Sperre auf, das Protokoll ist wieder da
+        self.assertEqual(self.d.arbeite_einmal(), "angehalten")  # die Anfrage darf trotzdem nicht weiterlaufen
+        self.assertEqual(self.anfrage()["status"], "uebernommen")
+
+    def test_ein_teilrueckweg_laesst_die_ausgerollte_anfrage_offen(self):
+        self.bringe_nach("umgeschaltet")
+        r = self.sende("zurueck ui")
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.anfrage()["status"], "umgeschaltet")
+        self.assertTrue(self.sende("zurueck alles")["ok"])
+        self.assertEqual(self.endgrund(), ("zurueckgenommen", "zurueck"))
+
+    def test_freigabe_ohne_gespeicherte_commit_id_wird_nicht_angenommen(self):
+        self.bringe_nach("wartet_freigabe")
+        with self.d._lock:
+            self.d._z["anfrage"]["daten"].pop("v_commit")
+        self.db.anker_setzt(self.anfrage()["id"], "freigegeben", v_commit=None, tree_id=None)
+        self.d.arbeite_einmal()
+        self.assertEqual(self.endgrund(), ("abgebrochen", "freigabe_abweichung"))
+        self.assertEqual(self.anker.sperre, "an")
+
+
+class WartenUndTypenTests(ReleaseTest):
+    def test_wartende_stufe_verbraucht_keine_versuche(self):
+        self.stufen.setze("version_waehlen", ST.Ergebnis.wartet())
+        self.anfordern()
+        self.lauf(bis="versionswahl")
+        for _ in range(AU.VERSUCHE_MAX * 4):
+            self.zeit[0] += R.WARTE_S + 1
+            self.assertEqual(self.d.arbeite_einmal(), "wartet")
+        a = self.anfrage()
+        self.assertEqual((a["status"], a["versuch"]), ("versionswahl", 1))
+        starts = [z for z in self.audit() if z["ereignis"] == "stufe_start" and z["status"] == "versionswahl"]
+        self.assertEqual(len(starts), 1)  # nachfragen füllt das Protokoll nicht
+        self.stufen.setze("version_waehlen", ST.STANDARD["version_waehlen"])
+        self.zeit[0] += R.WARTE_S + 1
+        self.d.arbeite_einmal()
+        self.assertEqual(self.anfrage()["status"], "pruefung3")
+
+    def test_vertauschte_typen_in_der_zustandsdatei_sind_defekt_nicht_absturz(self):
+        gut = {"id": ADMIN, "profil": ADMIN, "quelle": "main", "status": "pruefung1", "seq": 2, "start": 1, "seit": 2,
+               "versuch": 1, "fertig": False, "daten": {}, "ende_grund": None}
+        faelle = []
+        for feld in ("status", "quelle", "id", "daten", "seq", "fertig"):
+            for ersatz in ([], {}, [1], None, "x", 1.5):
+                if feld == "daten" and ersatz == {}:
+                    continue  # leere Daten sind gültig
+                faelle.append({**AU.leerer_zustand(), "anfrage": {**gut, feld: ersatz}})
+        for ersatz in ([], {}, [1], None):
+            faelle.append({**AU.leerer_zustand(), "anfrage": {**gut, "daten": {"klasse": ersatz}}})
+            faelle.append({**AU.leerer_zustand(), "anfrage": {**gut, "daten": {"pruefstand": {"bauen": ersatz}}}})
+            faelle.append({**AU.leerer_zustand(), "abgeschlossen": [{"id": ADMIN, "profil": ADMIN, "status": ersatz,
+                                                                     "grund": None, "start": 1, "ende": 2}]})
+        for i, z in enumerate(faelle):
+            with self.subTest(i=i):
+                Path(self.p.zustand_datei).write_text(json.dumps(z))
+                d2 = self.neu()  # darf nicht abstürzen
+                self.assertEqual(d2._defekt, "zustand_defekt")
+                self.assertTrue(self.sende("zurueck alles --trocken", d=d2)["ok"])
+
+    def test_vertauschte_typen_in_stufendaten(self):
+        for ergebnis in (ST.Ergebnis.ok(basis_commit=[], c1_commit="b" * 40), ST.Ergebnis.ok(klasse=[]),
+                         ST.Ergebnis.ok(bump={}), ST.Ergebnis.ok(pruefstand={"bauen": []}), ST.Ergebnis.ok(**{"x": 1})):
+            with self.subTest(ergebnis=str(ergebnis)[:50]):
+                self.setUp()
+                self.stufen.setze("uebernehmen", ergebnis)
+                self.anfordern()
+                self.lauf()
+                self.assertEqual(self.endgrund(), ("abgebrochen", "stufe_ungueltig"))
+        for daten in ({"klasse": []}, {"bump": {}}, {"pruefstand": {"bauen": []}}, {1: 2}, {"basis_commit": []}):
+            with self.subTest(daten=str(daten)), self.assertRaises(ValueError):
+                AU.daten_pruefen(daten)
+
+    def test_ort_der_ausnahme_ohne_text(self):
+        try:
+            raise ValueError("geheim: sk-ant-xyz")
+        except ValueError as e:
+            text = R._ort(e)
+        self.assertRegex(text, r"^ValueError in test_release\.py:\d+$")
+        self.assertNotIn("sk-ant", text)
+
+
+class ZustandAnKetteTests(ReleaseTest):
+    def schreibe(self, aenderung):
+        datei = Path(self.p.zustand_datei)
+        z = json.loads(datei.read_text())
+        z.update(aenderung)
+        datei.write_text(json.dumps(z))
+
+    def test_zustand_ist_an_das_protokoll_gebunden(self):
+        self.anfordern()
+        self.lauf(bis="pruefung1")
+        self.d.wache()
+        z = json.loads(Path(self.p.zustand_datei).read_text())
+        self.assertGreater(z["spiegel_n"], 0)
+        original = Path(self.p.zustand_datei).read_bytes()
+        faelle = {"falscher Hash": {"audit_hash": "f" * 64}, "Spiegelstand verschoben": {"spiegel_offset": z["spiegel_offset"] + 1},
+                  "Spiegel hinter dem Ende": {"spiegel_n": z["audit_n"] + 50, "spiegel_offset": 1},
+                  "Zeile hinter dem Ende": {"audit_n": z["audit_n"] + 5, "audit_hash": "e" * 64}}
+        for name, aenderung in faelle.items():
+            with self.subTest(fall=name):
+                Path(self.p.zustand_datei).write_bytes(original)
+                self.schreibe(aenderung)
+                d2 = self.neu()
+                self.assertEqual(d2._defekt, "zustand_defekt")
+                self.assertEqual(self.sende(f"anfordern main {ADMIN}", d=d2)["grund"], "zustand_defekt")
+        Path(self.p.zustand_datei).write_bytes(original)
+        self.assertIsNone(self.neu()._defekt)
+
+    def test_rotiertes_protokoll_wird_nicht_still_hingenommen(self):
+        self.anfordern()
+        self.lauf(bis="pruefung1")
+        os.replace(self.p.audit, self.p.audit + ".alt")  # Protokoll weg, Zustandsdatei bleibt
+        d2 = self.neu()
+        self.assertEqual(d2._defekt, "zustand_defekt")
+        self.assertTrue(self.sende("zurueck alles", d=d2)["ok"])  # der Rückweg bleibt
+
+    def test_aelterer_stand_der_datei_wird_nachgezogen(self):
+        self.anfordern()
+        gesichert = Path(self.p.zustand_datei).read_bytes()
+        self.lauf(bis="pruefung1")
+        Path(self.p.zustand_datei).write_bytes(gesichert)
+        d2 = self.neu()
+        self.assertIsNone(d2._defekt)
+        self.assertEqual(self.anfrage(d2)["status"], "pruefung1")
+
+    def test_start_spiegelt_den_rueckstand(self):
+        self.anfordern()
+        self.db.ausfall = True
+        self.lauf(bis="pruefung1")
+        self.assertGreater(self.sende("status")["spiegel"]["rueckstand"], 0)
+        self.db.ausfall = False
+        d2 = self.neu()  # schon der Start holt nach
+        self.assertEqual(self.sende("status", d=d2)["spiegel"]["rueckstand"], 0)
+        self.assertEqual(self.db.anfragen[self.anfrage(d2)["id"]]["status"], "pruefung1")
+
+    def test_neuaufbau_ohne_zustandsdatei_spiegelt_nicht_noch_einmal(self):
+        self.anfordern()
+        self.lauf(bis="pruefung1")
+        self.d.wache()
+        vorher = len(self.db.ereignisse)
+        os.unlink(self.p.zustand_datei)
+        d2 = self.neu()
+        d2.wache()
+        self.assertEqual(len(self.db.ereignisse), vorher)
+        self.assertIn("neu_aufgebaut", [z for z in self.audit() if z["ereignis"] == "dienst_start"][-1])
+
+    def test_start_ohne_abgleich_fragt_die_datenbank_nicht(self):
+        d = self.neu(wiederaufnehmen=False)
+        aufrufe = len(self.db.aufrufe)
+        d.wiederaufnehmen(abgleich=False)
+        self.assertEqual(len(self.db.aufrufe), aufrufe)
+        d.wache()  # die Wache gleicht ab
+        self.assertGreater(len(self.db.aufrufe), aufrufe)
+
+    def test_aufraeumen_der_datenbank_geschieht_nicht_unter_dem_schloss(self):
+        beobachtet = []
+        original = self.db.status_setzen
+
+        def spion(*a, **kw):
+            beobachtet.append(self.d._lock._is_owned())
+            return original(*a, **kw)
+
+        self.db.status_setzen = spion
+        alt = self.d.audit.anhaengen
+        self.d.audit.anhaengen = lambda e, *a, **kw: (_ for _ in ()).throw(K.AuditFehler("voll")) if e == "angefordert" \
+            else alt(e, *a, **kw)
+        self.assertEqual(self.sende(f"anfordern main {ADMIN}")["grund"], "audit_nicht_schreibbar")
+        self.assertEqual(beobachtet, [False])
+
+
+class FuellgradUndGrenzenTests(ReleaseTest):
+    def test_der_kern_kann_das_protokoll_nicht_ueber_75_prozent_fuellen(self):
+        mit = K.AUDIT_DATEI_MAX
+        try:
+            K.AUDIT_DATEI_MAX = 40000
+            self.anker.sperre = "an"
+            letzte = None
+            for i in range(600):
+                if i % R.AENDERN_KERN_MAX == 0:
+                    self.zeit[0] += R.ABLEHN_FENSTER_S + 1
+                letzte = self.sende(f"anfordern main {ADMIN}", "wamo-core").get("grund")
+                if letzte == "audit_nicht_schreibbar":
+                    break
+            self.assertEqual(letzte, "audit_nicht_schreibbar")
+            self.assertLessEqual(self.d.audit.fuellgrad(), K.AUDIT_GRENZE_LESEN + 0.03)
+            self.assertTrue(self.sende("zurueck alles")["ok"])
+            self.assertNotEqual(self.sende(f"anfordern main {ADMIN}").get("grund"), "audit_nicht_schreibbar")  # root darf weiter
+        finally:
+            K.AUDIT_DATEI_MAX = mit
+
+    def test_kern_darf_weniger_aendernde_anfragen_als_root(self):
+        self.anker.sperre = "an"
+        kern = [self.sende(f"anfordern main {ADMIN}", "wamo-core").get("grund") for _ in range(R.AENDERN_KERN_MAX + 3)]
+        self.assertEqual(kern.count("zu_viele"), 3)
+        self.assertEqual(self.sende(f"anfordern main {ADMIN}", "root")["grund"], "gesperrt")  # root hat sein eigenes Budget
+
+    def test_status_ist_je_benutzer_begrenzt(self):
+        antworten = [self.sende("status", "wamo-core").get("grund") for _ in range(R.STATUS_MAX + 5)]
+        self.assertEqual(antworten.count("zu_viele"), 5)
+        self.assertTrue(self.sende("status", "root")["ok"])
+
+    def test_status_belastet_den_anker_nicht_bei_jedem_aufruf(self):
+        d = self.neu()
+        d.tor_zeit = 3600
+        d._tor_stand = (-1e9, "unbekannt")
+        aufrufe = len(self.anker.aufrufe)
+        for _ in range(10):
+            self.sende("status", d=d)
+        self.assertEqual(len(self.anker.aufrufe) - aufrufe, 1)
+
+
+class HintergrundTests(ReleaseTest):
+    def test_arbeiter_und_wache_bringen_eine_anfrage_ans_ende(self):
+        d = self.neu()
+        d.starte_hintergrund(arbeiter_takt=0.01, wache_takt=0.05)
+        self.addCleanup(d.stoppe_hintergrund)
+        self.anfordern(d)
+        ende = time.monotonic() + 40
+        while time.monotonic() < ende and self.anfrage(d) is not None:
+            self.anker_spielt(d)
+            time.sleep(0.02)
+        self.assertEqual(self.endgrund(d), ("bewaehrt", None))
+        d.stoppe_hintergrund()
+        self.assertFalse(any(f.is_alive() for f in d._faeden))
+        self.assertTrue(K.kette_pruefen(self.p.audit)[0])
+        self.assertEqual(self.db.verstoesse, [])
+
+    def test_wache_beendet_im_hintergrund_eine_zu_alte_anfrage(self):
+        d = self.neu()
+        d.starte_hintergrund(arbeiter_takt=3600, wache_takt=0.02)  # der Arbeiter ruht, nur die Wache läuft
+        self.addCleanup(d.stoppe_hintergrund)
+        self.anfordern(d)
+        self.zeit[0] += AU.FRIST_S["angefragt"] + 1
+        ende = time.monotonic() + 10
+        while time.monotonic() < ende and self.anfrage(d) is not None:
+            time.sleep(0.02)
+        self.assertEqual(self.endgrund(d), ("abgebrochen", "zeitlimit"))
 
 
 if __name__ == "__main__":

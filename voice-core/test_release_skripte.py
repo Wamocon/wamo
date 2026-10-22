@@ -48,9 +48,11 @@ class TextTests(unittest.TestCase):
                      "ReadWritePaths=/var/lib/wamo-release /run/wamo-release /var/log/wamo-release",
                      "ExecStartPre=/usr/bin/python3 -E -s -B /opt/wamo-release/app/wamo_release.py selbstpruefung",
                      "ExecStart=/usr/bin/python3 -E -s -B /opt/wamo-release/app/wamo_release.py dienst",
-                     "Requires=wamo-anker.service", "After=wamo-anker.service", "SupplementaryGroups=wamocon"):
+                     "Requires=wamo-anker.service", "After=wamo-anker.service", "PartOf=wamo-anker.service",
+                     "SupplementaryGroups=wamocon", "LimitCORE=0",
+                     "InaccessiblePaths=-/etc/wamo -/etc/wamo-geraete -/etc/wamo-release -/etc/wamo-anker"):
             self.assertIn(soll, zeilen)
-        self.assertEqual([z for z in zeilen if z.startswith(("ExecStart", "ExecStop", "ExecReload"))].__len__(), 2)
+        self.assertEqual(len([z for z in zeilen if z.startswith(("ExecStart", "ExecStop", "ExecReload"))]), 2)
         for verboten in ("EnvironmentFile", "ExecStartPre=+", "ExecStart=+", "AmbientCapabilities=CAP", "RestrictAddressFamilies=AF_INET",
                          "User=root", "IPAddressAllow", "PermissionsStartOnly", "Environment=WAMO"):
             self.assertFalse(any(verboten in z for z in zeilen), verboten)

@@ -1349,10 +1349,10 @@ class Server:
             conn.setblocking(False)
             conn.recv(4096)  # ungelesene Bytes verwerfen (nicht auswerten), sonst löscht ein Reset die Antwort
 
-    def bedienen(self, conn: socket.socket) -> None:
-        """Eine Verbindung vollständig: Gegenstelle prüfen, lesen, bearbeiten, antworten."""
+    def bedienen(self, conn: socket.socket, peer: Peer | None = None) -> None:
+        """Eine Verbindung vollständig: Gegenstelle prüfen, lesen, bearbeiten, antworten (peer: schon ermittelt)."""
         d = self.dienst
-        peer = self.peer(conn)
+        peer = peer if peer is not None else self.peer(conn)
         name = d.benutzer(peer)
         if peer is None or name is None:
             antwort = d.abweisen(peer)  # nichts lesen
@@ -1361,11 +1361,11 @@ class Server:
             antwort = d.bearbeite(roh, fehler, peer, name)
         self._antworten(conn, antwort)
 
-    def _bedienen_thread(self, conn: socket.socket, platz: threading.BoundedSemaphore) -> None:
+    def _bedienen_thread(self, conn: socket.socket, platz: threading.BoundedSemaphore, peer: Peer) -> None:
         try:
             with contextlib.closing(conn):
                 try:
-                    self.bedienen(conn)
+                    self.bedienen(conn, peer)
                 except Exception as e:  # noqa: BLE001 (eine Verbindung darf den Dienst nie beenden)
                     print(f"wamo-release: Verbindung fehlgeschlagen ({_ort(e)})", file=sys.stderr)
         finally:
@@ -1403,7 +1403,7 @@ class Server:
                     self._antworten(conn, {"ok": False, "abgelehnt": True, "grund": "ausgelastet",
                                            "text": GRUENDE["ausgelastet"]})
                 continue
-            t = threading.Thread(target=self._bedienen_thread, args=(conn, platz), daemon=True)
+            t = threading.Thread(target=self._bedienen_thread, args=(conn, platz, peer), daemon=True)
             self._laufend.add(t)
             try:
                 t.start()
@@ -1411,6 +1411,7 @@ class Server:
                 self._laufend.discard(t)
                 platz.release()
                 conn.close()
+        d.stoppe_hintergrund()  # Arbeiter und Wache zuerst anhalten: dienst_stop ist dann die letzte Zeile des Laufs
         d.protokolliere("dienst_stop", AUDIT_GRENZE_LESEN,
                         grund="haenger" if d.haenger else ("angefordert" if self._halt else "socket_weg"))
         return self._halt and not d.haenger

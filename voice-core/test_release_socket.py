@@ -257,17 +257,85 @@ class SocketTests(T.ReleaseTest):
         t.join(5)
         self.assertTrue(ergebnis[0]["ok"])
 
+    @staticmethod
+    def warte_bis(bedingung, sekunden=5.0):
+        ende = time.monotonic() + sekunden
+        while time.monotonic() < ende:
+            if bedingung():
+                return True
+            time.sleep(0.02)
+        return bedingung()
+
     def test_gleichzeitige_verbindungen_sind_begrenzt_und_fremde_zaehlen_nicht(self):
-        self.starte()
+        server = self.starte()
         with mock.patch.object(R, "GESAMT_ZEIT_S", 3.0), mock.patch.object(R, "LESE_ZEIT_S", 3.0):
             stumm = [self.verbinde() for _ in range(R.VERBINDUNGEN_MAX)]  # erlaubt, aber still: belegen je einen Platz
-            time.sleep(0.3)
+            self.assertTrue(self.warte_bis(lambda: len(server._laufend) == R.VERBINDUNGEN_MAX))
             antwort = self.frage("status")
             self.assertEqual(antwort["grund"], "ausgelastet")
             for s in stumm:
                 s.close()
-            time.sleep(0.2)
+            self.assertTrue(self.warte_bis(lambda: len(server._laufend) == 0))
         self.assertTrue(self.frage("status")["ok"])
+
+    def test_der_kern_kann_root_nicht_aushungern(self):
+        eigene = os.getuid()
+        rollen = ["kern"] * (R.VERBINDUNGEN_KERN_MAX + 1) + ["root"]
+        d = self.neu(aufloesen={"root": eigene, "wamo-core": eigene + 7}.get)
+        server = R.Server(d, 0o660, peer=lambda conn: R.Peer(1, eigene + 7 if rollen.pop(0) == "kern" else eigene, 0))
+        server.binden()
+        faden = threading.Thread(target=server.lauf, daemon=True)
+        faden.start()
+
+        def ende():
+            server.anhalten()
+            faden.join(5)
+            server.schliessen(5)
+
+        self.addCleanup(ende)
+        with mock.patch.object(R, "GESAMT_ZEIT_S", 3.0), mock.patch.object(R, "LESE_ZEIT_S", 3.0):
+            stumm = [self.verbinde() for _ in range(R.VERBINDUNGEN_KERN_MAX)]  # der Kern belegt seinen ganzen Topf
+            self.assertTrue(self.warte_bis(lambda: len(server._laufend) == R.VERBINDUNGEN_KERN_MAX))
+            fuenfte = self.verbinde()
+            self.assertEqual(json.loads(fuenfte.recv(4096))["grund"], "ausgelastet")  # der Kern bekommt keinen weiteren Platz
+            fuenfte.close()
+            self.assertTrue(self.frage("zurueck alles --trocken")["ok"])  # root kommt trotzdem durch
+            for s in stumm:
+                s.close()
+
+    def test_dienst_main_startet_arbeitet_und_endet_auf_sigterm(self):
+        import signal
+        eigene = os.getuid()
+        d = self.neu(wiederaufnehmen=False, aufloesen={"root": eigene}.get)
+        antworten = []
+
+        def beenden():
+            self.warte_bis(lambda: os.path.exists(self.p.socket), 10)
+            antworten.append(self.frage("status"))
+            antworten.append(self.frage(f"anfordern main {ADMIN}"))
+            self.warte_bis(lambda: self.anfrage(d) is not None and self.anfrage(d)["status"] != "angefragt", 10)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        alt = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+        faden = threading.Thread(target=beenden, daemon=True)
+        faden.start()
+        try:
+            with mock.patch.object(R.os, "geteuid", return_value=4711), mock.patch.object(R, "Dienst", lambda: d):
+                rc = R.dienst_main()
+        finally:
+            signal.signal(signal.SIGTERM, alt[0])
+            signal.signal(signal.SIGINT, alt[1])
+        faden.join(5)
+        self.assertEqual(rc, 0)
+        self.assertTrue(antworten[0]["ok"])
+        self.assertTrue(antworten[1]["ok"], antworten[1])
+        self.assertNotEqual(self.anfrage(d)["status"], "angefragt")  # der Arbeiter im Hintergrund hat sie weitergebracht
+        self.assertEqual(self.audit()[-1]["ereignis"], "dienst_stop")
+        self.assertTrue(K.kette_pruefen(self.p.audit)[0])
+
+    def test_dienst_main_verweigert_root(self):
+        with mock.patch.object(R.os, "geteuid", return_value=0), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(R.dienst_main(), 1)
 
     def test_gleichzeitige_anfragen_halten_die_kette(self):
         self.starte()
@@ -361,7 +429,7 @@ class MitEchtemAnkerTests(T.ReleaseTest):
         self.assertEqual(self.anfrage()["status"], "uebernommen")
         r = self.sende("zurueck alles")  # der Anker hat noch keinen letzten guten Stand: ehrliche Antwort, Anfrage endet trotzdem
         self.assertEqual(self.endgrund(), ("abgebrochen", "zurueck"))
-        self.assertIn(r["grund"], ("rueckweg_fehlgeschlagen",))
+        self.assertEqual(r["grund"], "rueckweg_fehlgeschlagen")
 
     def test_sperre_dry_run_aendert_nichts(self):
         a = self.echt.sperre_an(trocken=True)
