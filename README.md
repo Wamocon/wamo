@@ -12,7 +12,7 @@ gemeinsamem Gedächtnis.
 | `desktop/` | Electron 44: App-Fenster, roter Stimmen-Rand je Monitor, Tray, Autostart, Betriebsart Büro/Unterwegs | PC |
 | `supabase/` | Migrationen mit `__SCHEMA__`-Platzhalter | eigener WAMO-Supabase auf Sokrates-2 |
 | `infra/sokrates2/` | Einrichtung von Supabase-Stack, TLS (eigene CA, Caddy), Firewall und Benutzer `wamo` (Claude Code, ECC, REA, gh, Vercel, Supabase-CLI) | Sokrates-2 |
-| `scripts/` | Start der Desktop-App, Datenbankzugang, Nutzerverwaltung, Migrationen | PC |
+| `scripts/` | Start der Desktop-App, Datenbankzugang, Nutzerverwaltung, Migrationen, Versionsskript `wamo_version.py` | PC |
 
 ## Stand (20.10.2026)
 
@@ -71,6 +71,16 @@ gemeinsamem Gedächtnis.
   `infra/sokrates2/README.md`, Abschnitt 12.
 
 ### Offen
+
+- Selbstüberarbeitung, Stufe 0 (Konzept `docs/selbstueberarbeitung.md`): Migration 0013 (Freigaben und Rollen: Tabellen
+  `release_anfragen`, `release_freigaben`, `release_ereignisse`, `release_stand`, Rollen `wamo_release` und `wamo_anker`,
+  Prüfsumme `sha256` in `schema_migrations`) liegt mit Rückweg und SQL-Test bereit, ist aber noch auf keinem Schema
+  angewendet. Anwenden auf `wamo_dev` und `wamo_test` (je zweimal, der zweite Lauf ändert nichts), danach
+  `supabase/tests/0013_release_test.sql` (letzte Zeile „0013 OK“); `wamo_prod` erst nach `database-reviewer` und Freigabe:
+  `bash scripts/render-migration.sh <schema> supabase/migrations/0013_release_freigaben.sql | ssh sokrates2 "docker exec -i wamo-supabase-db psql -U postgres -v ON_ERROR_STOP=1 --single-transaction"`.
+  Die Rollen sind NOLOGIN; Login und DSN richtet erst Schritt 0.5 ein. Version und Changelog: `python scripts/wamo_version.py`
+  (`vorschlag`, `changelog`, `anwenden X.Y.Z --trocken`, `pruefen`) leitet die Version aus Conventional Commits ab und hält alle
+  Versionsdateien samt `CHANGELOG.md` gleich; das erste Tag `v0.1.0` setzt Niko von Hand (kein Tag, kein Push durch das Skript).
 
 - Modellzugang ausrollen: `WAMO_SCHLUESSEL_KEK` erzeugen und in `core.env` setzen, Schlüssel der Person zuordnen
   oder hinterlegen, Migration 0010 in `wamo_prod`, Hausmodelle (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`) im Kern
