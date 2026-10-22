@@ -55,6 +55,13 @@ gemeinsamem Gedächtnis.
   der Datenbank, Standard Haiku) oder nur Hausmodelle über LiteLLM und SearXNG ohne Rückfall auf Claude; Migration 0010
   in `wamo_dev` und `wamo_test` angewendet.
 
+- WAMO Boss und Modellkarte (22.10.2026, Abschnitt „Boss und Modellkarte“): Der Boss wählt das Modell nach Aufgabenklasse,
+  gemessener Güte, Antwortzeit, Erreichbarkeit und Modus des Profils (Automatisch oder Nur Hausmodelle); das Gespräch
+  startet ohne Zusatzlatenz mit dem besten schnellen Modell, Fachaufgaben gehen asynchron an Spezialisten
+  (`aufgabe_verteilen`, Karte unter Vorgänge). Zweiter Schlüsseltyp: Claude-Code-Token für Entwicklungsaufträge.
+  Modellwahl und Token sind auch ohne Gespräch einstellbar (`/wamo/api/modellzugang`). Migration 0011 in `wamo_dev` und
+  `wamo_test` angewendet.
+
 - Browser-Betrieb (21.10.2026, Variante A): Die Oberfläche läuft als Container `wamo-ui` auf Sokrates-2 hinter
   `wamo-caddy` unter `https://192.168.178.136:55445` (Zertifikat der WAMO-CA, nur Büro-LAN und Loopback). Jedes
   Gerät im Büro öffnet WAMO im Browser, nach dem einmaligen Import der WAMO-CA; der Browser dort kennt nur die
@@ -68,6 +75,12 @@ gemeinsamem Gedächtnis.
 - Modellzugang ausrollen: `WAMO_SCHLUESSEL_KEK` erzeugen und in `core.env` setzen, Schlüssel der Person zuordnen
   oder hinterlegen, Migration 0010 in `wamo_prod`, Hausmodelle (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`) im Kern
   eintragen. Solange der Kern auf Sokrates-2 den alten Stand hat, nutzt jedes Profil dort noch den Schlüssel des Kerns.
+
+- Boss ausrollen: Migration 0011 in `wamo_prod` (vorher `database-reviewer`), Kern auf Sokrates-2 neu verteilen und neu
+  starten, danach `WAMO_LLM_MODELL=gemma4-31b` aus `core.env` entfernen (der Boss entscheidet, die Variable bleibt nur
+  als Übersteuerung). Der Dispatcher muss den Token über die zweite stdin-Zeile annehmen (siehe „Boss und Modellkarte“).
+  Hausmodelle im Gespräch kaltstartfrei halten (Aufwärmanfrage oder `keep_alive`), sonst kostet der erste Satz nach einer
+  Pause rund 9 Sekunden.
 
 - Ausrollen der Übernahmen und Freigaben im Büro (Kern, PC-Tunnel, GoTrue-Sitzungsgrenzen): Die Skripte sind
   vorbereitet, aber noch nicht angewendet. Bis dahin gibt es im Büro keinen Freigabeweg (fehlender Freigabe-Schlüssel:
@@ -287,8 +300,27 @@ Jedes Profil hat genau eine von zwei Arten (`voice-core/modellzugang.py`, Tabell
   Verbrauch steht als Tokenzahlen je Profil im Log (`Verbrauch profil=… anbieter=… modell=… ein=… aus=…`), ohne Inhalt.
 - **Stimme:** Jedes Profil trägt `stt` und `tts` (`soniox` oder `haus`) als Schnittstelle für Phase P5; ein Admin setzt
   sie mit `modellzugang-setzen --stt haus --tts haus`.
-- **Entwicklungsaufträge** laufen vorerst nur mit dem Claude-Zugang der Sandbox (`/etc/wamo/geheim.env`), nicht mit
-  dem Zugang des Profils.
+- **Modus je Profil** (Migration 0011, Spalte `modell_modus`): „Automatisch“ oder „Nur Hausmodelle“, gewählt in der Karte
+  Modellzugang und gültig ab der nächsten Sitzung. Der Zwang eines Admins (`nur_haus`) bleibt stärker. Im Modus Nur
+  Hausmodelle geht nichts an Anthropic, auch nicht als Rückfall, und Claude-Code-Aufträge sind aus.
+- **Zweiter Schlüsseltyp, Claude-Code-Token** (`sk-ant-oat…` aus `claude setup-token`, Max-Tarif): nur für
+  Entwicklungsaufträge, nie für das Gespräch. Der Kern prüft nur das Format (eine Testanfrage würde das Kontingent
+  verbrauchen), verschlüsselt ihn wie den API-Schlüssel (AES-256-GCM, Zweck als zusätzliche Daten, zwei getrennte Felder
+  in der Oberfläche) und gibt ihn nie zurück. `modellzugang.claude_code_zugang_fuer(user_id)` liefert dem Dispatcher
+  `{"typ": "oauth" | "api", "wert": …}` für genau diese Sitzung und diesen Lauf: zuerst der Token (Modell Sonnet), dann
+  der API-Schlüssel (Modell Haiku), sonst `None`. Die Oberfläche erkennt die Art am Anfang des Werts und bietet bei einem
+  falschen Feld an, ihn ins richtige zu verschieben.
+- **Ohne Gespräch:** `GET` und `POST /wamo/api/modellzugang` (Anmelde-Token, zweiter Faktor, aktives Profil, Profil nur aus
+  der Identität, Body höchstens 8 KB) tun dasselbe wie der Datenkanal; die Karte nutzt sie, wenn keine Sitzung läuft.
+  Fehler kommen als konkreter Satz (401 Schlüssel abgelehnt, Format, Zeitüberschreitung, Kern nicht erreichbar).
+- **Schlüssel nie in Texten:** Eine Schutzstufe im Kern (`voice-core/schluessel_filter.py`) ersetzt `sk-ant-…` (auch
+  `sk-ant-oat…`) schon hinter der Spracherkennung durch „[Schlüssel entfernt]“, bevor Verlauf, Modell, Lernen,
+  Gedächtnis und Log etwas sehen. WAMO nimmt Schlüssel nie per Stimme an und fragt nie danach; er erklärt nur, wo die Karte ist.
+- **Entwicklungsaufträge** laufen mit dem Token (Sonnet), sonst mit dem API-Schlüssel des Profils (Haiku, Allowlist in
+  `werkzeugkarte.py`); das Profil des Kern-Schlüssels nutzt übergangsweise weiter den Zugang der Sandbox
+  (`/etc/wamo/geheim.env`). Alle anderen Profile haben keine Entwicklungsaufträge, bis eine Hausvariante mit `wamo-coder`
+  gebaut und gemessen ist. Der Dispatcher bekommt den Wert nie auf der Befehlszeile, sondern nur über eine zweite
+  stdin-Zeile (`{"typ","wert"}`, Kopfzeile `zugang_folgt`).
 
 ## Modelle (Ausbaustufe P4)
 
@@ -349,6 +381,41 @@ Knopf an bekannter Stelle. Ergebnisse unter `voice-core/eval/ergebnisse/baustein
 
 Nach Änderungen an den PC-Werkzeugen des Hosts den Schnappschuss erneuern:
 `host\.venv\Scripts\python.exe voice-core\eval\pc_werkzeuge_holen.py`.
+
+## Boss und Modellkarte
+
+**Modellkarte** (`voice-core/modellkarte.py`, nur Daten): je Modell Alias, Anbieter, Fähigkeiten mit gemessenen Werten
+(Anteil bestandener Fälle, Zahl der Fälle, Datum, Quelldatei unter `voice-core/eval/ergebnisse/`), Latenzklasse
+(schnell, mittel, langsam, Grenzen je Fähigkeit in `LATENZ_GRENZEN`), Datenschutz und Status (`standard`, `fachmodell`,
+`gesperrt`, `verweis`). `test_modellkarte.py` rechnet jede Zahl aus den Ergebnisdateien nach. Das Fachmodell Recht
+(`sokrates-steuer`) wählt der Boss nie von selbst, ein ungeprüftes Modell (`sokrates-fable-qwen27`) nie ohne eigene
+Messung und Freigabe. Fehlende Werte misst `voice-core/eval/modellkarte_messen.py` mit kleinen, nacheinander laufenden
+Tests (`code`, `analyse`, `bewerter`, `einbettung`, `latenz`, `kennenlernen`; Claude Haiku nur als kleine Referenz).
+
+**Boss** (`voice-core/boss.py`, Regelwerk auf der gemessenen Karte, keine Modellfrage im Gespräch):
+
+| Aufgabe | Wahl |
+| --- | --- |
+| Gespräch mit Werkzeugen | Haiku, wenn das Profil Claude darf; sonst das beste livetaugliche Hausmodell (Güte mit Abzug je Latenzklasse; ausgeschlossen, wenn der Prompt ohne Cache über 10 s braucht) |
+| Code und Entwicklung | Claude Code, wenn ein Token oder API-Schlüssel hinterlegt ist; sonst keine (bis eine Hausvariante mit `wamo-coder` gemessen ist) |
+| Lernen, Zusammenfassung, Bildschirm, Analyse, Bewertung | bestes Modell nach Güte und Antwortzeit; bei gleicher Güte gewinnt das Hausmodell |
+| Unklare Aufgabe | kleines Modell ordnet ein (Hausprofil: bestes Hausmodell, Claude-Profil: Haiku) |
+| Vertrauliches, Hausprofil, Nur Hausmodelle | immer Hausmodelle, nie Claude, auch nicht als Rückfall |
+
+- **Erreichbarkeit:** Vor der Wahl prüft der Boss das Gateway und fragt das gewählte Hausmodell mit einer kleinen
+  Probe (Zeitgrenze 10 s, Ergebnis 120 s gemerkt, Fehler 20 s; `WAMO_BOSS_PROBE=aus` schaltet sie ab). Antwortet es
+  nicht innerhalb von 3 s (die erste Probe darf ein Kaltstart sein, die zweite nicht), nimmt der Boss das nächstbeste und sagt es klar (Karte und Statusleiste zeigen Modell, Modus und Grund).
+  Erreicht kein erlaubtes Modell die Mindestgüte, nimmt er das beste verfügbare ab der Notfallgüte, sonst endet das
+  Gespräch mit einer verständlichen Meldung. `WAMO_LLM_*` bleibt als Übersteuerung.
+- **Aufgaben verteilen:** Das Werkzeug `aufgabe_verteilen(art, auftrag)` startet eine Aufgabe asynchron auf einem
+  Spezialisten (höchstens 2 parallel, 30 je Sitzung, 3 Versuche, 240 s). Unter Vorgänge steht eine Karte, das Ergebnis
+  kommt als unvertrauenswürdige Daten zurück (Marker entfernt, Ende gekennzeichnet) und das Protokoll enthält keine Inhalte.
+- **Antwortzeit messen:** Kaltstart (Modell wurde aus dem Speicher verdrängt, etwa 9 Sekunden), erster Folgeaufruf und
+  Prompt ohne Cache (etwa 7,5 Sekunden) sind getrennte Werte der Karte. Die langen Werte im Live-Gespräch (über eine
+  Minute) ließen sich nicht reproduzieren, vermutlich Verdrängung oder Auslastung der Sparks.
+- **Aufwärmen (Vorschlag, nicht eingerichtet):** Das Gesprächsmodell mit `keep_alive` (etwa 30 Minuten) auf den Sparks
+  halten oder beim Anmelden eine kurze Aufwärmanfrage über LiteLLM schicken und alle 5 Minuten wiederholen, solange
+  eine Sitzung offen ist.
 
 ## Sicherheitsmodell
 

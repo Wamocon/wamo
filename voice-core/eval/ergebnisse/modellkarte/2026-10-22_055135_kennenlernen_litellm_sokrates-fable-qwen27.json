@@ -1,0 +1,10 @@
+{
+ "zeitpunkt": "2026-10-22T05:51:35+02:00",
+ "anbieter": "litellm",
+ "modell": "sokrates-fable-qwen27",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "kennenlernen",
+ "antwort": "Ich bin ein KI-Assistent, der entwickelt wurde, um dich bei Fragen, kreativen Aufgaben und verschiedenen Alltagsproblemen zu unterstützen.",
+ "dauer_s": 1.62,
+ "fehler": null
+}

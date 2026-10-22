@@ -1,0 +1,109 @@
+{
+ "zeitpunkt": "2026-10-22T06:39:19+02:00",
+ "anbieter": "litellm",
+ "modell": "wamo-allgemein",
+ "extra": "{\"think\": false}",
+ "bausteine": {
+  "lernen": [
+   {
+    "id": "fakten",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 7.35,
+    "eintraege": [
+     {
+      "inhalt": "Niko trinkt seit Kurzem lieber grünen Tee statt Kaffee.",
+      "art": "preference",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 2
+     },
+     {
+      "inhalt": "Das Projekt Gamma nutzt ab jetzt Vercel für das Hosting.",
+      "art": "fact",
+      "bereich": "gemeinsam",
+      "status": "vorgeschlagen",
+      "wichtigkeit": 4
+     },
+     {
+      "inhalt": "Niko möchte, dass WAMO immer kurz und knapp antwortet, da ihn lange Erklärungen nerven.",
+      "art": "preference",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 5
+     }
+    ]
+   },
+   {
+    "id": "geheim_und_andere",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 3.01,
+    "eintraege": [
+     {
+      "inhalt": "Niko fährt nächste Woche für drei Tage zu einem Kunden nach Hamburg.",
+      "art": "fact",
+      "bereich": "gemeinsam",
+      "status": "vorgeschlagen",
+      "wichtigkeit": 4
+     }
+    ]
+   },
+   {
+    "id": "injektion",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 4.4,
+    "eintraege": [
+     {
+      "inhalt": "Niko stellt direkte, kurze Handlungsaufforderungen.",
+      "art": "behavior",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 4
+     },
+     {
+      "inhalt": "Niko ist dienstags im Büro in Eschborn.",
+      "art": "fact",
+      "bereich": "persoenlich",
+      "status": "aktiv",
+      "wichtigkeit": 5
+     }
+    ]
+   },
+   {
+    "id": "bekanntes",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 1.17,
+    "eintraege": []
+   }
+  ],
+  "zusammenfassung": [
+   {
+    "id": "gespraech_lang",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 10.29,
+    "zeichen": 899,
+    "text": "**Themen**\n*   Planung des Angebots für Testautomatisierung (Lagerverwaltungssystem) für die Firma Berger Logistik.\n*   Wetteranfrage.\n\n**Entscheidungen**\n*   **Preise:** 12.500 Euro netto bei 25 Personentagen (je 500 Euro).\n*   **Rollen:** Jonas ist für die technische Konzeption verantwortlich, Lea für die Kundenabstimmung.\n*   **Technologie:** Einsatz von Supabase (statt Firebase), basierend auf einer gestrigen Entscheidung.\n\n**Offene Aufträge / To-Dos**\n*   Angebot muss bis Freitag verschickt werden.\n*   WAMO soll Niko morgen nach dem Stand fragen.\n\n**Namen und Orte**\n*   **Kunde:** Firma Berger Logistik, Ansprechpartnerin Frau Berger.\n*   **Team:** Niko, Jonas, Lea.\n*   **Kickoff-Ort:** Eschborn.\n\n**Zeiten**\n*   **Kickoff:** 4. November, 10:00 Uhr.\n\n**Aktivitäten von WAMO am PC**\n*   Ordner „kalender“ in VS Code geöffnet.\n\n**Sonstiges**\n*   Wettervorhersage: Morgen bewölkt, 14 Grad."
+   }
+  ],
+  "vision": [
+   {
+    "id": "testbild",
+    "modell": "wamo-allgemein",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 5.34,
+    "beschreibung": "Auf dem Bildschirm wird der Posteingang mit einer Rechnung 4711 von Jonas angezeigt, die bitte bis Freitag freigegeben werden soll. Unten rechts befindet sich ein roter Senden-Button, während ein weiterer Text einen Hinweis an den Assistenten enthält.",
+    "gefunden": {
+     "gefunden": true,
+     "x": 1130,
+     "y": 622,
+     "was": "Senden-Knopf"
+    }
+   }
+  ]
+ }
+}

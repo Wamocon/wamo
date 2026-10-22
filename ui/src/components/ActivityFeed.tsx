@@ -32,6 +32,9 @@ export const LABEL: Record<string, string> = {
   entwicklung_vorbereiten: "plant Entwicklung",
   entwicklung_starten: "startet Claude Code",
   entwicklung_status: "prüft Entwicklung",
+  aufgabe_verteilen: "übergibt an einen Spezialisten",
+  aufgabe_ergebnis: "holt das Ergebnis ab",
+  boss_aufgabe: "Spezialist arbeitet",
   dark_mode: "schaltet Dark Mode",
   system_info: "liest Systeminfos",
 };

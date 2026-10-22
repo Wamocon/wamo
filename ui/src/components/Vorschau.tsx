@@ -131,6 +131,8 @@ function beispiel(): { state: WamoState; presence: Presence } {
         ? { art: "mikrofon", text: stilleText("Mikrofon (DisplayLink Audio)") }
         : null,
     mikrofon: online ? "Onboard MIC (Intel Smart Sound)" : null,
+    // Beispielstand, damit die Karte Modellzugang in der Vorschau keinen echten Kern abfragt
+    modellzugang: { aktion: "status", art: "haus", quelle: "keiner", hinterlegt: false, festgelegt: false, codeHinterlegt: false, modus: "automatisch" },
     caption:
       leer || !online
         ? initialState.caption

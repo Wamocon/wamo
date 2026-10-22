@@ -1,0 +1,65 @@
+{
+ "zeitpunkt": "2026-10-22T06:02:27+02:00",
+ "anbieter": "litellm",
+ "modell": "gemma4-31b",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "code",
+ "faelle": [
+  {
+   "id": "roemisch",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 30.86,
+   "ausgabe_tokens": 228
+  },
+  {
+   "id": "dauer",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 24.6,
+   "ausgabe_tokens": 239
+  },
+  {
+   "id": "intervalle",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 22.28,
+   "ausgabe_tokens": 217
+  },
+  {
+   "id": "luhn",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 17.23,
+   "ausgabe_tokens": 167
+  },
+  {
+   "id": "lru",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 19.38,
+   "ausgabe_tokens": 189
+  },
+  {
+   "id": "flach",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 7.62,
+   "ausgabe_tokens": 71
+  },
+  {
+   "id": "woerter",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 10.53,
+   "ausgabe_tokens": 100
+  },
+  {
+   "id": "iban",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 29.44,
+   "ausgabe_tokens": 289
+  }
+ ]
+}

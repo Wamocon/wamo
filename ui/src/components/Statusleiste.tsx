@@ -2,6 +2,7 @@
 
 import { memo } from "react";
 import { KERN, useBetriebsart, type Betriebsart } from "@/lib/betriebsart";
+import { modusKurz } from "@/lib/modellwahl";
 import type { Betrieb } from "@/lib/nachrichten";
 import { useSelect } from "@/lib/store";
 import { unverschluesselteDienste } from "@/lib/umgebung";
@@ -105,6 +106,7 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
   const kernText = `Kern: ${KERN[art].ort}`;
   const m = betrieb?.modelle;
   const modelleKurz = (m && [m.llm, m.stt].filter(Boolean).join(" · ")) || "Modelle unbekannt";
+  const modus = modusKurz(betrieb); // Automatisch oder Nur Hausmodelle (WAMO Boss), null bei einem Kern ohne Meldung
 
   return (
     <dl className={kompakt ? "status-items" : "status-list"}>
@@ -128,9 +130,18 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
       {kompakt ? (
         <div data-feld="modelle">
           <dt className={dt}>Modelle</dt>
-          <dd title={m ? `Gespräch: ${m.llm ?? "unbekannt"}, Hören: ${m.stt ?? "unbekannt"}, Stimme: ${m.tts ?? "unbekannt"}` : undefined}>
+          <dd
+            title={
+              m
+                ? `Gespräch: ${m.llm ?? "unbekannt"}, Hören: ${m.stt ?? "unbekannt"}, Stimme: ${m.tts ?? "unbekannt"}` +
+                  (modus ? `. Modus: ${modus.text}${modus.grund ? ` (${modus.grund})` : ""}` : "") +
+                  (betrieb?.modellHinweis ? `. ${betrieb.modellHinweis}` : "")
+                : undefined
+            }
+          >
             {modelleKurz}
             {betrieb?.ort && <span className="tag">{betrieb.ort === "cloud" ? "Cloud" : "im Haus"}</span>}
+            {modus && <span className="tag">{modus.text}</span>}
           </dd>
         </div>
       ) : (
@@ -142,6 +153,21 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
               {betrieb?.ort && <span className="tag">{betrieb.ort === "cloud" ? "Cloud" : "im Haus"}</span>}
             </dd>
           </div>
+          {modus && (
+            <div data-feld="modus">
+              <dt>Modus</dt>
+              <dd>
+                {modus.text}
+                {modus.grund && <span className="status-label"> ({modus.grund})</span>}
+              </dd>
+            </div>
+          )}
+          {betrieb?.modellHinweis && (
+            <div data-feld="modellhinweis">
+              <dt>Hinweis</dt>
+              <dd>{betrieb.modellHinweis}</dd>
+            </div>
+          )}
           <div>
             <dt>Hören</dt>
             <dd>{m?.stt ?? "unbekannt"}</dd>

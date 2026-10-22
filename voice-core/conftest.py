@@ -34,12 +34,18 @@ def _kein_echtes_gateway(monkeypatch):
     monkeypatch.delenv("WAMO_CLAUDE_SCHLUESSEL_PROFIL", raising=False)
     monkeypatch.delenv("WAMO_SCHLUESSEL_KEK", raising=False)
     monkeypatch.delenv("WAMO_SCHLUESSEL_KEK_ALT", raising=False)
+    # Der Boss prüft vor dem Gespräch mit einer kleinen Anfrage, ob ein Hausmodell jetzt schnell genug antwortet:
+    # in Tests aus (test_boss.py schaltet sie gezielt ein und ersetzt das Netz)
+    monkeypatch.setenv("WAMO_BOSS_PROBE", "aus")
+    import boss
     import llm_anbieter
     import modellzugang
 
     llm_anbieter._cache_leeren()
     llm_anbieter._claude_cache.clear()
     modellzugang._versuche.clear()
+    boss._probe_cache_leeren()
     yield
     llm_anbieter._cache_leeren()
     llm_anbieter._claude_cache.clear()
+    boss._probe_cache_leeren()

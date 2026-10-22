@@ -79,6 +79,11 @@ async def _shot(pc_client) -> dict:
     return shot
 
 
+async def foto(pc_client) -> Bild:
+    """Bildschirmfoto als Bild (für den Boss, boss.py). Wirft BildschirmGesperrt oder RuntimeError."""
+    return Bild((await _shot(pc_client))["jpeg_base64"])
+
+
 async def describe(pc_client, frage: str, zugang: Zugang) -> str:
     shot = await _shot(pc_client)
     antwort = await anfrage(

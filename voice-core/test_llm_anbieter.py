@@ -178,7 +178,8 @@ def test_lernen_und_zusammenfassung_erben_das_gespraechsmodell(monkeypatch):
     monkeypatch.setenv("WAMO_LLM_VISION", "litellm")
     assert la.konfiguration("lernen") == ("litellm", "qwen3.6:35b")
     assert la.konfiguration("zusammenfassung") == ("litellm", "qwen3.6:35b")
-    assert la.konfiguration("vision") == ("litellm", None)  # Bildmodell nie stillschweigend erben
+    # Bildmodell nie stillschweigend vom Gespräch erben: ohne Vorgabe gilt das Bildmodell der Modellkarte
+    assert la.konfiguration("vision") == ("litellm", "wamo-vision")
 
 
 async def test_litellm_mit_angebotenem_modell(monkeypatch, cz):
@@ -327,17 +328,28 @@ async def test_fehler_5xx_sperrt_nur_das_modell_keine_verbindung_das_gateway(mon
     monkeypatch.setattr(la, "_litellm_anfrage", fehler)
     with pytest.raises(la.LLMNichtVerfuegbar):
         await la.anfrage("lernen", zugang=hz, system="s", inhalt="i", max_tokens=10)
-    with pytest.raises(la.LLMNichtVerfuegbar, match="HTTP 503"):  # dieses Modell gilt kurz als weg ...
-        await la.waehlen("lernen", hz)
-    assert (await la.waehlen("vision", hz)).anbieter == "litellm"  # ... ein anderes Modell nicht
+    # dieses Modell gilt kurz als weg: der Boss nimmt das nächstbeste Hausmodell und sagt, warum ...
+    naechstes = await la.waehlen("lernen", hz)
+    assert naechstes.anbieter == "litellm" and naechstes.modell != "gemma4-31b" and "HTTP 503" in naechstes.grund
+    assert (await la.waehlen("vision", hz)).anbieter == "litellm"  # ... ein anderes Modell ist nicht betroffen
 
 
 @pytest.mark.parametrize("name", ["claude-haiku-5-5", "Claude-Sonnet", "anthropic/claude-haiku", "bedrock/claude-x"])
 async def test_haus_profil_lehnt_anthropic_modelle_hinter_dem_gateway_ab(monkeypatch, name):
     _hausmodelle(monkeypatch, modell=name)
-    _gateway(monkeypatch, _liste(name, alias_status=200))
+    # nichts anderes nutzbar: keine Sitzung, nie ein Aufruf an Anthropic
+    _gateway(monkeypatch, _liste(name))
     with pytest.raises(la.LLMNichtVerfuegbar, match="Anthropic"):
         await la.waehlen("gespraech", la.Zugang.haus(USER))
+
+
+@pytest.mark.parametrize("name", ["claude-haiku-5-5", "anthropic/claude-haiku"])
+async def test_falsche_vorgabe_des_betriebs_wird_uebersprungen(monkeypatch, name):
+    """Ein Anthropic-Modell als Vorgabe für Hausprofile: der Boss nimmt das nächstbeste Hausmodell und sagt es."""
+    _hausmodelle(monkeypatch, modell=name)
+    _gateway(monkeypatch, _liste(name, alias_status=200))
+    wahl = await la.waehlen("gespraech", la.Zugang.haus(USER))
+    assert (wahl.anbieter, wahl.modell) == ("litellm", "gemma4-31b") and "Anthropic" in wahl.grund
 
 
 async def test_haus_profil_lehnt_gateway_bei_anthropic_ab(monkeypatch):
@@ -371,13 +383,21 @@ async def test_fehlender_gateway_schluessel_faellt_auf_claude_zurueck(monkeypatc
 
 @pytest.mark.parametrize("variable,grund", [
     ("LITELLM_BASE_URL", "LITELLM_BASE_URL fehlt"),
-    ("WAMO_LLM_MODELL", "kein Modell gesetzt"),
 ])
 async def test_fehlende_einstellung_faellt_zurueck(monkeypatch, cz, variable, grund):
     _litellm(monkeypatch)
     monkeypatch.delenv(variable)
     wahl = await la.waehlen("gespraech", cz)
     assert wahl.anbieter == "claude" and wahl.grund == grund
+
+
+async def test_ohne_modellvorgabe_gilt_die_modellkarte(monkeypatch, cz):
+    """Früher: "kein Modell gesetzt" und Rückfall. Jetzt nimmt der Boss das Hausmodell der Karte."""
+    _litellm(monkeypatch)
+    monkeypatch.delenv("WAMO_LLM_MODELL")
+    _gateway(monkeypatch, _liste("gemma4-31b"))
+    wahl = await la.waehlen("gespraech", cz)
+    assert (wahl.anbieter, wahl.modell) == ("litellm", "gemma4-31b")
 
 
 async def test_adresse_ohne_http_faellt_zurueck(monkeypatch, cz):
@@ -855,3 +875,62 @@ def test_lesbarer_modellname():
     assert la.lesbarer_modellname("claude-haiku-5-5") == "Claude Haiku 5.5"
     assert la.lesbarer_modellname("claude-sonnet-4-5-20250929") == "Claude Sonnet 4.5"
     assert la.lesbarer_modellname("qwen3.6:35b") == "qwen3.6:35b"
+
+
+# --- modell_anfrage (Boss): genau diese Wahl, ohne Rückfall, mit den Sperren für Hausprofile --------------------
+
+
+async def test_modell_anfrage_haus_profil_nie_claude(monkeypatch, hz):
+    def gebaut(self):
+        raise AssertionError("ein Hausprofil darf nie einen Anthropic-Client bauen")
+
+    monkeypatch.setattr(la.Zugang, "anthropic", gebaut)
+    with pytest.raises(la.LLMNichtVerfuegbar, match="Anthropic ist gesperrt"):
+        await la.modell_anfrage(la.Wahl("boss_code", "claude", "claude-haiku-5-5", "claude"), zugang=hz, system="s",
+                                inhalt="i", max_tokens=10, timeout=5, baustein="boss_code")
+
+
+@pytest.mark.parametrize("name", ["claude-haiku-5-5", "anthropic/claude-x", "bedrock/claude-y"])
+async def test_modell_anfrage_hausmodell_das_zu_anthropic_fuehrt(monkeypatch, hz, name):
+    _mit_litellm_client(monkeypatch, _FalscheCompletions(_openai_antwort()))
+    with pytest.raises(la.LLMNichtVerfuegbar, match="Anthropic"):
+        await la.modell_anfrage(la.Wahl("boss_code", "litellm", name, "litellm"), zugang=hz, system="s", inhalt="i",
+                                max_tokens=10, timeout=5, baustein="boss_code")
+
+
+async def test_modell_anfrage_litellm_mit_token_zahlen(monkeypatch, hz):
+    c = _FalscheCompletions(_openai_antwort("fertig"))
+    _mit_litellm_client(monkeypatch, c)
+    antwort = await la.modell_anfrage(la.Wahl("boss_code", "litellm", "wamo-coder", "litellm"), zugang=hz, system="s",
+                                      inhalt="i", max_tokens=77, timeout=33, baustein="boss_code")
+    assert (antwort.text, antwort.eingabe, antwort.ausgabe) == ("fertig", 5, 2)
+    assert c.params["max_tokens"] == 77 and c.params["timeout"].read == 33
+
+
+async def test_modell_anfrage_claude_ohne_denkphase_und_mit_token_zahlen(monkeypatch, cz):
+    usage = SimpleNamespace(input_tokens=11, output_tokens=3, cache_read_input_tokens=0, cache_creation_input_tokens=0)
+    m = _FalscheMessages(SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="ok")],
+                                         usage=usage))
+    _mit_claude(monkeypatch, m)
+    antwort = await la.modell_anfrage(la.Wahl("boss_analyse", "claude", "claude-haiku-5-5", "claude"), zugang=cz,
+                                      system="s", inhalt="i", max_tokens=400, timeout=20, baustein="boss_analyse")
+    assert (antwort.text, antwort.eingabe, antwort.ausgabe) == ("ok", 11, 3)
+    assert m.params["thinking"] == {"type": "disabled"} and m.params["max_tokens"] == 400
+    # Lernen und Bildschirm (anfrage) lassen die Denkphase wie bisher
+    await la._claude_anfrage(la.Wahl("lernen", "claude", "claude-haiku-5-5", "claude"), _auftrag(), cz)
+    assert "thinking" not in m.params
+
+
+async def test_modell_anfrage_merkt_sich_ausfaelle_aber_nicht_zeitgrenzen(monkeypatch, hz):
+    for zeitlimit in (False, True):
+        la._cache_leeren()
+
+        async def fehler(wahl, auftrag, zugang, zeitlimit=zeitlimit):
+            raise la.LLMFehler("LiteLLM: Zeitüberschreitung" if zeitlimit else "LiteLLM: HTTP 503", verbindung=True,
+                               zeitlimit=zeitlimit)
+
+        monkeypatch.setattr(la, "_litellm_anfrage", fehler)
+        with pytest.raises(la.LLMFehler):
+            await la.modell_anfrage(la.Wahl("boss_code", "litellm", "wamo-coder", "litellm"), zugang=hz, system="s",
+                                    inhalt="i", max_tokens=10, timeout=5, baustein="boss_code")
+        assert bool(la._pruef_cache) is (not zeitlimit)

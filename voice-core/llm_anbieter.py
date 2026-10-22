@@ -86,6 +86,7 @@ CLAUDE_PRUEF_TTL_SECS = 60.0
 ANFRAGE_TIMEOUT_SECS = {"lernen": 45.0, "vision": 12.0, "zusammenfassung": 60.0, "gespraech": 20.0}
 VERBINDUNG_TIMEOUT_SECS = 3.0
 GESPRAECH_LESE_TIMEOUT_SECS = 20.0  # längste Pause im Stream, bevor das Gespräch die Anfrage aufgibt
+ANTHROPIC_WOERTER = ("claude", "anthropic", "haiku", "sonnet", "opus")
 _CLAUDE_MODELL = re.compile(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?")
 _ALLE = "*"  # Cache-Schlüssel für "Gateway ganz weg", gilt für jedes Modell
 
@@ -101,7 +102,10 @@ class LLMFehler(Exception):
 
 
 class LLMNichtVerfuegbar(LLMFehler):
-    """Kein erlaubter Anbieter ist für den Baustein nutzbar (bei haus-Profilen nie ein Rückfall auf Claude)."""
+    """Kein erlaubter Anbieter ist für den Baustein nutzbar (bei haus-Profilen nie ein Rückfall auf Claude).
+    gruende: bei der Wahl des Boss die Gründe je übersprungenem Kandidaten (ohne Vorspann), sonst leer."""
+
+    gruende: str = ""
 
 
 @dataclass(frozen=True, eq=False)
@@ -111,13 +115,16 @@ class Zugang:
 
     user_id: str
     art: Art
-    quelle: str = "keiner"  # profil | zuordnung | betreiber | festgelegt | keiner | fehler
+    quelle: str = "keiner"  # profil | zuordnung | betreiber | festgelegt (Admin) | wahl (Person) | keiner | fehler
     claude_modell: str | None = None
     claude_schluessel: str | None = field(default=None, repr=False)
     claude_workspace: str | None = None
     stt: str = "soniox"
     tts: str = "soniox"
     hinweis: str | None = None
+    # Hat die Person einen Claude-Code-Token hinterlegt? Nur dieses Merkmal, nie der Token selbst (den liefert
+    # modellzugang.claude_code_zugang_fuer kurz vor einem Entwicklungslauf). Er berührt das Gespräch nicht.
+    claude_code: bool = False
     _client: list = field(default_factory=list, repr=False, init=False)  # einmal je Zugang gebaut
     _zu: list = field(default_factory=list, repr=False, init=False)  # gefüllt, sobald die Sitzung schloss
 
@@ -129,8 +136,8 @@ class Zugang:
 
     @classmethod
     def haus(cls, user_id: str, quelle: str = "keiner", hinweis: str | None = None, *, stt: str = "soniox",
-             tts: str = "soniox") -> Zugang:
-        return cls(user_id, "haus", quelle, stt=stt, tts=tts, hinweis=hinweis)
+             tts: str = "soniox", claude_code: bool = False) -> Zugang:
+        return cls(user_id, "haus", quelle, stt=stt, tts=tts, hinweis=hinweis, claude_code=claude_code)
 
     @classmethod
     def betreiber(cls) -> Zugang:
@@ -203,6 +210,8 @@ class Antwort:
     text: str
     ende: Ende
     wahl: Wahl
+    eingabe: int = 0  # Tokens laut Anbieter (0, wenn er sie nicht meldet)
+    ausgabe: int = 0
 
 
 def lesbarer_modellname(model: str) -> str:
@@ -290,21 +299,40 @@ def rueckfall_erlaubt(baustein: str) -> bool:
     return baustein in {teil.strip() for teil in wert.split(",")}
 
 
-def konfiguration(baustein: str, zugang: Zugang | None = None) -> tuple[Anbieter, str | None]:
-    """(Anbieter, Modell) aus der Umgebung. Für haus-Profile ist der Anbieter immer litellm."""
+def vorgabe(baustein: str, zugang: Zugang | None = None) -> tuple[Anbieter | None, str | None]:
+    """Was der Betrieb in der Umgebung vorgibt (Übersteuerung der Modellkarte): (Anbieter, Modell). Anbieter None heißt:
+    nicht gesetzt, dann wählt der Boss. Für haus-Profile ist der Anbieter immer litellm."""
     if baustein not in _ENV:
         raise ValueError(f"unbekannter Baustein {baustein!r}")
     anbieter_env, modell_env = _ENV[baustein]
     haus = zugang is not None and zugang.art == "haus"
-    wert = "litellm" if haus else (_env(anbieter_env).lower() or "claude")
-    if wert not in ANBIETER:
+    wert = "litellm" if haus else _env(anbieter_env).lower()
+    if wert and wert not in ANBIETER:
         logger.error("{}={!r} ist unbekannt (erlaubt: claude, litellm), nutze claude", anbieter_env, wert)
         wert = "claude"
-    anbieter: Anbieter = "litellm" if wert == "litellm" else "claude"
+    anbieter: Anbieter | None = ("litellm" if wert == "litellm" else "claude") if wert else None
     modell = _env(modell_env) or None
     gespraech_im_haus = haus or _env("WAMO_LLM_ANBIETER").lower() == "litellm"
     if anbieter == "litellm" and not modell and baustein in ("lernen", "zusammenfassung") and gespraech_im_haus:
         modell = _env("WAMO_LLM_MODELL") or None  # dasselbe Modell wie das Gespräch
+    return anbieter, modell
+
+
+def konfiguration(baustein: str, zugang: Zugang | None = None) -> tuple[Anbieter, str | None]:
+    """(Anbieter, Modell): die Vorgabe des Betriebs aus der Umgebung, sonst der Standard aus der Modellkarte (Boss).
+    Für haus-Profile ist der Anbieter immer litellm und das Modell das beste Hausmodell der Karte; für ein Profil mit
+    Claude-Schlüssel ist es das Modell mit den besten Punkten, im Gespräch also Claude Haiku."""
+    import boss
+
+    anbieter, modell = vorgabe(baustein, zugang)
+    klasse = boss.BAUSTEIN_KLASSE[baustein]
+    if anbieter is None:  # der Betrieb legt nichts fest: Modellkarte
+        liste = boss.rangliste(klasse, claude_erlaubt=zugang is None or zugang.art == "claude")
+        if liste and liste[0].anbieter == "litellm":
+            return "litellm", liste[0].alias
+        return "claude", None
+    if anbieter == "litellm" and not modell:
+        modell = boss.hausstandard(klasse)
     return anbieter, modell
 
 
@@ -484,6 +512,14 @@ async def claude_problem(zugang: Zugang) -> str | None:
     return problem
 
 
+def claude_bekannt_weg(zugang: Zugang) -> str | None:
+    """Ein jüngst bekannter Ausfall von Claude für den Schlüssel dieses Zugangs (ohne neue Anfrage), sonst None."""
+    eintrag = _claude_cache.get(_claude_kennung(zugang))
+    if eintrag and time.monotonic() - eintrag[0] < CLAUDE_PRUEF_TTL_SECS:
+        return eintrag[1]
+    return None
+
+
 def _claude_ausgefallen(zugang: Zugang, problem: str) -> None:
     _claude_cache[_claude_kennung(zugang)] = (time.monotonic(), problem)
 
@@ -509,7 +545,8 @@ def anthropic_ziel(modell: str | None) -> str | None:
     """Grund, wenn ein "Hausmodell" in Wahrheit zu Anthropic führen würde (Claude-Modellname, Anthropic-Alias auf
     dem Gateway oder ein Gateway auf einem Anthropic-Host). Haus-Profile lehnen das ab."""
     klein = (modell or "").lower()
-    if klein.startswith(("claude", "anthropic")) or "/claude" in klein or "anthropic/" in klein:
+    # Teilstrings statt Anfang: auch "bedrock/anthropic.claude-…", "us.anthropic.…" und die Modellfamilien Haiku, Sonnet, Opus
+    if any(wort in klein for wort in ANTHROPIC_WOERTER):
         return f"Das Modell {modell!r} führt zu Anthropic"
     host = (urlparse(litellm_basis()).hostname or "").lower()
     if host == "anthropic.com" or host.endswith(".anthropic.com"):
@@ -518,20 +555,34 @@ def anthropic_ziel(modell: str | None) -> str | None:
 
 
 async def _haus_wahl(baustein: str, zugang: Zugang, gewuenscht: Anbieter, grund: str | None = None) -> Wahl:
-    """Hausmodell für den Baustein; LLMNichtVerfuegbar, wenn es nicht nutzbar ist."""
-    _anbieter, modell = konfiguration(baustein, Zugang.haus(zugang.user_id))
-    if ziel := anthropic_ziel(modell):
-        raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {ziel}")
-    if problem := await litellm_problem(modell):
-        raise LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {problem}")
-    assert modell is not None  # litellm_problem prüft das
-    return Wahl(baustein, "litellm", modell, gewuenscht, grund)
+    """Bestes nutzbares Hausmodell für den Baustein (Boss): zuerst die Vorgabe des Betriebs, dann die Modellkarte der
+    Reihe nach; für das Gespräch zusätzlich mit Probe, ob das Modell jetzt schnell genug antwortet. LLMNichtVerfuegbar,
+    wenn keines nutzbar ist (nie ein Ersatz durch Claude)."""
+    import boss
+
+    _anbieter, vorgabe_modell = vorgabe(baustein, Zugang.haus(zugang.user_id))
+    try:
+        wahl = await boss.waehlen(boss.BAUSTEIN_KLASSE[baustein], Zugang.haus(zugang.user_id), baustein=baustein,
+                                  bevorzugt=("litellm", vorgabe_modell) if vorgabe_modell else None)
+    except LLMNichtVerfuegbar as e:
+        fehler = LLMNichtVerfuegbar(f"Hausmodell für {baustein} nicht nutzbar: {e.gruende or e}")
+        fehler.gruende = e.gruende
+        raise fehler from None
+    if gewuenscht != wahl.gewuenscht or grund:
+        return Wahl(wahl.baustein, wahl.anbieter, wahl.modell, gewuenscht, "; ".join(x for x in (grund, wahl.grund) if x) or None)
+    return wahl
 
 
 async def waehlen(baustein: str, zugang: Zugang) -> Wahl:
-    """Anbieter und Modell für einen Baustein nach dem Zugang des Profils."""
+    """Anbieter und Modell für einen Baustein nach dem Zugang des Profils. Der Boss (boss.py) wählt aus der
+    Modellkarte, es sei denn, der Betrieb legt den Anbieter in der Umgebung fest (WAMO_LLM_*)."""
+    import boss
+
     if zugang.art == "haus":
         return await _haus_wahl(baustein, zugang, "litellm")
+    anbieter_vorgabe, _modell_vorgabe = vorgabe(baustein, zugang)
+    if anbieter_vorgabe is None:
+        return await boss.waehlen(boss.BAUSTEIN_KLASSE[baustein], zugang, baustein=baustein)
     anbieter, modell = konfiguration(baustein, zugang)
     if anbieter == "claude":
         if modell and not modell.startswith("claude-"):
@@ -543,6 +594,8 @@ async def waehlen(baustein: str, zugang: Zugang) -> Wahl:
         return Wahl(baustein, "claude", zugang.claude_modell or modell or claude_standardmodell(baustein, zugang),
                     "claude")
     problem = await litellm_problem(modell)
+    if not problem and baustein == "gespraech" and boss.probe_an():
+        problem = await boss.live_problem(modell or "")
     if problem or not modell:
         return _rueckfall_auf_claude(baustein, modell, problem or "kein Modell gesetzt", zugang)
     return Wahl(baustein, "litellm", modell, "litellm")
@@ -734,6 +787,7 @@ class _Auftrag:
     json_schema: dict | None
     schema_name: str
     timeout: float
+    denken: bool = True  # False: Claude ohne Denkphase (sonst zählt sie zu max_tokens und die Antwort kann abbrechen)
 
 
 def _systemtext(a: _Auftrag, wahl: Wahl) -> str:
@@ -747,6 +801,7 @@ async def _claude_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
     client = zugang.anthropic().with_options(
         timeout=anthropic.Timeout(a.timeout, connect=VERBINDUNG_TIMEOUT_SECS), max_retries=0
     )
+    zusatz: dict[str, Any] = {} if a.denken else {"thinking": {"type": "disabled"}}
     try:
         r = await client.messages.create(
             model=wahl.modell,
@@ -754,6 +809,7 @@ async def _claude_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
             system=_systemtext(a, wahl),
             output_config=output_config,
             messages=[{"role": "user", "content": _claude_inhalt(a.inhalt)}],
+            **zusatz,
         )
     except anthropic.AuthenticationError:
         raise LLMFehler("Claude: Schlüssel abgelehnt", verbindung=True) from None
@@ -763,13 +819,15 @@ async def _claude_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
         raise LLMFehler("Claude: Zeitüberschreitung", verbindung=True, zeitlimit=True) from None
     except anthropic.APIConnectionError:
         raise LLMFehler("Claude: keine Verbindung", verbindung=True) from None
+    ein = aus = 0
     if (u := getattr(r, "usage", None)) is not None:
-        verbrauch_loggen(zugang, "claude", wahl.modell, a.baustein, eingabe=u.input_tokens or 0,
-                         ausgabe=u.output_tokens or 0, cache_lesen=getattr(u, "cache_read_input_tokens", 0) or 0,
+        ein, aus = u.input_tokens or 0, u.output_tokens or 0
+        verbrauch_loggen(zugang, "claude", wahl.modell, a.baustein, eingabe=ein, ausgabe=aus,
+                         cache_lesen=getattr(u, "cache_read_input_tokens", 0) or 0,
                          cache_schreiben=getattr(u, "cache_creation_input_tokens", 0) or 0)
     ende: Ende = {"refusal": "abgelehnt", "max_tokens": "zu_lang"}.get(r.stop_reason or "", "fertig")
     text = " ".join(b.text.strip() for b in r.content if b.type == "text").strip()
-    return Antwort(text, ende, wahl)
+    return Antwort(text, ende, wahl, ein, aus)
 
 
 async def _litellm_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
@@ -797,12 +855,13 @@ async def _litellm_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
         raise LLMFehler("LiteLLM: ungültige Anfrage-Parameter (WAMO_LLM_EXTRA prüfen)") from None
     if not r.choices:
         raise LLMFehler("LiteLLM: leere Antwort")
+    ein = aus = 0
     if (u := getattr(r, "usage", None)) is not None:
-        verbrauch_loggen(zugang, "litellm", wahl.modell, a.baustein, eingabe=getattr(u, "prompt_tokens", 0) or 0,
-                         ausgabe=getattr(u, "completion_tokens", 0) or 0)
+        ein, aus = getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0
+        verbrauch_loggen(zugang, "litellm", wahl.modell, a.baustein, eingabe=ein, ausgabe=aus)
     grund = r.choices[0].finish_reason or ""
     ende: Ende = {"content_filter": "abgelehnt", "length": "zu_lang"}.get(grund, "fertig")
-    return Antwort((r.choices[0].message.content or "").strip(), ende, wahl)
+    return Antwort((r.choices[0].message.content or "").strip(), ende, wahl, ein, aus)
 
 
 async def anfrage(
@@ -845,6 +904,41 @@ async def anfrage(
         ersatz = await _haus_wahl(baustein, zugang, "claude", str(e))
         logger.warning("Claude für {} nicht nutzbar ({}): einmal mit dem Hausmodell {}", baustein, e, ersatz.modell)
         return await _litellm_anfrage(ersatz, auftrag, zugang)
+
+
+async def modell_anfrage(
+    wahl: Wahl,
+    *,
+    zugang: Zugang,
+    system: System,
+    inhalt: str | list[str | Bild],
+    max_tokens: int,
+    timeout: float,
+    baustein: str,
+    json_schema: dict | None = None,
+    schema_name: str = "antwort",
+    denken: bool = False,
+) -> Antwort:
+    """Ein Aufruf genau dieser Wahl, ohne Rückfall (den Rückfall entscheidet der Boss, boss.py). Zwei Sperren, die
+    unabhängig von der Auswahl gelten: ein haus-Profil ruft nie Claude auf, und ein "Hausmodell", das zu Anthropic
+    führt, wird abgelehnt. Claude läuft standardmäßig ohne Denkphase (denken=False), damit die Tokengrenze für die
+    Antwort gilt. Wirft LLMFehler."""
+    if wahl.anbieter == "claude" and zugang.art != "claude":
+        raise LLMNichtVerfuegbar("Dieses Profil nutzt nur Hausmodelle, Anthropic ist gesperrt")
+    if wahl.anbieter == "litellm" and (ziel := anthropic_ziel(wahl.modell)):
+        raise LLMNichtVerfuegbar(f"Hausmodell {wahl.modell!r} nicht nutzbar: {ziel}")
+    auftrag = _Auftrag(baustein, system, inhalt, max_tokens, json_schema, schema_name, timeout, denken)
+    try:
+        if wahl.anbieter == "litellm":
+            return await _litellm_anfrage(wahl, auftrag, zugang)
+        return await _claude_anfrage(wahl, auftrag, zugang)
+    except LLMFehler as e:
+        if e.verbindung and not e.zeitlimit:  # eine langsame Anfrage sperrt weder das Gateway noch andere Sitzungen
+            if wahl.anbieter == "litellm":
+                _litellm_ausgefallen(str(e), None if e.gateway_weg else wahl.modell)
+            else:
+                _claude_ausgefallen(zugang, str(e))
+        raise
 
 
 _ZAUN = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)

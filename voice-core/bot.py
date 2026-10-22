@@ -94,13 +94,15 @@ from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
 from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
-from llm_anbieter import LLMNichtVerfuegbar, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
+from llm_anbieter import LLMNichtVerfuegbar, ausblenden_text, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
 from memory import MemoryStore, Profile, ProfileDirectory, Recall, shared_database
-from modellzugang import modellzugang_nachricht, zugang_laden
+from modellzugang import claude_code_zugang_fuer, modellzugang_nachricht, zugang_laden
+from boss import Boss, entwicklung_quelle, modus_wirksam
 from kern_dienst import runner_vorbereiten
 from cache_waerme import vorwaermen
 from latenz import LatenzObserver, api_messen, latenz_log_an
 from pc_geraet import geraet_wache, rechnername_passt
+from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from turn_wache import TurnWache
 from pc_host import (
@@ -116,7 +118,7 @@ from pc_host import (
 )
 from pc_freigaben import PcFreigaben
 from persona import build_system_prompt
-from screen import PC_OFF, register_screen_tools
+from screen import PC_OFF, foto as screen_foto, register_screen_tools
 from sitzungen import Sitzung, Sitzungen
 from soft_interrupt import (
     MeaningfulWordsUserTurnStartStrategy,
@@ -125,7 +127,7 @@ from soft_interrupt import (
     echo_filter_an,
 )
 from soniox_tts import LazySonioxTTSService
-from tools import TurnState, gemerkt_message, register_tools
+from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
 
 load_dotenv(override=True)
 
@@ -271,6 +273,7 @@ def soniox_tts() -> LazySonioxTTSService:
 def betrieb_message(
     pc: str, pc_latenz_ms: int | None = None, pc_steuerung: bool = False, entwicklung: bool = False,
     llm: str | None = None, pc_name: str | None = None, pc_belegt: bool = False, sprache: dict[str, str] | None = None,
+    modell_modus: str | None = None, modell_quelle: str | None = None, modell_hinweis: str | None = None,
 ) -> dict:
     """pc: verbindet | verbunden | gesperrt | getrennt | aus (gesperrt: Bildschirm am PC gesperrt, pc_anzeige).
     pc_steuerung: ob die PC-Werkzeuge in dieser Sitzung eingeschaltet sind (Standard aus).
@@ -278,7 +281,10 @@ def betrieb_message(
     llm: Anzeigename des Gesprächsmodells dieser Sitzung (llm_anbieter.Wahl.anzeige).
     pc_name: Rechnername des gesteuerten PCs (aus system_info), damit die Oberfläche das Ziel zeigt.
     pc_belegt: Einschalten abgelehnt, weil eine andere Sitzung den PC gerade steuert (Büro).
-    sprache: Anzeigenamen für Hören und Stimme (sprache_anbieter.SprachWahl.anzeige), Standard Soniox."""
+    sprache: Anzeigenamen für Hören und Stimme (sprache_anbieter.SprachWahl.anzeige), Standard Soniox.
+    modell_modus: wirksamer Modus dieser Sitzung (automatisch | nur_haus, boss.modus_wirksam), modell_quelle: warum
+    (festgelegt: Admin, wahl: Person, keiner: kein eigener Schlüssel), modell_hinweis: warum der Boss nicht das beste
+    Modell nehmen konnte (zu langsam, nicht erreichbar), für die Anzeige in der Statusleiste."""
     sprache = sprache or {}
     message = {
         "type": "betrieb",
@@ -296,7 +302,23 @@ def betrieb_message(
         message["pc_name"] = pc_name
     if pc_belegt:
         message["pc_belegt"] = True
+    if modell_modus:
+        message["modell_modus"] = modell_modus
+    if modell_quelle:
+        message["modell_quelle"] = modell_quelle
+    if modell_hinweis:
+        message["modell_hinweis"] = modell_hinweis[:200]
     return message
+
+
+def kein_modell_text(fehler: Exception, admin: bool = False) -> str:
+    """Meldung an die Person, wenn kein Gesprächsmodell nutzbar ist. Die Einzelheiten (Namen von Modellen und
+    Einstellungen, Gateway-Meldungen) bekommt nur ein Admin; sie stehen immer im Log. Der Text von LLMNichtVerfuegbar
+    enthält nie Schlüssel oder Inhalte; ausgeblendete Namen ersetzt ausblenden_text."""
+    text = "Kein Gesprächsmodell erreichbar. Bitte in ein paar Minuten noch einmal versuchen."
+    if admin:
+        text += f" ({ausblenden_text(' '.join(str(fehler).split()))[:180]})"
+    return text
 
 
 def darf_pc_freigeben(identity: Identity, pc_enabled: bool, steuerung_an: bool, haelt_sperre: bool) -> bool:
@@ -479,9 +501,12 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Beide Prüfungen parallel, damit ein langsames Gateway den Start nur einmal verzögert.
     # summary_llm None: Pipecat fasst mit dem Gesprächsmodell zusammen.
     zugang = await zugang_laden(identity.user_id)
-    if entwicklung and zugang.art != "claude":
-        # Claude Code läuft über Anthropic: Profile mit nur Hausmodellen starten keine Entwicklungsaufträge
-        logger.warning("Entwicklungsaufträge aus: Profil {} nutzt nur Hausmodelle", zugang.kennung)
+    dev_quelle = entwicklung_quelle(zugang)
+    if entwicklung and dev_quelle == "keine":
+        # Claude Code läuft über Anthropic, mit dem Zugang der Person (boss.entwicklung_quelle): Claude-Code-Token oder
+        # eigener API-Schlüssel. Ohne beides, oder bei nur Hausmodellen, startet kein Entwicklungsauftrag
+        logger.warning("Entwicklungsaufträge aus: Profil {} hat keinen eigenen Zugang für Claude Code oder nutzt nur Hausmodelle",
+                       zugang.kennung)
         entwicklung = False
     try:
         (llm, llm_wahl), summary_llm = await asyncio.gather(
@@ -494,7 +519,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Spracherkennung und Sprachausgabe je Profil (Zugang.stt/tts) oder für alle (WAMO_STT_ANBIETER/WAMO_TTS_ANBIETER):
     # Soniox oder im Haus über LiteLLM, mit Rückfall auf Soniox (sprache_anbieter.py)
     sprache = await sprach_wahl(zugang)
-    stt = haus_stt(sprache.stt, STT_TERMS) if sprache.stt.anbieter == "haus" else soniox_stt()
+    # Ein Schlüssel im Gesagten wird vor allem anderen entfernt (schluessel_filter.py): Verlauf, Modell, Gedächtnis, Untertitel
+    stt = absichern(haus_stt(sprache.stt, STT_TERMS) if sprache.stt.anbieter == "haus" else soniox_stt())
     tts = haus_tts(sprache.tts) if sprache.tts.anbieter == "haus" else soniox_tts()
 
     transcript: list[tuple[str, str]] = []  # fürs Lernen
@@ -504,8 +530,12 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang).standard_tools)
     dev: DevAgent | None = None
     if entwicklung:
-        # Entwicklungsaufträge an Claude Code; Start und Freigaben per Klick in der UI (dev_agent.py)
-        dev = DevAgent(memory, auftraggeber=identity.name)
+        # Entwicklungsaufträge an Claude Code; Start und Freigaben per Klick in der UI (dev_agent.py). Mit eigenem
+        # Zugang läuft der Auftrag auf dem Token oder Schlüssel dieses Profils (nur für diesen Lauf entschlüsselt).
+        dev = DevAgent(
+            memory, auftraggeber=identity.name,
+            token_quelle=(lambda: claude_code_zugang_fuer(identity.user_id)) if dev_quelle in ("token", "api") else None,
+        )
         dev.on_result = turn.taint
         dev.register(llm)
         standard_tools += dev.schemas()
@@ -523,6 +553,20 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Mitglieder geregelt ist (Bauplan S6)
     screen_schemas = (register_screen_tools(llm, lambda: pc_client, pc_allowed, turn.taint, zugang=zugang)
                       if pc_client and is_admin else [])
+
+    # WAMO Boss (boss.py): Aufgaben an Spezialisten verteilen; Karte unter Vorgänge, Ergebnis als Daten (turn.taint).
+    # Die Art "bild" gibt es nur mit PC-Steuerung und Rolle admin, wie bildschirm_ansehen.
+    async def bildschirm_foto():
+        if not pc_allowed():
+            raise RuntimeError("PC-Steuerung aus")
+        return await screen_foto(pc_client)
+
+    boss = Boss(zugang, senden=lambda d: send(d), melden=lambda t: melde_llm(t), fremdinhalt=turn.taint,
+                gefaerbt=lambda: turn.tainted, auftraggeber=identity.name, canvas=lambda item: canvas_legen(item),
+                bild_quelle=bildschirm_foto if (pc_client and is_admin) else None)
+    boss.register(llm)
+    standard_tools += boss.schemas()
+    context.set_tools(ToolsSchema(standard_tools=standard_tools))
 
     learned_upto = 0  # bis zu diesem Index in transcript ist ausgewertet
     learn_task: asyncio.Task | None = None
@@ -595,6 +639,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             transport.input(),
             AudioInputMonitor(),  # Diagnose: Lücken und Pegel des Browser-Mikrofons, Stille-Wächter
             stt,
+            SchluesselFilter(),  # zweite Stufe: auch Text, der nicht aus der Spracherkennung kommt
             SpeakerTracker(),  # wer spricht -> Farbe im Stimmen-Rand
             user_agg,
             soft_gate,
@@ -630,10 +675,17 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def send(data: dict) -> None:
         await task.queue_frames([RTVIServerMessageFrame(data=data)])
 
+    async def canvas_legen(item: dict) -> None:
+        """Ergebnis einer Boss-Aufgabe aufs Canvas, gespeichert wie bei canvas_zeigen."""
+        item["id"] = await memory.save_canvas(CANVAS_TYPE[item["kind"]], item["title"], item)
+        await send({"type": "canvas", "item": item})
+
     async def send_betrieb() -> None:
         await send(betrieb_message(pc_anzeige(state["pc"], state["pc_gesperrt"]), state["pc_latenz_ms"],
                                    state["pc_steuerung"], entwicklung, llm=llm_wahl.anzeige, pc_name=state["pc_name"],
-                                   pc_belegt=state["pc_belegt"], sprache=sprache.anzeige(SONIOX_VOICE)))
+                                   pc_belegt=state["pc_belegt"], sprache=sprache.anzeige(SONIOX_VOICE),
+                                   modell_modus=modus_wirksam(zugang), modell_quelle=zugang.quelle,
+                                   modell_hinweis=llm_wahl.grund))
 
     async def set_sperre(gesperrt: bool) -> None:
         """Bildschirm am PC gesperrt oder entsperrt (Werkzeugergebnis, Tunnel-Probe, system_info)."""
@@ -940,6 +992,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         if cancel_task:
             with contextlib.suppress(Exception):
                 await task.cancel()
+        with contextlib.suppress(Exception):
+            await boss.schliessen()  # laufende Aufgaben der Spezialisten abbrechen
         if dev:
             await dev.close()  # laufenden Entwicklungsauftrag beim Auflegen beenden
         if freigaben is not None:
@@ -1008,6 +1062,12 @@ async def bot(runner_args: RunnerArguments):
         # statt die Verbindung ohne Pipeline offen zu lassen.
         logger.error("Sitzung beendet, kein Gesprächsmodell: {}", e)
         if connection is not None:
+            # Der Person klar sagen, warum die Verbindung endet (Datenkanal, noch ohne Pipeline); die Oberfläche zeigt
+            # die Meldung wie jedes "Sitzung beendet"
+            with contextlib.suppress(Exception):
+                connection.send_app_message({"label": "rtvi-ai", "type": "server-message", "data": {
+                    "type": "sitzung_beendet", "grund": kein_modell_text(e, identity.is_admin)}})
+                await asyncio.sleep(ENDE_MELDUNG_SECS * 2)
             with contextlib.suppress(Exception):
                 await connection.disconnect()
     finally:

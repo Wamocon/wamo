@@ -1,0 +1,39 @@
+{
+ "zeitpunkt": "2026-10-22T05:51:25+02:00",
+ "anbieter": "litellm",
+ "modell": "qwen3.8-27b",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "latenz",
+ "prompt_zeichen": 7718,
+ "werkzeuge": 17,
+ "kurz_1": {
+  "erstes_token_s": 0.52,
+  "gesamt_s": 0.87,
+  "zeichen": 31,
+  "fehler": null
+ },
+ "kurz_2": {
+  "erstes_token_s": 0.18,
+  "gesamt_s": 0.54,
+  "zeichen": 31,
+  "fehler": null
+ },
+ "voll_neu_1": {
+  "erstes_token_s": 5.81,
+  "gesamt_s": 5.92,
+  "zeichen": 0,
+  "fehler": null
+ },
+ "voll_gleich": {
+  "erstes_token_s": 0.21,
+  "gesamt_s": 1.06,
+  "zeichen": 31,
+  "fehler": null
+ },
+ "voll_neu_2": {
+  "erstes_token_s": 1.41,
+  "gesamt_s": 2.14,
+  "zeichen": 30,
+  "fehler": null
+ }
+}
