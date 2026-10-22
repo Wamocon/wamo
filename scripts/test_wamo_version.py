@@ -174,7 +174,7 @@ def test_changelog_abschnitt_aus_den_commits():
     assert "### Sicherheit\n\n- **security:** Token nicht mehr protokollieren\n" in text
     assert "README" not in text                                  # docs erscheinen nicht
     assert text.index("### Hinzugefügt") < text.index("### Geändert") < text.index("### Behoben") < text.index("### Sicherheit")
-    assert "–" not in text and "—" not in text
+    assert chr(0x2013) not in text and chr(0x2014) not in text
     # gleiche Eingabe, gleiche Ausgabe (Byte für Byte, Prüfstrecke 3)
     assert text == wv.changelog_abschnitt("0.2.0", "2026-11-01", ergebnis)
 

@@ -46,7 +46,7 @@ def test_schema_platzhalter_und_keine_festen_schemas():
 
 def test_keine_gedankenstriche_und_nur_echte_umlaute_in_den_kommentaren():
     for text in (SQL, DOWN, TEST):
-        assert "–" not in text and "—" not in text
+        assert chr(0x2013) not in text and chr(0x2014) not in text
         kommentare = [z for z in text.splitlines() if z.lstrip().startswith("--")]
         for zeile in kommentare:
             assert " - " not in zeile, zeile
