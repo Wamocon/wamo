@@ -7,6 +7,7 @@ Installiert als /opt/wamo/bin/wamo-job-rauchtest durch wamo-job-einrichten.sh. A
     sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --attrappe   zusätzlich Claude Code Ende zu Ende
     sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp        zusätzlich MCP-Server mit echter Umgebung
     sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --app-echt   zusätzlich die eingerichtete GitHub-App (echt, nur lesend)
+    sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --token-attrappe   zusätzlich der persönliche Claude-Zugang (Attrappen)
 
 --attrappe startet in der Sandbox eine Attrappe der Messages-API (127.0.0.1:20180, nur Standardbibliothek) und
 lässt Claude Code mit einem Dummy-Schlüssel dagegen laufen. Die Attrappe verlangt den Befehl
@@ -19,6 +20,12 @@ einer Attrappe der GitHub-API im Dispatcher-Prozess und einem Testschlüssel, oh
 Rechte je Art, Repo-Begrenzung, Token als GH_TOKEN in der Sandbox, Widerruf am Ende, bei cancel, Lebenslinie und
 SIGTERM, fail-closed bei Fehlern und kaputter Konfiguration, Rückfall ohne Konfiguration, kein Schlüssel und kein
 Token in Audit-Log und argv. Statt Claude Code läuft dabei ein kurzes Prüfskript in der Sandbox.
+--token-attrappe prüft die Übergabe des persönlichen Claude-Zugangs über den echten Einstiegspunkt (wamo-job-dispatch start)
+mit erfundenen Werten und ohne echte Aufrufe bei Anthropic: zweite stdin-Zeile, strenges Format (fail-closed), einziger
+Claude-Zugang der Sandbox (nichts aus geheim.env beigemischt), Modell nach Zugangsart (Abo Sonnet, API-Schlüssel Haiku, Wunsch
+aus der Allowlist), Schwärzung in Ausgabe, Protokoll und Dateien unter claude/, kein Wert in Audit, Auftragsordner und
+Prozessliste, Wiederholung nach approve, WAMO_SERVERZUGANG=aus sowie echtes Claude Code gegen die API-Attrappe, die
+Limit-Kopfzeilen (anthropic-ratelimit-unified-*) schickt: daraus muss das Ereignis kontingent entstehen.
 --mcp startet "claude mcp list" in der Sandbox mit der Umgebung der Auftragsarten datenbank und umsetzung
 (echte Token aus /etc/wamo/geheim.env, im App-Modus ein echtes, nur lesendes und danach widerrufenes App-Token;
 ausgegeben wird nur der Verbindungsstatus).
@@ -58,6 +65,8 @@ import json, os, sys, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attrappe.log")
 DELAY = float(os.environ.get("ATTRAPPE_PAUSE", "0"))
+LIMITS = os.environ.get("ATTRAPPE_LIMITS") == "1"   # Kopfzeilen anthropic-ratelimit-unified-* wie bei einem Abo-Zugang
+EINMAL = os.environ.get("ATTRAPPE_EINMAL") == "1"   # nur Text antworten, nie ein Werkzeug anfordern
 COMMAND = "git push origin main"
 WIEDERHOLT = []
 
@@ -69,10 +78,20 @@ class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *a):
         pass
+    def _limits(self):
+        if not LIMITS:
+            return
+        jetzt = int(time.time())
+        for name, wert in (("status", "allowed"), ("5h-utilization", "0.42"), ("5h-reset", jetzt + 3 * 3600),
+                           ("7d-utilization", "0.13"), ("7d-reset", jetzt + 4 * 86400),
+                           ("7d_oi-utilization", "0.07"), ("7d_oi-reset", jetzt + 5 * 86400),
+                           ("representative-claim", "five_hour"), ("reset", jetzt + 3 * 3600)):
+            self.send_header("anthropic-ratelimit-unified-" + name, str(wert))
     def _json(self, obj):
         body = json.dumps(obj).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
+        self._limits()
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -87,7 +106,9 @@ class H(BaseHTTPRequestHandler):
         last = (body.get("messages") or [{}])[-1]
         content = last.get("content") if isinstance(last.get("content"), list) else []
         results = [c for c in content if isinstance(c, dict) and c.get("type") == "tool_result"]
-        if "Bash" in tools:
+        if EINMAL:
+            blocks, stop = [{"type": "text", "text": "fertig"}], "end_turn"
+        elif "Bash" in tools:
             if DELAY:
                 time.sleep(DELAY)
             text = json.dumps(results[0].get("content"), ensure_ascii=False)[:3000] if results else ""
@@ -131,6 +152,7 @@ class H(BaseHTTPRequestHandler):
         payload = "".join(f"event: {n}\ndata: {json.dumps(d)}\n\n" for n, d in events).encode()
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
+        self._limits()
         self.send_header("content-length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -916,6 +938,269 @@ def github_app_mit_attrappe() -> None:
         entfernen(ordner)
 
 
+# ---------------------------------------------------------------- Persönlicher Claude-Zugang mit Attrappe
+# Prüfskript statt Claude Code: meldet nur Hashes des Zugangs, gibt den Wert absichtlich in Ausgabe, Datei und stderr aus
+# (der Dispatcher muss ihn schwärzen) und wartet, damit der Test die Prozessliste lesen kann.
+TOKEN_PRUEFSKRIPT = r'''
+t="${CLAUDE_CODE_OAUTH_TOKEN:-}"; a="${ANTHROPIC_API_KEY:-}"
+ho=$(printf %s "$t" | sha256sum | cut -c1-64); ha=$(printf %s "$a" | sha256sum | cut -c1-64)
+hh=$(printf %s "${ANTHROPIC_CUSTOM_HEADERS:-}" | sha256sum | cut -c1-64)
+w=nein; [ -e /etc/wamo ] && w=ja
+printf '{"type":"rauchtest","oauth":"%s","api":"%s","header":"%s","modell":"%s","etc_wamo":"%s"}\n' "$ho" "$ha" "$hh" "$1" "$w"
+printf '{"type":"assistant","text":"Wert: %s und %s"}\n' "$t" "$a"
+mkdir -p /srv/wamo/.claude/projects/x && printf '%s %s' "$t" "$a" > /srv/wamo/.claude/projects/x/s.jsonl
+printf 'Fehlerausgabe %s %s\n' "$t" "$a" >&2
+sleep "$2"
+'''
+SERVER_GEHEIM = {"ANTHROPIC_API_KEY": "sk-ant-api03-RauchtestServerSchluessel0123456789",
+                 "ANTHROPIC_WORKSPACE_ID": "wrkspc_ServerWork01", "GH_TOKEN": "ghp_rauchtestserver0123456789"}
+
+
+def start_token(spec_pfad: str) -> int:
+    """Kindprozess: der echte Dispatcher (main/cmd_start) mit Attrappen für geheim.env und das Programm in der Sandbox.
+    Modus pruef: das Prüfskript. Modus claude: echtes Claude Code gegen die API-Attrappe (Modell wie vom Dispatcher
+    gewählt). Der persönliche Zugang kommt wie im Betrieb über stdin, nie über die Spezifikation."""
+    spec = json.loads(Path(spec_pfad).read_text())
+    D.lese_geheimnisse = lambda path=None: dict(spec["geheim"])
+    if spec["modus"] == "pruef":
+        D.claude_argv = lambda system, modell, session=None: ["/bin/bash", "-c", TOKEN_PRUEFSKRIPT, "pruefung", modell,
+                                                              str(spec["schlaf"])]
+    else:
+        echt = D.claude_argv
+
+        def mit_attrappe(system, modell, session=None):
+            claude = shlex.join(echt(system, modell, session))
+            innen = (f"ATTRAPPE_LIMITS={int(spec['limits'])} ATTRAPPE_EINMAL=1 python3 -I /run/wamo/zustand/attrappe.py "
+                     f"{PORT_ATTRAPPE} </dev/null >/dev/null 2>&1 & "
+                     f"for i in $(seq 100); do (exec 3<>/dev/tcp/127.0.0.1/{PORT_ATTRAPPE}) 2>/dev/null && break; sleep 0.1; done; "
+                     f"exec {claude}")
+            return ["/bin/bash", "-c", innen]
+        D.claude_argv = mit_attrappe
+        ohne_basis = D.sandbox_env
+
+        def sandbox_env(*args, **kwargs):
+            env = ohne_basis(*args, **kwargs)
+            return None if env is None else {**env, "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{PORT_ATTRAPPE}"}
+        D.sandbox_env = sandbox_env
+    return D.main(["start", spec["job"], PROJEKT, spec["art"]])
+
+
+def token_attrappe() -> None:
+    import hashlib
+    ordner = Path(tempfile.mkdtemp(prefix=".rauchtest-tok-", dir=D.JOBS))  # wamo-eigen, in der Sandbox unsichtbar
+    os.chmod(ordner, 0o750)
+    jobs: list[str] = []
+    stempel = uuid.uuid4().hex
+    oauth = "sk-ant-oat01-Rauchtest" + stempel          # Format wie von `claude setup-token`, aber erfunden
+    api = "sk-ant-api03-Rauchtest" + stempel[::-1]
+    workspace = "wrkspc_Rauch01"
+
+    def sha(text: str) -> str:
+        return hashlib.sha256(text.encode()).hexdigest()
+
+    def lauf(art="umsetzung", geheim=None, kopf_extra=None, zeile=None, modus="pruef", schlaf=0, limits=False,
+             job=None, waehrend=None):
+        job = job or uuid.uuid4().hex[:16]
+        if job not in jobs:
+            jobs.append(job)
+        jobdir = D.job_ordner(job)
+        (jobdir / "zustand").mkdir(mode=0o700, exist_ok=True)
+        if modus == "claude":
+            (jobdir / "zustand" / "attrappe.py").write_text(ATTRAPPE, encoding="utf-8")
+            (jobdir / "zustand" / "attrappe.log").unlink(missing_ok=True)
+        for name in os.listdir(PROJ):  # leerer Projektordner: die Buchführung verlangt keine Freigabe
+            entfernen(PROJ / name) if (PROJ / name).is_dir() else (PROJ / name).unlink()
+        spec_pfad = ordner / f"spec-{uuid.uuid4().hex[:8]}.json"
+        spec_pfad.write_text(json.dumps({"job": job, "art": art, "geheim": SERVER_GEHEIM if geheim is None else geheim,
+                                         "modus": modus, "schlaf": schlaf, "limits": limits}))
+        with open(ordner / "kind-stderr.log", "ab") as fehlerlog:
+            kind = subprocess.Popen([sys.executable, "-I", __file__, "--start-token", str(spec_pfad)],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=fehlerlog, env=D.basis_env())
+        kopf = {"auftrag": "Rauchtest persönlicher Zugang", "system": "Rauchtest", **(kopf_extra or {})}
+        kind.stdin.write((json.dumps(kopf) + "\n").encode())
+        if zeile is not None:
+            kind.stdin.write(zeile)
+        kind.stdin.flush()
+        if zeile is None and (kopf_extra or {}).get("zugang") == "folgt":
+            kind.stdin.close()  # die angekündigte Zugangszeile fehlt: sofort Ende statt 30 Sekunden Wartezeit
+        puffer: list[bytes] = []
+        laeuft = threading.Event()  # das Prüfskript in der Sandbox hat sich gemeldet
+
+        def lesen():
+            for z in kind.stdout:
+                puffer.append(z)
+                if b'"rauchtest"' in z:
+                    laeuft.set()
+        leser = threading.Thread(target=lesen, daemon=True)
+        leser.start()
+        if waehrend is not None:
+            laeuft.wait(timeout=180)
+            waehrend()
+        try:
+            kind.wait(timeout=400)
+        except subprocess.TimeoutExpired:
+            kind.kill()
+        leser.join(timeout=10)
+        if not kind.stdin.closed:
+            try:
+                kind.stdin.close()
+            except OSError:
+                pass
+        text_ = b"".join(puffer).decode("utf-8", "replace")
+        zeilen_ = []
+        for z in text_.splitlines():
+            try:
+                zeilen_.append(json.loads(z))
+            except ValueError:
+                pass
+        return kind.returncode, zeilen_, text_, jobdir, job
+
+    def ereignisse(zeilen_):
+        return [z.get("ereignis") for z in zeilen_ if z.get("type") == "wamo"]
+
+    def pruefung(zeilen_):
+        return next((z for z in zeilen_ if z.get("type") == "rauchtest"), {})
+
+    def init(zeilen_):
+        return next((z for z in zeilen_ if z.get("type") == "system" and z.get("subtype") == "init"), {})
+
+    def fundstellen(wert: str, jobdir: Path | None, *texte: str) -> list[str]:
+        """Wo der Wert noch steht: in den Texten, im Audit, in der stderr-Datei des Kindes und in jeder Datei unter dem
+        Auftragsordner (ohne Links zu folgen)."""
+        funde = [f"text{i}" for i, t in enumerate(texte) if wert in t]
+        for pfad in (D.LOGS / "auftraege.log", ordner / "kind-stderr.log"):
+            if pfad.is_file() and wert in pfad.read_bytes().decode("utf-8", "replace"):
+                funde.append(pfad.name)
+        for wurzel, _ordner, dateien in os.walk(jobdir if jobdir else ordner, followlinks=False):
+            for name in dateien:
+                p = Path(wurzel) / name
+                if p.is_symlink() or not p.is_file():
+                    continue
+                try:
+                    if wert.encode() in p.read_bytes():
+                        funde.append(str(p.relative_to(jobdir if jobdir else ordner)))
+                except OSError:
+                    pass
+        return funde
+
+    try:
+        # 1. Abo-Zugang (oauth) mit Prüfskript: Umgebung, einziger Claude-Zugang, Schwärzung, Prozessliste
+        argv_funde: list[str] = []
+
+        def argv_pruefen():
+            for pid in os.listdir("/proc"):
+                if pid.isdigit():
+                    try:
+                        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace")
+                    except OSError:
+                        continue
+                    if oauth in cmd:
+                        argv_funde.append(pid)
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"},
+                                        zeile=(json.dumps({"typ": "oauth", "wert": oauth}) + "\n").encode(),
+                                        schlaf=4, waehrend=argv_pruefen)
+        innen = pruefung(z)
+        pruefe("Persönlicher Zugang (oauth): einziger Claude-Zugang in der Sandbox, kein Schlüssel und kein Workspace aus "
+               "geheim.env, Modell Sonnet",
+               rc == 0 and innen.get("oauth") == sha(oauth) and innen.get("api") == sha("") and innen.get("header") == sha("")
+               and innen.get("etc_wamo") == "nein" and innen.get("modell") == "claude-sonnet-5-5",
+               json.dumps({k: ("passt" if innen.get(k) == sha(w) else "falsch") for k, w in (("oauth", oauth), ("api", ""), ("header", ""))}
+                          | {"modell": innen.get("modell"), "rc": rc, "ereignisse": ereignisse(z)}))
+        audit = (D.LOGS / "auftraege.log").read_text(encoding="utf-8", errors="replace")[-200_000:]
+        sitzung = (jobdir / "claude" / "projects" / "x" / "s.jsonl")
+        lauflog = (jobdir / "lauf.log").read_text(encoding="utf-8", errors="replace") if (jobdir / "lauf.log").is_file() else ""
+        pruefe("Persönlicher Zugang: der Wert steht nirgends (Ausgabe, Audit, Auftragsordner, Protokoll, Prozessliste), "
+               "[CLAUDE_ZUGANG] an seiner Stelle",
+               not fundstellen(oauth, jobdir, text, audit, lauflog) and not argv_funde and "[CLAUDE_ZUGANG]" in text
+               and "[CLAUDE_ZUGANG]" in lauflog and sitzung.is_file() and "[CLAUDE_ZUGANG]" in sitzung.read_text()
+               and "claude=persoenlich-oauth" in audit,
+               f"Funde {fundstellen(oauth, jobdir, text, audit, lauflog)}, argv {argv_funde}, Sitzungsdatei "
+               f"{'geschwärzt' if sitzung.is_file() and oauth not in sitzung.read_text() else 'fehlt oder offen'}")
+
+        # 2. API-Schlüssel (Guthaben) mit eigenem Workspace: Haiku, kein oauth
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"},
+                                        zeile=(json.dumps({"typ": "api", "wert": api, "workspace": workspace}) + "\n").encode())
+        innen = pruefung(z)
+        pruefe("Persönlicher Zugang (api): ANTHROPIC_API_KEY mit eigenem Workspace-Header, nichts aus geheim.env, Modell Haiku",
+               rc == 0 and innen.get("api") == sha(api) and innen.get("oauth") == sha("")
+               and innen.get("header") == sha(f"anthropic-workspace-id: {workspace}") and innen.get("modell") == "claude-haiku-5-5"
+               and not fundstellen(api, jobdir, text), f"rc {rc}, Modell {innen.get('modell')}, Funde {fundstellen(api, jobdir, text)}")
+
+        # 3. Claude Code selbst gegen die Attrappe: Modell nach Zugangsart, Kontingent aus rate_limit_event
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"}, modus="claude", limits=True,
+                                        zeile=(json.dumps({"typ": "oauth", "wert": oauth}) + "\n").encode())
+        kont = [x for x in z if x.get("ereignis") == "kontingent"]
+        limits = kont[-1].get("limits", []) if kont else []
+        pruefe("Claude Code mit Abo-Zugang: Modell Sonnet, rate_limit_event wird zum Ereignis kontingent (Sitzung 42, Woche 13, "
+               "Modell-Woche 7 Prozent, nur Allowlist-Felder)",
+               rc == 0 and init(z).get("model") == "claude-sonnet-5-5" and bool(kont)
+               and [(e.get("art"), e.get("prozent")) for e in limits] == [("sitzung", 42.0), ("woche", 13.0), ("fable", 7.0)]
+               and all(set(e) <= {"art", "prozent", "endet", "status"} and len(e.get("endet", "")) == 20 for e in limits)
+               and set(kont[-1]) == {"type", "ereignis", "quelle", "limits"} and any(x.get("type") == "rate_limit_event" for x in z)
+               and not fundstellen(oauth, jobdir, text),
+               f"rc {rc}, Modell {init(z).get('model')}, Limits {[(e.get('art'), e.get('prozent')) for e in limits]}, "
+               f"Ereignisse {ereignisse(z)}")
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"}, modus="claude", limits=True,
+                                        zeile=(json.dumps({"typ": "api", "wert": api}) + "\n").encode())
+        pruefe("Claude Code mit API-Schlüssel: Modell Haiku, kein Kontingent (API-Schlüssel tragen keine Limit-Kopfzeilen)",
+               rc == 0 and init(z).get("model") == "claude-haiku-5-5" and init(z).get("apiKeySource") == "ANTHROPIC_API_KEY"
+               and "kontingent" not in ereignisse(z) and not fundstellen(api, jobdir, text),
+               f"rc {rc}, Modell {init(z).get('model')}, Quelle {init(z).get('apiKeySource')}, Ereignisse {ereignisse(z)}")
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d", "modell": "claude-opus-5-5"},
+                                        modus="claude", zeile=(json.dumps({"typ": "oauth", "wert": oauth}) + "\n").encode())
+        pruefe("Übersteuerung über das Kopfzeilenfeld modell (Allowlist) gilt auch mit Abo-Zugang",
+               rc == 0 and init(z).get("model") == "claude-opus-5-5", f"rc {rc}, Modell {init(z).get('model')}")
+
+        # 4. fail-closed bei kaputtem Format: nichts startet, der Wert steht nirgends
+        kaputt = "sk-ant-api03-Rauchtest" + stempel  # api-Format, aber als oauth übergeben
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt"}, zeile=(json.dumps({"typ": "oauth", "wert": kaputt}) + "\n").encode())
+        pruefe("Kaputtes Format: Start abgewiesen (Code 2, Ereignis zugang_ungueltig), Sandbox nicht gestartet, Wert nirgends",
+               rc == D.EXIT_ABGEWIESEN and ereignisse(z) == ["zugang_ungueltig"] and not pruefung(z)
+               and not fundstellen(kaputt, jobdir, text), f"rc {rc}, Ereignisse {ereignisse(z)}")
+        for beispiel, zeile_ in (("kein JSON", b"das ist kein json\n"), ("fehlende Zeile", None),
+                                 ("zusätzliches Feld", (json.dumps({"typ": "oauth", "wert": oauth, "x": 1}) + "\n").encode())):
+            rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt"}, zeile=zeile_)
+            pruefe(f"Zugangszeile ungültig ({beispiel}): Code 2, nichts gestartet", rc == D.EXIT_ABGEWIESEN and not pruefung(z)
+                   and "zugang_ungueltig" in ereignisse(z) and not fundstellen(oauth, jobdir, text), f"rc {rc}, {ereignisse(z)}")
+
+        # 5. Wiederholung (nach approve oder Fortsetzung): der Dispatcher hat nichts aufbewahrt
+        wiederholt = uuid.uuid4().hex[:16]
+        a = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"}, zeile=(json.dumps({"typ": "oauth", "wert": oauth}) + "\n").encode(),
+                 job=wiederholt)
+        b = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"}, zeile=None, geheim={}, job=wiederholt)
+        c = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"}, zeile=(json.dumps({"typ": "oauth", "wert": oauth}) + "\n").encode(),
+                 job=wiederholt, geheim={})
+        pruefe("Wiederholung desselben Auftrags: ohne erneute Übergabe kein Zugang (nichts gespeichert), mit erneuter Übergabe läuft er",
+               a[0] == 0 and b[0] == D.EXIT_ABGEWIESEN and c[0] == 0 and pruefung(c[1]).get("oauth") == sha(oauth)
+               and not fundstellen(oauth, c[3], a[2], b[2], c[2]), f"Exits {a[0]} {b[0]} {c[0]}")
+
+        # 6. Zugang aus geheim.env: nur wenn erlaubt, nie als Beimischung
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "server"})
+        innen = pruefung(z)
+        pruefe("Serverzugang (zugang=server): Schlüssel aus geheim.env, Haiku wie bisher",
+               rc == 0 and innen.get("api") == sha(SERVER_GEHEIM["ANTHROPIC_API_KEY"]) and innen.get("modell") == "claude-haiku-5-5",
+               f"rc {rc}, Modell {innen.get('modell')}")
+        rc, z, text, jobdir, job = lauf()
+        pruefe("Älterer Kern (ohne Feld zugang): Zugang aus geheim.env wie bisher", rc == 0
+               and pruefung(z).get("api") == sha(SERVER_GEHEIM["ANTHROPIC_API_KEY"]), f"rc {rc}")
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "server"}, geheim=SERVER_GEHEIM | {"WAMO_SERVERZUGANG": "aus"})
+        pruefe("WAMO_SERVERZUGANG=aus: ohne persönlichen Zugang startet nichts (Code 5, keine_zugangsdaten)",
+               rc == D.EXIT_KEIN_ZUGANG and "keine_zugangsdaten" in ereignisse(z) and not pruefung(z), f"rc {rc}, {ereignisse(z)}")
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"},
+                                        zeile=(json.dumps({"typ": "oauth", "wert": oauth}) + "\n").encode(),
+                                        geheim=SERVER_GEHEIM | {"WAMO_SERVERZUGANG": "aus"})
+        pruefe("WAMO_SERVERZUGANG=aus: der persönliche Zugang geht trotzdem", rc == 0 and pruefung(z).get("oauth") == sha(oauth), f"rc {rc}")
+
+        audit = (D.LOGS / "auftraege.log").read_text(encoding="utf-8", errors="replace")[-300_000:]
+        pruefe("Audit nennt Art und Kennung des Zugangs, nie den Wert",
+               "claude=persoenlich-oauth" in audit and "CLAUDE_CODE_OAUTH_TOKEN@1a2b3c4d" in audit and oauth not in audit
+               and api not in audit, "geprüft in /srv/wamo/logs/auftraege.log")
+    finally:
+        for job in jobs:
+            entfernen(D.JOBS / job)
+        entfernen(ordner)
+
+
 # ---------------------------------------------------------------- GitHub-App echt (nach dem Einrichten)
 def github_app_echt() -> None:
     """Prüft die eingerichtete App bei GitHub, ausschließlich lesend: Installation lesen (JWT), dann zwei Token der
@@ -1017,6 +1302,8 @@ def main() -> int:
         D.beenden(ausfuehren(sys.argv[2]))  # hartes Ende wie der Dispatcher (Lebenslinien-Thread)
     if len(sys.argv) == 3 and sys.argv[1] == "--start-attrappe":
         D.beenden(start_attrappe(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == "--start-token":
+        D.beenden(start_token(sys.argv[2]))
     if os.getuid() == 0 or Path.home() != D.HEIM:
         print("Bitte als wamo ausführen: sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest", file=sys.stderr)
         return 1
@@ -1032,6 +1319,8 @@ def main() -> int:
         if "--attrappe" in sys.argv:
             ende_zu_ende()
             github_app_mit_attrappe()
+        if "--token-attrappe" in sys.argv:
+            token_attrappe()
         if "--app-echt" in sys.argv:
             github_app_echt()
     finally:
