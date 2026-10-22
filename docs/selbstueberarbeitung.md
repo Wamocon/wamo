@@ -490,6 +490,15 @@ Rückweg des Kerns wertlos.
 5. `main` fortschreiben durch den Release-Dienst per Fast-Forward (so entworfen) oder nur Branch und Tag, den Merge macht ein
    Mensch auf GitHub?
 
+## Änderungen am Plan
+
+| Datum | Schritt | Änderung | Grund |
+| --- | --- | --- | --- |
+| 22.10.2026 | 1.1 | Die Gesundheitsprobe ist eine Route (`ui/src/app/version.json/route.ts`, dynamisch, Felder `name`, `version`, `commit`, `gebaut`, `sauber`), keine statische `ui/public/version.json`. Commit, Bauzeit und Sauberkeit kommen als Build-Argumente `WAMO_COMMIT`, `WAMO_BAUZEIT`, `WAMO_SAUBER` in die Umgebung des Laufzeit-Images; die Version aus `package.json`. Der Hinweis "Neue Version, bitte neu laden" (Abfrage alle 5 Minuten) bleibt offen und gehört zu Schritt 1.5 | Eine Datei in `public/` würde mit der Route kollidieren; die Route prüft jeden Wert gegen ein enges Muster und berechnet die Antwort bei jeder Anfrage |
+| 22.10.2026 | 1.1 | Statische Dateien: Caddy fragt zuerst die live gesetzte Farbe und bei 404 die vorige (`handle_response` mit zweitem `reverse_proxy`), im Rauchtest mit echtem Caddy belegt. Der Zustand (live, vorige, seit) steht in den Kopfzeilen der Include-Datei `etc/kern/wamo-ui-aktiv.inc`, eine zweite Zustandsdatei gibt es nicht | Die Include-Datei ist die einzige Wahrheit, sie wird bei jedem Schalten aus der Vorlage im Skript neu erzeugt und vorher als ganze Konfiguration geprüft |
+| 22.10.2026 | 1.1 | Die Site schützt mit einem `route`-Block (405 für alles außer GET und HEAD vor dem Include). Der Rückfall auf 404 gilt nur für zwei Fassungen: Seiten, die zwei Releases zurückliegen, verlieren nachgeladene Chunks | Caddy ordnet `handle` vor `respond` ein (Fund des Reviews, im Rauchtest belegt); die Farbe, die das nächste Release ersetzt, trägt die älteste Fassung |
+| 22.10.2026 | 1.1 | `wamo-ui-umschalten.sh` ist zugleich das Schritt-Skript des Ankers: Als `schritte/rueckweg-ui` kopiert, bedient es `rueckweg-ui vX.Y.Z HEX40 Farbe` (blau oder gruen; idempotent, nur saubere Stände). Die Zeile `EINTRAG {...}` am Ende von `umschalten` ist der Eintrag "letzte gute Version" im Format von `stand.json`; geschrieben wird `stand.json` weiterhin nur vom Anker | Der Anker bleibt unverändert (Schritt 0.1); die Verdrahtung (Kopie ins Verzeichnis `anker/schritte`, Manifest) ist ein Handgriff in der Anker-Einrichtung |
+
 ---
 
 WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn

@@ -7,7 +7,8 @@ import { buildInfo } from "@/lib/buildInfo";
  * Die Route läuft bei jeder Anfrage (connection), damit die Probe wirklich den laufenden Server prüft und nie eine
  * Antwort aus dem Build-Cache liefert. Die Version setzt next.config.ts beim Build aus package.json ein; Commit-ID und
  * Bauzeit stehen als Umgebung im Image (Build-Argumente in infra/sokrates2/wamo-ui/Dockerfile). Kein Geheimnis,
- * keine Anfragedaten, nur GET.
+ * keine Anfragedaten, nur GET. Die Sicherheitsheader aus next.config.ts (CSP und andere) gelten auch hier, das ist gewollt;
+ * ein eigenes Cache-Control setzen sie nicht, das no-store dieser Route bleibt also erhalten.
  */
 export async function GET(): Promise<Response> {
   await connection();

@@ -229,7 +229,7 @@ class Last:
         while self.laeuft:
             with self.sperre:
                 chunks = sorted(self.chunks)
-            pfade = ["/version.json", "/", *[f"/_next/static/chunks/{c}" for c in chunks]]
+            pfade = ["/version.json", "/", *[c if c.startswith("/") else f"/_next/static/chunks/{c}" for c in chunks]]
             self.pool.submit(self._eine, pfade[i % len(pfade)])
             i += 1
             naechster += takt
@@ -320,6 +320,7 @@ class Umgebung:
         self.c_blau = self.p + "ui-blau"
         self.c_gruen = self.p + "ui-gruen"
         self.bauargs = f"NODE_IMAGE={bild_node}"
+        self.echt = False
         self.anker = self._anker_laden()
 
     @staticmethod
@@ -336,13 +337,34 @@ class Umgebung:
             "WAMO_UI_BASIS": str(self.basis),
             "WAMO_UI_CADDY_DIR": str(self.caddy_dir),
             "WAMO_UI_QUELLE": str(self.quelle),
-            "WAMO_UI_BAUDATEI": str(self.quelle / "attrappe" / "Dockerfile"),
-            "WAMO_UI_BAUKONTEXT": str(self.ctx),
-            "WAMO_UI_BEREIT_S": "40",
-            "ATTRAPPE_BAUARGS": self.bauargs,
+            "WAMO_UI_BEREIT_S": "120" if self.echt else "40",
         }
+        if not self.echt:        # sonst baut das Skript mit wamo-ui/Dockerfile aus ui/ (die echte Oberfläche)
+            e["WAMO_UI_BAUDATEI"] = str(self.quelle / "attrappe" / "Dockerfile")
+            e["WAMO_UI_BAUKONTEXT"] = str(self.ctx)
+            e["ATTRAPPE_BAUARGS"] = self.bauargs
         e.update(extra or {})
         return e
+
+    def echt_vorbereiten(self) -> None:
+        """Für --nur echt: Quellen von ui/ (ohne Abhängigkeiten und Gebautes) und das echte Dockerfile in die Quelle des Skripts."""
+        self.echt = True
+        ziel = self.quelle / "ui"
+        if ziel.exists():
+            shutil.rmtree(ziel)
+        shutil.copytree(REPO / "ui", ziel, ignore=shutil.ignore_patterns(
+            "node_modules", ".next", "out", "coverage", ".env*", "*.log", "*.tsbuildinfo", "next-env.d.ts"))
+        shutil.copy(REPO / "infra" / "sokrates2" / "wamo-ui" / "Dockerfile", self.quelle / "wamo-ui" / "Dockerfile")
+
+    def echt_aendern(self) -> None:
+        """Eine zweite Fassung: Version 0.1.1 und ein geänderter Text in einer Client-Komponente (neue Chunk-Namen)."""
+        paket = self.quelle / "ui" / "package.json"
+        paket.write_text(paket.read_text(encoding="utf-8").replace('"version": "0.1.0"', '"version": "0.1.1"', 1), encoding="utf-8")
+        datei = self.quelle / "ui" / "src" / "components" / "LiveCaption.tsx"
+        text = datei.read_text(encoding="utf-8")
+        assert "Sag einfach, was du brauchst." in text
+        datei.write_text(text.replace("Sag einfach, was du brauchst.", "Sag einfach, was du brauchst (Fassung 2).", 1),
+                         encoding="utf-8")
 
     def aufbauen(self) -> None:
         aufraeumen_praefix(self.p, behalte=(self.mein_name, self.p + "etc"))
@@ -354,10 +376,11 @@ class Umgebung:
         shutil.copytree(REPO / "infra" / "sokrates2" / "wamo-ui" / "attrappe", self.quelle / "attrappe", dirs_exist_ok=True)
         shutil.copy(REPO / "infra" / "sokrates2" / "wamo-ui" / "docker-compose.yml", self.quelle / "wamo-ui" / "docker-compose.yml")
         shutil.copy(REPO / "infra" / "sokrates2" / "wamo-ui-umschalten.sh", self.quelle / "wamo-ui-umschalten.sh")
+        schema = "https" if self.echt else "http"      # die echte Oberfläche nimmt als Kern nur https-Adressen an (next.config.ts)
         (self.basis / "wamo-ui.conf").write_text(
             f"WAMO_UI_URL=http://{self.caddy}:{self.port}\n"
             "NEXT_PUBLIC_SUPABASE_URL=https://192.168.178.136:55443\n"
-            f"NEXT_PUBLIC_WAMO_KERN_BUERO=http://127.0.0.1:{self.kern_port}\n"
+            f"NEXT_PUBLIC_WAMO_KERN_BUERO={schema}://127.0.0.1:{self.kern_port}\n"
             "WAMO_UI_TLS=intern\nWAMO_UI_HSTS=nein\nNEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER=\n", encoding="utf-8")
 
     def etc_schreiben(self) -> None:
@@ -570,7 +593,91 @@ def innen(args: argparse.Namespace) -> int:
     return 0 if erfolg else 1
 
 
+def _echt(u: Umgebung, b: Bericht, last: Last) -> None:
+    """Die echte Oberfläche: Erstinstallation (noch keine Fassung), Release 1, Release 2 unter Last, Rückweg."""
+    c1, c2 = commit_von(1), commit_von(2)
+    s = b.neu("Echte Oberfläche: Aufbau ohne frühere Fassung (Erstinstallation), Include-Datei live=keine")
+    u.echt = True       # die echte Oberfläche kennt als Kern nur https-Adressen (next.config.ts)
+    u.aufbauen()
+    u.etc_schreiben()
+    u.echt_vorbereiten()
+    r = u.skript("include-anlegen")
+    b.pruefe(s, r.returncode == 0 and u.zustand() == ("keine", "keine"), f"Include-Datei angelegt ({u.zustand()})")
+    u.caddy_starten()
+    b.pruefe(s, warte_http(u.caddy, u.port, "/", 503), "ohne Fassung antwortet Caddy mit 503 (Die Oberfläche wird eingerichtet)")
+
+    s = b.neu("Echte Oberfläche: Release 1 (Version 0.1.0) in blau, gebaut mit wamo-ui/Dockerfile")
+    (u.quelle / "wamo-ui" / "bau.info").write_text(f"WAMO_COMMIT={c1}\nWAMO_SAUBER=ja\n", encoding="ascii")
+    t0 = time.time()
+    r = u.skript("umschalten", "--bewaehrung", "6", timeout=1800)
+    s.update({"befehl": "umschalten", "dauer_s": round(time.time() - t0, 1), "rc": r.returncode})
+    b.pruefe(s, r.returncode == 0, f"Rückgabewert {r.returncode} (erwartet 0), Dauer {time.time() - t0:.0f} s")
+    if r.returncode != 0:
+        print(ausgabe_kurz(r))
+        return
+    b.pruefe(s, u.zustand() == ("blau", "keine"), f"Zustand live=blau ({u.zustand()})")
+    eintrag_pruefen(u, r.stdout, s, b, c1, "blau", "v0.1.0")
+    c = http.client.HTTPConnection(u.caddy, u.port, timeout=10)
+    c.request("GET", "/")
+    antwort = c.getresponse()
+    html = antwort.read().decode("utf-8", "replace")
+    kopf = {k.lower(): v for k, v in antwort.getheaders()}
+    b.pruefe(s, antwort.status == 200 and "content-security-policy" in kopf, "Startseite 200 mit Content-Security-Policy")
+    rohe = {m.rstrip("\\") for m in re.findall(r'"(/_next/static/[^"]+\.js[^"]*)"', html)}
+    chunks = sorted(m for m in rohe if re.fullmatch(r"/_next/static/[\w./~%-]+\.js", m))[:12]
+    b.pruefe(s, len(chunks) >= 3, f"Startseite verweist auf {len(chunks)} Chunks unter /_next/static/")
+    c.request("GET", "/version.json")
+    antwort = c.getresponse()
+    koerper = antwort.read().decode()
+    b.pruefe(s, antwort.status == 200 and VERSION_JSON_RE.match(koerper) is not None and c1 in koerper
+             and antwort.getheader("cache-control") == "no-store", f"/version.json der echten Route: {koerper[:110]}...")
+    c.request("POST", "/version.json", body=b"x")
+    st = c.getresponse().status
+    b.pruefe(s, st == 405, f"POST /version.json: HTTP {st} (erwartet 405)")
+    c.close()
+    last.setze(chunks=set(chunks))
+    last.start()
+    time.sleep(3)
+
+    s = b.neu("Echte Oberfläche: Release 2 (Version 0.1.1, anderer Text, neue Chunk-Namen) unter Last, Chunks der Fassung 1 bleiben")
+    u.echt_aendern()
+    (u.quelle / "wamo-ui" / "bau.info").write_text(f"WAMO_COMMIT={c2}\nWAMO_SAUBER=ja\n", encoding="ascii")
+    t0 = time.time()
+    r = u.skript("umschalten", "--bewaehrung", "6", timeout=1800)
+    t1 = time.time()
+    time.sleep(1)
+    f = last.fenster(t0, time.time())
+    s.update({"befehl": "umschalten", "dauer_s": round(t1 - t0, 1), "rc": r.returncode, **f})
+    b.pruefe(s, r.returncode == 0, f"Rückgabewert {r.returncode} (erwartet 0), Dauer {t1 - t0:.0f} s")
+    if r.returncode != 0:
+        print(ausgabe_kurz(r))
+        return
+    print(f"    Last: {f['anfragen']} Anfragen, {f['fehler']} Fehler, {f['wiederholungen']} Wiederholungen, p50 {f['p50_ms']} ms, "
+          f"p95 {f['p95_ms']} ms, max {f['max_ms']} ms {f['fehler_arten']}", flush=True)
+    b.sollnull_fehler += f["fehler"]
+    b.sollnull_anfragen += f["anfragen"]
+    b.pruefe(s, f["fehler"] == 0, "null Fehler unter Last (die Chunks der Fassung 1 antworten auch nach dem Umschalten)")
+    b.pruefe(s, u.zustand() == ("gruen", "blau"), f"Zustand live=gruen vorige=blau ({u.zustand()})")
+    wirkung(last, r.stdout, c2, s, b)
+    eintrag_pruefen(u, r.stdout, s, b, c2, "gruen", "v0.1.1")
+
+    s = b.neu("Echte Oberfläche: Rückweg auf blau unter Last")
+    r, f = lauf(u, last, b, s, ["zurueck"], 0)
+    b.pruefe(s, u.zustand() == ("blau", "gruen"), f"Zustand live=blau vorige=gruen ({u.zustand()})")
+    wirkung(last, r.stdout, c1, s, b)
+    b.pruefe(s, s["dauer_s"] < 30, f"Rückweg in {s['dauer_s']} s (Ziel unter 30 Sekunden)")
+    r = u.skript("status")
+    print(ausgabe_kurz(r))
+    info = sh("docker", "inspect", "-f", "readonly={{.HostConfig.ReadonlyRootfs}} capdrop={{.HostConfig.CapDrop}} "
+              "health={{.State.Health.Status}} user={{.Config.User}}", u.c_blau, check=False).stdout.strip()
+    b.pruefe(s, "readonly=true" in info and "capdrop=[ALL]" in info and "health=healthy" in info,
+             f"Härtung und Gesundheit der echten Container: {info}")
+
+
 def _ablauf(u: Umgebung, b: Bericht, kern: KernAttrappe, last: Last, nur: str) -> None:
+    if nur == "echt":
+        _echt(u, b, last)
+        return
     c1 = commit_von(1)
     c2 = commit_von(2)
 
@@ -759,8 +866,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Rauchtest für das Umschalten der WAMO-Oberfläche (Attrappen, echtes Caddy)")
     ap.add_argument("--name", default="rauch", help="Namensteil der Testressourcen (wamo-test-NAME-...)")
     ap.add_argument("--bild-node", default="node:22-bookworm-slim", help="Basisbild der Attrappen")
-    ap.add_argument("--nur", choices=["alles", "kurz", "ausfall"], default="alles",
-                    help="kurz: ohne Absturz, 500er und Ausfall; ausfall: nur Aufbau, zwei Fassungen und der Ausfall der live Farbe")
+    ap.add_argument("--nur", choices=["alles", "kurz", "ausfall", "echt"], default="alles",
+                    help="kurz: ohne Absturz, 500er und Ausfall; ausfall: nur Aufbau, zwei Fassungen und der Ausfall der live Farbe; "
+                         "echt: Erstinstallation und zwei Releases mit der echten Oberfläche (Dockerfile und Quellen aus ui/, dauert Minuten)")
     ap.add_argument("--ausgabe", help="Ergebnis als JSON schreiben")
     ap.add_argument("--bild-behalten", action="store_true", help="das Läufer-Image nach dem Lauf behalten")
     ap.add_argument("--innen", action="store_true", help="intern: im Läufer-Container ausführen")

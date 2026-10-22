@@ -534,7 +534,7 @@ bau_angaben() {   # Commit und Sauberkeit aus wamo-ui/bau.info (schreibt "vertei
   if [ -n "$COMMIT_OPT" ]; then BAU_COMMIT="$COMMIT_OPT"; fi
   if [ -n "$SAUBER_OPT" ]; then BAU_SAUBER="$SAUBER_OPT"; fi
   [ -f "$UI/package.json" ] || fehler "$UI/package.json fehlt (python scripts/wamo_ui_sokrates2.py verteilen)."
-  BAU_VERSION="$(sed -n 's/^  "version": "\([0-9][0-9.]*\)",\{0,1\}$/\1/p' "$UI/package.json" | head -n1)"
+  BAU_VERSION="$(tr -d '\r' < "$UI/package.json" | sed -n 's/^  "version": "\([0-9][0-9.]*\)",\{0,1\}$/\1/p' | head -n1)"
   [[ "$BAU_VERSION" =~ $VERSION_RE ]] || fehler "$UI/package.json: Version fehlt oder ist ungültig."
 }
 
