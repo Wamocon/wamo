@@ -1186,13 +1186,13 @@ class LaufTests(ReleaseTest):
         self.assertEqual(self.endgrund(d), ("abgebrochen", "stufe_nicht_verfuegbar"))
 
     def test_ausnahme_einer_stufe(self):
-        self.stufen.setze("pruefen", RuntimeError("geheim: sk-ant-xyz"))
+        self.stufen.setze("pruefen", RuntimeError("SENTINEL-GEHEIMNIS-4711"))
         self.anfordern()
         self.lauf()
         self.assertEqual(self.endgrund(), ("abgebrochen", "stufe_ausnahme"))
         text = Path(self.p.audit).read_text()
         self.assertIn("RuntimeError", text)
-        self.assertNotIn("sk-ant", text)  # nur der Typ der Ausnahme, nie ihr Text
+        self.assertNotIn("SENTINEL", text)  # nur der Typ der Ausnahme, nie ihr Text
 
     def test_ungueltige_ergebnisse(self):
         for wert in ("ok", None, 5, ST.Ergebnis("vielleicht"), ST.Ergebnis.ok(basis_commit="xyz"),
@@ -2176,11 +2176,11 @@ class WartenUndTypenTests(ReleaseTest):
 
     def test_ort_der_ausnahme_ohne_text(self):
         try:
-            raise ValueError("geheim: sk-ant-xyz")
+            raise ValueError("SENTINEL-GEHEIMNIS-4711")
         except ValueError as e:
             text = R._ort(e)
         self.assertRegex(text, r"^ValueError in test_release\.py:\d+$")
-        self.assertNotIn("sk-ant", text)
+        self.assertNotIn("SENTINEL", text)
 
 
 class ZustandAnKetteTests(ReleaseTest):
