@@ -47,7 +47,14 @@ http
       res.end("Fehler");
       return;
     }
-    const url = new URL(req.url, "http://x");
+    let url;
+    try {
+      url = new URL(req.url, "http://x");
+    } catch {
+      res.writeHead(400);
+      res.end("ungueltig");
+      return;
+    }
     // Modus "alt": die Fassung vor der Umstellung auf blau/grün kennt /version.json nicht
     if (url.pathname === "/version.json" && MODUS !== "alt") {
       res.writeHead(200, { ...kopf, "Content-Type": "application/json", "Cache-Control": "no-store" });

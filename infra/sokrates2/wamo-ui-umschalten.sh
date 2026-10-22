@@ -143,6 +143,8 @@ CADDY_IMAGE=caddy:2.11.2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae5
 if [ "$TESTMODUS" = ja ]; then
   pfad_pruefen() {
     [[ "$2" =~ ^/[A-Za-z0-9._/-]{1,200}$ ]] && [[ "$2" != *..* ]] || aufruf_fehler "$1 ist ungültig."
+    # Der Testmodus darf nie die Ordner des Betriebs treffen (sie liegen im Home von wamocon)
+    [[ "$2" != /home/* && "$2" != /root/* ]] || aufruf_fehler "$1 darf im Testmodus nicht unter /home oder /root liegen."
   }
   for v in WAMO_UI_BASIS WAMO_UI_CADDY_DIR WAMO_UI_QUELLE WAMO_UI_BAUDATEI WAMO_UI_BAUKONTEXT; do
     if [ -n "${!v:-}" ]; then pfad_pruefen "$v" "${!v}"; fi
@@ -299,21 +301,21 @@ EOF
 handle /_next/static/* {
 	reverse_proxy $h1:3000 $h2:3000 {
 		lb_policy first
-		lb_try_duration 3s
+		lb_try_duration 5s
 		lb_try_interval 250ms
 		health_uri $gesundheit
 		health_interval 2s
 		health_timeout 2s
 		fail_duration 10s
 		transport http {
-			dial_timeout 3s
+			dial_timeout 1s
 			response_header_timeout 30s
 		}
 		@fehlt status 404
 		handle_response @fehlt {
 			reverse_proxy $h2:3000 {
 				transport http {
-					dial_timeout 3s
+					dial_timeout 1s
 					response_header_timeout 30s
 				}
 			}
@@ -323,14 +325,14 @@ handle /_next/static/* {
 handle {
 	reverse_proxy $h1:3000 $h2:3000 {
 		lb_policy first
-		lb_try_duration 3s
+		lb_try_duration 5s
 		lb_try_interval 250ms
 		health_uri $gesundheit
 		health_interval 2s
 		health_timeout 2s
 		fail_duration 10s
 		transport http {
-			dial_timeout 3s
+			dial_timeout 1s
 			response_header_timeout 30s
 		}
 	}
@@ -373,10 +375,11 @@ include_setzen() {   # $1 live, $2 vorige
   mkdir -p "$work/etc/kern"
   include_text "$live" "$vorige" "$seit" > "$work/etc/kern/wamo-ui-aktiv.inc"
   caddy_adapt_pruefen "$work/etc" || return 1
+  [ ! -L "$INC" ] || fehler "$INC ist ein symbolischer Link: abgelehnt."
   [ ! -f "$INC" ] || cp -a "$INC" "$work/inc.vorher"
-  tmp="$INC.neu.$$"
+  tmp="$(mktemp "$INC.neu.XXXXXX")"
   install -m 644 "$work/etc/kern/wamo-ui-aktiv.inc" "$tmp"
-  if [ "$(id -u)" = 0 ]; then chown "$(stat -c '%u:%g' "$CADDY_DIR/etc/kern")" "$tmp"; fi
+  if [ "$(id -u)" = 0 ]; then chown -h "$(stat -c '%u:%g' "$CADDY_DIR/etc/kern")" "$tmp"; fi
   mv -f "$tmp" "$INC"
   if ! caddy_neu_laden; then
     echo "  Include-Datei wird zurückgenommen" >&2
@@ -398,9 +401,11 @@ P_VERSION=""; P_COMMIT=""; P_GEBAUT=""; P_SAUBER=""
 parse_version() {   # $1 Antworttext; strenges Muster, alles andere ist keine gültige Antwort
   [[ "$1" =~ $VERSION_JSON_RE ]] || return 1
   P_VERSION="${BASH_REMATCH[1]}"; P_COMMIT="${BASH_REMATCH[2]}"; P_GEBAUT="${BASH_REMATCH[3]}"; P_SAUBER="${BASH_REMATCH[4]}"
+  [[ "$P_VERSION" =~ $VERSION_RE ]]   # dieselbe Form wie vX.Y.Z des Ankers (ohne v)
 }
-version_von_container() { docker exec "$C_CADDY" wget -q -O - -T 3 "http://$1:3000/version.json" 2>/dev/null; }
-public_holen() { curl "${CURL_OPT[@]}" "$WAMO_UI_URL/version.json" 2>/dev/null; }
+# Die Antwort ist auf 600 Byte begrenzt (die gültige hat etwa 150)
+version_von_container() { docker exec "$C_CADDY" wget -q -O - -T 3 "http://$1:3000/version.json" 2>/dev/null | head -c 600; }
+public_holen() { curl "${CURL_OPT[@]}" "$WAMO_UI_URL/version.json" 2>/dev/null | head -c 600; }
 
 bereit_warten() {   # $1 Containername, $2 erwartete Version, $3 erwarteter Commit, $4 Sekunden
   local host="$1" ende=$((SECONDS + $4)) body="" grund="noch keine Antwort"
@@ -533,13 +538,23 @@ bau_angaben() {   # Commit und Sauberkeit aus wamo-ui/bau.info (schreibt "vertei
   [[ "$BAU_VERSION" =~ $VERSION_RE ]] || fehler "$UI/package.json: Version fehlt oder ist ungültig."
 }
 
-archiv_tag() {   # Archiv-Tag der Fassung (Version und Commit, ohne Commit mit Zeitstempel)
-  if [ "$BAU_COMMIT" = unbekannt ]; then echo "v${BAU_VERSION}-lokal-$(date -u +%Y%m%d%H%M%S)"; else echo "v${BAU_VERSION}-${BAU_COMMIT:0:12}"; fi
+# Archiv-Tag der Fassung: Version und Commit. Nur ein sauberer Stand (aus unverändertem Git) bekommt ihn; alles andere trägt
+# einen Zeitstempel, damit ein Bau mit lokalen Änderungen nie den Tag eines sauberen Standes überschreibt und der Notanker
+# nur auf saubere Stände zurückgehen kann.
+archiv_tag() {
+  if [ "$BAU_COMMIT" = unbekannt ] || [ "$BAU_SAUBER" != ja ]; then
+    echo "v${BAU_VERSION}-lokal-$(date -u +%Y%m%d%H%M%S)"
+  else
+    echo "v${BAU_VERSION}-${BAU_COMMIT:0:12}"
+  fi
 }
 
 compose_ausfuehren() {
   [ -f "$COMPOSE" ] || fehler "$COMPOSE fehlt (zuerst bauen)."
-  ( cd "$BASIS" && WAMO_UI_PRAEFIX="$PRAEFIX" WAMO_UI_BILD="$BILD" WAMO_UI_NETZ="$NETZ" docker compose -p "$PROJEKT" "$@" )
+  [ ! -L "$COMPOSE" ] || fehler "$COMPOSE ist ein symbolischer Link: abgelehnt."
+  # --env-file /dev/null: keine .env aus dem Ordner (die Werte kommen nur aus dem Aufruf)
+  ( cd "$BASIS" && WAMO_UI_PRAEFIX="$PRAEFIX" WAMO_UI_BILD="$BILD" WAMO_UI_NETZ="$NETZ" \
+      docker compose --env-file /dev/null -p "$PROJEKT" "$@" )
 }
 
 # Startet genau eine Farbe neu. Die live gesetzte Farbe wird nie angefasst: Sie würde Anfragen verlieren.
@@ -647,6 +662,7 @@ eintrag_von() {   # $1 Farbe -> JSON-Eintrag im Format von stand.json (komponent
     fehler "Farbe $1 antwortet nicht mit einer gültigen /version.json."
   fi
   [[ "$P_COMMIT" =~ $COMMIT_RE ]] || fehler "Farbe $1 trägt keine Commit-ID ($P_COMMIT): kein Eintrag für den Notanker möglich."
+  [ "$P_SAUBER" = true ] || fehler "Farbe $1 wurde nicht aus unverändertem Git-Stand gebaut: kein Eintrag für den Notanker."
   printf '{"version":"v%s","commit":"%s","ziel":"%s","seit":"%s"}\n' "$P_VERSION" "$P_COMMIT" "$1" "$seit"
 }
 
@@ -681,28 +697,32 @@ cmd_eintrag() {
 }
 
 cmd_include_anlegen() {
+  schloss
   lies_zustand
   if [ -n "$LIVE" ]; then echo "  Include-Datei vorhanden: live $LIVE, vorige $VORIGE"; return 0; fi
   [ -d "$CADDY_DIR/etc/kern" ] || fehler "$CADDY_DIR/etc/kern fehlt (zuerst wamo-tls-einrichten.sh)."
+  [ ! -L "$INC" ] || fehler "$INC ist ein symbolischer Link: abgelehnt."
   local live=keine tmp
   if existiert "$C_ALT"; then live=alt; fi    # Umstellung: der bisherige Container bleibt zunächst live
-  tmp="$INC.neu.$$"
+  tmp="$(mktemp "$INC.neu.XXXXXX")"
   include_text "$live" keine "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp"
   chmod 644 "$tmp"
-  if [ "$(id -u)" = 0 ]; then chown "$(stat -c '%u:%g' "$CADDY_DIR/etc/kern")" "$tmp"; fi
+  if [ "$(id -u)" = 0 ]; then chown -h "$(stat -c '%u:%g' "$CADDY_DIR/etc/kern")" "$tmp"; fi
   mv -f "$tmp" "$INC"
   echo "  Include-Datei angelegt: live $live"
 }
 
 schloss() {
   install -d -m 755 "$BASIS"
+  [ ! -L "$LOCK" ] || fehler "$LOCK ist ein symbolischer Link: abgelehnt."
   exec 9>"$LOCK"
   # Legt root (Notanker) die Sperrdatei an, gehört sie danach dem Besitzer des Ordners: sonst könnte wamocon sie nicht mehr öffnen
-  if [ "$(id -u)" = 0 ]; then chown "$(stat -c '%u:%g' "$BASIS")" "$LOCK"; fi
+  if [ "$(id -u)" = 0 ]; then chown -h "$(stat -c '%u:%g' "$BASIS")" "$LOCK"; fi
   flock -n 9 || fehler "Ein anderer Schaltvorgang läuft gerade ($LOCK)."
 }
 
 cmd_bauen() {
+  if [ "$TROCKEN" != ja ]; then schloss; fi   # erst sperren, dann den Zustand lesen: sonst entscheidet ein veralteter Zustand
   lies_konfig; lies_zustand
   [ -n "$LIVE" ] || fehler "Include-Datei fehlt (zuerst wamo-ui-einrichten.sh caddy)."
   local ziel
@@ -712,7 +732,6 @@ cmd_bauen() {
     echo "Trockenlauf: baut $BILD:$(archiv_tag) als Farbe $ziel (Version $BAU_VERSION, Commit $BAU_COMMIT) und startet $(host_von "$ziel"); live bleibt $LIVE."
     return 0
   fi
-  schloss
   caddy_laeuft || fehler "$C_CADDY läuft nicht."
   bauen_und_starten "$ziel"
   bereit_warten "$(host_von "$ziel")" "$ERW_VERSION" "$ERW_COMMIT" "$BEREIT_S" || { farbe_anhalten "$ziel"; exit 3; }
@@ -721,6 +740,7 @@ cmd_bauen() {
 }
 
 cmd_umschalten() {
+  if [ "$TROCKEN" != ja ]; then schloss; fi
   lies_konfig; lies_zustand
   [ -n "$LIVE" ] || fehler "Include-Datei fehlt (zuerst wamo-ui-einrichten.sh caddy)."
   local ziel alt_live alt_vorige host
@@ -739,7 +759,6 @@ cmd_umschalten() {
     echo "  5 bei einem Fehler danach: automatischer Rückweg auf $LIVE"
     return 0
   fi
-  schloss
   caddy_laeuft || fehler "$C_CADDY läuft nicht."
   echo "== Umschalten: live $LIVE (vorige $VORIGE), neue Farbe $ziel"
   local t0
@@ -794,12 +813,17 @@ cmd_umschalten() {
   alte_bilder_entfernen
   echo "Die Farbe $ziel ist live ($alt_live läuft als vorige weiter)."
   lies_zustand
-  if [ "$LIVE" = "$ziel" ] && [[ "$ERW_COMMIT" =~ $COMMIT_RE ]]; then
-    echo "EINTRAG $(printf '{"version":"v%s","commit":"%s","ziel":"%s","seit":"%s"}' "$ERW_VERSION" "$ERW_COMMIT" "$ziel" "$SEIT")"
+  # Eintrag "letzte gute Version" für den Notanker (Format von stand.json), nur für einen sauberen Stand mit Commit-ID
+  local zeile
+  if [ "$LIVE" = "$ziel" ] && zeile="$(eintrag_von "$ziel" "$SEIT" 2>&1)"; then
+    echo "EINTRAG $zeile"
+  else
+    echo "Hinweis: kein Eintrag für den Notanker (${zeile:-live passt nicht})" >&2
   fi
 }
 
 cmd_zurueck() {
+  if [ "$TROCKEN" != ja ]; then schloss; fi
   lies_konfig; lies_zustand
   [ -n "$LIVE" ] || fehler "Include-Datei fehlt."
   [[ "$VORIGE" =~ ^(blau|gruen|alt)$ ]] || { echo "Es gibt keine vorige Fassung (live $LIVE, vorige $VORIGE)." >&2; exit 6; }
@@ -809,7 +833,6 @@ cmd_zurueck() {
     echo "Trockenlauf: live $LIVE -> $VORIGE (vorige danach: $LIVE); $host_v $(laeuft "$host_v" && echo "läuft" || echo "müsste erst gestartet werden")"
     return 0
   fi
-  schloss
   caddy_laeuft || fehler "$C_CADDY läuft nicht."
   echo "ZEIT start=$(zeit)"
   echo "== Rückweg: live $LIVE -> $VORIGE"
@@ -852,20 +875,32 @@ cmd_zurueck() {
 
 # Schnittstelle des Notankers: rueckweg-ui <Version> <Commit> <Ziel>, alles bereits streng geprüft.
 cmd_anker_rueckweg() {
+  if [ "$TROCKEN" != ja ]; then schloss; fi
   lies_konfig; lies_zustand
   [ -n "$LIVE" ] || fehler "Include-Datei fehlt."
   local ver="${ARG_VERSION#v}" com="$ARG_COMMIT" ziel="$ARG_ZIEL" host archiv bereit=nein body
   host="$(host_von "$ziel")"
   archiv="$BILD:v${ver}-${com:0:12}"
+  # Als Ziel des Ankers gilt nur ein sauberer Stand: Version und Commit stimmen und der Bau stammte unverändert aus Git
+  fassung_passt() { local b; b="$(version_von_container "$1")" && parse_version "$b" && [ "$P_VERSION" = "$ver" ] && [ "$P_COMMIT" = "$com" ] && [ "$P_SAUBER" = true ]; }
   if [ "$LIVE" = "$ziel" ]; then
-    if body="$(version_von_container "$host")" && parse_version "$body" && [ "$P_VERSION" = "$ver" ] && [ "$P_COMMIT" = "$com" ]; then
-      echo "Schon erledigt: $ziel ist live mit v$ver ($com)."
+    if fassung_passt "$host"; then
+      # Stand der Datei und des Containers stimmen. Liefert Caddy sie auch? Nach einem Abbruch zwischen Tausch der Datei und
+      # Neuladen (etwa durch das Zeitlimit des Ankers) wäre die Buchführung sonst voreilig.
+      if [ "$TROCKEN" = ja ] || wirkung_abwarten "$ver" "$com" 3; then
+        echo "Schon erledigt: $ziel ist live mit v$ver ($com)."
+        return 0
+      fi
+      echo "  Die Include-Datei nennt $ziel, Caddy liefert die Fassung aber noch nicht: Caddy wird neu geladen" >&2
+      caddy_neu_laden || exit 5
+      wirkung_abwarten "$ver" "$com" 20 || { echo "Caddy liefert v$ver nicht: $0 status" >&2; exit 5; }
+      echo "Rückweg fertig: $ziel ist live mit v$ver ($com)."
       return 0
     fi
-    echo "Das Ziel $ziel ist die live gesetzte Farbe, trägt aber nicht v$ver ($com). Ein Neustart der aktiven Farbe würde Anfragen verlieren." >&2
+    echo "Das Ziel $ziel ist die live gesetzte Farbe, trägt aber nicht v$ver ($com) als sauberen Stand. Ein Neustart der aktiven Farbe würde Anfragen verlieren." >&2
     exit 6
   fi
-  if laeuft "$host" && body="$(version_von_container "$host")" && parse_version "$body" && [ "$P_VERSION" = "$ver" ] && [ "$P_COMMIT" = "$com" ]; then
+  if laeuft "$host" && fassung_passt "$host"; then
     bereit=ja
   elif [ "$(docker image inspect -f '{{index .Config.Labels "wamo.commit"}}' "$archiv" 2>/dev/null || true)" = "$com" ]; then
     bereit=archiv
@@ -877,14 +912,14 @@ cmd_anker_rueckweg() {
     echo "Trockenlauf: live $LIVE -> $ziel (v$ver, $com); Quelle: $([ "$bereit" = ja ] && echo "$host läuft schon" || echo "Archiv $archiv, $host wird neu gestartet")"
     return 0
   fi
-  schloss
   caddy_laeuft || fehler "$C_CADDY läuft nicht."
   echo "ZEIT start=$(zeit)"
   if [ "$bereit" = archiv ]; then
     echo "== $host aus $archiv starten"
     docker tag "$archiv" "$BILD:$ziel"
     farbe_starten "$ziel"
-    bereit_warten "$host" "$ver" "$com" "$BEREIT_S" || { farbe_anhalten "$ziel"; exit 6; }
+    # Das Zeitlimit des Ankers für die Oberfläche beträgt 120 Sekunden: höchstens 60 für den Start
+    bereit_warten "$host" "$ver" "$com" "$(( BEREIT_S < 60 ? BEREIT_S : 60 ))" || { farbe_anhalten "$ziel"; exit 6; }
   fi
   echo "ZEIT schalten_beginn=$(zeit)"
   include_setzen "$ziel" "$LIVE" || { echo "Rückweg ließ sich nicht schalten." >&2; exit 5; }

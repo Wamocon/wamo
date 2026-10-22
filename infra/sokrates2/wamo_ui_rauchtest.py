@@ -613,6 +613,19 @@ def _ablauf(u: Umgebung, b: Bericht, kern: KernAttrappe, last: Last, nur: str) -
     last.setze(chunks={"gemeinsam.js", "app-1.js", "app-2.js"})
     time.sleep(1.5)
 
+    s = b.neu("Schreibende Methoden werden abgewiesen, bevor ein Upstream sie sieht (Site: nur GET und HEAD)")
+    for methode, pfad in (("POST", "/"), ("POST", "/_next/static/chunks/gemeinsam.js"), ("POST", "/version.json"),
+                          ("DELETE", "/"), ("PUT", "/_next/static/chunks/app-2.js"), ("PATCH", "/x")):
+        c = http.client.HTTPConnection(u.caddy, u.port, timeout=5)
+        c.request(methode, pfad, body=b"x")
+        st = c.getresponse().status
+        c.close()
+        b.pruefe(s, st == 405, f"{methode} {pfad}: HTTP {st} (erwartet 405)")
+
+    if nur == "ausfall":
+        _ausfall(u, b, last, mit_umschalten=False)
+        return
+
     # ---- Rückweg und wieder vorwärts
     s = b.neu("Rückweg: zurueck von gruen auf blau")
     t0 = time.time()
@@ -708,27 +721,46 @@ def _ablauf(u: Umgebung, b: Bericht, kern: KernAttrappe, last: Last, nur: str) -
     b.pruefe(s, u.zustand() == ("gruen", "keine"), f"automatischer Rückweg: live=gruen ({u.zustand()})")
     s["hinweis"] = "500er der neuen Fassung erreichen Nutzer, bis die Gesundheitsprobe (2 s) sie aus dem Pool nimmt"
 
-    # ---- Ausfall der live gesetzten Farbe
+    _ausfall(u, b, last, mit_umschalten=True)
+
+
+def _ausfall(u: Umgebung, b: Bericht, last: Last, mit_umschalten: bool) -> None:
+    """Die live gesetzte Farbe wird hart beendet (docker kill): Caddy muss auf die vorige Farbe ausweichen."""
     s = b.neu("Ausfall der live gesetzten Farbe (docker kill) während der Last")
-    u.fassung_bereit(8)
-    r, f = lauf(u, last, b, s, ["umschalten", "--bewaehrung", "5"], 0)
-    last.setze(chunks={"gemeinsam.js", "app-5.js"})
+    if mit_umschalten:
+        u.fassung_bereit(8)
+        r, f = lauf(u, last, b, s, ["umschalten", "--bewaehrung", "5"], 0)
+    z = u.zustand()
+    live = u.c_blau if z[0] == "blau" else u.c_gruen
+    vorige = u.c_gruen if z[0] == "blau" else u.c_blau
+    fassung_vorige = sh("docker", "exec", u.caddy, "wget", "-q", "-O", "-", f"http://{vorige}:3000/version.json", check=False).stdout
+    print(f"    live {live}, vorige {vorige}: {fassung_vorige[:120]}", flush=True)
+    chunks = {"gemeinsam.js"} | ({"app-1.js"} if "app-1" in fassung_vorige or commit_von(1) in fassung_vorige else set())
+    chunks |= {"app-5.js"} if commit_von(5) in fassung_vorige else set()
+    last.setze(chunks=chunks)
     time.sleep(1)
     t0 = time.time()
-    sh("docker", "kill", u.c_blau)
+    sh("docker", "kill", live)
     time.sleep(12)
     f = last.fenster(t0, time.time())
     s.update({"befehl": "docker kill (live)", **f})
-    print(f"    Last: {f['anfragen']} Anfragen, {f['fehler']} Fehler {f['fehler_arten'] if f['fehler'] else ''}", flush=True)
-    b.pruefe(s, f["fehler"] <= 2, f"höchstens 2 Fehler beim Ausfall der live Farbe ({f['fehler']}), Caddy nimmt die vorige Farbe")
-    b.pruefe(s, u.laeuft(u.c_blau), "Docker hat die live Farbe neu gestartet (restart: unless-stopped)")
+    print(f"    Last: {f['anfragen']} Anfragen, {f['fehler']} Fehler, {f['wiederholungen']} Wiederholungen {f['fehler_arten'] if f['fehler'] else ''}", flush=True)
+    if f["fehler"]:
+        log = sh("docker", "logs", "--tail", "40", u.caddy, check=False)
+        for z in (log.stdout + log.stderr).splitlines():
+            if '"level":"error"' in z:
+                print("      caddy:", z[:300])
+    b.pruefe(s, f["fehler"] == 0, f"null Fehler beim Ausfall der live Farbe ({f['fehler']}), Caddy nimmt die vorige Farbe")
+    b.sollnull_fehler += f["fehler"]
+    b.sollnull_anfragen += f["anfragen"]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Rauchtest für das Umschalten der WAMO-Oberfläche (Attrappen, echtes Caddy)")
     ap.add_argument("--name", default="rauch", help="Namensteil der Testressourcen (wamo-test-NAME-...)")
     ap.add_argument("--bild-node", default="node:22-bookworm-slim", help="Basisbild der Attrappen")
-    ap.add_argument("--nur", choices=["alles", "kurz"], default="alles", help="kurz: ohne Absturz, 500er und Ausfall")
+    ap.add_argument("--nur", choices=["alles", "kurz", "ausfall"], default="alles",
+                    help="kurz: ohne Absturz, 500er und Ausfall; ausfall: nur Aufbau, zwei Fassungen und der Ausfall der live Farbe")
     ap.add_argument("--ausgabe", help="Ergebnis als JSON schreiben")
     ap.add_argument("--bild-behalten", action="store_true", help="das Läufer-Image nach dem Lauf behalten")
     ap.add_argument("--innen", action="store_true", help="intern: im Läufer-Container ausführen")

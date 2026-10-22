@@ -89,13 +89,25 @@ def test_caddy_regeln_im_umschalter():
     # der Neustart von Caddy ist verboten: nur reload
     assert not re.search(r"docker (restart|stop|rm)[^\n]*\$C_CADDY", text)
     assert "up -d --no-deps --force-recreate" in text
+    # Ausfall der live Farbe: kurzes Wählen (die Adresse eines beendeten Containers antwortet nicht) und genug Zeit für den
+    # Versuch beim zweiten Upstream, sonst gehen Anfragen im Zeitfenster des ersten Fehlers verloren
+    zeiten = {int(m) for m in re.findall(r"dial_timeout (\d+)s", text)}
+    versuch = {int(m) for m in re.findall(r"lb_try_duration (\d+)s", text)}
+    assert zeiten == {1} and versuch == {5}
+    assert "--env-file /dev/null" in text and "head -c 600" in text
+    assert text.count("[ ! -L ") >= 3                                 # Sperrdatei, Include-Datei und Compose: keine Links
 
 
 def test_site_vorlage_bindet_die_include_datei_ein():
     text = (INFRA / "wamo-ui" / "wamo-ui.caddy.vorlage").read_text(encoding="utf-8")
     assert "import /etc/caddy/kern/wamo-ui-aktiv.inc" in text
     assert "reverse_proxy wamo-ui:3000" not in text
-    assert "@schreibend not method GET HEAD" in text         # nur GET und HEAD, sonst wäre der Static-Fallback nicht sicher
+    # nur GET und HEAD, sonst wäre der Static-Fallback nicht sicher; die Reihenfolge steht in einem route-Block fest, weil
+    # Caddy sonst die handle-Blöcke der Include-Datei vor das respond stellt und POST durchkäme (Fund des Reviews, Rauchtest)
+    route = text.split("route {", 1)[1]
+    assert route.index('respond @schreibend "Methode nicht erlaubt" 405') < route.index("import /etc/caddy/kern/wamo-ui-aktiv.inc")
+    assert "@schreibend not method GET HEAD" in route
+    assert not re.search(r"^\s*respond @schreibend", text.split("route {", 1)[0], re.M)
 
 
 def test_compose_zwei_gehaertete_farben():

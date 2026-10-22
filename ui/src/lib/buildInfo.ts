@@ -15,13 +15,14 @@ export const UNBEKANNT = "unbekannt";
 
 const VERSION_RE = /^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})$/;
 const COMMIT_RE = /^[0-9a-f]{40}$/;
-const ZEIT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+// Zeitpunkt in UTC, ISO 8601 ohne Bruchteile; Monat, Tag und Uhrzeit liegen im gültigen Bereich
+const ZEIT_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\dZ$/;
 
 export type BuildRoh = {
-  version?: string;
-  commit?: string;
-  gebaut?: string;
-  sauber?: string;
+  version?: string | undefined;
+  commit?: string | undefined;
+  gebaut?: string | undefined;
+  sauber?: string | undefined;
 };
 
 export type BuildInfo = {
@@ -38,12 +39,14 @@ function nurWennGueltig(wert: string | undefined, muster: RegExp): string {
 
 /** Baut die Antwort aus den rohen Umgebungswerten. Reihenfolge der Felder ist Teil des Vertrags (siehe oben). */
 export function buildInfo(roh: BuildRoh): BuildInfo {
+  const commit = nurWennGueltig(roh.commit, COMMIT_RE);
   return {
     name: "wamo-ui",
     version: nurWennGueltig(roh.version, VERSION_RE),
-    commit: nurWennGueltig(roh.commit, COMMIT_RE),
+    commit,
     gebaut: nurWennGueltig(roh.gebaut, ZEIT_RE),
-    // "ja" nur bei einem Build aus unverändertem Git-Stand (verteilen prüft das vor dem Kopieren)
-    sauber: roh.sauber === "ja",
+    // "ja" nur bei einem Build aus unverändertem Git-Stand (verteilen prüft das vor dem Kopieren) und mit gültiger
+    // Commit-ID: ohne Commit lässt sich "sauber" nicht belegen
+    sauber: roh.sauber === "ja" && commit !== UNBEKANNT,
   };
 }

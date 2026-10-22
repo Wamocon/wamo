@@ -14,9 +14,6 @@
 __ADRESSE__ {
 	__TLS__
 	encode zstd gzip
-	# Die Oberfläche wird nur gelesen. Alles andere (Server Actions, POST) gibt es nicht.
-	@schreibend not method GET HEAD
-	respond @schreibend "Methode nicht erlaubt" 405
 	request_body {
 		max_size 1KB
 	}
@@ -27,7 +24,14 @@ __ADRESSE__ {
 		Cross-Origin-Resource-Policy "same-origin"
 		__HSTS__
 	}
+	# Die Oberfläche wird nur gelesen. Alles andere (Server Actions, POST) gibt es nicht und wird abgewiesen, bevor ein
+	# Upstream erreicht wird. Die Reihenfolge steht in einem route-Block fest: Ohne ihn ordnet Caddy die handle-Blöcke der
+	# Include-Datei vor das respond, und POST käme durch (mit dem Rauchtest belegt).
 	# Welche Farbe (wamo-ui-blau oder wamo-ui-gruen) live ist, die Gesundheitsprobe und die Rückfallebene für statische Dateien
 	# stehen in der Include-Datei. Sie erzeugt wamo-ui-umschalten.sh; "caddy reload" schaltet um, nichts wird neu angelegt.
-	import /etc/caddy/kern/wamo-ui-aktiv.inc
+	route {
+		@schreibend not method GET HEAD
+		respond @schreibend "Methode nicht erlaubt" 405
+		import /etc/caddy/kern/wamo-ui-aktiv.inc
+	}
 }
