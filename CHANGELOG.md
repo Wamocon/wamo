@@ -8,7 +8,7 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ## [0.1.0] - 2026-10-22
 
-Grundlage des Protokolls: der Stand, auf dem alle Pakete (`ui`, `desktop`, `voice-core`, `host`, `geraete`) vor dem ersten Release stehen.
+Erstes Release: der Stand, auf dem alle Pakete (`ui`, `desktop`, `voice-core`, `host`, `geraete`) stehen.
 
 ### Hinzugefügt
 
@@ -22,7 +22,14 @@ Grundlage des Protokolls: der Stand, auf dem alle Pakete (`ui`, `desktop`, `voic
   und Anzeige des Kontingents.
 - Entwicklungsaufträge in einer Sandbox auf Sokrates-2 mit ECC und REA.
 - Geräte und Tunnel je Laptop, Teilen von Inhalten.
-- Eigener Supabase-Stack auf Sokrates-2 mit den Migrationen bis 0012 und der Prüfung der Rechte nach jedem Anwenden.
+- Eigener Supabase-Stack auf Sokrates-2 mit den Migrationen bis 0013 und der Prüfung der Rechte nach jedem Anwenden.
+- Einstellungsseite der Oberfläche mit Konto, Modellzugang, Verbrauch, Sprache, Darstellung, Geräten, Teilen und Info;
+  der Claude-Code-Token lässt sich dort auch ohne laufendes Gespräch hinterlegen, ein Schlüssel im Gesagten wird entfernt.
+- Stimme und Sprachverhalten: Stopp an der hörbaren Wortgrenze, Dämpfen beim Einwurf, Erkennung von Rückmeldelauten,
+  Echo-Modus und ein Messweg mit Hörproben (`scripts/wamo_stimme.py`).
+- Grundlagen der Selbstüberarbeitung (Konzept in `docs/selbstueberarbeitung.md`): Notanker, Gerüst des Release-Dienstes,
+  Migration 0013 für Anfragen und Freigaben mit Vier-Augen-Regel, Versionsskript sowie die Oberfläche in zwei Farben
+  (blau und grün) mit Umschalten ohne Lücke und Rückweg. Notanker und Release-Dienst sind noch nicht in Betrieb.
 
 [Unveröffentlicht]: https://github.com/Wamocon/wamo/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/Wamocon/wamo/releases/tag/v0.1.0
