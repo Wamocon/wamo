@@ -77,6 +77,7 @@ import threading
 import time
 from collections import namedtuple
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 VERSION = "5"
@@ -137,7 +138,9 @@ MAX_ZUGANG_BYTES = 2048
 ZUGANG_ERSATZ = b"[CLAUDE_ZUGANG]"
 MAX_SCHWAERZ_DATEI = 64 * 1024 * 1024  # größere Dateien unter claude/ werden gelöscht statt gelesen
 MAX_SCHWAERZ_DATEIEN = 5000
-MAX_KONTINGENT_EREIGNISSE = 200  # je Lauf; mehr gibt es nicht weiter (die Zeilen kommen aus der Sandbox)
+SCHWAERZ_ZEIT_S = 20.0  # Zeitbudget für das Schwärzen nach dem Lauf; danach gilt es als unvollständig
+KONTINGENT_ABSTAND_S = 2.0  # höchstens alle 2 Sekunden ein Ereignis kontingent (die Zeilen kommen aus der Sandbox)
+SK_ANT_RE = re.compile(rb"sk-ant-[A-Za-z0-9_-]{20,}")  # jeder Anthropic-Schlüssel in der Ausgabe, auch ein fremder
 MAX_COMMAND_CHARS = 300
 MAX_HEADER_BYTES = 256 * 1024
 MAX_TEXT_CHARS = 20000
@@ -180,16 +183,16 @@ class ZugangUngueltig(Abgewiesen):
 Kopf = namedtuple("Kopf", ("auftrag", "system", "modell", "repo", "zugang", "profil"))
 
 
-class ClaudeZugang(namedtuple("_ClaudeZugang", ("typ", "wert", "workspace", "profil"))):
+@dataclass(frozen=True, slots=True)
+class ClaudeZugang:
     """Persönlicher Claude-Zugang für einen Lauf: typ oauth | api, wert (Geheimnis!), workspace (nur api), profil.
-    Die Darstellung verbirgt den Wert, damit er auch bei einem versehentlichen Protokollieren nicht auftaucht."""
+    Der Wert fehlt in der Darstellung (repr=False) und ist weder iterierbar noch in JSON umwandelbar: ein
+    versehentliches Protokollieren zeigt ihn nicht."""
 
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        return f"ClaudeZugang(typ={self.typ!r}, wert=<verborgen>, profil={self.profil!r})"
-
-    __str__ = __repr__
+    typ: str
+    wert: str = field(repr=False)
+    workspace: str | None
+    profil: str | None
 
 
 class _Zeitueberschreitung(Exception):
@@ -307,6 +310,8 @@ def parse_header(raw: bytes) -> Kopf:
         raise Abgewiesen("Kopfzeile: zugang ungültig (folgt oder server)")
     if profil is not None and (not isinstance(profil, str) or not PROFIL_RE.fullmatch(profil)):
         raise Abgewiesen("Kopfzeile: profil ungültig")
+    if zugang == "folgt" and profil is None:  # sonst teilten sich alle persönlichen Zugänge eine Kennung in der Buchführung
+        raise Abgewiesen("Kopfzeile: profil fehlt bei zugang folgt")
     auftrag, system = data.get("auftrag"), data.get("system", "")
     if not isinstance(auftrag, str) or not isinstance(system, str):
         raise Abgewiesen("Kopfzeile: auftrag und system müssen Text sein")
@@ -358,9 +363,12 @@ def modell_waehlen(art: str, wunsch: str | None, typ: str) -> str:
 
 
 def serverzugang_erlaubt(geheim: dict[str, str]) -> bool:
-    """Darf ein Lauf ohne persönlichen Zugang den Claude-Zugang aus geheim.env nutzen? Standard ja (bisheriges Verhalten);
-    WAMO_SERVERZUGANG=aus schaltet das ab, sobald jedes Profil seinen eigenen Zugang hat."""
-    return (geheim.get("WAMO_SERVERZUGANG") or "an").strip().lower() not in ("aus", "nein", "0", "false", "off")
+    """Darf ein Lauf ohne persönlichen Zugang den Claude-Zugang aus geheim.env nutzen? Standard ja (bisheriges Verhalten,
+    auch für ältere Kerne ohne Feld zugang); WAMO_SERVERZUGANG=aus schaltet das ab, sobald jedes Profil seinen eigenen
+    Zugang hat. Fail-closed: jeder andere Wert als an/ja/1/true/on und jeder Tippfehler im Namen (WAMO_SERVER...) sperrt."""
+    if any(n.startswith("WAMO_SERVER") and n != "WAMO_SERVERZUGANG" for n in geheim):
+        return False
+    return (geheim.get("WAMO_SERVERZUGANG") or "an").strip().lower() in ("an", "ja", "1", "true", "on")
 
 
 def _clean(text: str) -> str:
@@ -2109,7 +2117,16 @@ def kontingent_modul():
     """Parser für rate_limit_event (kontingent.py aus /opt/wamo/waechter); None, wenn die Kopie fehlt."""
     try:
         return _modul("kontingent")
-    except ImportError:
+    except Exception:  # fehlt oder defekt: ohne Kontingent weiterlaufen, der Auftrag ist wichtiger
+        return None
+
+
+def kontingent_ereignis(modul, raw: bytes) -> dict | None:
+    """Ereignis kontingent aus einer Zeile von Claude Code (nur Felder der Allowlist) oder None. Die Zeile kommt aus der
+    Sandbox: was nicht passt, wirft nie, sondern ergibt None."""
+    try:
+        return modul.ereignis_aus_zeile(json.loads(raw))
+    except Exception:  # ungültiges JSON, zu tief verschachtelt, absurde Zahlen: ohne Ereignis weiter
         return None
 
 
@@ -2126,13 +2143,15 @@ def schwaerzungen(env: dict[str, str]) -> list[tuple[bytes, bytes]]:
 
 
 def schwaerzen(daten: bytes, ersetzungen: list[tuple[bytes, bytes]]) -> bytes:
+    """Ersetzt die Werte dieses Laufs wörtlich und danach alles, was wie ein Anthropic-Schlüssel aussieht."""
     for wert, ersatz in ersetzungen:
         daten = daten.replace(wert, ersatz)
-    return daten
+    return SK_ANT_RE.sub(ZUGANG_ERSATZ, daten) if b"sk-ant-" in daten else daten
 
 
-def _datei_schwaerzen(pfad: str, ordner: str, ersetzungen: list[tuple[bytes, bytes]]) -> bool:
-    """Eine reguläre Datei (ohne Link) schwärzen. True, wenn sie geändert oder, weil nicht prüfbar, gelöscht wurde."""
+def _datei_schwaerzen(pfad: str, ordner: str, ersetzungen: list[tuple[bytes, bytes]]) -> str:
+    """Eine reguläre Datei (ohne Link) schwärzen. Ergebnis: "unveraendert", "geschwaerzt", "entfernt" (nicht prüfbar, zu
+    groß oder nicht ersetzbar: fail-closed gelöscht) oder "offen" (weder geschwärzt noch gelöscht)."""
     flags = os.O_RDONLY | O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
     tmp = None
     try:
@@ -2140,7 +2159,7 @@ def _datei_schwaerzen(pfad: str, ordner: str, ersetzungen: list[tuple[bytes, byt
         try:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
-                return False
+                return "unveraendert"
             if st.st_size > MAX_SCHWAERZ_DATEI:
                 raise OSError("zu groß")
             with os.fdopen(fd, "rb", closefd=False) as f:
@@ -2149,13 +2168,13 @@ def _datei_schwaerzen(pfad: str, ordner: str, ersetzungen: list[tuple[bytes, byt
             os.close(fd)
         neu = schwaerzen(daten, ersetzungen)
         if neu == daten:
-            return False
+            return "unveraendert"
         tmp_fd, tmp = tempfile.mkstemp(dir=ordner, prefix=".schwaerzen.")
         with os.fdopen(tmp_fd, "wb") as f:
             f.write(neu)
         os.chmod(tmp, stat.S_IMODE(st.st_mode))
         os.replace(tmp, pfad)
-        return True
+        return "geschwaerzt"
     except OSError:
         # nicht lesbar, zu groß oder nicht ersetzbar: fail-closed, die Datei wird entfernt (Sitzungsdaten sind nur
         # eine Zugabe für --resume, ein Zugangswert darf nicht überleben)
@@ -2164,26 +2183,65 @@ def _datei_schwaerzen(pfad: str, ordner: str, ersetzungen: list[tuple[bytes, byt
         try:
             os.unlink(pfad)
         except OSError:
-            pass
-        return True
+            return "offen"
+        return "entfernt"
 
 
-def zugang_aus_dateien_entfernen(wurzel: Path, ersetzungen: list[tuple[bytes, bytes]]) -> int:
+def zugang_aus_dateien_entfernen(wurzel: Path, ersetzungen: list[tuple[bytes, bytes]]) -> tuple[int, int]:
     """Schwärzt Zugangswerte in allen Dateien unter wurzel (der Konfigordner claude/ des Auftrags mit den Sitzungen
     für --resume): dort landet ein Wert, den der Agent trotz Sperre ausgibt, als Werkzeugergebnis. Läuft nach dem Ende
-    der Sandbox, ohne Links zu folgen (nur reguläre Dateien, O_NOFOLLOW), mit Grenzen für Zahl und Größe. Liefert die
-    Zahl der geänderten Dateien."""
+    der Sandbox, ohne Links zu folgen (nur reguläre Dateien, O_NOFOLLOW), mit Grenzen für Zahl und Zeit. Liefert
+    (geändert, offen): offen zählt alles, was nicht geprüft oder nicht bereinigt werden konnte (nicht lesbare Ordner,
+    Dateien, die sich weder schwärzen noch löschen ließen, Überschreiten der Grenzen)."""
     if not ersetzungen or wurzel.is_symlink() or not wurzel.is_dir():
-        return 0
-    geaendert = geprueft = 0
-    for ordner, unterordner, dateien in os.walk(wurzel, followlinks=False):
+        return 0, 0
+    geaendert = offen = geprueft = 0
+    ende = time.monotonic() + SCHWAERZ_ZEIT_S
+
+    def fehler(_e: OSError) -> None:
+        nonlocal offen
+        offen += 1
+    for ordner, unterordner, dateien in os.walk(wurzel, followlinks=False, onerror=fehler):
         unterordner[:] = [d for d in unterordner if not os.path.islink(os.path.join(ordner, d))]
         for name in dateien:
             geprueft += 1
-            if geprueft > MAX_SCHWAERZ_DATEIEN:
-                return geaendert
-            geaendert += _datei_schwaerzen(os.path.join(ordner, name), ordner, ersetzungen)
-    return geaendert
+            if geprueft > MAX_SCHWAERZ_DATEIEN or time.monotonic() > ende:
+                return geaendert, offen + 1
+            ergebnis = _datei_schwaerzen(os.path.join(ordner, name), ordner, ersetzungen)
+            if ergebnis in ("geschwaerzt", "entfernt"):
+                geaendert += 1
+            elif ergebnis == "offen":
+                offen += 1
+    return geaendert, offen
+
+
+def _baum_entfernen(pfad: Path) -> None:
+    """Entfernt einen Ordner samt Inhalt, auch wenn die Sandbox Rechte entzogen hat (ohne Links zu folgen)."""
+    import shutil
+
+    def frei(funktion, p, _exc):
+        try:
+            os.chmod(os.path.dirname(p), 0o700)
+            os.chmod(p, 0o700)
+            funktion(p)
+        except OSError:
+            pass
+    if pfad.is_dir() and not pfad.is_symlink():
+        shutil.rmtree(pfad, onerror=frei)
+
+
+def zugang_aufraeumen(jobdir: Path, job: str, ersetzungen: list[tuple[bytes, bytes]]) -> None:
+    """Nach dem Lauf: Zugangswerte aus claude/ schwärzen. Bleibt etwas offen, gehen die Sitzungsdaten (projects/)
+    verloren statt den Wert zu behalten; das Audit nennt nur Zahlen. Wirft nie."""
+    try:
+        geaendert, offen = zugang_aus_dateien_entfernen(jobdir / "claude", ersetzungen)
+        if offen:
+            _baum_entfernen(jobdir / "claude" / "projects")
+            log(f"schwaerzen_unvollstaendig {job}: {offen} offen, Sitzungsdaten entfernt")
+        elif geaendert:
+            log(f"schwaerzen {job}: {geaendert} Dateien unter claude/")
+    except Exception as e:  # noqa: BLE001 (Aufräumen darf den Abschluss des Auftrags nie verhindern)
+        log(f"schwaerzen {job} FEHLER {type(e).__name__}")
 
 
 def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> int:
@@ -2271,11 +2329,12 @@ def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> i
                 if gh_token is not None:
                     env = sandbox_env(art, geheim, app_modus=True, gh_token=gh_token, zugang=zugang)
                 log(f"start {job} {projekt} {art} {'fortsetzung' if session else 'neu'} modell={modell} "
-                    f"zugaenge={','.join(zugaenge)} github={github} repo={repo or '-'} claude={quelle}", pflicht=True)
+                    f"zugaenge={','.join(zugaenge)} github={github} repo={repo or '-'} claude={quelle} "
+                    f"profil={kopf.profil or '-'}", pflicht=True)
                 code = _ausfuehren(argv, env, auftrag, jobdir, job, projekt, art)
         except GithubAppFehler as e:
             return _start_abgelehnt(jobdir, job, projekt, art, str(e))
-    del gehalten, zugang, env  # erst jetzt frei (Prozessende gibt sie ohnehin frei); der Zugang wird nicht aufbewahrt
+    del gehalten  # erst jetzt frei (Prozessende gibt sie ohnehin frei)
     return code
 
 
@@ -2373,14 +2432,16 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
     ersetzungen = schwaerzungen(env)
     kontingent = kontingent_modul()
     kontingent_zuletzt: list | None = None
-    kontingent_zahl = 0
+    kontingent_ungesendet: dict | None = None
+    kontingent_gesendet = float("-inf")
     verworfen = 0
     # Der try-Block beginnt vor dem Start: ein Signal ab hier stoppt immer auch die Sandbox, selbst wenn es
     # zwischen Popen und dem ersten Befehl danach eintrifft
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=env, cwd="/", start_new_session=True)
-        threading.Thread(target=stderr_sichern, daemon=True).start()
+        stderr_thread = threading.Thread(target=stderr_sichern, daemon=True)
+        stderr_thread.start()
         threading.Thread(target=lebenslinie, daemon=True).start()
         threading.Thread(target=egress_wache, daemon=True).start()
         try:
@@ -2412,26 +2473,29 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
             if not emit_raw(ausgabe):
                 stoppen("verlassen")
                 break
-            if kontingent is not None and b'"rate_limit_event"' in raw and kontingent_zahl < MAX_KONTINGENT_EREIGNISSE:
+            if kontingent is not None and b'"rate_limit_event"' in raw:
                 # Limits des Abos: die Zeile kommt aus der Sandbox, also nur Felder der Allowlist und mit Wertebereich;
-                # eigene Zeile vom Typ wamo (die der Sandbox werden verworfen). Unveränderte Werte nicht wiederholen.
-                try:
-                    ereignis = kontingent.ereignis_aus_zeile(json.loads(raw))
-                except (ValueError, RecursionError):
-                    ereignis = None
+                # eigene Zeile vom Typ wamo (die der Sandbox werden verworfen). Unveränderte Werte nicht wiederholen,
+                # höchstens ein Ereignis alle KONTINGENT_ABSTAND_S; der letzte Stand kommt nach der Schleife nach.
+                ereignis = kontingent_ereignis(kontingent, raw)
                 if ereignis is not None and ereignis["limits"] != kontingent_zuletzt:
                     kontingent_zuletzt = ereignis["limits"]
-                    kontingent_zahl += 1
-                    emit(ereignis)
+                    kontingent_ungesendet = ereignis
+                if kontingent_ungesendet is not None and time.monotonic() - kontingent_gesendet >= KONTINGENT_ABSTAND_S:
+                    emit(kontingent_ungesendet)
+                    kontingent_ungesendet, kontingent_gesendet = None, time.monotonic()
         rc = proc.wait()
-        zugang_aus_dateien_entfernen(jobdir / "claude", ersetzungen)
+        stderr_thread.join(timeout=5)  # das Protokoll des Auftrags ist vollständig, bevor es geprüft wird
+        if kontingent_ungesendet is not None:
+            emit(kontingent_ungesendet)  # der letzte Stand gehört dazu, auch wenn der Abstand noch nicht um war
+        zugang_aufraeumen(jobdir, job, ersetzungen)
     except BaseException:
         # Signal (_Beendet) oder Fehler im Dispatcher: die Sandbox nie unbeobachtet weiterlaufen lassen; der
         # Aufrufer widerruft danach ein GitHub-Token (finally in github_token_fuer_lauf)
         with _signale(signal.SIG_IGN):  # ein zweites SIGTERM darf das Stoppen der Sandbox nicht unterbrechen
             stoppen("intern")
             freigabe.stop()
-            zugang_aus_dateien_entfernen(jobdir / "claude", ersetzungen)
+            zugang_aufraeumen(jobdir, job, ersetzungen)
             try:
                 _status(jobdir, job, projekt, art, ende=int(time.time()), ergebnis="abgebrochen", code=None)
             except OSError:

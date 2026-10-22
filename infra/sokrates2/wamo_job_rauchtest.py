@@ -947,7 +947,7 @@ ho=$(printf %s "$t" | sha256sum | cut -c1-64); ha=$(printf %s "$a" | sha256sum |
 hh=$(printf %s "${ANTHROPIC_CUSTOM_HEADERS:-}" | sha256sum | cut -c1-64)
 w=nein; [ -e /etc/wamo ] && w=ja
 printf '{"type":"rauchtest","oauth":"%s","api":"%s","header":"%s","modell":"%s","etc_wamo":"%s"}\n' "$ho" "$ha" "$hh" "$1" "$w"
-printf '{"type":"assistant","text":"Wert: %s und %s"}\n' "$t" "$a"
+printf '{"type":"assistant","text":"Wert: %s und %s und fremd sk-ant-api03-FREMD0Rauchtest0Fremd0Rauchtest"}\n' "$t" "$a"
 mkdir -p /srv/wamo/.claude/projects/x && printf '%s %s' "$t" "$a" > /srv/wamo/.claude/projects/x/s.jsonl
 printf 'Fehlerausgabe %s %s\n' "$t" "$a" >&2
 sleep "$2"
@@ -1112,6 +1112,7 @@ def token_attrappe() -> None:
         pruefe("Persönlicher Zugang: der Wert steht nirgends (Ausgabe, Audit, Auftragsordner, Protokoll, Prozessliste), "
                "[CLAUDE_ZUGANG] an seiner Stelle",
                not fundstellen(oauth, jobdir, text, audit, lauflog) and not argv_funde and "[CLAUDE_ZUGANG]" in text
+               and "FREMD0Rauchtest" not in text  # auch ein fremder Anthropic-Schlüssel in der Ausgabe wird geschwärzt
                and "[CLAUDE_ZUGANG]" in lauflog and sitzung.is_file() and "[CLAUDE_ZUGANG]" in sitzung.read_text()
                and "claude=persoenlich-oauth" in audit,
                f"Funde {fundstellen(oauth, jobdir, text, audit, lauflog)}, argv {argv_funde}, Sitzungsdatei "
@@ -1153,15 +1154,22 @@ def token_attrappe() -> None:
 
         # 4. fail-closed bei kaputtem Format: nichts startet, der Wert steht nirgends
         kaputt = "sk-ant-api03-Rauchtest" + stempel  # api-Format, aber als oauth übergeben
-        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt"}, zeile=(json.dumps({"typ": "oauth", "wert": kaputt}) + "\n").encode())
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"},
+                                        zeile=(json.dumps({"typ": "oauth", "wert": kaputt}) + "\n").encode())
         pruefe("Kaputtes Format: Start abgewiesen (Code 2, Ereignis zugang_ungueltig), Sandbox nicht gestartet, Wert nirgends",
                rc == D.EXIT_ABGEWIESEN and ereignisse(z) == ["zugang_ungueltig"] and not pruefung(z)
                and not fundstellen(kaputt, jobdir, text), f"rc {rc}, Ereignisse {ereignisse(z)}")
         for beispiel, zeile_ in (("kein JSON", b"das ist kein json\n"), ("fehlende Zeile", None),
                                  ("zusätzliches Feld", (json.dumps({"typ": "oauth", "wert": oauth, "x": 1}) + "\n").encode())):
-            rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt"}, zeile=zeile_)
+            rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt", "profil": "1a2b3c4d"}, zeile=zeile_)
             pruefe(f"Zugangszeile ungültig ({beispiel}): Code 2, nichts gestartet", rc == D.EXIT_ABGEWIESEN and not pruefung(z)
                    and "zugang_ungueltig" in ereignisse(z) and not fundstellen(oauth, jobdir, text), f"rc {rc}, {ereignisse(z)}")
+
+        rc, z, text, jobdir, job = lauf(kopf_extra={"zugang": "folgt"},
+                                        zeile=(json.dumps({"typ": "oauth", "wert": oauth}) + "\n").encode())
+        pruefe("Zugang ohne Profilkennung in der Kopfzeile: abgewiesen (Code 2), nichts gestartet",
+               rc == D.EXIT_ABGEWIESEN and not pruefung(z) and not fundstellen(oauth, jobdir, text),
+               f"rc {rc}, {ereignisse(z)}")
 
         # 5. Wiederholung (nach approve oder Fortsetzung): der Dispatcher hat nichts aufbewahrt
         wiederholt = uuid.uuid4().hex[:16]

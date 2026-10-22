@@ -88,7 +88,10 @@ from werkzeugkarte import AUFTRAGSARTEN, KARTEN, MODELLE_ERLAUBT, anweisungsbloc
 
 try:  # liefert der Modellzugang (Karte "Modellzugang"): {"typ": "oauth" | "api", "wert": str[, "workspace"]} oder None
     from modellzugang import claude_code_zugang_fuer
-except ImportError:  # noch nicht vorhanden: kein persönlicher Zugang (Tests ersetzen die Funktion)
+except ImportError as _fehler:  # noch nicht vorhanden: kein persönlicher Zugang (Tests ersetzen die Funktion)
+    logger.warning("modellzugang.claude_code_zugang_fuer fehlt ({}): Aufträge starten nur mit dem Serverzugang des "
+                   "vorgesehenen Profils", _fehler.__class__.__name__)
+
     def claude_code_zugang_fuer(user_id):
         return None
 
@@ -265,7 +268,7 @@ async def persoenlicher_zugang(user_id: object) -> dict | None:
     """Eigener Claude-Zugang des Profils für Claude Code, frisch für jeden Lauf: {"typ": "oauth" | "api", "wert": str,
     ["workspace": str]} oder None (kein Zugang, ein Fehler beim Lesen oder eine Form, die nicht passt). Der Wert wird nie
     geloggt; bei einem Fehler steht nur die Art der Ausnahme im Log."""
-    if not user_id:
+    if not user_id or not normalize_uuid(user_id):
         return None
     try:
         zugang = claude_code_zugang_fuer(user_id)
@@ -578,11 +581,15 @@ class DevAgent:
         self._proc: asyncio.subprocess.Process | None = None
         self.on_result = None  # optional: Rückruf, wenn ein Ergebnis eintrifft (z. B. für M4 im Bot)
         # Kontingent des Max-Abos dieses Profils (kontingent.py); None = noch nicht aus der Datenbank geladen
-        self._kontingent: list[dict] | None = None
+        self._kontingent: list[dict] = []
         self._kontingent_stand: str | None = None
+        self._kontingent_geladen = False  # der gespeicherte Stand ist eingelesen (sonst wird nichts gespeichert)
+        self._kontingent_lock = asyncio.Lock()
         self._kontingent_offen = False  # neue Beobachtung, noch nicht gespeichert
-        self._kontingent_gesendet = 0.0
-        self._kontingent_gespeichert = 0.0
+        self._kontingent_ungesendet = False  # neue Beobachtung, noch nicht an die Oberfläche geschickt
+        self._kontingent_gesendet = float("-inf")
+        self._kontingent_gespeichert = float("-inf")
+        self._eigener_zugang = False  # der laufende Lauf nutzt den Zugang des Profils (nur dann gilt sein Kontingent)
 
     def attach(self, pipeline_task) -> None:
         self._task = pipeline_task
@@ -857,13 +864,14 @@ class DevAgent:
             job.ereignisse = {}
             job.status = KEIN_ZUGANG_STATUS
             job.steps.append("Kein Claude-Zugang für dieses Profil. In der Karte Modellzugang den Max-Token "
-                             "(claude setup-token) oder einen API-Schlüssel hinterlegen, dann den Auftrag neu starten.")
+                             "(claude setup-token) oder einen API-Schlüssel hinterlegen und den Auftrag danach neu stellen.")
             logger.warning("Entwicklungsauftrag {} nicht gestartet: kein Claude-Zugang für Profil {}", job.id,
                            str(getattr(self._memory, "user_id", None) or "?")[:8])
             await self._canvas(job)
             await self._announce(job)
             return
         zugang_kopf, zugang_zeile = zugang
+        self._eigener_zugang = zugang_kopf.get("zugang") == "folgt"
         job.ereignisse = {}
         job.status = "läuft"
         job.steps.append("Weiter nach Freigabe" if resume else f"Start auf Sokrates-2 in {job.projekt} ({KARTEN[job.art].titel})")
@@ -919,7 +927,7 @@ class DevAgent:
             if proc is not None and proc.returncode not in (0, None) and stderr_tail:
                 logger.warning("Sokrates-2 meldete: {}", " | ".join(stderr_tail)[-1500:])
 
-        await self._kontingent_speichern(erzwingen=True)
+        await self._kontingent_abschliessen()
         await self._collect_pending(job, None)
         await self._canvas(job)
         await self._announce(job)
@@ -929,44 +937,58 @@ class DevAgent:
         Eigener Zugang des Profils (Max-Token oder API-Schlüssel) hat Vorrang. Ohne ihn gilt der Zugang aus geheim.env nur,
         wenn das Profil dafür vorgesehen ist (serverzugang_erlaubt)."""
         user_id = getattr(self._memory, "user_id", None)
+        kennung = normalize_uuid(user_id) if user_id else None
+        if not kennung:
+            return None
+        profil = kennung.replace("-", "")[:8]  # nur zur Zuordnung im Audit und in der Buchführung des Dispatchers
         eigener = await persoenlicher_zugang(user_id)
         if eigener is not None:
-            profil = (normalize_uuid(user_id) or "").replace("-", "")[:8]
             return ({"zugang": "folgt", "profil": profil},
                     (json.dumps(eigener, ensure_ascii=False) + "\n").encode("utf-8"))
         if serverzugang_erlaubt(user_id):
-            return {"zugang": "server"}, None
+            return {"zugang": "server", "profil": profil}, None
         return None
 
     # ---------- Kontingent des Max-Abos ----------
     async def _kontingent_laden(self) -> None:
-        """Gespeicherten Stand des Profils einmal je Sitzung aus der Datenbank holen (Fehler: unbekannt)."""
-        if self._kontingent is not None:
+        """Gespeicherten Stand des Profils einmal je Sitzung aus der Datenbank holen und unter die Beobachtungen legen,
+        die inzwischen eingetroffen sind. Schlägt es fehl, bleibt der Stand ungeladen (nächster Versuch beim nächsten
+        Aufruf) und es wird nichts gespeichert, damit nichts Bekanntes überschrieben wird."""
+        if self._kontingent_geladen:
             return
-        self._kontingent, self._kontingent_stand = [], None
-        user_id, db = getattr(self._memory, "user_id", None), _kontingent_db()
-        if not user_id or db is None:
-            return
-        try:
-            self._kontingent, self._kontingent_stand = await kt.laden(db, user_id)
-        except Exception as e:  # noqa: BLE001 (Anzeige ist eine Zugabe: Tabelle fehlt, Datenbank weg)
-            logger.warning("Kontingent von Profil {} nicht lesbar ({})", str(user_id)[:8], type(e).__name__)
+        async with self._kontingent_lock:
+            if self._kontingent_geladen:
+                return
+            user_id, db = getattr(self._memory, "user_id", None), _kontingent_db()
+            if not user_id or db is None:
+                self._kontingent_geladen = True  # nichts zu laden, und es gibt auch nichts zu speichern
+                return
+            try:
+                alt, stand = await kt.laden(db, user_id)
+            except Exception as e:  # noqa: BLE001 (Anzeige ist eine Zugabe: Tabelle fehlt, Datenbank weg)
+                logger.warning("Kontingent von Profil {} nicht lesbar ({})", str(user_id)[:8], type(e).__name__)
+                return
+            self._kontingent = kt.zusammenfuehren(alt, self._kontingent)
+            self._kontingent_stand = self._kontingent_stand or stand
+            self._kontingent_geladen = True
 
     async def _kontingent_senden(self) -> None:
         """Servernachricht kontingent: nur geprüfte Felder (kt.nachricht); ohne Daten ist der Zustand unbekannt."""
         self._kontingent_gesendet = time.monotonic()
-        await self._send(kt.nachricht(self._kontingent or [], self._kontingent_stand))
+        self._kontingent_ungesendet = False
+        await self._send(kt.nachricht(self._kontingent, self._kontingent_stand))
 
     async def _kontingent_aufnehmen(self, ereignis: dict) -> None:
         """Ereignis kontingent des Dispatchers: erneut geprüft, über den bekannten Stand gelegt, an die Oberfläche
-        geschickt (höchstens alle 2 s) und gespeichert (höchstens alle 60 s, am Laufende immer)."""
+        geschickt (höchstens alle 2 s) und gespeichert (höchstens alle 60 s, am Laufende immer). Nur für Läufe mit dem
+        eigenen Zugang des Profils: das Kontingent des Serverzugangs gehört nicht in dessen Zeile."""
         limits = kt.pruefen_ereignis(ereignis)
-        if not limits:
+        if not limits or not self._eigener_zugang:
             return
         await self._kontingent_laden()
-        self._kontingent = kt.zusammenfuehren(self._kontingent or [], limits)
+        self._kontingent = kt.zusammenfuehren(self._kontingent, limits)
         self._kontingent_stand = kt.jetzt_iso()
-        self._kontingent_offen = True
+        self._kontingent_offen = self._kontingent_ungesendet = True
         if time.monotonic() - self._kontingent_gesendet >= KONTINGENT_SENDEN_SECS:
             await self._kontingent_senden()
         await self._kontingent_speichern()
@@ -976,18 +998,25 @@ class DevAgent:
             return
         if not erzwingen and time.monotonic() - self._kontingent_gespeichert < KONTINGENT_SPEICHERN_SECS:
             return
-        if erzwingen:
-            await self._kontingent_senden()  # der letzte Stand des Laufs geht immer an die Oberfläche
+        await self._kontingent_laden()
+        if not self._kontingent_geladen:
+            return  # Stand unlesbar: nicht speichern (sonst gingen die bekannten Limits verloren); später erneut
         user_id, db = getattr(self._memory, "user_id", None), _kontingent_db()
         if not user_id or db is None:
             self._kontingent_offen = False
             return
         self._kontingent_gespeichert = time.monotonic()
         try:
-            await kt.speichern(db, user_id, self._kontingent or [])
+            await kt.speichern(db, user_id, self._kontingent)
             self._kontingent_offen = False
         except Exception as e:  # noqa: BLE001
             logger.warning("Kontingent von Profil {} nicht gespeichert ({})", str(user_id)[:8], type(e).__name__)
+
+    async def _kontingent_abschliessen(self) -> None:
+        """Am Ende eines Laufs (oder beim Auflegen): der letzte Stand geht immer an die Oberfläche und in die Datenbank."""
+        if self._kontingent_ungesendet:
+            await self._kontingent_senden()
+        await self._kontingent_speichern(erzwingen=True)
 
     async def _read_stream(self, job: Job) -> None:
         last_canvas = 0.0
@@ -1156,6 +1185,8 @@ class DevAgent:
             await _kill_tree(self._proc)
         if self._ort == "sokrates2" and running_job is not None:
             await self._ssh_kurz(["cancel", running_job.id], timeout=10)
+        with contextlib.suppress(Exception, asyncio.TimeoutError):  # der Abbruch unten lässt das Endspeichern des Laufs aus
+            await asyncio.wait_for(self._kontingent_abschliessen(), 5)
         if self._running and not self._running.done():
             self._running.cancel()
 

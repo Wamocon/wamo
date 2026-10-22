@@ -231,22 +231,24 @@ class FakeKontingentDb:
 
     configured = True
 
-    def __init__(self, fehler: Exception | None = None):
+    def __init__(self, fehler_lesen: Exception | None = None, fehler_schreiben: Exception | None = None):
         self.zeilen: dict[str, dict] = {}
         self.anweisungen: list[tuple[str, tuple]] = []
-        self.fehler = fehler
+        self.fehler_lesen, self.fehler_schreiben = fehler_lesen, fehler_schreiben
+        self.lesezugriffe = 0
 
     def t(self, name: str) -> str:
         return f"wamo_test.{name}"
 
     async def fetchrow(self, sql: str, *args):
-        if self.fehler:
-            raise self.fehler
+        self.lesezugriffe += 1
+        if self.fehler_lesen:
+            raise self.fehler_lesen
         return self.zeilen.get(args[0])
 
     async def execute(self, sql: str, *args):
-        if self.fehler:
-            raise self.fehler
+        if self.fehler_schreiben:
+            raise self.fehler_schreiben
         self.anweisungen.append((sql, args))
         self.zeilen[args[0]] = {"kontingent": args[1], "kontingent_stand": datetime.now(timezone.utc)}
 
@@ -643,7 +645,7 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         zeilen_ = proc.stdin.data.decode("utf-8").splitlines()
         self.assertEqual(len(zeilen_), 1)  # keine zweite Zeile
         self.assertEqual(json.loads(zeilen_[0])["zugang"], "server")
-        self.assertNotIn("profil", json.loads(zeilen_[0]))
+        self.assertEqual(json.loads(zeilen_[0])["profil"], "0f6c2b1e")  # zur Zuordnung im Audit, auch beim Serverzugang
         self.assertEqual(job.status, "fertig")
         for user, soll in ((NIKO, True), (NIKO.upper(), True), (KOLLEGIN, False), (None, False), ("", False), ("kein uuid", False)):
             self.assertIs(dev_agent.serverzugang_erlaubt(user), soll, user)
@@ -693,11 +695,17 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
                 {"type": "wamo", "ereignis": "kontingent", "limits": [{"art": "geheim", "prozent": 1, "x": OAUTH_TEST}]},
                 {"type": "wamo", "ereignis": "ende", "ergebnis": "fertig", "code": 0}]
 
+    async def eigener_lauf(self, db, zeilen=None, user=KOLLEGIN):
+        """Ein Lauf mit dem eigenen Zugang des Profils (nur dann gilt das Kontingent für das Profil)."""
+        self.memory.user_id = user
+        self.start_procs.append(FakeProc(zeilen if zeilen is not None else self.kontingent_zeilen()))
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=db), \
+             mock.patch.object(dev_agent, "claude_code_zugang_fuer", return_value={"typ": "oauth", "wert": OAUTH_TEST}):
+            return await self.prepare_and_start()
+
     async def test_kontingent_wird_geprueft_gespeichert_und_gesendet(self):
         db = FakeKontingentDb()
-        self.start_procs.append(FakeProc(self.kontingent_zeilen()))
-        with mock.patch.object(dev_agent, "_kontingent_db", return_value=db):
-            job = await self.prepare_and_start()
+        job = await self.eigener_lauf(db)
         nachrichten = [m for m in self.task.messages() if m.get("type") == "kontingent"]
         self.assertTrue(nachrichten)
         letzte = nachrichten[-1]
@@ -705,12 +713,47 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e["art"] for e in letzte["limits"]], ["sitzung", "woche", "fable"])  # die gefälschte Art fiel weg
         self.assertEqual(set(letzte), {"type", "zustand", "stand", "limits"})
         self.assertNotIn(OAUTH_TEST, json.dumps(nachrichten))
-        gespeichert = json.loads(db.zeilen[NIKO]["kontingent"])
+        gespeichert = json.loads(db.zeilen[KOLLEGIN]["kontingent"])
         self.assertEqual([e["art"] for e in gespeichert], ["sitzung", "woche", "fable"])
-        self.assertTrue(db.anweisungen)
+        self.assertLessEqual(len(db.anweisungen), 2)  # gedrosselt: das erste Ereignis und der Stand am Laufende
         self.assertFalse(any("kontingent" in s.lower() for s in job.steps))  # kein Schritt im Auftrag
         self.assertNotIn("kontingent", job.ereignisse)
         self.assertNotIn("42", " ".join(self.task.llm_texts()))  # das Sprachmodell bekommt nur die feste Meldung
+
+    async def test_der_letzte_stand_eines_laufs_geht_immer_an_die_oberflaeche(self):
+        """Die Drosselung (2 s) darf nie den letzten Stand verschlucken."""
+        db = FakeKontingentDb()
+        ereignisse = self.kontingent_zeilen(prozent=10.0)[1:2] + self.kontingent_zeilen(prozent=55.0)[1:2]
+        await self.eigener_lauf(db, [{"type": "wamo", "ereignis": "selbsttest_ok"}, *ereignisse,
+                                     {"type": "wamo", "ereignis": "ende", "ergebnis": "fertig", "code": 0}])
+        nachrichten = [m for m in self.task.messages() if m.get("type") == "kontingent"]
+        self.assertEqual(nachrichten[-1]["limits"][0]["prozent"], 55.0)
+        self.assertEqual(json.loads(db.zeilen[KOLLEGIN]["kontingent"])[0]["prozent"], 55.0)
+
+    async def test_serverzugang_verfaelscht_das_kontingent_des_profils_nicht(self):
+        db = FakeKontingentDb()
+        db.zeilen[NIKO] = {"kontingent": json.dumps([{"art": "woche", "prozent": 1.0, "endet": "2096-10-26T09:00:00Z"}]),
+                           "kontingent_stand": datetime(2026, 10, 22, 11, 59, tzinfo=timezone.utc)}
+        self.start_procs.append(FakeProc(self.kontingent_zeilen()))
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=db):
+            await self.prepare_and_start()  # NIKO ohne eigenen Zugang: Lauf mit dem Zugang aus geheim.env
+        self.assertEqual(db.anweisungen, [])  # dessen Limits gehören nicht in die Zeile des Profils
+        self.assertEqual([m for m in self.task.messages() if m.get("type") == "kontingent"], [])
+
+    async def test_unlesbarer_gespeicherter_stand_wird_nicht_ueberschrieben(self):
+        db = FakeKontingentDb(fehler_lesen=RuntimeError("Tabelle fehlt"))
+        await self.eigener_lauf(db)
+        self.assertEqual(db.anweisungen, [])  # lieber nichts speichern als bekannte Limits zu verlieren
+        self.assertTrue([m for m in self.task.messages() if m.get("type") == "kontingent"])  # die Anzeige läuft trotzdem
+        # Lesen klappt später: der nächste Lauf holt den Stand nach und speichert dann
+        db.fehler_lesen = None
+        db.zeilen[KOLLEGIN] = {"kontingent": json.dumps([{"art": "opus", "prozent": 20.0, "endet": "2096-10-26T09:00:00Z"}]),
+                               "kontingent_stand": datetime(2026, 10, 22, 11, 59, tzinfo=timezone.utc)}
+        self.start_procs.append(FakeProc(self.kontingent_zeilen()))
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=db), \
+             mock.patch.object(dev_agent, "claude_code_zugang_fuer", return_value={"typ": "oauth", "wert": OAUTH_TEST}):
+            await self.prepare_and_start()
+        self.assertIn("opus", [e["art"] for e in json.loads(db.zeilen[KOLLEGIN]["kontingent"])])  # Bekanntes blieb erhalten
 
     async def test_kontingent_abfrage_ohne_lauf_und_ohne_daten(self):
         db = FakeKontingentDb()
@@ -722,15 +765,17 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
                            "kontingent_stand": datetime(2026, 10, 22, 11, 59, tzinfo=timezone.utc)}
         agent = dev_agent.DevAgent(memory=self.memory, auftraggeber="Erika")
         agent.attach(self.task)
+        zaehler = db.lesezugriffe
         with mock.patch.object(dev_agent, "_kontingent_db", return_value=db):
             await agent.on_client_message("kontingent", {})
             await agent.on_client_message("kontingent", {})  # zweiter Aufruf liest nicht noch einmal
+        self.assertEqual(db.lesezugriffe - zaehler, 1)
         bekannt = [m for m in self.task.messages() if m.get("type") == "kontingent"][-1]
         self.assertEqual(bekannt["zustand"], "bekannt")
         self.assertEqual(bekannt["limits"], [{"art": "woche", "prozent": 55.5, "endet": "2096-10-26T09:00:00Z"}])
         self.assertEqual(bekannt["stand"], "2026-10-22T11:59:00Z")
         # ohne Datenbank oder bei einem Fehler: unbekannt, nie eine Ausnahme
-        kaputt = FakeKontingentDb(fehler=RuntimeError("Tabelle fehlt"))
+        kaputt = FakeKontingentDb(fehler_lesen=RuntimeError("Tabelle fehlt"))
         agent2 = dev_agent.DevAgent(memory=self.memory, auftraggeber="Erika")
         agent2.attach(self.task)
         with mock.patch.object(dev_agent, "_kontingent_db", return_value=kaputt):
@@ -743,11 +788,36 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m for m in self.task.messages() if m.get("type") == "kontingent"][-1]["zustand"], "unbekannt")
 
     async def test_kontingent_speicherfehler_stoert_den_auftrag_nicht(self):
-        self.start_procs.append(FakeProc(self.kontingent_zeilen()))
-        with mock.patch.object(dev_agent, "_kontingent_db", return_value=FakeKontingentDb(fehler=RuntimeError("weg"))):
-            job = await self.prepare_and_start()
+        job = await self.eigener_lauf(FakeKontingentDb(fehler_schreiben=RuntimeError("weg")))
         self.assertEqual(job.status, "fertig")
         self.assertTrue([m for m in self.task.messages() if m.get("type") == "kontingent"])  # Anzeige trotzdem
+
+    async def test_auflegen_sichert_den_letzten_stand(self):
+        db = FakeKontingentDb()
+        self.memory.user_id = KOLLEGIN
+        proc = FakeProc([{"type": "wamo", "ereignis": "selbsttest_ok"}, self.kontingent_zeilen()[1]], haengt=True)
+        self.start_procs.append(proc)
+        params = type("P", (), {})()
+        params.arguments = {"auftrag": "Lange Arbeit", "projekt": "rezepte-app", "art": "umsetzung"}
+        result = {}
+
+        async def cb(r):
+            result.update(r)
+        params.result_callback = cb
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=db), \
+             mock.patch.object(dev_agent, "claude_code_zugang_fuer", return_value={"typ": "oauth", "wert": OAUTH_TEST}):
+            await self.agent._vorbereiten(params)
+            await self.agent.on_client_message("auftrag_start", {"job": result["auftrag_id"], "entscheidung": "ja"})
+            for _ in range(100):  # warten, bis das Ereignis angekommen ist
+                if self.agent._kontingent:
+                    break
+                await asyncio.sleep(0.01)
+            await self.agent.close()  # Auflegen: der Lauf wird abgebrochen, der Stand soll trotzdem in die Datenbank
+            try:
+                await asyncio.wait_for(self.agent._running, 5)
+            except asyncio.CancelledError:
+                pass
+        self.assertEqual([e["art"] for e in json.loads(db.zeilen[KOLLEGIN]["kontingent"])], ["sitzung", "woche", "fable"])
 
     async def test_hangup_ends_remote_job(self):
         proc = FakeProc([{"type": "wamo", "ereignis": "selbsttest_ok"}], haengt=True)

@@ -33,6 +33,7 @@ LINUX = sys.platform.startswith("linux")
 def _load(name: str, datei: str):
     spec = importlib.util.spec_from_file_location(name, INFRA / datei)
     modul = importlib.util.module_from_spec(spec)
+    sys.modules[name] = modul  # nötig für @dataclass (löst Typen über sys.modules auf)
     spec.loader.exec_module(modul)
     return modul
 
@@ -1739,6 +1740,8 @@ class PersoenlicherZugangTests(unittest.TestCase):
             return json.dumps({"auftrag": "x", **extra}).encode() + b"\n"
         self.assertEqual(D.parse_header(kopf(zugang="folgt", profil="1a2b3c4d"))[4:], ("folgt", "1a2b3c4d"))
         self.assertEqual(D.parse_header(kopf(zugang="server"))[4:], ("server", None))
+        with self.assertRaises(D.Abgewiesen):  # ohne Kennung teilten sich alle persönlichen Zugänge eine Buchführung
+            D.parse_header(kopf(zugang="folgt"))
         for schlecht in ({"zugang": "ja"}, {"zugang": 1}, {"zugang": ["folgt"]}, {"profil": "xyz"}, {"profil": "1A2B3C4D"},
                          {"profil": "1a2b3c4d5"}, {"profil": 5}, {"zugangswert": OAUTH_WERT}, {"wert": OAUTH_WERT}):
             with self.subTest(schlecht=schlecht), self.assertRaises(D.Abgewiesen):
@@ -1802,8 +1805,11 @@ class PersoenlicherZugangTests(unittest.TestCase):
         self.assertTrue(D.serverzugang_erlaubt({}))
         for an in ("an", "ja", "AN", "1"):
             self.assertTrue(D.serverzugang_erlaubt({"WAMO_SERVERZUGANG": an}))
-        for aus in ("aus", "AUS", " nein ", "0", "false", "off"):
-            self.assertFalse(D.serverzugang_erlaubt({"WAMO_SERVERZUGANG": aus}))
+        for aus in ("aus", "AUS", " nein ", "0", "false", "off", "no", "disabled", "vielleicht", "an!"):
+            self.assertFalse(D.serverzugang_erlaubt({"WAMO_SERVERZUGANG": aus}), aus)  # alles Unbekannte sperrt
+        for tippfehler in ("WAMO_SERVERZUGAGN", "WAMO_SERVERZUGANG_", "WAMO_SERVER_ZUGANG"):
+            self.assertFalse(D.serverzugang_erlaubt({tippfehler: "aus"}), tippfehler)  # Tippfehler im Namen sperrt
+            self.assertFalse(D.serverzugang_erlaubt({tippfehler: "an", "WAMO_SERVERZUGANG": "an"}), tippfehler)
 
     def test_schwaerzen_und_dateien(self):
         ersetzungen = D.schwaerzungen({"CLAUDE_CODE_OAUTH_TOKEN": OAUTH_WERT, "ANTHROPIC_API_KEY": API_WERT,
@@ -1828,14 +1834,63 @@ class PersoenlicherZugangTests(unittest.TestCase):
             except (OSError, NotImplementedError):
                 pass  # Windows ohne Rechte für Links
             with mock.patch.object(D, "MAX_SCHWAERZ_DATEI", 200):
-                self.assertGreaterEqual(D.zugang_aus_dateien_entfernen(wurzel, ersetzungen), 2)  # Sitzung geschwärzt, große gelöscht
+                geaendert, offen = D.zugang_aus_dateien_entfernen(wurzel, ersetzungen)
+            self.assertGreaterEqual(geaendert, 2)  # Sitzung geschwärzt, große gelöscht
+            self.assertEqual(offen, 0)
+            self.assertEqual([n for n in os.listdir(wurzel / "projects" / "p") if n.startswith(".schwaerzen")], [])
             self.assertEqual(json.loads(sitzung.read_bytes().splitlines()[0]), {"tool_result": "TOKEN=[CLAUDE_ZUGANG]"})
             self.assertIn(b"zweite Zeile", sitzung.read_bytes())
             self.assertEqual((wurzel / "unberuehrt.txt").read_bytes(), b"nichts Geheimes")
             self.assertFalse(gross.exists())
             self.assertEqual(ausserhalb.read_bytes(), OAUTH_WERT.encode())  # Ziel eines Links bleibt unangetastet
-            self.assertEqual(D.zugang_aus_dateien_entfernen(wurzel, []), 0)
-            self.assertEqual(D.zugang_aus_dateien_entfernen(Path(tmp) / "gibt-es-nicht", ersetzungen), 0)
+            self.assertEqual(D.zugang_aus_dateien_entfernen(wurzel, []), (0, 0))
+            self.assertEqual(D.zugang_aus_dateien_entfernen(Path(tmp) / "gibt-es-nicht", ersetzungen), (0, 0))
+
+    def test_schwaerzen_erkennt_jeden_anthropic_schluessel_und_bleibt_sonst_still(self):
+        fremd = "sk-ant-api03-" + "FREMDER0schluessel" * 2  # nicht der Wert dieses Laufs, aber ein Schlüssel
+        ersetzungen = D.schwaerzungen({"CLAUDE_CODE_OAUTH_TOKEN": OAUTH_WERT})
+        text = f"a {fremd} b sk-ant-kurz c".encode()
+        self.assertEqual(D.schwaerzen(text, ersetzungen), b"a [CLAUDE_ZUGANG] b sk-ant-kurz c")
+        self.assertEqual(D.schwaerzen(b"nichts Besonderes", ersetzungen), b"nichts Besonderes")
+        self.assertEqual(D.schwaerzen(f"{fremd}".encode(), []), b"[CLAUDE_ZUGANG]")  # auch ganz ohne Wert des Laufs
+
+    def test_unvollstaendiges_schwaerzen_entfernt_die_sitzungsdaten(self):
+        ersetzungen = D.schwaerzungen({"CLAUDE_CODE_OAUTH_TOKEN": OAUTH_WERT})
+        with tempfile.TemporaryDirectory() as tmp:
+            jobdir = Path(tmp)
+            sitzung = jobdir / "claude" / "projects" / "p" / "s.jsonl"
+            sitzung.parent.mkdir(parents=True)
+            sitzung.write_bytes(f"TOKEN={OAUTH_WERT}".encode())
+            (jobdir / "claude" / "settings.json").write_text("{}")
+            zeilen_: list[str] = []
+            with mock.patch.object(D, "log", side_effect=lambda t, pflicht=False: zeilen_.append(t)):
+                D.zugang_aufraeumen(jobdir, JOB, ersetzungen)  # alles gut: geschwärzt, Sitzung bleibt
+                self.assertEqual(sitzung.read_text(), "TOKEN=[CLAUDE_ZUGANG]")
+                self.assertTrue(any("schwaerzen" in z and "unvollstaendig" not in z for z in zeilen_))
+                sitzung.write_bytes(f"TOKEN={OAUTH_WERT}".encode())
+                with mock.patch.object(D, "MAX_SCHWAERZ_DATEIEN", 0):  # Grenze überschritten: fail-closed
+                    D.zugang_aufraeumen(jobdir, JOB, ersetzungen)
+                self.assertFalse((jobdir / "claude" / "projects").exists())  # Sitzungsdaten sind weg, der Wert mit
+                self.assertTrue(any("schwaerzen_unvollstaendig" in z for z in zeilen_))
+                with mock.patch.object(D, "zugang_aus_dateien_entfernen", side_effect=RuntimeError("kaputt")):
+                    D.zugang_aufraeumen(jobdir, JOB, ersetzungen)  # wirft nie
+            self.assertNotIn(OAUTH_WERT, "\n".join(zeilen_))
+
+    def test_zugang_ist_kein_json_und_nicht_iterierbar(self):
+        z = D.ClaudeZugang("oauth", OAUTH_WERT, None, "1a2b3c4d")
+        with self.assertRaises(TypeError):
+            json.dumps(z)
+        with self.assertRaises(TypeError):
+            list(z)
+        self.assertNotIn(OAUTH_WERT, repr(z))
+
+    def test_kontingent_ereignis_nie_eine_ausnahme(self):
+        import kontingent
+        for roh in (b"kein json", b"[" * 5000, b'{"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": '
+                    b'{"five_hour": {"utilization": 1' + b"0" * 400 + b', "resetsAt": 1}}}}'):
+            self.assertIsNone(D.kontingent_ereignis(kontingent, roh))
+        self.assertIsNotNone(D.kontingent_ereignis(kontingent, json.dumps(
+            {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour"}}).encode()))
 
 
 class PersoenlicherZugangStartTests(unittest.TestCase):
@@ -1934,16 +1989,17 @@ class PersoenlicherZugangStartTests(unittest.TestCase):
 
     def test_modellwunsch_uebersteuert_nach_allowlist(self):
         for zugang in (zeile("oauth", OAUTH_WERT), zeile("api", API_WERT)):
-            argv = self.start({"zugang": "folgt", "modell": "claude-opus-5-5"}, zugang, job=uuid.uuid4().hex[:16])[1][0][0]
+            argv = self.start({"zugang": "folgt", "profil": "1a2b3c4d", "modell": "claude-opus-5-5"}, zugang,
+                              job=uuid.uuid4().hex[:16])[1][0][0]
             self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-5-5")
         with self.assertRaises(D.Abgewiesen):
-            self.start({"zugang": "folgt", "modell": "claude-irgendwas"}, zeile())
+            self.start({"zugang": "folgt", "profil": "1a2b3c4d", "modell": "claude-irgendwas"}, zeile())
         self.assertEqual(self.zeilen_gelesen, 0)  # ein Wunsch außerhalb der Allowlist scheitert, bevor etwas gelesen wird
 
     def test_ungueltiger_zugang_startet_nichts(self):
         for schlecht in (zeile("oauth", "sk-ant-api03-" + "A" * 40), b"kein json\n", zeile("oauth", OAUTH_WERT, extra="x")):
             self.ereignisse.clear()
-            code, aufrufe = self.start({"zugang": "folgt"}, schlecht)
+            code, aufrufe = self.start({"zugang": "folgt", "profil": "1a2b3c4d"}, schlecht)
             self.assertEqual(code, D.EXIT_ABGEWIESEN)
             self.assertEqual(aufrufe, [])
             self.assertEqual(self.ereignis_namen(), ["zugang_ungueltig"])
@@ -1952,7 +2008,8 @@ class PersoenlicherZugangStartTests(unittest.TestCase):
 
     def test_zeitlimit_der_zugangszeile_wird_abgewiesen(self):
         with mock.patch.object(D, "_zugangszeile_lesen", side_effect=D.ZugangUngueltig("Zugangszeile kam nicht rechtzeitig")), \
-             mock.patch.object(D, "_kopfzeile_lesen", return_value=b'{"auftrag": "x", "zugang": "folgt"}\n'):
+             mock.patch.object(D, "_kopfzeile_lesen",
+                               return_value=b'{"auftrag": "x", "zugang": "folgt", "profil": "1a2b3c4d"}\n'):
             self.assertEqual(D.cmd_start(JOB, "rezepte-app", "review"), D.EXIT_ABGEWIESEN)
         self.assertEqual(self.ereignis_namen(), ["zugang_ungueltig"])
 
@@ -1989,7 +2046,7 @@ class PersoenlicherZugangStartTests(unittest.TestCase):
         self.assertEqual(a2[0][1]["CLAUDE_CODE_OAUTH_TOKEN"], OAUTH_WERT)  # nur weil er neu übergeben wurde
         self.nirgends(OAUTH_WERT)
         # ohne erneute Übergabe gibt es keinen Zugang: der Dispatcher hat nichts aufbewahrt
-        code3, a3 = self.start({"zugang": "folgt"}, b"", job=job)
+        code3, a3 = self.start({"zugang": "folgt", "profil": "1a2b3c4d"}, b"", job=job)
         self.assertEqual((code3, a3), (D.EXIT_ABGEWIESEN, []))
 
     def test_zugang_einer_anderen_person_im_selben_projekt_braucht_freigabe(self):
@@ -2041,7 +2098,7 @@ class PersoenlicherZugangStartTests(unittest.TestCase):
                    json.dumps({"type": "wamo", "ereignis": "kontingent", "limits": [{"art": "woche", "prozent": 1}]})]
         gesehen: list[bytes] = []
         leitung = Leitung()
-        skript = (f"cat >/dev/null; printf '%s\\n' \"$0\" >&2; printf '%s' 'TOKEN={OAUTH_WERT}' > '{sitzung}'; "
+        skript = (f"cat >/dev/null; printf 'Fehlerausgabe %s\\n' \"$0\" >&2; printf '%s' 'TOKEN={OAUTH_WERT}' > '{sitzung}'; "
                   + "; ".join(f"printf '%s\\n' '{z}'" for z in zeilen_))
         ereignisse: list[dict] = []
         try:
@@ -2065,7 +2122,10 @@ class PersoenlicherZugangStartTests(unittest.TestCase):
         self.assertEqual(kontingent[0]["limits"], [{"art": "sitzung", "prozent": 42.0, "endet": endet, "status": "ok"}])
         self.assertNotIn("GEHEIM", json.dumps(ereignisse))
         self.assertEqual(sitzung.read_text(), "TOKEN=[CLAUDE_ZUGANG]")  # Datei unter claude/ geschwärzt
-        self.assertNotIn("GEHEIM", (jobdir / "lauf.log").read_text(encoding="utf-8"))  # Protokoll des Auftrags
+        lauflog = (jobdir / "lauf.log").read_text(encoding="utf-8")
+        self.assertIn("Fehlerausgabe", lauflog)  # das Protokoll ist vollständig (der Lesethread wird abgewartet) ...
+        self.assertIn("[CLAUDE_ZUGANG]", lauflog)
+        self.assertNotIn("GEHEIM", lauflog)  # ... und ohne den Wert
         self.assertNotIn("GEHEIM", " ".join(self.logzeilen))
 
 

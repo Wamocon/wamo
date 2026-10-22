@@ -38,14 +38,19 @@ STATUS = {"allowed": "ok", "allowed_warning": "warnung", "rejected": "erreicht"}
 MAX_PROZENT = 1000.0  # über 100 kommt vor (Nutzung läuft über die Grenze); alles darüber ist Unsinn
 MAX_LIMITS = len(ARTEN)
 MIN_EPOCHE, MAX_EPOCHE = 1_577_836_800, 4_102_444_800  # 2020-01-01 bis 2100-01-01
-ZEIT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+ZEIT_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")  # nur ASCII-Ziffern
 SCHLUESSEL = ("art", "prozent", "endet", "status")
 
 
 def _zahl(wert: object) -> float | None:
-    if isinstance(wert, bool) or not isinstance(wert, (int, float)) or not math.isfinite(wert):
+    """Endliche Zahl als float; Wahrheitswerte, Text und Ganzzahlen mit absurd vielen Stellen (OverflowError) sind keine."""
+    if isinstance(wert, bool):
         return None
-    return float(wert)
+    if isinstance(wert, int):
+        return float(wert) if abs(wert) < 10**15 else None
+    if isinstance(wert, float) and math.isfinite(wert):
+        return wert
+    return None
 
 
 def _prozent(bruchteil: object) -> float | None:
@@ -61,6 +66,17 @@ def _zeit(epoche: object) -> str | None:
     if z is None or not MIN_EPOCHE <= z <= MAX_EPOCHE:
         return None
     return datetime.fromtimestamp(int(z), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def zeit_gueltig(text: object) -> bool:
+    """ISO-Zeit in UTC (YYYY-MM-DDTHH:MM:SSZ), wirklich ein Datum."""
+    if not isinstance(text, str) or not ZEIT_RE.fullmatch(text):
+        return False
+    try:
+        datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
 
 
 def _limit(art: str, prozent: float | None, endet: str | None, status: str | None) -> dict:
@@ -121,7 +137,7 @@ def limits_pruefen(limits: object) -> list[dict]:
         z = _zahl(prozent)
         if prozent is not None and (z is None or not 0 <= z <= MAX_PROZENT):
             continue
-        if endet is not None and not (isinstance(endet, str) and ZEIT_RE.fullmatch(endet)):
+        if endet is not None and not zeit_gueltig(endet):
             continue
         if status is not None and status not in STATI:
             continue
@@ -141,24 +157,29 @@ def jetzt_iso(jetzt: datetime | None = None) -> str:
 
 
 def zusammenfuehren(alt: list[dict], neu: list[dict], jetzt: datetime | None = None) -> list[dict]:
-    """Neue Beobachtungen über die bisherigen legen. Je Art zählt die neue Angabe; fehlt ihr der Prozentwert und
-    endet das Fenster später als das alte, ist der alte Wert veraltet. Abgelaufene Fenster fallen weg (Claude Code
-    verwirft sie ebenso): ihr Stand ist unbekannt, bis der nächste Lauf sie wieder meldet."""
-    stand = {e["art"]: dict(e) for e in limits_pruefen(alt)}
-    for e in limits_pruefen(neu):
-        vorher = stand.get(e["art"], {})
-        if "prozent" not in e and e.get("endet") != vorher.get("endet"):
-            vorher.pop("prozent", None)
-        stand[e["art"]] = {**vorher, **e}
+    """Neue Beobachtungen über die bisherigen legen. Abgelaufene Fenster fallen vorher weg (Claude Code verwirft sie
+    ebenso): ihr Stand ist unbekannt, bis der nächste Lauf sie wieder meldet. Je Art zählt die neue Angabe; endet das
+    Fenster anders als das bekannte, ist es ein neues Fenster und nichts vom alten (Prozent, Status) gilt weiter."""
     grenze = jetzt_iso(jetzt)
-    return [stand[a] for a in ARTEN if a in stand and len(stand[a]) > 1 and stand[a].get("endet", "9") > grenze]
+
+    def gueltig(e: dict) -> bool:
+        return e.get("endet", "9") > grenze  # ohne Ende läuft ein Eintrag nie ab ("9" sortiert hinter jedem Datum)
+    stand = {e["art"]: dict(e) for e in limits_pruefen(alt) if gueltig(e)}
+    for e in limits_pruefen(neu):
+        if not gueltig(e):
+            continue
+        vorher = stand.get(e["art"], {})
+        if "endet" in e and e["endet"] != vorher.get("endet"):
+            vorher = {}
+        stand[e["art"]] = {**vorher, **e}
+    return [stand[a] for a in ARTEN if a in stand and len(stand[a]) > 1]
 
 
 def nachricht(limits: object, stand: str | None = None, jetzt: datetime | None = None) -> dict:
     """Servernachricht an die Oberfläche. Ohne (noch gültige) Daten ist der Zustand "unbekannt"."""
     gueltig = zusammenfuehren([], limits if isinstance(limits, list) else [], jetzt)
     return {"type": "kontingent", "zustand": "bekannt" if gueltig else "unbekannt",
-            "stand": stand if isinstance(stand, str) and ZEIT_RE.fullmatch(stand) and gueltig else None,
+            "stand": stand if zeit_gueltig(stand) and gueltig else None,
             "limits": gueltig}
 
 

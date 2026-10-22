@@ -62,6 +62,38 @@ def test_unbekanntes_und_fehlerhaftes_wird_ignoriert():
     assert kt.aus_rate_limit_info(None) == [] and kt.aus_rate_limit_info([]) == []
 
 
+def test_absurde_zahlen_und_zeiten_werfen_nie():
+    gross = 10**400  # float(gross) wirft OverflowError
+    info = {"status": "allowed", "rateLimitType": "five_hour", "resetsAt": gross, "utilization": gross,
+            "unifiedWindows": {"five_hour": {"utilization": gross, "resetsAt": gross},
+                               "seven_day": {"utilization": -gross, "resetsAt": gross},
+                               "seven_day_overage_included": {"utilization": 1e308 * 10, "resetsAt": -1e308 * 10}}}
+    kt.aus_rate_limit_info(info)  # darf nicht werfen
+    assert [e for e in kt.aus_rate_limit_info(info) if "prozent" in e or "endet" in e] == []
+    assert kt.limits_pruefen([{"art": "woche", "prozent": gross}]) == []
+    ereignis = kt.ereignis_aus_zeile({"type": "rate_limit_event", "rate_limit_info": info})
+    assert ereignis["limits"] == [{"art": "sitzung", "status": "ok"}]  # nur der Status des Fensters, keine Zahlen
+    for schlecht in ("٢٠٩٩-01-01T00:00:00Z", "9999-99-99T99:99:99Z", "2096-02-30T00:00:00Z", "2096-10-22 15:00:00Z"):
+        assert not kt.zeit_gueltig(schlecht)
+        assert kt.limits_pruefen([{"art": "woche", "endet": schlecht}]) == []
+    assert kt.zeit_gueltig("2096-10-22T15:00:00Z")
+
+
+def test_neues_fenster_uebernimmt_weder_prozent_noch_status():
+    alt = [{"art": "sitzung", "prozent": 100.0, "endet": "2096-10-22T15:00:00Z", "status": "erreicht"}]
+    neu = [{"art": "sitzung", "prozent": 3.0, "endet": "2096-10-22T20:00:00Z"}]
+    assert kt.zusammenfuehren(alt, neu, JETZT) == neu
+    # ein abgelaufenes Fenster trägt nichts in das nächste hinein
+    spaeter = datetime(2096, 10, 22, 16, 0, tzinfo=UTC)
+    assert kt.zusammenfuehren(alt, [{"art": "sitzung", "endet": "2096-10-22T20:00:00Z"}], spaeter)         == [{"art": "sitzung", "endet": "2096-10-22T20:00:00Z"}]
+    # dasselbe Fenster: Werte der Beobachtungen werden ergänzt
+    gleich = kt.zusammenfuehren([{"art": "woche", "prozent": 5.0, "endet": "2096-10-26T09:00:00Z"}],
+                                [{"art": "woche", "status": "warnung", "endet": "2096-10-26T09:00:00Z"}], JETZT)
+    assert gleich == [{"art": "woche", "prozent": 5.0, "endet": "2096-10-26T09:00:00Z", "status": "warnung"}]
+    # eine neue Beobachtung, die schon abgelaufen ist, zählt nicht
+    assert kt.zusammenfuehren([], [{"art": "woche", "prozent": 5.0, "endet": "2020-01-01T00:00:00Z"}], JETZT) == []
+
+
 def test_modell_wochenlimits_opus_und_sonnet():
     for typ, art in (("seven_day_opus", "opus"), ("seven_day_sonnet", "sonnet")):
         out = kt.aus_rate_limit_info({"status": "allowed_warning", "rateLimitType": typ, "resetsAt": WOCHE,
