@@ -105,6 +105,7 @@ from pc_geraet import geraet_wache, rechnername_passt
 from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from turn_wache import TurnWache
+from wartesatz import Wartesatz, wartesatz_an, wartesatz_secs
 from pc_host import (
     call_host_tool,
     host_client,
@@ -125,6 +126,11 @@ from soft_interrupt import (
     PlaybackTracker,
     SoftInterruptGate,
     echo_filter_an,
+    ducken_an,
+    echo_modus_an,
+    kuerze_auf_gehoertes,
+    ohne_letzte_woerter,
+    stopp_grenze_an,
 )
 from soniox_tts import LazySonioxTTSService
 from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
@@ -204,8 +210,9 @@ SPERR_PROBE_SECS = 10.0  # lokal: so oft fragt eine Sitzung bei gesperrtem Bilds
 
 INTERRUPTED_NOTE = (
     "[Hinweis für WAMO: Du wurdest gerade unterbrochen. Deine letzte Antwort endet dort, wo du "
-    "aufgehört hast. Reagiere natürlich auf den Einwurf und knüpfe dann, falls noch relevant, an "
-    "deinem letzten Gedanken an, statt von vorn zu beginnen.]"
+    "aufgehört hast. War der Einwurf nur ein Laut oder eine kurze Zustimmung ohne neue Frage, mach "
+    "ohne Entschuldigung genau dort weiter. Sonst reagiere natürlich auf den Einwurf und knüpfe dann, "
+    "falls noch relevant, an deinem letzten Gedanken an, statt von vorn zu beginnen.]"
 )
 
 # Referenzen halten, sonst räumt der Garbage Collector laufende Hintergrund-Tasks weg.
@@ -573,6 +580,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     soft_gate = SoftInterruptGate(
         max_words=SOFT_INTERRUPT_MAX_WORDS,
         playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
+        grenze=stopp_grenze_an(),  # Stopp an der nächsten hörbaren Wortgrenze (WAMO_STOPP_GRENZE)
+        ducken=ducken_an(),  # Stimme vorsorglich leiser, sobald die Person spricht (WAMO_DUCKEN)
     )
 
     user_agg, assistant_agg = LLMContextAggregatorPair(
@@ -602,6 +611,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                         enable_interruptions=False,
                         # Echo der eigenen Stimme am Mikrofon löst keine Unterbrechung aus (soft_interrupt.ist_echo)
                         gesprochen=soft_gate.kuerzlich_gesprochen if echo_filter_an() else None,
+                        beurteilt=soft_gate.beurteilt,  # Rückmeldung oder Echo: Dämpfung zurücknehmen
+                        echo_modus=echo_filter_an() and echo_modus_an(),  # bei erkennbarem Echo unterbricht nur ein Stoppwort
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.
@@ -644,6 +655,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             wache.vorne(),
             llm,
             wache.hinten(),
+            *([Wartesatz(nach_secs=wartesatz_secs())] if wartesatz_an() else []),  # langer Werkzeugaufruf: kurzer Satz
             aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
             tts,
             transport.output(),
@@ -879,15 +891,20 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def on_assistant_turn_stopped(_agg, message):
         # Erst alles, was das Gespräch braucht; die Datenbank zuletzt. Ist sie langsam, darf das
         # weder den Verlauf noch die weiche Unterbrechung aufhalten.
-        transcript.append(("assistant", message.content))
+        content = message.content
+        if message.interrupted and (ungehoert := soft_gate.ungehoerte_woerter()):
+            # Wörter, die der Kern schon gemeldet hat, die die Person aber nicht mehr hörte: aus dem Verlauf nehmen
+            if kuerze_auf_gehoertes(context, ungehoert):
+                content = ohne_letzte_woerter(content, ungehoert)  # Transkript und Protokoll wie der Verlauf
+        transcript.append(("assistant", content))
         if message.interrupted:
             logger.info("WAMO wurde unterbrochen")
-            logger.debug("Unterbrochen nach: {!r}", message.content[-80:])
+            logger.debug("Unterbrochen nach: {!r}", content[-80:])
             # Nur wenn WAMO schon etwas gesagt hat; sonst verwirrt die Notiz Claude.
-            if message.content.strip():
+            if content.strip():
                 context.add_message({"role": "user", "content": INTERRUPTED_NOTE})
         soft_gate.assistant_turn_recorded()
-        await memory.log_turn(role="assistant", content=message.content, interrupted=message.interrupted)
+        await memory.log_turn(role="assistant", content=content, interrupted=message.interrupted)
 
     @user_agg.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(_agg, _strategy, message):

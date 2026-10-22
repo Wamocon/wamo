@@ -42,8 +42,9 @@ GEMEINSAM = [
 # Wortgleich mit bot.INTERRUPTED_NOTE (test_bewertung.py prüft das)
 UNTERBROCHEN = (
     "[Hinweis für WAMO: Du wurdest gerade unterbrochen. Deine letzte Antwort endet dort, wo du "
-    "aufgehört hast. Reagiere natürlich auf den Einwurf und knüpfe dann, falls noch relevant, an "
-    "deinem letzten Gedanken an, statt von vorn zu beginnen.]"
+    "aufgehört hast. War der Einwurf nur ein Laut oder eine kurze Zustimmung ohne neue Frage, mach "
+    "ohne Entschuldigung genau dort weiter. Sonst reagiere natürlich auf den Einwurf und knüpfe dann, "
+    "falls noch relevant, an deinem letzten Gedanken an, statt von vorn zu beginnen.]"
 )
 # Rückgabe des Hosts bei ausgeschalteter PC-Steuerung (screen.PC_OFF)
 PC_AUS = {"status": "rejected", "summary": "Die PC-Steuerung ist aus. Sie lässt sich in der Oberfläche einschalten."}

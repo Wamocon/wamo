@@ -134,7 +134,8 @@ export type ServerMessage =
   | { type: "canvas"; item: CanvasItem }
   | ({ type: "aktivitaet" } & Pick<Activity, "id" | "name" | "detail" | "status">)
   | { type: "sprecher"; index: number }
-  | { type: "leiser_stopp" }
+  | { type: "leiser_stopp"; sofort?: boolean }
+  | { type: "stimme_leiser"; an: boolean }
   | { type: "freigaben"; job: string; projekt: string; items: FreigabePunkt[] }
   | ({ type: "profil" } & Profil)
   | ({ type: "betrieb" } & Betrieb)
@@ -278,7 +279,9 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         ? { type: "sprecher", index: Math.max(0, Math.min(7, Math.trunc(m.index))) }
         : null;
     case "leiser_stopp":
-      return { type: "leiser_stopp" };
+      return { type: "leiser_stopp", sofort: m.sofort === true };
+    case "stimme_leiser":
+      return typeof m.an === "boolean" ? { type: "stimme_leiser", an: m.an } : null;
     case "freigaben": {
       if (!isStr(m.job) || !Array.isArray(m.items)) return null;
       const items = m.items
