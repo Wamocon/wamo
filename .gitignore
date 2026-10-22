@@ -21,3 +21,4 @@ desktop/logs/
 *.p12
 .claude/settings.local.json
 .claude/worktrees/
+.playwright-mcp/
