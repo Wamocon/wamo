@@ -1651,6 +1651,26 @@ class ConsistencyTests(unittest.TestCase):
         self.assertIn("start_abgelehnt", dev_agent.REMOTE_EREIGNIS_STATUS)
         self.assertEqual(dev_agent.REPO_RE.pattern, D.REPO_RE.pattern)  # gleiche Repo-Regel auf PC und Server
 
+    def test_zugang_vertrag_zwischen_kern_und_dispatcher(self):
+        """Die zweite stdin-Zeile: Felder, Arten und Meldungen müssen auf PC/Kern und Server gleich lauten."""
+        self.assertEqual(D.ZUGANG_FELDER, {"typ", "wert", "workspace"})
+        self.assertEqual(set(D.ZUGANG_FORMAT), {"oauth", "api"})
+        self.assertEqual(D.ZUGANG_MODI, ("folgt", "server"))
+        self.assertEqual(D.ZUGANG_VARIABLE, {"oauth": "CLAUDE_CODE_OAUTH_TOKEN", "api": "ANTHROPIC_API_KEY"})
+        self.assertEqual(set(D.ZUGANG_VARIABLE.values()), set(wk.CLAUDE_VARIABLEN))
+        self.assertIn("zugang_ungueltig", dev_agent.REMOTE_EREIGNIS_STATUS)
+        self.assertIn("Claude-Zugang", dev_agent.REMOTE_EREIGNIS_STATUS["zugang_ungueltig"])
+        ablauf = (INFRA / "wamo-job-einrichten.sh").read_text(encoding="utf-8")
+        self.assertGreaterEqual(ablauf.count("kontingent.py"), 3)  # Pflichtdatei, Installation und Anleitung
+        self.assertIn('"$HERE/kontingent.py"', ablauf)
+        # der Parser für den Dispatcher kennt nur die Standardbibliothek (er läuft in /opt/wamo/waechter ohne Pakete)
+        import ast
+        import kontingent
+        baum = ast.parse(Path(kontingent.__file__).read_text(encoding="utf-8"))
+        module = {n.module for n in ast.walk(baum) if isinstance(n, ast.ImportFrom)} | \
+                 {a.name for n in ast.walk(baum) if isinstance(n, ast.Import) for a in n.names}
+        self.assertLessEqual({m.split(".")[0] for m in module if m}, {"__future__", "json", "math", "re", "datetime"})
+
     def test_selftest_never_uses_mv(self):
         """mv kopiert bei EXDEV und löscht die Quelle: im Projektordner wäre danach der Inhalt weg."""
         import inspect

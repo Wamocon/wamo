@@ -136,7 +136,7 @@ def pruefen_ereignis(ereignis: object) -> list[dict]:
     return limits_pruefen(ereignis.get("limits"))
 
 
-def _jetzt_iso(jetzt: datetime | None = None) -> str:
+def jetzt_iso(jetzt: datetime | None = None) -> str:
     return (jetzt or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -150,7 +150,7 @@ def zusammenfuehren(alt: list[dict], neu: list[dict], jetzt: datetime | None = N
         if "prozent" not in e and e.get("endet") != vorher.get("endet"):
             vorher.pop("prozent", None)
         stand[e["art"]] = {**vorher, **e}
-    grenze = _jetzt_iso(jetzt)
+    grenze = jetzt_iso(jetzt)
     return [stand[a] for a in ARTEN if a in stand and len(stand[a]) > 1 and stand[a].get("endet", "9") > grenze]
 
 
@@ -176,7 +176,7 @@ async def laden(db, user_id: str) -> tuple[list[dict], str | None]:
     except (ValueError, RecursionError):
         limits = []
     stand = zeile["kontingent_stand"]
-    return limits, _jetzt_iso(stand.astimezone(timezone.utc)) if hasattr(stand, "astimezone") else None
+    return limits, jetzt_iso(stand.astimezone(timezone.utc)) if hasattr(stand, "astimezone") else None
 
 
 async def speichern(db, user_id: str, limits: list[dict]) -> None:

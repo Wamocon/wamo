@@ -5,7 +5,7 @@
 #
 # Vom PC aus (Repo-Wurzel, Git Bash). Der Ordner liegt im Home von wamocon, nie in /tmp:
 #   cd infra/sokrates2 && scp -r wamo-job.sh wamo-job-einrichten.sh wamo-job-ecc.py wamo_job_dispatch.py #     wamo_job_rauchtest.py abschottung.py wamo-egress.nft wamo-egress.service wamo-egress-rueckweg.sh claude-code #     sokrates2:wamo-infra/ && cd ../..
-#   scp voice-core/dev_guard.py voice-core/werkzeugkarte.py ~/.ssh/id_ed25519_wamo_jobs.pub sokrates2:wamo-infra/
+#   scp voice-core/dev_guard.py voice-core/werkzeugkarte.py voice-core/kontingent.py ~/.ssh/id_ed25519_wamo_jobs.pub sokrates2:wamo-infra/
 #   (~/wamo-infra teilen sich mehrere Einrichtungsskripte: nur die eigenen Dateien ersetzen, den Ordner nicht leeren)
 #   ssh sokrates2 "chmod -R go-w ~/wamo-infra && sudo bash ~/wamo-infra/wamo-job-einrichten.sh"
 # Danach innerhalb von 5 Minuten mit einer NEUEN Verbindung bestätigen, dass die Anmeldung als wamocon weiter geht
@@ -22,7 +22,7 @@
 #   loginctl enable-linger wamo          systemd-Benutzerdienst (Grenzen und Abbruch über systemd-run --user)
 #   /opt/wamo                            root:wamo 0750, für wamo nur lesbar und ausführbar (nicht umbenennbar):
 #     bin/{wamo-job-dispatch,wamo-job.sh,wamo-job-rauchtest}, wamo-job.conf (Grenzen, CLAUDE_VERSION),
-#     waechter/{dev_guard,werkzeugkarte,abschottung}.py, waechter/seccomp.bpf,
+#     waechter/{dev_guard,werkzeugkarte,kontingent,abschottung}.py, waechter/seccomp.bpf,
 #     claude-code/{managed-settings.json,managed-mcp.json},
 #     claude-plugins/ (Kopie des ECC-Plugins von wamo ohne Hooks, lokaler Marketplace "ecc", wamo-job-ecc.py)
 #   /etc/wamo/egress.nft, /etc/systemd/system/wamo-egress.service   Ausgangsfilter (nft inet wamo_egress)
@@ -63,7 +63,7 @@ pruefe_herkunft() {
 pruefe_herkunft
 for datei in wamo-job.sh wamo_job_dispatch.py wamo_job_rauchtest.py abschottung.py claude-code/managed-settings.json \
   claude-code/managed-mcp.json wamo-job-ecc.py \
-  dev_guard.py werkzeugkarte.py wamo-egress.nft wamo-egress.service; do
+  dev_guard.py werkzeugkarte.py kontingent.py wamo-egress.nft wamo-egress.service; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei" >&2; exit 1; }
 done
 [[ $REA_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "REA_VERSION ungültig" >&2; exit 1; }
@@ -128,7 +128,7 @@ install -d -o root -g "$WAMO_USER" -m 0750 "$APP" "$APP/bin" "$APP/waechter" "$A
 install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo_job_dispatch.py" "$APP/bin/wamo-job-dispatch"
 install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo-job.sh" "$APP/bin/wamo-job.sh"
 install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo_job_rauchtest.py" "$APP/bin/wamo-job-rauchtest"
-install -o root -g "$WAMO_USER" -m 0640 "$HERE/dev_guard.py" "$HERE/werkzeugkarte.py" "$HERE/abschottung.py" "$APP/waechter/"
+install -o root -g "$WAMO_USER" -m 0640 "$HERE/dev_guard.py" "$HERE/werkzeugkarte.py" "$HERE/kontingent.py" "$HERE/abschottung.py" "$APP/waechter/"
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/claude-code/managed-settings.json" "$APP/claude-code/managed-settings.json"
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/claude-code/managed-mcp.json" "$APP/claude-code/managed-mcp.json"
 sed -i 's/\r$//' "$APP/bin/wamo-job.sh" "$APP/bin/wamo-job-dispatch" "$APP/bin/wamo-job-rauchtest"

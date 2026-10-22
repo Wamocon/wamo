@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from unittest import mock
 
@@ -21,6 +22,8 @@ import dev_agent
 import dev_guard
 
 SID = "754fb6bb-4880-4fc6-bc55-ed512941f3d3"
+OAUTH_TEST = "sk-ant-oat01-" + "GEHEIMoauth0" * 5
+API_TEST = "sk-ant-api03-" + "GEHEIMapi00" * 5
 PUSH = {"command": "git push origin main", "description": "Änderungen hochladen"}
 
 
@@ -206,9 +209,14 @@ class FakeProc:
         return out, b""
 
 
+NIKO = "0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c"  # das Profil, dem der Zugang aus geheim.env auf Sokrates-2 gehört
+KOLLEGIN = "7d3e9c1a-2b4f-4e6a-8c0d-1f2a3b4c5d6e"
+
+
 class FakeMemory:
-    def __init__(self):
+    def __init__(self, user_id=NIKO):
         self.actions = []
+        self.user_id = user_id
 
     async def log_action(self, **kw):
         self.actions.append(kw)
@@ -216,6 +224,31 @@ class FakeMemory:
 
     async def update_action(self, action_id, status):
         self.actions.append({"update": action_id, "status": status})
+
+
+class FakeKontingentDb:
+    """Tabelle model_access im Speicher, nur die Spalten des Kontingents (kontingent.py)."""
+
+    configured = True
+
+    def __init__(self, fehler: Exception | None = None):
+        self.zeilen: dict[str, dict] = {}
+        self.anweisungen: list[tuple[str, tuple]] = []
+        self.fehler = fehler
+
+    def t(self, name: str) -> str:
+        return f"wamo_test.{name}"
+
+    async def fetchrow(self, sql: str, *args):
+        if self.fehler:
+            raise self.fehler
+        return self.zeilen.get(args[0])
+
+    async def execute(self, sql: str, *args):
+        if self.fehler:
+            raise self.fehler
+        self.anweisungen.append((sql, args))
+        self.zeilen[args[0]] = {"kontingent": args[1], "kontingent_stand": datetime.now(timezone.utc)}
 
 
 class FakeTask:
@@ -253,11 +286,14 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.env = mock.patch.dict(os.environ, {"WAMO_ENTWICKLUNG_ORT": "sokrates2",
                                                 "WAMO_ENTWICKLUNG_SSH_KNOWN_HOSTS": str(hosts),
                                                 "WAMO_ENTWICKLUNG_SSH_SCHLUESSEL": str(key),
-                                                "WAMO_ENTWICKLUNG_SSH_ZIEL": "wamo@192.168.178.136"})
+                                                "WAMO_ENTWICKLUNG_SSH_ZIEL": "wamo@192.168.178.136",
+                                                "WAMO_CLAUDE_SCHLUESSEL_PROFIL": NIKO,
+                                                "WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL": ""})
         self.env.start()
         self.which = mock.patch.object(dev_agent.shutil, "which", return_value="ssh")
         self.which.start()
         self.calls: list[list[str]] = []
+        self.kwargs: list[dict] = []
         self.start_procs: list[FakeProc] = []
         self.approve_rc = 0
         self.pending_rc = 0
@@ -266,6 +302,7 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_exec(*argv, **kwargs):
             self.calls.append(list(argv))
+            self.kwargs.append(kwargs)
             befehl = argv[-1].split(" ")[0]
             if befehl == "start":
                 return self.start_procs.pop(0)
@@ -498,6 +535,219 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         job = await self.prepare_and_start()
         self.assertIn("SSH", job.status)
         self.assertEqual(self.remote("cancel"), [f"cancel {job.id}"])  # unklarer Zustand: sicherheitshalber abbrechen
+
+    # ---------------------------------------------------------------- Claude-Zugang je Profil
+    def zugang_texte(self) -> str:
+        """Alles, was der Kern nach außen gibt: ssh-Aufrufe, Umgebungen, Nachrichten an Oberfläche und Sprachmodell."""
+        return json.dumps([self.calls, [k.get("env") for k in self.kwargs], self.task.messages(), self.task.llm_texts(),
+                           [(j.steps, j.result, j.status) for j in self.agent._jobs.values()]], default=str)
+
+    async def test_eigener_zugang_geht_als_zweite_zeile_und_nirgends_sonst(self):
+        meldungen: list[str] = []
+        sink = logger.add(lambda m: meldungen.append(str(m)), level="DEBUG")
+        self.memory.user_id = KOLLEGIN  # nicht das Profil, dem der Zugang aus geheim.env gehört
+        proc = FakeProc(stream())
+        self.start_procs.append(proc)
+        try:
+            with mock.patch.object(dev_agent, "claude_code_zugang_fuer", return_value={"typ": "oauth", "wert": OAUTH_TEST}):
+                job = await self.prepare_and_start()
+        finally:
+            logger.remove(sink)
+        zeilen_ = proc.stdin.data.decode("utf-8").splitlines()
+        self.assertEqual(len(zeilen_), 2)
+        kopf = json.loads(zeilen_[0])
+        self.assertEqual((kopf["zugang"], kopf["profil"]), ("folgt", "7d3e9c1a"))
+        self.assertNotIn(OAUTH_TEST, zeilen_[0])  # nie in der Kopfzeile
+        self.assertEqual(json.loads(zeilen_[1]), {"typ": "oauth", "wert": OAUTH_TEST})
+        self.assertEqual(job.status, "fertig")
+        self.assertTrue(all(k.get("env") is None for k in self.kwargs))  # ssh erbt die Umgebung, es gibt nichts Besonderes
+        for geheim in (OAUTH_TEST, "GEHEIMoauth"):
+            self.assertNotIn(geheim, self.zugang_texte())  # weder argv noch Karten noch Sprachmodell
+            self.assertNotIn(geheim, "\n".join(meldungen))  # und nicht im Log
+
+    async def test_eigener_zugang_async_mit_api_und_workspace(self):
+        self.memory.user_id = KOLLEGIN
+        proc = FakeProc(stream())
+        self.start_procs.append(proc)
+
+        async def zugang(user_id):
+            self.assertEqual(user_id, KOLLEGIN)
+            return {"typ": "api", "wert": API_TEST, "workspace": "wrkspc_Mine01", "unbekannt": "x"}
+        with mock.patch.object(dev_agent, "claude_code_zugang_fuer", zugang):
+            await self.prepare_and_start()
+        zeile = json.loads(proc.stdin.data.decode("utf-8").splitlines()[1])
+        self.assertEqual(zeile, {"typ": "api", "wert": API_TEST, "workspace": "wrkspc_Mine01"})  # nur bekannte Felder
+
+    async def test_zugang_wird_nach_freigabe_erneut_gesendet(self):
+        self.memory.user_id = KOLLEGIN
+        erste, zweite = FakeProc(stream()), FakeProc(stream(tool=False))
+        self.start_procs += [erste, zweite]
+        with mock.patch.object(dev_agent, "claude_code_zugang_fuer", return_value={"typ": "oauth", "wert": OAUTH_TEST}):
+            job = await self.prepare_and_start()
+            fp = dev_guard.fingerprint("Bash", PUSH)
+            await self.agent.on_client_message("freigabe", {"job": job.id, "id": fp, "entscheidung": "ja"})
+            await self.agent._running
+        for proc in (erste, zweite):
+            zeilen_ = proc.stdin.data.decode("utf-8").splitlines()
+            self.assertEqual(json.loads(zeilen_[1])["wert"], OAUTH_TEST)  # bei jedem Lauf frisch, nichts aufbewahrt
+        self.assertEqual(self.remote("start")[1], f"start {job.id} rezepte-app umsetzung {SID}")
+        self.assertNotIn(OAUTH_TEST, self.zugang_texte())
+
+    async def test_ohne_zugang_und_ohne_berechtigung_startet_nichts(self):
+        meldungen: list[str] = []
+        sink = logger.add(lambda m: meldungen.append(str(m)), level="DEBUG")
+        self.memory.user_id = KOLLEGIN
+        try:
+            with mock.patch.object(dev_agent, "claude_code_zugang_fuer", return_value=None):
+                job = await self.prepare_and_start()
+        finally:
+            logger.remove(sink)
+        self.assertEqual(self.remote("start"), [])  # kein ssh-Aufruf, also auch nicht mit dem Schlüssel aus geheim.env
+        self.assertEqual(job.status, dev_agent.KEIN_ZUGANG_STATUS)
+        self.assertTrue(any("Modellzugang" in s for s in job.steps))
+        canvas = [m for m in self.task.messages() if m.get("type") == "canvas"][-1]
+        self.assertIn("Modellzugang", canvas["item"]["text"])
+        self.assertIn("kein Claude-Zugang", self.task.llm_texts()[-1])  # klare Meldung auch für die Stimme
+        self.assertEqual(self.remote("cancel"), [])
+        self.assertTrue(any("nicht gestartet" in m for m in meldungen))
+
+    async def test_fehler_beim_lesen_des_zugangs_zeigt_nie_den_inhalt(self):
+        meldungen: list[str] = []
+        sink = logger.add(lambda m: meldungen.append(str(m)), level="DEBUG")
+        self.memory.user_id = KOLLEGIN
+
+        def kaputt(user_id):
+            raise RuntimeError(f"Entschlüsseln fehlgeschlagen: {OAUTH_TEST}")
+        try:
+            with mock.patch.object(dev_agent, "claude_code_zugang_fuer", kaputt):
+                job = await self.prepare_and_start()
+        finally:
+            logger.remove(sink)
+        self.assertEqual(self.remote("start"), [])
+        self.assertEqual(job.status, dev_agent.KEIN_ZUGANG_STATUS)
+        self.assertNotIn(OAUTH_TEST, "\n".join(meldungen) + self.zugang_texte())
+        self.assertTrue(any("RuntimeError" in m for m in meldungen))  # nur die Art der Ausnahme
+
+    async def test_unbrauchbare_zugaenge_zaehlen_als_keiner(self):
+        self.memory.user_id = KOLLEGIN
+        for roh in ({"typ": "x", "wert": OAUTH_TEST}, {"typ": "oauth", "wert": ""}, {"typ": "oauth"}, {"wert": OAUTH_TEST},
+                    "sk-ant-oat01-text", [OAUTH_TEST], 5, {"typ": "api", "wert": 5}):
+            with self.subTest(roh=str(roh)[:30]), mock.patch.object(dev_agent, "claude_code_zugang_fuer", return_value=roh):
+                self.assertIsNone(await dev_agent.persoenlicher_zugang(KOLLEGIN))
+        self.assertIsNone(await dev_agent.persoenlicher_zugang(None))
+
+    async def test_serverzugang_nur_fuer_das_vorgesehene_profil(self):
+        proc = FakeProc(stream())
+        self.start_procs.append(proc)
+        job = await self.prepare_and_start()  # NIKO, ohne eigenen Zugang (Standard der Attrappe: keiner)
+        zeilen_ = proc.stdin.data.decode("utf-8").splitlines()
+        self.assertEqual(len(zeilen_), 1)  # keine zweite Zeile
+        self.assertEqual(json.loads(zeilen_[0])["zugang"], "server")
+        self.assertNotIn("profil", json.loads(zeilen_[0]))
+        self.assertEqual(job.status, "fertig")
+        for user, soll in ((NIKO, True), (NIKO.upper(), True), (KOLLEGIN, False), (None, False), ("", False), ("kein uuid", False)):
+            self.assertIs(dev_agent.serverzugang_erlaubt(user), soll, user)
+        with mock.patch.dict(os.environ, {"WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL": KOLLEGIN}):  # ausdrücklich ein anderes
+            self.assertTrue(dev_agent.serverzugang_erlaubt(KOLLEGIN))
+            self.assertFalse(dev_agent.serverzugang_erlaubt(NIKO))
+        with mock.patch.dict(os.environ, {"WAMO_CLAUDE_SCHLUESSEL_PROFIL": "", "WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL": ""}):
+            self.assertFalse(dev_agent.serverzugang_erlaubt(NIKO))  # nichts zugeordnet: für niemanden
+
+    async def test_eigener_zugang_hat_vorrang_vor_dem_serverzugang(self):
+        proc = FakeProc(stream())
+        self.start_procs.append(proc)
+        with mock.patch.object(dev_agent, "claude_code_zugang_fuer", return_value={"typ": "oauth", "wert": OAUTH_TEST}):
+            await self.prepare_and_start()  # NIKO hat beides
+        zeilen_ = proc.stdin.data.decode("utf-8").splitlines()
+        self.assertEqual(json.loads(zeilen_[0])["zugang"], "folgt")
+        self.assertEqual(json.loads(zeilen_[1])["typ"], "oauth")
+
+    async def test_profil_ohne_kennung_startet_nichts(self):
+        self.memory.user_id = None
+        job = await self.prepare_and_start()
+        self.assertEqual(self.remote("start"), [])
+        self.assertEqual(job.status, dev_agent.KEIN_ZUGANG_STATUS)
+
+    async def test_ungueltiger_zugang_und_abgelehnter_token_werden_gemeldet(self):
+        self.start_procs.append(FakeProc([{"type": "wamo", "ereignis": "zugang_ungueltig",
+                                           "grund": "Zugangszeile: wert hat nicht das Format für typ oauth"}], returncode=2))
+        job = await self.prepare_and_start()
+        self.assertIn("Claude-Zugang ungültig", job.status)
+        self.assertTrue(any(s.startswith("Claude-Zugang abgelehnt: Zugangszeile: wert hat nicht das Format") for s in job.steps))
+        self.assertEqual(self.remote("cancel"), [])
+        self.start_procs.append(FakeProc([{"type": "wamo", "ereignis": "selbsttest_ok"},
+                                          {"type": "result", "is_error": True, "session_id": SID,
+                                           "result": "Invalid bearer token"}]))
+        job2 = await self.prepare_and_start()
+        self.assertTrue(any("Claude-Zugang abgelehnt" in s and "Modellzugang" in s for s in job2.steps))
+        self.assertIn("zugang_ungueltig", dev_agent.REMOTE_EREIGNIS_STATUS)
+
+    # ---------------------------------------------------------------- Kontingent
+    def kontingent_zeilen(self, prozent=42.0):
+        limits = [{"art": "sitzung", "prozent": prozent, "endet": "2096-10-22T15:00:00Z", "status": "ok"},
+                  {"art": "woche", "prozent": 13.0, "endet": "2096-10-26T09:00:00Z"},
+                  {"art": "fable", "prozent": 7.0, "endet": "2096-10-27T09:00:00Z"}]
+        return [{"type": "wamo", "ereignis": "selbsttest_ok"},
+                {"type": "wamo", "ereignis": "kontingent", "quelle": "rate_limit_event", "limits": limits},
+                {"type": "wamo", "ereignis": "kontingent", "quelle": "rate_limit_event", "limits": limits[:1]},
+                {"type": "wamo", "ereignis": "kontingent", "limits": [{"art": "geheim", "prozent": 1, "x": OAUTH_TEST}]},
+                {"type": "wamo", "ereignis": "ende", "ergebnis": "fertig", "code": 0}]
+
+    async def test_kontingent_wird_geprueft_gespeichert_und_gesendet(self):
+        db = FakeKontingentDb()
+        self.start_procs.append(FakeProc(self.kontingent_zeilen()))
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=db):
+            job = await self.prepare_and_start()
+        nachrichten = [m for m in self.task.messages() if m.get("type") == "kontingent"]
+        self.assertTrue(nachrichten)
+        letzte = nachrichten[-1]
+        self.assertEqual(letzte["zustand"], "bekannt")
+        self.assertEqual([e["art"] for e in letzte["limits"]], ["sitzung", "woche", "fable"])  # die gefälschte Art fiel weg
+        self.assertEqual(set(letzte), {"type", "zustand", "stand", "limits"})
+        self.assertNotIn(OAUTH_TEST, json.dumps(nachrichten))
+        gespeichert = json.loads(db.zeilen[NIKO]["kontingent"])
+        self.assertEqual([e["art"] for e in gespeichert], ["sitzung", "woche", "fable"])
+        self.assertTrue(db.anweisungen)
+        self.assertFalse(any("kontingent" in s.lower() for s in job.steps))  # kein Schritt im Auftrag
+        self.assertNotIn("kontingent", job.ereignisse)
+        self.assertNotIn("42", " ".join(self.task.llm_texts()))  # das Sprachmodell bekommt nur die feste Meldung
+
+    async def test_kontingent_abfrage_ohne_lauf_und_ohne_daten(self):
+        db = FakeKontingentDb()
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=db):
+            await self.agent.on_client_message("kontingent", {})
+        leer = [m for m in self.task.messages() if m.get("type") == "kontingent"][-1]
+        self.assertEqual(leer, {"type": "kontingent", "zustand": "unbekannt", "stand": None, "limits": []})
+        db.zeilen[NIKO] = {"kontingent": json.dumps([{"art": "woche", "prozent": 55.5, "endet": "2096-10-26T09:00:00Z"}]),
+                           "kontingent_stand": datetime(2026, 10, 22, 11, 59, tzinfo=timezone.utc)}
+        agent = dev_agent.DevAgent(memory=self.memory, auftraggeber="Erika")
+        agent.attach(self.task)
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=db):
+            await agent.on_client_message("kontingent", {})
+            await agent.on_client_message("kontingent", {})  # zweiter Aufruf liest nicht noch einmal
+        bekannt = [m for m in self.task.messages() if m.get("type") == "kontingent"][-1]
+        self.assertEqual(bekannt["zustand"], "bekannt")
+        self.assertEqual(bekannt["limits"], [{"art": "woche", "prozent": 55.5, "endet": "2096-10-26T09:00:00Z"}])
+        self.assertEqual(bekannt["stand"], "2026-10-22T11:59:00Z")
+        # ohne Datenbank oder bei einem Fehler: unbekannt, nie eine Ausnahme
+        kaputt = FakeKontingentDb(fehler=RuntimeError("Tabelle fehlt"))
+        agent2 = dev_agent.DevAgent(memory=self.memory, auftraggeber="Erika")
+        agent2.attach(self.task)
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=kaputt):
+            await agent2.on_client_message("kontingent", {})
+        self.assertEqual([m for m in self.task.messages() if m.get("type") == "kontingent"][-1]["zustand"], "unbekannt")
+        agent3 = dev_agent.DevAgent(memory=self.memory, auftraggeber="Erika")
+        agent3.attach(self.task)
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=None):
+            await agent3.on_client_message("kontingent", {})
+        self.assertEqual([m for m in self.task.messages() if m.get("type") == "kontingent"][-1]["zustand"], "unbekannt")
+
+    async def test_kontingent_speicherfehler_stoert_den_auftrag_nicht(self):
+        self.start_procs.append(FakeProc(self.kontingent_zeilen()))
+        with mock.patch.object(dev_agent, "_kontingent_db", return_value=FakeKontingentDb(fehler=RuntimeError("weg"))):
+            job = await self.prepare_and_start()
+        self.assertEqual(job.status, "fertig")
+        self.assertTrue([m for m in self.task.messages() if m.get("type") == "kontingent"])  # Anzeige trotzdem
 
     async def test_hangup_ends_remote_job(self):
         proc = FakeProc([{"type": "wamo", "ereignis": "selbsttest_ok"}], haengt=True)
