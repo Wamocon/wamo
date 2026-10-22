@@ -822,6 +822,99 @@ außerhalb von `/run/wamo-pc` sind möglich (der Streuner meldet sie binnen 5 Mi
 Dienst einen vorhersagbaren Pfad dort öffnet, deshalb prüft der Kern vor dem ersten Byte per `SO_PEERCRED`. Eine
 Obergrenze für Weiterleitungen je Gerät gibt es nicht (`MaxSessions` zählt nur Sitzungen).
 
+## 14. Notanker der Selbstüberarbeitung (Schritt 0.1, vorbereitet am 22.10.2026, noch nicht ausgerollt)
+
+**Zweck.** Der Notanker ist der kleine Teil der geplanten Selbstüberarbeitung (`docs/selbstueberarbeitung.md`, Abschnitt G),
+der Root-Rechte braucht. Er kann nur zurückführen, sperren und prüfen. Er liegt in `/usr/local/lib/wamo-anker`, außerhalb von
+`/opt/wamo*` und außerhalb des Repo-Deploys, gehört root, ist für WAMO und alle Dienstbenutzer nie änderbar und wird nur von
+Hand installiert. Quelltext: `infra/sokrates2/anker/`. Bis die Stufen 1 und 2 stehen, bleibt `SELF_REPO = "wamo"` unverändert.
+
+| Befehl | Wirkung |
+| --- | --- |
+| `wamo-anker status` | aktive und letzte gute Version je Komponente (`ui`, `kern`), Sperre, Zustandsdatei, Hashkette des Audit-Protokolls, Prüfsumme der Installation. Offene Anfragen kommen mit Schritt 0.2 (Datenbank) |
+| `wamo-anker rueckweg ui`, `kern`, `alles` | zurück auf den letzten guten Stand aus `stand.json`. Der Anker ruft dazu das feste Skript `/usr/local/lib/wamo-anker/schritte/rueckweg-ui` oder `rueckweg-kern` mit Version, Commit und Ziel (alles aus der Zustandsdatei, nie aus der Anfrage). Die Skripte liefern die Stufen 1.1 und 2.4; bis dahin antwortet `rueckweg` ehrlich mit "Schritt fehlt". Das Skript läuft auch dann, wenn `stand.json` schon den letzten guten Stand zeigt (die Buchführung könnte nach einem Absturz hinter dem Schalter zurückliegen; die Skripte müssen idempotent sein). Ein zweiter Aufruf geht nie weiter zurück als bis zum letzten guten Stand. Die Ausgabe des Skripts sehen nur `root` und `wamocon` |
+| `wamo-anker sperre an`, `aus` | Abschalter für jede Selbständerung: Datei `/etc/wamo-anker/selbstaenderung.aus`. Steht sie (oder ist sie nicht eindeutig lesbar), lehnt der Anker alle Vorwärtsbefehle ab (`bereitstellen`, `migrieren`, `umschalten`, in Stufe 1 und 2 gefüllt; jetzt nur reserviert). `rueckweg` und `status` laufen immer, der Rückweg ist der Notausgang |
+| `wamo-anker pruefe-sonder <id>` | Schnittstelle der Sonderfreigabe für die Schutzschicht. Bis Stufe 4 antwortet sie für jede Kennung `NEIN` (Exit 1). Änderungen an der Schutzschicht gibt künftig nur ein anderer Admin frei als der Beauftragte, und nur mit mindestens zwei aktiven Admins; heute gibt es einen, die Schutzschicht bleibt also gesperrt |
+| `--trocken` | bei `rueckweg` und `sperre`: zeigt den Plan, ändert weder Zustand noch Sperre noch Systeme (nur das Audit-Protokoll bekommt die Zeile) |
+| `wamo-anker lokal <befehl>` | Notfallweg nur für root, wenn der Dienst steht: dieselbe Prüfung und dasselbe Protokoll ohne Socket |
+
+**Wer darf.** Der Dienst `wamo-anker` (root, ohne Capabilities) lauscht auf `/run/wamo-anker/anker.sock` (Ordner 2750
+`root:wamocon`, Socket 0660). Zusätzlich prüft er jede Verbindung per `SO_PEERCRED`, bevor er ein Byte liest. Erlaubt sind
+`root` und `wamocon`; `wamo-release` ist für Schritt 0.3 vorgesehen (status, rueckweg, sperre an, pruefe-sonder, nie
+`sperre aus`; ein Zugriff dafür wäre eine ACL auf den Socket). `wamo`, `wamo-core`, `wamo-geraete`, die Tunnelbenutzer und alle
+anderen werden abgewiesen.
+
+**Was er nie tut.** Keine Shell und kein Pfad aus einer Anfrage (`subprocess` nur mit Liste, feste Pfade, leere Umgebung,
+Zeitlimit, begrenzte Ausgabe); keine Geheimnisse lesen oder protokollieren; kein Netz (`RestrictAddressFamilies=AF_UNIX`);
+nichts am Repo; keine Datenbank (kommt in 0.2 und 2.5); Schritt-Skripte nur, wenn sie root gehören, nicht beschreibbar sind und
+ihre Prüfsumme im Manifest stimmt. Eingaben: genau eine ASCII-Zeile bis 160 Bytes, Allowlist-Regex je Feld, jede Anfrage
+mit eigener Kennung (dieselbe Kennung wird nie zweimal bedient). Bei einem Fehler gilt immer die sichere Seite: unklare
+Sperre heißt gesperrt, kaputte Zustandsdatei heißt kein Rückweg und keine Überschreibung, nicht schreibbares Audit-Protokoll
+heißt keine ändernde Aktion. Damit niemand (auch kein erlaubter Benutzer) das Protokoll füllt und so den Rückweg aussperrt,
+gelten Klassen: Lesen, Abweisungen und Anfragen ohne Wirkung werden nur bis 75 Prozent Füllgrad protokolliert (je uid und
+Grund höchstens 20 Zeilen pro Minute, der Rest wird gezählt und in der nächsten Zeile genannt), eine ändernde Sperre bis 90
+Prozent, ein Rückweg mit Wirkung bis 100 Prozent. Ändernde Anfragen sind je uid auf 30 pro Minute gedrosselt. Es wird nur
+angehängt, wenn mindestens 1 MiB Platz frei ist (keine halben Zeilen bei voller Platte).
+
+| Ort | Inhalt |
+| --- | --- |
+| `/usr/local/lib/wamo-anker` (root, 0755) | `wamo_anker.py`, `wamo-anker.sh`, `anker_rauchtest.py`, `schritte/`, `SHA256SUMS` (Prüfsumme aller Dateien; `ExecStartPre` prüft sie vor jedem Start, `status` zeigt Abweichungen) |
+| `/etc/wamo-anker` (root, 0755, ohne Geheimnisse) | `selbstaenderung.aus` (die Sperre) |
+| `/var/lib/wamo-anker` (root, 0700) | `stand.json` (Tabelle der letzten guten Stände je Komponente, die Vorgängerin als `.vorher`), Schreibsperre |
+| `/var/log/wamo-anker` (root, 0750) | `audit.jsonl`: eine JSON-Zeile je Ereignis mit Hashkette (`n`, `vorher`, `hash`), `chattr +a`, Zeile höchstens 1024 Bytes, bei 32 MiB ist es voll |
+| `/run/wamo-anker` | `anker.sock` |
+
+Format von `stand.json` (bis die Stufen 1 und 2 es füllen, steht überall `null`; Handarbeit von root ist möglich, die Datei
+wird beim Laden streng geprüft): je Komponente `aktiv` und `letzte_gute` mit `version` (`vX.Y.Z`), `commit` (40 Hexzeichen),
+`ziel` (`blau` oder `gruen` für die Oberfläche, `a` oder `b` für den Kern) und `seit` (UTC, ISO 8601).
+
+**Einrichten (von Hand, wiederholbar).** Erstinstallation legt `stand.json` leer an und **setzt die Sperre** (Selbständerung
+aus); ein weiterer Lauf ändert weder Zustand noch Sperre noch Protokoll.
+
+```bash
+ssh sokrates2 "rm -rf ~/wamo-infra" && scp -r infra/sokrates2 sokrates2:wamo-infra && ssh sokrates2 "chmod -R go-w ~/wamo-infra"
+ssh sokrates2 "sudo bash ~/wamo-infra/anker-einrichten.sh --trocken"                       # zeigt nur, was geschähe
+ssh sokrates2 "sudo bash ~/wamo-infra/anker-einrichten.sh"
+ssh sokrates2 "wamo-anker status"
+ssh sokrates2 "sudo python3 -I /usr/local/lib/wamo-anker/anker_rauchtest.py --produktiv"   # Wegwerf-Instanz plus echte Installation
+```
+
+Der Rauchtest prüft in einer Wegwerf-Instanz Befehle, Verbotsproben (auch als `wamo`, `wamo-core`, `nobody` über `runuser`),
+Sperre, `--trocken`, Hashkette und Zeit des Rückwegs (UI unter 30 Sekunden, Kern unter 60 Sekunden, hier mit Attrappen der
+Schritt-Skripte). Mit `--produktiv` prüft er zusätzlich Rechte, Prüfsumme, `chattr +a` und den Socket der echten Installation
+(es entstehen Zeilen im Audit-Protokoll). Probelauf der Skripte ohne root: `WAMO_ANKER_WURZEL=/tmp/anker-probe bash
+anker-einrichten.sh` (läuft nie als root, die Wurzel darf nur aus A-Z, a-z, 0-9, `.`, `_`, `-` und `/` bestehen, ohne `//` und
+ohne `.` oder `..`). Tests ohne Root: `uv run python -m pytest -q test_anker.py test_anker_skripte.py` im Ordner `voice-core`.
+Das Einrichtungsskript lässt Systemordner wie `/usr/local/lib` unverändert und hält den bisherigen Baum als
+`/usr/local/lib/wamo-anker.vorher`, bis `wamo-anker status` nach dem Neustart bestanden hat (sonst steht der Rückfallbefehl im
+Fehlertext). `status` meldet außerdem Elternordner von `lib`, die für alle oder für eine Gruppe mit Mitgliedern beschreibbar
+sind (wer dort schreiben darf, könnte `lib` samt Prüfsumme austauschen; auf Ubuntu ist `/usr/local/lib` root:staff 2775, die
+Gruppe `staff` ist normalerweise leer und löst keine Meldung aus).
+
+**Rückweg.** `sudo bash ~/wamo-infra/anker-rueckweg.sh` stoppt den Dienst, alles bleibt liegen. Mit `--entfernen` verschwinden
+Programme, Unit, Verknüpfung, tmpfiles-Datei und `stand.json` (beide Dateien zuvor nach `/var/backups/wamo-anker` gesichert,
+das Audit-Protokoll wird dorthin verschoben, nie gelöscht). Die Sperre bleibt bewusst bestehen; sie fällt nur mit
+`sudo rm /etc/wamo-anker/selbstaenderung.aus`. Beide Skripte kennen `--trocken`.
+
+**Wenn das Audit-Protokoll voll oder beschädigt ist.** `status` zeigt `Kette defekt` oder den Füllgrad. Ab 75 Prozent
+protokollieren nur noch schreibende Befehle (der Rückweg bleibt möglich), bei 100 Prozent oder defekter Kette lehnen alle
+schreibenden Befehle ab. Handarbeit: `sudo chattr -a /var/log/wamo-anker/audit.jsonl`, Datei nach `/var/backups/wamo-anker`
+verschieben, `sudo systemctl restart wamo-anker` (neue Kette), `sudo chattr +a` auf die neue Datei.
+
+**Grenzen.** Der Anker schützt gegen WAMO und die Dienstbenutzer, nicht gegen Menschen mit root: `wamocon` hat sudo und die
+Docker-Gruppe und kann ihn ändern, ebenso das Audit-Protokoll samt Kette (die Hashkette ist nicht geschlüsselt; sie erkennt
+Fehler und Teilmanipulation, ein Fälscher mit root rechnet sie neu; den letzten Hash zeigt `status`, ab Schritt 0.2 gehört er
+zusätzlich in die Datenbank). Das Gedächtnis gegen doppelte Anfragen liegt im Speicher, nach einem Neustart des Dienstes ist
+es leer. Ein Schritt-Skript, das einen Hintergrundprozess mit offener Ausgabe zurücklässt, läuft bis zum Zeitlimit; danach
+beendet der Anker die ganze Prozessgruppe. Der Dienst bedient eine Verbindung nach der anderen: Ein laufender Rückweg
+(`alles`: bis 300 Sekunden) hält `status` und `sperre` so lange auf; SIGTERM wartet ihn ab (`TimeoutStopSec=330`). Ein
+erlaubter Benutzer kann den Dienst jeweils bis zu 5 Sekunden mit einer stillen Verbindung binden und das Protokoll innerhalb der
+genannten Klassen und Drosseln beschweren; wer das Protokoll trotzdem füllt, braucht Handarbeit von root (oben), und root kann
+den Rückweg im Notfall direkt am Skript unter `/usr/local/lib/wamo-anker/schritte` ausführen. Die Dienst-Unit wurde ohne
+systemd-Test auf Sokrates-2 geschrieben und ist durch `systemd-analyze verify` im Einrichtungsskript, `systemd-analyze security
+wamo-anker` und den Rauchtest zu bestätigen; startet sie nicht, sind `MemoryDenyWriteExecute` und `SystemCallFilter` die ersten
+Verdächtigen.
+
 ---
 
 WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn
