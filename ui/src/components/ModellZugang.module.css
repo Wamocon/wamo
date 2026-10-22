@@ -46,6 +46,13 @@
 
 .mehr > summary { font-size: 14px; color: var(--ink-soft); cursor: pointer; min-height: 32px; }
 .mehr[open] > summary { margin-bottom: 6px; }
+.mehr > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Nummerierte Schritte der geführten Anleitung */
+.schritte { margin: 0 0 10px; padding-left: 22px; display: grid; gap: 6px; font-size: 15px; line-height: 1.4; }
+.schritte a { color: var(--accent); font-weight: 700; }
+.schritte a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.schritte code { font-family: var(--font-code); font-size: 14px; background: var(--rule); padding: 1px 6px; border-radius: 3px; }
 
 .knoepfe { display: flex; gap: 8px; flex-wrap: wrap; }
 

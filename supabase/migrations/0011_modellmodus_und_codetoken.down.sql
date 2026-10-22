@@ -8,6 +8,8 @@ do $$ begin
   end if;
 end $$;
 
+set local lock_timeout = '5s';
+
 -- Wächter zurück auf den Stand von 0010 (ohne Claude-Code-Token); die Spalten hängen nicht mehr daran
 alter table __SCHEMA__.model_access
   drop constraint if exists model_access_codetoken_vollstaendig,
@@ -38,6 +40,12 @@ begin
   end if;
   return new;
 end $$;
+
+-- Wer nur Hausmodelle gewählt hat, soll danach nicht plötzlich mit Claude bedient werden, weil die Wahl verschwindet und
+-- der Schlüssel bleibt: sein API-Schlüssel wird mit gelöscht (er trägt ihn bei Bedarf neu ein). Der Wächter räumt die
+-- Angaben (Ende, Workspace, geprüft) mit.
+update __SCHEMA__.model_access set claude_schluessel = null
+ where modell_modus = 'nur_haus' and claude_schluessel is not null;
 
 alter table __SCHEMA__.model_access
   drop column if exists modell_modus,

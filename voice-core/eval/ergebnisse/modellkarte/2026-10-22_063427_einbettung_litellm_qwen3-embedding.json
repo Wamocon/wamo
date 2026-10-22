@@ -1,0 +1,13 @@
+{
+ "zeitpunkt": "2026-10-22T06:34:27+02:00",
+ "anbieter": "litellm",
+ "modell": "qwen3-embedding",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "einbettung",
+ "dimension": 4096,
+ "treffer": 6,
+ "von": 6,
+ "dokumente_s": 5.08,
+ "einzel_p50_s": 0.18,
+ "einzel_max_s": 0.21
+}

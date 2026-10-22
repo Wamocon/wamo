@@ -18,11 +18,15 @@ from dataclasses import dataclass
 
 ECC_PREFIX = "ecc:"
 
-# Modell je Auftrag (Kosten): Standard ist Haiku für alle Arten (Sonnet kostet etwa das Dreifache). Sonnet und Opus
-# nur, wenn WAMO_ENTWICKLUNG_MODELL sie ausdrücklich setzt (dev_agent.py), und nur mit einem Namen aus MODELLE_ERLAUBT.
+# Modell je Auftrag (Kosten): Läuft der Auftrag über einen API-Schlüssel und geht vom Guthaben ab, ist der Standard
+# Haiku für alle Arten (Sonnet kostet etwa das Dreifache). Läuft er mit dem Claude-Code-Token eines Max-Tarifs
+# (Kontingent des Abos, keine Kosten je Anfrage), ist der Standard Sonnet (MODELL_ABO, modell_fuer(abo=True)). Opus und
+# jede Abweichung nur, wenn WAMO_ENTWICKLUNG_MODELL sie ausdrücklich setzt (dev_agent.py), und nur mit einem Namen aus
+# MODELLE_ERLAUBT. Das Gesprächsmodell bleibt in jedem Fall Haiku (llm_anbieter.py).
 MODELL_STANDARD = "claude-haiku-5-5"
 MODELL_SONNET = "claude-sonnet-5-5"
 MODELL_OPUS = "claude-opus-5-5"
+MODELL_ABO = MODELL_SONNET
 MODELLE_ERLAUBT: tuple[str, ...] = (MODELL_STANDARD, MODELL_SONNET, MODELL_OPUS)
 
 
@@ -280,14 +284,16 @@ def zugangs_variablen(art: str) -> tuple[str, ...]:
     return tuple(name for dienst in KARTEN[art].zugaenge for name in ZUGANG_VARIABLEN[dienst])
 
 
-def modell_fuer(art: str, wunsch: str | None = None) -> str:
-    """Modell für einen Auftrag: der Wunsch (WAMO_ENTWICKLUNG_MODELL), wenn erlaubt, sonst das der Art.
+def modell_fuer(art: str, wunsch: str | None = None, *, abo: bool = False) -> str:
+    """Modell für einen Auftrag: der Wunsch (WAMO_ENTWICKLUNG_MODELL), wenn erlaubt, sonst der Standard je Zugang:
+    mit dem Claude-Code-Token eines Max-Tarifs (abo=True; Kontingent des Abos, keine Kosten je Anfrage) Sonnet
+    (MODELL_ABO), mit einem API-Schlüssel (geht vom Guthaben ab) das Modell der Art, also Haiku.
     ValueError bei einem Wunsch außerhalb der Allowlist (kein stilles Ausweichen auf ein teures Modell)."""
     if wunsch:
         if wunsch not in MODELLE_ERLAUBT:
             raise ValueError(f"Modell {wunsch!r} ist nicht erlaubt (erlaubt: {', '.join(MODELLE_ERLAUBT)})")
         return wunsch
-    return KARTEN[art].modell
+    return MODELL_ABO if abo else KARTEN[art].modell
 
 
 def sandbox_name(name: str) -> str:

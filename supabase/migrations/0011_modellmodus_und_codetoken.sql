@@ -11,6 +11,12 @@
 --                aufträge, nie für das Gespräch (die Messages-API nimmt ihn nicht). Verschlüsselt wie der API-Schlüssel
 --                (AES-256-GCM, Profil-ID und Zweck als zusätzliche Daten, Hauptschlüssel nur beim Kern). wamo_admin hat
 --                auf diese Spalten kein Recht; ein Admin leert den Token nur, indem er das Profil auf nur_haus setzt.
+-- Wichtig: 0010 danach NIE erneut anwenden. Es setzt die Rechte der Tabelle zurück (revoke all) und den Wächter auf den
+-- alten Stand; der Kern würde dann alle Profile auf Hausmodelle werfen. Vor dem Anwenden einer Migration prüfen:
+--   select version from __SCHEMA__.schema_migrations order by version;
+-- Der Wert nur_haus in modell_modus (Wahl der Person) ist nicht die Spalte nur_haus (Zwang des Admins): zwei Schalter.
+
+set local lock_timeout = '5s';  -- ALTER TABLE sperrt model_access kurz; hängt es, bricht die Migration ab statt zu stauen
 
 do $$ begin
   if to_regclass('__SCHEMA__.model_access') is null then
@@ -49,23 +55,23 @@ declare
     (pg_has_role(current_user, 'wamo_admin', 'USAGE') and not pg_has_role(current_user, 'wamo_core', 'USAGE'))
     or (pg_has_role(session_user, 'wamo_admin', 'USAGE') and not pg_has_role(session_user, 'wamo_core', 'USAGE'));
 begin
-  if verwaltung and new.claude_schluessel is not null then
-    if tg_op = 'INSERT' then
-      raise exception 'wamo_admin darf keinen Claude-Schlüssel setzen' using errcode = '42501';
-    elsif (new.claude_schluessel, new.claude_schluessel_ende, new.claude_workspace, new.claude_geprueft_at)
-          is distinct from
-          (old.claude_schluessel, old.claude_schluessel_ende, old.claude_workspace, old.claude_geprueft_at) then
-      raise exception 'wamo_admin darf einen Claude-Schlüssel nicht ändern' using errcode = '42501';
-    end if;
+  -- Die Verwaltung setzt, ersetzt oder leert Schlüssel und Token nie selbst (das Leeren tut nur der Wechsel auf nur_haus
+  -- weiter unten): geprüft wird deshalb auch, wenn ein vorhandener Wert verschwinden soll
+  if verwaltung and tg_op = 'INSERT' and new.claude_schluessel is not null then
+    raise exception 'wamo_admin darf keinen Claude-Schlüssel setzen' using errcode = '42501';
+  elsif verwaltung and tg_op = 'UPDATE' and (new.claude_schluessel is not null or old.claude_schluessel is not null)
+        and (new.claude_schluessel, new.claude_schluessel_ende, new.claude_workspace, new.claude_geprueft_at)
+            is distinct from
+            (old.claude_schluessel, old.claude_schluessel_ende, old.claude_workspace, old.claude_geprueft_at) then
+    raise exception 'wamo_admin darf einen Claude-Schlüssel nicht ändern' using errcode = '42501';
   end if;
-  if verwaltung and new.claude_code_token is not null then
-    if tg_op = 'INSERT' then
-      raise exception 'wamo_admin darf keinen Claude-Code-Token setzen' using errcode = '42501';
-    elsif (new.claude_code_token, new.claude_code_token_ende, new.claude_code_token_at)
-          is distinct from
-          (old.claude_code_token, old.claude_code_token_ende, old.claude_code_token_at) then
-      raise exception 'wamo_admin darf einen Claude-Code-Token nicht ändern' using errcode = '42501';
-    end if;
+  if verwaltung and tg_op = 'INSERT' and new.claude_code_token is not null then
+    raise exception 'wamo_admin darf keinen Claude-Code-Token setzen' using errcode = '42501';
+  elsif verwaltung and tg_op = 'UPDATE' and (new.claude_code_token is not null or old.claude_code_token is not null)
+        and (new.claude_code_token, new.claude_code_token_ende, new.claude_code_token_at)
+            is distinct from
+            (old.claude_code_token, old.claude_code_token_ende, old.claude_code_token_at) then
+    raise exception 'wamo_admin darf einen Claude-Code-Token nicht ändern' using errcode = '42501';
   end if;
   -- Wird der Schlüssel oder der Token geleert, gehen die Angaben mit
   if tg_op = 'UPDATE' and new.claude_schluessel is null and old.claude_schluessel is not null then
@@ -93,24 +99,40 @@ grant insert (modell_modus, claude_code_token, claude_code_token_ende, claude_co
 grant update (modell_modus, claude_code_token, claude_code_token_ende, claude_code_token_at)
   on __SCHEMA__.model_access to wamo_core;
 
--- Selbsttest: bricht die Transaktion bei Rechtedrift ab.
-do $$ begin
-  if has_column_privilege('wamo_admin', '__SCHEMA__.model_access', 'modell_modus', 'SELECT,INSERT,UPDATE')
-     or has_column_privilege('wamo_admin', '__SCHEMA__.model_access', 'claude_code_token', 'SELECT,INSERT,UPDATE')
-     or has_column_privilege('wamo_admin', '__SCHEMA__.model_access', 'claude_code_token_ende', 'SELECT,INSERT,UPDATE')
-     or has_column_privilege('wamo_admin', '__SCHEMA__.model_access', 'claude_code_token_at', 'SELECT,INSERT,UPDATE')
-     or not has_column_privilege('wamo_core', '__SCHEMA__.model_access', 'modell_modus', 'SELECT,INSERT,UPDATE')
-     or not has_column_privilege('wamo_core', '__SCHEMA__.model_access', 'claude_code_token', 'SELECT,INSERT,UPDATE')
-     or has_column_privilege('wamo_core', '__SCHEMA__.model_access', 'nur_haus', 'INSERT,UPDATE')
+-- Selbsttest: bricht die Transaktion bei Rechtedrift ab. Jedes Recht und jede neue Spalte einzeln (has_column_privilege
+-- mit mehreren Rechten wäre schon bei einem davon wahr).
+do $$
+declare
+  spalten text[] := array['modell_modus', 'claude_code_token', 'claude_code_token_ende', 'claude_code_token_at'];
+  spalte text;
+  recht text;
+  rolle text;
+begin
+  foreach spalte in array spalten loop
+    foreach recht in array array['SELECT', 'INSERT', 'UPDATE'] loop
+      if not has_column_privilege('wamo_core', '__SCHEMA__.model_access', spalte, recht) then
+        raise exception 'model_access (0011): wamo_core braucht % auf %', recht, spalte using errcode = '42501';
+      end if;
+      foreach rolle in array array['wamo_admin', 'anon', 'authenticated', 'service_role'] loop
+        if has_column_privilege(rolle, '__SCHEMA__.model_access', spalte, recht) then
+          raise exception 'model_access (0011): % darf % auf % nicht haben', rolle, recht, spalte using errcode = '42501';
+        end if;
+      end loop;
+    end loop;
+  end loop;
+  if has_column_privilege('wamo_core', '__SCHEMA__.model_access', 'nur_haus', 'INSERT,UPDATE')
      or has_table_privilege('wamo_core', '__SCHEMA__.model_access', 'DELETE,TRUNCATE')
-     or has_column_privilege('anon', '__SCHEMA__.model_access', 'claude_code_token', 'SELECT,INSERT,UPDATE')
-     or has_column_privilege('authenticated', '__SCHEMA__.model_access', 'claude_code_token', 'SELECT,INSERT,UPDATE')
-     or has_column_privilege('service_role', '__SCHEMA__.model_access', 'claude_code_token', 'SELECT,INSERT,UPDATE')
-     or has_column_privilege('anon', '__SCHEMA__.model_access', 'modell_modus', 'SELECT,INSERT,UPDATE')
-     or has_column_privilege('authenticated', '__SCHEMA__.model_access', 'modell_modus', 'SELECT,INSERT,UPDATE')
-     or has_column_privilege('service_role', '__SCHEMA__.model_access', 'modell_modus', 'SELECT,INSERT,UPDATE')
   then
-    raise exception 'model_access (0011): unzulässige Rechte (Rechte der neuen Spalten prüfen)' using errcode = '42501';
+    raise exception 'model_access (0011): wamo_core hat zu viele Rechte' using errcode = '42501';
+  end if;
+  -- der Wächter hängt an der Tabelle und kennt den Claude-Code-Token
+  if not exists (select 1 from pg_trigger t where t.tgrelid = '__SCHEMA__.model_access'::regclass
+                   and t.tgname = 'model_access_guard' and t.tgenabled = 'O')
+     or (select position('claude_code_token' in p.prosrc) from pg_proc p
+          where p.oid = '__SCHEMA__.model_access_guard()'::regprocedure) = 0
+  then
+    raise exception 'model_access (0011): der Wächter model_access_guard fehlt oder kennt den Token nicht'
+      using errcode = '42501';
   end if;
 end $$;
 

@@ -1,8 +1,9 @@
 "use client";
 
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { ModellWahl } from "@/components/ModellWahl";
 import type { Modellzugang } from "@/lib/nachrichten";
+import { API_ANLEITUNG, NICHT_AUTOMATISCH, TOKEN_ANLEITUNG, type Anleitung } from "@/lib/schluesselhilfe";
 import { useSelect } from "@/lib/store";
 import type { ModellzugangAnfrage, SchluesselArt } from "@/lib/useWamo";
 import { istOnline, wamo } from "@/lib/wamo";
@@ -37,7 +38,7 @@ type Wartet = { art: SchluesselArt; aktion: "hinterlegen" | "loeschen" };
 type FormularProps = {
   art: SchluesselArt;
   ueberschrift: string;
-  erklaerung: ReactNode;
+  anleitung: Anleitung;
   beschriftung: string;
   platzhalter: string;
   hinterlegt: boolean;
@@ -61,6 +62,13 @@ function SchluesselFormular(p: FormularProps) {
   const meins = p.wartet?.art === p.art;
   const idKopf = `schluessel-${p.art}`;
   const hinweis = p.hinweis?.art === p.art ? p.hinweis : null;
+  const anleitungRef = useRef<HTMLDetailsElement>(null);
+  const eingabeRef = useRef<HTMLInputElement>(null);
+  // "Fertig, eintragen": Anleitung einklappen und ins Feld springen
+  const fertig = () => {
+    if (anleitungRef.current) anleitungRef.current.open = false;
+    eingabeRef.current?.focus();
+  };
 
   return (
     <section className={styles.abschnitt} aria-labelledby={idKopf}>
@@ -72,7 +80,37 @@ function SchluesselFormular(p: FormularProps) {
           ? `Hinterlegt, endet auf …${p.ende ?? "????"}${zeitText(p.gesetzt)}.`
           : "Noch nichts hinterlegt."}
       </p>
-      <p className={styles.klein}>{p.erklaerung}</p>
+      {/* Geführte Anleitung: offen, solange noch nichts hinterlegt ist; key setzt sie beim Wechsel zurück */}
+      <details key={String(p.hinterlegt)} ref={anleitungRef} className={styles.mehr} open={!p.hinterlegt}>
+        <summary>{p.anleitung.ueberschrift}</summary>
+        <ol className={styles.schritte}>
+          {p.anleitung.schritte.map((s) => (
+            <li key={s.text}>
+              {s.text}
+              {s.link && (
+                <>
+                  {" "}
+                  <a href={s.link.url} target="_blank" rel="noopener noreferrer">
+                    {s.link.wort} (neuer Tab)
+                  </a>
+                </>
+              )}
+              {s.befehl && (
+                <>
+                  {" "}
+                  <code>{s.befehl}</code>
+                </>
+              )}
+            </li>
+          ))}
+          <li>
+            {p.anleitung.zweck} {NICHT_AUTOMATISCH}
+          </li>
+        </ol>
+        <button type="button" className="btn-secondary btn-small" onClick={fertig}>
+          Fertig, eintragen
+        </button>
+      </details>
       <form
         className={styles.form}
         autoComplete="off"
@@ -85,6 +123,7 @@ function SchluesselFormular(p: FormularProps) {
         <label className={styles.feld}>
           <span>{p.hinterlegt ? `Neu: ${p.beschriftung}` : p.beschriftung}</span>
           <input
+            ref={eingabeRef}
             type="password"
             name={`wamo-${p.art === "api" ? "anthropic" : "claudecode"}`}
             value={wert}
@@ -301,7 +340,7 @@ export const ModellZugang = memo(function ModellZugang({
               <SchluesselFormular
                 art="api"
                 ueberschrift="Claude-API-Schlüssel (Gespräch, bezahlt nach Verbrauch)"
-                erklaerung="Erzeugen unter console.anthropic.com im Bereich API-Schlüssel. Der Kern prüft ihn mit einer kleinen Anfrage. Mit ihm läuft das Gespräch auf Claude Haiku; Sonnet kostet ein Vielfaches."
+                anleitung={API_ANLEITUNG}
                 beschriftung="Anthropic-API-Schlüssel"
                 platzhalter="sk-ant-api…"
                 hinterlegt={hinterlegt}
@@ -316,13 +355,7 @@ export const ModellZugang = memo(function ModellZugang({
               <SchluesselFormular
                 art="code"
                 ueberschrift="Claude-Code-Token (Entwicklungsaufträge, aus dem Max-Tarif)"
-                erklaerung={
-                  <>
-                    Erzeugen im Terminal mit <code>claude setup-token</code>, angemeldet mit deinem Claude-Konto. Der
-                    Token gilt nur für Entwicklungsaufträge mit Claude Code, nicht für das Gespräch. Es gibt keine
-                    Testanfrage, damit dein Kontingent nicht verbraucht wird; WAMO prüft nur das Format.
-                  </>
-                }
+                anleitung={TOKEN_ANLEITUNG}
                 beschriftung="Claude-Code-Token"
                 platzhalter="sk-ant-oat…"
                 hinterlegt={zugang?.codeHinterlegt === true}

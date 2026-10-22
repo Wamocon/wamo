@@ -772,6 +772,7 @@ class _Auftrag:
     json_schema: dict | None
     schema_name: str
     timeout: float
+    denken: bool = True  # False: Claude ohne Denkphase (sonst zählt sie zu max_tokens und die Antwort kann abbrechen)
 
 
 def _systemtext(a: _Auftrag, wahl: Wahl) -> str:
@@ -785,6 +786,7 @@ async def _claude_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
     client = zugang.anthropic().with_options(
         timeout=anthropic.Timeout(a.timeout, connect=VERBINDUNG_TIMEOUT_SECS), max_retries=0
     )
+    zusatz: dict[str, Any] = {} if a.denken else {"thinking": {"type": "disabled"}}
     try:
         r = await client.messages.create(
             model=wahl.modell,
@@ -792,6 +794,7 @@ async def _claude_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
             system=_systemtext(a, wahl),
             output_config=output_config,
             messages=[{"role": "user", "content": _claude_inhalt(a.inhalt)}],
+            **zusatz,
         )
     except anthropic.AuthenticationError:
         raise LLMFehler("Claude: Schlüssel abgelehnt", verbindung=True) from None
@@ -899,15 +902,17 @@ async def modell_anfrage(
     baustein: str,
     json_schema: dict | None = None,
     schema_name: str = "antwort",
+    denken: bool = False,
 ) -> Antwort:
     """Ein Aufruf genau dieser Wahl, ohne Rückfall (den Rückfall entscheidet der Boss, boss.py). Zwei Sperren, die
     unabhängig von der Auswahl gelten: ein haus-Profil ruft nie Claude auf, und ein "Hausmodell", das zu Anthropic
-    führt, wird abgelehnt. Wirft LLMFehler."""
+    führt, wird abgelehnt. Claude läuft standardmäßig ohne Denkphase (denken=False), damit die Tokengrenze für die
+    Antwort gilt. Wirft LLMFehler."""
     if wahl.anbieter == "claude" and zugang.art != "claude":
         raise LLMNichtVerfuegbar("Dieses Profil nutzt nur Hausmodelle, Anthropic ist gesperrt")
     if wahl.anbieter == "litellm" and (ziel := anthropic_ziel(wahl.modell)):
         raise LLMNichtVerfuegbar(f"Hausmodell {wahl.modell!r} nicht nutzbar: {ziel}")
-    auftrag = _Auftrag(baustein, system, inhalt, max_tokens, json_schema, schema_name, timeout)
+    auftrag = _Auftrag(baustein, system, inhalt, max_tokens, json_schema, schema_name, timeout, denken)
     try:
         if wahl.anbieter == "litellm":
             return await _litellm_anfrage(wahl, auftrag, zugang)

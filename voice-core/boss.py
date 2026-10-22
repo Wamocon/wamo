@@ -46,6 +46,7 @@ from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.services.llm_service import FunctionCallParams
 
+import llm_anbieter as la
 import modellkarte as karte
 from llm_anbieter import (
     Anbieter,
@@ -60,7 +61,6 @@ from llm_anbieter import (
     json_aus_text,
     litellm_client,
     litellm_extra,
-    litellm_problem,
     modell_anfrage,
 )
 from persona import clean_inline, sichtbar
@@ -78,12 +78,24 @@ MINDEST_GUETE = {"gespraech": 0.90, "lernen": 0.70, "zusammenfassung": 0.70, "vi
                  "analyse": 0.60, "bewertung": 0.70}
 NOTFALL_GUETE = {"gespraech": 0.70, "lernen": 0.50, "zusammenfassung": 0.50, "vision": 0.50, "code": 0.40,
                  "analyse": 0.40, "bewertung": 0.50}
-# Strafe je Latenzstufe (schnell 0, mittel 1, langsam 2): nur dort groß, wo ein Mensch auf die Antwort wartet
-LATENZ_ABZUG = {"gespraech": 0.05, "vision": 0.05, "lernen": 0.0, "zusammenfassung": 0.02, "code": 0.0,
-                "analyse": 0.0, "bewertung": 0.02}
+# Strafe je Latenzstufe (schnell 0, mittel 1, langsam 2): groß, wo ein Mensch am Bildschirm auf die Antwort wartet
+# (Gespräch, Bildschirm: eine Stufe Bildschirm kostet 0,20, weil jeder Klick darauf wartet), klein bei Aufgaben im
+# Hintergrund
+LATENZ_ABZUG = {"gespraech": 0.05, "vision": 0.20, "lernen": 0.0, "zusammenfassung": 0.02, "code": 0.01,
+                "analyse": 0.01, "bewertung": 0.02}
 CLOUD_ABZUG = 0.03  # bei gleicher Güte gewinnt das Hausmodell (Kosten, Datenschutz); nicht im Gespräch
 KEIN_CLOUD_ABZUG = frozenset({"gespraech"})
 LATENZ_STUFE = {"schnell": 0, "mittel": 1, "langsam": 2}
+# Ein eigens für die Aufgabe abgestimmtes Modell (Karte: spezialist_fuer) bekommt einen Vorschuss: Die Testsätze sind
+# klein (acht Aufgaben, ein Bildschirmfoto), und ein Spezialist soll bei größeren Aufgaben besser sein als ein
+# Allgemeinmodell, das im kleinen Test nur zufällig eine Aufgabe mehr schafft.
+SPEZIALIST_BONUS = 0.15
+# Glättung: Wenige Fälle zählen weniger. Güte g bei n Fällen wird zu (g*n + 0,5*K) / (n + K), K = 1.
+K_GLAETTUNG = 1.0
+
+
+def glaetten(g: float, n: int) -> float:
+    return (g * n + 0.5 * K_GLAETTUNG) / (n + K_GLAETTUNG)
 
 # Probe vor dem Gespräch (nur Hausmodelle): eine kleine Anfrage mit einem Ausgabe-Token
 PROBE_TIMEOUT_SECS = 10.0
@@ -107,16 +119,17 @@ def _anbieter_name(a: str) -> Anbieter:
 
 
 def guete(m: karte.Modell, klasse: str) -> float | None:
-    """Güte des Modells für die Klasse. Gespräch: das Schwächere aus Gespräch und Werkzeug-Treue."""
+    """Geglättete Güte des Modells für die Klasse. Gespräch: das Schwächere aus Gespräch und Werkzeug-Treue."""
     e = m.eignungen.get(FAEHIGKEIT[klasse])
     if e is None or e.guete is None:
         return None
+    g = glaetten(e.guete, e.n)
     if klasse == "gespraech":
         w = m.eignungen.get("werkzeuge")
         if w is None or w.guete is None:
             return None
-        return min(e.guete, w.guete)
-    return e.guete
+        g = min(g, glaetten(w.guete, w.n))
+    return g
 
 
 def punkte(m: karte.Modell, klasse: str) -> float | None:
@@ -127,7 +140,8 @@ def punkte(m: karte.Modell, klasse: str) -> float | None:
     abzug = LATENZ_ABZUG[klasse] * LATENZ_STUFE.get(latenz, 1)
     if m.anbieter == "claude" and klasse not in KEIN_CLOUD_ABZUG:
         abzug += CLOUD_ABZUG
-    return round(g - abzug, 4)
+    bonus = SPEZIALIST_BONUS if FAEHIGKEIT[klasse] in m.spezialist_fuer else 0.0
+    return round(g - abzug + bonus, 4)
 
 
 def rangliste(klasse: str, *, claude_erlaubt: bool, vertraulich: bool = False, claude_modell: str | None = None,
@@ -144,6 +158,8 @@ def rangliste(klasse: str, *, claude_erlaubt: bool, vertraulich: bool = False, c
             continue
         if m.anbieter == "claude" and not erlaubt_claude:
             continue
+        if klasse == "gespraech" and m.live_neu_s is not None and m.live_neu_s > karte.LIVE_NEU_MAX_S:
+            continue  # im Livegespräch zu langsam (gemessen), auch wenn die Werkzeug-Treue stimmt
         p, g = punkte(m, klasse), guete(m, klasse)
         if p is None or g is None:
             continue
@@ -265,7 +281,7 @@ async def live_problem(alias: str) -> str | None:
 async def _haus_problem(alias: str, klasse: str, probe: bool) -> str | None:
     if ziel := anthropic_ziel(alias):
         return ziel
-    if problem := await litellm_problem(alias):
+    if problem := await la.litellm_problem(alias):  # über das Modul, damit sich die Prüfung ersetzen lässt
         return problem
     if klasse == "gespraech" and probe and probe_an():
         return await live_problem(alias)

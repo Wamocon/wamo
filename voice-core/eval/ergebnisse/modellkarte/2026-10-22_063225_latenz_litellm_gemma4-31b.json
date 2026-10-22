@@ -1,0 +1,71 @@
+{
+ "zeitpunkt": "2026-10-22T06:32:25+02:00",
+ "anbieter": "litellm",
+ "modell": "gemma4-31b",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "latenz",
+ "prompt_zeichen": 7718,
+ "werkzeuge": 17,
+ "kurz_1": {
+  "erstes_token_s": 8.71,
+  "gesamt_s": 9.51,
+  "zeichen": 31,
+  "fehler": null
+ },
+ "kurz_2": {
+  "erstes_token_s": 0.57,
+  "gesamt_s": 1.36,
+  "zeichen": 31,
+  "fehler": null
+ },
+ "voll_neu_1": {
+  "erstes_token_s": 7.53,
+  "gesamt_s": 7.64,
+  "zeichen": 0,
+  "fehler": null
+ },
+ "voll_gleich": {
+  "erstes_token_s": 1.39,
+  "gesamt_s": 1.5,
+  "zeichen": 0,
+  "fehler": null
+ },
+ "voll_neu_2": {
+  "erstes_token_s": 7.45,
+  "gesamt_s": 7.56,
+  "zeichen": 0,
+  "fehler": null
+ },
+ "zwischen": {
+  "wamo-coder": {
+   "erstes_token_s": 13.65,
+   "gesamt_s": 13.88,
+   "zeichen": 33,
+   "fehler": null
+  },
+  "qwen3-coder-next-raw": {
+   "erstes_token_s": 0.23,
+   "gesamt_s": 0.45,
+   "zeichen": 33,
+   "fehler": null
+  },
+  "qwen3.8-27b": {
+   "erstes_token_s": 0.41,
+   "gesamt_s": 0.88,
+   "zeichen": 33,
+   "fehler": null
+  }
+ },
+ "nach_zwischen_1": {
+  "erstes_token_s": 0.72,
+  "gesamt_s": 1.56,
+  "zeichen": 31,
+  "fehler": null
+ },
+ "nach_zwischen_2": {
+  "erstes_token_s": 0.58,
+  "gesamt_s": 1.39,
+  "zeichen": 31,
+  "fehler": null
+ }
+}

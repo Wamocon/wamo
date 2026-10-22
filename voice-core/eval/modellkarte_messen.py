@@ -230,16 +230,21 @@ async def bewerter_messen(anbieter: str, modell: str | None, pause: float) -> di
 
 
 async def einbettung_messen(modell: str, pause: float) -> dict:
-    from llm_anbieter import litellm_client
+    import httpx
 
-    client = litellm_client()
+    from llm_anbieter import litellm_basis
+
+    kopf = {"Authorization": f"Bearer {(os.getenv('LITELLM_API_KEY') or '').strip()}"}
 
     async def einbetten(texte: list[str]) -> tuple[list[list[float]], float]:
+        # Eigene Anfrage statt des OpenAI-SDK: das schickt encoding_format, das Ollama hinter dem Gateway nicht kennt.
+        # Fehlertexte des Gateways kommen nie in die Ausgabe (sie nennen Aliase anderer Projekte).
         start = time.perf_counter()
-        # float: das SDK fragt sonst base64 an, das Ollama hinter dem Gateway nicht kennt
-        r = await client.embeddings.create(model=modell, input=texte, encoding_format="float",
-                                           timeout=LATENZ_TIMEOUT_SECS)
-        return [d.embedding for d in r.data], time.perf_counter() - start
+        async with httpx.AsyncClient(timeout=LATENZ_TIMEOUT_SECS) as c:
+            r = await c.post(f"{litellm_basis()}/embeddings", headers=kopf, json={"model": modell, "input": texte})
+        if r.status_code != 200:
+            raise SystemExit(f"Einbettung mit {modell}: HTTP {r.status_code}")
+        return [d["embedding"] for d in r.json()["data"]], time.perf_counter() - start
 
     zeiten = []
     dokumente, dauer = await einbetten(list(EINBETTUNG_DOKUMENTE))
@@ -294,10 +299,12 @@ async def _strom_messen(modell: str, nachrichten: list[dict], tools: list[dict] 
             "zeichen": text, "fehler": fehler}
 
 
-async def latenz_messen(modell: str, pause: float, nach_pause: float) -> dict:
+async def latenz_messen(modell: str, pause: float, nach_pause: float, zwischen: list[str] | None = None) -> dict:
     """Fünf Anfragen nacheinander: kurz (ggf. Kaltstart), kurz sofort danach, voller Prompt mit neuem Anfang
     (kein Prompt-Cache), derselbe Prompt gleich noch einmal (Cache warm), voller Prompt mit neuem Anfang.
-    Mit --nach-pause zusätzlich eine kurze Anfrage nach so vielen Sekunden Ruhe (Kaltstart nach Leerlauf)."""
+    Mit --nach-pause zusätzlich eine kurze Anfrage nach so vielen Sekunden Ruhe (Kaltstart nach Leerlauf).
+    Mit --zwischen (andere Modelle, kommagetrennt) zusätzlich: je eine kurze Anfrage an diese Modelle (die dabei
+    geladen werden und das Gesprächsmodell verdrängen können), danach zwei kurze Anfragen an das Gesprächsmodell."""
     import abnahme
 
     system = abnahme.system_prompt()
@@ -317,6 +324,17 @@ async def latenz_messen(modell: str, pause: float, nach_pause: float) -> dict:
         print(f"  latenz {name:12} erstes Token {ergebnis[name]['erstes_token_s']} s, gesamt "
               f"{ergebnis[name]['gesamt_s']} s {ergebnis[name]['fehler'] or ''}")
         await asyncio.sleep(pause)
+    if zwischen:
+        andere = {}
+        for anderes in zwischen:
+            andere[anderes] = await _strom_messen(anderes, kurz, None)
+            print(f"  latenz Zwischenanfrage {anderes}: erstes Token {andere[anderes]['erstes_token_s']} s")
+            await asyncio.sleep(pause)
+        ergebnis["zwischen"] = andere
+        for name in ("nach_zwischen_1", "nach_zwischen_2"):
+            ergebnis[name] = await _strom_messen(modell, kurz, None)
+            print(f"  latenz {name} erstes Token {ergebnis[name]['erstes_token_s']} s {ergebnis[name]['fehler'] or ''}")
+            await asyncio.sleep(pause)
     if nach_pause > 0:
         print(f"  Ruhe für {nach_pause:.0f} s (Kaltstart nach Leerlauf)")
         await asyncio.sleep(nach_pause)
@@ -407,16 +425,20 @@ def bericht_schreiben() -> Path:
     lat = [(p, d) for p, d in laeufe if d["art"] == "latenz"]
     if lat:
         zeilen += ["## Antwortzeit wie im Live-Gespräch (erstes Token, Streaming)", "",
-                   "| Datei | Modell | kurz 1 | kurz 2 | voll neu 1 | voll gleich | voll neu 2 | kurz nach Ruhe |",
-                   "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+                   "kurz = kleiner Prompt; voll = Persona und 17 Werkzeuge (rund 3 500 Token); neu = Anfang des Prompts "
+                   "ist dem Modell neu (kein Prompt-Cache); gleich = derselbe Prompt sofort noch einmal.", "",
+                   "| Datei | Modell | kurz 1 | kurz 2 | voll neu 1 | voll gleich | voll neu 2 | kurz nach Ruhe | "
+                   "kurz nach anderen Modellen |",
+                   "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
         for p, d in lat:
             def z(name: str) -> str:
                 x = d.get(name)
                 return "–" if not x else (_s(x["erstes_token_s"]) if not x.get("fehler") else f"Fehler {x['fehler']}")
             ruhe = d.get("kurz_nach_ruhe")
             nach = "–" if not ruhe else f"{_s(ruhe['erstes_token_s'])} nach {ruhe['ruhe_s']:.0f} s"
+            zw = "–" if "zwischen" not in d else f"{z('nach_zwischen_1')} / {z('nach_zwischen_2')} nach {len(d['zwischen'])} Modellen"
             zeilen.append(f"| `{p.name}` | {d['modell']} | {z('kurz_1')} | {z('kurz_2')} | {z('voll_neu_1')} | "
-                          f"{z('voll_gleich')} | {z('voll_neu_2')} | {nach} |")
+                          f"{z('voll_gleich')} | {z('voll_neu_2')} | {nach} | {zw} |")
         zeilen.append("")
     kenn = [(p, d) for p, d in laeufe if d["art"] == "kennenlernen"]
     if kenn:
@@ -439,6 +461,7 @@ async def main() -> None:
     p.add_argument("--wiederholungen", type=int, default=2)
     p.add_argument("--pause", type=float, default=3.0)
     p.add_argument("--nach-pause", type=float, default=0.0)
+    p.add_argument("--zwischen", default="", help="latenz: andere Modelle, die zwischendurch geladen werden (kommagetrennt)")
     p.add_argument("--max-kosten", type=float, default=1.0)
     p.add_argument("--bericht", action="store_true")
     args = p.parse_args()
@@ -472,7 +495,8 @@ async def main() -> None:
     elif args.art == "einbettung":
         daten = await einbettung_messen(modell, args.pause)
     elif args.art == "latenz":
-        daten = await latenz_messen(modell, args.pause, args.nach_pause)
+        zwischen = [m.strip() for m in args.zwischen.split(",") if m.strip() and not ausgeblendet(m.strip())]
+        daten = await latenz_messen(modell, args.pause, args.nach_pause, zwischen)
     else:
         daten = await kennenlernen(modell)
     if args.anbieter == "claude":

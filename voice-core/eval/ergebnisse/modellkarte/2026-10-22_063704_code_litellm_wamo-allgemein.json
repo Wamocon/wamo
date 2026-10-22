@@ -1,0 +1,65 @@
+{
+ "zeitpunkt": "2026-10-22T06:37:04+02:00",
+ "anbieter": "litellm",
+ "modell": "wamo-allgemein",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "code",
+ "faelle": [
+  {
+   "id": "roemisch",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 5.85,
+   "ausgabe_tokens": 196
+  },
+  {
+   "id": "dauer",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 8.0,
+   "ausgabe_tokens": 281
+  },
+  {
+   "id": "intervalle",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 4.6,
+   "ausgabe_tokens": 138
+  },
+  {
+   "id": "luhn",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 4.94,
+   "ausgabe_tokens": 163
+  },
+  {
+   "id": "lru",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 5.05,
+   "ausgabe_tokens": 182
+  },
+  {
+   "id": "flach",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 2.98,
+   "ausgabe_tokens": 83
+  },
+  {
+   "id": "woerter",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 3.46,
+   "ausgabe_tokens": 108
+  },
+  {
+   "id": "iban",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 13.6,
+   "ausgabe_tokens": 396
+  }
+ ]
+}

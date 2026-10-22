@@ -816,7 +816,10 @@ class DevAgent:
             )
             stderr_task = asyncio.create_task(_drain(self._proc.stderr, stderr_tail))
             kopf_daten = {"auftrag": prompt, "system": system_append}
-            if modell_wunsch():  # sonst wählt der Dispatcher das Modell der Art (Werkzeugkarte auf Sokrates-2)
+            if token:
+                # Eigener Claude-Code-Token (Max-Tarif, Kontingent des Abos): Standard Sonnet, außer WAMO_ENTWICKLUNG_MODELL
+                kopf_daten["modell"] = modell_fuer(job.art, modell_wunsch(), abo=True)
+            elif modell_wunsch():  # sonst wählt der Dispatcher das Modell der Art (Werkzeugkarte auf Sokrates-2, Haiku)
                 kopf_daten["modell"] = modell_wunsch()
             if job.repo:  # im App-Modus gilt das GitHub-Token dann nur für dieses Repo
                 kopf_daten["repo"] = job.repo

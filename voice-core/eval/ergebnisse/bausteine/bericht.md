@@ -21,6 +21,7 @@ Erzeugt von `voice-core/eval/bausteine.py`. Gewertet wird die Qualität; die Zei
 | `2026-10-22_054457_litellm_wamo-vision.json` | litellm | wamo-vision | 4/4 | 1/1 | 1/1 | 39,5 s / 30,3 s / 14,8 s |
 | `2026-10-22_054533_litellm_qwen3.6-35b.json` | litellm | qwen3.6-35b | 3/4 | 1/1 | 1/1 | 14,2 s / 4,1 s / 3,8 s |
 | `2026-10-22_054617_litellm_qwen3.8-27b.json` | litellm | qwen3.8-27b | 3/4 | 1/1 | 1/1 | 11,0 s / 9,1 s / 10,0 s |
+| `2026-10-22_063919_litellm_wamo-allgemein.json` | litellm | wamo-allgemein | 4/4 | 1/1 | 1/1 | 15,9 s / 10,3 s / 5,3 s |
 
 Gründe je Lauf:
 
