@@ -1,6 +1,7 @@
 "use client";
 
 import { memo } from "react";
+import { EinstellungenKnopf } from "@/components/einstellungen/EinstellungenLink";
 import { Statusanzeige } from "@/components/kommando/Statusanzeige";
 import { ProfilChip } from "@/components/ProfilChip";
 import { StatusDetails } from "@/components/Statusleiste";
@@ -10,7 +11,8 @@ import { WmcLogo } from "@/components/WmcLogo";
  * Kopfzeile und Statusleiste in einem (48 px): links die Wortmarke WAMO und der Profil-Chip,
  * daneben Verbindung, Betriebsart, Modelle, PC-Host und Mikrofon, rechts das WMC-Logo wie in der
  * WMC-Vorlage. Unter 1024 px bleiben nur Punkte und Kurzformen, die Details liegen im Menü.
- * Rechts davor die Statusanzeige der Kommandozentrale: Sitzungsfortschritt, ONLINE-Abzeichen, Uhrzeit.
+ * Rechts davor die Statusanzeige der Kommandozentrale: Sitzungsfortschritt, ONLINE-Abzeichen, Uhrzeit, dann das
+ * Zahnrad zu den Einstellungen (ein Link auf #einstellungen, auch mit der Tastatur erreichbar).
  */
 export const Kopfzeile = memo(function Kopfzeile({
   email,
@@ -30,6 +32,7 @@ export const Kopfzeile = memo(function Kopfzeile({
       <StatusDetails kompakt />
       <div className="topbar-end">
         <Statusanzeige />
+        <EinstellungenKnopf />
         <button
           type="button"
           className="topbar-btn verlauf-btn"

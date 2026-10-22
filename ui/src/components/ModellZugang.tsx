@@ -15,7 +15,6 @@ import {
 import { useSelect } from "@/lib/store";
 import type { ModellzugangAnfrage, SchluesselArt } from "@/lib/useWamo";
 import { istOnline, wamo } from "@/lib/wamo";
-import styles from "./ModellZugang.module.css";
 
 // API-Schlüssel (sk-ant-api…) und Claude-Code-Token (sk-ant-oat…) sind verschiedene Dinge: jedes Feld nimmt nur seins
 const API_MUSTER = /^sk-ant-(?!oat)[A-Za-z0-9_-]{20,250}$/;
@@ -44,7 +43,12 @@ type Wartet = { art: SchluesselArt; aktion: "hinterlegen" | "loeschen" };
 
 type FormularProps = {
   art: SchluesselArt;
+  /** Name des Blocks ("Gespräch", "Entwicklungsaufträge"); Überschrift der Stufe 4 */
   ueberschrift: string;
+  /** wofür der Schlüssel gilt, ein Satz unter der Überschrift */
+  zweck: string;
+  /** was der Kern daraus macht (zum Beispiel "wird im Modus Nur Hausmodelle nicht benutzt"), optional */
+  wirkung?: string;
   anleitung: Anleitung;
   beschriftung: string;
   platzhalter: string;
@@ -94,19 +98,29 @@ function SchluesselFormular(p: FormularProps) {
   };
 
   return (
-    <section className={styles.abschnitt} aria-labelledby={idKopf} aria-busy={meins || undefined}>
-      <h3 id={idKopf} className={styles.ueberschrift}>
+    <section className="mz-abschnitt" aria-labelledby={idKopf} aria-busy={meins || undefined}>
+      <h4 id={idKopf} className="mz-ueberschrift">
         {p.ueberschrift}
-      </h3>
-      <p className={styles.text}>
-        {p.hinterlegt
-          ? `Hinterlegt, endet auf …${p.ende ?? "????"}${zeitText(p.gesetzt)}.`
-          : "Noch nichts hinterlegt."}
+      </h4>
+      <p className="mz-zweck">{p.zweck}</p>
+      <p className="mz-status" data-hinterlegt={p.hinterlegt || undefined}>
+        <span className="mz-marke" aria-hidden="true" />
+        {p.hinterlegt ? (
+          <span>
+            <strong>Hinterlegt</strong>, endet auf …{p.ende ?? "????"}
+            {zeitText(p.gesetzt, p.art === "api" ? "geprüft am" : "gespeichert am")}.
+          </span>
+        ) : (
+          <span>
+            <strong>Nicht hinterlegt.</strong>
+          </span>
+        )}
       </p>
+      {p.wirkung && <p className="mz-text">{p.wirkung}</p>}
       {/* Geführte Anleitung: offen, solange noch nichts hinterlegt ist; key setzt sie beim Wechsel zurück */}
-      <details key={String(p.hinterlegt)} ref={anleitungRef} className={styles.mehr} open={!p.hinterlegt}>
+      <details key={String(p.hinterlegt)} ref={anleitungRef} className="mz-mehr" open={!p.hinterlegt}>
         <summary>{p.anleitung.ueberschrift}</summary>
-        <ol className={styles.schritte}>
+        <ol className="mz-schritte">
           {p.anleitung.schritte.map((s) => (
             <li key={s.text}>
               {s.text}
@@ -135,7 +149,7 @@ function SchluesselFormular(p: FormularProps) {
         </button>
       </details>
       <form
-        className={styles.form}
+        className="mz-form"
         autoComplete="off"
         onSubmit={(e) => {
           e.preventDefault();
@@ -144,7 +158,7 @@ function SchluesselFormular(p: FormularProps) {
           if (p.onHinterlegen(wert.trim(), workspace.trim())) setWert("");
         }}
       >
-        <label className={styles.feld}>
+        <label className="mz-feld">
           <span>{p.hinterlegt ? `Neu: ${p.beschriftung}` : p.beschriftung}</span>
           <input
             ref={eingabeRef}
@@ -164,8 +178,8 @@ function SchluesselFormular(p: FormularProps) {
           />
         </label>
         {falsch && (
-          <div id={`${idKopf}-falsch`} className={styles.falsch} role="alert">
-            <p className={styles.meldung} data-fehler>
+          <div id={`${idKopf}-falsch`} className="mz-falsch" role="alert">
+            <p className="mz-meldung" data-fehler>
               Fehler: {falsch.text}
             </p>
             <button
@@ -183,9 +197,9 @@ function SchluesselFormular(p: FormularProps) {
           </div>
         )}
         {p.workspace && (
-          <details className={styles.mehr}>
+          <details className="mz-mehr">
             <summary>Organisationsschlüssel mit Workspace</summary>
-            <label className={styles.feld}>
+            <label className="mz-feld">
               <span>Workspace-ID (nur wenn nötig)</span>
               <input
                 type="text"
@@ -200,7 +214,7 @@ function SchluesselFormular(p: FormularProps) {
             </label>
           </details>
         )}
-        <div className={styles.knoepfe}>
+        <div className="mz-knoepfe">
           {/* Während des Wartens aria-disabled statt disabled: der Fokus bleibt auf dem Knopf, der Klick wird ignoriert */}
           <button
             type="submit"
@@ -251,11 +265,11 @@ function SchluesselFormular(p: FormularProps) {
         </div>
       </form>
       {/* Erfolg höflich (status), Fehler sofort (alert); die status-Region bleibt immer im DOM */}
-      <p className={styles.meldung} role="status">
+      <p className="mz-meldung" role="status">
         {hinweis && !hinweis.fehler ? hinweis.text : ""}
       </p>
       {hinweis?.fehler && (
-        <p className={styles.meldung} role="alert" data-fehler>
+        <p className="mz-meldung" role="alert" data-fehler>
           Fehler: {hinweis.text}
         </p>
       )}
@@ -283,19 +297,6 @@ export const ModellZugang = memo(function ModellZugang({
   const [wartet, setWartet] = useState<Wartet | null>(null);
   const [hinweis, setHinweis] = useState<Hinweis | null>(null);
   const uhr = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const angefragt = useRef(false);
-
-  // Stand holen, solange keiner da ist (der Kern schickt ihn nicht von sich aus); je Lücke genau eine Anfrage. Nach
-  // einer Antwort, auch einer mit Fehler, ist wieder ein Stand da; "Erneut versuchen" fragt noch einmal.
-  useEffect(() => {
-    if (zugang) {
-      angefragt.current = false;
-      return;
-    }
-    if (angefragt.current) return;
-    angefragt.current = true;
-    sende({ aktion: "status" });
-  }, [zugang, sende]);
 
   // Antwort des Kerns beendet das Warten (die Wahl des Modus bearbeitet ModellWahl). Abgeleiteter Zustand während des
   // Renderns statt in einem Effekt: React empfiehlt das für "auf eine neue Antwort reagieren". Nur die Antwort auf
@@ -380,29 +381,36 @@ export const ModellZugang = memo(function ModellZugang({
   // Stand nicht lesbar (Kern nicht erreichbar, Anmeldung abgelaufen, Datenbank weg): konkreter Satz und neuer Versuch
   const standFehler = zugang && !zugang.art && zugang.fehler ? zugang.fehler : null;
 
+  // Was für das Gespräch gerade gilt (nur der Stand, nie der Schlüssel)
+  const wirkungGespraech =
+    hinterlegt && zugang?.quelle === "wahl"
+      ? "Im Modus Nur Hausmodelle wird der Schlüssel nicht benutzt."
+      : hinterlegt
+        ? zugang?.art === "claude" && zugang.modell
+          ? `Das Gespräch läuft mit ${zugang.modell}.`
+          : undefined
+        : zugang?.quelle === "zuordnung"
+          ? "Kein eigener Schlüssel hinterlegt; dein Profil nutzt den Schlüssel des Kerns."
+          : "Ohne eigenen Schlüssel laufen Gespräch, Lernen, Zusammenfassung, Bilder und Websuche über die Hausmodelle.";
+
   return (
-    <div className={styles.inhalt}>
-      <p className={styles.statuszeile}>
-        <span className={styles.art} data-art={zugang?.art}>
-          {kopfzeile(zugang)}
-        </span>
-      </p>
+    <div className="mz-inhalt">
       {!online && (
-        <p className={styles.offline} role="status">
-          Gerade läuft kein Gespräch. Du kannst den Modus und die Schlüssel trotzdem hier einstellen: Die Änderung wird
+        <p className="mz-offline" role="status">
+          Gerade läuft kein Gespräch. Du kannst Schlüssel, Token und Modus trotzdem hier einstellen: Die Änderung wird
           direkt am Kern gespeichert und gilt ab der nächsten Sitzung.
         </p>
       )}
       {standFehler && (
-        <div className={styles.falsch} role="alert">
-          <p className={styles.meldung} data-fehler>
+        <div className="mz-falsch" role="alert">
+          <p className="mz-meldung" data-fehler>
             Fehler: {standFehler}
           </p>
           <button
             type="button"
             className="btn-secondary btn-small"
             onClick={() => {
-              // Stand löschen und neu fragen: die Statusabfrage läuft wieder genau einmal (Effekt oben)
+              // Stand löschen und neu fragen: die Hauptansicht holt ihn dann wieder (useModellzugangStandHalten)
               wamo.set((s) => ({ ...s, modellzugang: null }));
             }}
           >
@@ -410,24 +418,17 @@ export const ModellZugang = memo(function ModellZugang({
           </button>
         </div>
       )}
-      <ModellWahl senden={sende} />
-      <p className={styles.text}>
-        {hinterlegt && zugang?.quelle === "wahl"
-          ? `Eigener API-Schlüssel hinterlegt, endet auf …${zugang?.ende ?? "????"}. Im Modus Nur Hausmodelle wird er nicht benutzt.`
-          : hinterlegt
-            ? `Eigener API-Schlüssel hinterlegt, endet auf …${zugang?.ende ?? "????"}${zeitText(zugang?.geprueft, "geprüft am")}.`
-            : zugang?.quelle === "zuordnung"
-              ? "Kein eigener Schlüssel hinterlegt; dein Profil nutzt den Schlüssel des Kerns."
-              : festgelegt
-                ? "Ein Admin hat dein Profil auf Hausmodelle festgelegt. Eigene Schlüssel sind nicht möglich."
-                : "Kein eigener API-Schlüssel: Gespräch, Lernen, Zusammenfassung, Bilder und Websuche laufen über die Hausmodelle."}
-        {zugang?.art === "claude" && zugang.modell ? ` Modell: ${zugang.modell}.` : ""}
-      </p>
-      {!festgelegt && (
+      {festgelegt ? (
+        <p className="mz-offline">
+          Ein Admin hat dein Profil auf Hausmodelle festgelegt. Eigene Schlüssel und Token sind nicht möglich.
+        </p>
+      ) : (
         <>
           <SchluesselFormular
             art="api"
-            ueberschrift="Claude-API-Schlüssel (Gespräch, bezahlt nach Verbrauch)"
+            ueberschrift="Gespräch"
+            zweck="Claude-API-Schlüssel: Das Gespräch läuft mit Claude Haiku, bezahlt nach Verbrauch von deinem Guthaben."
+            wirkung={wirkungGespraech}
             anleitung={API_ANLEITUNG}
             beschriftung="Anthropic-API-Schlüssel"
             platzhalter="sk-ant-api…"
@@ -443,7 +444,8 @@ export const ModellZugang = memo(function ModellZugang({
           />
           <SchluesselFormular
             art="code"
-            ueberschrift="Claude-Code-Token (Entwicklungsaufträge, aus dem Max-Tarif)"
+            ueberschrift="Entwicklungsaufträge"
+            zweck="Claude-Code-Token: Entwicklungsaufträge laufen über das Kontingent deines Max-Tarifs, nicht über das Gespräch."
             anleitung={TOKEN_ANLEITUNG}
             beschriftung="Claude-Code-Token"
             platzhalter="sk-ant-oat…"
@@ -458,7 +460,19 @@ export const ModellZugang = memo(function ModellZugang({
           />
         </>
       )}
-      <p className={styles.klein}>
+      <section className="mz-abschnitt" aria-labelledby="modellzugang-modus">
+        <h4 id="modellzugang-modus" className="mz-ueberschrift">
+          Modus
+        </h4>
+        <p className="mz-zweck">Welche Modelle WAMO benutzen darf, unabhängig davon, welche Schlüssel hinterlegt sind.</p>
+        <p className="mz-statuszeile">
+          <span className="mz-art" data-art={zugang?.art}>
+            {kopfzeile(zugang)}
+          </span>
+        </p>
+        <ModellWahl senden={sende} />
+      </section>
+      <p className="mz-klein">
         Beides liegt verschlüsselt im Kern, wird nie angezeigt und nie in Gesprächen, Aufgaben oder im Gedächtnis
         gespeichert. API-Schlüssel und Token sind getrennt: Der Token ersetzt den Schlüssel nicht. Änderungen gelten ab
         der nächsten Sitzung.

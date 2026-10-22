@@ -124,7 +124,7 @@ Beim ersten Anmelden richtet die Oberfläche die Authenticator-App ein (QR-Code)
 | Unterwegs (Standard) | auf diesem PC, `http://localhost:7860` (`NEXT_PUBLIC_VOICE_CORE_URL`), die Desktop-App startet ihn | Host per stdio |
 | Büro | Sokrates-2, `https://192.168.178.136:55444` (`NEXT_PUBLIC_WAMO_KERN_BUERO` in `ui\.env.local`, nur https) | Host per SSH-Rücktunnel, nur für das an diesen PC gebundene Profil |
 
-Umschalten in der Oberfläche (unter den Schaltflächen, nur ohne laufendes Gespräch) oder im Tray-Menü der Desktop-App;
+Umschalten in der Oberfläche (Einstellungen, Abschnitt „Geräte und PC“, nur ohne laufendes Gespräch) oder im Tray-Menü der Desktop-App;
 die Einstellung gilt dauerhaft je Gerät (Desktop: `%APPDATA%\wamo-desktop\einstellungen.json`, Browser: localStorage).
 Die Statusleiste zeigt Betriebsart und Kern, der PC-Host den Zielrechner. Einrichtung des Tunnels auf diesem PC (ohne
 Adminrechte, Rückweg `scripts\wamo-tunnel-entfernen.ps1`):
@@ -152,6 +152,31 @@ python scripts\wamo_ui_sokrates2.py verteilen        # Quellen der Oberfläche u
 python scripts\wamo_ui_sokrates2.py einrichten       # Firewall, Caddy, Image bauen, Container, erlaubte Herkunft des Kerns, Prüfung
 python scripts\wamo_ui_sokrates2.py status           # Zustand; bauen = nur Image und Container, pruefen = Header, TLS, Härtung
 ```
+
+#### Einstellungen in der Oberfläche
+
+Alle Formulare und Schalter liegen auf der Einstellungsseite (Zahnrad in der Kopfzeile oder „Einstellungen öffnen“ in der
+linken Seitenleiste, `ui/src/components/einstellungen/`). Sie ist keine eigene Route, sondern eine Ansicht der Hauptseite über
+den Hash `#einstellungen/<abschnitt>`: Das passt zur Desktop-App, Links und „Zurück“ des Browsers gehen, und ein laufendes
+Gespräch bleibt unberührt (die Kommandozentrale wird nur verborgen, Meldungen stehen oben in der Seite). Ab 860 px zwei
+Spalten (Gliederung links), darunter eine Liste, die in den Abschnitt führt. Escape schließt wie „Zurück“, lässt aber
+Eingaben in Textfeldern in Ruhe.
+
+| Abschnitt (Kennung) | Inhalt | Sichtbar für |
+| --- | --- | --- |
+| Konto und Profil (`konto`) | E-Mail, aktives Profil, Rolle, Abmelden | alle |
+| Modellzugang (`modellzugang`) | API-Schlüssel (Gespräch), Claude-Code-Token (Entwicklungsaufträge), Modus, geführte Anleitung | alle |
+| Verbrauch (`verbrauch`) | Kontingent des Max-Abos aus der Servernachricht `kontingent`: Sitzungslimit, Wochenlimit, Fable limit | Admin |
+| Sprache und Ton (`sprache`) | Mikrofonwahl, Spracherkennung und Sprachausgabe laut Betriebsmeldung | alle |
+| Darstellung (`darstellung`) | Normal, Fokus, Zentrale, Nacht | alle |
+| Geräte und PC (`geraete`) | Verbindungen, PC-Steuerung samt Autostart (nur Admin, nur Desktop-App), Betriebsart, Stand der Geräteeinrichtung | alle, PC-Steuerung nur Admin |
+| Teilen (`teilen`) | Geteilte Arbeit: mit mir, von mir, Dateien | alle |
+| Info (`info`) | Version, Kern, Hinweise an Admins | alle, Hinweise nur Admin |
+
+Der Abschnitt Verbrauch ist **Format ungeprüft**: Das Datenformat des Kerns (`voice-core/kontingent.py`) ist noch an keinem
+echten Token bestätigt, die Seite sagt das dort auch (`ui/src/lib/verbrauch.ts`). In der Entwicklung zeigt
+`/?vorschau=1&rolle=admin&kontingent=beispiel#einstellungen/verbrauch` Beispieldaten (nur `next dev` mit
+`NEXT_PUBLIC_WAMO_VORSCHAU=1`).
 
 Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo-tunnel.ps1`: Host und Tunnel laufen damit
 unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
@@ -284,7 +309,7 @@ Jedes Profil hat genau eine von zwei Arten (`voice-core/modellzugang.py`, Tabell
 | Eigener Claude-Schlüssel | Die Person hat ihren Schlüssel hinterlegt (oder ist das Profil in `WAMO_CLAUDE_SCHLUESSEL_PROFIL`) | Claude mit dem Schlüssel dieses Profils, Standardmodell Haiku (ein Admin kann ein anderes festlegen); fällt Claude aus, übernehmen die Hausmodelle mit Hinweis | Anthropic-Websuche |
 | Nur Hausmodelle | Kein eigener Schlüssel, Fehler beim Laden des Zugangs oder vom Admin festgelegt | LiteLLM (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`), nie Anthropic, auch nicht als Rückfall | SearXNG |
 
-- **Hinterlegen** in der Oberfläche (Bereich „Modellzugang“, maskiertes Feld): Der Kern prüft den Schlüssel mit einer
+- **Hinterlegen** in der Oberfläche (Einstellungen, Abschnitt „Modellzugang“, maskiertes Feld): Der Kern prüft den Schlüssel mit einer
   kleinen Testanfrage (höchstens 5 Versuche je 10 Minuten), verschlüsselt ihn mit AES-256-GCM (Profil-ID als
   zusätzliche Daten, Hauptschlüssel `WAMO_SCHLUESSEL_KEK` nur in `core.env` bzw. `.env` des Kerns) und speichert nur das
   Chiffrat. Zurück zur Oberfläche gehen nur „hinterlegt“ und die letzten vier Zeichen. Ersetzen und Löschen gehen

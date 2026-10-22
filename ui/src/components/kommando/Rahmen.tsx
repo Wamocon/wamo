@@ -27,6 +27,8 @@ export type RahmenInhalt = {
   erledigt: ReactNode;
   /** Verlauf und Ansage für Screenreader */
   anhang: ReactNode;
+  /** Einstellungsseite; nur gesetzt, solange sie offen ist. Die Kommandozentrale bleibt dabei eingehängt und wird nur verborgen. */
+  einstellungen?: ReactNode;
 };
 
 const RECHTS: readonly ReiterDef<Rechts>[] = [
@@ -119,7 +121,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
         data-mobil={mobilEff}
       >
         {inhalt.kopf}
-        <main className="kz-main">
+        <main className="kz-main" hidden={Boolean(inhalt.einstellungen)}>
           <div className="kz-sterne" aria-hidden="true" />
           {effektiv !== "fokus" && effektiv !== "zentrale" && (
             <Reiterleiste
@@ -201,6 +203,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
             </div>
           </div>
         </main>
+        {inhalt.einstellungen}
         {inhalt.anhang}
       </div>
     </RahmenKontext.Provider>

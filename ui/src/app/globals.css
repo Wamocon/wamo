@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
+@import "../components/einstellungen/einstellungen.css"; /* Einstellungsseite: Regeln unter .ez */
+@import "../components/modellzugang.css"; /* Karte Modellzugang: Regeln mit Präfix .mz- */
 
 /* =====================================================================
    WAMO im WMC-Corporate-Design (WAMOCON GmbH)
@@ -802,7 +804,7 @@ p, li { text-wrap: pretty; }
   display: grid; gap: 6px; padding: 12px 14px;
   background: var(--surface); border-left: 4px solid var(--accent); border-radius: 0 4px 4px 0;
 }
-.geteilt-editor h3 { margin: 0 0 4px; font: 700 19px/1.25 var(--font-wmc); }
+.geteilt-editor h5 { margin: 0 0 4px; font: 700 19px/1.25 var(--font-wmc); }
 .geteilt-editor label, .teilen-form > label { font-size: 15px; font-weight: 700; }
 
 .teilen { display: grid; gap: 8px; justify-items: start; }
