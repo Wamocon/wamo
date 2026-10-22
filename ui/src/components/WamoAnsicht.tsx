@@ -1,9 +1,10 @@
 "use client";
 
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityTimeline } from "@/components/ActivityFeed";
-import { ModellZugang } from "@/components/ModellZugang";
 import { CanvasBereich } from "@/components/Canvas";
+import { Einstellungen } from "@/components/einstellungen/Einstellungen";
+import { EINSTELLUNGEN_KNOPF_ID } from "@/components/einstellungen/EinstellungenLink";
 import { Auftraege, Freigaben } from "@/components/Freigaben";
 import { GemerktHinweis } from "@/components/GemerktHinweis";
 import { Bedienung, type TextSenden } from "@/components/kommando/Bedienung";
@@ -11,58 +12,18 @@ import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
 import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
-import { GeraetEinrichtung } from "@/components/GeraetEinrichtung";
-import { GeteiltBereich } from "@/components/Geteilt";
-import { Hinweise as AdminHinweise } from "@/components/Hinweise";
+import { GeraetEinrichtung, GeraetZeile } from "@/components/GeraetEinrichtung";
+import { Hinweise as AdminHinweise, HinweiseZaehler } from "@/components/Hinweise";
 import { Kopfzeile } from "@/components/Kopfzeile";
 import type { Sitzung } from "@/components/LoginGate";
-import { StatusDetails } from "@/components/Statusleiste";
+import { MikrofonWahl } from "@/components/MikrofonWahl";
 import { Verlauf } from "@/components/Verlauf";
-import {
-  BETRIEBSARTEN,
-  BUERO_VERFUEGBAR,
-  betriebsartSetzen,
-  KERN,
-  useBetriebsart,
-  type Betriebsart,
-} from "@/lib/betriebsart";
-import { pcAutoSetzen, usePcAuto } from "@/lib/einstellungen";
-import { useServerBrowser } from "@/lib/geraet";
+import { einstellungenSchliessen, oeffnerFuerFokus, useEinstellungenZiel } from "@/lib/einstellungenHash";
 import type { Mikrofon } from "@/lib/mikrofon";
+import { useModellzugangStandHalten } from "@/lib/modellzugangApi";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
-import { istOnline, wamo, zeigeToast, type Memo } from "@/lib/wamo";
-
-/** Gerätewahl in der Mikrofon-Warnung: Liste beim Erscheinen laden, Wechsel gilt sofort und auf diesem Gerät. */
-function MikrofonWahl({ laden, waehlen }: { laden: () => Promise<Mikrofon[]>; waehlen: (id: string) => boolean }) {
-  const [liste, setListe] = useState<Mikrofon[] | null>(null);
-  const aktuell = useSelect(wamo, (s) => s.mikrofon);
-  useEffect(() => {
-    let weg = false;
-    void laden().then((l) => {
-      if (!weg) setListe(l);
-    });
-    return () => {
-      weg = true;
-    };
-  }, [laden]);
-  if (!liste || liste.length === 0) return null;
-  return (
-    <label className="mic-wahl">
-      <span>Anderes Mikrofon:</span>
-      <select defaultValue="" onChange={(e) => e.target.value && waehlen(e.target.value)}>
-        <option value="" disabled>
-          {aktuell ? `jetzt: ${aktuell}` : "wählen …"}
-        </option>
-        {liste.map((m) => (
-          <option key={m.id} value={m.id}>
-            {m.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
+import { istOnline, wamo, type Memo } from "@/lib/wamo";
 
 /** Fehler in Tinte mit rotem Symbol und sicherer nächster Aktion. */
 const FehlerAnzeige = memo(function FehlerAnzeige({
@@ -144,132 +105,6 @@ const Aktionen = memo(function Aktionen({ aktionen }: { aktionen: WamoAktionen }
   );
 });
 
-/**
- * Schalter "PC-Steuerung" für diese Sitzung: Standard aus, nur für admin und nur bei Verbindung.
- * Gesendet wird nur der Wunsch; was gilt, meldet der Kern in betrieb.pc_steuerung zurück.
- */
-const PcSteuerungSchalter = memo(function PcSteuerungSchalter({
-  onSchalten,
-}: {
-  onSchalten: (an: boolean) => boolean;
-}) {
-  const admin = useSelect(wamo, (s) => s.profil?.rolle === "admin");
-  const online = useSelect(wamo, istOnline);
-  const an = useSelect(wamo, (s) => s.betrieb?.pcSteuerung === "an");
-  const belegt = useSelect(wamo, (s) => s.betrieb?.pcBelegt === true && s.betrieb?.pcSteuerung !== "an");
-  const pcName = useSelect(wamo, (s) => s.betrieb?.pcName ?? null);
-  const [ziel, setZiel] = useState<boolean | null>(null);
-  const auto = usePcAuto();
-  const serverBrowser = useServerBrowser();
-  const ausstehend = ziel !== null && ziel !== an && !belegt;
-  if (!admin) return null;
-  if (serverBrowser) {
-    // Browser auf dem Server: die PC-Werkzeuge gehören zur Desktop-App (lib/geraet.ts)
-    return (
-      <div className="pc-steuerung">
-        <p className="pc-switch-hint">PC-Steuerung: nur in der Desktop-App verfügbar</p>
-      </div>
-    );
-  }
-  const hinweis = ausstehend
-    ? "wird geschaltet …"
-    : belegt
-      ? "eine andere Sitzung steuert diesen PC gerade"
-      : `gilt nur für diese Sitzung${pcName ? `, Ziel ${pcName}` : ""}`;
-  return (
-    <div className="pc-steuerung">
-      {online && (
-        <div className="pc-switch-row">
-          <PcSchalterKnopf an={an} ausstehend={ausstehend} onSchalten={onSchalten} setZiel={setZiel} />
-          <span className="pc-switch-hint">{hinweis}</span>
-        </div>
-      )}
-      <label className="pc-auto">
-        <input type="checkbox" checked={auto} onChange={(e) => pcAutoSetzen(e.target.checked)} />
-        <span>PC-Steuerung beim Start automatisch einschalten (dieses Gerät)</span>
-      </label>
-      {auto && <p className="pc-auto-hint">Ohne Sprecherprüfung reagiert WAMO dann auf jede Stimme im Raum.</p>}
-    </div>
-  );
-});
-
-function PcSchalterKnopf({
-  an,
-  ausstehend,
-  onSchalten,
-  setZiel,
-}: {
-  an: boolean;
-  ausstehend: boolean;
-  onSchalten: (an: boolean) => boolean;
-  setZiel: (ziel: boolean | null) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={an}
-      className="pc-switch"
-      data-an={an || undefined}
-      disabled={ausstehend}
-      onClick={() => {
-        const neu = !an;
-        if (!onSchalten(neu)) return;
-        setZiel(neu);
-        setTimeout(() => setZiel(null), 5000); // ohne Rückmeldung nach 5 s wieder bedienbar
-      }}
-    >
-      <span className="pc-switch-bahn" aria-hidden="true">
-        <span className="pc-switch-knopf" />
-      </span>
-      PC-Steuerung {an ? "an" : "aus"}
-    </button>
-  );
-}
-
-/**
- * Betriebsart dieses Geräts: Büro (Kern auf Sokrates-2) oder Unterwegs (Kern auf diesem PC). Umschalten nur ohne
- * laufendes Gespräch; es gilt ab dem nächsten Verbinden. In der Desktop-App startet "Unterwegs" den lokalen Kern.
- */
-const BetriebsartWahl = memo(function BetriebsartWahl() {
-  const art = useBetriebsart();
-  const offline = useSelect(wamo, (s) => s.presence === "offline");
-  const [laeuft, setLaeuft] = useState(false);
-  const serverBrowser = useServerBrowser();
-  if (!BUERO_VERFUEGBAR || serverBrowser) return null; // Browser auf dem Server: nur Büro, nichts zu wählen
-  const waehle = (neu: Betriebsart) => {
-    if (neu === art || !offline || laeuft) return;
-    setLaeuft(true);
-    void betriebsartSetzen(neu)
-      .then((gilt) => zeigeToast(`Betriebsart ${KERN[gilt].name}: Kern ${KERN[gilt].ort}`))
-      .catch(() => zeigeToast("Betriebsart konnte nicht umgeschaltet werden"))
-      .finally(() => setLaeuft(false));
-  };
-  return (
-    <div className="betriebsart">
-      <div className="betriebsart-wahl" role="radiogroup" aria-label="Betriebsart">
-        {BETRIEBSARTEN.map((a) => (
-          <button
-            key={a}
-            type="button"
-            role="radio"
-            aria-checked={a === art}
-            data-an={a === art || undefined}
-            disabled={!offline || laeuft}
-            onClick={() => waehle(a)}
-          >
-            {KERN[a].name}
-          </button>
-        ))}
-      </div>
-      <span className="pc-switch-hint">
-        Kern: {KERN[art].ort}
-        {!offline && " (umschalten nach dem Gespräch)"}
-      </span>
-    </div>
-  );
-});
-
 /** Kurzer sichtbarer Hinweis (z. B. Autostart der PC-Steuerung); die Ansage läuft über role="status". */
 const HinweisToast = memo(function HinweisToast() {
   const toast = useSelect(wamo, (s) => s.toast);
@@ -301,15 +136,37 @@ type MitText = WamoAktionen & { textSenden?: TextSenden };
 /**
  * Hauptansicht "Kommandozentrale" (kommando/Rahmen.tsx). Abschnitte abonnieren eigene Store-Ausschnitte,
  * deshalb rendert hier nichts im Worttakt neu. Ab 1100 px drei Spalten: links Hinweise (Gedächtnis, geteilte
- * Arbeit, Geräte), in der Mitte der Kern mit Untertiteln, Eingabepille und Canvas, rechts Reiter für Freigaben
- * und Aufträge, Vorgänge (Zeitleiste der Werkzeuge) und Erledigtes. Darunter eine Spalte mit Reiterleiste.
- * Der Verlauf bleibt eine Schublade.
+ * Arbeit, Stand der Einstellungen), in der Mitte der Kern mit Untertiteln, Eingabepille und Canvas, rechts Reiter für
+ * Freigaben und Aufträge, Vorgänge (Zeitleiste der Werkzeuge) und Erledigtes. Darunter eine Spalte mit Reiterleiste.
+ * Der Verlauf bleibt eine Schublade. Die Einstellungen (components/einstellungen/) sind eine zweite Ansicht derselben
+ * Seite, gesteuert über den Hash #einstellungen: Sie verbergen die Kommandozentrale, ohne das Gespräch zu berühren.
  */
 export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sitzung: Sitzung }) {
   const [verlaufOffen, setVerlaufOffen] = useState(false);
+  const einstellungenOffen = useEinstellungenZiel().offen;
+  // Beim Öffnen der Einstellungen geht der Verlauf zu (Zustand während des Renderns anpassen, kein Zwischenbild); danach
+  // lässt er sich auch über den Einstellungen öffnen, denn er liegt als Schublade über der ganzen Seite.
+  const [warEinstellungenOffen, setWarEinstellungenOffen] = useState(einstellungenOffen);
+  if (warEinstellungenOffen !== einstellungenOffen) {
+    setWarEinstellungenOffen(einstellungenOffen);
+    if (einstellungenOffen) setVerlaufOffen(false);
+  }
   const toggleVerlauf = useCallback(() => setVerlaufOffen((o) => !o), []);
   const schliesseVerlauf = useCallback(() => setVerlaufOffen(false), []);
   const { disconnect, connect, vergessen } = aktionen;
+  // Der Stand des Modellzugangs wird einmal hier gehalten: die Seitenleiste zeigt eine Zeile daraus, die Einstellungen die Karte
+  useModellzugangStandHalten(aktionen.modellzugang);
+  // Nach dem Schließen der Einstellungen (Knopf, Escape oder "Zurück" des Browsers) kehrt der Fokus zu dem zurück, was
+  // sie geöffnet hat (Zahnrad oder Link), sonst zum Zahnrad. Hat die Person den Fokus schon selbst gesetzt (zum Beispiel
+  // auf "Verlauf"), bleibt er dort.
+  const warOffen = useRef(false);
+  useEffect(() => {
+    if (warOffen.current && !einstellungenOffen) {
+      const a = document.activeElement;
+      if (!a || a === document.body) (oeffnerFuerFokus() ?? document.getElementById(EINSTELLUNGEN_KNOPF_ID))?.focus();
+    }
+    warOffen.current = einstellungenOffen;
+  }, [einstellungenOffen]);
   // "Rückgängig" nimmt den Eintrag auch aus der Gedächtnis-Karte, sobald er aus dem Store verschwunden ist
   const vergesseEintrag = useCallback(
     (m: Memo) => {
@@ -354,19 +211,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
         />
       }
       canvas={<CanvasBereich />}
-      hinweise={
-        <Hinweise
-          geraete={
-            <>
-              <StatusDetails kompakt={false} />
-              <PcSteuerungSchalter onSchalten={aktionen.pcSteuerung} />
-              <BetriebsartWahl />
-              <ModellZugang onAnfrage={aktionen.modellzugang} />
-              <GeteiltBereich />
-            </>
-          }
-        />
-      }
+      hinweise={<Hinweise />}
       auftraege={
         <>
           <Freigaben onDecide={aktionen.decide} />
@@ -386,6 +231,30 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           <Verlauf offen={verlaufOffen} onSchliessen={schliesseVerlauf} />
           <Ansage />
         </>
+      }
+      einstellungen={
+        einstellungenOffen ? (
+          <Einstellungen
+            aktionen={aktionen}
+            email={sitzung.email}
+            onAbmelden={abmelden}
+            meldungen={
+              <>
+                <FehlerAnzeige
+                  onRetry={retry}
+                  onAbmelden={abmelden}
+                  onSchliessen={aktionen.schliesseFehler}
+                  onMikrofone={aktionen.mikrofone}
+                  onMikrofonWaehlen={aktionen.mikrofonWaehlen}
+                />
+                <HinweisToast />
+                <GemerktHinweis onVergessen={vergesseEintrag} />
+                <HinweiseZaehler onAnsehen={() => einstellungenSchliessen()} />
+                <GeraetZeile />
+              </>
+            }
+          />
+        ) : null
       }
     />
   );

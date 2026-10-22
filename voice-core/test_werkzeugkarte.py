@@ -289,5 +289,32 @@ class DevAgentFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(await dev_agent.guard_selftest(Path(tmp) / "projekt", Path(tmp)))
 
 
+class ModellJeZugangTests(unittest.TestCase):
+    """Modell für Entwicklungsaufträge je Zugang: Abo (Claude-Code-Token) Sonnet, API-Schlüssel Haiku."""
+
+    def test_standard_je_zugang(self):
+        import werkzeugkarte as wk
+
+        for art in wk.AUFTRAGSARTEN:
+            self.assertEqual(wk.modell_fuer(art), wk.MODELL_STANDARD)  # API-Schlüssel, geht vom Guthaben ab: Haiku
+            self.assertEqual(wk.modell_fuer(art, abo=True), wk.MODELL_ABO)  # Max-Tarif, Kontingent des Abos: Sonnet
+        self.assertEqual((wk.MODELL_STANDARD, wk.MODELL_ABO), ("claude-haiku-5-5", "claude-sonnet-5-5"))
+
+    def test_wunsch_geht_vor_und_bleibt_in_der_allowlist(self):
+        import werkzeugkarte as wk
+
+        self.assertEqual(wk.modell_fuer("planung", "claude-opus-5-5", abo=True), "claude-opus-5-5")
+        self.assertEqual(wk.modell_fuer("planung", "claude-haiku-5-5", abo=True), "claude-haiku-5-5")
+        for schlecht in ("claude-opus-9", "gpt-x", "claude-sonnet-5-5 "):
+            with self.assertRaises(ValueError):
+                wk.modell_fuer("planung", schlecht, abo=True)
+
+    def test_gespraech_bleibt_haiku(self):
+        import llm_anbieter
+        import werkzeugkarte as wk
+
+        self.assertEqual(llm_anbieter.STANDARD_CLAUDE, wk.MODELL_STANDARD)
+
+
 if __name__ == "__main__":
     unittest.main()

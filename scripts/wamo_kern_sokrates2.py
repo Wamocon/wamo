@@ -60,6 +60,8 @@ AUS_ENV = (
     "WAMO_SCHLUESSEL_KEK", "WAMO_SCHLUESSEL_KEK_ALT", "WAMO_CLAUDE_SCHLUESSEL_PROFIL",
     # Latenz und Unterbrechungen (wie ERLAUBT in infra/sokrates2/wamo_core_env.py)
     "WAMO_LATENZ_LOG", "WAMO_VAD_STOP_SECS", "WAMO_TTS_START_ZEICHEN", "WAMO_ECHO_FILTER", "WAMO_CACHE_VORWAERMEN",
+    # Sprachverhalten (voice-core/soft_interrupt.py, wartesatz.py): Stopp an der Wortgrenze, Dämpfen, Rückmeldelaute, Wartesatz
+    "WAMO_STOPP_GRENZE", "WAMO_DUCKEN", "WAMO_RUECKMELDUNG", "WAMO_WARTESATZ", "WAMO_WARTESATZ_SECS",
 )
 AUS_ENV_PRAEFIX = ("WAMO_LLM_",)
 

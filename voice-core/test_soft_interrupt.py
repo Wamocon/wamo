@@ -6,24 +6,37 @@ import unittest
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     InterimTranscriptionFrame,
     InterruptionFrame,
     TranscriptionFrame,
     TTSStartedFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
+from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.tests.utils import SleepFrame, run_test
 
+import soft_interrupt
 from soft_interrupt import (
     MeaningfulWordsUserTurnStartStrategy,
     PlaybackTracker,
     SoftInterruptGate,
     echo_filter_an,
     echo_urteil,
+    ducken_an,
+    echo_modus_an,
+    hat_stoppwort,
     ist_echo,
+    ist_rueckmeldung,
+    kuerze_auf_gehoertes,
     meaningful_word_count,
+    ohne_letzte_woerter,
+    rueckmeldung_an,
+    stopp_grenze_an,
 )
 
 
@@ -335,6 +348,467 @@ class WoerterTest(unittest.TestCase):
         self.assertEqual(meaningful_word_count("mhm ja genau"), 0)
         self.assertEqual(meaningful_word_count("Doch, stopp"), 2)
         self.assertEqual(meaningful_word_count("J"), 0)
+
+
+class RueckmeldungTest(unittest.TestCase):
+    """Erweiterte Erkennung kurzer Zustimmung (WAMO_RUECKMELDUNG)."""
+
+    def test_bindestrich_schreibweisen_der_erkennung(self):
+        for text in ("Mm-hmm.", "Mm-hm", "Uh-huh", "mmh", "Mhm, mhm.", "Ahja"):
+            self.assertEqual(meaningful_word_count(text, True), 0, text)
+            self.assertTrue(ist_rueckmeldung(text, True), text)
+        self.assertEqual(meaningful_word_count("Mm-hmm.", False), 1, "ohne die Erweiterung zählte der Laut als Wort")
+
+    def test_wendungen_als_ganze_aeusserung(self):
+        for text in ("Alles klar.", "Na klar", "Ja, genau.", "Ach so, ja", "Ich verstehe.", "Sehr gut", "Ganz genau"):
+            self.assertEqual(meaningful_word_count(text, True), 0, text)
+        self.assertTrue(ist_rueckmeldung("Alles klar.", True))
+
+    def test_einwuerfe_bleiben_einwuerfe(self):
+        for text in ("Doch", "Stopp", "Nein", "Alles", "Ja aber", "Genau, und die Kosten?", "Warte mal", "Na", "Ich"):
+            self.assertGreaterEqual(meaningful_word_count(text, True), 1, text)
+            self.assertFalse(ist_rueckmeldung(text, True), text)
+
+    def test_wortanfang_eines_rueckmeldelauts_im_zwischenstand_zaehlt_noch_nicht(self):
+        for anfang in (" Gen", "Mh", "Ric"):
+            self.assertEqual(meaningful_word_count(anfang, True, interim=True), 0, anfang)
+            self.assertEqual(meaningful_word_count(anfang, True, interim=False), 1, "der endgültige Text zählt")
+        self.assertEqual(meaningful_word_count("Stopp, Ge", True, interim=True), 1, "\"Stopp\" zählt, der Anfang noch nicht")
+        self.assertEqual(meaningful_word_count("Gestern", True, interim=True), 1, "kein Anfang eines Rückmeldelauts")
+        self.assertEqual(meaningful_word_count(" Gen", False, interim=True), 1, "ohne die Erweiterung wie früher")
+
+    def test_unentschiedenes_ist_keine_rueckmeldung(self):
+        self.assertFalse(ist_rueckmeldung("", True))
+        self.assertFalse(ist_rueckmeldung("J", True), "Bruchstück der Live-Erkennung")
+        self.assertFalse(ist_rueckmeldung("  ...  ", True))
+
+    def test_schalter(self):
+        self.assertTrue(rueckmeldung_an("an"))
+        self.assertTrue(rueckmeldung_an(""))
+        self.assertFalse(rueckmeldung_an("aus"))
+        self.assertFalse(rueckmeldung_an("0"))
+
+
+class EchoModusTest(unittest.IsolatedAsyncioTestCase):
+    """Bei erkennbarem Echo unterbricht nur ein Stoppwort."""
+
+    GESPIELT = "die hauptstadt von frankreich ist paris".split()
+
+    def strategie(self, echo_modus=True):
+        self.ausgeloest, self.beurteilungen = [], []
+        s = MeaningfulWordsUserTurnStartStrategy(
+            min_words=1, enable_interruptions=False, gesprochen=lambda sekunden: self.GESPIELT,
+            beurteilt=self.beurteilungen.append, echo_modus=echo_modus,
+        )
+        s._bot_speaking = True
+
+        async def start():
+            self.ausgeloest.append(True)
+
+        async def reset():
+            pass
+
+        s.trigger_user_turn_started = start
+        s.trigger_reset_aggregation = reset
+        return s
+
+    async def echo_hoeren(self, s, n=2):
+        for _ in range(n):
+            await s.process_frame(TranscriptionFrame("Die Hauptstadt von Frankreich", "u", "t"))
+
+    async def test_ohne_erkanntes_echo_wirkt_ein_einwurf_wie_immer(self):
+        s = self.strategie()
+        await s.process_frame(TranscriptionFrame("Carl Dre", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    async def test_nach_zwei_echos_unterbricht_ohne_stoppwort_nichts(self):
+        s = self.strategie()
+        await self.echo_hoeren(s)
+        self.assertTrue(s.echo_modus_aktiv())
+        await s.process_frame(TranscriptionFrame("Der Laufmaschine von Carl Dre", "u", "t"))
+        self.assertEqual(self.ausgeloest, [])
+        self.assertEqual(s.echo_vermutet, 1)
+        self.assertEqual(self.beurteilungen[-1], "echo")
+
+    async def test_ein_stoppwort_unterbricht_auch_im_echo_modus(self):
+        s = self.strategie()
+        await self.echo_hoeren(s)
+        await s.process_frame(TranscriptionFrame("Moment, ich habe eine Frage", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    async def test_ein_echo_allein_macht_noch_keinen_modus(self):
+        s = self.strategie()
+        await self.echo_hoeren(s, 1)
+        self.assertFalse(s.echo_modus_aktiv())
+        await s.process_frame(TranscriptionFrame("Carl Dre", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    async def test_vermutetes_echo_verlaengert_den_modus_nicht(self):
+        s = self.strategie()
+        await self.echo_hoeren(s)
+        vorher = len(s._echo_zeiten)
+        await s.process_frame(TranscriptionFrame("Carl Dre", "u", "t"))
+        self.assertEqual(len(s._echo_zeiten), vorher, "nur wirklich erkanntes Echo zählt für den Modus")
+
+    async def test_modus_endet_nach_dem_fenster(self):
+        s = self.strategie()
+        await self.echo_hoeren(s)
+        s._echo_zeiten = type(s._echo_zeiten)([t - soft_interrupt.ECHO_MODUS_FENSTER_SECS - 1 for t in s._echo_zeiten], maxlen=8)
+        self.assertFalse(s.echo_modus_aktiv())
+
+    async def test_aus_ist_aus(self):
+        s = self.strategie(echo_modus=False)
+        await self.echo_hoeren(s)
+        self.assertFalse(s.echo_modus_aktiv())
+        await s.process_frame(TranscriptionFrame("Carl Dre", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    def test_stoppwort_und_schalter(self):
+        self.assertTrue(hat_stoppwort("Moment, ich habe eine Frage"))
+        self.assertTrue(hat_stoppwort("Was kostet das?"))
+        self.assertFalse(hat_stoppwort("Der Laufmaschine von Carl Dre"))
+        self.assertTrue(echo_modus_an(""))
+        self.assertFalse(echo_modus_an("aus"))
+
+
+class RueckmeldungStrategieTest(unittest.IsolatedAsyncioTestCase):
+    async def beurteilung(self, text):
+        bekannt = []
+        s = MeaningfulWordsUserTurnStartStrategy(min_words=1, enable_interruptions=False, beurteilt=bekannt.append)
+        s._bot_speaking = True
+        ausgeloest = []
+
+        async def start():
+            ausgeloest.append(True)
+
+        async def reset():
+            pass
+
+        s.trigger_user_turn_started = start
+        s.trigger_reset_aggregation = reset
+        await s.process_frame(InterimTranscriptionFrame(text, "u", "t"))
+        return ausgeloest, bekannt
+
+    async def test_rueckmeldung_wird_gemeldet_und_loest_nichts_aus(self):
+        ausgeloest, bekannt = await self.beurteilung("Mhm")
+        self.assertEqual(ausgeloest, [])
+        self.assertEqual(bekannt, ["rueckmeldung"])
+
+    async def test_einwurf_wird_nicht_als_rueckmeldung_gemeldet(self):
+        ausgeloest, bekannt = await self.beurteilung("Stopp")
+        self.assertEqual(ausgeloest, [True])
+        self.assertEqual(bekannt, [])
+
+    async def test_bruchstueck_ist_noch_unentschieden(self):
+        ausgeloest, bekannt = await self.beurteilung("J")
+        self.assertEqual((ausgeloest, bekannt), ([], []))
+
+
+class _GateTest(unittest.IsolatedAsyncioTestCase):
+    """Gate ohne Pipeline: eigene Uhr, gesendete Frames werden gesammelt, Aufgaben laufen in der Schleife."""
+
+    def gate(self, **kwargs):
+        self.t = 0.0
+        g = SoftInterruptGate(uhr=lambda: self.t, max_wait_secs=0, **kwargs)
+        self.gesendet = []
+
+        async def push(frame, direction=None):
+            self.gesendet.append(frame)
+
+        g.push_frame = push
+        g.create_task = lambda coro, name=None: asyncio.ensure_future(coro)
+        g._bot_speaking = True
+        return g
+
+    def worte(self, g, *zeitwort):
+        for t, wort in zeitwort:
+            self.t = t
+            g.on_word_played(wort)
+
+
+class GrenzeTest(_GateTest):
+    def test_fruehestes_erreichbares_wort_ist_die_grenze(self):
+        g = self.gate(grenze=True, playback_lag_secs=0.5)
+        self.worte(g, (0.0, "Das"), (0.5, "ist"), (0.9, "gut"))
+        self.t = 0.95  # Grenzen vor 0,95 - 0,5 + 0,19 = 0,64 sind nicht mehr zu erreichen
+        self.assertEqual(g._naechste_grenze(self.t), (0.9, False))
+
+    def test_zu_knappe_grenzen_fallen_weg(self):
+        g = self.gate(grenze=True, playback_lag_secs=0.5)
+        self.worte(g, (0.0, "Das"), (0.5, "ist"))
+        self.assertIsNone(g._naechste_grenze(1.0), "beide Grenzen sind zu spät zu erreichen: das nächste Wort bringt eine")
+
+    def test_satzende_kurz_danach_geht_vor(self):
+        g = self.gate(grenze=True, playback_lag_secs=0.5)
+        self.worte(g, (0.1, "Das"), (0.2, "ist."), (0.3, "Gut"), (0.45, "so"))
+        self.assertEqual(g._naechste_grenze(0.35), (0.3, True), "Grenze nach dem Satzende, 0,2 s nach der frühesten (0,1)")
+
+    def test_satzende_zu_spaet_geht_nicht_vor(self):
+        g = self.gate(grenze=True, playback_lag_secs=0.5)
+        self.worte(g, (0.0, "Das"), (0.2, "ist"), (0.3, "gut"), (0.6, "und"), (0.9, "so."), (1.0, "Dann"))
+        self.assertEqual(g._naechste_grenze(0.35), (0.2, False))
+
+    async def test_arm_nimmt_eine_schon_gemeldete_grenze_und_stoppt_sofort_dann_serverseitig(self):
+        g = self.gate(grenze=True, playback_lag_secs=0.3)  # erreichbar: Grenzen ab 0,95 - 0,3 + 0,19 = 0,84
+        self.worte(g, (0.0, "Das"), (0.5, "ist"), (0.9, "gut"))
+        self.t = 0.95
+        ziele = []
+
+        async def warte(tracker_zeit):
+            ziele.append(tracker_zeit)
+
+        g._warte_bis = warte
+        g._arm()
+        self.assertTrue(g._firing)
+        self.assertEqual(g.ungehoerte_woerter(), 1, "\"gut\" war gemeldet, liegt aber hinter der Grenze")
+        self.assertEqual(g.ungehoerte_woerter(), 0, "einmal abholen")
+        await asyncio.wait_for(g._fire_task, 2)
+        arten = [type(f).__name__ for f in self.gesendet]
+        self.assertEqual(arten, ["RTVIServerMessageFrame", "InterruptionFrame"])
+        self.assertEqual(self.gesendet[0].data, {"type": "leiser_stopp", "sofort": True})
+        ton = 0.9 + 0.3  # Grenze plus Vorsprung der Zeitstempel vor dem Ton
+        self.assertAlmostEqual(ziele[0], ton - soft_interrupt.STOPP_FADE_SECS - soft_interrupt.STOPP_VORLAUF_SECS)
+        self.assertAlmostEqual(ziele[1], ton, msg="der Server bricht erst ab, wenn die Person die Grenze hört")
+
+    async def test_ohne_gemeldete_grenze_bringt_das_naechste_wort_sie_und_wird_abgeschnitten(self):
+        g = self.gate(grenze=True, playback_lag_secs=0.2)
+        self.worte(g, (0.0, "Das"), (0.5, "ist"))
+        self.t = 1.0
+        g._arm()
+        self.assertTrue(g._pending and not g._firing)
+        self.t = 1.2
+        self.assertTrue(g.on_word_played("gut"), "das Wort liegt hinter der Grenze und gilt als nicht gesprochen")
+        self.assertTrue(g._firing)
+        self.assertEqual(g.ungehoerte_woerter(), 0)
+        await asyncio.wait_for(g._fire_task, 2)
+        self.assertEqual([type(f).__name__ for f in self.gesendet][-1], "InterruptionFrame")
+
+    def test_alter_modus_unveraendert(self):
+        g = self.gate(grenze=False)
+        g._pending, g._words_left = True, 1
+        self.assertFalse(g.on_word_played("Das"))
+        self.assertEqual(len(g._grenzen), 0)
+
+    def test_alter_modus_haelt_am_satzende(self):
+        g = self.gate(grenze=False)
+        gruende = []
+        g._start_fire = lambda grund, **_: gruende.append(grund)
+        g._pending, g._words_left = True, 3
+        self.assertFalse(g.on_word_played("ist."))
+        self.assertTrue(g.on_word_played("Gut"), "das Wort nach dem Satzende wird abgeschnitten")
+        self.assertEqual(gruende, ["Satzende"])
+
+    def test_nicht_abgeholte_zahl_geht_nicht_in_die_naechste_antwort(self):
+        g = self.gate(grenze=True, playback_lag_secs=0.3)
+        self.worte(g, (0.0, "Das"), (0.9, "gut"))
+        self.t = 0.95
+        g._arm()
+        self.assertEqual(g._ungehoert, 1)
+        g._firing = False  # der Stopp ist durch, die Antwort stand schon im Verlauf: nichts wurde abgeholt
+        g.antwort_beginnt()
+        self.assertEqual(g.ungehoerte_woerter(), 0, "ein neuer Sprachabschnitt beginnt: die alte Zahl gilt nicht mehr")
+        g._fire_task.cancel()
+
+    def test_woerter_ausserhalb_des_verlaufs_zaehlen_nicht_als_ungehoert(self):
+        g = self.gate(grenze=True, playback_lag_secs=0.3)
+        g.on_word_played("Moment", False)  # Wartesatz: nicht im Verlauf
+        self.t = 0.5
+        g.on_word_played("schau", False)
+        self.t = 0.9
+        g.on_word_played("gut")
+        self.assertEqual(g.kuerzlich_gesprochen(10), ["moment", "schau", "gut"], "der Echo-Filter kennt alle")
+        self.t = 0.95
+        g._arm()
+        self.assertEqual(g.ungehoerte_woerter(), 1, "nur das Wort aus dem Verlauf")
+        g._fire_task.cancel()
+
+
+class VerlaufKuerzenTest(unittest.TestCase):
+    def test_ohne_letzte_woerter(self):
+        self.assertEqual(ohne_letzte_woerter("Das ist ein langer Satz.", 2), "Das ist ein")
+        self.assertEqual(ohne_letzte_woerter("Das ist", 0), "Das ist")
+        self.assertEqual(ohne_letzte_woerter("Das ist", 5), "")
+        self.assertEqual(ohne_letzte_woerter("Ja, genau, also", 1), "Ja, genau,")
+
+    def test_kuerzt_die_letzte_antwort_im_verlauf(self):
+        ctx = LLMContext(messages=[{"role": "user", "content": "Hallo"}, {"role": "assistant", "content": "● Das ist ein Test"}])
+        kuerze_auf_gehoertes(ctx, 2)
+        self.assertEqual(ctx.messages[-1]["content"], "● Das ist")
+
+    def test_leere_antwort_wird_entfernt(self):
+        ctx = LLMContext(messages=[{"role": "user", "content": "Hallo"}, {"role": "assistant", "content": "● Das ist"}])
+        kuerze_auf_gehoertes(ctx, 2)
+        self.assertEqual([m["role"] for m in ctx.messages], ["user"])
+
+    def test_fasst_nur_die_letzte_antwort_an(self):
+        ctx = LLMContext(messages=[{"role": "assistant", "content": "● Eins zwei"}, {"role": "user", "content": "Hm"}])
+        self.assertFalse(kuerze_auf_gehoertes(ctx, 1), "die letzte Nachricht ist keine Antwort: nichts verändert")
+        self.assertEqual(ctx.messages[0]["content"], "● Eins zwei")
+
+    def test_rueckgabewert_sagt_ob_gekuerzt_wurde(self):
+        ctx = LLMContext(messages=[{"role": "assistant", "content": "● Eins zwei drei"}])
+        self.assertTrue(kuerze_auf_gehoertes(ctx, 1))
+        blocks = LLMContext(messages=[{"role": "assistant", "content": [{"type": "text", "text": "Eins zwei"}]}])
+        self.assertFalse(kuerze_auf_gehoertes(blocks, 1), "Inhalt aus Blöcken wird nicht angefasst")
+
+
+class DuckenTest(_GateTest):
+    """Vorsorgliches Dämpfen: leiser, sobald die Person spricht; zurück bei Rückmeldung, Echo oder Sprachende."""
+
+    def setUp(self):
+        self._alt = (soft_interrupt.DUCK_VERZOEGERUNG_SECS, soft_interrupt.DUCK_NACH_VAD_ENDE_SECS, soft_interrupt.DUCK_MAX_SECS,
+                     soft_interrupt.DUCK_BEURTEILT_SECS)
+        soft_interrupt.DUCK_VERZOEGERUNG_SECS = 0.02
+        soft_interrupt.DUCK_NACH_VAD_ENDE_SECS = 0.05
+        soft_interrupt.DUCK_MAX_SECS = 0.3
+
+    def tearDown(self):
+        (soft_interrupt.DUCK_VERZOEGERUNG_SECS, soft_interrupt.DUCK_NACH_VAD_ENDE_SECS, soft_interrupt.DUCK_MAX_SECS,
+         soft_interrupt.DUCK_BEURTEILT_SECS) = self._alt
+
+    def nachrichten(self):
+        return [f.data for f in self.gesendet if isinstance(f, RTVIServerMessageFrame)]
+
+    async def test_sprache_daempft_und_das_ende_der_sprache_nimmt_zurueck(self):
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        await asyncio.sleep(0.08)
+        self.assertEqual(self.nachrichten(), [{"type": "stimme_leiser", "an": True}])
+        g._vad_spricht = False
+        g._frist("_duck_ende_task", 0.03, "Sprache zu Ende", 0.0)
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.nachrichten()[-1], {"type": "stimme_leiser", "an": False})
+
+    async def test_pause_in_der_rede_nimmt_die_daempfung_nicht_zurueck(self):
+        soft_interrupt.DUCK_MAX_SECS = 1.0
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        await asyncio.sleep(0.06)
+        g._vad_spricht = False
+        g._frist("_duck_ende_task", 0.1, "Sprache zu Ende", 0.0)  # Sprachende gemeldet ...
+        await asyncio.sleep(0.03)
+        g._vad_spricht = True
+        g._fristen_abbrechen("_duck_ende_task")  # ... aber die Person redet weiter
+        await asyncio.sleep(0.2)
+        self.assertEqual([m["an"] for m in self.nachrichten()], [True])
+
+    async def test_rueckmeldung_nimmt_zurueck_und_sperrt_das_erneute_daempfen(self):
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        await asyncio.sleep(0.06)
+        soft_interrupt.DUCK_BEURTEILT_SECS = 0.02
+        g.beurteilt("rueckmeldung")
+        await asyncio.sleep(0.08)
+        self.assertEqual([m["an"] for m in self.nachrichten()], [True, False])
+        g._duck_planen()
+        await asyncio.sleep(0.06)
+        self.assertEqual(len(self.nachrichten()), 2, "in der Sperrzeit wird nicht erneut gedämpft")
+
+    async def test_rueckmeldung_vor_dem_daempfen_verhindert_es(self):
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        g.beurteilt("echo")
+        await asyncio.sleep(0.08)
+        self.assertEqual(self.nachrichten(), [])
+
+    async def test_ohne_bestaetigung_endet_das_daempfen_nach_der_hoechstzeit(self):
+        g = self.gate(ducken=True)
+        g._vad_spricht = True  # Echo hält die Sprachaktivität dauerhaft an
+        g._duck_planen()
+        await asyncio.sleep(0.5)
+        self.assertEqual([m["an"] for m in self.nachrichten()], [True, False])
+
+    async def test_bestaetigter_einwurf_bleibt_gedaempft_bis_zum_stopp(self):
+        g = self.gate(ducken=True, playback_lag_secs=0.05)
+        g._vad_spricht = True
+        g._duck_planen()
+        await asyncio.sleep(0.06)
+        g._arm()  # die Spracherkennung hat den Einwurf bestätigt
+        await asyncio.sleep(0.4)
+        self.assertEqual([m["an"] for m in self.nachrichten() if "an" in m], [True], "keine Entwarnung vor dem Stopp")
+
+    async def test_frames_daempfen_und_geben_die_vad_frames_weiter(self):
+        gate = SoftInterruptGate(ducken=True, max_wait_secs=0)
+        unten, _ = await run_test(
+            gate,
+            frames_to_send=[
+                BotStartedSpeakingFrame(), SleepFrame(0.05), VADUserStartedSpeakingFrame(start_secs=0.2),
+                SleepFrame(0.1), VADUserStoppedSpeakingFrame(stop_secs=0.15), SleepFrame(0.3),
+            ],
+        )
+        nachrichten = [f.data for f in unten if isinstance(f, RTVIServerMessageFrame)]
+        self.assertEqual([m["an"] for m in nachrichten], [True, False])
+        self.assertTrue(any(isinstance(f, VADUserStartedSpeakingFrame) for f in unten), "VAD-Frames gehen weiter")
+        self.assertTrue(any(isinstance(f, VADUserStoppedSpeakingFrame) for f in unten))
+
+    async def test_ende_der_antwort_nimmt_die_daempfung_zurueck(self):
+        gate = SoftInterruptGate(ducken=True, max_wait_secs=0)
+        unten, _ = await run_test(
+            gate,
+            frames_to_send=[
+                BotStartedSpeakingFrame(), SleepFrame(0.05), VADUserStartedSpeakingFrame(start_secs=0.2), SleepFrame(0.1),
+                BotStoppedSpeakingFrame(), SleepFrame(0.1),
+            ],
+        )
+        nachrichten = [f.data for f in unten if isinstance(f, RTVIServerMessageFrame)]
+        self.assertEqual([m["an"] for m in nachrichten], [True, False])
+
+    async def test_bestaetigung_innerhalb_der_beurteilungsfrist_nimmt_nicht_zurueck(self):
+        soft_interrupt.DUCK_BEURTEILT_SECS = 0.15
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        await asyncio.sleep(0.06)
+        g.beurteilt("rueckmeldung")  # "Ja" ...
+        await asyncio.sleep(0.03)
+        g._arm()  # ... "aber": der Einwurf ist bestätigt
+        await asyncio.sleep(0.3)
+        self.assertEqual([m["an"] for m in self.nachrichten() if "an" in m], [True], "kein Lauter zwischen Leiser und Stopp")
+
+    async def test_echo_sperrt_das_daempfen_lange(self):
+        soft_interrupt.DUCK_BEURTEILT_SECS = 0.02
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        await asyncio.sleep(0.06)
+        g.beurteilt("echo")
+        await asyncio.sleep(0.08)
+        self.assertEqual([m["an"] for m in self.nachrichten()], [True, False])
+        self.assertGreater(g._duck_gesperrt_bis - self.t, soft_interrupt.DUCK_SPERRE_SECS, "länger als bei einer Rückmeldung")
+
+    async def test_echo_vor_dem_daempfen_sperrt_ebenfalls_lange(self):
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        g.beurteilt("echo")
+        self.assertGreater(g._duck_gesperrt_bis - self.t, soft_interrupt.DUCK_SPERRE_SECS)
+
+    async def test_rueckmeldung_nach_der_beurteilungsfrist_nimmt_zurueck(self):
+        soft_interrupt.DUCK_BEURTEILT_SECS = 0.05
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        await asyncio.sleep(0.06)
+        g.beurteilt("rueckmeldung")
+        await asyncio.sleep(0.15)
+        self.assertEqual([m["an"] for m in self.nachrichten()], [True, False])
+
+    async def test_aus_daempft_nie(self):
+        g = self.gate(ducken=False)
+        g._vad_spricht = True
+        g._duck_planen()
+        await asyncio.sleep(0.08)
+        self.assertEqual(self.nachrichten(), [])
+
+    def test_schalter(self):
+        self.assertTrue(ducken_an("an"))
+        self.assertFalse(ducken_an("aus"))
+        self.assertTrue(stopp_grenze_an(""))
+        self.assertFalse(stopp_grenze_an("0"))
 
 
 if __name__ == "__main__":

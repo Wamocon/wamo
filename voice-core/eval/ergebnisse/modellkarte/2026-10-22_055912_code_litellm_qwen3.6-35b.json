@@ -1,0 +1,65 @@
+{
+ "zeitpunkt": "2026-10-22T05:59:12+02:00",
+ "anbieter": "litellm",
+ "modell": "qwen3.6-35b",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "code",
+ "faelle": [
+  {
+   "id": "roemisch",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 11.23,
+   "ausgabe_tokens": 218
+  },
+  {
+   "id": "dauer",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 4.42,
+   "ausgabe_tokens": 297
+  },
+  {
+   "id": "intervalle",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 3.84,
+   "ausgabe_tokens": 251
+  },
+  {
+   "id": "luhn",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 3.34,
+   "ausgabe_tokens": 215
+  },
+  {
+   "id": "lru",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 3.08,
+   "ausgabe_tokens": 197
+  },
+  {
+   "id": "flach",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 1.48,
+   "ausgabe_tokens": 77
+  },
+  {
+   "id": "woerter",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 2.9,
+   "ausgabe_tokens": 183
+  },
+  {
+   "id": "iban",
+   "ok": false,
+   "grund": "AssertionError",
+   "dauer_s": 5.57,
+   "ausgabe_tokens": 381
+  }
+ ]
+}

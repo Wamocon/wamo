@@ -1,0 +1,39 @@
+{
+ "zeitpunkt": "2026-10-22T05:49:17+02:00",
+ "anbieter": "litellm",
+ "modell": "gemma4-31b",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "latenz",
+ "prompt_zeichen": 7718,
+ "werkzeuge": 17,
+ "kurz_1": {
+  "erstes_token_s": 8.67,
+  "gesamt_s": 9.46,
+  "zeichen": 31,
+  "fehler": null
+ },
+ "kurz_2": {
+  "erstes_token_s": 0.52,
+  "gesamt_s": 1.32,
+  "zeichen": 31,
+  "fehler": null
+ },
+ "voll_neu_1": {
+  "erstes_token_s": 7.37,
+  "gesamt_s": 7.47,
+  "zeichen": 0,
+  "fehler": null
+ },
+ "voll_gleich": {
+  "erstes_token_s": 1.42,
+  "gesamt_s": 1.52,
+  "zeichen": 0,
+  "fehler": null
+ },
+ "voll_neu_2": {
+  "erstes_token_s": 7.38,
+  "gesamt_s": 7.48,
+  "zeichen": 0,
+  "fehler": null
+ }
+}

@@ -13,6 +13,12 @@ bei einem langen ersten Satz ("Eins, zwei, drei, ...") wartet der erste Ton desh
 hier gibt den Text schon an einer Wortgrenze frei, sobald die Schwelle erreicht ist (WAMO_TTS_START_ZEICHEN, Standard
 68, 0 = Pipecat-Standard). Die Fuge ist fuer Soniox unsichtbar, es sieht einen durchgehenden Text.
 
+Rueckhalt am Textende (Messung 22.10.2026, direkte Verbindung): Soniox spricht nur Text, hinter dem noch etwa 65 Zeichen
+Vorschau stehen, oder alles bis text_end. Der Rest eines Satzes erklingt erst, wenn der naechste Text oder text_end eintrifft
+(Satz A 95 Zeichen, Satz B 3 s spaeter: Pause von 2 s mitten in A; Satz B allein erklingt erst mit text_end). Solange das
+Modell schneller liefert als WAMO spricht, merkt man nichts davon; bei langsamem Modell oder einem Werkzeugaufruf mitten in
+der Antwort entsteht daraus Stille. Dagegen hilft der Wartesatz (wartesatz.py), nicht ein anderer Aggregator.
+
 Gemessen und verworfen: den Stream frueher oeffnen (234 ms bis zum ersten Audio, ob die Konfiguration mit dem Text oder
 0,3 s vorher kommt), den Text tokenweise reichen (Pipecat-Modus TOKEN: nach einer Unterbrechung stand nur ein Wort im
 Verlauf, Oberflaeche und Kontext waeren falsch) und einen Satzteil am Komma freigeben (unter der Schwelle startet

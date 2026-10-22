@@ -1,0 +1,81 @@
+{
+ "zeitpunkt": "2026-10-22T05:52:54+02:00",
+ "anbieter": "litellm",
+ "modell": "laaj-judge",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "bewerter",
+ "faelle": [
+  {
+   "id": "b1",
+   "erwartet": "richtig",
+   "urteil": "richtig",
+   "ok": true,
+   "dauer_s": 13.59,
+   "fehler": null
+  },
+  {
+   "id": "b2",
+   "erwartet": "falsch",
+   "urteil": "falsch",
+   "ok": true,
+   "dauer_s": 0.98,
+   "fehler": null
+  },
+  {
+   "id": "b3",
+   "erwartet": "richtig",
+   "urteil": "richtig",
+   "ok": true,
+   "dauer_s": 1.29,
+   "fehler": null
+  },
+  {
+   "id": "b4",
+   "erwartet": "falsch",
+   "urteil": "falsch",
+   "ok": true,
+   "dauer_s": 1.37,
+   "fehler": null
+  },
+  {
+   "id": "b5",
+   "erwartet": "richtig",
+   "urteil": "richtig",
+   "ok": true,
+   "dauer_s": 1.22,
+   "fehler": null
+  },
+  {
+   "id": "b6",
+   "erwartet": "falsch",
+   "urteil": "falsch",
+   "ok": true,
+   "dauer_s": 1.24,
+   "fehler": null
+  },
+  {
+   "id": "b7",
+   "erwartet": "falsch",
+   "urteil": "falsch",
+   "ok": true,
+   "dauer_s": 1.5,
+   "fehler": null
+  },
+  {
+   "id": "b8",
+   "erwartet": "richtig",
+   "urteil": "richtig",
+   "ok": true,
+   "dauer_s": 1.13,
+   "fehler": null
+  },
+  {
+   "id": "b9",
+   "erwartet": "falsch",
+   "urteil": "falsch",
+   "ok": true,
+   "dauer_s": 1.31,
+   "fehler": null
+  }
+ ]
+}

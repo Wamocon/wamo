@@ -1,0 +1,30 @@
+{
+ "zeitpunkt": "2026-10-22T06:29:37+02:00",
+ "anbieter": "claude",
+ "modell": "claude-haiku-5-5",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "analyse",
+ "laeufe": [
+  {
+   "lauf": 1,
+   "richtig": 5,
+   "von": 6,
+   "dauer_s": 1.97,
+   "gruende": [
+    "Frage 4: falsche Zahl (4 Risiken (R1, R3, R5, R7, R8 – das sind 5; korrig)"
+   ],
+   "eingabe_tokens": 12498,
+   "ausgabe_tokens": 102
+  },
+  {
+   "lauf": 2,
+   "richtig": 6,
+   "von": 6,
+   "dauer_s": 1.5,
+   "gruende": [],
+   "eingabe_tokens": 12498,
+   "ausgabe_tokens": 87
+  }
+ ],
+ "kosten_usd": 0.0026
+}

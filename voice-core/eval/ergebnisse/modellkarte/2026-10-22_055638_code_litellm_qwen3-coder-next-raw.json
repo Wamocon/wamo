@@ -1,0 +1,65 @@
+{
+ "zeitpunkt": "2026-10-22T05:56:38+02:00",
+ "anbieter": "litellm",
+ "modell": "qwen3-coder-next-raw",
+ "extra": "{\"think\": false, \"temperature\": 0}",
+ "art": "code",
+ "faelle": [
+  {
+   "id": "roemisch",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 7.91,
+   "ausgabe_tokens": 300
+  },
+  {
+   "id": "dauer",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 29.77,
+   "ausgabe_tokens": 387
+  },
+  {
+   "id": "intervalle",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 4.42,
+   "ausgabe_tokens": 164
+  },
+  {
+   "id": "luhn",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 7.54,
+   "ausgabe_tokens": 321
+  },
+  {
+   "id": "lru",
+   "ok": false,
+   "grund": "Syntaxfehler (Zeile 25)",
+   "dauer_s": 7.52,
+   "ausgabe_tokens": 312
+  },
+  {
+   "id": "flach",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 1.92,
+   "ausgabe_tokens": 65
+  },
+  {
+   "id": "woerter",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 4.83,
+   "ausgabe_tokens": 194
+  },
+  {
+   "id": "iban",
+   "ok": true,
+   "grund": "",
+   "dauer_s": 7.88,
+   "ausgabe_tokens": 333
+  }
+ ]
+}

@@ -22,6 +22,14 @@ export const DARSTELLUNG_TEXT: Record<Darstellung, string> = {
   nacht: "Nacht",
 };
 
+/** Ein Satz je Darstellung für die Einstellungsseite. */
+export const DARSTELLUNG_BESCHREIBUNG: Record<Darstellung, string> = {
+  normal: "Drei Spalten: Hinweise links, der Kern in der Mitte, Aufträge und Vorgänge rechts.",
+  fokus: "Nur der Kern und die Untertitel, alles andere ist ausgeblendet.",
+  zentrale: "Große Kommandozentrale mit Statuszeilen und Zähler.",
+  nacht: "Erzwungen dunkel, der Kern ist gedämpft.",
+};
+
 export const DARSTELLUNG_SCHLUESSEL = "wamo.darstellung";
 
 export function istDarstellung(v: unknown): v is Darstellung {

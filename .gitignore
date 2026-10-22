@@ -21,3 +21,10 @@ desktop/logs/
 *.p12
 .claude/settings.local.json
 .claude/worktrees/
+# Messordner des Szenariotests (Testkonto, Aufnahmen, Logs) gehört nie ins Repository
+konto.json
+*.kern.log
+*-bot.wav
+*-mic.wav
+*.metriken.json
+.playwright-mcp/

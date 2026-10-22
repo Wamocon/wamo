@@ -2,6 +2,8 @@
 
 import { memo, type ReactNode } from "react";
 import { LABEL } from "@/components/ActivityFeed";
+import { EinstellungenLink } from "@/components/einstellungen/EinstellungenLink";
+import { modellzugangKurz } from "@/lib/einstellungenAbschnitte";
 import { useSelect } from "@/lib/store";
 import { wamo, type Memo } from "@/lib/wamo";
 import { offeneEntscheidungen } from "./ansicht";
@@ -73,17 +75,19 @@ function Eintrag({ m }: { m: Memo }) {
 }
 
 /**
- * Linke Seite: Gedächtnis (was in dieser Sitzung gemerkt wurde), geteilte Arbeit (gemeinsame Einträge,
- * Canvas, Entwicklung) und Geräte-Status. Alles aus vorhandenen Daten; ohne Inhalt steht ein freundlicher Text.
- * Der Geräte-Block (Status, PC-Steuerung, Betriebsart) kommt von außen, weil er Schalter der Hauptansicht enthält.
+ * Linke Seite, schlank: Gedächtnis (was in dieser Sitzung gemerkt wurde), geteilte Arbeit (gemeinsame Einträge) mit
+ * dem Kurzstatus (Rolle, Canvas, Entwicklung) und eine kleine Karte mit dem Stand des Modellzugangs und dem Link zu den
+ * Einstellungen. Alles aus vorhandenen Daten; ohne Inhalt steht ein freundlicher Text. Formulare gibt es hier nicht
+ * mehr: Modellzugang, Geräte, Teilen und Darstellung stehen auf der Einstellungsseite (components/einstellungen/).
  */
-export const Hinweise = memo(function Hinweise({ geraete }: { geraete: ReactNode }) {
+export const Hinweise = memo(function Hinweise() {
   const gemerkt = useGemerktSitzung();
   const persoenlich = gemerkt.filter((m) => m.bereich === "persoenlich");
   const gemeinsam = gemerkt.filter((m) => m.bereich === "gemeinsam");
   const canvas = useSelect(wamo, (s) => s.canvas.length);
   const entwicklung = useSelect(wamo, (s) => s.betrieb?.entwicklung ?? null);
   const rolle = useSelect(wamo, (s) => s.profil?.rolle ?? null);
+  const zugang = useSelect(wamo, (s) => s.modellzugang);
 
   return (
     <>
@@ -131,11 +135,17 @@ export const Hinweise = memo(function Hinweise({ geraete }: { geraete: ReactNode
         </dl>
       </section>
 
-      <section className="kz-karte" aria-labelledby="kz-h-geraete">
-        <h2 id="kz-h-geraete" className="kz-karte-titel">
-          Geräte
+      <section className="kz-karte" aria-labelledby="kz-h-einstellungen">
+        <h2 id="kz-h-einstellungen" className="kz-karte-titel">
+          Einstellungen
         </h2>
-        {geraete}
+        <dl className="kz-daten">
+          <div>
+            <dt>Modellzugang</dt>
+            <dd>{modellzugangKurz(zugang)}</dd>
+          </div>
+        </dl>
+        <EinstellungenLink className="kz-link">Einstellungen öffnen</EinstellungenLink>
       </section>
     </>
   );

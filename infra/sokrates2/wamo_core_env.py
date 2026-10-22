@@ -48,6 +48,8 @@ ERLAUBT = set(PFLICHT) | {
     # Latenz und Unterbrechungen (voice-core/latenz.py, soniox_tts.py, soft_interrupt.py): Log je Zug ohne Inhalte,
     # Stille für das Ende des Redebeitrags, Startschwelle der Sprachausgabe, Echo-Filter, Prompt-Cache vorwärmen
     "WAMO_LATENZ_LOG", "WAMO_VAD_STOP_SECS", "WAMO_TTS_START_ZEICHEN", "WAMO_ECHO_FILTER", "WAMO_CACHE_VORWAERMEN",
+    # Sprachverhalten (voice-core/soft_interrupt.py, wartesatz.py): Stopp an der Wortgrenze, Dämpfen, Rückmeldelaute, Wartesatz
+    "WAMO_STOPP_GRENZE", "WAMO_DUCKEN", "WAMO_RUECKMELDUNG", "WAMO_WARTESATZ", "WAMO_WARTESATZ_SECS",
     "LITELLM_BASE_URL", "WAMO_SUCHE", "WAMO_SEARXNG_URL", "WAMO_LITELLM_EXTRA",
     # Eine Sitzung je Profil und Höchstalter der Anmeldung (bot.py, auth_gate.py)
     "WAMO_SITZUNG_EINZELN", "WAMO_ANMELDUNG_MAX_STUNDEN",

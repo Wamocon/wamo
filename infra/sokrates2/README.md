@@ -67,6 +67,7 @@ Datei `/etc/wamo/geheim.env` (Rechte 640, root:wamo). Nie ins Repository.
 | Variable | Wofür | Empfehlung für minimale Rechte |
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` oder `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code ohne Bildschirm | Firmen-API-Schlüssel mit Ausgabenlimit, oder Abo-Token aus `claude setup-token` |
+| `WAMO_SERVERZUGANG` | `aus` sperrt den Rückfall auf den Claude-Zugang dieser Datei für Läufe ohne persönlichen Zugang (Standard `an`); Abschnitt 9, Persönlicher Claude-Zugang | `aus`, sobald jedes Profil seinen eigenen Zugang hinterlegt hat |
 | `ANTHROPIC_WORKSPACE_ID` | Pflicht bei einem Organisationsschlüssel (`wrkspc_…`), wird als Header `anthropic-workspace-id` mitgeschickt | derselbe Wert wie in der `.env` des PCs |
 | `WAMO_GH_APP_ID` | App-ID der GitHub-App (nur Ziffern); schaltet zusammen mit den beiden folgenden den App-Modus ein | Anleitung unten |
 | `WAMO_GH_APP_INSTALLATION_ID` | Installation-ID der App in der Organisation (nur Ziffern) | Anleitung unten |
@@ -394,7 +395,8 @@ Rauchtest danach immer: `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-r
 | Ausgangsfilter | `/etc/wamo/egress.nft`, `wamo-egress.service` | nft-Tabelle `inet wamo_egress`, nur für uid `wamo` |
 | SSH | `/etc/ssh/authorized_keys.d/wamo`, `/etc/ssh/sshd_config.d/wamo.conf` | Schlüssel mit `restrict,from="192.168.178.0/24",command=...`; `Match User wamo` mit `ForceCommand`, nur Public Key, keine Weiterleitungen, kein TTY, `PermitUserRC no`, `MaxSessions 2` |
 | Version | `CLAUDE_VERSION` in `/opt/wamo/wamo-job.conf` | nach einem Update von Claude Code startet nichts, bis das Einrichtungsskript und der Rauchtest liefen |
-| Modell | `modell` je Karte in `voice-core/werkzeugkarte.py` | Standard für alle Arten `claude-haiku-5-5` (Sonnet kostet etwa das Dreifache); `claude-sonnet-5-5` oder `claude-opus-5-5` nur über `WAMO_ENTWICKLUNG_MODELL` in der `.env` des PCs (nur Namen aus `MODELLE_ERLAUBT`, über die Kopfzeile an den Dispatcher) |
+| Modell | `modell` je Karte in `voice-core/werkzeugkarte.py`, Wahl nach Zugangsart in `modell_waehlen` (Dispatcher) | Mit API-Schlüssel (Guthaben) Standard für alle Arten `claude-haiku-5-5` (Sonnet kostet etwa das Dreifache), mit Abo-Zugang (Max-Token) `claude-sonnet-5-5`; `claude-opus-5-5` oder ein anderes Modell nur über `WAMO_ENTWICKLUNG_MODELL` in der `.env` des PCs (nur Namen aus `MODELLE_ERLAUBT`, über die Kopfzeile an den Dispatcher) |
+| Claude-Zugang | zweite stdin-Zeile von `start`, `WAMO_SERVERZUGANG` in `geheim.env` | persönlicher Zugang des Profils für genau einen Lauf, Rückfall auf `geheim.env` nur wenn erlaubt (unten) |
 | GitHub-Zugang | `GITHUB_ZUGRIFF` und `GITHUB_APP_RECHTE` in `voice-core/werkzeugkarte.py`, Schlüssel `/etc/wamo/gh-app.pem` | im App-Modus je Lauf ein kurzlebiges Installations-Token mit den Rechten der Art, auf Wunsch nur für ein Repo, am Laufende widerrufen (unten) |
 
 GitHub-CLI im Auftrag: ohne Karte nur lesende Befehle (`gh repo view/list/clone`, `gh pr view/list/diff/checks/status/
@@ -450,6 +452,98 @@ Sandbox:
 `wamo-job-dispatch ping` meldet `"github": "app"`, `"token"` (Rückfall) oder `"fehler: <Grund>"`, ohne Netz. Der Rauchtest
 prüft den App-Modus mit `--attrappe` ohne echte GitHub-Aufrufe und mit `--app-echt` gegen die eingerichtete App
 (nur lesend).
+
+### Persönlicher Claude-Zugang je Profil und Kontingent des Max-Abos (eingerichtet am 22.10.2026)
+
+Jeder Lauf nutzt den Claude-Zugang des Profils, das den Auftrag stellt: den Max-Token aus `claude setup-token` (Kontingent
+des Abos) oder einen Anthropic-API-Schlüssel (monatliches Guthaben). Beide hinterlegt der Kollege selbst, verschlüsselt, in der
+Karte Modellzugang. Der Zugang in `geheim.env` (Nikos Schlüssel) bleibt nur als Rückfall für genau ein Profil.
+
+Ablauf je Lauf (Kern in `voice-core/dev_agent.py`, Dispatcher in `wamo_job_dispatch.py`):
+
+1. Der Kern holt den Zugang frisch (`modellzugang.claude_code_zugang_fuer`) und sendet ihn nach der Kopfzeile als zweite
+   stdin-Zeile `{"typ": "oauth" | "api", "wert": "…", "workspace": "wrkspc_…" (nur api, optional)}` per SSH. Die Kopfzeile
+   trägt nur `"zugang": "folgt"` und `"profil"` (die ersten 8 Zeichen der Profil-UUID, nur zur Zuordnung), nie den Wert. Der
+   Wert steht nie in argv, in der Umgebung des ssh-Prozesses, im Log, im Audit, in Ereignissen oder in Fehlertexten. Nach
+   `approve` und beim Fortsetzen sendet der Kern ihn erneut, der Dispatcher speichert nichts.
+2. Der Dispatcher liest die Zeile vor Sperren und Selbsttest (höchstens 2 KiB, 30 Sekunden) und prüft streng: nur die
+   Felder `typ`, `wert`, `workspace`; `oauth` verlangt `sk-ant-oat…`, `api` verlangt `sk-ant-api…` (Admin- und Sitzungsschlüssel
+   passen auf keins von beiden); `folgt` ohne `profil` wird abgewiesen. Bei einem Fehler endet der Start mit Code 2 und dem
+   Ereignis `zugang_ungueltig`, der Text nennt nie etwas aus der Zeile.
+3. In der Sandbox steht genau eine Claude-Variable: `CLAUDE_CODE_OAUTH_TOKEN` (oauth) oder `ANTHROPIC_API_KEY` (api). Aus
+   `geheim.env` kommt dann nichts dazu, auch nicht der Workspace-Header des Organisationsschlüssels (kein Mischen mit einem
+   fremden Schlüssel). Die Dienst-Token der Auftragsart (GitHub, Vercel …) bleiben wie bisher.
+4. Rückfall auf `geheim.env`: nur mit `"zugang": "server"` oder ohne das Feld (ältere Kerne). Der Kern erlaubt das nur dem
+   Profil in `WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL` (leer: `WAMO_CLAUDE_SCHLUESSEL_PROFIL`). Alle anderen bekommen ohne eigenen
+   Zugang die Meldung „kein Claude-Zugang“ und es startet nichts. `WAMO_SERVERZUGANG=aus` in `geheim.env` sperrt den Rückfall im
+   Dispatcher ganz (Code 5, Ereignis `keine_zugangsdaten`); jeder andere Wert als `an`, `ja`, `1`, `true`, `on` und jeder
+   Tippfehler im Namen (`WAMO_SERVER…`) sperrt ebenfalls. `ping` meldet `"serverzugang": true|false`.
+5. Buchführung je Projekt: ein persönlicher Zugang heißt `CLAUDE_CODE_OAUTH_TOKEN@<profil>` bzw. `ANTHROPIC_API_KEY@<profil>`
+   (nie der Wert). Kommt in einem Projekt mit Inhalt der Zugang einer anderen Person (oder der Serverzugang) dazu, verlangt der
+   Dispatcher wie bei jedem neuen Token eine Freigabe (Karte „mehr Zugänge“).
+6. Modell nach Zugangsart (`modell_waehlen`): Abo-Zugang (oauth) `claude-sonnet-5-5`, API-Schlüssel das Modell der Art (derzeit
+   `claude-haiku-5-5`). Übersteuerung nur über `WAMO_ENTWICKLUNG_MODELL` bzw. das Kopfzeilenfeld `modell`, nur mit Namen aus
+   `MODELLE_ERLAUBT`.
+7. Schwärzung: Der Wert und jeder `sk-ant-…`-Schlüssel wird in der Ausgabe zum PC, im Protokoll `lauf.log` und nach dem Lauf in
+   allen Dateien unter `claude/` (Sitzungen für `--resume`) durch `[CLAUDE_ZUGANG]` ersetzt. Bleibt etwas offen (nicht lesbar,
+   Grenzen überschritten), löscht der Dispatcher `claude/projects` und schreibt `schwaerzen_unvollstaendig` ins Audit. Kodierte
+   Formen (etwa Base64) fängt das nicht. Das Audit nennt nur `claude=persoenlich-oauth|persoenlich-api|server` und die Kennung
+   `…@<profil>`.
+
+Risiko, bewusst akzeptiert: Der Token liegt für die Dauer des Laufs in der Umgebung der Sandbox, genau wie `GH_TOKEN`. Ein
+gekaperter Auftrag (Prompt-Injection über Webseiten oder Dateien) könnte ihn lesen und über Port 443 abfließen lassen.
+Gegenmittel: (a) Tokens aus `claude setup-token` gelten nur für Claude Code (reine Inferenz, Umfang `user:inference`; Claude Code
+2.1.303 beschreibt sie selbst als „limited to inference-only“), nicht für Konto, Verwaltung oder Chats; (b) der Kollege kann den
+Token jederzeit in seinem Claude-Konto widerrufen und in der Karte Modellzugang löschen (die genaue Stelle im Claude-Konto beim
+ersten echten Test prüfen und hier eintragen); (c) der Wächter `dev_guard.py` sperrt Befehle, die die Variablen nennen, sowie
+`env`, `printenv` und `environ`; (d) Schwärzung wie oben; (e) höchstens ein Auftrag gleichzeitig, Zeitlimit je Lauf. Nicht
+einsetzbar: `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` würde Anthropic-Zugänge aus Unterprozessen entfernen, erzwingt in Claude Code
+2.1.303 aber den Berechtigungsmodus `default` und passt damit nicht zu `bypassPermissions` (im Versuch mit der Attrappe
+bestätigt). Empfehlung: den Token nur für WAMO erzeugen, nicht für andere Zwecke mitnutzen.
+
+Kontingent des Max-Abos (Sitzungslimit, Wochenlimit, Modell-Wochenlimit):
+
+- Quelle ist das Ereignis `rate_limit_event` im stream-json von Claude Code (geprüft gegen Version 2.1.303 mit der API-Attrappe
+  des Rauchtests, die die Kopfzeilen `anthropic-ratelimit-unified-*` schickt). Es erscheint nur bei einem Abo-Zugang: API-Schlüssel
+  tragen diese Kopfzeilen nicht. Felder in `rate_limit_info`: `status` (`allowed`, `allowed_warning`, `rejected`), `rateLimitType`,
+  `resetsAt` (Unix-Sekunden), `utilization` (Bruchteil) und `unifiedWindows` mit `five_hour` (Sitzungslimit, 5 Stunden), `seven_day`
+  (Wochenlimit, alle Modelle) und `seven_day_overage_included` (modellbezogenes Wochenlimit, in Claude Code „Fable limit“), je mit
+  `utilization` und `resetsAt`. Ältere Namen: `seven_day_opus`, `seven_day_sonnet`.
+- Der Dispatcher gibt daraus (nur Felder einer festen Allowlist, Wertebereich geprüft, Zeilen aus der Sandbox sind nicht
+  vertrauenswürdig, `voice-core/kontingent.py`) das Ereignis `{"type": "wamo", "ereignis": "kontingent", "quelle":
+  "rate_limit_event", "limits": [{"art": "sitzung" | "woche" | "opus" | "sonnet" | "fable", "prozent": 42.0, "endet":
+  "2026-10-22T15:00:00Z", "status": "ok" | "warnung" | "erreicht"}]}` weiter, höchstens alle 2 Sekunden und nur bei geänderten Werten.
+- Der Kern prüft es erneut, legt es über den bekannten Stand (abgelaufene Fenster fallen weg), speichert es je Profil
+  (`model_access.kontingent`, `kontingent_stand`, Migration 0012, nur der Kern hat Rechte darauf) und schickt die Servernachricht
+  `{"type": "kontingent", "zustand": "bekannt" | "unbekannt", "stand": "…", "limits": [...]}` an die Oberfläche (`ui/src/lib/
+  nachrichten.ts`, Zustand `kontingent`). Die Client-Nachricht `{"type": "kontingent"}` fragt den gespeicherten Stand ab. Ohne
+  Daten ist der Zustand „unbekannt“. Das Kontingent des Serverzugangs wird nicht gespeichert (es gehört nicht dem Profil).
+- Ohne laufenden Auftrag lässt sich das Kontingent mit diesem Token nicht abfragen: `/usage` und `GET /api/oauth/usage` brauchen
+  den Umfang `user:profile`, den Tokens aus `claude setup-token` nicht haben, und der Token darf nur von Claude Code verwendet
+  werden. Die Anzeige zeigt deshalb den Stand des letzten Laufs mit Zeitangabe. Möglich wäre ein Mini-Lauf (eine Antwort mit
+  Haiku, wenige Token): er kostet etwas Kontingent und kann ein neues 5-Stunden-Fenster beginnen, deshalb ist er nicht gebaut.
+- Der Name des modellbezogenen Limits („Fable“) kommt in Claude Code nur aus `/usage`; aus dem Ereignis ist nur die Art
+  `fable` (`seven_day_overage_included`) bekannt. Beim ersten echten Test prüfen, ob die Prozentwerte zur Anzeige in Claude Code
+  passen.
+- Beim API-Schlüssel gibt es kein Kontingent; die Kosten je Auftrag stehen auf dem Canvas (`total_cost_usd`).
+
+Schritt für Schritt, was ein Kollege tut:
+
+1. Auf dem eigenen Rechner, angemeldet mit dem eigenen Max-Abo, `claude setup-token` ausführen und den Token (`sk-ant-oat01-…`,
+   wird nur einmal angezeigt) kopieren. Alternativ im Anthropic-Konto einen API-Schlüssel (`sk-ant-api03-…`) für das monatliche
+   Guthaben erzeugen.
+2. In WAMO die Karte Modellzugang öffnen, den Token bzw. Schlüssel einfügen und speichern (er wird verschlüsselt abgelegt und
+   nie wieder angezeigt, nur die letzten vier Zeichen).
+3. Einen Entwicklungsauftrag stellen und starten. Mit dem Token läuft er mit Sonnet auf dem Kontingent des Abos, mit dem
+   API-Schlüssel mit Haiku auf dem Guthaben. Nach dem ersten Lauf erscheint das Kontingent.
+4. Zum Wechseln oder bei Verdacht: Token im Claude-Konto widerrufen, in der Karte Modellzugang löschen, neu erzeugen.
+
+Betrieb (Niko): Zuerst den Dispatcher ausrollen (`ping` meldet `"version": "5"`), erst danach den Kern neu starten, sonst
+weist ein alter Dispatcher die neuen Kopfzeilenfelder ab. Migration 0012 auf `wamo_dev` und `wamo_test` ist angewendet, für
+`wamo_prod` nach 0010 und 0011 anwenden (Reihenfolge einhalten, nach jedem erneuten Lauf von 0010 oder 0011 auch 0012 erneut).
+`WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL` in der `.env` des Kerns setzen (oder `WAMO_CLAUDE_SCHLUESSEL_PROFIL` beibehalten).
+Haben alle Kollegen ihren eigenen Zugang, in `geheim.env` `WAMO_SERVERZUGANG=aus` setzen. Rauchtest mit den Attrappen:
+`ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp --attrappe --token-attrappe"`.
 
 Ausgangsfilter: Für Sockets des Benutzers `wamo` gilt nur Internet auf TCP 80 und 443, DNS an `127.0.0.53` und auf
 Loopback `127.0.0.1:20000-20999` für eigene Entwicklungsserver eines Auftrags. IPv6, LAN, Docker-Netze, private
@@ -551,23 +645,28 @@ Der Browser dort kennt nur die Betriebsart Büro (Kern auf Sokrates-2); PC-Werkz
 Oberfläche zeigt „nur in der Desktop-App verfügbar“.
 
 ```text
-Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000, Netz wamo-ui-netz (internal)──> wamo-ui (Next.js, Standalone)
+Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000, Netz wamo-ui-netz (internal)──> wamo-ui-blau  oder  wamo-ui-gruen (Next.js, Standalone)
    ├──HTTPS 55443──> wamo-caddy ──> Envoy (Anmeldung, Supabase)
    └──HTTPS 55444──> wamo-caddy ──> wamo-core (Kern, Unix-Socket); Medien als WebRTC direkt (UDP)
 ```
+
+Seit Schritt 1.1 der Selbstüberarbeitung (`docs/selbstueberarbeitung.md`, Abschnitt B) läuft die Oberfläche als zwei Container,
+von denen genau einer live ist; ein Release schaltet ohne Lücke um, der Rückweg dauert eine Sekunde (Abschnitt 12.6).
 
 ### 12.1 Bausteine
 
 | Baustein | Ort | Zweck |
 | --- | --- | --- |
-| Image und Container | `infra/sokrates2/wamo-ui/Dockerfile`, `docker-compose.yml`; auf dem Server `/home/wamocon/wamo-ui` | `npm ci`, `next build` (Standalone), Laufzeit `node:22-bookworm-slim` über Digest, arm64. Container: Benutzer `node`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, 512 MB, 1 CPU, 128 Prozesse, `restart: unless-stopped`, Healthcheck, kein veröffentlichter Port |
+| Image und Container | `infra/sokrates2/wamo-ui/Dockerfile`, `docker-compose.yml`; auf dem Server `/home/wamocon/wamo-ui` | `npm ci`, `next build` (Standalone), Laufzeit `node:22-bookworm-slim` über Digest, arm64. Zwei Container `wamo-ui-blau` und `wamo-ui-gruen` (je Farbe ein Image-Tag `wamo-ui:blau` und `wamo-ui:gruen`, dazu ein Archiv-Tag `wamo-ui:vX.Y.Z-<Commit, 12 Zeichen>`, die drei neuesten bleiben). Beide: Benutzer `node`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, 512 MB, 1 CPU, 128 Prozesse, `restart: unless-stopped`, Healthcheck auf `/version.json`, kein veröffentlichter Port |
+| Gesundheitsprobe | `ui/src/app/version.json/route.ts`, `ui/src/lib/buildInfo.ts` | `GET /version.json` liefert `{"name","version","commit","gebaut","sauber"}`: Version aus `ui/package.json`, Commit-ID, Bauzeit und der Vermerk „unverändert aus Git“ aus den Build-Argumenten (`WAMO_COMMIT`, `WAMO_BAUZEIT`, `WAMO_SAUBER`). Jeder Wert wird gegen ein enges Muster geprüft, nie ein Geheimnis. Antwort mit `Cache-Control: no-store`, bei jeder Anfrage frisch berechnet |
 | Netz | `wamo-ui-netz` (172.25.0.0/24), angelegt vom Compose von `wamo-caddy` | `internal` und ohne Adresse auf der Bridge (`inhibit_ipv4`): Der Container erreicht weder Internet noch Büro-LAN noch Dienste des Hosts (in `pruefen` geprüft: Gateway, Router, Internet, Host). Nur `wamo-caddy` hängt zusätzlich darin |
-| Caddy-Site | `wamo-ui/wamo-ui.caddy.vorlage`, installiert als `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui.caddy` | `https://192.168.178.136:55445` mit Zertifikat der WAMO-CA (`tls internal`), nur GET und HEAD, Body höchstens 1 KB, `encode`, ohne `Server` und `X-Powered-By`, COOP und CORP `same-origin`. Die übrigen Header (CSP, Referrer-Policy, nosniff, X-Frame-Options, Permissions-Policy) setzt Next.js. Kein HSTS: Browser ignorieren ihn bei einer IP-Adresse |
+| Caddy-Site | `wamo-ui/wamo-ui.caddy.vorlage`, installiert als `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui.caddy` | `https://192.168.178.136:55445` mit Zertifikat der WAMO-CA (`tls internal`), nur GET und HEAD, Body höchstens 1 KB, `encode`, ohne `Server` und `X-Powered-By`, COOP und CORP `same-origin`. Die übrigen Header (CSP, Referrer-Policy, nosniff, X-Frame-Options, Permissions-Policy) setzt Next.js. Kein HSTS: Browser ignorieren ihn bei einer IP-Adresse. Den Upstream bindet die Site über `import /etc/caddy/kern/wamo-ui-aktiv.inc` ein |
+| Include-Datei | `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui-aktiv.inc`, erzeugt von `wamo-ui-umschalten.sh` | legt fest, welche Farbe live ist (Kopfzeilen `# live=… vorige=…` und `# seit=…`), die Gesundheitsprobe und die Rückfallebene für statische Dateien. Endung `.inc`, damit der Import `kern/*.caddy` sie nicht als Site lädt. Nie von Hand ändern |
 | Einstellungen | `/home/wamocon/wamo-ui/wamo-ui.conf` (Vorlage `wamo-ui/wamo-ui.conf.beispiel`) | `WAMO_UI_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_WAMO_KERN_BUERO`, `WAMO_UI_TLS`, `WAMO_UI_HSTS`, Anmeldedauer im Browser. Hier und nur hier stehen Adresse und Zertifikatsart; im Code der Oberfläche steht keine feste IP. Werte sind öffentlich (stehen im JavaScript), keine Geheimnisse |
 | Publishable Key | liest das Skript auf dem Server aus `/home/wamocon/supabase-wamo/.env` | als Build-Argument ohne Wert in der Befehlszeile; abgelehnt wird alles außer `sb_publishable_…` (oder ein JWT mit Rolle `anon`), nie `service_role` |
 | Firewall | Port 55445 in `WAMO-FW-LAN` (`wamo-firewall.sh`) | Loopback und Büro-LAN, übernommen per `systemctl reload wamo-firewall` ohne Lücke |
 | Erlaubte Herkunft | Drop-in `/etc/systemd/system/wamo-core.service.d/wamo-ui.conf` | ergänzt `PIPECAT_ALLOWED_ORIGINS` um `WAMO_UI_URL` (Basis ist die Liste aus `wamo-core.service`); `wamo-core.service` selbst bleibt unberührt. Wirksam nach einem Neustart von wamo-core |
-| Skripte | `wamo-ui-einrichten.sh`, `wamo-ui-rueckweg.sh`, vom PC `scripts/wamo_ui_sokrates2.py` | alle wiederholbar; prüfen den Ablageort in `~/wamo-infra` wie die übrigen Skripte |
+| Skripte | `wamo-ui-umschalten.sh` (Bauen, Umschalten, Rückweg, Schnittstelle zum Notanker), `wamo-ui-einrichten.sh`, `wamo-ui-rueckweg.sh`, vom PC `scripts/wamo_ui_sokrates2.py` | alle wiederholbar; prüfen den Ablageort in `~/wamo-infra` wie die übrigen Skripte |
 
 Supabase braucht nichts Neues: Der Envoy des Stacks antwortet auf Preflight-Anfragen mit der Herkunft der Anfrage
 (geprüft für `https://192.168.178.136:55445`). Anmeldung mit Passwort und TOTP kennt keine Weiterleitung;
@@ -580,9 +679,10 @@ Supabase braucht nichts Neues: Der Envoy des Stacks antwortet auf Preflight-Anfr
 ```bash
 # vom PC, Repo-Wurzel
 python scripts/wamo_ui_sokrates2.py verteilen --mit-firewall-und-caddy   # Quellen von ui/ (ohne node_modules, .next, .env*) und Skripte
-python scripts/wamo_ui_sokrates2.py einrichten                            # Firewall, Caddy, Image, Container, Herkunft, Prüfung
+python scripts/wamo_ui_sokrates2.py einrichten                            # Firewall, Caddy, Umschalten, Herkunft, Prüfung
 python scripts/wamo_ui_sokrates2.py einrichten --neustart                 # zusätzlich wamo-core neu starten, aber nur ohne Sitzung
-python scripts/wamo_ui_sokrates2.py bauen                                 # nach einer Änderung an ui/: nur Image und Container
+python scripts/wamo_ui_sokrates2.py verteilen && python scripts/wamo_ui_sokrates2.py umschalten   # nach einer Änderung an ui/: Release ohne Lücke
+python scripts/wamo_ui_sokrates2.py zurueck                               # Rückweg auf die vorige Farbe (eine Sekunde)
 python scripts/wamo_ui_sokrates2.py status                                # lesend; pruefen = Header, TLS, Härtung, Isolation, Ladezeit
 ```
 
@@ -594,9 +694,10 @@ python scripts/wamo_ui_sokrates2.py status                                # lese
   Journalzeile außer abgewiesenen Anfragen in den letzten 5 Minuten), sonst bricht es mit einem Hinweis ab.
 - Den Neustart von wamo-core macht nur `herkunft --neustart` und auch nur ohne Sitzung (gleiche Prüfung); sonst bleibt er ein
   offener Schritt: `ssh sokrates2 "bash ~/wamo-infra/wamo-ui-einrichten.sh herkunft --neustart"`.
-- Nach einem Update von `ui/` genügt `bauen`. Das vorige Image bleibt als `wamo-ui:vorher`, zurück geht es mit
-  `python scripts/wamo_ui_sokrates2.py zurueck`.
-- Rückweg: Abschnitt 8.
+- Nach einem Update von `ui/` genügt `verteilen` und `umschalten` (Abschnitt 12.6). Die alte Farbe läuft weiter, zurück geht es
+  mit `python scripts/wamo_ui_sokrates2.py zurueck`. `verteilen` schreibt dazu `wamo-ui/bau.info` (Commit-ID von HEAD und den
+  Vermerk, ob `ui/` und `infra/sokrates2` unverändert sind); die Oberfläche meldet beides in `/version.json`.
+- Rückweg der ganzen Oberfläche (abschalten): Abschnitt 8.
 
 ### 12.3 Ein weiterer Windows-PC (Browser, Schritt für Schritt)
 
@@ -661,6 +762,101 @@ Die WAMO-CA kann bleiben (Desktop-App im Notfall über die IP), sollte aber nich
   (globaler Block `timeouts` im Caddyfile, gemeinsam genutzt).
 - **HSTS** gilt bei Variante B für die ganze Domain und ein Jahr; vorher klären, ob andere Dienste unter derselben Domain
   ohne HTTPS laufen.
+
+### 12.6 Release ohne Lücke: blau/grün, Umschalten, Rückweg (Schritt 1.1, vorbereitet am 22.10.2026, noch nicht ausgerollt)
+
+**Prinzip.** Zwei Container, einer ist live. Ein Release baut die Fassung in die andere Farbe, prüft sie dort, setzt die
+Include-Datei um und lädt Caddy neu (`caddy reload`, kein Neustart, kein neues Anlegen von `wamo-caddy`). Die alte Farbe läuft
+weiter und wird erst beim nächsten Release ersetzt. Der Kern (WebRTC, Medien), die Anmeldung und die Sitzungen bleiben unberührt:
+Die Oberfläche hält keinen Serverzustand, Browser sprechen Kern und Anmeldung selbst an.
+
+```bash
+python scripts/wamo_ui_sokrates2.py verteilen                      # Quellen und Skripte, dazu wamo-ui/bau.info (Commit von HEAD)
+python scripts/wamo_ui_sokrates2.py umschalten --trocken           # zeigt den Plan, ändert nichts
+python scripts/wamo_ui_sokrates2.py umschalten                     # bauen, prüfen, umschalten, bewähren (30 Sekunden), sonst zurück
+python scripts/wamo_ui_sokrates2.py umschalten --bewaehrung 120 --fehlerquote 5     # strenger und länger
+python scripts/wamo_ui_sokrates2.py bauen && python scripts/wamo_ui_sokrates2.py umschalten --ohne-bau   # in zwei Schritten
+python scripts/wamo_ui_sokrates2.py zurueck                        # Rückweg auf die vorige Farbe, ebenso wieder vorwärts
+python scripts/wamo_ui_sokrates2.py eintrag                        # Eintrag "letzte gute Version" für den Notanker (JSON)
+ssh sokrates2 "bash ~/wamo-infra/wamo-ui-umschalten.sh status"     # Farbe, Fassungen, öffentliche Antwort
+```
+
+**Ablauf von `umschalten`.**
+
+| Schritt | Was geschieht | Bei einem Fehler |
+| --- | --- | --- |
+| 1 Bauen | Image `wamo-ui:vX.Y.Z-<Commit>` und `wamo-ui:<Farbe>`, `docker compose up -d --no-deps --force-recreate <Farbe>`; die live gesetzte Farbe wird nie angefasst. Nur ein sauberer Stand (aus unverändertem Git) bekommt den Archiv-Tag, alles andere `…-lokal-<Zeit>` | Rückgabewert 1, nichts geändert |
+| 2 Prüfen | am neuen Container aus dem Netz von Caddy: `/version.json` mit der erwarteten Version und dem erwarteten Commit, Startseite 200, `nosniff`, die CSP nennt Anmeldung und Büro-Kern (nur dann zeigt der Build auf die richtigen Adressen); der Kern antwortet ohne Anmeldung auf `POST /start` mit 401 (nicht erreichbar: Hinweis, kein Abbruch; jeder andere Status: Abbruch) | Rückgabewert 3, der neue Container wird angehalten, die alte Farbe bleibt live |
+| 3 Schalten | neue Include-Datei aus der Vorlage im Skript, Prüfung der ganzen Konfiguration in einem Wegwerf-Container ohne Netz (`caddy adapt`), atomarer Tausch (`mv`), `caddy reload` | alte Datei kommt zurück, Rückgabewert 3 |
+| 4 Wirkung | wartet (höchstens 20 s), bis `GET /version.json` über die öffentliche Adresse die neue Fassung liefert | automatischer Rückweg, Rückgabewert 4 |
+| 5 Bewährung | zwei Proben je Sekunde über die öffentliche Adresse, Standard 30 Sekunden (`--bewaehrung 0` bis 1800) | drei Fehler in Folge oder mehr als `--fehlerquote` Prozent (Standard 10) lösen den automatischen Rückweg aus, Rückgabewert 4 |
+| 6 Aufräumen | der Container `wamo-ui` aus der Zeit vor blau/grün wird abgeräumt, sobald er nicht mehr die vorige Farbe ist; die drei neuesten Archiv-Tags bleiben | |
+
+Der automatische Rückweg setzt die Include-Datei auf die alte Farbe zurück und hält die fehlerhafte Farbe an (Protokoll mit
+`docker logs wamo-ui-<farbe>`). Rückgabewert 5 heißt, dass auch der Rückweg nicht gelang: Dann zuerst `docker exec wamo-caddy caddy
+reload --config /etc/caddy/Caddyfile --adapter caddyfile` und `status`. Ein zweiter Lauf zugleich wird mit einer Sperre
+(`flock` auf `~/wamo-ui/.umschalten.lock`) abgewiesen.
+
+**Die Include-Datei** `etc/kern/wamo-ui-aktiv.inc` ist der einzige Zustand: Kopfzeilen `# live=… vorige=…` und `# seit=…`, darunter
+zwei `handle`-Blöcke. Erster Upstream ist die live gesetzte Farbe, zweiter die vorige. Fällt der erste aus (Verbindungsfehler oder
+die Gesundheitsprobe `/version.json` alle 2 Sekunden), nimmt Caddy ohne Eingriff den zweiten; bei einer Wahl, die nicht antwortet,
+versucht es bis zu 5 Sekunden weiter (`lb_try_duration`), Wählen dauert höchstens 1 Sekunde. Für `/_next/static/*` fragt Caddy
+die live gesetzte Farbe und gibt bei 404 die Antwort der vorigen weiter (`handle_response`): Jeder Build hat eigene Dateinamen,
+und eine offene Seite der alten Fassung lädt ihre Chunks weiter. Dasselbe gilt nach dem Rückweg in die andere Richtung. Die Site
+weist alles außer GET und HEAD mit 405 ab, bevor ein Upstream etwas sieht (Block `route`, die Reihenfolge steht dort fest).
+Von Hand ändern gilt nicht: Das nächste Schalten erzeugt die Datei neu.
+
+**Erstumstellung (einmalig).** Heute läuft der einzelne Container `wamo-ui`. Reihenfolge ohne Lücke:
+
+1. `verteilen --mit-firewall-und-caddy` aus einem sauberen Stand (`git status` ohne Änderungen in `ui/` und `infra/sokrates2`),
+   sonst bekommt die Fassung `sauber: false` und der Notanker nimmt sie nicht als Ziel an.
+2. `python scripts/wamo_ui_sokrates2.py einrichten` legt nur die Include-Datei (live ist zunächst der alte Container `wamo-ui`) und
+   die neue Site an und lädt Caddy neu; `wamo-caddy` selbst wird nicht neu angelegt, weil sich sein Compose nicht ändert. Die Site
+   wirkt wie vorher, nur über die Include-Datei.
+3. `python scripts/wamo_ui_sokrates2.py umschalten` baut `wamo-ui-blau`, prüft es neben dem alten Container, schaltet um und
+   bewährt es. Der alte Container bleibt als vorige Farbe (`alt`) laufen: Der Rückweg geht auch jetzt in einer Sekunde, und
+   die Chunks offener Seiten bleiben erreichbar. Er wird beim nächsten Release abgeräumt, die alten Images `wamo-ui:aktuell`,
+   `:vorher` und die Zeitstempel-Tags bleiben liegen (von Hand mit `docker image rm`, wenn sie nicht mehr gebraucht werden).
+4. Danach `python scripts/wamo_ui_sokrates2.py eintrag` ausgeben und als `komponenten.ui.aktiv` und `letzte_gute` in die
+   `stand.json` des Ankers eintragen (root, die Datei prüft der Anker streng; der Anker schreibt sie später selbst).
+
+**Notanker.** Der Anker ruft als root ein festes Schritt-Skript `schritte/rueckweg-ui <Version> <Commit> <Ziel>` aus seiner
+Zustandsdatei auf (Abschnitt 14). `wamo-ui-umschalten.sh` ist genau dafür gebaut: Als `rueckweg-ui` kopiert (Name entscheidet),
+bedient es den Befehl `anker-rueckweg`. Es ist idempotent (schon aktiv: Exit 0, nach einem Abbruch zwischen Tausch und Reload lädt
+es Caddy neu), prüft jeden Parameter streng (nur `vX.Y.Z`, 40 Hexzeichen, `blau` oder `gruen`), startet die Zielfarbe bei Bedarf aus
+dem Archiv-Image und geht nur auf saubere Stände. Das Einbinden (Datei nach `anker/schritte/` kopieren, Prüfsumme im Manifest) ist ein
+Handgriff in der Anker-Einrichtung und gehört zu Schritt 1.6; dieser Schritt ändert den Anker nicht. Läuft das Skript als root, legt es
+Dateien im Home von `wamocon` mit dem Besitzer des Ordners an.
+
+**Messung (Rauchtest `wamo_ui_rauchtest.py`, Attrappen und echtes Caddy 2.11.2, 20 Anfragen je Sekunde, Stand 22.10.2026).** Null
+Fehler bei Erstumstellung, Release, Rückweg, Weg vorwärts, Rückweg des Ankers, Ausfall der live Farbe (`docker kill`) und Prüfungen,
+die vor dem Umschalten scheitern (1212 Anfragen, 0 Fehler). Das Prüfen der Konfiguration, der Tausch der Datei und das Neuladen von Caddy
+dauern zusammen 0,3 bis 0,4 Sekunden; die neue Fassung antwortet 0,3 bis 0,6 Sekunden nach Beginn des Schaltens über Caddy. `zurueck`
+ist nach 0,5 Sekunden fertig, vom Aufruf bis zur ersten Antwort der alten Fassung vergehen 0,6 Sekunden (Ziel: unter 30 Sekunden).
+Ein Release dauert mit Attrappe und 6 Sekunden Bewährung etwa 8 Sekunden. Je Umschalten bricht eine Ruhe-Verbindung ab, weil Caddy sie
+beim Neuladen schließt; ein Browser wiederholt die GET-Anfrage unbemerkt, der Rauchtest tut es ebenso und zählt es getrennt.
+Eine Bewährung, die durchfällt (Absturz der neuen Fassung nach dem Umschalten), schaltet automatisch zurück (Rückgabewert 4): bei einem
+Absturz 0 Fehler, bei Fehlerantworten 500 der neuen Fassung 9 Fehler in 17 Sekunden, bis die Gesundheitsprobe sie aus dem Pool nimmt.
+
+**Grenzen.**
+
+- Offene Seiten, die zwei Releases zurückliegen, verlieren nachgeladene Chunks (die Farbe, die das nächste Release ersetzt, trug
+  die älteste Fassung) und brauchen ein Neuladen. Der Hinweis „Neue Version, bitte neu laden“ in der Oberfläche folgt mit Schritt 1.5.
+- Antwortet die neue Fassung nach dem Umschalten mit Fehlerstatus 500 statt mit Verbindungsfehlern, erreichen diese Antworten
+  Nutzer, bis die Gesundheitsprobe sie aus dem Pool nimmt (zwei Sekunden) und die Bewährung zurückschaltet. Verbindungsfehler
+  und Abstürze fängt Caddy ab.
+- Fällt die live gesetzte Farbe aus, geht der Verkehr zehn Sekunden lang (`fail_duration`) an die vorige, auch wenn sie älter ist.
+- Das Skript folgt als root keinen Links (Sperrdatei, Include-Datei und Compose-Datei werden abgelehnt, wenn sie welche sind),
+  verlässt sich aber auf die Dateien im Home von `wamocon`; wer dort schreiben darf, hat ohnehin `sudo` und `docker`
+  (Grenze des Ankers, Abschnitt 14).
+- Ein Rückweg über das Archiv startet die Zielfarbe neu. Hat Caddy sie zuvor als ausgefallen vermerkt, verwendet es sie erst nach
+  `fail_duration` (10 Sekunden) wieder; das Skript wartet darauf und meldet erst dann Erfolg (gemessen 13 Sekunden insgesamt, ohne
+  Fehler, die vorige Fassung bedient solange weiter). Das Zeitlimit des Ankers beträgt 120 Sekunden für die Oberfläche.
+
+**Tests.** `uv run python -m pytest ../scripts/test_wamo_ui_sokrates2.py` im Ordner `voice-core` (Syntax, feste Regeln, rund 90
+Verbotsproben der Parameter ohne Aufruf von docker, Verteil-Werkzeug); `npm test` in `ui/` (Route und Vertrag mit dem Muster des
+Skripts); `python infra/sokrates2/wamo_ui_rauchtest.py` (braucht nur Docker; legt ausschließlich Container, Netze, Volumes und Images
+mit dem Namen `wamo-test-rauch-…` an und räumt sie wieder ab; `--nur kurz` lässt Absturz und Ausfall weg).
 
 ## 13. Rücktunnel je Gerät (Laptops, vorbereitet am 21.10.2026)
 
@@ -727,6 +923,210 @@ Restrisiken: Wer auf Sokrates-2 `sudo` oder die docker-Gruppe hat, ist root und 
 außerhalb von `/run/wamo-pc` sind möglich (der Streuner meldet sie binnen 5 Minuten); gefährlich wären sie nur, wenn ein
 Dienst einen vorhersagbaren Pfad dort öffnet, deshalb prüft der Kern vor dem ersten Byte per `SO_PEERCRED`. Eine
 Obergrenze für Weiterleitungen je Gerät gibt es nicht (`MaxSessions` zählt nur Sitzungen).
+
+## 14. Notanker der Selbstüberarbeitung (Schritt 0.1, vorbereitet am 22.10.2026, noch nicht ausgerollt)
+
+**Zweck.** Der Notanker ist der kleine Teil der geplanten Selbstüberarbeitung (`docs/selbstueberarbeitung.md`, Abschnitt G),
+der Root-Rechte braucht. Er kann nur zurückführen, sperren und prüfen. Er liegt in `/usr/local/lib/wamo-anker`, außerhalb von
+`/opt/wamo*` und außerhalb des Repo-Deploys, gehört root, ist für WAMO und alle Dienstbenutzer nie änderbar und wird nur von
+Hand installiert. Quelltext: `infra/sokrates2/anker/`. Bis die Stufen 1 und 2 stehen, bleibt `SELF_REPO = "wamo"` unverändert.
+
+| Befehl | Wirkung |
+| --- | --- |
+| `wamo-anker status` | aktive und letzte gute Version je Komponente (`ui`, `kern`), Sperre, Zustandsdatei, Hashkette des Audit-Protokolls, Prüfsumme der Installation. Offene Anfragen kommen mit Schritt 0.2 (Datenbank) |
+| `wamo-anker rueckweg ui`, `kern`, `alles` | zurück auf den letzten guten Stand aus `stand.json`. Der Anker ruft dazu das feste Skript `/usr/local/lib/wamo-anker/schritte/rueckweg-ui` oder `rueckweg-kern` mit Version, Commit und Ziel (alles aus der Zustandsdatei, nie aus der Anfrage). Die Skripte liefern die Stufen 1.1 und 2.4; bis dahin antwortet `rueckweg` ehrlich mit "Schritt fehlt". Das Skript läuft auch dann, wenn `stand.json` schon den letzten guten Stand zeigt (die Buchführung könnte nach einem Absturz hinter dem Schalter zurückliegen; die Skripte müssen idempotent sein). Ein zweiter Aufruf geht nie weiter zurück als bis zum letzten guten Stand. Die Ausgabe des Skripts sehen nur `root` und `wamocon` |
+| `wamo-anker sperre an`, `aus` | Abschalter für jede Selbständerung: Datei `/etc/wamo-anker/selbstaenderung.aus`. Steht sie (oder ist sie nicht eindeutig lesbar), lehnt der Anker alle Vorwärtsbefehle ab (`bereitstellen`, `migrieren`, `umschalten`, in Stufe 1 und 2 gefüllt; jetzt nur reserviert). `rueckweg` und `status` laufen immer, der Rückweg ist der Notausgang |
+| `wamo-anker pruefe-sonder <id>` | Schnittstelle der Sonderfreigabe für die Schutzschicht. Bis Stufe 4 antwortet sie für jede Kennung `NEIN` (Exit 1). Änderungen an der Schutzschicht gibt künftig nur ein anderer Admin frei als der Beauftragte, und nur mit mindestens zwei aktiven Admins; heute gibt es einen, die Schutzschicht bleibt also gesperrt |
+| `--trocken` | bei `rueckweg` und `sperre`: zeigt den Plan, ändert weder Zustand noch Sperre noch Systeme (nur das Audit-Protokoll bekommt die Zeile) |
+| `wamo-anker lokal <befehl>` | Notfallweg nur für root, wenn der Dienst steht: dieselbe Prüfung und dasselbe Protokoll ohne Socket |
+
+**Wer darf.** Der Dienst `wamo-anker` (root, ohne Capabilities) lauscht auf `/run/wamo-anker/anker.sock` (Ordner 2750
+`root:wamocon`, Socket 0660). Zusätzlich prüft er jede Verbindung per `SO_PEERCRED`, bevor er ein Byte liest. Erlaubt sind
+`root` und `wamocon`; `wamo-release` ist für Schritt 0.3 vorgesehen (status, rueckweg, sperre an, pruefe-sonder, nie
+`sperre aus`; ein Zugriff dafür wäre eine ACL auf den Socket). `wamo`, `wamo-core`, `wamo-geraete`, die Tunnelbenutzer und alle
+anderen werden abgewiesen.
+
+**Was er nie tut.** Keine Shell und kein Pfad aus einer Anfrage (`subprocess` nur mit Liste, feste Pfade, leere Umgebung,
+Zeitlimit, begrenzte Ausgabe); keine Geheimnisse lesen oder protokollieren; kein Netz (`RestrictAddressFamilies=AF_UNIX`);
+nichts am Repo; keine Datenbank (kommt in 0.2 und 2.5); Schritt-Skripte nur, wenn sie root gehören, nicht beschreibbar sind und
+ihre Prüfsumme im Manifest stimmt. Eingaben: genau eine ASCII-Zeile bis 160 Bytes, Allowlist-Regex je Feld, jede Anfrage
+mit eigener Kennung (dieselbe Kennung wird nie zweimal bedient). Bei einem Fehler gilt immer die sichere Seite: unklare
+Sperre heißt gesperrt, kaputte Zustandsdatei heißt kein Rückweg und keine Überschreibung, nicht schreibbares Audit-Protokoll
+heißt keine ändernde Aktion. Damit niemand (auch kein erlaubter Benutzer) das Protokoll füllt und so den Rückweg aussperrt,
+gelten Klassen: Lesen, Abweisungen und Anfragen ohne Wirkung werden nur bis 75 Prozent Füllgrad protokolliert (je uid und
+Grund höchstens 20 Zeilen pro Minute, der Rest wird gezählt und in der nächsten Zeile genannt), eine ändernde Sperre bis 90
+Prozent, ein Rückweg mit Wirkung bis 100 Prozent. Ändernde Anfragen sind je uid auf 30 pro Minute gedrosselt. Es wird nur
+angehängt, wenn mindestens 1 MiB Platz frei ist (keine halben Zeilen bei voller Platte).
+
+| Ort | Inhalt |
+| --- | --- |
+| `/usr/local/lib/wamo-anker` (root, 0755) | `wamo_anker.py`, `wamo-anker.sh`, `anker_rauchtest.py`, `schritte/`, `SHA256SUMS` (Prüfsumme aller Dateien; `ExecStartPre` prüft sie vor jedem Start, `status` zeigt Abweichungen) |
+| `/etc/wamo-anker` (root, 0755, ohne Geheimnisse) | `selbstaenderung.aus` (die Sperre) |
+| `/var/lib/wamo-anker` (root, 0700) | `stand.json` (Tabelle der letzten guten Stände je Komponente, die Vorgängerin als `.vorher`), Schreibsperre |
+| `/var/log/wamo-anker` (root, 0750) | `audit.jsonl`: eine JSON-Zeile je Ereignis mit Hashkette (`n`, `vorher`, `hash`), `chattr +a`, Zeile höchstens 1024 Bytes, bei 32 MiB ist es voll |
+| `/run/wamo-anker` | `anker.sock` |
+
+Format von `stand.json` (bis die Stufen 1 und 2 es füllen, steht überall `null`; Handarbeit von root ist möglich, die Datei
+wird beim Laden streng geprüft): je Komponente `aktiv` und `letzte_gute` mit `version` (`vX.Y.Z`), `commit` (40 Hexzeichen),
+`ziel` (`blau` oder `gruen` für die Oberfläche, `a` oder `b` für den Kern) und `seit` (UTC, ISO 8601).
+
+**Einrichten (von Hand, wiederholbar).** Erstinstallation legt `stand.json` leer an und **setzt die Sperre** (Selbständerung
+aus); ein weiterer Lauf ändert weder Zustand noch Sperre noch Protokoll.
+
+```bash
+ssh sokrates2 "rm -rf ~/wamo-infra" && scp -r infra/sokrates2 sokrates2:wamo-infra && ssh sokrates2 "chmod -R go-w ~/wamo-infra"
+ssh sokrates2 "sudo bash ~/wamo-infra/anker-einrichten.sh --trocken"                       # zeigt nur, was geschähe
+ssh sokrates2 "sudo bash ~/wamo-infra/anker-einrichten.sh"
+ssh sokrates2 "wamo-anker status"
+ssh sokrates2 "sudo python3 -I /usr/local/lib/wamo-anker/anker_rauchtest.py --produktiv"   # Wegwerf-Instanz plus echte Installation
+```
+
+Der Rauchtest prüft in einer Wegwerf-Instanz Befehle, Verbotsproben (auch als `wamo`, `wamo-core`, `nobody` über `runuser`),
+Sperre, `--trocken`, Hashkette und Zeit des Rückwegs (UI unter 30 Sekunden, Kern unter 60 Sekunden, hier mit Attrappen der
+Schritt-Skripte). Mit `--produktiv` prüft er zusätzlich Rechte, Prüfsumme, `chattr +a` und den Socket der echten Installation
+(es entstehen Zeilen im Audit-Protokoll). Probelauf der Skripte ohne root: `WAMO_ANKER_WURZEL=/tmp/anker-probe bash
+anker-einrichten.sh` (läuft nie als root, die Wurzel darf nur aus A-Z, a-z, 0-9, `.`, `_`, `-` und `/` bestehen, ohne `//` und
+ohne `.` oder `..`). Tests ohne Root: `uv run python -m pytest -q test_anker.py test_anker_skripte.py` im Ordner `voice-core`.
+Das Einrichtungsskript lässt Systemordner wie `/usr/local/lib` unverändert und hält den bisherigen Baum als
+`/usr/local/lib/wamo-anker.vorher`, bis `wamo-anker status` nach dem Neustart bestanden hat (sonst steht der Rückfallbefehl im
+Fehlertext). `status` meldet außerdem Elternordner von `lib`, die für alle oder für eine Gruppe mit Mitgliedern beschreibbar
+sind (wer dort schreiben darf, könnte `lib` samt Prüfsumme austauschen; auf Ubuntu ist `/usr/local/lib` root:staff 2775, die
+Gruppe `staff` ist normalerweise leer und löst keine Meldung aus).
+
+**Rückweg.** `sudo bash ~/wamo-infra/anker-rueckweg.sh` stoppt den Dienst, alles bleibt liegen. Mit `--entfernen` verschwinden
+Programme, Unit, Verknüpfung, tmpfiles-Datei und `stand.json` (beide Dateien zuvor nach `/var/backups/wamo-anker` gesichert,
+das Audit-Protokoll wird dorthin verschoben, nie gelöscht). Die Sperre bleibt bewusst bestehen; sie fällt nur mit
+`sudo rm /etc/wamo-anker/selbstaenderung.aus`. Beide Skripte kennen `--trocken`.
+
+**Wenn das Audit-Protokoll voll oder beschädigt ist.** `status` zeigt `Kette defekt` oder den Füllgrad. Ab 75 Prozent
+protokollieren nur noch schreibende Befehle (der Rückweg bleibt möglich), bei 100 Prozent oder defekter Kette lehnen alle
+schreibenden Befehle ab. Handarbeit: `sudo chattr -a /var/log/wamo-anker/audit.jsonl`, Datei nach `/var/backups/wamo-anker`
+verschieben, `sudo systemctl restart wamo-anker` (neue Kette), `sudo chattr +a` auf die neue Datei.
+
+**Grenzen.** Der Anker schützt gegen WAMO und die Dienstbenutzer, nicht gegen Menschen mit root: `wamocon` hat sudo und die
+Docker-Gruppe und kann ihn ändern, ebenso das Audit-Protokoll samt Kette (die Hashkette ist nicht geschlüsselt; sie erkennt
+Fehler und Teilmanipulation, ein Fälscher mit root rechnet sie neu; den letzten Hash zeigt `status`, ab Schritt 0.2 gehört er
+zusätzlich in die Datenbank). Das Gedächtnis gegen doppelte Anfragen liegt im Speicher, nach einem Neustart des Dienstes ist
+es leer. Ein Schritt-Skript, das einen Hintergrundprozess mit offener Ausgabe zurücklässt, läuft bis zum Zeitlimit; danach
+beendet der Anker die ganze Prozessgruppe. Der Dienst bedient eine Verbindung nach der anderen: Ein laufender Rückweg
+(`alles`: bis 300 Sekunden) hält `status` und `sperre` so lange auf; SIGTERM wartet ihn ab (`TimeoutStopSec=330`). Ein
+erlaubter Benutzer kann den Dienst jeweils bis zu 5 Sekunden mit einer stillen Verbindung binden und das Protokoll innerhalb der
+genannten Klassen und Drosseln beschweren; wer das Protokoll trotzdem füllt, braucht Handarbeit von root (oben), und root kann
+den Rückweg im Notfall direkt am Skript unter `/usr/local/lib/wamo-anker/schritte` ausführen. Die Dienst-Unit wurde ohne
+systemd-Test auf Sokrates-2 geschrieben und ist durch `systemd-analyze verify` im Einrichtungsskript, `systemd-analyze security
+wamo-anker` und den Rauchtest zu bestätigen; startet sie nicht, sind `MemoryDenyWriteExecute` und `SystemCallFilter` die ersten
+Verdächtigen.
+
+## 15. Release-Dienst der Selbstüberarbeitung (Schritt 0.3, Gerüst, vorbereitet am 22.10.2026, noch nicht ausgerollt)
+
+**Zweck.** `wamo-release` (Konzept `docs/selbstueberarbeitung.md`, Abschnitt D) führt eine Release-Anfrage durch einen
+Zustandsautomaten. Er läuft unprivilegiert (Benutzer `wamo-release`, ohne Capabilities, nur Unix-Sockets) und schaltet nie
+selbst: Alles Schaltende liegt beim Notanker, den er nur über dessen Socket mit `status`, `rueckweg` und `sperre an` erreicht
+(nie `sperre aus`). In diesem Schritt sind die Stufen (Übernehmen, Prüfstrecke, Review, Refactor, Veröffentlichen,
+Bereitstellen) Schnittstellen ohne Inhalt (`release/release_stufen.py`, Stufe 1 bis 3 füllen sie), es gibt keine
+Datenbankverbindung (`release/release_db.py`, Stufe 1), keinen Aufruf eines Modells, kein Netz und kein GitHub. Der Dienst
+im Betrieb lehnt `anfordern` deshalb ehrlich ab (`datenbank_fehlt`, solange die Sperre des Ankers steht `gesperrt`). Voll
+getestet sind Socket, Audit-Kette, Zustandsautomat, Wiederaufnahme, Zeitgrenzen, Sperre und Rückweg. Quelltext:
+`infra/sokrates2/release/`.
+
+| Befehl (`sudo wamo-release ...`) | Wirkung |
+| --- | --- |
+| `status` | offene Anfrage, letzte Anfragen, Sperre des Ankers, Datenbank, Audit-Kette, Spiegel, Prüfsumme der Installation |
+| `anfordern main <profil>` | legt eine Anfrage an: nur für einen aktiven Admin laut Datenbank, nur wenn der Anker erreichbar und nicht gesperrt ist, höchstens eine offene, höchstens drei je Admin und Tag. Die Quelle `selbst` ist erst mit Stufe 3 freigeschaltet |
+| `abbrechen <anfrage>` | beendet die offene Anfrage, solange nichts umgeschaltet ist; ab `veroeffentlicht` (der Anker kann schon begonnen haben) erst nach einem gelungenen Rückweg, ab `bereitgestellt` nur über `zurueck` |
+| `zurueck ui`, `kern`, `alles` [`--trocken`] | Rückweg über den Anker; beendet auch die offene Anfrage (vor `veroeffentlicht` und in `veroeffentlicht` mit `abgebrochen`, ab `bereitgestellt` mit `zurueckgenommen`, hier nur bei `alles`: ein Teilrückweg lässt sie offen). Geht aus jedem Zustand, auch bei defekter Zustandsdatei, nicht beschreibbarem Protokoll und hängendem Schloss |
+| `freigeben`, `diff` | gibt es hier nie: Freigaben schreibt nur der Freigabe-Dienst des Ankers (Stufe 1.4), die Diff-Ansicht kommt mit Stufe 1.5 |
+
+**Wer darf.** Socket `/run/wamo-release/ctl.sock` (Ordner 2750 `wamo-release:wamo-core`, Socket 0660) und `SO_PEERCRED`
+vor dem ersten gelesenen Byte: `root` darf alle vier Befehle, `wamo-core` (der Kern) nur `status` und `anfordern`, nie
+Freigabe, Rückweg oder Abbruch. Menschen kommen über `sudo`. Der Socket für Personen mit Token (`api.sock`, Prüfung von Token,
+aal2 und Rolle) kommt mit Stufe 1.4; bis dahin kann der Kern eine Anfrage im Namen eines beliebigen Admin-Profils stellen (die
+Datenbank prüft, dass es ein aktiver Admin ist; die Person, die den Kern bedient, prüft der Kern). Eingaben: eine ASCII-Zeile bis
+160 Bytes, Regex je Feld, jede Kennung nur einmal. Grenzen gegen Dauerfeuer: der Kern darf 10 ändernde Anfragen je Minute und
+protokolliert nur bis 75 Prozent Füllgrad, root 30 und bis 90 Prozent, der Rückweg bis zum Ende; `status` höchstens 120 je Minute
+und Benutzer; getrennte Verbindungstöpfe (8 für root, 4 für den Kern), damit der Kern den Rückweg nicht aushungern kann.
+
+**Zustände.** Es sind die der Datenbank (Migration 0013), 17 Zustände und 30 erlaubte Übergänge; die Quelle `main` überspringt
+`arbeit`, `review`, `refactor` und `pruefung2`. Fehler, Zeitüberschreitung und Abbruch führen nach `abgebrochen` (mit Grund);
+ab `veroeffentlicht` (dort ruft der Dienst den Anker) geschieht das erst nach einem gelungenen Rückweg, ab `bereitgestellt`
+heißt das Ende `zurueckgenommen`. Gelingt der Rückweg nicht, bleibt die Anfrage offen, der Anker bekommt `sperre an`, und die
+Wache versucht es alle 60 Sekunden bis zu fünfmal (`status` zeigt `rueckweg_offen`, danach Handarbeit mit `wamo-anker rueckweg
+alles`). Eine Stufe, die auf einen Menschen wartet (zum Beispiel die Wahl der Version), verbraucht keine Versuche. Die Zustände ab `freigegeben` außer `veroeffentlicht`
+setzt nur der Anker oder der Freigabe-Dienst in der Datenbank; der Dienst beobachtet sie nur und prüft bei der Freigabe
+Commit-ID und Tree-ID gegen seine eigenen Werte (Abweichung: Abbruch und `sperre an`).
+
+| Zustand | Arbeit | Zeitgrenze |
+| --- | --- | --- |
+| `angefragt` | Anfrage steht | 15 Min |
+| `arbeit` (selbst) | Agent in der Arbeitskopie | 60 Min |
+| `uebernommen` | Quelle als Commit C1 festhalten | 10 Min |
+| `pruefung1` | bauen, testen, scannen | 45 Min |
+| `review`, `refactor` (selbst) | lesende Agenten, Refactor als Commit R | je 30 Min |
+| `pruefung2` (selbst) | Prüfstrecke auf R | 45 Min |
+| `versionswahl` | Vorschlag, Wahl des Admins, Release-Commit V | 24 Std |
+| `pruefung3` | schnelle Prüfung auf V, Klassifizierung durch den Anker | 15 Min |
+| `wartet_freigabe` | wartet auf die Freigabe (Datenbank) | 24 Std |
+| `freigegeben` | veröffentlichen | 15 Min |
+| `veroeffentlicht`, `bereitgestellt` | der Anker stellt bereit und schaltet um | 30 und 15 Min, danach Rückweg |
+| `umgeschaltet` | Bewährung (30 Minuten, Anker) | 60 Min, danach Rückweg |
+
+Zum Wortlaut der Konzeptskizze: angefordert heißt `angefragt`, Quelle geholt `uebernommen`, gebaut und getestet `pruefung1`,
+geprüft `review`, refaktoriert `refactor`, nachgetestet `pruefung2`, Version vorgeschlagen `versionswahl`. Insgesamt darf eine
+Anfrage drei Tage offen sein. Jede Stufe prüft ihr Ergebnis an einem Tor (Pflichtzeilen des Prüfstands, Commit-IDs,
+Version nie unter dem Vorschlag, Klasse der Schutzschicht): `gesperrt` beendet die Anfrage immer, `sonder` verlangt mindestens zwei
+aktive Admins (sonst endet sie mit `zweiter_admin_noetig`; heute gibt es einen, die Schutzschicht bleibt also gesperrt) und ist
+für die Quelle `selbst` bis Stufe 4 ganz gesperrt. Ein anderer Admin als der Beauftragte gibt `sonder` frei, das setzt die
+Datenbank durch (Trigger der Migration 0013).
+
+**Audit und Wiederaufnahme.** `audit.jsonl` mit Hashkette (wie beim Anker, `chattr +a`) ist zugleich das Write-Ahead-Log:
+Eine Zustandsänderung gilt erst, wenn ihre Zeile steht; `zustand.json` ist ein Zwischenspeicher davon. Nach einem Absturz
+zieht der Dienst die Zeilen hinter dem Stand der Datei nach (auch ohne die Datei). Die Datei ist an die Kette gebunden (Hash der
+Zeile `audit_n`, Position des Spiegelstands): Ein zurückgespielter Stand, der über das Ende des Protokolls hinausreicht, oder ein
+rotiertes Protokoll macht den Dienst defekt (er beginnt nichts Neues; `zurueck` geht weiter). Eine Stufe, die beim Absturz lief,
+läuft höchstens dreimal. Die Zeilen werden in `release_ereignisse` gespiegelt (in Reihenfolge, nach einem Ausfall der Datenbank
+nachgeholt, jede Zeile einzeln festgehalten; doppelt höchstens bei einem Absturz zwischen Datenbank und Merken, erkennbar an
+`quelle_n`); wird der Zustand ohne Datei aus dem Protokoll neu aufgebaut, gilt der Spiegel als erledigt. `status` zeigt den
+Rückstand. Hält der Anker die Sperre oder ist er nicht erreichbar, beginnt keine neue Anfrage und keine Stufe läuft weiter.
+**Protokoll voll (32 MiB)** oder bewusst rotieren, nur ohne offene Anfrage: `sudo systemctl stop wamo-release`, `sudo chattr -a
+/var/log/wamo-release/audit.jsonl`, Protokoll und `zustand.json` nach `/var/backups/wamo-release` verschieben, `sudo systemctl
+start wamo-release`, danach `sudo chattr +a /var/log/wamo-release/audit.jsonl` (der Dienst legt die neue Datei an; die Zähler
+der Anfragen des Tages beginnen dabei von vorn).
+
+| Ort | Inhalt |
+| --- | --- |
+| `/opt/wamo-release/app` (root, 0755) | Module, `wamo-release.sh`, `release_rauchtest.py`, `SHA256SUMS` (`ExecStartPre` prüft sie) |
+| `/var/lib/wamo-release` (wamo-release, 0700) | `zustand.json` (atomar, die Vorgängerin als `.vorher`) |
+| `/var/log/wamo-release` (wamo-release, 0750) | `audit.jsonl` (Zeile höchstens 2 KiB, bei 32 MiB voll) |
+| `/run/wamo-release` | `ctl.sock` |
+
+**Einrichten (von Hand, wiederholbar, Voraussetzung: der Anker ist eingerichtet).**
+
+```bash
+ssh sokrates2 "rm -rf ~/wamo-infra" && scp -r infra/sokrates2 sokrates2:wamo-infra && ssh sokrates2 "chmod -R go-w ~/wamo-infra"
+ssh sokrates2 "sudo bash ~/wamo-infra/release-einrichten.sh --trocken"                  # zeigt nur, was geschähe
+ssh sokrates2 "sudo bash ~/wamo-infra/release-einrichten.sh"
+ssh sokrates2 "sudo wamo-release status"
+ssh sokrates2 "sudo python3 -E -s /opt/wamo-release/app/release_rauchtest.py --produktiv"
+```
+
+Probelauf ohne root: `WAMO_RELEASE_WURZEL=/tmp/release-probe bash release-einrichten.sh`. Tests im Ordner `voice-core`:
+`uv run python -m pytest -q test_release.py test_release_socket.py test_release_skripte.py` (die Socket-Tests laufen nur unter
+Linux). **Rückweg:** `sudo bash ~/wamo-infra/release-rueckweg.sh` stoppt den Dienst (der Anker und die Produktion bleiben
+unberührt), mit `--entfernen` verschwindet er, Audit-Protokoll und Zustand werden nach `/var/backups/wamo-release`
+gesichert; beide Skripte kennen `--trocken`.
+
+**Grenzen und Prüfpunkte.** (a) Zum Anker kommt der Dienst über die Zusatzgruppe `wamocon` (dessen Ordner ist 2750
+`root:wamocon`). Das gibt ihm die Gruppenrechte an Dateien außerhalb von `/home` (die Unit verbirgt das Home und die Geheimnisordner
+anderer Dienste); besser wäre eine eigene Gruppe oder eine ACL nur für den Socket, eine Änderung am Anker. Außerdem erlaubt der
+Anker dem Benutzer `wamo-release` heute schon alle Vorwärtsbefehle (nur die Sperre bremst sie, und ihre Schritt-Skripte fehlen
+noch): Der Riegel gegen `sperre aus` und die Vorwärtsbefehle ist in diesem Schritt allein der Client (`release_anker.py`); für
+Schritt 0.5 gehört `ERLAUBT["wamo-release"]` im Anker bis Stufe 1 auf `status`, `rueckweg` und `sperre:an`. (b) Die Unit ist auf Sokrates-2 nicht erprobt: `systemd-analyze verify` läuft im
+Einrichtungsskript, `systemd-analyze security wamo-release` und der Rauchtest sind zu prüfen; `MemoryDenyWriteExecute` wurde mit einem
+nachgebauten Seccomp-Filter gegen Tests und Rauchtest (Teil A) geprüft. (c) Ein Stufenaufruf, der nicht zurückkehrt, wird nach
+etwa zwei Stunden erkannt: Der Dienst beendet sich mit Fehler, systemd startet ihn neu, die Wiederaufnahme übernimmt. (d) Wer root
+hat, kann das Protokoll samt Kette neu rechnen (wie beim Anker). (e) Offen für 0.5: Anker-Befehle `klassifiziere`, `bereitstellen`,
+`migrieren`, `umschalten` (die Liste in `release_anker.py` muss dann bewusst erweitert werden), echte Datenbank mit
+`wamo_release`, Socket für Personen mit Token.
 
 ---
 

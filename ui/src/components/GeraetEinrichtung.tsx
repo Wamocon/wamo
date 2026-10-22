@@ -2,6 +2,8 @@
 
 import { memo, useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { GERAET_STILL, geraeteAnzeige } from "@/lib/geraeteAnzeige";
+import { useSelect } from "@/lib/store";
 import { useBetriebsart } from "@/lib/betriebsart";
 import {
   STATUS_INTERVALL_MS,
@@ -9,8 +11,6 @@ import {
   hinweisZeile,
   naechsteWartezeitMs,
   pruefeStatusAntwort,
-  type EinrichtungsZustand,
-  type TunnelZustand,
 } from "@/lib/geraet";
 import { kernJson } from "@/lib/kernApi";
 
@@ -24,17 +24,13 @@ import { kernJson } from "@/lib/kernApi";
  * Gerät und Tunnel ab; fehlt die Einrichtung dann (Datei gelöscht), läuft der Ablauf noch einmal.
  *
  * Unsichtbar, solange alles in Ordnung ist. Eine kurze Zeile erscheint nur bei "wartet", bei einem Fehler (mit dem
- * Text des Kerns) und solange der Tunnel nicht verbunden ist.
+ * Text des Kerns) und solange der Tunnel nicht verbunden ist. Den vollen Stand zeigt die Einstellungsseite
+ * (Abschnitt Geräte und PC); beide lesen denselben Store (lib/geraeteAnzeige.ts).
  */
-
-type Anzeige = { zustand: EinrichtungsZustand; text?: string; tunnel: TunnelZustand | null };
-
-const STILL: Anzeige = { zustand: "nicht_noetig", tunnel: null };
 
 export const GeraetEinrichtung = memo(function GeraetEinrichtung() {
   const betriebsart = useBetriebsart();
   const [userId, setUserId] = useState<string | null>(null);
-  const [anzeige, setAnzeige] = useState<Anzeige>(STILL);
 
   // Benutzerkennung der Sitzung (und ihr Ende)
   useEffect(() => {
@@ -59,7 +55,7 @@ export const GeraetEinrichtung = memo(function GeraetEinrichtung() {
   useEffect(() => {
     const desktop = window.wamoDesktop?.geraet;
     if (!userId || betriebsart !== "buero" || !desktop) {
-      setAnzeige(STILL);
+      geraeteAnzeige.set(() => GERAET_STILL);
       return;
     }
     let beendet = false;
@@ -82,7 +78,14 @@ export const GeraetEinrichtung = memo(function GeraetEinrichtung() {
         void durchlauf(); // Gerätedatei ist weg: neu einrichten
         return;
       }
-      if (status) setAnzeige({ zustand: "eingerichtet", tunnel: status.tunnel });
+      if (status) {
+        // gleicher Stand: kein neues Objekt, damit die Abonnenten nicht jede Minute neu rendern
+        geraeteAnzeige.set((alt) =>
+          alt.zustand === "eingerichtet" && alt.tunnel === status.tunnel && alt.kennung === status.kennung
+            ? alt
+            : { zustand: "eingerichtet", tunnel: status.tunnel, kennung: status.kennung },
+        );
+      }
       spaeter(STATUS_INTERVALL_MS, pruefeZustand);
     };
 
@@ -91,10 +94,11 @@ export const GeraetEinrichtung = memo(function GeraetEinrichtung() {
       const ergebnis = await einrichten({ desktop, kernJson, userId });
       if (beendet) return;
       fehlerInFolge = ergebnis.zustand === "fehler" ? fehlerInFolge + 1 : 0;
-      setAnzeige((alt) => ({
+      geraeteAnzeige.set((alt) => ({
         zustand: ergebnis.zustand,
         text: ergebnis.text,
         tunnel: ergebnis.zustand === "eingerichtet" ? alt.tunnel : null,
+        kennung: ergebnis.zustand === "eingerichtet" ? alt.kennung : null,
       }));
       const warten = naechsteWartezeitMs(ergebnis.zustand, fehlerInFolge);
       if (warten !== null) spaeter(warten, durchlauf);
@@ -108,6 +112,15 @@ export const GeraetEinrichtung = memo(function GeraetEinrichtung() {
     };
   }, [userId, betriebsart]);
 
+  // Beim Abmelden bleibt kein Stand des früheren Profils zurück
+  useEffect(() => () => geraeteAnzeige.set(() => GERAET_STILL), []);
+
+  return <GeraetZeile />;
+});
+
+/** Die eine Zeile zum Stand der Geräteeinrichtung (nichts, solange alles in Ordnung ist); auch in den Meldungen der Einstellungen. */
+export const GeraetZeile = memo(function GeraetZeile() {
+  const anzeige = useSelect(geraeteAnzeige, (s) => s);
   const zeile = hinweisZeile(anzeige.zustand, anzeige.text, anzeige.tunnel);
   if (!zeile) return null;
   return (

@@ -12,7 +12,7 @@ gemeinsamem Gedächtnis.
 | `desktop/` | Electron 44: App-Fenster, roter Stimmen-Rand je Monitor, Tray, Autostart, Betriebsart Büro/Unterwegs | PC |
 | `supabase/` | Migrationen mit `__SCHEMA__`-Platzhalter | eigener WAMO-Supabase auf Sokrates-2 |
 | `infra/sokrates2/` | Einrichtung von Supabase-Stack, TLS (eigene CA, Caddy), Firewall und Benutzer `wamo` (Claude Code, ECC, REA, gh, Vercel, Supabase-CLI) | Sokrates-2 |
-| `scripts/` | Start der Desktop-App, Datenbankzugang, Nutzerverwaltung, Migrationen | PC |
+| `scripts/` | Start der Desktop-App, Datenbankzugang, Nutzerverwaltung, Migrationen, Versionsskript `wamo_version.py` | PC |
 
 ## Stand (20.10.2026)
 
@@ -55,6 +55,13 @@ gemeinsamem Gedächtnis.
   der Datenbank, Standard Haiku) oder nur Hausmodelle über LiteLLM und SearXNG ohne Rückfall auf Claude; Migration 0010
   in `wamo_dev` und `wamo_test` angewendet.
 
+- WAMO Boss und Modellkarte (22.10.2026, Abschnitt „Boss und Modellkarte“): Der Boss wählt das Modell nach Aufgabenklasse,
+  gemessener Güte, Antwortzeit, Erreichbarkeit und Modus des Profils (Automatisch oder Nur Hausmodelle); das Gespräch
+  startet ohne Zusatzlatenz mit dem besten schnellen Modell, Fachaufgaben gehen asynchron an Spezialisten
+  (`aufgabe_verteilen`, Karte unter Vorgänge). Zweiter Schlüsseltyp: Claude-Code-Token für Entwicklungsaufträge.
+  Modellwahl und Token sind auch ohne Gespräch einstellbar (`/wamo/api/modellzugang`). Migration 0011 in `wamo_dev` und
+  `wamo_test` angewendet.
+
 - Browser-Betrieb (21.10.2026, Variante A): Die Oberfläche läuft als Container `wamo-ui` auf Sokrates-2 hinter
   `wamo-caddy` unter `https://192.168.178.136:55445` (Zertifikat der WAMO-CA, nur Büro-LAN und Loopback). Jedes
   Gerät im Büro öffnet WAMO im Browser, nach dem einmaligen Import der WAMO-CA; der Browser dort kennt nur die
@@ -65,9 +72,25 @@ gemeinsamem Gedächtnis.
 
 ### Offen
 
+- Selbstüberarbeitung, Stufe 0 (Konzept `docs/selbstueberarbeitung.md`): Migration 0013 (Freigaben und Rollen: Tabellen
+  `release_anfragen`, `release_freigaben`, `release_ereignisse`, `release_stand`, Rollen `wamo_release` und `wamo_anker`,
+  Prüfsumme `sha256` in `schema_migrations`) liegt mit Rückweg und SQL-Test bereit, ist aber noch auf keinem Schema
+  angewendet. Anwenden auf `wamo_dev` und `wamo_test` (je zweimal, der zweite Lauf ändert nichts), danach
+  `supabase/tests/0013_release_test.sql` (letzte Zeile „0013 OK“); `wamo_prod` erst nach `database-reviewer` und Freigabe:
+  `bash scripts/render-migration.sh <schema> supabase/migrations/0013_release_freigaben.sql | ssh sokrates2 "docker exec -i wamo-supabase-db psql -U postgres -v ON_ERROR_STOP=1 --single-transaction"`.
+  Die Rollen sind NOLOGIN; Login und DSN richtet erst Schritt 0.5 ein. Version und Changelog: `python scripts/wamo_version.py`
+  (`vorschlag`, `changelog`, `anwenden X.Y.Z --trocken`, `pruefen`) leitet die Version aus Conventional Commits ab und hält alle
+  Versionsdateien samt `CHANGELOG.md` gleich; das erste Tag `v0.1.0` setzt Niko von Hand (kein Tag, kein Push durch das Skript).
+
 - Modellzugang ausrollen: `WAMO_SCHLUESSEL_KEK` erzeugen und in `core.env` setzen, Schlüssel der Person zuordnen
   oder hinterlegen, Migration 0010 in `wamo_prod`, Hausmodelle (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`) im Kern
   eintragen. Solange der Kern auf Sokrates-2 den alten Stand hat, nutzt jedes Profil dort noch den Schlüssel des Kerns.
+
+- Boss ausrollen: Migration 0011 in `wamo_prod` (vorher `database-reviewer`), Kern auf Sokrates-2 neu verteilen und neu
+  starten, danach `WAMO_LLM_MODELL=gemma4-31b` aus `core.env` entfernen (der Boss entscheidet, die Variable bleibt nur
+  als Übersteuerung). Der Dispatcher muss den Token über die zweite stdin-Zeile annehmen (siehe „Boss und Modellkarte“).
+  Hausmodelle im Gespräch kaltstartfrei halten (Aufwärmanfrage oder `keep_alive`), sonst kostet der erste Satz nach einer
+  Pause rund 9 Sekunden.
 
 - Ausrollen der Übernahmen und Freigaben im Büro (Kern, PC-Tunnel, GoTrue-Sitzungsgrenzen): Die Skripte sind
   vorbereitet, aber noch nicht angewendet. Bis dahin gibt es im Büro keinen Freigabeweg (fehlender Freigabe-Schlüssel:
@@ -111,7 +134,7 @@ Beim ersten Anmelden richtet die Oberfläche die Authenticator-App ein (QR-Code)
 | Unterwegs (Standard) | auf diesem PC, `http://localhost:7860` (`NEXT_PUBLIC_VOICE_CORE_URL`), die Desktop-App startet ihn | Host per stdio |
 | Büro | Sokrates-2, `https://192.168.178.136:55444` (`NEXT_PUBLIC_WAMO_KERN_BUERO` in `ui\.env.local`, nur https) | Host per SSH-Rücktunnel, nur für das an diesen PC gebundene Profil |
 
-Umschalten in der Oberfläche (unter den Schaltflächen, nur ohne laufendes Gespräch) oder im Tray-Menü der Desktop-App;
+Umschalten in der Oberfläche (Einstellungen, Abschnitt „Geräte und PC“, nur ohne laufendes Gespräch) oder im Tray-Menü der Desktop-App;
 die Einstellung gilt dauerhaft je Gerät (Desktop: `%APPDATA%\wamo-desktop\einstellungen.json`, Browser: localStorage).
 Die Statusleiste zeigt Betriebsart und Kern, der PC-Host den Zielrechner. Einrichtung des Tunnels auf diesem PC (ohne
 Adminrechte, Rückweg `scripts\wamo-tunnel-entfernen.ps1`):
@@ -139,6 +162,31 @@ python scripts\wamo_ui_sokrates2.py verteilen        # Quellen der Oberfläche u
 python scripts\wamo_ui_sokrates2.py einrichten       # Firewall, Caddy, Image bauen, Container, erlaubte Herkunft des Kerns, Prüfung
 python scripts\wamo_ui_sokrates2.py status           # Zustand; bauen = nur Image und Container, pruefen = Header, TLS, Härtung
 ```
+
+#### Einstellungen in der Oberfläche
+
+Alle Formulare und Schalter liegen auf der Einstellungsseite (Zahnrad in der Kopfzeile oder „Einstellungen öffnen“ in der
+linken Seitenleiste, `ui/src/components/einstellungen/`). Sie ist keine eigene Route, sondern eine Ansicht der Hauptseite über
+den Hash `#einstellungen/<abschnitt>`: Das passt zur Desktop-App, Links und „Zurück“ des Browsers gehen, und ein laufendes
+Gespräch bleibt unberührt (die Kommandozentrale wird nur verborgen, Meldungen stehen oben in der Seite). Ab 860 px zwei
+Spalten (Gliederung links), darunter eine Liste, die in den Abschnitt führt. Escape schließt wie „Zurück“, lässt aber
+Eingaben in Textfeldern in Ruhe.
+
+| Abschnitt (Kennung) | Inhalt | Sichtbar für |
+| --- | --- | --- |
+| Konto und Profil (`konto`) | E-Mail, aktives Profil, Rolle, Abmelden | alle |
+| Modellzugang (`modellzugang`) | API-Schlüssel (Gespräch), Claude-Code-Token (Entwicklungsaufträge), Modus, geführte Anleitung | alle |
+| Verbrauch (`verbrauch`) | Kontingent des Max-Abos aus der Servernachricht `kontingent`: Sitzungslimit, Wochenlimit, Fable limit | Admin |
+| Sprache und Ton (`sprache`) | Mikrofonwahl, Spracherkennung und Sprachausgabe laut Betriebsmeldung | alle |
+| Darstellung (`darstellung`) | Normal, Fokus, Zentrale, Nacht | alle |
+| Geräte und PC (`geraete`) | Verbindungen, PC-Steuerung samt Autostart (nur Admin, nur Desktop-App), Betriebsart, Stand der Geräteeinrichtung | alle, PC-Steuerung nur Admin |
+| Teilen (`teilen`) | Geteilte Arbeit: mit mir, von mir, Dateien | alle |
+| Info (`info`) | Version, Kern, Hinweise an Admins | alle, Hinweise nur Admin |
+
+Der Abschnitt Verbrauch ist **Format ungeprüft**: Das Datenformat des Kerns (`voice-core/kontingent.py`) ist noch an keinem
+echten Token bestätigt, die Seite sagt das dort auch (`ui/src/lib/verbrauch.ts`). In der Entwicklung zeigt
+`/?vorschau=1&rolle=admin&kontingent=beispiel#einstellungen/verbrauch` Beispieldaten (nur `next dev` mit
+`NEXT_PUBLIC_WAMO_VORSCHAU=1`).
 
 Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo-tunnel.ps1`: Host und Tunnel laufen damit
 unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
@@ -184,7 +232,21 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   sich der Rand aus, erst nach zwei gleichen Werten. Wert 7 (Store-App) zählt nicht, weil Store-Apps unter Windows 10
   und 11 auch im Fenster laufen. Der Wächter endet mit der App und startet nach einem Absturz nach 5 s neu.
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
-  spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel).
+  spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel). Mit
+  `WAMO_STOPP_GRENZE` (Standard an) wählt der Kern die Wortgrenze selbst und schickt `leiser_stopp` mit `sofort`.
+- **Stimme und Sprachverhalten** (22.10.2026, Messweg `scripts/wamo_stimme.py` und `scripts/wamo-stimme-messen.cjs`,
+  Befunde und Zahlen: Abschnitt „Stimme messen“ unten). Schalter im Kern, jeder einzeln abschaltbar:
+  `WAMO_STOPP_GRENZE` (Stopp an der ersten noch erreichbaren hörbaren Wortgrenze, Satz- oder Kommaende bis 0,3 s später
+  geht vor, der Verlauf wird auf das Gehörte gekürzt), `WAMO_DUCKEN` (Stimme sofort leiser, sobald die Person spricht,
+  Nachricht `stimme_leiser`; bei Rückmeldelaut oder Geräusch nach 0,3 s wieder normal und 8 s keine neue Dämpfung, bei
+  Echo 30 s), `WAMO_RUECKMELDUNG` (erweiterte Erkennung von „mhm“, „mm-hmm“, „alles klar“, Wortanfänge wie „Gen“ vor
+  „Genau“ zählen im Zwischenstand nicht), `WAMO_ECHO_MODUS` (hört WAMO sich erkennbar selbst, mindestens zwei
+  Echo-Urteile in 20 s, unterbricht nur noch ein Stoppwort wie „Stopp“, „Moment“, „Was“, „Nein“; wirkt nur mit
+  `WAMO_ECHO_FILTER`), `WAMO_WARTESATZ` und `WAMO_WARTESATZ_SECS` (kurzer Satz bei einem Werkzeugaufruf, der länger als
+  0,9 s dauert und bei dem WAMO sonst schweigt, `voice-core/wartesatz.py`). Standard: alle an, nur `WAMO_WARTESATZ` aus
+  (in der Messung sagte das Modell den Füllsatz selbst, der Wächter löste nie aus). Abschalten mit `aus`, `0`, `nein`;
+  ein unbekannter Wert gilt als an und wird einmal gewarnt (`voice-core/env_schalter.py`). Auf Sokrates-2 stehen alle
+  Namen in der Liste erlaubter Werte (`infra/sokrates2/wamo_core_env.py`).
 - **Mikrofon-Wächter** (`ui/src/lib/mikrofon.ts`, `voice-core/audio_monitor.py`): Die Oberfläche misst die eigene Spur und
   warnt nach 3 s digitaler Stille, bei einer beendeten Spur ohne Ersatz, ohne Spur 5 s nach „Bot bereit“ und bei
   Mikrofonsperre durch Windows (Datenschutz für Desktop-Apps, `systemPreferences.getMediaAccessStatus`), jeweils mit
@@ -206,6 +268,60 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Werkzeugergebnis, das während WAMOs Sprechen eintrifft, und schiebt den Verlauf beim nächsten „Bot stopped speaking“
   noch einmal an, auch wenn der neue Zug der Person schon beantwortet wird. Die Turn-Wache vor und hinter dem Modell
   verwirft solche Anfragen (gleicher Verlauf wie zuletzt, oder der Verlauf endet mit WAMOs Antwort).
+
+### Stimme messen (Szenariotest)
+
+Der Test spielt über ein virtuelles Mikrofon Sprechproben und Geräusche gegen einen lokalen Kern (Unterwegs) und nimmt
+WAMOs Ausgabestrom, das Mikrofon und die Lautstärke des Wiedergabeelements mit einer gemeinsamen Uhr auf. Die Person
+spricht immer dann, wenn WAMO in einem bestimmten Zustand ist („seit 5 s am Sprechen“). Szenarien: `fakten`, `kurz`,
+`lang`, `einwurf`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`. Voraussetzung: ein temporäres
+Testkonto (`scripts/wamo_nutzer.py anlegen`, danach `sperren`), `konto.json` im Messordner (nicht im Repo), Oberfläche aus
+einer Kopie gebaut (`NEXT_PUBLIC_VOICE_CORE_URL=http://127.0.0.1:7861`).
+
+```powershell
+python scripts\wamo_stimme.py clips D:\tmp\wamo-stimme2
+$env:WAMO_MESS_DIR = "D:\tmp\wamo-stimme2"; $env:WAMO_UI_URL = "http://127.0.0.1:3101"
+$env:KERN_ENV = "WAMO_STOPP_GRENZE=aus;WAMO_DUCKEN=aus"        # Schalter zum Vergleichen
+node scripts\wamo-stimme-messen.cjs vorher "einwurf:8,backchannel:6,echo:4"
+python scripts\wamo_stimme.py auswerten D:\tmp\wamo-stimme2 vorher
+python scripts\wamo_stimme.py hoerprobe D:\tmp\wamo-stimme2 vorher D:\tmp\stimme-hoerprobe vorher
+```
+
+Kennzahlen: Zeit von der Frage bis zum ersten Ton, größte Stille innerhalb einer Antwort, Anteil falscher Unterbrechungen
+(Rückmeldelaute, Geräusche, Echo), verpasste echte Einwürfe, Zeit bis zum Verstummen, hartes Abschneiden, erste Reaktion
+der Oberfläche (Dämpfen).
+
+Ergebnis (Unterwegs, Lauf `vorher2` mit allen Schaltern aus gegen `nachher2` mit den Standardwerten; Zahlen sind Median
+und 95. Perzentil bei 5 bis 8 Wiederholungen, die Stichproben sind klein):
+
+| Kennzahl | vorher | nachher |
+| --- | --- | --- |
+| Zeit bis zum Verstummen nach echtem Einwurf | 2285 / 2800 ms | 1245 / 2040 ms |
+| Erste hörbare Reaktion auf den Einwurf | 2241 / 2750 ms | 757 / 780 ms (Dämpfen) |
+| Verpasste Einwürfe | 0 von 8 | 0 von 8 |
+| Hart abgeschnitten (Auslauf unter 35 ms) | 1 von 8 | 0 von 8 |
+| Falsche Unterbrechung durch „mhm“, „ja genau“, „aha“ (Log) | 3 von 12 | 0 von 16 |
+| Falsche Unterbrechung durch Husten, Klopfen | 0 von 8 | 0 von 10 |
+| Unterbrechungen durch Echo (4 Läufe, Echopegel 0,5) | 11 | 3 |
+| Größte Stille innerhalb einer Antwort | 1410 ms (p95), einmalige Stockung | 660 ms (p95) |
+| Erster Ton nach Faktenfrage | 2101 / 2314 ms | 2058 / 2924 ms (innerhalb der Streuung) |
+
+Nicht messbar verbessert: die Stille innerhalb von Antworten (Satzpausen 0,5 bis 0,65 s sind die Stimme selbst, die
+Stockung von 1,4 s im Lauf `vorher2` trat im Endstand nicht mehr auf, Ursache offen) und die Wartezeit bei Werkzeugen
+(Websuche 6 bis 10 s, das Modell sagt vorher selbst „Moment“). Befunde, die den Entwurf bestimmt haben:
+
+- Soniox-TTS hält das Ende des Textes zurück, bis weiterer Text oder `text_end` kommt (Messung: der Rest eines Satzes
+  erklingt erst, wenn der nächste eintrifft). Lücken in laufenden Antworten entstehen deshalb nur, wenn das Modell langsamer
+  liefert als WAMO spricht, vor allem bei Werkzeugaufrufen: dort setzt der Wartesatz ein.
+- Die Stille von etwa 2,4 s bis zum Verstummen kam fast ganz aus dem Kern: Spracherkennung (0,9 s bis zum ersten Wort),
+  dann bis zu drei weitere Wörter oder die Zeitgrenze von 1,5 s, dann 0,5 s Vorsprung der Zeitstempel.
+- Vorbilder: Pipecat (Verlauf enthält nur das Gespielte, `MinWords` gegen Rückmeldelaute), LiveKit (Rückmeldelaute und
+  Wiederaufnahme nach falscher Unterbrechung, 0,5 s Mindestdauer, 2 s `false_interruption_timeout`), OpenAI Realtime (Kürzen
+  des Verlaufs auf die gehörte Dauer), Soniox und Full-Duplex-Bench-v3 (Wartesatz nur einmal, kurz, abbrechbar).
+- REA an der öffentlichen Demo unmute.sh (Quelle des Clients offen, Auswertung der WebSocket-Ereignisse mit REA): der Client
+  puffert nur 80 ms und leert beim Unterbrechen, der Server unterbricht auf die Sprachaktivität vor dem Transkript
+  (`unmute.interrupted_by_vad`), filtert aber „Mm hmm“ nicht und antwortet dann darauf. Übernommen wurde die frühe
+  Reaktion (Dämpfen), nicht das Fehlen des Filters.
 
 ## Nutzer und Gedächtnis
 
@@ -271,7 +387,7 @@ Jedes Profil hat genau eine von zwei Arten (`voice-core/modellzugang.py`, Tabell
 | Eigener Claude-Schlüssel | Die Person hat ihren Schlüssel hinterlegt (oder ist das Profil in `WAMO_CLAUDE_SCHLUESSEL_PROFIL`) | Claude mit dem Schlüssel dieses Profils, Standardmodell Haiku (ein Admin kann ein anderes festlegen); fällt Claude aus, übernehmen die Hausmodelle mit Hinweis | Anthropic-Websuche |
 | Nur Hausmodelle | Kein eigener Schlüssel, Fehler beim Laden des Zugangs oder vom Admin festgelegt | LiteLLM (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`), nie Anthropic, auch nicht als Rückfall | SearXNG |
 
-- **Hinterlegen** in der Oberfläche (Bereich „Modellzugang“, maskiertes Feld): Der Kern prüft den Schlüssel mit einer
+- **Hinterlegen** in der Oberfläche (Einstellungen, Abschnitt „Modellzugang“, maskiertes Feld): Der Kern prüft den Schlüssel mit einer
   kleinen Testanfrage (höchstens 5 Versuche je 10 Minuten), verschlüsselt ihn mit AES-256-GCM (Profil-ID als
   zusätzliche Daten, Hauptschlüssel `WAMO_SCHLUESSEL_KEK` nur in `core.env` bzw. `.env` des Kerns) und speichert nur das
   Chiffrat. Zurück zur Oberfläche gehen nur „hinterlegt“ und die letzten vier Zeichen. Ersetzen und Löschen gehen
@@ -287,8 +403,27 @@ Jedes Profil hat genau eine von zwei Arten (`voice-core/modellzugang.py`, Tabell
   Verbrauch steht als Tokenzahlen je Profil im Log (`Verbrauch profil=… anbieter=… modell=… ein=… aus=…`), ohne Inhalt.
 - **Stimme:** Jedes Profil trägt `stt` und `tts` (`soniox` oder `haus`) als Schnittstelle für Phase P5; ein Admin setzt
   sie mit `modellzugang-setzen --stt haus --tts haus`.
-- **Entwicklungsaufträge** laufen vorerst nur mit dem Claude-Zugang der Sandbox (`/etc/wamo/geheim.env`), nicht mit
-  dem Zugang des Profils.
+- **Modus je Profil** (Migration 0011, Spalte `modell_modus`): „Automatisch“ oder „Nur Hausmodelle“, gewählt in der Karte
+  Modellzugang und gültig ab der nächsten Sitzung. Der Zwang eines Admins (`nur_haus`) bleibt stärker. Im Modus Nur
+  Hausmodelle geht nichts an Anthropic, auch nicht als Rückfall, und Claude-Code-Aufträge sind aus.
+- **Zweiter Schlüsseltyp, Claude-Code-Token** (`sk-ant-oat…` aus `claude setup-token`, Max-Tarif): nur für
+  Entwicklungsaufträge, nie für das Gespräch. Der Kern prüft nur das Format (eine Testanfrage würde das Kontingent
+  verbrauchen), verschlüsselt ihn wie den API-Schlüssel (AES-256-GCM, Zweck als zusätzliche Daten, zwei getrennte Felder
+  in der Oberfläche) und gibt ihn nie zurück. `modellzugang.claude_code_zugang_fuer(user_id)` liefert dem Dispatcher
+  `{"typ": "oauth" | "api", "wert": …}` für genau diese Sitzung und diesen Lauf: zuerst der Token (Modell Sonnet), dann
+  der API-Schlüssel (Modell Haiku), sonst `None`. Die Oberfläche erkennt die Art am Anfang des Werts und bietet bei einem
+  falschen Feld an, ihn ins richtige zu verschieben.
+- **Ohne Gespräch:** `GET` und `POST /wamo/api/modellzugang` (Anmelde-Token, zweiter Faktor, aktives Profil, Profil nur aus
+  der Identität, Body höchstens 8 KB) tun dasselbe wie der Datenkanal; die Karte nutzt sie, wenn keine Sitzung läuft.
+  Fehler kommen als konkreter Satz (401 Schlüssel abgelehnt, Format, Zeitüberschreitung, Kern nicht erreichbar).
+- **Schlüssel nie in Texten:** Eine Schutzstufe im Kern (`voice-core/schluessel_filter.py`) ersetzt `sk-ant-…` (auch
+  `sk-ant-oat…`) schon hinter der Spracherkennung durch „[Schlüssel entfernt]“, bevor Verlauf, Modell, Lernen,
+  Gedächtnis und Log etwas sehen. WAMO nimmt Schlüssel nie per Stimme an und fragt nie danach; er erklärt nur, wo die Karte ist.
+- **Entwicklungsaufträge** laufen mit dem Token (Sonnet), sonst mit dem API-Schlüssel des Profils (Haiku, Allowlist in
+  `werkzeugkarte.py`); das Profil des Kern-Schlüssels nutzt übergangsweise weiter den Zugang der Sandbox
+  (`/etc/wamo/geheim.env`). Alle anderen Profile haben keine Entwicklungsaufträge, bis eine Hausvariante mit `wamo-coder`
+  gebaut und gemessen ist. Der Dispatcher bekommt den Wert nie auf der Befehlszeile, sondern nur über eine zweite
+  stdin-Zeile (`{"typ","wert"}`, Kopfzeile `zugang_folgt`).
 
 ## Modelle (Ausbaustufe P4)
 
@@ -349,6 +484,41 @@ Knopf an bekannter Stelle. Ergebnisse unter `voice-core/eval/ergebnisse/baustein
 
 Nach Änderungen an den PC-Werkzeugen des Hosts den Schnappschuss erneuern:
 `host\.venv\Scripts\python.exe voice-core\eval\pc_werkzeuge_holen.py`.
+
+## Boss und Modellkarte
+
+**Modellkarte** (`voice-core/modellkarte.py`, nur Daten): je Modell Alias, Anbieter, Fähigkeiten mit gemessenen Werten
+(Anteil bestandener Fälle, Zahl der Fälle, Datum, Quelldatei unter `voice-core/eval/ergebnisse/`), Latenzklasse
+(schnell, mittel, langsam, Grenzen je Fähigkeit in `LATENZ_GRENZEN`), Datenschutz und Status (`standard`, `fachmodell`,
+`gesperrt`, `verweis`). `test_modellkarte.py` rechnet jede Zahl aus den Ergebnisdateien nach. Das Fachmodell Recht
+(`sokrates-steuer`) wählt der Boss nie von selbst, ein ungeprüftes Modell (`sokrates-fable-qwen27`) nie ohne eigene
+Messung und Freigabe. Fehlende Werte misst `voice-core/eval/modellkarte_messen.py` mit kleinen, nacheinander laufenden
+Tests (`code`, `analyse`, `bewerter`, `einbettung`, `latenz`, `kennenlernen`; Claude Haiku nur als kleine Referenz).
+
+**Boss** (`voice-core/boss.py`, Regelwerk auf der gemessenen Karte, keine Modellfrage im Gespräch):
+
+| Aufgabe | Wahl |
+| --- | --- |
+| Gespräch mit Werkzeugen | Haiku, wenn das Profil Claude darf; sonst das beste livetaugliche Hausmodell (Güte mit Abzug je Latenzklasse; ausgeschlossen, wenn der Prompt ohne Cache über 10 s braucht) |
+| Code und Entwicklung | Claude Code, wenn ein Token oder API-Schlüssel hinterlegt ist; sonst keine (bis eine Hausvariante mit `wamo-coder` gemessen ist) |
+| Lernen, Zusammenfassung, Bildschirm, Analyse, Bewertung | bestes Modell nach Güte und Antwortzeit; bei gleicher Güte gewinnt das Hausmodell |
+| Unklare Aufgabe | kleines Modell ordnet ein (Hausprofil: bestes Hausmodell, Claude-Profil: Haiku) |
+| Vertrauliches, Hausprofil, Nur Hausmodelle | immer Hausmodelle, nie Claude, auch nicht als Rückfall |
+
+- **Erreichbarkeit:** Vor der Wahl prüft der Boss das Gateway und fragt das gewählte Hausmodell mit einer kleinen
+  Probe (Zeitgrenze 10 s, Ergebnis 120 s gemerkt, Fehler 20 s; `WAMO_BOSS_PROBE=aus` schaltet sie ab). Antwortet es
+  nicht innerhalb von 3 s (die erste Probe darf ein Kaltstart sein, die zweite nicht), nimmt der Boss das nächstbeste und sagt es klar (Karte und Statusleiste zeigen Modell, Modus und Grund).
+  Erreicht kein erlaubtes Modell die Mindestgüte, nimmt er das beste verfügbare ab der Notfallgüte, sonst endet das
+  Gespräch mit einer verständlichen Meldung. `WAMO_LLM_*` bleibt als Übersteuerung.
+- **Aufgaben verteilen:** Das Werkzeug `aufgabe_verteilen(art, auftrag)` startet eine Aufgabe asynchron auf einem
+  Spezialisten (höchstens 2 parallel, 30 je Sitzung, 3 Versuche, 240 s). Unter Vorgänge steht eine Karte, das Ergebnis
+  kommt als unvertrauenswürdige Daten zurück (Marker entfernt, Ende gekennzeichnet) und das Protokoll enthält keine Inhalte.
+- **Antwortzeit messen:** Kaltstart (Modell wurde aus dem Speicher verdrängt, etwa 9 Sekunden), erster Folgeaufruf und
+  Prompt ohne Cache (etwa 7,5 Sekunden) sind getrennte Werte der Karte. Die langen Werte im Live-Gespräch (über eine
+  Minute) ließen sich nicht reproduzieren, vermutlich Verdrängung oder Auslastung der Sparks.
+- **Aufwärmen (Vorschlag, nicht eingerichtet):** Das Gesprächsmodell mit `keep_alive` (etwa 30 Minuten) auf den Sparks
+  halten oder beim Anmelden eine kurze Aufwärmanfrage über LiteLLM schicken und alle 5 Minuten wiederholen, solange
+  eine Sitzung offen ist.
 
 ## Sicherheitsmodell
 

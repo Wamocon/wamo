@@ -28,7 +28,20 @@ export type Betrieb = {
   pcName?: string;
   /** Einschalten abgelehnt, weil eine andere Sitzung den PC gerade steuert */
   pcBelegt?: boolean;
+  /** wirksamer Modus dieser Sitzung (WAMO Boss): nur_haus gilt ohne eigenen API-Schlüssel, bei Zwang des Admins und
+   *  bei der Wahl der Person; sonst wählt der Boss unter allen erlaubten Modellen */
+  modellModus?: ModellModus;
+  /** warum dieser Modus gilt (festgelegt: Admin, wahl: Person, keiner: kein eigener Schlüssel, ...) */
+  modellQuelle?: ModellQuelle;
+  /** warum der Boss nicht das beste Modell nehmen konnte (zu langsam, nicht erreichbar) */
+  modellHinweis?: string;
 };
+
+/** Modellwahl je Profil: Automatisch (der Boss wählt) oder Nur Hausmodelle */
+export type ModellModus = "automatisch" | "nur_haus";
+export type ModellQuelle = "profil" | "zuordnung" | "festgelegt" | "wahl" | "keiner" | "fehler" | "betreiber";
+const MODELL_MODI = ["automatisch", "nur_haus"] as const;
+const MODELL_QUELLEN = ["profil", "zuordnung", "festgelegt", "wahl", "keiner", "fehler", "betreiber"] as const;
 
 export type Gemerkt = {
   bereich: "persoenlich" | "gemeinsam";
@@ -43,18 +56,48 @@ export type Gemerkt = {
  * Enthält nie den Schlüssel, nur ob einer hinterlegt ist und seine letzten vier Zeichen.
  */
 export type Modellzugang = {
-  aktion: "status" | "hinterlegen" | "loeschen";
+  aktion: "status" | "hinterlegen" | "loeschen" | "modus";
   /** fehlt, wenn der Kern den Stand gerade nicht lesen konnte (dann steht nur fehler da) */
   art?: "claude" | "haus";
-  /** profil: eigener Schlüssel, zuordnung: Schlüssel des Kerns für genau dieses Profil, festgelegt: vom Admin */
-  quelle?: "profil" | "zuordnung" | "festgelegt" | "keiner" | "fehler";
+  /** profil: eigener Schlüssel, zuordnung: Schlüssel des Kerns für genau dieses Profil, festgelegt: vom Admin,
+   *  wahl: von der Person gewählt (nur Hausmodelle) */
+  quelle?: "profil" | "zuordnung" | "festgelegt" | "wahl" | "keiner" | "fehler";
+  /** eigener API-Schlüssel (Gespräch) hinterlegt */
   hinterlegt: boolean;
   ende?: string;
   geprueft?: string;
+  /** ein Admin hat nur Hausmodelle festgelegt: die Wahl der Person ist gesperrt */
   festgelegt: boolean;
   modell?: string;
+  /** Wahl der Person, unabhängig vom Zwang des Admins; fehlt, wenn der Kern sie nicht gemeldet hat */
+  modus?: ModellModus;
+  /** Claude-Code-Token (nur Entwicklungsaufträge, aus `claude setup-token`) hinterlegt; nur die letzten vier Zeichen */
+  codeHinterlegt: boolean;
+  codeEnde?: string;
+  codeGesetzt?: string;
   wirksam?: string;
   fehler?: string;
+};
+
+/**
+ * Kontingent des Max-Abos (voice-core/kontingent.py, aus rate_limit_event von Claude Code): sitzung = 5-Stunden-Fenster,
+ * woche = Wochenlimit (alle Modelle), fable = Wochenlimit des größten Modells (in Claude Code "Fable limit"), opus und
+ * sonnet = ältere modellbezogene Wochenlimits. Jedes Feld außer art kann fehlen. Ohne Daten ist der Zustand "unbekannt".
+ */
+export const KONTINGENT_ARTEN = ["sitzung", "woche", "opus", "sonnet", "fable"] as const;
+export type KontingentLimit = {
+  art: (typeof KONTINGENT_ARTEN)[number];
+  /** genutzter Anteil in Prozent (0 bis 1000; über 100 kommt vor), eine Nachkommastelle */
+  prozent?: number;
+  /** Ende des Fensters, ISO 8601 in UTC (YYYY-MM-DDTHH:MM:SSZ) */
+  endet?: string;
+  status?: "ok" | "warnung" | "erreicht";
+};
+export type Kontingent = {
+  zustand: "unbekannt" | "bekannt";
+  /** wann der Kern den Stand zuletzt gespeichert hat (ISO 8601, UTC) */
+  stand?: string;
+  limits: KontingentLimit[];
 };
 
 /** wartet: kritische PC-Aktion, die auf eine Freigabe in der Oberfläche wartet */
@@ -91,7 +134,8 @@ export type ServerMessage =
   | { type: "canvas"; item: CanvasItem }
   | ({ type: "aktivitaet" } & Pick<Activity, "id" | "name" | "detail" | "status">)
   | { type: "sprecher"; index: number }
-  | { type: "leiser_stopp" }
+  | { type: "leiser_stopp"; sofort?: boolean }
+  | { type: "stimme_leiser"; an: boolean }
   | { type: "freigaben"; job: string; projekt: string; items: FreigabePunkt[] }
   | ({ type: "profil" } & Profil)
   | ({ type: "betrieb" } & Betrieb)
@@ -99,6 +143,7 @@ export type ServerMessage =
   | ({ type: "auftrag" } & Auftrag)
   | { type: "sitzung_beendet"; grund: string; anmelden?: boolean }
   | ({ type: "modellzugang" } & Modellzugang)
+  | ({ type: "kontingent" } & Kontingent)
   /** Kern: still = seit `sekunden` nur digitale Stille vom Mikrofon, ok = wieder Ton (voice-core/audio_monitor.py) */
   | { type: "mikrofon"; zustand: "still" | "fehlt" | "ok"; sekunden: number };
 
@@ -125,6 +170,25 @@ export function sauber(text: string, max: number, zeilen = true): string {
   let t = text.replace(STEUER, "");
   if (!zeilen) t = t.replace(/[\r\n\t]+/g, " ");
   return t.length > max ? `${t.slice(0, max)} … (gekürzt)` : t;
+}
+
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+/** Limits des Kontingents prüfen: nur bekannte Arten, Zahlen im Wertebereich, ISO-Zeiten; Doppelte zählen einmal. */
+function kontingentLimits(roh: unknown): KontingentLimit[] {
+  if (!Array.isArray(roh)) return [];
+  const gefunden = new Map<string, KontingentLimit>();
+  for (const e of roh.slice(0, 10)) {
+    if (!isObj(e) || !oneOf(e.art, KONTINGENT_ARTEN) || gefunden.has(e.art)) continue;
+    const l: KontingentLimit = { art: e.art };
+    if (typeof e.prozent === "number" && Number.isFinite(e.prozent) && e.prozent >= 0 && e.prozent <= 1000) {
+      l.prozent = Math.round(e.prozent * 10) / 10;
+    }
+    if (isStr(e.endet) && ISO_UTC.test(e.endet)) l.endet = e.endet;
+    if (oneOf(e.status, ["ok", "warnung", "erreicht"] as const)) l.status = e.status;
+    if (Object.keys(l).length > 1) gefunden.set(e.art, l);
+  }
+  return KONTINGENT_ARTEN.flatMap((a) => gefunden.get(a) ?? []);
 }
 
 const AKTIVITAET_STATUS = ["laeuft", "fertig", "abgelehnt", "fehler", "wartet"] as const;
@@ -215,7 +279,9 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         ? { type: "sprecher", index: Math.max(0, Math.min(7, Math.trunc(m.index))) }
         : null;
     case "leiser_stopp":
-      return { type: "leiser_stopp" };
+      return { type: "leiser_stopp", sofort: m.sofort === true };
+    case "stimme_leiser":
+      return typeof m.an === "boolean" ? { type: "stimme_leiser", an: m.an } : null;
     case "freigaben": {
       if (!isStr(m.job) || !Array.isArray(m.items)) return null;
       const items = m.items
@@ -258,6 +324,9 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         entwicklung: oneOf(m.entwicklung, ["an", "aus"] as const) ? m.entwicklung : undefined,
         pcName: isStr(m.pc_name) && /^[A-Za-z0-9._-]{1,63}$/.test(m.pc_name) ? m.pc_name : undefined,
         pcBelegt: m.pc_belegt === true ? true : undefined,
+        modellModus: oneOf(m.modell_modus, MODELL_MODI) ? m.modell_modus : undefined,
+        modellQuelle: oneOf(m.modell_quelle, MODELL_QUELLEN) ? m.modell_quelle : undefined,
+        modellHinweis: optStr(m.modell_hinweis, 200),
       };
     }
     case "gemerkt":
@@ -292,20 +361,46 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         anmelden: m.anmelden === true ? true : undefined,
       };
     case "modellzugang": {
-      if (!oneOf(m.aktion, ["status", "hinterlegen", "loeschen"] as const)) return null;
+      if (!oneOf(m.aktion, ["status", "hinterlegen", "loeschen", "modus"] as const)) return null;
+      // Minutengenau, mit Zeitzone (der Kern liefert UTC mit +00:00): ohne sie läse der Browser den Wert als Ortszeit
+      const zeit = (v: unknown) => {
+        const t = isStr(v) ? /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?/.exec(v) : null;
+        return t ? t[1] + (t[2] ?? "") : undefined;
+      };
+      const vier = (v: unknown) => (isStr(v) && /^[A-Za-z0-9_-]{4}$/.test(v) ? v : undefined);
       return {
         type: "modellzugang",
         aktion: m.aktion,
         art: oneOf(m.art, ["claude", "haus"] as const) ? m.art : undefined,
-        quelle: oneOf(m.quelle, ["profil", "zuordnung", "festgelegt", "keiner", "fehler"] as const) ? m.quelle : undefined,
+        quelle: oneOf(m.quelle, ["profil", "zuordnung", "festgelegt", "wahl", "keiner", "fehler"] as const)
+          ? m.quelle
+          : undefined,
         hinterlegt: m.hinterlegt === true,
         // nur die letzten vier Zeichen; alles andere wird verworfen
-        ende: isStr(m.ende) && /^[A-Za-z0-9_-]{4}$/.test(m.ende) ? m.ende : undefined,
-        geprueft: isStr(m.geprueft) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(m.geprueft) ? m.geprueft.slice(0, 16) : undefined,
+        ende: vier(m.ende),
+        geprueft: zeit(m.geprueft),
         festgelegt: m.festgelegt === true,
         modell: isStr(m.modell) ? sauber(m.modell, 60, false) : undefined,
+        modus: oneOf(m.modus, MODELL_MODI) ? m.modus : undefined,
+        codeHinterlegt: m.code_hinterlegt === true,
+        codeEnde: vier(m.code_ende),
+        codeGesetzt: zeit(m.code_gesetzt),
         wirksam: isStr(m.wirksam) ? sauber(m.wirksam, 60, false) : undefined,
-        fehler: isStr(m.fehler) && m.fehler.trim() ? sauber(m.fehler.trim(), 200, false) : undefined,
+        // Absicherung: auch wenn der Kern je einen Schlüssel in einen Fehlertext schriebe, zeigt die Oberfläche ihn nicht
+        fehler:
+          isStr(m.fehler) && m.fehler.trim()
+            ? sauber(m.fehler.trim(), 200, false).replace(/sk-ant-[A-Za-z0-9_-]*/gi, "[Schlüssel entfernt]")
+            : undefined,
+      };
+    }
+    case "kontingent": {
+      if (!oneOf(m.zustand, ["unbekannt", "bekannt"] as const)) return null;
+      const limits = m.zustand === "bekannt" ? kontingentLimits(m.limits) : [];
+      return {
+        type: "kontingent",
+        zustand: limits.length > 0 ? "bekannt" : "unbekannt", // ohne gültige Limits bleibt es unbekannt
+        stand: limits.length > 0 && isStr(m.stand) && ISO_UTC.test(m.stand) ? m.stand : undefined,
+        limits,
       };
     }
     case "mikrofon": {

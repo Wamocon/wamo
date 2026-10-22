@@ -1,58 +1,76 @@
-# WAMO-Oberfläche auf Sokrates-2 (Container wamo-ui, eigenes Compose-Projekt, getrennt von supabase-wamo und wamo-caddy).
-# Eingerichtet durch infra/sokrates2/wamo-ui-einrichten.sh, auf dem Server in /home/wamocon/wamo-ui.
+# WAMO-Oberfläche auf Sokrates-2, blau und grün (Container wamo-ui-blau und wamo-ui-gruen, eigenes Compose-Projekt,
+# getrennt von supabase-wamo und wamo-caddy). Eingerichtet durch infra/sokrates2/wamo-ui-umschalten.sh, auf dem Server
+# in /home/wamocon/wamo-ui.
 #
-#   Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000 (Netz wamo-ui-netz)──> wamo-ui
+#   Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000 (Netz wamo-ui-netz)──> wamo-ui-blau  oder  wamo-ui-gruen
 #
-# Der Container veröffentlicht keinen Port. Er hängt nur im Netz wamo-ui-netz (internal: kein Weg ins Internet, ins
+# Eine Farbe ist live, die andere trägt die vorige Fassung oder ruht. Welche live ist, steht in einer Datei von Caddy
+# (etc/kern/wamo-ui-aktiv.inc), die das Skript erzeugt; "caddy reload" schaltet um, nichts wird neu angelegt außer der
+# inaktiven Farbe. Gestartet wird immer nur eine Farbe (docker compose up -d --no-deps blau|gruen), nie beide zugleich
+# und nie die live gesetzte neu. Nach der Umstellung von wamo-ui auf blau/grün läuft der alte Container wamo-ui (Dienst
+# "ui" der früheren Fassung) als Waise weiter, bis das nächste Release ihn abräumt; Compose warnt dann vor "orphan containers".
+#
+# Beide Container veröffentlichen keinen Port. Sie hängen nur im Netz wamo-ui-netz (internal: kein Weg ins Internet, ins
 # Büro-LAN oder zu Diensten des Hosts). Das Netz legt das Compose-Projekt wamo-caddy an (infra/sokrates2/wamo-caddy/
-# docker-compose.yml), weil nur Caddy hineinmuss. Der Container braucht keine Verbindung nach außen: Anmeldung und
+# docker-compose.yml), weil nur Caddy hineinmuss. Die Container brauchen keine Verbindung nach außen: Anmeldung und
 # Kern spricht der Browser selbst an.
+#
+# Die Platzhalter mit Vorgabe (WAMO_UI_PRAEFIX, WAMO_UI_BILD, WAMO_UI_NETZ) setzt nur der Rauchtest
+# (infra/sokrates2/wamo_ui_rauchtest.py) auf Namen mit wamo-test-; im Betrieb gelten die Vorgaben.
 name: wamo-ui
 
+x-wamo-ui: &wamo-ui
+  # Das Image baut das Skript (docker build) und versieht es mit dem Farb-Tag (wamo-ui:blau, wamo-ui:gruen) und dem
+  # Archiv-Tag aus Version und Commit (wamo-ui:v0.1.0-0123456789ab)
+  pull_policy: never
+  init: true
+  restart: unless-stopped
+  # Benutzer node des Images (1000), ohne Linux-Capabilities, ohne neue Rechte, Dateisystem schreibgeschützt
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  # Grenzen: die Oberfläche liefert nur Seiten aus, 512 MB und eine CPU reichen weit
+  mem_limit: 512m
+  memswap_limit: 512m
+  cpus: 1.0
+  pids_limit: 128
+  ulimits:
+    nofile: 4096
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=32m
+    - /app/.next/cache:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000
+  environment:
+    NODE_ENV: production
+    PORT: "3000"
+    HOSTNAME: 0.0.0.0
+    NEXT_TELEMETRY_DISABLED: "1"
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/version.json').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+    start_period: 15s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  networks:
+    - ui
+
 services:
-  ui:
-    # Das Image baut das Einrichtungsskript (docker build); "aktuell" ist der laufende Stand, "vorher" der vorige
-    image: wamo-ui:aktuell
-    pull_policy: never
-    container_name: wamo-ui
-    init: true
-    restart: unless-stopped
-    # Benutzer node des Images (1000), ohne Linux-Capabilities, ohne neue Rechte, Dateisystem schreibgeschützt
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    # Grenzen: die Oberfläche liefert nur Seiten aus, 512 MB und eine CPU reichen weit
-    mem_limit: 512m
-    memswap_limit: 512m
-    cpus: 1.0
-    pids_limit: 128
-    ulimits:
-      nofile: 4096
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=32m
-      - /app/.next/cache:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000
-    environment:
-      NODE_ENV: production
-      PORT: "3000"
-      HOSTNAME: 0.0.0.0
-      NEXT_TELEMETRY_DISABLED: "1"
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    networks:
-      - ui
+  blau:
+    <<: *wamo-ui
+    image: ${WAMO_UI_BILD:-wamo-ui}:blau
+    container_name: ${WAMO_UI_PRAEFIX:-wamo-}ui-blau
+  gruen:
+    <<: *wamo-ui
+    image: ${WAMO_UI_BILD:-wamo-ui}:gruen
+    container_name: ${WAMO_UI_PRAEFIX:-wamo-}ui-gruen
 
 networks:
   ui:
-    name: wamo-ui-netz
+    name: ${WAMO_UI_NETZ:-wamo-ui-netz}
     external: true
