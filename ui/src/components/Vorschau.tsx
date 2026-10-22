@@ -3,11 +3,15 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { CanvasItem } from "@/components/Canvas";
+import { gespraechsStartSetzen } from "@/components/kommando/ansicht";
+import { istDarstellung, darstellungSetzen } from "@/components/kommando/darstellung";
 import { LoginGate } from "@/components/LoginGate";
 import { WamoAnsicht } from "@/components/WamoAnsicht";
+import { stilleText } from "@/lib/mikrofon";
 import type { WamoAktionen } from "@/lib/useWamo";
 import {
   HISTORY,
+  entferneMemo,
   historyRef,
   initialState,
   levelsRef,
@@ -34,9 +38,18 @@ import {
  *   /?vorschau=1&pcsteuerung=an     PC-Steuerung dieser Sitzung an
  *   /?vorschau=1&pcauto=1           Autostart der PC-Steuerung (simuliert, ändert die Geräte-Einstellung nicht)
  *   /?vorschau=1&fehler=1           offline mit Fehlermeldung
+ *   /?vorschau=1&fehler=mikrofon    Mikrofon liefert keinen Ton (Warnung mit Gerätewahl)
  *   /?vorschau=1&rolle=mitglied     Profil als Mitglied
  *   /?vorschau=1&pc=getrennt        PC-Host getrennt (auch gesperrt, aus)
  *   /?vorschau=anmeldung            Anmeldeformular
+ *
+ * Kommandozentrale (Darstellung und Beispieldaten):
+ *   /?vorschau=1&ansicht=fokus      Darstellung: normal, fokus, zentrale, nacht (gilt nur jetzt, wird nicht gespeichert)
+ *   /?vorschau=1&viele=1            drei Freigaben und ein Entwicklungsauftrag (rote Zahl am Reiter Aufträge)
+ *   /?vorschau=1&entwicklung=laeuft Entwicklungsauftrag läuft seit 30 s (Zähler der Zentrale)
+ *   /?vorschau=1&gemerkt=gemeinsam  zusätzlich ein gemeinsamer Gedächtniseintrag
+ *   /?vorschau=1&sitzung=45         Gespräch läuft seit 45 Minuten (Sitzungsfortschritt)
+ *   /?vorschau=1&text=aus           Texteingabe gesperrt (ohne Sendefunktion, so ist der heutige Stand)
  */
 
 const ZUSTAENDE: Presence[] = ["offline", "connecting", "idle", "listening", "thinking", "speaking"];
@@ -61,7 +74,7 @@ const DOKUMENT: CanvasItem = {
   text: "## Ergebnis\nDrei von vier Testfällen sind **bestanden**.\n- Zugang stabil\n- Export braucht `pdf-engine` 2.1",
 };
 
-const KEINE_AKTIONEN: WamoAktionen = {
+const KEINE_AKTIONEN: WamoAktionen & { textSenden?: (text: string) => boolean } = {
   connect: async () => {},
   disconnect: async () => {},
   decide: (a) => {
@@ -69,7 +82,7 @@ const KEINE_AKTIONEN: WamoAktionen = {
     return true;
   },
   toggleMic: () => wamo.set((s) => ({ ...s, micOn: !s.micOn })),
-  vergessen: () => {},
+  vergessen: (m) => entferneMemo(m.key),
   entscheideAuftrag: (a) => {
     wamo.set((s) => ({ ...s, auftraege: s.auftraege.filter((x) => x.job !== a.job) }));
     return true;
@@ -79,6 +92,16 @@ const KEINE_AKTIONEN: WamoAktionen = {
     return true;
   },
   schliesseFehler: () => wamo.set((s) => ({ ...s, error: null })),
+  mikrofone: async () => [
+    { id: "vorschau-1", label: "Onboard MIC (Intel Smart Sound)" },
+    { id: "vorschau-2", label: "Headset-Mikrofon" },
+  ],
+  mikrofonWaehlen: () => true,
+  // Texteingabe simulieren: der Text erscheint als Nutzerzeile der Untertitel
+  textSenden: (text) => {
+    wamo.set((s) => ({ ...s, caption: { ...s.caption, userDone: text, userLive: "", userLogged: false } }));
+    return true;
+  },
 };
 
 function param(name: string) {
@@ -95,6 +118,7 @@ function beispiel(): { state: WamoState; presence: Presence } {
   const presence: Presence = z && ZUSTAENDE.includes(z) ? z : "speaking";
   const leer = param("leer") === "1";
   const fehler = param("fehler") === "1";
+  const micStill = param("fehler") === "mikrofon";
   const pc = param("pc");
   const online = presence !== "offline" && presence !== "connecting" && !fehler;
   const botText = "Hier ist die Übersicht. Vier Testfälle sind offen, einer davon ist kritisch.";
@@ -103,7 +127,10 @@ function beispiel(): { state: WamoState; presence: Presence } {
     presence: fehler ? "offline" : presence,
     error: fehler
       ? { art: "verbindung", text: "Voice-Core unter http://localhost:7860 nicht erreichbar. Läuft bot.py?" }
-      : null,
+      : micStill
+        ? { art: "mikrofon", text: stilleText("Mikrofon (DisplayLink Audio)") }
+        : null,
+    mikrofon: online ? "Onboard MIC (Intel Smart Sound)" : null,
     caption:
       leer || !online
         ? initialState.caption
@@ -128,7 +155,9 @@ function beispiel(): { state: WamoState; presence: Presence } {
     activities: leer
       ? []
       : [
-          param("handelt") === "1"
+          param("entwicklung") === "laeuft"
+            ? { id: "a5", name: "entwicklung_starten", detail: "atlas, Fehler beheben", status: "laeuft", turn: 2, startedAt: performance.now() - 30_000 }
+            : param("handelt") === "1"
             ? { id: "a4", name: "webseite_oeffnen", detail: "atlas.wamocon.local", status: "laeuft", turn: 2, startedAt: 0 }
             : { id: "a4", name: "canvas_zeigen", detail: "Tabelle", status: "fertig", turn: 2, startedAt: 0, endedAt: 310 },
           { id: "a3", name: "websuche", detail: "pdf-engine Changelog", status: "fertig", turn: 2, startedAt: 0, endedAt: 1240 },
@@ -136,7 +165,22 @@ function beispiel(): { state: WamoState; presence: Presence } {
           { id: "a1", name: "aktuelle_zeit", detail: "", status: "fertig", turn: 1, startedAt: 0, endedAt: 80 },
         ],
     approvals:
-      param("freigabe") === "pc"
+      param("viele") === "1"
+        ? [
+            { job: "vorschau", projekt: "atlas", id: "1", grund: "Paket installieren", detail: "npm install pdf-engine@2.1", von: "Niko" },
+            { job: "vorschau", projekt: "atlas", id: "2", grund: "Datei löschen", detail: "rm exporte/alt.pdf", von: "Niko" },
+            {
+              job: "pc",
+              projekt: "WMC-PC",
+              id: "0123456789abcdef",
+              grund: "Nachricht tippen und senden",
+              detail: "Bin in fünf Minuten da⏎",
+              ziel: "Chat | Microsoft Teams (ms-teams.exe)",
+              von: "Niko",
+              ablauf: Date.now() + 5 * 60 * 1000,
+            },
+          ]
+        : param("freigabe") === "pc"
         ? [
             {
               job: "pc",
@@ -162,7 +206,7 @@ function beispiel(): { state: WamoState; presence: Presence } {
           ]
         : [],
     auftraege:
-      param("auftrag") === "1"
+      param("auftrag") === "1" || param("viele") === "1"
         ? [
             {
               job: "dev-42",
@@ -207,6 +251,16 @@ function Hauptvorschau() {
         : null;
     if (param("leer") !== "1" && state.presence !== "offline") {
       zeigeMemo({ bereich: "persoenlich", status: "aktiv", text: "Niko mag kurze Antworten.", id: "m1" });
+      if (param("gemerkt") === "gemeinsam") {
+        zeigeMemo({ bereich: "gemeinsam", status: "vorgeschlagen", text: "Der Testlauf für Atlas beginnt freitags um 14 Uhr.", id: "m2" });
+      }
+    }
+    // Kommandozentrale: Darstellung nur für diese Ansicht setzen (nicht im Speicher des Geräts ablegen)
+    const ansicht = param("ansicht");
+    if (istDarstellung(ansicht)) darstellungSetzen(ansicht, false);
+    const minuten = Number(param("sitzung"));
+    if (Number.isFinite(minuten) && minuten > 0 && state.presence !== "offline" && state.presence !== "connecting") {
+      gespraechsStartSetzen(Date.now() - minuten * 60_000);
     }
     // Künstliche Pegel: erst spricht das Profil, dann WAMO, dazwischen eine Unterbrechung
     const welle = (t: number, f: number) => Math.max(0, Math.sin(t * f) * 0.5 + Math.sin(t * f * 2.7) * 0.3);
@@ -247,5 +301,9 @@ function Hauptvorschau() {
   }, [state, presence]);
 
   const sitzung = useMemo(() => ({ signOut: () => router.push("/"), email: "niko@example.com" }), [router]);
-  return <WamoAnsicht aktionen={KEINE_AKTIONEN} sitzung={sitzung} />;
+  const aktionen = useMemo(
+    () => (param("text") === "aus" ? { ...KEINE_AKTIONEN, textSenden: undefined } : KEINE_AKTIONEN),
+    [],
+  );
+  return <WamoAnsicht aktionen={aktionen} sitzung={sitzung} />;
 }

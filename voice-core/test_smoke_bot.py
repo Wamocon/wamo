@@ -17,6 +17,8 @@ DUMMY_ENV = {
     "WAMO_DATABASE_URL": "",
     "WAMO_DB_SCHEMA": "wamo_test",
     "WAMO_PC_HOST": "off",
+    # Der Schlüssel des Kerns gilt nur für dieses Profil (Modellzugang, Übergang über die Zuordnung)
+    "WAMO_CLAUDE_SCHLUESSEL_PROFIL": "0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c",
 }
 
 with mock.patch.dict(os.environ, DUMMY_ENV):
@@ -30,6 +32,20 @@ from pipecat.transports.base_transport import BaseTransport  # noqa: E402
 from auth_gate import Identity  # noqa: E402
 
 USER = "0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c"
+ANDERES_PROFIL = "7d3e9c1a-2b4f-4e6a-8c0d-1f2a3b4c5d6e"
+_patches: list = []
+
+
+def setUpModule():
+    # Ohne Netz: die kurze Prüfung, ob Claude mit dem Schlüssel des Profils erreichbar ist, entfällt
+    p = mock.patch("llm_anbieter.claude_problem", mock.AsyncMock(return_value=None))
+    p.start()
+    _patches.append(p)
+
+
+def tearDownModule():
+    while _patches:
+        _patches.pop().stop()
 
 
 class _Passthrough(FrameProcessor):
@@ -67,6 +83,34 @@ class SmokeTests(unittest.IsolatedAsyncioTestCase):
         session = await self.build("admin")
         self.assertIsInstance(session.task, PipelineTask)
         await session.cleanup()
+
+    async def test_session_ohne_eigenen_schluessel_nur_hausmodelle(self):
+        """Ein Profil ohne eigenen Schlüssel bekommt das Hausmodell, nie den Schlüssel des Kerns."""
+        import llm_anbieter
+
+        env = {**DUMMY_ENV, "LITELLM_BASE_URL": "http://gateway.test.invalid:4000/v1",
+               "LITELLM_API_KEY": "sk-gateway-test", "WAMO_LLM_MODELL": "gemma4-31b"}
+        gebaut = []
+
+        async def merken(system_instruction, zugang):
+            gebaut.append((zugang, await llm_anbieter.gespraech_llm(system_instruction, zugang)))
+            return gebaut[-1][1]
+
+        with mock.patch.dict(os.environ, env), mock.patch.object(bot, "gespraech_llm", merken),              mock.patch("llm_anbieter.litellm_problem", mock.AsyncMock(return_value=None)),              mock.patch.object(llm_anbieter.Zugang, "anthropic", side_effect=AssertionError("Anthropic gesperrt")):
+            session = await bot.build_session(FakeTransport(), Identity(ANDERES_PROFIL, "Max", "mitglied", "du"))
+        self.assertIsInstance(session.task, PipelineTask)
+        await session.cleanup()
+        zugang, (llm, wahl) = gebaut[0]
+        self.assertEqual((zugang.art, zugang.quelle), ("haus", "keiner"))
+        self.assertIsInstance(llm, llm_anbieter.LiteLLMService)
+        self.assertEqual((wahl.anbieter, wahl.modell), ("litellm", "gemma4-31b"))
+
+    async def test_session_ohne_gateway_und_ohne_schluessel_bricht_ab(self):
+        """Ohne eigenen Schlüssel und ohne Hausmodell gibt es keine Sitzung (kein stiller Rückfall auf Claude)."""
+        import llm_anbieter
+
+        with mock.patch.dict(os.environ, DUMMY_ENV), self.assertRaises(llm_anbieter.LLMNichtVerfuegbar):
+            await bot.build_session(FakeTransport(), Identity(ANDERES_PROFIL, "Max", "mitglied", "du"))
 
     async def test_bot_without_identity_ends_immediately(self):
         class Conn:

@@ -21,6 +21,9 @@ Nachrichten an die Oberfläche (RTVI-Servernachrichten, zusätzlich zu canvas, a
   {"type": "betrieb", "modus", "ort", "modelle", "pc", "pc_latenz_ms"?}
                                                                    beim Verbinden und wenn der PC-Host steht
   {"type": "gemerkt", "bereich", "status", "text", "id"}           nach jedem gespeicherten Gedächtniseintrag
+  {"type": "mikrofon", "zustand": "still"|"fehlt"|"ok", "sekunden"}
+                                                                   10 s nur digitale Stille vom Mikrofon, "fehlt": 5 s gar
+                                                                   keine Audiopakete, "ok": wieder Ton (audio_monitor.py)
 Nachrichten von der Oberfläche:
   {"type": "vergessen", "data": {"id"}}   eigenen Eintrag deaktivieren (memory.forget)
   {"type": "freigabe", "data": {"job": "pc", "id", "entscheidung"}}
@@ -53,6 +56,7 @@ from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import LLMMessagesAppendFrame, LLMUpdateSettingsFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -92,7 +96,13 @@ from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
 from llm_anbieter import LLMNichtVerfuegbar, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
 from memory import MemoryStore, Profile, ProfileDirectory, Recall, shared_database
+from modellzugang import modellzugang_nachricht, zugang_laden
 from kern_dienst import runner_vorbereiten
+from cache_waerme import vorwaermen
+from latenz import LatenzObserver, api_messen, latenz_log_an
+from pc_geraet import geraet_wache, rechnername_passt
+from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
+from turn_wache import TurnWache
 from pc_host import (
     call_host_tool,
     host_client,
@@ -100,6 +110,8 @@ from pc_host import (
     ist_tunnel,
     pc_host_fuer,
     pc_sperre_pruefen,
+    pc_zugang,
+    register_modus,
     sperre_aus_ergebnis,
 )
 from pc_freigaben import PcFreigaben
@@ -160,6 +172,8 @@ LEARN_OVERLAP = 4  # so viele frühere Zeilen als Kontext mitgeben
 SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS") or 60000)
 SUMMARY_TARGET_TOKENS = int(os.getenv("SUMMARY_TARGET_TOKENS") or 25000)
 DEFAULT_GREETING = "Hallo {name}, WAMO ist bereit."
+# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält (Standard von Pipecat 0,2 s)
+VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.2)
 # Hält Claude einen Satz für unvollständig, wartet WAMO so lange auf den Rest (Sekunden).
 SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 1.0)
 TURN_INCOMPLETE_SHORT_SECS = float(os.getenv("TURN_INCOMPLETE_SHORT_SECS") or 1.5)
@@ -209,6 +223,15 @@ def _keep(task: asyncio.Task) -> asyncio.Task:
     return task
 
 
+async def _zugang_nach_lernen(lernen: asyncio.Task | None, zugang) -> None:
+    """Schließt den Modellclient der Sitzung erst, wenn die letzte Auswertung (Lernen) fertig ist."""
+    if lernen is not None:
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.shield(lernen)
+    with contextlib.suppress(Exception):
+        await zugang.schliessen()
+
+
 def greeting_text(name: str) -> str:
     template = os.getenv("WAMO_GREETING", DEFAULT_GREETING)
     return template.replace("{name}", name).strip()
@@ -218,21 +241,47 @@ def profil_message(identity: Identity) -> dict:
     return {"type": "profil", "name": identity.name, "rolle": identity.rolle}
 
 
+def soniox_stt() -> SonioxSTTService:
+    return SonioxSTTService(
+        api_key=os.environ["SONIOX_API_KEY"],
+        url=SONIOX_STT_URL,
+        settings=SonioxSTTService.Settings(
+            # Nur Deutsch, strikt: mit DE+EN wurde "Wie geht's?" als "We get." erkannt.
+            # Englische Fachwörter (SQL, Statement) bleiben trotzdem erkennbar.
+            language_hints=[Language.DE],
+            language_hints_strict=True,
+            enable_speaker_diarization=True,  # mehrere Personen im Raum -> Sprecher-Labels
+            context=SonioxContextObject(terms=STT_TERMS) if STT_TERMS else None,
+        ),
+    )
+
+
+def soniox_tts() -> LazySonioxTTSService:
+    return LazySonioxTTSService(
+        api_key=os.environ["SONIOX_API_KEY"],
+        url=SONIOX_TTS_URL,
+        settings=SonioxTTSService.Settings(voice=SONIOX_VOICE, language=Language.DE),
+    )
+
+
 def betrieb_message(
     pc: str, pc_latenz_ms: int | None = None, pc_steuerung: bool = False, entwicklung: bool = False,
-    llm: str | None = None, pc_name: str | None = None, pc_belegt: bool = False,
+    llm: str | None = None, pc_name: str | None = None, pc_belegt: bool = False, sprache: dict[str, str] | None = None,
 ) -> dict:
     """pc: verbindet | verbunden | gesperrt | getrennt | aus (gesperrt: Bildschirm am PC gesperrt, pc_anzeige).
     pc_steuerung: ob die PC-Werkzeuge in dieser Sitzung eingeschaltet sind (Standard aus).
     entwicklung: ob Entwicklungsaufträge in dieser Sitzung angeboten werden (WAMO_ENTWICKLUNG und Rolle).
     llm: Anzeigename des Gesprächsmodells dieser Sitzung (llm_anbieter.Wahl.anzeige).
     pc_name: Rechnername des gesteuerten PCs (aus system_info), damit die Oberfläche das Ziel zeigt.
-    pc_belegt: Einschalten abgelehnt, weil eine andere Sitzung den PC gerade steuert (Büro)."""
+    pc_belegt: Einschalten abgelehnt, weil eine andere Sitzung den PC gerade steuert (Büro).
+    sprache: Anzeigenamen für Hören und Stimme (sprache_anbieter.SprachWahl.anzeige), Standard Soniox."""
+    sprache = sprache or {}
     message = {
         "type": "betrieb",
         "modus": BETRIEB_MODUS,
         "ort": MODELL_ORT,
-        "modelle": {"llm": llm or lesbarer_modellname(CLAUDE_MODEL), "stt": "Soniox", "tts": f"Soniox {SONIOX_VOICE}"},
+        "modelle": {"llm": llm or lesbarer_modellname(CLAUDE_MODEL), "stt": sprache.get("stt", "Soniox"),
+                    "tts": sprache.get("tts", f"Soniox {SONIOX_VOICE}")},
         "pc": pc,
         "pc_steuerung": "an" if pc_steuerung else "aus",
         "entwicklung": "an" if entwicklung else "aus",
@@ -391,7 +440,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     eine kurze Prüfung des LiteLLM-Gateways, wenn ein Baustein darauf steht, siehe llm_anbieter.py)."""
     memory = MemoryStore.from_env(identity.user_id)
     is_admin = identity.is_admin
-    pc_enabled = pc_host_fuer(identity)  # admin; im Büro zusätzlich an diesen PC gebunden (pc_host.py)
+    # PC-Werkzeuge. Alter Weg: admin, im Büro zusätzlich an diesen PC gebunden (pc_host.py). Tunnel je Gerät
+    # (WAMO_PC_REGISTER=an): die Sitzung bekommt nur IHREN Laptop aus dem Geräteregister, sonst keine (pc_geraet.py).
+    zugang = await pc_zugang(identity) if register_modus() else None
+    pc_enabled = zugang is not None if register_modus() else pc_host_fuer(identity)
     entwicklung = is_admin and entwicklung_enabled()
     if entwicklung and (problem := entwicklung_problem()):
         logger.error("Entwicklungsaufträge aus: {}", problem)
@@ -399,11 +451,14 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # PC-Steuerung je Sitzung standardmäßig aus; nur ein Admin schaltet sie in der UI ein.
     state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
                    "client_ready": False, "live": True, "cleaned": False, "guard": None,
-                   "pc_weg": False, "pc_tools": False, "pc_waechter": None,  # pc_weg: Hinweis im Prompt
+                   "pc_weg": False, "pc_tools": False, "pc_waechter": None, "geraet_wache": None,  # pc_weg: Hinweis im Prompt
+                   "geraet_ok": zugang is None, "geraet_entzogen": False,  # Tunnel je Gerät: erst nach dem Namensabgleich, nie nach einem Entzug
                    "pc_name": None, "pc_belegt": False,
                    "pc_gesperrt": False, "sperr_probe": None}  # Bildschirm am PC gesperrt (Host: status=locked)
     # Kennung dieser Sitzung für die PC-Sperre (Sitzung.pc_lease_nehmen) und ihre Ablösung (sitzungen.py)
     sitzung = sitzung or Sitzung(identity.user_id)
+    if zugang is not None:
+        sitzung.geraet_id = zugang.geraet.device_id  # die PC-Sperre gilt je Gerät
 
     def prompt_for(recall: Recall) -> str:
         return build_system_prompt(
@@ -414,36 +469,35 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Gedächtnis je Sitzung laden (kein prozessweiter Cache: jedes Profil sieht nur seins).
     recall = await memory.recall()
 
-    stt = SonioxSTTService(
-        api_key=os.environ["SONIOX_API_KEY"],
-        url=SONIOX_STT_URL,
-        settings=SonioxSTTService.Settings(
-            # Nur Deutsch, strikt: mit DE+EN wurde "Wie geht's?" als "We get." erkannt.
-            # Englische Fachwörter (SQL, Statement) bleiben trotzdem erkennbar.
-            language_hints=[Language.DE],
-            language_hints_strict=True,
-            enable_speaker_diarization=True,  # mehrere Personen im Raum -> Sprecher-Labels
-            context=SonioxContextObject(terms=STT_TERMS) if STT_TERMS else None,
-        ),
-    )
-
-    tts = LazySonioxTTSService(
-        api_key=os.environ["SONIOX_API_KEY"],
-        url=SONIOX_TTS_URL,
-        settings=SonioxTTSService.Settings(voice=SONIOX_VOICE, language=Language.DE),
-    )
-
-    # Claude oder ein eigenes Modell über LiteLLM (WAMO_LLM_ANBIETER), mit Rückfall auf Claude.
+    # Modellzugang des Profils (modellzugang.py): eigener Claude-Schlüssel oder nur Hausmodelle. Jede Sitzung hat
+    # ihren eigenen Client; der Schlüssel des Kerns gilt nur für das zugeordnete Profil.
     # Persona als system_instruction (Einzelheiten in llm_anbieter.gespraech_dienst).
     # Beide Prüfungen parallel, damit ein langsames Gateway den Start nur einmal verzögert.
     # summary_llm None: Pipecat fasst mit dem Gesprächsmodell zusammen.
-    (llm, llm_wahl), summary_llm = await asyncio.gather(gespraech_llm(prompt_for(recall)), zusammenfassung_llm())
+    zugang = await zugang_laden(identity.user_id)
+    if entwicklung and zugang.art != "claude":
+        # Claude Code läuft über Anthropic: Profile mit nur Hausmodellen starten keine Entwicklungsaufträge
+        logger.warning("Entwicklungsaufträge aus: Profil {} nutzt nur Hausmodelle", zugang.kennung)
+        entwicklung = False
+    try:
+        (llm, llm_wahl), summary_llm = await asyncio.gather(
+            gespraech_llm(prompt_for(recall), zugang), zusammenfassung_llm(zugang)
+        )
+    except Exception:
+        await zugang.schliessen()  # ein bei der Prüfung gebauter Client darf nicht offen bleiben
+        raise
+
+    # Spracherkennung und Sprachausgabe je Profil (Zugang.stt/tts) oder für alle (WAMO_STT_ANBIETER/WAMO_TTS_ANBIETER):
+    # Soniox oder im Haus über LiteLLM, mit Rückfall auf Soniox (sprache_anbieter.py)
+    sprache = await sprach_wahl(zugang)
+    stt = haus_stt(sprache.stt, STT_TERMS) if sprache.stt.anbieter == "haus" else soniox_stt()
+    tts = haus_tts(sprache.tts) if sprache.tts.anbieter == "haus" else soniox_tts()
 
     transcript: list[tuple[str, str]] = []  # fürs Lernen
     # Fremdinhalte im laufenden Zug (Websuche, Bildschirm, PC, Entwicklungs-Ergebnisse) merken: kein
     # sofort wirksames gemeinsames Wissen (M4) und kein Lernen aus diesen Abschnitten.
     turn = TurnState(transcript_len=lambda: len(transcript))
-    standard_tools = list(register_tools(llm, memory, identity, turn).standard_tools)
+    standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang).standard_tools)
     dev: DevAgent | None = None
     if entwicklung:
         # Entwicklungsaufträge an Claude Code; Start und Freigaben per Klick in der UI (dev_agent.py)
@@ -454,14 +508,17 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     context = LLMContext(tools=ToolsSchema(standard_tools=standard_tools))
 
     # PC-Werkzeuge nur für admin; im Hintergrund dazuholen (lokal per stdio, im Büro über den Tunnel).
-    pc_client = host_client() if pc_enabled else None
+    pc_client = host_client(zugang) if pc_enabled else None
 
     def pc_allowed() -> bool:
         # Abgelöst oder Sperre verloren (Büro): sofort keine PC-Aktionen mehr, auch vor dem Trennen
-        return bool(state["pc_steuerung"]) and sitzung.pc_lease_haelt()
+        return bool(state["pc_steuerung"]) and state["geraet_ok"] and sitzung.pc_lease_haelt()
 
     # Bildschirm sehen/klicken: Foto vom Host, Bildmodell entscheidet (siehe screen.py)
-    screen_schemas = register_screen_tools(llm, lambda: pc_client, pc_allowed, turn.taint) if pc_client else []
+    # Bildschirm sehen und klicken: Das Bild geht an das Bildmodell, deshalb nur für admin, bis die Einwilligung der
+    # Mitglieder geregelt ist (Bauplan S6)
+    screen_schemas = (register_screen_tools(llm, lambda: pc_client, pc_allowed, turn.taint, zugang=zugang)
+                      if pc_client and is_admin else [])
 
     learned_upto = 0  # bis zu diesem Index in transcript ist ausgewertet
     learn_task: asyncio.Task | None = None
@@ -485,7 +542,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             ),
         ),
         user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(),
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_STOP_SECS)),
             user_turn_strategies=UserTurnStrategies(
                 # Unterbrechen entscheidet das SoftInterruptGate, nicht die Strategie.
                 start=[
@@ -524,15 +581,19 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     )
 
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
+    # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
+    wache = TurnWache()
     pipeline = Pipeline(
         [
             transport.input(),
-            AudioInputMonitor(),  # Diagnose: Lücken und Pegel des Browser-Mikrofons
+            AudioInputMonitor(),  # Diagnose: Lücken und Pegel des Browser-Mikrofons, Stille-Wächter
             stt,
             SpeakerTracker(),  # wer spricht -> Farbe im Stimmen-Rand
             user_agg,
             soft_gate,
+            wache.vorne(),
             llm,
+            wache.hinten(),
             aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
             tts,
             transport.output(),
@@ -541,9 +602,14 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         ]
     )
 
+    # Latenz je Zug ins Log (WAMO_LATENZ_LOG=1, latenz.py): Sprechende, Turn-Ende, STT, Modell, API, TTS, Ausgabe
+    latenz_beobachter = LatenzObserver() if latenz_log_an() else None
+    if latenz_beobachter:
+        api_messen(llm, latenz_beobachter)
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+        observers=[latenz_beobachter] if latenz_beobachter else [],
     )
     if dev:
         dev.attach(task)
@@ -560,7 +626,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def send_betrieb() -> None:
         await send(betrieb_message(pc_anzeige(state["pc"], state["pc_gesperrt"]), state["pc_latenz_ms"],
                                    state["pc_steuerung"], entwicklung, llm=llm_wahl.anzeige, pc_name=state["pc_name"],
-                                   pc_belegt=state["pc_belegt"]))
+                                   pc_belegt=state["pc_belegt"], sprache=sprache.anzeige(SONIOX_VOICE)))
 
     async def set_sperre(gesperrt: bool) -> None:
         """Bildschirm am PC gesperrt oder entsperrt (Werkzeugergebnis, Tunnel-Probe, system_info)."""
@@ -603,7 +669,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         darf=lambda: darf_pc_freigeben(identity, pc_enabled, bool(state["pc_steuerung"]), sitzung.pc_lease_haelt()),
         pc_name=lambda: state["pc_name"],
     ) if pc_client else None
-    if freigaben is not None:
+    if freigaben is not None and is_admin:  # Mitglieder können nichts freigeben: keine Karte, die ins Leere läuft
         aktivitaet.on_freigabe = freigaben.anfrage
 
     async def refresh_prompt() -> None:
@@ -627,6 +693,19 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     async def attach_pc_tools(melde_fehler: bool = True) -> bool:
         pc = await host_tools(pc_client)
+        if pc and zugang is not None:
+            # Plausibilität: der Host meldet denselben Rechnernamen, den das Register für das Gerät führt; sonst keine
+            # Werkzeuge (fail closed, auch wenn system_info nicht antwortet)
+            gemeldet = None
+            with contextlib.suppress(Exception):
+                gemeldet = rechnername(await asyncio.wait_for(call_host_tool(pc_client, "system_info", {}), 5))
+            if not rechnername_passt(zugang.geraet, gemeldet):
+                logger.warning("WAMO-GERAET Rechnername des Hosts passt nicht zum Gerät {}: keine PC-Werkzeuge",
+                               zugang.geraet.kennung)
+                pc = None
+                state["geraet_ok"] = False
+            elif not state["geraet_entzogen"]:
+                state["geraet_ok"] = True
         if not pc and not melde_fehler:
             return False
         latenz = None
@@ -642,7 +721,26 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 if (gesperrt := sperre_aus_ergebnis("system_info", info)) is not None:
                     await set_sperre(gesperrt)
         await set_pc("verbunden" if pc else "getrennt", latenz)
+        if pc and zugang is not None:
+            _keep(asyncio.create_task(zugang.gesehen()))  # last_seen_at, höchstens einmal je Minute
         return bool(pc)
+
+    async def geraet_entzogen(grund: str) -> None:
+        """Das Gerät wurde gesperrt oder widerrufen (oder das Register ist länger nicht erreichbar): PC-Steuerung dieser
+        Sitzung endet sofort, die Sperre wird frei, WAMO sagt es."""
+        state["geraet_ok"], state["geraet_entzogen"] = False, True  # danach schaltet auch ein Klick in der Oberfläche nichts ein
+        state["pc_steuerung"] = False
+        sitzung.pc_lease_freigeben()
+        state["pc_tools"] = False
+        wachter = state["pc_waechter"]
+        if wachter is not None and wachter is not asyncio.current_task():
+            wachter.cancel()
+        if pc_client is not None:
+            with contextlib.suppress(Exception):
+                await pc_client.close()
+        with contextlib.suppress(Exception):
+            await set_pc("getrennt")
+            await melde_llm(f"Systemhinweis, bitte kurz und ruhig weitergeben: {grund} WAMO kann den Laptop jetzt nicht mehr bedienen.")
 
     async def pc_wechsel(erreichbar: bool, latenz_ms: int | None) -> None:
         """Tunnel weg oder zurück (pc_tunnel.TunnelHost.ueberwache); Werkzeuge beim ersten Erfolg anhängen."""
@@ -651,13 +749,30 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         else:
             await set_pc("verbunden" if erreichbar else "getrennt", latenz_ms)
 
+    tools_bereit = asyncio.Event()  # Werkzeuge der Sitzung stehen fest (Wärmen des Prompt-Caches wartet darauf)
+    if not pc_client:
+        tools_bereit.set()
+
     async def start_pc() -> None:
-        # Beim Sitzungsaufbau lädt der Kern Modelle; ein erster Fehlschlag zählt noch nicht als "nicht erreichbar"
-        if not await attach_pc_tools(melde_fehler=False):
-            await asyncio.sleep(2)
-            await attach_pc_tools()
+        try:
+            # Beim Sitzungsaufbau lädt der Kern Modelle; ein erster Fehlschlag zählt noch nicht als "nicht erreichbar"
+            if not await attach_pc_tools(melde_fehler=False):
+                await asyncio.sleep(2)
+                await attach_pc_tools()
+        finally:
+            tools_bereit.set()
         if ist_tunnel(pc_client) and state["live"]:
             state["pc_waechter"] = _keep(asyncio.create_task(pc_client.ueberwache(pc_wechsel, set_sperre)))
+        if zugang is not None and state["live"]:
+            state["geraet_wache"] = _keep(asyncio.create_task(geraet_wache(zugang, geraet_entzogen)))
+
+    async def cache_vorwaermen() -> None:
+        """Prompt-Cache vorwärmen, während die Begrüßung läuft (cache_waerme.py). Die Werkzeuge gehören zum
+        Cache-Schlüssel, deshalb erst, wenn der PC-Host seine Werkzeuge geliefert hat (höchstens 6 s warten)."""
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(tools_bereit.wait(), 6)
+        if state["live"]:
+            await vorwaermen(llm, context.tools)
 
     if pc_client:
         _keep(asyncio.create_task(start_pc()))
@@ -682,7 +797,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         elif msg.type == "pc_steuerung":
             # Nur ein Admin mit eingerichtetem PC-Host darf einschalten; ausschalten geht immer.
             # Im Büro steuert höchstens eine Sitzung den PC (pc_host.pc_lease_nehmen); eine abgelöste nie wieder.
-            an = bool(data.get("an") is True and pc_enabled)
+            an = bool(data.get("an") is True and pc_enabled and state["geraet_ok"])
             state["pc_belegt"] = an and not sitzung.pc_lease_nehmen()
             if state["pc_belegt"] or not an:
                 an = False
@@ -696,6 +811,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 logger.warning("PC-Freigabe ohne PC-Werkzeuge in dieser Sitzung abgewiesen")
                 return
             await freigaben.entscheiden(data)
+        elif msg.type == "modellzugang":
+            # Eigener Claude-Schlüssel: hinterlegen, ersetzen, löschen, Stand (gilt ab der nächsten Sitzung).
+            # Der Inhalt dieser Nachricht wird nie geloggt und nie zurückgeschickt.
+            await modellzugang_nachricht(identity.user_id, data, send)
         elif dev:
             await dev.on_client_message(msg.type, data)
 
@@ -738,7 +857,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             learned_upto = end
             return
         chunk = transcript[start:end]
-        saved = await learn_from_session(memory, chunk, name=identity.name)  # Modell: llm_anbieter, Baustein lernen
+        saved = await learn_from_session(memory, chunk, name=identity.name, zugang=zugang)  # Zugang des Profils
         learned_upto = end
         if not (saved and live and state["live"]):
             return
@@ -758,6 +877,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         greeting = greeting_text(identity.name)
         if greeting:
             await task.queue_frames([TTSSpeakFrame(greeting)])
+        _keep(asyncio.create_task(cache_vorwaermen()))  # die erste Frage soll einen warmen Prompt-Cache finden
         # Sitzung erst nach der Begrüßung anlegen (der Insert kostete vor dem ersten Ton Zeit)
         await memory.start_session(channel=os.getenv("WAMO_CHANNEL") or "web")
         # Profil regelmäßig neu prüfen und Höchstdauer einhalten (M5)
@@ -804,7 +924,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         guard_task = state["guard"]
         if guard_task is not None and guard_task is not asyncio.current_task():
             guard_task.cancel()
-        for name in ("pc_waechter", "sperr_probe"):
+        for name in ("pc_waechter", "sperr_probe", "geraet_wache"):
             hintergrund = state[name]
             if hintergrund is not None and hintergrund is not asyncio.current_task():
                 hintergrund.cancel()
@@ -828,6 +948,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             logger.warning("Gedächtnis: Sitzungsende nicht rechtzeitig gespeichert")
         # Rest seit der letzten Auswertung im Hintergrund lernen; blockiert nichts.
         start_learning(live=False)
+        _keep(asyncio.create_task(_zugang_nach_lernen(learn_task, zugang)))
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):
@@ -896,7 +1017,11 @@ if __name__ == "__main__":
     if not os.getenv("PIPECAT_ALLOWED_ORIGINS", "").strip():
         os.environ["PIPECAT_ALLOWED_ORIGINS"] = DEFAULT_ALLOWED_ORIGINS
     # Und auch von dort nur angemeldete Profile mit zweitem Faktor (auth_gate.py).
-    install_access_gate(app)
+    gate = install_access_gate(app)
+    # Eigene Schnittstellen unter /wamo/api (Gerätebindung, Hinweise, geteilte Arbeit), hinter derselben Prüfung
+    import wamo_api
+
+    wamo_api.installieren(app, gate)
     # Log-Stufe nach dem Runner wiederherstellen (er setzt DEBUG) und auf Sokrates-2 nur über den
     # Unix-Socket WAMO_CORE_UDS lauschen (kern_dienst.py).
     runner_vorbereiten(pipecat_runner, _configure_logging)

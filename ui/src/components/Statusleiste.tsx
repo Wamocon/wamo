@@ -97,6 +97,7 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
   const online = useSelect(wamo, istOnline);
   const betrieb = useSelect(wamo, (s) => s.betrieb);
   const micOn = useSelect(wamo, (s) => s.micOn);
+  const mikrofon = useSelect(wamo, (s) => s.mikrofon);
   const gewaehlt = useBetriebsart();
   const dt = kompakt ? "sr-only" : undefined;
   // Verbunden: was der Kern meldet. Sonst: die gewählte Betriebsart für das nächste Gespräch.
@@ -191,7 +192,10 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
       )}
       <div data-feld="mikro">
         <dt className={dt}>Mikrofon</dt>
-        <dd>{!online ? "Mikro bereit" : micOn ? "Mikro an" : <strong>Mikro aus</strong>}</dd>
+        <dd title={online && mikrofon ? `Gerät: ${mikrofon}` : undefined}>
+          {!online ? "Mikro bereit" : micOn ? "Mikro an" : <strong>Mikro aus</strong>}
+          {!kompakt && online && mikrofon && <span className="status-label"> ({mikrofon})</span>}
+        </dd>
       </div>
     </dl>
   );

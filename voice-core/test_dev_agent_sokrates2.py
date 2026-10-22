@@ -80,6 +80,31 @@ class SwitchTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 dev_agent.validate_project(bad, "sokrates2")
 
+    def test_repo_pruefen_und_aus_auftrag(self):
+        for roh, repo in (("wamocon/rezepte-app", "wamocon/rezepte-app"), (" a/b ", "a/b"),
+                          ("https://github.com/a/b.git", "a/b"), ("github.com/a/b/", "a/b"), ("a/b.c_d-e", "a/b.c_d-e")):
+            with self.subTest(roh=roh):
+                self.assertEqual(dev_agent.repo_pruefen(roh), repo)
+        for schlecht in ("", "a", "a/b/c", "../x", "a/..", "a b/c", "a/b;id", "https://evil.example/a/b", None, 5):
+            with self.subTest(schlecht=schlecht), self.assertRaises(ValueError):
+                dev_agent.repo_pruefen(schlecht)
+        aus = dev_agent.repo_aus_auftrag
+        self.assertEqual(aus("Fix in github.com/wamocon/app, bitte."), "wamocon/app")
+        self.assertEqual(aus("https://github.com/a/b und https://github.com/A/B.git"), "a/b")  # dasselbe Repo
+        with self.assertRaises(ValueError) as ctx:  # mehrere Repos: nie stillschweigend die ganze Installation
+            aus("https://github.com/a/b und https://github.com/c/d")
+        self.assertIn("ausdrücklich", str(ctx.exception))
+        self.assertIsNone(aus("Lesen/Schreiben im Repo rezepte"))  # ohne GitHub-Adresse kein Raten
+        for eigen in ("wamocon/wamo", "Wamocon/WAMO", "https://github.com/wamocon/wamo.git"):  # Selbstschutz
+            with self.subTest(eigen=eigen), self.assertRaises(ValueError):
+                dev_agent.repo_pruefen(eigen)
+        with self.assertRaises(ValueError) as ctx:  # nie stillschweigend übergehen: sonst Token für die ganze Installation
+            aus("Siehe https://github.com/wamocon/wamo für den Hintergrund.")
+        self.assertIn("Feld repo", str(ctx.exception))
+        for gross in ("https://GitHub.com/a/b", "HTTP://GITHUB.COM/a/b/", "GitHub.com/a/b.git"):  # Groß-/Kleinschreibung
+            with self.subTest(gross=gross):
+                self.assertEqual(dev_agent.repo_pruefen(gross), "a/b")
+
     def test_rules_mention_sandbox_only_remote(self):
         self.assertIn("Sandbox", dev_agent.rules_for("Erika", "sokrates2"))
         self.assertIn("git clone", dev_agent.rules_for("Erika", "sokrates2"))
@@ -271,9 +296,10 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
     def remote(self, befehl):
         return [c[-1] for c in self.calls if c[-1].split(" ")[0] == befehl]
 
-    async def prepare_and_start(self, art="umsetzung"):
+    async def prepare_and_start(self, art="umsetzung", **extra):
         params = type("P", (), {})()
-        params.arguments = {"auftrag": "Baue eine Rezepte-App und pushe sie", "projekt": "rezepte-app", "art": art}
+        params.arguments = {"auftrag": "Baue eine Rezepte-App und pushe sie", "projekt": "rezepte-app", "art": art,
+                            **extra}
         result = {}
 
         async def cb(r):
@@ -299,6 +325,8 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kopf["auftrag"], "Baue eine Rezepte-App und pushe sie")
         self.assertIn("Sandbox", kopf["system"])
         self.assertIn("Werkzeugkarte für diesen Auftrag (Art: Umsetzung)", kopf["system"])
+        self.assertNotIn("modell", kopf)  # ohne WAMO_ENTWICKLUNG_MODELL wählt der Dispatcher das Modell der Art
+        self.assertNotIn("repo", kopf)  # kein Repo genannt: Token für die Installation mit den Rechten der Art
         self.assertTrue(proc.stdin_offen_beim_warten)  # Lebenslinie bleibt offen, bis der Lauf endet
         self.assertTrue(proc.stdin.closed)
         self.assertEqual(job.status, "fertig")
@@ -315,6 +343,85 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sokrates-2, Sandbox", canvas["item"]["text"])
         texte = self.task.llm_texts()
         self.assertNotIn("Push braucht", texte[-1])  # Ergebnistext nur auf dem Canvas
+
+    async def test_modell_override_goes_in_header(self):
+        proc = FakeProc(stream())
+        self.start_procs.append(proc)
+        with mock.patch.dict(os.environ, {"WAMO_ENTWICKLUNG_MODELL": "claude-opus-5-5"}):
+            await self.prepare_and_start()
+        kopf = json.loads(proc.stdin.data.decode("utf-8").splitlines()[0])
+        self.assertEqual(kopf["modell"], "claude-opus-5-5")
+
+    async def test_repo_goes_in_header_and_card(self):
+        proc = FakeProc(stream())
+        self.start_procs.append(proc)
+        job = await self.prepare_and_start(repo="https://github.com/wamocon/rezepte-app.git")
+        kopf = json.loads(proc.stdin.data.decode("utf-8").splitlines()[0])
+        self.assertEqual(kopf["repo"], "wamocon/rezepte-app")
+        self.assertEqual(job.repo, "wamocon/rezepte-app")
+        karte = next(m for m in self.task.messages() if m.get("type") == "auftrag")
+        self.assertEqual(karte["repo"], "wamocon/rezepte-app")
+        canvas = [m for m in self.task.messages() if m.get("type") == "canvas"][-1]
+        self.assertIn("wamocon/rezepte-app", canvas["item"]["text"])
+
+    async def test_repo_from_github_address_in_task(self):
+        proc = FakeProc(stream())
+        self.start_procs.append(proc)
+        await self.prepare_and_start(auftrag="Behebe den Fehler aus https://github.com/Wamocon/rezepte-app/issues/3.")
+        kopf = json.loads(proc.stdin.data.decode("utf-8").splitlines()[0])
+        self.assertEqual(kopf["repo"], "Wamocon/rezepte-app")
+
+    async def test_invalid_repo_is_rejected_before_card(self):
+        params = type("P", (), {})()
+        params.arguments = {"auftrag": "x", "projekt": "rezepte-app", "art": "umsetzung", "repo": "../etc/passwd"}
+        result = {}
+
+        async def cb(r):
+            result.update(r)
+        params.result_callback = cb
+        await self.agent._vorbereiten(params)
+        self.assertFalse(result["ok"])
+        self.assertIn("owner/name", result["fehler"])
+        self.assertEqual(self.agent._jobs, {})
+
+    async def test_multiple_repos_in_task_must_be_named_explicitly(self):
+        params = type("P", (), {})()
+        params.arguments = {"auftrag": "Vergleiche https://github.com/a/b mit https://github.com/c/d und ändere beides",
+                            "projekt": "rezepte-app", "art": "umsetzung"}
+        result = {}
+
+        async def cb(r):
+            result.update(r)
+        params.result_callback = cb
+        await self.agent._vorbereiten(params)
+        self.assertFalse(result["ok"])
+        self.assertIn("mehrere GitHub-Repos", result["fehler"])
+        self.assertEqual(self.agent._jobs, {})  # keine Karte, kein stilles Token für die ganze Installation
+        params.arguments["repo"] = "c/d"  # ausdrücklich genannt: ok
+        result.clear()
+        await self.agent._vorbereiten(params)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["repo"], "c/d")
+
+    async def test_revoke_failure_is_shown_on_canvas(self):
+        self.start_procs.append(FakeProc(stream() + [{"type": "wamo", "ereignis": "gh_widerruf_fehlgeschlagen"}]))
+        job = await self.prepare_and_start()
+        self.assertTrue(any("nicht widerrufen" in s for s in job.steps))
+
+    async def test_github_token_refused_is_clean_and_reported(self):
+        self.start_procs.append(FakeProc([{"type": "wamo", "ereignis": "selbsttest_ok"},
+                                          {"type": "wamo", "ereignis": "start_abgelehnt",
+                                           "grund": "GitHub-App: GitHub antwortet 401: JWT abgelehnt"}], returncode=8))
+        job = await self.prepare_and_start()
+        self.assertEqual(job.status, "nicht gestartet (GitHub-Token der App nicht erzeugt)")
+        self.assertTrue(any(s.startswith("Start abgelehnt: GitHub-App: GitHub antwortet 401") for s in job.steps))
+        self.assertEqual(self.remote("cancel"), [])  # Code 8: nichts lief, kein Abbruch nötig
+        self.assertNotIn("401", self.task.llm_texts()[-1])  # Grund nur auf dem Canvas
+        self.assertIn("GitHub", dev_agent.remote_status(8, {}))
+
+    async def test_invalid_modell_override_blocks_start(self):
+        with mock.patch.dict(os.environ, {"WAMO_ENTWICKLUNG_MODELL": "claude-irgendwas"}):
+            self.assertIn("WAMO_ENTWICKLUNG_MODELL", dev_agent.entwicklung_problem() or "")
 
     async def test_approval_goes_over_ssh_and_resumes(self):
         self.start_procs += [FakeProc(stream()), FakeProc(stream(tool=False))]

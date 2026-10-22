@@ -43,19 +43,32 @@ def laeufe_laden(ordner: Path) -> list[dict]:
     return laeufe
 
 
+def latenz_schwelle(anbieter: str) -> bool:
+    """Die Schwelle für das erste Token gilt nur für Hausmodelle; Claude ist Referenz und Rückfall (Vorgabe von
+    Niko). Bewusst hier und nicht in bewertung.py: dort hängt der Hash der Bewertung dran, alle Läufe blieben gültig."""
+    return anbieter != "claude"
+
+
+def lauf_gruende(k: dict, anbieter: str) -> list[str]:
+    """Gründe gegen die Freigabe eines Laufs; ohne Latenzgrund, wo die Schwelle nicht gilt."""
+    gruende = bw.lauf_freigabe(k)[1]
+    if latenz_schwelle(anbieter):
+        return gruende
+    return [g for g in gruende if not g.startswith("erstes Token p95")]
+
+
 def gruppen_freigabe(laeufe: list[dict]) -> tuple[str, list[str], list[dict]]:
     """(Status, Gründe, gewertete Läufe) für die gültigen Läufe eines Modells mit aktuellem Stand."""
     gewertet = [d for d in laeufe if gueltig(d)][-bw.FREIGABE_LAEUFE:]
     if len(gewertet) < bw.FREIGABE_LAEUFE:
         return f"offen ({len(gewertet)} von {bw.FREIGABE_LAEUFE} Läufen)", [], gewertet
+    anbieter = gewertet[-1].get("anbieter", "")
     gruende: list[str] = []
     for d in gewertet:
-        ok, g = bw.lauf_freigabe(d["kennzahlen"])
-        if not ok:
-            gruende += [f"{d['_datei'][:15]}: {x}" for x in g]
+        gruende += [f"{d['_datei'][:15]}: {x}" for x in lauf_gruende(d["kennzahlen"], anbieter)]
     ttft = [z["ttft_s"] if z.get("ttft_s") is not None else bw.ZUG_TIMEOUT_SECS for d in gewertet for z in d["zuege"]]
     p95 = bw.perzentil(ttft, 0.95)
-    if p95 is None or p95 > bw.FREIGABE_TTFT_P95:
+    if latenz_schwelle(anbieter) and (p95 is None or p95 > bw.FREIGABE_TTFT_P95):
         gruende.append(f"erstes Token p95 über {len(gewertet)} Läufe {_s(p95)} statt höchstens "
                        f"{_s(bw.FREIGABE_TTFT_P95)}")
     if gruende:
@@ -106,7 +119,8 @@ def bericht_schreiben(ordner: Path, jetzt: dict) -> Path:
         f"Erzeugt von `voice-core/eval/abnahme.py`. Testsatz `{jetzt['testsatz']}`, Prompt `{jetzt['prompt']}`, "
         f"Bewertung `{jetzt['bewertung']}`. Freigabe für das Gespräch nur bei mindestens "
         f"{_p(bw.FREIGABE_WERKZEUG)} richtigen Werkzeugaufrufen, mindestens {_p(bw.FREIGABE_MARKER)} korrekten "
-        f"Markern, erstem Token p95 höchstens {_s(bw.FREIGABE_TTFT_P95)}, allen Muss-Fällen und ohne "
+        f"Markern, erstem Token p95 höchstens {_s(bw.FREIGABE_TTFT_P95)} (nur Hausmodelle; Claude ist Referenz "
+        "und Rückfall, seine Zeiten stehen nur zum Vergleich da), allen Muss-Fällen und ohne "
         f"Infrastrukturfehler, und das in {bw.FREIGABE_LAEUFE} Läufen hintereinander (p95 über alle zusammen). "
         "Format und Inhalt sind Zusatzangaben ohne Schwelle. Gemessen wird vom Rechner, auf dem der Lauf startet "
         "(Feld stand.messort in der JSON-Datei); der Testsatz deckt nur die Konfiguration Admin, PC-Steuerung an, "
@@ -135,7 +149,7 @@ def bericht_schreiben(ordner: Path, jetzt: dict) -> Path:
             f"{_s(k.get('ttft_folge_p95_s'))} | {tps} | {_usd(k.get('kosten_kalt_usd'))} | {status} |"
         )
         details.append(f"- {anbieter} {modell}: {status}.")
-        details += [f"  - {g}" for g in (gruende or bw.lauf_freigabe(k)[1])]
+        details += [f"  - {g}" for g in (gruende or lauf_gruende(k, anbieter))]
         if flacker := flackernd(gewertet):
             details.append(f"  - Wechselnde Ergebnisse zwischen den Läufen: {', '.join(flacker)}")
     if not gruppen:

@@ -30,10 +30,14 @@ GRUPPE = "wamo-core"
 MAX_WERT = 4096
 MAX_ZEILEN = 200
 
-PFLICHT = ("SONIOX_API_KEY", "ANTHROPIC_API_KEY", "SUPABASE_PUBLISHABLE_KEY", "WAMO_DATABASE_URL")
+PFLICHT = ("SONIOX_API_KEY", "SUPABASE_PUBLISHABLE_KEY", "WAMO_DATABASE_URL")
 ERLAUBT = set(PFLICHT) | {
     # Geheimnisse (WAMO_PC_HOST_FREIGABE: zweites Geheimnis für Freigaben kritischer PC-Aktionen)
     "ANTHROPIC_WORKSPACE_ID", "WAMO_PC_HOST_TOKEN", "WAMO_PC_HOST_FREIGABE", "LITELLM_API_KEY",
+    # Modellzugang je Profil (voice-core/modellzugang.py): ANTHROPIC_API_KEY ist der Schlüssel einer Person und gilt
+    # nur für das Profil in WAMO_CLAUDE_SCHLUESSEL_PROFIL, sonst gar nicht; WAMO_SCHLUESSEL_KEK verschlüsselt die
+    # eigenen Schlüssel der Profile in der Datenbank. Ohne beide laufen alle Profile nur mit Hausmodellen.
+    "ANTHROPIC_API_KEY", "WAMO_CLAUDE_SCHLUESSEL_PROFIL", "WAMO_SCHLUESSEL_KEK", "WAMO_SCHLUESSEL_KEK_ALT",
     # Bindung des PCs am Tunnel (genau eine user_id)
     "WAMO_PC_HOST_PROFILE",
     # Einstellungen wie in der .env des PCs

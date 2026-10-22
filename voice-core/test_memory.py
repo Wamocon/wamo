@@ -225,6 +225,19 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await store.remember("Firmenwissen", "fact", bereich="gemeinsam", status="aktiv"))
         warn.assert_called_once()
 
+    async def test_schluessel_landen_nie_in_turns_actions_oder_gedaechtnis(self):
+        schluessel = "sk-ant-api03-GEHEIMgeheim-0123456789abcdefghij"
+        db = FakeDb()
+        db.session_gate.set()
+        store = m.MemoryStore(USER, db)
+        await store.start_session()
+        await store.log_turn("user", f"mein Schlüssel ist {schluessel}")
+        self.assertIsNone(await store.remember(f"Der Schlüssel lautet {schluessel}", "fact"))
+        await store.log_action("powershell", {"befehl": f"echo {schluessel}"}, f"Grund {schluessel}", "critical")
+        alle = repr(db.calls)
+        self.assertNotIn("GEHEIMgeheim", alle)
+        self.assertIn("sk-ant-…", alle)
+
     async def test_update_action_follows_state_machine(self):
         db = FakeDb()
         store = m.MemoryStore(USER, db)

@@ -19,9 +19,15 @@
 //   bekommt nur den Namen der Betriebsart; die Adressen stehen in ihrer Build-Konfiguration (und CSP). Der Kern im
 //   Büro läuft über HTTPS mit der WAMO-CA, der Chromium der App vertraut ihr über den Windows-Speicher.
 //
+// * Einrichtung des Laptops bei der Anmeldung (geraet.js, nur Büro): eigener Geräteschlüssel, Bindung an das Profil über
+//   den Kern, Tunnel zu Sokrates-2; ein Wächter stößt die Aufgabe "WAMO Tunnel" an, wenn ihr Überwacher schweigt.
+//
 // Umgebung: WAMO_UI_URL, WAMO_VOICE_CORE_URL (http oder https), WAMO_MANAGE_SERVICES, WAMO_UI_DEV,
 // WAMO_VEIL_CM, WAMO_LOG_LEVEL (an den Voice-Core; Standard INFO, nie DEBUG), WAMO_VOLLBILD_LOG=1 (Rohwerte des
-// Vollbild-Wächters in logs/vollbild.log).
+// Vollbild-Wächters in logs/vollbild.log), WAMO_BERECHTIGUNG_LOG=1 (jede Berechtigungsanfrage und -prüfung in
+// logs/berechtigungen.log; abgelehnte Mikrofon-Anfragen stehen immer dort). Mikrofon-Meldungen der Oberfläche
+// ("[WAMO] ...", z. B. "Mikrofon liefert Ton: Gerät, Spitze -52 dBFS" oder "liefert nur Stille") und der
+// Windows-Mikrofonzugriff beim Start landen in logs/oberflaeche.log.
 //
 // Sicherheit: contextIsolation + sandbox, keine nodeIntegration. Die Seite darf nur Pegel mit Zustand
 // und einmalig die Randfarben melden; beides wird hier gegen eine feste Liste geprüft. Navigation und
@@ -40,6 +46,7 @@ const {
   screen,
   session,
   shell,
+  systemPreferences,
 } = require("electron");
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -47,7 +54,16 @@ const http = require("node:http");
 const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
+const { GeraetFehler, erzeugeGeraet } = require("./geraet");
 const { powershellPfad, starteVollbildWaechter } = require("./vollbild");
+const {
+  installieren,
+  mikrofonStatusWert,
+  oberflaechenZeile,
+  protokollieren,
+  protokollZeile,
+  ratenGrenze,
+} = require("./berechtigungen");
 
 // Zweite Instanz: sofort zurückkehren, bevor irgendetwas registriert oder gestartet wird. Sonst würde
 // sie beim Beenden die Dienste der ersten Instanz stoppen (killStale, stopServices). Die erste Instanz
@@ -61,6 +77,13 @@ const UI_URL = process.env.WAMO_UI_URL || "http://localhost:3000";
 const VOICE_CORE_URL = process.env.WAMO_VOICE_CORE_URL || "http://localhost:7860";
 const REPO = path.resolve(__dirname, "..");
 const UI_DIR = path.join(REPO, "ui");
+// Nur http(s): bei file:, data: o. ä. wäre der Origin "null", und sameOrigin() ließe jeden solchen Origin zu
+if (!/^https?:$/.test(new URL(UI_URL).protocol)) {
+  console.error("WAMO_UI_URL muss eine http- oder https-Adresse sein.");
+  app.exit(1);
+  return;
+}
+const geraet = erzeugeGeraet({ repo: REPO, log: (text) => console.log(`[Gerät] ${text}`) }); // geraet.js
 const UI_ORIGIN = new URL(UI_URL).origin;
 const LOG_DIR = path.join(__dirname, "logs");
 const LOG_MAX_BYTES = 5 * 1024 * 1024; // je Logdatei höchstens 5 MB
@@ -484,6 +507,13 @@ function createMainWindow() {
     if (!isMainFrame || code === -3 || !sameOrigin(url)) return; // -3 = abgebrochen
     zeigeStart("fehler", beschreibung);
   });
+  // Mikrofon-Meldungen der eigenen Oberfläche ("[WAMO] ...") mitschreiben: Gerät, Stille, Fehler beim Öffnen
+  const logRate = ratenGrenze(30, 10_000); // höchstens 30 Zeilen je 10 s aus der Oberfläche
+  wc.on("console-message", (event) => {
+    if (!sameOrigin(event?.frame?.url ?? wc.getURL())) return;
+    const zeile = oberflaechenZeile(event?.level, event?.message);
+    if (zeile && logRate()) schreibeLog("oberflaeche", zeile);
+  });
 
   mainWin.on("close", (event) => {
     if (!quitting) {
@@ -675,6 +705,44 @@ ipcMain.handle("betriebsart:setzen", async (event, art) => {
 // Rechnername dieses PCs: die Oberfläche schaltet die PC-Steuerung im Büro nur automatisch ein, wenn der Kern
 // genau diesen PC steuert
 ipcMain.handle("rechnername", (event) => (fromMainUi(event) ? os.hostname() : null));
+// Windows-Datenschutz für das Mikrofon: nur einer von fünf festen Werten, nur für das Hauptfenster (berechtigungen.js)
+function mikrofonStatus() {
+  try {
+    return mikrofonStatusWert(systemPreferences.getMediaAccessStatus("microphone"));
+  } catch {
+    return "unknown";
+  }
+}
+ipcMain.handle("mikrofon:status", (event) => (fromMainUi(event) ? mikrofonStatus() : null));
+
+// Einrichtung des Laptops (geraet.js): nur das Hauptfenster mit der eigenen Oberfläche und nur in der Betriebsart Büro.
+// Der private Geräteschlüssel bleibt in diesem Prozess; signiert wird nur die feste Bindungsnachricht. Fehler kommen als
+// { ok: false, text } mit einem Text, den die Oberfläche anzeigen darf.
+function geraetHandler(arbeit, nurBuero = true) {
+  return async (event, ...args) => {
+    if (!fromMainUi(event)) return { ok: false, text: "Nicht erlaubt." };
+    if (nurBuero && betriebsart !== "buero") {
+      return { ok: false, text: "Die Einrichtung des Laptops läuft nur in der Betriebsart Büro." };
+    }
+    try {
+      return await arbeit(...args);
+    } catch (err) {
+      if (err instanceof GeraetFehler) return { ok: false, text: err.text };
+      console.error(`Gerät: ${err.message}`);
+      return { ok: false, text: "Die Einrichtung des Laptops ist fehlgeschlagen." };
+    }
+  };
+}
+ipcMain.handle("geraet:vorbereiten", geraetHandler(async () => ({ ok: true, ...(await geraet.vorbereiten()) })));
+ipcMain.handle(
+  "geraet:signieren",
+  geraetHandler(async (anfrage) => ({
+    ok: true,
+    signatur: await geraet.signiere({ nonce: anfrage?.nonce, userId: anfrage?.userId }),
+  })),
+);
+ipcMain.handle("geraet:aktivieren", geraetHandler((antwort) => geraet.aktivieren(antwort)));
+ipcMain.handle("geraet:status", geraetHandler(async () => ({ ok: true, ...geraet.status() }), false));
 
 // Zustände, die der Rand kennt (alles andere wird "idle")
 const ZUSTAENDE = new Set(["offline", "idle", "listening", "thinking", "speaking", "acting", "approval"]);
@@ -744,23 +812,32 @@ function istEigeneUi(wc, url) {
   return Boolean(wc) && Boolean(mainWin) && wc === mainWin.webContents && sameOrigin(url ?? "");
 }
 
+// Diagnose der Berechtigungen (logs/berechtigungen.log, siehe berechtigungen.js) und der Mikrofon-Meldungen der
+// Oberfläche (logs/oberflaeche.log); die Logdateien entstehen erst beim ersten Eintrag
+const BERECHTIGUNG_LOG = process.env.WAMO_BERECHTIGUNG_LOG === "1";
+const logs = {};
+function schreibeLog(name, zeile) {
+  try {
+    logs[name] ??= new Logdatei(name);
+    logs[name].schreiben(`${zeile}\n`);
+  } catch {
+    // Diagnose darf Start und Berechtigungen nie stören (schreibgeschützter Ordner o. ä.)
+  }
+}
+function entscheide(art, permission, details, eigene, erlaubt) {
+  if (protokollieren(art, permission, erlaubt, BERECHTIGUNG_LOG)) {
+    schreibeLog("berechtigungen", protokollZeile(art, permission, details, eigene, erlaubt));
+  }
+  return erlaubt;
+}
+
 app.whenReady().then(async () => {
+  // Mikrofon (nur Audio, nie Kamera) und Zwischenablage nur für die eigene Oberfläche, sonst nichts: als Erstes,
+  // für die Standard-Session und jede weitere (Partitionen), die später entsteht
+  installieren(session.defaultSession, istEigeneUi, entscheide);
+  app.on("session-created", (ses) => installieren(ses, istEigeneUi, entscheide));
   ladeEinstellungen(); // Betriebsart vor dem Start der Dienste (Büro: kein lokaler Kern)
-  const ses = session.defaultSession;
-  // Mikrofon (nur Audio, nie Kamera) und Zwischenablage nur für die eigene Oberfläche, sonst nichts
-  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
-    if (!istEigeneUi(wc, details.requestingUrl)) return callback(false);
-    if (permission === "media") {
-      const typen = details.mediaTypes ?? [];
-      return callback(typen.length > 0 && typen.every((t) => t === "audio"));
-    }
-    callback(permission === "clipboard-sanitized-write");
-  });
-  ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
-    if (!istEigeneUi(wc, requestingOrigin)) return false;
-    if (permission === "media") return details?.mediaType === "audio";
-    return permission === "clipboard-sanitized-write";
-  });
+  schreibeLog("oberflaeche", `${new Date().toISOString()} info [WAMO-Desktop] Windows-Mikrofonzugriff: ${mikrofonStatus()}`);
   // Audio bekommt Vorrang, wenn Chrome & Co. beim Öffnen kurz die CPU belegen (Aussetzer)
   setInterval(raisePriority, 5000);
   createTray();
@@ -784,10 +861,12 @@ app.whenReady().then(async () => {
   screen.on("display-added", overlaysSpaeter);
   screen.on("display-removed", overlaysSpaeter);
   screen.on("display-metrics-changed", overlaysSpaeter);
+  if (process.platform === "win32") geraet.starteWaechter(); // Tunnel-Aufgabe anstoßen, wenn der Überwacher schweigt
 });
 
 app.on("before-quit", () => {
   quitting = true;
+  geraet.stoppe();
   vollbildWaechter?.stop();
   vollbildWaechter = null;
   energieschutz(false);

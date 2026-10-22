@@ -29,6 +29,37 @@ class ModellAnzeigeTests(unittest.TestCase):
         self.assertTrue(bot.betrieb_message("aus")["modelle"]["llm"].startswith("Claude"))
 
 
+class ZugangNachLernenTests(unittest.IsolatedAsyncioTestCase):
+    async def test_client_schliesst_erst_nach_der_letzten_auswertung(self):
+        import asyncio
+
+        reihenfolge: list[str] = []
+
+        async def lernen():
+            await asyncio.sleep(0.05)
+            reihenfolge.append("gelernt")
+
+        class Zugang:
+            async def schliessen(self):
+                reihenfolge.append("geschlossen")
+
+        await bot._zugang_nach_lernen(asyncio.create_task(lernen()), Zugang())
+        self.assertEqual(reihenfolge, ["gelernt", "geschlossen"])
+
+    async def test_fehler_beim_lernen_oder_schliessen_stoert_nicht(self):
+        import asyncio
+
+        async def kaputt():
+            raise RuntimeError("Lernen fehlgeschlagen")
+
+        class Zugang:
+            async def schliessen(self):
+                raise RuntimeError("Schließen fehlgeschlagen")
+
+        await bot._zugang_nach_lernen(asyncio.create_task(kaputt()), Zugang())
+        await bot._zugang_nach_lernen(None, Zugang())
+
+
 class OhneGespraechsmodellTests(unittest.IsolatedAsyncioTestCase):
     async def test_sitzung_endet_sauber(self):
         class Conn:

@@ -1,0 +1,79 @@
+# WAMO-Gerätedienst auf Sokrates-2: Bürogeräte (Server, Drucker, Scanner, Router, NAS, Fernseher, Lautsprecher,
+# Steckdosen) für den Kern. Installiert durch infra/sokrates2/wamo-geraete-einrichten.sh. Rückweg: wamo-geraete-rueckweg.sh
+#
+# Lauscht nur auf /run/wamo-geraete/geraete.sock (2750 wamo-geraete:wamo-core, Socket 0660, SO_PEERCRED = wamo-core).
+# Ausgang zweifach begrenzt: IPAddressDeny=any plus IPAddressAllow aus geraete.toml (Drop-in ausgang.conf, erzeugt) und
+# die nft-Tabelle inet wamo_geraete_egress (wamo-geraete-egress.service). Der Dienst prüft das beim Start selbst.
+# Zugangsdaten liest der Dienst selbst aus /etc/wamo-geraete/geraete.env (nicht als Umgebung, Kindprozesse erben sie nicht).
+[Unit]
+Description=WAMO-Gerätedienst (Bürogeräte für den Kern)
+After=network-online.target wamo-geraete-egress.service
+Wants=network-online.target
+Requires=wamo-geraete-egress.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=wamo-geraete
+Group=wamo-geraete
+WorkingDirectory=/opt/wamo-geraete/app
+Environment=WAMO_GERAETE_KONFIG=/etc/wamo-geraete/geraete.toml
+Environment=WAMO_GERAETE_ENV=/etc/wamo-geraete/geraete.env
+Environment=WAMO_GERAETE_SOCKET=/run/wamo-geraete/geraete.sock
+Environment=WAMO_GERAETE_ZUSTAND=/var/lib/wamo-geraete
+Environment=WAMO_GERAETE_SSH_ORDNER=/var/lib/wamo-geraete/ssh
+Environment=WAMO_GERAETE_KOPPLUNG=/var/lib/wamo-geraete/kopplung
+Environment=WAMO_GERAETE_SCHRIFTEN=/opt/wamo-geraete/schriften
+Environment=HOME=/var/lib/wamo-geraete
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+ExecStartPre=+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/wamo-geraete.conf
+# kein -I: das Paket liegt im Arbeitsordner (root-eigen, für den Dienst nur lesbar)
+ExecStart=/opt/wamo-geraete/venv/bin/python -s -m wamo_geraete
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+StateDirectory=wamo-geraete
+StateDirectoryMode=0700
+ReadWritePaths=/run/wamo-geraete
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# GPU-Status von Sokrates-2 (nvidia-smi) braucht die NVIDIA-Geräte, sonst keine
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia0 rw
+DeviceAllow=/dev/nvidia-uvm rw
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+MemoryMax=1G
+TasksMax=128
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

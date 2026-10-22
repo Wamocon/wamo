@@ -6,7 +6,7 @@ gemeinsamem Gedächtnis.
 
 | Ordner | Was | Läuft auf |
 | --- | --- | --- |
-| `ui/` | Next.js 16: Präsenzkern, Live-Untertitel, Stimmlinie, Werkzeug-Zeitleiste, Canvas, Freigabe-Karten, Anmeldung mit zweitem Faktor | PC (Desktop-App oder Browser) |
+| `ui/` | Next.js 16: Präsenzkern, Live-Untertitel, Stimmlinie, Werkzeug-Zeitleiste, Canvas, Freigabe-Karten, Anmeldung mit zweitem Faktor | PC (Desktop-App oder Browser) oder als Container `wamo-ui` auf Sokrates-2 (Browser jedes Büro-Geräts) |
 | `voice-core/` | Pipecat 1.12: Soniox STT, Claude Haiku 5.5, Soniox TTS; Mehrprofil-Anmeldung, Gedächtnis, Werkzeugkarte für ECC und REA | PC (Unterwegs) oder Sokrates-2 als Dienst `wamo-core` (Büro) |
 | `host/` | MCP-Werkzeugserver für Windows mit Risikoklassen und Audit-Log; lokal über stdio, im Büro über den SSH-Rücktunnel mit Bearer-Token | PC (angemeldete Sitzung) |
 | `desktop/` | Electron 44: App-Fenster, roter Stimmen-Rand je Monitor, Tray, Autostart, Betriebsart Büro/Unterwegs | PC |
@@ -51,7 +51,23 @@ gemeinsamem Gedächtnis.
   und klar gemeldet, eine Sitzung je Profil, Stimmen-Rand blendet sich bei Vollbild aus, Freigabeweg für kritische
   PC-Aktionen per Karte in der Oberfläche, Höchstalter der Anmeldung und „Angemeldet bleiben“.
 
+- Modellzugang je Profil (21.10.2026, Abschnitt „Modellzugang je Profil“): eigener Claude-Schlüssel (verschlüsselt in
+  der Datenbank, Standard Haiku) oder nur Hausmodelle über LiteLLM und SearXNG ohne Rückfall auf Claude; Migration 0010
+  in `wamo_dev` und `wamo_test` angewendet.
+
+- Browser-Betrieb (21.10.2026, Variante A): Die Oberfläche läuft als Container `wamo-ui` auf Sokrates-2 hinter
+  `wamo-caddy` unter `https://192.168.178.136:55445` (Zertifikat der WAMO-CA, nur Büro-LAN und Loopback). Jedes
+  Gerät im Büro öffnet WAMO im Browser, nach dem einmaligen Import der WAMO-CA; der Browser dort kennt nur die
+  Betriebsart Büro, PC-Steuerung gibt es nur in der Desktop-App. Test mit Chromium: Seite in 0,23 s geladen, Anmeldung mit
+  zweitem Faktor, Verbindung nach 0,9 s, Begrüßung nach 4,0 s, Frage erkannt und beantwortet, keine CSP-Verstöße.
+  Einzelheiten und die Umstellung auf Variante B (eigene Domain, öffentliches Zertifikat):
+  `infra/sokrates2/README.md`, Abschnitt 12.
+
 ### Offen
+
+- Modellzugang ausrollen: `WAMO_SCHLUESSEL_KEK` erzeugen und in `core.env` setzen, Schlüssel der Person zuordnen
+  oder hinterlegen, Migration 0010 in `wamo_prod`, Hausmodelle (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`) im Kern
+  eintragen. Solange der Kern auf Sokrates-2 den alten Stand hat, nutzt jedes Profil dort noch den Schlüssel des Kerns.
 
 - Ausrollen der Übernahmen und Freigaben im Büro (Kern, PC-Tunnel, GoTrue-Sitzungsgrenzen): Die Skripte sind
   vorbereitet, aber noch nicht angewendet. Bis dahin gibt es im Büro keinen Freigabeweg (fehlender Freigabe-Schlüssel:
@@ -60,7 +76,7 @@ gemeinsamem Gedächtnis.
 - Soniox: Der Schlüssel gehört zu einem US-Projekt, die Spracherkennung läuft deshalb vorerst über den US-Endpunkt.
   Für EU-Datenhaltung EU-Schlüssel anlegen und `SONIOX_STT_URL` und `SONIOX_TTS_URL` auf `*.eu.soniox.com` stellen.
 - Weitere PCs: `infra/sokrates2/wamo-ca.crt` importieren (ein `certutil`-Befehl, siehe `infra/sokrates2/README.md`,
-  Abschnitt 5.2). Seit 19.10.2026 gilt Stufe 2: HTTP 55321 ist im LAN geschlossen, nur noch HTTPS 55443.
+  Abschnitt 5.2 und die Anleitung für den Browser in Abschnitt 12.3). Seit 19.10.2026 gilt Stufe 2: HTTP 55321 ist im LAN geschlossen, nur noch HTTPS 55443.
 - Zugangsschlüssel auf Sokrates-2 enger fassen (Repo-gebundene GitHub-Token, Lese-Token, Jira-Konto nur lesend),
   bevor Entwicklungsaufträge eingeschaltet werden.
 - P3: Den PC an das eigene Admin-Profil binden, sobald das Konto angelegt ist
@@ -108,6 +124,22 @@ python scripts\wamo_kern_sokrates2.py alles --email vorname.nachname@wamocon.com
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wamo-tunnel-einrichten.ps1 -Starten
 ```
 
+#### Browser auf Sokrates-2
+
+Die Oberfläche gibt es zusätzlich als Dienst auf Sokrates-2 (`https://192.168.178.136:55445`). Gebaut wird sie mit
+`NEXT_PUBLIC_WAMO_NUR_BUERO=ja` (Build-Argument, `infra/sokrates2/wamo-ui/Dockerfile`); ein solcher Build kennt keinen
+lokalen Kern, nennt ihn auch nicht in der CSP und bietet im Browser nur die Betriebsart Büro an. Die Umschaltung
+Büro/Unterwegs entfällt dort, bei der PC-Steuerung steht „nur in der Desktop-App verfügbar“. Erkannt wird die Desktop-App an
+`window.wamoDesktop` (`ui/src/lib/geraet.ts`), nie an der Adresse. Die Anmeldung gilt im Browser 24 Stunden
+(`NEXT_PUBLIC_WAMO_ANMELDUNG_MAX_STUNDEN_BROWSER`). Adresse und Zertifikat stehen nur in `/home/wamocon/wamo-ui/wamo-ui.conf`
+auf dem Server, nicht im Code.
+
+```powershell
+python scripts\wamo_ui_sokrates2.py verteilen        # Quellen der Oberfläche und Skripte nach ~/wamo-infra (ohne .env, node_modules, .next)
+python scripts\wamo_ui_sokrates2.py einrichten       # Firewall, Caddy, Image bauen, Container, erlaubte Herkunft des Kerns, Prüfung
+python scripts\wamo_ui_sokrates2.py status           # Zustand; bauen = nur Image und Container, pruefen = Header, TLS, Härtung
+```
+
 Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo-tunnel.ps1`: Host und Tunnel laufen damit
 unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
 sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
@@ -153,6 +185,27 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   und 11 auch im Fenster laufen. Der Wächter endet mit der App und startet nach einem Absturz nach 5 s neu.
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
   spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel).
+- **Mikrofon-Wächter** (`ui/src/lib/mikrofon.ts`, `voice-core/audio_monitor.py`): Die Oberfläche misst die eigene Spur und
+  warnt nach 3 s digitaler Stille, bei einer beendeten Spur ohne Ersatz, ohne Spur 5 s nach „Bot bereit“ und bei
+  Mikrofonsperre durch Windows (Datenschutz für Desktop-Apps, `systemPreferences.getMediaAccessStatus`), jeweils mit
+  Gerätename, Abhilfe und Gerätewahl. Der Kern meldet per Servernachricht `mikrofon`: `still` nach 10 s nur digitaler
+  Stille, `fehlt` nach 5 s ganz ohne Audiopakete (die Sendespur ist abgerissen), `ok` bei Rückkehr. Wechselt das
+  Standardgerät (Dock, Headset), legt die Oberfläche die neue Spur auf die Verbindung (`sendeSpurErsetzen`); der
+  SmallWebRTC-Transport tut das mit dem WavMediaManager nicht, die alte, beendete Spur blieb am Sender und es kam
+  gar nichts mehr an. Protokoll der Desktop-App: `desktop/logs/oberflaeche.log` (Zeilen `[WAMO] Mikrofon …`, beim
+  Start der Windows-Mikrofonzugriff), `desktop/logs/berechtigungen.log` (abgelehnte Mikrofon-Anfragen; mit
+  `WAMO_BERECHTIGUNG_LOG=1` alle). Berechtigungen: `desktop/berechtigungen.js`, geprüft gegen ein echtes Electron
+  (`desktop/berechtigungen.electron.test.js`).
+- **Prüfung in 30 Sekunden**: App starten, „Gespräch starten“, einen Satz sagen. Dann zeigt
+  `desktop\logs\oberflaeche.log` zuletzt `[WAMO] Mikrofon liefert Ton: <Gerät>, Spitze -xx dBFS` (über -100), die
+  Stimmlinie bewegt sich, und im Kern steht `Mikrofon: Pegel Median … dBFS` deutlich über -100. Die Windows-Liste
+  der letzten Mikrofonnutzer (`HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged`)
+  ist nur ein Zusatz: In Testläufen aus der Entwicklungsumgebung trugen sich selbst Chrome, ffmpeg und Electron bei
+  echter Aufnahme nicht ein, ein fehlender Eintrag beweist also nicht, dass das Mikrofon nie geöffnet wurde.
+- **Keine doppelten Antworten** (`voice-core/turn_wache.py`): Pipecats Assistent-Aggregator merkt sich ein
+  Werkzeugergebnis, das während WAMOs Sprechen eintrifft, und schiebt den Verlauf beim nächsten „Bot stopped speaking“
+  noch einmal an, auch wenn der neue Zug der Person schon beantwortet wird. Die Turn-Wache vor und hinter dem Modell
+  verwirft solche Anfragen (gleicher Verlauf wie zuletzt, oder der Verlauf endet mit WAMOs Antwort).
 
 ## Nutzer und Gedächtnis
 
@@ -193,7 +246,7 @@ schreibt eine Warnung ins Log.
 | `infra/sokrates2/wamo-job.sh` | bubblewrap-Sandbox als `wamo`: nur der Projektordner `/srv/wamo/projekte/<projekt>` ist dauerhaft beschreibbar, `/etc` nur aus einer Allowlist, eigener PID-Namensraum, keine Geräte, Zeit- und Ressourcengrenzen über `systemd-run --user` |
 | `infra/sokrates2/abschottung.py` | Landlock (keine TCP-Verbindungen zu Diensten des Hosts, keine abstrakten Unix-Sockets außerhalb) und seccomp (u. a. MPTCP, SCTP, io_uring, TCP Fast Open) |
 | `infra/sokrates2/wamo-egress.nft` | Ausgangsfilter für uid `wamo`: nur Internet über TCP 80 und 443, Loopback nur 20000 bis 20999, kein IPv6, kein LAN |
-| `infra/sokrates2/claude-code/managed-settings.json` | Wächter-Hooks (vorher und nachher), nur verwaltete Hooks (ECC als verwaltetes Plugin), Sperrliste |
+| `infra/sokrates2/claude-code/managed-settings.json` | Wächter-Hooks (vorher und nachher), nur verwaltete Hooks (allein der Wächter; ECC ohne Hooks als lokale Kopie, `infra/sokrates2/wamo-job-ecc.py`), Sperrliste |
 | `infra/sokrates2/wamo-job-einrichten.sh` | Installation nach `/opt/wamo` (root-eigen), AppArmor-Profil nur für eine bwrap-Kopie, sshd-Drop-in, Schlüssel mit `from=` |
 | `infra/sokrates2/wamo_job_rauchtest.py` | Rauchtest: `sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp --attrappe` |
 
@@ -203,14 +256,47 @@ stream-json-Ausgabe wie lokal. stdin bleibt offen: Auflegen beendet ssh und dami
 gelangen nur die Token der Auftragsart aus `/etc/wamo/geheim.env` (`ZUGANG_VARIABLEN` in `voice-core/werkzeugkarte.py`;
 lesende Arten nur `GH_TOKEN_LESEN`), als Umgebungsvariablen, nie über die Befehlszeile. Bekäme ein Lauf mehr Token als
 frühere Läufe im selben Projekt, braucht er eine Freigabe. Grenze: Die Token der Auftragsart sind in der Sandbox lesbar
-und über HTTPS nutzbar. Token deshalb eng zuschneiden (Repos, Rechte, Ablaufdatum). Einzelheiten:
-`infra/sokrates2/README.md`, Abschnitt 9.
+und über HTTPS nutzbar. Token deshalb eng zuschneiden (Repos, Rechte, Ablaufdatum). Für GitHub gibt es dazu den
+App-Modus (`WAMO_GH_APP_ID`, `WAMO_GH_APP_INSTALLATION_ID`, `WAMO_GH_APP_SCHLUESSEL` in `/etc/wamo/geheim.env`): Der
+Dispatcher erzeugt je Lauf außerhalb der Sandbox ein kurzlebiges Installations-Token nur mit den Rechten der Auftragsart
+(und, wenn der Auftrag ein Repo nennt, nur für dieses) und widerruft es am Laufende; ohne diese Variablen gelten
+`GH_TOKEN` und `GH_TOKEN_LESEN` wie bisher. Einzelheiten und Anleitung: `infra/sokrates2/README.md`, Abschnitte 2 und 9.
+
+## Modellzugang je Profil
+
+Jedes Profil hat genau eine von zwei Arten (`voice-core/modellzugang.py`, Tabelle `model_access`, Migration 0010):
+
+| Art | Wann | Gespräch, Lernen, Zusammenfassung, Bildschirm | Websuche |
+| --- | --- | --- | --- |
+| Eigener Claude-Schlüssel | Die Person hat ihren Schlüssel hinterlegt (oder ist das Profil in `WAMO_CLAUDE_SCHLUESSEL_PROFIL`) | Claude mit dem Schlüssel dieses Profils, Standardmodell Haiku (ein Admin kann ein anderes festlegen); fällt Claude aus, übernehmen die Hausmodelle mit Hinweis | Anthropic-Websuche |
+| Nur Hausmodelle | Kein eigener Schlüssel, Fehler beim Laden des Zugangs oder vom Admin festgelegt | LiteLLM (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`), nie Anthropic, auch nicht als Rückfall | SearXNG |
+
+- **Hinterlegen** in der Oberfläche (Bereich „Modellzugang“, maskiertes Feld): Der Kern prüft den Schlüssel mit einer
+  kleinen Testanfrage (höchstens 5 Versuche je 10 Minuten), verschlüsselt ihn mit AES-256-GCM (Profil-ID als
+  zusätzliche Daten, Hauptschlüssel `WAMO_SCHLUESSEL_KEK` nur in `core.env` bzw. `.env` des Kerns) und speichert nur das
+  Chiffrat. Zurück zur Oberfläche gehen nur „hinterlegt“ und die letzten vier Zeichen. Ersetzen und Löschen gehen
+  ebenso. Eine Änderung gilt ab der nächsten Sitzung. Schlüssel stehen nie in Logs (ein Filter schwärzt `sk-ant-…`),
+  `actions` oder `turns`.
+- **Admin:** `uv run python wamo_admin.py modellzugang` zeigt die Zugänge, `modellzugang-setzen --user-id <uuid>
+  --nur-haus an` legt ein Profil auf Hausmodelle fest (der Trigger löscht dabei den Schlüssel; die Verwaltung kann
+  nie einen setzen oder lesen).
+- **Der Schlüssel in `ANTHROPIC_API_KEY`** gehört einer Person und gilt nur für das Profil in
+  `WAMO_CLAUDE_SCHLUESSEL_PROFIL`, nie für andere. Besser ist, ihn mit `uv run python modellzugang.py hinterlegen
+  --user-id <uuid>` zu hinterlegen und die Variable zu entfernen.
+- **Je Sitzung ein eigener Client:** Es gibt keinen Anthropic-Client und keinen Schlüssel, der Profile teilt. Der
+  Verbrauch steht als Tokenzahlen je Profil im Log (`Verbrauch profil=… anbieter=… modell=… ein=… aus=…`), ohne Inhalt.
+- **Stimme:** Jedes Profil trägt `stt` und `tts` (`soniox` oder `haus`) als Schnittstelle für Phase P5; ein Admin setzt
+  sie mit `modellzugang-setzen --stt haus --tts haus`.
+- **Entwicklungsaufträge** laufen vorerst nur mit dem Claude-Zugang der Sandbox (`/etc/wamo/geheim.env`), nicht mit
+  dem Zugang des Profils.
 
 ## Modelle (Ausbaustufe P4)
 
 Jeder Baustein lässt sich zwischen Claude und den eigenen Modellen auf den Sparks umschalten
 (`voice-core/llm_anbieter.py`). Eigene Modelle laufen nur über das LiteLLM-Gateway (`LITELLM_BASE_URL`,
-`LITELLM_API_KEY`), nie direkt über die Adressen der Knoten. Standard ist überall Claude.
+`LITELLM_API_KEY`), nie direkt über die Adressen der Knoten. Standard ist für Profile mit eigenem Claude-Schlüssel
+Claude (Haiku); Profile ohne Schlüssel nutzen immer die Hausmodelle, von den folgenden Einstellungen gelten für sie
+nur die Modellnamen.
 
 | Baustein | Anbieter | Modell | Standard |
 | --- | --- | --- | --- |

@@ -1,0 +1,26 @@
+# WAMO-Gerätedienst: nft-Tabelle inet wamo_geraete_egress (Ausgang des Benutzers wamo-geraete nur zu den Geräten aus
+# geraete.toml). Installiert durch wamo-geraete-einrichten.sh; die Regeldatei /etc/wamo/geraete-egress.nft erzeugt das
+# Skript aus der Konfiguration. Eigene Tabelle: ufw, Docker und iptables fassen sie nicht an.
+# Rückweg: wamo-geraete-rueckweg.sh
+[Unit]
+Description=WAMO-Ausgangsfilter für den Gerätedienst (nft inet wamo_geraete_egress)
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target
+Wants=network-pre.target
+Conflicts=nftables.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/sbin/nft -c -f /etc/wamo/geraete-egress.nft
+ExecStart=/usr/sbin/nft -f /etc/wamo/geraete-egress.nft
+ExecReload=/usr/sbin/nft -f /etc/wamo/geraete-egress.nft
+ExecStop=/usr/sbin/nft delete table inet wamo_geraete_egress
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

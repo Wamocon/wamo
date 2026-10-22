@@ -2,7 +2,8 @@
 REA-Werkzeuge Claude Code für welche Auftragsart zuerst nutzen soll.
 
 Claude-Code-Läufe aus dev_agent.py erben die Installation auf Benutzerebene: das Plugin ecc@ecc
-(Skills, Befehle, Agenten, Hooks) und den MCP-Server rea (Werkzeuge mcp__rea__*). Die Namen hier
+(Skills, Befehle, Agenten; auf Sokrates-2 als Kopie ohne Hooks) und den MCP-Server rea (Werkzeuge mcp__rea__*).
+Je Art legt die Karte auch das Modell fest (modell, Standard MODELL_STANDARD). Die Namen hier
 sind gegen ECC 2.2.3 geprüft (test_werkzeugkarte.py vergleicht sie mit dem Plugin-Ordner) und gegen
 die REA-Liste in dev_guard.py. REA-Werkzeuge stehen hier nur, wenn sie lesend arbeiten; was Geräte,
 Prozesse oder Dateien verändert, gibt der Wächter erst nach Freigabe frei.
@@ -17,6 +18,13 @@ from dataclasses import dataclass
 
 ECC_PREFIX = "ecc:"
 
+# Modell je Auftrag (Kosten): Standard ist Haiku für alle Arten (Sonnet kostet etwa das Dreifache). Sonnet und Opus
+# nur, wenn WAMO_ENTWICKLUNG_MODELL sie ausdrücklich setzt (dev_agent.py), und nur mit einem Namen aus MODELLE_ERLAUBT.
+MODELL_STANDARD = "claude-haiku-5-5"
+MODELL_SONNET = "claude-sonnet-5-5"
+MODELL_OPUS = "claude-opus-5-5"
+MODELLE_ERLAUBT: tuple[str, ...] = (MODELL_STANDARD, MODELL_SONNET, MODELL_OPUS)
+
 
 @dataclass(frozen=True)
 class Karte:
@@ -28,6 +36,7 @@ class Karte:
     rea: tuple[str, ...] = ()  # nur lesende REA-Werkzeuge (ohne Präfix mcp__rea__)
     hinweis: str = ""
     zugaenge: tuple[str, ...] = ()  # Dienste, deren Token der Auftrag auf Sokrates-2 bekommt (ZUGANG_VARIABLEN)
+    modell: str = MODELL_STANDARD  # Claude-Modell für diese Art (MODELLE_ERLAUBT); derzeit überall Haiku
 
 
 # Token-Allowlist für Aufträge auf Sokrates-2 (infra/sokrates2/wamo_job_dispatch.py liest /etc/wamo/geheim.env
@@ -46,6 +55,40 @@ ZUGANG_VARIABLEN: dict[str, tuple[str, ...]] = {
 
 # Name in geheim.env: Name in der Sandbox (wo sie sich unterscheiden)
 SANDBOX_NAMEN: dict[str, str] = {"GH_TOKEN_LESEN": "GH_TOKEN"}
+
+# GitHub-Zugriff je Auftragsart. Im App-Modus (WAMO_GH_APP_* in geheim.env) erzeugt der Dispatcher je Lauf ein
+# kurzlebiges Installations-Token mit genau den Rechten dieser Stufe; ohne App-Modus gilt weiter GH_TOKEN bzw.
+# GH_TOKEN_LESEN aus ZUGANG_VARIABLEN. Die Tabelle muss zu den zugaenge der Karten passen (github = schreiben,
+# github_lesen = lesen, keins = None); github_app_rechte() prüft das bei jedem Aufruf, die Tests ebenso.
+GITHUB_ZUGRIFF: dict[str, str | None] = {
+    "planung": "lesen",
+    "umsetzung": "schreiben",
+    "fehlerbehebung": "schreiben",
+    "review": "lesen",
+    "test": "schreiben",
+    "sicherheit": "lesen",
+    "refactoring": "schreiben",
+    "dokumentation": "lesen",
+    "datenbank": "schreiben",
+    "frontend": "schreiben",
+    "deployment": "schreiben",
+    "analyse": "lesen",
+    "reverse_engineering": "lesen",
+    "recherche": None,
+}
+# Rechte des Installations-Tokens je Stufe (Feld permissions der GitHub-API). Nie mehr als diese drei Bereiche.
+GITHUB_APP_RECHTE: dict[str, dict[str, str]] = {
+    "lesen": {"contents": "read", "metadata": "read", "pull_requests": "read"},
+    "schreiben": {"contents": "write", "pull_requests": "write", "metadata": "read"},
+}
+# Obergrenze der Tabelle: schreibend darf höchstens Inhalt und Pull Requests sein; die Stufe "lesen" nie schreibend
+GITHUB_APP_RECHTE_HOECHSTENS: dict[str, str] = {"contents": "write", "pull_requests": "write", "metadata": "read"}
+# Bereiche, die ein Auftrags-Token nie bekommt, auch nicht durch einen Fehler in der Tabelle oben
+GITHUB_APP_RECHTE_VERBOTEN: frozenset[str] = frozenset({
+    "administration", "workflows", "secrets", "actions", "members", "organization_administration",
+    "organization_secrets", "environments", "deployments", "repository_hooks", "organization_hooks",
+    "security_events", "secret_scanning_alerts", "dependabot_secrets", "codespaces_secrets", "email_addresses",
+})
 
 ABSCHLUSS_SKILLS = ("verification-loop",)
 ABSCHLUSS_BEFEHLE = ("quality-gate",)
@@ -237,9 +280,46 @@ def zugangs_variablen(art: str) -> tuple[str, ...]:
     return tuple(name for dienst in KARTEN[art].zugaenge for name in ZUGANG_VARIABLEN[dienst])
 
 
+def modell_fuer(art: str, wunsch: str | None = None) -> str:
+    """Modell für einen Auftrag: der Wunsch (WAMO_ENTWICKLUNG_MODELL), wenn erlaubt, sonst das der Art.
+    ValueError bei einem Wunsch außerhalb der Allowlist (kein stilles Ausweichen auf ein teures Modell)."""
+    if wunsch:
+        if wunsch not in MODELLE_ERLAUBT:
+            raise ValueError(f"Modell {wunsch!r} ist nicht erlaubt (erlaubt: {', '.join(MODELLE_ERLAUBT)})")
+        return wunsch
+    return KARTEN[art].modell
+
+
 def sandbox_name(name: str) -> str:
     """Name einer Variablen in der Sandbox (GH_TOKEN_LESEN kommt als GH_TOKEN an)."""
     return SANDBOX_NAMEN.get(name, name)
+
+
+def github_stufe(art: str) -> str | None:
+    """GitHub-Stufe der Art ("lesen", "schreiben" oder None). KeyError bei unbekannter Art. ValueError, wenn die
+    Tabelle GITHUB_ZUGRIFF nicht zu den zugaenge der Karte passt (fail-closed, kein Token aus einer Tabelle,
+    die gegen die Karte verstößt)."""
+    zugaenge = KARTEN[art].zugaenge
+    erwartet = "schreiben" if "github" in zugaenge else "lesen" if "github_lesen" in zugaenge else None
+    stufe = GITHUB_ZUGRIFF[art]
+    if stufe != erwartet:
+        raise ValueError(f"GITHUB_ZUGRIFF[{art!r}] passt nicht zu den Zugängen der Karte")
+    return stufe
+
+
+def github_app_rechte(art: str) -> dict[str, str] | None:
+    """Rechte (permissions) für das Installations-Token eines Laufs dieser Art, oder None ohne GitHub-Zugang.
+    ValueError, wenn die Tabelle einen verbotenen oder unbekannten Bereich enthielte."""
+    stufe = github_stufe(art)
+    if stufe is None:
+        return None
+    rechte = dict(GITHUB_APP_RECHTE[stufe])
+    if set(rechte) & GITHUB_APP_RECHTE_VERBOTEN or not set(rechte) <= {"contents", "metadata", "pull_requests"} \
+            or rechte.get("metadata") != "read" or any(v not in ("read", "write") for v in rechte.values()) \
+            or any(v == "write" and GITHUB_APP_RECHTE_HOECHSTENS.get(b) != "write" for b, v in rechte.items()) \
+            or (stufe == "lesen" and any(v != "read" for v in rechte.values())):
+        raise ValueError(f"GITHUB_APP_RECHTE[{stufe!r}] enthält unzulässige Rechte")
+    return rechte
 
 
 def referenzierte_namen() -> dict[str, set[str]]:

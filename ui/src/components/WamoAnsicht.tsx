@@ -1,16 +1,23 @@
 "use client";
 
-import { memo, useCallback, useState } from "react";
-import { ActivityTimeline, LABEL } from "@/components/ActivityFeed";
+import { memo, useCallback, useEffect, useState } from "react";
+import { ActivityTimeline } from "@/components/ActivityFeed";
+import { ModellZugang } from "@/components/ModellZugang";
 import { CanvasBereich } from "@/components/Canvas";
 import { Auftraege, Freigaben } from "@/components/Freigaben";
 import { GemerktHinweis } from "@/components/GemerktHinweis";
+import { Bedienung, type TextSenden } from "@/components/kommando/Bedienung";
+import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
+import { Kernbereich } from "@/components/kommando/Kernbereich";
+import { KommandoRahmen } from "@/components/kommando/Rahmen";
+import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
+import { GeraetEinrichtung } from "@/components/GeraetEinrichtung";
+import { GeteiltBereich } from "@/components/Geteilt";
+import { Hinweise as AdminHinweise } from "@/components/Hinweise";
 import { Kopfzeile } from "@/components/Kopfzeile";
-import { LiveCaption } from "@/components/LiveCaption";
 import type { Sitzung } from "@/components/LoginGate";
-import { Orb } from "@/components/Orb";
+import { StatusDetails } from "@/components/Statusleiste";
 import { Verlauf } from "@/components/Verlauf";
-import { VoiceLine } from "@/components/VoiceLine";
 import {
   BETRIEBSARTEN,
   BUERO_VERFUEGBAR,
@@ -20,62 +27,56 @@ import {
   type Betriebsart,
 } from "@/lib/betriebsart";
 import { pcAutoSetzen, usePcAuto } from "@/lib/einstellungen";
+import { useServerBrowser } from "@/lib/geraet";
+import type { Mikrofon } from "@/lib/mikrofon";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
-import {
-  historyRef,
-  istOnline,
-  laufendesWerkzeug,
-  levelsRef,
-  wamo,
-  wartetAufEntscheidung,
-  zeigeToast,
-  type Presence,
-} from "@/lib/wamo";
+import { istOnline, wamo, zeigeToast, type Memo } from "@/lib/wamo";
 
-const PRESENCE_TEXT: Record<Presence, string> = {
-  offline: "schläft",
-  connecting: "wacht auf",
-  idle: "ist da",
-  listening: "hört zu",
-  thinking: "denkt nach",
-  speaking: "spricht",
-};
-
-/** Kern, Zustandswort und Untertitel: die Präsenz. Unter 1024 px als schmale, klebende Leiste. */
-const Praesenz = memo(function Praesenz() {
-  const presence = useSelect(wamo, (s) => s.presence);
-  const werkzeug = useSelect(wamo, (s) => (istOnline(s) ? laufendesWerkzeug(s) : null));
-  const freigabe = useSelect(wamo, wartetAufEntscheidung);
-  const zustand = freigabe
-    ? "wartet auf deine Entscheidung"
-    : werkzeug
-      ? `handelt: ${LABEL[werkzeug] ?? werkzeug}`
-      : PRESENCE_TEXT[presence];
+/** Gerätewahl in der Mikrofon-Warnung: Liste beim Erscheinen laden, Wechsel gilt sofort und auf diesem Gerät. */
+function MikrofonWahl({ laden, waehlen }: { laden: () => Promise<Mikrofon[]>; waehlen: (id: string) => boolean }) {
+  const [liste, setListe] = useState<Mikrofon[] | null>(null);
+  const aktuell = useSelect(wamo, (s) => s.mikrofon);
+  useEffect(() => {
+    let weg = false;
+    void laden().then((l) => {
+      if (!weg) setListe(l);
+    });
+    return () => {
+      weg = true;
+    };
+  }, [laden]);
+  if (!liste || liste.length === 0) return null;
   return (
-    <section className="presence-core" data-presence={presence} aria-label="Gesprächszustand">
-      <div className="kern-wrap">
-        <Orb levels={levelsRef} />
-      </div>
-      <div className="presence-text">
-        <p className="state" data-presence={presence} data-zustand={freigabe ? "freigabe" : werkzeug ? "handelt" : presence}>
-          WAMO {zustand}
-        </p>
-        <LiveCaption />
-      </div>
-    </section>
+    <label className="mic-wahl">
+      <span>Anderes Mikrofon:</span>
+      <select defaultValue="" onChange={(e) => e.target.value && waehlen(e.target.value)}>
+        <option value="" disabled>
+          {aktuell ? `jetzt: ${aktuell}` : "wählen …"}
+        </option>
+        {liste.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
-});
+}
 
 /** Fehler in Tinte mit rotem Symbol und sicherer nächster Aktion. */
 const FehlerAnzeige = memo(function FehlerAnzeige({
   onRetry,
   onAbmelden,
   onSchliessen,
+  onMikrofone,
+  onMikrofonWaehlen,
 }: {
   onRetry: () => void;
   onAbmelden: () => void;
   onSchliessen: () => void;
+  onMikrofone: () => Promise<Mikrofon[]>;
+  onMikrofonWaehlen: (id: string) => boolean;
 }) {
   const error = useSelect(wamo, (s) => s.error);
   const offline = useSelect(wamo, (s) => s.presence === "offline");
@@ -101,6 +102,7 @@ const FehlerAnzeige = memo(function FehlerAnzeige({
               Abmelden
             </button>
           )}
+          {error.art === "mikrofon" && <MikrofonWahl laden={onMikrofone} waehlen={onMikrofonWaehlen} />}
           <button type="button" className="error-close" onClick={onSchliessen}>
             Schließen
           </button>
@@ -110,11 +112,10 @@ const FehlerAnzeige = memo(function FehlerAnzeige({
   );
 });
 
-/** Hauptschaltfläche und Mikrofon (unter 1024 px unten fixiert). */
+/** Hauptschaltfläche (unter 1100 px unten fixiert). Das Mikrofon sitzt in der Eingabepille (kommando/Bedienung.tsx). */
 const Aktionen = memo(function Aktionen({ aktionen }: { aktionen: WamoAktionen }) {
   const presence = useSelect(wamo, (s) => s.presence);
   const online = useSelect(wamo, istOnline);
-  const micOn = useSelect(wamo, (s) => s.micOn);
   return (
     <div className="actions">
       {presence === "connecting" ? (
@@ -137,22 +138,6 @@ const Aktionen = memo(function Aktionen({ aktionen }: { aktionen: WamoAktionen }
               Gespräch starten
             </button>
           )}
-          <button
-            type="button"
-            className="btn-mic"
-            aria-pressed={!micOn}
-            aria-keyshortcuts="Control+M"
-            disabled={!online}
-            title="Mikrofon stumm schalten (Strg+M)"
-            onClick={aktionen.toggleMic}
-          >
-            <svg viewBox="0 0 20 20" aria-hidden="true">
-              <rect x="7" y="2.5" width="6" height="10" rx="3" />
-              <path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5" />
-              {!micOn && <path className="mic-off" d="M3 3l14 14" />}
-            </svg>
-            Stumm
-          </button>
         </>
       )}
     </div>
@@ -175,8 +160,17 @@ const PcSteuerungSchalter = memo(function PcSteuerungSchalter({
   const pcName = useSelect(wamo, (s) => s.betrieb?.pcName ?? null);
   const [ziel, setZiel] = useState<boolean | null>(null);
   const auto = usePcAuto();
+  const serverBrowser = useServerBrowser();
   const ausstehend = ziel !== null && ziel !== an && !belegt;
   if (!admin) return null;
+  if (serverBrowser) {
+    // Browser auf dem Server: die PC-Werkzeuge gehören zur Desktop-App (lib/geraet.ts)
+    return (
+      <div className="pc-steuerung">
+        <p className="pc-switch-hint">PC-Steuerung: nur in der Desktop-App verfügbar</p>
+      </div>
+    );
+  }
   const hinweis = ausstehend
     ? "wird geschaltet …"
     : belegt
@@ -241,7 +235,8 @@ const BetriebsartWahl = memo(function BetriebsartWahl() {
   const art = useBetriebsart();
   const offline = useSelect(wamo, (s) => s.presence === "offline");
   const [laeuft, setLaeuft] = useState(false);
-  if (!BUERO_VERFUEGBAR) return null;
+  const serverBrowser = useServerBrowser();
+  if (!BUERO_VERFUEGBAR || serverBrowser) return null; // Browser auf dem Server: nur Büro, nichts zu wählen
   const waehle = (neu: Betriebsart) => {
     if (neu === art || !offline || laeuft) return;
     setLaeuft(true);
@@ -298,17 +293,31 @@ const Ansage = memo(function Ansage() {
 });
 
 /**
- * Hauptansicht. Abschnitte abonnieren eigene Store-Ausschnitte, deshalb rendert hier nichts
- * im Worttakt neu. Aufbau ab 1280 px: Kopfzeile, links die Präsenzspalte (Freigaben, Fehler,
- * Kern, Untertitel, Stimmlinie, Gemerkt, Werkzeuge, Schaltflächen), rechts das Canvas;
- * ab 1600 px dritte Spalte Verlauf, darunter als Schublade. Unter 1024 px eine Spalte mit
- * klebender Präsenzleiste und unten fixierten Schaltflächen.
+ * Optionale Erweiterung von WamoAktionen: Text an WAMO senden (Texteingabe der Eingabepille).
+ * Bietet useWamo die Aktion an, wird die Eingabepille ohne weitere Änderung aktiv.
+ */
+type MitText = WamoAktionen & { textSenden?: TextSenden };
+
+/**
+ * Hauptansicht "Kommandozentrale" (kommando/Rahmen.tsx). Abschnitte abonnieren eigene Store-Ausschnitte,
+ * deshalb rendert hier nichts im Worttakt neu. Ab 1100 px drei Spalten: links Hinweise (Gedächtnis, geteilte
+ * Arbeit, Geräte), in der Mitte der Kern mit Untertiteln, Eingabepille und Canvas, rechts Reiter für Freigaben
+ * und Aufträge, Vorgänge (Zeitleiste der Werkzeuge) und Erledigtes. Darunter eine Spalte mit Reiterleiste.
+ * Der Verlauf bleibt eine Schublade.
  */
 export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sitzung: Sitzung }) {
   const [verlaufOffen, setVerlaufOffen] = useState(false);
   const toggleVerlauf = useCallback(() => setVerlaufOffen((o) => !o), []);
   const schliesseVerlauf = useCallback(() => setVerlaufOffen(false), []);
-  const { disconnect, connect } = aktionen;
+  const { disconnect, connect, vergessen } = aktionen;
+  // "Rückgängig" nimmt den Eintrag auch aus der Gedächtnis-Karte, sobald er aus dem Store verschwunden ist
+  const vergesseEintrag = useCallback(
+    (m: Memo) => {
+      vergessen(m);
+      gemerktZurueckgenommen(m);
+    },
+    [vergessen],
+  );
   const { signOut } = sitzung;
   const abmelden = useCallback(() => {
     void disconnect();
@@ -317,34 +326,67 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
   const retry = useCallback(() => void connect(), [connect]);
 
   return (
-    <div className="shell">
-      <Kopfzeile email={sitzung.email} onAbmelden={abmelden} verlaufOffen={verlaufOffen} onVerlauf={toggleVerlauf} />
-      <main className="workspace">
-        <div className="col-main">
+    <KommandoRahmen
+      kopf={<Kopfzeile email={sitzung.email} onAbmelden={abmelden} verlaufOffen={verlaufOffen} onVerlauf={toggleVerlauf} />}
+      meldungen={
+        <>
+          <FehlerAnzeige
+            onRetry={retry}
+            onAbmelden={abmelden}
+            onSchliessen={aktionen.schliesseFehler}
+            onMikrofone={aktionen.mikrofone}
+            onMikrofonWaehlen={aktionen.mikrofonWaehlen}
+          />
+          <HinweisToast />
+          <GemerktHinweis onVergessen={vergesseEintrag} />
+          <AdminHinweise />
+          <GeraetEinrichtung />
+        </>
+      }
+      kernbereich={<Kernbereich />}
+      aktionen={<Aktionen aktionen={aktionen} />}
+      bedienung={
+        <Bedienung
+          onMikro={aktionen.toggleMic}
+          senden={(aktionen as MitText).textSenden}
+          verlaufOffen={verlaufOffen}
+          onVerlauf={toggleVerlauf}
+        />
+      }
+      canvas={<CanvasBereich />}
+      hinweise={
+        <Hinweise
+          geraete={
+            <>
+              <StatusDetails kompakt={false} />
+              <PcSteuerungSchalter onSchalten={aktionen.pcSteuerung} />
+              <BetriebsartWahl />
+              <ModellZugang onAnfrage={aktionen.modellzugang} />
+              <GeteiltBereich />
+            </>
+          }
+        />
+      }
+      auftraege={
+        <>
           <Freigaben onDecide={aktionen.decide} />
           <Auftraege onDecide={aktionen.entscheideAuftrag} />
-          <FehlerAnzeige onRetry={retry} onAbmelden={abmelden} onSchliessen={aktionen.schliesseFehler} />
-          <Praesenz />
-          <div className="voice">
-            <VoiceLine history={historyRef} />
-            <p className="legend" aria-hidden="true">
-              <span className="legend-user">Du</span>
-              <span className="legend-bot">WAMO</span>
-            </p>
-          </div>
-          <HinweisToast />
-          <GemerktHinweis onVergessen={aktionen.vergessen} />
+          <AuftraegeLeer />
+        </>
+      }
+      vorgaenge={
+        <>
           <ActivityTimeline />
-          <PcSteuerungSchalter onSchalten={aktionen.pcSteuerung} />
-          <BetriebsartWahl />
-          <Aktionen aktionen={aktionen} />
-        </div>
-        <section className="canvas" aria-label="Canvas">
-          <CanvasBereich />
-        </section>
-        <Verlauf offen={verlaufOffen} onSchliessen={schliesseVerlauf} />
-      </main>
-      <Ansage />
-    </div>
+          <VorgaengeLeer />
+        </>
+      }
+      erledigt={<ErledigtListe />}
+      anhang={
+        <>
+          <Verlauf offen={verlaufOffen} onSchliessen={schliesseVerlauf} />
+          <Ansage />
+        </>
+      }
+    />
   );
 }

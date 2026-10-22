@@ -11,6 +11,12 @@ Beispiele (im Ordner voice-core/):
   uv run python wamo_admin.py vorschlaege
   uv run python wamo_admin.py freigeben <memory-id> --admin <uuid>
   uv run python wamo_admin.py ablehnen <memory-id> --admin <uuid>
+  uv run python wamo_admin.py modellzugang
+  uv run python wamo_admin.py modellzugang-setzen --user-id <uuid> --nur-haus an [--stt haus --tts haus]
+  uv run python wamo_admin.py modellzugang-setzen --user-id <uuid> --modell claude-haiku-5-5
+
+Modellzugang: Den eigenen Claude-Schlüssel hinterlegt die Person selbst (Oberfläche) oder der Betrieb mit
+voice-core/modellzugang.py; die Verwaltung sieht nur die letzten vier Zeichen und kann den Schlüssel nie lesen.
 """
 
 from __future__ import annotations
@@ -51,12 +57,55 @@ def _parser() -> argparse.ArgumentParser:
         r = sub.add_parser(name, help=hilfe)
         r.add_argument("memory_id", help="id des Gedächtniseintrags")
         r.add_argument("--admin", required=True, help="user_id des entscheidenden Admins")
+    sub.add_parser("modellzugang", help="Modellzugang aller Profile (eigener Claude-Schlüssel oder Hausmodelle)")
+    m = sub.add_parser("modellzugang-setzen", help="nur Hausmodelle, Claude-Modell oder Stimme eines Profils festlegen")
+    m.add_argument("--user-id", required=True)
+    m.add_argument("--nur-haus", choices=("an", "aus"),
+                   help="an: nur Hausmodelle, ein hinterlegter Schlüssel wird gelöscht")
+    m.add_argument("--modell", help="Claude-Modell für dieses Profil, z. B. claude-haiku-5-5 (Standard: Haiku)")
+    m.add_argument("--stt", choices=("soniox", "haus"))
+    m.add_argument("--tts", choices=("soniox", "haus"))
     return p
+
+
+async def _modellzugang(args: argparse.Namespace) -> int:
+    # Spät importiert: zieht die Anbieter-Fabrik (Pipecat) nur für diese Befehle nach
+    from modellzugang import ZugangFehler, admin_festlegen, admin_liste, kern_zuordnung
+
+    if args.befehl == "modellzugang":
+        zeilen = await admin_liste(admin_database())
+        if not zeilen:
+            print("Keine Profile vorhanden.")
+        for z in zeilen:
+            if z["nur_haus"]:
+                art = "nur Hausmodelle (festgelegt)"
+            elif z["claude_schluessel_ende"]:
+                art = f"eigener Claude-Schlüssel, endet auf …{z['claude_schluessel_ende']}"
+            elif kern_zuordnung(z["user_id"]):
+                art = "Claude-Schlüssel des Kerns (Zuordnung WAMO_CLAUDE_SCHLUESSEL_PROFIL)"
+            else:
+                art = "nur Hausmodelle (kein eigener Schlüssel)"
+            modell = f", Modell {z['claude_modell']}" if z["claude_modell"] else ""
+            print(f"{z['user_id']}  {clean_inline(z['display_name'], 60)}  {art}{modell}  "
+                  f"Stimme: stt {z['stt']}, tts {z['tts']}")
+        return 0
+    nur_haus = None if args.nur_haus is None else args.nur_haus == "an"
+    try:
+        await admin_festlegen(args.user_id, nur_haus=nur_haus, modell=args.modell, stt=args.stt, tts=args.tts,
+                              db=admin_database())
+    except ZugangFehler as e:
+        print(f"Fehler: {e}", file=sys.stderr)
+        return 1
+    print("Modellzugang gespeichert; er gilt ab der nächsten Sitzung des Profils."
+          + (" Ein hinterlegter Claude-Schlüssel wurde gelöscht." if nur_haus else ""))
+    return 0
 
 
 async def _run(args: argparse.Namespace) -> int:
     directory = AdminDirectory(admin_database())
     print(f"Schema: {directory.schema}")
+    if args.befehl.startswith("modellzugang"):
+        return await _modellzugang(args)
     if args.befehl == "profile":
         profile = await directory.list_profiles()
         if not profile:

@@ -10,8 +10,14 @@ Zwei Wege, gewählt über die Umgebung:
     (user_id der Person, der der PC gehört), und steuern darf immer nur eine Sitzung (pc_lease_nehmen). Fehlt
     die Bindung oder das Token, gibt es keine PC-Werkzeuge (fail closed).
 
-Risikoklassen und Freigaben prüft der Host selbst. Nur Profile mit der Rolle admin bekommen die PC-Werkzeuge.
-WAMO_PC_HOST=off schaltet sie ganz ab.
+Tunnel je Gerät (WAMO_PC_REGISTER=an, nur Büro, pc_geraet.py): Jeder Laptop hat einen eigenen Benutzer und Socket auf
+Sokrates-2. Der Kern ordnet die Sitzung IHREM Laptop zu, nur über das Profil und das Geräteregister (pc_zugang): kein
+Werkzeugparameter, keine Liste, keine Bindung in der Umgebung, kein Ausweichen auf den alten Tunnel oder stdio. Die
+Sperre gilt dann je Gerät. Ohne den Schalter (Standard) bleibt der alte Weg unverändert.
+
+Risikoklassen und Freigaben prüft der Host selbst. Im alten Weg bekommen nur Profile mit der Rolle admin die
+PC-Werkzeuge, im Tunnel je Gerät auch Mitglieder, sobald WAMO_PC_MITGLIEDER=an gesetzt ist. WAMO_PC_HOST=off schaltet
+sie ganz ab.
 
 Freigaben kritischer PC-Aktionen (Host: status=needs_approval): Nur pc_freigabe_entscheiden ruft nach einem Klick in
 der Oberfläche das Host-Werkzeug freigabe_entscheiden auf. Es steht nicht in LLM_TOOLS (das Sprachmodell sieht es
@@ -40,7 +46,14 @@ from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.services.mcp_service import MCPClient
 
 from memory import normalize_uuid
-from pc_tunnel import PC_NICHT_ERREICHBAR, PcNichtErreichbar, TunnelHost
+from pc_geraet import PcZugang, pc_zugang_fuer, register_modus
+from pc_tunnel import (
+    AUFRUFE_JE_MINUTE_GERAET,
+    MAX_ANTWORT_BYTES_GERAET,
+    PC_NICHT_ERREICHBAR,
+    PcNichtErreichbar,
+    TunnelHost,
+)
 
 HOST_DIR = Path(__file__).resolve().parent.parent / "host"
 HOST_SCRIPT = HOST_DIR / "wamo_host.py"
@@ -58,11 +71,13 @@ _FREIGABE_SCHLUESSEL: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def freigabe_schluessel(client: object) -> str | None:
-    """Zweites Geheimnis für die Freigaben dieses Hosts oder None (dann gibt es keinen Freigabeweg)."""
+    """Zweites Geheimnis für die Freigaben dieses Hosts oder None (dann gibt es keinen Freigabeweg). Im Tunnel je Gerät
+    steht ein Geheimnisse-Objekt, das nach einem Host-Neustart neu gelesen wird."""
     try:
-        return _FREIGABE_SCHLUESSEL.get(client)
+        wert = _FREIGABE_SCHLUESSEL.get(client)
     except TypeError:
         return None
+    return getattr(wert, "freigabe", wert)
 
 
 def _buero_freigabe_schluessel() -> str | None:
@@ -102,8 +117,18 @@ def buero() -> bool:
     return (os.getenv("WAMO_BETRIEB") or "").strip().lower() == "buero"
 
 
+async def pc_zugang(identity) -> PcZugang | None:
+    """Tunnel je Gerät: der Zugang dieser Sitzung zu IHREM Laptop oder None (keine PC-Werkzeuge). Wirft nie."""
+    if not pc_host_enabled():
+        return None
+    return await pc_zugang_fuer(identity)
+
+
 def pc_host_fuer(identity) -> bool:
-    """Bekommt diese Sitzung PC-Werkzeuge? Nur admin, Host an; im Büro zusätzlich Token und Profilbindung."""
+    """Bekommt diese Sitzung PC-Werkzeuge (alter Weg)? Nur admin, Host an; im Büro zusätzlich Token und Profilbindung.
+    Im Tunnel je Gerät gilt stattdessen pc_zugang; dieser Weg liefert dort nie True."""
+    if register_modus():
+        return False
     if not (identity.is_admin and pc_host_enabled()):
         return False
     if tunnel_socket() is None:
@@ -121,31 +146,48 @@ def pc_host_fuer(identity) -> bool:
 
 
 # Höchstens eine Sitzung steuert den PC über den Tunnel (zweites Gerät, zweiter Tab). Lokal hat jeder PC seinen
-# eigenen Kern, dort gilt die Sperre nicht.
+# eigenen Kern, dort gilt die Sperre nicht. Im alten Tunnel gibt es eine Sperre für den einen PC, im Tunnel je Gerät
+# eine je Gerät (Schlüssel = device_id): zwei Profile mit zwei Laptops steuern gleichzeitig, nie zwei Sitzungen
+# denselben Laptop.
 _lease: object | None = None
+_lease_je_geraet: dict[str, object] = {}
 
 
-def pc_lease_nehmen(sitzung: object) -> bool:
+def tunnel_modus() -> bool:
+    return tunnel_socket() is not None or register_modus()
+
+
+def pc_lease_nehmen(sitzung: object, geraet_id: str | None = None) -> bool:
     """True, wenn diese Sitzung den PC steuern darf (frei oder schon ihre)."""
     global _lease
-    if tunnel_socket() is None:
+    if not tunnel_modus():
         return True
+    if geraet_id is not None:
+        if _lease_je_geraet.get(geraet_id) in (None, sitzung):
+            _lease_je_geraet[geraet_id] = sitzung
+            return True
+        return False
     if _lease is None or _lease is sitzung:
         _lease = sitzung
         return True
     return False
 
 
-def pc_lease_haelt(sitzung: object) -> bool:
+def pc_lease_haelt(sitzung: object, geraet_id: str | None = None) -> bool:
     """Hält diese Sitzung die Sperre? Lokal immer (jede Sitzung hat ihren eigenen Host über stdio)."""
-    if tunnel_socket() is None:
+    if not tunnel_modus():
         return True
+    if geraet_id is not None:
+        return _lease_je_geraet.get(geraet_id) is sitzung
     return _lease is sitzung
 
 
-def pc_lease_freigeben(sitzung: object) -> None:
+def pc_lease_freigeben(sitzung: object, geraet_id: str | None = None) -> None:
     global _lease
-    if _lease is sitzung:
+    if geraet_id is not None:
+        if _lease_je_geraet.get(geraet_id) is sitzung:
+            del _lease_je_geraet[geraet_id]
+    elif _lease is sitzung:
         _lease = None
 
 
@@ -159,9 +201,19 @@ def _venv_python() -> Path:
     return HOST_DIR / ".venv" / "bin" / "python"
 
 
-def host_client() -> MCPClient | TunnelHost | None:
+def host_client(zugang: PcZugang | None = None) -> MCPClient | TunnelHost | None:
     if not pc_host_enabled():
         return None
+    if zugang is not None:
+        # Tunnel je Gerät: nur der Socket dieses Geräts, Gegenstelle per SO_PEERCRED geprüft, Kennung und Profil in jeder
+        # Anfrage, Token wird nach einem 401 neu gelesen. bildschirmfoto, maus_klicken usw. ruft nur der Kern auf.
+        tunnel = TunnelHost(zugang.socket, zugang.geheimnisse.token, tools_filter=LLM_TOOLS, erwartete_uid=zugang.uid,
+                            geraet=zugang.geraet.kennung, profil=zugang.user_id, nachladen=zugang.nachladen,
+                            max_antwort_bytes=MAX_ANTWORT_BYTES_GERAET, aufrufe_je_minute=AUFRUFE_JE_MINUTE_GERAET)
+        _FREIGABE_SCHLUESSEL[tunnel] = zugang.geheimnisse
+        return tunnel
+    if register_modus():
+        return None  # Büro mit Register: ohne Zugang kein PC, nie zurück auf den alten Weg
     socket_path = tunnel_socket()
     if socket_path is not None:
         token = (os.getenv("WAMO_PC_HOST_TOKEN") or "").strip()

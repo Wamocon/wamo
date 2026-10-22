@@ -1,7 +1,7 @@
 import type { BotOutputData } from "@pipecat-ai/client-js";
 import type { CanvasItem } from "@/components/Canvas";
 import type { Betriebsart } from "@/lib/betriebsart";
-import type { Activity, Auftrag, Betrieb, Gemerkt, Profil, ServerMessage } from "@/lib/nachrichten";
+import type { Activity, Auftrag, Betrieb, Gemerkt, Modellzugang, Profil, ServerMessage } from "@/lib/nachrichten";
 import { createStore } from "@/lib/store";
 
 /**
@@ -92,8 +92,12 @@ export type WamoState = {
   /** Kern der laufenden oder letzten Verbindung (Betriebsart beim Verbinden, lib/betriebsart.ts) */
   kern: Betriebsart | null;
   profil: Profil | null;
+  /** Modellzugang des Profils (eigener Claude-Schlüssel oder Hausmodelle), null bis der Kern ihn meldet */
+  modellzugang: Modellzugang | null;
   memos: Memo[];
   micOn: boolean;
+  /** Name des Mikrofons der laufenden Verbindung (aus der Spur), null ohne Verbindung */
+  mikrofon: string | null;
   /** Text für role="status": nur bedeutsame Wechsel (verbunden, getrennt, Mikro, PC) */
   ansage: string;
   /** kurzer sichtbarer Hinweis (z. B. "PC-Steuerung automatisch eingeschaltet"), verschwindet selbst */
@@ -123,8 +127,10 @@ export const initialState: WamoState = {
   betrieb: null,
   kern: null,
   profil: null,
+  modellzugang: null,
   memos: [],
   micOn: true,
+  mikrofon: null,
   ansage: "",
   toast: null,
 };
@@ -439,8 +445,19 @@ export function applyServerMessage(msg: ServerMessage) {
         ansage: "Sitzung vom Voice-Core beendet",
       }));
       return;
+    case "modellzugang": {
+      const { type: _typ, ...stand } = msg;
+      void _typ;
+      wamo.set((s) => ({
+        ...s,
+        // Ohne lesbaren Stand (nur Fehler) bleibt der letzte bekannte Stand stehen, mit dem Fehler daran
+        modellzugang: stand.art ? stand : s.modellzugang ? { ...s.modellzugang, aktion: stand.aktion, fehler: stand.fehler } : stand,
+      }));
+      return;
+    }
     case "leiser_stopp":
-      return; // behandelt useWamo (weicher Stopp der Wiedergabe)
+    case "mikrofon":
+      return; // behandelt useWamo (weicher Stopp der Wiedergabe, Stille-Warnung abhängig vom Mikrofonschalter)
     default: {
       const unbekannt: never = msg; // neue Nachrichtentypen müssen hier behandelt werden
       void unbekannt;

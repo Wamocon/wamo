@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from llm_anbieter import LLMFehler, anfrage, json_aus_text
+from llm_anbieter import LLMFehler, Zugang, anfrage, json_aus_text
 from memory import BEREICHE, MemoryStore, initial_status
 from persona import clean_inline
 
@@ -100,8 +100,11 @@ def transcript_text(transcript: list[tuple[str, str]], name: str) -> str:
     )
 
 
-async def learn_from_session(memory: MemoryStore, transcript: list[tuple[str, str]], *, name: str) -> list[Gemerkt]:
-    """Wertet den Abschnitt aus und speichert neue Einträge. Gibt die gespeicherten zurück."""
+async def learn_from_session(
+    memory: MemoryStore, transcript: list[tuple[str, str]], *, name: str, zugang: Zugang
+) -> list[Gemerkt]:
+    """Wertet den Abschnitt mit dem Modellzugang des Profils aus und speichert neue Einträge. Gibt die
+    gespeicherten zurück."""
     if not memory.enabled:
         return []
     lines = [(role, _clean(text)) for role, text in transcript if _clean(text)]
@@ -116,6 +119,7 @@ async def learn_from_session(memory: MemoryStore, transcript: list[tuple[str, st
     try:
         antwort = await anfrage(
             "lernen",
+            zugang=zugang,
             system=system_prompt(name),
             inhalt=f"Bereits bekannt:\n{bekannt}\n\nGespräch:\n{transcript_text(lines, name)}",
             max_tokens=2000,

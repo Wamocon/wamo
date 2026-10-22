@@ -972,7 +972,8 @@ if __name__ == "__main__":
             # Ohne Konsole (geplante Aufgabe): Meldungen von uvicorn in eine Datei; nie Token oder Header
             sys.stdout = sys.stderr = open(log_datei, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
         try:
-            host_http.starte(mcp, BIND_HOST, BIND_PORT, os.getenv("WAMO_HOST_TOKEN_FILE"), audit=_audit)
+            host_http.starte(mcp, BIND_HOST, BIND_PORT, os.getenv("WAMO_HOST_TOKEN_FILE"), audit=_audit,
+                             geraet_datei=(os.getenv("WAMO_HOST_GERAET_DATEI") or "").strip() or None)
         except (host_http.TokenFehler, ValueError) as e:
             sys.exit(f"WAMO-Host startet nicht: {e}")
     else:

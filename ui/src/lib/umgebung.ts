@@ -4,6 +4,8 @@
  * Statusleiste (Kennzeichen "unverschlüsselt").
  */
 
+import { NUR_BUERO_BUILD } from "@/lib/geraet";
+
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 /** true, wenn die Adresse weder https noch Loopback ist (Daten gehen unverschlüsselt durchs Netz). */
@@ -25,6 +27,7 @@ export const VOICE_CORE_URL = process.env.NEXT_PUBLIC_VOICE_CORE_URL ?? "http://
 export function unverschluesselteDienste(): { name: string; url: string }[] {
   return [
     { name: "Anmeldung (Supabase)", url: SUPABASE_URL },
-    { name: "Voice-Core (Unterwegs)", url: VOICE_CORE_URL },
+    // Im Build für Sokrates-2 gibt es keinen lokalen Kern (lib/geraet.ts)
+    { name: "Voice-Core (Unterwegs)", url: NUR_BUERO_BUILD ? "" : VOICE_CORE_URL },
   ].filter((d) => unverschluesselt(d.url));
 }

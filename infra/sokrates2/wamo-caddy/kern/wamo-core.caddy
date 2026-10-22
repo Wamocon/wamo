@@ -5,8 +5,15 @@
 # lauscht ausschließlich auf dem Unix-Socket; die Medien (UDP) laufen direkt zwischen Browser und Kern.
 https://192.168.178.136:55444, https://sokrates2:55444, https://spark-651f.local:55444 {
 	tls internal
-	# SDP-Offers sind wenige Kilobyte groß (die Zugangskontrolle des Kerns begrenzt zusätzlich auf 256 KB)
-	request_body {
+	# SDP-Offers sind wenige Kilobyte groß (die Zugangskontrolle des Kerns begrenzt zusätzlich auf 256 KB).
+	# Nur geteilte Dateien (/wamo/api/dateien, Datei oder neue Fassung) dürfen bis 26 MiB groß sein; der Kern begrenzt
+	# selbst auf 25 MiB. Beide Pfadgruppen schließen sich aus, sonst griffe die engere Grenze zusätzlich.
+	@dateien path /wamo/api/dateien /wamo/api/dateien/*
+	@sonst not path /wamo/api/dateien /wamo/api/dateien/*
+	request_body @dateien {
+		max_size 26MiB
+	}
+	request_body @sonst {
 		max_size 512KB
 	}
 	reverse_proxy unix//run/wamo-core/core.sock {

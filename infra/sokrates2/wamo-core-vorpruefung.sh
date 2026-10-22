@@ -14,7 +14,7 @@ fehler() { echo "wamo-core-Vorprüfung: $*" >&2; exit 1; }
 for d in /opt/wamo-core/app/voice-core /opt/wamo-core/app /opt/wamo-core /opt /; do
   [ ! -e "$d/.env" ] || fehler "$d/.env gefunden (würde die Unit überschreiben), bitte entfernen"
 done
-for name in SONIOX_API_KEY ANTHROPIC_API_KEY SUPABASE_PUBLISHABLE_KEY WAMO_DATABASE_URL; do
+for name in SONIOX_API_KEY SUPABASE_PUBLISHABLE_KEY WAMO_DATABASE_URL; do
   eval "wert=\${$name:-}"
   [ -n "$wert" ] || fehler "$name fehlt in /etc/wamo/core.env (vom PC: python scripts/wamo_kern_sokrates2.py alles)"
 done
@@ -27,4 +27,9 @@ esac
 eigen="$(stat -c '%U:%g:%a' /run/wamo-core 2>/dev/null || true)"
 [ "$eigen" = "wamo-core:1000:750" ] || fehler "/run/wamo-core hat $eigen statt wamo-core:1000:750 (systemd-tmpfiles --create /etc/tmpfiles.d/wamo-core.conf)"
 [ -r "${WAMO_CA_FILE:-/nicht}" ] || fehler "WAMO_CA_FILE nicht lesbar"
+if [ "${WAMO_PC_REGISTER:-aus}" = an ]; then
+  # Tunnel je Gerät: Wurzel der Geräteordner gehört root und ist nur zu betreten (0711), sonst vertraut der Kern ihr nicht
+  wurzel="$(stat -c '%U:%a' "${WAMO_PC_SOCKET_WURZEL:-/run/wamo-pc}" 2>/dev/null || true)"
+  [ "$wurzel" = "root:711" ] || fehler "${WAMO_PC_SOCKET_WURZEL:-/run/wamo-pc} hat $wurzel statt root:711 (wamo-pc-tunnel-einrichten.sh)"
+fi
 exit 0

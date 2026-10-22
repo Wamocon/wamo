@@ -4,13 +4,15 @@
 # wamo-einrichten.sh lief (Benutzer wamo, Claude Code, Node, ECC, REA). Wiederholbar, richtet keine Geheimnisse ein.
 #
 # Vom PC aus (Repo-Wurzel, Git Bash). Der Ordner liegt im Home von wamocon, nie in /tmp:
-#   ssh sokrates2 "rm -rf ~/wamo-infra" && scp -r infra/sokrates2 sokrates2:wamo-infra
+#   cd infra/sokrates2 && scp -r wamo-job.sh wamo-job-einrichten.sh wamo-job-ecc.py wamo_job_dispatch.py #     wamo_job_rauchtest.py abschottung.py wamo-egress.nft wamo-egress.service wamo-egress-rueckweg.sh claude-code #     sokrates2:wamo-infra/ && cd ../..
 #   scp voice-core/dev_guard.py voice-core/werkzeugkarte.py ~/.ssh/id_ed25519_wamo_jobs.pub sokrates2:wamo-infra/
+#   (~/wamo-infra teilen sich mehrere Einrichtungsskripte: nur die eigenen Dateien ersetzen, den Ordner nicht leeren)
 #   ssh sokrates2 "chmod -R go-w ~/wamo-infra && sudo bash ~/wamo-infra/wamo-job-einrichten.sh"
 # Danach innerhalb von 5 Minuten mit einer NEUEN Verbindung bestätigen, dass die Anmeldung als wamocon weiter geht
 # (sonst nimmt ein Zeitschalter den sshd-Drop-in automatisch zurück):
 #   ssh sokrates2 "sudo touch /run/wamo-sshd-bestaetigt"
-# Rauchtest:  ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --attrappe"
+# Rauchtest:  ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp --attrappe"
+#             (nach dem Einrichten der GitHub-App zusätzlich --app-echt, nur lesend, README Abschnitt 2)
 #
 # Was das Skript am System ändert (nur WAMO):
 #   /usr/local/lib/wamo/bwrap            Kopie von /usr/bin/bwrap, root:wamo 0750 (nur Gruppe wamo)
@@ -21,7 +23,8 @@
 #   /opt/wamo                            root:wamo 0750, für wamo nur lesbar und ausführbar (nicht umbenennbar):
 #     bin/{wamo-job-dispatch,wamo-job.sh,wamo-job-rauchtest}, wamo-job.conf (Grenzen, CLAUDE_VERSION),
 #     waechter/{dev_guard,werkzeugkarte,abschottung}.py, waechter/seccomp.bpf,
-#     claude-code/{managed-settings.json,managed-mcp.json}
+#     claude-code/{managed-settings.json,managed-mcp.json},
+#     claude-plugins/ (Kopie des ECC-Plugins von wamo ohne Hooks, lokaler Marketplace "ecc", wamo-job-ecc.py)
 #   /etc/wamo/egress.nft, /etc/systemd/system/wamo-egress.service   Ausgangsfilter (nft inet wamo_egress)
 #   Aufräumen der Auftrags-Caches erledigt der Dispatcher als wamo (frühere /etc/tmpfiles.d/wamo-jobs.conf wird entfernt)
 #   /etc/ssh/authorized_keys.d/wamo      root, Zeile restrict,from=...,command="/opt/wamo/bin/wamo-job-dispatch"
@@ -59,7 +62,7 @@ pruefe_herkunft() {
 [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo ausführen." >&2; exit 1; }
 pruefe_herkunft
 for datei in wamo-job.sh wamo_job_dispatch.py wamo_job_rauchtest.py abschottung.py claude-code/managed-settings.json \
-  claude-code/managed-mcp.json \
+  claude-code/managed-mcp.json wamo-job-ecc.py \
   dev_guard.py werkzeugkarte.py wamo-egress.nft wamo-egress.service; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei" >&2; exit 1; }
 done
@@ -72,6 +75,10 @@ for prog in /usr/bin/bwrap /usr/bin/python3 /usr/bin/systemd-run /usr/bin/prlimi
 done
 UID_WAMO=$(id -u "$WAMO_USER")
 [[ $UID_WAMO =~ ^[0-9]+$ ]] || { echo "uid von $WAMO_USER unklar" >&2; exit 1; }
+# GitHub-App-Modus (kurzlebige Token je Auftrag) signiert mit dem Systempaket python3-cryptography; ohne das Paket
+# lehnt der Dispatcher im App-Modus jeden Start mit GitHub ab (fail-closed), der Rückfall auf GH_TOKEN bleibt möglich
+/usr/bin/python3 -I -c 'import cryptography' 2>/dev/null \
+  || echo "Hinweis: python3-cryptography fehlt; der GitHub-App-Modus braucht es (apt-get install python3-cryptography)." >&2
 
 echo "== 1. bubblewrap-Kopie nur für die Gruppe wamo, AppArmor-Profil mit Benutzer-Namensräumen"
 install -d -o root -g "$WAMO_USER" -m 0750 /usr/local/lib/wamo
@@ -176,6 +183,10 @@ sudo -u "$WAMO_USER" -H env -i HOME="$HEIM" PATH="$HEIM/.fnm/aliases/default/bin
   bash -c "npm ls -g 'rea-agents@$REA_VERSION' >/dev/null 2>&1 || npm install -g --no-fund --no-audit 'rea-agents@$REA_VERSION' >/dev/null"
 [ -x "$HEIM/.npm-global/bin/rea-agents" ] || { echo "REA-Installation fehlgeschlagen" >&2; exit 1; }
 
+echo "== 4c. ECC-Plugin ohne Hooks für die Sandbox (/opt/wamo/claude-plugins; nach ECC-Updates erneut ausführen)"
+/usr/bin/python3 -I "$HERE/wamo-job-ecc.py" --quelle "$HEIM/.claude/plugins" --ziel "$APP/claude-plugins" \
+  --heim "$HEIM" --gruppe "$WAMO_USER"
+
 echo "== 5. Ausgangsfilter für uid $UID_WAMO (nft inet wamo_egress, wamo-egress.service)"
 install -d -o root -g "$WAMO_USER" -m 0750 /etc/wamo
 neu=$(mktemp)
@@ -195,10 +206,11 @@ rm -f /etc/tmpfiles.d/wamo-jobs.conf
 echo "  Caches der Aufträge (npm, cache, plugin-daten) nach 7 Tagen, claude/ nach 30 Tagen: aufraeumen() im Dispatcher"
 
 echo "== 7. SSH: Schlüssel nur für Aufträge (Forced Command, from=, kein Shell-Zugang), Login-Shell /bin/sh"
-# N7: genau eine .pub-Datei im Quellordner (oder keine, dann wird ein schon eingetragener Schlüssel wiederverwendet)
-anzahl_pub=$(find "$HERE" -maxdepth 1 -name '*.pub' | wc -l)
-[ "$anzahl_pub" -le 1 ] || { echo "Mehr als eine .pub-Datei in $HERE; genau eine (den Auftragsschlüssel) ablegen." >&2; exit 1; }
-SCHLUESSEL=$(find "$HERE" -maxdepth 1 -name '*.pub' | head -n1)
+# N7: der Auftragsschlüssel heißt *wamo_jobs*.pub; höchstens einer davon im Quellordner (andere .pub-Dateien, etwa
+# der Tunnelschlüssel, bleiben unbeachtet). Fehlt er, wird ein schon eingetragener Schlüssel wiederverwendet.
+anzahl_pub=$(find "$HERE" -maxdepth 1 -name '*wamo_jobs*.pub' | wc -l)
+[ "$anzahl_pub" -le 1 ] || { echo "Mehr als ein Auftragsschlüssel (*wamo_jobs*.pub) in $HERE." >&2; exit 1; }
+SCHLUESSEL=$(find "$HERE" -maxdepth 1 -name '*wamo_jobs*.pub' | head -n1)
 install -d -o root -g root -m 0755 /etc/ssh/authorized_keys.d
 if [ -n "$SCHLUESSEL" ]; then
   zeile=$(tr -d '\r' < "$SCHLUESSEL" | head -n1)
@@ -279,4 +291,5 @@ else
 fi
 sshd -T -C user=wamo,host=pc,addr=192.168.178.2 | grep -E '^(authorizedkeysfile|permittty|allowtcpforwarding|clientaliveinterval|passwordauthentication) '
 /usr/sbin/nft list chain inet wamo_egress ausgang | grep -E 'skuid|counter' || true
-echo "Fertig. Rauchtest: sudo -u $WAMO_USER -H $APP/bin/wamo-job-rauchtest --attrappe"
+echo "Fertig. Rauchtest: sudo -u $WAMO_USER -H $APP/bin/wamo-job-rauchtest --mcp --attrappe" \
+  "(mit eingerichteter GitHub-App zusätzlich --app-echt; \"github\" im ping oben: app, token oder fehler)"

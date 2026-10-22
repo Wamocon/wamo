@@ -38,6 +38,25 @@ export type Gemerkt = {
   id?: string;
 };
 
+/**
+ * Modellzugang des Profils (voice-core/modellzugang.py): eigener Claude-Schlüssel oder nur Hausmodelle.
+ * Enthält nie den Schlüssel, nur ob einer hinterlegt ist und seine letzten vier Zeichen.
+ */
+export type Modellzugang = {
+  aktion: "status" | "hinterlegen" | "loeschen";
+  /** fehlt, wenn der Kern den Stand gerade nicht lesen konnte (dann steht nur fehler da) */
+  art?: "claude" | "haus";
+  /** profil: eigener Schlüssel, zuordnung: Schlüssel des Kerns für genau dieses Profil, festgelegt: vom Admin */
+  quelle?: "profil" | "zuordnung" | "festgelegt" | "keiner" | "fehler";
+  hinterlegt: boolean;
+  ende?: string;
+  geprueft?: string;
+  festgelegt: boolean;
+  modell?: string;
+  wirksam?: string;
+  fehler?: string;
+};
+
 /** wartet: kritische PC-Aktion, die auf eine Freigabe in der Oberfläche wartet */
 export type ActivityStatus = "laeuft" | "fertig" | "abgelehnt" | "fehler" | "wartet";
 
@@ -78,7 +97,10 @@ export type ServerMessage =
   | ({ type: "betrieb" } & Betrieb)
   | ({ type: "gemerkt" } & Gemerkt)
   | ({ type: "auftrag" } & Auftrag)
-  | { type: "sitzung_beendet"; grund: string; anmelden?: boolean };
+  | { type: "sitzung_beendet"; grund: string; anmelden?: boolean }
+  | ({ type: "modellzugang" } & Modellzugang)
+  /** Kern: still = seit `sekunden` nur digitale Stille vom Mikrofon, ok = wieder Ton (voice-core/audio_monitor.py) */
+  | { type: "mikrofon"; zustand: "still" | "fehlt" | "ok"; sekunden: number };
 
 type Roh = Record<string, unknown>;
 
@@ -109,7 +131,31 @@ const AKTIVITAET_STATUS = ["laeuft", "fertig", "abgelehnt", "fehler", "wartet"] 
 
 const zelle = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PROJEKT = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
+
+/** Angaben zum Teilen (voice-core/dev_agent.py: teilbar_id, teilbar_projekt; teilen_werkzeuge.py: geteilt). */
+function canvasZusatz(v: Record<string, unknown>): Pick<CanvasItem, "teilbar" | "geteilt"> {
+  const zusatz: Pick<CanvasItem, "teilbar" | "geteilt"> = {};
+  if (isStr(v.teilbar_id) && UUID.test(v.teilbar_id)) {
+    zusatz.teilbar = {
+      id: v.teilbar_id,
+      projekt: isStr(v.teilbar_projekt) && PROJEKT.test(v.teilbar_projekt) ? v.teilbar_projekt : undefined,
+    };
+  }
+  const geteilt = v.geteilt;
+  if (isObj(geteilt) && (geteilt.recht === "lesen" || geteilt.recht === "bearbeiten")) {
+    zusatz.geteilt = { von: isStr(geteilt.von) ? sauber(geteilt.von, 60, false) : null, recht: geteilt.recht };
+  }
+  return zusatz;
+}
+
 function canvasItem(v: unknown): CanvasItem | null {
+  const item = canvasGrund(v);
+  return item && isObj(v) ? { ...item, ...canvasZusatz(v) } : item;
+}
+
+function canvasGrund(v: unknown): CanvasItem | null {
   if (!isObj(v) || !oneOf(v.kind, CANVAS_KINDS) || !isStr(v.title)) return null;
   const id = isStr(v.id) ? v.id.slice(0, 100) : null;
   const title = sauber(v.title, 200, false);
@@ -245,6 +291,28 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         grund: isStr(m.grund) ? sauber(m.grund, 200, false) : "",
         anmelden: m.anmelden === true ? true : undefined,
       };
+    case "modellzugang": {
+      if (!oneOf(m.aktion, ["status", "hinterlegen", "loeschen"] as const)) return null;
+      return {
+        type: "modellzugang",
+        aktion: m.aktion,
+        art: oneOf(m.art, ["claude", "haus"] as const) ? m.art : undefined,
+        quelle: oneOf(m.quelle, ["profil", "zuordnung", "festgelegt", "keiner", "fehler"] as const) ? m.quelle : undefined,
+        hinterlegt: m.hinterlegt === true,
+        // nur die letzten vier Zeichen; alles andere wird verworfen
+        ende: isStr(m.ende) && /^[A-Za-z0-9_-]{4}$/.test(m.ende) ? m.ende : undefined,
+        geprueft: isStr(m.geprueft) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(m.geprueft) ? m.geprueft.slice(0, 16) : undefined,
+        festgelegt: m.festgelegt === true,
+        modell: isStr(m.modell) ? sauber(m.modell, 60, false) : undefined,
+        wirksam: isStr(m.wirksam) ? sauber(m.wirksam, 60, false) : undefined,
+        fehler: isStr(m.fehler) && m.fehler.trim() ? sauber(m.fehler.trim(), 200, false) : undefined,
+      };
+    }
+    case "mikrofon": {
+      if (!oneOf(m.zustand, ["still", "fehlt", "ok"] as const)) return null;
+      const s = typeof m.sekunden === "number" && Number.isFinite(m.sekunden) ? Math.round(m.sekunden) : 10;
+      return { type: "mikrofon", zustand: m.zustand, sekunden: Math.max(1, Math.min(3600, s)) };
+    }
     default:
       return null;
   }

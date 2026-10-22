@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { NUR_BUERO_BUILD, serverBrowser } from "@/lib/geraet";
 
 /**
  * Betriebsart, je Gerät dauerhaft:
@@ -12,6 +13,9 @@ import { useSyncExternalStore } from "react";
  * Im Browser liegt sie in localStorage. Die Adressen stehen zur Build-Zeit fest (auch in der CSP); über die
  * Brücke kommt nur der Name der Betriebsart, nie eine Adresse.
  * Standard bleibt "unterwegs" (NEXT_PUBLIC_WAMO_BETRIEBSART=buero ändert den Standard im Browser).
+ *
+ * Im Build für Sokrates-2 (NEXT_PUBLIC_WAMO_NUR_BUERO=ja, lib/geraet.ts) gibt es keinen lokalen Kern: Ein Browser
+ * darauf hat nur die Betriebsart Büro (Standard und einzige Wahl), "unterwegs" ist dort nicht eingerichtet.
  */
 
 export type Betriebsart = "buero" | "unterwegs";
@@ -37,7 +41,8 @@ function sichereHerkunft(url: string | undefined): string {
   }
 }
 
-const URL_UNTERWEGS = process.env.NEXT_PUBLIC_VOICE_CORE_URL ?? "http://localhost:7860";
+// Der Build für Sokrates-2 kennt keinen lokalen Kern (auch nicht in der CSP, next.config.ts)
+const URL_UNTERWEGS = NUR_BUERO_BUILD ? "" : (process.env.NEXT_PUBLIC_VOICE_CORE_URL ?? "http://localhost:7860");
 const URL_BUERO = sichereHerkunft(process.env.NEXT_PUBLIC_WAMO_KERN_BUERO);
 
 export const BUERO_VERFUEGBAR = URL_BUERO !== "";
@@ -48,16 +53,18 @@ export const KERN: Record<Betriebsart, { name: string; ort: string; url: string 
 };
 
 const STANDARD: Betriebsart =
-  process.env.NEXT_PUBLIC_WAMO_BETRIEBSART === "buero" && BUERO_VERFUEGBAR ? "buero" : "unterwegs";
+  (process.env.NEXT_PUBLIC_WAMO_BETRIEBSART === "buero" || NUR_BUERO_BUILD) && BUERO_VERFUEGBAR ? "buero" : "unterwegs";
 const SPEICHER = "wamo.betriebsart";
 
 export function istBetriebsart(v: unknown): v is Betriebsart {
   return v === "buero" || v === "unterwegs";
 }
 
-/** Gültige Betriebsart; Büro ohne eingerichtete Adresse fällt auf Unterwegs zurück. */
+/** Gültige Betriebsart; Büro ohne eingerichtete Adresse fällt auf Unterwegs zurück. Ein Browser auf dem Server hat
+ * nur Büro (ist es nicht eingerichtet, bleibt Unterwegs und die Meldung "nicht eingerichtet" zeigt den Fehler). */
 function pruefe(v: unknown): Betriebsart | null {
   if (!istBetriebsart(v)) return null;
+  if (serverBrowser()) return BUERO_VERFUEGBAR ? "buero" : "unterwegs";
   return v === "buero" && !BUERO_VERFUEGBAR ? "unterwegs" : v;
 }
 

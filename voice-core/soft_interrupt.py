@@ -14,6 +14,8 @@ Ablauf
     gesprochene Text von WAMO im Verlauf steht, und sortiert den Einwurf dahinter ein. Sonst sieht
     Claude die eigene Antwort nicht und fängt von vorn an.
   * Spricht WAMO noch nicht (Claude denkt noch), wird wie bisher sofort unterbrochen.
+  * Zeitgrenze: Kommen keine Wort-Zeitstempel (Sprachausgabe im Haus liefert nur ganze Sätze), unterbricht das Gate
+    spätestens max_wait_secs nach dem Einwurf. Die Grenze macht Unterbrechungen nur früher, nie später.
 """
 
 from __future__ import annotations
@@ -85,11 +87,15 @@ class SoftInterruptGate(FrameProcessor):
         *,
         max_words: int = 3,
         playback_lag_secs: float = 0.5,
+        max_wait_secs: float = 1.5,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._max_words = max_words
         self._playback_lag_secs = playback_lag_secs
+        self._max_wait_secs = max_wait_secs
+        self._arm_count = 0  # jede Scharfschaltung zählt; die Zeitgrenze gilt nur für ihre eigene
+        self._grenze_task: asyncio.Task | None = None
         self._bot_speaking = False
         self._pending = False  # die Person spricht, Unterbrechung steht aus
         self._firing = False  # Grenze gefunden, Unterbrechung laeuft
@@ -171,7 +177,16 @@ class SoftInterruptGate(FrameProcessor):
         self._pending = True
         self._words_left = self._max_words
         self._turns_at_arm = self._turns_recorded
+        self._arm_count += 1
+        if self._max_wait_secs > 0:
+            self._grenze_task = self.create_task(self._zeitgrenze(self._arm_count), name="soft_interrupt_zeitgrenze")
         logger.debug(f"{self}: Person spricht, WAMO beendet erst den Satz")
+
+    async def _zeitgrenze(self, arm: int):
+        """Ohne Wortgrenze (keine Zeitstempel) spätestens nach max_wait_secs unterbrechen."""
+        await asyncio.sleep(self._max_wait_secs)
+        if self._pending and arm == self._arm_count:
+            self._start_fire("Zeitgrenze")
 
     def _start_fire(self, reason: str, *, interrupt: bool = True):
         if not self._pending:
@@ -235,6 +250,9 @@ class SoftInterruptGate(FrameProcessor):
         if self._fire_task:
             await self.cancel_task(self._fire_task)
             self._fire_task = None
+        if self._grenze_task and not self._grenze_task.done():
+            await self.cancel_task(self._grenze_task)
+        self._grenze_task = None
 
 
 class PlaybackTracker(FrameProcessor):

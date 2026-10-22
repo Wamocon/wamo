@@ -1,0 +1,18 @@
+{
+ "zeitpunkt": "2026-10-21T08:15:21+02:00",
+ "anbieter": "litellm",
+ "modell": "sokrates-fast",
+ "extra": "{\"think\":false}",
+ "bausteine": {
+  "zusammenfassung": [
+   {
+    "id": "gespraech_lang",
+    "ok": true,
+    "gruende": [],
+    "dauer_s": 38.43,
+    "zeichen": 963,
+    "text": "Hier ist die Zusammenfassung des Gesprächs zwischen Niko und WAMO:\n\n**Themen & Entscheidungen:**\n*   **Projekt:** Angebot für Testautomatisierung des Lagerverwaltungssystems der Firma Berger Logistik (Ansprechpartnerin: Frau Berger).\n*   **Kalkulation:** 25 Personentage zu je 500 Euro, ergibt 12.500 Euro netto.\n*   **Rollenverteilung:** Jonas ist für die technische Konzeption zuständig, Lea für die Abstimmung mit dem Kunden.\n*   **Technologie:** Als Datenbank wird Supabase (statt Firebase) verwendet.\n*   **Termin:** Kickoff am 4. November um 10 Uhr in Eschborn.\n\n**Offene Aufträge:**\n*   Das Angebot muss bis Freitag versendet werden.\n*   WAMO soll Niko morgen nach dem Stand der Dinge fragen.\n\n**Namen & Zahlen:**\n*   Personen: Niko, Frau Berger, Jonas, Lea.\n*   Zahlen: 25 Personentage, 500 Euro/Tag, 12.500 Euro netto, 4. November, 10 Uhr, 14 Grad (Wettervorhersage).\n\n**Aktivitäten am PC:**\n*   WAMO hat den Projektordner „kalender“ in VS Code geöffnet."
+   }
+  ]
+ }
+}

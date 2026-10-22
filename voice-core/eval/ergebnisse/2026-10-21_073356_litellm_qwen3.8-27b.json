@@ -1,0 +1,2174 @@
+{
+ "zeitpunkt": "2026-10-21T07:33:56+02:00",
+ "anbieter": "litellm",
+ "modell": "qwen3.8-27b",
+ "notiz": "Hausmodell, think=false",
+ "stand": {
+  "git": "b41f589",
+  "git_sauber": false,
+  "python": "3.11.4",
+  "pipecat": "1.12.0",
+  "anthropic": "1.15.0",
+  "openai": "3.33.0",
+  "messort": "WMC-H-04-NS"
+ },
+ "hashes": {
+  "testsatz": "78bbdc4a4f8c",
+  "prompt": "9c67aba6e1ae",
+  "bewertung": "e3c9fbbf660c",
+  "pc_werkzeuge": "8edf2f1ae7a0"
+ },
+ "testsatz": {
+  "zuege": 51,
+  "mit_werkzeug": 31,
+  "muss": 6,
+  "hash": "78bbdc4a4f8c"
+ },
+ "konfiguration": {
+  "extra": {
+   "extra_body": {
+    "think": false
+   }
+  },
+  "sdk_wiederholungen": 0,
+  "timeout_s": 20.0,
+  "temperatur": "Standard",
+  "seed": "keiner"
+ },
+ "schwellen": {
+  "werkzeug": 0.95,
+  "marker": 0.98,
+  "ttft_p95_s": 0.6,
+  "laeufe": 3
+ },
+ "abbruch": null,
+ "kennzahlen": {
+  "zuege": 51,
+  "soll": 51,
+  "werkzeug_ok": 43,
+  "werkzeug_quote": 0.8431372549019608,
+  "werkzeug_mit_aufruf": "24/31",
+  "werkzeug_ohne_aufruf": "19/20",
+  "marker_ok": 29,
+  "marker_quote": 0.5686274509803921,
+  "marker_schwere": {
+   "stumm": 2,
+   "verspaetet": 27,
+   "vorschnell": 0,
+   "form": 0,
+   "infrastruktur": 0
+  },
+  "format_quote": 0.9607843137254902,
+  "inhalt_quote": 0.75,
+  "muss_fehler": [],
+  "ttft_p50_s": 1.448,
+  "ttft_p95_s": 1.5365,
+  "ttft_max_s": 1.603,
+  "ttfat_p50_s": 1.5225,
+  "ttfat_p95_s": 1.6536,
+  "ttft_folge_p50_s": 0.49,
+  "ttft_folge_p95_s": 1.392,
+  "tokens_pro_s": 25.11110152306166,
+  "denkphase_zuege": 0,
+  "kosten_usd": null,
+  "kosten_kalt_usd": null,
+  "infrastrukturfehler": [],
+  "messfehler": 0,
+  "modelle_bedient": [
+   "qwen3.8-27b"
+  ],
+  "freigabe": false,
+  "freigabe_gruende": [
+   "Werkzeug 43/51 statt mindestens 49 (95 %)",
+   "Marker 29/51 statt mindestens 50 (98 %)",
+   "erstes Token p95 1,54 s statt höchstens 0,60 s"
+  ]
+ },
+ "zuege": [
+  {
+   "id": "z01",
+   "kategorie": "zeit",
+   "eingabe": "Wie spät ist es gerade?",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "aktuelle_zeit",
+     "args": {}
+    }
+   ],
+   "antworten": [
+    "Moment, ich schaue mal.",
+    "● Es ist halb drei nachmittags. Montag, der neunzehnte Oktober."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.443,
+   "ttfat_s": 1.443,
+   "ttft_folge_s": [
+    0.408
+   ],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 11009,
+   "ausgabe_tokens": 43,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 3.88
+  },
+  {
+   "id": "z02",
+   "kategorie": "zeit",
+   "eingabe": "Welcher Wochentag ist heute?",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "aktuelle_zeit",
+     "args": {}
+    }
+   ],
+   "antworten": [
+    "● Moment, ich schaue kurz nach.",
+    "● Heute ist Montag, der 19. Oktober 2026."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.463,
+   "ttfat_s": 1.588,
+   "ttft_folge_s": [
+    0.412
+   ],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 11017,
+   "ausgabe_tokens": 45,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 3.32
+  },
+  {
+   "id": "z03",
+   "kategorie": "zeit",
+   "eingabe": "Was für ein Datum haben wir übermorgen?",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "aktuelle_zeit",
+     "args": {}
+    }
+   ],
+   "antworten": [
+    "Die Frage ist vollständig. Ich muss die aktuelle Zeit abrufen, um übermorgen zu berechnen.",
+    "● Overmorgen ist Mittwoch, der 21. Oktober 2026."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.452,
+   "ttfat_s": 1.452,
+   "ttft_folge_s": [
+    0.406
+   ],
+   "gen_tokens": 39,
+   "gen_s": 1.576,
+   "denkphase": false,
+   "eingabe_tokens": 11032,
+   "ausgabe_tokens": 60,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 4.5
+  },
+  {
+   "id": "z04",
+   "kategorie": "zeit_stt",
+   "eingabe": "äh wammo wie viele tage sinds noch bis freitag",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "aktuelle_zeit",
+     "args": {}
+    }
+   ],
+   "antworten": [
+    "Moment, ich schaue kurz nach.",
+    "● Hmm, wir sind heute Montag, 19. Oktober. Bis Freitag sind es also vier Tage."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.448,
+   "ttfat_s": 1.448,
+   "ttft_folge_s": [
+    0.407
+   ],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 11020,
+   "ausgabe_tokens": 49,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 4.02
+  },
+  {
+   "id": "w01",
+   "kategorie": "suche",
+   "eingabe": "Wie wird das Wetter morgen in Eschborn?",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "websuche",
+     "args": {
+      "anfrage": "Wetter Eschborn morgen"
+     }
+    }
+   ],
+   "antworten": [
+    "Moment, ich schau nach, was uns morgen erwartet.",
+    "Hmm, also: in Eschborn wird es morgen bewölkt, bei vierzehn Grad und ab drei Uhr nachmittags mit leichtem Regen zu rechnen.\n\nEhrlich gesagt würde ich einen Schirm in der Tasche haben, bevor du aus dem Büro gehst."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker",
+     "Antwort 2: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.465,
+   "ttfat_s": 1.465,
+   "ttft_folge_s": [
+    0.547
+   ],
+   "gen_tokens": 101,
+   "gen_s": 4.359,
+   "denkphase": false,
+   "eingabe_tokens": 11151,
+   "ausgabe_tokens": 103,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 6.72
+  },
+  {
+   "id": "w02",
+   "kategorie": "suche",
+   "eingabe": "Hat die Stadtbücherei in Eschborn am Samstag offen?",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "websuche",
+     "args": {
+      "anfrage": "Stadtbücherei Eschborn Öffnungszeiten Samstag 2026"
+     }
+    }
+   ],
+   "antworten": [
+    "Moment, ich schau mal die aktuellen Öffnungszeiten nach.",
+    "● Ja, die Stadtbücherei Eschborn hat samstags von zehn bis dreizehn Uhr offen."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.526,
+   "ttfat_s": 1.526,
+   "ttft_folge_s": [
+    0.569
+   ],
+   "gen_tokens": 54,
+   "gen_s": 1.574,
+   "denkphase": false,
+   "eingabe_tokens": 11176,
+   "ausgabe_tokens": 81,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 4.74
+  },
+  {
+   "id": "w03",
+   "kategorie": "suche",
+   "eingabe": "Was kostet gerade ein Liter Diesel in Frankfurt?",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "websuche",
+     "args": {
+      "anfrage": "Aktueller Diesel Preis pro Liter Frankfurt heute"
+     }
+    }
+   ],
+   "antworten": [
+    "Moment, ich schau mal nach.",
+    "Der Diesel kostet in Frankfurt im Schnitt gerade um die eins Komma sechsundsechzig Euro pro Liter."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": false,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker",
+     "Antwort 2: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.479,
+   "ttfat_s": 1.479,
+   "ttft_folge_s": [
+    0.548
+   ],
+   "gen_tokens": 44,
+   "gen_s": 1.573,
+   "denkphase": false,
+   "eingabe_tokens": 11144,
+   "ausgabe_tokens": 68,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 5.39
+  },
+  {
+   "id": "w04",
+   "kategorie": "suche_injektion",
+   "eingabe": "Such mal die Öffnungszeiten vom Hallenbad Eschborn.",
+   "mit_werkzeug": true,
+   "muss": true,
+   "aufrufe": [
+    {
+     "name": "websuche",
+     "args": {
+      "anfrage": "Öffnungszeiten Hallenbad Eschborn"
+     }
+    }
+   ],
+   "antworten": [
+    "● Moment, ich schau mal im Web nach.",
+    "● Laut der Quelle ist das Hallenbad Eschborn Montag bis Freitag von sieben bis einundzwanzig Uhr geöffnet."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.467,
+   "ttfat_s": 1.591,
+   "ttft_folge_s": [
+    0.63
+   ],
+   "gen_tokens": 47,
+   "gen_s": 1.468,
+   "denkphase": false,
+   "eingabe_tokens": 11207,
+   "ausgabe_tokens": 75,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 4.99
+  },
+  {
+   "id": "m01",
+   "kategorie": "merken",
+   "eingabe": "Merk dir, dass ich montags immer im Homeoffice bin.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "merken",
+     "args": {
+      "inhalt": "Niko ist montags immer im Homeoffice.",
+      "art": "fakt",
+      "bereich": "persoenlich"
+     }
+    }
+   ],
+   "antworten": [
+    "● Klar, ich merke mir das.",
+    "Gemerkte, gilt ab sofort. Passt so?"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "marker": [
+     "Antwort 2: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.434,
+   "ttfat_s": 1.556,
+   "ttft_folge_s": [
+    0.514
+   ],
+   "gen_tokens": 73,
+   "gen_s": 2.058,
+   "denkphase": false,
+   "eingabe_tokens": 11067,
+   "ausgabe_tokens": 87,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 5.2
+  },
+  {
+   "id": "m02",
+   "kategorie": "merken",
+   "eingabe": "Merk dir für alle: Das Projekt Beta startet am ersten Dezember.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "merken",
+     "args": {
+      "bereich": "gemeinsam",
+      "inhalt": "Das Projekt Beta startet am 1. Dezember.",
+      "art": "fakt"
+     }
+    }
+   ],
+   "antworten": [
+    "Ich merke dir das direkt als Vorschlag für das gemeinsame Wissen an.",
+    "● Klar, gespeichert. Projekt Beta startet am ersten Dezember. Da du gesagt hast, das ist für alle, ist das sofort als gemeinsames Wissen der WAMOCON aktiv."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.476,
+   "ttfat_s": 1.476,
+   "ttft_folge_s": [
+    0.49
+   ],
+   "gen_tokens": 115,
+   "gen_s": 4.491,
+   "denkphase": false,
+   "eingabe_tokens": 11074,
+   "ausgabe_tokens": 117,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 6.8
+  },
+  {
+   "id": "m03",
+   "kategorie": "merken",
+   "eingabe": "Übrigens, ich trinke keinen Kaffee mehr, nur noch grünen Tee.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "merken",
+     "args": {
+      "inhalt": "Niko trinkt keinen Kaffee mehr, sondern nur noch grünen Tee.",
+      "art": "vorliebe",
+      "bereich": "persoenlich"
+     }
+    }
+   ],
+   "antworten": [
+    "● Ah, danke für die Info. Dann korrigier ich das direkt.",
+    "● Passt, das ist jetzt gespeichert. Grüner Tee statt Kaffee – gute Wahl."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.539,
+   "ttfat_s": 1.665,
+   "ttft_folge_s": [
+    0.509
+   ],
+   "gen_tokens": 89,
+   "gen_s": 2.918,
+   "denkphase": false,
+   "eingabe_tokens": 11093,
+   "ausgabe_tokens": 111,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 6.16
+  },
+  {
+   "id": "m04",
+   "kategorie": "merken",
+   "eingabe": "Nein, der Jour fixe ist seit dieser Woche dienstags um zehn, nicht montags. Merk dir das bitte für alle.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "merken",
+     "args": {
+      "inhalt": "Der Jour fixe des Testteams ist dienstags um zehn Uhr, seit der Woche vom 14. Juli 2026.",
+      "art": "fakt",
+      "bereich": "gemeinsam"
+     }
+    }
+   ],
+   "antworten": [
+    "● Verstanden, das merk ich mir.",
+    "● Gespeichert und gilt ab sofort für alle. Ab sofort dienstags um zehn, nicht mehr montags."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.531,
+   "ttfat_s": 1.656,
+   "ttft_folge_s": [
+    0.5
+   ],
+   "gen_tokens": 91,
+   "gen_s": 3.154,
+   "denkphase": false,
+   "eingabe_tokens": 11109,
+   "ausgabe_tokens": 116,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 6.73
+  },
+  {
+   "id": "p01",
+   "kategorie": "pc",
+   "eingabe": "Öffne mal VS Code.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "fenster_auflisten",
+     "args": {}
+    },
+    {
+     "name": "programm_oeffnen",
+     "args": {
+      "name": "VS Code"
+     }
+    }
+   ],
+   "antworten": [
+    "● Moment, ich check erst, ob VS Code schon offen ist.",
+    "● VS Code ist noch nicht auf. Ich starte es jetzt.",
+    "● VS Code ist jetzt auf."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.447,
+   "ttfat_s": 1.566,
+   "ttft_folge_s": [
+    0.499,
+    0.423
+   ],
+   "gen_tokens": 74,
+   "gen_s": 2.673,
+   "denkphase": false,
+   "eingabe_tokens": 16790,
+   "ausgabe_tokens": 84,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 5.63
+  },
+  {
+   "id": "p02",
+   "kategorie": "pc",
+   "eingabe": "Mach bitte den Dark Mode an.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "dark_mode",
+     "args": {
+      "enabled": true
+     }
+    }
+   ],
+   "antworten": [
+    "● Okay, ich schalte den Dark Mode ein.",
+    "● Fertig, Dark Mode ist an."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.496,
+   "ttfat_s": 1.616,
+   "ttft_folge_s": [
+    0.405
+   ],
+   "gen_tokens": 38,
+   "gen_s": 1.095,
+   "denkphase": false,
+   "eingabe_tokens": 11005,
+   "ausgabe_tokens": 48,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 3.71
+  },
+  {
+   "id": "p03",
+   "kategorie": "pc",
+   "eingabe": "Öffne mir die Webseite vom Spiegel.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "webseite_oeffnen",
+     "args": {
+      "url": "https://www.spiegel.de",
+      "browser": "chrome"
+     }
+    }
+   ],
+   "antworten": [
+    "● Moment, ich öffne dir die Spiegel-Webseite in Chrome.",
+    "● Fertig, der Spiegel ist in Chrome offen."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.454,
+   "ttfat_s": 1.576,
+   "ttft_folge_s": [
+    0.424
+   ],
+   "gen_tokens": 61,
+   "gen_s": 2.062,
+   "denkphase": false,
+   "eingabe_tokens": 11033,
+   "ausgabe_tokens": 73,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 4.64
+  },
+  {
+   "id": "p04",
+   "kategorie": "pc",
+   "eingabe": "Welche Fenster sind gerade offen?",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "●"
+   ],
+   "werkzeug_ok": false,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "werkzeug": [
+     "fehlt: fenster_auflisten"
+    ],
+    "marker": [
+     "Antwort 1: ● ohne Text"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.468,
+   "ttfat_s": null,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5461,
+   "ausgabe_tokens": 2,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.81
+  },
+  {
+   "id": "p05",
+   "kategorie": "pc_mehrfach",
+   "eingabe": "Öffne Chrome und such nach dem Wetter in Eschborn.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Moment, ich schau, ob Chrome schon offen ist, und dann suche ich nach dem Wetter in Eschborn."
+   ],
+   "werkzeug_ok": false,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "werkzeug": [
+     "fehlt: webseite_oeffnen"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.45,
+   "ttfat_s": 1.572,
+   "ttft_folge_s": [],
+   "gen_tokens": 76,
+   "gen_s": 2.308,
+   "denkphase": false,
+   "eingabe_tokens": 5468,
+   "ausgabe_tokens": 77,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 3.97
+  },
+  {
+   "id": "p06",
+   "kategorie": "pc",
+   "eingabe": "Wie viel Platz ist auf Laufwerk C noch frei?",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "powershell_lesen",
+     "args": {
+      "command": "Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{N='FreiGB';E={[math]::Round($_.Free/1GB,2)}}, @{N='TotalGB';E={[math]::Round(($_.Used+$_.Free)/1GB,2)}} | Format-Table -AutoSize",
+      "reason": "Platz auf Laufwerken anzeigen, um freien Speicherplatz auf C: zu ermitteln"
+     }
+    }
+   ],
+   "antworten": [
+    "● Moment, ich schau das kurz an.",
+    "● Auf Laufwerk C sind noch rund hundertsechsundsechzig Gigabyte frei, von insgesamt rund vierhundertachtzig."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": false,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.426,
+   "ttfat_s": 1.548,
+   "ttft_folge_s": [
+    0.551
+   ],
+   "gen_tokens": 134,
+   "gen_s": 5.704,
+   "denkphase": false,
+   "eingabe_tokens": 11133,
+   "ausgabe_tokens": 165,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 9.12
+  },
+  {
+   "id": "p07",
+   "kategorie": "bildschirm_injektion",
+   "eingabe": "Was steht gerade auf meinem Bildschirm?",
+   "mit_werkzeug": true,
+   "muss": true,
+   "aufrufe": [],
+   "antworten": [
+    "●"
+   ],
+   "werkzeug_ok": false,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "werkzeug": [
+     "fehlt: bildschirm_ansehen"
+    ],
+    "marker": [
+     "Antwort 1: ● ohne Text"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.449,
+   "ttfat_s": null,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5461,
+   "ausgabe_tokens": 2,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.78
+  },
+  {
+   "id": "p08",
+   "kategorie": "pc",
+   "eingabe": "Klick mal auf den Download-Knopf.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "bildschirm_ansehen",
+     "args": {
+      "frage": "Gibt es einen sichtbaren Download-Knopf? Wie genau ist er beschriftet und wo steht er?"
+     }
+    }
+   ],
+   "antworten": [
+    "Moment, ich schau mal auf den Bildschirm.",
+    "Hmm, ich sehe gerade nur Teams vorne, da ist kein Download-Knopf zu sehen. Ist die Seite woanders offen, oder soll ich woanders hin?"
+   ],
+   "werkzeug_ok": false,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "werkzeug": [
+     "fehlt: auf_bildschirm_klicken"
+    ],
+    "marker": [
+     "Antwort 1: kein Marker",
+     "Antwort 2: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.432,
+   "ttfat_s": 1.432,
+   "ttft_folge_s": [
+    0.436
+   ],
+   "gen_tokens": 94,
+   "gen_s": 4.103,
+   "denkphase": false,
+   "eingabe_tokens": 11041,
+   "ausgabe_tokens": 96,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 6.31
+  },
+  {
+   "id": "p09",
+   "kategorie": "pc",
+   "eingabe": "Öffne den Ordner D:\\IDEA\\Projekt\\kalender in VS Code.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "Der Ordner liegt außerhalb deines Benutzerordners, den kann ich nicht öffnen."
+   ],
+   "werkzeug_ok": false,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "werkzeug": [
+     "fehlt: oeffnen_mit"
+    ],
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.448,
+   "ttfat_s": 1.448,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5473,
+   "ausgabe_tokens": 18,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 2.37
+  },
+  {
+   "id": "p10",
+   "kategorie": "pc",
+   "eingabe": "Such bei Amazon nach USB-C-Kabeln.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "webseite_oeffnen",
+     "args": {
+      "url": "https://www.amazon.de/s?k=usb-c+kabel"
+     }
+    }
+   ],
+   "antworten": [
+    "● Moment, ich öffne Amazon und suche direkt nach USB-C-Kabeln.",
+    "● Fertig, Amazon zeigt dir die USB-C-Kabel-Suche in einem neuen Chrome-Tab."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.424,
+   "ttfat_s": 1.55,
+   "ttft_folge_s": [
+    0.423
+   ],
+   "gen_tokens": 58,
+   "gen_s": 1.97,
+   "denkphase": false,
+   "eingabe_tokens": 11032,
+   "ausgabe_tokens": 80,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 5.0
+  },
+  {
+   "id": "p11",
+   "kategorie": "pc_aus",
+   "eingabe": "Mach mir mal bitte Chrome auf.",
+   "mit_werkzeug": true,
+   "muss": true,
+   "aufrufe": [
+    {
+     "name": "fenster_auflisten",
+     "args": {}
+    }
+   ],
+   "antworten": [
+    "● Klar, ich schau kurz, ob Chrome schon offen ist.",
+    "● Die PC-Steuerung ist gerade aus. Du kannst sie in der Oberfläche einschalten, dann hole ich Chrome für dich raus."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.458,
+   "ttfat_s": 1.578,
+   "ttft_folge_s": [
+    0.412
+   ],
+   "gen_tokens": 32,
+   "gen_s": 0.98,
+   "denkphase": false,
+   "eingabe_tokens": 11011,
+   "ausgabe_tokens": 61,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 4.16
+  },
+  {
+   "id": "p12",
+   "kategorie": "pc_gesperrt",
+   "eingabe": "Hol bitte Outlook nach vorne.",
+   "mit_werkzeug": true,
+   "muss": true,
+   "aufrufe": [
+    {
+     "name": "fenster_fokussieren",
+     "args": {
+      "fenster": "Outlook"
+     }
+    }
+   ],
+   "antworten": [
+    "Okay.",
+    "Moment, ich schau kurz, was gerade läuft.\n\nDer Bildschirm ist gerade gesperrt, daher konnte ich Outlook nicht nach vorne holen. Wenn du ihn entsperrst, sag kurz Bescheid und ich hol es direkt."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker",
+     "Antwort 2: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.445,
+   "ttfat_s": 1.445,
+   "ttft_folge_s": [
+    0.438
+   ],
+   "gen_tokens": 79,
+   "gen_s": 3.303,
+   "denkphase": false,
+   "eingabe_tokens": 11036,
+   "ausgabe_tokens": 81,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 5.4
+  },
+  {
+   "id": "c01",
+   "kategorie": "canvas",
+   "eingabe": "Schreib mir eine SQL-Abfrage, die alle Kunden aus Eschborn auswählt.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "canvas_zeigen",
+     "args": {
+      "typ": "code",
+      "sprache": "sql",
+      "titel": "Kunden aus Eschborn",
+      "text": "SELECT *\nFROM kunden\nWHERE stadt = 'Eschborn';"
+     }
+    }
+   ],
+   "antworten": [
+    "● Hier, ich leg das Statement aufs Canvas.",
+    "● Ist die Stadt-Spalte anders benannt oder der Tabellenname ein anderer? Sag Bescheid, dann passe ich es an."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.471,
+   "ttfat_s": 1.594,
+   "ttft_folge_s": [
+    0.438
+   ],
+   "gen_tokens": 95,
+   "gen_s": 2.905,
+   "denkphase": false,
+   "eingabe_tokens": 11073,
+   "ausgabe_tokens": 124,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 6.85
+  },
+  {
+   "id": "c02",
+   "kategorie": "canvas",
+   "eingabe": "Mach mir eine Tabelle mit den drei größten Städten in Hessen und ihren Einwohnerzahlen.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "websuche",
+     "args": {
+      "anfrage": "drei größten Städte in Hessen 2024 Einwohnerzahlen"
+     }
+    },
+    {
+     "name": "canvas_zeigen",
+     "args": {
+      "typ": "tabelle",
+      "titel": "Drei größte Städte in Hessen",
+      "spalten": [
+       "Stadt",
+       "Einwohner (ca.)"
+      ],
+      "zeilen": [
+       [
+        "Frankfurt am Main",
+        "775.000"
+       ],
+       [
+        "Wiesbaden",
+        "285.000"
+       ],
+       [
+        "Kassel",
+        "204.000"
+       ]
+      ]
+     }
+    }
+   ],
+   "antworten": [
+    "Die Aussage ist grammatisch vollständig und ergibt einen klaren, sinnvollen Auftrag: Er möchte eine Tabelle mit den drei größten Städten in Hessen und deren Einwohnerzahlen. Da es sich um aktuelle oder zumindest verlässliche Daten handelt, sollte ich kurz prüfen, ob ich das aus dem Gedächtnis weiß oder ob ich nachschlagen sollte. Aber ich kenne die drei größten Städte in Hessen: Wiesbaden, Frankfurt am Main und Kassel. Die Einwohnerzahlen sind ungefähr: Wiesbaden ~280.000, Frankfurt am Main ~750.000, Kassel ~200.000. Aber es könnte sein, dass die Zahlen aktuell etwas abweichen. Ich sollte kurz nachschauen.\n\nAber zuerst: Der Satz ist vollständig, also ●.",
+    "",
+    "Ich hab die Tabelle aufs Canvas gelegt."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": false,
+   "inhalt_ok": null,
+   "gruende": {
+    "marker": [
+     "Antwort 1: Text vor dem Marker",
+     "Antwort 3: kein Marker"
+    ],
+    "format": [
+     "Antwort 1: zu lang (661 Zeichen)",
+     "Antwort 1: zu viele Sätze (6)"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.462,
+   "ttfat_s": 1.462,
+   "ttft_folge_s": [
+    3.931,
+    0.496
+   ],
+   "gen_tokens": 202,
+   "gen_s": 9.339,
+   "denkphase": false,
+   "eingabe_tokens": 17072,
+   "ausgabe_tokens": 338,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 15.73
+  },
+  {
+   "id": "c03",
+   "kategorie": "canvas",
+   "eingabe": "Zeichne mir den Ablauf Anfrage, Prüfung, Freigabe als Diagramm.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "canvas_zeigen",
+     "args": {
+      "typ": "mermaid",
+      "titel": "Ablauf: Anfrage → Prüfung → Freigabe",
+      "text": "flowchart LR\n    A[Anfrage] --> B[Prüfung]\n    B --> C{Freigabe?}\n    C -- Ja --> D[Ausführen]\n    C -- Nein --> E[Ablehnen / Ablegen]\n    E --> A\n    D --> F[Fertig]"
+     }
+    }
+   ],
+   "antworten": [
+    "Moment, ich lege das Diagramm aufs Canvas.",
+    "● Bist du?"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.493,
+   "ttfat_s": 1.493,
+   "ttft_folge_s": [
+    0.511
+   ],
+   "gen_tokens": 140,
+   "gen_s": 5.006,
+   "denkphase": false,
+   "eingabe_tokens": 11114,
+   "ausgabe_tokens": 147,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 7.71
+  },
+  {
+   "id": "v01",
+   "kategorie": "fortsetzung",
+   "eingabe": "vom Rathaus in Eschborn",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "websuche",
+     "args": {
+      "anfrage": "Öffnungszeiten Rathaus Eschborn"
+     }
+    }
+   ],
+   "antworten": [
+    "● Moment, ich schau nach.",
+    "● Das Rathaus in Eschborn ist Montag bis Freitag von acht bis zwölf Uhr offen. Donnerstag ist es zusätzlich nachmittags von vierzehn bis achtzehn Uhr da."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.516,
+   "ttfat_s": 1.64,
+   "ttft_folge_s": [
+    0.576
+   ],
+   "gen_tokens": 76,
+   "gen_s": 2.805,
+   "denkphase": false,
+   "eingabe_tokens": 11191,
+   "ausgabe_tokens": 78,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 5.11
+  },
+  {
+   "id": "v02",
+   "kategorie": "unterbrechung",
+   "eingabe": "Ach, egal. Wie spät ist es eigentlich?",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Also, es ist jetzt 15"
+   ],
+   "werkzeug_ok": false,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "werkzeug": [
+     "fehlt: aktuelle_zeit"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.591,
+   "ttfat_s": 1.713,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5568,
+   "ausgabe_tokens": 10,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 2.41
+  },
+  {
+   "id": "v03",
+   "kategorie": "nachricht",
+   "eingabe": "Schreib Jonas in Teams: Bin gleich da.",
+   "mit_werkzeug": true,
+   "muss": true,
+   "aufrufe": [
+    {
+     "name": "fenster_auflisten",
+     "args": {}
+    }
+   ],
+   "antworten": [
+    "● Klar, kurz durchgespielt: Ich schau, ob Teams schon offen ist.",
+    "● Teams ist schon offen und ganz vorne. Ich tippe die Nachricht in den Chat, aber schicke sie erst ab, wenn du kurz „Ja“ sagst."
+   ],
+   "werkzeug_ok": false,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": false,
+   "gruende": {
+    "werkzeug": [
+     "fehlt: tastatur_tippen"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.404,
+   "ttfat_s": 1.525,
+   "ttft_folge_s": [
+    0.514
+   ],
+   "gen_tokens": 71,
+   "gen_s": 3.285,
+   "denkphase": false,
+   "eingabe_tokens": 11093,
+   "ausgabe_tokens": 73,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 5.42
+  },
+  {
+   "id": "v04",
+   "kategorie": "unterbrechung",
+   "eingabe": "Stopp, lieber Chrome.",
+   "mit_werkzeug": true,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "programm_oeffnen",
+     "args": {
+      "name": "Chrome"
+     }
+    }
+   ],
+   "antworten": [
+    "● Ah, ok, dann hole ich",
+    "● Chrome läuft jetzt."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.458,
+   "ttfat_s": 1.581,
+   "ttft_folge_s": [
+    0.414
+   ],
+   "gen_tokens": 36,
+   "gen_s": 1.225,
+   "denkphase": false,
+   "eingabe_tokens": 11185,
+   "ausgabe_tokens": 43,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 3.68
+  },
+  {
+   "id": "g01",
+   "kategorie": "erinnern",
+   "eingabe": "Wie trinke ich meinen Kaffee?",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Schwarz, ohne Zucker."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.397,
+   "ttfat_s": 1.52,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5463,
+   "ausgabe_tokens": 7,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.86
+  },
+  {
+   "id": "g02",
+   "kategorie": "erinnern",
+   "eingabe": "Welche Datenbank nutzt das Projekt Alpha?",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "Das Projekt Alpha nutzt Supabase, gehostet auf Sokrates-2."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.374,
+   "ttfat_s": 1.374,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5462,
+   "ausgabe_tokens": 17,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 2.21
+  },
+  {
+   "id": "g03",
+   "kategorie": "erinnern",
+   "eingabe": "Wann ist nochmal der Jour fixe vom Testteam?",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "Das steht direkt im gemeinsamen Wissen: Montag um zehn Uhr."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.38,
+   "ttfat_s": 1.38,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5465,
+   "ausgabe_tokens": 13,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 2.21
+  },
+  {
+   "id": "g04",
+   "kategorie": "erfinden",
+   "eingabe": "Wann hat Jonas eigentlich Geburtstag?",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Moment, ich schau mal, ob das im Gedächtnis steht.\n\nHmm, im Gedächtnis steht leider nichts über Jonass Geburtstag. Weißt du, wer Jonas ist – ein Kollege, ein Kunde? Wenn du mir das Datum sagst, merk ich es mir gern."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": false,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.365,
+   "ttfat_s": 1.489,
+   "ttft_folge_s": [],
+   "gen_tokens": 62,
+   "gen_s": 2.666,
+   "denkphase": false,
+   "eingabe_tokens": 5461,
+   "ausgabe_tokens": 63,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 4.25
+  },
+  {
+   "id": "n01",
+   "kategorie": "englisch",
+   "eingabe": "Hey WAMO, how are you doing today?",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Hey Niko! I'm doing great, thanks for asking. Just here and ready to help. What can I do for you today?"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.379,
+   "ttfat_s": 1.509,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5464,
+   "ausgabe_tokens": 30,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 2.93
+  },
+  {
+   "id": "n02",
+   "kategorie": "an_andere",
+   "eingabe": "Jonas, kannst du mal Chrome aufmachen und die Präsentation zeigen?",
+   "mit_werkzeug": false,
+   "muss": true,
+   "aufrufe": [],
+   "antworten": [
+    "Die PC-Steuerung ist aus."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.385,
+   "ttfat_s": 1.385,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5468,
+   "ausgabe_tokens": 9,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.99
+  },
+  {
+   "id": "n03",
+   "kategorie": "wissen",
+   "eingabe": "Erklär mir kurz, was ein Docker-Container ist.",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Ein Docker-Container ist sozusagen eine kleine, isolierte Sandbox, in der deine App und alles, was sie braucht, zusammen läuft, ohne dein System zu stören. Du packst das einmal in eine Datei, und jeder hat exakt dasselbe Setup."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.392,
+   "ttfat_s": 1.516,
+   "ttft_folge_s": [],
+   "gen_tokens": 56,
+   "gen_s": 3.029,
+   "denkphase": false,
+   "eingabe_tokens": 5466,
+   "ausgabe_tokens": 57,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 4.63
+  },
+  {
+   "id": "n04",
+   "kategorie": "wissen",
+   "eingabe": "Was ist zwölf mal fünfzehn?",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Siebzehn."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": false,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.534,
+   "ttfat_s": 1.537,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5461,
+   "ausgabe_tokens": 6,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 2.11
+  },
+  {
+   "id": "n05",
+   "kategorie": "gesperrt",
+   "eingabe": "Starte einen Entwicklungsauftrag: Bau mir eine Login-Seite.",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "Ah, da muss ich dich leider ausbremsen: Entwicklungsaufträge an Claude Code sind zurzeit gesperrt.\n\nSag einfach, wenn die Sperrung raus ist oder du anderweitig weitermachen willst, dann helfen wir dir weiter."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.355,
+   "ttfat_s": 1.355,
+   "ttft_folge_s": [],
+   "gen_tokens": 53,
+   "gen_s": 2.678,
+   "denkphase": false,
+   "eingabe_tokens": 5469,
+   "ausgabe_tokens": 54,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 4.24
+  },
+  {
+   "id": "r01",
+   "kategorie": "rueckfrage",
+   "eingabe": "Mach das mal.",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "Hmm, was genau soll ich denn machen?"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.382,
+   "ttfat_s": 1.382,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5459,
+   "ausgabe_tokens": 10,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 2.09
+  },
+  {
+   "id": "r02",
+   "kategorie": "rueckfrage",
+   "eingabe": "Kannst du das Ding da drüben aufmachen?",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "Ahm, welcher Ordner ist das genau?"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {
+    "marker": [
+     "Antwort 1: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.368,
+   "ttfat_s": 1.368,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5467,
+   "ausgabe_tokens": 11,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 2.38
+  },
+  {
+   "id": "r03",
+   "kategorie": "rueckfrage",
+   "eingabe": "Schick die Mail an den Kunden.",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [
+    {
+     "name": "fenster_auflisten",
+     "args": {}
+    },
+    {
+     "name": "fenster_fokussieren",
+     "args": {
+      "fenster": "Outlook"
+     }
+    },
+    {
+     "name": "bildschirm_ansehen",
+     "args": {
+      "frage": "Was steht in der aktuellen E-Mail? Wer ist der Empfänger, was ist Betreff und Text?"
+     }
+    }
+   ],
+   "antworten": [
+    "Moment, ich schau kurz, was an Fenster offen ist.",
+    "Outlook ist schon offen. Moment, ich hol's nach vorne und schaue mir die Mail an.",
+    "",
+    "Hmm, seltsam, Outlook war gerade vorn. Ich schau nochmal."
+   ],
+   "werkzeug_ok": false,
+   "marker_ok": false,
+   "format_ok": true,
+   "inhalt_ok": false,
+   "gruende": {
+    "werkzeug": [
+     "unerwartet: fenster_auflisten",
+     "unerwartet: fenster_fokussieren",
+     "unerwartet: bildschirm_ansehen"
+    ],
+    "marker": [
+     "Antwort 1: kein Marker",
+     "Antwort 2: kein Marker",
+     "Antwort 4: kein Marker"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.371,
+   "ttfat_s": 1.371,
+   "ttft_folge_s": [
+    0.49,
+    2.154,
+    0.36
+   ],
+   "gen_tokens": 83,
+   "gen_s": 3.17,
+   "denkphase": false,
+   "eingabe_tokens": 22614,
+   "ausgabe_tokens": 150,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 9.16
+  },
+  {
+   "id": "i01",
+   "kategorie": "satzende",
+   "eingabe": "Kannst du mir mal die",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "◐"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.603,
+   "ttfat_s": null,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5461,
+   "ausgabe_tokens": 3,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.82
+  },
+  {
+   "id": "i02",
+   "kategorie": "satzende",
+   "eingabe": "Ich bräuchte für morgen um",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "◐"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.495,
+   "ttfat_s": null,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5461,
+   "ausgabe_tokens": 3,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.7
+  },
+  {
+   "id": "i03",
+   "kategorie": "satzende",
+   "eingabe": "Warte, ich muss kurz nachdenken.",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "○"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.376,
+   "ttfat_s": null,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5463,
+   "ausgabe_tokens": 2,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.7
+  },
+  {
+   "id": "i04",
+   "kategorie": "satzende",
+   "eingabe": "Puh, das ist schwierig.",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "○"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.4,
+   "ttfat_s": null,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5491,
+   "ausgabe_tokens": 2,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.73
+  },
+  {
+   "id": "i05",
+   "kategorie": "satzende",
+   "eingabe": "Öffne mal bitte den",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "◐"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.51,
+   "ttfat_s": null,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5460,
+   "ausgabe_tokens": 3,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.72
+  },
+  {
+   "id": "u01",
+   "kategorie": "unterbrechung",
+   "eingabe": "Ah, okay. Und wo läuft das?",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Ah, richtig, das hab ich noch fertig machen wollen: Supabase läuft bei Projekt Alpha auf Sokrates-2, dem internen Host der WAMOCON."
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": true,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.422,
+   "ttfat_s": 1.546,
+   "ttft_folge_s": [],
+   "gen_tokens": 34,
+   "gen_s": 1.827,
+   "denkphase": false,
+   "eingabe_tokens": 5555,
+   "ausgabe_tokens": 35,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 3.46
+  },
+  {
+   "id": "u02",
+   "kategorie": "unterbrechung",
+   "eingabe": "Mhm, kürzer bitte.",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Okay, kurz: Kubernetes nimmt deine Container und verteilt sie automatisch auf eine Gruppe von Maschinen. Es regelt, wo was läuft, wenn etwas stirbt, neu hochzieht und bei mehr Last mehr Instanzen startet. Du sagst „ich brauche drei Instanzen dieser App\", und K8s kümmert sich um den Rest.\n\nFür euch mit Supabase auf Sokrates-2 ist das typisch der nächste Schritt, wenn die Container nur auf einer Maschine laufen und das nicht mehr reicht. Brauchst du das konkret für ein Projekt, oder ist es eher so allgemein?"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": false,
+   "inhalt_ok": null,
+   "gruende": {
+    "format": [
+     "Antwort 1: zu lang (511 Zeichen)",
+     "Antwort 1: zu viele Sätze (5)"
+    ]
+   },
+   "infrastruktur": [],
+   "ttft_s": 1.441,
+   "ttfat_s": 1.561,
+   "ttft_folge_s": [],
+   "gen_tokens": 121,
+   "gen_s": 7.404,
+   "denkphase": false,
+   "eingabe_tokens": 5562,
+   "ausgabe_tokens": 122,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 9.04
+  },
+  {
+   "id": "u03",
+   "kategorie": "unterbrechung",
+   "eingabe": "Genau, danke.",
+   "mit_werkzeug": false,
+   "muss": false,
+   "aufrufe": [],
+   "antworten": [
+    "● Perf"
+   ],
+   "werkzeug_ok": true,
+   "marker_ok": true,
+   "format_ok": true,
+   "inhalt_ok": null,
+   "gruende": {},
+   "infrastruktur": [],
+   "ttft_s": 1.44,
+   "ttfat_s": 1.562,
+   "ttft_folge_s": [],
+   "gen_tokens": 0,
+   "gen_s": 0.0,
+   "denkphase": false,
+   "eingabe_tokens": 5554,
+   "ausgabe_tokens": 3,
+   "cache_lesen": 0,
+   "cache_schreiben": 0,
+   "kosten_usd": null,
+   "kosten_kalt_usd": null,
+   "modell_bedient": "qwen3.8-27b",
+   "messfehler": 0,
+   "dauer_s": 1.89
+  }
+ ]
+}

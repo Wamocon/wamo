@@ -67,12 +67,16 @@ import faelle  # noqa: E402
 from llm_anbieter import (  # noqa: E402
     LLMFehler,
     Wahl,
-    anthropic_client,
+    Zugang,
     claude_standardmodell,
     gespraech_dienst,
     litellm_extra,
+    ausblenden_text,
+    ausgeblendet,
     litellm_modelle,
     litellm_problem,
+    log_schutz_einrichten,
+    sichtbare_modelle,
 )
 from messung import Messung, Sammler, messen  # noqa: E402
 from persona import build_system_prompt  # noqa: E402
@@ -145,7 +149,7 @@ def konfiguration(llm, wahl: Wahl) -> dict:
     if wahl.anbieter == "claude":
         thinking = s.thinking.model_dump(exclude_unset=True) if getattr(s, "thinking", None) else None
         return {"thinking": thinking, "prompt_caching": bool(s.enable_prompt_caching), "max_tokens": s.max_tokens,
-                "sdk_wiederholungen": anthropic_client().max_retries, "temperatur": "Standard"}
+                "sdk_wiederholungen": llm._client.max_retries, "temperatur": "Standard"}
     return {"extra": litellm_extra(), "sdk_wiederholungen": llm._client.max_retries,
             "timeout_s": llm._client.timeout.read, "temperatur": "Standard", "seed": "keiner"}
 
@@ -192,7 +196,8 @@ async def _zug(task, context, sammler, messungen, fall) -> tuple[float, list[Mes
 
 
 async def lauf_ausfuehren(wahl: Wahl, faelle_liste: list[faelle.Fall], pause: float, max_kosten: float) -> Lauf:
-    llm = gespraech_dienst(wahl, system_prompt())
+    # Werkzeug des Betreibers: Claude läuft mit ANTHROPIC_API_KEY, nie mit dem Schlüssel eines Profils
+    llm = gespraech_dienst(wahl, system_prompt(), Zugang.betreiber())
     messungen: list[Messung] = []
     messen(llm, wahl.anbieter, messungen)
     sammler = Sammler(llm)
@@ -234,9 +239,11 @@ async def lauf_ausfuehren(wahl: Wahl, faelle_liste: list[faelle.Fall], pause: fl
             zeichen = "ok" if zug.werkzeug_ok and zug.marker_ok else "FEHLER"
             ttft = f"{zug.ttft_s:.2f}s" if zug.ttft_s is not None else "-"
             gruende = "; ".join(chain.from_iterable(zug.gruende.values()))
-            print(f"  {fall.id:4} {zeichen:6} erstes Token {ttft:>6}  {gruende[:110]}")
+            denken = " Denkphase" if zug.denkphase else ""
+            print(f"  {fall.id:4} {zeichen:6} erstes Token {ttft:>6}  Eingabe {zug.eingabe_tokens:>6} Tokens{denken}  "
+                  f"{gruende[:100]}")
             if zeichen != "ok" and zug.antworten:
-                print(f"       letzte Antwort: {zug.antworten[-1][:100]!r}")
+                print(f"       letzte Antwort: {ausblenden_text(zug.antworten[-1][:100])!r}")
             fehler_in_folge = fehler_in_folge + 1 if zug.infrastruktur else 0
             if fehler_in_folge >= MAX_FEHLER_IN_FOLGE:
                 lauf.abbruch = f"{MAX_FEHLER_IN_FOLGE} Fehler in Folge ({zug.infrastruktur[0]})"
@@ -297,7 +304,7 @@ def zug_auswerten(
         cache_schreiben=summe["cache_schreiben"],
         kosten_usd=round(kosten, 6) if kosten is not None else None,
         kosten_kalt_usd=round(kalt, 6) if kalt is not None else None,
-        modell_bedient=next((m.modell for m in messungen if m.modell), ""),
+        modell_bedient=ausblenden_text(next((m.modell for m in messungen if m.modell), "")),
         messfehler=sum(m.fehler for m in messungen),
         dauer_s=round(dauer, 2),
     )
@@ -327,7 +334,9 @@ def speichern(lauf: Lauf, k: dict, hashes: dict, notiz: str = "") -> Path:
         "kennzahlen": k,
         "zuege": [asdict(z) for z in lauf.zuege],
     }
-    pfad.write_text(json.dumps(daten, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    text = ausblenden_text(json.dumps(daten, ensure_ascii=False, indent=1))  # auch in Modellantworten
+    json.loads(text)  # das Ersetzen darf die Datei nicht beschädigen
+    pfad.write_text(text + "\n", encoding="utf-8")
     return pfad
 
 
@@ -336,7 +345,7 @@ def speichern(lauf: Lauf, k: dict, hashes: dict, notiz: str = "") -> Path:
 
 async def _modelle_im_haus() -> list[str]:
     try:
-        return await litellm_modelle(timeout=10)
+        return sichtbare_modelle(await litellm_modelle(timeout=10))  # WAMO_LLM_AUSBLENDEN
     except LLMFehler as e:
         raise SystemExit(f"LiteLLM: {e}") from None
 
@@ -358,7 +367,8 @@ async def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Marker und Umlaute in der Windows-Konsole
     logger.remove()
-    logger.add(sys.stderr, level="WARNING")
+    log_schutz_einrichten()  # Schlüssel schwärzen und fremde Aliase ausblenden, auch in Pipecat-Meldungen
+    logger.add(sys.stderr, level="WARNING", diagnose=False)
     hashes = aktuelle_hashes()
 
     if args.liste:
@@ -381,6 +391,8 @@ async def main() -> None:
         if ausgelassen := sorted(set(alle) - set(modelle)):
             print(f"Ausgelassen (kein Chat-Modell): {', '.join(ausgelassen)}")
     elif args.modell:
+        if ausgeblendet(args.modell):
+            raise SystemExit("Dieses Modell ist über WAMO_LLM_AUSBLENDEN ausgeblendet")
         modelle = [args.modell]
     else:
         p.error("--modell oder --alle fehlt")
@@ -404,7 +416,7 @@ async def main() -> None:
             k = bewertung.kennzahlen(lauf.zuege, len(auswahl))
             print(json.dumps({x: k[x] for x in ("werkzeug_quote", "marker_quote", "format_quote", "muss_fehler",
                                                 "ttft_p50_s", "ttft_p95_s", "ttfat_p95_s", "tokens_pro_s",
-                                                "kosten_usd", "freigabe")}, ensure_ascii=False))
+                                                "denkphase_zuege", "kosten_usd", "freigabe")}, ensure_ascii=False))
             if not args.faelle:
                 print(speichern(lauf, k, hashes, args.notiz))
             if lauf.abbruch:

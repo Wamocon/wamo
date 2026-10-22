@@ -1,0 +1,35 @@
+# WAMO-Oberfläche (Container wamo-ui auf Sokrates-2) über HTTPS. Vorlage: wamo-ui-einrichten.sh setzt die Platzhalter
+# aus /home/wamocon/wamo-ui/wamo-ui.conf ein und installiert das Ergebnis als wamo-ui.caddy nach
+# /home/wamocon/wamo-tls/caddy/etc/kern/ (die Datei wird vom Caddyfile über "import /etc/caddy/kern/*.caddy" geladen).
+# Rückweg: wamo-ui-rueckweg.sh (Datei weg, caddy reload).
+#
+# Platzhalter (nie von Hand ändern, sondern in wamo-ui.conf und das Skript neu ausführen):
+#   __ADRESSE__   Site-Adresse, z. B. https://192.168.178.136:55445 (Variante A) oder https://wamo.example.org:55445
+#   __TLS__       "tls internal" (Zertifikat der WAMO-CA, Variante A) oder die tls-Zeile für ein öffentliches Zertifikat
+#   __HSTS__      leer oder die Zeile Strict-Transport-Security (nur sinnvoll bei einem Domainnamen, nicht bei einer IP)
+#
+# Die Sicherheitsheader der Seite (CSP, Referrer-Policy, X-Content-Type-Options, X-Frame-Options, Permissions-Policy)
+# setzt Next.js selbst (ui/next.config.ts); die CSP kennt nur Anmeldung und Büro-Kern, die zur Build-Zeit festgelegt wurden.
+__ADRESSE__ {
+	__TLS__
+	encode zstd gzip
+	# Die Oberfläche wird nur gelesen. Alles andere (Server Actions, POST) gibt es nicht.
+	@schreibend not method GET HEAD
+	respond @schreibend "Methode nicht erlaubt" 405
+	request_body {
+		max_size 1KB
+	}
+	header {
+		-Server
+		-X-Powered-By
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		__HSTS__
+	}
+	reverse_proxy wamo-ui:3000 {
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 30s
+		}
+	}
+}
