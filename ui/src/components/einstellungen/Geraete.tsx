@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { StatusDetails } from "@/components/Statusleiste";
 import {
   BETRIEBSARTEN,
@@ -13,6 +13,7 @@ import {
 import { pcAutoSetzen, usePcAuto } from "@/lib/einstellungen";
 import { geraeteBloecke, geraeteStandText } from "@/lib/einstellungenAbschnitte";
 import { useDesktopApp, useServerBrowser } from "@/lib/geraet";
+import { nachbar } from "@/lib/modellwahl";
 import { geraeteAnzeige } from "@/lib/geraeteAnzeige";
 import { useSelect } from "@/lib/store";
 import { istOnline, wamo, zeigeToast } from "@/lib/wamo";
@@ -102,7 +103,9 @@ function PcSchalterKnopf({
       <span className="pc-switch-bahn" aria-hidden="true">
         <span className="pc-switch-knopf" />
       </span>
-      PC-Steuerung {an ? "an" : "aus"}
+      {/* feste Beschriftung, der Zustand steht in aria-checked; der sichtbare Zusatz wird nicht doppelt vorgelesen */}
+      <span>PC-Steuerung</span>
+      <span aria-hidden="true">{an ? "an" : "aus"}</span>
     </button>
   );
 }
@@ -116,6 +119,7 @@ const BetriebsartWahl = memo(function BetriebsartWahl() {
   const offline = useSelect(wamo, (s) => s.presence === "offline");
   const [laeuft, setLaeuft] = useState(false);
   const serverBrowser = useServerBrowser();
+  const knoepfe = useRef<(HTMLButtonElement | null)[]>([]);
   if (!BUERO_VERFUEGBAR || serverBrowser) return null; // Browser auf dem Server: nur Büro, nichts zu wählen
   const waehle = (neu: Betriebsart) => {
     if (neu === art || !offline || laeuft) return;
@@ -125,18 +129,31 @@ const BetriebsartWahl = memo(function BetriebsartWahl() {
       .catch(() => zeigeToast("Betriebsart konnte nicht umgeschaltet werden"))
       .finally(() => setLaeuft(false));
   };
+  // Radiogruppe nach WAI-ARIA wie ModellWahl: ein Tabstopp, Pfeiltasten wählen, Home und Ende springen
+  const taste = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const ziel = nachbar(index, e.key, BETRIEBSARTEN.length);
+    if (ziel === null) return;
+    e.preventDefault();
+    knoepfe.current[ziel]?.focus();
+    waehle(BETRIEBSARTEN[ziel]);
+  };
   return (
     <div className="betriebsart">
       <div className="betriebsart-wahl" role="radiogroup" aria-label="Betriebsart">
-        {BETRIEBSARTEN.map((a) => (
+        {BETRIEBSARTEN.map((a, i) => (
           <button
             key={a}
+            ref={(el) => {
+              knoepfe.current[i] = el;
+            }}
             type="button"
             role="radio"
             aria-checked={a === art}
             data-an={a === art || undefined}
+            tabIndex={a === art ? 0 : -1}
             disabled={!offline || laeuft}
             onClick={() => waehle(a)}
+            onKeyDown={(e) => taste(e, i)}
           >
             {KERN[a].name}
           </button>

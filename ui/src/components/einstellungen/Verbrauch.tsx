@@ -19,9 +19,14 @@ import { Block } from "./Block";
 
 function Limit({ z }: { z: VerbrauchZeile }) {
   return (
-    <li className="ez-limit" data-status={z.status ?? undefined} data-gemeldet={z.gemeldet || undefined}>
+    <li
+      className="ez-limit"
+      data-status={z.status ?? undefined}
+      data-gemeldet={z.gemeldet || undefined}
+      data-veraltet={z.veraltet || undefined}
+    >
       <div className="ez-limit-kopf">
-        <h4 className="ez-limit-titel">{z.titel}</h4>
+        <h5 className="ez-limit-titel">{z.titel}</h5>
         <span className="ez-limit-art">{z.erklaerung}</span>
       </div>
       <div className="ez-bahn" aria-hidden="true">
@@ -29,7 +34,7 @@ function Limit({ z }: { z: VerbrauchZeile }) {
       </div>
       <dl className="ez-daten ez-limit-daten">
         <div>
-          <dt>Genutzt</dt>
+          <dt>{z.veraltet ? "Zuletzt gemeldet" : "Genutzt"}</dt>
           <dd className="num">
             {z.prozentText}
             {z.statusText && <span className="ez-limit-status">, {z.statusText}</span>}
@@ -41,7 +46,7 @@ function Limit({ z }: { z: VerbrauchZeile }) {
             {z.zuruecksetzen ? (
               z.zuruecksetzen.vorbei ? (
                 <>
-                  {z.zuruecksetzen.absolut} ({z.zuruecksetzen.relativ}). Das Fenster ist schon zurückgesetzt, der Wert ist veraltet.
+                  {z.zuruecksetzen.absolut} ({z.zuruecksetzen.relativ}). Das Fenster hat sich schon zurückgesetzt, der Wert gilt nicht mehr.
                 </>
               ) : (
                 <>

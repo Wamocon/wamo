@@ -33,8 +33,9 @@ const ART_TEXT: Record<string, string> = {
   scan_fertig: "Scan",
 };
 
-const KEINE: Hinweis[] = [];
-const offene = createStore<Hinweis[]>(KEINE);
+type Stand = { liste: Hinweis[]; /** laedt: noch kein Abruf gelungen; fehler: der letzte Abruf ging schief (die Liste ist dann ein älterer Stand) */ lage: "laedt" | "ok" | "fehler" };
+const KEINE: Stand = { liste: [], lage: "laedt" };
+const offene = createStore<Stand>(KEINE);
 const stand = {
   runde: 0, // gegen Überholen: nur die Antwort der letzten Anfrage zählt
   quittiert: new Set<string>(),
@@ -58,16 +59,17 @@ async function laden() {
     stand.bekannt = new Set(offen.map((h) => h.id));
     if (neu.length === 1) zeigeToast(`Neuer Hinweis: ${neu[0].titel}`);
     else if (neu.length > 1) zeigeToast(`${neu.length} neue Hinweise`);
-    offene.set(() => offen);
+    offene.set(() => ({ liste: offen, lage: "ok" }));
   } catch {
-    // Kern ohne Schnittstelle (älterer Stand) oder gerade nicht erreichbar: nichts anzeigen
+    // Kern ohne Schnittstelle (älterer Stand) oder gerade nicht erreichbar: die Karten oben bleiben still
+    if (meine === stand.runde) offene.set((alt) => (alt.lage === "fehler" ? alt : { ...alt, lage: "fehler" }));
   }
 }
 
 async function gelesen(ids: string[]) {
   ids.forEach((id) => stand.quittiert.add(id));
   stand.runde++; // eine gerade laufende Abfrage darf sie nicht zurückholen
-  offene.set((h) => h.filter((x) => !ids.includes(x.id)));
+  offene.set((alt) => ({ ...alt, liste: alt.liste.filter((x) => !ids.includes(x.id)) }));
   const fehlgeschlagen = await Promise.allSettled(
     ids.map((id) => kernJson(`/hinweise/${encodeURIComponent(id)}/gelesen`, "POST")),
   );
@@ -78,7 +80,7 @@ async function gelesen(ids: string[]) {
 }
 
 export const Hinweise = memo(function Hinweise() {
-  const hinweise = useSelect(offene, (h) => h);
+  const hinweise = useSelect(offene, (s) => s.liste);
 
   useEffect(() => {
     void laden();
@@ -131,13 +133,39 @@ function HinweisKarte({ h }: { h: Hinweis }) {
 
 /** Alle offenen Hinweise ohne Begrenzung (Einstellungsseite, Info). Lädt nicht selbst, sondern zeigt den Stand der Hauptansicht. */
 export const HinweiseListe = memo(function HinweiseListe() {
-  const hinweise = useSelect(offene, (h) => h);
-  if (!hinweise.length) return <p className="ez-leer">Keine offenen Hinweise.</p>;
+  const hinweise = useSelect(offene, (s) => s.liste);
+  const lage = useSelect(offene, (s) => s.lage);
+  if (!hinweise.length) {
+    return (
+      <p className="ez-leer" role="status">
+        {lage === "laedt"
+          ? "Hinweise werden geladen …"
+          : lage === "fehler"
+            ? "Die Hinweise sind gerade nicht erreichbar."
+            : "Keine offenen Hinweise."}
+      </p>
+    );
+  }
   return (
     <div className="hinweise">
       {hinweise.map((h) => (
         <HinweisKarte key={h.id} h={h} />
       ))}
     </div>
+  );
+});
+
+/** Eine Zeile mit der Zahl offener Hinweise für die Meldungen der Einstellungen; die Karten selbst stehen im Gespräch. */
+export const HinweiseZaehler = memo(function HinweiseZaehler({ onAnsehen }: { onAnsehen: () => void }) {
+  const anzahl = useSelect(offene, (s) => s.liste.length);
+  if (!anzahl) return null;
+  return (
+    <p className="hinweis-toast" role="status">
+      <span className="dot dot-rot" aria-hidden="true" />
+      {anzahl === 1 ? "Ein offener Hinweis" : `${anzahl} offene Hinweise`}
+      <button type="button" className="error-close" onClick={onAnsehen}>
+        Im Gespräch ansehen
+      </button>
+    </p>
   );
 });

@@ -18,6 +18,7 @@ import {
   einstellungenSchliessen,
   useEinstellungenZiel,
   useZweispaltig,
+  zurListe,
 } from "@/lib/einstellungenHash";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
@@ -35,17 +36,38 @@ import { VerbrauchAbschnitt } from "./Verbrauch";
  *
  * Bedienung: Beim Öffnen und bei jedem Wechsel springt der Fokus auf die Überschrift des Abschnitts (am Handy in der
  * Liste auf "Einstellungen"). Escape und "Zum Gespräch" schließen; am Handy führt Escape aus einem Abschnitt zuerst zur
- * Liste. Wartet etwas auf eine Entscheidung, steht oben ein Hinweis mit dem Weg zurück, denn Freigaben erscheinen nur
- * in der Kommandozentrale.
+ * Liste. Escape lässt Eingaben in Texteingaben in Ruhe (Editor, Schlüsselfelder), damit nichts verloren geht. Meldungen
+ * der Kommandozentrale (Fehler, Gemerktes, Hinweise) stehen oben in einem eigenen Streifen, weil die Kommandozentrale
+ * verborgen ist und ein Alarm dort nicht vorgelesen würde. Wartet etwas auf eine Entscheidung, steht dort auch der Weg
+ * zurück, denn Freigaben erscheinen nur in der Kommandozentrale.
  */
 
 type Props = {
   aktionen: WamoAktionen;
   email: string | null;
   onAbmelden: () => void;
-  /** kurzer Bestätigungstext (zum Beispiel "Betriebsart Büro"), sonst sähe man ihn hier nicht */
-  toast: ReactNode;
+  /** Meldungen der Kommandozentrale (Fehler, Gemerktes, Hinweise, kurze Bestätigungen), die hier sonst unsichtbar wären */
+  meldungen: ReactNode;
 };
+
+/** Ist gerade ein Popover (Profil, Status) offen? Ältere Browser kennen den Selektor nicht; dann gilt: nein. */
+function popoverOffen(): boolean {
+  try {
+    return document.querySelector(":popover-open") !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Tippt die Person gerade in einem Feld, in dem Escape etwas anderes bedeutet oder etwas verloren ginge? Mehrzeilige
+ * Texte (Editor für geteilte Dokumente) und Felder mit Inhalt (Schlüssel, Nachricht) schließen die Seite nicht.
+ */
+function tippt(ziel: EventTarget | null): boolean {
+  if (!(ziel instanceof HTMLElement)) return false;
+  if (ziel.isContentEditable || ziel instanceof HTMLTextAreaElement) return true;
+  return ziel instanceof HTMLInputElement && ziel.value !== "" && !["checkbox", "radio", "button", "submit"].includes(ziel.type);
+}
 
 function Entscheidung() {
   const offen = useSelect(wamo, offeneEntscheidungen);
@@ -57,14 +79,14 @@ function Entscheidung() {
         {offen === 1 ? "Eine Freigabe oder ein Auftrag wartet" : `${offen} Freigaben oder Aufträge warten`} auf deine
         Entscheidung.
       </p>
-      <button type="button" className="btn-secondary btn-small" onClick={einstellungenSchliessen}>
+      <button type="button" className="btn-secondary btn-small" onClick={() => einstellungenSchliessen()}>
         Zum Gespräch
       </button>
     </div>
   );
 }
 
-export function Einstellungen({ aktionen, email, onAbmelden, toast }: Props) {
+export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props) {
   const ziel = useEinstellungenZiel();
   const zweispaltig = useZweispaltig();
   const rolle = useSelect(wamo, (s) => s.profil?.rolle ?? null);
@@ -76,12 +98,17 @@ export function Einstellungen({ aktionen, email, onAbmelden, toast }: Props) {
   const abschnittsTitel = useRef<HTMLHeadingElement>(null);
   const inhalt = useRef<HTMLDivElement>(null);
 
-  // Fokus auf die Überschrift des Abschnitts (oder der Liste), Inhalt wieder nach oben
+  // Fokus auf die Überschrift des Abschnitts (oder der Liste), Inhalt wieder nach oben. Nur ein Wechsel des Abschnitts
+  // zählt: ein Drehen oder Zoomen (zweispaltig ändert sich) setzt den Fokus nicht zurück.
+  const zweispaltigRef = useRef(zweispaltig);
+  useEffect(() => {
+    zweispaltigRef.current = zweispaltig;
+  });
   useEffect(() => {
     (wirksam ? abschnittsTitel : seitenTitel).current?.focus({ preventScroll: true });
     inhalt.current?.scrollTo({ top: 0 });
-    if (!zweispaltig) window.scrollTo({ top: 0 });
-  }, [wirksam, zweispaltig]);
+    if (!zweispaltigRef.current) window.scrollTo({ top: 0 });
+  }, [wirksam]);
 
   // Browserleiste und Screenreader: wo bin ich?
   useEffect(() => {
@@ -94,7 +121,7 @@ export function Einstellungen({ aktionen, email, onAbmelden, toast }: Props) {
 
   // Escape wie "Zurück". Was sich selbst auf Escape schließt (Popover, geöffnete Formulare), geht vor.
   const zurueck = () => {
-    if (zurueckZiel(wirksam, zweispaltig) === "liste") abschnittWaehlen(null, true);
+    if (zurueckZiel(wirksam, zweispaltig) === "liste") zurListe();
     else einstellungenSchliessen();
   };
   const zurueckRef = useRef(zurueck);
@@ -104,7 +131,7 @@ export function Einstellungen({ aktionen, email, onAbmelden, toast }: Props) {
   useEffect(() => {
     const beiTaste = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
-      if (document.querySelector(":popover-open")) return;
+      if (popoverOffen() || tippt(e.target)) return;
       e.preventDefault();
       zurueckRef.current();
     };
@@ -115,7 +142,7 @@ export function Einstellungen({ aktionen, email, onAbmelden, toast }: Props) {
   const waehlen = (e: MouseEvent<HTMLAnchorElement>, id: AbschnittId) => {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
-    abschnittWaehlen(id, zweispaltig);
+    abschnittWaehlen(id);
   };
 
   const admin = rolle === "admin";
@@ -124,13 +151,14 @@ export function Einstellungen({ aktionen, email, onAbmelden, toast }: Props) {
   return (
     <main className="ez" data-ansicht={wirksam === null ? "liste" : "abschnitt"}>
       <Entscheidung />
+      <div className="ez-meldungen">{meldungen}</div>
       <div className="ez-gitter">
         <div className="ez-seite">
           <div className="ez-kopf">
             <h2 ref={seitenTitel} tabIndex={-1} className="ez-titel">
               Einstellungen
             </h2>
-            <button type="button" className="btn-secondary btn-small ez-zumgespraech" onClick={einstellungenSchliessen}>
+            <button type="button" className="btn-secondary btn-small ez-zumgespraech" onClick={() => einstellungenSchliessen()}>
               Zum Gespräch
             </button>
           </div>
@@ -154,19 +182,18 @@ export function Einstellungen({ aktionen, email, onAbmelden, toast }: Props) {
         </div>
 
         <div ref={inhalt} className="ez-inhalt">
-          {toast}
           {aktuell && wirksam && (
             <section className="ez-abschnitt" aria-labelledby="ez-h-abschnitt">
               <div className="ez-abschnitt-kopf">
                 {!zweispaltig && (
                   <div className="ez-wege">
-                    <button type="button" className="ez-zurueck" onClick={() => abschnittWaehlen(null, true)}>
+                    <button type="button" className="ez-zurueck" onClick={zurListe}>
                       <svg viewBox="0 0 16 16" aria-hidden="true">
                         <path d="M10 3L5 8l5 5" />
                       </svg>
                       Alle Einstellungen
                     </button>
-                    <button type="button" className="ez-zurueck" onClick={einstellungenSchliessen}>
+                    <button type="button" className="ez-zurueck" onClick={() => einstellungenSchliessen()}>
                       Zum Gespräch
                     </button>
                   </div>

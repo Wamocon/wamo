@@ -1,4 +1,4 @@
-import type { Kontingent, KontingentLimit } from "./nachrichten.ts";
+import { KONTINGENT_ARTEN, type Kontingent, type KontingentLimit } from "./nachrichten.ts";
 
 /**
  * Anzeigemodell für den Abschnitt "Verbrauch" (Kontingent des Max-Abos, Servernachricht "kontingent").
@@ -31,9 +31,15 @@ const ARTEN: Record<Art, { titel: string; erklaerung: string }> = {
 
 /** Diese drei zeigt die Seite immer, sobald es überhaupt Angaben gibt (fehlt eine, steht "keine Angabe" da). */
 export const STANDARD_ARTEN: readonly Art[] = ["sitzung", "woche", "fable"];
-const ALLE_ARTEN: readonly Art[] = ["sitzung", "woche", "opus", "sonnet", "fable"];
+const ALLE_ARTEN: readonly Art[] = KONTINGENT_ARTEN; // eine Quelle: die Reihenfolge des Kerns (lib/nachrichten.ts)
 
-const STATUS_TEXT = { ok: "im Rahmen", warnung: "Warnung, das Limit ist bald erreicht", erreicht: "Limit erreicht" } as const;
+type Status = NonNullable<KontingentLimit["status"]>;
+const STATUS_TEXT: Record<Status, string> = {
+  ok: "im Rahmen",
+  warnung: "Warnung, das Limit ist bald erreicht",
+  erreicht: "Limit erreicht",
+};
+const MAX_PROZENT = 1000; // wie lib/nachrichten.ts und voice-core/kontingent.py: über 100 kommt vor, mehr ist Unsinn
 
 export type Zuruecksetzen = {
   /** "heute, 15:00 Uhr", "morgen, 09:00 Uhr" oder "Samstag, 24.10.2026, 09:00 Uhr" in der Zeitzone des Geräts */
@@ -55,9 +61,12 @@ export type VerbrauchZeile = {
   prozentText: string;
   /** Füllung des Balkens, 0 bis 100 (über 100 Prozent bleibt der Balken voll) */
   balken: number;
-  status: KontingentLimit["status"] | null;
+  /** Status des Kerns; fehlt er, folgt er aus dem Prozent (ab 100 erreicht); bei einem veralteten Wert nie gesetzt */
+  status: Status | null;
   statusText: string | null;
   zuruecksetzen: Zuruecksetzen | null;
+  /** das gemeldete Fenster ist schon vorbei: Prozent und Status gelten nicht mehr, die Seite zeigt sie als "zuletzt" */
+  veraltet: boolean;
 };
 
 export type VerbrauchAnzeige = {
@@ -76,8 +85,8 @@ function mehrzahl(n: number, einzahl: string, vielzahl: string): string {
 }
 
 /** Dauer im Dativ für "in …" und "vor …", höchstens zwei Einheiten: "3 Tagen und 4 Stunden", "2 Stunden und 5 Minuten". */
-export function dauerText(ms: number): string {
-  const minuten = Math.max(0, Math.floor(ms / 60_000));
+export function dauerText(ms: number, aufrunden = false): string {
+  const minuten = Math.max(0, aufrunden ? Math.ceil(ms / 60_000) : Math.floor(ms / 60_000));
   if (minuten < 1) return "weniger als einer Minute";
   const tage = Math.floor(minuten / 1440);
   const stunden = Math.floor((minuten % 1440) / 60);
@@ -93,31 +102,54 @@ export function dauerText(ms: number): string {
 
 type Teile = { y: number; m: number; d: number; wochentag: string; stunde: string; minute: string };
 
+const formatierer = new Map<string, Intl.DateTimeFormat>();
+
+/** Formatierer je Zeitzone, einmal gebaut. Eine unbekannte Zone fällt auf die des Geräts zurück (nie ein Fehler im Render). */
+function formatiererFuer(zone: string | undefined): Intl.DateTimeFormat {
+  const schluessel = zone ?? "";
+  let f = formatierer.get(schluessel);
+  if (f === undefined) {
+    const optionen: Intl.DateTimeFormatOptions = {
+      weekday: "long",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    };
+    try {
+      f = new Intl.DateTimeFormat("de-DE", { ...optionen, timeZone: zone });
+    } catch {
+      f = zone === undefined ? new Intl.DateTimeFormat("de-DE", optionen) : formatiererFuer(undefined);
+    }
+    formatierer.set(schluessel, f);
+  }
+  return f;
+}
+
 function teileIn(datum: Date, zone: string | undefined): Teile {
-  const f = new Intl.DateTimeFormat("de-DE", {
-    timeZone: zone,
-    weekday: "long",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
   const p: Record<string, string> = {};
-  for (const t of f.formatToParts(datum)) p[t.type] = t.value;
+  for (const t of formatiererFuer(zone).formatToParts(datum)) p[t.type] = t.value;
   return { y: Number(p.year), m: Number(p.month), d: Number(p.day), wochentag: p.weekday, stunde: p.hour, minute: p.minute };
 }
 
 /**
  * Zeitpunkt (ISO 8601) für Menschen in der Zeitzone des Geräts (zone nur für Tests). null bei ungültiger Eingabe.
- * "heute, 15:00 Uhr" und "morgen, 09:00 Uhr" sind kurz, weiter weg steht Wochentag und Datum.
+ * "heute, 15:00 Uhr" und "morgen, 09:00 Uhr" sind kurz, weiter weg steht Wochentag und Datum. Die Tage werden als
+ * Kalendertage der Zone gezählt, nicht als Vielfache von 24 Stunden (Umstellung auf Winterzeit).
  */
-export function zeitpunktText(iso: string, jetzt: number, zone?: string): { absolut: string; relativ: string; vorbei: boolean } | null {
+export function zeitpunktText(iso: string, jetzt: number, zone?: string): Zuruecksetzen | null {
   const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) return null;
-  const t = teileIn(new Date(ms), zone);
-  const heute = teileIn(new Date(jetzt), zone);
+  if (!Number.isFinite(ms) || !Number.isFinite(jetzt)) return null;
+  let t: Teile;
+  let heute: Teile;
+  try {
+    t = teileIn(new Date(ms), zone);
+    heute = teileIn(new Date(jetzt), zone);
+  } catch {
+    return null; // Zeitwert außerhalb dessen, was Date darstellen kann
+  }
   const tage = Math.round((Date.UTC(t.y, t.m - 1, t.d) - Date.UTC(heute.y, heute.m - 1, heute.d)) / 86_400_000);
   const uhr = `${t.stunde}:${t.minute} Uhr`;
   const absolut =
@@ -130,17 +162,33 @@ export function zeitpunktText(iso: string, jetzt: number, zone?: string): { abso
           : `${t.wochentag}, ${zweistellig(t.d)}.${zweistellig(t.m)}.${t.y}, ${uhr}`;
   const diff = ms - jetzt;
   const vorbei = diff <= 0;
-  return { absolut, relativ: vorbei ? `vor ${dauerText(-diff)}` : `in ${dauerText(diff)}`, vorbei };
+  // Bis zum Zeitpunkt wird aufgerundet ("in 3 Stunden und 5 Minuten" bleibt, bis die Uhr 15:05 zeigt), danach abgerundet
+  return { absolut, relativ: vorbei ? `vor ${dauerText(-diff)}` : `in ${dauerText(diff, true)}`, vorbei };
 }
 
 /** Zahl mit höchstens einer Nachkommastelle und deutschem Komma. */
 const zahlText = (n: number): string => String(Math.round(n * 10) / 10).replace(".", ",");
 
+/** Das Limit mit nur den Feldern, die sich anzeigen lassen: Prozent endlich von 0 bis 1000, Zeit lesbar, Status bekannt. */
+function bereinigt(l: KontingentLimit): KontingentLimit {
+  const out: KontingentLimit = { art: l.art };
+  if (typeof l.prozent === "number" && Number.isFinite(l.prozent) && l.prozent >= 0 && l.prozent <= MAX_PROZENT) {
+    out.prozent = l.prozent;
+  }
+  if (typeof l.endet === "string" && Number.isFinite(Date.parse(l.endet))) out.endet = l.endet;
+  if (l.status !== undefined && Object.hasOwn(STATUS_TEXT, l.status)) out.status = l.status;
+  return out;
+}
+
+const verwertbar = (l: KontingentLimit): boolean => l.prozent !== undefined || l.endet !== undefined || l.status !== undefined;
+
 function zeile(art: Art, l: KontingentLimit | undefined, jetzt: number, zone: string | undefined): VerbrauchZeile {
   const info = ARTEN[art];
-  const p = l?.prozent;
-  const prozent = typeof p === "number" && Number.isFinite(p) && p >= 0 ? p : null;
-  const status = l?.status ?? null;
+  const prozent = l?.prozent ?? null;
+  const zurueck = l?.endet ? zeitpunktText(l.endet, jetzt, zone) : null;
+  const veraltet = zurueck?.vorbei === true;
+  // Der Status folgt dem Prozent, wenn beide sich widersprechen (104 % ist nie "im Rahmen"); veraltet gilt er nicht mehr
+  const status: Status | null = veraltet ? null : prozent !== null && prozent >= 100 ? "erreicht" : (l?.status ?? null);
   return {
     art,
     titel: info.titel,
@@ -150,18 +198,19 @@ function zeile(art: Art, l: KontingentLimit | undefined, jetzt: number, zone: st
     prozentText: prozent === null ? "keine Angabe" : `${zahlText(prozent)} %`,
     balken: prozent === null ? (status === "erreicht" ? 100 : 0) : Math.min(100, prozent),
     status,
-    statusText: status ? STATUS_TEXT[status] : null,
-    zuruecksetzen: l?.endet ? zeitpunktText(l.endet, jetzt, zone) : null,
+    statusText: veraltet ? "Wert veraltet" : status ? STATUS_TEXT[status] : null,
+    zuruecksetzen: zurueck,
+    veraltet,
   };
 }
 
 /**
  * Anzeigemodell aus dem Stand des Kerns. Leer, wenn es keinen Stand gibt, der Zustand unbekannt ist oder kein Limit
- * etwas Verwertbares trägt. Sonst die drei Standardarten (auch ohne Angabe) und dazu jede weitere Art, die der Kern
- * gemeldet hat, in fester Reihenfolge.
+ * etwas Verwertbares trägt (nach dem Bereinigen, nicht vorher). Sonst die drei Standardarten (auch ohne Angabe) und
+ * dazu jede weitere Art, die der Kern gemeldet hat, in fester Reihenfolge.
  */
 export function verbrauchAnzeige(k: Kontingent | null, jetzt: number, zone?: string): VerbrauchAnzeige {
-  const limits = k && k.zustand === "bekannt" ? k.limits.filter((l) => l.prozent !== undefined || l.endet !== undefined || l.status !== undefined) : [];
+  const limits = k && k.zustand === "bekannt" ? k.limits.map(bereinigt).filter(verwertbar) : [];
   if (limits.length === 0) return { leer: true, zeilen: [], stand: null, formatGeprueft: VERBRAUCH_FORMAT_GEPRUEFT };
   const nachArt = new Map(limits.map((l) => [l.art, l]));
   const arten = ALLE_ARTEN.filter((a) => STANDARD_ARTEN.includes(a) || nachArt.has(a));

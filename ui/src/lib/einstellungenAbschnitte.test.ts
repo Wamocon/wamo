@@ -34,7 +34,7 @@ test("Admin sieht alle Abschnitte, Mitglied und unbekannte Rolle nicht den Verbr
 });
 
 test("Texte der Gliederung ohne Gedankenstrich", () => {
-  for (const a of ABSCHNITTE) assert.ok(!/[–—]/.test(`${a.titel} ${a.kurz}`), a.id);
+  for (const a of ABSCHNITTE) assert.ok(!/[–—]|\s-\s/.test(`${a.titel} ${a.kurz}`), a.id);
 });
 
 test("Hash: Seite offen, mit und ohne Abschnitt", () => {
@@ -51,9 +51,19 @@ test("Hash: Unbekanntes und Fremdes ergibt nie einen Abschnitt", () => {
   for (const h of ["#einstellungen/gibtesnicht", "#einstellungen/konto/mehr", "#einstellungen//konto", "#einstellungen/%6Bonto", "#einstellungen/__proto__"]) {
     assert.deepEqual(parseHash(h), { offen: true, abschnitt: null }, h);
   }
-  for (const h of ["", "#", "#konto", "#einstellungenx", "#x/einstellungen", `#einstellungen/${"a".repeat(80)}`]) {
+  for (const h of ["", "#", "#konto", "#einstellungenx", "#x/einstellungen"]) {
     assert.deepEqual(parseHash(h), { offen: false, abschnitt: null }, h);
   }
+  // überlanger Rest: die Seite öffnet, aber nie mit einem Abschnitt (wie bei jedem anderen unbekannten Abschnitt)
+  for (const h of [`#einstellungen/${"a".repeat(80)}`, `#einstellungen/konto/${"a".repeat(80)}`]) {
+    assert.deepEqual(parseHash(h), { offen: true, abschnitt: null }, h.slice(0, 30));
+  }
+});
+
+test("Ergebnisse von parseHash sind eingefroren und lassen sich nicht verändern", () => {
+  assert.ok(Object.isFrozen(parseHash("#x")));
+  assert.ok(Object.isFrozen(parseHash("#einstellungen")));
+  assert.ok(Object.isFrozen(parseHash("#einstellungen/konto")));
 });
 
 test("hashFuer und parseHash sind zueinander umkehrbar", () => {
@@ -72,6 +82,9 @@ test("wirksamer Abschnitt: zweispaltig der erste, einspaltig die Liste", () => {
   // nicht erlaubt für diese Rolle: wie ohne Abschnitt
   assert.equal(wirksamerAbschnitt({ offen: true, abschnitt: "verbrauch" }, mitglied, true), "konto");
   assert.equal(wirksamerAbschnitt({ offen: true, abschnitt: "verbrauch" }, mitglied, false), null);
+  // keine erlaubten Abschnitte: nie ein Abschnitt
+  assert.equal(wirksamerAbschnitt({ offen: true, abschnitt: "konto" }, [], true), null);
+  assert.equal(wirksamerAbschnitt({ offen: true, abschnitt: null }, [], true), null);
 });
 
 test("Zurück: am Handy aus dem Abschnitt zur Liste, sonst zum Gespräch", () => {
@@ -111,6 +124,20 @@ test("Stand der Geräteeinrichtung als Satz", () => {
   assert.match(geraeteStandText(stand, { desktop: true, bueroBetrieb: false }).text, /Betriebsart Büro/);
 });
 
+test("Stand der Geräteeinrichtung: alle Tunnelzustände, fehlende Kennung, Fehler ohne Text", () => {
+  const buero = { desktop: true, bueroBetrieb: true };
+  const eingerichtet = (tunnel: "verbunden" | "host" | "aus" | "unbekannt" | null, kennung: string | null) =>
+    geraeteStandText({ zustand: "eingerichtet", tunnel, kennung }, buero);
+  assert.equal(eingerichtet("host", "pc-niko").art, "bereit");
+  assert.match(eingerichtet("host", "pc-niko").text, /kein Tunnel nötig/);
+  assert.equal(eingerichtet("unbekannt", null).art, "offen");
+  assert.match(eingerichtet("unbekannt", null).text, /Tunnel unbekannt/);
+  // Tunnel noch nicht gemeldet: eingerichtet, aber noch nichts weiter zu sagen
+  assert.deepEqual(eingerichtet(null, null), { text: "Eingerichtet.", art: "offen" });
+  assert.ok(!eingerichtet("verbunden", null).text.includes("Kennung"));
+  assert.match(geraeteStandText({ zustand: "fehler", tunnel: null, kennung: null }, buero).text, /fehlgeschlagen/);
+});
+
 const Z: Modellzugang = { aktion: "status", hinterlegt: false, festgelegt: false, codeHinterlegt: false };
 
 test("Kurzzeile Modellzugang: nur der Stand, nie ein Wert", () => {
@@ -121,6 +148,9 @@ test("Kurzzeile Modellzugang: nur der Stand, nie ein Wert", () => {
   assert.equal(modellzugangKurz({ ...Z, art: "haus", codeHinterlegt: true, codeEnde: "cd34" }), "Token hinterlegt");
   assert.equal(modellzugangKurz({ ...Z, art: "claude", hinterlegt: true, codeHinterlegt: true }), "Claude-Schlüssel und Token hinterlegt");
   assert.equal(modellzugangKurz({ ...Z, art: "claude", quelle: "zuordnung" }), "Schlüssel des Kerns");
+  // ohne lesbare Art ist der Stand nicht lesbar, auch ohne Fehlertext; mit Art zählt ein anhängender Fehler nicht
+  assert.equal(modellzugangKurz({ ...Z }), "Stand nicht lesbar");
+  assert.equal(modellzugangKurz({ ...Z, art: "claude", hinterlegt: true, fehler: "alter Fehler" }), "Claude-Schlüssel hinterlegt");
   const alle = [null, Z, { ...Z, hinterlegt: true, ende: "ab12" }].map(modellzugangKurz).join(" ");
   assert.ok(!alle.includes("ab12"));
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useRahmen } from "@/components/kommando/rahmenKontext";
 import { TeilenKnopf } from "@/components/Teilen";
 import {
   alsCanvasAntwort,
@@ -19,6 +20,7 @@ import {
   type Recht,
   type Teilung,
 } from "@/lib/kernApi";
+import { einstellungenSchliessen } from "@/lib/einstellungenHash";
 import { parseServerMessage } from "@/lib/nachrichten";
 import { applyServerMessage, zeigeToast } from "@/lib/wamo";
 
@@ -235,12 +237,15 @@ type Bearbeitung = { canvasId: string; antwort: CanvasAntwort; ausloeser: HTMLEl
 
 function MitMir({ teilungen, onAenderung }: { teilungen: Teilung[]; onAenderung: () => Promise<void> }) {
   const [bearbeiten, setBearbeiten] = useState<Bearbeitung | null>(null);
+  const { zeigeCanvas } = useRahmen();
 
   const oeffnen = async (canvasId: string, alsEditor: HTMLElement | null) => {
     try {
       const antwort = await canvasLaden(canvasId);
       aufsCanvas(antwort);
       if (alsEditor) setBearbeiten({ canvasId, antwort, ausloeser: alsEditor });
+      // Das Canvas liegt in der Kommandozentrale: Zum Ansehen geht die Einstellungsseite zu und das Canvas kommt in den Blick
+      else einstellungenSchliessen(zeigeCanvas);
     } catch (e) {
       zeigeToast(fehlerText(e, "Öffnen fehlgeschlagen"));
     }
@@ -399,7 +404,7 @@ function Editor({
       const neu = await canvasLaden(canvasId);
       aufsCanvas(neu);
       setBasis(neu.version);
-      setMeldung({ text: `Fassung ${neu.version} liegt jetzt auf dem Canvas. Dein Text ist noch hier.`, konflikt: false });
+      setMeldung({ text: `Fassung ${neu.version} liegt jetzt auf dem Canvas im Gespräch. Dein Text ist noch hier.`, konflikt: false });
     } catch (e) {
       setMeldung({ text: fehlerText(e, "Neu laden fehlgeschlagen"), konflikt: true });
     }
@@ -414,9 +419,9 @@ function Editor({
         void speichern();
       }}
     >
-      <h3 ref={kopf} tabIndex={-1}>
+      <h5 ref={kopf} tabIndex={-1}>
         {titel} bearbeiten (neue Fassung)
-      </h3>
+      </h5>
       <label htmlFor={`${id}-text`}>Inhalt</label>
       <textarea id={`${id}-text`} rows={14} maxLength={100_000} value={text} onChange={(e) => setText(e.target.value)} />
       {meldung && (

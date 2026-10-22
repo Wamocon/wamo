@@ -58,23 +58,25 @@ export function istAbschnittId(v: unknown): v is AbschnittId {
 // ---------- Adresse (Hash) ----------
 export const HASH_WURZEL = "einstellungen";
 
-export type HashZiel = { offen: boolean; abschnitt: AbschnittId | null };
+export type HashZiel = Readonly<{ offen: false; abschnitt: null } | { offen: true; abschnitt: AbschnittId | null }>;
 
-const GESCHLOSSEN: HashZiel = { offen: false, abschnitt: null };
+const GESCHLOSSEN: HashZiel = Object.freeze({ offen: false, abschnitt: null });
+const OFFEN_OHNE_ABSCHNITT: HashZiel = Object.freeze({ offen: true, abschnitt: null });
 
 /**
  * Hash der Adresse (mit oder ohne #) als Ziel. "#einstellungen" öffnet die Seite ohne Abschnitt,
- * "#einstellungen/modellzugang" mit Abschnitt. Alles andere, auch ein unbekannter Abschnitt oder zusätzliche Teile,
- * ergibt nie einen Abschnitt; fremde Hashes lassen die Seite geschlossen.
+ * "#einstellungen/modellzugang" mit Abschnitt. Alles andere, auch ein unbekannter Abschnitt, zusätzliche Teile oder
+ * ein überlanger Rest, öffnet die Seite ohne Abschnitt; fremde Hashes lassen sie geschlossen. Die Ergebnisse sind
+ * eingefroren und werden gemeinsam benutzt.
  */
 export function parseHash(hash: string): HashZiel {
   const roh = (hash.startsWith("#") ? hash.slice(1) : hash).toLowerCase();
-  if (roh.length > 64) return GESCHLOSSEN;
-  const teile = roh.split("/");
+  const teile = roh.split("/", 8); // mehr Teile gibt es nie; ein überlanger Hash fällt unten auf "ohne Abschnitt"
   if (teile[0] !== HASH_WURZEL) return GESCHLOSSEN;
+  if (roh.length > 64) return OFFEN_OHNE_ABSCHNITT;
   const rest = teile.slice(1).filter((t, i, alle) => !(t === "" && i === alle.length - 1)); // ein Schrägstrich am Ende zählt nicht
-  if (rest.length === 1 && istAbschnittId(rest[0])) return { offen: true, abschnitt: rest[0] };
-  return { offen: true, abschnitt: null };
+  if (rest.length === 1 && istAbschnittId(rest[0])) return Object.freeze({ offen: true, abschnitt: rest[0] });
+  return OFFEN_OHNE_ABSCHNITT;
 }
 
 /** Hash (mit #) für die Seite; ohne Abschnitt die Gliederung beziehungsweise der erste Abschnitt. */
@@ -155,8 +157,13 @@ export function geraeteStandText(
       const kennung = s.kennung ? ` Kennung ${s.kennung}.` : "";
       return { text: `Eingerichtet.${kennung}${tunnel ? ` ${tunnel}` : ""}`, art: s.tunnel === "verbunden" || s.tunnel === "host" ? "bereit" : "offen" };
     }
-    default:
+    case "nicht_noetig":
       return { text: "Noch nicht geprüft. Die Einrichtung startet nach der Anmeldung von selbst.", art: "offen" };
+    default: {
+      const unbekannt: never = s.zustand; // neue Zustände müssen hier behandelt werden
+      void unbekannt;
+      return { text: "Stand unbekannt.", art: "offen" };
+    }
   }
 }
 
@@ -167,7 +174,7 @@ export function geraeteStandText(
  */
 export function modellzugangKurz(z: Modellzugang | null): string {
   if (!z) return "wird geladen";
-  if (!z.art && z.fehler) return "Stand nicht lesbar";
+  if (!z.art) return "Stand nicht lesbar"; // der Kern hat keinen lesbaren Stand gemeldet, mit oder ohne Fehlertext
   if (z.hinterlegt && z.codeHinterlegt) return "Claude-Schlüssel und Token hinterlegt";
   if (z.hinterlegt) return "Claude-Schlüssel hinterlegt";
   if (z.codeHinterlegt) return "Token hinterlegt";

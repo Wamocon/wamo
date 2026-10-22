@@ -12,13 +12,13 @@ import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
 import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
-import { GeraetEinrichtung } from "@/components/GeraetEinrichtung";
-import { Hinweise as AdminHinweise } from "@/components/Hinweise";
+import { GeraetEinrichtung, GeraetZeile } from "@/components/GeraetEinrichtung";
+import { Hinweise as AdminHinweise, HinweiseZaehler } from "@/components/Hinweise";
 import { Kopfzeile } from "@/components/Kopfzeile";
 import type { Sitzung } from "@/components/LoginGate";
 import { MikrofonWahl } from "@/components/MikrofonWahl";
 import { Verlauf } from "@/components/Verlauf";
-import { einstellungenSchliessen, useEinstellungenZiel } from "@/lib/einstellungenHash";
+import { einstellungenSchliessen, oeffnerFuerFokus, useEinstellungenZiel } from "@/lib/einstellungenHash";
 import type { Mikrofon } from "@/lib/mikrofon";
 import { useModellzugangStandHalten } from "@/lib/modellzugangApi";
 import { useSelect } from "@/lib/store";
@@ -144,29 +144,27 @@ type MitText = WamoAktionen & { textSenden?: TextSenden };
 export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sitzung: Sitzung }) {
   const [verlaufOffen, setVerlaufOffen] = useState(false);
   const einstellungenOffen = useEinstellungenZiel().offen;
-  // Verlauf und Einstellungen schließen sich: Der Verlauf liegt über der Kommandozentrale, nicht über den Einstellungen.
-  // Beim Öffnen der Einstellungen (Zustand während des Renderns anpassen, kein Zwischenbild) geht der Verlauf zu.
+  // Beim Öffnen der Einstellungen geht der Verlauf zu (Zustand während des Renderns anpassen, kein Zwischenbild); danach
+  // lässt er sich auch über den Einstellungen öffnen, denn er liegt als Schublade über der ganzen Seite.
   const [warEinstellungenOffen, setWarEinstellungenOffen] = useState(einstellungenOffen);
   if (warEinstellungenOffen !== einstellungenOffen) {
     setWarEinstellungenOffen(einstellungenOffen);
     if (einstellungenOffen) setVerlaufOffen(false);
   }
-  const toggleVerlauf = useCallback(() => {
-    if (einstellungenOffen) {
-      einstellungenSchliessen();
-      setVerlaufOffen(true);
-    } else {
-      setVerlaufOffen((o) => !o);
-    }
-  }, [einstellungenOffen]);
+  const toggleVerlauf = useCallback(() => setVerlaufOffen((o) => !o), []);
   const schliesseVerlauf = useCallback(() => setVerlaufOffen(false), []);
   const { disconnect, connect, vergessen } = aktionen;
   // Der Stand des Modellzugangs wird einmal hier gehalten: die Seitenleiste zeigt eine Zeile daraus, die Einstellungen die Karte
   useModellzugangStandHalten(aktionen.modellzugang);
-  // Nach dem Schließen der Einstellungen (Knopf, Escape oder "Zurück" des Browsers) kehrt der Fokus zum Zahnrad zurück
+  // Nach dem Schließen der Einstellungen (Knopf, Escape oder "Zurück" des Browsers) kehrt der Fokus zu dem zurück, was
+  // sie geöffnet hat (Zahnrad oder Link), sonst zum Zahnrad. Hat die Person den Fokus schon selbst gesetzt (zum Beispiel
+  // auf "Verlauf"), bleibt er dort.
   const warOffen = useRef(false);
   useEffect(() => {
-    if (warOffen.current && !einstellungenOffen) document.getElementById(EINSTELLUNGEN_KNOPF_ID)?.focus();
+    if (warOffen.current && !einstellungenOffen) {
+      const a = document.activeElement;
+      if (!a || a === document.body) (oeffnerFuerFokus() ?? document.getElementById(EINSTELLUNGEN_KNOPF_ID))?.focus();
+    }
     warOffen.current = einstellungenOffen;
   }, [einstellungenOffen]);
   // "Rückgängig" nimmt den Eintrag auch aus der Gedächtnis-Karte, sobald er aus dem Store verschwunden ist
@@ -236,7 +234,26 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
       }
       einstellungen={
         einstellungenOffen ? (
-          <Einstellungen aktionen={aktionen} email={sitzung.email} onAbmelden={abmelden} toast={<HinweisToast />} />
+          <Einstellungen
+            aktionen={aktionen}
+            email={sitzung.email}
+            onAbmelden={abmelden}
+            meldungen={
+              <>
+                <FehlerAnzeige
+                  onRetry={retry}
+                  onAbmelden={abmelden}
+                  onSchliessen={aktionen.schliesseFehler}
+                  onMikrofone={aktionen.mikrofone}
+                  onMikrofonWaehlen={aktionen.mikrofonWaehlen}
+                />
+                <HinweisToast />
+                <GemerktHinweis onVergessen={vergesseEintrag} />
+                <HinweiseZaehler onAnsehen={() => einstellungenSchliessen()} />
+                <GeraetZeile />
+              </>
+            }
+          />
         ) : null
       }
     />

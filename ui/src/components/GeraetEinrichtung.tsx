@@ -31,7 +31,6 @@ import { kernJson } from "@/lib/kernApi";
 export const GeraetEinrichtung = memo(function GeraetEinrichtung() {
   const betriebsart = useBetriebsart();
   const [userId, setUserId] = useState<string | null>(null);
-  const anzeige = useSelect(geraeteAnzeige, (s) => s);
 
   // Benutzerkennung der Sitzung (und ihr Ende)
   useEffect(() => {
@@ -79,7 +78,14 @@ export const GeraetEinrichtung = memo(function GeraetEinrichtung() {
         void durchlauf(); // Gerätedatei ist weg: neu einrichten
         return;
       }
-      if (status) geraeteAnzeige.set(() => ({ zustand: "eingerichtet", tunnel: status.tunnel, kennung: status.kennung }));
+      if (status) {
+        // gleicher Stand: kein neues Objekt, damit die Abonnenten nicht jede Minute neu rendern
+        geraeteAnzeige.set((alt) =>
+          alt.zustand === "eingerichtet" && alt.tunnel === status.tunnel && alt.kennung === status.kennung
+            ? alt
+            : { zustand: "eingerichtet", tunnel: status.tunnel, kennung: status.kennung },
+        );
+      }
       spaeter(STATUS_INTERVALL_MS, pruefeZustand);
     };
 
@@ -109,6 +115,12 @@ export const GeraetEinrichtung = memo(function GeraetEinrichtung() {
   // Beim Abmelden bleibt kein Stand des früheren Profils zurück
   useEffect(() => () => geraeteAnzeige.set(() => GERAET_STILL), []);
 
+  return <GeraetZeile />;
+});
+
+/** Die eine Zeile zum Stand der Geräteeinrichtung (nichts, solange alles in Ordnung ist); auch in den Meldungen der Einstellungen. */
+export const GeraetZeile = memo(function GeraetZeile() {
+  const anzeige = useSelect(geraeteAnzeige, (s) => s);
   const zeile = hinweisZeile(anzeige.zustand, anzeige.text, anzeige.tunnel);
   if (!zeile) return null;
   return (

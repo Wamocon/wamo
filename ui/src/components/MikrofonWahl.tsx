@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Mikrofon } from "@/lib/mikrofon";
 import { useSelect } from "@/lib/store";
 import { wamo } from "@/lib/wamo";
@@ -8,15 +8,17 @@ import { wamo } from "@/lib/wamo";
 /**
  * Liste der angeschlossenen Mikrofone. Lädt beim Erscheinen und noch einmal, wenn Geräte kommen oder gehen
  * (devicechange). null, solange die erste Antwort aussteht. Eine Antwort, die erst nach dem Verschwinden der
- * Komponente eintrifft, wird verworfen.
+ * Komponente oder nach einem neueren Abruf eintrifft, wird verworfen.
  */
 export function useMikrofonListe(laden: () => Promise<Mikrofon[]>): Mikrofon[] | null {
   const [liste, setListe] = useState<Mikrofon[] | null>(null);
+  const lauf = useRef(0); // nur die Antwort des letzten Abrufs zählt (ein Gerät kann kommen, während ein Abruf läuft)
   useEffect(() => {
     let weg = false;
     const holen = () => {
+      const meiner = ++lauf.current;
       void laden().then((l) => {
-        if (!weg) setListe(l);
+        if (!weg && meiner === lauf.current) setListe(l);
       });
     };
     holen();

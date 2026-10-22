@@ -11,6 +11,15 @@ import {
   zeitpunktText,
 } from "./verbrauch.ts";
 
+// Voraussetzung dieser Tests: Node mit voller ICU (deutsche Wochentage, Zeitzonendaten). Ohne sie schlägt nur dieser Test
+// fehl und sagt, woran es liegt, statt dass alle Zeitangaben mit rätselhaften Texten abweichen.
+test("Voraussetzung: volle ICU mit Deutsch und Zeitzonen", () => {
+  const f = new Intl.DateTimeFormat("de-DE", { weekday: "long", timeZone: "Europe/Berlin", hour: "2-digit", hourCycle: "h23" });
+  const text = f.format(Date.parse("2026-10-22T10:00:00Z"));
+  assert.match(text, /Donnerstag/, "Node ohne volle ICU: Wochentage nicht deutsch");
+  assert.match(text, /12/, "Node ohne Zeitzonendaten: Europe/Berlin fehlt");
+});
+
 const ZONE = "Europe/Berlin";
 // 22.10.2026, 12:00 Uhr in Berlin (MESZ endet am 25.10.2026, also noch UTC+2)
 const JETZT = Date.parse("2026-10-22T10:00:00Z");
@@ -159,5 +168,86 @@ test("Dauer in Worten mit höchstens zwei Einheiten", () => {
 test("kein Gedankenstrich in den festen Texten", () => {
   const a = verbrauchAnzeige(BEKANNT, JETZT, ZONE);
   const alles = [VERBRAUCH_LEER, ...a.zeilen.flatMap((z) => [z.titel, z.erklaerung, z.statusText ?? "", z.prozentText])].join(" ");
-  assert.ok(!/[–—]/.test(alles));
+  assert.ok(!/[–—]|\s-\s/.test(alles));
+});
+
+test("Prozent und Zeit werden vor dem Prüfen auf Verwertbares bereinigt", () => {
+  for (const limits of [
+    [{ art: "sitzung", prozent: -5 }],
+    [{ art: "woche", endet: "bald" }],
+    [{ art: "fable", prozent: 1e308 }],
+    [{ art: "sitzung", prozent: 1001 }],
+    [{ art: "sitzung", prozent: Number.NaN, endet: "gestern" }],
+  ] as Kontingent["limits"][]) {
+    assert.equal(verbrauchAnzeige({ zustand: "bekannt", limits }, JETZT, ZONE).leer, true, JSON.stringify(limits));
+  }
+  // die Grenze selbst gilt noch
+  const grenze = verbrauchAnzeige({ zustand: "bekannt", limits: [{ art: "sitzung", prozent: 1000 }] }, JETZT, ZONE);
+  assert.equal(grenze.zeilen[0].prozentText, "1000 %");
+});
+
+test("ab 100 Prozent ist das Limit erreicht, auch wenn der Kern ok meldet", () => {
+  const z = verbrauchAnzeige({ zustand: "bekannt", limits: [{ art: "sitzung", prozent: 104, status: "ok" }] }, JETZT, ZONE).zeilen[0];
+  assert.equal(z.status, "erreicht");
+  assert.equal(z.statusText, "Limit erreicht");
+  assert.equal(z.balken, 100);
+});
+
+test("ein veraltetes Fenster zeigt weder erreicht noch warnung, sondern Wert veraltet", () => {
+  const k: Kontingent = {
+    zustand: "bekannt",
+    limits: [{ art: "sitzung", prozent: 100, status: "erreicht", endet: "2026-10-22T09:00:00Z" }],
+  };
+  const z = verbrauchAnzeige(k, JETZT, ZONE).zeilen[0];
+  assert.equal(z.veraltet, true);
+  assert.equal(z.status, null);
+  assert.equal(z.statusText, "Wert veraltet");
+  assert.equal(z.zuruecksetzen?.vorbei, true);
+  // ein Fenster, das noch läuft, ist nicht veraltet
+  assert.equal(verbrauchAnzeige(BEKANNT, JETZT, ZONE).zeilen[0].veraltet, false);
+});
+
+test("falsche Eingaben werfen nie: jetzt ungültig, Zeitzone unbekannt", () => {
+  const a = verbrauchAnzeige(BEKANNT, Number.NaN, ZONE);
+  assert.equal(a.leer, false);
+  assert.equal(a.zeilen[0].zuruecksetzen, null);
+  assert.equal(a.stand, null);
+  assert.equal(zeitpunktText("2026-10-22T13:05:00Z", Number.NaN, ZONE), null);
+  assert.match(zeitpunktText("2026-10-22T13:05:00Z", JETZT, "Mars/Olympus")?.absolut ?? "", /Uhr$/);
+  assert.match(zeitpunktText("2026-10-22T13:05:00Z", JETZT)?.absolut ?? "", /Uhr$/); // Zone des Geräts
+});
+
+test("weitere Art sonnet kommt in der Reihenfolge des Kerns", () => {
+  const a = verbrauchAnzeige({ zustand: "bekannt", limits: [{ art: "sonnet", prozent: 3 }] }, JETZT, ZONE);
+  assert.deepEqual(a.zeilen.map((z) => z.art), ["sitzung", "woche", "sonnet", "fable"]);
+  assert.equal(a.zeilen[2].titel, "Sonnet-Wochenlimit");
+});
+
+test("Umstellung auf Winterzeit am 25.10.2026: Kalendertage der Zone, nicht Vielfache von 24 Stunden", () => {
+  // um 03:00 Uhr MESZ springt die Uhr auf 02:00 MEZ; 00:30 Uhr am 25.10. ist 22:30Z des Vortags
+  const vorUmstellung = Date.parse("2026-10-24T22:30:00Z");
+  assert.equal(zeitpunktText("2026-10-25T00:30:00Z", vorUmstellung, ZONE)?.absolut, "heute, 02:30 Uhr");
+  assert.equal(zeitpunktText("2026-10-25T01:30:00Z", vorUmstellung, ZONE)?.absolut, "heute, 02:30 Uhr"); // dieselbe Uhrzeit, eine Stunde später
+  // 25 Stunden später ist es der nächste Kalendertag, nicht "heute"
+  assert.equal(zeitpunktText("2026-10-25T23:30:00Z", vorUmstellung, ZONE)?.absolut, "morgen, 00:30 Uhr");
+  // Sommerzeit am 28.03.2027: 02:00 Uhr MEZ springt auf 03:00 MESZ
+  const vorSommerzeit = Date.parse("2027-03-27T23:30:00Z"); // 00:30 Uhr MEZ am 28.03.
+  assert.equal(zeitpunktText("2027-03-28T00:30:00Z", vorSommerzeit, ZONE)?.absolut, "heute, 01:30 Uhr");
+  assert.equal(zeitpunktText("2027-03-28T01:30:00Z", vorSommerzeit, ZONE)?.absolut, "heute, 03:30 Uhr");
+});
+
+test("bis zum Zeitpunkt wird aufgerundet, danach abgerundet", () => {
+  assert.equal(zeitpunktText("2026-10-22T10:01:01Z", JETZT, ZONE)?.relativ, "in 2 Minuten");
+  assert.equal(zeitpunktText("2026-10-22T10:01:00Z", JETZT, ZONE)?.relativ, "in 1 Minute");
+  assert.equal(zeitpunktText("2026-10-22T09:58:59Z", JETZT, ZONE)?.relativ, "vor 1 Minute");
+});
+
+test("Dauer: Grenzen von Minuten, Stunden und Tagen", () => {
+  const min = 60_000;
+  assert.equal(dauerText(59 * min), "59 Minuten");
+  assert.equal(dauerText(61 * min), "1 Stunde und 1 Minute");
+  assert.equal(dauerText(1439 * min), "23 Stunden und 59 Minuten");
+  assert.equal(dauerText(1440 * min), "1 Tag");
+  assert.equal(dauerText(1441 * min), "1 Tag");
+  assert.equal(dauerText(61_000, true), "2 Minuten");
 });

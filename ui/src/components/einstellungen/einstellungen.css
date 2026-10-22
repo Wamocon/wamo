@@ -49,6 +49,27 @@ a.topbar-btn { text-decoration: none; color: var(--ink); }
 }
 .ez-meldung p { margin: 0; flex: 1 1 240px; font-weight: 700; }
 
+/* Meldungen der Kommandozentrale (Fehler, Gemerktes, Hinweise): die Kommandozentrale ist verborgen, hier stehen sie sichtbar */
+.ez-meldungen {
+  flex: none; display: flex; flex-direction: column; gap: 8px;
+  max-height: 40dvh; overflow-y: auto;
+  padding: 0 20px;
+}
+.ez-meldungen { padding-top: 10px; }
+/* ohne sichtbare Meldung nimmt der Streifen keinen Platz, die Live-Region (Gemerktes) bleibt aber im Baum */
+.ez-meldungen:not(:has(> :not(.memos:empty))) { padding: 0; max-height: 0; overflow: hidden; }
+.ez-meldungen > * { width: 100%; max-width: 760px; margin-inline: auto; }
+/* zweispaltig stehen die Meldungen über dem Abschnitt, in der Spalte rechts (Gliederung 320 px, Innenabstand 28 px) */
+@media (min-width: 860px) {
+  .ez-meldungen { padding-right: 28px; }
+  .ez-meldungen > * {
+    width: calc(100% - 328px); margin-left: calc(328px + max(0px, (100% - 1088px) / 2)); margin-right: 0;
+  }
+}
+.ez-meldungen .memos:empty { display: none; }
+.ez-meldungen .error, .ez-meldungen .hinweis-toast, .ez-meldungen .memo { background: var(--kz-karte); border-radius: 12px; }
+.ez-meldungen .hinweis-toast .error-close { margin-left: auto; }
+
 /* ---------- Gliederung (links) ---------- */
 .ez-seite {
   min-height: 0; overflow-y: auto; overscroll-behavior: contain;
@@ -80,7 +101,6 @@ a.topbar-btn { text-decoration: none; color: var(--ink); }
   position: relative; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   padding: 22px 28px 56px;
 }
-.ez-inhalt > .hinweis-toast { max-width: 760px; margin: 0 auto 14px; background: var(--kz-karte); border-radius: 12px; }
 .ez-abschnitt { max-width: 760px; margin: 0 auto; }
 .ez-abschnitt-kopf { display: grid; gap: 6px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--rule); }
 .ez-abschnitt-titel {
@@ -161,6 +181,9 @@ a.topbar-btn { text-decoration: none; color: var(--ink); }
 .ez-limit-daten { font-size: 15px; gap: 4px; }
 .ez-limit[data-status="warnung"], .ez-limit[data-status="erreicht"] { padding-left: 12px; box-shadow: inset 4px 0 0 var(--accent); }
 .ez-limit-status { font-weight: 400; }
+/* veralteter Wert: gedämpft und gestrichelt, dazu steht "Wert veraltet" im Text */
+.ez-limit[data-veraltet] .ez-bahn span { background: repeating-linear-gradient(135deg, var(--rule-strong) 0 6px, transparent 6px 10px); }
+.ez-limit[data-veraltet] .ez-limit-titel { color: var(--ink-soft); }
 
 /* Hinweise an Admins (Info) */
 .ez .hinweise { gap: 10px; }
@@ -172,7 +195,7 @@ a.topbar-btn { text-decoration: none; color: var(--ink); }
 .ez .pc-steuerung { gap: 12px; }
 
 /* ---------- Handy und schmale Fenster: Liste, dann Abschnitt ---------- */
-@media (max-width: 859px) {
+@media (max-width: 859.98px) { /* Gegenstück zu (min-width: 860px) in lib/einstellungenHash.ts, ohne Lücke bei Zoom */
   .ez { height: auto; min-height: calc(100dvh - var(--top)); flex: 1 0 auto; overflow: visible; background: var(--bg); }
   .ez-gitter { display: block; }
   .ez-seite { overflow: visible; padding: 16px 16px 28px; border-right: 0; }
