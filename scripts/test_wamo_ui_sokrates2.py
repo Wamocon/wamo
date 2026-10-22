@@ -289,6 +289,32 @@ def test_erlaubte_parameter_werden_angenommen(falsches_docker):
         assert docker_aufrufe == "", a
 
 
+@braucht_bash
+@pytest.mark.parametrize("args,rc_ist_zwei", [
+    ([ "v0.1.0", COMMIT, "blau"], False),
+    (["v0.1.0", COMMIT, "gruen"], False),
+    (["v0.1.0", COMMIT, "alt"], True),
+    (["0.1.0", COMMIT, "blau"], True),
+    (["v0.1.0", COMMIT[:39], "blau"], True),
+    (["v0.1.0", COMMIT, "blau", "--trocken"], False),
+    (["v0.1.0", COMMIT, "blau", "extra"], True),
+    (["v0.1.0", COMMIT], True),
+    ([], True),
+    (["umschalten"], True),            # als Schritt-Skript gibt es nur den Rückweg
+    (["status"], True),
+])
+def test_als_schritt_skript_rueckweg_ui(falsches_docker, tmp_path, args, rc_ist_zwei):
+    """Der Anker kopiert das Skript unverändert als schritte/rueckweg-ui und ruft es mit Version, Commit und Ziel auf."""
+    kopie = tmp_path / "rueckweg-ui"
+    shutil.copy(INFRA / "wamo-ui-umschalten.sh", kopie)
+    bin_, log = falsches_docker
+    umgebung = {**os.environ, "PATH": f"{bin_.as_posix()}{os.pathsep}{os.environ['PATH']}"}
+    umgebung.pop("WAMO_UI_PRAEFIX", None)
+    r = subprocess.run([BASH, kopie.as_posix(), *args], capture_output=True, text=True, env=umgebung, timeout=60)
+    assert (r.returncode == 2) == rc_ist_zwei, (args, r.returncode, r.stderr)
+    assert not log.exists() or log.read_text(encoding="utf-8") == ""
+
+
 # ---------------------------------------------------------------- Verteil-Werkzeug
 def test_bau_info_nur_gueltige_commit_ids():
     assert w.bau_info(COMMIT, True) == f"WAMO_COMMIT={COMMIT}\nWAMO_SAUBER=ja\n".encode()

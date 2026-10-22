@@ -645,23 +645,28 @@ Der Browser dort kennt nur die Betriebsart Büro (Kern auf Sokrates-2); PC-Werkz
 Oberfläche zeigt „nur in der Desktop-App verfügbar“.
 
 ```text
-Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000, Netz wamo-ui-netz (internal)──> wamo-ui (Next.js, Standalone)
+Browser ──HTTPS 55445──> wamo-caddy ──HTTP 3000, Netz wamo-ui-netz (internal)──> wamo-ui-blau  oder  wamo-ui-gruen (Next.js, Standalone)
    ├──HTTPS 55443──> wamo-caddy ──> Envoy (Anmeldung, Supabase)
    └──HTTPS 55444──> wamo-caddy ──> wamo-core (Kern, Unix-Socket); Medien als WebRTC direkt (UDP)
 ```
+
+Seit Schritt 1.1 der Selbstüberarbeitung (`docs/selbstueberarbeitung.md`, Abschnitt B) läuft die Oberfläche als zwei Container,
+von denen genau einer live ist; ein Release schaltet ohne Lücke um, der Rückweg dauert eine Sekunde (Abschnitt 12.6).
 
 ### 12.1 Bausteine
 
 | Baustein | Ort | Zweck |
 | --- | --- | --- |
-| Image und Container | `infra/sokrates2/wamo-ui/Dockerfile`, `docker-compose.yml`; auf dem Server `/home/wamocon/wamo-ui` | `npm ci`, `next build` (Standalone), Laufzeit `node:22-bookworm-slim` über Digest, arm64. Container: Benutzer `node`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, 512 MB, 1 CPU, 128 Prozesse, `restart: unless-stopped`, Healthcheck, kein veröffentlichter Port |
+| Image und Container | `infra/sokrates2/wamo-ui/Dockerfile`, `docker-compose.yml`; auf dem Server `/home/wamocon/wamo-ui` | `npm ci`, `next build` (Standalone), Laufzeit `node:22-bookworm-slim` über Digest, arm64. Zwei Container `wamo-ui-blau` und `wamo-ui-gruen` (je Farbe ein Image-Tag `wamo-ui:blau` und `wamo-ui:gruen`, dazu ein Archiv-Tag `wamo-ui:vX.Y.Z-<Commit, 12 Zeichen>`, die drei neuesten bleiben). Beide: Benutzer `node`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, 512 MB, 1 CPU, 128 Prozesse, `restart: unless-stopped`, Healthcheck auf `/version.json`, kein veröffentlichter Port |
+| Gesundheitsprobe | `ui/src/app/version.json/route.ts`, `ui/src/lib/buildInfo.ts` | `GET /version.json` liefert `{"name","version","commit","gebaut","sauber"}`: Version aus `ui/package.json`, Commit-ID, Bauzeit und der Vermerk „unverändert aus Git“ aus den Build-Argumenten (`WAMO_COMMIT`, `WAMO_BAUZEIT`, `WAMO_SAUBER`). Jeder Wert wird gegen ein enges Muster geprüft, nie ein Geheimnis. Antwort mit `Cache-Control: no-store`, bei jeder Anfrage frisch berechnet |
 | Netz | `wamo-ui-netz` (172.25.0.0/24), angelegt vom Compose von `wamo-caddy` | `internal` und ohne Adresse auf der Bridge (`inhibit_ipv4`): Der Container erreicht weder Internet noch Büro-LAN noch Dienste des Hosts (in `pruefen` geprüft: Gateway, Router, Internet, Host). Nur `wamo-caddy` hängt zusätzlich darin |
-| Caddy-Site | `wamo-ui/wamo-ui.caddy.vorlage`, installiert als `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui.caddy` | `https://192.168.178.136:55445` mit Zertifikat der WAMO-CA (`tls internal`), nur GET und HEAD, Body höchstens 1 KB, `encode`, ohne `Server` und `X-Powered-By`, COOP und CORP `same-origin`. Die übrigen Header (CSP, Referrer-Policy, nosniff, X-Frame-Options, Permissions-Policy) setzt Next.js. Kein HSTS: Browser ignorieren ihn bei einer IP-Adresse |
+| Caddy-Site | `wamo-ui/wamo-ui.caddy.vorlage`, installiert als `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui.caddy` | `https://192.168.178.136:55445` mit Zertifikat der WAMO-CA (`tls internal`), nur GET und HEAD, Body höchstens 1 KB, `encode`, ohne `Server` und `X-Powered-By`, COOP und CORP `same-origin`. Die übrigen Header (CSP, Referrer-Policy, nosniff, X-Frame-Options, Permissions-Policy) setzt Next.js. Kein HSTS: Browser ignorieren ihn bei einer IP-Adresse. Den Upstream bindet die Site über `import /etc/caddy/kern/wamo-ui-aktiv.inc` ein |
+| Include-Datei | `/home/wamocon/wamo-tls/caddy/etc/kern/wamo-ui-aktiv.inc`, erzeugt von `wamo-ui-umschalten.sh` | legt fest, welche Farbe live ist (Kopfzeilen `# live=… vorige=…` und `# seit=…`), die Gesundheitsprobe und die Rückfallebene für statische Dateien. Endung `.inc`, damit der Import `kern/*.caddy` sie nicht als Site lädt. Nie von Hand ändern |
 | Einstellungen | `/home/wamocon/wamo-ui/wamo-ui.conf` (Vorlage `wamo-ui/wamo-ui.conf.beispiel`) | `WAMO_UI_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_WAMO_KERN_BUERO`, `WAMO_UI_TLS`, `WAMO_UI_HSTS`, Anmeldedauer im Browser. Hier und nur hier stehen Adresse und Zertifikatsart; im Code der Oberfläche steht keine feste IP. Werte sind öffentlich (stehen im JavaScript), keine Geheimnisse |
 | Publishable Key | liest das Skript auf dem Server aus `/home/wamocon/supabase-wamo/.env` | als Build-Argument ohne Wert in der Befehlszeile; abgelehnt wird alles außer `sb_publishable_…` (oder ein JWT mit Rolle `anon`), nie `service_role` |
 | Firewall | Port 55445 in `WAMO-FW-LAN` (`wamo-firewall.sh`) | Loopback und Büro-LAN, übernommen per `systemctl reload wamo-firewall` ohne Lücke |
 | Erlaubte Herkunft | Drop-in `/etc/systemd/system/wamo-core.service.d/wamo-ui.conf` | ergänzt `PIPECAT_ALLOWED_ORIGINS` um `WAMO_UI_URL` (Basis ist die Liste aus `wamo-core.service`); `wamo-core.service` selbst bleibt unberührt. Wirksam nach einem Neustart von wamo-core |
-| Skripte | `wamo-ui-einrichten.sh`, `wamo-ui-rueckweg.sh`, vom PC `scripts/wamo_ui_sokrates2.py` | alle wiederholbar; prüfen den Ablageort in `~/wamo-infra` wie die übrigen Skripte |
+| Skripte | `wamo-ui-umschalten.sh` (Bauen, Umschalten, Rückweg, Schnittstelle zum Notanker), `wamo-ui-einrichten.sh`, `wamo-ui-rueckweg.sh`, vom PC `scripts/wamo_ui_sokrates2.py` | alle wiederholbar; prüfen den Ablageort in `~/wamo-infra` wie die übrigen Skripte |
 
 Supabase braucht nichts Neues: Der Envoy des Stacks antwortet auf Preflight-Anfragen mit der Herkunft der Anfrage
 (geprüft für `https://192.168.178.136:55445`). Anmeldung mit Passwort und TOTP kennt keine Weiterleitung;
@@ -674,9 +679,10 @@ Supabase braucht nichts Neues: Der Envoy des Stacks antwortet auf Preflight-Anfr
 ```bash
 # vom PC, Repo-Wurzel
 python scripts/wamo_ui_sokrates2.py verteilen --mit-firewall-und-caddy   # Quellen von ui/ (ohne node_modules, .next, .env*) und Skripte
-python scripts/wamo_ui_sokrates2.py einrichten                            # Firewall, Caddy, Image, Container, Herkunft, Prüfung
+python scripts/wamo_ui_sokrates2.py einrichten                            # Firewall, Caddy, Umschalten, Herkunft, Prüfung
 python scripts/wamo_ui_sokrates2.py einrichten --neustart                 # zusätzlich wamo-core neu starten, aber nur ohne Sitzung
-python scripts/wamo_ui_sokrates2.py bauen                                 # nach einer Änderung an ui/: nur Image und Container
+python scripts/wamo_ui_sokrates2.py verteilen && python scripts/wamo_ui_sokrates2.py umschalten   # nach einer Änderung an ui/: Release ohne Lücke
+python scripts/wamo_ui_sokrates2.py zurueck                               # Rückweg auf die vorige Farbe (eine Sekunde)
 python scripts/wamo_ui_sokrates2.py status                                # lesend; pruefen = Header, TLS, Härtung, Isolation, Ladezeit
 ```
 
@@ -688,9 +694,10 @@ python scripts/wamo_ui_sokrates2.py status                                # lese
   Journalzeile außer abgewiesenen Anfragen in den letzten 5 Minuten), sonst bricht es mit einem Hinweis ab.
 - Den Neustart von wamo-core macht nur `herkunft --neustart` und auch nur ohne Sitzung (gleiche Prüfung); sonst bleibt er ein
   offener Schritt: `ssh sokrates2 "bash ~/wamo-infra/wamo-ui-einrichten.sh herkunft --neustart"`.
-- Nach einem Update von `ui/` genügt `bauen`. Das vorige Image bleibt als `wamo-ui:vorher`, zurück geht es mit
-  `python scripts/wamo_ui_sokrates2.py zurueck`.
-- Rückweg: Abschnitt 8.
+- Nach einem Update von `ui/` genügt `verteilen` und `umschalten` (Abschnitt 12.6). Die alte Farbe läuft weiter, zurück geht es
+  mit `python scripts/wamo_ui_sokrates2.py zurueck`. `verteilen` schreibt dazu `wamo-ui/bau.info` (Commit-ID von HEAD und den
+  Vermerk, ob `ui/` und `infra/sokrates2` unverändert sind); die Oberfläche meldet beides in `/version.json`.
+- Rückweg der ganzen Oberfläche (abschalten): Abschnitt 8.
 
 ### 12.3 Ein weiterer Windows-PC (Browser, Schritt für Schritt)
 

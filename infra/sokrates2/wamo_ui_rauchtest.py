@@ -105,6 +105,8 @@ def aussen(args: argparse.Namespace) -> int:
         "COPY --from=d /usr/local/bin/docker /usr/local/bin/docker\n"
         "COPY --from=d /usr/local/libexec/docker/cli-plugins/docker-compose "
         "/usr/local/libexec/docker/cli-plugins/docker-compose\n"
+        "COPY --from=d /usr/local/libexec/docker/cli-plugins/docker-buildx "
+        "/usr/local/libexec/docker/cli-plugins/docker-buildx\n"
     )
     print("== Läufer-Image bauen (einmalig, danach aus dem Cache)")
     r = sh("docker", "build", "-q", "-t", LAEUFER_BILD, "-", eingabe=dockerfile.encode(), check=False)
@@ -139,10 +141,11 @@ def commit_von(k: int) -> str:
 
 
 class Probe:
-    __slots__ = ("t", "pfad", "status", "dauer", "commit", "fehler")
+    __slots__ = ("t", "pfad", "status", "dauer", "commit", "fehler", "wdh")
 
-    def __init__(self, t, pfad, status, dauer, commit, fehler):
+    def __init__(self, t, pfad, status, dauer, commit, fehler, wdh=0):
         self.t, self.pfad, self.status, self.dauer, self.commit, self.fehler = t, pfad, status, dauer, commit, fehler
+        self.wdh = wdh
 
 
 class Last:
@@ -173,15 +176,32 @@ class Last:
             self.lokal.c = c
         return c
 
+    def _anfrage(self, pfad: str) -> tuple[int, bytes, int]:
+        """Eine Anfrage wie ein Browser: Bricht eine wiederverwendete Verbindung ab (Caddy schließt beim Neuladen der
+        Konfiguration Ruhe-Verbindungen), wiederholt er die GET-Anfrage einmal auf einer neuen Verbindung. Das zählt als
+        Wiederholung, nicht als Fehler. Eine frische Verbindung wird nie wiederholt."""
+        for versuch in (0, 1):
+            wiederverwendet = getattr(self.lokal, "benutzt", False)
+            try:
+                c = self._verbindung()
+                c.request("GET", pfad)
+                antwort = c.getresponse()
+                koerper = antwort.read()
+                self.lokal.benutzt = True
+                return antwort.status, koerper, versuch
+            except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, http.client.CannotSendRequest,
+                    http.client.BadStatusLine):
+                self.lokal.c = None
+                self.lokal.benutzt = False
+                if not (versuch == 0 and wiederverwendet):
+                    raise
+        raise RuntimeError("unerreichbar")
+
     def _eine(self, pfad: str) -> None:
         start = time.time()
-        status, commit, fehler = 0, "", ""
+        status, commit, fehler, wdh = 0, "", "", 0
         try:
-            c = self._verbindung()
-            c.request("GET", pfad)
-            antwort = c.getresponse()
-            koerper = antwort.read()
-            status = antwort.status
+            status, koerper, wdh = self._anfrage(pfad)
             with self.sperre:
                 alt = self.alt_erlaubt
             if pfad == "/version.json":
@@ -198,8 +218,9 @@ class Last:
         except Exception as e:  # noqa: BLE001 - jede Störung zählt als Fehler
             fehler = type(e).__name__
             self.lokal.c = None
+            self.lokal.benutzt = False
         with self.sperre:
-            self.proben.append(Probe(start, pfad, status, time.time() - start, commit, fehler))
+            self.proben.append(Probe(start, pfad, status, time.time() - start, commit, fehler, wdh))
 
     def _lauf(self) -> None:
         takt = 1.0 / self.rate
@@ -235,6 +256,7 @@ class Last:
         zahl = len(ps)
         return {
             "anfragen": zahl,
+            "wiederholungen": sum(p.wdh for p in ps),
             "fehler": len(fehler),
             "fehler_arten": sorted({f"{p.pfad}:{p.fehler}" for p in fehler})[:6],
             "p50_ms": round(statistics.median(dauern) * 1000, 1) if dauern else 0,
@@ -463,7 +485,8 @@ def lauf(u: Umgebung, last: Last, b: Bericht, s: dict, args: list[str], rc_soll:
     b.pruefe(s, r.returncode == rc_soll, f"Rückgabewert {r.returncode} (erwartet {rc_soll}), Dauer {t1 - t0:.1f} s")
     if r.returncode != rc_soll:
         print(ausgabe_kurz(r))
-    print(f"    Last: {f['anfragen']} Anfragen, {f['fehler']} Fehler, p50 {f['p50_ms']} ms, p95 {f['p95_ms']} ms, "
+    print(f"    Last: {f['anfragen']} Anfragen, {f['fehler']} Fehler, {f['wiederholungen']} Wiederholungen einer abgebrochenen "
+          f"Ruhe-Verbindung (wie im Browser), p50 {f['p50_ms']} ms, p95 {f['p95_ms']} ms, "
           f"max {f['max_ms']} ms {f['fehler_arten'] if f['fehler'] else ''}", flush=True)
     if sollnull:
         b.sollnull_fehler += f["fehler"]
@@ -580,7 +603,7 @@ def _ablauf(u: Umgebung, b: Bericht, kern: KernAttrappe, last: Last, nur: str) -
     # ---- Release
     s = b.neu("Release: Fassung 0.1.1 in der inaktiven Farbe gruen, Umschalten, Bewährung")
     c2 = u.fassung_bereit(2)
-    last.setze(chunks={"gemeinsam.js", "app-0.js", "app-1.js"})
+    last.setze(chunks={"gemeinsam.js", "app-1.js"})   # Seiten von vor zwei Fassungen (app-0) verlieren ihre Chunks, siehe README 12.6
     r, f = lauf(u, last, b, s, ["umschalten", "--bewaehrung", "6"], 0)
     b.pruefe(s, u.zustand() == ("gruen", "blau"), f"Zustand live=gruen vorige=blau ({u.zustand()})")
     b.pruefe(s, not u.existiert(u.c_alt), "der Container der früheren Fassung ist abgeräumt")
@@ -641,6 +664,8 @@ def _ablauf(u: Umgebung, b: Bericht, kern: KernAttrappe, last: Last, nur: str) -
 
     # ---- Prüfung des neuen Containers fällt durch
     s = b.neu("Prüfung vor dem Umschalten: CSP ohne Anmeldung und Kern, nichts wird umgeschaltet")
+    # Ab hier baut jeder Versuch in die inaktive Farbe (gruen, trug 0.1.1): deren Chunks (app-2) gehen mit dem Bau verloren
+    last.setze(chunks={"gemeinsam.js", "app-1.js"})
     u.fassung_bereit(3, modus="ohne-csp")
     inc = u.include()
     r, f = lauf(u, last, b, s, ["umschalten", "--bewaehrung", "3"], 3)

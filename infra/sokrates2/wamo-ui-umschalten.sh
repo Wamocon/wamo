@@ -58,6 +58,10 @@ VERSION_V_RE='^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'
 VERSION_RE='^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'
 ZAHL_RE='^[0-9]{1,4}$'
 
+# Als Schritt-Skript des Notankers installiert (Name rueckweg-ui, Aufruf: rueckweg-ui vX.Y.Z HEX40 blau|gruen) gilt genau
+# der Befehl anker-rueckweg. Der Anker kopiert dieses Skript unverändert; es braucht dafür keine weitere Datei.
+if [ "$(basename "$0")" = rueckweg-ui ]; then set -- anker-rueckweg "$@"; fi
+
 [ $# -ge 1 ] || aufruf_fehler "Befehl fehlt."
 BEFEHL="$1"; shift
 case "$BEFEHL" in
@@ -693,6 +697,8 @@ cmd_include_anlegen() {
 schloss() {
   install -d -m 755 "$BASIS"
   exec 9>"$LOCK"
+  # Legt root (Notanker) die Sperrdatei an, gehört sie danach dem Besitzer des Ordners: sonst könnte wamocon sie nicht mehr öffnen
+  if [ "$(id -u)" = 0 ]; then chown "$(stat -c '%u:%g' "$BASIS")" "$LOCK"; fi
   flock -n 9 || fehler "Ein anderer Schaltvorgang läuft gerade ($LOCK)."
 }
 
