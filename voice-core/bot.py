@@ -122,6 +122,7 @@ from soft_interrupt import (
     MeaningfulWordsUserTurnStartStrategy,
     PlaybackTracker,
     SoftInterruptGate,
+    echo_filter_an,
 )
 from soniox_tts import LazySonioxTTSService
 from tools import TurnState, gemerkt_message, register_tools
@@ -172,10 +173,13 @@ LEARN_OVERLAP = 4  # so viele frühere Zeilen als Kontext mitgeben
 SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS") or 60000)
 SUMMARY_TARGET_TOKENS = int(os.getenv("SUMMARY_TARGET_TOKENS") or 25000)
 DEFAULT_GREETING = "Hallo {name}, WAMO ist bereit."
-# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält (Standard von Pipecat 0,2 s)
-VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.2)
-# Hält Claude einen Satz für unvollständig, wartet WAMO so lange auf den Rest (Sekunden).
-SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 1.0)
+# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält (Standard von Pipecat 0,2 s).
+# 0,15 s spart 50 ms bis zum Transkript (gemessen am 21.10.2026: 308 gegen 356 ms) und trennt Sätze mit Pausen nicht
+# häufiger; Pipecat meldet einmal je Sitzung, dass der Wert vom Standard abweicht (Warnung im Log, harmlos).
+VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.15)
+# Hält Smart-Turn einen Satz für unvollständig, wartet WAMO so lange (Sekunden Stille) auf den Rest; danach entscheidet
+# Claude mit dem Satzende-Marker. Jeder unvollständige Befund kostete bis zu 0,85 s (früher 1,0 s).
+SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.5)
 TURN_INCOMPLETE_SHORT_SECS = float(os.getenv("TURN_INCOMPLETE_SHORT_SECS") or 1.5)
 TURN_INCOMPLETE_LONG_SECS = float(os.getenv("TURN_INCOMPLETE_LONG_SECS") or 3.0)  # 8 s wirkten wie ein Hänger
 # Weiche Unterbrechung: nach einem Einwurf spricht WAMO den Satz zu Ende, höchstens aber das
@@ -442,8 +446,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     is_admin = identity.is_admin
     # PC-Werkzeuge. Alter Weg: admin, im Büro zusätzlich an diesen PC gebunden (pc_host.py). Tunnel je Gerät
     # (WAMO_PC_REGISTER=an): die Sitzung bekommt nur IHREN Laptop aus dem Geräteregister, sonst keine (pc_geraet.py).
-    zugang = await pc_zugang(identity) if register_modus() else None
-    pc_enabled = zugang is not None if register_modus() else pc_host_fuer(identity)
+    geraet_zugang = await pc_zugang(identity) if register_modus() else None
+    pc_enabled = geraet_zugang is not None if register_modus() else pc_host_fuer(identity)
     entwicklung = is_admin and entwicklung_enabled()
     if entwicklung and (problem := entwicklung_problem()):
         logger.error("Entwicklungsaufträge aus: {}", problem)
@@ -452,13 +456,13 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
                    "client_ready": False, "live": True, "cleaned": False, "guard": None,
                    "pc_weg": False, "pc_tools": False, "pc_waechter": None, "geraet_wache": None,  # pc_weg: Hinweis im Prompt
-                   "geraet_ok": zugang is None, "geraet_entzogen": False,  # Tunnel je Gerät: erst nach dem Namensabgleich, nie nach einem Entzug
+                   "geraet_ok": geraet_zugang is None, "geraet_entzogen": False,  # Tunnel je Gerät: erst nach dem Namensabgleich, nie nach einem Entzug
                    "pc_name": None, "pc_belegt": False,
                    "pc_gesperrt": False, "sperr_probe": None}  # Bildschirm am PC gesperrt (Host: status=locked)
     # Kennung dieser Sitzung für die PC-Sperre (Sitzung.pc_lease_nehmen) und ihre Ablösung (sitzungen.py)
     sitzung = sitzung or Sitzung(identity.user_id)
-    if zugang is not None:
-        sitzung.geraet_id = zugang.geraet.device_id  # die PC-Sperre gilt je Gerät
+    if geraet_zugang is not None:
+        sitzung.geraet_id = geraet_zugang.geraet.device_id  # die PC-Sperre gilt je Gerät
 
     def prompt_for(recall: Recall) -> str:
         return build_system_prompt(
@@ -508,7 +512,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     context = LLMContext(tools=ToolsSchema(standard_tools=standard_tools))
 
     # PC-Werkzeuge nur für admin; im Hintergrund dazuholen (lokal per stdio, im Büro über den Tunnel).
-    pc_client = host_client(zugang) if pc_enabled else None
+    pc_client = host_client(geraet_zugang) if pc_enabled else None
 
     def pc_allowed() -> bool:
         # Abgelöst oder Sperre verloren (Büro): sofort keine PC-Aktionen mehr, auch vor dem Trennen
@@ -523,6 +527,11 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     learned_upto = 0  # bis zu diesem Index in transcript ist ausgewertet
     learn_task: asyncio.Task | None = None
     pause_short, pause_long = pause_prompts(identity.name)
+
+    soft_gate = SoftInterruptGate(
+        max_words=SOFT_INTERRUPT_MAX_WORDS,
+        playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
+    )
 
     user_agg, assistant_agg = LLMContextAggregatorPair(
         context,
@@ -547,7 +556,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 # Unterbrechen entscheidet das SoftInterruptGate, nicht die Strategie.
                 start=[
                     MeaningfulWordsUserTurnStartStrategy(
-                        min_words=MIN_INTERRUPT_WORDS, enable_interruptions=False
+                        min_words=MIN_INTERRUPT_WORDS,
+                        enable_interruptions=False,
+                        # Echo der eigenen Stimme am Mikrofon löst keine Unterbrechung aus (soft_interrupt.ist_echo)
+                        gesprochen=soft_gate.kuerzlich_gesprochen if echo_filter_an() else None,
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.
@@ -573,11 +585,6 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 ],
             ),
         ),
-    )
-
-    soft_gate = SoftInterruptGate(
-        max_words=SOFT_INTERRUPT_MAX_WORDS,
-        playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
     )
 
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
@@ -693,15 +700,15 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     async def attach_pc_tools(melde_fehler: bool = True) -> bool:
         pc = await host_tools(pc_client)
-        if pc and zugang is not None:
+        if pc and geraet_zugang is not None:
             # Plausibilität: der Host meldet denselben Rechnernamen, den das Register für das Gerät führt; sonst keine
             # Werkzeuge (fail closed, auch wenn system_info nicht antwortet)
             gemeldet = None
             with contextlib.suppress(Exception):
                 gemeldet = rechnername(await asyncio.wait_for(call_host_tool(pc_client, "system_info", {}), 5))
-            if not rechnername_passt(zugang.geraet, gemeldet):
+            if not rechnername_passt(geraet_zugang.geraet, gemeldet):
                 logger.warning("WAMO-GERAET Rechnername des Hosts passt nicht zum Gerät {}: keine PC-Werkzeuge",
-                               zugang.geraet.kennung)
+                               geraet_zugang.geraet.kennung)
                 pc = None
                 state["geraet_ok"] = False
             elif not state["geraet_entzogen"]:
@@ -721,8 +728,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 if (gesperrt := sperre_aus_ergebnis("system_info", info)) is not None:
                     await set_sperre(gesperrt)
         await set_pc("verbunden" if pc else "getrennt", latenz)
-        if pc and zugang is not None:
-            _keep(asyncio.create_task(zugang.gesehen()))  # last_seen_at, höchstens einmal je Minute
+        if pc and geraet_zugang is not None:
+            _keep(asyncio.create_task(geraet_zugang.gesehen()))  # last_seen_at, höchstens einmal je Minute
         return bool(pc)
 
     async def geraet_entzogen(grund: str) -> None:
@@ -763,8 +770,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             tools_bereit.set()
         if ist_tunnel(pc_client) and state["live"]:
             state["pc_waechter"] = _keep(asyncio.create_task(pc_client.ueberwache(pc_wechsel, set_sperre)))
-        if zugang is not None and state["live"]:
-            state["geraet_wache"] = _keep(asyncio.create_task(geraet_wache(zugang, geraet_entzogen)))
+        if geraet_zugang is not None and state["live"]:
+            state["geraet_wache"] = _keep(asyncio.create_task(geraet_wache(geraet_zugang, geraet_entzogen)))
 
     async def cache_vorwaermen() -> None:
         """Prompt-Cache vorwärmen, während die Begrüßung läuft (cache_waerme.py). Die Werkzeuge gehören zum

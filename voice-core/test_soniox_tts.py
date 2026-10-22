@@ -34,8 +34,14 @@ class StartAggregatorTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_langer_erster_satz_geht_an_der_wortgrenze_raus(self):
         out = await teile(self.neu(20), *tokens(ZAEHLEN))
-        self.assertEqual(out[0], "Eins, zwei, drei, vier,")
-        self.assertEqual(" ".join(out), ZAEHLEN, "nichts geht verloren, nichts doppelt")
+        self.assertEqual(out[0], "Eins, zwei, drei, vier, ")
+        self.assertEqual("".join(out), ZAEHLEN, "so wie Soniox den Text bekommt: nichts verloren, nichts doppelt, kein Wort verschmolzen")
+
+    async def test_fuge_mitten_im_satz_verschmilzt_keine_woerter(self):
+        text = "Das Dorf liegt mitten im Norden des Landes nahe der Grenze und ist klein."
+        for schwelle in range(5, 60, 3):
+            out = await teile(self.neu(schwelle), *tokens(text))
+            self.assertEqual("".join(out), text, f"Schwelle {schwelle}")
 
     async def test_nur_ein_fruehes_stueck_je_antwort(self):
         out = await teile(self.neu(20), *tokens(ZAEHLEN))
@@ -49,29 +55,29 @@ class StartAggregatorTest(unittest.IsolatedAsyncioTestCase):
         text = "Die Hauptstadt von Frankreich ist Paris. Das ist eine wirklich schöne und sehr große Stadt an der Seine."
         out = await teile(self.neu(68), *tokens(text))
         self.assertEqual(out[0], "Die Hauptstadt von Frankreich ist Paris.")
-        self.assertEqual(" ".join(out), text)
+        self.assertEqual("".join(out), text.replace("Paris. Das", "Paris.Das"), "Fuge am Satzende ohne Leerzeichen, wie bei Pipecat")
         self.assertGreater(len(out), 2, "der zweite Satz geht schon vor dem Satzende raus")
         self.assertLess(len(out[1]), len("Das ist eine wirklich schöne und sehr große Stadt an der Seine."))
 
     async def test_wort_wird_nie_geteilt(self):
         text = "Unglaublich zusammengesetzte Wortungetüme erreichen irgendwann die Schwelle und gehen heraus."
         out = await teile(self.neu(30), *tokens(text))
-        self.assertEqual(" ".join(out), text)
+        self.assertEqual("".join(out), text)
         for stueck in out:
-            self.assertFalse(stueck.startswith(" ") or stueck.endswith(" "))
+            self.assertFalse(stueck.startswith(" "), "kein Leerzeichen am Anfang")
 
     async def test_neue_antwort_nach_flush_beginnt_wieder_bei_null(self):
         agg = self.neu(20)
         await teile(agg, *tokens(ZAEHLEN))
         out = await teile(agg, *tokens(ZAEHLEN))
-        self.assertEqual(out[0], "Eins, zwei, drei, vier,")
+        self.assertEqual(out[0], "Eins, zwei, drei, vier, ")
 
     async def test_nach_unterbrechung_beginnt_wieder_bei_null(self):
         agg = self.neu(20)
         [a async for a in agg.aggregate("Eins, zwei, drei, vier, fünf, sechs,")]
         await agg.handle_interruption()
         out = await teile(agg, *tokens(ZAEHLEN))
-        self.assertEqual(out[0], "Eins, zwei, drei, vier,")
+        self.assertEqual(out[0], "Eins, zwei, drei, vier, ")
 
     async def test_leerraum_zaehlt_nicht(self):
         agg = self.neu(30)

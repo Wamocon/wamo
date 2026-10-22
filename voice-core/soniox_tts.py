@@ -73,7 +73,10 @@ class StartAggregator(SimpleTextAggregator):
         teil = self._text.strip()
         await SimpleTextAggregator.reset(self)  # Puffer und Vorschau leeren, Zaehler bleibt
         self._gesendet += _zeichen(teil)
-        return Aggregation(text=teil, type=AggregationType.SENTENCE)
+        # Mit Leerzeichen am Ende: Pipecat reicht den Text unverändert an Soniox, der Rest des Satzes beginnt ohne Leerzeichen.
+        # An einer Satzgrenze trennt das Satzzeichen die Teile, hier mitten im Satz müsste sonst "des" + "Landes" zu "desLandes"
+        # werden.
+        return Aggregation(text=teil + " ", type=AggregationType.SENTENCE)
 
     async def flush(self) -> Aggregation | None:
         try:
