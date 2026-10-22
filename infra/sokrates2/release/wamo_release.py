@@ -51,7 +51,7 @@ from typing import Callable
 
 from release_anker import AnkerClient, AnkerFehler
 from release_automat import (
-    ANFRAGEN_JE_TAG, ANKER_FOLGE, BEOBACHTEN, BEREITGESTELLT_AB, DB_SCHREIBBAR, DB_SPALTEN, ENDZUSTAENDE,
+    ANFRAGEN_JE_TAG, ANKER_BERUEHRT_AB, ANKER_FOLGE, BEOBACHTEN, BEREITGESTELLT_AB, DB_SCHREIBBAR, DB_SPALTEN, ENDZUSTAENDE,
     GESAMT_FRIST_S, GRUND_RE, PRUEFSTAND_PFLICHT, REIHENFOLGE, SCHUTZ_SELBST_FREIGESCHALTET, STUFE_RUNDE,
     TAG_S, UUID_RE, VERSUCHE_MAX, WAL_EREIGNISSE, WEG, ZustandDefekt, anwenden, daten_pruefen, frist_ablauf, leerer_zustand,
     naechster, zustand_pruefen,
@@ -59,7 +59,7 @@ from release_automat import (
 from release_db import Datenbank, DatenbankAbgelehnt, DatenbankFehler, DatenbankFehlt, OhneDatenbank
 from release_kette import (
     AUDIT_GRENZE_LESEN, Audit, AuditFehler, KetteDefekt, ZUSTAND_MAX, audit_ab, audit_zeilen,
-    datei_atomar_schreiben, eigene_uid, kette_pruefen, lies_datei, sauber, unsicher, zeit_iso,
+    datei_atomar_schreiben, eigene_uid, kette_pruefen, lies_datei, sauber, unsicher, zeit_iso, zeile_bauen,
 )
 from release_stufen import Ergebnis, Kontext, NichtVerfuegbar, Stufen, aufruf
 
@@ -72,8 +72,13 @@ CLIENT_ZEIT_S = 420.0
 IDS_MAX = 4096
 ABLEHN_FENSTER_S = 60.0
 ABLEHN_MAX = 20  # protokollierte Zeilen je uid, Grund und Fenster für Abweisungen und Anfragen ohne Wirkung
-AENDERN_MAX = 30  # ändernde Anfragen je uid und Fenster
-VERBINDUNGEN_MAX = 8  # gleichzeitig bediente Verbindungen erlaubter Benutzer
+AENDERN_MAX = 30  # ändernde Anfragen von root je uid und Fenster
+AENDERN_KERN_MAX = 10  # ändernde Anfragen des Kerns (und aller anderen außer root) je Fenster
+STATUS_MAX = 120  # status je uid und Fenster (jeder Aufruf fragt auch den Anker)
+AUDIT_GRENZE_AENDERN = 0.90  # bis hierhin protokolliert root ändernde Anfragen; der Kern nur bis AUDIT_GRENZE_LESEN
+INSTALLATION_ZEIT_S = 10.0  # so lange gilt die Prüfung der Prüfsummen für status
+VERBINDUNGEN_MAX = 8  # gleichzeitig bediente Verbindungen von root
+VERBINDUNGEN_KERN_MAX = 4  # gleichzeitig bediente Verbindungen des Kerns (eigener Topf: er kann root nicht aushungern)
 TOR_ZEIT_S = 3.0  # so lange gilt die Antwort des Ankers zur Sperre für den Start einer Stufe
 WARTE_S = 5.0  # Abstand, wenn eine Stufe "wartet" meldet
 SPIEGEL_WARTE_S = 10.0  # Abstand nach einem Fehler der Datenbank
@@ -92,6 +97,15 @@ except ImportError:  # pragma: no cover
 
 class Absturz(BaseException):
     """Nur für Tests: simuliert einen Absturz an einem Haken (läuft durch jedes `except Exception`)."""
+
+
+def _ort(e: BaseException) -> str:
+    """Typ und Ort (Datei:Zeile) einer Ausnahme für das Journal; nie ihr Text, denn der könnte Geheimnisse enthalten."""
+    tb = e.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    ort = f"{os.path.basename(tb.tb_frame.f_code.co_filename)}:{tb.tb_lineno}" if tb is not None else "?"
+    return f"{type(e).__name__} in {ort}"
 
 
 # ---------------------------------------------------------------- Pfade
@@ -376,6 +390,9 @@ class Dienst:
         self._abweichung: str | None = None
         self._gemeldet: set[tuple] = set()
         self._rueckweg_offen: dict | None = None
+        self._wartend: tuple | None = None  # (Kennung, Zustand, Zähler) einer Stufe, die schon "wartet" meldete
+        self._anhalten_anfrage: str | None = None  # Anfrage, die nicht weiterlaufen darf (Rückweg ohne Protokoll)
+        self._installation_stand: tuple[float, list] = (-1e9, [])
         self._speicher_fehler: str | None = None
         self._kette_stand: tuple = (None, (True, 0, "", None))
         self._halt = threading.Event()
@@ -421,10 +438,10 @@ class Dienst:
         probe = copy.deepcopy(self._z)
         anwenden(probe, zeile)
         self._haken("vor_audit")
-        n = self.audit.anhaengen(ereignis, 1.0, **{k: v for k, v in zeile.items() if k != "ereignis"})
+        n, h = self.audit.anhaengen(ereignis, 1.0, **{k: v for k, v in zeile.items() if k != "ereignis"})
         self._haken("nach_audit")
         anwenden(self._z, zeile)
-        self._z["audit_n"] = n
+        self._z["audit_n"], self._z["audit_hash"] = n, h
         self._spiegel_dran = True
         self._speichern()
         self._haken("nach_speichern")
@@ -446,46 +463,71 @@ class Dienst:
         self.protokolliere("dienst_defekt", grund=grund)
 
     # --- Start und Wiederaufnahme
-    def _zustand_laden(self) -> dict:
+    def _zustand_laden(self) -> tuple[dict, bool]:
+        """(Zustand, Datei war da). Fehlt die Datei, ist der Zustand leer; das Protokoll baut ihn dann wieder auf."""
         grund = unsicher(self.p.zustand_datei, False, self.p.uid, privat=True)
         if grund == "fehlt":
-            return leerer_zustand()  # frisch, oder verloren: dann baut das Protokoll den Zustand wieder auf
+            return leerer_zustand(), False
         try:
             daten = lies_datei(self.p.zustand_datei, ZUSTAND_MAX, self.p.uid, privat=True)
-            return zustand_pruefen(json.loads(daten.decode("utf-8"), object_pairs_hook=_keine_doppelten))
-        except (ValueError, OSError, RecursionError) as e:
-            raise ZustandDefekt(f"Zustandsdatei: {sauber(e, 60)}") from e
+            return zustand_pruefen(json.loads(daten.decode("utf-8"), object_pairs_hook=_keine_doppelten)), True
+        except (ValueError, OSError, RecursionError, TypeError, KeyError, AttributeError) as e:
+            raise ZustandDefekt(f"Zustandsdatei: {sauber(type(e).__name__, 60)}") from e
 
-    def wiederaufnehmen(self) -> None:
-        """Beim Start: Zustandsdatei laden, die Zeilen des Protokolls hinter ihrem Stand nachziehen (Write-Ahead-Log),
-        mit der Datenbank abgleichen. Ist etwas defekt, beginnt der Dienst nichts Neues (status und zurueck gehen weiter)."""
-        angewandt = 0
+    def wiederaufnehmen(self, abgleich: bool = True) -> None:
+        """Beim Start: Zustandsdatei laden und an das Protokoll binden (Hash der Zeile audit_n, Position des Spiegelstands),
+        die Zeilen hinter ihrem Stand nachziehen (Write-Ahead-Log) und mit der Datenbank abgleichen. Passt etwas nicht
+        zusammen oder ist etwas defekt, beginnt der Dienst nichts Neues (status und zurueck gehen weiter)."""
+        angewandt, neuaufbau = 0, False
         with self._lock:
             self._defekt = None
             try:
-                z = self._zustand_laden()
-                for n, obj, _h in audit_zeilen(self.p.audit, self.p.uid):
+                z, vorhanden = self._zustand_laden()
+                gebunden = z["audit_n"] == 0
+                gespiegelt = z["spiegel_n"] == 0 and z["spiegel_offset"] == 0
+                letzte_n, pos = 0, 0
+                for n, obj, h in audit_zeilen(self.p.audit, self.p.uid):
+                    pos += len(zeile_bauen(obj))  # Länge der Zeile in der Datei (Zeilen sind kanonisch geschrieben)
+                    letzte_n = n
+                    if n == z["audit_n"]:
+                        if h != z["audit_hash"]:
+                            raise ZustandDefekt("Zustandsdatei passt nicht zum Protokoll (Hash)")
+                        gebunden = True
+                    if n == z["spiegel_n"]:
+                        if pos != z["spiegel_offset"]:
+                            raise ZustandDefekt("Spiegelstand passt nicht zum Protokoll (Position)")
+                        gespiegelt = True
                     if n <= z["audit_n"]:
                         continue
                     if obj.get("ereignis") in WAL_EREIGNISSE:
                         anwenden(z, obj)
                         angewandt += 1
-                    z["audit_n"] = n
+                    z["audit_n"], z["audit_hash"] = n, h
+                if not (gebunden and gespiegelt):
+                    raise ZustandDefekt("Zustandsdatei reicht über das Ende des Protokolls hinaus (zurückgespielt oder rotiert)")
+                if not vorhanden and letzte_n > 0:  # aus dem Protokoll neu aufgebaut: den Spiegel nicht noch einmal fluten
+                    z["spiegel_n"], z["spiegel_offset"] = letzte_n, pos
+                    neuaufbau = True
             except ZustandDefekt as e:
                 self._defekt = "zustand_defekt"
-                print(f"wamo-release: {sauber(e, 80)}", file=sys.stderr)
+                print(f"wamo-release: {sauber(e, 100)}", file=sys.stderr)
             except KetteDefekt as e:
                 self._defekt = "zustand_defekt"
                 print(f"wamo-release: Protokoll defekt ({sauber(e, 80)})", file=sys.stderr)
             else:
                 self._z = z
-                if angewandt:
+                if angewandt or neuaufbau:
                     self._speichern()
             self._bereit = self._defekt is None
         if self._defekt is None:
-            self.protokolliere("dienst_start", version=VERSION, nachgezogen=angewandt or None)
-            self._abgleichen()
-            self._spiegeln()
+            self.protokolliere("dienst_start", version=VERSION, nachgezogen=angewandt or None,
+                               neu_aufgebaut=neuaufbau or None)
+            self._spiegel_dran = True
+            if abgleich:
+                self._abgleichen()
+                self._spiegeln()
+            else:
+                self._abgleich_naechster = 0.0  # die Wache gleicht ab, sobald der Socket steht
 
     # --- Gedächtnis gegen Dauerfeuer (wie im Anker)
     def _budget(self, uid: int, schluessel: str, maximum: int) -> tuple[bool, int]:
@@ -556,13 +598,16 @@ class Dienst:
         aendernd = BEFEHLE[anf.befehl].schreibend and not anf.trocken
         daten = {"uid": peer.uid, "pid": peer.pid, "benutzer": name, "id": anf.id, "befehl": anf.befehl,
                  "arg": " ".join(anf.args) or None, "trocken": anf.trocken or None}
-        protokoll = False
+        # Füllgrad-Klassen wie im Anker: Der Rückweg darf das Protokoll bis zum Ende nutzen, root ändert bis 90 Prozent, der
+        # Kern (und jeder andere) nur bis 75 Prozent. So kann kein Dauerfeuer den Rückweg oder den Zustand aussperren.
+        bis = 1.0 if anf.befehl == "zurueck" else (AUDIT_GRENZE_AENDERN if name == "root" else AUDIT_GRENZE_LESEN)
+        if anf.befehl == "status" and not self._budget(peer.uid, "status", STATUS_MAX)[0]:
+            return self._ablehnung(peer, name, "zu_viele", anf, roh)
         if aendernd:
-            if not self._budget(peer.uid, "aendern", AENDERN_MAX)[0]:
+            if not self._budget(peer.uid, "aendern", AENDERN_MAX if name == "root" else AENDERN_KERN_MAX)[0]:
                 return self._ablehnung(peer, name, "zu_viele", anf, roh)
-            protokoll = self.protokolliere("anfrage", 1.0, **daten)
-            if not protokoll and anf.befehl != "zurueck":  # der Rückweg ist der Notausgang und läuft auch ohne Protokoll
-                return self._antwort(False, "audit_nicht_schreibbar")
+            if not self.protokolliere("anfrage", bis, **daten) and anf.befehl != "zurueck":
+                return self._antwort(False, "audit_nicht_schreibbar")  # der Rückweg ist der Notausgang und läuft auch so
         else:
             erlaubt, nachlass = self._budget(peer.uid, "ohne_wirkung", ABLEHN_MAX)
             if erlaubt:
@@ -572,10 +617,10 @@ class Dienst:
         except MitCode as e:
             antwort = self._antwort(False, e.code, detail=sauber(e.detail, 80) if e.detail else None)
         except Exception as e:  # noqa: BLE001 (nie abstürzen, nie Einzelheiten nach außen)
-            print(f"wamo-release: interner Fehler {type(e).__name__}", file=sys.stderr)
+            print(f"wamo-release: interner Fehler ({_ort(e)})", file=sys.stderr)
             antwort = self._antwort(False, "intern")
         if aendernd:
-            self.protokolliere("ergebnis", 1.0, id=anf.id, befehl=anf.befehl, ok=bool(antwort.get("ok")),
+            self.protokolliere("ergebnis", bis, id=anf.id, befehl=anf.befehl, ok=bool(antwort.get("ok")),
                                grund=antwort.get("grund"))
         return antwort
 
@@ -627,8 +672,8 @@ class Dienst:
             datenbank = "fehlt"
         except DatenbankFehler:
             datenbank = "nicht_erreichbar"
-        sperre = self.anker.sperre_zustand()
-        probleme = installation_pruefen(self.p)
+        sperre = self._sperre_gecached()  # status darf den einthreadigen Anker nicht bei jedem Aufruf belasten
+        probleme = self._installation()
         arbeit = "frei" if self._arbeit_seit is None else ("haengt" if self.haenger else "beschaeftigt")
         return self._antwort(
             True, text="Release-Dienst läuft", version=VERSION, zeit=zeit_iso(self.uhr()), modus="geruest",
@@ -638,13 +683,17 @@ class Dienst:
             anker={"erreichbar": sperre != "unbekannt", "sperre": sperre}, datenbank=datenbank, arbeiter=arbeit,
             audit={"kette": "ok" if ok else "defekt", "zeilen": zeilen, "letzter_hash": letzter, "grund": grund,
                    "fuellgrad_prozent": round(self.audit.fuellgrad() * 100, 1)},
-            spiegel={"rueckstand": self._rueckstand(z), "defekt": self._spiegel_defekt or None},
+            spiegel={"rueckstand": max(0, zeilen - z["spiegel_n"]) if self._spiegel_dran else 0,
+                     "defekt": self._spiegel_defekt or None},
             abweichung=self._abweichung, rueckweg_offen=self._rueckweg_offen is not None or None,
             speicherfehler=self._speicher_fehler,
             installation="ok" if not probleme else "abweichung", installation_probleme=probleme or None)
 
-    def _rueckstand(self, z: dict) -> int:
-        return max(0, z["audit_n"] - z["spiegel_n"])
+    def _installation(self) -> list:
+        jetzt = time.monotonic()
+        if jetzt - self._installation_stand[0] >= INSTALLATION_ZEIT_S:
+            self._installation_stand = (jetzt, installation_pruefen(self.p))
+        return self._installation_stand[1]
 
     # --- anfordern
     def cmd_anfordern(self, quelle: str, profil: str) -> dict:
@@ -678,13 +727,16 @@ class Dienst:
                 raise MitCode({"23505": "belegt", "42501": "kein_admin"}.get(e.code, "datenbank_abgelehnt"),
                               e.code) from e
             self._haken("nach_db_anlegen")
+            fehler: Exception | None = None
             with self._lock:
                 try:
                     self._wal("angefordert", anfrage=kennung, profil=profil, quelle=quelle)
                 except (AuditFehler, ZustandDefekt) as e:
-                    self._verwaisung_beenden(kennung)
-                    raise MitCode("audit_nicht_schreibbar" if isinstance(e, AuditFehler) else "zustand_defekt") from e
+                    fehler = e
                 ansicht = self._ansicht(self._z["anfrage"])
+            if fehler is not None:  # die Datenbank kennt die Anfrage schon: aufräumen, aber nicht unter dem Schloss
+                self._verwaisung_beenden(kennung)
+                raise MitCode("audit_nicht_schreibbar" if isinstance(fehler, AuditFehler) else "zustand_defekt") from fehler
             self._spiegeln()
             return self._antwort(True, text="Anfrage angelegt", anfrage=ansicht)
         finally:
@@ -696,14 +748,28 @@ class Dienst:
             self.db.status_setzen(kennung, "abgebrochen", {})
 
     # --- Übergänge
+    def _unveraendert(self, a: dict) -> bool:
+        """Ist die offene Anfrage noch dieselbe, im selben Zustand und mit demselben Zähler? Der Aufrufer hält self._lock."""
+        cur = self._z["anfrage"]
+        return cur is not None and cur["id"] == a["id"] and cur["status"] == a["status"] and cur["seq"] == a["seq"]
+
+    def _anfrage_kopie(self, warte: float = 3.0) -> dict | None:
+        """Kopie der offenen Anfrage. Ist das Schloss nicht zu bekommen (Platte hängt), None: Der Rückweg wartet nicht."""
+        if not self._lock.acquire(timeout=warte):
+            return None
+        try:
+            return copy.deepcopy(self._z["anfrage"])
+        finally:
+            self._lock.release()
+
     def _uebergang(self, erwartet: dict, nach: str, beleg: str, grund: str | None = None, daten: dict | None = None,
                    detail: str | None = None) -> bool:
         """Ein Übergang mit Vergleich: Kennung, Zustand und Zähler der Anfrage müssen noch so sein wie erwartet (eine
         verspätete Stufe ändert nichts). True, wenn er stattfand. Wirft nichts; ein Fehler macht den Dienst defekt."""
         with self._lock:
-            a = self._z["anfrage"]
-            if a is None or a["id"] != erwartet["id"] or a["status"] != erwartet["status"] or a["seq"] != erwartet["seq"]:
+            if not self._unveraendert(erwartet):
                 return False
+            a = self._z["anfrage"]
             try:
                 self._wal("uebergang", anfrage=a["id"], von=a["status"], nach=nach, seq=a["seq"] + 1, beleg=beleg,
                           grund=grund, daten=daten or None, detail=sauber(detail, 40) if detail else None)
@@ -715,63 +781,104 @@ class Dienst:
         return True
 
     def _beenden(self, erwartet: dict, grund: str, beleg: str, detail: str | None = None) -> bool:
+        """Beendet die Anfrage mit einem Grund. Ab veroeffentlicht hat der Anker vielleicht schon etwas getan: Dann endet sie
+        erst nach einem gelungenen Rückweg (und nie aus dem Dienst heraus mit einem Zustand, den die Tabelle verbietet)."""
+        if REIHENFOLGE.index(erwartet["status"]) >= ANKER_BERUEHRT_AB:
+            return self._mit_rueckweg_beenden(erwartet, grund, detail)
+        if self._uebergang(erwartet, "abgebrochen", beleg, grund, None, detail):
+            self._abbruch.set()  # eine laufende Stufe soll zügig zurückkehren
+            return True
+        return False
+
+    def _mit_rueckweg_beenden(self, a: dict, grund: str, detail: str | None = None) -> bool:
+        """Rückweg über den Anker (alles), danach das Ende: abgebrochen aus veroeffentlicht, zurueckgenommen ab bereitgestellt.
+        Scheitert der Rückweg, bleibt die Anfrage offen, der Anker bekommt `sperre an`, und die Wache versucht es erneut."""
+        with self._lock:
+            if not self._unveraendert(a):
+                return False  # inzwischen hat sich etwas geändert (zum Beispiel ist sie bewährt): nichts zurückrollen
         self._abbruch.set()
-        return self._uebergang(erwartet, "abgebrochen", beleg, grund, None, detail)
+        try:
+            ant = self.anker.rueckweg("alles")
+            ok, anker_grund = ant.ok, ant.grund or "unbekannt"
+        except AnkerFehler as e:
+            ok, anker_grund = False, e.grund
+        if ok:
+            nach = "abgebrochen" if a["status"] == "veroeffentlicht" else "zurueckgenommen"
+            if self._uebergang(a, nach, "zurueck", grund, None, detail):
+                self._rueckweg_offen = None
+                return True
+            anker_grund = "uebergang"  # der Rückweg gelang, das Ende ließ sich nicht festhalten: später erneut
+        self._rueckweg_gescheitert(a, anker_grund, grund)
+        return False
 
     # --- abbrechen
     def cmd_abbrechen(self, kennung: str) -> dict:
-        with self._lock:
-            a = copy.deepcopy(self._z["anfrage"])
+        a = self._anfrage_kopie()
         if a is None:
             raise MitCode("keine_anfrage")
         if a["id"] != kennung:
             raise MitCode("falsche_anfrage")
         if REIHENFOLGE.index(a["status"]) >= BEREITGESTELLT_AB:
             raise MitCode("nicht_abbrechbar")
-        self._abbruch.set()  # eine laufende Stufe soll zügig zurückkehren
-        if not self._uebergang(a, "abgebrochen", "abbruch", "abbruch_person"):
-            raise MitCode("audit_nicht_schreibbar" if not self._defekt else "zustand_defekt")
+        if not self._beenden(a, "abbruch_person", "abbruch"):
+            if REIHENFOLGE.index(a["status"]) >= ANKER_BERUEHRT_AB:
+                raise MitCode("rueckweg_fehlgeschlagen")
+            raise MitCode("zustand_defekt" if self._defekt else "audit_nicht_schreibbar")
         self._spiegeln()
         return self._antwort(True, text="Anfrage abgebrochen", anfrage=kennung)
 
     # --- zurueck
     def cmd_zurueck(self, komponente: str, trocken: bool) -> dict:
         """Der Rückweg ist von jedem Zustand aus erreichbar: auch ohne offene Anfrage, auch mit defektem Zustand, auch mit
-        nicht beschreibbarem Protokoll. Die Arbeit macht der Anker; dieser Dienst beendet danach die offene Anfrage."""
-        with self._lock:
-            a = copy.deepcopy(self._z["anfrage"])
-        ausgerollt = a is not None and REIHENFOLGE.index(a["status"]) >= BEREITGESTELLT_AB
+        nicht beschreibbarem Protokoll, auch wenn das Schloss hängt. Die Arbeit macht der Anker; dieser Dienst beendet danach
+        die offene Anfrage: vor veroeffentlicht gibt es nichts zurückzurollen (abgebrochen), danach zählt nur ein gelungener
+        Rückweg `alles` (ein Teilrückweg lässt die Anfrage offen)."""
+        a = self._anfrage_kopie()
+        beruehrt = a is not None and REIHENFOLGE.index(a["status"]) >= ANKER_BERUEHRT_AB
         beendet = None
-        if a is not None and not ausgerollt and not trocken:
-            beendet = self._beenden(a, "zurueck", "zurueck")  # vor der Bereitstellung gibt es nichts zurückzurollen
+        hinweis = None
+        if a is not None and not beruehrt and not trocken:
+            beendet = self._beenden(a, "zurueck", "zurueck")
+            if not beendet:  # zum Beispiel Protokoll voll: die Anfrage darf nicht still weiterlaufen
+                self._anhalten_anfrage = a["id"]
+                self._auto_sperre("zurueck_ohne_protokoll", a["id"])
         try:
             ant = self.anker.rueckweg(komponente, trocken)
         except AnkerFehler as e:
-            if a is not None and ausgerollt and not trocken:
-                self._rueckweg_gescheitert(a, e.grund)
+            if beruehrt and not trocken:
+                self._rueckweg_gescheitert(a, e.grund, "zurueck")
             self._spiegeln()
             return self._antwort(False, "anker_nicht_erreichbar", detail=e.grund, anfrage_beendet=beendet or None)
-        if not trocken and a is not None and ausgerollt:
-            if ant.ok:
-                beendet = self._uebergang(a, "zurueckgenommen", "zurueck", "zurueck")
-                self._rueckweg_offen = None
+        if beruehrt and not trocken:
+            if not ant.ok:
+                self._rueckweg_gescheitert(a, ant.grund or "unbekannt", "zurueck")
+            elif komponente == "alles":
+                nach = "abgebrochen" if a["status"] == "veroeffentlicht" else "zurueckgenommen"
+                beendet = self._uebergang(a, nach, "zurueck", "zurueck")
+                if beendet:
+                    self._rueckweg_offen = None
+                    self._abbruch.set()
+                else:
+                    self._rueckweg_gescheitert(a, "uebergang", "zurueck")
             else:
-                self._rueckweg_gescheitert(a, ant.grund or "unbekannt")
+                hinweis = "Teilrückweg: Die Anfrage bleibt offen, bis der Rückweg alles gelungen ist"
         teile = ant.daten.get("teile")
         self._spiegeln()
         return self._antwort(ant.ok, None if ant.ok else "rueckweg_fehlgeschlagen",
                              text=("Trockenlauf: " if trocken else "") + ("Rückweg in Ordnung" if ant.ok else GRUENDE[
                                  "rueckweg_fehlgeschlagen"]),
                              anker_grund=ant.grund, anker_teile=teile if isinstance(teile, list) else None,
-                             anfrage_beendet=beendet or None, trocken=trocken or None)
+                             anfrage_beendet=beendet or None, trocken=trocken or None, hinweis=hinweis)
 
-    def _rueckweg_gescheitert(self, a: dict, grund: str) -> None:
-        """Nach der Bereitstellung gelang der Rückweg nicht: festhalten, weitere Versuche planen, nichts Neues zulassen."""
+    def _rueckweg_gescheitert(self, a: dict, anker_grund: str, ende_grund: str) -> None:
+        """Nach veroeffentlicht gelang der Rückweg nicht oder sein Ende ließ sich nicht festhalten: festhalten, weitere
+        Versuche planen, nichts Neues zulassen (sperre an, außer der Anker ist nur gerade mit etwas anderem beschäftigt)."""
         erster = self._rueckweg_offen is None
-        self._rueckweg_offen = {"anfrage": a["id"], "versuche": (self._rueckweg_offen or {}).get("versuche", 0) + 1,
+        alt = self._rueckweg_offen or {}
+        self._rueckweg_offen = {"anfrage": a["id"], "versuche": alt.get("versuche", 0) + 1, "grund": ende_grund,
                                 "naechster": self.uhr() + RUECKWEG_WIEDERHOLUNG_S}
-        self.protokolliere("rueckweg_fehlgeschlagen", 1.0, anfrage=a["id"], grund=sauber(grund, 40))
-        if erster:
+        self.protokolliere("rueckweg_fehlgeschlagen", 1.0, anfrage=a["id"], grund=sauber(anker_grund, 40))
+        if erster and anker_grund != "belegt":
             self._auto_sperre("rueckweg_fehlgeschlagen", a["id"])
 
     def _auto_sperre(self, grund: str, anfrage: str | None = None) -> None:
@@ -812,7 +919,11 @@ class Dienst:
                 return "defekt"
             a = copy.deepcopy(self._z["anfrage"])
         if a is None:
+            self._anhalten_anfrage = None
             return "leer"
+        if a["id"] == self._anhalten_anfrage:
+            self._angehalten = "zurueck"
+            return "angehalten"
         if self.uhr() < self._naechster_versuch:
             return "wartet"
         grund = self._tor()
@@ -831,26 +942,33 @@ class Dienst:
         return self._stufe(a, fn)
 
     def _stufe(self, a: dict, fn: Callable[[Kontext], Ergebnis]) -> str:
+        erschoepft = False
         with self._lock:
-            cur = self._z["anfrage"]
-            if cur is None or cur["id"] != a["id"] or cur["status"] != a["status"] or cur["seq"] != a["seq"]:
+            if not self._unveraendert(a):
                 return "veraendert"
-            if cur["versuch"] >= VERSUCHE_MAX:
-                self._beenden(a, "wiederaufnahme_erschoepft", "fehler")
-                return "gearbeitet"
-            versuch = cur["versuch"] + 1
-            try:
-                self._wal("stufe_start", anfrage=a["id"], status=a["status"], versuch=versuch)
-            except AuditFehler:
-                return "audit"
-            except ZustandDefekt:
-                self._defekt_setzen("zustand_defekt")
-                return "defekt"
-            self._abbruch = ereignis = threading.Event()
-            rest = max(1.0, min(frist_ablauf(a) - self.uhr(), STUFE_MAX_S))
-            self._arbeit_seit = time.monotonic()
-            ctx = Kontext(anfrage=a["id"], quelle=a["quelle"], profil=a["profil"], status=a["status"], versuch=versuch,
-                          daten=copy.deepcopy(a["daten"]), frist=time.monotonic() + rest, abbruch=ereignis)
+            cur = self._z["anfrage"]
+            if self._wartend == (a["id"], a["status"], a["seq"]):
+                versuch = cur["versuch"]  # dieselbe Stufe fragt nur nach (wartet auf einen Menschen): kein neuer Versuch
+            elif cur["versuch"] >= VERSUCHE_MAX:
+                erschoepft = True
+            else:
+                versuch = cur["versuch"] + 1
+                try:
+                    self._wal("stufe_start", anfrage=a["id"], status=a["status"], versuch=versuch)
+                except AuditFehler:
+                    return "audit"
+                except ZustandDefekt:
+                    self._defekt_setzen("zustand_defekt")
+                    return "defekt"
+            if not erschoepft:
+                self._abbruch = ereignis = threading.Event()
+                rest = max(1.0, min(frist_ablauf(a) - self.uhr(), STUFE_MAX_S))
+                self._arbeit_seit = time.monotonic()
+                ctx = Kontext(anfrage=a["id"], quelle=a["quelle"], profil=a["profil"], status=a["status"], versuch=versuch,
+                              daten=copy.deepcopy(a["daten"]), frist=time.monotonic() + rest, abbruch=ereignis)
+        if erschoepft:
+            self._beenden(a, "wiederaufnahme_erschoepft", "fehler")
+            return "gearbeitet"
         self._haken("in_stufe")
         ergebnis: object = None
         ausnahme: str | None = None
@@ -867,6 +985,8 @@ class Dienst:
         grund: str | None = None
         detail: str | None = None
         daten: dict = {}
+        wartend = (a["id"], a["status"], a["seq"])
+        self._wartend = None
         if ausnahme:
             grund, detail = "stufe_ausnahme", ausnahme
         elif not isinstance(ergebnis, Ergebnis) or ergebnis.art not in ("ok", "fehler", "wartet"):
@@ -875,21 +995,22 @@ class Dienst:
             grund = "stufe_fehler" if ergebnis.grund != "stufe_nicht_verfuegbar" else "stufe_nicht_verfuegbar"
             detail = ergebnis.grund if isinstance(ergebnis.grund, str) and GRUND_RE.fullmatch(ergebnis.grund) else None
         elif ergebnis.art == "wartet":
+            self._wartend = wartend
             self._naechster_versuch = self.uhr() + WARTE_S
             return "wartet"
         else:
             try:
                 daten = daten_pruefen(ergebnis.daten)
-            except ValueError:
+            except (ValueError, TypeError):
                 grund = "stufe_ungueltig"
         if grund is None:
             grund = self._tor_ergebnis(a, daten)
             if grund == "wiederholen":
+                self._wartend = wartend
                 self._naechster_versuch = self.uhr() + WARTE_S
                 return "wartet"
         with self._lock:
-            cur = self._z["anfrage"]
-            if cur is None or cur["id"] != a["id"] or cur["status"] != a["status"] or cur["seq"] != a["seq"]:
+            if not self._unveraendert(a):
                 self.protokolliere("ergebnis_verworfen", 1.0, anfrage=a["id"], status=a["status"])
                 return "veraendert"
             try:
@@ -963,11 +1084,12 @@ class Dienst:
         ausgerollt = REIHENFOLGE.index(a["status"]) >= BEREITGESTELLT_AB
         folge = naechster(a["status"], a["quelle"])
         if s == folge and folge in ("freigegeben", "bereitgestellt", "umgeschaltet", "bewaehrt"):
-            if folge == "freigegeben" and (st.get("v_commit") != a["daten"].get("v_commit")
-                                          or st.get("tree_id") != a["daten"].get("tree_id")):
-                if self._beenden(a, "freigabe_abweichung", "fehler"):
-                    self._auto_sperre("freigabe_abweichung", a["id"])
-                return "gearbeitet"
+            if folge == "freigegeben":  # die Freigabe gilt genau für diesen Commit und diesen Tree, und beide müssen da sein
+                v, t = a["daten"].get("v_commit"), a["daten"].get("tree_id")
+                if v is None or t is None or st.get("v_commit") != v or st.get("tree_id") != t:
+                    if self._beenden(a, "freigabe_abweichung", "fehler"):
+                        self._auto_sperre("freigabe_abweichung", a["id"])
+                    return "gearbeitet"
             self._uebergang(a, folge, "datenbank")
             return "gearbeitet"
         if s == "zurueckgenommen" and ausgerollt:
@@ -976,14 +1098,14 @@ class Dienst:
         if s == "abgebrochen" and not ausgerollt:
             self._beenden(a, "abgebrochen_extern", "abbruch")
             return "gearbeitet"
-        if s in ENDZUSTAENDE or (a["status"], s) not in self._gemeldet:
+        if (a["status"], s) not in self._gemeldet:  # jede Abweichung nur einmal melden (sonst füllt das Dauerfeuer das Protokoll)
             self._gemeldet.add((a["status"], s))
             self.protokolliere("db_abweichung", 1.0, anfrage=a["id"], lokal=a["status"], db=sauber(s, 20))
         return "wartet"
 
     # --- Wache: Zeitgrenzen, Spiegel, Abgleich, Hänger
     def wache(self) -> None:
-        """Zeitgrenzen, Wiederholung des Rückwegs, Abgleich und Spiegel. Blockiert nie lange."""
+        """Zeitgrenzen, Wiederholung des Rückwegs, Abgleich und Spiegel. Blockiert nie lange (außer in einem Rückweg)."""
         jetzt = self.uhr()
         with self._lock:
             a = copy.deepcopy(self._z["anfrage"]) if self._bereit and not self._defekt else None
@@ -1004,54 +1126,39 @@ class Dienst:
             self._spiegeln()
 
     def _frist_abgelaufen(self, a: dict, grund: str) -> None:
-        if REIHENFOLGE.index(a["status"]) < BEREITGESTELLT_AB:
-            self._beenden(a, grund, "zeit")
-            return
-        # Ausgerollt, aber nicht bewährt: Der sichere Zustand ist der letzte gute Stand.
         if self._rueckweg_offen is not None:
-            return
-        try:
-            ant = self.anker.rueckweg("alles")
-            ok = ant.ok
-            antwort_grund = ant.grund or "unbekannt"
-        except AnkerFehler as e:
-            ok, antwort_grund = False, e.grund
-        if ok:
-            self._uebergang(a, "zurueckgenommen", "zurueck", "rueckweg_nach_zeitlimit")
+            return  # ein Rückweg läuft schon (Wiederholung in _rueckweg_wiederholen)
+        if REIHENFOLGE.index(a["status"]) >= ANKER_BERUEHRT_AB:
+            self._mit_rueckweg_beenden(a, "rueckweg_nach_zeitlimit")  # der sichere Zustand ist der letzte gute Stand
         else:
-            self._rueckweg_gescheitert(a, antwort_grund)
+            self._beenden(a, grund, "zeit")
 
     def _rueckweg_wiederholen(self) -> None:
         offen = self._rueckweg_offen
         if offen is None:
             return
-        with self._lock:
-            a = copy.deepcopy(self._z["anfrage"])
+        a = self._anfrage_kopie()
         if a is None or a["id"] != offen["anfrage"]:
             self._rueckweg_offen = None
             return
         if offen["versuche"] >= RUECKWEG_VERSUCHE_MAX:
             return  # Handarbeit: wamo-anker rueckweg alles; der Status zeigt rueckweg_offen
-        try:
-            ant = self.anker.rueckweg("alles")
-            ok, grund = ant.ok, ant.grund or "unbekannt"
-        except AnkerFehler as e:
-            ok, grund = False, e.grund
-        if ok:
-            self._rueckweg_offen = None
-            self._uebergang(a, "zurueckgenommen", "zurueck", "rueckweg_nach_zeitlimit")
-        else:
-            offen["versuche"] += 1
-            offen["naechster"] = self.uhr() + RUECKWEG_WIEDERHOLUNG_S
-            self.protokolliere("rueckweg_fehlgeschlagen", 1.0, anfrage=a["id"], grund=sauber(grund, 40))
+        offen["naechster"] = self.uhr() + RUECKWEG_WIEDERHOLUNG_S
+        self._mit_rueckweg_beenden(a, offen["grund"])
 
     # --- Abgleich mit der Datenbank
     def _abgleichen(self) -> None:
         """Stimmt die Datenbank mit dem Zustand überein? Eine Anfrage, die nur die Datenbank kennt (Absturz zwischen
         Anlegen und Protokoll), wird beendet, solange sie noch am Anfang steht; alles andere ist eine Abweichung, die
-        neue Anfragen sperrt, bis ein Mensch nachgesehen hat."""
-        if self._anfordern_laeuft.locked():
+        neue Anfragen sperrt, bis ein Mensch nachgesehen hat. Läuft nie neben einem anfordern."""
+        if not self._anfordern_laeuft.acquire(blocking=False):
             return  # eine Anfrage entsteht gerade: die Datenbank kennt sie schon, das Protokoll noch nicht
+        try:
+            self._abgleichen_innen()
+        finally:
+            self._anfordern_laeuft.release()
+
+    def _abgleichen_innen(self) -> None:
         try:
             offene = self.db.offene_anfragen()
         except DatenbankFehler:
@@ -1077,8 +1184,7 @@ class Dienst:
             except DatenbankFehler:
                 st = {"status": "?"}
             if st is None or st.get("status") in ENDZUSTAENDE:
-                ausgerollt = REIHENFOLGE.index(lokal["status"]) >= BEREITGESTELLT_AB
-                if not ausgerollt:
+                if REIHENFOLGE.index(lokal["status"]) < BEREITGESTELLT_AB:
                     self._beenden(lokal, "abgebrochen_extern" if st else "verwaist", "abbruch")
         if abweichung and abweichung != self._abweichung:
             self.protokolliere("db_abweichung", 1.0, art=abweichung)
@@ -1136,16 +1242,16 @@ class Dienst:
         self.db.ereignis_anhaengen(anfrage, ereignis, daten, obj.get("profil") if ereignis == "angefordert" else None)
 
     # --- Hintergrund
-    def starte_hintergrund(self) -> None:
+    def starte_hintergrund(self, arbeiter_takt: float = 0.5, wache_takt: float = 1.0) -> None:
         def schleife(fn: Callable[[], object], takt: float) -> None:
             while not self._halt.is_set():
                 try:
                     fn()
                 except Exception as e:  # noqa: BLE001 (der Arbeiter darf nie sterben)
-                    print(f"wamo-release: {fn.__name__} fehlgeschlagen ({type(e).__name__})", file=sys.stderr)
+                    print(f"wamo-release: {fn.__name__} fehlgeschlagen ({_ort(e)})", file=sys.stderr)
                 self._halt.wait(takt)
-        self._faeden = [threading.Thread(target=schleife, args=(self.arbeite_einmal, 0.5), daemon=True),
-                        threading.Thread(target=schleife, args=(self.wache, 1.0), daemon=True)]
+        self._faeden = [threading.Thread(target=schleife, args=(self.arbeite_einmal, arbeiter_takt), daemon=True),
+                        threading.Thread(target=schleife, args=(self.wache, wache_takt), daemon=True)]
         for f in self._faeden:
             f.start()
 
@@ -1204,7 +1310,8 @@ class Server:
         self.peer = peer
         self._halt = False
         self._srv: socket.socket | None = None
-        self._platz = threading.BoundedSemaphore(VERBINDUNGEN_MAX)
+        self._platz_root = threading.BoundedSemaphore(VERBINDUNGEN_MAX)
+        self._platz_kern = threading.BoundedSemaphore(VERBINDUNGEN_KERN_MAX)
         self._laufend: set[threading.Thread] = set()
 
     def binden(self) -> None:
@@ -1254,15 +1361,15 @@ class Server:
             antwort = d.bearbeite(roh, fehler, peer, name)
         self._antworten(conn, antwort)
 
-    def _bedienen_thread(self, conn: socket.socket) -> None:
+    def _bedienen_thread(self, conn: socket.socket, platz: threading.BoundedSemaphore) -> None:
         try:
             with contextlib.closing(conn):
                 try:
                     self.bedienen(conn)
                 except Exception as e:  # noqa: BLE001 (eine Verbindung darf den Dienst nie beenden)
-                    print(f"wamo-release: Verbindung fehlgeschlagen ({type(e).__name__})", file=sys.stderr)
+                    print(f"wamo-release: Verbindung fehlgeschlagen ({_ort(e)})", file=sys.stderr)
         finally:
-            self._platz.release()
+            platz.release()
             self._laufend.discard(threading.current_thread())
 
     def lauf(self) -> bool:
@@ -1285,18 +1392,25 @@ class Server:
                 time.sleep(0.5)
                 continue
             peer = self.peer(conn)
-            if peer is None or d.benutzer(peer) is None:
+            name = d.benutzer(peer)
+            if peer is None or name is None:
                 with contextlib.closing(conn):
                     self._antworten(conn, d.abweisen(peer))
                 continue
-            if not self._platz.acquire(blocking=False):
+            platz = self._platz_root if name == "root" else self._platz_kern  # der Kern kann root nicht aushungern
+            if not platz.acquire(blocking=False):
                 with contextlib.closing(conn):
                     self._antworten(conn, {"ok": False, "abgelehnt": True, "grund": "ausgelastet",
                                            "text": GRUENDE["ausgelastet"]})
                 continue
-            t = threading.Thread(target=self._bedienen_thread, args=(conn,), daemon=True)
+            t = threading.Thread(target=self._bedienen_thread, args=(conn, platz), daemon=True)
             self._laufend.add(t)
-            t.start()
+            try:
+                t.start()
+            except RuntimeError:  # keine Fäden mehr: Verbindung und Platz nicht festhalten
+                self._laufend.discard(t)
+                platz.release()
+                conn.close()
         d.protokolliere("dienst_stop", AUDIT_GRENZE_LESEN,
                         grund="haenger" if d.haenger else ("angefordert" if self._halt else "socket_weg"))
         return self._halt and not d.haenger
@@ -1320,7 +1434,7 @@ def dienst_main() -> int:
         print("Der Dienst läuft nur unter Linux und nie als root.", file=sys.stderr)
         return 1
     dienst = Dienst()
-    dienst.wiederaufnehmen()
+    dienst.wiederaufnehmen(abgleich=False)  # der Abgleich mit der Datenbank folgt in der Wache, wenn der Socket schon steht
     server = Server(dienst)
     server.binden()
     signal.signal(signal.SIGTERM, server.anhalten)

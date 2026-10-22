@@ -27,7 +27,6 @@ from typing import Callable
 ANTWORT_MAX = 8192
 ZEIT_KURZ_S = 5.0  # status und sperre
 ZEIT_RUECKWEG_S = {"ui": 150.0, "kern": 200.0, "alles": 330.0}  # die Schritte des Ankers haben 120 und 180 Sekunden
-KOMPONENTEN = ("ui", "kern", "alles")
 
 # Die einzigen Anfragen, die dieser Client senden kann: (Befehl, Argument-Muster, --trocken erlaubt)
 ERLAUBT = {

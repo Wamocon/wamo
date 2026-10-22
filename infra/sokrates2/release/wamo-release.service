@@ -43,6 +43,10 @@ Environment=PYTHONUTF8=1
 UMask=0077
 
 ReadWritePaths=/var/lib/wamo-release /run/wamo-release /var/log/wamo-release
+# Die Zusatzgruppe wamocon soll nur zum Anker führen: Geheimnisordner anderer Dienste sind für diesen Dienst unsichtbar
+# (das Home verbirgt ProtectHome=yes)
+InaccessiblePaths=-/etc/wamo -/etc/wamo-geraete -/etc/wamo-release -/etc/wamo-anker
+LimitCORE=0
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

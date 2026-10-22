@@ -136,6 +136,10 @@ block "legt den Systembenutzer $BENUTZER an (nologin, keine weiteren Gruppen), f
 
 echo "== 2. Verzeichnisse"
 verzeichnisse() {
+  local d
+  for d in "$BASIS" "$DATEN" "$LOG" "$LOG/audit.jsonl"; do   # root arbeitet hier in Ordnern, die dem Dienst gehören: keine Links
+    if [ -L "$d" ]; then echo "$d ist ein Link, Abbruch." >&2; exit 1; fi
+  done
   mkdir -p "$(dirname "$BIN")" "$(dirname "$DATEN")" "$(dirname "$LOG")" "$(dirname "$BASIS")"
   install -d "${OWN[@]}" -m 0755 "$BASIS"
   install -d "${DIENST_OWN[@]}" -m 0700 "$DATEN"
@@ -146,6 +150,7 @@ block "legt an: $BASIS (root, 0755), $DATEN (0700), $LOG (0750)" verzeichnisse
 echo "== 3. Programme nach $APP (neuer Baum, Prüfsumme, dann Austausch)"
 programme() {
   local neu m
+  rm -rf -- "$BASIS"/.app.neu.*   # Reste eines abgebrochenen Laufs
   neu="$(mktemp -d "$BASIS/.app.neu.XXXXXX")"
   install -d "${OWN[@]}" -m 0755 "$neu"
   for m in "${MODULE[@]}"; do
@@ -183,10 +188,12 @@ audit() {
     install "${DIENST_OWN[@]}" -m 0600 /dev/null "$LOG/audit.jsonl"
   fi
   if [ -z "$WURZEL" ]; then
+    # fail closed: Ein Protokoll, das der Dienst (oder jemand mit seinem Benutzer) löschen könnte, ist kein Beweismittel
     if chattr +a "$LOG/audit.jsonl" 2>/dev/null; then
       echo "  chattr +a gesetzt: das Protokoll lässt sich nur noch anhängen"
     else
-      echo "  Hinweis: chattr +a ging nicht (Dateisystem?). Das Protokoll ist dann nicht gegen Löschen geschützt." >&2
+      echo "chattr +a auf $LOG/audit.jsonl ging nicht (Dateisystem?), Abbruch." >&2
+      exit 1
     fi
   fi
 }

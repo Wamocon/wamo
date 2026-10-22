@@ -55,7 +55,12 @@ BELEG_ABBRUCH = frozenset({"abbruch", "zeit", "fehler", "zurueck", "sperre"})
 
 BEOBACHTEN = frozenset({"wartet_freigabe", "umgeschaltet"})  # keine eigene Arbeit, nur auf die Datenbank schauen
 ANKER_FOLGE = frozenset({"veroeffentlicht", "bereitgestellt"})  # Arbeit ruft den Anker, danach beobachten
-BEREITGESTELLT_AB = REIHENFOLGE.index("bereitgestellt")  # ab hier ist etwas ausgerollt: Abbruch geht nur über den Rückweg
+BEREITGESTELLT_AB = REIHENFOLGE.index("bereitgestellt")  # ab hier ist etwas ausgerollt: Ende nur über den Rückweg
+# Ab hier kann der Anker schon etwas getan haben (die Arbeit von veroeffentlicht ruft ihn): Jedes Ende der Anfrage verlangt
+# zuerst einen gelungenen Rückweg. Die Datenbank kennt von veroeffentlicht aus nur abgebrochen, ab bereitgestellt auch
+# zurueckgenommen.
+ANKER_BERUEHRT_AB = REIHENFOLGE.index("veroeffentlicht")
+GENESIS = "0" * 64
 
 
 def _tabelle() -> dict[str, frozenset[str]]:
@@ -142,29 +147,37 @@ def pruefstand_pruefen(obj: object) -> dict[str, str]:
     if not isinstance(obj, dict) or len(obj) > 16:
         raise ValueError("pruefstand")
     for k, v in obj.items():
-        if not isinstance(k, str) or not PRUEFSTAND_NAME_RE.fullmatch(k) or v not in PRUEFSTAND_WERTE:
+        if not isinstance(k, str) or not PRUEFSTAND_NAME_RE.fullmatch(k) or not isinstance(v, str) \
+                or v not in PRUEFSTAND_WERTE:
             raise ValueError("pruefstand")
     return dict(obj)
 
 
 def daten_pruefen(daten: object) -> dict:
     """Prüft die Werte, die eine Stufe liefert (und die später im Audit-Protokoll stehen). Wirft ValueError."""
+    try:
+        return _daten_pruefen(daten)
+    except TypeError as e:  # unhashbare Werte (Listen, Objekte) in einem Feld, das Zeichenketten erwartet
+        raise ValueError("Wert hat den falschen Typ") from e
+
+
+def _daten_pruefen(daten: object) -> dict:
     if not isinstance(daten, dict) or len(daten) > len(DATEN_SCHLUESSEL):
         raise ValueError("daten")
     ergebnis: dict = {}
     for k, v in daten.items():
-        if k not in DATEN_SCHLUESSEL:
+        if not isinstance(k, str) or k not in DATEN_SCHLUESSEL:
             raise ValueError(f"unbekannter Schlüssel {k!r}"[:60])
         if k == "treffer_sha":
             ok = isinstance(v, str) and SHA_RE.fullmatch(v) is not None
         elif k in HEX_SCHLUESSEL:
             ok = isinstance(v, str) and HEX_RE.fullmatch(v) is not None
         elif k == "bump":
-            ok = v in ("patch", "minor", "major")
+            ok = isinstance(v, str) and v in ("patch", "minor", "major")
         elif k in ("version_vorschlag", "version_final"):
             ok = isinstance(v, str) and VERSION_RE.fullmatch(v) is not None
         elif k == "klasse":
-            ok = v in KLASSEN
+            ok = isinstance(v, str) and v in KLASSEN
         elif k == "treffer_anzahl":
             ok = isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 200
         elif k == "refactor_verworfen":
@@ -194,7 +207,8 @@ def naechster(status: str, quelle: str) -> str | None:
 
 def uebergang_pruefen(von: str, nach: str, beleg: str, quelle: str) -> None:
     """Wirft UebergangVerboten(grund), wenn der Übergang nicht in der Tabelle steht oder der Beleg nicht passt."""
-    if von not in ZUSTAENDE or nach not in ZUSTAENDE or beleg not in BELEGE:
+    if not (isinstance(von, str) and isinstance(nach, str) and isinstance(beleg, str)) \
+            or von not in ZUSTAENDE or nach not in ZUSTAENDE or beleg not in BELEGE:
         raise UebergangVerboten("zustand_unbekannt")
     if von in ENDZUSTAENDE:
         raise UebergangVerboten("anfrage_beendet")
@@ -222,7 +236,10 @@ def frist_ablauf(a: dict) -> float:
 
 # ---------------------------------------------------------------- Zustandsdatei
 def leerer_zustand() -> dict:
-    return {"schema": 1, "audit_n": 0, "spiegel_n": 0, "spiegel_offset": 0, "anfrage": None, "abgeschlossen": []}
+    # audit_hash ist der Hash der Protokollzeile audit_n: Er bindet die Datei an die Kette (ein zurückgespielter Stand oder ein
+    # rotiertes Protokoll fällt beim Start auf). spiegel_offset ist die Byte-Position hinter der Zeile spiegel_n.
+    return {"schema": 1, "audit_n": 0, "audit_hash": GENESIS, "spiegel_n": 0, "spiegel_offset": 0, "anfrage": None,
+            "abgeschlossen": []}
 
 
 ANFRAGE_FELDER = frozenset({"id", "profil", "quelle", "status", "seq", "start", "seit", "versuch", "fertig", "daten",
@@ -240,13 +257,22 @@ def _ganz(v: object, maximum: int = 10**9) -> bool:
 
 def zustand_pruefen(obj: object) -> dict:
     """Streng: nur bekannte Felder, nur gültige Werte. Wirft ZustandDefekt. Gibt eine unabhängige Kopie zurück."""
-    if not isinstance(obj, dict) or set(obj) != {"schema", "audit_n", "spiegel_n", "spiegel_offset", "anfrage",
+    try:
+        return _zustand_pruefen(obj)
+    except (TypeError, AttributeError, KeyError) as e:  # JSON-gültig, aber mit vertauschten Typen
+        raise ZustandDefekt(f"Zustand hat falsche Typen ({type(e).__name__})") from e
+
+
+def _zustand_pruefen(obj: object) -> dict:
+    if not isinstance(obj, dict) or set(obj) != {"schema", "audit_n", "audit_hash", "spiegel_n", "spiegel_offset", "anfrage",
                                                  "abgeschlossen"} or obj["schema"] != 1 or isinstance(obj["schema"], bool):
         raise ZustandDefekt("Kopf ungültig")
-    if not all(_ganz(obj[k]) for k in ("audit_n", "spiegel_n", "spiegel_offset")):
+    if not all(_ganz(obj[k]) for k in ("audit_n", "spiegel_n", "spiegel_offset")) \
+            or not isinstance(obj["audit_hash"], str) or not SHA_RE.fullmatch(obj["audit_hash"]) \
+            or (obj["audit_n"] == 0) != (obj["audit_hash"] == GENESIS):
         raise ZustandDefekt("Zähler ungültig")
     z = leerer_zustand()
-    for k in ("audit_n", "spiegel_n", "spiegel_offset"):
+    for k in ("audit_n", "audit_hash", "spiegel_n", "spiegel_offset"):
         z[k] = obj[k]
     a = obj["anfrage"]
     if a is not None:
@@ -290,6 +316,13 @@ def anfrage_von(zeile: dict) -> dict:
 def anwenden(z: dict, zeile: dict) -> None:
     """Wendet eine Zeile des Write-Ahead-Logs auf den Zustand z an (verändert z). Wirft ZustandDefekt, wenn die Zeile nicht
     zum Zustand passt. Dieselbe Funktion arbeitet im Betrieb und bei der Wiederaufnahme nach einem Absturz."""
+    try:
+        _anwenden(z, zeile)
+    except (KeyError, TypeError, AttributeError) as e:
+        raise ZustandDefekt(f"Zeile passt nicht ({type(e).__name__})") from e
+
+
+def _anwenden(z: dict, zeile: dict) -> None:
     art = zeile.get("ereignis")
     a = z["anfrage"]
     try:

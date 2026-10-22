@@ -33,8 +33,10 @@ import threading
 import time
 
 try:  # nur Linux; die Plattformprüfung in main() meldet es freundlich
+    import grp
     import pwd
 except ImportError:
+    grp = None
     pwd = None
 
 sys.dont_write_bytecode = True  # beim Import aus der Installation darf kein __pycache__ neben die Prüfsumme geraten
@@ -93,6 +95,8 @@ def lade_dienst(installiert: bool):
     kandidaten = [PRODUKTIV_APP] if installiert else [os.path.join(HIER, "release"), HIER]
     for ordner in kandidaten:
         if os.path.isfile(os.path.join(ordner, "wamo_release.py")):
+            if installiert and (os.stat(ordner).st_uid != 0 or os.stat(ordner).st_mode & 0o022):
+                raise SystemExit(f"{ordner} gehört nicht root oder ist beschreibbar: Der Rauchtest lädt dort keinen Code")
             sys.path.insert(0, ordner)
             import release_anker as ra
             import release_automat as au
@@ -213,7 +217,7 @@ def lauf_ende(dienst, db, maximal: int = 60) -> None:
 
 
 def teil_a(M, benutzer: list[str], root: bool) -> None:
-    R, AU, K = M["R"], M["AU"], M["K"]
+    R, K = M["R"], M["K"]
     print("== A. Wegwerf-Instanz")
     tmp = tempfile.mkdtemp(prefix="release-rauchtest-")
     os.chmod(tmp, 0o755)
@@ -338,7 +342,7 @@ def teil_a(M, benutzer: list[str], root: bool) -> None:
 
 
 def teil_b(M, benutzer: list[str], root: bool) -> None:
-    R, K = M["R"], M["K"]
+    R = M["R"]
     print("== B. Echte Installation (nur lesend und anfragend)")
     P = R.PFADE
     probleme = R.installation_pruefen(P)
@@ -362,7 +366,8 @@ def teil_b(M, benutzer: list[str], root: bool) -> None:
     pid = pid.strip()
     if rc == 0 and pid.isdigit() and int(pid) > 1:
         try:
-            status = open(f"/proc/{pid}/status", encoding="ascii", errors="replace").read()
+            with open(f"/proc/{pid}/status", encoding="ascii", errors="replace") as f:
+                status = f.read()
             felder = dict(z.split(":\t", 1) for z in status.splitlines() if ":\t" in z)
             wr = pwd.getpwnam("wamo-release").pw_uid
             pruefe("Dienstprozess ohne Capabilities", felder.get("CapEff", "").strip() == "0000000000000000", felder.get("CapEff", ""))
@@ -376,7 +381,7 @@ def teil_b(M, benutzer: list[str], root: bool) -> None:
         st = os.lstat(P.socket)
         pruefe("Socket 0660 wamo-release:wamo-core",
                stat.S_ISSOCK(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o660 and st.st_uid == pwd.getpwnam("wamo-release").pw_uid
-               and st.st_gid == __import__("grp").getgrnam("wamo-core").gr_gid, f"{oct(stat.S_IMODE(st.st_mode))} {st.st_uid}:{st.st_gid}")
+               and st.st_gid == grp.getgrnam("wamo-core").gr_gid, f"{oct(stat.S_IMODE(st.st_mode))} {st.st_uid}:{st.st_gid}")
     except (OSError, KeyError) as e:
         pruefe("Socket vorhanden", False, str(e))
     if not root:

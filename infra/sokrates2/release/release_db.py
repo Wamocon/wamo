@@ -16,7 +16,6 @@ from __future__ import annotations
 import re
 import threading
 import uuid
-from typing import Callable
 
 from release_automat import DB_SCHREIBBAR, ENDZUSTAENDE, OFFENE, REIHENFOLGE, UUID_RE
 
@@ -80,7 +79,7 @@ class AttrappeDatenbank(Datenbank):
     """Bildet die Regeln der Migration 0013 so weit nach, wie der Dienst sie berührt. Fehlverhalten des Dienstes erscheint
     als DatenbankAbgelehnt und in verstoesse. ausfall=True lässt jede Frage mit DatenbankFehler scheitern."""
 
-    def __init__(self, admins: set[str] | None = None, uhr: Callable[[], float] | None = None):
+    def __init__(self, admins: set[str] | None = None):
         self.admins = set(admins or ())
         self.anfragen: dict[str, dict] = {}
         self.ereignisse: list[dict] = []

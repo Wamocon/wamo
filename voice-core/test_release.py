@@ -877,6 +877,7 @@ class ZustandsdateiTests(ReleaseTest):
         self.assertEqual(self.neu()._defekt, "zustand_defekt")
 
     def test_ordner_statt_datei(self):
+        os.unlink(self.p.zustand_datei)
         os.makedirs(self.p.zustand_datei)
         self.assertEqual(self.neu()._defekt, "zustand_defekt")
 
@@ -1162,6 +1163,10 @@ class LaufTests(ReleaseTest):
         self.zeit[0] += R.WARTE_S + 1
         self.assertEqual(self.d.arbeite_einmal(), "gearbeitet")
         self.assertEqual(self.anfrage()["status"], "pruefung1")
+        # Nachfragen ist kein neuer Versuch und füllt das Protokoll nicht
+        starts = [(z["status"], z["versuch"]) for z in self.audit() if z["ereignis"] == "stufe_start"]
+        self.assertEqual(starts[0], ("uebernommen", 1))
+        self.assertEqual(len([s for s in starts if s[0] == "uebernommen"]), 1)
 
     def test_fehler_einer_stufe_beendet_die_anfrage(self):
         self.stufen.setze("uebernehmen", ST.Ergebnis.fehler("quelle_kaputt"))
@@ -1371,7 +1376,12 @@ class ZeitTests(ReleaseTest):
                     self.zeit[0] += 2
                     d.wache()
                     self.assertIsNone(self.anfrage(d))
-                    self.assertEqual(self.endgrund(d), ("abgebrochen", "zeitlimit"))
+                    if status == "veroeffentlicht":  # der Anker kann schon begonnen haben: erst der Rückweg, dann das Ende
+                        self.assertEqual(self.endgrund(d), ("abgebrochen", "rueckweg_nach_zeitlimit"))
+                        self.assertEqual(self.anker.aufrufe[-1], ("rueckweg", "alles", False))
+                    else:
+                        self.assertEqual(self.endgrund(d), ("abgebrochen", "zeitlimit"))
+                        self.assertEqual(self.anker.namen().count("rueckweg"), 0)
                     self.assertEqual(self.db.verstoesse, [])
 
     def test_ausgerollt_und_nicht_bewaehrt_geht_zurueck(self):
@@ -1513,8 +1523,14 @@ class RueckwegTests(ReleaseTest):
                         r = self.sende(f"zurueck {komp}", d=d)
                         self.assertTrue(r["ok"], r)
                         self.assertEqual(self.anker.aufrufe[-1], ("rueckweg", komp, False))
-                        ausgerollt = AU.REIHENFOLGE.index(status) >= AU.BEREITGESTELLT_AB
-                        self.assertEqual(self.endgrund(d), ("zurueckgenommen" if ausgerollt else "abgebrochen", "zurueck"))
+                        index = AU.REIHENFOLGE.index(status)
+                        if index >= AU.ANKER_BERUEHRT_AB and komp != "alles":
+                            # ein Teilrückweg lässt die Anfrage offen: die andere Komponente bleibt neu
+                            self.assertEqual(self.anfrage(d)["status"], status)
+                            self.assertIn("Teilrückweg", r["hinweis"])
+                            continue
+                        ende = "zurueckgenommen" if index >= AU.BEREITGESTELLT_AB else "abgebrochen"
+                        self.assertEqual(self.endgrund(d), (ende, "zurueck"))
                         self.assertIsNone(self.anfrage(d))
                         self.assertEqual(self.db.verstoesse, [])
 
@@ -1594,8 +1610,7 @@ class RueckwegTests(ReleaseTest):
 
 
 # ==================================================================== Wiederaufnahme nach einem Absturz
-class Absturz(BaseException):
-    pass
+Absturz = R.Absturz
 
 
 class WiederaufnahmeTests(ReleaseTest):
@@ -1656,8 +1671,8 @@ class WiederaufnahmeTests(ReleaseTest):
                         if zaehler["n"] == k:
                             raise Absturz()
 
-                    d1 = self.neu(haken={name: stuerzt})
                     try:
+                        d1 = self.neu(haken={name: stuerzt})  # auch der Start spiegelt, und kann abstürzen
                         self.ablauf(d1)
                     except Absturz:
                         pass

@@ -97,7 +97,10 @@ fi
 
 echo "== 2. Zustand und Audit-Protokoll sichern"
 sichern() {
-  local zeit
+  local zeit d
+  for d in "$DATEN" "$LOG" "$DATEN/zustand.json" "$LOG/audit.jsonl"; do   # root arbeitet in Ordnern des Dienstes: keine Links
+    if [ -L "$d" ]; then echo "$d ist ein Link, Abbruch." >&2; exit 1; fi
+  done
   zeit="$(date -u +%Y%m%dT%H%M%SZ)"
   install -d -m 0700 "$SICHERUNG"
   if [ -f "$DATEN/zustand.json" ]; then cp -p "$DATEN/zustand.json" "$SICHERUNG/zustand.$zeit.json"; fi

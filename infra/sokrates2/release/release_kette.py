@@ -126,9 +126,13 @@ class KetteDefekt(Exception):
     pass
 
 
-def zeile_bauen(rest: dict) -> bytes:
+def zeile_und_hash(rest: dict) -> tuple[bytes, str]:
     h = hashlib.sha256(kanonisch(rest).encode("ascii")).hexdigest()
-    return (kanonisch({**rest, "hash": h}) + "\n").encode("ascii")
+    return (kanonisch({**rest, "hash": h}) + "\n").encode("ascii"), h
+
+
+def zeile_bauen(rest: dict) -> bytes:
+    return zeile_und_hash(rest)[0]
 
 
 def zeile_lesen(zeile: bytes) -> tuple[dict, str]:
@@ -246,9 +250,10 @@ class Audit:
         except OSError:
             return 0.0
 
-    def anhaengen(self, ereignis: str, bis: float = 1.0, **felder: object) -> int:
+    def anhaengen(self, ereignis: str, bis: float = 1.0, **felder: object) -> tuple[int, str]:
         """Hängt eine Zeile an, solange die Datei danach höchstens bis (Anteil von AUDIT_DATEI_MAX) groß ist und noch
-        AUDIT_PLATZ_MIN frei ist. Ergebnis: die Nummer n der Zeile. Wirft AuditFehler; angehängt wird dann nichts."""
+        AUDIT_PLATZ_MIN frei ist. Ergebnis: die Nummer n und der Hash der Zeile. Wirft AuditFehler; angehängt wird dann
+        nichts."""
         rest = {"ereignis": ereignis, "t": zeit_iso(self.uhr())}
         rest.update({k: v for k, v in felder.items() if v is not None})
         fd = None
@@ -264,7 +269,7 @@ class Audit:
                 raise AuditFehler("keine reguläre Datei")
             vorher, n = self._letzte(fd, st.st_size)
             rest.update(n=n + 1, vorher=vorher)
-            zeile = zeile_bauen(rest)
+            zeile, h = zeile_und_hash(rest)
             if len(zeile) > AUDIT_ZEILE_MAX:
                 raise AuditFehler("Zeile zu lang")
             if st.st_size + len(zeile) > AUDIT_DATEI_MAX * bis:
@@ -277,7 +282,7 @@ class Audit:
             if os.write(fd, zeile) != len(zeile):
                 raise AuditFehler("Teilschreibung")
             os.fsync(fd)
-            return n + 1
+            return n + 1, h
         except OSError as e:
             raise AuditFehler(f"Schreibfehler {errno.errorcode.get(e.errno or 0, '?')}") from e
         finally:
