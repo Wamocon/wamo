@@ -28,6 +28,8 @@ from soft_interrupt import (
     echo_filter_an,
     echo_urteil,
     ducken_an,
+    echo_modus_an,
+    hat_stoppwort,
     ist_echo,
     ist_rueckmeldung,
     kuerze_auf_gehoertes,
@@ -387,6 +389,88 @@ class RueckmeldungTest(unittest.TestCase):
         self.assertFalse(rueckmeldung_an("0"))
 
 
+class EchoModusTest(unittest.IsolatedAsyncioTestCase):
+    """Bei erkennbarem Echo unterbricht nur ein Stoppwort."""
+
+    GESPIELT = "die hauptstadt von frankreich ist paris".split()
+
+    def strategie(self, echo_modus=True):
+        self.ausgeloest, self.beurteilungen = [], []
+        s = MeaningfulWordsUserTurnStartStrategy(
+            min_words=1, enable_interruptions=False, gesprochen=lambda sekunden: self.GESPIELT,
+            beurteilt=self.beurteilungen.append, echo_modus=echo_modus,
+        )
+        s._bot_speaking = True
+
+        async def start():
+            self.ausgeloest.append(True)
+
+        async def reset():
+            pass
+
+        s.trigger_user_turn_started = start
+        s.trigger_reset_aggregation = reset
+        return s
+
+    async def echo_hoeren(self, s, n=2):
+        for _ in range(n):
+            await s.process_frame(TranscriptionFrame("Die Hauptstadt von Frankreich", "u", "t"))
+
+    async def test_ohne_erkanntes_echo_wirkt_ein_einwurf_wie_immer(self):
+        s = self.strategie()
+        await s.process_frame(TranscriptionFrame("Carl Dre", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    async def test_nach_zwei_echos_unterbricht_ohne_stoppwort_nichts(self):
+        s = self.strategie()
+        await self.echo_hoeren(s)
+        self.assertTrue(s.echo_modus_aktiv())
+        await s.process_frame(TranscriptionFrame("Der Laufmaschine von Carl Dre", "u", "t"))
+        self.assertEqual(self.ausgeloest, [])
+        self.assertEqual(s.echo_vermutet, 1)
+        self.assertEqual(self.beurteilungen[-1], "echo")
+
+    async def test_ein_stoppwort_unterbricht_auch_im_echo_modus(self):
+        s = self.strategie()
+        await self.echo_hoeren(s)
+        await s.process_frame(TranscriptionFrame("Moment, ich habe eine Frage", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    async def test_ein_echo_allein_macht_noch_keinen_modus(self):
+        s = self.strategie()
+        await self.echo_hoeren(s, 1)
+        self.assertFalse(s.echo_modus_aktiv())
+        await s.process_frame(TranscriptionFrame("Carl Dre", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    async def test_vermutetes_echo_verlaengert_den_modus_nicht(self):
+        s = self.strategie()
+        await self.echo_hoeren(s)
+        vorher = len(s._echo_zeiten)
+        await s.process_frame(TranscriptionFrame("Carl Dre", "u", "t"))
+        self.assertEqual(len(s._echo_zeiten), vorher, "nur wirklich erkanntes Echo zählt für den Modus")
+
+    async def test_modus_endet_nach_dem_fenster(self):
+        s = self.strategie()
+        await self.echo_hoeren(s)
+        s._echo_zeiten = type(s._echo_zeiten)([t - soft_interrupt.ECHO_MODUS_FENSTER_SECS - 1 for t in s._echo_zeiten], maxlen=8)
+        self.assertFalse(s.echo_modus_aktiv())
+
+    async def test_aus_ist_aus(self):
+        s = self.strategie(echo_modus=False)
+        await self.echo_hoeren(s)
+        self.assertFalse(s.echo_modus_aktiv())
+        await s.process_frame(TranscriptionFrame("Carl Dre", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    def test_stoppwort_und_schalter(self):
+        self.assertTrue(hat_stoppwort("Moment, ich habe eine Frage"))
+        self.assertTrue(hat_stoppwort("Was kostet das?"))
+        self.assertFalse(hat_stoppwort("Der Laufmaschine von Carl Dre"))
+        self.assertTrue(echo_modus_an(""))
+        self.assertFalse(echo_modus_an("aus"))
+
+
 class RueckmeldungStrategieTest(unittest.IsolatedAsyncioTestCase):
     async def beurteilung(self, text):
         bekannt = []
@@ -684,6 +768,24 @@ class DuckenTest(_GateTest):
         g._arm()  # ... "aber": der Einwurf ist bestätigt
         await asyncio.sleep(0.3)
         self.assertEqual([m["an"] for m in self.nachrichten() if "an" in m], [True], "kein Lauter zwischen Leiser und Stopp")
+
+    async def test_echo_sperrt_das_daempfen_lange(self):
+        soft_interrupt.DUCK_BEURTEILT_SECS = 0.02
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        await asyncio.sleep(0.06)
+        g.beurteilt("echo")
+        await asyncio.sleep(0.08)
+        self.assertEqual([m["an"] for m in self.nachrichten()], [True, False])
+        self.assertGreater(g._duck_gesperrt_bis - self.t, soft_interrupt.DUCK_SPERRE_SECS, "länger als bei einer Rückmeldung")
+
+    async def test_echo_vor_dem_daempfen_sperrt_ebenfalls_lange(self):
+        g = self.gate(ducken=True)
+        g._vad_spricht = True
+        g._duck_planen()
+        g.beurteilt("echo")
+        self.assertGreater(g._duck_gesperrt_bis - self.t, soft_interrupt.DUCK_SPERRE_SECS)
 
     async def test_rueckmeldung_nach_der_beurteilungsfrist_nimmt_zurueck(self):
         soft_interrupt.DUCK_BEURTEILT_SECS = 0.05

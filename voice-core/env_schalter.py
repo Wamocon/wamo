@@ -1,14 +1,27 @@
-"""Ein Parser für die an/aus-Schalter des Sprachverhaltens (WAMO_ECHO_FILTER, WAMO_STOPP_GRENZE, WAMO_DUCKEN,
-WAMO_RUECKMELDUNG, WAMO_WARTESATZ). Leer oder nicht gesetzt heißt an; aus, 0, nein, false, off und no schalten ab."""
+"""Ein Parser für die an/aus-Schalter des Sprachverhaltens (WAMO_ECHO_FILTER, WAMO_ECHO_MODUS, WAMO_STOPP_GRENZE,
+WAMO_DUCKEN, WAMO_RUECKMELDUNG, WAMO_WARTESATZ). Leer oder nicht gesetzt heißt an. Ein unbekannter Wert (Tippfehler im
+Notaus) bleibt an, wird aber einmal je Wert gewarnt."""
 
 from __future__ import annotations
 
 import os
 
-AUS = ("aus", "0", "nein", "false", "off", "no")
+from loguru import logger
+
+AUS = ("aus", "0", "nein", "false", "off", "no", "n", "disabled", "deaktiviert", "inaktiv")
+AN = ("an", "ein", "1", "ja", "true", "on", "yes", "y", "aktiv", "enabled")
+_GEWARNT: set[tuple[str, str]] = set()
 
 
 def schalter_an(name: str, wert: str | None = None) -> bool:
     """Ist der Schalter name an? wert ersetzt die Umgebungsvariable (für Tests)."""
-    w = os.getenv(name) if wert is None else wert
-    return (w or "an").strip().lower() not in AUS
+    w = (os.getenv(name) if wert is None else wert) or ""
+    w = w.strip().lower()
+    if not w or w in AN:
+        return True
+    if w in AUS:
+        return False
+    if (name, w) not in _GEWARNT:
+        _GEWARNT.add((name, w))
+        logger.warning("{} hat den unbekannten Wert {!r}: gilt als an (zum Abschalten aus, 0 oder nein setzen)", name, w)
+    return True

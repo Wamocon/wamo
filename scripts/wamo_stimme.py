@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import statistics
 import struct
@@ -65,14 +66,16 @@ SPRECHPROBEN = {
 
 
 def _sprechen(text: str, ziel: Path) -> None:
+    # Text und Zielpfad gehen über die Umgebung, nie in den PowerShell-Text (ein ' im Ordnernamen wäre sonst Befehlscode)
     ps = (
         "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
         "$s.SelectVoice('Microsoft Hedda Desktop'); $s.Rate = 0; "
         f"$f = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo({RATE}, "
         "[System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono); "
-        f"$s.SetOutputToWaveFile('{ziel}', $f); $s.Speak('{text}'); $s.Dispose()"
+        "$s.SetOutputToWaveFile($env:WAMO_SPRECH_ZIEL, $f); $s.Speak($env:WAMO_SPRECH_TEXT); $s.Dispose()"
     )
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True)
+    env = {**os.environ, "WAMO_SPRECH_ZIEL": str(ziel), "WAMO_SPRECH_TEXT": text}
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, env=env)
 
 
 def schreibe_wav(pfad: Path, daten: np.ndarray, rate: int) -> None:
@@ -156,6 +159,7 @@ STILLE_ENDE_S = 0.9  # so lange kein Ton heißt: WAMO ist verstummt (kürzere Pa
 VERPASST_NACH_S = 4.0  # ein Einwurf, auf den WAMO länger als so viele Sekunden weiterspricht, gilt als verpasst
 HART_FALL_MS = 35  # fällt der Pegel in weniger als dieser Zeit von 50 % auf nichts, wurde hart abgeschnitten
 ANTWORT_TRENNER_S = 1.2  # Stille, die zwei Antworten trennt
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")  # Laufnamen und Beschriftungen: nie Pfade
 
 
 def huellkurve(x: np.ndarray, rate: int, fenster: float = HUELL_S) -> np.ndarray:
@@ -551,6 +555,8 @@ def lauf_analysieren(ordner: Path, lauf: str) -> dict[str, list[dict]]:
 
 def auswerten(ordner: Path, laeufe: list[str]) -> None:
     for lauf in laeufe:
+        if not NAME_RE.match(lauf):
+            sys.exit(f"Ungültiger Laufname: {lauf!r}")
         daten = lauf_analysieren(ordner, lauf)
         z = zusammenfassen(daten)
         (ordner / f"{lauf}.metriken.json").write_text(
@@ -561,6 +567,8 @@ def auswerten(ordner: Path, laeufe: list[str]) -> None:
 def hoerprobe(ordner: Path, lauf: str, ziel: Path, label: str) -> None:
     """Drei Hörproben (10 bis 20 s): Einwurf mitten im Satz, Rückmeldelaut, Werkzeugaufruf. Mikrofon und das, was die Person
     hört (Ausgabestrom mal Lautstärke), gemischt in Mono."""
+    if not NAME_RE.match(lauf) or not NAME_RE.match(label):
+        sys.exit("lauf und label dürfen nur Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich enthalten.")
     j = json.loads((ordner / f"{lauf}.json").read_text(encoding="utf-8"))
     ziel.mkdir(parents=True, exist_ok=True)
     plan = {"unterbrechung": ("einwurf", "einwurf", -7.0, 11.0), "backchannel": ("backchannel", "backchannel", -6.0, 12.0),

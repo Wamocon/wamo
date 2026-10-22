@@ -4,7 +4,7 @@
 // gemeinsamen Uhr (AudioContext), dazu die Lautstärke des Wiedergabeelements (weiches Ausblenden der Oberfläche).
 // Auswertung: scripts/wamo_stimme.py (Kennzahlen, Hörproben). Ablauf und Voraussetzungen: dort im Kopf der Datei.
 //
-//   node scripts/wamo-stimme-messen.cjs <lauf> [szenarien] [wiederholungen]
+//   node scripts/wamo-stimme-messen.cjs <lauf> [szenarien] [wiederholungen]   (szenarien: "einwurf:8,echo" nennt je Szenario die Wiederholungen)
 //
 // Szenarien (Komma): kurz, lang, einwurf, backchannel, geraeusch, echo, schnell, pause, werkzeug (Standard: alle).
 //
@@ -26,7 +26,7 @@ const net = require("net");
 const { spawn, spawnSync } = require("child_process");
 
 function playwrightLaden() {
-  const orte = [process.cwd(), path.join(__dirname, "..", "ui"), path.join(__dirname, "..", "desktop")];
+  const orte = [path.join(__dirname, "..", "ui"), path.join(__dirname, "..", "desktop")]; // nie aus dem Arbeitsordner laden
   for (const name of [process.env.PLAYWRIGHT_MODUL, "playwright", "playwright-core"].filter(Boolean)) {
     try {
       return require(require.resolve(name, { paths: orte }));
@@ -34,7 +34,7 @@ function playwrightLaden() {
       /* nächster Versuch */
     }
   }
-  console.error('Playwright fehlt: im Arbeitsordner "npm install --no-save playwright-core" oder PLAYWRIGHT_MODUL setzen.');
+  console.error("Playwright fehlt: PLAYWRIGHT_MODUL auf den Ordner von playwright-core setzen.");
   process.exit(2);
 }
 const { chromium } = playwrightLaden();
@@ -45,11 +45,22 @@ const REPO = process.env.WAMO_REPO || path.join(__dirname, "..");
 const [lauf, szenarioArg, wdhArg] = process.argv.slice(2);
 const ALLE = ["fakten", "kurz", "lang", "einwurf", "backchannel", "geraeusch", "echo", "schnell", "pause", "werkzeug"];
 const WIEDERHOLUNGEN = { fakten: 8, kurz: 5, lang: 3, einwurf: 6, backchannel: 5, geraeusch: 5, echo: 3, schnell: 5, pause: 6, werkzeug: 5 };
-if (!lauf) {
-  console.error("Aufruf: node wamo-stimme-messen.cjs <lauf> [szenarien] [wiederholungen]");
+if (!lauf || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(lauf)) {
+  console.error("Aufruf: node wamo-stimme-messen.cjs <lauf> [szenarien] [wiederholungen] (lauf: Buchstaben, Ziffern, . _ -)");
   process.exit(2);
 }
-const szenarien = szenarioArg && szenarioArg !== "alle" ? szenarioArg.split(",") : ALLE;
+{
+  // Der Messordner enthält das Testkonto im Klartext, Gesprächsaufnahmen und Logs: nie im Repository
+  const rel = path.relative(path.resolve(REPO), path.resolve(DIR));
+  if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
+    console.error("WAMO_MESS_DIR liegt im Repository (" + DIR + "): bitte einen Ordner außerhalb wählen, z. B. D:\tmp\wamo-stimme.");
+    process.exit(2);
+  }
+}
+const LOOPBACK = ["127.0.0.1", "localhost", "[::1]"].includes(new globalThis.URL(URL).hostname);
+const eintraege = szenarioArg && szenarioArg !== "alle" ? szenarioArg.split(",") : ALLE; // "einwurf:8" nennt die Wiederholungen
+const szenarien = eintraege.map((e) => e.split(":")[0]);
+for (const e of eintraege) { const w = parseInt(e.split(":")[1] || "", 10); if (w > 0) WIEDERHOLUNGEN[e.split(":")[0]] = w; }
 for (const s of szenarien) if (!ALLE.includes(s)) { console.error("Unbekanntes Szenario:", s); process.exit(2); }
 const konto = JSON.parse(fs.readFileSync(path.join(DIR, "konto.json"), "utf8"));
 const clipDauer = JSON.parse(fs.readFileSync(path.join(DIR, "clips", "clips.json"), "utf8"));
@@ -87,6 +98,7 @@ async function kernStarten() {
   };
   for (const paar of (process.env.KERN_ENV || "").split(";").filter(Boolean)) {
     const i = paar.indexOf("=");
+    if (i < 1) throw new Error("KERN_ENV: Eintrag ohne Namen oder ohne = : " + paar.split("=")[0]);
     env[paar.slice(0, i).trim()] = paar.slice(i + 1).trim();
   }
   const python = path.join(REPO, "voice-core", ".venv", "Scripts", "python.exe");
@@ -101,7 +113,10 @@ async function kernStarten() {
   throw new Error("Kern auf Port 7861 nicht erreichbar, siehe " + logPfad);
 }
 function kernBeenden() {
-  if (kern && kern.pid) spawnSync("taskkill", ["/pid", String(kern.pid), "/T", "/F"], { stdio: "ignore" });
+  if (kern && kern.pid && kern.exitCode === null) {
+    const taskkill = path.join(process.env.SystemRoot || "C:\Windows", "System32", "taskkill.exe");
+    spawnSync(taskkill, ["/pid", String(kern.pid), "/T", "/F"], { stdio: "ignore" });
+  }
   kern = null;
 }
 
@@ -380,14 +395,14 @@ function seite({ modus, echoPegel }) {
     channel: "chrome",
     args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--autoplay-policy=no-user-gesture-required"],
   });
-  const ctx = await browser.newContext({ ignoreHTTPSErrors: true, bypassCSP: true, viewport: { width: 1400, height: 900 }, permissions: ["microphone"] });
+  const ctx = await browser.newContext({ ignoreHTTPSErrors: LOOPBACK, bypassCSP: LOOPBACK, viewport: { width: 1400, height: 900 }, permissions: ["microphone"] });
   await ctx.addInitScript(seite, { modus: "unterwegs", echoPegel: parseFloat(process.env.ECHO_PEGEL || "0.5") });
   const page = await ctx.newPage();
   const konsole = [];
   page.on("console", (m) => {
     if (["error", "warning"].includes(m.type()) && !m.text().includes("GL Driver")) konsole.push(`${m.type()}: ${m.text().slice(0, 200)}`);
   });
-  const ergebnis = { lauf, zeit: new Date().toISOString(), kernEnv: process.env.KERN_ENV || "", szenarien: [], konsole };
+  const ergebnis = { lauf, zeit: new Date().toISOString(), kernEnv: (process.env.KERN_ENV || "").split(";").filter(Boolean).map((e) => (/KEY|SECRET|TOKEN|PASSWORD|URL|KEK/i.test(e.split("=")[0]) ? e.split("=")[0] + "=<verdeckt>" : e)).join(";"), szenarien: [], konsole };
   const speichern = () => fs.writeFileSync(path.join(DIR, `${lauf}.json`), JSON.stringify(ergebnis, null, 1));
   try {
     await page.goto(URL, { waitUntil: "networkidle" });
@@ -403,7 +418,7 @@ function seite({ modus, echoPegel }) {
     if (await page.locator("details.gate-secret").count()) {
       await page.locator("details.gate-secret summary").click();
       konto.secret = (await page.locator("details.gate-secret code").innerText()).trim();
-      fs.writeFileSync(path.join(DIR, "konto.json"), JSON.stringify(konto));
+      fs.writeFileSync(path.join(DIR, "konto.json"), JSON.stringify(konto), { mode: 0o600 });
     }
     await code.fill(totp(konto.secret));
     await code.press("Enter");

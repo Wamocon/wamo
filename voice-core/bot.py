@@ -127,6 +127,7 @@ from soft_interrupt import (
     SoftInterruptGate,
     echo_filter_an,
     ducken_an,
+    echo_modus_an,
     kuerze_auf_gehoertes,
     ohne_letzte_woerter,
     stopp_grenze_an,
@@ -611,6 +612,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                         # Echo der eigenen Stimme am Mikrofon löst keine Unterbrechung aus (soft_interrupt.ist_echo)
                         gesprochen=soft_gate.kuerzlich_gesprochen if echo_filter_an() else None,
                         beurteilt=soft_gate.beurteilt,  # Rückmeldung oder Echo: Dämpfung zurücknehmen
+                        echo_modus=echo_filter_an() and echo_modus_an(),  # bei erkennbarem Echo unterbricht nur ein Stoppwort
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.

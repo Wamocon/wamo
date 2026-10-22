@@ -163,10 +163,25 @@ ECHO_ANTEIL = 0.7  # so viel vom langen Einwurf muss in WAMOs Text stehen (Verh�
 ECHO_AEHNLICH = 0.8  # Ähnlichkeit, ab der die Erkennung ein gesprochenes Wort als dasselbe zählt ("Frankreichs")
 ECHO_AEHNLICH_MIN_LAENGE = 6  # kürzere Wörter müssen genau stimmen ("wer" ist nicht "werden")
 ECHO_LUECKE = 1  # so viele gespielte Wörter darf die Erkennung zwischen zwei erkannten überhören
+# Echo-Modus (WAMO_ECHO_MODUS): Hört das Mikrofon die eigene Stimme erkennbar (mindestens ECHO_MODUS_MIN als Echo erkannte
+# Einwürfe in ECHO_MODUS_FENSTER_SECS), kommen verhörte Bruchstücke des Echos ("Magnetfeldpunkt", "Carl Dre") am Text nicht
+# mehr vom Einwurf zu unterscheiden. Solange es anhält, unterbricht nur noch ein Stoppwort (STOPP_WORDS).
+ECHO_MODUS_FENSTER_SECS = 20.0
+ECHO_MODUS_MIN = 2
 
 
 def echo_filter_an(wert: str | None = None) -> bool:
     return schalter_an("WAMO_ECHO_FILTER", wert)
+
+
+def echo_modus_an(wert: str | None = None) -> bool:
+    """WAMO_ECHO_MODUS: bei erkennbarem Echo unterbricht nur ein Stoppwort (Standard an; wirkt nur mit dem Echo-Filter)."""
+    return schalter_an("WAMO_ECHO_MODUS", wert)
+
+
+def hat_stoppwort(text: str) -> bool:
+    """Enthält der Text ein Wort, mit dem man WAMO anhält oder etwas wissen will ("Stopp", "Moment", "Was", "Nein")?"""
+    return any(_wort(w) in STOPP_WORDS for w in text.split())
 
 
 def _wort(w: str) -> str:
@@ -280,6 +295,7 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         *,
         gesprochen: Callable[[float], list[str]] | None = None,
         beurteilt: Callable[[str], None] | None = None,
+        echo_modus: bool = False,
         **kwargs,
     ):
         """beurteilt: wird mit "rueckmeldung" oder "echo" gerufen, wenn der erkannte Text kein Einwurf ist (das Gate
@@ -287,10 +303,19 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         super().__init__(**kwargs)
         self._gesprochen = gesprochen
         self._beurteilt = beurteilt
+        self._echo_modus = echo_modus
+        self._echo_zeiten: deque[float] = deque(maxlen=8)  # Zeiten der als Echo erkannten Einwürfe
+        self.echo_vermutet = 0  # Einwürfe ohne Stoppwort, die im Echo-Modus verworfen wurden
+        self._echo_vermutet_gemeldet = 0.0
         self.echo_verworfen = 0  # für Tests und das Log
         self._echo_gemeldet = 0.0
         self.rueckmeldungen = 0
         self._rueckmeldung_gemeldet = 0.0
+
+    def echo_modus_aktiv(self) -> bool:
+        """Hört WAMO sich gerade erkennbar selbst? (Mindestens ECHO_MODUS_MIN Echo-Urteile in den letzten Sekunden.)"""
+        jetzt = time.monotonic()
+        return self._echo_modus and sum(1 for t in self._echo_zeiten if jetzt - t < ECHO_MODUS_FENSTER_SECS) >= ECHO_MODUS_MIN
 
     def _urteil(self, text: str) -> str:
         if self._gesprochen is None:
@@ -303,9 +328,20 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         count = meaningful_word_count(frame.text, interim=isinstance(frame, InterimTranscriptionFrame))
         if count >= self._min_words:
             urteil = self._urteil(frame.text)
+            if urteil != "echo" and self.echo_modus_aktiv() and not hat_stoppwort(frame.text):
+                self.echo_vermutet += 1
+                jetzt = time.monotonic()
+                if jetzt - self._echo_vermutet_gemeldet > 5.0:  # höchstens alle 5 s, ohne Inhalt
+                    self._echo_vermutet_gemeldet = jetzt
+                    logger.info(f"{self}: Echo vermutet, ohne Stoppwort kein Einwurf ({count} Wörter, insgesamt {self.echo_vermutet})")
+                if self._beurteilt is not None:
+                    self._beurteilt("echo")
+                await self.trigger_reset_aggregation()
+                return ProcessFrameResult.CONTINUE
             if urteil == "echo":
                 self.echo_verworfen += 1
                 jetzt = time.monotonic()
+                self._echo_zeiten.append(jetzt)
                 if jetzt - self._echo_gemeldet > 5.0:  # höchstens alle 5 s, ohne Inhalt
                     self._echo_gemeldet = jetzt
                     logger.info(f"{self}: Echo der eigenen Stimme verworfen ({count} Wörter, insgesamt {self.echo_verworfen})")
@@ -337,11 +373,12 @@ ASSISTANT_RECORD_TIMEOUT_SECS = 1.0
 STOPP_FADE_SECS = 0.14  # so lange blendet die Oberfläche aus (ui/src/lib/useWamo.ts fadeOutAudio)
 STOPP_VORLAUF_SECS = 0.05  # Weg der Servernachricht zur Oberfläche
 STOPP_SATZ_VORZUG_SECS = 0.30  # ein Satz- oder Kommaende, das höchstens so viel später liegt als die früheste Grenze, geht vor
-DUCK_VERZOEGERUNG_SECS = 0.12  # Sprache der Person so lange (nach der Meldung der Spracherkennung), bevor gedämpft wird
+DUCK_VERZOEGERUNG_SECS = 0.25  # Sprache der Person so lange (nach der Meldung der Spracherkennung), bevor gedämpft wird
 DUCK_NACH_VAD_ENDE_SECS = 1.0  # ohne bestätigten Einwurf so lange nach dem Ende der Sprache wieder normal (Pausen, Verzug der Erkennung)
 DUCK_SPERRE_SECS = 8.0  # nach einer Entwarnung (Rückmeldung, Echo, Höchstdauer) so lange nicht wieder dämpfen
+DUCK_SPERRE_ECHO_SECS = 30.0  # Echo erkannt: die Dämpfung würde mit dem Echo pumpen, also lange nicht
 DUCK_SPERRE_KURZ_SECS = 1.5  # nach dem Ende der Sprache ohne Urteil der Erkennung nur kurz
-DUCK_BEURTEILT_SECS = 0.5  # Rückmeldung oder Echo erkannt: so lange warten, ob doch ein Einwurf folgt ("Ja, aber ...")
+DUCK_BEURTEILT_SECS = 0.3  # Rückmeldung oder Echo erkannt: so lange warten, ob doch ein Einwurf folgt ("Ja, aber ...")
 DUCK_MAX_SECS = 3.0  # spätestens nach dieser Zeit ohne bestätigten Einwurf wieder normal (Echo hält die Sprachaktivität an)
 
 
@@ -445,9 +482,10 @@ class SoftInterruptGate(FrameProcessor):
             return
         if self._duck_task and not self._duck_task.done():
             self._duck_task.cancel()  # noch nicht gedämpft: in dieser Sprachphase gar nicht erst dämpfen
-            self._duck_gesperrt_bis = max(self._duck_gesperrt_bis, self._uhr() + DUCK_SPERRE_KURZ_SECS)
+            sperre = DUCK_SPERRE_ECHO_SECS if grund == "echo" else DUCK_SPERRE_KURZ_SECS
+            self._duck_gesperrt_bis = max(self._duck_gesperrt_bis, self._uhr() + sperre)
         if self._duckt and not (self._pending or self._firing):
-            self._frist("_duck_ende_task", DUCK_BEURTEILT_SECS, grund, DUCK_SPERRE_SECS)
+            self._frist("_duck_ende_task", DUCK_BEURTEILT_SECS, grund, DUCK_SPERRE_ECHO_SECS if grund == "echo" else DUCK_SPERRE_SECS)
 
     def _kurz(self, coro, name: str):
         """Kurze Hintergrundaufgabe, die cleanup noch beenden kann."""

@@ -229,6 +229,41 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   noch einmal an, auch wenn der neue Zug der Person schon beantwortet wird. Die Turn-Wache vor und hinter dem Modell
   verwirft solche Anfragen (gleicher Verlauf wie zuletzt, oder der Verlauf endet mit WAMOs Antwort).
 
+### Stimme messen (Szenariotest)
+
+Der Test spielt über ein virtuelles Mikrofon Sprechproben und Geräusche gegen einen lokalen Kern (Unterwegs) und nimmt
+WAMOs Ausgabestrom, das Mikrofon und die Lautstärke des Wiedergabeelements mit einer gemeinsamen Uhr auf. Die Person
+spricht immer dann, wenn WAMO in einem bestimmten Zustand ist („seit 5 s am Sprechen“). Szenarien: `fakten`, `kurz`,
+`lang`, `einwurf`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`. Voraussetzung: ein temporäres
+Testkonto (`scripts/wamo_nutzer.py anlegen`, danach `sperren`), `konto.json` im Messordner (nicht im Repo), Oberfläche aus
+einer Kopie gebaut (`NEXT_PUBLIC_VOICE_CORE_URL=http://127.0.0.1:7861`).
+
+```powershell
+python scripts\wamo_stimme.py clips D:\tmp\wamo-stimme2
+$env:WAMO_MESS_DIR = "D:\tmp\wamo-stimme2"; $env:WAMO_UI_URL = "http://127.0.0.1:3101"
+$env:KERN_ENV = "WAMO_STOPP_GRENZE=aus;WAMO_DUCKEN=aus"        # Schalter zum Vergleichen
+node scripts\wamo-stimme-messen.cjs vorher "einwurf:8,backchannel:6,echo:4"
+python scripts\wamo_stimme.py auswerten D:\tmp\wamo-stimme2 vorher
+python scripts\wamo_stimme.py hoerprobe D:\tmp\wamo-stimme2 vorher D:\tmp\stimme-hoerprobe vorher
+```
+
+Kennzahlen: Zeit von der Frage bis zum ersten Ton, größte Stille innerhalb einer Antwort, Anteil falscher Unterbrechungen
+(Rückmeldelaute, Geräusche, Echo), verpasste echte Einwürfe, Zeit bis zum Verstummen, hartes Abschneiden, erste Reaktion
+der Oberfläche (Dämpfen). Befunde, die den Entwurf bestimmt haben:
+
+- Soniox-TTS hält das Ende des Textes zurück, bis weiterer Text oder `text_end` kommt (Messung: der Rest eines Satzes
+  erklingt erst, wenn der nächste eintrifft). Lücken in laufenden Antworten entstehen deshalb nur, wenn das Modell langsamer
+  liefert als WAMO spricht, vor allem bei Werkzeugaufrufen: dort setzt der Wartesatz ein.
+- Die Stille von etwa 2,4 s bis zum Verstummen kam fast ganz aus dem Kern: Spracherkennung (0,9 s bis zum ersten Wort),
+  dann bis zu drei weitere Wörter oder die Zeitgrenze von 1,5 s, dann 0,5 s Vorsprung der Zeitstempel.
+- Vorbilder: Pipecat (Verlauf enthält nur das Gespielte, `MinWords` gegen Rückmeldelaute), LiveKit (Rückmeldelaute und
+  Wiederaufnahme nach falscher Unterbrechung, 0,5 s Mindestdauer, 2 s `false_interruption_timeout`), OpenAI Realtime (Kürzen
+  des Verlaufs auf die gehörte Dauer), Soniox und Full-Duplex-Bench-v3 (Wartesatz nur einmal, kurz, abbrechbar).
+- REA an der öffentlichen Demo unmute.sh (Quelle des Clients offen, Auswertung der WebSocket-Ereignisse mit REA): der Client
+  puffert nur 80 ms und leert beim Unterbrechen, der Server unterbricht auf die Sprachaktivität vor dem Transkript
+  (`unmute.interrupted_by_vad`), filtert aber „Mm hmm“ nicht und antwortet dann darauf. Übernommen wurde die frühe
+  Reaktion (Dämpfen), nicht das Fehlen des Filters.
+
 ## Nutzer und Gedächtnis
 
 | Befehl | Zweck |
