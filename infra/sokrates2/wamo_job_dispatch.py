@@ -18,10 +18,19 @@ aus SSH_ORIGINAL_COMMAND und wird streng geprüft (feste Muster, keine Shell):
     cancel  <job>                               laufenden Auftrag beenden
 
 start: Die erste stdin-Zeile ist ein JSON-Objekt {"auftrag": "...", "system": "...", "modell": "..." (optional),
-"repo": "owner/name" (optional, Ziel-Repo für das GitHub-Token)}. Danach bleibt stdin
+"repo": "owner/name" (optional, Ziel-Repo für das GitHub-Token), "zugang": "folgt" | "server" (optional),
+"profil": "<8 Hexzeichen>" (optional, Kennung des Profils für die Buchführung)}. Mit "zugang": "folgt" kommt als
+zweite Zeile der persönliche Claude-Zugang des Profils {"typ": "oauth" | "api", "wert": "...", "workspace": "wrkspc_..."
+(nur api, optional)}; er gilt für genau diesen Lauf und ersetzt den Claude-Zugang aus geheim.env vollständig (kein
+Mischen). "server" erlaubt ausdrücklich den Zugang aus geheim.env (Standard ohne das Feld, für ältere Kerne; mit
+WAMO_SERVERZUGANG=aus in geheim.env abschaltbar). Der Wert steht nie in argv, Log, Auftragsordner, Kopfzeile, Ereignissen
+oder Fehlertexten und wird nicht gespeichert; in der Ausgabe und in den Dateien unter claude/ wird er geschwärzt.
+Danach bleibt stdin
 offen und dient als Lebenslinie: endet sie (Auflegen, Verbindungsabbruch, Voice-Core beendet), wird der
 Auftrag sofort beendet. stdout trägt die stream-json-Ausgabe von Claude Code und eigene Zeilen
-{"type": "wamo", "ereignis": ...}; Zeilen dieses Typs aus der Sandbox werden verworfen. Ablauf je Lauf:
+{"type": "wamo", "ereignis": ...}; Zeilen dieses Typs aus der Sandbox werden verworfen. Das Ereignis "kontingent"
+gibt die Limits des Max-Abos aus den rate_limit_event von Claude Code weiter (nur Felder einer Allowlist, kontingent.py).
+Ablauf je Lauf:
 
     1. Auftragsordner /srv/wamo/jobs/<job> anlegen bzw. prüfen (Projekt und Art sind an den Auftrag gebunden).
     2. Sperren: ein Lauf je Auftrag, ein Auftrag je Projekt, höchstens PARALLEL_MAX gleichzeitig.
@@ -32,9 +41,11 @@ Auftrag sofort beendet. stdout trägt die stream-json-Ausgabe von Claude Code un
     4. Selbsttest in der Sandbox: Wächter-Hook mit einem bekannten Sperrfall (genaue Ablehnung), /etc/wamo
        unsichtbar, approvals.json schreibgeschützt, Wächterpfade nicht umbenennbar, Landlock-Sperre auf
        einen eigenen Probe-Port, Ausgangsfirewall zu Docker-Bridge und LAN. Scheitert er, startet nichts.
-    5. Token nur der Auftragsart aus /etc/wamo/geheim.env als Umgebung (nie argv) an wamo-job.sh. Bekäme der
-       Lauf ein Token, das ein früherer Lauf im selben Projekt nicht hatte, startet er nur nach einer
-       Freigabe (Ereignis zugang_erweitert) oder auf einem frischen, leeren Projektordner.
+    5. Token nur der Auftragsart aus /etc/wamo/geheim.env als Umgebung (nie argv) an wamo-job.sh, dazu genau ein
+       Claude-Zugang: der persönliche aus der zweiten stdin-Zeile oder, wenn erlaubt, der aus geheim.env. Bekäme der
+       Lauf ein Token, das ein früherer Lauf im selben Projekt nicht hatte (ein persönlicher Zugang zählt je Profil),
+       startet er nur nach einer Freigabe (Ereignis zugang_erweitert) oder auf einem frischen, leeren Projektordner.
+       Das Modell richtet sich nach der Zugangsart (modell_waehlen): Abo (oauth) Sonnet, sonst das der Art.
     6. GitHub im App-Modus (WAMO_GH_APP_ID, WAMO_GH_APP_INSTALLATION_ID, WAMO_GH_APP_SCHLUESSEL in geheim.env):
        der Dispatcher signiert außerhalb der Sandbox ein JWT (RS256) mit dem privaten Schlüssel der App, holt
        damit ein Installations-Token nur mit den Rechten der Auftragsart (Werkzeugkarte, GITHUB_ZUGRIFF) und,
@@ -43,8 +54,8 @@ Auftrag sofort beendet. stdout trägt die stream-json-Ausgabe von Claude Code un
        (Ereignis start_abgelehnt, Code 8); ein Rückfall auf GH_TOKEN aus geheim.env gibt es dann nicht.
        Ohne diese drei Variablen gilt weiter GH_TOKEN bzw. GH_TOKEN_LESEN.
 
-Nur Standardbibliothek, im App-Modus zusätzlich das Systempaket python3-cryptography. Wächter und Werkzeugkarte
-kommen aus /opt/wamo/waechter (Kopien aus voice-core).
+Nur Standardbibliothek, im App-Modus zusätzlich das Systempaket python3-cryptography. Wächter, Werkzeugkarte und
+Kontingent-Parser kommen aus /opt/wamo/waechter (Kopien aus voice-core).
 """
 
 from __future__ import annotations
@@ -68,7 +79,7 @@ from collections import namedtuple
 from contextlib import contextmanager
 from pathlib import Path
 
-VERSION = "4"
+VERSION = "5"
 
 HEIM = Path("/srv/wamo")
 APP = Path("/opt/wamo")  # root-eigen; Programme in bin/, Wächter in waechter/ (in der Sandbox derselbe Pfad)
@@ -112,6 +123,21 @@ MODELL_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,63}")
 # Ziel-Repo owner/name: genau ein Schrägstrich, Owner wie bei GitHub (Buchstaben, Ziffern, Bindestrich, bis 39),
 # Name bis 100 Zeichen aus A-Z, a-z, 0-9, Punkt, Unterstrich, Bindestrich (dieselbe Regel in dev_agent.py)
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+# Persönlicher Claude-Zugang eines Profils (zweite stdin-Zeile von start). Das Format wird streng geprüft: oauth ist
+# der Token aus `claude setup-token` (sk-ant-oat01-...), api ein Anthropic-API-Schlüssel (sk-ant-api03-...); Admin-
+# Schlüssel (sk-ant-admin01-...) und Sitzungsschlüssel passen auf keins von beiden.
+ZUGANG_MODI = ("folgt", "server")
+ZUGANG_FORMAT = {"oauth": re.compile(r"sk-ant-oat[0-9]{2}-[A-Za-z0-9_-]{20,400}"),
+                 "api": re.compile(r"sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,250}")}
+ZUGANG_VARIABLE = {"oauth": "CLAUDE_CODE_OAUTH_TOKEN", "api": "ANTHROPIC_API_KEY"}
+ZUGANG_FELDER = {"typ", "wert", "workspace"}
+PROFIL_RE = re.compile(r"[0-9a-f]{8}")
+WORKSPACE_ZUGANG_RE = re.compile(r"wrkspc_[A-Za-z0-9]{6,60}")
+MAX_ZUGANG_BYTES = 2048
+ZUGANG_ERSATZ = b"[CLAUDE_ZUGANG]"
+MAX_SCHWAERZ_DATEI = 64 * 1024 * 1024  # größere Dateien unter claude/ werden gelöscht statt gelesen
+MAX_SCHWAERZ_DATEIEN = 5000
+MAX_KONTINGENT_EREIGNISSE = 200  # je Lauf; mehr gibt es nicht weiter (die Zeilen kommen aus der Sandbox)
 MAX_COMMAND_CHARS = 300
 MAX_HEADER_BYTES = 256 * 1024
 MAX_TEXT_CHARS = 20000
@@ -144,6 +170,26 @@ SETTINGS_KEYS = ("enabledPlugins",)  # Rest (Hooks, Helfer, statusLine, Marktpl�
 
 class Abgewiesen(Exception):
     """Aufruf verletzt die Regeln; wird protokolliert und mit Code 2 beantwortet."""
+
+
+class ZugangUngueltig(Abgewiesen):
+    """Die Zugangszeile ist unbrauchbar. Der Text nennt nie den Inhalt der Zeile."""
+
+
+# Kopfzeile von start; zugang: None (älterer Kern), "folgt" (zweite Zeile mit dem Zugang) oder "server"
+Kopf = namedtuple("Kopf", ("auftrag", "system", "modell", "repo", "zugang", "profil"))
+
+
+class ClaudeZugang(namedtuple("_ClaudeZugang", ("typ", "wert", "workspace", "profil"))):
+    """Persönlicher Claude-Zugang für einen Lauf: typ oauth | api, wert (Geheimnis!), workspace (nur api), profil.
+    Die Darstellung verbirgt den Wert, damit er auch bei einem versehentlichen Protokollieren nicht auftaucht."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return f"ClaudeZugang(typ={self.typ!r}, wert=<verborgen>, profil={self.profil!r})"
+
+    __str__ = __repr__
 
 
 class _Zeitueberschreitung(Exception):
@@ -237,17 +283,18 @@ def check_repo(value: object) -> str:
     return value
 
 
-def parse_header(raw: bytes) -> tuple[str, str, str | None, str | None]:
+def parse_header(raw: bytes) -> Kopf:
     """Erste stdin-Zeile von start: {"auftrag": str, "system": str, "modell": str (optional), "repo": "owner/name"
-    (optional)}. Steuerzeichen außer Zeilenumbruch und Tabulator fliegen heraus; beide Texte sind begrenzt. Das
-    Modell prüft cmd_start gegen die Allowlist der Werkzeugkarte, das Repo prüft check_repo."""
+    (optional), "zugang": "folgt" | "server" (optional), "profil": 8 Hexzeichen (optional)}. Steuerzeichen außer
+    Zeilenumbruch und Tabulator fliegen heraus; beide Texte sind begrenzt. Das Modell prüft cmd_start gegen die
+    Allowlist der Werkzeugkarte, das Repo prüft check_repo. Die Kopfzeile trägt nie einen Zugangswert."""
     if not raw.endswith(b"\n") or len(raw) > MAX_HEADER_BYTES:
         raise Abgewiesen("Kopfzeile fehlt oder ist zu lang")
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise Abgewiesen("Kopfzeile ist kein JSON") from None
-    if not isinstance(data, dict) or set(data) - {"auftrag", "system", "modell", "repo"}:
+    if not isinstance(data, dict) or set(data) - {"auftrag", "system", "modell", "repo", "zugang", "profil"}:
         raise Abgewiesen("Kopfzeile hat unbekannte Felder")
     modell = data.get("modell")
     if modell is not None and (not isinstance(modell, str) or not MODELL_RE.fullmatch(modell)):
@@ -255,6 +302,11 @@ def parse_header(raw: bytes) -> tuple[str, str, str | None, str | None]:
     repo = data.get("repo")
     if repo is not None:
         repo = check_repo(repo)
+    zugang, profil = data.get("zugang"), data.get("profil")
+    if zugang is not None and zugang not in ZUGANG_MODI:
+        raise Abgewiesen("Kopfzeile: zugang ungültig (folgt oder server)")
+    if profil is not None and (not isinstance(profil, str) or not PROFIL_RE.fullmatch(profil)):
+        raise Abgewiesen("Kopfzeile: profil ungültig")
     auftrag, system = data.get("auftrag"), data.get("system", "")
     if not isinstance(auftrag, str) or not isinstance(system, str):
         raise Abgewiesen("Kopfzeile: auftrag und system müssen Text sein")
@@ -263,7 +315,52 @@ def parse_header(raw: bytes) -> tuple[str, str, str | None, str | None]:
         raise Abgewiesen("Auftrag ist leer")
     if len(auftrag) > MAX_TEXT_CHARS or len(system) > MAX_TEXT_CHARS:
         raise Abgewiesen("Auftrag oder Systemtext zu lang")
-    return auftrag, system, modell or None, repo
+    return Kopf(auftrag, system, modell or None, repo, zugang, profil)
+
+
+def parse_zugang(raw: bytes, profil: str | None = None) -> ClaudeZugang:
+    """Zweite stdin-Zeile von start (nur bei "zugang": "folgt"): {"typ": "oauth" | "api", "wert": str, "workspace":
+    str (nur api, optional)}. Genau diese Felder, Format des Werts streng nach Typ (ZUGANG_FORMAT), eine Zeile bis
+    MAX_ZUGANG_BYTES. ZugangUngueltig nennt nie den Inhalt der Zeile, auch nicht in Teilen."""
+    if not raw.endswith(b"\n") or len(raw) > MAX_ZUGANG_BYTES:
+        raise ZugangUngueltig("Zugangszeile fehlt oder ist zu lang")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        raise ZugangUngueltig("Zugangszeile ist kein JSON") from None
+    if not isinstance(data, dict) or set(data) - ZUGANG_FELDER:
+        raise ZugangUngueltig("Zugangszeile hat unbekannte Felder")
+    typ, wert, workspace = data.get("typ"), data.get("wert"), data.get("workspace")
+    if not isinstance(typ, str) or typ not in ZUGANG_FORMAT:
+        raise ZugangUngueltig("Zugangszeile: typ ungültig (oauth oder api)")
+    if not isinstance(wert, str) or not ZUGANG_FORMAT[typ].fullmatch(wert):
+        raise ZugangUngueltig(f"Zugangszeile: wert hat nicht das Format für typ {typ}")
+    if workspace is not None and (typ != "api" or not isinstance(workspace, str)
+                                  or not WORKSPACE_ZUGANG_RE.fullmatch(workspace)):
+        raise ZugangUngueltig("Zugangszeile: workspace ungültig (nur bei api, Form wrkspc_...)")
+    return ClaudeZugang(typ, wert, workspace, profil)
+
+
+def zugang_typ(env: dict[str, str]) -> str:
+    """Art des Claude-Zugangs in einer Sandbox-Umgebung: oauth (Abo, Kontingent) oder api (Guthaben)."""
+    return "oauth" if env.get("CLAUDE_CODE_OAUTH_TOKEN") else "api"
+
+
+def modell_waehlen(art: str, wunsch: str | None, typ: str) -> str:
+    """Modell des Laufs. Ein Wunsch (WAMO_ENTWICKLUNG_MODELL, Kopfzeilenfeld modell) gilt nur aus der Allowlist der
+    Werkzeugkarte (ValueError sonst). Ohne Wunsch: Abo-Zugang (oauth, Kontingent des Max-Abos) Sonnet, wenn die Art
+    nicht ohnehin ein stärkeres Modell festlegt; sonst (api, Guthaben) das Modell der Art, derzeit Haiku."""
+    wk = werkzeugkarte()
+    modell = wk.modell_fuer(art, wunsch)
+    if not wunsch and typ == "oauth" and modell == wk.MODELL_STANDARD:
+        return wk.MODELL_SONNET
+    return modell
+
+
+def serverzugang_erlaubt(geheim: dict[str, str]) -> bool:
+    """Darf ein Lauf ohne persönlichen Zugang den Claude-Zugang aus geheim.env nutzen? Standard ja (bisheriges Verhalten);
+    WAMO_SERVERZUGANG=aus schaltet das ab, sobald jedes Profil seinen eigenen Zugang hat."""
+    return (geheim.get("WAMO_SERVERZUGANG") or "an").strip().lower() not in ("aus", "nein", "0", "false", "off")
 
 
 def _clean(text: str) -> str:
@@ -306,13 +403,19 @@ def _github_variablen() -> set[str]:
     return {*wk.ZUGANG_VARIABLEN["github"], *wk.ZUGANG_VARIABLEN["github_lesen"]}
 
 
-def zugangs_quellen(art: str, geheim: dict[str, str], app_modus: bool = False, repo: str | None = None) -> set[str]:
+def zugangs_quellen(art: str, geheim: dict[str, str], app_modus: bool = False, repo: str | None = None,
+                    zugang: ClaudeZugang | None = None) -> set[str]:
     """Namen in geheim.env, deren Werte ein Lauf dieser Art bekommt (für die Buchführung je Projekt). Im
     App-Modus steht statt GH_TOKEN bzw. GH_TOKEN_LESEN der Name GH_APP_SCHREIBEN bzw. GH_APP_LESEN, mit dem
     Umfang des Tokens: "@owner/name" (kleingeschrieben) für ein Repo, "@*" für die ganze Installation. Ein anderes
-    oder breiteres Repo als in früheren Läufen des Projekts zählt so als neuer Zugang und braucht eine Freigabe."""
+    oder breiteres Repo als in früheren Läufen des Projekts zählt so als neuer Zugang und braucht eine Freigabe.
+    Ein persönlicher Claude-Zugang heißt <Variable>@<Profil> (nie der Wert): der Zugang einer anderen Person, auch
+    der aus geheim.env, ist für ein Projekt ein neuer Zugang."""
     wk = werkzeugkarte()
-    claude = next((name for name in wk.CLAUDE_VARIABLEN if geheim.get(name)), None)
+    if zugang is not None:
+        claude = f"{ZUGANG_VARIABLE[zugang.typ]}@{zugang.profil or '?'}"
+    else:
+        claude = next((name for name in wk.CLAUDE_VARIABLEN if geheim.get(name)), None)
     namen = {n for n in wk.zugangs_variablen(art) if geheim.get(n)}
     if app_modus:
         namen -= _github_variablen()
@@ -323,20 +426,27 @@ def zugangs_quellen(art: str, geheim: dict[str, str], app_modus: bool = False, r
 
 
 def sandbox_env(art: str, geheim: dict[str, str], app_modus: bool = False,
-                gh_token: str | None = None) -> dict[str, str] | None:
+                gh_token: str | None = None, zugang: ClaudeZugang | None = None) -> dict[str, str] | None:
     """Basis plus genau ein Claude-Zugang und die Token der Auftragsart. None ohne Claude-Zugang. Im App-Modus
     kommt GitHub nur als gh_token (kurzlebiges Installations-Token dieses Laufs) an, nie GH_TOKEN oder
-    GH_TOKEN_LESEN aus geheim.env; die App-Variablen (WAMO_GH_APP_*) gelangen nie in die Umgebung."""
+    GH_TOKEN_LESEN aus geheim.env; die App-Variablen (WAMO_GH_APP_*) gelangen nie in die Umgebung.
+    Mit einem persönlichen Zugang (zugang) ist das der einzige Claude-Zugang des Laufs: nichts davon kommt aus
+    geheim.env, auch nicht der Workspace-Header des Organisationsschlüssels (kein Mischen mit einem fremden Schlüssel)."""
     wk = werkzeugkarte()
-    claude = next((name for name in wk.CLAUDE_VARIABLEN if geheim.get(name)), None)
-    if claude is None:
-        return None
     env = basis_env()
-    env[claude] = geheim[claude]
-    workspace = geheim.get("ANTHROPIC_WORKSPACE_ID", "")
-    if claude == "ANTHROPIC_API_KEY" and WORKSPACE_RE.fullmatch(workspace):
-        # Organisationsschlüssel ohne festen Workspace: Claude Code schickt den Header bei jeder Anfrage mit
-        env["ANTHROPIC_CUSTOM_HEADERS"] = f"anthropic-workspace-id: {workspace}"
+    if zugang is not None:
+        env[ZUGANG_VARIABLE[zugang.typ]] = zugang.wert
+        if zugang.typ == "api" and zugang.workspace:
+            env["ANTHROPIC_CUSTOM_HEADERS"] = f"anthropic-workspace-id: {zugang.workspace}"
+    else:
+        claude = next((name for name in wk.CLAUDE_VARIABLEN if geheim.get(name)), None)
+        if claude is None:
+            return None
+        env[claude] = geheim[claude]
+        workspace = geheim.get("ANTHROPIC_WORKSPACE_ID", "")
+        if claude == "ANTHROPIC_API_KEY" and WORKSPACE_RE.fullmatch(workspace):
+            # Organisationsschlüssel ohne festen Workspace: Claude Code schickt den Header bei jeder Anfrage mit
+            env["ANTHROPIC_CUSTOM_HEADERS"] = f"anthropic-workspace-id: {workspace}"
     persoenlich = _github_variablen()
     for name in wk.zugangs_variablen(art):
         if app_modus and name in persoenlich:
@@ -1746,7 +1856,8 @@ def egress_offen() -> bool:
 # ---------------------------------------------------------------- Befehle
 def cmd_ping() -> int:
     emit({"ok": True, "version": VERSION, "runner": RUNNER.is_file(), "waechter": (WAECHTER / "dev_guard.py").is_file(),
-          "github": github_status()})
+          "github": github_status(), "serverzugang": serverzugang_erlaubt(lese_geheimnisse()),
+          "kontingent": kontingent_modul() is not None})
     return EXIT_OK
 
 
@@ -1974,23 +2085,122 @@ def aufraeumen() -> None:
                 shutil.rmtree(p, ignore_errors=True)
 
 
-def _kopfzeile_lesen() -> bytes:
+def _zeile_lesen(limit: int, was: str, fehler=Abgewiesen) -> bytes:
+    """Eine Zeile von stdin, höchstens limit Bytes, innerhalb von 30 Sekunden."""
     def zu_spaet(*_):
-        raise Abgewiesen("Kopfzeile kam nicht rechtzeitig")
+        raise fehler(f"{was} kam nicht rechtzeitig")
     signal.signal(signal.SIGALRM, zu_spaet)
     signal.alarm(30)
     try:
-        return sys.stdin.buffer.readline(MAX_HEADER_BYTES + 1)
+        return sys.stdin.buffer.readline(limit)
     finally:
         signal.alarm(0)
 
 
-def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> int:
-    auftrag, system, wunsch, repo = parse_header(_kopfzeile_lesen())
+def _kopfzeile_lesen() -> bytes:
+    return _zeile_lesen(MAX_HEADER_BYTES + 1, "Kopfzeile")
+
+
+def _zugangszeile_lesen() -> bytes:
+    return _zeile_lesen(MAX_ZUGANG_BYTES + 1, "Zugangszeile", ZugangUngueltig)
+
+
+def kontingent_modul():
+    """Parser für rate_limit_event (kontingent.py aus /opt/wamo/waechter); None, wenn die Kopie fehlt."""
     try:
-        modell = werkzeugkarte().modell_fuer(art, wunsch)
+        return _modul("kontingent")
+    except ImportError:
+        return None
+
+
+def schwaerzungen(env: dict[str, str]) -> list[tuple[bytes, bytes]]:
+    """Geheimnisse dieses Laufs, die in der Ausgabe des Agenten nicht erscheinen sollen: (Wert, Ersatz). Mindestens 8
+    Zeichen (kürzere Werte sind keine Schlüssel und würden Text zerstören)."""
+    out = []
+    for name, ersatz in (("GH_TOKEN", b"[GH_TOKEN]"), ("CLAUDE_CODE_OAUTH_TOKEN", ZUGANG_ERSATZ),
+                         ("ANTHROPIC_API_KEY", ZUGANG_ERSATZ)):
+        wert = env.get(name, "")
+        if len(wert) >= 8:
+            out.append((wert.encode("utf-8"), ersatz))
+    return out
+
+
+def schwaerzen(daten: bytes, ersetzungen: list[tuple[bytes, bytes]]) -> bytes:
+    for wert, ersatz in ersetzungen:
+        daten = daten.replace(wert, ersatz)
+    return daten
+
+
+def _datei_schwaerzen(pfad: str, ordner: str, ersetzungen: list[tuple[bytes, bytes]]) -> bool:
+    """Eine reguläre Datei (ohne Link) schwärzen. True, wenn sie geändert oder, weil nicht prüfbar, gelöscht wurde."""
+    flags = os.O_RDONLY | O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    tmp = None
+    try:
+        fd = os.open(pfad, flags)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                return False
+            if st.st_size > MAX_SCHWAERZ_DATEI:
+                raise OSError("zu groß")
+            with os.fdopen(fd, "rb", closefd=False) as f:
+                daten = f.read()
+        finally:
+            os.close(fd)
+        neu = schwaerzen(daten, ersetzungen)
+        if neu == daten:
+            return False
+        tmp_fd, tmp = tempfile.mkstemp(dir=ordner, prefix=".schwaerzen.")
+        with os.fdopen(tmp_fd, "wb") as f:
+            f.write(neu)
+        os.chmod(tmp, stat.S_IMODE(st.st_mode))
+        os.replace(tmp, pfad)
+        return True
+    except OSError:
+        # nicht lesbar, zu groß oder nicht ersetzbar: fail-closed, die Datei wird entfernt (Sitzungsdaten sind nur
+        # eine Zugabe für --resume, ein Zugangswert darf nicht überleben)
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+        try:
+            os.unlink(pfad)
+        except OSError:
+            pass
+        return True
+
+
+def zugang_aus_dateien_entfernen(wurzel: Path, ersetzungen: list[tuple[bytes, bytes]]) -> int:
+    """Schwärzt Zugangswerte in allen Dateien unter wurzel (der Konfigordner claude/ des Auftrags mit den Sitzungen
+    für --resume): dort landet ein Wert, den der Agent trotz Sperre ausgibt, als Werkzeugergebnis. Läuft nach dem Ende
+    der Sandbox, ohne Links zu folgen (nur reguläre Dateien, O_NOFOLLOW), mit Grenzen für Zahl und Größe. Liefert die
+    Zahl der geänderten Dateien."""
+    if not ersetzungen or wurzel.is_symlink() or not wurzel.is_dir():
+        return 0
+    geaendert = geprueft = 0
+    for ordner, unterordner, dateien in os.walk(wurzel, followlinks=False):
+        unterordner[:] = [d for d in unterordner if not os.path.islink(os.path.join(ordner, d))]
+        for name in dateien:
+            geprueft += 1
+            if geprueft > MAX_SCHWAERZ_DATEIEN:
+                return geaendert
+            geaendert += _datei_schwaerzen(os.path.join(ordner, name), ordner, ersetzungen)
+    return geaendert
+
+
+def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> int:
+    kopf = parse_header(_kopfzeile_lesen())
+    auftrag, system, wunsch, repo = kopf.auftrag, kopf.system, kopf.modell, kopf.repo
+    try:
+        werkzeugkarte().modell_fuer(art, wunsch)  # ein Wunsch außerhalb der Allowlist scheitert vor allem anderen
     except ValueError as e:
         raise Abgewiesen(str(e)) from None
+    zugang = None
+    if kopf.zugang == "folgt":  # persönlicher Zugang als zweite Zeile, jetzt lesen (vor Sperren und Selbsttest)
+        try:
+            zugang = parse_zugang(_zugangszeile_lesen(), kopf.profil)
+        except ZugangUngueltig as e:
+            log(f"zugang_ungueltig {job}: {e}", pflicht=True)
+            wamo_event("zugang_ungueltig", grund=str(e)[:200])
+            return EXIT_ABGEWIESEN
     aufraeumen()  # N5: alte Caches als wamo entfernen
     sperren = sperren_ordner()
     jobdir = job_ordner(job)
@@ -2027,12 +2237,19 @@ def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> i
         app = github_app_konfig(geheim)
     except GithubAppFehler as e:
         return _start_abgelehnt(jobdir, job, projekt, art, str(e))
-    env = sandbox_env(art, geheim, app_modus=app is not None)
+    if zugang is None and not serverzugang_erlaubt(geheim):
+        wamo_event("keine_zugangsdaten", grund="Kein persönlicher Claude-Zugang übergeben, und der Zugang aus geheim.env "
+                   "ist abgeschaltet (WAMO_SERVERZUGANG=aus)")
+        _status(jobdir, job, projekt, art, ergebnis="keine_zugangsdaten", code=EXIT_KEIN_ZUGANG)
+        return EXIT_KEIN_ZUGANG
+    env = sandbox_env(art, geheim, app_modus=app is not None, zugang=zugang)
     if env is None:
         wamo_event("keine_zugangsdaten", grund="ANTHROPIC_API_KEY oder CLAUDE_CODE_OAUTH_TOKEN in /etc/wamo/geheim.env fehlt")
         _status(jobdir, job, projekt, art, ergebnis="keine_zugangsdaten", code=EXIT_KEIN_ZUGANG)
         return EXIT_KEIN_ZUGANG
-    zugaenge = sorted(zugangs_quellen(art, geheim, app_modus=app is not None, repo=repo))
+    modell = modell_waehlen(art, wunsch, zugang_typ(env))
+    quelle = f"persoenlich-{zugang.typ}" if zugang is not None else "server"
+    zugaenge = sorted(zugangs_quellen(art, geheim, app_modus=app is not None, repo=repo, zugang=zugang))
     snapshot = read_json(jobdir / "zustand" / "approvals.json", [])
     anfrage = zugang_pruefen(projekt, set(zugaenge), snapshot if isinstance(snapshot, list) else [])
     if anfrage is not None:
@@ -2052,13 +2269,13 @@ def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> i
         try:
             with github_token_fuer_lauf(job, art, repo, app) as gh_token:
                 if gh_token is not None:
-                    env = sandbox_env(art, geheim, app_modus=True, gh_token=gh_token)
+                    env = sandbox_env(art, geheim, app_modus=True, gh_token=gh_token, zugang=zugang)
                 log(f"start {job} {projekt} {art} {'fortsetzung' if session else 'neu'} modell={modell} "
-                    f"zugaenge={','.join(zugaenge)} github={github} repo={repo or '-'}", pflicht=True)
+                    f"zugaenge={','.join(zugaenge)} github={github} repo={repo or '-'} claude={quelle}", pflicht=True)
                 code = _ausfuehren(argv, env, auftrag, jobdir, job, projekt, art)
         except GithubAppFehler as e:
             return _start_abgelehnt(jobdir, job, projekt, art, str(e))
-    del gehalten  # erst jetzt frei (Prozessende gibt sie ohnehin frei)
+    del gehalten, zugang, env  # erst jetzt frei (Prozessende gibt sie ohnehin frei); der Zugang wird nicht aufbewahrt
     return code
 
 
@@ -2145,13 +2362,18 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
         with open(log_pfad, "ab") as f:
             for raw in zeilen(proc.stderr, MAX_ZEILE_STDERR):
                 if raw is not None and written < MAX_LOG_BYTES:
+                    raw = schwaerzen(raw, ersetzungen)  # ein Zugangswert gehört auch nicht ins Protokoll des Auftrags
                     f.write(raw)
                     f.flush()
                     written += len(raw)
 
-    # Ein GitHub-Token ist ein Geheimnis dieses Laufs: erscheint es in der Ausgabe des Agenten, wird es vor dem
-    # Weiterreichen an den PC (Canvas, Sprachmodell) geschwärzt (Defense in Depth; kodierte Formen fängt das nicht)
-    schwaerzen = [w.encode("utf-8") for w in (env.get("GH_TOKEN", ""),) if len(w) >= 8]
+    # GitHub-Token und Claude-Zugang sind Geheimnisse dieses Laufs: erscheinen sie in der Ausgabe des Agenten, werden sie
+    # vor dem Weiterreichen an den PC (Canvas, Sprachmodell) geschwärzt, ebenso im Protokoll und nach dem Lauf in den
+    # Dateien unter claude/ (Defense in Depth; kodierte Formen fängt das nicht)
+    ersetzungen = schwaerzungen(env)
+    kontingent = kontingent_modul()
+    kontingent_zuletzt: list | None = None
+    kontingent_zahl = 0
     verworfen = 0
     # Der try-Block beginnt vor dem Start: ein Signal ab hier stoppt immer auch die Sandbox, selbst wenn es
     # zwischen Popen und dem ersten Befehl danach eintrifft
@@ -2186,18 +2408,30 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
                     sessions.append(sid)
                     write_json_atomic(jobdir / "sessions.json", sessions[-50:])
             ausgabe = raw if raw.endswith(b"\n") else raw + b"\n"
-            for geheim_wert in schwaerzen:
-                ausgabe = ausgabe.replace(geheim_wert, b"[GH_TOKEN]")
+            ausgabe = schwaerzen(ausgabe, ersetzungen)
             if not emit_raw(ausgabe):
                 stoppen("verlassen")
                 break
+            if kontingent is not None and b'"rate_limit_event"' in raw and kontingent_zahl < MAX_KONTINGENT_EREIGNISSE:
+                # Limits des Abos: die Zeile kommt aus der Sandbox, also nur Felder der Allowlist und mit Wertebereich;
+                # eigene Zeile vom Typ wamo (die der Sandbox werden verworfen). Unveränderte Werte nicht wiederholen.
+                try:
+                    ereignis = kontingent.ereignis_aus_zeile(json.loads(raw))
+                except (ValueError, RecursionError):
+                    ereignis = None
+                if ereignis is not None and ereignis["limits"] != kontingent_zuletzt:
+                    kontingent_zuletzt = ereignis["limits"]
+                    kontingent_zahl += 1
+                    emit(ereignis)
         rc = proc.wait()
+        zugang_aus_dateien_entfernen(jobdir / "claude", ersetzungen)
     except BaseException:
         # Signal (_Beendet) oder Fehler im Dispatcher: die Sandbox nie unbeobachtet weiterlaufen lassen; der
         # Aufrufer widerruft danach ein GitHub-Token (finally in github_token_fuer_lauf)
         with _signale(signal.SIG_IGN):  # ein zweites SIGTERM darf das Stoppen der Sandbox nicht unterbrechen
             stoppen("intern")
             freigabe.stop()
+            zugang_aus_dateien_entfernen(jobdir / "claude", ersetzungen)
             try:
                 _status(jobdir, job, projekt, art, ende=int(time.time()), ergebnis="abgebrochen", code=None)
             except OSError:

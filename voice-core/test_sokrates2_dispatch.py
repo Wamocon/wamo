@@ -8,6 +8,7 @@ Ausführen:  uv run python -m pytest -q test_sokrates2_dispatch.py   (im Ordner 
 """
 
 import contextlib
+import dataclasses
 import importlib.util
 import io
 import json
@@ -80,12 +81,14 @@ class CommandValidationTests(unittest.TestCase):
                 self.assertEqual(D.main([]), D.EXIT_ABGEWIESEN)
 
     def test_header(self):
-        auftrag, system, modell, repo = D.parse_header(
+        auftrag, system, modell, repo, zugang, profil = D.parse_header(
             json.dumps({"auftrag": "Baue\u0007 eine App\nmit Login", "system": "x"}).encode() + b"\n")
         self.assertEqual(auftrag, "Baue eine App\nmit Login")
         self.assertEqual(system, "x")
         self.assertIsNone(modell)
         self.assertIsNone(repo)
+        self.assertIsNone(zugang)  # älterer Kern: Zugang aus geheim.env wie bisher
+        self.assertIsNone(profil)
         self.assertEqual(D.parse_header(b'{"auftrag": "x", "modell": "claude-opus-5-5"}\n')[2], "claude-opus-5-5")
         self.assertEqual(D.parse_header(b'{"auftrag": "x", "repo": "wamocon/rezepte-app"}\n')[3], "wamocon/rezepte-app")
         for raw in [b'{"auftrag": "x"}', b'kein json\n', b'[]\n', b'{"auftrag": "x", "befehl": "id"}\n',
@@ -1666,6 +1669,384 @@ class ConsistencyTests(unittest.TestCase):
         self.assertEqual(wk.zugangs_variablen("recherche"), ())
         self.assertIn("GH_TOKEN", wk.zugangs_variablen("umsetzung"))
         self.assertIn("GH_TOKEN_LESEN", wk.zugangs_variablen("review"))
+
+
+OAUTH_WERT = "sk-ant-oat01-" + "GEHEIMoauth0" * 5
+API_WERT = "sk-ant-api03-" + "GEHEIMapi00" * 5
+NIKO_GEHEIM = {"ANTHROPIC_API_KEY": "sk-ant-api03-NikoServerSchluessel0123456789", "ANTHROPIC_WORKSPACE_ID": "wrkspc_01ABCdef",
+               "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-NikoServerAbo0123456789abc", "GH_TOKEN": "ghp_cccccccccccc"}
+
+
+def zeile(typ="oauth", wert=OAUTH_WERT, **extra) -> bytes:
+    return json.dumps({"typ": typ, "wert": wert, **extra}).encode() + b"\n"
+
+
+class PersoenlicherZugangTests(unittest.TestCase):
+    """Übergabe des persönlichen Claude-Zugangs: zweite stdin-Zeile, strenge Prüfung, einziger Claude-Zugang des Laufs,
+    Modellwahl nach Art, Buchführung je Profil, Schwärzung. Nichts davon zeigt den Wert."""
+
+    def test_zugangszeile_streng(self):
+        for typ, wert in (("oauth", OAUTH_WERT), ("api", API_WERT)):
+            z = D.parse_zugang(zeile(typ, wert), "1a2b3c4d")
+            self.assertEqual((z.typ, z.wert, z.workspace, z.profil), (typ, wert, None, "1a2b3c4d"))
+        self.assertEqual(D.parse_zugang(zeile("api", API_WERT, workspace="wrkspc_01ABCdef")).workspace, "wrkspc_01ABCdef")
+        schlecht = [
+            b"", b"\n", b"kein json\n", b"[]\n", zeile()[:-1],  # ohne Zeilenende
+            zeile("oauth", API_WERT), zeile("api", OAUTH_WERT),  # Wert passt nicht zum Typ
+            zeile("api", "sk-ant-admin01-" + "A" * 40), zeile("api", "sk-ant-sid01-" + "A" * 40),
+            zeile("oauth", "sk-ant-oat01-kurz"), zeile("oauth", OAUTH_WERT + " "), zeile("oauth", OAUTH_WERT + "\n"),
+            zeile("oauth", "x" + OAUTH_WERT), zeile("oauth", "sk-ant-oat01-" + "ä" * 30),
+            zeile("oauth", OAUTH_WERT, workspace="wrkspc_01ABCdef"),  # Workspace nur bei api
+            zeile("api", API_WERT, workspace="evil\nX: 1"), zeile("api", API_WERT, workspace=5),
+            zeile("kaputt", OAUTH_WERT), zeile(None, OAUTH_WERT), zeile(["oauth"], OAUTH_WERT),
+            zeile("oauth", None), zeile("oauth", 5), zeile("oauth", [OAUTH_WERT]),
+            zeile("oauth", OAUTH_WERT, extra="x"),  # unbekanntes Feld
+            b'{"typ": "oauth"}\n', b"\xff\xfe\n", b"[" * 5000 + b"\n",
+            zeile("oauth", "sk-ant-oat01-" + "A" * (D.MAX_ZUGANG_BYTES)),  # zu lang
+        ]
+        for raw in schlecht:
+            with self.subTest(raw=raw[:50]):
+                with self.assertRaises(D.ZugangUngueltig) as ctx:
+                    D.parse_zugang(raw)
+                for geheim in (OAUTH_WERT, API_WERT, "GEHEIM", "sk-ant-"):  # die Meldung nennt nie etwas aus der Zeile
+                    self.assertNotIn(geheim, str(ctx.exception))
+        z = D.parse_zugang(zeile(), "1a2b3c4d")
+        self.assertNotIn(OAUTH_WERT, repr(z) + str(z))  # auch ein versehentliches Protokollieren zeigt den Wert nicht
+        self.assertTrue(issubclass(D.ZugangUngueltig, D.Abgewiesen))
+
+    def test_kopfzeile_zugang_und_profil(self):
+        def kopf(**extra):
+            return json.dumps({"auftrag": "x", **extra}).encode() + b"\n"
+        self.assertEqual(D.parse_header(kopf(zugang="folgt", profil="1a2b3c4d"))[4:], ("folgt", "1a2b3c4d"))
+        self.assertEqual(D.parse_header(kopf(zugang="server"))[4:], ("server", None))
+        for schlecht in ({"zugang": "ja"}, {"zugang": 1}, {"zugang": ["folgt"]}, {"profil": "xyz"}, {"profil": "1A2B3C4D"},
+                         {"profil": "1a2b3c4d5"}, {"profil": 5}, {"zugangswert": OAUTH_WERT}, {"wert": OAUTH_WERT}):
+            with self.subTest(schlecht=schlecht), self.assertRaises(D.Abgewiesen):
+                D.parse_header(kopf(**schlecht))
+
+    def test_umgebung_enthaelt_nur_den_persoenlichen_zugang(self):
+        for art in wk.AUFTRAGSARTEN:
+            with self.subTest(art=art, typ="oauth"):
+                z = D.ClaudeZugang("oauth", OAUTH_WERT, None, "1a2b3c4d")
+                env = D.sandbox_env(art, NIKO_GEHEIM, zugang=z)
+                self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], OAUTH_WERT)
+                self.assertNotIn("ANTHROPIC_API_KEY", env)  # kein Mischen mit dem Schlüssel aus geheim.env
+                self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", env)  # auch nicht mit dessen Workspace
+                self.assertNotIn("ANTHROPIC_WORKSPACE_ID", env)
+                self.assertNotIn(NIKO_GEHEIM["CLAUDE_CODE_OAUTH_TOKEN"], env.values())
+                self.assertNotIn(NIKO_GEHEIM["ANTHROPIC_API_KEY"], env.values())
+            with self.subTest(art=art, typ="api"):
+                z = D.ClaudeZugang("api", API_WERT, None, "1a2b3c4d")
+                env = D.sandbox_env(art, NIKO_GEHEIM, zugang=z)
+                self.assertEqual(env["ANTHROPIC_API_KEY"], API_WERT)
+                self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
+                self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", env)
+                self.assertNotIn(NIKO_GEHEIM["ANTHROPIC_API_KEY"], env.values())
+        mit_workspace = D.sandbox_env("review", NIKO_GEHEIM, zugang=D.ClaudeZugang("api", API_WERT, "wrkspc_Mine01", "1a2b3c4d"))
+        self.assertEqual(mit_workspace["ANTHROPIC_CUSTOM_HEADERS"], "anthropic-workspace-id: wrkspc_Mine01")
+        # ohne jeden Zugang in geheim.env geht es trotzdem; die Dienst-Token der Art bleiben wie bisher
+        ohne = D.sandbox_env("umsetzung", {"GH_TOKEN": "ghp_cccccccccccc"}, zugang=D.ClaudeZugang("oauth", OAUTH_WERT, None, None))
+        self.assertEqual(ohne["CLAUDE_CODE_OAUTH_TOKEN"], OAUTH_WERT)
+        self.assertEqual(ohne["GH_TOKEN"], "ghp_cccccccccccc")
+        self.assertIsNone(D.sandbox_env("umsetzung", {"GH_TOKEN": "ghp_cccccccccccc"}))  # wie bisher: ohne Zugang kein Start
+        erlaubt = set(D.basis_env()) | set(wk.CLAUDE_VARIABLEN) | {"ANTHROPIC_CUSTOM_HEADERS", "GH_TOKEN"}
+        self.assertLessEqual({k for k in mit_workspace if not k.startswith("GIT_CONFIG_")}, erlaubt)
+
+    def test_buchfuehrung_je_profil(self):
+        z = D.ClaudeZugang("oauth", OAUTH_WERT, None, "1a2b3c4d")
+        namen = D.zugangs_quellen("review", NIKO_GEHEIM, zugang=z)
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN@1a2b3c4d", namen)
+        self.assertNotIn("ANTHROPIC_API_KEY", namen)  # der Schlüssel aus geheim.env zählt nicht mit
+        self.assertNotIn(OAUTH_WERT, " ".join(namen))
+        andere = D.zugangs_quellen("review", NIKO_GEHEIM, zugang=D.ClaudeZugang("oauth", OAUTH_WERT, None, "9f8e7d6c"))
+        self.assertNotEqual(namen, andere)
+        self.assertIn("ANTHROPIC_API_KEY@?", D.zugangs_quellen("review", {}, zugang=D.ClaudeZugang("api", API_WERT, None, None)))
+        self.assertIn("ANTHROPIC_API_KEY", D.zugangs_quellen("review", NIKO_GEHEIM))  # Serverzugang wie bisher
+
+    def test_modell_nach_zugangsart(self):
+        for art in wk.AUFTRAGSARTEN:
+            self.assertEqual(D.modell_waehlen(art, None, "oauth"), "claude-sonnet-5-5")  # Max-Kontingent
+            self.assertEqual(D.modell_waehlen(art, None, "api"), "claude-haiku-5-5")  # Guthaben
+        for typ in ("oauth", "api"):  # Wunsch (WAMO_ENTWICKLUNG_MODELL, Kopfzeilenfeld modell) übersteuert, nur aus der Allowlist
+            self.assertEqual(D.modell_waehlen("umsetzung", "claude-opus-5-5", typ), "claude-opus-5-5")
+            self.assertEqual(D.modell_waehlen("umsetzung", "claude-haiku-5-5", typ), "claude-haiku-5-5")
+            with self.assertRaises(ValueError):
+                D.modell_waehlen("umsetzung", "claude-irgendwas", typ)
+        opus = dataclasses.replace(wk.KARTEN["planung"], modell=wk.MODELL_OPUS)
+        with mock.patch.dict(wk.KARTEN, {"planung": opus}):
+            self.assertEqual(D.modell_waehlen("planung", None, "oauth"), "claude-opus-5-5")  # nie unter das der Art
+        self.assertEqual(D.zugang_typ({"CLAUDE_CODE_OAUTH_TOKEN": OAUTH_WERT}), "oauth")
+        self.assertEqual(D.zugang_typ({"ANTHROPIC_API_KEY": API_WERT}), "api")
+
+    def test_serverzugang_schalter(self):
+        self.assertTrue(D.serverzugang_erlaubt({}))
+        for an in ("an", "ja", "AN", "1"):
+            self.assertTrue(D.serverzugang_erlaubt({"WAMO_SERVERZUGANG": an}))
+        for aus in ("aus", "AUS", " nein ", "0", "false", "off"):
+            self.assertFalse(D.serverzugang_erlaubt({"WAMO_SERVERZUGANG": aus}))
+
+    def test_schwaerzen_und_dateien(self):
+        ersetzungen = D.schwaerzungen({"CLAUDE_CODE_OAUTH_TOKEN": OAUTH_WERT, "ANTHROPIC_API_KEY": API_WERT,
+                                       "GH_TOKEN": "ghs_" + "T0k3n" * 6, "VERCEL_TOKEN": "kurz"})
+        text = f"a {OAUTH_WERT} b {API_WERT} c ghs_{'T0k3n' * 6} d kurz".encode()
+        aus = D.schwaerzen(text, ersetzungen)
+        self.assertEqual(aus, b"a [CLAUDE_ZUGANG] b [CLAUDE_ZUGANG] c [GH_TOKEN] d kurz")
+        self.assertEqual(D.schwaerzungen({"CLAUDE_CODE_OAUTH_TOKEN": "kurz", "ANTHROPIC_API_KEY": ""}), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            wurzel = Path(tmp) / "claude"
+            (wurzel / "projects" / "p").mkdir(parents=True)
+            sitzung = wurzel / "projects" / "p" / "s.jsonl"
+            sitzung.write_bytes(json.dumps({"tool_result": f"TOKEN={OAUTH_WERT}"}).encode() + b"\nzweite Zeile\n")
+            (wurzel / "unberuehrt.txt").write_bytes(b"nichts Geheimes")
+            gross = wurzel / "gross.bin"
+            gross.write_bytes(b"x" * 400)
+            ausserhalb = Path(tmp) / "ausserhalb.txt"
+            ausserhalb.write_bytes(OAUTH_WERT.encode())
+            try:
+                os.symlink(ausserhalb, wurzel / "link.txt")
+                os.symlink(tmp, wurzel / "ordnerlink", target_is_directory=True)
+            except (OSError, NotImplementedError):
+                pass  # Windows ohne Rechte für Links
+            with mock.patch.object(D, "MAX_SCHWAERZ_DATEI", 200):
+                self.assertGreaterEqual(D.zugang_aus_dateien_entfernen(wurzel, ersetzungen), 2)  # Sitzung geschwärzt, große gelöscht
+            self.assertEqual(json.loads(sitzung.read_bytes().splitlines()[0]), {"tool_result": "TOKEN=[CLAUDE_ZUGANG]"})
+            self.assertIn(b"zweite Zeile", sitzung.read_bytes())
+            self.assertEqual((wurzel / "unberuehrt.txt").read_bytes(), b"nichts Geheimes")
+            self.assertFalse(gross.exists())
+            self.assertEqual(ausserhalb.read_bytes(), OAUTH_WERT.encode())  # Ziel eines Links bleibt unangetastet
+            self.assertEqual(D.zugang_aus_dateien_entfernen(wurzel, []), 0)
+            self.assertEqual(D.zugang_aus_dateien_entfernen(Path(tmp) / "gibt-es-nicht", ersetzungen), 0)
+
+
+class PersoenlicherZugangStartTests(unittest.TestCase):
+    """cmd_start mit persönlichem Zugang: Sperren, Selbsttest und Sandbox-Lauf sind Attrappen, alles andere ist echt."""
+
+    class _Sperre:
+        def __init__(self, pfad):
+            self.datei = None
+
+        def versuchen(self):
+            return True
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        wurzel = Path(self.tmp.name)
+        self.jobs, self.projekte, self.heim = wurzel / "jobs", wurzel / "projekte", wurzel / "heim"
+        for p in (self.jobs, self.projekte / "rezepte-app", self.heim):
+            p.mkdir(parents=True)
+        self.logzeilen: list[str] = []
+        self.ereignisse: list[dict] = []
+        self.selbsttests = 0
+        self.patches = [mock.patch.object(D, "log", side_effect=lambda t, pflicht=False: self.logzeilen.append(t)),
+                        mock.patch.object(D, "JOBS", self.jobs), mock.patch.object(D, "PROJEKTE", self.projekte),
+                        mock.patch.object(D, "HEIM", self.heim),
+                        mock.patch.object(D, "emit", side_effect=lambda ev: self.ereignisse.append(ev) or True),
+                        mock.patch.object(D, "Sperre", self._Sperre), mock.patch.object(D, "aufraeumen"),
+                        mock.patch.object(D, "exklusiv", lambda pfad: contextlib.nullcontext()),
+                        mock.patch.object(D, "selbsttest", side_effect=self._selbsttest),
+                        mock.patch.object(D, "projekt_entschaerfen", return_value=[])]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+        self.tmp.cleanup()
+
+    def _selbsttest(self, *_):
+        self.selbsttests += 1
+        return True, "ok"
+
+    def start(self, kopf_extra=None, zugangszeile=None, geheim=None, art="umsetzung", job=JOB, session=None):
+        """Liefert (Code, Aufrufe von _ausfuehren als (argv, env)). zugangszeile=None: es wird keine gelesen."""
+        aufrufe: list[tuple] = []
+
+        def fake_ausfuehren(argv, env, auftrag, jobdir, job_, projekt, art_):
+            aufrufe.append((list(argv), dict(env)))
+            return D.EXIT_OK
+
+        kopf = json.dumps({"auftrag": "Baue etwas", "system": "Regeln", **(kopf_extra or {})}).encode() + b"\n"
+        with mock.patch.object(D, "_kopfzeile_lesen", return_value=kopf), \
+             mock.patch.object(D, "_zugangszeile_lesen", return_value=zugangszeile) as lesen, \
+             mock.patch.object(D, "lese_geheimnisse", return_value=NIKO_GEHEIM if geheim is None else geheim), \
+             mock.patch.object(D, "_ausfuehren", side_effect=fake_ausfuehren):
+            try:
+                code = D.cmd_start(job, "rezepte-app", art, session)
+            finally:
+                self.zeilen_gelesen = lesen.call_count
+        return code, aufrufe
+
+    def ereignis_namen(self) -> list[str]:
+        return [e["ereignis"] for e in self.ereignisse if e.get("ereignis") != "selbsttest_ok"]
+
+    def nirgends(self, *werte: str) -> None:
+        """Keiner der Werte steht in Log, Ereignissen oder einer Datei unter dem Auftragsordner (inklusive Projekt)."""
+        alles = "\n".join(self.logzeilen) + json.dumps(self.ereignisse)
+        for ordner, _, dateien in os.walk(self.tmp.name):
+            for name in dateien:
+                alles += (Path(ordner) / name).read_bytes().decode("utf-8", "replace")
+        for wert in werte:
+            self.assertNotIn(wert, alles)
+
+    def test_oauth_zugang_ersetzt_den_serverzugang_und_waehlt_sonnet(self):
+        code, aufrufe = self.start({"zugang": "folgt", "profil": "1a2b3c4d"}, zeile("oauth", OAUTH_WERT))
+        self.assertEqual(code, D.EXIT_OK)
+        self.assertEqual(self.zeilen_gelesen, 1)
+        argv, env = aufrufe[0]
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], OAUTH_WERT)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", env)
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-sonnet-5-5")
+        self.assertNotIn(OAUTH_WERT, " ".join(argv))  # nie in argv
+        self.assertEqual(env["GH_TOKEN"], "ghp_cccccccccccc")  # Dienst-Token der Art wie bisher
+        self.assertTrue(any("claude=persoenlich-oauth" in z and "modell=claude-sonnet-5-5" in z for z in self.logzeilen))
+        self.assertTrue(any("CLAUDE_CODE_OAUTH_TOKEN@1a2b3c4d" in z for z in self.logzeilen))  # Kennung, nicht der Wert
+        self.nirgends(OAUTH_WERT, NIKO_GEHEIM["ANTHROPIC_API_KEY"])
+
+    def test_api_zugang_waehlt_haiku_und_kein_oauth_aus_geheim_env(self):
+        code, aufrufe = self.start({"zugang": "folgt", "profil": "1a2b3c4d"}, zeile("api", API_WERT, workspace="wrkspc_Mine01"))
+        argv, env = aufrufe[0]
+        self.assertEqual(env["ANTHROPIC_API_KEY"], API_WERT)
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)  # geheim.env hat beide, keiner davon gilt
+        self.assertEqual(env["ANTHROPIC_CUSTOM_HEADERS"], "anthropic-workspace-id: wrkspc_Mine01")  # nicht der von Niko
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-haiku-5-5")
+        self.nirgends(API_WERT, NIKO_GEHEIM["CLAUDE_CODE_OAUTH_TOKEN"])
+
+    def test_modellwunsch_uebersteuert_nach_allowlist(self):
+        for zugang in (zeile("oauth", OAUTH_WERT), zeile("api", API_WERT)):
+            argv = self.start({"zugang": "folgt", "modell": "claude-opus-5-5"}, zugang, job=uuid.uuid4().hex[:16])[1][0][0]
+            self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-5-5")
+        with self.assertRaises(D.Abgewiesen):
+            self.start({"zugang": "folgt", "modell": "claude-irgendwas"}, zeile())
+        self.assertEqual(self.zeilen_gelesen, 0)  # ein Wunsch außerhalb der Allowlist scheitert, bevor etwas gelesen wird
+
+    def test_ungueltiger_zugang_startet_nichts(self):
+        for schlecht in (zeile("oauth", "sk-ant-api03-" + "A" * 40), b"kein json\n", zeile("oauth", OAUTH_WERT, extra="x")):
+            self.ereignisse.clear()
+            code, aufrufe = self.start({"zugang": "folgt"}, schlecht)
+            self.assertEqual(code, D.EXIT_ABGEWIESEN)
+            self.assertEqual(aufrufe, [])
+            self.assertEqual(self.ereignis_namen(), ["zugang_ungueltig"])
+        self.assertEqual(self.selbsttests, 0)  # scheitert vor Sperren und Selbsttest
+        self.nirgends(OAUTH_WERT, "sk-ant-api03-" + "A" * 40)
+
+    def test_zeitlimit_der_zugangszeile_wird_abgewiesen(self):
+        with mock.patch.object(D, "_zugangszeile_lesen", side_effect=D.ZugangUngueltig("Zugangszeile kam nicht rechtzeitig")), \
+             mock.patch.object(D, "_kopfzeile_lesen", return_value=b'{"auftrag": "x", "zugang": "folgt"}\n'):
+            self.assertEqual(D.cmd_start(JOB, "rezepte-app", "review"), D.EXIT_ABGEWIESEN)
+        self.assertEqual(self.ereignis_namen(), ["zugang_ungueltig"])
+
+    def test_server_zugang_nur_wenn_erlaubt(self):
+        for extra in ({}, {"zugang": "server"}):  # älterer Kern ohne Feld, oder ausdrücklich erlaubt
+            code, aufrufe = self.start(extra, None, job=uuid.uuid4().hex[:16])
+            self.assertEqual(code, D.EXIT_OK)
+            self.assertEqual(self.zeilen_gelesen, 0)  # keine zweite Zeile
+            argv, env = aufrufe[0]
+            self.assertEqual(env["ANTHROPIC_API_KEY"], NIKO_GEHEIM["ANTHROPIC_API_KEY"])  # wie bisher
+            self.assertEqual(argv[argv.index("--model") + 1], "claude-haiku-5-5")  # API-Schlüssel: Haiku wie bisher
+            self.assertTrue(any("claude=server" in z for z in self.logzeilen))
+        # abgeschaltet: ohne persönlichen Zugang kein Start mit dem Schlüssel aus geheim.env, mit klarer Meldung
+        self.ereignisse.clear()
+        aus = {**NIKO_GEHEIM, "WAMO_SERVERZUGANG": "aus"}
+        for extra in ({}, {"zugang": "server"}):
+            code, aufrufe = self.start(extra, None, geheim=aus, job=uuid.uuid4().hex[:16])
+            self.assertEqual(code, D.EXIT_KEIN_ZUGANG)
+            self.assertEqual(aufrufe, [])
+        self.assertEqual(self.ereignis_namen(), ["keine_zugangsdaten"] * 2)
+        self.assertIn("WAMO_SERVERZUGANG", [e for e in self.ereignisse if e["ereignis"] == "keine_zugangsdaten"][0]["grund"])
+        code, aufrufe = self.start({"zugang": "folgt", "profil": "1a2b3c4d"}, zeile(), geheim=aus, job=uuid.uuid4().hex[:16])
+        self.assertEqual(code, D.EXIT_OK)  # der persönliche Zugang geht trotzdem
+        self.assertEqual(aufrufe[0][1]["CLAUDE_CODE_OAUTH_TOKEN"], OAUTH_WERT)
+
+    def test_wiederholung_nach_approve_sendet_den_zugang_erneut_und_speichert_nichts(self):
+        fp = "0123456789abcdef" * 4
+        job = uuid.uuid4().hex[:16]
+        code1, a1 = self.start({"zugang": "folgt", "profil": "1a2b3c4d"}, zeile(), job=job)
+        (self.jobs / job / "freigaben.json").write_text(json.dumps([fp]))  # wie nach approve
+        code2, a2 = self.start({"zugang": "folgt", "profil": "1a2b3c4d"}, zeile(), job=job)
+        self.assertEqual((code1, code2), (D.EXIT_OK, D.EXIT_OK))
+        self.assertEqual(a1[0][1]["CLAUDE_CODE_OAUTH_TOKEN"], OAUTH_WERT)
+        self.assertEqual(a2[0][1]["CLAUDE_CODE_OAUTH_TOKEN"], OAUTH_WERT)  # nur weil er neu übergeben wurde
+        self.nirgends(OAUTH_WERT)
+        # ohne erneute Übergabe gibt es keinen Zugang: der Dispatcher hat nichts aufbewahrt
+        code3, a3 = self.start({"zugang": "folgt"}, b"", job=job)
+        self.assertEqual((code3, a3), (D.EXIT_ABGEWIESEN, []))
+
+    def test_zugang_einer_anderen_person_im_selben_projekt_braucht_freigabe(self):
+        self.assertEqual(self.start({"zugang": "folgt", "profil": "1a2b3c4d"}, zeile())[0], D.EXIT_OK)  # leeres Projekt
+        (self.projekte / "rezepte-app" / "datei.txt").write_text("Inhalt")  # jetzt hat das Projekt Inhalt
+        gleiche = self.start({"zugang": "folgt", "profil": "1a2b3c4d"}, zeile(), job=uuid.uuid4().hex[:16])
+        self.assertEqual(gleiche[0], D.EXIT_OK)  # dieselbe Person: frei
+        self.ereignisse.clear()
+        andere = self.start({"zugang": "folgt", "profil": "9f8e7d6c"}, zeile(), job=uuid.uuid4().hex[:16])
+        self.assertEqual(andere[0], D.EXIT_ZUGANG_ERWEITERT)
+        self.assertEqual(andere[1], [])
+        ereignis = self.ereignisse[-1]
+        self.assertEqual(ereignis["ereignis"], "zugang_erweitert")
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN@9f8e7d6c", ereignis["input"]["neu"])
+        self.assertNotIn(OAUTH_WERT, json.dumps(ereignis))
+        # der Serverzugang ist für dieses Projekt ebenfalls ein anderer Zugang als der persönliche
+        self.assertEqual(self.start({}, None, job=uuid.uuid4().hex[:16])[0], D.EXIT_ZUGANG_ERWEITERT)
+
+    def test_ping_meldet_serverzugang_und_kontingent(self):
+        with mock.patch.object(D, "lese_geheimnisse", return_value={"WAMO_SERVERZUGANG": "aus"}), \
+             mock.patch.object(D, "github_status", return_value="token"):
+            D.cmd_ping()
+        ping = self.ereignisse[-1]
+        self.assertIs(ping["serverzugang"], False)
+        self.assertIs(ping["kontingent"], True)
+        self.assertEqual(ping["version"], "5")
+
+    @unittest.skipUnless(LINUX, "Prozess mit /bin/sh nur unter Linux")
+    def test_ausgabe_log_und_dateien_ohne_zugangswert_und_kontingent_nur_aus_der_allowlist(self):
+        import threading
+        from datetime import datetime, timezone
+
+        class Leitung:  # stdin der SSH-Verbindung: bleibt offen, bis der Test endet
+            def __init__(self):
+                self.ende, self.buffer = threading.Event(), self
+
+            def read1(self, _n):
+                self.ende.wait(60)
+                return b""
+        jobdir = self.jobs / JOB
+        (jobdir / "zustand").mkdir(parents=True)
+        (jobdir / "claude" / "projects").mkdir(parents=True)
+        sitzung = jobdir / "claude" / "projects" / "s.jsonl"
+        ereignis = {"type": "rate_limit_event", "uuid": "u", "session_id": "s", "rate_limit_info": {
+            "status": "allowed", "rateLimitType": "five_hour", "resetsAt": 4_000_000_000,
+            "unifiedWindows": {"five_hour": {"utilization": 0.42, "resetsAt": 4_000_000_000}}, "geheim": OAUTH_WERT}}
+        zeilen_ = [json.dumps({"type": "assistant", "text": f"Das ist {OAUTH_WERT} und {API_WERT}"}),
+                   json.dumps(ereignis), json.dumps(ereignis),  # zweimal derselbe Stand: nur einmal weitergegeben
+                   json.dumps({"type": "wamo", "ereignis": "kontingent", "limits": [{"art": "woche", "prozent": 1}]})]
+        gesehen: list[bytes] = []
+        leitung = Leitung()
+        skript = (f"cat >/dev/null; printf '%s\\n' \"$0\" >&2; printf '%s' 'TOKEN={OAUTH_WERT}' > '{sitzung}'; "
+                  + "; ".join(f"printf '%s\\n' '{z}'" for z in zeilen_))
+        ereignisse: list[dict] = []
+        try:
+            with mock.patch.object(D.sys, "stdin", leitung), mock.patch.object(D, "stop_units"), \
+                 mock.patch.object(D, "_status"), mock.patch.object(D, "egress_offen", return_value=False), \
+                 mock.patch.object(D, "emit_raw", side_effect=lambda b: gesehen.append(b) or True), \
+                 mock.patch.object(D, "emit", side_effect=lambda ev: ereignisse.append(ev) or True):
+                code = D._ausfuehren(["/bin/sh", "-c", skript, OAUTH_WERT],
+                                     {"CLAUDE_CODE_OAUTH_TOKEN": OAUTH_WERT, "ANTHROPIC_API_KEY": API_WERT,
+                                      "PATH": "/usr/bin:/bin"}, "Auftrag", jobdir, JOB, "rezepte-app", "umsetzung")
+        finally:
+            leitung.ende.set()
+        text = b"".join(gesehen).decode("utf-8")
+        endet = datetime.fromtimestamp(4_000_000_000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assertEqual(code, D.EXIT_OK)
+        self.assertIn("Das ist [CLAUDE_ZUGANG] und [CLAUDE_ZUGANG]", text)
+        self.assertNotIn("GEHEIM", text)
+        self.assertNotIn('"ereignis": "kontingent"', text)  # die gefälschte wamo-Zeile aus der Sandbox ist verworfen
+        kontingent = [e for e in ereignisse if e.get("ereignis") == "kontingent"]
+        self.assertEqual(len(kontingent), 1)  # echtes Ereignis, einmal
+        self.assertEqual(kontingent[0]["limits"], [{"art": "sitzung", "prozent": 42.0, "endet": endet, "status": "ok"}])
+        self.assertNotIn("GEHEIM", json.dumps(ereignisse))
+        self.assertEqual(sitzung.read_text(), "TOKEN=[CLAUDE_ZUGANG]")  # Datei unter claude/ geschwärzt
+        self.assertNotIn("GEHEIM", (jobdir / "lauf.log").read_text(encoding="utf-8"))  # Protokoll des Auftrags
+        self.assertNotIn("GEHEIM", " ".join(self.logzeilen))
 
 
 class AbschottungTests(unittest.TestCase):
