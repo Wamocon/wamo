@@ -1,0 +1,33 @@
+# Dependabot: hält Abhängigkeiten aktuell und meldet bekannte Schwachstellen.
+# Kostenlos, auch für private Repositories.
+#
+# Aktiv ist zunächst nur die Pflege der GitHub Actions. Für die Sprachen des jeweiligen Projekts
+# die passenden Blöcke unten einkommentieren. Ein Block ohne passende Datei im Projekt erzeugt
+# nur Fehlermeldungen in der Dependabot-Übersicht, deshalb nur aktivieren, was es gibt.
+#
+# Die Schwachstellenmeldungen (Dependabot alerts) und die automatischen Sicherheitsupdates
+# werden zusätzlich in den Repository-Einstellungen eingeschaltet, siehe docs/EINRICHTUNG_GITHUB.md.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # - package-ecosystem: "npm"        # package.json, Next.js, Node
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
+  #   open-pull-requests-limit: 5
+
+  # - package-ecosystem: "pip"        # requirements.txt, pyproject.toml
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
+  #   open-pull-requests-limit: 5
+
+  # - package-ecosystem: "docker"     # Dockerfile
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
