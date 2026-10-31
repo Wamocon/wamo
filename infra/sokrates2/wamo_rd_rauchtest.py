@@ -549,7 +549,9 @@ def ausgang_proben(e: Ergebnis, ziele: list[str]) -> None:
     if r.returncode != 0:
         e.skip("Ausgangsregel für wamo-rd", "Tabelle inet wamo_rd_ausgang nicht geladen oder sudo -n nft nicht möglich (Vorbedingung vor dem ersten Ziel Sokrates-2)")
         return
-    e.pruefe("meta skuid wamo-rd jump wamo_rd" in r.stdout and "ip daddr @gesperrt4 counter" in r.stdout and "meta nfproto ipv6 counter" in r.stdout,
+    # nft zeigt die Benutzerkennung als Zahl (meta skuid 1005), nicht als Name
+    e.pruefe(re.search(r"meta skuid (wamo-rd|\d+) jump wamo_rd", r.stdout) is not None and "ip daddr @gesperrt4 counter" in r.stdout
+             and "meta nfproto ipv6 counter" in r.stdout,
              "Tabelle enthält die Regel für das Konto, die Sperre für LAN und Loopback und die Sperre für IPv6")
     if sh("sudo", "-n", "-u", "wamo-rd", "true").returncode != 0:
         e.skip("Proben als wamo-rd", "sudo -n -u wamo-rd nicht möglich")
