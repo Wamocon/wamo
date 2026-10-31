@@ -263,6 +263,20 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Projekte, Dokumente, Desktop und Downloads im Benutzerordner, nie in AppData oder versteckten Ordnern; `system_info`
   nennt Rechnername, Benutzer-, Projekte-Ordner), das Vorholen von Fenstern ohne Alt-Druck mit Nachprüfung des Fokus
   (verweigert Windows es, meldet der Host das, statt „ist vorne“ zu behaupten) und 20 s Zeitgrenze für Lesebefehle.
+- **GitHub im Host** (31.10.2026, `host/wamo_host.py`): `github_repo_anlegen` (Risikoklasse critical) legt ein Repository in
+  der Organisation an, nie im privaten Konto: `WAMO_GITHUB_ORG` aus der Umgebung des Hosts, sonst `Wamocon`, geprüft
+  gegen eine Allowlist-Regex. Es passiert nichts ohne die Freigabe-Karte (Organisation, Name, Sichtbarkeit und
+  Beschreibung stehen im Detail, öffentlich ist rot hervorgehoben und nur mit ausdrücklichem Wunsch), genau einmal, mit
+  Zeitgrenze 60 s, höchstens 5 Anfragen je Minute. Standard ist privat. `git_klonen` (change, ohne Karte) klont nur
+  nach `Projekte\<name>` (Regeln wie `ordner_anlegen`), nur aus der Organisation und aus Konten in
+  `WAMO_GITHUB_KLONEN_VON` (Liste mit Komma, Standard leer); liegt dort schon ein Klon mit demselben Remote, ist das
+  ein Erfolg (`vorhanden`), ein anderes Remote im selben Ordner ist ein Fehler. Die Remote-Adresse wird als Text aus
+  `.git/config` gelesen, in fremden Ordnern läuft kein git. Zeitgrenze 90 s (Tunnel: 100 s), 6 je Minute. Beide nutzen das
+  `gh` des Laptops, also die Anmeldung der Person: Der Host hält kein Token und reicht `GH_TOKEN`/`GITHUB_TOKEN` aus
+  seiner Umgebung nicht weiter. Ausgaben von gh und git erreichen das Modell nur als feste Sätze oder gefilterte, auf
+  300 Zeichen gekürzte Fehlerzeile (Tokens und Passwörter in Adressen entfernt); das Audit nennt Repository und
+  Sichtbarkeit, die Beschreibung nur als Prüfsumme. Beide ruhen bei gesperrtem Bildschirm und bei offener Freigabe.
+  Nicht enthalten: Vercel, Supabase, Admin-Helfer.
 - **Höchstalter der Anmeldung** (gemessen ab Passwort und Code, Claim `amr`): Der Kern lehnt Tokens ohne `amr` ab und
   erzwingt `WAMO_ANMELDUNG_MAX_STUNDEN` (Standard 168), auch für gecachte Tokens; eine laufende Sitzung endet beim
   Überschreiten, die Oberfläche meldet ab. Die Anmeldemaske hat „Angemeldet bleiben“ (in der Desktop-App

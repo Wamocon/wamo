@@ -9,8 +9,8 @@ Werkzeuge per MCP. Zwei Betriebsarten:
 Sicherheitsmodell (wird HIER erzwungen, nicht im Prompt). Alles, was ein Modell schickt, ist
 untrusted: auch Text aus Websuche, Mails oder Dateien kann im Modell als Anweisung wirken.
   read      sofort                (system_info, powershell_lesen mit reinen Get-/Test-Befehlen)
-  change    sofort, protokolliert (webseite_oeffnen, programm_oeffnen, dark_mode)
-  critical  nur Freigabe-Anfrage; ausgeführt erst nach Bestätigung durch einen Admin in der UI
+  change    sofort, protokolliert (webseite_oeffnen, programm_oeffnen, dark_mode, git_klonen)
+  critical  nur Freigabe-Anfrage; ausgeführt erst nach Bestätigung durch einen Admin in der UI (auch github_repo_anlegen)
   blocked   nie
 Freigaben kann das Modell NICHT selbst erteilen. Solange eine Anfrage offen ist oder eine freigegebene Aktion läuft,
 ruhen alle Eingaben (status=wartet), und die eigene Oberfläche (Freigabekarte) bedient WAMO nie: Das Modell kann die
@@ -26,6 +26,7 @@ Jeder Aufruf landet im Audit-Log (JSONL).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import ipaddress
@@ -1186,6 +1187,318 @@ def element_text_setzen(element: int, text: str, fenster: str = "", beschreibung
             **_markierung(ziel.get("hwnd"))}
 
 
+# ---------- GitHub: Repository anlegen (nur per Freigabe-Karte) und klonen (gh und git des Laptops) ----------
+# Der Host hält kein Token: Angemeldet ist, wer am Laptop `gh auth login` gemacht hat. Token aus der Umgebung des Hosts
+# gibt er nicht weiter (GH_TOKEN, GITHUB_TOKEN), Ausgaben von gh und git werden gefiltert und gekürzt.
+GITHUB_ORG_STANDARD = "Wamocon"  # Firmenprojekte gehören in die Organisation, nie ins private Konto
+GITHUB_OWNER_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+GITHUB_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+GITHUB_BESCHREIBUNG_MAX = 200
+GH_ANLEGEN_TIMEOUT_SECS = 60
+GIT_KLONEN_TIMEOUT_SECS = 90  # voice-core/pc_tunnel.py wartet etwas länger (LANGE_WERKZEUGE)
+GH_ANLEGEN_PRO_MINUTE = 5
+GIT_KLONEN_PRO_MINUTE = 6
+GH_AUSGABE_MAX = 300
+# Zugangsdaten, die in einer Fehlermeldung stehen könnten: Tokens, Passwörter in Adressen, Bearer-Köpfe
+_GH_GEHEIM = re.compile(r"(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|(?<=//)[^/@\s:]+:[^/@\s]+(?=@)|"
+                        r"(?i:bearer\s+\S+))")
+_GH_UMGEBUNG_RAUS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST")
+
+
+class GhFehler(Exception):
+    """gh oder git fehlt, ist abgelaufen oder meldet einen Fehler; text ist eine Antwort für das Sprachmodell."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.text = text
+
+
+def github_org() -> str:
+    """Organisation für neue Repositories: WAMO_GITHUB_ORG aus der Umgebung des Hosts oder Wamocon. ValueError bei einem
+    Wert, der kein GitHub-Name sein kann (Allowlist-Regex, damit nie ein freier Text bis zum Befehl gelangt)."""
+    wert = (os.environ.get("WAMO_GITHUB_ORG") or "").strip() or GITHUB_ORG_STANDARD
+    if not GITHUB_OWNER_RE.fullmatch(wert):
+        raise ValueError("WAMO_GITHUB_ORG am Laptop ist ungültig")
+    return wert
+
+
+def github_klonen_von() -> set[str]:
+    """Konten, aus denen geklont werden darf (klein geschrieben): die Organisation plus WAMO_GITHUB_KLONEN_VON (Liste mit
+    Komma). Ungültige Einträge zählen nicht."""
+    erlaubt = {github_org().lower()}
+    for teil in (os.environ.get("WAMO_GITHUB_KLONEN_VON") or "").split(","):
+        if GITHUB_OWNER_RE.fullmatch(teil.strip()):
+            erlaubt.add(teil.strip().lower())
+    return erlaubt
+
+
+def validate_repo_name(name: object) -> str:
+    """Name eines Repositorys: Buchstaben, Ziffern, Punkt, Strich, Unterstrich; er wird auch der Ordnername unter Projekte,
+    darum keine Windows-Sonderfälle (Gerätenamen, Punkt am Ende) und kein .git am Ende."""
+    if not isinstance(name, str) or not GITHUB_NAME_RE.fullmatch(name.strip()):
+        raise ValueError("Repository-Name: Buchstaben, Ziffern, Punkt, Strich und Unterstrich, höchstens 100 Zeichen")
+    name = name.strip()
+    if name.endswith((".", ".git")) or _RESERVIERT.fullmatch(name):
+        raise ValueError(f"Ungültiger Repository-Name {name[:40]!r}")
+    return name
+
+
+def parse_repo(repo: object) -> tuple[str, str]:
+    """name, besitzer/name, https://github.com/besitzer/name(.git) oder git@github.com:besitzer/name -> (besitzer, name).
+    Ohne Besitzer gilt die Organisation. Andere Besitzer nur aus github_klonen_von()."""
+    if not isinstance(repo, str) or not repo.strip() or len(repo) > 300 or _CONTROL_CHARS.search(repo):
+        raise ValueError("Repository als name, besitzer/name oder https://github.com/besitzer/name")
+    roh = repo.strip()
+    for vorsatz in ("https://github.com/", "git@github.com:"):
+        if roh.lower().startswith(vorsatz):
+            roh = roh[len(vorsatz):]
+            break
+    roh = roh.rstrip("/").removesuffix(".git")
+    teile = roh.split("/")
+    if len(teile) == 1:
+        besitzer, name = github_org(), teile[0]
+    elif len(teile) == 2:
+        besitzer, name = teile
+    else:
+        raise ValueError("Repository als name, besitzer/name oder https://github.com/besitzer/name")
+    if not GITHUB_OWNER_RE.fullmatch(besitzer):
+        raise ValueError("Ungültiger GitHub-Besitzer")
+    if besitzer.lower() not in github_klonen_von():
+        raise ValueError(f"Aus dem Konto {besitzer} klont WAMO nicht (erlaubt: {', '.join(sorted(github_klonen_von()))})")
+    return besitzer, validate_repo_name(name)
+
+
+def _programm(namen: tuple[str, ...], feste_pfade: tuple[str, ...]) -> str | None:
+    for pfad in feste_pfade:
+        if Path(pfad).is_file():
+            return pfad
+    return next((p for n in namen if (p := shutil.which(n))), None)
+
+
+def _gh_pfad() -> str:
+    pfad = _programm(("gh",), (r"C:\Program Files\GitHub CLI\gh.exe",))
+    if not pfad:
+        raise GhFehler("Auf diesem Laptop ist gh (GitHub CLI) nicht installiert. Die Person muss es installieren und "
+                       "einmal 'gh auth login' ausführen.")
+    return pfad
+
+
+def _git_pfad() -> str:
+    pfad = _programm(("git",), (r"C:\Program Files\Git\cmd\git.exe",))
+    if not pfad:
+        raise GhFehler("Auf diesem Laptop ist git nicht installiert.")
+    return pfad
+
+
+def _gh_umgebung() -> dict:
+    """Umgebung für gh und git: ohne Token aus dem Host-Prozess (es gilt allein die Anmeldung der Person), ohne Rückfragen."""
+    env = {k: v for k, v in os.environ.items() if k not in _GH_UMGEBUNG_RAUS}
+    env.update({"GH_PROMPT_DISABLED": "1", "GIT_TERMINAL_PROMPT": "0", "GH_NO_UPDATE_NOTIFIER": "1", "NO_COLOR": "1",
+                "GH_SPINNER_DISABLED": "1"})
+    return env
+
+
+def _gh_ausgabe(text: object, grenze: int = GH_AUSGABE_MAX) -> str:
+    """Fehlertext von gh oder git für das Sprachmodell: ohne Steuerzeichen und Zugangsdaten, eine Zeile, gekürzt."""
+    t = _GH_GEHEIM.sub("[entfernt]", _CONTROL_CHARS.sub(" ", str(text or "")))
+    t = " ".join(t.split())
+    return t if len(t) <= grenze else t[:grenze] + " [gekürzt]"
+
+
+def _baum_beenden(pid: int) -> None:
+    """Prozess samt Kindern beenden (gh startet git)."""
+    taskkill = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32" / "taskkill.exe"
+    try:
+        subprocess.run([str(taskkill), "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _gh_lauf(argv: list[str], timeout: int) -> tuple[int, str, str]:
+    """Programm ohne Shell und ohne Eingabe ausführen. Rückgabe (Exit-Code, stdout, stderr), beides unbereinigt: nur für
+    die Auswertung hier, nie ans Modell. Bei Zeitüberschreitung wird der ganze Prozessbaum beendet (GhFehler)."""
+    if platform.system() != "Windows":
+        raise GhFehler("Host läuft nicht unter Windows")
+    try:
+        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             encoding="utf-8", errors="replace", env=_gh_umgebung(),
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError as e:
+        raise GhFehler(f"Programm nicht startbar ({type(e).__name__})") from e
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _baum_beenden(p.pid)
+        p.kill()
+        with contextlib.suppress(Exception):
+            p.communicate(timeout=5)
+        raise GhFehler(f"Zeitlimit von {timeout} s überschritten. Nicht wiederholen: die Person prüft Netz und "
+                       "Anmeldung (gh auth status).") from None
+    return p.returncode, out or "", err or ""
+
+
+def _gh_fehlertext(rc: int, err: str) -> str:
+    """Bekannte Fehler in klare Sätze, sonst die gefilterte letzte Zeile."""
+    low = err.lower()
+    if "gh auth login" in low or "not logged in" in low or "authentication" in low or "bad credentials" in low:
+        return "Die GitHub-Anmeldung fehlt oder ist abgelaufen: die Person macht am Laptop einmal 'gh auth login'."
+    if "already exists" in low:
+        return "Dieses Repository gibt es schon."
+    if "could not resolve to a repository" in low or "not found" in low or "repository not found" in low:
+        return "Das Repository gibt es nicht, oder die Person hat dort keinen Zugriff."
+    if "403" in low or "forbidden" in low or "permission" in low or "must have admin" in low:
+        return "Dafür fehlt die Berechtigung (Organisation oder Repository)."
+    if "could not resolve host" in low or "unable to access" in low or "timed out" in low:
+        return "GitHub ist von diesem Laptop gerade nicht erreichbar."
+    letzte = next((z for z in reversed(err.strip().splitlines()) if z.strip()), "")
+    return f"gh meldete einen Fehler (Exit-Code {rc}): {_gh_ausgabe(letzte)}".rstrip(": ")
+
+
+def _origin_url(ordner: Path) -> str | None:
+    """URL von origin aus .git/config, gelesen als Text: in einem fremden Ordner läuft kein git (dessen Einstellungen
+    könnten Programme starten)."""
+    konfig = ordner / ".git" / "config"
+    try:
+        if not konfig.is_file() or konfig.stat().st_size > 65536:
+            return None
+        text = konfig.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    abschnitt = None
+    for zeile in text.splitlines():
+        z = zeile.strip()
+        if z.startswith("["):
+            abschnitt = z
+        elif abschnitt == '[remote "origin"]':
+            m = re.fullmatch(r"url\s*=\s*(.+)", z)
+            if m:
+                return m.group(1).strip()
+    return None
+
+
+def _gleiches_repo(url: str, besitzer: str, name: str) -> bool:
+    """Zeigt die Remote-Adresse auf genau dieses GitHub-Repository (https, ssh, mit oder ohne .git, Groß- und Kleinschreibung egal)?"""
+    m = re.fullmatch(r"(?:https?://(?:[^/@\s]+@)?github\.com/|ssh://git@github\.com/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?/?",
+                     url.strip(), re.IGNORECASE)
+    return bool(m) and m.group(1).lower() == besitzer.lower() and m.group(2).lower() == name.lower()
+
+
+def _git_klonen_ausfuehren(repo: object) -> dict:
+    """Klont besitzer/name nach Projekte\\name (feste Wurzel, Regeln wie ordner_anlegen). Liegt dort schon ein Klon desselben
+    Repositorys, ist das ein Erfolg; ein anderes Remote im selben Ordner ist ein Fehler."""
+    try:
+        besitzer, name = parse_repo(repo)
+        ziel = validate_new_folder(str(PROJEKTE_DIR / name))
+    except ValueError as e:
+        _audit({"tool": "git_klonen", "repo": str(repo)[:120], "risk": "rejected", "error": str(e)[:200]})
+        return {"status": "rejected", "summary": str(e)}
+    voll = f"{besitzer}/{name}"
+    if not _rate_ok("git_klonen", GIT_KLONEN_PRO_MINUTE):
+        _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "Rate-Grenze"})
+        return {"status": "rejected", "summary": "Zu viele Klone in kurzer Zeit. Bitte kurz warten."}
+    if ziel.exists():
+        if (ziel / ".git").is_dir():
+            url = _origin_url(ziel)
+            if url and _gleiches_repo(url, besitzer, name):
+                _audit({"tool": "git_klonen", "repo": voll, "risk": "change", "vorhanden": True})
+                return {"status": "success", "summary": f"{voll} ist schon nach {ziel.name} geklont", "pfad": str(ziel),
+                        "vorhanden": True}
+            _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "anderes Remote"})
+            return {"status": "error", "summary": f"Im Ordner {ziel.name} liegt ein anderes Repository. Dorthin klont "
+                    "WAMO nicht; ein anderer Ordnername ist nicht vorgesehen."}
+        if not ziel.is_dir() or any(ziel.iterdir()):
+            _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "Ordner belegt"})
+            return {"status": "error", "summary": f"Den Ordner {ziel.name} gibt es schon und er ist kein Git-Repository."}
+    try:
+        gh = _gh_pfad()
+        _git_pfad()
+    except GhFehler as e:
+        _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "gh oder git fehlt"})
+        return {"status": "error", "summary": e.text}
+    _audit({"tool": "git_klonen", "repo": voll, "risk": "change"})
+    try:
+        PROJEKTE_DIR.mkdir(parents=True, exist_ok=True)
+        rc, _out, err = _gh_lauf([gh, "repo", "clone", voll, str(ziel)], GIT_KLONEN_TIMEOUT_SECS)
+    except OSError as e:
+        return {"status": "error", "summary": f"Projekte-Ordner nicht angelegt ({type(e).__name__})"}
+    except GhFehler as e:
+        _audit({"tool": "git_klonen", "repo": voll, "result": "error", "grund": "Zeitlimit oder Start"})
+        return {"status": "error", "summary": e.text}
+    if rc != 0 or not (ziel / ".git").is_dir():
+        _audit({"tool": "git_klonen", "repo": voll, "result": "error", "exit_code": rc})
+        return {"status": "error", "summary": _gh_fehlertext(rc, err)}
+    _audit({"tool": "git_klonen", "repo": voll, "result": "success"})
+    return {"status": "success", "summary": f"{voll} nach {ziel.name} geklont", "pfad": str(ziel), "vorhanden": False}
+
+
+@mcp.tool()
+async def git_klonen(repo: str) -> dict:
+    """Klont ein GitHub-Repository der Firma nach Projekte\\<name> (change, ohne Freigabe), mit dem gh des Laptops: repo =
+    name (Organisation Wamocon), besitzer/name oder die GitHub-Adresse. Ist es schon dort geklont, ist das ein Erfolg
+    (vorhanden=true). Danach mit oeffnen_mit im Editor öffnen. Pfade nie raten: das Ergebnis nennt den Ordner."""
+    if vorab := _eingabe_vorab("git_klonen"):
+        return vorab
+    # Im Thread: ein Klon dauert bis zu 90 s und darf die Probe des Kerns nicht blockieren
+    return await asyncio.to_thread(_git_klonen_ausfuehren, repo)
+
+
+GITHUB_KARTE = ("Das legt ein neues Repository bei GitHub an. Ein Admin muss es in der Oberfläche freigeben; bis dahin "
+                "passiert nichts.")
+
+
+@mcp.tool()
+def github_repo_anlegen(name: str, privat: bool = True, beschreibung: str = "") -> dict:
+    """Legt ein neues GitHub-Repository in der Organisation der Firma an (critical: nur per Freigabe-Karte, genau einmal).
+    Standard ist privat; öffentlich nur, wenn die Person es ausdrücklich will. Klont nicht: danach git_klonen. Statt über
+    github.com/new zu klicken."""
+    if vorab := _eingabe_vorab("github_repo_anlegen"):
+        return vorab
+    try:
+        org = github_org()
+        repo = validate_repo_name(name)
+        text = uia_control.sicherer_text(beschreibung, GITHUB_BESCHREIBUNG_MAX) if beschreibung else ""
+        if len(str(beschreibung or "")) > GITHUB_BESCHREIBUNG_MAX:
+            raise ValueError(f"Beschreibung höchstens {GITHUB_BESCHREIBUNG_MAX} Zeichen")
+        if not isinstance(privat, bool):
+            raise ValueError("privat: ja oder nein")
+        _gh_pfad()
+    except GhFehler as e:
+        _audit({"tool": "github_repo_anlegen", "name": str(name)[:100], "risk": "rejected", "grund": "gh fehlt"})
+        return {"status": "error", "summary": e.text}
+    except ValueError as e:
+        _audit({"tool": "github_repo_anlegen", "name": str(name)[:100], "risk": "rejected", "error": str(e)[:200]})
+        return {"status": "rejected", "summary": str(e)}
+    if not _rate_ok("github_repo_anlegen", GH_ANLEGEN_PRO_MINUTE):
+        _audit({"tool": "github_repo_anlegen", "risk": "rejected", "grund": "Rate-Grenze"})
+        return {"status": "rejected", "summary": "Zu viele Anfragen in kurzer Zeit. Bitte kurz warten."}
+    detail = (f"Repository: {org}/{repo}\nSichtbarkeit: "
+              + ("privat" if privat else "ÖFFENTLICH (für alle im Internet sichtbar)")
+              + (f"\nBeschreibung: {text}" if text else ""))
+    return _anfrage("github_repo_anlegen", "github_anlegen",
+                    {"org": org, "name": repo, "privat": privat, "beschreibung": text}, "github",
+                    "GitHub-Repository anlegen" if privat else "ÖFFENTLICHES GitHub-Repository anlegen", detail,
+                    f"GitHub, Organisation {org}", GITHUB_KARTE, {"repo": f"{org}/{repo}", "privat": privat})
+
+
+def _github_anlegen_ausfuehren(eintrag: dict) -> dict:
+    """Freigegebenes Anlegen: Organisation und Name werden direkt davor noch einmal geprüft, dann `gh repo create`."""
+    org, name = eintrag["org"], validate_repo_name(eintrag["name"])
+    if not GITHUB_OWNER_RE.fullmatch(org) or org != github_org():
+        raise ValueError("Die Organisation hat sich seit der Anfrage geändert")
+    gh = _gh_pfad()
+    argv = [gh, "repo", "create", f"{org}/{name}", "--private" if eintrag["privat"] else "--public"]
+    if eintrag["beschreibung"]:
+        argv.append(f"--description={eintrag['beschreibung']}")  # ein Argument, nie als Schalter lesbar
+    try:
+        rc, _out, err = _gh_lauf(argv, GH_ANLEGEN_TIMEOUT_SECS)
+    except GhFehler as e:
+        return {"status": "error", "summary": e.text}
+    if rc != 0:
+        return {"status": "error", "summary": _gh_fehlertext(rc, err)}
+    return {"status": "success", "summary": f"Repository {org}/{name} angelegt ({'privat' if eintrag['privat'] else 'öffentlich'}). "
+            "Zum Arbeiten daran git_klonen.", "url": f"https://github.com/{org}/{name}"}
+
+
 UNBEKANNT = {"status": "error", "summary": "Unbekannte oder abgelaufene Freigabe."}
 
 
@@ -1214,6 +1527,9 @@ def _inhalt_audit(eintrag: dict) -> dict:
     if art == "uia_text":
         return {"ziel": eintrag["titel"][:120], "nummer": eintrag["nummer"], "element": eintrag["knoten"].name[:60],
                 **_text_audit(eintrag["text"])}
+    if art == "github_anlegen":  # Repository und Sichtbarkeit, die Beschreibung nur als Prüfsumme
+        return {"repo": f"{eintrag['org']}/{eintrag['name']}", "privat": eintrag["privat"],
+                **({"beschreibung": _text_audit(eintrag["beschreibung"])} if eintrag["beschreibung"] else {})}
     return {}
 
 
@@ -1341,6 +1657,8 @@ def _ausfuehren(eintrag: dict) -> dict:
         UIA.text_setzen(eintrag["hwnd"], None, knoten, eintrag["text"])
         return {"status": "success", "summary": f"Text in „{knoten.name[:60]}“ in {info['titel'][:60]} gesetzt",
                 **_markierung(eintrag.get("hwnd"))}
+    if art == "github_anlegen":
+        return _github_anlegen_ausfuehren(eintrag)
     if art == "webseite":
         url = validate_url(eintrag["url"])  # die DNS-Auflösung kann sich seit der Anfrage geändert haben
         _launch(resolve_app(eintrag["browser"]), [url])

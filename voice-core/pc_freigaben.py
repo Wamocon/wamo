@@ -43,7 +43,7 @@ MAX_OFFEN = 5  # wie MAX_PENDING im Host
 MAX_ERGEBNIS_ZEICHEN = 800  # so viel vom Ergebnis des PCs bekommt das Sprachmodell
 SCHLIESSEN_TIMEOUT_SECS = 3.0
 AKTION_TEXT = {"powershell": "den PowerShell-Befehl", "senden": "das Senden", "webseite": "das Öffnen der Webseite",
-               "klicken": "den Klick"}
+               "klicken": "den Klick", "github": "das Anlegen des GitHub-Repositorys"}
 
 
 @dataclass

@@ -52,7 +52,8 @@ SERVER_NAME = "wamo-host"
 CONNECT_TIMEOUT_SECS = 3.0
 CALL_TIMEOUT_SECS = 30.0
 # Werkzeuge, die am PC selbst länger laufen dürfen (powershell_lesen hat dort 60 s Zeitlimit)
-LANGE_WERKZEUGE = {"powershell_lesen": 75.0, "freigabe_entscheiden": 135.0}  # Freigabe: 120 s am PC
+LANGE_WERKZEUGE = {"powershell_lesen": 75.0, "freigabe_entscheiden": 135.0,  # Freigabe: 120 s am PC
+                   "git_klonen": 100.0}  # Klon: 90 s am PC
 PROBE_TIMEOUT_SECS = 5.0
 ERSTKONTAKT_TIMEOUT_SECS = 10.0  # tools() beim Sitzungsaufbau, wenn der Kern noch Modelle lädt
 MAX_ANTWORT_BYTES = 8 * 1024 * 1024  # Bildschirmfotos als JPEG-Base64 liegen bei etwa 1 MB

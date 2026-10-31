@@ -31,6 +31,7 @@ DETAIL_KEYS = {
     "canvas_zeigen": "titel", "auf_bildschirm_klicken": "ziel", "bildschirm_ansehen": "frage",
     "merken": "art", "entwicklung_vorbereiten": "projekt", "maus_scrollen": "richtung",
     "aufgabe_verteilen": "art", "element_klicken": "beschreibung", "elemente_auflisten": "fenster",
+    "git_klonen": "repo", "github_repo_anlegen": "name",
 }
 
 
@@ -44,10 +45,11 @@ def _detail(name: str, args: dict) -> str:
 
 
 APPROVAL_ID_RE = re.compile(r"[0-9a-f]{16}")
-FREIGABE_AKTIONEN = ("powershell", "senden", "webseite", "klicken")
+FREIGABE_AKTIONEN = ("powershell", "senden", "webseite", "klicken", "github")
 # Nur diese Werkzeuge können eine Freigabe-Anfrage des Hosts liefern (auf_bildschirm_klicken über maus_klicken)
 FREIGABE_WERKZEUGE = frozenset({"powershell_lesen", "tastatur_tippen", "tasten_druecken", "webseite_oeffnen",
-                                "auf_bildschirm_klicken", "element_klicken", "element_text_setzen"})
+                                "auf_bildschirm_klicken", "element_klicken", "element_text_setzen",
+                                "github_repo_anlegen"})
 FREIGABE_DETAIL_ZEICHEN = 2000  # wie die Grenze der Oberfläche (ui/src/lib/nachrichten.ts)
 FREIGABE_KURZ_ZEICHEN = 200
 
