@@ -435,6 +435,83 @@ def screen_bounds() -> tuple[int, int, int, int]:
         return v["left"], v["top"], v["left"] + v["width"], v["top"] + v["height"]
 
 
+# ---------- Markierung für den Lichtrahmen (nur Zahlen, nie Titel oder Inhalte) ----------
+MARK_POS_MIN, MARK_POS_MAX = -32768, 32767  # Position in Bildschirmpixeln (Windows nutzt 16 Bit für Koordinaten)
+MARK_GROESSE_MAX = 32768  # Breite und Höhe
+
+
+def _ganz(wert: object) -> bool:
+    return isinstance(wert, int) and not isinstance(wert, bool)
+
+
+def rechteck(x: object, y: object, b: object, h: object) -> dict | None:
+    """Rechteck aus ganzen Zahlen mit Obergrenzen (Position und Größe) oder None. Sonst nichts."""
+    if not all(_ganz(v) for v in (x, y, b, h)):
+        return None
+    if not (MARK_POS_MIN <= x <= MARK_POS_MAX and MARK_POS_MIN <= y <= MARK_POS_MAX):
+        return None
+    if not (1 <= b <= MARK_GROESSE_MAX and 1 <= h <= MARK_GROESSE_MAX):
+        return None
+    return {"x": x, "y": y, "b": b, "h": h}
+
+
+def punkt(x: object, y: object) -> dict | None:
+    """Punkt aus ganzen Zahlen innerhalb der Obergrenzen oder None."""
+    if not (_ganz(x) and _ganz(y)) or not (MARK_POS_MIN <= x <= MARK_POS_MAX and MARK_POS_MIN <= y <= MARK_POS_MAX):
+        return None
+    return {"x": x, "y": y}
+
+
+def schnitt(a: dict, b: dict) -> dict | None:
+    """Überlappung zweier Rechtecke (x, y, b, h) oder None, wenn sie sich nicht berühren."""
+    links, oben = max(a["x"], b["x"]), max(a["y"], b["y"])
+    rechts, unten = min(a["x"] + a["b"], b["x"] + b["b"]), min(a["y"] + a["h"], b["y"] + b["h"])
+    return rechteck(links, oben, rechts - links, unten - oben)
+
+
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+
+def _sichtbarer_rahmen(hwnd: int) -> tuple[int, int, int, int] | None:
+    """Sichtbares Rechteck ohne den unsichtbaren Größenrand, den GetWindowRect unter Windows 10 und 11 mitliefert."""
+    try:
+        r = wintypes.RECT()
+        if ctypes.windll.dwmapi.DwmGetWindowAttribute(wintypes.HWND(hwnd), DWMWA_EXTENDED_FRAME_BOUNDS,
+                                                      ctypes.byref(r), ctypes.sizeof(r)) != 0:
+            return None
+        return r.left, r.top, r.right, r.bottom
+    except (AttributeError, OSError):
+        return None
+
+
+def window_rect(hwnd: int) -> dict | None:
+    """Sichtbares Rechteck eines Fensters in Bildschirmpixeln (wie die Klickpunkte, pro Monitor DPI-bewusst) oder None
+    (nicht sichtbar, minimiert, unbrauchbar). Nur ganze Zahlen; nie ein Titel."""
+    try:
+        win32gui = _win32()[0]
+        if not hwnd or not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
+            return None
+        _dpi_aware()
+        links, oben, rechts, unten = _sichtbarer_rahmen(hwnd) or win32gui.GetWindowRect(hwnd)
+        return rechteck(int(links), int(oben), int(rechts) - int(links), int(unten) - int(oben))
+    except Exception:  # noqa: BLE001 (Fenster weg oder verweigert die Auskunft: keine Markierung)
+        return None
+
+
+def monitor_rect(x: int, y: int) -> dict | None:
+    """Rechteck des Monitors, auf dem der Punkt liegt (mss, Bildschirmpixel), sonst None."""
+    try:
+        import mss
+        _dpi_aware()
+        with mss.mss() as sct:
+            for m in sct.monitors[1:]:
+                if m["left"] <= x < m["left"] + m["width"] and m["top"] <= y < m["top"] + m["height"]:
+                    return rechteck(int(m["left"]), int(m["top"]), int(m["width"]), int(m["height"]))
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def click(x: int, y: int, button: str = "links", double: bool = False) -> None:
     _dpi_aware()
     down, up = {"links": (0x0002, 0x0004), "rechts": (0x0008, 0x0010)}[button]
