@@ -30,6 +30,14 @@ class SchalterTest(unittest.TestCase):
         for wert in ("an", "ein", "1", "ja", "true", "on", "yes", "aktiv"):
             self.assertTrue(schalter_an("X", wert), wert)
 
+    def test_unbekannter_wert_bleibt_aus_bei_standard_aus(self):
+        env_schalter._GEWARNT.clear()
+        with mock.patch.object(env_schalter.logger, "warning") as warnung:
+            self.assertFalse(schalter_an("WAMO_Z", "disable", standard=False))
+            self.assertFalse(schalter_an("WAMO_Z", "disable", standard=False))
+        self.assertEqual(warnung.call_count, 1)
+        self.assertTrue(schalter_an("WAMO_Z", "disable", standard=True), "Notaus-Schalter bleiben bei Tippfehlern an")
+
     def test_umgebungsvariable(self):
         with mock.patch.dict(os.environ, {"WAMO_TEST_SCHALTER": "aus"}):
             self.assertFalse(schalter_an("WAMO_TEST_SCHALTER"))

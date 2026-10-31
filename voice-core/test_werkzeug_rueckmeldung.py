@@ -73,9 +73,7 @@ class GateZustandTest(unittest.IsolatedAsyncioTestCase):
         self.t += WERKZEUG_NACHLAUF_SECS + 1
         self.assertTrue(g.werkzeug_laeuft(), "b läuft noch")
         await self.senden(g, FunctionCallCancelFrame(function_name="websuche", tool_call_id="b"))
-        self.assertTrue(g.werkzeug_laeuft())  # Nachlauf nach dem Abbruch
-        self.t += WERKZEUG_NACHLAUF_SECS + 0.1
-        self.assertFalse(g.werkzeug_laeuft())
+        self.assertFalse(g.werkzeug_laeuft(), "nach einem Abbruch kein Nachlauf: der Zug des Einwurfs läuft schon")
 
     async def test_unterbrechung_raeumt_auf(self):
         g = self.gate()
@@ -153,6 +151,21 @@ class StrategieTest(unittest.IsolatedAsyncioTestCase):
     async def test_beim_sprechen_bleibt_alles_wie_gehabt(self):
         s, ausgeloest, bekannt, _ = await self.lauf("Mhm", False, sprechend=True)
         self.assertEqual((ausgeloest, bekannt, s.werkzeug_rueckmeldungen), ([], ["rueckmeldung"], 0))
+
+    async def test_ein_wort_genuegt_auch_mit_hoeherer_mindestzahl(self):
+        # MIN_INTERRUPT_WORDS betrifft nur das Sprechen; bei schweigendem WAMO gilt wie bei Pipecat ein Wort
+        ausgeloest = []
+        s = MeaningfulWordsUserTurnStartStrategy(min_words=3, enable_interruptions=False, werkzeug_laeuft=lambda: True)
+
+        async def start():
+            ausgeloest.append(True)
+
+        async def reset():
+            pass
+
+        s.trigger_user_turn_started, s.trigger_reset_aggregation = start, reset
+        await s.process_frame(TranscriptionFrame("Stopp", "u", "t"))
+        self.assertEqual(ausgeloest, [True])
 
     async def test_bruchstueck_ist_noch_unentschieden(self):
         _, ausgeloest, bekannt, _ = await self.lauf("J", True)

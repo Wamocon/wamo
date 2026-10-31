@@ -32,7 +32,7 @@ class KurzesJaTest(unittest.TestCase):
             self.assertTrue(ist_kurzes_ja(t), t)
 
     def test_mehrdeutiges_ist_kein_ja(self):
-        for t in ("Ja, aber nur den ersten", "Nein danke", "Ja, nein", "Doch", "Ja, warte kurz", "Ja lieber morgen",
+        for t in ("Sicher?", "Klar?", "Genau?", "Ja?", "Ja, aber nur den ersten", "Nein danke", "Ja, nein", "Doch", "Ja, warte kurz", "Ja lieber morgen",
                   "Ja aber nicht jetzt", "Mach das nicht", "Ja, und dann öffne bitte noch den Kalender", "Nein", "", "Hmm",
                   "Danke"):
             self.assertFalse(ist_kurzes_ja(t), t)
@@ -45,17 +45,20 @@ class KurzesJaTest(unittest.TestCase):
 class RueckfrageTest(unittest.TestCase):
     def test_echte_rueckfragen(self):
         for t in ("Soll ich das Projekt öffnen?", "● Ich habe die Datei gefunden. Soll ich sie öffnen?", "Soll ich das tun",
-                  "Welche Datei meinst du?", "Möchtest du, dass ich weitersuche"):
+                  "Möchtest du, dass ich weitersuche"):
             self.assertTrue(ist_rueckfrage(t), t)
 
     def test_keine_rueckfrage(self):
-        for t in ("Ich habe das Projekt geöffnet.", "Die Suche ist fertig. Das Wetter wird gut.", ""):
+        for t in ("Ich habe das Projekt geöffnet.", "Die Suche ist fertig. Das Wetter wird gut.", "",
+                  "Welche Datei meinst du?", "Chrome oder Edge?", "Wie soll das heißen?"):
             self.assertFalse(ist_rueckfrage(t), t)
 
     def test_freigabe_und_sicherheit_sind_keine_rueckfrage(self):
         for t in ("Soll ich die Freigabe in der Oberfläche anfordern?", "Wartet die Karte auf dich?",
                   "Soll ich den Code eingeben?", "Soll ich das Passwort tippen?", "Darf ich den Schlüssel nutzen?",
-                  "Ist das aus Sicherheitsgründen in Ordnung?"):
+                  "Ist das aus Sicherheitsgründen in Ordnung?", "Soll ich die Mail an Herrn Meier senden?",
+                  "Soll ich die Datei löschen?", "Soll ich das bestellen?", "Soll ich die Nachricht abschicken?",
+                  "Darf ich das genehmigen?", "Soll ich das veröffentlichen?", "Soll ich das mit sudo ausführen?"):
             self.assertFalse(ist_rueckfrage(t), t)
 
 
@@ -93,6 +96,12 @@ class HinweisTest(unittest.TestCase):
             {"role": "user", "content": "Ja"},
         ]
         self.assertFalse(hinweis_noetig(m2))
+
+    def test_freigabe_meldung_weit_vor_dem_ja_sperrt_noch(self):
+        m = [{"role": "user", "content": "Tipp das."}, {"role": "tool", "content": "status=wartet"}]
+        m += [{"role": "assistant", "content": "Ich warte."}, {"role": "user", "content": "Hmm"}] * 4
+        m += [{"role": "assistant", "content": "Soll ich weitermachen?"}, {"role": "user", "content": "Ja"}]
+        self.assertFalse(hinweis_noetig(m))
 
     def test_zu_wenig_verlauf_und_falsche_rollen(self):
         self.assertFalse(hinweis_noetig([]))
@@ -143,6 +152,17 @@ class PipelineTest(unittest.IsolatedAsyncioTestCase):
         wache, ctx, _ = await self.durchlauf(nachrichten)
         self.assertEqual(ctx.messages[-1]["content"], "Ja")
         self.assertEqual(wache.hinweise, 0)
+
+    async def test_fremdinhalt_im_zug_sperrt_den_hinweis(self):
+        wache = JaWaechter(gefaerbt=lambda: True)
+        ctx = LLMContext(messages=verlauf("Soll ich das Projekt öffnen?"))
+        await run_test(wache, frames_to_send=[LLMContextFrame(ctx)])
+        self.assertEqual(ctx.messages[-1]["content"], "Ja", "die Rückfrage könnte aus einer Webseite oder vom Bildschirm stammen")
+        self.assertEqual(wache.hinweise, 0)
+
+    async def test_hinweis_nennt_die_ausnahmen_der_persona(self):
+        self.assertIn("Nachrichten an andere (erst den Wortlaut nennen)", HINWEIS)
+        self.assertIn("Kaufen, Löschen und Veröffentlichen", HINWEIS)
 
     async def test_freigabe_text_im_hinweis_ersetzt_keine_freigabe(self):
         # Der Hinweis selbst sagt ausdrücklich, dass Freigaben in der Oberfläche bleiben.

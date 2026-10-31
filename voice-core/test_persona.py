@@ -89,6 +89,20 @@ class PersonaPaketATests(unittest.TestCase):
         self.assertIn("Sag in einem kurzen Satz, was du tust.", aus)
         self.assertEqual(self.bauen(), aus, "ohne gesetzte Umgebungsvariable gilt aus")
 
+    def test_standard_prompt_ist_byteidentisch_zum_alten(self):
+        import hashlib
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"WAMO_PERSONA_RUECKFRAGEN": "", "WAMO_PERSONA_PC_ORDNER": ""}):
+            voll = build_system_prompt("Max", "du", ["x"], ["y"], pc_werkzeuge=True, entwicklung=True, pc_erreichbar=False)
+            kurz = build_system_prompt("Max", "sie", pc_werkzeuge=False)
+        # SHA-256 der Prompts vor Paket A (Stand a3e86b6)
+        self.assertEqual(hashlib.sha256(voll.encode()).hexdigest(),
+                         "a7efa1f0b93acad1e2cb45484c7e78a6c1d6bc2046675d58797725928b0ba1ad")
+        self.assertEqual(hashlib.sha256(kurz.encode()).hexdigest(),
+                         "1ccb24f540620477ad33f68c6b05d8c80adb8f290a9cb2494ea108e6755fa7ff")
+
     def test_schalter_aus_der_umgebung(self):
         from persona import persona_pc_ordner_an, persona_rueckfragen_an
 

@@ -355,7 +355,8 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         if not self._bot_speaking and not werkzeug:
             return await super()._handle_transcription(frame)
         count = meaningful_word_count(frame.text, interim=isinstance(frame, InterimTranscriptionFrame))
-        if count >= self._min_words:
+        # Schweigt WAMO (Werkzeug läuft), gilt wie bei Pipecat schon ein Wort; MIN_INTERRUPT_WORDS betrifft nur das Sprechen
+        if count >= (self._min_words if self._bot_speaking else 1):
             urteil = self._urteil(frame.text)
             if urteil != "echo" and self.echo_modus_aktiv() and not hat_stoppwort(frame.text):
                 self.echo_vermutet += 1
@@ -499,9 +500,12 @@ class SoftInterruptGate(FrameProcessor):
         if isinstance(frame, FunctionCallInProgressFrame):
             if frame.cancel_on_interruption:  # nur Aufrufe, die ein neuer Zug abbräche; asynchrone stören nicht
                 self._werkzeuge.setdefault(frame.tool_call_id, self._uhr())
-        elif isinstance(frame, (FunctionCallResultFrame, FunctionCallCancelFrame)):
+        elif isinstance(frame, FunctionCallResultFrame):
             if self._werkzeuge.pop(frame.tool_call_id, None) is not None and not self._werkzeuge:
                 self._werkzeug_nachlauf_bis = self._uhr() + WERKZEUG_NACHLAUF_SECS
+        elif isinstance(frame, FunctionCallCancelFrame):
+            # Ein Abbruch folgt meist einem Einwurf, dessen Zug schon läuft: kein Nachlauf, sonst ginge dessen Text verloren
+            self._werkzeuge.pop(frame.tool_call_id, None)
         elif isinstance(frame, InterruptionFrame):
             self._werkzeuge.clear()  # Pipecat bricht sie ab
             self._werkzeug_nachlauf_bis = 0.0

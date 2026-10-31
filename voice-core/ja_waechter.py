@@ -37,7 +37,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 HINWEIS = (
     "[Hinweis für WAMO: Die Person hat deine Rückfrage mit Ja beantwortet. Führ den Auftrag jetzt aus und frag nicht "
-    "noch einmal. Das gilt nicht für Freigaben: Was in der Oberfläche freigegeben werden muss, bleibt dort.]"
+    "noch einmal. Das gilt nicht für Freigaben: Was in der Oberfläche freigegeben werden muss, bleibt dort. Ausgenommen sind "
+    "Nachrichten an andere (erst den Wortlaut nennen), Kaufen, Löschen und Veröffentlichen.]"
 )
 MAX_WOERTER = 4
 # Zustimmung (deutsch und englisch). KERN: mindestens eines davon muss vorkommen; FUELL: darf zusätzlich vorkommen.
@@ -45,7 +46,7 @@ JA_KERN = frozenset(
     {"ja", "jo", "jaja", "klar", "genau", "gern", "gerne", "mach", "machs", "okay", "ok", "sicher", "natürlich", "yes", "yep",
      "yeah", "sure", "tu", "los", "einverstanden", "passt"}
 )
-JA_FUELL = frozenset({"bitte", "das", "es", "ruhig", "mal", "gerne", "gern", "na", "dann", "schon", "do", "it", "go", "ahead",
+JA_FUELL = frozenset({"bitte", "das", "es", "ruhig", "mal", "na", "dann", "schon", "do", "it", "go", "ahead",
                       "please", "bitteschön", "gut", "so", "bitte"})
 # Wörter, die aus dem Ja ein Aber machen oder etwas anderes verlangen
 GEGEN = frozenset({"aber", "nein", "nicht", "kein", "keine", "lieber", "erst", "vorher", "warte", "warten", "stopp", "stop",
@@ -53,11 +54,20 @@ GEGEN = frozenset({"aber", "nein", "nicht", "kein", "keine", "lieber", "erst", "
 FRAGE_ANFAENGE = ("soll ich", "soll ich's", "möchtest du", "möchten sie", "willst du", "wollen sie", "darf ich", "wollen wir",
                   "soll das", "do you want", "shall i", "should i")
 # Rückfragen, die um eine Freigabe oder Sicherheit gehen: dort gibt es keinen Hinweis
-FREIGABE_RE = re.compile(r"freigab|freigeb|karte|oberfläche|bestätig|code|passwort|schlüssel|token|sicherheit|zugangsdaten",
-                         re.IGNORECASE)
+FREIGABE_RE = re.compile(
+    r"freigab|freigeb|karte|oberfläche|bestätig|code|passwort|schlüssel|token|sicherheit|zugangsdaten|genehmig|erlaub|approv|"
+    r"allow|confirm|autoris|sudo|admin|sperre|pc-steuerung|"
+    # Handlungen mit Folgen für andere oder Kosten: dort gilt die zweistufige Bestätigung der Persona (Wortlaut nennen, Ja)
+    r"send|schick|schreib|nachricht|mail|lösch|entfern|kauf|bestell|bezahl|überweis|veröffentlich|publish|push|deploy|install|"
+    r"abschick|teil(?:e|en) ",
+    re.IGNORECASE,
+)
+# Fragen nach einer Auswahl oder einer Angabe beantwortet kein Ja
+FRAGEWOERTER = ("welche", "welcher", "welches", "welchen", "was", "wie", "wo", "wann", "warum", "wer", "wen", "wem", "wohin",
+                "woher", "wieso", "weshalb", "which", "what", "how", "where", "when", "who", "why")
 FREIGABE_MELDUNG_RE = re.compile(r"needs_approval|status=wartet|\"wartet\"|PC-Freigabe|freigegeben werden", re.IGNORECASE)
 MARKER = "●◐○ "
-RUECKSCHAU = 6  # so viele Nachrichten vor dem Ja werden auf Freigabe-Meldungen geprüft
+RUECKSCHAU = 16  # so viele Nachrichten vor dem Ja werden auf Freigabe-Meldungen geprüft (mindestens ein ganzer Zug)
 
 
 def ja_waechter_an(wert: str | None = None) -> bool:
@@ -73,8 +83,8 @@ def ist_kurzes_ja(text: str) -> bool:
     """Besteht die Äußerung nur aus Zustimmung ("Ja", "Ja bitte", "Mach das", "Okay, gerne")? Nie bei "[" am Anfang, nie bei
     "Ja, aber ...", "Ja, nein", "Doch", "Ja, warte kurz"."""
     text = text.strip()
-    if not text or text.startswith("["):
-        return False
+    if not text or text.startswith("[") or text.endswith("?"):
+        return False  # "Sicher?" ist eine Gegenfrage der Person, keine Zustimmung
     w = _woerter(text)
     if not w or len(w) > MAX_WOERTER:
         return False
@@ -93,6 +103,8 @@ def ist_rueckfrage(text: str) -> bool:
     if not saetze:
         return False
     letzter = saetze[-1].lower()
+    if letzter.split(" ", 1)[0].strip(",") in FRAGEWOERTER or " oder " in f" {letzter} ":
+        return False  # Auswahl- und Wortfragen beantwortet kein Ja
     return letzter.endswith("?") or any(letzter.startswith(a) or f" {a} " in f" {letzter} " for a in FRAGE_ANFAENGE)
 
 
@@ -102,7 +114,7 @@ def _inhalt(nachricht: object) -> str | None:
     return None
 
 
-def freigabe_im_verlauf(messages: list) -> bool:
+def freigabe_im_verlauf(messages: list[object]) -> bool:
     """Steht in den letzten Nachrichten eine Freigabe-Meldung (needs_approval, wartet, PC-Freigabe)?"""
     for m in messages[-RUECKSCHAU:]:
         text = _inhalt(m)
@@ -113,7 +125,7 @@ def freigabe_im_verlauf(messages: list) -> bool:
     return False
 
 
-def hinweis_noetig(messages: list, offen: bool = False) -> bool:
+def hinweis_noetig(messages: list[object], offen: bool = False) -> bool:
     """Gehört an die letzte Nachricht der Hinweis? Nur nach einem kurzen Ja auf eine echte Rückfrage, ohne Freigabe im Spiel."""
     if offen or len(messages) < 2:
         return False
@@ -131,17 +143,21 @@ def hinweis_noetig(messages: list, offen: bool = False) -> bool:
 class JaWaechter(FrameProcessor):
     """Hängt nach einem Ja auf eine echte Rückfrage den Hinweis an die Nachricht der Person (siehe Moduldoc)."""
 
-    def __init__(self, *, offen: Callable[[], bool] | None = None, **kwargs):
-        """offen: sagt, ob eine Freigabe (PC-Freigabe, Entwicklungsauftrag) offen ist; dann greift der Wächter nie."""
+    def __init__(self, *, offen: Callable[[], bool] | None = None, gefaerbt: Callable[[], bool] | None = None, **kwargs) -> None:
+        """offen: sagt, ob eine Freigabe (PC-Freigabe, Entwicklungsauftrag) offen ist; dann greift der Wächter nie.
+        gefaerbt: sagt, ob der Zug Fremdinhalte enthält (Websuche, Bildschirm, PC-Ausgaben); dann könnte die Rückfrage von
+        dort stammen, und der Wächter greift ebenfalls nie."""
         super().__init__(**kwargs)
         self._offen = offen
+        self._gefaerbt = gefaerbt
         self.hinweise = 0  # für Tests und das Log
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM and not getattr(frame, "speculation", False):
             messages = frame.context.messages
-            offen = bool(self._offen()) if self._offen is not None else False
+            offen = (bool(self._offen()) if self._offen is not None else False) or (
+                bool(self._gefaerbt()) if self._gefaerbt is not None else False)
             if hinweis_noetig(messages, offen):
                 messages[-1]["content"] = f"{messages[-1]['content']} {HINWEIS}"
                 self.hinweise += 1

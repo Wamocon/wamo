@@ -37,8 +37,11 @@ def schalter_an(name: str, wert: str | None = None, standard: bool = True) -> bo
         return False
     if (name, w) not in _GEWARNT:
         _GEWARNT.add((name, w))
-        logger.warning("{} hat den unbekannten Wert {!r}: gilt als an (zum Abschalten aus, 0 oder nein setzen)", name, w)
-    return True
+        if standard:
+            logger.warning("{} hat den unbekannten Wert {!r}: gilt als an (zum Abschalten aus, 0 oder nein setzen)", name, w)
+        else:
+            logger.warning("{} hat den unbekannten Wert {!r}: bleibt aus (zum Einschalten an, 1 oder ja setzen)", name, w)
+    return standard
 
 
 def schalter_oder_none(name: str, wert: str | None = None) -> bool | None:

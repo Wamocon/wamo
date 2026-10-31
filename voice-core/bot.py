@@ -678,9 +678,14 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     def freigabe_offen() -> bool:
         """Wartet eine Freigabe (PC-Freigabe-Karte oder Entwicklungsauftrag)? Dann greift der Ja-Wächter nie."""
-        if freigaben is not None and getattr(freigaben, "_offen", None):
+        # Fail closed: fehlt ein erwartetes Attribut (Umbenennung), gilt eine Freigabe als offen
+        try:
+            if freigaben is not None and freigaben._offen:
+                return True
+            return dev is not None and any(j.pending for j in dev._jobs.values())
+        except AttributeError:
+            logger.warning("Ja-Wächter: Freigabe-Zustand nicht lesbar, es gilt als offen")
             return True
-        return dev is not None and any(getattr(j, "pending", None) for j in getattr(dev, "_jobs", {}).values())
 
     pipeline = Pipeline(
         [
@@ -691,7 +696,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             SpeakerTracker(),  # wer spricht -> Farbe im Stimmen-Rand
             user_agg,
             soft_gate,
-            *([JaWaechter(offen=freigabe_offen)] if ja_waechter_an() else []),  # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER)
+            *([JaWaechter(offen=freigabe_offen, gefaerbt=lambda: turn.tainted)] if ja_waechter_an() else []),  # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER)
             wache.vorne(),
             llm,
             wache.hinten(),
