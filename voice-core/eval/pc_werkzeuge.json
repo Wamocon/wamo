@@ -50,7 +50,7 @@
   },
   {
     "name": "system_info",
-    "description": "Basisinfos zum PC (read), dazu ob der Bildschirm gerade gesperrt ist (gesperrt).",
+    "description": "Basisinfos zum PC (read): Rechnername, Benutzer, Benutzerordner und Projekte-Ordner (feste Pfade, nie raten oder\n    ganze Laufwerke durchsuchen), die Ordner für ordner_anlegen, und ob der Bildschirm gerade gesperrt ist (gesperrt).",
     "properties": {},
     "required": []
   },
@@ -150,6 +150,19 @@
       "programm": {
         "default": "vscode",
         "title": "Programm",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pfad"
+    ]
+  },
+  {
+    "name": "ordner_anlegen",
+    "description": "Legt einen Ordner an (change, ohne Freigabe), z. B. einen Projektordner. Nur der volle Pfad unter den Ordnern,\n    die system_info nennt (Projekte, Dokumente, Desktop, Downloads), nie in AppData oder versteckten Ordnern. Pfade nie\n    raten: erst system_info fragen. Gibt es den Ordner schon, passiert nichts. Statt New-Item per PowerShell.",
+    "properties": {
+      "pfad": {
+        "title": "Pfad",
         "type": "string"
       }
     },

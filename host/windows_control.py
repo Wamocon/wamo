@@ -224,15 +224,51 @@ def foreground() -> dict:
     return {"hwnd": hwnd, "titel": _title(hwnd), "programm": _exe_of(hwnd)}
 
 
-def focus(hwnd: int) -> None:
+FOKUS_WARTE_SECS = 0.25  # so lange gibt Windows dem Fenster Zeit, bevor der Fokus nachgeprüft wird
+VK_SHIFT = 0x10
+KEYEVENTF_KEYUP = 0x0002
+
+
+def _thread_apis():
+    """user32 und kernel32 für das Vorholen (eigene Funktion, damit Tests sie ersetzen können)."""
+    return ctypes.windll.user32, ctypes.windll.kernel32
+
+
+def focus(hwnd: int) -> bool:
+    """Holt ein Fenster nach vorne, ohne den Fokus darin zu verschieben, und meldet, ob es wirklich vorne liegt.
+
+    Kein Alt-Druck: Ein Alt, das ein schon vorderes Fenster erreicht, schickt den Tastaturfokus in dessen Menü, und
+    der nächste getippte Text geht verloren. Ist das Fenster schon vorne, passiert nichts. Sonst hängt sich der Host
+    kurz an die Eingabewarteschlange des vorderen Fensters (dann erlaubt Windows SetForegroundWindow ohne Tastendruck).
+    Nur wenn Windows trotzdem ablehnt, folgt als Notausgang ein Shift-Druck (Shift allein öffnet kein Menü).
+    Rückgabe: True nur, wenn danach GetForegroundWindow dieses Fenster liefert; sonst False (z. B. bei einem Fenster
+    mit höheren Rechten). Die Aufrufer prüfen das Zielfenster danach trotzdem erneut."""
     win32gui, _, win32con = _win32()
     if win32gui.IsIconic(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-    # Windows erlaubt SetForegroundWindow nur nach einer Eingabe; ein Alt-Druck loest die Sperre
-    ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
-    ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
-    win32gui.SetForegroundWindow(hwnd)
-    time.sleep(0.25)
+    elif win32gui.GetForegroundWindow() == hwnd:
+        return True
+    user32, kernel32 = _thread_apis()
+    vorne = user32.GetWindowThreadProcessId(win32gui.GetForegroundWindow(), None)
+    eigener = kernel32.GetCurrentThreadId()
+    verbunden = bool(vorne) and vorne != eigener and bool(user32.AttachThreadInput(eigener, vorne, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:  # noqa: BLE001 (pywin32 wirft bei verweigertem Vorholen; unten wird nachgeprüft)
+        pass
+    finally:
+        if verbunden:
+            user32.AttachThreadInput(eigener, vorne, False)
+    if win32gui.GetForegroundWindow() != hwnd:
+        user32.keybd_event(VK_SHIFT, 0, 0, 0)
+        user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:  # noqa: BLE001
+            pass
+    time.sleep(FOKUS_WARTE_SECS)
+    return win32gui.GetForegroundWindow() == hwnd
 
 
 # SendInput-Strukturen
@@ -435,7 +471,12 @@ def pick_start_app(name: str, apps: list[dict]) -> dict:
         raise ValueError("Programmname fehlt")
     exact = [a for a in apps if a["Name"].lower() == q]
     partial = sorted((a for a in apps if q in a["Name"].lower()), key=lambda a: len(a["Name"]))
-    match = (exact or partial or [None])[0]
+    # Umgekehrt: "Claude Code" findet die App "Claude". Nur ganze Wörter am Anfang der Anfrage, der längste Name
+    # zuerst (so schlägt "Claude Code" die App "Claude" nicht, wenn es eine App mit genau diesem Namen gibt).
+    words = q.split()
+    kuerzer = sorted((a for a in apps if (n := a["Name"].lower().split()) and n == words[:len(n)]),
+                     key=lambda a: -len(a["Name"]))
+    match = (exact or partial or kuerzer or [None])[0]
     if not match:
         raise ValueError(f"Kein installiertes Programm passt zu {name!r}")
     check_app_name(match["Name"])

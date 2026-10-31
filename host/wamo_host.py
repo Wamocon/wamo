@@ -60,6 +60,7 @@ mcp = FastMCP("wamo-host", host=BIND_HOST, port=BIND_PORT)
 
 # ---------- Programme: nur diese Liste, keine freien Pfade ----------
 _LOCAL = os.environ.get("LOCALAPPDATA", "")
+_SYSTEM32 = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32")
 APPS: dict[str, list[str]] = {
     # Name -> Kandidaten (exe-Pfad oder Shell-URI); der erste vorhandene gewinnt
     "chrome": [
@@ -74,6 +75,10 @@ APPS: dict[str, list[str]] = {
     "einstellungen": ["ms-settings:"],
     "vscode": [rf"{_LOCAL}\Programs\Microsoft VS Code\Code.exe"],
     "spotify": ["spotify:"],
+    # "Umgebungsvariablen bearbeiten": Systemeigenschaften (Reiter Erweitert) mit dem Knopf "Umgebungsvariablen".
+    # Systemvariablen ändern fragt Windows selbst per UAC, die Person bestätigt das am PC.
+    "systemeigenschaften": [rf"{_SYSTEM32}\SystemPropertiesAdvanced.exe"],
+    "umgebungsvariablen": [rf"{_SYSTEM32}\SystemPropertiesAdvanced.exe"],
 }
 
 # ---------- PowerShell: nur lesen, alles andere braucht Freigabe ----------
@@ -114,6 +119,9 @@ FREIGABE_EINGABE_SECS = 120  # Senden, Tasten, Klicks: kürzer, denn solange ruh
 EINGABE_ARTEN = ("tippen", "tasten", "klick")
 FREIGABE_DETAIL_MAX = 1800  # mehr zeigt die Karte nicht vollständig (mit ⏎ je Enter), also keine Anfrage
 FREIGABE_TIMEOUT_SECS = 120  # Zeitlimit eines freigegebenen PowerShell-Befehls (der Kern wartet etwas länger)
+# Lesen muss schnell gehen: der Host arbeitet Aufrufe nacheinander ab, ein langes Lesen (Suche über ganze Laufwerke)
+# machte den Laptop sonst bis zu 60 s lang taub für alle folgenden Aufrufe im Tunnel.
+READ_TIMEOUT_SECS = 20
 APPROVAL_ID_RE = re.compile(r"[0-9a-f]{16}")
 FREIGABE_SCHLUESSEL_RE = re.compile(r"[A-Za-z0-9_-]{43,512}")  # wie das Host-Token: 256 Bit, base64url
 
@@ -195,6 +203,23 @@ def _duplicate(tool: str, **args) -> dict | None:
     return None
 
 
+_rate_zeiten: dict[str, list[float]] = {}
+_RATE_LOCK = threading.Lock()
+
+
+def _rate_ok(tool: str, je_minute: int) -> bool:
+    """Gleitende Minute je Werkzeug: höchstens je_minute Aufrufe (Schutz vor einer Flut, auch bei ruhigem Tunnel)."""
+    jetzt = time.monotonic()
+    with _RATE_LOCK:
+        zeiten = [t for t in _rate_zeiten.get(tool, []) if jetzt - t < 60.0]
+        if len(zeiten) >= je_minute:
+            _rate_zeiten[tool] = zeiten
+            return False
+        zeiten.append(jetzt)
+        _rate_zeiten[tool] = zeiten
+        return True
+
+
 def _clean(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     text = _CONTROL_CHARS.sub("", text)
     if len(text) > limit:
@@ -255,10 +280,27 @@ def _resolve_host(host: str) -> list[str]:
         return []
 
 
+APP_ZUSATZ = re.compile(r"[a-zäöüß ]{1,60}")  # "Umgebungsvariablen bearbeiten": nur Wörter nach dem Namen
+APP_MIT_ZUSATZ = ("systemeigenschaften", "umgebungsvariablen")  # nur diese gelten auch mit weiteren Wörtern dahinter
+
+
+def _app_schluessel(name: object) -> str | None:
+    """Name aus APPS: genau, oder (nur für APP_MIT_ZUSATZ) das erste Wort einer kurzen Wortfolge aus Buchstaben."""
+    if not isinstance(name, str):
+        return None
+    q = re.sub(" +", " ", name.strip().lower())
+    if q in APPS:
+        return q
+    if APP_ZUSATZ.fullmatch(q):
+        return next((k for k in APP_MIT_ZUSATZ if q.startswith(k + " ")), None)
+    return None
+
+
 def resolve_app(name: object) -> str:
-    if not isinstance(name, str) or name.strip().lower() not in APPS:
+    key = _app_schluessel(name)
+    if key is None:
         raise ValueError(f"unbekanntes Programm, erlaubt: {', '.join(sorted(APPS))}")
-    for candidate in APPS[name.strip().lower()]:
+    for candidate in APPS[key]:
         if candidate.endswith(":") or shutil.which(candidate) or Path(candidate).is_file():
             return candidate
     raise ValueError(f"{name} ist auf diesem PC nicht installiert")
@@ -307,7 +349,7 @@ def _launch(target: str, args: list[str] | None = None) -> None:
     subprocess.Popen([target, *(args or [])], close_fds=True)
 
 
-def _powershell(command: str, timeout: int = 60) -> dict:
+def _powershell(command: str, timeout: int = READ_TIMEOUT_SECS) -> dict:
     if platform.system() != "Windows":
         return {"status": "error", "summary": "Host laeuft nicht unter Windows"}
     try:
@@ -316,7 +358,10 @@ def _powershell(command: str, timeout: int = 60) -> dict:
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return {"status": "error", "summary": f"PowerShell hat das Zeitlimit von {timeout} s überschritten"}
+        return {"status": "error", "zeitlimit": True,
+                "summary": f"PowerShell hat das Zeitlimit von {timeout} s überschritten. Nicht wiederholen: enger "
+                           "eingrenzen (nur im Benutzerordner, ohne -Recurse über ganze Laufwerke) oder die Person "
+                           "um Hilfe bitten."}
     except OSError as e:
         return {"status": "error", "summary": f"PowerShell nicht startbar ({type(e).__name__})"}
     return {
@@ -418,6 +463,85 @@ def validate_local_path(pfad: object) -> Path:
     return path
 
 
+# ---------- Ordner anlegen: feste Wurzeln, kein Raten, kein Freigabe-Umweg für Harmloses ----------
+PROJEKTE_DIR = HOME / "Projekte"
+ORDNER_WURZELN = tuple(HOME / n for n in ("Projekte", "Documents", "Dokumente", "Desktop", "Downloads"))
+ORDNER_MAX_TIEFE = 6  # Ebenen unterhalb der Wurzel
+ORDNER_NAME_MAX = 100
+# Zeichen, die Windows in Namen verbietet, plus Steuerzeichen; reservierte Gerätenamen
+_ORDNER_UNGUELTIG = re.compile(r'[<>:"|?*\x00-\x1f/\\]')
+_RESERVIERT = re.compile(r"(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?", re.IGNORECASE)
+ORDNER_PRO_MINUTE = 30
+
+
+def _unter(path: Path, wurzel: Path) -> bool:
+    try:
+        return path == wurzel or path.is_relative_to(wurzel)
+    except ValueError:
+        return False
+
+
+def validate_new_folder(pfad: object) -> Path:
+    """Neuer Ordner nur unter den festen Wurzeln (ORDNER_WURZELN) im eigenen Benutzerordner: nie in AppData, nie in
+    versteckten Ordnern (Name beginnt mit Punkt), nie in Ordnern mit Zugangsdaten oder dem WAMO-Ordner
+    (SENSITIVE_PARTS), keine Gerätenamen, keine Umleitung über Verknüpfungen (aufgelöst wird vor der Prüfung)."""
+    if not isinstance(pfad, str) or not pfad.strip() or len(pfad) > 400 or _CONTROL_CHARS.search(pfad):
+        raise ValueError("Pfad fehlt")
+    roh = pfad.strip().strip('"')
+    # Windows schneidet Punkt und Leerzeichen am Ende still ab (aus "leer " würde "leer"): vor dem Auflösen prüfen
+    if any(t not in ("", ".", "..") and t.endswith((" ", ".")) for t in re.split(r"[\\/]", roh)):
+        raise ValueError("Ordnernamen enden nicht auf Punkt oder Leerzeichen")
+    path = Path(roh).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"Bitte den vollen Pfad, z. B. {PROJEKTE_DIR / 'radar'} (system_info nennt die Ordner)")
+    try:
+        path = path.resolve()
+    except (OSError, RuntimeError) as e:
+        raise ValueError("Pfad lässt sich nicht auflösen") from e
+    wurzel = next((w for w in ORDNER_WURZELN if _unter(path, w.resolve())), None)
+    if wurzel is None:
+        raise ValueError("Ordner legt WAMO nur unter " + ", ".join(w.name for w in ORDNER_WURZELN) + " an")
+    relativ = path.relative_to(wurzel.resolve()).parts
+    if len(relativ) > ORDNER_MAX_TIEFE:
+        raise ValueError(f"Höchstens {ORDNER_MAX_TIEFE} Ebenen unter {wurzel.name}")
+    for teil in path.relative_to(HOME.resolve()).parts:
+        if teil.startswith(".") or teil.lower() in SENSITIVE_PARTS or teil.lower() == "appdata":
+            raise ValueError("Dort legt WAMO keine Ordner an (versteckt, Zugangsdaten oder WAMO-Ordner)")
+    for teil in relativ:
+        if (_ORDNER_UNGUELTIG.search(teil) or teil.endswith((" ", ".")) or len(teil) > ORDNER_NAME_MAX
+                or _RESERVIERT.fullmatch(teil)):
+            raise ValueError(f"Ungültiger Ordnername {teil[:40]!r}")
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"{path.name} ist eine Datei, kein Ordner")
+    return path
+
+
+@mcp.tool()
+def ordner_anlegen(pfad: str) -> dict:
+    """Legt einen Ordner an (change, ohne Freigabe), z. B. einen Projektordner. Nur der volle Pfad unter den Ordnern,
+    die system_info nennt (Projekte, Dokumente, Desktop, Downloads), nie in AppData oder versteckten Ordnern. Pfade nie
+    raten: erst system_info fragen. Gibt es den Ordner schon, passiert nichts. Statt New-Item per PowerShell."""
+    if locked := _gesperrt("ordner_anlegen"):
+        return locked
+    try:
+        path = validate_new_folder(pfad)
+    except ValueError as e:
+        _audit({"tool": "ordner_anlegen", "pfad": str(pfad)[:200], "risk": "rejected", "error": str(e)})
+        return {"status": "rejected", "summary": str(e)}
+    if not _rate_ok("ordner_anlegen", ORDNER_PRO_MINUTE):
+        _audit({"tool": "ordner_anlegen", "pfad": str(path), "risk": "rejected", "grund": "Rate-Grenze"})
+        return {"status": "rejected", "summary": "Zu viele Ordner in kurzer Zeit. Bitte kurz warten."}
+    if path.is_dir():
+        _audit({"tool": "ordner_anlegen", "pfad": str(path), "risk": "change", "vorhanden": True})
+        return {"status": "success", "summary": f"Den Ordner {path.name} gibt es schon", "pfad": str(path)}
+    _audit({"tool": "ordner_anlegen", "pfad": str(path), "risk": "change"})
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"status": "error", "summary": f"Ordner nicht angelegt ({type(e).__name__})"}
+    return {"status": "success", "summary": f"Ordner {path.name} angelegt", "pfad": str(path)}
+
+
 @mcp.tool()
 def oeffnen_mit(pfad: str, programm: str = "vscode") -> dict:
     """Oeffnet einen Ordner oder eine Datei direkt in einem Programm (change): vscode (Standard, z. B.
@@ -509,15 +633,28 @@ def fenster_fokussieren(fenster: str) -> dict:
     except ValueError as e:
         return {"status": "rejected", "summary": str(e)}
     _audit({"tool": "fenster_fokussieren", "titel": w["titel"], "programm": w["programm"], "risk": "change"})
-    wc.focus(w["hwnd"])
+    if not wc.focus(w["hwnd"]):
+        _audit({"tool": "fenster_fokussieren", "titel": w["titel"], "risk": "rejected", "grund": "Fokus verweigert"})
+        return {"status": "rejected", "summary": FOKUS_VERWEIGERT.format(titel=w["titel"][:60])}
     return {"status": "success", "summary": f"{w['titel']} ist vorne"}
 
 
+FOKUS_VERWEIGERT = ("Windows hat {titel!r} nicht nach vorne gelassen (zum Beispiel weil das Fenster mit höheren "
+                    "Rechten läuft). WAMO tippt und klickt dort nicht; die Person holt das Fenster selbst vor.")
+
+
 def _prepare_input(fenster: str | None) -> dict:
-    """Optional Fenster fokussieren, dann pruefen, ob dort getippt werden darf."""
+    """Optional Fenster fokussieren, dann pruefen, ob dort getippt werden darf. Mit fenster gilt das Fenster erst als
+    Ziel, wenn es nachweislich vorne liegt (sonst ginge der Text ins vorherige Fenster)."""
+    ziel = None
     if fenster:
-        wc.focus(wc.find_window(fenster)["hwnd"])
+        ziel = wc.find_window(fenster)
+        wc.check_not_wamo_ui(ziel["programm"], ziel["titel"])
+        if not wc.focus(ziel["hwnd"]):
+            raise ValueError(FOKUS_VERWEIGERT.format(titel=ziel["titel"][:60]))
     target = wc.foreground()
+    if ziel is not None and target["hwnd"] != ziel["hwnd"]:
+        raise ValueError(FOKUS_VERWEIGERT.format(titel=ziel["titel"][:60]))
     wc.check_typing_target(target["programm"], target["titel"])
     return target
 
@@ -707,13 +844,20 @@ def powershell_lesen(command: str, reason: str) -> dict:
 
 @mcp.tool()
 def system_info() -> dict:
-    """Basisinfos zum PC (read), dazu ob der Bildschirm gerade gesperrt ist (gesperrt)."""
+    """Basisinfos zum PC (read): Rechnername, Benutzer, Benutzerordner und Projekte-Ordner (feste Pfade, nie raten oder
+    ganze Laufwerke durchsuchen), die Ordner für ordner_anlegen, und ob der Bildschirm gerade gesperrt ist (gesperrt)."""
     gesperrt = _ist_gesperrt()
     _audit({"tool": "system_info", "risk": "read", "gesperrt": gesperrt})
     return {
         "status": "success",
         "os": platform.platform(),
         "machine": platform.node(),
+        "rechnername": platform.node(),
+        "benutzer": HOME.name,
+        "benutzerordner": str(HOME),
+        "projekte_ordner": str(PROJEKTE_DIR),
+        "projekte_ordner_vorhanden": PROJEKTE_DIR.is_dir(),
+        "ordner_anlegen_unter": [str(w) for w in ORDNER_WURZELN if w.is_dir() or w == PROJEKTE_DIR],
         "python": platform.python_version(),
         "gesperrt": gesperrt,
     }
@@ -919,7 +1063,8 @@ def _zielfenster(eintrag: dict) -> dict:
     info = wc.window_info(eintrag["hwnd"])
     _passt_zur_anfrage(info, eintrag)
     wc.check_typing_target(info["programm"], info["titel"])
-    wc.focus(eintrag["hwnd"])
+    if not wc.focus(eintrag["hwnd"]):  # Fokus nachgeprüft; zusätzlich gleich die Prüfung von foreground()
+        raise ValueError(FOKUS_VERWEIGERT.format(titel=info["titel"][:60]))
     vorne = wc.foreground()
     _passt_zur_anfrage(vorne, eintrag)
     wc.check_typing_target(vorne["programm"], vorne["titel"])
