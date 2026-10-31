@@ -18,6 +18,7 @@ infra/sokrates2/supabase-wamo-einrichten.sh und angewendete Migration 0001.
 from __future__ import annotations
 
 import argparse
+import os
 import base64
 import hashlib
 import hmac
@@ -170,7 +171,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Datenbankzugang fuer wamo_core oder wamo_admin einrichten")
     parser.add_argument("--rolle", choices=sorted(ROLES), default="wamo_core",
                         help="wamo_core fuer den Voice-Core (Standard), wamo_admin fuer die Verwaltung")
-    parser.add_argument("--host", default="sokrates2", help="SSH-Alias von Sokrates-2")
+    parser.add_argument("--host", default=os.environ.get("WAMO_SSH_HOST", "wamo-sokrates2"), help="SSH-Alias von Sokrates-2 (Dienstkonto wamocon)")
     parser.add_argument("--neu", action="store_true", help="Passwort neu setzen, auch wenn schon eingerichtet")
     args = parser.parse_args()
     env_key, conn_limit = ROLES[args.rolle]
