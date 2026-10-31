@@ -51,7 +51,14 @@
   --dur-exit: 160ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
-  --top: 48px; /* Höhe der Kopfzeile */
+  /* Safe-Area (iPhone mit Notch oder Dynamic Island, Home-Balken; Querformat links und rechts). Alle Regeln nutzen
+     diese vier Variablen. Ohne viewport-fit=cover (layout.tsx) und auf dem PC sind sie 0. */
+  --sa-t: env(safe-area-inset-top, 0px);
+  --sa-r: env(safe-area-inset-right, 0px);
+  --sa-b: env(safe-area-inset-bottom, 0px);
+  --sa-l: env(safe-area-inset-left, 0px);
+  --top-basis: 48px; /* Höhe der Kopfzeile ohne Safe-Area */
+  --top: calc(var(--top-basis) + var(--sa-t)); /* Höhe der Kopfzeile samt Abstand oben: alle Anker darunter nutzen --top */
   color-scheme: light;
 }
 
@@ -108,7 +115,7 @@
 }
 
 * { box-sizing: border-box; }
-html { -webkit-font-smoothing: antialiased; }
+html { -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   margin: 0;
   background: var(--bg);
@@ -685,7 +692,7 @@ p, li { text-wrap: pretty; }
 
 /* unter 1024 px: eine Spalte, klebende Präsenzleiste, Schaltflächen unten fixiert */
 @media (max-width: 1023px) {
-  :root { --top: 44px; }
+  :root { --top-basis: 44px; }
   .topbar { gap: 8px; padding: 0 8px 0 12px; }
   .wordmark-sm { font-size: 22px; }
   .profile-chip { padding: 0 4px; }
@@ -838,4 +845,53 @@ p, li { text-wrap: pretty; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition-duration: 0ms !important; }
   .state[data-zustand="thinking"] { color: var(--ink-soft); background: none; }
+}
+
+/* ---------- iPhone: Safe-Area (Notch, Dynamic Island, Home-Balken, Querformat) ----------
+   Steht am Ende, damit die Regeln die Abstände der Breitenstufen oben übersteuern. Auf dem PC sind alle --sa-* gleich 0,
+   die Werte fallen dann auf die ursprünglichen Abstände zurück (max). Die Höhe der Kopfzeile (--top) enthält den Abstand
+   oben schon, deshalb verschieben sich alle darunter verankerten Teile (Reiterleiste, Verlauf, Popover) von selbst. */
+.topbar { padding-top: var(--sa-t); padding-right: max(var(--sa-r), 16px); padding-left: max(var(--sa-l), 20px); }
+@media (max-width: 1023px) {
+  .topbar { padding-right: max(var(--sa-r), 8px); padding-left: max(var(--sa-l), 12px); }
+}
+.profile-pop { left: max(12px, var(--sa-l)); }
+.status-pop { right: max(12px, var(--sa-r)); }
+.verlauf { padding-right: var(--sa-r); padding-bottom: var(--sa-b); }
+
+/* Anmeldung */
+.brandbar { padding-top: calc(12px + var(--sa-t)); padding-right: max(var(--sa-r), 24px); padding-left: max(var(--sa-l), 24px); }
+.gate-main { padding-right: max(var(--sa-r), 16px); padding-left: max(var(--sa-l), 16px); }
+.gate-unsicher { padding-right: max(var(--sa-r), 24px); padding-left: max(var(--sa-l), 24px); }
+.gate-foot { padding-bottom: calc(12px + var(--sa-b)); padding-right: max(var(--sa-r), 24px); padding-left: max(var(--sa-l), 24px); }
+@media (max-width: 520px) {
+  .brandbar { padding-top: calc(10px + var(--sa-t)); padding-right: max(var(--sa-r), 14px); padding-left: max(var(--sa-l), 14px); }
+}
+
+/* Kommandozentrale: Handy und Tablet, eine Spalte mit fester Aktionsleiste unten */
+@media (max-width: 1099px) {
+  .kz-main { padding-bottom: calc(84px + var(--sa-b)); }
+  .kz-reiter-mobil { padding-left: var(--sa-l); padding-right: var(--sa-r); }
+  .kz-links, .kz-rechts, .kz-mitte { padding-left: max(var(--sa-l), 14px); padding-right: max(var(--sa-r), 14px); }
+  .kz .actions {
+    height: calc(68px + var(--sa-b));
+    padding-bottom: calc(10px + var(--sa-b));
+    padding-left: max(var(--sa-l), 14px);
+    padding-right: max(var(--sa-r), 14px);
+  }
+  .kz[data-ansicht="fokus"] .kz-mitte, .kz[data-ansicht="zentrale"] .kz-mitte {
+    min-height: calc(100dvh - var(--top) - 84px - var(--sa-b));
+  }
+}
+
+/* Einstellungen */
+.ez-meldung { padding-right: max(var(--sa-r), 20px); padding-left: max(var(--sa-l), 16px); }
+.ez-meldungen { padding-right: max(var(--sa-r), 20px); padding-left: max(var(--sa-l), 20px); }
+@media (min-width: 860px) { .ez-meldungen { padding-right: max(var(--sa-r), 28px); } }
+.ez-seite { padding-bottom: calc(28px + var(--sa-b)); padding-left: max(var(--sa-l), 16px); }
+.ez-inhalt { padding-bottom: calc(56px + var(--sa-b)); padding-right: max(var(--sa-r), 28px); }
+@media (max-width: 859.98px) {
+  .ez-meldung { padding-right: max(var(--sa-r), 16px); }
+  .ez-seite { padding-right: max(var(--sa-r), 16px); }
+  .ez-inhalt { padding-left: max(var(--sa-l), 16px); padding-right: max(var(--sa-r), 16px); padding-bottom: calc(40px + var(--sa-b)); }
 }
