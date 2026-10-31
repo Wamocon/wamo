@@ -53,7 +53,7 @@ MESSAGING_TITLE = re.compile(
 # Die eigene Oberfläche (Electron-App "WAMO", Browser-Tab "WAMO - ...") bedient WAMO nie: dort liegen die
 # Freigabekarten. Groß geschrieben und allein stehend, damit "wamo - Visual Studio Code" oder "WAMO-Konzept.docx"
 # weiter gehen.
-WAMO_UI_EXES = {"electron.exe"}
+WAMO_UI_EXES = {"electron.exe", "wamo.exe"}  # Entwicklermodus und installierte App (executableName WAMO)
 WAMO_UI_TITLE = re.compile(r"^WAMO(?![-.\w])")
 # Adressleiste von Browsern und Explorer: Strg+L, Alt+D, F6
 ADDRESS_BAR_COMBOS = {frozenset({0x11, ord("L")}), frozenset({0x12, ord("D")}), frozenset({0x75})}
@@ -417,6 +417,106 @@ def screenshot(monitor: int = 0) -> dict:
         "scale": scale, "bild_breite": img.width, "bild_hoehe": img.height,
         "jpeg_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
     }
+
+
+# ---------- Live-Bild: begrenzte Einzelbilder (live_bild.py entscheidet, OB ein Bild entsteht) ----------
+LIVE_QUALITAETEN = (70, 55, 42, 32)
+LIVE_VERKLEINERN = 0.75
+LIVE_VERSUCHE = 5
+SHELL_KLASSEN = {"progman", "workerw", "shell_traywnd", "shell_secondarytraywnd"}
+
+
+def jpeg_begrenzt(img, max_bytes: int, kante_max: int):
+    """(JPEG-Bytes, Bild): erst Kante auf kante_max, dann Qualität und notfalls Größe senken, bis max_bytes passt.
+    Wirft ValueError, wenn das nicht gelingt (kein Bild über der Grenze). Nur im Arbeitsspeicher."""
+    import io
+
+    from PIL import Image
+
+    teiler = min(1.0, kante_max / max(img.size))
+    if teiler < 1.0:
+        img = img.resize((max(1, round(img.width * teiler)), max(1, round(img.height * teiler))), Image.BILINEAR)
+    for _ in range(LIVE_VERSUCHE):
+        for qualitaet in LIVE_QUALITAETEN:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=qualitaet)
+            if buf.tell() <= max_bytes:
+                return buf.getvalue(), img
+        img = img.resize((max(1, round(img.width * LIVE_VERKLEINERN)), max(1, round(img.height * LIVE_VERKLEINERN))),
+                         Image.BILINEAR)
+    raise ValueError("Das Bild passt nicht in die Größengrenze")
+
+
+def monitore_von_links(sct) -> list[dict]:
+    """Monitore von links nach rechts (dann von oben): die Reihenfolge entscheidet der Host, nicht der Kern."""
+    return sorted(sct.monitors[1:], key=lambda m: (m["left"], m["top"]))
+
+
+def screenshot_live(monitor: int, kante_max: int, max_bytes: int) -> dict:
+    """Ein Live-Bild: Monitor 1 bis n von links, JPEG höchstens max_bytes. Nichts wird gespeichert."""
+    import base64
+
+    import mss
+    from PIL import Image
+
+    _dpi_aware()
+    with mss.mss() as sct:
+        liste = monitore_von_links(sct)
+        if not 1 <= monitor <= len(liste):
+            raise ValueError(f"Monitor {monitor} gibt es nicht (1 bis {len(liste)})")
+        m = liste[monitor - 1]
+        raw = sct.grab(m)
+    img = Image.frombytes("RGB", raw.size, raw.rgb)
+    daten, klein = jpeg_begrenzt(img, max_bytes, kante_max)
+    return {"monitor": monitor, "monitore": len(liste), "breite": klein.width, "hoehe": klein.height,
+            "bytes": len(daten), "jpeg_base64": base64.b64encode(daten).decode("ascii")}
+
+
+def monitor_anzahl() -> int:
+    import mss
+
+    _dpi_aware()
+    with mss.mss() as sct:
+        return len(sct.monitors) - 1
+
+
+def ist_vollbild(fenster: tuple[int, int, int, int], monitor: tuple[int, int, int, int], klasse: str = "") -> bool:
+    """Deckt das Fenster seinen ganzen Monitor ab (Vollbild-Programm, Präsentation, Spiel)? Desktop und Taskleiste zählen
+    nicht. Rechtecke als (links, oben, rechts, unten)."""
+    if (klasse or "").lower() in SHELL_KLASSEN:
+        return False
+    return fenster[0] <= monitor[0] and fenster[1] <= monitor[1] and fenster[2] >= monitor[2] and fenster[3] >= monitor[3]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
+                ("dwFlags", wintypes.DWORD)]
+
+
+def foreground_vollbild() -> bool:
+    """Liegt das Fenster vorne im Vollbild? Lässt es sich nicht feststellen, gilt es als Vollbild (kein Live-Bild)."""
+    try:
+        _dpi_aware()
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        klasse = ctypes.create_unicode_buffer(128)
+        user32.GetClassNameW(hwnd, klasse, 128)
+        rect = wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return True
+        user32.MonitorFromWindow.restype = wintypes.HANDLE
+        mon = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not mon or not user32.GetMonitorInfoW(mon, ctypes.byref(info)):
+            return True
+        m = info.rcMonitor
+        return ist_vollbild((rect.left, rect.top, rect.right, rect.bottom), (m.left, m.top, m.right, m.bottom), klasse.value)
+    except (AttributeError, OSError, ValueError):
+        return True
 
 
 def window_at(x: int, y: int) -> dict:

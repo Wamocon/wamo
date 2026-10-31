@@ -107,6 +107,10 @@ class GeraetBindung:
             return None
         return werte
 
+    def werte(self) -> tuple[str, str, str] | None:
+        """(Kennung, Besitzer, Stufe) aus geraet.json oder None (live_bild.py prüft damit den Schalter am Laptop)."""
+        return self._lesen()
+
     @property
     def stufe(self) -> str:
         werte = self._lesen()
