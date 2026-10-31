@@ -772,6 +772,14 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     aktivitaet.on_ergebnis = pc_ergebnis
 
+    def markierung_von() -> tuple[str | None, str | None]:
+        """Welcher Laptop handelt (Gerätekennung im Tunnel je Gerät, Rechnername): nur dort zeichnet die Desktop-App den
+        Lichtrahmen. Ohne PC-Werkzeuge gibt es keinen Rahmen."""
+        return (geraet_zugang.geraet.kennung if geraet_zugang is not None else None), state["pc_name"]
+
+    if pc_client is not None:
+        aktivitaet.markierung_von = markierung_von
+
     async def melde_llm(text: str) -> None:
         """Kurze Nachricht an das Sprachmodell, das dann antwortet (Ergebnis einer PC-Freigabe)."""
         if state["live"]:
@@ -781,7 +789,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     freigaben = PcFreigaben(
         memory, client=lambda: pc_client, melden=melde_llm, fremdinhalt=turn.taint, senden=send, von=identity.name,
         darf=lambda: darf_pc_freigeben(identity, pc_enabled, bool(state["pc_steuerung"]), sitzung.pc_lease_haelt()),
-        pc_name=lambda: state["pc_name"],
+        pc_name=lambda: state["pc_name"], markierung_von=markierung_von,
     ) if pc_client else None
     if freigaben is not None and is_admin:  # Mitglieder können nichts freigeben: keine Karte, die ins Leere läuft
         aktivitaet.on_freigabe = freigaben.anfrage
