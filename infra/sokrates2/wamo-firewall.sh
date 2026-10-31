@@ -14,6 +14,13 @@
 #   Ports 55443, 55444, 55445, 55322, 56543    127.0.0.0/8, 192.168.178.0/24 (55444: HTTPS des Kerns, Phase P3;
 #                                       55445: HTTPS der Oberfläche, Browser-Betrieb)
 #   Absender aus 172.16.0.0/12, die nicht über eine Docker-Bridge (br-*) kommen, gelten als gefälscht.
+#   Port 55446 (HTTPS, Remote-Desktop-Gateway wamo-rd, docs/remote-desktop.md) wie die übrigen LAN-Ports: Loopback und Büro-LAN
+#   (damit auch WireGuard-Clients der Fritzbox), alles andere verworfen.
+#   Ausgang des Gateways (Netz wamo-rd-ziel 172.27.0.0/24, nur der Container wamo-rd-guacd): Kette WAMO-FW-RD. Durch kommt
+#   ausschließlich TCP 3389 zu den Adressen, die in /etc/wamo-rd/ziele.toml als  adresse = "..."  stehen; ohne Eintrag geht nichts
+#   hinaus. Für Pakete an den Host selbst (INPUT, z. B. sshd) gilt die Kette WAMO-FW-RDIN: aus dem Netz des Gateways nur TCP 3389
+#   (dort entscheidet danach ufw), alles andere verworfen. Beide Ketten und der Sprung in INPUT entstehen und verschwinden mit
+#   start und stop; fremde Regeln bleiben unberührt.
 #
 #   wamo-firewall start    Regeln setzen; wiederholbar und atomar (iptables-restore --noflush); legt DOCKER-USER
 #                          bei Bedarf selbst an, damit die Regeln schon vor dem Start von Docker stehen
@@ -29,7 +36,7 @@ set -euo pipefail
 
 CONF="${WAMO_FW_CONF:-/etc/wamo/firewall.conf}"
 HTTP_PORT=55321
-LAN_PORTS="55443 55444 55445 55322 56543" # API (HTTPS), Kern (HTTPS, wamo-core über Caddy), Oberfläche (HTTPS, wamo-ui über Caddy), Pooler Session, Transaktion
+LAN_PORTS="55443 55444 55445 55446 55322 56543" # API (HTTPS), Kern (HTTPS, wamo-core über Caddy), Oberfläche (HTTPS, wamo-ui über Caddy), Remote-Desktop-Gateway (HTTPS, wamo-rd über Caddy), Pooler Session, Transaktion
 NETZ_LOOPBACK="127.0.0.0/8"
 NETZ_CADDY="172.24.0.0/24"          # wamo-caddy_default (fest in infra/sokrates2/wamo-caddy/docker-compose.yml)
 NETZ_DOCKER="172.16.0.0/12"         # alle Docker-Netze, nur zur Erkennung gefälschter Absender
@@ -37,6 +44,11 @@ NETZ_LAN="192.168.178.0/24"         # Büro-LAN, auch WireGuard-Clients der Frit
 KETTE=WAMO-FW
 KETTE_HTTP=WAMO-FW-HTTP
 KETTE_LAN=WAMO-FW-LAN
+KETTE_RD=WAMO-FW-RD                 # Ausgang des Gateways wamo-rd (FORWARD, über DOCKER-USER)
+KETTE_RDIN=WAMO-FW-RDIN             # Pakete des Gateways an den Host selbst (INPUT)
+NETZ_RD_ZIEL="172.27.0.0/24"        # wamo-rd-ziel, fest in infra/sokrates2/wamo-rd/docker-compose.yml
+RD_PORT=3389
+ZIELE_DATEI="${WAMO_FW_RD_ZIELE:-/etc/wamo-rd/ziele.toml}"
 ALTE_KETTEN="WAMO-FW-INTERN"        # aus früheren Fassungen, wird beim Start entfernt
 LOG='-m limit --limit 6/min --limit-burst 10 -j LOG --log-prefix "WAMO-FW verworfen: " --log-level 4'
 
@@ -56,6 +68,34 @@ lies_einstellung() {
   esac
 }
 
+# Ziele des Remote-Desktop-Gateways: Zeilen  adresse = "a.b.c.d"  in ZIELE_DATEI (keine Datei oder kein Eintrag: keine Ziele).
+# Ungültige Adressen werden ausgelassen und gemeldet (weniger erlaubt ist hier der sichere Fall); höchstens 8.
+RD_ZIELE=""
+lies_ziele() {
+  RD_ZIELE=""
+  [ -r "$ZIELE_DATEI" ] || return 0
+  local zeile wert o n=0 ok
+  while IFS= read -r zeile; do
+    wert="${zeile#*=}"
+    wert="${wert%%#*}"
+    wert="$(tr -d " \t\r\"'" <<<"$wert")"
+    ok=ja
+    # vier Zahlen ohne führende Nullen (iptables läse sie als oktal), nie Loopback, Multicast, Link-Local und nie ein Docker-Netz
+    if [[ "$wert" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]]; then
+      for o in "${BASH_REMATCH[@]:1}"; do (( o <= 255 )) || ok=nein; done
+      if (( BASH_REMATCH[1] == 0 || BASH_REMATCH[1] == 127 || BASH_REMATCH[1] >= 224 )) \
+        || (( BASH_REMATCH[1] == 169 && BASH_REMATCH[2] == 254 )) \
+        || (( BASH_REMATCH[1] == 172 && BASH_REMATCH[2] >= 16 && BASH_REMATCH[2] <= 31 )); then ok=nein; fi
+    else
+      ok=nein
+    fi
+    if [ "$ok" = nein ]; then echo "Zieladresse '$wert' in $ZIELE_DATEI ist ungültig und wird ausgelassen." >&2; continue; fi
+    n=$((n + 1))
+    if (( n > 8 )); then echo "Mehr als 8 Ziele in $ZIELE_DATEI, der Rest wird ausgelassen." >&2; break; fi
+    RD_ZIELE="$RD_ZIELE $wert"
+  done < <(grep -E '^[[:space:]]*adresse[[:space:]]*=' "$ZIELE_DATEI" || true)
+}
+
 ipt() { iptables -w 5 "$@"; }
 
 regeln() {
@@ -64,6 +104,8 @@ regeln() {
   echo ":$KETTE_HTTP - [0:0]"
   echo ":$KETTE_LAN - [0:0]"
   echo ":$KETTE - [0:0]"
+  echo ":$KETTE_RD - [0:0]"
+  echo ":$KETTE_RDIN - [0:0]"
   # 55321: Docker-Absender nur echt, wenn sie über eine Docker-Bridge kommen
   echo "-A $KETTE_HTTP -s $NETZ_DOCKER ! -i br-+ -j DROP"
   echo "-A $KETTE_HTTP -s $NETZ_LOOPBACK -j RETURN"
@@ -80,6 +122,19 @@ regeln() {
   for port in $LAN_PORTS; do
     echo "-A $KETTE -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport $port -j $KETTE_LAN"
   done
+  # Remote-Desktop-Gateway, Ausgang (Container wamo-rd-guacd im Netz wamo-rd-ziel): nur TCP 3389 zu den Zielen
+  local ziel
+  echo "-A $KETTE_RD ! -i br-+ -j DROP"
+  for ziel in $RD_ZIELE; do
+    echo "-A $KETTE_RD -d $ziel/32 -p tcp --dport $RD_PORT -j RETURN"
+  done
+  echo "-A $KETTE_RD $LOG"
+  echo "-A $KETTE_RD -j DROP"
+  echo "-A $KETTE -s $NETZ_RD_ZIEL -j $KETTE_RD"
+  # Remote-Desktop-Gateway an den Host selbst (INPUT): nur TCP 3389, danach entscheidet ufw; alles andere verworfen
+  echo "-A $KETTE_RDIN -p tcp --dport $RD_PORT -j RETURN"
+  echo "-A $KETTE_RDIN $LOG"
+  echo "-A $KETTE_RDIN -j DROP"
   echo "COMMIT"
 }
 
@@ -93,28 +148,41 @@ sprung_an_position_1() {
   done
 }
 
+# Genau ein Sprung nach WAMO-FW-RDIN, und zwar an Position 1 von INPUT (nur für Pakete aus dem Netz des Gateways)
+sprung_input_an_position_1() {
+  local n
+  [ "$(ipt -S INPUT | sed -n '2p')" = "-A INPUT -s $NETZ_RD_ZIEL -j $KETTE_RDIN" ] || ipt -I INPUT 1 -s "$NETZ_RD_ZIEL" -j "$KETTE_RDIN"
+  while n="$(ipt -n -L INPUT --line-numbers | awk -v k="$KETTE_RDIN" 'NR > 2 && $2 == k && $1 > 1 { print $1; exit }')"
+    [ -n "$n" ]; do
+    ipt -D INPUT "$n"
+  done
+}
+
 start() {
   local k
   lies_einstellung
+  lies_ziele
   ipt -n -L DOCKER-USER >/dev/null 2>&1 || ipt -N DOCKER-USER  # Docker übernimmt die Kette später unverändert
   regeln | iptables-restore -w 5 --noflush
   sprung_an_position_1
+  sprung_input_an_position_1
   for k in $ALTE_KETTEN; do ipt -F "$k" 2>/dev/null && ipt -X "$k" 2>/dev/null || true; done
-  echo "WAMO-Firewall aktiv: HTTP $HTTP_PORT nur intern: $HTTP_NUR_INTERN; LAN-Ports $LAN_PORTS"
+  echo "WAMO-Firewall aktiv: HTTP $HTTP_PORT nur intern: $HTTP_NUR_INTERN; LAN-Ports $LAN_PORTS; Remote-Desktop-Ziele:${RD_ZIELE:- keine}"
 }
 
 stop() {
   local k
   while ipt -C DOCKER-USER -j "$KETTE" 2>/dev/null; do ipt -D DOCKER-USER -j "$KETTE"; done
-  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" $ALTE_KETTEN; do ipt -F "$k" 2>/dev/null || true; done
-  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" $ALTE_KETTEN; do ipt -X "$k" 2>/dev/null || true; done
+  while ipt -C INPUT -s "$NETZ_RD_ZIEL" -j "$KETTE_RDIN" 2>/dev/null; do ipt -D INPUT -s "$NETZ_RD_ZIEL" -j "$KETTE_RDIN"; done
+  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" "$KETTE_RD" "$KETTE_RDIN" $ALTE_KETTEN; do ipt -F "$k" 2>/dev/null || true; done
+  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" "$KETTE_RD" "$KETTE_RDIN" $ALTE_KETTEN; do ipt -X "$k" 2>/dev/null || true; done
   echo "WAMO-Firewall entfernt"
 }
 
 status() {
   local k
   ipt -n -v -L DOCKER-USER --line-numbers
-  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN"; do
+  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" "$KETTE_RD" "$KETTE_RDIN"; do
     echo
     ipt -n -v -L "$k" 2>/dev/null || echo "Kette $k fehlt"
   done
@@ -125,6 +193,6 @@ case "${1:-}" in
   start) als_root; start ;;
   stop) als_root; stop ;;
   status) als_root; status ;;
-  regeln) lies_einstellung; regeln ;;  # nur anzeigen, was start setzen würde (ohne root, ändert nichts)
+  regeln) lies_einstellung; lies_ziele; regeln ;;  # nur anzeigen, was start setzen würde (ohne root, ändert nichts)
   *) echo "Aufruf: $0 start|stop|status|regeln" >&2; exit 2 ;;
 esac
