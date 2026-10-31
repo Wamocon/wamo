@@ -850,6 +850,19 @@ class IsLockedTests(unittest.TestCase):
             with self.subTest(handle=api.handle, name=api.name, info=api.info_ok):
                 self.assertTrue(ECHT_IS_LOCKED(api))
 
+    def test_sperrbildschirm_lockapp_vorne_ist_gesperrt(self):
+        """31.10.2026: LockApp.exe liegt auf dem Desktop "Default"; allein der Desktopname meldete "entsperrt"."""
+        for programm, erwartet in (("LockApp.exe", True), ("lockapp.exe", True), ("chrome.exe", False), ("", False)):
+            with self.subTest(programm=programm), \
+                 mock.patch.object(host.wc, "_desktop_api", return_value=self.Api()), \
+                 mock.patch.object(host.wc, "foreground", return_value={"hwnd": 1, "titel": "x", "programm": programm}):
+                self.assertIs(ECHT_IS_LOCKED(), erwartet)
+
+    def test_fenster_nicht_lesbar_aendert_den_desktopbefund_nicht(self):
+        with mock.patch.object(host.wc, "_desktop_api", return_value=self.Api()), \
+             mock.patch.object(host.wc, "foreground", side_effect=OSError):
+            self.assertFalse(ECHT_IS_LOCKED())
+
     @unittest.skipUnless(sys.platform == "win32" and os.environ.get("SESSIONNAME") and _interaktiv(),
                          "nur in einer interaktiven Windows-Sitzung mit Fenster im Vordergrund")
     def test_echter_desktop_dieser_sitzung(self):

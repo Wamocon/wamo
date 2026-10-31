@@ -365,6 +365,26 @@ Marke „Dieses Gerät“. Die Status zeigen Wort und Form (Raute wartet, Kreis 
   Projekte, Dokumente, Desktop und Downloads im Benutzerordner, nie in AppData oder versteckten Ordnern; `system_info`
   nennt Rechnername, Benutzer-, Projekte-Ordner), das Vorholen von Fenstern ohne Alt-Druck mit Nachprüfung des Fokus
   (verweigert Windows es, meldet der Host das, statt „ist vorne“ zu behaupten) und 20 s Zeitgrenze für Lesebefehle.
+- **Seiten im aktiven Tab laden** (31.10.2026, `host/wamo_host.py`, `host/uia_control.py`): `webseite_oeffnen` startet den
+  Browser nicht mehr bei jedem Aufruf neu (das öffnete immer einen neuen Tab, in der Sitzung vom 31.10. zwei für eine
+  Suche). Standard ist der AKTIVE Tab des obersten nutzbaren Fensters des gewünschten Browsers (`chrome` oder `edge`):
+  Fenster nach vorn mit Nachprüfung des Fokus (kein Alt-Druck), Adressleiste per UI Automation setzen und fokussieren
+  (kein Debug-Port), Kontrolle, dass sie genau die geprüfte Adresse zeigt, Sperre und Zielfenster erneut prüfen, eine
+  zweite Kontrolle von Wert und Tastaturfokus unmittelbar vor dem Tastendruck, dann Enter per SendInput. Die Adresse
+  durchläuft dieselbe Prüfung wie bisher (`validate_url`, nur http und https, keine privaten Ziele, Freigabe-Karte bei
+  sehr langer Suchanfrage). `neuer_tab=true` gilt nur auf ausdrücklichen Wunsch und behält das alte Verhalten. Nie benutzt
+  werden Fenster eines anderen Programms als gewünscht, die eigene Oberfläche, Anmelde-, Zahlungs-, Mail- und
+  Messenger-Seiten. Gibt es kein nutzbares Fenster oder scheitert der Weg (Fokus verweigert, Adressleiste nicht
+  bedienbar, Anzeige weicht ab, Fenster gewechselt), öffnet sich wie früher ein neuer Tab, und das Ergebnis sagt
+  „im neuen Tab geöffnet, weil ...“; das Ergebnis nennt sonst Browser, Fenstertitel und Monitor („im aktiven Tab
+  geladen“). Bei gesperrtem Bildschirm startet auch der Rückfall nie. Audit: `tab` (aktuell oder neu), `weg` (uia oder
+  start) und bei einem Rückfall ein fester Code, nie ein Titel oder Seiteninhalt; die Duplikatwache unterscheidet beides.
+  Wie jede Eingabe ruht der Weg über die Adressleiste bei offener Freigabe (Rate-Grenze 12 je Minute). Eine Suche auf einer
+  offenen Seite macht WAMO per Such-URL im selben Tab oder über das Suchfeld (`elemente_auflisten`, `element_text_setzen`,
+  Enter). Persona-Schalter `WAMO_PERSONA_TAB` (Standard an; `aus` bringt die alte Formulierung zurück). Zusätzlich gilt der
+  Sperrbildschirm `LockApp.exe` vorne jetzt als gesperrt (er liegt auf dem Desktop „Default“, der Desktopname allein
+  meldete „entsperrt“). Grenzen: Es wird nur das oberste nutzbare Fenster versucht, und ob die Seite danach wirklich
+  geladen ist, prüft `browser_lesen`.
 - **Browser lesen statt raten** (31.10.2026, `host/uia_control.py`, `host/wamo_host.py`): `browser_lesen` (read) liefert für
   das oberste oder benannte Fenster von Chrome, Edge, Firefox oder Brave Titel und Adresse des aktiven Tabs, die Titel
   der Tabs (höchstens 20), den Seitentext in Lesereihenfolge (Überschriften mit `#`, Absätze, Listen mit `-`, Links als

@@ -1,7 +1,7 @@
 [
   {
     "name": "webseite_oeffnen",
-    "description": "Oeffnet eine Webseite im Browser (change). Fuer Suchen auf Shops direkt die Such-URL bauen,\n    z. B. https://www.amazon.de/s?k=wohnzimmer+lampe. browser: chrome oder edge.",
+    "description": "Laedt eine Webseite im Browser (change), standardmaessig im AKTIVEN Tab des offenen Browserfensters (kein neuer\n    Tab). Fuer Suchen auf Shops direkt die Such-URL bauen, z. B. https://www.amazon.de/s?k=wohnzimmer+lampe.\n    browser: chrome oder edge. neuer_tab=true NUR auf ausdruecklichen Wunsch der Person (dann ein neuer Tab). Ist kein\n    Fenster des Browsers offen oder laesst sich der aktive Tab nicht bedienen, oeffnet sich ein neuer Tab und das\n    Ergebnis nennt den Grund. Das Ergebnis sagt, was passiert ist (tab: aktuell oder neu). Eine Suche auf einer schon\n    offenen Seite: entweder per Such-URL im selben Tab (dieses Werkzeug, Standard) oder ueber das Suchfeld der Seite\n    (elemente_auflisten, element_text_setzen, dann Enter mit tasten_druecken).",
     "properties": {
       "url": {
         "title": "Url",
@@ -11,6 +11,11 @@
         "default": "chrome",
         "title": "Browser",
         "type": "string"
+      },
+      "neuer_tab": {
+        "default": false,
+        "title": "Neuer Tab",
+        "type": "boolean"
       }
     },
     "required": [

@@ -9,7 +9,8 @@ Hier steht nur die Mechanik: der Elementbaum, die Nummern und die Muster. Alle W
 (Sperre, Zielfenster-Prüfung, Freigabekarten, Risikoklassen, Rate-Grenze, Audit). Diese Datei enthält zusätzlich nur
 Regeln, die das Element selbst betreffen:
   * Passwortfelder (UIA IsPassword oder ein Name wie "Kennwort") werden nie gelesen und nie beschrieben.
-  * Adressleisten befüllt WAMO nicht (dort liefe der Text an der URL-Prüfung des Hosts vorbei).
+  * Adressleisten befüllt WAMO nicht (dort liefe der Text an der URL-Prüfung des Hosts vorbei). Einzige Ausnahme ist
+    adresse_setzen, das nur webseite_oeffnen mit einer schon geprüften http(s)-Adresse aufruft.
   * Die Nummern aus elemente_auflisten gelten nur für den letzten Aufruf desselben Fensters. Sie verfallen nach
     NUMMER_GUELTIG_SECS und sobald sich der Aufbau des Fensters ändert (Element dazu, weg oder ersetzt). Vor jeder
     Aktion wird der Baum frisch gelesen und das Zielelement an Laufzeit-Kennung, Typ, Automations-Kennung und Name
@@ -100,6 +101,21 @@ MUSTER_REIHENFOLGE = ("invoke", "toggle", "auswahl", "aufklappen")  # so wird ei
 
 class UiaFehler(ValueError):
     """Eine Aktion ist nicht möglich oder nicht erlaubt; die Meldung geht an das Sprachmodell (kein Stacktrace)."""
+
+
+class AdresseAbweichend(UiaFehler):
+    """Die Adressleiste zeigt nach dem Setzen nicht genau die geprüfte Adresse (zum Beispiel durch eine automatische
+    Ergänzung des Browsers): dann wird nichts abgeschickt."""
+
+
+ADRESSE_SECS = 10.0  # so lange wartet der Host auf adresse_setzen (Suche der Adressleiste, Fokus, Wert)
+ADRESSE_PRUEFEN_SECS = 4.0  # so lange wartet der Host auf die Kontrolle direkt vor Enter
+ADRESSE_NACHLAUF_SECS = 0.15  # Chrome und Edge ergänzen Vorschläge asynchron: so lange nach SetValue warten, dann lesen
+OMNIBOX_KLASSE = "OmniboxViewViews"  # Klasse der Adressleiste in Chrome, Edge und Brave
+ADRESSLEISTE_NAME = re.compile(r"^(adress- und suchleiste|adressleiste|address and search bar|address bar)$", re.IGNORECASE)
+EDIT_TYP = 50004
+ADRESSE_SUCHE_SECS = 4.0  # so lange wird die Adressleiste gesucht (der Browser schaltet UIA erst beim ersten Zugriff ein)
+ADRESSE_ERLAUBT = re.compile(r"https?://[^\s\"\x00-\x1f\x7f]{1,2040}")  # Schutz in der Schicht, die Prüfung liegt im Host
 
 
 MELDUNG_KEINE_ANTWORT = "Das Programm antwortet nicht auf UI Automation (hängt es?)."
@@ -490,6 +506,16 @@ class Backend:
         """was: invoke, toggle, auswahl, aufklappen, wert_setzen, wert_lesen. Liefert bei wert_lesen den Wert."""
         raise NotImplementedError
 
+    def adresse_setzen(self, hwnd: int, url: str, vor_aktion: Callable[[], None] | None = None) -> dict:
+        """Setzt die Adressleiste eines Browserfensters auf url und gibt ihr den Tastaturfokus. vor_aktion wird direkt
+        vor dem ersten Eingriff aufgerufen und wirft, wenn der Aufrufer schon aufgegeben hat. Liefert
+        {"wert": was die Adressleiste danach zeigt, "fokus": hat sie den Tastaturfokus}. Schickt nichts ab."""
+        raise NotImplementedError
+
+    def adresse_lesen(self, hwnd: int) -> dict:
+        """Liest die Adressleiste, ohne etwas zu ändern: {"wert": ..., "fokus": hat sie den Tastaturfokus}."""
+        raise NotImplementedError
+
     def faden_ende(self) -> None:
         """Wird am Ende jedes Arbeitsfadens aufgerufen (COM-Abmeldung); die Attrappe braucht nichts."""
 
@@ -699,6 +725,54 @@ class UiaSchicht:
         if not fertig:
             raise UiaFehler(MELDUNG_KEINE_ANTWORT + " Es wurde nichts verändert.")
         return seite_aufbereiten(seite, abschnitt, bool(nur_sichtbar))
+
+    def adresse_setzen(self, hwnd: int, url: object) -> dict:
+        """Trägt eine schon geprüfte Adresse in die Adressleiste eines Browserfensters ein und gibt ihr den Fokus (der
+        Aufrufer sendet danach Enter). Nur für webseite_oeffnen: Die Prüfung der Adresse (validate_url) liegt dort, hier
+        gilt zusätzlich nur http(s) ohne Leer- und Steuerzeichen. Weicht der angezeigte Wert von der Adresse ab, oder
+        hat die Adressleiste den Fokus nicht, ist es ein Fehler und es wird nichts abgeschickt. Hat der Host nach der
+        Frist schon aufgegeben, greift der Faden nicht mehr ein (vor_aktion)."""
+        if not isinstance(url, str) or not ADRESSE_ERLAUBT.fullmatch(url):
+            raise UiaFehler("Adresse ungültig für die Adressleiste")
+
+        def lauf(phase: dict):
+            phase["p"] = "adresse"
+
+            def vor_aktion() -> None:
+                with phase["sperre"]:
+                    if phase["abbruch"]:
+                        raise UiaFehler("abgebrochen")  # der Aufrufer hat schon "nichts geladen" gemeldet
+                    phase["p"] = "aktion"
+
+            return self.backend.adresse_setzen(hwnd, url, vor_aktion)
+
+        fertig, ergebnis = self._arbeiten(lauf, ADRESSE_SECS)
+        if not fertig:
+            raise UiaFehler(MELDUNG_KEINE_ANTWORT + " Es wurde nichts geladen.")
+        self._adresse_pruefen(ergebnis, url)
+        return {"ausgefuehrt": True}
+
+    def adresse_pruefen(self, hwnd: int, url: object) -> None:
+        """Direkt vor Enter: zeigt die Adressleiste noch genau url und hat sie den Tastaturfokus? Sonst UiaFehler
+        (AdresseAbweichend bei einem anderen Wert). Ändert nichts."""
+        if not isinstance(url, str) or not ADRESSE_ERLAUBT.fullmatch(url):
+            raise UiaFehler("Adresse ungültig für die Adressleiste")
+
+        def lauf(phase: dict):
+            phase["p"] = "adresse_lesen"
+            return self.backend.adresse_lesen(hwnd)
+
+        fertig, ergebnis = self._arbeiten(lauf, ADRESSE_PRUEFEN_SECS)
+        if not fertig:
+            raise UiaFehler(MELDUNG_KEINE_ANTWORT)
+        self._adresse_pruefen(ergebnis, url)
+
+    @staticmethod
+    def _adresse_pruefen(ergebnis: object, url: str) -> None:
+        if not isinstance(ergebnis, dict) or not ergebnis.get("fokus"):
+            raise UiaFehler("Die Adressleiste hat den Tastaturfokus nicht (mehr).")
+        if str(ergebnis.get("wert", "")) != url:
+            raise AdresseAbweichend("Die Adressleiste zeigt nicht genau die geprüfte Adresse.")
 
 
 def pruefe_beschreibbar(k: Knoten) -> None:
@@ -1081,6 +1155,95 @@ class ComUia(Backend):
             return str(muster.CurrentValue or "")
         except Exception:  # noqa: BLE001
             return ""
+
+    # ----- Adressleiste setzen (nur webseite_oeffnen, mit geprüfter Adresse) -----
+    @staticmethod
+    def _omnibox(el) -> bool:
+        """Genau die Adressleiste des Browsers (nicht jedes Feld mit "Suche" im Namen): Klasse OmniboxViewViews oder der
+        feste Name der Adressleiste. Zum Schreiben bewusst enger als ADRESSFELD_NAME (Lesen)."""
+        try:
+            return (el.CurrentClassName or "") == OMNIBOX_KLASSE or bool(ADRESSLEISTE_NAME.match(el.CurrentName or ""))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _adressleiste_finden(self, auto, wurzel):
+        """Die Adressleiste der Browser-Oberfläche oder None. Wie _geruest: Unter dem Webdokument wird nie gesucht, eine
+        Webseite kann sich so nicht als Adressleiste ausgeben."""
+        walker = auto.ControlViewWalker
+        stapel = [(wurzel, 0)]
+        besucht = 0
+        while stapel and besucht < 800:
+            el, ebene = stapel.pop()
+            besucht += 1
+            try:
+                typ_id = int(el.CurrentControlType)
+                if ebene > 0 and typ_id == DOKUMENT:
+                    continue
+                if (ebene > 0 and typ_id == EDIT_TYP and self._omnibox(el) and not el.CurrentIsPassword
+                        and not el.CurrentIsOffscreen):
+                    return el
+            except Exception:  # noqa: BLE001
+                continue
+            if ebene >= 16:
+                continue
+            kinder = []
+            try:
+                kind = walker.GetFirstChildElement(el)
+                while kind and len(kinder) < 200:
+                    kinder.append((kind, ebene + 1))
+                    kind = walker.GetNextSiblingElement(kind)
+            except Exception:  # noqa: BLE001
+                pass
+            stapel.extend(reversed(kinder))
+        return None
+
+    def _adressleiste_oeffnen(self, hwnd: int, warten: bool):
+        """(uia, Adressleiste) des Browserfensters. Fehler heißen UiaFehler."""
+        import ctypes
+
+        comtypes, uia = self._anmelden()
+        try:
+            auto = comtypes.CoCreateInstance(uia.CUIAutomation._reg_clsid_, interface=uia.IUIAutomation,
+                                             clsctx=comtypes.CLSCTX_INPROC_SERVER)
+            wurzel = auto.ElementFromHandle(ctypes.c_void_p(int(hwnd)))
+        except Exception as e:  # noqa: BLE001
+            raise UiaFehler(f"Das Fenster ist für UI Automation nicht erreichbar ({type(e).__name__})") from e
+        ende = time.monotonic() + (ADRESSE_SUCHE_SECS if warten else 0)
+        feld = self._adressleiste_finden(auto, wurzel)
+        while feld is None and time.monotonic() + DOKUMENT_WARTE_SECS < ende:
+            time.sleep(DOKUMENT_WARTE_SECS)  # der erste Zugriff schaltet die Barrierefreiheit des Browsers erst ein
+            feld = self._adressleiste_finden(auto, wurzel)
+        if feld is None:
+            raise UiaFehler("Die Adressleiste des Browsers ist per UI Automation nicht erreichbar.")
+        return uia, feld
+
+    def adresse_setzen(self, hwnd: int, url: str, vor_aktion: Callable[[], None] | None = None) -> dict:
+        uia, feld = self._adressleiste_oeffnen(hwnd, warten=True)
+        try:
+            muster = feld.GetCurrentPattern(uia.UIA_ValuePatternId).QueryInterface(uia.IUIAutomationValuePattern)
+            if muster.CurrentIsReadOnly:
+                raise UiaFehler("Die Adressleiste ist schreibgeschützt.")
+            if vor_aktion is not None:
+                vor_aktion()  # hat der Host schon aufgegeben, greift dieser Faden nicht mehr ein
+            feld.SetFocus()
+            muster.SetValue(url)
+            time.sleep(ADRESSE_NACHLAUF_SECS)
+            return {"wert": str(muster.CurrentValue or ""), "fokus": bool(feld.CurrentHasKeyboardFocus)}
+        except UiaFehler:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise UiaFehler(f"Die Adressleiste hat die Eingabe nicht angenommen ({type(e).__name__})") from e
+        finally:
+            feld = muster = None  # COM-Zeiger vor der Abmeldung des Fadens loslassen, auch bei einem Fehler
+
+    def adresse_lesen(self, hwnd: int) -> dict:
+        uia, feld = self._adressleiste_oeffnen(hwnd, warten=False)
+        try:
+            return {"wert": self._wert(uia, feld), "fokus": bool(feld.CurrentHasKeyboardFocus)}
+        except Exception as e:  # noqa: BLE001
+            raise UiaFehler(f"Die Adressleiste ist nicht lesbar ({type(e).__name__})") from e
+        finally:
+            feld = None
 
     def _seite_lesen(self, auto, uia, dokument, seite: Seite, frist: float) -> None:
         """Knotenbaum des Webdokuments (Zwischenspeicher, ein Zug) in seite.knoten, Titel und Adresse des Dokuments."""

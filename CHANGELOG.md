@@ -16,8 +16,16 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 - Hinweise an Admins nennen den Weg über die Karte Geräteverwaltung statt des nicht vorhandenen Skripts `wamo_geraete.py`
   (nur die Anzeige, die Texte der Migration 0002 bleiben unverändert) und führen mit einem Knopf zur Karte.
 
+### Behoben
+
+- Der Sperrbildschirm `LockApp.exe` vorne gilt als gesperrt (bisher meldete die Prüfung des Eingabedesktops „entsperrt“).
+
 ### Geändert
 
+- `webseite_oeffnen` lädt Seiten und Suchen im aktiven Tab des offenen Browsers (Chrome oder Edge) statt jedes Mal einen
+  neuen Tab zu öffnen. Neuer Parameter `neuer_tab` (nur auf ausdrücklichen Wunsch); ohne nutzbares Fenster oder bei einem
+  Fehler öffnet sich wie bisher ein neuer Tab, das Ergebnis nennt den Grund. Audit und Duplikatwache kennen `tab` und `weg`.
+  Persona und Werkzeugbeschreibung angepasst, abschaltbar mit `WAMO_PERSONA_TAB=aus`.
 - Desktop-App: Electron von 44.5.1 auf 44.10.1 angehoben (schließt den Hinweis zu den Zwischenzertifikaten der Web-PKI aus
   `npm audit`); Tests, Installer-Bau und Fuses unverändert grün.
 

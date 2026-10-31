@@ -71,7 +71,10 @@ APPS: dict[str, list[str]] = {
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         rf"{_LOCAL}\Google\Chrome\Application\chrome.exe",
     ],
-    "edge": [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"],
+    "edge": [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
     "explorer": [r"C:\Windows\explorer.exe"],
     "notepad": [r"C:\Windows\System32\notepad.exe"],
     "rechner": ["calculator:"],
@@ -378,30 +381,215 @@ def _powershell(command: str, timeout: int = READ_TIMEOUT_SECS) -> dict:
 
 
 # ---------- MCP-Werkzeuge ----------
+# ---------- Webseite laden: im aktiven Tab des offenen Browsers, nur auf Wunsch (oder zur Not) in einem neuen ----------
+# Der Start von chrome.exe mit einer Adresse öffnet IMMER einen neuen Tab (Sitzung 31.10.: zwei Aufrufe, zwei Tabs).
+# Darum lädt der Host die Adresse standardmäßig im aktiven Tab des obersten Fensters des gewünschten Browsers: Fenster
+# nach vorn (mit Nachprüfung), Adressleiste per UI Automation setzen und fokussieren (ohne Debug-Port), Enter senden.
+# Die Adresse ist dieselbe, die validate_url schon geprüft hat; die Schicht prüft zusätzlich, dass die Adressleiste nach
+# dem Setzen genau diese Adresse zeigt (keine automatische Ergänzung des Browsers).
+BROWSER_EXE = {"chrome": "chrome.exe", "edge": "msedge.exe"}
+BROWSER_ANZEIGE = {"chrome": "Chrome", "edge": "Edge"}
+TAB_AKTUELL, TAB_NEU = "aktuell", "neu"
+WEG_UIA, WEG_START = "uia", "start"
+RUECKFALL_GRUND = {
+    "gewuenscht": "",
+    "kein_fenster": "kein passendes {browser}-Fenster offen war (es öffnet sich ein neues Fenster)",
+    "fokus": "Windows das {browser}-Fenster nicht nach vorne gelassen hat",
+    "adressleiste": "die Adressleiste von {browser} nicht per UI Automation zu bedienen war",
+    "adresse_abweichend": "die Adressleiste von {browser} nicht genau die geprüfte Adresse zeigte",
+    "ziel_gewechselt": "das Fenster vor dem Abschicken gewechselt hat",
+}
+ENTER = [0x0D]
+ADRESSE_RATE_PRO_MINUTE = 12  # Seiten im aktiven Tab je Minute (überschreibt den Tab der Person: keine Flut)
+_TAB_LOCK = threading.Lock()  # Fokus, Adressleiste und Enter zweier Aufrufe nie ineinander verschränken
+
+
+def _browser_name(browser: object) -> str:
+    return browser if browser in BROWSER_EXE else "chrome"
+
+
+def _browser_fenster_nutzbar(w: dict, browser: str) -> None:
+    """ValueError, wenn dieses Fenster nicht als Ziel für eine neue Adresse taugt: ein anderes Programm als gewünscht,
+    die eigene Oberfläche, Anmelde-, Passwort- und Zahlungsseiten."""
+    if (w.get("programm") or "").lower() != BROWSER_EXE[browser]:
+        raise ValueError("anderes Programm")
+    wc.check_not_wamo_ui(w["programm"], w["titel"])
+    wc.check_input_target(w["programm"], w["titel"])
+    if SEITE_GESPERRT_TITEL.search(w["titel"] or ""):
+        raise ValueError("Passwort-, Zugangsdaten- und Zahlungsseiten bedient WAMO nicht")
+    if wc.is_messaging(w["programm"], w["titel"]):  # ein Entwurf im Webmail oder Messenger darf nicht überschrieben werden
+        raise ValueError("Mail- und Messenger-Seiten bedient WAMO hier nicht")
+
+
+def _browser_ziel(browser: str) -> dict | None:
+    """Das zuletzt aktive (oberste) nutzbare Fenster des gewünschten Browsers oder None."""
+    try:
+        fenster = wc.list_windows()
+    except Exception:  # noqa: BLE001 (Fensterliste nicht lesbar: wie "kein Fenster", der Rückfall startet den Browser)
+        return None
+    for w in fenster:
+        try:
+            _browser_fenster_nutzbar(w, browser)
+        except ValueError:
+            continue
+        return w
+    return None
+
+
+def _im_aktiven_tab(ziel: dict, url: str, browser: str) -> str | None:
+    """Lädt url im aktiven Tab des Fensters ziel. None bei Erfolg, sonst der Code des Rückfalls (RUECKFALL_GRUND) oder
+    "gesperrt". Enter geht nur ab, wenn das Fenster nachweislich vorne liegt, nicht gesperrt ist und noch taugt und die
+    Adressleiste unmittelbar davor noch genau die Adresse zeigt und den Tastaturfokus hat (sonst träfe Enter die Seite).
+    Ein kleines Zeitfenster zwischen dieser letzten Kontrolle und dem Tastendruck lässt sich ohne Debug-Port nicht
+    schließen."""
+    with _TAB_LOCK:
+        return _im_aktiven_tab_gesperrt(ziel, url, browser)
+
+
+def _im_aktiven_tab_gesperrt(ziel: dict, url: str, browser: str) -> str | None:
+    def vorne_ist_ziel() -> bool:
+        vorne = wc.foreground()
+        if vorne["hwnd"] != ziel["hwnd"]:
+            return False
+        _browser_fenster_nutzbar(vorne, browser)
+        return True
+
+    try:
+        if not wc.focus(ziel["hwnd"]) or not vorne_ist_ziel():
+            return "fokus"
+    except ValueError:
+        return "ziel_gewechselt"
+    except Exception:  # noqa: BLE001 (Windows-API verweigert das Vorholen)
+        return "fokus"
+    try:
+        UIA.adresse_setzen(ziel["hwnd"], url)
+    except uia_control.AdresseAbweichend:
+        return "adresse_abweichend"
+    except uia_control.UiaFehler:
+        return "adressleiste"
+    if _ist_gesperrt():
+        return "gesperrt"
+    try:
+        if not vorne_ist_ziel():
+            return "ziel_gewechselt"
+    except Exception:  # noqa: BLE001 (ValueError: Fenster taugt nicht mehr, sonst Windows-API)
+        return "ziel_gewechselt"
+    try:
+        UIA.adresse_pruefen(ziel["hwnd"], url)  # unmittelbar vor Enter: Wert und Fokus der Adressleiste noch wie geprüft
+    except uia_control.AdresseAbweichend:
+        return "adresse_abweichend"
+    except uia_control.UiaFehler:
+        return "adressleiste"
+    if _ist_gesperrt():
+        return "gesperrt"
+    try:
+        wc.press(ENTER)
+    except Exception:  # noqa: BLE001 (SendInput verweigert: nichts abgeschickt, Rückfall)
+        return "fokus"
+    return None
+
+
+def _seite_plan(browser: str, neuer_tab: bool) -> tuple[dict | None, str, str]:
+    """(Zielfenster, tab, weg): im aktiven Tab nur mit nutzbarem Fenster und ohne ausdrücklichen Wunsch nach einem neuen."""
+    ziel = _browser_ziel(browser)
+    if ziel is not None and not neuer_tab:
+        return ziel, TAB_AKTUELL, WEG_UIA
+    return ziel, TAB_NEU, WEG_START
+
+
+def _fenster_titel_kurz(ziel: dict) -> str:
+    return uia_control.sicherer_text(ziel.get("titel", ""), 60)
+
+
+def _seite_laden(url: str, browser: str, neuer_tab: bool, ziel: dict | None) -> dict:
+    """Lädt die geprüfte Adresse: im aktiven Tab des Fensters ziel (Standard) oder im neuen Tab/Fenster (auf Wunsch,
+    oder mit Grund, wenn der aktive Tab nicht zu bedienen war). Das Ergebnis sagt, was passiert ist."""
+    anzeige = BROWSER_ANZEIGE[browser]
+    code = "gewuenscht" if neuer_tab else "kein_fenster"
+    if ziel is not None and not neuer_tab:
+        code = _im_aktiven_tab(ziel, url, browser)
+        if code == "gesperrt":
+            _audit({"tool": "webseite_oeffnen", "risk": "locked", "grund": "Bildschirm gesperrt", "tab": TAB_AKTUELL,
+                    "weg": WEG_UIA})
+            return dict(GESPERRT)
+        if code is None:
+            nummer, _ = _monitor_nummer(ziel["hwnd"])
+            ort = f", Monitor {nummer}" if nummer is not None else ""
+            return {"status": "success", "tab": TAB_AKTUELL, "weg": WEG_UIA, "browser": browser,
+                    "fenster": _fenster_titel_kurz(ziel),
+                    "summary": f"{url[:120]} im aktiven Tab geladen ({anzeige}, Fenster „{_fenster_titel_kurz(ziel)}“{ort})",
+                    **_markierung(ziel.get("hwnd"))}
+        _audit({"tool": "webseite_oeffnen", "risk": "change", "browser": browser, "tab": TAB_NEU, "weg": WEG_START,
+                "rueckfall": code})
+    if _ist_gesperrt():  # der Weg über die Adressleiste kann Sekunden gedauert haben: auch der Rückfall startet nie gesperrt
+        _audit({"tool": "webseite_oeffnen", "risk": "locked", "grund": "Bildschirm gesperrt", "tab": TAB_NEU,
+                "weg": WEG_START})
+        return dict(GESPERRT)
+    try:
+        exe = resolve_app(browser)
+    except ValueError as e:  # der Weg über die Adressleiste ging nicht und der Browser ist nicht startbar
+        return {"status": "rejected", "summary": f"{url[:120]} nicht geladen: {e}"}
+    _launch(exe, [url])
+    if code == "gewuenscht":
+        grund = "so gewünscht"
+    else:
+        grund = f"weil {RUECKFALL_GRUND[code].format(browser=anzeige)}"
+    ergebnis = {"status": "success", "tab": TAB_NEU, "weg": WEG_START, "browser": browser,
+                "summary": f"{url[:120]} im neuen Tab geöffnet ({anzeige}), {grund}"}
+    if code not in ("gewuenscht", "kein_fenster"):
+        ergebnis["rueckfall"] = code
+    if ziel is not None:
+        nummer, _ = _monitor_nummer(ziel["hwnd"])
+        if nummer is not None:
+            ergebnis["monitor"] = nummer
+    return ergebnis
+
+
+def _als_wahrheit(wert: object) -> bool:
+    """neuer_tab kommt vom Sprachmodell: nur ein echtes True (oder die Wörter true, ja, 1) zählt, nie ein beliebiger Text."""
+    return wert is True or (isinstance(wert, str) and wert.strip().lower() in ("true", "ja", "1"))
+
+
 @mcp.tool()
-def webseite_oeffnen(url: str, browser: str = "chrome") -> dict:
-    """Oeffnet eine Webseite im Browser (change). Fuer Suchen auf Shops direkt die Such-URL bauen,
-    z. B. https://www.amazon.de/s?k=wohnzimmer+lampe. browser: chrome oder edge."""
+def webseite_oeffnen(url: str, browser: str = "chrome", neuer_tab: bool = False) -> dict:
+    """Laedt eine Webseite im Browser (change), standardmaessig im AKTIVEN Tab des offenen Browserfensters (kein neuer
+    Tab). Fuer Suchen auf Shops direkt die Such-URL bauen, z. B. https://www.amazon.de/s?k=wohnzimmer+lampe.
+    browser: chrome oder edge. neuer_tab=true NUR auf ausdruecklichen Wunsch der Person (dann ein neuer Tab). Ist kein
+    Fenster des Browsers offen oder laesst sich der aktive Tab nicht bedienen, oeffnet sich ein neuer Tab und das
+    Ergebnis nennt den Grund. Das Ergebnis sagt, was passiert ist (tab: aktuell oder neu). Eine Suche auf einer schon
+    offenen Seite: entweder per Such-URL im selben Tab (dieses Werkzeug, Standard) oder ueber das Suchfeld der Seite
+    (elemente_auflisten, element_text_setzen, dann Enter mit tasten_druecken)."""
     if locked := _gesperrt("webseite_oeffnen"):
         return locked
+    neu = _als_wahrheit(neuer_tab)
+    browser_name = _browser_name(browser)
+    ziel = None
     try:
         safe_url = validate_url(url)
-        exe = resolve_app(browser if browser in ("chrome", "edge") else "chrome")
+        ziel, tab, weg = _seite_plan(browser_name, neu)
+        if weg == WEG_START:
+            resolve_app(browser_name)  # nur der Start braucht das Programm; ein offenes Fenster genügt dem Weg über die Adressleiste
     except ValueError as e:
         _audit({"tool": "webseite_oeffnen", "url": str(url)[:200], "risk": "rejected", "error": str(e)})
         return {"status": "rejected", "summary": str(e)}
     if len(urlsplit(safe_url).query) > MAX_QUERY_CHARS:
-        browser_name = browser if browser in ("chrome", "edge") else "chrome"
         return _anfrage(
-            "webseite_oeffnen", "webseite", {"url": safe_url, "browser": browser_name}, "webseite",
+            "webseite_oeffnen", "webseite", {"url": safe_url, "browser": browser_name, "neuer_tab": neu}, "webseite",
             "Webseite mit sehr langer Suchanfrage öffnen", safe_url, browser_name,
             "Sehr lange Such-Parameter könnten Gesprächsinhalte nach außen tragen. Ein Admin muss das in der "
-            "Oberfläche freigeben; bis dahin passiert nichts.", {"url": safe_url[:200]})
-    if dup := _duplicate("webseite_oeffnen", url=safe_url):
+            "Oberfläche freigeben; bis dahin passiert nichts.",
+            {"url": safe_url[:200], "tab": TAB_NEU if neu else TAB_AKTUELL})
+    if weg == WEG_UIA:  # Fenster nach vorn und Enter: wie jede Eingabe, bei offener Freigabe ruht sie
+        if vorab := _eingabe_vorab("webseite_oeffnen"):
+            return vorab
+        if not _rate_ok("webseite_oeffnen", ADRESSE_RATE_PRO_MINUTE):
+            _audit({"tool": "webseite_oeffnen", "risk": "rejected", "grund": "Rate-Grenze"})
+            return {"status": "rejected", "summary": "Zu viele Seiten in kurzer Zeit. Bitte kurz warten."}
+    if dup := _duplicate("webseite_oeffnen", url=safe_url, tab=tab, weg=weg):
         return dup
-    _audit({"tool": "webseite_oeffnen", "url": safe_url, "browser": browser, "risk": "change"})
-    _launch(exe, [safe_url])
-    return {"status": "success", "summary": f"{safe_url} in {browser} geoeffnet"}
+    _audit({"tool": "webseite_oeffnen", "url": safe_url, "browser": browser_name, "risk": "change", "tab": tab,
+            "weg": weg})
+    return _seite_laden(safe_url, browser_name, neu, ziel)
 
 
 @mcp.tool()
@@ -1792,7 +1980,7 @@ def _inhalt_audit(eintrag: dict) -> dict:
     if art == "powershell":
         return {"befehl": str(eintrag["command"])[:300]}
     if art == "webseite":
-        return {"url": str(eintrag["url"])[:200]}
+        return {"url": str(eintrag["url"])[:200], "tab": TAB_NEU if eintrag.get("neuer_tab") else TAB_AKTUELL}
     if art == "tippen":
         return {"ziel": eintrag["titel"][:120], **_text_audit(eintrag["text"])}
     if art == "tasten":
@@ -1938,8 +2126,14 @@ def _ausfuehren(eintrag: dict) -> dict:
         return _github_anlegen_ausfuehren(eintrag)
     if art == "webseite":
         url = validate_url(eintrag["url"])  # die DNS-Auflösung kann sich seit der Anfrage geändert haben
-        _launch(resolve_app(eintrag["browser"]), [url])
-        return {"status": "success", "summary": f"{url[:80]} in {eintrag['browser']} geöffnet"}
+        browser = _browser_name(eintrag["browser"])
+        neu = bool(eintrag.get("neuer_tab"))
+        ziel, tab, weg = _seite_plan(browser, neu)
+        if weg == WEG_START:
+            resolve_app(browser)
+        _audit({"tool": "webseite_oeffnen", "url": url[:200], "browser": browser, "risk": "change", "tab": tab,
+                "weg": weg, "freigabe": True})
+        return _seite_laden(url, browser, neu, ziel)
     raise ValueError("unbekannte Art der Freigabe")
 
 
