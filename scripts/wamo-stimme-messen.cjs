@@ -105,7 +105,9 @@ async function kernStarten() {
   // Ein Arbeitsordner (Worktree) hat kein eigenes venv: WAMO_PYTHON zeigt dann auf das venv des Hauptordners.
   const python = process.env.WAMO_PYTHON || path.join(REPO, "voice-core", ".venv", "Scripts", "python.exe");
   const ui = new globalThis.URL(URL);
-  kern = spawn(python, ["bot.py", "--port", "7861", "--allowed-origins", ui.origin, ui.origin.replace("127.0.0.1", "localhost")], {
+  // Die .env des Kerns (override=True) darf Profil und Schalter der Messung nicht überschreiben: eigener Starter
+  env.WAMO_MESS_FEST = ["WAMO_CLAUDE_SCHLUESSEL_PROFIL", ...(process.env.KERN_ENV || "").split(";").filter(Boolean).map((p) => p.split("=")[0].trim())].join(",");
+  kern = spawn(python, [path.join(__dirname, "wamo_kern_messstart.py"), "bot.py", "--port", "7861", "--allowed-origins", ui.origin, ui.origin.replace("127.0.0.1", "localhost")], {
     cwd: path.join(REPO, "voice-core"), env, stdio: ["ignore", fd, fd], windowsHide: true,
   });
   for (let i = 0; i < 120; i++) {
