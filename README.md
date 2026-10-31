@@ -220,8 +220,12 @@ keine `.env`.
   aktualisiert (feste GUID). Einen automatischen Updater gibt es in diesem Paket nicht (`publish` ist `null`). Das Audit-Protokoll
   des Hosts (`host\wamo_audit.jsonl`) liegt im Installationsordner und geht bei Update oder Deinstallation verloren; ein fester
   Ort per `WAMO_AUDIT_LOG` braucht eine Änderung in `scripts/wamo-tunnel.ps1`.
-- Bekannt: Das mitgelieferte Electron 44.5.1 hat laut `npm audit` einen Hinweis zu Zwischenzertifikaten der Web-PKI (Fix in
-  44.10.1); die App lädt nur den eigenen Server. Anheben in einem eigenen Schritt, danach `npm test` und neu bauen.
+- **Electron 44.10.1** (exakt gepinnt, vorher 44.5.1): schließt den Hinweis von `npm audit` zu den Zwischenzertifikaten der
+  Web-PKI (Fix ab 44.9.1). Die Linie 44.x hat keine neuere Version; die Notizen der Versionen 44.6 bis 44.10 nennen keine
+  Breaking Changes, 44.9.0 behebt zusätzlich, dass `setCertificateVerifyProc` bei gleichzeitigen ersten Anfragen an einen Host
+  mitunter nicht griff. Nach dem Anheben geprüft: `npm test` (116 grün), Installer gebaut, `wamo-dist-pruefen.cjs` ohne Funde,
+  Fuses unverändert, Start der entpackten App ohne Absturz. Offene Funde von `npm audit` betreffen nur Bauwerkzeuge
+  (electron-builder und Unterpakete), nicht die ausgelieferte App.
 
 #### Texteingabe und Verbindungsfrist
 
@@ -266,7 +270,7 @@ Eingaben in Textfeldern in Ruhe.
 | Verbrauch (`verbrauch`) | Kontingent des Max-Abos aus der Servernachricht `kontingent`: Sitzungslimit, Wochenlimit, Fable limit | Admin |
 | Sprache und Ton (`sprache`) | Mikrofonwahl, Spracherkennung und Sprachausgabe laut Betriebsmeldung | alle |
 | Darstellung (`darstellung`) | Normal, Fokus, Zentrale, Nacht | alle |
-| Geräte und PC (`geraete`) | Verbindungen, PC-Steuerung samt Autostart (nur Admin, nur Desktop-App), Betriebsart, Stand der Geräteeinrichtung | alle, PC-Steuerung nur Admin |
+| Geräte und PC (`geraete`) | Verbindungen, Geräteverwaltung (Freigeben, Sperren, Widerrufen), PC-Steuerung samt Autostart (nur Admin, nur Desktop-App), Betriebsart, Stand der Geräteeinrichtung | alle, Geräteverwaltung und PC-Steuerung nur Admin |
 | Teilen (`teilen`) | Geteilte Arbeit: mit mir, von mir, Dateien | alle |
 | Info (`info`) | Version, Kern, Hinweise an Admins | alle, Hinweise nur Admin |
 
@@ -278,6 +282,44 @@ echten Token bestätigt, die Seite sagt das dort auch (`ui/src/lib/verbrauch.ts`
 Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo-tunnel.ps1`: Host und Tunnel laufen damit
 unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
 sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
+
+### Geräte, Tunnel je Gerät und Geräteverwaltung
+
+Jeder persönliche Laptop hat einen eigenen Rücktunnel zu Sokrates-2: ein Gerät, ein ed25519-Schlüssel, ein Tunnelplatz
+(Benutzer `wamo-t-NN`, Ordner `/run/wamo-pc/tNN/`, NN von 01 bis 64). Die Desktop-App bindet den Laptop bei der Anmeldung
+(`POST /wamo/api/geraet/binden`, Migration 0002). Ein Mitglied ohne früheres Gerät wird dabei sofort `aktiv`; jedes Admin-Profil
+und jeder Gerätewechsel steht danach auf `beantragt`, bis ein Admin entscheidet. Status: `beantragt`, `aktiv`, `gesperrt`,
+`widerrufen` (endgültig). Nur `aktiv` zählt für den Abgleich der SSH-Schlüssel (`pc_abgleich_liste`).
+
+**Geräteverwaltung** (Einstellungen, Geräte und PC, Karte „Geräteverwaltung“, nur Admin): Das Entscheiden geschieht in der
+Oberfläche, nicht mehr in der Datenbank. Wartende Geräte stehen oben mit Kennung, Rechnername, Profil und dem Fingerabdruck in
+Vierergruppen; darunter die aktiven und gesperrten Geräte, widerrufene (letzte 90 Tage) eingeklappt. Der eigene Laptop trägt die
+Marke „Dieses Gerät“. Die Status zeigen Wort und Form (Raute wartet, Kreis aktiv, Quadrat gesperrt, Kreuz widerrufen).
+
+- **Aktionen:** freigeben (beantragt zu aktiv), ablehnen oder widerrufen (endgültig, Grund Pflicht), sperren (Grund Pflicht),
+  entsperren. Jede Aktion geht durch einen Bestätigungsdialog mit dem Fingerabdruck und dem Hinweis „Vergleiche ihn mit dem
+  Fingerabdruck am Laptop“; Freigeben und Entsperren verlangen das ausdrückliche Bestätigen des Vergleichs. Ein Admin darf sein
+  eigenes Gerät freigeben (sonst käme ein einzelner Admin nie an sein erstes Gerät), nur mit derselben Anzeige und einer Warnung.
+- **Frischer zweiter Faktor:** Der Dialog fragt bei jeder Aktion den Code der Authenticator-App ab (`mfa.challengeAndVerify`).
+  Der Kern nimmt ändernde Aktionen nur an, wenn der letzte `totp`-Zeitstempel im Claim `amr` höchstens 120 Sekunden alt ist
+  (`voice-core/geraete_admin_api.py`); die Datenbank prüft dieselbe Frist noch einmal.
+- **Kern-API** (`/wamo/api`, wie alle Routen mit Token, aal2 und aktivem Profil, zusätzlich Rolle admin): `GET /geraete/verwaltung`
+  (Liste ohne Schlüsselmaterial, mit Verlauf der letzten zehn Ereignisse) und `POST /geraete/verwaltung/aktion`
+  (`kennung`, `aktion`, `grund`, `fingerabdruck`). Grenzen je Admin: Liste 60 je Minute, Aktionen 10 je 10 Minuten. Eine doppelte
+  Aktion (zwei Admins gleichzeitig, Doppelklick) ist folgenlos und wird als „schon erledigt“ gemeldet.
+- **Datenbank (Migration 0014):** `wamo_core` bekommt kein Update-Recht auf `devices`, sondern nur die Ausführung zweier Funktionen,
+  `geraet_entscheiden` (feste Übergänge, Akteur muss aktiver Admin sein, Zeile gesperrt, Verlauf über die Trigger aus 0002) und
+  `geraete_verwaltung_liste`. Die Trigger aus 0002 bleiben maßgeblich. Prüfung: `supabase/tests/0014_geraete_verwaltung_test.sql`.
+- **Grenze der Prüfung:** Die Datenbank sieht kein Token. Rolle, Anmeldung und die Frische des Codes prüft der Kern; die Datenbank
+  prüft Akteur und Zeit erneut, kann sie aber nicht beglaubigen. Ein übernommener Kern könnte beides selbst setzen. Dagegen
+  melden sich jede Freigabe und jedes Entsperren mit Kennung, Fingerabdruck und Akteur bei allen Admins (Hinweis `system`),
+  und der Verlauf in `device_events` hält jede Änderung fest. Die Frist von 120 Sekunden gilt für ein Zeitfenster, nicht für
+  einen einzelnen Code. Noch nicht an einem echten GoTrue erprobt: dass ein erneutes `challengeAndVerify` den Zeitstempel im Claim
+  `amr` erneuert (die Oberfläche prüft das nach dem Bestätigen und meldet es sonst).
+- **Hinweise:** Die Texte der Migration 0002 verweisen auf ein Skript `wamo_geraete.py`, das es nicht gibt. Die Datenbank bleibt
+  unverändert (Migrationen sind nach dem Anwenden unveränderlich); die Oberfläche zeigt stattdessen den Weg über die Karte
+  und bietet an den Hinweisen für Admins den Knopf „Zur Geräteverwaltung“.
+- **Gemeinsame Geräte** (Drucker, Scanner und Ähnliches) und Notfälle ohne Oberfläche laufen weiter über `wamo_admin` (SQL).
 
 ### Sitzungen, Anmeldung und Freigaben
 
@@ -323,6 +365,37 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Projekte, Dokumente, Desktop und Downloads im Benutzerordner, nie in AppData oder versteckten Ordnern; `system_info`
   nennt Rechnername, Benutzer-, Projekte-Ordner), das Vorholen von Fenstern ohne Alt-Druck mit Nachprüfung des Fokus
   (verweigert Windows es, meldet der Host das, statt „ist vorne“ zu behaupten) und 20 s Zeitgrenze für Lesebefehle.
+- **Browser lesen statt raten** (31.10.2026, `host/uia_control.py`, `host/wamo_host.py`): `browser_lesen` (read) liefert für
+  das oberste oder benannte Fenster von Chrome, Edge, Firefox oder Brave Titel und Adresse des aktiven Tabs, die Titel
+  der Tabs (höchstens 20), den Seitentext in Lesereihenfolge (Überschriften mit `#`, Absätze, Listen mit `-`, Links als
+  `[Text]`, Schaltflächen und Eingabefelder mit Namen und Inhalt) und den Monitor des Fensters (Zählung wie
+  `bildschirmfoto`; `fenster_auflisten` und `elemente_auflisten` nennen ihn ebenfalls). Der Text kommt in Abschnitten
+  von etwa 6000 Zeichen (`abschnitt=2` liest weiter, `gekuerzt` und `abschnitte` sagen, ob es mehr gibt), standardmäßig
+  nur der sichtbare Teil (`nur_sichtbar=false` für die ganze Seite). Ohne `fenster` gilt das oberste Browserfenster, auch
+  wenn ein anderes Fenster vorne liegt, nie die eigene Oberfläche. Das Ergebnis trägt die Marke `vertrauen:
+  unvertrauenswuerdig` samt Hinweis und Schlusszeile, und weil `browser_lesen` in `LLM_TOOLS` steht, färbt
+  `gate_pc_tools` den Zug als Fremdinhalt (kein Lernen). Die Wächter sind dieselben wie bei den UIA-Werkzeugen (Sperr-
+  Erkennung, Zielfenster-Prüfung, Rate-Grenze 60 je Minute), dazu: keine Passwort-, Anmelde-, Zugangsdaten- und
+  Zahlungsseiten, Passwort-, Karten-, PIN- und IBAN-Felder nie mit Wert (auch unter harmlosem Namen, wenn der Wert wie eine
+  Kartennummer aussieht), Adressen ohne Zugangsdaten, Fragment und geheim klingende Parameter, Tabs und Adressleiste nur
+  aus der Browser-Oberfläche (eine Seite kann sie nicht vortäuschen), keine Cookies, kein Skript, kein Debugging-Port.
+  Das Audit nennt Programm, Domain und Zahlen, nie Titel, Text oder Werte. Gemessen mit selbst gestarteten Instanzen
+  (Chrome 155, Edge 156, eigenes Profil, ohne `--force-renderer-accessibility`): Chrome und Edge liefern die Seite nach
+  dem ersten UIA-Zugriff von selbst; der erste Zugriff kann leer sein, deshalb wiederholt der Host bis zu 7 s (Chrome kalt
+  0,5 bis 1,9 s, Edge kalt 5,9 s, danach 0,2 bis 0,8 s). Amazon-Suche: 2750 Knoten, 61 000 Zeichen in 11 Abschnitten,
+  der sichtbare Teil 4200 Zeichen. Die Baumtiefe 8 reichte für Webseiten nie (das Dokument liegt bei Tiefe 7, der Inhalt
+  bis Tiefe 14): `elemente_auflisten` liefert deshalb unter einem Webdokument bis zu 80 Ebenen, gelesen mit einem
+  Zwischenspeicher (gemessen 0,25 s statt 3 s je Seite), und listet die Fensterknöpfe des Browsers (Schließen beendet alle
+  Tabs) nicht mehr auf. `bildschirmfoto` hat zusätzlich `fenster` (nur dieses Fenster, auch auf einem anderen Monitor
+  oder hinter einem anderen Fenster; was darüber liegt, ist mit auf dem Bild), `bildschirm_ansehen` reicht es durch.
+  Reihenfolge für das Modell: erst `browser_lesen` (Text), dann `elemente_auflisten` zum Bedienen, ein Bild nur, wenn Text
+  nicht reicht (Bilder, Diagramme, Layout). **Grenzen:** Firefox ist nicht gemessen (kein Firefox auf dem Testrechner;
+  die Schicht sucht den Dokumentknoten über den Steuerelementtyp, UIA in Firefox ist dünner), die Absatzgrenzen im Text
+  werden aus den Abständen auf dem Bildschirm geschätzt (Chrome und Edge liefern Absätze als lose Textstücke), Inhalte
+  in Canvas, Bildern und PDF-Viewern fehlen (dafür bleibt `bildschirm_ansehen` mit `fenster`), eine ganz neue Seite liefert
+  kurz nur den Rahmen, und die Barrierefreiheit des Browsers bleibt nach dem ersten Zugriff eingeschaltet (etwas mehr
+  Speicher im Browser). Verdeckte oder minimierte Fenster gelten als „nicht sichtbar“: dann liefert `browser_lesen` die
+  ganze Seite statt nichts.
 - **GitHub im Host** (31.10.2026, `host/wamo_host.py`): `github_repo_anlegen` (Risikoklasse critical) legt ein Repository in
   der Organisation an, nie im privaten Konto: `WAMO_GITHUB_ORG` aus der Umgebung des Hosts, sonst `Wamocon`, geprüft
   gegen eine Allowlist-Regex. Es passiert nichts ohne die Freigabe-Karte (Organisation, Name, Sichtbarkeit und
@@ -361,6 +434,36 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Stimmen-Rand: nicht anklickbar, nicht in Bildschirmfotos für das Bildmodell (Inhaltsschutz der Rand-Fenster), aus bei Vollbild (`vollbild.js`) und bei ausgeschaltetem Rand-Haken, aus bei offener
   Freigabe und ohne Gespräch. Bei `prefers-reduced-motion` gibt es kein Ein- und Ausblenden und keine wachsende Welle,
   nur einen stillen Rahmen und einen ruhenden Ring. Das Sprachmodell sieht die Zahlen im Werkzeugergebnis, mehr nicht.
+- **Live-Bild des eigenen Laptops** (31.10.2026, Paket E, Entscheidung des Nutzers mit Auflagen): Admin sieht den Bildschirm
+  seines eigenen, gebundenen Laptops als Einzelbilder (JPEG, höchstens etwa 2 je Sekunde, 1280 Pixel Kante, höchstens
+  110 KB) in einer Ansicht der Kommandozentrale (Chip „Live-Bild“, Karte im Canvas-Bereich) mit Monitorwahl (Reihenfolge von
+  links, Hinweis bei nur einem Monitor), Lupe und Restzeit bis zum automatischen Ende. Erzwungen wird es an drei Stellen:
+  *Am Laptop* (`desktop/livebild.js`, Tray-Menü „Live-Bild einschalten …“): Standard aus, nur die Person am Laptop schaltet
+  ein, nach einem Einwilligungsdialog mit Inhalt, Zweck, Dauer und Datenschutz (Hinweis auf Kundendaten und fremde Chats);
+  die Einwilligung gilt je Laptop und Besitzer und wird bei neuer Bindung neu verlangt. Der Schalter ist die Datei
+  `%LOCALAPPDATA%\WAMO\live-bild.json` (`an`, `bis` höchstens 30 Minuten, Herzschlag alle 2 s, `sichtbar`); beim Start,
+  Beenden, Ablauf und Wechsel der Bindung steht dort `aus`. Solange er an ist, zeigt jeder Monitor einen roten Rahmen mit
+  Plakette (`livebild-hinweis.*`, bewusst nicht vor Bildschirmfotos geschützt, also in jedem Bild zu sehen) und das
+  Tray-Symbol ist rot. *Im Host* (`host/live_bild.py`, Werkzeuge `bild_holen`, `live_bild_status`, `live_bild_beenden`, nie in
+  `LLM_TOOLS`): Der Host prüft bei jedem Bild selbst Schalterdatei (Kennung und Besitzer wie `geraet.json`, Stufe `admin`,
+  Einwilligung, Ablauf, Herzschlag höchstens 6 s alt, Hinweis sichtbar), zählt unabhängig davon die Hinweisfenster der App
+  (eines je Monitor), und liefert nichts bei gesperrtem Bildschirm, offener Freigabe, Vollbild, Passwortfenster vorne oder
+  einem Passwortmanager irgendwo sichtbar; ein Bild wird verworfen, wenn sich währenddessen etwas ändert. Höchstens ein
+  Zuschauer (12 s Frist), 0,35 s Abstand, 150 Bilder je Minute. Befehle, die `live-bild` nennen, sind gesperrt, die Fenster der
+  App (`wamo.exe`, `electron.exe`, Titel „WAMO …“) bedient der Host nie. *Im Kern* (`voice-core/bildstrom.py`): nur Admin mit
+  gebundenem Gerät (Tunnel je Gerät), PC-Steuerung an und gehaltener Sperre; ein Bild nach dem anderen (die Oberfläche
+  bestätigt jedes, ohne Bestätigung nach 10 s Ende), 15 Minuten Höchstdauer, Ende bei Sperre, Trennen, Abmelden, Ablösung,
+  Entzug des Geräts und ausgeschalteter PC-Steuerung; WAMO sagt Anfang und Ende. Tunnelgrenzen: eigene Zählung
+  (`BILD_AUFRUFE_JE_MINUTE = 200`), die 120 allgemeinen Aufrufe je Minute und 4 MB bleiben, Bildantworten höchstens 256 KB, Zeitgrenze 8 s.
+  Weg der Bilder: Servernachricht `bild` der bestehenden, angemeldeten Sitzung (kein neuer Port, keine zweite Anmeldung,
+  gebunden an Sitzung, Rolle und Gerät); der Rückstau durch die Bestätigung hält Untertitel und Gespräch im selben
+  Datenkanal frei. Keine Aufzeichnung: Bilder liegen nur im Arbeitsspeicher (Host, Kern, Browser), nie in Datenbank,
+  Gedächtnis, Verlauf, Audit, Log (`WAMO_LOG_LEVEL=TRACE` wird auf DEBUG begrenzt), Store oder Datei und nie bei einem Sprachmodell;
+  das bestehende Werkzeug `bildschirmfoto` bleibt unverändert. Restrisiken: Passwortfelder in Fenstern, die nicht
+  Passwortmanager sind, lassen sich per UI Automation nicht erkennen; ein von einem Admin auf einer Freigabekarte bestätigter,
+  verschleierter PowerShell-Befehl könnte die Schalterdatei schreiben (der Host zählt dann trotzdem die Hinweisfenster);
+  Fernklick und Fernsteuerung (Paket F) gibt es nicht. Noch offen: Probelauf mit der installierten App an einem echten Laptop
+  (Hinweisfenster-Erkennung, Datenkanal mit Bildern von rund 150 KB) und eine Betriebsvereinbarung beziehungsweise Information der Beschäftigten.
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
   spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel). Mit
   `WAMO_STOPP_GRENZE` (Standard an) wählt der Kern die Wortgrenze selbst und schickt `leiser_stopp` mit `sofort`.
@@ -390,6 +493,23 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Stoppwörter und echte Einwürfe wirken weiter), `WAMO_JA_WAECHTER` (`voice-core/ja_waechter.py`: ein kurzes Ja auf eine
   echte Rückfrage führt den Auftrag aus; greift nie bei offener Freigabe-Karte, Freigabe-Meldung im Verlauf oder
   Rückfragen zu Freigabe und Sicherheit). Messszenario `werkzeug_mhm` (zwei Rückmeldelaute während der Websuche).
+- **Fehlerbehebungen aus der Sitzung vom 31.10.2026** (Kern-Journal 12:43 bis 12:47, 15 Züge; alle Schalter Standard an, sie
+  ändern nur Fehlerfälle). `WAMO_ABBRUCH_HINWEIS` (`voice-core/werkzeug_wache.py`): Bricht eine Äußerung ein laufendes Werkzeug
+  ab, stand im Verlauf nur „CANCELLED“; das Modell hielt die Aktion für gescheitert oder vergaß den Auftrag (Bildschirm sehen
+  12:45:14, Scrollen 12:45:41). Jetzt steht dort „ohne Ergebnis, Auftrag offen“ (Lesewerkzeuge erneut aufrufen, Aktionen erst
+  prüfen). `WAMO_WERKZEUG_DOPPELT`: Dieselbe Öffnen-Aktion im selben Zug läuft nicht noch einmal (der Host fängt nur 6 s ab), eine
+  weitere Seite derselben Webseite bekommt einen Hinweis im Ergebnis, ab der vierten wird nicht mehr geöffnet; ein neuer
+  Beitrag der Person setzt zurück, gescheiterte Aufrufe zählen nicht. Die zwei Amazon-Suchen von 12:44:35 gehören zu zwei
+  Antworten des Modells hintereinander, nicht zu zwei gleichzeitigen Aufrufen; ob die Person beides wollte, zeigt das Log ohne
+  Inhalte nicht, deshalb wird nichts verboten. `WAMO_MARKER_FALLBACK` (`voice-core/marker_wache.py`): Fehlt der Satzende-Marker ●
+  (12:44:36 nach der Werkzeugrunde), gab Pipecat den Text erst am Ende der Antwort frei; jetzt sofort, ohne Textverlust.
+  `WAMO_LERNEN_HAUS_SECS` (Standard 15): Für Profile mit Claude-Zugang darf das Hausmodell für „lernen“ nur so lange brauchen
+  (gemma4-31b lief zweimal in die 45 s), danach 300 s Pause und gleich Claude. Verzögerungen im Protokoll: Zug 9 und 11 (+3,1 und
+  +3,7 s) sind ein ◐-Urteil nach dem Einwurf (erste Antwort 8 Token, 1,5 s Wartezeit, zweite Anfrage), Zug 14 (+2 s STT) und
+  Zug 8, 10 sind zu früh beendete Redebeiträge („weitergesprochen“), Zug 13 (+1,1 s) ist die Smart-Turn-Wartezeit. Wirken
+  erst mit den Messschaltern: `WAMO_RUECKMELDUNG_WERKZEUG` (Zug 10, Einwurf bei laufendem Werkzeug) und `WAMO_PAUSEN_PROMPT`
+  (Zug 9, 11). Harmlos: „No screen video transceiver“ (die Oberfläche sendet keinen Bildschirm) und „Media stream error“
+  beim Auflegen.
 - **Mikrofon-Wächter** (`ui/src/lib/mikrofon.ts`, `voice-core/audio_monitor.py`): Die Oberfläche misst die eigene Spur und
   warnt nach 3 s digitaler Stille, bei einer beendeten Spur ohne Ersatz, ohne Spur 5 s nach „Bot bereit“ und bei
   Mikrofonsperre durch Windows (Datenschutz für Desktop-Apps, `systemPreferences.getMediaAccessStatus`), jeweils mit

@@ -146,7 +146,37 @@ export type Markierung = {
   punkt?: Punkt;
 };
 
+/**
+ * Live-Bild des eigenen Laptops (voice-core/bildstrom.py). "bildstrom" meldet den Zustand, "bild" ist ein einzelnes JPEG
+ * (Base64, höchstens LIVE_BILD_B64_MAX Zeichen). Bilder werden nie gespeichert: nur im Arbeitsspeicher gezeichnet.
+ */
+export const LIVE_BILD_ZUSTAENDE = ["aus", "wartet", "laeuft", "pausiert"] as const;
+export const LIVE_BILD_B64_MAX = 150_000;
+export const LIVE_BILD_MONITOR_MAX = 16;
+export type LiveBildZustand = (typeof LIVE_BILD_ZUSTAENDE)[number];
+export type LiveBildMeldung = {
+  zustand: LiveBildZustand;
+  /** stabiler Code (nicht_erlaubt, schalter_aus, freigabe, vollbild, geschuetzt, ende, ...) */
+  grund?: string;
+  /** erklärender Satz des Kerns (ohne Bildinhalt) */
+  text?: string;
+  monitor?: number;
+  monitore?: number;
+  restS?: number;
+};
+export type LiveBildFrame = {
+  seq: number;
+  monitor: number;
+  monitore: number;
+  breite: number;
+  hoehe: number;
+  jpeg: string;
+  restS: number;
+};
+
 export type ServerMessage =
+  | ({ type: "bildstrom" } & LiveBildMeldung)
+  | ({ type: "bild" } & LiveBildFrame)
   | { type: "canvas"; item: CanvasItem }
   | ({ type: "markierung" } & Markierung)
   | ({ type: "aktivitaet" } & Pick<Activity, "id" | "name" | "detail" | "status">)
@@ -306,6 +336,19 @@ function canvasGrund(v: unknown): CanvasItem | null {
   }
 }
 
+const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const ganzIn = (v: unknown, von: number, bis: number): v is number => ganz(v) && v >= von && v <= bis;
+
+/** Ein Bild des Live-Bilds prüfen: JPEG-Kopf, Base64, Größengrenze, ganze Zahlen. Sonst null (nie ein Teilergebnis). */
+function liveBildFrame(m: Roh): LiveBildFrame | null {
+  const { jpeg } = m;
+  if (!isStr(jpeg) || jpeg.length < 8 || jpeg.length > LIVE_BILD_B64_MAX || !jpeg.startsWith("/9j/") || !B64.test(jpeg)) return null;
+  if (!ganzIn(m.seq, 1, 2 ** 31) || !ganzIn(m.monitor, 1, LIVE_BILD_MONITOR_MAX) || !ganzIn(m.monitore, 1, LIVE_BILD_MONITOR_MAX)) return null;
+  if (m.monitor > m.monitore) return null;
+  if (!ganzIn(m.breite, 1, 4096) || !ganzIn(m.hoehe, 1, 4096) || !ganzIn(m.rest_s, 0, 86_400)) return null;
+  return { seq: m.seq, monitor: m.monitor, monitore: m.monitore, breite: m.breite, hoehe: m.hoehe, jpeg, restS: m.rest_s };
+}
+
 /** Prüft eine Servernachricht und gibt sie typisiert zurück; alles Unbekannte wird null. */
 export function parseServerMessage(data: unknown): ServerMessage | null {
   if (!isObj(data) || !isStr(data.type)) return null;
@@ -314,6 +357,22 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
     case "canvas": {
       const item = canvasItem(m.item);
       return item ? { type: "canvas", item } : null;
+    }
+    case "bild": {
+      const frame = liveBildFrame(m);
+      return frame ? { type: "bild", ...frame } : null;
+    }
+    case "bildstrom": {
+      if (!oneOf(m.zustand, LIVE_BILD_ZUSTAENDE)) return null;
+      return {
+        type: "bildstrom",
+        zustand: m.zustand,
+        grund: isStr(m.grund) && /^[a-z_]{1,40}$/.test(m.grund) ? m.grund : undefined,
+        text: isStr(m.text) && m.text.trim() ? sauber(m.text.trim(), 300, false) : undefined,
+        monitor: ganzIn(m.monitor, 1, LIVE_BILD_MONITOR_MAX) && !(ganzIn(m.monitore, 1, LIVE_BILD_MONITOR_MAX) && m.monitor > m.monitore) ? m.monitor : undefined,
+        monitore: ganzIn(m.monitore, 1, LIVE_BILD_MONITOR_MAX) ? m.monitore : undefined,
+        restS: ganzIn(m.rest_s, 0, 86_400) ? m.rest_s : undefined,
+      };
     }
     case "markierung": {
       const mk = markierung(m);

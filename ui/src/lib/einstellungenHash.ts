@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useSyncExternalStore } from "react";
-import { hashFuer, parseHash, type AbschnittId, type HashZiel } from "@/lib/einstellungenAbschnitte";
+import { GERAETEVERWALTUNG_ID, hashFuer, parseHash, type AbschnittId, type HashZiel } from "@/lib/einstellungenAbschnitte";
 import {
   basisNachErsetzen,
   nachRueckschrittNochOffen,
@@ -123,6 +123,26 @@ export function einstellungenOeffnen(abschnitt: AbschnittId | null = null) {
   basis = 0;
   window.history.pushState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
   melden();
+}
+
+/**
+ * Zur Karte Geräteverwaltung (Geräte und PC): Seite und Abschnitt öffnen, dann die Karte in Sicht bringen und fokussieren.
+ * Die Karte entsteht erst mit dem Abschnitt; deshalb wird nach dem Zeichnen gesucht (kurz wiederholt, falls der Abschnitt
+ * noch lädt). Für Hinweise an Admins ("Gerät wartet auf Freigabe") und die Info-Seite.
+ */
+export function zurGeraeteverwaltung() {
+  einstellungenOeffnen("geraete");
+  let versuche = 0;
+  const suchen = () => {
+    const karte = document.getElementById(GERAETEVERWALTUNG_ID);
+    if (karte) {
+      karte.scrollIntoView({ block: "start", behavior: "auto" });
+      karte.focus({ preventScroll: true });
+    } else if (++versuche < 10) {
+      setTimeout(suchen, 60);
+    }
+  };
+  setTimeout(suchen, 60); // nach dem Fokus der Überschrift, den die Einstellungsseite beim Öffnen setzt
 }
 
 /**

@@ -1,0 +1,50 @@
+/* Live-Bild des eigenen Laptops (components/BildschirmAnsicht.tsx), WMC-Farben über die Variablen aus globals.css.
+   Regeln mit Präfix .lb- (Rot, Weiß, Schwarz, Grautöne; kein Blau). */
+.lb {
+  display: grid; gap: 12px; min-width: 0; margin: 0 0 16px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--rule); border-left: 4px solid var(--accent); border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+.lb-titel {
+  margin: 0; display: flex; align-items: center; gap: 8px;
+  font: 700 12px/1.2 var(--font-wmc); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft);
+}
+.lb-titel::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+.lb-text { margin: 0; font-size: 16px; line-height: 1.4; }
+.lb-hinweis { margin: 0; padding: 8px 10px; border-left: 4px solid var(--rule-strong); background: var(--surface); font-size: 15px; line-height: 1.4; }
+.lb-aktionen { display: flex; gap: 8px; flex-wrap: wrap; }
+.lb-klein { margin: 0; font-size: 14px; color: var(--ink-soft); }
+
+.lb-kopf { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
+.lb-zustand { margin: 0; display: flex; align-items: center; gap: 8px; font: 700 16px/1.3 var(--font-wmc); }
+.lb-rest { margin: 0; font-size: 15px; color: var(--ink-soft); }
+/* Zustand nie nur als Farbe: das Wort steht daneben. Läuft = roter Punkt, wartet und pausiert = Ring */
+.lb-punkt { flex: none; width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--rule-strong); }
+.lb-punkt[data-zustand="laeuft"] { background: var(--accent); box-shadow: none; }
+
+.lb-werkzeuge { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.lb-monitore button:disabled { opacity: 0.6; cursor: default; }
+.lb-zu { margin-left: auto; }
+
+.lb-rahmen {
+  position: relative; min-height: 120px;
+  border: 2px solid var(--ink); border-radius: 8px; background: var(--wmc-black, #000);
+}
+.lb-rahmen:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.lb-rahmen[data-lupe] { cursor: zoom-in; }
+.lb-bild { display: block; width: 100%; height: auto; border-radius: 6px; }
+.lb-rahmen[data-leer] .lb-bild { visibility: hidden; }
+.lb-platzhalter {
+  position: absolute; inset: 0; margin: 0; display: grid; place-items: center; padding: 16px; text-align: center;
+  color: var(--wmc-white, #fff); font: 700 17px/1.4 var(--font-wmc);
+}
+.lb-lupe {
+  position: absolute; width: 168px; height: 168px; pointer-events: none;
+  border: 3px solid var(--accent); border-radius: 50%; background: var(--wmc-black, #000);
+  box-shadow: 0 0 0 2px var(--wmc-white, #fff), 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+.lb-lupe[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .lb * { transition: none; animation: none; }
+}

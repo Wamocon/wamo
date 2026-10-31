@@ -43,9 +43,11 @@ def _kein_echtes_gateway(monkeypatch):
 
     llm_anbieter._cache_leeren()
     llm_anbieter._claude_cache.clear()
+    llm_anbieter._haus_pause.clear()
     modellzugang._versuche.clear()
     boss._probe_cache_leeren()
     yield
     llm_anbieter._cache_leeren()
     llm_anbieter._claude_cache.clear()
+    llm_anbieter._haus_pause.clear()
     boss._probe_cache_leeren()

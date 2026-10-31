@@ -18,3 +18,6 @@ Caddyfile text eol=lf
 *.pdf binary
 *.service text eol=lf
 *.timer text eol=lf
+*.vorlage text eol=lf
+*.beispiel text eol=lf
+*.toml text eol=lf

@@ -6,6 +6,21 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ## [Unveröffentlicht]
 
+### Hinzugefügt
+
+- Geräteverwaltung für Admins in den Einstellungen (Geräte und PC): Geräte freigeben, ablehnen, sperren, entsperren und
+  widerrufen per Oberfläche statt per SQL. Bestätigungsdialog mit Fingerabdruck, frischem Code des zweiten Faktors (höchstens
+  120 Sekunden alt) und Grund bei Sperre und Widerruf; Kern-API `GET /wamo/api/geraete/verwaltung` und
+  `POST /wamo/api/geraete/verwaltung/aktion`; Migration 0014 mit den Funktionen `geraet_entscheiden` und
+  `geraete_verwaltung_liste` (kein Update-Recht auf `devices` für den Kern).
+- Hinweise an Admins nennen den Weg über die Karte Geräteverwaltung statt des nicht vorhandenen Skripts `wamo_geraete.py`
+  (nur die Anzeige, die Texte der Migration 0002 bleiben unverändert) und führen mit einem Knopf zur Karte.
+
+### Geändert
+
+- Desktop-App: Electron von 44.5.1 auf 44.10.1 angehoben (schließt den Hinweis zu den Zwischenzertifikaten der Web-PKI aus
+  `npm audit`); Tests, Installer-Bau und Fuses unverändert grün.
+
 ## [0.1.0] - 2026-10-22
 
 Erstes Release: der Stand, auf dem alle Pakete (`ui`, `desktop`, `voice-core`, `host`, `geraete`) stehen.

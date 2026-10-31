@@ -39,7 +39,7 @@ export const ABSCHNITTE: readonly Abschnitt[] = [
   { id: "verbrauch", titel: "Verbrauch", kurz: "Kontingent deines Claude-Abos", nurAdmin: true },
   { id: "sprache", titel: "Sprache und Ton", kurz: "Mikrofon, Hören und Stimme" },
   { id: "darstellung", titel: "Darstellung", kurz: "Normal, Fokus, Zentrale und Nacht" },
-  { id: "geraete", titel: "Geräte und PC", kurz: "Verbindungen, PC-Steuerung und Betriebsart" },
+  { id: "geraete", titel: "Geräte und PC", kurz: "Verbindungen, Geräteverwaltung, PC-Steuerung und Betriebsart" },
   { id: "teilen", titel: "Teilen", kurz: "Geteilte Dokumente und Dateien" },
   { id: "info", titel: "Info", kurz: "Version, Kern und Hinweise" },
 ];
@@ -103,10 +103,14 @@ export function zurueckZiel(wirksam: AbschnittId | null, zweispaltig: boolean): 
 }
 
 // ---------- Geräte und PC ----------
-export type GeraeteBlock = "status" | "pc" | "betriebsart" | "einrichtung";
+export type GeraeteBlock = "status" | "verwaltung" | "pc" | "betriebsart" | "einrichtung";
+
+/** Kennung der Karte Geräteverwaltung im Dokument: Hinweise und Info springen hierhin (lib/einstellungenHash.ts). */
+export const GERAETEVERWALTUNG_ID = "geraeteverwaltung";
 
 /**
- * Blöcke des Abschnitts "Geräte und PC": der Status der Verbindungen sieht jeder. PC-Steuerung nur der Admin (im
+ * Blöcke des Abschnitts "Geräte und PC": der Status der Verbindungen sieht jeder. Die Geräteverwaltung (Freigeben,
+ * Sperren, Widerrufen) und die PC-Steuerung nur der Admin (die PC-Steuerung im
  * Browser auf dem Server mit dem Hinweis, dass sie zur Desktop-App gehört). Die Betriebsart gibt es nur, wo es etwas zu
  * wählen gibt (Büro eingerichtet und kein Browser auf dem Server). Die Einrichtung des Geräts gibt es nur in der
  * Desktop-App.
@@ -118,7 +122,7 @@ export function geraeteBloecke(o: {
   bueroVerfuegbar: boolean;
 }): readonly GeraeteBlock[] {
   const bloecke: GeraeteBlock[] = ["status"];
-  if (o.rolle === "admin") bloecke.push("pc");
+  if (o.rolle === "admin") bloecke.push("verwaltung", "pc");
   if (o.bueroVerfuegbar && !o.serverBrowser) bloecke.push("betriebsart");
   if (o.desktop) bloecke.push("einrichtung");
   return bloecke;

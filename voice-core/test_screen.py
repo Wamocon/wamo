@@ -69,3 +69,71 @@ async def test_locate_rechnet_nach_dem_tatsaechlichen_anbieter(monkeypatch, wahl
     assert (found["gefunden"], found["x"], found["y"]) == erwartet
     assert gesehen["schema"]["properties"]["x"]["type"] == "number"
     assert ("0 bis 1000" in gesehen["system"]) is (wahl.anbieter == "litellm")
+
+
+# ---------- Fenster statt Monitor, Hinweise zur Werkzeugwahl ----------
+class _Params:
+    def __init__(self, arguments):
+        self.arguments, self.result = arguments, None
+
+    async def result_callback(self, wert):
+        self.result = wert
+
+
+class _Llm:
+    def __init__(self):
+        self.handler = {}
+
+    def register_function(self, name, handler, **_kw):
+        self.handler[name] = handler
+
+
+async def test_shot_gibt_fenster_an_den_host_nur_wenn_gesetzt(monkeypatch):
+    aufrufe = []
+
+    async def host(_client, name, args):
+        aufrufe.append((name, args))
+        return json.dumps({"status": "success", **SHOT})
+
+    monkeypatch.setattr(screen, "call_host_tool", host)
+    await screen._shot(None)
+    await screen._shot(None, "Chrome")
+    assert aufrufe == [("bildschirmfoto", {"monitor": 0}), ("bildschirmfoto", {"monitor": 0, "fenster": "Chrome"})]
+
+
+async def test_describe_ohne_fenster_ruft_shot_wie_bisher(monkeypatch):
+    gesehen = []
+
+    async def foto(*args):
+        gesehen.append(args)
+        return SHOT
+
+    async def anfrage(baustein, *, zugang, system, inhalt, max_tokens):
+        return la.Antwort("Ein Browser.", "fertig", CLAUDE)
+
+    monkeypatch.setattr(screen, "_shot", foto)
+    monkeypatch.setattr(screen, "anfrage", anfrage)
+    zugang = la.Zugang.haus("0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c")
+    await screen.describe(None, "Was ist offen?", zugang)
+    await screen.describe(None, "Was ist offen?", zugang, "Chrome")
+    assert gesehen == [(None,), (None, "Chrome")]
+
+
+async def test_host_lehnt_foto_ab_modell_bekommt_den_grund(monkeypatch):
+    async def host(_client, name, args):
+        return json.dumps({"status": "rejected", "summary": "Kein offenes Fenster passt zu 'Foo'"})
+
+    monkeypatch.setattr(screen, "call_host_tool", host)
+    llm = _Llm()
+    screen.register_screen_tools(llm, lambda: object(), lambda: True, lambda: None,
+                                 zugang=la.Zugang.haus("0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c"))
+    p = _Params({"frage": "Was steht da?", "fenster": "Foo"})
+    await llm.handler["bildschirm_ansehen"](p)
+    assert p.result["status"] == "rejected" and "Foo" in p.result["antwort"]
+
+
+def test_bildschirm_ansehen_nennt_erst_text_dann_foto():
+    schema = next(s for s in screen.SCHEMAS if s.name == "bildschirm_ansehen")
+    for wort in ("browser_lesen", "elemente_auflisten", "Text nicht reicht", "fenster"):
+        assert wort in schema.description
+    assert "fenster" in schema.properties

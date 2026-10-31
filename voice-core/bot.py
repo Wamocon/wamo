@@ -20,6 +20,7 @@ Nachrichten an die Oberfläche (RTVI-Servernachrichten, zusätzlich zu canvas, a
   {"type": "profil", "name", "rolle"}                              beim Verbinden
   {"type": "betrieb", "modus", "ort", "modelle", "pc", "pc_latenz_ms"?}
                                                                    beim Verbinden und wenn der PC-Host steht
+  {"type": "bildstrom", ...} und {"type": "bild", ...}             Live-Bild des eigenen Laptops (bildstrom.py)
   {"type": "gemerkt", "bereich", "status", "text", "id"}           nach jedem gespeicherten Gedächtniseintrag
   {"type": "mikrofon", "zustand": "still"|"fehlt"|"ok", "sekunden"}
                                                                    10 s nur digitale Stille vom Mikrofon, "fehlt": 5 s gar
@@ -29,6 +30,8 @@ Nachrichten von der Oberfläche:
   {"type": "freigabe", "data": {"job": "pc", "id", "entscheidung"}}
                                           Freigabe einer kritischen PC-Aktion (pc_freigaben.py; nur admin, PC-Steuerung
                                           an, Sitzung hält die PC-Sperre), geprüft vor den Entwicklungsaufträgen
+  {"type": "bildstrom", "data": {"aktion", ...}}
+                                          Live-Bild des eigenen Laptops (bildstrom.py; nur admin mit gebundenem Gerät)
   {"type": "freigabe", "data": {...}}     sonst Freigabe für Entwicklungsaufträge (nur admin)
 Live-Untertitel: Pipecat sendet bot-output (mit Wortfortschritt aus den Soniox-Zeitstempeln) und
 user-transcription von selbst; RTVIObserverParams bleiben dafür auf dem Standard (eingeschaltet).
@@ -108,6 +111,7 @@ from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from ja_waechter import JaWaechter, ja_waechter_an
 from turn_wache import TurnWache
+from werkzeug_wache import AbbruchHinweis, DoppelWache, abbruch_hinweis_an, umhuellen, werkzeug_doppelt_an
 from wartesatz import Wartesatz, wartesatz_an, wartesatz_secs
 from pc_host import (
     call_host_tool,
@@ -120,6 +124,7 @@ from pc_host import (
     register_modus,
     sperre_aus_ergebnis,
 )
+from bildstrom import NICHT_ERLAUBT as BILD_NICHT_ERLAUBT, Bildstrom
 from pc_freigaben import PcFreigaben
 from persona import build_system_prompt
 from screen import PC_OFF, foto as screen_foto, register_screen_tools
@@ -145,6 +150,8 @@ load_dotenv(override=True)
 def _configure_logging() -> None:
     """Standard INFO (WAMO_LOG_LEVEL): INFO enthält keine Gesprächsinhalte, die stehen nur in DEBUG."""
     level = (os.getenv("WAMO_LOG_LEVEL") or "INFO").strip().upper()
+    if level == "TRACE":  # TRACE schriebe ganze Frames (auch Bilder des Live-Bilds) ins Log: höchstens DEBUG
+        level = "DEBUG"
     logger.remove()
     # diagnose=False: loguru schriebe sonst bei Ausnahmen die Werte lokaler Variablen (Tokens, Schlüssel) ins Log
     try:
@@ -354,10 +361,13 @@ def rechnername(system_info_text: str) -> str | None:
 
 
 def gate_pc_tools(
-    schemas: list[FunctionSchema], allowed: Callable[[], bool], on_foreign_content: Callable[[], None]
+    schemas: list[FunctionSchema], allowed: Callable[[], bool], on_foreign_content: Callable[[], None],
+    doppel: DoppelWache | None = None,
 ) -> list[FunctionSchema]:
     """Hüllt die Handler der Host-Werkzeuge: bei ausgeschalteter PC-Steuerung eine klare Absage,
-    sonst Aufruf des Originals. Ergebnisse vom PC (Fenstertitel, Ausgaben) gelten als Fremdinhalt."""
+    sonst Aufruf des Originals. Ergebnisse vom PC (Fenstertitel, Ausgaben) gelten als Fremdinhalt.
+    doppel (WAMO_WERKZEUG_DOPPELT): derselbe Öffnen-Aufruf im selben Zug läuft nicht noch einmal, eine weitere Seite derselben
+    Webseite bekommt einen Hinweis im Ergebnis (werkzeug_wache.py)."""
     gated = []
     for schema in schemas:
         original = schema.handler
@@ -366,8 +376,20 @@ def gate_pc_tools(
             if not allowed():
                 await params.result_callback(PC_OFF)
                 return
+            if doppel is not None:
+                urteil = doppel.pruefen(params.function_name, params.arguments)
+                if urteil.aktion == "ueberspringen":
+                    await params.result_callback(urteil.ergebnis)
+                    return
+                if urteil.eintrag is not None:
+                    params = umhuellen(params, doppel, urteil)
             on_foreign_content()
-            await _original(params)
+            try:
+                await _original(params)
+            except BaseException:  # Ausnahme oder Abbruch: kein Ergebnis, die Aktion gilt nicht als getan
+                if doppel is not None and params.arguments:
+                    doppel.misserfolg(params.function_name, params.arguments)
+                raise
 
         if original is not None:
             handler.__dict__.update(getattr(original, "__dict__", {}))  # @tool_options übernehmen
@@ -675,6 +697,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
     # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
     wache = TurnWache()
+    # Doppelte Aufrufe im selben Zug und abgebrochene Werkzeuge (werkzeug_wache.py)
+    doppel = DoppelWache(turn_nr=lambda: turn.turn_nr) if werkzeug_doppelt_an() else None
 
     def freigabe_offen() -> bool:
         """Wartet eine Freigabe (PC-Freigabe-Karte oder Entwicklungsauftrag)? Dann greift der Ja-Wächter nie."""
@@ -697,9 +721,11 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             user_agg,
             soft_gate,
             *([JaWaechter(offen=freigabe_offen, gefaerbt=lambda: turn.tainted)] if ja_waechter_an() else []),  # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER)
+            *([AbbruchHinweis(name="AbbruchHinweisVorne")] if abbruch_hinweis_an() else []),  # CANCELLED im Verlauf erklären (WAMO_ABBRUCH_HINWEIS)
             wache.vorne(),
             llm,
             wache.hinten(),
+            *([AbbruchHinweis(name="AbbruchHinweisHinten")] if abbruch_hinweis_an() else []),  # Anfragen von hinten laufen stromaufwärts: erst hier, dann die Wache
             *([Wartesatz(nach_secs=wartesatz_secs())] if wartesatz_an() else []),  # langer Werkzeugaufruf: kurzer Satz
             aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
             tts,
@@ -742,12 +768,27 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                                    modell_modus=modus_wirksam(zugang), modell_quelle=zugang.quelle,
                                    modell_hinweis=llm_wahl.grund))
 
+    async def ansage(text: str) -> None:
+        """Kurze Meldung im Gespräch (Live-Bild an oder aus): wird gesprochen, das Modell erfährt es ohne zu antworten."""
+        if state["live"]:
+            await task.queue_frames([TTSSpeakFrame(text),
+                                     LLMMessagesAppendFrame(messages=[{"role": "user", "content": f"Systemhinweis: {text}"}],
+                                                            run_llm=False)])
+
+    # Live-Bild des eigenen Laptops: nur Admin mit gebundenem Gerät (Tunnel je Gerät), PC-Steuerung an, Sperre gehalten
+    bild = Bildstrom(
+        client=lambda: pc_client, darf=lambda: bool(is_admin and geraet_zugang is not None and pc_allowed()),
+        senden=send, ansage=ansage, aufruf=call_host_tool,
+    ) if (pc_client is not None and is_admin and geraet_zugang is not None) else None
+
     async def set_sperre(gesperrt: bool) -> None:
         """Bildschirm am PC gesperrt oder entsperrt (Werkzeugergebnis, Tunnel-Probe, system_info)."""
         if gesperrt == state["pc_gesperrt"]:
             return
         state["pc_gesperrt"] = gesperrt
         logger.info("PC-Bildschirm {}", "gesperrt" if gesperrt else "entsperrt")
+        if gesperrt and bild is not None:
+            await bild.stoppen("Der Bildschirm am Laptop ist gesperrt. Das Live-Bild ist beendet.")
         # Lokal (stdio) gibt es keine Tunnel-Probe: solange gesperrt, regelmäßig nachfragen, damit die Anzeige
         # nach dem Entsperren nicht stehen bleibt
         probe = state["sperr_probe"]
@@ -783,6 +824,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def melde_llm(text: str) -> None:
         """Kurze Nachricht an das Sprachmodell, das dann antwortet (Ergebnis einer PC-Freigabe)."""
         if state["live"]:
+            turn.turn_nr += 1  # eine Meldung von WAMO selbst (z. B. nach einer Freigabe) ist ein neuer Anlass, kein Doppelaufruf
             await task.queue_frames([LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)])
 
     # Freigaben kritischer PC-Aktionen (pc_freigaben.py): nur mit PC-Werkzeugen; die Karte entsteht in activity.py
@@ -832,7 +874,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             return False
         latenz = None
         if pc:
-            pc_schemas = gate_pc_tools(list(pc.standard_tools), pc_allowed, turn.taint)
+            pc_schemas = gate_pc_tools(list(pc.standard_tools), pc_allowed, turn.taint, doppel)
             context.set_tools(ToolsSchema(standard_tools=[*standard_tools, *pc_schemas, *screen_schemas]))
             state["pc_tools"] = True
             started = time.monotonic()
@@ -854,6 +896,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         state["pc_steuerung"] = False
         sitzung.pc_lease_freigeben()
         state["pc_tools"] = False
+        if bild is not None:
+            await bild.stoppen("Dein Laptop wurde gesperrt oder die Freigabe wurde widerrufen. Das Live-Bild ist beendet.")
         wachter = state["pc_waechter"]
         if wachter is not None and wachter is not asyncio.current_task():
             wachter.cancel()
@@ -925,8 +969,16 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 an = False
                 sitzung.pc_lease_freigeben()
             state["pc_steuerung"] = an
+            if not an and bild is not None:
+                await bild.stoppen("Die PC-Steuerung ist aus. Das Live-Bild ist beendet.")
             logger.info("PC-Steuerung {}{}", "an" if an else "aus", " (andere Sitzung steuert)" if state["pc_belegt"] else "")
             await send_betrieb()
+        elif msg.type == "bildstrom":
+            # Live-Bild: ohne Admin, gebundenes Gerät und PC-Steuerung gibt es nichts (Bilder sendet nur bildstrom.py)
+            if bild is None:
+                await send({"type": "bildstrom", "zustand": "aus", "grund": "nicht_erlaubt", "text": BILD_NICHT_ERLAUBT})
+            else:
+                await bild.nachricht(data)
         elif msg.type == "freigabe" and data.get("job") == "pc":
             # PC-Freigabe vor den Entwicklungsaufträgen. Ohne PC-Werkzeuge (z. B. Mitglied) gibt es keine.
             if freigaben is None:
@@ -1037,6 +1089,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         """Eine neue Sitzung desselben Profils hat übernommen (sitzungen.py). Die PC-Sperre ist schon weg; hier nur
         melden. Getrennt wird von außen; endet die Verbindung nicht von selbst, räumt der Rückfall unten auf."""
         state["pc_steuerung"] = False
+        if bild is not None:
+            await bild.stoppen(grund, melden=False)
         logger.info("Sitzung abgelöst: {}", grund)
         with contextlib.suppress(Exception):
             await send({"type": "sitzung_beendet", "grund": grund})
@@ -1067,6 +1121,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 hintergrund.cancel()
         state["pc_steuerung"] = False
         sitzung.pc_lease_freigeben()
+        if bild is not None:  # Trennen, Abmelden, Pipeline-Ende: das Live-Bild endet mit der Sitzung (Platz im Host frei)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(bild.stoppen("Die Sitzung ist beendet.", melden=False), CLEANUP_DB_TIMEOUT_SECS)
         if cancel_task:
             with contextlib.suppress(Exception):
                 await task.cancel()

@@ -59,6 +59,11 @@ function popoverOffen(): boolean {
   }
 }
 
+/** Ist ein modales Dialogfenster offen? Dann schließt Escape nur dieses, nicht die Seite. */
+function dialogOffen(): boolean {
+  return document.querySelector("dialog[open]") !== null;
+}
+
 /**
  * Tippt die Person gerade in einem Feld, in dem Escape etwas anderes bedeutet oder etwas verloren ginge? Mehrzeilige
  * Texte (Editor für geteilte Dokumente) und Felder mit Inhalt (Schlüssel, Nachricht) schließen die Seite nicht.
@@ -131,7 +136,8 @@ export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props)
   useEffect(() => {
     const beiTaste = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
-      if (popoverOffen() || tippt(e.target)) return;
+      // ein offener Bestätigungsdialog (Geräteverwaltung) gehört sich selbst; der Fokus kann während einer Anfrage auf body liegen
+      if (popoverOffen() || dialogOffen() || tippt(e.target)) return;
       e.preventDefault();
       zurueckRef.current();
     };

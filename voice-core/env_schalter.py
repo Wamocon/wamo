@@ -7,10 +7,16 @@ Lernen ohne Momentaufnahmen ist an, weil es nicht im Sprachpfad liegt):
   WAMO_TTS_SATZLEERZEICHEN     Leerzeichen am Ende jedes Satzes, damit Soniox das Satzzeichen nicht vorliest (soniox_tts.py)
   WAMO_PERSONA_RUECKFRAGEN     Persona: Rückfragen begrenzen, Aufträge am Stück (persona.py)
   WAMO_PERSONA_PC_ORDNER       Persona: Ordner des PCs nie raten, per system_info erfragen (persona.py)
+  WAMO_PERSONA_BROWSER         Persona: Browserinhalte zuerst mit browser_lesen lesen, Foto nur wenn Text nicht reicht (Standard an)
   WAMO_PAUSEN_PROMPT           Texte nach einer Pause ohne "Ich bin noch da" (bot.py, pause_prompts)
   WAMO_LERNEN_OHNE_MOMENT      Lernen ohne Momentaufnahmen und Aufgabenstände (learning.py, Standard an)
   WAMO_RUECKMELDUNG_WERKZEUG   Rückmeldelaut bei laufendem Werkzeug startet keinen Zug (soft_interrupt.py)
   WAMO_JA_WAECHTER             Ja auf eine Rückfrage führt den Auftrag aus, statt erneut zu fragen (ja_waechter.py)
+Fehlerbehebungen aus der Sitzung vom 31.10.2026 (Standard an, sie ändern kein Sprachverhalten, nur Fehlerfälle):
+  WAMO_ABBRUCH_HINWEIS         abgebrochenes Werkzeug im Verlauf als "ohne Ergebnis, Auftrag offen" erklären (werkzeug_wache.py)
+  WAMO_WERKZEUG_DOPPELT        dieselbe Öffnen-Aktion im selben Zug nicht wiederholen, weitere Seite mit Hinweis (werkzeug_wache.py)
+  WAMO_MARKER_FALLBACK         fehlt der Satzende-Marker, den Text sofort freigeben statt am Antwortende (marker_wache.py)
+  WAMO_LERNEN_HAUS_SECS        Zahl: so lange darf ein Hausmodell für "lernen" brauchen, bevor Claude übernimmt (Standard 15, 0 = aus)
 Zahlen und Werte ohne Schalterform (Stimme, Tempo, Pausen): SONIOX_VOICE, SONIOX_SPEED (0,7 bis 1,3) und
 SONIOX_REDUCE_SILENCE (an/aus); leer lässt die Standardeinstellung von Soniox (soniox_tts.stimme_einstellung)."""
 

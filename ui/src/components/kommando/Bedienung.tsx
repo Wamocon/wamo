@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useRef, useState, type FormEvent } from "react";
+import { useLiveBildErlaubt } from "@/components/BildschirmAnsicht";
 import { VoiceLine } from "@/components/VoiceLine";
 import { useSelect } from "@/lib/store";
 import { eingabeHinweis, MAX_TEXT } from "@/lib/textEingabe";
@@ -111,6 +112,7 @@ const Schnellaktionen = memo(function Schnellaktionen({
   const textMoeglich = useSelect(wamo, (s) => s.textMoeglich);
   const { gewaehlt } = useEffektiveDarstellung();
   const { zeigeCanvas } = useRahmen();
+  const liveBild = useLiveBildErlaubt();
   const umschalten = (d: Darstellung) => {
     darstellungSetzen(gewaehlt === d ? "normal" : d);
     // Fokus blendet diese Chips aus: der Tastaturfokus geht auf den aktiven Schalter der Darstellungswahl
@@ -145,6 +147,13 @@ const Schnellaktionen = memo(function Schnellaktionen({
           Canvas
         </button>
       </li>
+      {liveBild && (
+        <li>
+          <button type="button" className="kz-chip" onClick={zeigeCanvas}>
+            Live-Bild
+          </button>
+        </li>
+      )}
       <li>
         <button type="button" className="kz-chip" aria-pressed={gewaehlt === "fokus"} onClick={() => umschalten("fokus")}>
           Fokus

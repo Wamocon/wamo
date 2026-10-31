@@ -1,0 +1,58 @@
+# Remote-Desktop-Gateway (Container wamo-rd-web auf Sokrates-2, Apache Guacamole) über HTTPS. Vorlage: wamo-rd-einrichten.sh setzt
+# die Platzhalter ein und installiert das Ergebnis als wamo-rd.caddy nach /home/wamocon/wamo-tls/caddy/etc/kern/ (die Datei wird
+# vom Caddyfile über "import /etc/caddy/kern/*.caddy" geladen). Rückweg: wamo-rd-rueckweg.sh (Datei weg, caddy reload).
+#
+# Eigene Herkunft (Port 55446), getrennt von der Oberfläche (55445): Der Speicher der Oberfläche mit dem WAMO-Token ist für diese
+# Seite unsichtbar. Die Seite wird nie in einem iframe gezeigt (frame-ancestors 'none').
+#
+# Platzhalter (nie von Hand ändern, sondern das Skript neu ausführen):
+#   __ADRESSE__   Site-Adresse, https://192.168.178.136:55446
+#   __TLS__       "tls internal" (Zertifikat der WAMO-CA)
+#   __WSS__       dieselbe Adresse mit wss:// (WebSocket-Tunnel, für connect-src der CSP)
+#
+# 'unsafe-eval' in script-src ist nötig: Die Oberfläche von Guacamole (AngularJS) wertet ihre Vorlagen mit new Function aus
+# (im Browser belegt: ohne die Erlaubnis bleibt die Seite leer). Es gibt kein 'unsafe-inline' für Skripte, keine fremde Quelle,
+# und diese Herkunft hält weder ein WAMO-Token noch sonstige Geheimnisse; sie kennt nur das eigene Sitzungstoken.
+#
+# Angemeldet wird nicht über ein Formular: Das Einreichen eines Anmelde-JSON (POST /api/tokens mit data=...) macht allein der
+# Zugangsdienst im internen Netz; der Browser bekommt nur das Sitzungstoken. Guacamole nimmt JSON nur aus der festen Adresse des
+# Zugangsdienstes an (JSON_TRUSTED_NETWORKS, gilt für die echte Absenderadresse, nicht die von Caddy) und kennt sonst keine
+# Anmeldeart. POST /api/tokens selbst bleibt offen, weil die Oberfläche damit ihr Sitzungstoken erneuert (token=...).
+__ADRESSE__ {
+	__TLS__
+	encode zstd gzip
+	request_body {
+		max_size 64KB
+	}
+	# Alle Kopfzeilen mit ">" werden nach dem Upstream gesetzt und können von Tomcat nicht überschrieben werden.
+	header {
+		>-Server
+		>-X-Powered-By
+		>Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; media-src 'self'; connect-src 'self' __WSS__; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'"
+		>Referrer-Policy "no-referrer"
+		>X-Content-Type-Options "nosniff"
+		>X-Frame-Options "DENY"
+		>Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-read=(), clipboard-write=(), display-capture=()"
+		>Cross-Origin-Opener-Policy "same-origin"
+		>Cross-Origin-Resource-Policy "same-origin"
+		>Cache-Control "no-store"
+	}
+	# route erzwingt die Reihenfolge: erst abweisen, dann durchreichen
+	route {
+		# app.css (Zusatz-Stile aus Erweiterungen) kommt von Guacamole ohne Typ; mit nosniff würde der Browser sie sonst melden
+		@appcss path /app.css
+		header @appcss >Content-Type "text/css; charset=utf-8"
+		@methode not method GET HEAD POST DELETE
+		respond @methode "Methode nicht erlaubt" 405
+		reverse_proxy {$WAMO_RD_UPSTREAM:wamo-rd-web:8080} {
+			# Der WebSocket-Tunnel und die Bildschirmdaten sofort weitergeben
+			flush_interval -1
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 60s
+			}
+			# Offene Tunnel bei "caddy reload" nicht sofort trennen, aber auch nicht endlos (Obergrenze der Sitzung: 4 Stunden)
+			stream_close_delay 5m
+		}
+	}
+}
