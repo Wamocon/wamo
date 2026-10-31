@@ -172,6 +172,43 @@ class LearningPromptTests(unittest.TestCase):
         self.assertIsNone(FORBIDDEN.search(s))
 
 
+
+class GespraechTests(unittest.TestCase):
+    """WAMO_PERSONA_GESPRAECH: Gesprächsführung, Standard aus."""
+
+    def bauen(self, **kw):
+        return build_system_prompt("Erika Muster", "du", rueckfragen=False, pc_ordner=False, browser=False, tab=False, **kw)
+
+    def test_standard_aus_und_prompt_unveraendert(self):
+        import os
+        from unittest import mock
+        from persona import persona_gespraech_an
+        with mock.patch.dict(os.environ, {"WAMO_PERSONA_GESPRAECH": ""}):
+            self.assertFalse(persona_gespraech_an())
+            self.assertNotIn("Gesprächsführung", self.bauen())
+        self.assertEqual(self.bauen(gespraech=False), self.bauen())
+
+    def test_block_kommt_mit_dem_schalter_vor_den_werkzeugen(self):
+        p = self.bauen(gespraech=True)
+        self.assertIn("Gesprächsführung", p)
+        self.assertIn("gilt nur die letzte Fassung", p)
+        self.assertLess(p.index("Gesprächsführung"), p.index("Werkzeuge\n"))
+
+    def test_schalter_wird_aus_der_umgebung_gelesen(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"WAMO_PERSONA_GESPRAECH": "an"}):
+            self.assertIn("Gesprächsführung", self.bauen())
+
+    def test_keine_gedankenstriche_und_freigabe_bleibt(self):
+        p = self.bauen(gespraech=True)
+        self.assertNotIn("{name}", p)
+        self.assertNotIn(" – ", p)
+        self.assertNotIn("—", p)
+        self.assertNotIn(" - ", p.replace("\n- ", "\n"))
+        self.assertIn("Eine Freigabe in der\n  Oberfläche ersetzt das nie", p)
+
+
 if __name__ == "__main__":
     unittest.main()
 

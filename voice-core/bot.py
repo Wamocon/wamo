@@ -112,7 +112,7 @@ from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from ja_waechter import JaWaechter, ja_waechter_an
 from turn_wache import TurnWache
 from werkzeug_wache import AbbruchHinweis, DoppelWache, abbruch_hinweis_an, umhuellen, werkzeug_doppelt_an
-from wartesatz import Wartesatz, wartesatz_an, wartesatz_secs
+from wartesatz import Wartesatz, wartesatz_an, wartesatz_modell_an, wartesatz_modell_secs, wartesatz_secs
 from pc_host import (
     call_host_tool,
     host_client,
@@ -726,7 +726,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             llm,
             wache.hinten(),
             *([AbbruchHinweis(name="AbbruchHinweisHinten")] if abbruch_hinweis_an() else []),  # Anfragen von hinten laufen stromaufwärts: erst hier, dann die Wache
-            *([Wartesatz(nach_secs=wartesatz_secs())] if wartesatz_an() else []),  # langer Werkzeugaufruf: kurzer Satz
+            *([Wartesatz(nach_secs=wartesatz_secs(), werkzeug=wartesatz_an(),
+                         modell_secs=wartesatz_modell_secs() if wartesatz_modell_an() else None)]
+              if (wartesatz_an() or wartesatz_modell_an()) else []),  # langer Werkzeugaufruf oder langsames Modell: kurzer Satz
             aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
             tts,
             transport.output(),
