@@ -887,6 +887,11 @@ Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGua
 - **Ziele:** Die Zielliste liegt als root-Datei auf Sokrates-2 (`/etc/wamo-rd/ziele.toml`), aus der Anfrage kommt nur der Name.
   Angemeldet wird am Spark als Konto `wamo-rd` ohne sudo, docker und SSH. Auf Sokrates-2 darf dieses Konto per Ausgangsregel
   (`infra/sparks/wamo-rd-ausgang-einrichten.sh`) nur das Internet erreichen, nicht Kern, Datenbank, LAN oder andere Sparks.
+- **Weitere Ziele (Sokrates-1, Caesar):** Dasselbe Konto und xrdp wie auf Sokrates-2, dazu Port 3389 nur für die LAN-Adresse von
+  Sokrates-2 (`192.168.178.136/32`) und die Ausgangsregel mit `--gateway 192.168.178.136/32`. Das Passwort entsteht am Ziel und
+  geht ohne Bildschirm und ohne Argument per Pipe an Sokrates-2 (`wamo-rd-konto-einrichten.sh --fern`, dort `--uebernehmen --ziel NAME`,
+  Aufruf im Kopf des Skripts). Danach das Ziel in `/etc/wamo-rd/ziele.toml` eintragen, `sudo systemctl reload wamo-firewall` und
+  `docker restart wamo-rd-web wamo-rd-zugang`.
 - **Einschalten:** `WAMO_RD_AKTIV=ja` im Kern, erst nach dem Einrichten des Gateways (`wamo-rd-einrichten.sh`) und mit den Proben
   aus `wamo_rd_rauchtest.py`. Ohne den Schalter melden die Routen, dass der Fernzugriff nicht eingerichtet ist.
 - **Ein Code, ein Start:** Der Code der Authenticator-App gilt für genau einen Start (die Datenbank lehnt einen schon verwendeten
