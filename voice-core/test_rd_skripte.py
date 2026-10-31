@@ -118,6 +118,8 @@ class Werkstatt(unittest.TestCase):
         (self.att / f"{schluessel}.out").write_text(text)
         if rc is not None:
             (self.att / f"{schluessel}.rc").write_text(str(rc))
+        else:
+            (self.att / f"{schluessel}.rc").unlink(missing_ok=True)
 
     def aufrufe(self):
         return self.log.read_text().splitlines()
@@ -146,8 +148,10 @@ class AllgemeinTests(unittest.TestCase):
             self.assertIsNone(re.search(r"\beval\b", code), name)
             self.assertIsNone(re.search(r"\brm\s+-[a-z]*r[a-z]*f?\s+(/|\$\w+\s)", code), name)
             # Nichts wird von selbst aktualisiert (Hinweise in echo-Zeilen sind erlaubt, Aufrufe nicht)
-            ohne_echo = "\n".join(z for z in code.splitlines() if not z.lstrip().startswith("echo"))
-            self.assertIsNone(re.search(r"\bapt(-get)?\s+(install|upgrade|dist-upgrade|full-upgrade)\b", ohne_echo), name)
+            ohne_echo = "\n".join(z for z in code.splitlines() if not z.lstrip().startswith(("echo", "fehler")))
+            # ein Aufruf steht am Zeilenanfang oder nach ; && | sudo tu; Hinweistexte in Anführungszeichen zählen nicht
+            self.assertIsNone(re.search(r"(^|[;&|]\s*|\bsudo\s+|\btu\s+)apt(-get)?\s+(install|upgrade|dist-upgrade|full-upgrade)\b",
+                                        re.sub(r'"[^"\n]*"', '""', ohne_echo), flags=re.M), name)
             self.assertIsNone(re.search(r"\bunattended", code), name)
             # kein Passwort in Argumenten oder Ausgabe
             self.assertIsNone(re.search(r"echo[^\n]*\$\{?(PASSWORT|PW|passwort)", code), name)
@@ -608,6 +612,323 @@ class EinrichtenTrockenTests(Werkstatt):
         self.assertNotIn("docker volume prune", code)
         self.assertNotIn("docker network prune", code)
         self.assertNotIn("wamo-caddy_default", code)
+
+
+# ====================================================================================== Stufe 2: Konto und Ziel (Sokrates-2)
+KONTO_SKRIPT = "infra/sparks/wamo-rd-konto-einrichten.sh"
+ZIEL_SKRIPT = "infra/sparks/wamo-rd-ziel-einrichten.sh"
+
+# id: das Konto "existiert", sobald die Datei konto.da im Attrappen-Ordner liegt (useradd legt sie an)
+ID_ATTRAPPE = r"""#!/bin/sh
+echo "id $*" >> "$ATTRAPPE_LOG"
+case "$*" in "-u"|"-un"|"-g") echo 1000; exit 0 ;; esac
+[ -f "$ATTRAPPE_DIR/konto.da" ] || exit 1
+case "$*" in
+  "-nG wamo-rd") cat "$ATTRAPPE_DIR/id.gruppen" 2>/dev/null || echo "wamo-rd wamo-rd-ts" ;;
+  *) echo "uid=998(wamo-rd) gid=998(wamo-rd) groups=998(wamo-rd),999(wamo-rd-ts)" ;;
+esac
+exit 0
+"""
+USERADD_ATTRAPPE = r"""#!/bin/sh
+echo "useradd $*" >> "$ATTRAPPE_LOG"
+touch "$ATTRAPPE_DIR/konto.da"
+"""
+# chpasswd: legt nur ab, WAS auf stdin ankam (der Test prüft damit, dass das Passwort nie anderswo auftaucht)
+CHPASSWD_ATTRAPPE = r"""#!/bin/sh
+echo "chpasswd" >> "$ATTRAPPE_LOG"
+cat > "$ATTRAPPE_DIR/chpasswd.stdin"
+"""
+
+
+@unittest.skipUnless(LINUX and BASH, "Probelauf braucht Linux und GNU-Werkzeuge")
+class KontoTests(Werkstatt):
+    def setUp(self):
+        super().setUp()
+        self.attrappe("groupadd", "usermod", "userdel", "groupdel", "pkill", "getent", "sudo", "sshd")
+        for name, text in (("id", ID_ATTRAPPE), ("useradd", USERADD_ATTRAPPE), ("chpasswd", CHPASSWD_ATTRAPPE)):
+            (self.bin / name).write_text(text)
+            (self.bin / name).chmod(0o755)
+        os.makedirs(self.p("etc/wamo-rd"))
+        os.makedirs(self.p("home/wamo-rd"))
+        self.env = self.p("etc/wamo-rd/ziele.env")
+        self.ausgabe("getent.group_wamo-rd-gateway", "wamo-rd-gateway:x:996:\n")
+        self.ausgabe("getent.group_wamo-rd-ts", "", rc=2)  # Gruppe fehlt noch
+        self.ausgabe("sudo", "User wamo-rd is not allowed to run sudo on sokrates2.\n")
+        self.ausgabe("sshd", "port 22\nallowusers wamocon alice\n")
+
+    def konto(self, *args):
+        return self.lauf(KONTO_SKRIPT, *args, extra={"WAMO_RD_KONTO_WURZEL": str(self.wurzel)})
+
+    def stdin_pw(self):
+        text = (self.att / "chpasswd.stdin").read_text()
+        m = re.fullmatch(r"wamo-rd:([A-Za-z0-9]{32})\n", text)
+        self.assertIsNotNone(m, "chpasswd bekam kein Passwort der Länge 32 über stdin")
+        return m[1]
+
+    def konto_vorhanden(self):
+        (self.att / "konto.da").write_text("")
+
+    def test_trockenlauf_aendert_nichts(self):
+        r = self.konto("--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[trocken]", r.stdout)
+        self.assertFalse(self.env.exists())
+        self.assertEqual([z for z in self.aufrufe() if z.split()[0] in ("useradd", "groupadd", "chpasswd", "usermod", "userdel")], [])
+        self.assertFalse((self.att / "chpasswd.stdin").exists())
+
+    def test_anlegen_passwort_nur_in_der_datei_und_per_stdin(self):
+        r = self.konto()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        useradd = [z for z in self.aufrufe() if z.startswith("useradd ")][0]
+        for soll in ("--create-home", "--home-dir /home/wamo-rd", "--shell /bin/bash", "--user-group", "--groups wamo-rd-ts", "-K UMASK=077"):
+            self.assertIn(soll, useradd)
+        for verboten in ("sudo", "docker", "adm", "wheel", "lpadmin"):
+            self.assertNotIn(verboten, useradd.replace("wamo-rd", ""))
+        self.assertIn("groupadd --system wamo-rd-ts", self.aufrufe())
+        pw = self.stdin_pw()
+        zeilen = self.env.read_text().splitlines()
+        self.assertEqual(zeilen, [f"WAMO_RD_PASSWORT_SOKRATES2={pw}"])
+        self.assertEqual(stat.S_IMODE(os.stat(self.env).st_mode), 0o640)
+        # das Passwort steht NUR in der Datei und auf stdin von chpasswd
+        for quelle in (r.stdout, r.stderr, "\n".join(self.aufrufe())):
+            self.assertNotIn(pw, quelle)
+        self.assertEqual([f for f in os.listdir(self.p("etc/wamo-rd")) if f != "ziele.env"], [])
+        self.assertEqual(stat.S_IMODE(os.stat(self.p("home/wamo-rd")).st_mode), 0o700)
+
+    def test_zweiter_lauf_laesst_das_passwort(self):
+        self.assertEqual(self.konto().returncode, 0)
+        pw = self.stdin_pw()
+        (self.att / "chpasswd.stdin").unlink()
+        self.log.write_text("")
+        r = self.konto()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.att / "chpasswd.stdin").exists())
+        self.assertIn(pw, self.env.read_text())
+        self.assertIn("Passwort unverändert", r.stdout)
+
+    def test_rotieren_ersetzt_nur_die_eigene_zeile(self):
+        self.assertEqual(self.konto().returncode, 0)
+        alt = self.stdin_pw()
+        self.env.write_text(self.env.read_text() + "ANDERES=bleibt\n")
+        r = self.konto("--rotieren")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        neu = self.stdin_pw()
+        self.assertNotEqual(alt, neu)
+        zeilen = self.env.read_text().splitlines()
+        self.assertEqual(sorted(zeilen), sorted(["ANDERES=bleibt", f"WAMO_RD_PASSWORT_SOKRATES2={neu}"]))
+        self.assertNotIn(alt, self.env.read_text())
+        self.assertNotIn(neu, r.stdout + r.stderr)
+        self.assertEqual(stat.S_IMODE(os.stat(self.env).st_mode), 0o640)
+
+    def test_ziel_name_bestimmt_den_schluessel(self):
+        self.assertEqual(self.konto("--ziel", "caesar").returncode, 0)
+        self.assertIn("WAMO_RD_PASSWORT_CAESAR=", self.env.read_text())
+        self.assertEqual(self.konto("--ziel", "Gross;x").returncode, 2)
+
+    def test_weitere_gruppe_bricht_ab(self):
+        self.konto_vorhanden()
+        (self.att / "id.gruppen").write_text("wamo-rd wamo-rd-ts docker\n")
+        r = self.konto("--rotieren")
+        self.assertEqual(r.returncode, 0)  # rotieren prüft die Gruppen nicht, anlegen und status schon
+        r = self.konto()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("docker", r.stderr)
+        r = self.konto("--status")
+        self.assertEqual(r.returncode, 1)
+
+    def test_sudo_erlaubt_bricht_ab(self):
+        self.konto_vorhanden()
+        self.ausgabe("sudo", "User wamo-rd may run the following commands on sokrates2:\n    (ALL : ALL) ALL\n")
+        r = self.konto()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("sudo", r.stderr)
+
+    def test_ssh_muss_gesperrt_sein(self):
+        self.konto_vorhanden()
+        self.ausgabe("sshd", "port 22\nallowusers wamocon wamo-rd\n")
+        self.assertEqual(self.konto("--status").returncode, 1)
+        self.ausgabe("sshd", "port 22\npasswordauthentication no\n")  # weder AllowUsers noch DenyUsers
+        self.assertEqual(self.konto("--status").returncode, 1)
+        self.ausgabe("sshd", "port 22\ndenyusers bob wamo-rd\n")
+        self.assertEqual(self.konto("--status").returncode, 0)
+        self.ausgabe("sshd", "port 22\nallowusers wamocon wamo-rd-gateway\n")  # Namensteil zählt nicht als Treffer
+        self.assertEqual(self.konto("--status").returncode, 0)
+
+    def test_ohne_gateway_gruppe_kein_passwort(self):
+        self.ausgabe("getent.group_wamo-rd-gateway", "", rc=2)
+        r = self.konto()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("wamo-rd-einrichten.sh", r.stderr)
+        self.assertFalse(self.env.exists())
+        self.assertFalse((self.att / "chpasswd.stdin").exists())
+
+    def test_entfernen_raeumt_nur_das_eigene_weg(self):
+        self.assertEqual(self.konto().returncode, 0)
+        self.env.write_text(self.env.read_text() + "ANDERES=bleibt\n")
+        self.ausgabe("getent.group_wamo-rd-ts", "wamo-rd-ts:x:999:wamo-rd\n")
+        self.log.write_text("")
+        r = self.konto("--entfernen")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        aufrufe = self.aufrufe()
+        self.assertIn("userdel --remove wamo-rd", aufrufe)
+        self.assertIn("groupdel wamo-rd-ts", aufrufe)
+        self.assertEqual(self.env.read_text(), "ANDERES=bleibt\n")
+
+    def test_sperren(self):
+        self.konto_vorhanden()
+        r = self.konto("--sperren")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("usermod --lock --expiredate 1 wamo-rd", self.aufrufe())
+        self.assertIn("pkill -u wamo-rd", self.aufrufe())
+
+    def test_skript_zeigt_passwort_nie(self):
+        code = _ohne_kommentare((REPO / KONTO_SKRIPT).read_text(encoding="utf-8"))
+        self.assertIn("printf '%s:%s\\n' \"$KONTO\" \"$pw\" | chpasswd", code)
+        self.assertNotRegex(code, r"(echo|printf)[^\n]*\$\{?pw\}?[^\n]*>&?2")
+        for z in code.splitlines():
+            if re.search(r"\$\{?pw\}?", z):
+                self.assertNotRegex(z, r"^\s*(echo|tee|logger)\b", z)
+            self.assertNotIn("set -x", z)
+            self.assertNotRegex(z, r"\|\s*chpasswd\s+\S", z)  # kein Argument mit Klartext
+        self.assertNotIn("passwd --stdin", code)
+        self.assertNotIn("openssl passwd", code)
+
+
+@unittest.skipUnless(LINUX and BASH, "Probelauf braucht Linux und GNU-Werkzeuge")
+class ZielEinrichtenTests(Werkstatt):
+    def setUp(self):
+        super().setUp()
+        self.attrappe("ufw", "nft", "systemctl", "ss", "pgrep", "getent", "id")
+        os.makedirs(self.p("etc/xrdp"))
+        os.makedirs(self.p("etc/ufw"))
+        os.makedirs(self.p("home/wamo-rd"))
+        self.sesman = self.p("etc/xrdp/sesman.ini")
+        self.xrdp_ini = self.p("etc/xrdp/xrdp.ini")
+        self.sesman.write_text(SESMAN_INI)
+        self.sesman.chmod(0o640)
+        self.xrdp_ini.write_text("[Globals]\nport=3389\nsecurity_layer=negotiate\ncrypt_level=high\n\n[Channels]\nrdpdr=true\nrdpsnd=true\ncliprdr=true\ndrdynvc=true\n")
+        self.ausgabe("getent.group_wamo-rd-ts", "wamo-rd-ts:x:999:wamo-rd\n")
+        self.ausgabe("ufw.status", "Status: active\n")
+        self.ausgabe("ufw.status_numbered", "Status: active\n\n[ 1] 22/tcp ALLOW IN Anywhere\n")
+        self.ausgabe("nft.list_table", "", rc=1)
+        self.xsession = self.p("home/wamo-rd/.xsessionrc")
+
+    def ziel(self, *args):
+        return self.lauf(ZIEL_SKRIPT, *args, extra={"WAMO_RD_ZIEL_WURZEL": str(self.wurzel)})
+
+    def ini(self, datei, abschnitt, schluessel):
+        aktuell = None
+        wert = None
+        for z in datei.read_text().splitlines():
+            if z.strip().startswith("["):
+                aktuell = z.strip().strip("[]")
+            elif aktuell == abschnitt and z.split("=", 1)[0].strip() == schluessel:
+                wert = z.split("=", 1)[1].strip()
+        return wert
+
+    def test_trockenlauf_aendert_nichts(self):
+        vorher = (sha(self.sesman), sha(self.xrdp_ini))
+        r = self.ziel("--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((sha(self.sesman), sha(self.xrdp_ini)), vorher)
+        self.assertFalse(self.xsession.exists())
+        self.assertFalse(self.p("var").exists())
+        self.assertIn("[trocken]", r.stdout)
+        self.assertIn("ufw insert 1 allow from 172.27.0.0/24 to any port 3389 proto tcp comment wamo-xrdp", r.stdout)
+        self.assertIn("AlwaysGroupCheck=true", r.stdout)
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(ufw (insert|allow|deny|delete)|nft -f|systemctl (enable|restart|disable))", z)
+        self.assertEqual(sorted(os.listdir(self.p("etc/xrdp"))), ["sesman.ini", "xrdp.ini"])
+
+    def test_einrichten_setzt_genau_die_vorgesehenen_werte(self):
+        r = self.ziel()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        erwartet_sesman = {("Security", "AllowRootLogin"): "false", ("Security", "AlwaysGroupCheck"): "true",
+                           ("Security", "TerminalServerUsers"): "wamo-rd-ts", ("Sessions", "KillDisconnected"): "true",
+                           ("Sessions", "DisconnectedTimeLimit"): "900", ("Sessions", "IdleTimeLimit"): "600"}
+        for (ab, k), w in erwartet_sesman.items():
+            self.assertEqual(self.ini(self.sesman, ab, k), w, (ab, k))
+        erwartet_xrdp = {("Globals", "security_layer"): "tls", ("Globals", "crypt_level"): "high",
+                         ("Globals", "ssl_protocols"): "TLSv1.2, TLSv1.3", ("Channels", "rdpdr"): "false",
+                         ("Channels", "rdpsnd"): "false", ("Channels", "cliprdr"): "false", ("Channels", "drdynvc"): "true",
+                         ("Globals", "port"): "3389"}
+        for (ab, k), w in erwartet_xrdp.items():
+            self.assertEqual(self.ini(self.xrdp_ini, ab, k), w, (ab, k))
+        # Nebenwirkungen: übrige Zeilen unverändert (sesman.ini: Mehrzeilenvergleich ohne die geänderten Schlüssel)
+        geaendert = {k for (_, k) in erwartet_sesman}
+        alt = [z for z in SESMAN_INI.splitlines() if z.split("=")[0] not in geaendert]
+        neu = [z for z in self.sesman.read_text().splitlines() if z.split("=")[0] not in geaendert]
+        self.assertEqual(neu, alt)
+        self.assertEqual(stat.S_IMODE(os.stat(self.sesman).st_mode), 0o640)
+        # eine Sicherung je Datei, mit dem alten Inhalt
+        s = [f for f in os.listdir(self.p("etc/xrdp")) if f.startswith("sesman.ini.vor-wamo-rd-")]
+        x = [f for f in os.listdir(self.p("etc/xrdp")) if f.startswith("xrdp.ini.vor-wamo-rd-")]
+        self.assertEqual((len(s), len(x)), (1, 1))
+        self.assertEqual(self.p("etc/xrdp", s[0]).read_text(), SESMAN_INI)
+        # nur die eine Datei im Home des Kontos
+        self.assertIn("export XDG_CURRENT_DESKTOP=ubuntu:GNOME", self.xsession.read_text())
+        self.assertEqual(os.listdir(self.p("home/wamo-rd")), [".xsessionrc"])
+        # Sperre nur für das Netz des Gateways
+        aufrufe = self.aufrufe()
+        self.assertIn("ufw insert 1 allow from 172.27.0.0/24 to any port 3389 proto tcp comment wamo-xrdp", aufrufe)
+        # kein Paket, kein Neustart ohne Option, nichts mit GRD oder sshd
+        for z in aufrufe:
+            self.assertNotRegex(z, r"^(apt|dpkg|systemctl (restart|enable|stop|disable)|grdctl|sshd|ssh)", z)
+        self.assertIn("sudo systemctl restart xrdp-sesman", r.stdout)
+
+    def test_zweiter_lauf_aendert_nichts(self):
+        self.assertEqual(self.ziel().returncode, 0)
+        self.ausgabe("ufw.show_added", "ufw allow from 172.27.0.0/24 to any port 3389 proto tcp comment 'wamo-xrdp'\n"
+                                       "ufw deny proto tcp from any to any port 3389 comment 'wamo-xrdp'\n")
+        n = len(os.listdir(self.p("etc/xrdp")))
+        r = self.ziel()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(len(os.listdir(self.p("etc/xrdp"))), n)
+        self.assertIn("schon eingerichtet", r.stdout)
+
+    def test_neustart_nur_ohne_sitzung(self):
+        self.ausgabe("pgrep", "123\n", rc=0)
+        self.ziel("--neustart")
+        self.assertNotIn("systemctl restart xrdp-sesman", self.aufrufe())
+        self.ausgabe("pgrep", "", rc=1)
+        self.ziel("--neustart")
+        self.assertIn("systemctl restart xrdp-sesman", self.aufrufe())
+
+    def test_zurueck_stellt_beide_dateien_her(self):
+        self.assertEqual(self.ziel().returncode, 0)
+        self.ausgabe("ufw.show_added", "ufw allow from 172.27.0.0/24 to any port 3389 proto tcp comment 'wamo-xrdp'\n")
+        r = self.ziel("--zurueck")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.sesman.read_text(), SESMAN_INI)
+        self.assertIn("security_layer=negotiate", self.xrdp_ini.read_text())
+        self.assertFalse(self.xsession.exists())
+        self.assertIn("ufw --force delete allow from 172.27.0.0/24 to any port 3389 proto tcp", self.aufrufe())
+
+    def test_ohne_xrdp_bricht_vor_der_sperre_ab(self):
+        self.sesman.unlink()
+        r = self.ziel()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("apt-get install xrdp xorgxrdp", r.stderr)
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("ufw insert")])
+
+    def test_gruppe_mit_zweitem_mitglied_bricht_ab(self):
+        self.ausgabe("getent.group_wamo-rd-ts", "wamo-rd-ts:x:999:wamo-rd,bob\n")
+        r = self.ziel()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("genau ein Mitglied", r.stderr)
+
+    def test_fremde_xsessionrc_wird_nicht_ueberschrieben(self):
+        self.xsession.write_text("export MEINS=1\n")
+        r = self.ziel()
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.xsession.read_text(), "export MEINS=1\n")
+
+    def test_quelle_umlenkbar_und_geprueft(self):
+        r = self.ziel("--trocken", "--quelle", "192.168.178.136/32")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("from 192.168.178.136/32 to any port 3389", r.stdout)
+        self.assertEqual(self.ziel("--quelle", "alle; reboot").returncode, 2)
+        self.assertEqual(self.ziel("--quelle").returncode, 2)
 
 
 if __name__ == "__main__":

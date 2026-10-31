@@ -23,8 +23,11 @@
 # ufw-Regeldateien liegen in /var/backups/wamo-xrdp. Was vorher galt, steht in /var/lib/wamo-xrdp/zustand; --zurueck stellt
 # genau das wieder her (nur die eine Zeile in sesman.ini, nicht die ganze Datei) und entfernt die eigenen Regeln.
 #
+#   sudo bash xrdp-einhegen.sh --nur-sperre  # nur Port 3389 beschränken (ohne sesman.ini, auch bevor xrdp installiert ist)
+#
 # Einstellungen für Proben und Tests (nicht für den Betrieb): WAMO_XRDP_WURZEL stellt allen Dateipfaden einen Wegwerf-Ordner
-# voran und hebt die Pflicht zu root auf; WAMO_XRDP_QUELLE ersetzt die Quelladresse (nur IPv4).
+# voran und hebt die Pflicht zu root auf. WAMO_XRDP_QUELLE ersetzt die Quelladresse (IPv4, auch als Netz a.b.c.d/nn); auf
+# Sokrates-2 selbst ist es das Netz des Gateways 172.27.0.0/24 (wamo-rd-ziel-einrichten.sh setzt es).
 set -euo pipefail
 
 WURZEL="${WAMO_XRDP_WURZEL:-}"
@@ -33,7 +36,7 @@ PORT=3389
 MARKE=wamo-xrdp
 NFT_TABELLE=wamo_xrdp
 
-[[ "$QUELLE" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "Ungültige Quelladresse: $QUELLE" >&2; exit 2; }
+[[ "$QUELLE" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]] || { echo "Ungültige Quelladresse: $QUELLE" >&2; exit 2; }
 if [ -n "$WURZEL" ]; then
   [[ "$WURZEL" =~ ^/[A-Za-z0-9_./-]+$ ]] || { echo "Ungültiger WAMO_XRDP_WURZEL: $WURZEL" >&2; exit 2; }
 fi
@@ -53,13 +56,15 @@ TROCKEN=nein
 ZURUECK=nein
 NEUSTART=nein
 NUR_STATUS=nein
+NUR_SPERRE=nein
 for arg in "$@"; do
   case "$arg" in
     --trocken) TROCKEN=ja ;;
     --zurueck) ZURUECK=ja ;;
     --neustart) NEUSTART=ja ;;
     --status) NUR_STATUS=ja ;;
-    *) echo "Aufruf: $0 [--trocken] [--neustart] [--status] [--zurueck]" >&2; exit 2 ;;
+    --nur-sperre) NUR_SPERRE=ja ;;
+    *) echo "Aufruf: $0 [--trocken] [--neustart] [--status] [--nur-sperre] [--zurueck]" >&2; exit 2 ;;
   esac
 done
 
@@ -181,11 +186,17 @@ merkmale() {
 
 # ---------- 2. Sicherung
 ZEIT="$(date +%Y%m%d-%H%M%S)"
+SICHERUNG_GEMACHT=nein
 sicherung_anlegen() {
+  # einmal je Lauf, und nur, wenn wirklich etwas geändert wird (die Aufrufer prüfen das vorher)
+  [ "$SICHERUNG_GEMACHT" = nein ] || return 0
+  SICHERUNG_GEMACHT=ja
   echo "== Sicherung"
   tu install -d -m 700 "$SICHERUNG"
-  tu cp -p "$SESMAN" "$SESMAN.vor-wamo-$ZEIT"
-  echo "  $SESMAN.vor-wamo-$ZEIT"
+  if [ -r "$SESMAN" ]; then
+    tu cp -p "$SESMAN" "$SESMAN.vor-wamo-$ZEIT"
+    echo "  $SESMAN.vor-wamo-$ZEIT"
+  fi
   local f
   for f in "${UFW_USER_DATEIEN[@]}"; do
     if [ -r "$f" ]; then
@@ -294,6 +305,7 @@ sperre_ufw() {
     echo "  Regeln stehen schon"
     return 0
   fi
+  sicherung_anlegen
   # Die Erlaubnis für das Gateway zuerst, die Sperre danach; beide VOR den vorhandenen Regeln (sonst gewinnt eine breite
   # Erlaubnis wie "allow from 192.168.178.0/24"). Loopback erlaubt ufw selbst vor allen Benutzerregeln.
   ufw_regel 1 allow from "$QUELLE" to any port "$PORT" proto tcp comment "$MARKE"
@@ -344,6 +356,11 @@ sperre_nft() {
   local neu_nft neu_unit
   neu_nft="$(nft_inhalt)"
   neu_unit="$(unit_inhalt)"
+  if [ -f "$NFT_DATEI" ] && [ "$(cat "$NFT_DATEI")" = "$neu_nft" ] && [ -f "$UNIT" ] && [ "$(sperre_art_ist)" = nft ]; then
+    echo "  Tabelle steht schon"
+    return 0
+  fi
+  sicherung_anlegen
   if [ "$TROCKEN" = nein ]; then
     install -d -m 755 "$NFT_DIR" "$(dirname "$UNIT")"
     printf '%s\n' "$neu_nft" > "$NFT_DATEI.neu"
@@ -400,6 +417,11 @@ sesman_neu_starten() {
 }
 
 einhegen() {
+  if [ "$NUR_SPERRE" = ja ]; then
+    port_sperren
+    echo "  Nur die Sperre für Port $PORT wurde gesetzt (sesman.ini unverändert)."
+    return 0
+  fi
   [ -r "$SESMAN" ] || fehler "$SESMAN nicht lesbar: ist xrdp installiert?"
   merkmale
   echo
