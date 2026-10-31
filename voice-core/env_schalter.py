@@ -11,6 +11,9 @@ Lernen ohne Momentaufnahmen ist an, weil es nicht im Sprachpfad liegt):
   WAMO_LERNEN_OHNE_MOMENT      Lernen ohne Momentaufnahmen und Aufgabenstände (learning.py, Standard an)
   WAMO_RUECKMELDUNG_WERKZEUG   Rückmeldelaut bei laufendem Werkzeug startet keinen Zug (soft_interrupt.py)
   WAMO_JA_WAECHTER             Ja auf eine Rückfrage führt den Auftrag aus, statt erneut zu fragen (ja_waechter.py)
+Fehlerbehebungen aus der Sitzung vom 31.10.2026 (Standard an, sie ändern kein Sprachverhalten, nur Fehlerfälle):
+  WAMO_ABBRUCH_HINWEIS         abgebrochenes Werkzeug im Verlauf als "ohne Ergebnis, Auftrag offen" erklären (werkzeug_wache.py)
+  WAMO_WERKZEUG_DOPPELT        dieselbe Öffnen-Aktion im selben Zug nicht wiederholen, weitere Seite mit Hinweis (werkzeug_wache.py)
 Zahlen und Werte ohne Schalterform (Stimme, Tempo, Pausen): SONIOX_VOICE, SONIOX_SPEED (0,7 bis 1,3) und
 SONIOX_REDUCE_SILENCE (an/aus); leer lässt die Standardeinstellung von Soniox (soniox_tts.stimme_einstellung)."""
 
