@@ -3,12 +3,114 @@
   "version": "0.1.0",
   "private": true,
   "description": "WAMO als Desktop-Client: ungedrosseltes Gespräch, Stimmen-Rand über allen Monitoren, Autostart",
+  "author": "WAMOCON GmbH",
+  "license": "UNLICENSED",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test"
+    "test": "node --test",
+    "dist": "node ../scripts/wamo-dist-vorbereiten.cjs && electron-builder --win nsis --x64 --publish never",
+    "dist:pruefen": "node ../scripts/wamo-dist-pruefen.cjs dist/win-unpacked"
   },
   "devDependencies": {
-    "electron": "44.5.1"
+    "electron": "44.5.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "de.wamocon.wamo",
+    "productName": "WAMO",
+    "executableName": "WAMO",
+    "copyright": "Copyright © WAMOCON GmbH",
+    "artifactName": "WAMO-Setup-${version}.${ext}",
+    "publish": null,
+    "asar": true,
+    "compression": "normal",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "**/*",
+      "!**/*.test.js",
+      "!berechtigungen.probe.js",
+      "!testdaten/**",
+      "!build/**",
+      "!build-cache/**",
+      "!dist/**",
+      "!logs/**",
+      "!node_modules/.cache/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../host",
+        "to": "host",
+        "filter": [
+          "**/*.py",
+          "pyproject.toml",
+          "uv.lock",
+          "!**/test_*.py",
+          "!**/conftest.py",
+          "!.venv/**",
+          "!**/__pycache__/**",
+          "!.pytest_cache/**"
+        ]
+      },
+      {
+        "from": "../scripts",
+        "to": "scripts",
+        "filter": [
+          "wamo-tunnel.ps1",
+          "wamo-tunnel-einrichten.ps1",
+          "wamo-tunnel-entfernen.ps1"
+        ]
+      },
+      {
+        "from": "../infra/sokrates2/wamo-ca.crt",
+        "to": "wamo-ca.crt"
+      },
+      {
+        "from": "build-cache/uv",
+        "to": "uv"
+      }
+    ],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/wamo.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "packElevateHelper": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WAMO",
+      "uninstallDisplayName": "WAMO",
+      "installerIcon": "assets/wamo.ico",
+      "uninstallerIcon": "assets/wamo.ico",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "guid": "c59011d4-a64c-41af-9964-07f5c67d84f4",
+      "include": "build/installer.nsh",
+      "warningsAsErrors": true
+    }
   }
 }
