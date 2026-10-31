@@ -121,7 +121,8 @@ const hostUmgebung = PFADE.hostUmgebungVerwalten
   ? erzeugeHostUmgebung({
       hostDir: PFADE.hostDir,
       uvDatei: PFADE.uvDatei,
-      cacheDir: path.join(app.getPath("userData"), "uv-cache"),
+      // Lokal statt Roaming: Cache und Interpreter sind groß und gehören nicht in ein synchronisiertes Profil
+      cacheDir: path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "WAMO", "uv-cache"),
       pythonDir: path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "WAMO", "python"),
       log: (text) => console.log(`[Host-Umgebung] ${text}`),
     })

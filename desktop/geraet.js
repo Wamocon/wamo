@@ -500,23 +500,24 @@ function erzeugeGeraet(opt = {}) {
   /** Das Einrichtungsskript für den Tunnel (härtet scripts und host, legt die Aufgabe an und startet sie). */
   async function starteTunnel() {
     if (!skript || !vorhanden(skript)) throw new GeraetFehler("Das Einrichtungsskript für den Tunnel fehlt.");
-    if (opt.vorTunnel) {
-      // Installierte App: erst muss die Python-Umgebung des Hosts stehen (host-umgebung.js), sonst startet der Überwacher nicht
-      try {
-        await opt.vorTunnel();
-      } catch (err) {
-        throw new GeraetFehler(typeof err?.text === "string" ? err.text : "Die Python-Umgebung des Hosts ist nicht bereit.");
-      }
-    }
     const powershell = path.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
-    skriptLaeuft = true;
+    skriptLaeuft = true; // auch während der Vorbereitung: der Wächter darf in dieser Zeit nichts anstoßen
     try {
+      if (opt.vorTunnel) {
+        // Installierte App: erst muss die Python-Umgebung des Hosts stehen (host-umgebung.js), sonst startet der Überwacher nicht
+        try {
+          await opt.vorTunnel();
+        } catch (err) {
+          throw new GeraetFehler(typeof err?.text === "string" ? err.text : "Die Python-Umgebung des Hosts ist nicht bereit.");
+        }
+      }
       await ausfuehren(
         powershell,
         ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", skript, "-Geraet", "-Starten"],
         { frist: SKRIPT_FRIST_MS },
       );
     } catch (err) {
+      if (err instanceof GeraetFehler) throw err; // Vorbereitung gescheitert, Text steht schon fest
       log(`Einrichtungsskript fehlgeschlagen (${err?.killed ? "Zeitüberschreitung" : `Code ${err?.code ?? "?"}`})`);
       throw new GeraetFehler(
         err?.killed ? "Die Einrichtung des Tunnels dauert zu lange." : "Der Tunnel zu WAMO konnte nicht eingerichtet werden.",

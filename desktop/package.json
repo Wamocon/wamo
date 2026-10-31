@@ -13,6 +13,7 @@
     "dist:pruefen": "node ../scripts/wamo-dist-pruefen.cjs dist/win-unpacked"
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "electron": "44.5.1",
     "electron-builder": "26.18.0"
   },

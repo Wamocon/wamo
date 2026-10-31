@@ -713,3 +713,22 @@ test("vorTunnel: läuft vor dem Einrichtungsskript; ein Fehler dort verhindert d
   assert.deepEqual(reihenfolge, ["umgebung", "umgebung"]);
   assert.equal(u.aufrufeVon("powershell.exe").length, 1);
 });
+
+test("vorTunnel: solange die Python-Umgebung noch entsteht, stößt der Wächter die Aufgabe nicht an", async () => {
+  let freigeben;
+  const warten = new Promise((r) => {
+    freigeben = r;
+  });
+  const u = umgebung({ vorTunnel: () => warten });
+  await u.geraet.vorbereiten();
+  await u.geraet.signiere({ nonce: NONCE, userId: USER });
+  const lauf = u.geraet.aktivieren(guteAntwort());
+  for (let i = 0; i < 100 && !fs.existsSync(u.pfade.geraetDatei); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(fs.existsSync(u.pfade.geraetDatei), true, "geraet.json ist geschrieben, die Vorbereitung hängt noch");
+  u.setzeZeit(u.zeit() + 10 * 60_000);
+  const e = await u.geraet.waechterTick();
+  assert.equal(e.starten, false);
+  assert.equal(u.aufrufeVon("schtasks.exe").length, 0);
+  freigeben();
+  await lauf;
+});

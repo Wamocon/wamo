@@ -42,7 +42,7 @@ function herunterladen(adresse, ziel, umleitungen = 0) {
       return;
     }
     https
-      .get(url, (res) => {
+      .get(url, { timeout: 30_000 }, (res) => {
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
           res.resume();
           if (umleitungen >= MAX_UMLEITUNGEN) {
@@ -70,6 +70,9 @@ function herunterladen(adresse, ziel, umleitungen = 0) {
         res.pipe(aus);
         aus.on("finish", () => resolve());
         aus.on("error", reject);
+      })
+      .on("timeout", function onTimeout() {
+        this.destroy(new Error("Zeitüberschreitung beim Download")); // 30 s ohne Daten
       })
       .on("error", reject);
   });

@@ -47,10 +47,12 @@ function standardAusfuehren(datei, args, optionen) {
 function uvUmgebung(basis, { cacheDir, pythonDir }) {
   const env = { ...basis };
   for (const name of Object.keys(env)) {
-    if (/^UV_/i.test(name) || /^VIRTUAL_ENV$/i.test(name)) delete env[name]; // nichts Fremdes erben
+    // nichts erben, was Python oder uv umlenkt (Proxy- und Zertifikatsvariablen bleiben für Firmennetze)
+    if (/^(UV_|PYTHON)/i.test(name) || /^VIRTUAL_ENV$/i.test(name)) delete env[name];
   }
   return {
     ...env,
+    PYTHONNOUSERSITE: "1",
     UV_CACHE_DIR: cacheDir,
     UV_PYTHON_INSTALL_DIR: pythonDir,
     UV_LINK_MODE: "copy",
@@ -101,7 +103,10 @@ function erzeugeHostUmgebung(opt) {
     log("Python-Umgebung des Hosts wird eingerichtet (einmalig, braucht Netz)");
     dsys.mkdirSync(opt.cacheDir, { recursive: true });
     dsys.mkdirSync(opt.pythonDir, { recursive: true });
-    const args = ["sync", "--locked", "--no-dev", "--python", PYTHON_VERSION, "--project", opt.hostDir];
+    // --no-build: nur fertige Wheels mit Prüfsumme aus der Sperrdatei, nie Quelltext bauen (die Build-Werkzeuge hätten keine
+    // Prüfsumme). --managed-python: ein von uv geladener Interpreter (Prüfsumme in uv), nicht irgendein Python aus PATH oder
+    // Registry, das später verschwinden oder verändert werden kann.
+    const args = ["sync", "--locked", "--no-dev", "--no-build", "--managed-python", "--python", PYTHON_VERSION, "--project", opt.hostDir];
     try {
       await ausfuehren(opt.uvDatei, args, {
         cwd: opt.hostDir,
@@ -109,7 +114,8 @@ function erzeugeHostUmgebung(opt) {
         frist: opt.frist ?? FRIST_MS,
       });
     } catch (err) {
-      const ende = String(err?.stderr ?? "").trim().split(/\r?\n/).slice(-6).join(" | ");
+      // Zugangsdaten in Adressen (https://nutzer:token@host) nie ins Protokoll
+      const ende = String(err?.stderr ?? "").trim().split(/\r?\n/).slice(-6).join(" | ").replace(/:\/\/[^@\s/]+@/g, "://***@");
       log(`uv sync fehlgeschlagen (${err?.killed ? "Zeitüberschreitung" : `Code ${err?.code ?? "?"}`}): ${ende}`);
       throw new HostUmgebungFehler(
         err?.killed

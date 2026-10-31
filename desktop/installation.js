@@ -13,6 +13,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const BUERO_UI_URL = "https://192.168.178.136:55445";
+const BUERO_KERN_URL = "https://192.168.178.136:55444";
 const LOKALE_UI_URL = "http://localhost:3000";
 const LOKALER_KERN_URL = "http://localhost:7860";
 const BETRIEBSARTEN = ["buero", "unterwegs"];
@@ -60,7 +61,10 @@ function loeseAuf({ istPaketiert, resourcesPath, verzeichnis, userData, existier
 /** Adressen der Oberfläche und des lokalen Kerns. Installiert: nur die Büro-Oberfläche, nur https. */
 function adressen(pfade, env = {}) {
   const installiert = pfade.modus === "installiert";
-  const uiUrl = env.WAMO_UI_URL || (installiert ? BUERO_UI_URL : LOKALE_UI_URL);
+  // Installiert sind die Adressen fest: Die Umgebung ändert nichts, denn WAMO_UI_URL bestimmt, welche Seite im Fenster mit
+  // Mikrofonfreigabe und Brücke zur App läuft und für welchen Server die WAMO-CA gilt
+  if (installiert) return { uiUrl: BUERO_UI_URL, kernUrl: BUERO_KERN_URL };
+  const uiUrl = env.WAMO_UI_URL || LOKALE_UI_URL;
   const kernUrl = env.WAMO_VOICE_CORE_URL || LOKALER_KERN_URL;
   let ziel;
   try {
@@ -70,7 +74,6 @@ function adressen(pfade, env = {}) {
   }
   // Nur http(s): bei file:, data: o. ä. wäre der Origin "null", und der Origin-Vergleich ließe jeden solchen Origin zu
   if (!/^https?:$/.test(ziel.protocol)) throw new Error("WAMO_UI_URL muss eine http- oder https-Adresse sein.");
-  if (installiert && ziel.protocol !== "https:") throw new Error("In der installierten App muss WAMO_UI_URL eine https-Adresse sein.");
   return { uiUrl, kernUrl };
 }
 
@@ -80,4 +83,4 @@ function wirksameBetriebsart(wunsch, pfade) {
   return BETRIEBSARTEN.includes(wunsch) ? wunsch : "unterwegs";
 }
 
-module.exports = { BETRIEBSARTEN, BUERO_UI_URL, LOKALE_UI_URL, LOKALER_KERN_URL, adressen, loeseAuf, wirksameBetriebsart };
+module.exports = { BETRIEBSARTEN, BUERO_KERN_URL, BUERO_UI_URL, LOKALE_UI_URL, LOKALER_KERN_URL, adressen, loeseAuf, wirksameBetriebsart };

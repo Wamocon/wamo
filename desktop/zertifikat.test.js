@@ -57,6 +57,20 @@ test("Falscher Servername, CA-Zertifikat als Blatt, nur Client-Zertifikat, Müll
   assert.match(pruefeKette({ blattPem: "kein Zertifikat", zwischenPem: [], ca, host: HOST, jetzt: JETZT }).grund, /lesbar/);
 });
 
+test("Nur Namen aus der Namensbeschränkung der WAMO-CA, IPv6-Klammern und Schreibweise werden normalisiert", () => {
+  const r = pruefeKette({ blattPem: BLATT, zwischenPem: [ZW], ca, host: "[::1]", jetzt: JETZT });
+  assert.match(r.grund, /Namensbeschränkung/);
+  assert.match(pruefeKette({ blattPem: BLATT, zwischenPem: [ZW], ca, host: "beispiel.de", jetzt: JETZT }).grund, /Namensbeschränkung/);
+  assert.equal(pruefeKette({ blattPem: BLATT, zwischenPem: [ZW], ca, host: "LocalHost", jetzt: JETZT }).ok, true);
+  // der Prüfer stellt auch bei konfigurierten Namen außerhalb der Beschränkung nichts durch
+  const p = erzeugePruefer({ ca, erlaubteHosts: ["[::1]", "beispiel.de", "LOCALHOST"], jetzt: () => JETZT });
+  let antwort;
+  p({ hostname: "beispiel.de", verificationResult: "net::ERR_CERT_AUTHORITY_INVALID", certificate: { data: BLATT, issuerCert: { data: ZW } } }, (w) => (antwort = w));
+  assert.equal(antwort, -3);
+  p({ hostname: "localhost", verificationResult: "net::ERR_CERT_AUTHORITY_INVALID", certificate: { data: BLATT, issuerCert: { data: ZW } } }, (w) => (antwort = w));
+  assert.equal(antwort, 0);
+});
+
 test("Abgelaufen oder noch nicht gültig", () => {
   const spaet = Date.parse("2300-01-01");
   const frueh = Date.parse("2000-01-01");

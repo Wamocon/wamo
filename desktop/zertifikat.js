@@ -22,7 +22,13 @@ const { isIP } = require("node:net");
 const WAMO_CA_SHA256 = "A9:7E:9E:DA:3D:9E:C6:74:32:B0:59:7E:2F:16:AC:FB:45:5F:80:7F:3F:C5:88:21:55:6F:E3:5E:E6:9C:E0:23";
 const EKU_SERVER = "1.3.6.1.5.5.7.3.1";
 const ERSETZBARER_FEHLER = "net::ERR_CERT_AUTHORITY_INVALID";
-const MAX_KETTE = 5;
+const MAX_KETTE = 5; // Obergrenze beim Einlesen der Kette
+const MAX_ZWISCHEN = 1; // die WAMO-CA hat pathlen 1: höchstens ein Zwischenzertifikat (das von Caddy)
+// Die Namensbeschränkung der WAMO-CA (permittedSubtrees): nur diese Namen werden je geprüft, egal was konfiguriert ist
+const WAMO_NAMEN = ["192.168.178.136", "127.0.0.1", "localhost", "sokrates2", "spark-651f.local", "supavisor", "wamo-supabase-pooler"];
+
+/** Hostname ohne eckige Klammern (URL.hostname liefert IPv6 mit Klammern), kleingeschrieben. */
+const normalisiere = (host) => String(host).replace(/^\[|\]$/g, "").toLowerCase();
 
 /** Liest die CA aus einer PEM-Datei und prüft Fingerabdruck und CA-Kennzeichnung. Wirft bei Abweichung. */
 function ladeCa(pem, erwartet = WAMO_CA_SHA256) {
@@ -46,7 +52,9 @@ function zuZertifikat(pem) {
  * Prüft Serverzertifikat plus mitgelieferte Zwischenzertifikate (PEM) gegen die CA und den Servernamen.
  * Liefert { ok: true } oder { ok: false, grund }.
  */
-function pruefeKette({ blattPem, zwischenPem = [], ca, host, jetzt = Date.now() }) {
+function pruefeKette({ blattPem, zwischenPem = [], ca, host: roherHost, jetzt = Date.now() }) {
+  const host = normalisiere(roherHost);
+  if (!WAMO_NAMEN.includes(host)) return { ok: false, grund: "Servername nicht in der Namensbeschränkung der WAMO-CA" };
   const blatt = zuZertifikat(blattPem);
   if (!blatt) return { ok: false, grund: "Serverzertifikat nicht lesbar" };
   if (blatt.ca) return { ok: false, grund: "Serverzertifikat ist ein CA-Zertifikat" };
@@ -59,7 +67,7 @@ function pruefeKette({ blattPem, zwischenPem = [], ca, host, jetzt = Date.now() 
 
   const zwischen = zwischenPem.map(zuZertifikat).filter(Boolean);
   let aktuell = blatt;
-  for (let schritt = 0; schritt < MAX_KETTE; schritt++) {
+  for (let schritt = 0; schritt <= MAX_ZWISCHEN; schritt++) {
     if (aktuell.checkIssued(ca) && aktuell.verify(ca.publicKey)) return { ok: true };
     const naechstes = zwischen.find(
       (z) => z.ca && z !== aktuell && zeitlichGueltig(z, jetzt) && aktuell.checkIssued(z) && aktuell.verify(z.publicKey),
@@ -115,10 +123,10 @@ function zwischenZertifikate(zertifikat) {
  * Es wird nie abgelehnt oder gelockert, außer die Kette führt sicher zur WAMO-CA.
  */
 function erzeugePruefer({ ca, erlaubteHosts, jetzt = Date.now, log = () => {} }) {
-  const hosts = new Set(erlaubteHosts);
+  const hosts = new Set(erlaubteHosts.map(normalisiere));
   return (anfrage, rueckruf) => {
     try {
-      if (!hosts.has(anfrage.hostname) || anfrage.verificationResult !== ERSETZBARER_FEHLER) {
+      if (!hosts.has(normalisiere(anfrage.hostname)) || anfrage.verificationResult !== ERSETZBARER_FEHLER) {
         rueckruf(-3);
         return;
       }

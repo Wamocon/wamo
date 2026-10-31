@@ -47,7 +47,7 @@ test("Erster Start: uv sync mit Sperrdatei, ohne Dev-Pakete, in den eigenen Ordn
     assert.equal(a.aufrufe.length, 1);
     const { datei, args, o } = a.aufrufe[0];
     assert.equal(datei, a.optionen.uvDatei);
-    assert.deepEqual(args, ["sync", "--locked", "--no-dev", "--python", PYTHON_VERSION, "--project", a.hostDir]);
+    assert.deepEqual(args, ["sync", "--locked", "--no-dev", "--no-build", "--managed-python", "--python", PYTHON_VERSION, "--project", a.hostDir]);
     assert.equal(o.cwd, a.hostDir);
     assert.equal(o.env.UV_CACHE_DIR, a.optionen.cacheDir);
     assert.equal(o.env.UV_PYTHON_INSTALL_DIR, a.optionen.pythonDir);
@@ -61,7 +61,14 @@ test("Erster Start: uv sync mit Sperrdatei, ohne Dev-Pakete, in den eigenen Ordn
 });
 
 test("uvUmgebung erbt keine UV_*-Einstellungen und kein VIRTUAL_ENV", () => {
-  const env = uvUmgebung({ PATH: "p", UV_INDEX_URL: "x", uv_token: "y", VIRTUAL_ENV: "v", HOME: "h" }, { cacheDir: "c", pythonDir: "p2" });
+  const env = uvUmgebung(
+    { PATH: "p", UV_INDEX_URL: "x", uv_token: "y", VIRTUAL_ENV: "v", HOME: "h", PYTHONPATH: "C:\\boese", PythonHome: "C:\\boese", HTTPS_PROXY: "http://proxy:3128" },
+    { cacheDir: "c", pythonDir: "p2" },
+  );
+  assert.equal(env.PYTHONPATH, undefined);
+  assert.equal(env.PythonHome, undefined);
+  assert.equal(env.HTTPS_PROXY, "http://proxy:3128", "Proxy bleibt für Firmennetze");
+  assert.equal(env.PYTHONNOUSERSITE, "1");
   assert.equal(env.UV_INDEX_URL, undefined);
   assert.equal(env.uv_token, undefined);
   assert.equal(env.VIRTUAL_ENV, undefined);
@@ -127,7 +134,7 @@ test("uv scheitert: Fehlertext ohne Einzelheiten, der nächste Aufruf versucht e
       ...a.optionen,
       ausfuehren: async (...args) => {
         versuche += 1;
-        if (versuche === 1) throw Object.assign(new Error("x"), { code: 2, stderr: "geheim: Token abc\nfehler beim Laden" });
+        if (versuche === 1) throw Object.assign(new Error("x"), { code: 2, stderr: "geheim: Token abc\nfehler bei https://nutzer:hunter2@index.example/simple/mcp/" });
         return a.optionen.ausfuehren(...args);
       },
     };
@@ -135,6 +142,7 @@ test("uv scheitert: Fehlertext ohne Einzelheiten, der nächste Aufruf versucht e
     await assert.rejects(u.bereit(), (e) => /Netzverbindung/.test(e.text) && !/geheim/.test(e.text));
     assert.equal(u.status(), "fehler");
     assert.ok(a.logs.some((t) => /Code 2/.test(t)));
+    assert.ok(a.logs.every((t) => !/hunter2/.test(t)), "Zugangsdaten in Adressen stehen nicht im Protokoll");
     await u.bereit();
     assert.equal(u.status(), "bereit");
   } finally {

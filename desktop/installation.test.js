@@ -61,13 +61,16 @@ test("Adressen: Entwickler lokal, installiert die Büro-Oberfläche", () => {
   assert.equal(BUERO_UI_URL, "https://192.168.178.136:55445");
 });
 
-test("Adressen: Umgebung überschreibt, aber nur http(s); installiert nur https", () => {
+test("Adressen: installiert sind sie fest, die Umgebung ändert nichts", () => {
+  const a = adressen(installiert(), { WAMO_UI_URL: "https://boese.example", WAMO_VOICE_CORE_URL: "http://boese.example" });
+  assert.deepEqual(a, { uiUrl: "https://192.168.178.136:55445", kernUrl: "https://192.168.178.136:55444" });
+});
+
+test("Adressen: im Entwicklermodus überschreibt die Umgebung, aber nur mit http(s)", () => {
   assert.equal(adressen(entwickler(), { WAMO_UI_URL: "http://localhost:3999" }).uiUrl, "http://localhost:3999");
   assert.throws(() => adressen(entwickler(), { WAMO_UI_URL: "file:///C:/x.html" }), /http/);
   assert.throws(() => adressen(entwickler(), { WAMO_UI_URL: "data:text/html,x" }), /http/);
   assert.throws(() => adressen(entwickler(), { WAMO_UI_URL: "kaputt" }), /gültige/);
-  assert.throws(() => adressen(installiert(), { WAMO_UI_URL: "http://localhost:3000" }), /https/);
-  assert.equal(adressen(installiert(), { WAMO_UI_URL: "https://sokrates2:55445" }).uiUrl, "https://sokrates2:55445");
 });
 
 test("Betriebsart: ohne lokalen Kern immer Büro, im Entwicklermodus gilt der Wunsch (Standard Unterwegs)", () => {
