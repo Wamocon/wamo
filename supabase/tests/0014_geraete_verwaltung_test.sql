@@ -92,6 +92,8 @@ select wamo_testhilfe.fehler($$select * from __SCHEMA__.geraet_entscheiden('0000
 select wamo_testhilfe.fehler($$select * from __SCHEMA__.geraet_entscheiden('00000000-0000-4000-8000-0000000000a1', 'pc-anna-pc', 'sperren', '  ', clock_timestamp())$$, '22023');
 select wamo_testhilfe.fehler($$select * from __SCHEMA__.geraet_entscheiden('00000000-0000-4000-8000-0000000000a1', 'pc-anna-pc', 'sperren', 'ab', clock_timestamp())$$, '22023');
 select wamo_testhilfe.fehler($$select * from __SCHEMA__.geraet_entscheiden('00000000-0000-4000-8000-0000000000a1', 'pc-anna-pc', 'sperren', repeat('x', 201), clock_timestamp())$$, '22023');
+-- ein Grund aus Zeichen ohne Inhalt zählt nicht (Satzzeichen, Leerraum, Steuerzeichen)
+select wamo_testhilfe.fehler($$select * from __SCHEMA__.geraet_entscheiden('00000000-0000-4000-8000-0000000000a1', 'pc-anna-pc', 'sperren', '---...', clock_timestamp())$$, '22023');
 -- Akteur: Mitglied, inaktives Profil, unbekanntes Profil
 select wamo_testhilfe.fehler($$select * from __SCHEMA__.geraet_entscheiden('00000000-0000-4000-8000-0000000000b1', 'pc-admin1-pc', 'freigeben', null, clock_timestamp())$$, '42501');
 select wamo_testhilfe.fehler($$select * from __SCHEMA__.geraet_entscheiden('00000000-0000-4000-8000-0000000000b4', 'pc-admin1-pc', 'freigeben', null, clock_timestamp())$$, '42501');
@@ -193,6 +195,15 @@ end $$;
 reset role;
 
 -- Spuren in devices, device_events und Hinweisen
+do $$ begin
+  -- jede Aktivierung meldet sich bei beiden Admins (Freigabe Admin1, Entsperren Annas Geraet, Freigabe Wechselgeraet)
+  perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.hinweise h where h.art = 'system'
+    and h.empfaenger in ('00000000-0000-4000-8000-0000000000a1', '00000000-0000-4000-8000-0000000000a2')
+    and h.titel like 'Gerät %: pc-%'), 6::bigint, 'Hinweise an Admins bei Aktivierung (3 Aktivierungen x 2 Admins)');
+  perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.hinweise h where h.art = 'system'
+    and h.empfaenger = '00000000-0000-4000-8000-0000000000a2' and h.text like '%' || (select fp from k where n = 2) || '%'), 1::bigint,
+    'Hinweis nennt den Fingerabdruck (Entsperren von Annas Geraet)');
+end $$;
 do $$ declare d record; begin
   select * into d from __SCHEMA__.devices where kennung = 'pc-admin1-pc';
   perform wamo_testhilfe.gleich(d.status::text, 'aktiv', 'Admin1-Geraet aktiv');

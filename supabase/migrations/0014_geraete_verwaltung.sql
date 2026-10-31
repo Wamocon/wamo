@@ -31,6 +31,9 @@
 -- Ergebnis: ok | schon (Zielzustand war schon erreicht, nichts geändert) | nicht_moeglich (Übergang nicht erlaubt) |
 --   unbekannt (Kennung gibt es nicht) | konflikt (das Profil hat schon ein anderes aktives Gerät) |
 --   besitzer_inaktiv (das Besitzerprofil ist deaktiviert).
+-- Grenze der Frische: p_aal2_zeit stammt vom Kern. Die Prüfung schützt vor einem ehrlichen Kern mit einem alten Token, nicht
+-- vor einem übernommenen Kern (er setzt Akteur und Zeit selbst). Dagegen hilft nur der Hinweis an alle Admins bei jeder
+-- Aktivierung (siehe unten) und der Verlauf in device_events. Die Frist gilt für ein Zeitfenster, nicht für einen einzelnen Code.
 -- Ein Admin darf sein eigenes Gerät freigeben (sonst käme ein einzelner Admin nie an sein erstes Gerät); die Oberfläche
 -- verlangt dafür dieselbe Bestätigung mit Fingerabdruck wie bei jedem anderen Gerät.
 set local lock_timeout = '5s';
@@ -88,11 +91,15 @@ begin
   if p_kennung !~ '^pc-[a-z0-9]+(-[a-z0-9]+)*$' or length(p_kennung) > 23 then
     raise exception 'geraet_entscheiden: ungültige Kennung' using errcode = '22023';
   end if;
-  v_grund := nullif(btrim(regexp_replace(coalesce(p_grund, ''), '[[:cntrl:]]', '', 'g')), '');
+  -- Steuerzeichen und Zeilenumbrüche werden zu einem Leerzeichen, Leerraum wird zusammengezogen
+  v_grund := nullif(btrim(regexp_replace(regexp_replace(coalesce(p_grund, ''), '[[:cntrl:]]', ' ', 'g'),
+                                         '[[:space:]]+', ' ', 'g')), '');
   if length(v_grund) > 200 then
     raise exception 'geraet_entscheiden: Grund zu lang' using errcode = '22023';
   end if;
-  if p_aktion in ('sperren', 'widerrufen') and (v_grund is null or length(v_grund) < 3) then
+  -- ein Grund braucht mindestens drei Buchstaben oder Ziffern (nicht nur Zeichen ohne Inhalt)
+  if p_aktion in ('sperren', 'widerrufen')
+     and (v_grund is null or length(regexp_replace(v_grund, '[^[:alnum:]]', '', 'g')) < 3) then
     raise exception 'geraet_entscheiden: Grund fehlt' using errcode = '22023';
   end if;
   if not exists (select 1 from __SCHEMA__.profiles p where p.user_id = p_admin and p.aktiv and p.rolle = 'admin') then
@@ -127,6 +134,13 @@ begin
     return;
   end if;
 
+  -- Freigabe und Entsperren nur für ein aktives Besitzerprofil (der Wächter lehnt es sonst mit 42501 ab; dieser Fall wird
+  -- hier vorab gemeldet, damit ein echter Rechtefehler des Wächters nie als "besitzer_inaktiv" erscheint)
+  if v_ziel = 'aktiv' and not exists (select 1 from __SCHEMA__.profiles p where p.user_id = v_dev.user_id and p.aktiv) then
+    return query select v_dev.kennung, v_dev.status, v_dev.status, 'besitzer_inaktiv'::text;
+    return;
+  end if;
+
   begin
     update __SCHEMA__.devices d
        set status = v_ziel,
@@ -138,10 +152,16 @@ begin
     when unique_violation then   -- devices_ein_aktives_idx: das Profil hat schon ein anderes aktives Gerät
       return query select v_dev.kennung, v_dev.status, v_dev.status, 'konflikt'::text;
       return;
-    when insufficient_privilege then   -- devices_guard: Besitzerprofil ist nicht aktiv
-      return query select v_dev.kennung, v_dev.status, v_dev.status, 'besitzer_inaktiv'::text;
-      return;
   end;
+  -- Jede Aktivierung meldet sich bei allen Admins (Kennung, Fingerabdruck, Akteur): Eine Freigabe, die niemand ausgelöst
+  -- hat, fällt so auf, auch wenn der Kern selbst nicht vertrauenswürdig wäre.
+  if v_ziel = 'aktiv' then
+    perform __SCHEMA__.hinweis_an_admins('system',
+      'Gerät ' || case p_aktion when 'freigeben' then 'freigegeben' else 'entsperrt' end || ': ' || v_dev.kennung,
+      'Kennung ' || v_dev.kennung || ', Fingerabdruck ' || v_dev.ssh_fingerprint || ', durch '
+        || (select p.display_name from __SCHEMA__.profiles p where p.user_id = p_admin) || '.',
+      v_dev.id, jsonb_build_object('kennung', v_dev.kennung, 'fingerabdruck', v_dev.ssh_fingerprint, 'admin', p_admin));
+  end if;
   return query select v_dev.kennung, v_dev.status, v_ziel, 'ok'::text;
 end $$;
 
@@ -157,8 +177,7 @@ revoke insert, update, delete, truncate on __SCHEMA__.devices from wamo_core;
 revoke update (status, freigegeben_von, geaendert_von, gesperrt_grund) on __SCHEMA__.devices from wamo_core;
 
 -- ---------- Row Level Security ----------
--- devices hat RLS und die Policy core_all seit 0002; hier wird nur geprüft, dass es dabei bleibt.
-alter table __SCHEMA__.devices enable row level security;
+-- devices hat RLS und die Policy core_all seit 0002; hier wird nur geprüft (Selbsttest unten), nichts geändert.
 
 -- Selbsttest: bricht die Transaktion bei Rechtedrift ab.
 do $$ begin
