@@ -163,6 +163,66 @@ python scripts\wamo_ui_sokrates2.py einrichten       # Firewall, Caddy, Image ba
 python scripts\wamo_ui_sokrates2.py status           # Zustand; bauen = nur Image und Container, pruefen = Header, TLS, Härtung
 ```
 
+#### Windows-Installer (Desktop-App ohne Repository)
+
+Ein Laptop bekommt WAMO ohne Klonen und ohne `npm install`: `WAMO-Setup-<Version>.exe` (NSIS, pro Benutzer nach
+`%LOCALAPPDATA%\Programs\WAMO`, ohne Adminrechte, Kennung `de.wamocon.wamo`, Symbol `desktop/assets/wamo.ico`). Gebaut wird nur lokal:
+
+```powershell
+cd desktop
+npm ci
+npm run dist -- --config.directories.output=D:\tmp\wamo-dist   # ohne Angabe: desktop\dist (gitignored)
+node ..\scripts\wamo-dist-pruefen.cjs D:\tmp\wamo-dist\win-unpacked --liste   # Inhalt prüfen, optional --verboten=wort1,wort2
+```
+
+Was der Installer enthält (Größe etwa 117 MB, entpackt 340 MB): die App in `app.asar` (ohne Tests und Testdaten), in
+`resources\` den Host (`host\*.py`, `pyproject.toml`, `uv.lock`, ohne `.venv` und Tests), die drei Tunnelskripte
+(`scripts\wamo-tunnel*.ps1`), die WAMO-CA (`wamo-ca.crt`) und `uv.exe` mit Lizenztext. Kein Voice-Core, kein Oberflächen-Build,
+keine `.env`.
+
+- **Form der Installation** (`desktop/installation.js`): Nicht paketiert (Entwickler) gilt alles wie bisher aus dem Repository.
+  Installiert gibt es nur die Betriebsart **Büro**: Die App lädt `https://192.168.178.136:55445`, die Adressen sind fest und nicht
+  über die Umgebung änderbar, „Unterwegs“ steht im Tray ausgegraut („in dieser Installation nicht verfügbar“) und der Befehl der
+  Oberfläche dazu bleibt wirkungslos. Einstellungen, Logs und Einzelinstanz-Sperre liegen unter `%APPDATA%\WAMO`
+  (getrennt vom Entwicklermodus `%APPDATA%\wamo-desktop`).
+- **Python-Umgebung des Hosts** (`desktop/host-umgebung.js`): entsteht beim ersten Start im Hintergrund und spätestens vor dem
+  Einrichten des Tunnels mit `uv sync --locked --no-dev --no-build --managed-python --python 3.11` in `resources\host\.venv`, dort
+  erwartet sie `scripts\wamo-tunnel.ps1`. Sicherheit: Jedes Paket kommt mit der Prüfsumme aus `host/uv.lock`, es wird nie
+  Quelltext gebaut, der Interpreter ist ein von uv geladener (dessen Downloads laufen gegen eingebaute Prüfsummen), nichts wird
+  aus `PYTHON*`- oder `UV_*`-Variablen übernommen. Cache und Interpreter liegen unter `%LOCALAPPDATA%\WAMO\uv-cache` und `\python`.
+  Einmalig braucht der Laptop Netz zu PyPI und GitHub (etwa 25 Sekunden bis 1 Minute). Ohne Netz bleibt der Host aus, das
+  Einrichten des Tunnels meldet es, der nächste Start versucht es erneut. `uv.exe` (0.13.1, MIT) bringt der Bau mit: Version,
+  Adresse und SHA-256 stehen in `desktop/build/uv-pin.json`, `scripts/wamo-dist-vorbereiten.cjs` prüft die Prüfsumme vor dem
+  Auspacken und bricht sonst ab (keine Downloads ohne Prüfsumme).
+- **Vertrauen in die WAMO-CA** (`desktop/zertifikat.js`): Gewählt ist ein Vertrauen nur innerhalb der App statt
+  `certutil -user -addstore Root`. Der Windows-Weg zeigt eine Sicherheitsabfrage, wirkt für alle Programme des Benutzers und
+  bleibt nach dem Deinstallieren bestehen. Die App prüft stattdessen selbst (`session.setCertificateVerifyProc`): nur wenn
+  Chromium genau „Aussteller unbekannt“ meldet, nur für die Namen aus der Namensbeschränkung der CA (und nur, wenn sie zur
+  Oberfläche gehören), nur wenn die Kette per Signatur zur mitgelieferten CA mit festem SHA-256-Fingerabdruck führt (höchstens ein
+  Zwischenzertifikat), das Serverzertifikat gültig, kein CA-Zertifikat, für Server erlaubt ist und den Namen nennt. Alles andere
+  behält das Ergebnis von Chromium. Nie `--ignore-certificate-errors`. Anfragen der App aus dem Hauptprozess prüfen dieselbe Kette
+  (`pruefeSocket`), weil das Node in Electron die IP-Namensbeschränkung der CA nicht lesen kann. Wechselt die CA, braucht jede
+  Installation ein Update mit dem neuen Fingerabdruck (`WAMO_CA_SHA256`, der Test vergleicht ihn mit `infra/sokrates2/wamo-ca.crt`).
+- **Electron-Fuses** (am gebauten Programm mit REA gelesen): `RunAsNode` aus, `EnableNodeOptionsEnvironmentVariable` aus,
+  `EnableNodeCliInspectArguments` aus, `EnableCookieEncryption` an, `EnableEmbeddedAsarIntegrityValidation` an,
+  `OnlyLoadAppFromAsar` an. `GrantFileProtocolExtraPrivileges` bleibt an, weil `start.html` und `overlay.html` per `file://` aus der
+  asar geladen werden (mit „aus“ scheitert das am gebauten Programm mit `ERR_FILE_NOT_FOUND`).
+- **Autostart**: wie bisher nur über „Mit Windows starten“ im Tray, der Installer legt keinen Autostart an. Die Deinstallation
+  beendet und entfernt die geplante Aufgabe „WAMO Tunnel“ (`wamo-tunnel-entfernen.ps1`); Schlüssel und Token unter
+  `%LOCALAPPDATA%\WAMO` und `%USERPROFILE%\.ssh` bleiben stehen, ein Admin widerruft das Gerät im Register.
+- **Signierung (offen)**: Es gibt noch kein Codesignatur-Zertifikat. Der Installer und `WAMO.exe` sind unsigniert, Windows
+  SmartScreen zeigt beim ersten Start eine Warnung („Weitere Informationen“, „Trotzdem ausführen“), und bei der Installation pro
+  Benutzer könnte ein Prozess des Benutzers die `WAMO.exe` austauschen (die asar-Integrität schützt nur die asar). Später
+  signieren: Zertifikat besorgen (OV oder besser EV, oder Azure Trusted Signing), Variablen `CSC_LINK` und `CSC_KEY_PASSWORD` (bzw.
+  die Signierwerte von electron-builder) nur in der Umgebung des Baus setzen, nie committen; `npm run dist` signiert dann
+  `WAMO.exe`, `uv.exe` und den Installer von selbst. Bis dahin die SHA-256 des Installers getrennt weitergeben.
+- **Aktualisierung (offen)**: Die Version steht in `desktop/package.json`; ein neuer Installer über die alte Installation
+  aktualisiert (feste GUID). Einen automatischen Updater gibt es in diesem Paket nicht (`publish` ist `null`). Das Audit-Protokoll
+  des Hosts (`host\wamo_audit.jsonl`) liegt im Installationsordner und geht bei Update oder Deinstallation verloren; ein fester
+  Ort per `WAMO_AUDIT_LOG` braucht eine Änderung in `scripts/wamo-tunnel.ps1`.
+- Bekannt: Das mitgelieferte Electron 44.5.1 hat laut `npm audit` einen Hinweis zu Zwischenzertifikaten der Web-PKI (Fix in
+  44.10.1); die App lädt nur den eigenen Server. Anheben in einem eigenen Schritt, danach `npm test` und neu bauen.
+
 #### Texteingabe und Verbindungsfrist
 
 Die Eingabepille der Kommandozentrale sendet getippten Text wie eine gesprochene Bitte (`useWamo.textSenden`, RTVI

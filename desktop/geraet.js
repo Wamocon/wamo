@@ -317,7 +317,8 @@ function standardAusfuehren(datei, args, optionen = {}) {
 
 /**
  * Optionen (alle für die Tests einstellbar): env, home, localAppData, systemRoot, repo, hostname (Funktion),
- * ausfuehren(datei, args, { frist }) -> Promise<{ stdout }>, fs, jetzt (Funktion, Millisekunden), sid, log(text).
+ * ausfuehren(datei, args, { frist }) -> Promise<{ stdout }>, fs, jetzt (Funktion, Millisekunden), sid, log(text),
+ * vorTunnel() (async, läuft vor dem Einrichtungsskript; wirft Fehler mit .text).
  */
 /** Tunnelziel und erlaubte Hostschlüssel-Fingerabdrücke aus Optionen (Tests), Umgebung des Hauptprozesses oder Standard. */
 function erwartetesZiel(opt, env) {
@@ -500,14 +501,23 @@ function erzeugeGeraet(opt = {}) {
   async function starteTunnel() {
     if (!skript || !vorhanden(skript)) throw new GeraetFehler("Das Einrichtungsskript für den Tunnel fehlt.");
     const powershell = path.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
-    skriptLaeuft = true;
+    skriptLaeuft = true; // auch während der Vorbereitung: der Wächter darf in dieser Zeit nichts anstoßen
     try {
+      if (opt.vorTunnel) {
+        // Installierte App: erst muss die Python-Umgebung des Hosts stehen (host-umgebung.js), sonst startet der Überwacher nicht
+        try {
+          await opt.vorTunnel();
+        } catch (err) {
+          throw new GeraetFehler(typeof err?.text === "string" ? err.text : "Die Python-Umgebung des Hosts ist nicht bereit.");
+        }
+      }
       await ausfuehren(
         powershell,
         ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", skript, "-Geraet", "-Starten"],
         { frist: SKRIPT_FRIST_MS },
       );
     } catch (err) {
+      if (err instanceof GeraetFehler) throw err; // Vorbereitung gescheitert, Text steht schon fest
       log(`Einrichtungsskript fehlgeschlagen (${err?.killed ? "Zeitüberschreitung" : `Code ${err?.code ?? "?"}`})`);
       throw new GeraetFehler(
         err?.killed ? "Die Einrichtung des Tunnels dauert zu lange." : "Der Tunnel zu WAMO konnte nicht eingerichtet werden.",
