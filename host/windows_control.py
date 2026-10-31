@@ -344,10 +344,24 @@ def _desktop_api():
     return user32
 
 
+SPERRBILD_EXES = {"lockapp.exe"}  # der Sperrbildschirm (Uhr, Datum) von Windows 11
+
+
+def _sperrbild_vorne() -> bool:
+    """Liegt der Sperrbildschirm (LockApp.exe) vorne? Gemessen am 31.10.2026: Er liegt auf dem Desktop "Default" (das
+    Bildschirmfoto zeigt ihn), die Prüfung des Eingabedesktops allein meldete dann "entsperrt"."""
+    try:
+        return (foreground().get("programm") or "").lower() in SPERRBILD_EXES
+    except Exception:  # noqa: BLE001 (Fenster nicht lesbar: der Desktop-Test oben gilt)
+        return False
+
+
 def is_locked(api=None) -> bool:
     """Ist der Bildschirm gesperrt (Win+L, Anmeldebildschirm, UAC-Dialog auf dem sicheren Desktop)? Dann ist der
     Eingabedesktop nicht "Default": OpenInputDesktop scheitert für normale Prozesse, oder der Desktop heißt anders
-    (Winlogon). Tippen, Klicken und Bildschirmfotos liefen dort ins Leere. Jeder Fehler gilt als gesperrt."""
+    (Winlogon). Tippen, Klicken und Bildschirmfotos liefen dort ins Leere. Jeder Fehler gilt als gesperrt. Zusätzlich
+    gilt der Bildschirm als gesperrt, wenn der Sperrbildschirm LockApp.exe vorne liegt (nur ohne api, die Tests des
+    Desktops prüfen so allein den Desktopnamen)."""
     try:
         user32 = api if api is not None else _desktop_api()
         desk = user32.OpenInputDesktop(0, False, DESKTOP_READOBJECTS)
@@ -360,9 +374,11 @@ def is_locked(api=None) -> bool:
         noetig = wintypes.DWORD(0)
         if not user32.GetUserObjectInformationW(desk, UOI_NAME, name, ctypes.sizeof(name), ctypes.byref(noetig)):
             return True
-        return name.value.lower() != "default"
+        if name.value.lower() != "default":
+            return True
     finally:
         user32.CloseDesktop(desk)
+    return api is None and _sperrbild_vorne()
 
 
 # ---------- Bildschirm und Maus ----------
