@@ -79,10 +79,12 @@ class TurnState:
     tainted: bool = False
     taint_marks: list[int] = field(default_factory=list)
     transcript_len: Callable[[], int] = lambda: 0
+    turn_nr: int = 0  # zählt die Beiträge der Person; wechselt sie, ist ein Werkzeugaufruf ein neuer Auftrag (werkzeug_wache.py)
 
     def new_user_turn(self, text: str) -> None:
         self.last_user_text = text or ""
         self.tainted = False
+        self.turn_nr += 1
 
     def taint(self) -> None:
         self.tainted = True

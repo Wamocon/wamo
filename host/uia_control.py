@@ -30,7 +30,8 @@ import threading
 import time
 import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 MAX_TIEFE = 8  # Ebenen unter dem Fenster
 MAX_ELEMENTE = 120  # Standard für die Zahl der aufgelisteten Elemente
@@ -45,10 +46,28 @@ NAME_MAX = 80
 WERT_MAX = 500
 TEXT_MAX = 2000
 
+# Webseiten in Browsern (Chrome, Edge, Firefox, Brave): Der Dokumentknoten liegt schon 7 Ebenen unter dem Fenster, der
+# Seiteninhalt weitere 4 bis 14 darunter. Unter einem Webdokument gilt deshalb eine eigene Tiefe, und der Teilbaum
+# wird mit einem Zwischenspeicher (CacheRequest) in einem Zug gelesen: gemessen etwa 12-mal schneller als
+# Einzelabfragen (Amazon-Suche, 2750 Knoten: 0,25 s statt 3 s).
+WEB_TIEFE = 80  # Ebenen unter dem Dokument
+MAX_WEB_KNOTEN = 12000
+SEITE_SECS = 15.0  # so lange wartet der Host auf browser_lesen
+SEITE_ABSCHNITT_ZEICHEN = 6000  # Größe eines Abschnitts von browser_lesen
+SEITE_ZEILE_MAX = 1200
+MAX_TABS = 20
+TAB_NAME_MAX = 100
+DOKUMENT_VERSUCHE = 14  # Chrome und Edge schalten die Barrierefreiheit erst beim ersten UIA-Zugriff ein (Edge: bis ~8 s)
+DOKUMENT_WARTE_SECS = 0.5
+MAX_FELD_WERTE = 40  # so viele Eingabefelder liest browser_lesen höchstens mit Wert
+URL_MAX = 300
+
 PASSWORT_NAME = re.compile(
     r"(passwor|kennwort|password|passcode|passphrase|geheim|secret|\bpin\b|\bcvv\b|\bcvc\b|\botp\b|\btan\b|"
     r"zugangscode|sicherheitscode|security code|\btoken\b|api[ _-]?key|schlüssel|\biban\b|kreditkarte|card number|"
-    r"kartennummer)", re.IGNORECASE)
+    r"kartennummer|\bpw\b|\bpass\b|\bpwd\b|mot de passe|contraseña|пароль|密码|private key|recovery code|backup code|"
+    r"(verification|authentication|auth|bestätigungs|verifizierungs)[ -]?code|kontonummer|account number|\bssn\b|"
+    r"steuer-?id|cc[ -]?number|card[ -]?number|\bcvv\d?\b|\bcvc\d?\b|\bcsrf\b|\bxsrf\b|access[ -]?token)", re.IGNORECASE)
 ADRESSFELD_NAME = re.compile(r"(adress|address|omnibox|location bar|suchleiste|search bar|\burl\b)", re.IGNORECASE)
 
 # UIA-Steuerelementtypen -> deutsche Bezeichnung
@@ -65,7 +84,17 @@ BEDIENBAR = frozenset({
     "Teilungsschaltfläche",
 })
 TITELLEISTE = 50037  # UIA-Typ TitleBar
+DOKUMENT = 50030
+TAB_ELEMENT = 50019
+FENSTERKNOEPFE = re.compile(r"^(minimieren|maximieren|wiederherstellen|schließen|minimize|maximize|restore|close)$",
+                            re.IGNORECASE)  # Chrome und Edge führen sie nicht als TitleBar: nie auflisten (Fenster zu = Tabs weg)
+# weitere Typen, die nur der Seitentext von browser_lesen braucht (Gliederung, keine Bedienung)
+SEITE_TYPEN = {50008: "Liste", 50017: "Statusleiste", 50036: "Tabelle", 50028: "Tabelle", 50034: "Kopf", 50035: "Kopf",
+               50021: "Symbolleiste", 50018: "Registerleiste", 50009: "Menü", 50010: "Menü", 50023: "Baum",
+               50012: "Fortschritt"}
 PASSWORTFELD = "Passwortfeld"
+BROWSER_PROGRAMME = frozenset({"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe"})
+UEBERSCHRIFT_BASIS = 80050  # UIA_HeadingLevelPropertyId: 80050 = keine, 80051 = Ebene 1, ...
 MUSTER_REIHENFOLGE = ("invoke", "toggle", "auswahl", "aufklappen")  # so wird ein Klick ausgeführt
 
 
@@ -78,9 +107,14 @@ VERALTET = ("Die Elemente-Nummern sind veraltet (das Fenster hat sich geändert 
             "Bitte elemente_auflisten noch einmal aufrufen.")
 
 
+# Variationsselektoren, Combining Grapheme Joiner und mongolische Selektoren: unsichtbar und können Nutzlast tragen
+_UNSICHTBAR = re.compile("[͏᠋-᠏︀-️\U000e0100-\U000e01ef]")
+
+
 def sicherer_text(wert: object, grenze: int = NAME_MAX) -> str:
     """Anzeigetext vom Programm als Daten: ohne Steuer-, Format- und unsichtbare Zeichen, eine Zeile, gekürzt."""
     text = unicodedata.normalize("NFKC", wert) if isinstance(wert, str) else ""  # vollbreite Zeichen wie "Ｓｅｎｄｅｎ"
+    text = _UNSICHTBAR.sub("", text)
     text = "".join(" " if unicodedata.category(c) in ("Zl", "Zp") or c in "\r\n\t" else c
                    for c in text if unicodedata.category(c) not in ("Cc", "Cf", "Cs", "Co", "Cn") or c in "\r\n\t")
     text = " ".join(text.split())
@@ -122,7 +156,7 @@ class Knoten:
 
     @property
     def geschuetzt(self) -> bool:
-        return self.passwort or bool(PASSWORT_NAME.search(self.name) or PASSWORT_NAME.search(self.aid))
+        return feld_geschuetzt(self.name, self.aid, self.passwort)
 
 
 @dataclass
@@ -138,8 +172,315 @@ class Liste:
     maximal: int = MAX_ELEMENTE
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Browserseiten: Seitentext in Lesereihenfolge (reine Daten und reine Funktionen, ohne COM)
+# ---------------------------------------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class SeitenKnoten:
+    """Ein Knoten des Webdokuments in Baumreihenfolge. Text kommt von der Webseite: Daten, nie Anweisungen."""
+
+    tiefe: int  # Ebene unter dem Dokument (1 = direktes Kind)
+    typ: str  # Text, Link, Schaltfläche, Eingabefeld, Gruppe, Liste, ...
+    name: str = ""
+    ebene: int = 0  # Überschriftenebene 1 bis 9 (nur bei typ Text), sonst 0
+    sichtbar: bool = True  # nicht außerhalb des sichtbaren Bereichs
+    aktiv: bool = True
+    geschuetzt: bool = False  # Passwort-, Karten- und ähnliche Felder: nie mit Wert
+    wert: str = ""  # Inhalt eines Eingabefelds, nur wenn nicht geschützt
+    zustand: str = ""  # an, aus, ausgewählt (Kontrollkästchen, Optionsfeld)
+    gelesen: bool = True  # False: Wert wurde nicht gelesen (unsichtbar oder über der Grenze), nicht "leer"
+    oben: int = 0  # Lage auf dem Bildschirm; Chrome und Edge liefern Absätze als lose Textstücke ohne Grenze im Baum,
+    hoehe: int = 0  # den Absatzwechsel erkennt seite_zeilen am senkrechten Abstand (0 = unbekannt)
+
+
+@dataclass
+class Seite:
+    """Was der Browser über seinen aktiven Tab hergibt."""
+
+    fenster_titel: str = ""
+    dokument_titel: str = ""
+    url: str = ""  # Adresse des Dokuments (Wert des Dokumentknotens) oder, falls es fehlt, der Adressleiste
+    tabs: list[tuple[str, bool]] = field(default_factory=list)  # (Titel, aktiv)
+    knoten: list[SeitenKnoten] = field(default_factory=list)
+    dokument_gefunden: bool = False
+    gekuerzt: bool = False  # Knotenobergrenze oder Zeitbudget erreicht
+    fehler: str = ""  # Name der Ausnahme, falls der Browser den Teilbaum nicht lieferte (nur für das Log)
+
+
+_LUHN = re.compile(r"\d{13,19}")
+_IBAN = re.compile(r"[A-Za-z]{2}\d{2}[ ]?[A-Za-z0-9][A-Za-z0-9 ]{9,30}")
+
+
+def _kartenzahl(wert: str) -> bool:
+    if not re.fullmatch(r"[\d .\-]{13,32}", wert or ""):
+        return False
+    ziffern = re.sub(r"\D", "", wert)
+    if not _LUHN.fullmatch(ziffern):
+        return False
+    summe = 0
+    for i, c in enumerate(reversed(ziffern)):
+        d = int(c)
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        summe += d
+    return summe % 10 == 0
+
+
+def feld_geschuetzt(name: str, aid: str, passwort: bool, wert: str = "") -> bool:
+    """Darf der Wert dieses Eingabefelds nie ins Modell? Passwortfeld (UIA IsPassword), Name oder Kennung wie Kennwort,
+    Kartennummer, PIN, Token, und Werte, die wie eine Kartennummer (Luhn) oder IBAN aussehen, auch unter harmlosem Namen."""
+    if passwort or any(PASSWORT_NAME.search(n) for n in (name or "", aid or "", _trenner_auf(name), _trenner_auf(aid))):
+        return True
+    wert = (wert or "").strip()
+    # Wert sieht wie ein Geheimnis aus: Kartennummer, IBAN oder eine lange Zeichenkette ohne Leerzeichen (Token, JWT, Schlüssel)
+    return bool(wert) and (_kartenzahl(wert) or bool(_IBAN.fullmatch(wert))
+                           or bool(re.fullmatch(r"[A-Za-z0-9_\-.=+/~]{32,}", wert)))
+
+
+def _trenner_auf(text: object) -> str:
+    """csrf_token, authToken und card-number als getrennte Wörter (die \\b-Grenzen der Muster greifen sonst nicht)."""
+    t = re.sub(r"([a-zäöü])([A-ZÄÖÜ])", r"\1 \2", text if isinstance(text, str) else "")
+    return re.sub(r"[_\-./]+", " ", t)
+
+
+_URL_GEHEIME_WOERTER = frozenset({
+    "token", "secret", "password", "passwort", "pass", "pwd", "pw", "session", "sess", "sid", "auth", "key", "apikey", "sig",
+    "signature", "code", "jwt", "cred", "credentials", "otp", "csrf", "xsrf", "ticket", "bearer", "hash", "state", "nonce",
+    "invite", "magic", "email", "mail"})
+_URL_GEHEIMER_WERT = re.compile(r"(code|token|key|secret|session|sig|auth)(=|%3d)", re.IGNORECASE)
+_URL_TOKENARTIG = re.compile(r"[A-Za-z0-9_\-.~%]{24,}")
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _geheimer_name(name: str) -> bool:
+    woerter = _trenner_auf(name).lower().split()
+    return any(w in _URL_GEHEIME_WOERTER or w.startswith(("passw", "token", "secret", "session", "auth")) for w in woerter)
+
+
+def _pfad_token(segment: str) -> bool:
+    """Pfadsegment, das wie ein Zugangsschlüssel aussieht (Reset-, Einladungs-, Freigabelink): lang, mit Ziffern und
+    Buchstaben, kaum Bindestriche (sonst ist es ein Titel-Slug wie stehlampe-dimmbar-led), oder eine UUID."""
+    if _UUID.fullmatch(segment):
+        return True
+    return (len(segment) >= 20 and bool(re.fullmatch(r"[A-Za-z0-9_\-.~%]+", segment)) and segment.count("-") <= 2
+            and any(c.isdigit() for c in segment) and any(c.isalpha() for c in segment))
+
+
+def url_bereinigen(url: object) -> str:
+    """Adresse für das Modell: ohne Zugangsdaten vor dem @, ohne Fragment (dort liegen oft OAuth-Token), ohne
+    Pfadsegmente, die wie Schlüssel aussehen, Abfrageparameter mit geheim klingendem Namen oder Wert maskiert (Schlüssel
+    bleiben sichtbar, Werte werden …), gekürzt. Was keine Adresse ist, wird leer."""
+    text = sicherer_text(url, 2000)
+    if not text:
+        return ""
+    if text.lower().startswith("view-source:"):
+        rest = url_bereinigen(text[len("view-source:"):])
+        return ("view-source:" + rest) if rest else ""
+    if re.match(r"[A-Za-z][A-Za-z0-9+.\-]*:(?!//|\d)", text) and not text.lower().startswith(("about:", "chrome:", "edge:")):
+        return ""  # javascript:, data:, mailto: ... (nicht "host:8080/pfad")
+    try:
+        teile = urlsplit(text if "://" in text or text.startswith(("about:", "chrome:", "edge:")) else "http://" + text)
+        host = teile.hostname or ""
+        port = f":{teile.port}" if teile.port else ""
+    except ValueError:
+        return ""
+    if teile.scheme in ("about", "chrome", "edge"):
+        return sicherer_text(f"{teile.scheme}://{teile.netloc}{teile.path}" if teile.netloc else f"{teile.scheme}:{teile.path}",
+                             URL_MAX)
+    if teile.scheme not in ("http", "https", "file", "ftp") or not host or not re.fullmatch(r"[A-Za-z0-9.\-:_]+", host):
+        return ""  # javascript:, data:, mailto:, getippter Text statt einer Adresse
+    host = f"[{host}]" if ":" in host else host
+    pfad = "/".join("…" if _pfad_token(s.split(";")[0]) else s.split(";")[0] for s in teile.path.split("/"))
+    teile_abfrage = []
+    for teil in (t for t in teile.query.split("&") if t):
+        name, gleich, wert = teil.partition("=")
+        if not gleich:  # "?abc123": ein Wert ohne Namen ist meist ein Schlüssel
+            teile_abfrage.append("…" if len(teil) >= 12 else teil)
+        elif _geheimer_name(name) or _URL_GEHEIMER_WERT.search(wert) or _URL_TOKENARTIG.fullmatch(wert):
+            teile_abfrage.append(f"{name}=…")
+        else:
+            teile_abfrage.append(teil)
+    adresse = f"{teile.scheme}://{host}{port}{pfad}" + (f"?{'&'.join(teile_abfrage)}" if teile_abfrage else "")
+    return adresse if len(adresse) <= URL_MAX else adresse[: URL_MAX - 1] + "…"
+
+
+def seitentext(wert: object, grenze: int = SEITE_ZEILE_MAX) -> str:
+    """Seitentext als Daten: wie sicherer_text, aber ein Randleerzeichen bleibt (Textstücke einer Zeile werden
+    aneinandergehängt), und eckige Klammern werden rund (sonst könnte eine Seite unsere [Link]-Marken nachahmen)."""
+    roh = wert if isinstance(wert, str) else ""
+    vorn, hinten = roh[:1].isspace(), roh[-1:].isspace()
+    text = sicherer_text(roh, grenze).replace("[", "(").replace("]", ")")
+    if not text:
+        return " " if roh else ""
+    return (" " if vorn else "") + text + (" " if hinten else "")
+
+
+# Seiten, die browser_lesen nie liest und deren Tabtitel es nicht nennt (Passwort-, Anmelde-, Zugangsdaten- und Zahlungsseiten)
+SEITE_GESPERRT_TITEL = re.compile(
+    r"(passw|kennw|zugangsdaten|credentials|zahlungsmethod|payment method|wallet|password manager|anmeld|log ?in\b|"
+    r"einlogg|sign ?in\b|2fa|zwei-faktor|two-factor|bitwarden|lastpass|vaultwarden|keepass|1password|dashlane)",
+    re.IGNORECASE)
+ABSATZ_LUECKE = 0.6 # Abstand zur Unterkante des Vorgängers, ab dem (in Zeilenhöhen) ein neuer Absatz beginnt
+EINZELNE_TYPEN = frozenset({"Schaltfläche", "Teilungsschaltfläche", "Eingabefeld", "Kontrollkästchen", "Optionsfeld",
+                            "Auswahlliste", "Menüeintrag", "Schieberegler", "Drehfeld", "Registerkarte", "Bild"})
+INLINE_TYPEN = frozenset({"Text", "Link"})
+
+
+def seite_zeilen(knoten: list[SeitenKnoten], nur_sichtbar: bool = True) -> list[str]:
+    """Seitentext in Lesereihenfolge: Überschriften als "# Titel", Absätze als Zeilen, Listeneinträge mit "- ", Links
+    als "[Text]", Schaltflächen und Eingabefelder als eigene Zeile "[Schaltfläche: Name]", "[Eingabefeld: Name = "Wert"]".
+    Zeilenwechsel an jedem Blockwechsel (Gruppe, Liste, Eintrag, Tabelle ...); Textstücke und Links innerhalb eines
+    Blocks bilden eine Zeile. Geschützte Felder erscheinen nie mit Wert."""
+    zeilen: list[str] = []
+    puffer: list[str] = []
+    offen: list[tuple[int, str]] = []  # (Tiefe, Typ) der geöffneten Blöcke
+    praefix = ""
+    ueberspringen: int | None = None  # Teilbaum unterhalb dieser Tiefe weglassen (Name steht schon in der Zeile)
+    unten: int | None = None  # Unterkante des letzten Text- oder Linkstücks im aktuellen Block
+
+    def zeile_beenden() -> None:
+        nonlocal praefix, unten
+        unten = None
+        text = " ".join("".join(puffer).split())
+        puffer.clear()
+        while text:
+            if len(text) <= SEITE_ZEILE_MAX:
+                stueck, text = text, ""
+            else:  # lange Absätze auf mehrere Zeilen verteilen (an der Wortgrenze), nichts abschneiden
+                schnitt = text.rfind(" ", 0, SEITE_ZEILE_MAX)
+                schnitt = schnitt if schnitt > SEITE_ZEILE_MAX // 2 else SEITE_ZEILE_MAX
+                stueck, text = text[:schnitt], text[schnitt:].lstrip()
+            zeile = praefix + stueck
+            praefix = ""
+            if not zeilen or zeilen[-1] != zeile:
+                zeilen.append(zeile)
+
+    for k in knoten:
+        if ueberspringen is not None:
+            if k.tiefe > ueberspringen:
+                continue
+            ueberspringen = None
+        while offen and offen[-1][0] >= k.tiefe:
+            _, typ = offen.pop()
+            zeile_beenden()
+            if typ == "Listeneintrag":
+                praefix = ""  # ein leerer Eintrag (nur Symbol) lässt sein "- " nicht für die nächste Zeile stehen
+        name = seitentext(k.name, 2 * SEITE_ZEILE_MAX + 100)
+        sichtbar = k.sichtbar or not nur_sichtbar
+        if k.typ == "Text" and k.ebene:
+            if name.strip():
+                ueberspringen = k.tiefe
+            if sichtbar and name.strip():
+                zeile_beenden()
+                praefix = ""  # "- # Titel" gibt es nicht: eine Überschrift im Listeneintrag steht ohne Aufzählungszeichen
+                puffer.append("#" * min(k.ebene, 6) + " " + name)
+                zeile_beenden()
+        elif k.typ in INLINE_TYPEN:
+            if k.typ == "Link" and name.strip():
+                ueberspringen = k.tiefe
+            if not sichtbar:
+                continue
+            if not name.strip():
+                if name and puffer:
+                    puffer.append(" ")  # Leerzeichen zwischen zwei Links
+                continue
+            if k.hoehe > 0:
+                if unten is not None:
+                    luecke = k.oben - unten
+                    if luecke > ABSATZ_LUECKE * k.hoehe:  # deutlicher Abstand nach unten: neuer Absatz
+                        zeile_beenden()
+                    elif luecke >= 0 and puffer and not puffer[-1][-1:].isspace() and not name[:1].isspace():
+                        puffer.append(" ")  # nächste Bildschirmzeile desselben Absatzes
+                unten = k.oben + k.hoehe if unten is None else max(unten, k.oben + k.hoehe)
+            stueck = name if k.typ == "Text" else "[" + " ".join(name.split()) + "]"
+            if k.typ == "Text" and not puffer and name.lstrip().startswith(("#", "- ", ">")):
+                stueck = "\\" + name.lstrip()  # eine Seite kann keine Überschrift- oder Listenzeile vortäuschen
+            if k.typ == "Link" and puffer and puffer[-1] == stueck:
+                continue  # Shops liefern dasselbe Link-Stück oft doppelt (Bild und Titel verlinken beide)
+            puffer.append(stueck)
+        elif k.typ in EINZELNE_TYPEN:
+            # Eingabefelder auch ohne Namen: ihr Inhalt (Textbereich, contenteditable) steht in Kindknoten und darf nicht
+            # an der Schutzprüfung vorbei als Fließtext erscheinen
+            if name.strip() or k.typ in ("Eingabefeld", "Auswahlliste"):
+                ueberspringen = k.tiefe
+            if sichtbar and (name.strip() or k.typ in ("Eingabefeld", "Auswahlliste")):
+                zeile_beenden()
+                puffer.append(_einzelzeile(k, " ".join(name.split())))
+                zeile_beenden()
+        else:  # Gruppe, Liste, Eintrag, Tabelle, Bereich, Dokument, ...: Blockwechsel
+            zeile_beenden()
+            offen.append((k.tiefe, k.typ))
+            if k.typ == "Listeneintrag" and sichtbar:
+                praefix = "- "
+    zeile_beenden()
+    return zeilen
+
+
+def _einzelzeile(k: SeitenKnoten, name: str) -> str:
+    if k.typ in ("Eingabefeld", "Auswahlliste"):
+        bezeichnung = "Eingabefeld" if k.typ == "Eingabefeld" else "Auswahl"
+        if k.geschuetzt:
+            return f"[{bezeichnung}: {name or 'ohne Name'} (geschützt, Inhalt nicht gelesen)]"
+        if not k.gelesen:
+            return f"[{bezeichnung}: {name or 'ohne Name'}]"  # Inhalt nicht gelesen: nicht als "leer" ausgeben
+        wert = " ".join(seitentext(k.wert, 200).split())
+        return f"[{bezeichnung}: {name or 'ohne Name'} = „{wert}“]" if wert else f"[{bezeichnung}: {name or 'ohne Name'}, leer]"
+    zusatz = (", " + k.zustand) if k.zustand else ""
+    zusatz += ", deaktiviert" if not k.aktiv else ""
+    return f"[{k.typ}: {name}{zusatz}]"
+
+
+def abschnitte_bilden(zeilen: list[str], grenze: int = SEITE_ABSCHNITT_ZEICHEN) -> list[str]:
+    """Zeilen zu Abschnitten von höchstens etwa grenze Zeichen (nie mitten in einer Zeile getrennt)."""
+    abschnitte: list[str] = []
+    aktuell: list[str] = []
+    laenge = 0
+    for z in zeilen:
+        if aktuell and laenge + len(z) + 1 > grenze:
+            abschnitte.append("\n".join(aktuell))
+            aktuell, laenge = [], 0
+        aktuell.append(z)
+        laenge += len(z) + 1
+    if aktuell:
+        abschnitte.append("\n".join(aktuell))
+    return abschnitte
+
+
+def seite_aufbereiten(seite: Seite, abschnitt: int = 1, nur_sichtbar: bool = True) -> dict:
+    """Ergebnis von browser_lesen aus den Daten der Seite: Titel, Adresse, Tabs und ein Abschnitt Text."""
+    if isinstance(abschnitt, bool) or not isinstance(abschnitt, int) or abschnitt < 1:
+        raise UiaFehler("abschnitt: ganze Zahl ab 1")
+    titel = sicherer_text(seite.dokument_titel or seite.fenster_titel, 200)
+    tabs = [{"titel": "(gesperrt)" if SEITE_GESPERRT_TITEL.search(t or "") else sicherer_text(t, TAB_NAME_MAX),
+             "aktiv": bool(a)} for t, a in seite.tabs[:MAX_TABS]]
+    ergebnis: dict = {"titel": titel, "url": url_bereinigen(seite.url), "tabs": tabs, "tabs_anzahl": len(seite.tabs),
+                      "lesbar": bool(seite.dokument_gefunden and seite.knoten)}
+    if not ergebnis["lesbar"]:
+        ergebnis.update(abschnitt=1, abschnitte=0, text="", gekuerzt=False, nur_sichtbar=bool(nur_sichtbar))
+        return ergebnis
+    zeilen = seite_zeilen(seite.knoten, nur_sichtbar)
+    gefiltert = nur_sichtbar
+    if not zeilen and nur_sichtbar:  # Fenster verdeckt oder minimiert: alles gilt als außerhalb, dann den ganzen Text
+        zeilen, gefiltert = seite_zeilen(seite.knoten, False), False
+    teile = abschnitte_bilden(zeilen)
+    if teile and abschnitt > len(teile):
+        raise UiaFehler(f"Abschnitt {abschnitt} gibt es nicht (1 bis {len(teile)})")
+    # gekuerzt = es gibt weitere Abschnitte (dann abschnitt+1 lesen); seite_abgeschnitten = die Seite selbst war größer als
+    # die Grenzen des Hosts (Knotenzahl, Zeit), der Rest ist auch mit weiteren Abschnitten nicht zu bekommen
+    ergebnis.update(abschnitt=abschnitt, abschnitte=len(teile), text=teile[abschnitt - 1] if teile else "",
+                    gekuerzt=abschnitt < len(teile), nur_sichtbar=bool(gefiltert),
+                    zeichen_gesamt=sum(len(z) + 1 for z in zeilen))
+    if seite.gekuerzt:
+        ergebnis["seite_abgeschnitten"] = True
+    return ergebnis
+
+
 class Backend:
     """Zugriff auf UI Automation. ComUia ist die echte Umsetzung, Tests nehmen eine Attrappe."""
+
+    def seite(self, hwnd: int) -> Seite:
+        """Titel, Adresse, Tabs und der Knotenbaum des Webdokuments eines Browserfensters (nur Daten)."""
+        raise NotImplementedError
 
     def momentaufnahme(self, hwnd: int, tiefe: int, maximal: int, auch_texte: bool) -> tuple[list[tuple[Knoten, object]], bool]:
         """Liste aus (Knoten, Handle) in Baumreihenfolge und ob gekürzt wurde. Handles sind nur in diesem Aufruf gültig."""
@@ -341,7 +682,23 @@ class UiaSchicht:
         fertig, wert = self._handeln(hwnd, liste, ziel, "wert_lesen", None, AKTION_SECS, vorher)
         if not fertig:
             raise UiaFehler(MELDUNG_KEINE_ANTWORT)
+        if feld_geschuetzt(ziel.name, ziel.aid, ziel.passwort, str(wert or "")):  # auch Werte unter harmlosem Namen
+            raise UiaFehler("Passwortfelder liest WAMO nicht.")
         return {"wert": sicherer_text(wert, WERT_MAX), "gekuerzt": len(str(wert or "")) > WERT_MAX}
+
+    def seite_lesen(self, hwnd: int, abschnitt: int = 1, nur_sichtbar: bool = True) -> dict:
+        """Titel, Adresse, Tabs und ein Abschnitt Seitentext eines Browserfensters (nur Lesen, keine Nummern)."""
+        if isinstance(abschnitt, bool) or not isinstance(abschnitt, int) or abschnitt < 1:
+            raise UiaFehler("abschnitt: ganze Zahl ab 1")
+
+        def lauf(phase: dict):
+            phase["p"] = "seite"
+            return self.backend.seite(hwnd)  # nur Daten verlassen den Faden
+
+        fertig, seite = self._arbeiten(lauf, SEITE_SECS)
+        if not fertig:
+            raise UiaFehler(MELDUNG_KEINE_ANTWORT + " Es wurde nichts verändert.")
+        return seite_aufbereiten(seite, abschnitt, bool(nur_sichtbar))
 
 
 def pruefe_beschreibbar(k: Knoten) -> None:
@@ -366,11 +723,23 @@ def beschreibung(nummer: int, k: Knoten) -> dict:
     zustand = list(k.zustand)
     if not k.aktiv:
         zustand.insert(0, "deaktiviert")
-    if k.nur_lesen:
+    if k.nur_lesen and k.typ == "Eingabefeld":  # Links, Dokumente und Co. tragen nur die Adresse schreibgeschützt: kein Hinweis
         zustand.append("schreibgeschützt")
     if zustand:
         eintrag["zustand"] = zustand
     return eintrag
+
+
+MUSTER_IDS = (("invoke", "UIA_IsInvokePatternAvailablePropertyId"), ("toggle", "UIA_IsTogglePatternAvailablePropertyId"),
+              ("auswahl", "UIA_IsSelectionItemPatternAvailablePropertyId"),
+              ("wert", "UIA_IsValuePatternAvailablePropertyId"),
+              ("aufklappen", "UIA_IsExpandCollapsePatternAvailablePropertyId"))
+_TAB_ZUSATZ = re.compile(r"\s+[–-]\s+(Arbeitsspeicher\w*|Memory usage|Speicher\w*)\b.*$", re.IGNORECASE)
+
+
+def _tab_titel(name: object) -> str:
+    """Tab-Titel ohne den Zusatz der Speicheranzeige, den Chrome und Edge an den Namen hängen ("... – Arbeitsspeichernutzung – 24 MB")."""
+    return _TAB_ZUSATZ.sub("", sicherer_text(name, 300))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -431,10 +800,33 @@ class ComUia(Backend):
             walker = auto.ControlViewWalker
         except Exception as e:  # noqa: BLE001
             raise UiaFehler(f"Das Fenster ist für UI Automation nicht erreichbar ({type(e).__name__})") from e
+        browser = self._browser_oberflaeche(wurzel)
+        frist = time.monotonic() + SNAPSHOT_SECS - 3  # der Host gibt nach SNAPSHOT_SECS auf: vorher mit dem Ergebnis zurück
+        for versuch in range(DOKUMENT_VERSUCHE):
+            ergebnis, gekuerzt, web = self._lauf(auto, uia, wurzel, walker, tiefe, maximal, auch_texte, browser)
+            # Chrome und Edge schalten die Barrierefreiheit erst beim ersten Zugriff ein: dann fehlt die Webseite noch
+            # und erscheint bei der Folgeabfrage (gemessen: erster Lauf 37 Knoten, zweiter 228).
+            if (web or not browser or versuch == DOKUMENT_VERSUCHE - 1
+                    or time.monotonic() + DOKUMENT_WARTE_SECS + 1 > frist):
+                break
+            time.sleep(DOKUMENT_WARTE_SECS)
+        return ergebnis, gekuerzt
 
+    @staticmethod
+    def _browser_oberflaeche(wurzel) -> bool:
+        """Fenster eines Chromium- oder Firefox-Programms (Chrome, Edge, Brave, Firefox; auch Electron-Programme)?"""
+        try:
+            klasse = wurzel.CurrentClassName or ""
+        except Exception:  # noqa: BLE001
+            return False
+        return klasse.startswith(("Chrome_WidgetWin", "MozillaWindowClass"))
+
+    def _lauf(self, auto, uia, wurzel, walker, tiefe: int, maximal: int, auch_texte: bool, browser: bool = False):
+        """Ein Lauf durch den Baum: (Liste aus (Knoten, Handle), gekürzt, wurde ein Webdokument gelesen)."""
         ergebnis: list[tuple[Knoten, object]] = []
         besucht = 0
         gekuerzt = False
+        web = False
         ende = time.monotonic() + WALK_SECS
         # Tiefensuche in Baumreihenfolge: (Element, Tiefe, Pfad)
         stapel: list[tuple[object, int, tuple]] = [(wurzel, 0, ())]
@@ -443,11 +835,21 @@ class ComUia(Backend):
             if ebene > 0:
                 besucht += 1
                 try:
-                    if int(el.CurrentControlType) == TITELLEISTE:
+                    typ_id = int(el.CurrentControlType)
+                    if typ_id == TITELLEISTE:
                         continue  # Systemmenü, Minimieren, Schließen: nie auflisten, auch nicht darunter
+                    if typ_id == DOKUMENT and self._ist_webdokument(el):
+                        # Webseite eines Browsers: Teilbaum auf einmal (Zwischenspeicher) und eigene Tiefe, das Dokument
+                        # selbst steht nicht in der Liste
+                        web = True
+                        gekuerzt = self._web_knoten(auto, uia, el, pfad, auch_texte, maximal, ergebnis) or gekuerzt
+                        continue
                 except Exception:  # noqa: BLE001
                     continue
                 knoten = self._knoten(uia, el, pfad, auch_texte)
+                if (browser and knoten is not None and knoten.typ == "Schaltfläche" and ebene <= 6
+                        and FENSTERKNOEPFE.match(knoten.name)):
+                    knoten = None  # Fensterknöpfe des Browsers (Schließen würde alle Tabs beenden)
                 if knoten is not None:
                     if len(ergebnis) >= maximal:
                         gekuerzt = True
@@ -472,7 +874,7 @@ class ComUia(Backend):
             except Exception:  # noqa: BLE001 (Programm entzieht sich mitten im Lauf: Rest des Zweigs auslassen)
                 pass
             stapel.extend(reversed(kinder))  # erstes Kind zuerst abarbeiten
-        return ergebnis, gekuerzt
+        return ergebnis, gekuerzt, web
 
     def _knoten(self, uia, el, pfad: tuple, auch_texte: bool) -> Knoten | None:
         """Knoten für ein Element oder None, wenn es nicht aufgelistet wird (nicht bedienbar, außerhalb, Fehler)."""
@@ -501,18 +903,266 @@ class ComUia(Backend):
 
     @staticmethod
     def _muster(uia, el, typ: str) -> tuple[str, ...]:
-        ids = (("invoke", "UIA_IsInvokePatternAvailablePropertyId"), ("toggle", "UIA_IsTogglePatternAvailablePropertyId"),
-               ("auswahl", "UIA_IsSelectionItemPatternAvailablePropertyId"),
-               ("wert", "UIA_IsValuePatternAvailablePropertyId"),
-               ("aufklappen", "UIA_IsExpandCollapsePatternAvailablePropertyId"))
         gefunden = []
-        for muster, prop in ids:
+        for muster, prop in MUSTER_IDS:
             try:
                 if el.GetCurrentPropertyValue(getattr(uia, prop)):
                     gefunden.append(muster)
             except Exception:  # noqa: BLE001
                 continue
         return tuple(gefunden)
+
+    # ----- Webseiten (Zwischenspeicher) -----
+    @staticmethod
+    def _ist_webdokument(el) -> bool:
+        try:
+            return el.CurrentAutomationId == "RootWebArea" or el.CurrentFrameworkId in ("Chrome", "Gecko")
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _cache_anfrage(auto, uia):
+        """Alles, was Auflisten und Seitentext brauchen, in einem Zug für den ganzen Teilbaum (Werte nie: Passwörter)."""
+        cr = auto.CreateCacheRequest()
+        for prop in ("UIA_ControlTypePropertyId", "UIA_NamePropertyId", "UIA_IsOffscreenPropertyId",
+                     "UIA_IsPasswordPropertyId", "UIA_AutomationIdPropertyId", "UIA_IsEnabledPropertyId",
+                     "UIA_HeadingLevelPropertyId", "UIA_ToggleToggleStatePropertyId", "UIA_BoundingRectanglePropertyId",
+                     "UIA_SelectionItemIsSelectedPropertyId", *(p for _, p in MUSTER_IDS)):
+            cr.AddProperty(getattr(uia, prop))
+        cr.TreeScope = uia.TreeScope_Subtree
+        cr.TreeFilter = auto.ControlViewCondition
+        return cr
+
+    def _web_knoten(self, auto, uia, dokument, pfad: tuple, auch_texte: bool, maximal: int,
+                    ergebnis: list) -> bool:
+        """Hängt die bedienbaren Elemente eines Webdokuments an ergebnis an. True, wenn gekürzt wurde."""
+        try:
+            wurzel = dokument.BuildUpdatedCache(self._cache_anfrage(auto, uia))
+        except Exception:  # noqa: BLE001 (Dokument verschwunden oder Browser antwortet nicht)
+            return False
+        gekuerzt = False
+        besucht = 0
+        ende = time.monotonic() + WALK_SECS
+        stapel = [(wurzel, pfad, 0)]
+        while stapel:
+            el, p, tiefe = stapel.pop()
+            if tiefe > 0:
+                besucht += 1
+                knoten = self._knoten_cache(uia, el, p, auch_texte)
+                if knoten is not None:
+                    if len(ergebnis) >= maximal:
+                        return True
+                    ergebnis.append((knoten, el))
+                if besucht >= MAX_WEB_KNOTEN or time.monotonic() > ende:
+                    return True
+            if tiefe >= WEB_TIEFE:
+                continue
+            try:
+                kinder = el.GetCachedChildren()
+                stapel.extend((kinder.GetElement(i), p + (i,), tiefe + 1) for i in range(kinder.Length - 1, -1, -1))
+            except Exception:  # noqa: BLE001 (Blatt ohne Kinder)
+                continue
+        return gekuerzt
+
+    def _knoten_cache(self, uia, el, pfad: tuple, auch_texte: bool) -> Knoten | None:
+        """Wie _knoten, aber die Eigenschaften kommen aus dem Zwischenspeicher (kein Prozesswechsel je Eigenschaft)."""
+        try:
+            if el.CachedIsOffscreen:
+                return None
+            typ = TYPEN.get(int(el.CachedControlType))
+            if typ is None:
+                return None
+            name = sicherer_text(el.CachedName)
+            muster = tuple(m for m, prop in MUSTER_IDS if el.GetCachedPropertyValue(getattr(uia, prop)))
+            if typ not in BEDIENBAR and not muster and not (auch_texte and typ in ANZEIGE_TYPEN and name):
+                return None
+            try:
+                rid = tuple(int(x) for x in el.GetRuntimeId())
+            except Exception:  # noqa: BLE001
+                rid = ()
+            zustand, nur_lesen = self._zustand(uia, el, muster)
+            return Knoten(rid=rid or ("pfad",) + pfad, typ=typ, name=name,
+                          aid=sicherer_text(el.CachedAutomationId, 60), aktiv=bool(el.CachedIsEnabled),
+                          passwort=bool(el.CachedIsPassword), nur_lesen=nur_lesen, muster=muster, zustand=zustand)
+        except Exception:  # noqa: BLE001
+            return None
+
+    # ----- Seite eines Browsers (browser_lesen) -----
+    def seite(self, hwnd: int) -> Seite:
+        import ctypes
+
+        comtypes, uia = self._anmelden()
+        try:
+            auto = comtypes.CoCreateInstance(uia.CUIAutomation._reg_clsid_, interface=uia.IUIAutomation,
+                                             clsctx=comtypes.CLSCTX_INPROC_SERVER)
+            wurzel = auto.ElementFromHandle(ctypes.c_void_p(int(hwnd)))
+        except Exception as e:  # noqa: BLE001
+            raise UiaFehler(f"Das Fenster ist für UI Automation nicht erreichbar ({type(e).__name__})") from e
+        seite = Seite()
+        try:
+            seite.fenster_titel = sicherer_text(wurzel.CurrentName, 200)
+        except Exception:  # noqa: BLE001
+            pass
+        adresse = ""
+        frist = time.monotonic() + SEITE_SECS - 3  # der Host gibt nach SEITE_SECS auf: vorher mit dem Teilergebnis zurück
+        for versuch in range(DOKUMENT_VERSUCHE):
+            # Der erste Zugriff schaltet die Barrierefreiheit des Browsers ein; erst die Folgeabfragen liefern die Seite.
+            dokument, seite.tabs, adresse = self._geruest(auto, uia, wurzel)
+            if dokument is not None:
+                seite.dokument_gefunden = True
+                self._seite_lesen(auto, uia, dokument, seite, frist)
+                # eine leere Seite (about:blank) nicht minutenlang wiederholen: nach 4 Versuchen gilt sie als leer
+                if len(seite.knoten) >= 3 or versuch >= 3:
+                    break
+            if versuch < DOKUMENT_VERSUCHE - 1:
+                if time.monotonic() + DOKUMENT_WARTE_SECS > frist:
+                    break
+                time.sleep(DOKUMENT_WARTE_SECS)
+        if not seite.url:
+            seite.url = adresse
+        return seite
+
+    def _geruest(self, auto, uia, wurzel):
+        """Browser-Oberfläche ohne die Webseite: (Dokument oder None, Tabs, Adresse der Adressleiste). Unter dem
+        Dokument wird nie gesucht: Die Seite kann so keine Tabs oder Adressleiste vortäuschen."""
+        walker = auto.ControlViewWalker
+        tabs: list[tuple[str, bool]] = []
+        dokument = None
+        edits: list = []
+        stapel = [(wurzel, 0)]
+        besucht = 0
+        while stapel and besucht < 600:
+            el, ebene = stapel.pop()
+            besucht += 1
+            try:
+                typ_id = int(el.CurrentControlType)
+                if ebene > 0 and typ_id == DOKUMENT:
+                    if dokument is None or (el.CurrentAutomationId == "RootWebArea"
+                                            and dokument.CurrentAutomationId != "RootWebArea"):
+                        dokument = el
+                    continue
+                if ebene > 0 and typ_id == TAB_ELEMENT and len(tabs) < 200:  # alle zählen, seite_aufbereiten kürzt auf MAX_TABS
+                    ausgewaehlt = bool(el.GetCurrentPropertyValue(uia.UIA_SelectionItemIsSelectedPropertyId))
+                    tabs.append((_tab_titel(el.CurrentName), ausgewaehlt))
+                elif ebene > 0 and typ_id == 50004:
+                    edits.append(el)
+            except Exception:  # noqa: BLE001
+                continue
+            if ebene >= 16:
+                continue
+            kinder = []
+            try:
+                kind = walker.GetFirstChildElement(el)
+                while kind and len(kinder) < 200:
+                    kinder.append((kind, ebene + 1))
+                    kind = walker.GetNextSiblingElement(kind)
+            except Exception:  # noqa: BLE001
+                pass
+            stapel.extend(reversed(kinder))
+        adresse = ""
+        for el in edits:
+            if self._adressfeld(el):  # nur die Adressleiste: ein anderes Feld der Oberfläche enthält getippten Text
+                adresse = self._wert(uia, el)
+                if adresse:
+                    break
+        return dokument, tabs, adresse
+
+    @staticmethod
+    def _adressfeld(el) -> bool:
+        try:
+            return bool(ADRESSFELD_NAME.search(el.CurrentName or ""))
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _wert(uia, el) -> str:
+        try:
+            muster = el.GetCurrentPattern(uia.UIA_ValuePatternId).QueryInterface(uia.IUIAutomationValuePattern)
+            return str(muster.CurrentValue or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _seite_lesen(self, auto, uia, dokument, seite: Seite, frist: float) -> None:
+        """Knotenbaum des Webdokuments (Zwischenspeicher, ein Zug) in seite.knoten, Titel und Adresse des Dokuments."""
+        try:
+            seite.dokument_titel = sicherer_text(dokument.CurrentName, 200)
+            seite.url = self._wert(uia, dokument)
+            wurzel = dokument.BuildUpdatedCache(self._cache_anfrage(auto, uia))
+        except Exception as e:  # noqa: BLE001 (Browser antwortet nicht): Grund für das Log, die Seite gilt als nicht lesbar
+            seite.fehler = type(e).__name__
+            return
+        knoten: list[SeitenKnoten] = []
+        werte = [0]  # so viele Felder wurden schon mit Wert gelesen
+        ende = min(time.monotonic() + WALK_SECS * 2, frist)
+        stapel = [(wurzel, 0)]
+        while stapel:
+            el, tiefe = stapel.pop()
+            if tiefe > 0:
+                if len(knoten) >= MAX_WEB_KNOTEN or time.monotonic() > ende:
+                    seite.gekuerzt = True
+                    break
+                k = self._seiten_knoten(uia, el, tiefe, werte)
+                if k is not None:
+                    knoten.append(k)
+            if tiefe >= WEB_TIEFE:
+                seite.gekuerzt = True
+                continue
+            try:
+                kinder = el.GetCachedChildren()
+                stapel.extend((kinder.GetElement(i), tiefe + 1) for i in range(kinder.Length - 1, -1, -1))
+            except Exception:  # noqa: BLE001
+                continue
+        seite.knoten = knoten
+
+    def _seiten_knoten(self, uia, el, tiefe: int, werte: list[int]) -> SeitenKnoten | None:
+        try:
+            typ_id = int(el.CachedControlType)
+            typ = TYPEN.get(typ_id) or SEITE_TYPEN.get(typ_id) or "Gruppe"
+            if typ in ("Bereich", "Element"):
+                typ = "Gruppe"
+            name = (el.CachedName or "")[:2 * SEITE_ZEILE_MAX]  # Namen früh kürzen (Speicher, Zeit der Bereinigung)
+            ebene = 0
+            if typ == "Text":
+                try:
+                    stufe = int(el.GetCachedPropertyValue(uia.UIA_HeadingLevelPropertyId) or 0) - UEBERSCHRIFT_BASIS
+                    ebene = stufe if 1 <= stufe <= 9 else 0
+                except Exception:  # noqa: BLE001 (ältere Browser ohne Überschriftenebene: dann eben als Text)
+                    pass
+            sichtbar = not bool(el.CachedIsOffscreen)
+            aktiv = bool(el.CachedIsEnabled)
+            passwort = bool(el.CachedIsPassword)
+            aid = el.CachedAutomationId or ""
+            geschuetzt = False
+            wert = ""
+            gelesen = True
+            zustand = ""
+            if typ in ("Eingabefeld", "Auswahlliste"):
+                geschuetzt = feld_geschuetzt(name, aid, passwort)
+                if sichtbar and not geschuetzt and werte[0] < MAX_FELD_WERTE:
+                    werte[0] += 1
+                    roh = self._wert(uia, el)
+                    if feld_geschuetzt(name, aid, passwort, roh):
+                        geschuetzt = True
+                    else:
+                        wert = roh
+                else:
+                    gelesen = False  # Feld unsichtbar, geschützt oder über der Grenze: nie als "leer" ausgeben
+            elif typ == "Kontrollkästchen":
+                zustand = {0: "aus", 1: "an", 2: "unbestimmt"}.get(int(el.GetCachedPropertyValue(uia.UIA_ToggleToggleStatePropertyId) or 0), "")
+            elif typ == "Optionsfeld":
+                zustand = "ausgewählt" if el.GetCachedPropertyValue(uia.UIA_SelectionItemIsSelectedPropertyId) else ""
+            oben = hoehe = 0
+            if typ in INLINE_TYPEN:
+                try:
+                    _, y, _, h = el.GetCachedPropertyValue(uia.UIA_BoundingRectanglePropertyId)
+                    oben, hoehe = int(y), int(h)
+                except Exception:  # noqa: BLE001 (ohne Lage bleibt es bei der Reihenfolge im Baum)
+                    pass
+            return SeitenKnoten(tiefe=tiefe, typ=typ, name=name, ebene=ebene, sichtbar=sichtbar, aktiv=aktiv,
+                                geschuetzt=geschuetzt, wert=wert, zustand=zustand, oben=oben, hoehe=hoehe,
+                                gelesen=gelesen)
+        except Exception:  # noqa: BLE001 (Element verschwunden)
+            return None
 
     @staticmethod
     def _zustand(uia, el, muster: tuple[str, ...]) -> tuple[tuple[str, ...], bool]:

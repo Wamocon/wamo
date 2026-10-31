@@ -23,6 +23,38 @@ TOKEN = secrets.token_urlsafe(32)
 GESPERRT = json.dumps({"status": "locked", "summary": "Der Bildschirm ist gesperrt."})
 
 
+def test_browser_lesen_ist_modellwerkzeug_und_beweist_entsperrt():
+    assert "browser_lesen" in pc_host.LLM_TOOLS  # damit auch gate_pc_tools: Seiteninhalt gilt als Fremdinhalt (turn.taint)
+    assert pc_host.sperre_aus_ergebnis("browser_lesen", {"status": "success", "text": "x"}) is False
+    assert pc_host.sperre_aus_ergebnis("browser_lesen", {"status": "locked"}) is True
+
+
+async def test_browser_lesen_faerbt_den_zug_als_fremdinhalt():
+    """Der vorhandene Weg (gate_pc_tools, turn.taint) gilt für jedes Host-Werkzeug aus LLM_TOOLS: kein Lernen und kein
+    sofort wirksames gemeinsames Wissen aus einem Zug, in dem Seiteninhalt gelesen wurde."""
+    import bot
+    from pipecat.adapters.schemas.function_schema import FunctionSchema
+
+    class Params:
+        arguments: dict = {}
+
+        async def result_callback(self, wert):
+            self.wert = wert
+
+    async def original(params):
+        await params.result_callback({"status": "success", "vertrauen": "unvertrauenswuerdig"})
+
+    gefaerbt: list[int] = []
+    schema = FunctionSchema("browser_lesen", "x", {}, [], handler=original)
+    gate = bot.gate_pc_tools([schema], lambda: True, lambda: gefaerbt.append(1))[0]
+    await gate.handler(Params())
+    assert gefaerbt == [1]
+    aus = bot.gate_pc_tools([schema], lambda: False, lambda: gefaerbt.append(1))[0]
+    p = Params()
+    await aus.handler(p)
+    assert gefaerbt == [1] and p.wert["status"] == "rejected"  # PC-Steuerung aus: nichts gelesen, nichts gefärbt
+
+
 # ---------- Zeitleiste und Auswertung der Werkzeugergebnisse ----------
 def test_locked_ist_in_der_zeitleiste_abgelehnt():
     assert activity._status(GESPERRT) == "abgelehnt"

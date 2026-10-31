@@ -111,6 +111,7 @@ from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from ja_waechter import JaWaechter, ja_waechter_an
 from turn_wache import TurnWache
+from werkzeug_wache import AbbruchHinweis, DoppelWache, abbruch_hinweis_an, umhuellen, werkzeug_doppelt_an
 from wartesatz import Wartesatz, wartesatz_an, wartesatz_secs
 from pc_host import (
     call_host_tool,
@@ -360,10 +361,13 @@ def rechnername(system_info_text: str) -> str | None:
 
 
 def gate_pc_tools(
-    schemas: list[FunctionSchema], allowed: Callable[[], bool], on_foreign_content: Callable[[], None]
+    schemas: list[FunctionSchema], allowed: Callable[[], bool], on_foreign_content: Callable[[], None],
+    doppel: DoppelWache | None = None,
 ) -> list[FunctionSchema]:
     """Hüllt die Handler der Host-Werkzeuge: bei ausgeschalteter PC-Steuerung eine klare Absage,
-    sonst Aufruf des Originals. Ergebnisse vom PC (Fenstertitel, Ausgaben) gelten als Fremdinhalt."""
+    sonst Aufruf des Originals. Ergebnisse vom PC (Fenstertitel, Ausgaben) gelten als Fremdinhalt.
+    doppel (WAMO_WERKZEUG_DOPPELT): derselbe Öffnen-Aufruf im selben Zug läuft nicht noch einmal, eine weitere Seite derselben
+    Webseite bekommt einen Hinweis im Ergebnis (werkzeug_wache.py)."""
     gated = []
     for schema in schemas:
         original = schema.handler
@@ -372,8 +376,20 @@ def gate_pc_tools(
             if not allowed():
                 await params.result_callback(PC_OFF)
                 return
+            if doppel is not None:
+                urteil = doppel.pruefen(params.function_name, params.arguments)
+                if urteil.aktion == "ueberspringen":
+                    await params.result_callback(urteil.ergebnis)
+                    return
+                if urteil.eintrag is not None:
+                    params = umhuellen(params, doppel, urteil)
             on_foreign_content()
-            await _original(params)
+            try:
+                await _original(params)
+            except BaseException:  # Ausnahme oder Abbruch: kein Ergebnis, die Aktion gilt nicht als getan
+                if doppel is not None and params.arguments:
+                    doppel.misserfolg(params.function_name, params.arguments)
+                raise
 
         if original is not None:
             handler.__dict__.update(getattr(original, "__dict__", {}))  # @tool_options übernehmen
@@ -681,6 +697,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
     # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
     wache = TurnWache()
+    # Doppelte Aufrufe im selben Zug und abgebrochene Werkzeuge (werkzeug_wache.py)
+    doppel = DoppelWache(turn_nr=lambda: turn.turn_nr) if werkzeug_doppelt_an() else None
 
     def freigabe_offen() -> bool:
         """Wartet eine Freigabe (PC-Freigabe-Karte oder Entwicklungsauftrag)? Dann greift der Ja-Wächter nie."""
@@ -703,9 +721,11 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             user_agg,
             soft_gate,
             *([JaWaechter(offen=freigabe_offen, gefaerbt=lambda: turn.tainted)] if ja_waechter_an() else []),  # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER)
+            *([AbbruchHinweis(name="AbbruchHinweisVorne")] if abbruch_hinweis_an() else []),  # CANCELLED im Verlauf erklären (WAMO_ABBRUCH_HINWEIS)
             wache.vorne(),
             llm,
             wache.hinten(),
+            *([AbbruchHinweis(name="AbbruchHinweisHinten")] if abbruch_hinweis_an() else []),  # Anfragen von hinten laufen stromaufwärts: erst hier, dann die Wache
             *([Wartesatz(nach_secs=wartesatz_secs())] if wartesatz_an() else []),  # langer Werkzeugaufruf: kurzer Satz
             aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
             tts,
@@ -804,6 +824,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def melde_llm(text: str) -> None:
         """Kurze Nachricht an das Sprachmodell, das dann antwortet (Ergebnis einer PC-Freigabe)."""
         if state["live"]:
+            turn.turn_nr += 1  # eine Meldung von WAMO selbst (z. B. nach einer Freigabe) ist ein neuer Anlass, kein Doppelaufruf
             await task.queue_frames([LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)])
 
     # Freigaben kritischer PC-Aktionen (pc_freigaben.py): nur mit PC-Werkzeugen; die Karte entsteht in activity.py
@@ -853,7 +874,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             return False
         latenz = None
         if pc:
-            pc_schemas = gate_pc_tools(list(pc.standard_tools), pc_allowed, turn.taint)
+            pc_schemas = gate_pc_tools(list(pc.standard_tools), pc_allowed, turn.taint, doppel)
             context.set_tools(ToolsSchema(standard_tools=[*standard_tools, *pc_schemas, *screen_schemas]))
             state["pc_tools"] = True
             started = time.monotonic()
