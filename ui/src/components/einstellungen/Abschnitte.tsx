@@ -14,6 +14,7 @@ import { KERN, kernUrl, useBetriebsart } from "@/lib/betriebsart";
 import { rolleText } from "@/lib/einstellungenAbschnitte";
 import { useDesktopApp, useServerBrowser } from "@/lib/geraet";
 import { gewaehltesMikrofon, merkeMikrofon, type Mikrofon } from "@/lib/mikrofon";
+import { zurGeraeteverwaltung } from "@/lib/einstellungenHash";
 import { useSelect } from "@/lib/store";
 import { istOnline, wamo, zeigeToast } from "@/lib/wamo";
 import { Block, Daten } from "./Block";
@@ -218,6 +219,11 @@ export const InfoAbschnitt = memo(function InfoAbschnitt({ admin }: { admin: boo
       {admin && (
         <Block titel="Hinweise für Admins">
           <p className="ez-text">Neue und wartende Geräte sowie weitere Meldungen an dein Profil.</p>
+          <div>
+            <button type="button" className="btn-secondary btn-small" onClick={zurGeraeteverwaltung}>
+              Zur Geräteverwaltung
+            </button>
+          </div>
           <HinweiseListe />
         </Block>
       )}

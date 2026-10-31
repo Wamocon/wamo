@@ -98,10 +98,16 @@ const basis = { rolle: "mitglied" as const, desktop: false, serverBrowser: false
 
 test("Geräteblöcke je Rolle und Plattform", () => {
   assert.deepEqual(geraeteBloecke(basis), ["status", "betriebsart"]);
-  assert.deepEqual(geraeteBloecke({ ...basis, rolle: "admin" }), ["status", "pc", "betriebsart"]);
-  assert.deepEqual(geraeteBloecke({ ...basis, rolle: "admin", desktop: true }), ["status", "pc", "betriebsart", "einrichtung"]);
+  assert.deepEqual(geraeteBloecke({ ...basis, rolle: "admin" }), ["status", "verwaltung", "pc", "betriebsart"]);
+  assert.deepEqual(geraeteBloecke({ ...basis, rolle: "admin", desktop: true }), [
+    "status",
+    "verwaltung",
+    "pc",
+    "betriebsart",
+    "einrichtung",
+  ]);
   // Browser auf dem Server: nichts zu wählen, aber der Admin sieht den Hinweis zur PC-Steuerung
-  assert.deepEqual(geraeteBloecke({ ...basis, rolle: "admin", serverBrowser: true }), ["status", "pc"]);
+  assert.deepEqual(geraeteBloecke({ ...basis, rolle: "admin", serverBrowser: true }), ["status", "verwaltung", "pc"]);
   assert.deepEqual(geraeteBloecke({ ...basis, serverBrowser: true }), ["status"]);
   // Büro nicht eingerichtet: keine Betriebsart zu wählen
   assert.deepEqual(geraeteBloecke({ ...basis, bueroVerfuegbar: false, desktop: true }), ["status", "einrichtung"]);
