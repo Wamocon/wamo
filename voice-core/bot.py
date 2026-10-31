@@ -133,7 +133,7 @@ from soft_interrupt import (
     ohne_letzte_woerter,
     stopp_grenze_an,
 )
-from soniox_tts import LazySonioxTTSService
+from soniox_tts import LazySonioxTTSService, stimme_einstellung
 from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
 
 load_dotenv(override=True)
@@ -274,7 +274,8 @@ def soniox_tts() -> LazySonioxTTSService:
     return LazySonioxTTSService(
         api_key=os.environ["SONIOX_API_KEY"],
         url=SONIOX_TTS_URL,
-        settings=SonioxTTSService.Settings(voice=SONIOX_VOICE, language=Language.DE),
+        # Tempo und Pausen nur, wenn SONIOX_SPEED / SONIOX_REDUCE_SILENCE gesetzt sind (stimme_einstellung); sonst Standard
+        settings=SonioxTTSService.Settings(voice=SONIOX_VOICE, language=Language.DE, **stimme_einstellung()),
     )
 
 
