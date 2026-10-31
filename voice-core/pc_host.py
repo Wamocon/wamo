@@ -61,6 +61,7 @@ CONNECT_TIMEOUT_SECS = 20
 LLM_TOOLS = [
     "webseite_oeffnen", "programm_oeffnen", "powershell_lesen", "system_info", "dark_mode",
     "fenster_auflisten", "fenster_fokussieren", "tastatur_tippen", "tasten_druecken", "maus_scrollen", "oeffnen_mit",
+    "ordner_anlegen", "elemente_auflisten", "element_klicken", "element_text_setzen", "element_lesen",
 ]
 
 
@@ -263,7 +264,7 @@ async def host_tools(client: MCPClient | TunnelHost | None) -> ToolsSchema | Non
 # Werkzeuge, die der Host bei Sperre mit status=locked ablehnt (wamo_host._gesperrt); ihr Erfolg beweist "entsperrt".
 SPERR_WERKZEUGE = frozenset({
     "fenster_fokussieren", "tastatur_tippen", "tasten_druecken", "maus_scrollen", "bildschirm_ansehen",
-    "auf_bildschirm_klicken",
+    "auf_bildschirm_klicken", "element_klicken", "element_text_setzen", "ordner_anlegen",
 })
 SPERR_PROBE = "sperre_pruefen"  # nur für den Kern, nie in LLM_TOOLS
 

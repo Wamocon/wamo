@@ -163,6 +163,33 @@ python scripts\wamo_ui_sokrates2.py einrichten       # Firewall, Caddy, Image ba
 python scripts\wamo_ui_sokrates2.py status           # Zustand; bauen = nur Image und Container, pruefen = Header, TLS, Härtung
 ```
 
+#### Texteingabe und Verbindungsfrist
+
+Die Eingabepille der Kommandozentrale sendet getippten Text wie eine gesprochene Bitte (`useWamo.textSenden`, RTVI
+`send-text`, Antwort mit Stimme; die Nachricht unterbricht eine laufende Antwort wie ein Einwurf). Das Feld ist nur
+aktiv, wenn ein Gespräch läuft und der Kern Protokoll 2 oder neuer meldet (`textMoeglich`); sonst steht es ehrlich
+gesperrt da. Ein Schlüssel (`sk-ant-…`, auch gesprochen geschrieben) wird schon im Browser entfernt (`ui/src/lib/textEingabe.ts`),
+zusätzlich filtert ihn der Kern (`voice-core/schluessel_filter.py`). Getippter Text ersetzt nie eine Freigabe: Karten
+beantwortet nur der Klick. Kommt nach dem Verbinden 20 Sekunden lang keine Betriebsmeldung (Büro-Kern ohne WireGuard),
+bricht die Oberfläche ab und zeigt eine Meldung mit „Erneut verbinden“ (`ui/src/lib/verbindungsfrist.ts`); steht die
+Mikrofonfrage des Browsers noch offen, wird weiter gewartet.
+
+#### App auf dem iPhone
+
+Die Oberfläche ist als App installierbar (`ui/src/app/manifest.ts`, Symbole aus `scripts/wamo_icons_erzeugen.py`, Abstände
+für Notch und Home-Balken über `env(safe-area-inset-*)` in `globals.css`). Das Manifest enthält nur Namen, Farben und Symbole.
+Einrichtung am iPhone (nur Betriebsart Büro, also im Büro-LAN oder über WireGuard; die PC-Steuerung bleibt der Desktop-App vorbehalten):
+
+1. `infra/sokrates2/wamo-ca.crt` aufs iPhone bringen (AirDrop oder Mail an sich selbst) und öffnen: „Profil geladen“.
+2. Einstellungen, Allgemein, VPN und Geräteverwaltung: das Profil „WAMO CA“ installieren.
+3. Einstellungen, Allgemein, Info, Zertifikatsvertrauenseinstellungen: dem Zertifikat der WAMO-CA vollständig vertrauen (Schalter an).
+   Ohne diesen Schritt gibt es weder Anmeldung noch WebRTC.
+4. In Safari `https://192.168.178.136:55445` öffnen, anmelden (zweiter Faktor), dann Teilen, „Zum Home-Bildschirm“.
+
+**Offen:** Das Mikrofon und WebRTC im Standalone-Modus von iOS sind nur an einem echten Gerät prüfbar und noch nicht
+geprüft. Bis dahin gilt die App-Installation nicht als Lösung; Hilfsweise bleibt Safari im normalen Tab. Symbole
+neu erzeugen: `python scripts/wamo_icons_erzeugen.py` (Pillow nötig).
+
 #### Einstellungen in der Oberfläche
 
 Alle Formulare und Schalter liegen auf der Einstellungsseite (Zahnrad in der Kopfzeile oder „Einstellungen öffnen“ in der
@@ -220,6 +247,22 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   steht in der Tabelle `actions` (pending, approved oder rejected, running, done oder failed). Das Ergebnis bekommt
   WAMO als Daten. Lokal erzeugt der Kern das Geheimnis je Host-Start, im Büro liegt es in
   `%LOCALAPPDATA%\WAMO\host-freigabe` und als `WAMO_PC_HOST_FREIGABE` in `/etc/wamo/core.env`.
+- **Bedienung ohne Mausübernahme** (`host/uia_control.py`, Windows UI Automation über `comtypes`, MIT, exakt gepinnt):
+  `elemente_auflisten` (read) nummeriert die bedienbaren Elemente eines Fensters (Name, Typ, Zustand; höchstens 8 Ebenen
+  und 120 Einträge; Passwortfelder ohne Wert und gesperrt), `element_klicken` (change, per Invoke-, Toggle- oder
+  Auswahl-Muster), `element_text_setzen` (change, Value-Muster, ersetzt den Inhalt, nie in Passwortfelder und
+  Adressleisten) und `element_lesen` (read). Das Fenster muss nicht vorne liegen, Maus und Fokus der Person bleiben
+  unberührt. Davor stehen dieselben Wächter wie bei Maus und Tastatur: Zielfenster-Prüfung (keine Konsolen, Admin-,
+  Anmelde-, Passwortfenster, nie die eigene Oberfläche), Sperr-Erkennung, Ruhen bei offener Freigabe, Rate-Grenze
+  (60 je Minute und Werkzeug), Audit ohne Textinhalte. Klicks und Text in Mail- und Messenger-Fenstern sowie Klicks auf
+  Elemente mit Namen wie Senden, Bezahlen, Löschen, Veröffentlichen gehen nur über die Freigabe-Karte (Elementname und
+  Fenstertitel stehen darauf). Die Nummern gelten nur für die letzte Liste desselben Fensters, höchstens 3 Minuten, und
+  verfallen, sobald sich der Aufbau ändert; vor jeder Aktion wird der Baum frisch gelesen und das Element
+  wiedererkannt. Das Sprachmodell soll zuerst auflisten und dann klicken; `auf_bildschirm_klicken` und `maus_klicken`
+  bleiben der Rückfall für Zeichenflächen. Weitere Host-Werkzeuge dieser Stufe: `ordner_anlegen` (change, nur unter
+  Projekte, Dokumente, Desktop und Downloads im Benutzerordner, nie in AppData oder versteckten Ordnern; `system_info`
+  nennt Rechnername, Benutzer-, Projekte-Ordner), das Vorholen von Fenstern ohne Alt-Druck mit Nachprüfung des Fokus
+  (verweigert Windows es, meldet der Host das, statt „ist vorne“ zu behaupten) und 20 s Zeitgrenze für Lesebefehle.
 - **Höchstalter der Anmeldung** (gemessen ab Passwort und Code, Claim `amr`): Der Kern lehnt Tokens ohne `amr` ab und
   erzwingt `WAMO_ANMELDUNG_MAX_STUNDEN` (Standard 168), auch für gecachte Tokens; eine laufende Sitzung endet beim
   Überschreiten, die Oberfläche meldet ab. Die Anmeldemaske hat „Angemeldet bleiben“ (in der Desktop-App
@@ -247,6 +290,19 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   (in der Messung sagte das Modell den Füllsatz selbst, der Wächter löste nie aus). Abschalten mit `aus`, `0`, `nein`;
   ein unbekannter Wert gilt als an und wird einmal gewarnt (`voice-core/env_schalter.py`). Auf Sokrates-2 stehen alle
   Namen in der Liste erlaubter Werte (`infra/sokrates2/wamo_core_env.py`).
+- **Sprachpakete A und B** (31.10.2026, alle neuen Schalter Standard aus, bis der Messweg gegen den Büro-Kern bestätigt
+  hat, dass keine Kennzahl schlechter wird; nur das Lernen liegt nicht im Sprachpfad und ist an). `WAMO_TTS_SATZLEERZEICHEN`
+  (Leerzeichen am Ende jedes Textstücks für Soniox, damit das Satzzeichen nicht als „Punkt“ vorgelesen wird,
+  `voice-core/soniox_tts.py`), `SONIOX_SPEED` (0,7 bis 1,3) und `SONIOX_REDUCE_SILENCE` (an/aus) für Tempo und Pausen
+  (leer = Standard von Soniox; die Stimme selbst bleibt `SONIOX_VOICE`, die Wahl trifft die Hörprobe),
+  `WAMO_PERSONA_RUECKFRAGEN` (höchstens eine Rückfrage je Auftrag, Aufträge am Stück, keine Anschlussfrage, Freigaben
+  unberührt), `WAMO_PERSONA_PC_ORDNER` (Ordner des PCs nie raten, mit `system_info` erfragen), `WAMO_PAUSEN_PROMPT` (Texte
+  nach einer Pause ohne „Ich bin noch da“; nach der kurzen Pause erledigen oder still warten, nach der langen genau eine
+  Frage), `WAMO_LERNEN_OHNE_MOMENT` (Standard an: Lern-Prompt ohne Momentaufnahmen und Aufgabenstände),
+  `WAMO_RUECKMELDUNG_WERKZEUG` (ein „mhm“ bei laufendem Werkzeug startet keinen Zug und bricht es nicht ab, Nachlauf 4 s;
+  Stoppwörter und echte Einwürfe wirken weiter), `WAMO_JA_WAECHTER` (`voice-core/ja_waechter.py`: ein kurzes Ja auf eine
+  echte Rückfrage führt den Auftrag aus; greift nie bei offener Freigabe-Karte, Freigabe-Meldung im Verlauf oder
+  Rückfragen zu Freigabe und Sicherheit). Messszenario `werkzeug_mhm` (zwei Rückmeldelaute während der Websuche).
 - **Mikrofon-Wächter** (`ui/src/lib/mikrofon.ts`, `voice-core/audio_monitor.py`): Die Oberfläche misst die eigene Spur und
   warnt nach 3 s digitaler Stille, bei einer beendeten Spur ohne Ersatz, ohne Spur 5 s nach „Bot bereit“ und bei
   Mikrofonsperre durch Windows (Datenschutz für Desktop-Apps, `systemPreferences.getMediaAccessStatus`), jeweils mit
@@ -274,7 +330,7 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
 Der Test spielt über ein virtuelles Mikrofon Sprechproben und Geräusche gegen einen lokalen Kern (Unterwegs) und nimmt
 WAMOs Ausgabestrom, das Mikrofon und die Lautstärke des Wiedergabeelements mit einer gemeinsamen Uhr auf. Die Person
 spricht immer dann, wenn WAMO in einem bestimmten Zustand ist („seit 5 s am Sprechen“). Szenarien: `fakten`, `kurz`,
-`lang`, `einwurf`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`. Voraussetzung: ein temporäres
+`lang`, `einwurf`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`, `werkzeug_mhm`. Voraussetzung: ein temporäres
 Testkonto (`scripts/wamo_nutzer.py anlegen`, danach `sperren`), `konto.json` im Messordner (nicht im Repo), Oberfläche aus
 einer Kopie gebaut (`NEXT_PUBLIC_VOICE_CORE_URL=http://127.0.0.1:7861`).
 

@@ -11,7 +11,7 @@ import type {
   Profil,
   ServerMessage,
 } from "@/lib/nachrichten";
-import { createStore } from "@/lib/store";
+import { createStore } from "./store.ts"; // relativ, damit node:test diese Datei laden kann (textEingabe.test.ts)
 
 /**
  * Zustand der Hauptansicht als Store (lib/store.ts). Die Pegel für Kern, Stimmlinie und
@@ -107,6 +107,8 @@ export type WamoState = {
   kontingent: Kontingent | null;
   memos: Memo[];
   micOn: boolean;
+  /** Der Kern der laufenden Verbindung nimmt getippten Text an (Protokollversion aus "Bot bereit", lib/textEingabe.ts) */
+  textMoeglich: boolean;
   /** Name des Mikrofons der laufenden Verbindung (aus der Spur), null ohne Verbindung */
   mikrofon: string | null;
   /** Text für role="status": nur bedeutsame Wechsel (verbunden, getrennt, Mikro, PC) */
@@ -142,6 +144,7 @@ export const initialState: WamoState = {
   kontingent: null,
   memos: [],
   micOn: true,
+  textMoeglich: false,
   mikrofon: null,
   ansage: "",
   toast: null,
@@ -208,6 +211,28 @@ export function reduceBotOutput(c: Caption, d: BotOutputData): Caption {
   }
   const text = `${base.text} ${d.text}`.trim(); // Satz kommt vorab: grau als Vorschau
   return { ...base, text, spoken: d.will_be_spoken === false ? words(text) : base.spoken };
+}
+
+/**
+ * Ein neuer Beitrag der Person beginnt (Sprechen oder Tippen): spricht WAMO gerade, gilt der Rest als unterbrochen,
+ * ein beendeter Zug wird geleert, ein schon in den Verlauf übernommener Nutzerbeitrag beginnt neu.
+ */
+export function beginneNutzerZug(s: WamoState): WamoState {
+  let caption = s.caption;
+  if (s.presence === "speaking") caption = { ...caption, interrupted: true };
+  else if (caption.turnEnd) caption = { ...caption, ...ZUG_LEER };
+  if (caption.userLogged) caption = { ...caption, userDone: "", userLive: "", userLogged: false };
+  return { ...s, presence: "listening", caption, turn: s.turn + 1 };
+}
+
+/**
+ * Getippte Nachricht in die Anzeige übernehmen: wie ein gesprochener Beitrag erscheint sie als Nutzerzeile der
+ * Untertitel und kommt mit der Antwort in den Verlauf (onBotStartedSpeaking), damit die Reihenfolge stimmt, auch wenn
+ * die Nachricht eine laufende Antwort unterbricht. Der Text muss schon von Schlüsseln befreit sein (lib/textEingabe.ts).
+ */
+export function nimmeTextAuf(s: WamoState, text: string): WamoState {
+  const n = beginneNutzerZug(s);
+  return { ...n, presence: "thinking", caption: { ...n.caption, userDone: text, userLive: "", userLogged: false } };
 }
 
 /** Rückfall für Kerne ohne bot-output (nur LLM-Text): alles gilt sofort als gesprochen. */

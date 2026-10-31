@@ -8,6 +8,9 @@ dependencies = [
     "mss>=10.2.0",
     "pillow>=13.0.0",
     "pywin32>=308; sys_platform == 'win32'",
+    # UI Automation (Fenster-Elemente ohne Mausübernahme, uia_control.py): MIT-Lizenz, reines Python, bewusst direkt
+    # statt über ein Aufsatzpaket mit eigener Maus- und Tastatursteuerung. Exakt gepinnt.
+    "comtypes==1.4.17; sys_platform == 'win32'",
 ]
 
 [dependency-groups]

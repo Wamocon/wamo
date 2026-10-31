@@ -19,6 +19,15 @@ Vorschau stehen, oder alles bis text_end. Der Rest eines Satzes erklingt erst, w
 Modell schneller liefert als WAMO spricht, merkt man nichts davon; bei langsamem Modell oder einem Werkzeugaufruf mitten in
 der Antwort entsteht daraus Stille. Dagegen hilft der Wartesatz (wartesatz.py), nicht ein anderer Aggregator.
 
+Satzende (WAMO_TTS_SATZLEERZEICHEN, Standard aus bis zur Messung): Pipecat reicht jeden Satz ohne Leerzeichen am Ende
+an Soniox. Das Textende ohne Leerraum kann Soniox mit dem Anfang des nächsten Satzes verkleben ("Nutzung.Ich") und das
+Satzzeichen vorlesen. fuer_soniox hängt deshalb ein Leerzeichen an; es zählt nicht mit (siehe 65-Zeichen-Schwelle) und
+steht nicht im Verlauf, denn der Verlauf kommt aus den Wort-Zeitstempeln.
+
+Stimme, Tempo und Pausen (stimme_einstellung): SONIOX_VOICE, SONIOX_SPEED (0,7 bis 1,3) und SONIOX_REDUCE_SILENCE kommen aus
+der Umgebung; leer bleibt die Standardeinstellung von Pipecat und Soniox. Welche Stimme gilt, entscheidet die Hörprobe, nicht
+dieser Code.
+
 Gemessen und verworfen: den Stream frueher oeffnen (234 ms bis zum ersten Audio, ob die Konfiguration mit dem Text oder
 0,3 s vorher kommt), den Text tokenweise reichen (Pipecat-Modus TOKEN: nach einer Unterbrechung stand nur ein Wort im
 Verlauf, Oberflaeche und Kontext waeren falsch) und einen Satzteil am Komma freigeben (unter der Schwelle startet
@@ -32,12 +41,42 @@ import os
 from loguru import logger
 from websockets.protocol import State
 
+from env_schalter import schalter_an, schalter_oder_none, zahl_im_bereich
+
 from pipecat.services.soniox.tts import SonioxTTSService
 from pipecat.services.tts_service import TextAggregationMode
 from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 
 START_ZEICHEN_STANDARD = 68
+TEMPO_MIN, TEMPO_MAX = 0.7, 1.3  # Bereich, den Soniox für speed annimmt
+
+
+def satz_leerzeichen_an(wert: str | None = None) -> bool:
+    """WAMO_TTS_SATZLEERZEICHEN: Leerzeichen am Ende jedes Textstücks für Soniox (Standard aus, bis gemessen)."""
+    return schalter_an("WAMO_TTS_SATZLEERZEICHEN", wert, standard=False)
+
+
+def fuer_soniox(text: str, an: bool | None = None) -> str:
+    """Der Text, wie er an Soniox geht: mit einem Leerzeichen am Ende, damit das Satzzeichen nicht mit dem nächsten Satz
+    verklebt und vorgelesen wird. an=None liest den Schalter. Leerer Text und Text mit Leerraum am Ende bleiben unverändert."""
+    if not (satz_leerzeichen_an() if an is None else an):
+        return text
+    return text if not text or text[-1].isspace() else text + " "
+
+
+def stimme_einstellung(speed: str | None = None, reduce_silence: str | None = None) -> dict:
+    """Zusätzliche Einstellungen der Stimme aus der Umgebung: speed (SONIOX_SPEED, 0,7 bis 1,3) und reduce_silence
+    (SONIOX_REDUCE_SILENCE, an oder aus). Nur gesetzte und gültige Werte stehen im Ergebnis; ein ungültiger Wert wird
+    mit Warnung ignoriert, die Stimme bleibt dann beim Standard. Die Parameter ersetzen die Umgebung (für Tests)."""
+    out: dict = {}
+    tempo = zahl_im_bereich("SONIOX_SPEED", TEMPO_MIN, TEMPO_MAX, speed)
+    if tempo is not None:
+        out["speed"] = tempo
+    pausen = schalter_oder_none("SONIOX_REDUCE_SILENCE", reduce_silence)
+    if pausen is not None:
+        out["reduce_silence"] = pausen
+    return out
 
 
 def start_zeichen(wert: str | None = None) -> int:
@@ -121,5 +160,5 @@ class LazySonioxTTSService(SonioxTTSService):
             await self._send_config(context_id)  # idempotent, nur beim ersten Satz wirksam
         except Exception as e:
             logger.warning(f"{self}: Soniox-Stream {context_id} konnte nicht geoeffnet werden: {e}")
-        async for frame in super().run_tts(text, context_id):
+        async for frame in super().run_tts(fuer_soniox(text), context_id):
             yield frame

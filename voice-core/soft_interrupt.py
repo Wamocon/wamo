@@ -23,6 +23,12 @@ Ablauf
     (WAMO_ECHO_FILTER=aus schaltet das ab). Ein einzelnes Wort aus WAMOs letzten Sekunden ("Montag" nach "Montag oder
     Dienstag?") zählt erst, wenn die Erkennung es endgültig meldet; Echo läuft weiter und wird dann zu einer Folge.
     Stoppwörter, Fragewörter, Verneinungen und alles, was WAMO nicht gesagt hat, wirken sofort wie bisher.
+  * Werkzeuge (WAMO_RUECKMELDUNG_WERKZEUG, Standard aus bis zur Messung): Solange ein Werkzeug läuft, das eine Unterbrechung
+    abbrechen würde, und bis WERKZEUG_NACHLAUF_SECS nach seinem Ergebnis (bis die Antwort beginnt), schweigt WAMO. Dann
+    startete jedes erkannte Wort, auch ein "mhm", einen Zug, das Gate unterbrach sofort und Pipecat brach das Werkzeug ab
+    (Websuche, Bildschirm, Aufträge). Mit dem Schalter gelten in dieser Zeit dieselben Regeln wie beim Sprechen:
+    Rückmeldelaute und Echo starten keinen Zug und lassen das Werkzeug laufen; Stoppwörter und echte Einwürfe wirken
+    sofort und brechen es wie bisher ab. Das Gate merkt sich die laufenden Werkzeuge je Sitzung (werkzeug_laeuft).
   * Verlauf: Das Gate wartet nach der Unterbrechung nur dann auf den gesprochenen Text, wenn ein Sprachabschnitt läuft,
     dessen Text noch nicht im Verlauf steht. Steht er schon da (die Antwort war fertig, nur der Ton lief noch) oder
     wurde nichts gesprochen, geht es sofort weiter statt eine Sekunde zu warten.
@@ -45,6 +51,9 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    FunctionCallCancelFrame,
+    FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
     InterruptionFrame,
     InterimTranscriptionFrame,
     LLMContextFrame,
@@ -179,6 +188,17 @@ def echo_modus_an(wert: str | None = None) -> bool:
     return schalter_an("WAMO_ECHO_MODUS", wert)
 
 
+# Rückmeldelaut bei laufendem Werkzeug (WAMO_RUECKMELDUNG_WERKZEUG)
+WERKZEUG_NACHLAUF_SECS = 4.0  # so lange nach dem Ergebnis zählt das Werkzeug noch als laufend (bis die Antwort beginnt)
+WERKZEUG_MAX_SECS = 120.0  # ein Werkzeug, dessen Ergebnis nie ankam, hält die Regel nicht länger fest
+
+
+def rueckmeldung_werkzeug_an(wert: str | None = None) -> bool:
+    """WAMO_RUECKMELDUNG_WERKZEUG: ein Rückmeldelaut bei laufendem Werkzeug startet keinen Zug und bricht es nicht ab
+    (Standard aus, bis der Messweg die Kennzahlen bestätigt hat)."""
+    return schalter_an("WAMO_RUECKMELDUNG_WERKZEUG", wert, standard=False)
+
+
 def hat_stoppwort(text: str) -> bool:
     """Enthält der Text ein Wort, mit dem man WAMO anhält oder etwas wissen will ("Stopp", "Moment", "Was", "Nein")?"""
     return any(_wort(w) in STOPP_WORDS for w in text.split())
@@ -296,11 +316,16 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         gesprochen: Callable[[float], list[str]] | None = None,
         beurteilt: Callable[[str], None] | None = None,
         echo_modus: bool = False,
+        werkzeug_laeuft: Callable[[], bool] | None = None,
         **kwargs,
     ):
         """beurteilt: wird mit "rueckmeldung" oder "echo" gerufen, wenn der erkannte Text kein Einwurf ist (das Gate
-        nimmt dann die vorsorglich gedämpfte Stimme wieder zurück)."""
+        nimmt dann die vorsorglich gedämpfte Stimme wieder zurück). werkzeug_laeuft: sagt, ob gerade ein Werkzeug läuft
+        (SoftInterruptGate.werkzeug_laeuft); dann gelten dieselben Regeln wie beim Sprechen, None lässt alles wie bisher."""
         super().__init__(**kwargs)
+        self._werkzeug_laeuft = werkzeug_laeuft
+        self.werkzeug_rueckmeldungen = 0  # Rückmeldelaute, die bei laufendem Werkzeug keinen Zug starteten
+        self._werkzeug_gemeldet = 0.0
         self._gesprochen = gesprochen
         self._beurteilt = beurteilt
         self._echo_modus = echo_modus
@@ -322,11 +347,16 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
             return "einwurf"
         return echo_urteil(text, self._gesprochen(ECHO_FENSTER_KURZ_SECS), self._gesprochen(ECHO_FENSTER_SECS))
 
+    def _werkzeug_aktiv(self) -> bool:
+        return self._werkzeug_laeuft is not None and not self._bot_speaking and bool(self._werkzeug_laeuft())
+
     async def _handle_transcription(self, frame) -> ProcessFrameResult:
-        if not self._bot_speaking:
+        werkzeug = self._werkzeug_aktiv()
+        if not self._bot_speaking and not werkzeug:
             return await super()._handle_transcription(frame)
         count = meaningful_word_count(frame.text, interim=isinstance(frame, InterimTranscriptionFrame))
-        if count >= self._min_words:
+        # Schweigt WAMO (Werkzeug läuft), gilt wie bei Pipecat schon ein Wort; MIN_INTERRUPT_WORDS betrifft nur das Sprechen
+        if count >= (self._min_words if self._bot_speaking else 1):
             urteil = self._urteil(frame.text)
             if urteil != "echo" and self.echo_modus_aktiv() and not hat_stoppwort(frame.text):
                 self.echo_vermutet += 1
@@ -358,7 +388,13 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         if ist_rueckmeldung(frame.text):
             self.rueckmeldungen += 1
             jetzt = time.monotonic()
-            if jetzt - self._rueckmeldung_gemeldet > 2.0:  # ohne Inhalt, höchstens alle 2 s
+            if werkzeug:
+                self.werkzeug_rueckmeldungen += 1
+                if jetzt - self._werkzeug_gemeldet > 2.0:  # ohne Inhalt, höchstens alle 2 s
+                    self._werkzeug_gemeldet = jetzt
+                    logger.info(f"{self}: Rückmeldung bei laufendem Werkzeug, kein Zug, das Werkzeug läuft weiter "
+                                f"(insgesamt {self.werkzeug_rueckmeldungen})")
+            elif jetzt - self._rueckmeldung_gemeldet > 2.0:  # ohne Inhalt, höchstens alle 2 s
                 self._rueckmeldung_gemeldet = jetzt
                 logger.info(f"{self}: Rückmeldung erkannt, WAMO redet weiter (insgesamt {self.rueckmeldungen})")
             if self._beurteilt is not None:
@@ -449,6 +485,32 @@ class SoftInterruptGate(FrameProcessor):
         self._fire_task: asyncio.Task | None = None
         self._turns_recorded = 0
         self._turn_recorded = asyncio.Event()
+        self._werkzeuge: dict[str, float] = {}  # laufende Werkzeuge, die ein neuer Zug abbräche: Aufruf -> Beginn
+        self._werkzeug_nachlauf_bis = 0.0  # bis dahin zählt das Ergebnis noch als "Werkzeug läuft" (bis die Antwort beginnt)
+
+    def werkzeug_laeuft(self) -> bool:
+        """Läuft ein Werkzeug, das ein neuer Zug abbrechen würde, oder ist sein Ergebnis gerade erst gekommen und die Antwort
+        beginnt noch nicht? Je Sitzung, kein gemeinsamer Zustand."""
+        jetzt = self._uhr()
+        for aufruf in [a for a, t in self._werkzeuge.items() if jetzt - t > WERKZEUG_MAX_SECS]:
+            del self._werkzeuge[aufruf]  # Ergebnis nie angekommen: nicht ewig festhalten
+        return bool(self._werkzeuge) or jetzt < self._werkzeug_nachlauf_bis
+
+    def _werkzeug_verfolgen(self, frame: Frame) -> None:
+        if isinstance(frame, FunctionCallInProgressFrame):
+            if frame.cancel_on_interruption:  # nur Aufrufe, die ein neuer Zug abbräche; asynchrone stören nicht
+                self._werkzeuge.setdefault(frame.tool_call_id, self._uhr())
+        elif isinstance(frame, FunctionCallResultFrame):
+            if self._werkzeuge.pop(frame.tool_call_id, None) is not None and not self._werkzeuge:
+                self._werkzeug_nachlauf_bis = self._uhr() + WERKZEUG_NACHLAUF_SECS
+        elif isinstance(frame, FunctionCallCancelFrame):
+            # Ein Abbruch folgt meist einem Einwurf, dessen Zug schon läuft: kein Nachlauf, sonst ginge dessen Text verloren
+            self._werkzeuge.pop(frame.tool_call_id, None)
+        elif isinstance(frame, InterruptionFrame):
+            self._werkzeuge.clear()  # Pipecat bricht sie ab
+            self._werkzeug_nachlauf_bis = 0.0
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._werkzeug_nachlauf_bis = 0.0  # die Antwort beginnt: ab jetzt gilt die Regel fürs Sprechen
 
     def kuerzlich_gesprochen(self, sekunden: float = ECHO_FENSTER_KURZ_SECS) -> list[str]:
         """Wörter, die WAMO in den letzten Sekunden gespielt hat, in der Reihenfolge (klein, ohne Satzzeichen)."""
@@ -544,6 +606,7 @@ class SoftInterruptGate(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        self._werkzeug_verfolgen(frame)
 
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
@@ -581,6 +644,8 @@ class SoftInterruptGate(FrameProcessor):
                 self._arm()
             elif not self._firing:
                 # WAMO spricht noch nicht (Claude denkt) -> sofort abbrechen wie bisher.
+                if self.werkzeug_laeuft():
+                    logger.info(f"{self}: Zug bei laufendem Werkzeug, es wird abgebrochen")
                 await self.push_frame(InterruptionFrame())
             return
         elif (
