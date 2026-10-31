@@ -71,7 +71,10 @@ APPS: dict[str, list[str]] = {
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         rf"{_LOCAL}\Google\Chrome\Application\chrome.exe",
     ],
-    "edge": [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"],
+    "edge": [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
     "explorer": [r"C:\Windows\explorer.exe"],
     "notepad": [r"C:\Windows\System32\notepad.exe"],
     "rechner": ["calculator:"],
@@ -522,7 +525,11 @@ def _seite_laden(url: str, browser: str, neuer_tab: bool, ziel: dict | None) -> 
         _audit({"tool": "webseite_oeffnen", "risk": "locked", "grund": "Bildschirm gesperrt", "tab": TAB_NEU,
                 "weg": WEG_START})
         return dict(GESPERRT)
-    _launch(resolve_app(browser), [url])
+    try:
+        exe = resolve_app(browser)
+    except ValueError as e:  # der Weg über die Adressleiste ging nicht und der Browser ist nicht startbar
+        return {"status": "rejected", "summary": f"{url[:120]} nicht geladen: {e}"}
+    _launch(exe, [url])
     if code == "gewuenscht":
         grund = "so gewünscht"
     else:
@@ -556,9 +563,12 @@ def webseite_oeffnen(url: str, browser: str = "chrome", neuer_tab: bool = False)
         return locked
     neu = _als_wahrheit(neuer_tab)
     browser_name = _browser_name(browser)
+    ziel = None
     try:
         safe_url = validate_url(url)
-        resolve_app(browser_name)
+        ziel, tab, weg = _seite_plan(browser_name, neu)
+        if weg == WEG_START:
+            resolve_app(browser_name)  # nur der Start braucht das Programm; ein offenes Fenster genügt dem Weg über die Adressleiste
     except ValueError as e:
         _audit({"tool": "webseite_oeffnen", "url": str(url)[:200], "risk": "rejected", "error": str(e)})
         return {"status": "rejected", "summary": str(e)}
@@ -569,7 +579,6 @@ def webseite_oeffnen(url: str, browser: str = "chrome", neuer_tab: bool = False)
             "Sehr lange Such-Parameter könnten Gesprächsinhalte nach außen tragen. Ein Admin muss das in der "
             "Oberfläche freigeben; bis dahin passiert nichts.",
             {"url": safe_url[:200], "tab": TAB_NEU if neu else TAB_AKTUELL})
-    ziel, tab, weg = _seite_plan(browser_name, neu)
     if weg == WEG_UIA:  # Fenster nach vorn und Enter: wie jede Eingabe, bei offener Freigabe ruht sie
         if vorab := _eingabe_vorab("webseite_oeffnen"):
             return vorab
@@ -2118,9 +2127,10 @@ def _ausfuehren(eintrag: dict) -> dict:
     if art == "webseite":
         url = validate_url(eintrag["url"])  # die DNS-Auflösung kann sich seit der Anfrage geändert haben
         browser = _browser_name(eintrag["browser"])
-        resolve_app(browser)
         neu = bool(eintrag.get("neuer_tab"))
         ziel, tab, weg = _seite_plan(browser, neu)
+        if weg == WEG_START:
+            resolve_app(browser)
         _audit({"tool": "webseite_oeffnen", "url": url[:200], "browser": browser, "risk": "change", "tab": tab,
                 "weg": weg, "freigabe": True})
         return _seite_laden(url, browser, neu, ziel)

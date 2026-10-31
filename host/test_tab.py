@@ -144,6 +144,17 @@ class AktiverTabTests(TabTest):
         self.assertEqual(self.b.aufrufe[0][0], 9)
         self.assertIn("Edge", r["summary"])
 
+    def test_offenes_fenster_genuegt_auch_ohne_auffindbare_programmdatei(self):
+        """Edge liegt hier unter EdgeCore: der Weg über die Adressleiste braucht die Programmdatei nicht."""
+        self.fenster = [dict(EDGE)]
+        with mock.patch.object(host, "resolve_app", side_effect=ValueError("edge ist auf diesem PC nicht installiert")):
+            self.assertEqual(host.webseite_oeffnen(URL, "edge")["tab"], "aktuell")
+            host._recent_actions.clear()
+            self.b.fehler = u.UiaFehler("x")  # Rückfall ohne startbaren Browser: klare Ablehnung statt Absturz
+            r = host.webseite_oeffnen(URL, "edge")
+        self.assertEqual(r["status"], "rejected")
+        self.assertIn("nicht installiert", r["summary"])
+
     def test_unbekannter_browser_wird_chrome(self):
         r = host.webseite_oeffnen(URL, "opera")
         self.assertEqual(r["browser"], "chrome")
