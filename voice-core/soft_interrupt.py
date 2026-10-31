@@ -645,7 +645,9 @@ class SoftInterruptGate(FrameProcessor):
             elif not self._firing:
                 # WAMO spricht noch nicht (Claude denkt) -> sofort abbrechen wie bisher.
                 if self.werkzeug_laeuft():
-                    logger.info(f"{self}: Zug bei laufendem Werkzeug, es wird abgebrochen")
+                    laufend = len(self._werkzeuge)
+                    logger.info(f"{self}: Zug bei laufendem Werkzeug, es wird abgebrochen "
+                                f"({laufend} laufend{'' if laufend else ', Nachlauf nach dem Ergebnis'})")
                 await self.push_frame(InterruptionFrame())
             return
         elif (
