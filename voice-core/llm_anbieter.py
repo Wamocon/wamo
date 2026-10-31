@@ -47,7 +47,7 @@ import re
 import time
 from urllib.parse import urlparse
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 import anthropic
@@ -62,6 +62,7 @@ from pipecat.services.llm_service import LLMService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.utils.http import connection_limits
 
+from env_schalter import zahl_im_bereich
 from schluessel import schwaerzen
 
 Anbieter = Literal["claude", "litellm"]
@@ -85,6 +86,12 @@ CLAUDE_PRUEF_TTL_SECS = 60.0
 # Zeitgrenze je Aufruf. Vision: zwei Versuche (erster Anbieter, dann Rückfall) passen in die 30 s des Werkzeugs.
 ANFRAGE_TIMEOUT_SECS = {"lernen": 45.0, "vision": 12.0, "zusammenfassung": 60.0, "gespraech": 20.0}
 VERBINDUNG_TIMEOUT_SECS = 3.0
+# Hintergrundbausteine eines Profils mit Claude-Zugang: Das Hausmodell bekommt nur diese Zeit, danach übernimmt sofort Claude
+# (Befund 31.10.2026: gemma4-31b für "lernen" lief zweimal in die volle Zeitgrenze von 45 s, 12:44 und 12:47; gemessen sind
+# etwa 12 s je Fall, siehe eval/ergebnisse/bausteine/bericht.md). WAMO_LERNEN_HAUS_SECS ersetzt den Wert (0 = volle Zeitgrenze).
+HAUS_VORVERSUCH_SECS = {"lernen": 15.0}
+HAUS_PAUSE_SECS = 300.0  # nach einer Zeitüberschreitung geht der Baustein so lange gleich zu Claude (je Modell, je Prozess)
+_haus_pause: dict[str, float] = {}
 GESPRAECH_LESE_TIMEOUT_SECS = 20.0  # längste Pause im Stream, bevor das Gespräch die Anfrage aufgibt
 ANTHROPIC_WOERTER = ("claude", "anthropic", "haiku", "sonnet", "opus")
 _CLAUDE_MODELL = re.compile(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?")
@@ -864,6 +871,28 @@ async def _litellm_anfrage(wahl: Wahl, a: _Auftrag, zugang: Zugang) -> Antwort:
     return Antwort((r.choices[0].message.content or "").strip(), ende, wahl, ein, aus)
 
 
+def haus_vorversuch_secs(baustein: str, zugang: Zugang) -> float | None:
+    """Zeitgrenze für den Hausmodell-Versuch eines Hintergrundbausteins, wenn ein Rückfall auf Claude möglich ist
+    (Profil mit Claude-Zugang, WAMO_LLM_RUECKFALL erlaubt es), sonst None (dann gilt die volle Zeitgrenze des Bausteins)."""
+    standard = HAUS_VORVERSUCH_SECS.get(baustein)
+    if standard is None or zugang.art != "claude" or not rueckfall_erlaubt(baustein):
+        return None
+    if baustein == "lernen":
+        wert = zahl_im_bereich("WAMO_LERNEN_HAUS_SECS", 0, 600)
+        if wert is not None:
+            return wert or None  # 0 schaltet die Verkürzung ab
+    return standard
+
+
+def haus_pausiert(modell: str | None) -> bool:
+    return bool(modell) and time.monotonic() < _haus_pause.get(modell or "", 0.0)
+
+
+def _haus_pausieren(modell: str | None) -> None:
+    if modell:
+        _haus_pause[modell] = time.monotonic() + HAUS_PAUSE_SECS
+
+
 async def anfrage(
     baustein: str,
     *,
@@ -885,13 +914,25 @@ async def anfrage(
                        ANFRAGE_TIMEOUT_SECS.get(baustein, 30.0))
     wahl = await waehlen(baustein, zugang)
     if wahl.anbieter == "litellm":
+        grenze = haus_vorversuch_secs(baustein, zugang)
+        if grenze is not None and haus_pausiert(wahl.modell):
+            # Das Hausmodell war vor kurzem zu langsam: nicht noch einmal warten
+            claude = claude_standardmodell(baustein, zugang)
+            logger.info("Hausmodell {} für {} war vor kurzem zu langsam: gleich Claude ({})", wahl.modell, baustein, claude)
+            wahl = Wahl(baustein, "claude", claude, "litellm", "LiteLLM: vor kurzem zu langsam")
+            return await _claude_anfrage(wahl, auftrag, zugang)
+        versuch = replace(auftrag, timeout=min(auftrag.timeout, grenze)) if grenze is not None else auftrag
         try:
-            return await _litellm_anfrage(wahl, auftrag, zugang)
+            return await _litellm_anfrage(wahl, versuch, zugang)
         except LLMFehler as e:
             if not e.verbindung:
                 raise
             if not e.zeitlimit:  # eine langsame Anfrage sperrt weder das Gateway noch andere Sitzungen
                 _litellm_ausgefallen(str(e), None if e.gateway_weg else wahl.modell)
+            elif grenze is not None:
+                _haus_pausieren(wahl.modell)
+                logger.warning("Hausmodell {} für {} nach {:.0f} s ohne Antwort: Pause von {:.0f} s, Claude übernimmt",
+                               wahl.modell, baustein, versuch.timeout, HAUS_PAUSE_SECS)
             wahl = _rueckfall_auf_claude(baustein, wahl.modell, str(e), zugang)
         return await _claude_anfrage(wahl, auftrag, zugang)
     try:
