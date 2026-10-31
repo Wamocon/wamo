@@ -11,8 +11,15 @@
 #   sudo bash wamo-rd-konto-einrichten.sh --status           # nur prüfen und anzeigen
 #   sudo bash wamo-rd-konto-einrichten.sh --sperren          # Konto sperren, Sitzungen beenden (Passwort bleibt, Konto ohne Login)
 #   sudo bash wamo-rd-konto-einrichten.sh --entfernen        # Rückweg: Konto, Gruppe und Eintrag in ziele.env entfernen
-# Für Sokrates-1 und Caesar (Stufe 5 und 6) gilt dieselbe Technik; die Übergabe des Passworts an das Gateway auf einem anderen
-# Rechner ist noch nicht gebaut. Darum läuft dieses Skript vorerst nur dort, wo /etc/wamo-rd/ziele.env liegt.
+# Für Sokrates-1 und Caesar (Stufe 5 und 6) gilt dieselbe Technik, nur liegt dort keine ziele.env. Das Passwort geht deshalb in
+# zwei Schritten ohne Bildschirm und ohne Argument vom Ziel zum Gateway (eine Pipe von ssh nach ssh, vom PC aus):
+#   ssh wamo-sokrates1 "sudo bash wamo-rd-konto-einrichten.sh --fern" \
+#     | ssh wamo-sokrates2 "sudo bash wamo-rd-konto-einrichten.sh --uebernehmen --ziel sokrates1"
+#   --fern         (am Ziel) Konto anlegen wie sonst, aber jedes Mal ein NEUES Passwort setzen. Es geht allein auf den
+#                  Standardausgang des Skripts (Kanal 3), alle Meldungen gehen auf den Fehlerkanal. Nichts liegt am Ziel.
+#   --uebernehmen  (auf Sokrates-2) liest das Passwort von stdin (32 Zeichen a-z, A-Z, 0-9, sonst Abbruch ohne Änderung) und
+#                  trägt es als WAMO_RD_PASSWORT_<ZIEL> in /etc/wamo-rd/ziele.env ein. Scheitert die Übernahme, danach
+#                  --fern erneut ausführen (das alte Passwort am Ziel ist dann ohnehin ersetzt).
 #
 #   --ziel NAME   Name des Ziels (a-z, 0-9, bis 16 Zeichen), Teil des Schlüssels WAMO_RD_PASSWORT_NAME in ziele.env; Vorgabe sokrates2
 #
@@ -49,12 +56,14 @@ while [ $# -gt 0 ]; do
     --status) AKTION=status ;;
     --sperren) AKTION=sperren ;;
     --entfernen) AKTION=entfernen ;;
+    --fern) AKTION=fern ;;
+    --uebernehmen) AKTION=uebernehmen ;;
     --ziel)
       shift
       [ $# -gt 0 ] && [[ "$1" =~ ^[a-z0-9]{1,16}$ ]] || { echo "Ungültiger Wert für --ziel (a-z, 0-9, bis 16 Zeichen)." >&2; exit 2; }
       ZIEL="$1"
       ;;
-    *) echo "Aufruf: $0 [--trocken] [--ziel NAME] [--rotieren|--status|--sperren|--entfernen]" >&2; exit 2 ;;
+    *) echo "Aufruf: $0 [--trocken] [--ziel NAME] [--rotieren|--status|--sperren|--entfernen|--fern|--uebernehmen]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -159,21 +168,25 @@ passwort_setzen() {
 env_hat_passwort() { [ -r "$ENV_DATEI" ] && grep -q "^$VARIABLE=." "$ENV_DATEI"; }
 
 # ---------- Aktionen
-anlegen() {
-  echo "== Konto $KONTO"
-  gateway_pruefen
-  local neu_konto=nein
+NEU_KONTO=nein
+konto_sicherstellen() {
   getent group "$GRUPPE_TS" >/dev/null 2>&1 || tu groupadd --system "$GRUPPE_TS"
   if konto_da; then
     echo "  Konto vorhanden: $(id "$KONTO")"
   else
-    neu_konto=ja
+    NEU_KONTO=ja
     tu useradd --create-home --home-dir "$HOME_KONTO" --shell /bin/bash --user-group --groups "$GRUPPE_TS" \
       --comment "WAMO Remote Desktop" -K UMASK=077 "$KONTO"
   fi
   tu chmod 0700 "$WURZEL$HOME_KONTO"
   if [ "$TROCKEN" = nein ]; then gruppen_pruefen; sudo_pruefen; ssh_pruefen; fi
-  if [ "$neu_konto" = ja ] || ! env_hat_passwort; then
+}
+
+anlegen() {
+  echo "== Konto $KONTO"
+  gateway_pruefen
+  konto_sicherstellen
+  if [ "$NEU_KONTO" = ja ] || ! env_hat_passwort; then
     passwort_setzen
   else
     echo "  Passwort unverändert (Rotation mit --rotieren)"
@@ -236,7 +249,53 @@ entfernen() {
   echo "  entfernt"
 }
 
+fern() {
+  # Am Ziel ohne Gateway: Konto wie sonst, Passwort nur auf Kanal 3 (der ursprüngliche Standardausgang), nichts bleibt am Ziel
+  echo "== Konto $KONTO für das Gateway auf einem anderen Rechner"
+  konto_sicherstellen
+  if [ "$TROCKEN" = ja ]; then
+    echo "  [trocken] neues Passwort (32 Zeichen, zufällig) für $KONTO setzen und über Kanal 3 ausgeben; wird nie angezeigt"
+    return 0
+  fi
+  local pw
+  pw="$(passwort_erzeugen)"
+  if ! printf '%s:%s\n' "$KONTO" "$pw" | chpasswd; then
+    fehler "chpasswd ist fehlgeschlagen, nichts übergeben."
+  fi
+  printf '%s\n' "$pw" >&3 || fehler "Der Ausgabekanal für das Passwort ist nicht offen. Das Passwort am Konto ist geändert, bitte --fern erneut ausführen."
+  pw=""
+  echo "  Passwort am Konto gesetzt und an den Ausgangskanal übergeben (nicht angezeigt). Als Nächstes auf Sokrates-2: --uebernehmen --ziel $ZIEL"
+}
+
+uebernehmen() {
+  # Auf Sokrates-2: Passwort von stdin in ziele.env eintragen
+  echo "== Passwort für das Ziel $ZIEL übernehmen (von der Standardeingabe)"
+  gateway_pruefen
+  local pw=""
+  IFS= read -r -t 20 pw || true
+  if ! [[ "$pw" =~ ^[A-Za-z0-9]{32}$ ]]; then
+    pw=""
+    fehler "Die Eingabe ist kein Passwort der erwarteten Form (32 Zeichen aus a-z, A-Z, 0-9). Nichts geändert."
+  fi
+  if [ "$TROCKEN" = ja ]; then
+    pw=""
+    printf '  [trocken] Eintrag %s in %s schreiben (0640 root:%s); wird nie angezeigt\n' "$VARIABLE" "$ENV_DATEI" "$GRUPPE_GATEWAY"
+    return 0
+  fi
+  local neu
+  neu="$(umask 0137 && mktemp "$ETC_RD/.ziele.env.XXXXXX")"
+  { [ -f "$ENV_DATEI" ] && grep -v "^$VARIABLE=" "$ENV_DATEI" || true; } > "$neu"
+  printf '%s=%s\n' "$VARIABLE" "$pw" >> "$neu"
+  chmod 0640 "$neu"
+  if [ -z "$WURZEL" ]; then chown "root:$GRUPPE_GATEWAY" "$neu"; fi
+  pw=""
+  mv -f "$neu" "$ENV_DATEI" || { rm -f "$neu"; fehler "$ENV_DATEI konnte nicht geschrieben werden. Am Ziel bitte --fern erneut ausführen."; }
+  echo "  $VARIABLE steht in $ENV_DATEI (0640 root:$GRUPPE_GATEWAY); das Passwort wird nirgends angezeigt."
+}
+
 case "$AKTION" in
+  fern) exec 3>&1 1>&2; fern ;;
+  uebernehmen) uebernehmen ;;
   anlegen) anlegen ;;
   rotieren) rotieren ;;
   status) status ;;

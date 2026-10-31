@@ -136,11 +136,11 @@ class Werkstatt(unittest.TestCase):
     def aufrufe(self):
         return self.log.read_text().splitlines()
 
-    def lauf(self, skript, *args, extra=None):
+    def lauf(self, skript, *args, extra=None, eingabe=None):
         env = {"PATH": str(self.bin), "ATTRAPPE_LOG": str(self.log), "ATTRAPPE_DIR": str(self.att),
                "HOME": self.tmp.name, "LC_ALL": "C", **(extra or {})}
         return subprocess.run([BASH, str(REPO / skript), *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              env=env, timeout=120)
+                              env=env, timeout=120, input=eingabe if eingabe is not None else "")
 
     def p(self, *teile):
         return self.wurzel.joinpath(*[t.lstrip("/") for t in teile])
@@ -920,8 +920,71 @@ class KontoTests(Werkstatt):
         self.ausgabe("sudo", "User wamo-rd is not allowed to run sudo on sokrates2.\n")
         self.ausgabe("sshd", "port 22\nallowusers wamocon alice\n")
 
-    def konto(self, *args):
-        return self.lauf(KONTO_SKRIPT, *args, extra={"WAMO_RD_KONTO_WURZEL": str(self.wurzel)})
+    def konto(self, *args, eingabe=None):
+        return self.lauf(KONTO_SKRIPT, *args, extra={"WAMO_RD_KONTO_WURZEL": str(self.wurzel)}, eingabe=eingabe)
+
+    def test_fern_gibt_das_passwort_nur_auf_dem_standardausgang_aus(self):
+        shutil.rmtree(self.p("etc/wamo-rd"))  # am Ziel gibt es weder ziele.env noch die Gruppe des Gateways
+        r = self.konto("--fern", "--ziel", "sokrates1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        pw = self.stdin_pw()
+        self.assertEqual(r.stdout, pw + "\n")                      # stdout enthält nichts als das Passwort
+        self.assertNotIn(pw, r.stderr)                             # die Meldungen stehen auf dem Fehlerkanal, ohne Passwort
+        self.assertIn("Passwort am Konto gesetzt", r.stderr)
+        self.assertNotIn(pw, "\n".join(self.aufrufe()))
+        self.assertFalse(self.p("etc/wamo-rd").exists())           # nichts bleibt am Ziel
+        self.assertIn("groupadd --system wamo-rd-ts", self.aufrufe())
+        self.assertTrue([z for z in self.aufrufe() if z.startswith("useradd ")])
+
+    def test_fern_setzt_bei_jedem_lauf_ein_neues_passwort(self):
+        shutil.rmtree(self.p("etc/wamo-rd"))
+        erstes = self.konto("--fern").stdout
+        self.konto_vorhanden()
+        (self.att / "chpasswd.stdin").unlink()
+        zweites = self.konto("--fern").stdout
+        self.assertRegex(erstes, r"^[A-Za-z0-9]{32}\n$")
+        self.assertRegex(zweites, r"^[A-Za-z0-9]{32}\n$")
+        self.assertNotEqual(erstes, zweites)
+
+    def test_fern_im_trockenlauf_aendert_nichts(self):
+        shutil.rmtree(self.p("etc/wamo-rd"))
+        r = self.konto("--fern", "--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertFalse((self.att / "chpasswd.stdin").exists())
+
+    def test_uebernehmen_traegt_das_passwort_in_ziele_env_ein(self):
+        self.env.write_text("WAMO_RD_PASSWORT_SOKRATES2=bleibtbleibtbleibtbleibtbleibt12\n")
+        pw = "Ab3" * 10 + "Zz"
+        r = self.konto("--uebernehmen", "--ziel", "sokrates1", eingabe=pw + "\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.env.read_text().splitlines(),
+                         ["WAMO_RD_PASSWORT_SOKRATES2=bleibtbleibtbleibtbleibtbleibt12", f"WAMO_RD_PASSWORT_SOKRATES1={pw}"])
+        self.assertEqual(stat.S_IMODE(os.stat(self.env).st_mode), 0o640)
+        for quelle in (r.stdout, r.stderr, "\n".join(self.aufrufe())):
+            self.assertNotIn(pw, quelle)
+        self.assertEqual([f for f in os.listdir(self.p("etc/wamo-rd")) if f != "ziele.env"], [])
+
+    def test_uebernehmen_ersetzt_ein_altes_passwort_desselben_ziels(self):
+        self.env.write_text("WAMO_RD_PASSWORT_SOKRATES1=altaltaltaltaltaltaltaltaltalt12\n")
+        pw = "Qq9" * 10 + "Xx"
+        self.assertEqual(self.konto("--uebernehmen", "--ziel", "sokrates1", eingabe=pw + "\n").returncode, 0)
+        self.assertEqual(self.env.read_text().splitlines(), [f"WAMO_RD_PASSWORT_SOKRATES1={pw}"])
+
+    def test_uebernehmen_lehnt_falsche_eingaben_ab_und_aendert_nichts(self):
+        vorher = "WAMO_RD_PASSWORT_SOKRATES2=bleibtbleibtbleibtbleibtbleibt12\n"
+        self.env.write_text(vorher)
+        for eingabe in ("", "zukurz\n", "a" * 33 + "\n", "a" * 31 + "!\n", "a b" * 11 + "\n"):
+            r = self.konto("--uebernehmen", "--ziel", "sokrates1", eingabe=eingabe)
+            self.assertNotEqual(r.returncode, 0, eingabe)
+            self.assertEqual(self.env.read_text(), vorher)
+            self.assertNotIn("a" * 31, r.stdout + r.stderr)
+
+    def test_uebernehmen_im_trockenlauf_aendert_nichts(self):
+        r = self.konto("--uebernehmen", "--trocken", "--ziel", "sokrates1", eingabe="Ab3" * 10 + "Zz\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[trocken]", r.stdout)
+        self.assertFalse(self.env.exists())
 
     def stdin_pw(self):
         text = (self.att / "chpasswd.stdin").read_text()
