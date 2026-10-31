@@ -32,7 +32,8 @@ from loguru import logger
 from auth_gate import AccessGate, Identity
 
 PRAEFIX = "/wamo/api"
-ROUTEN_MODULE = ("geraet_api", "hinweise_api", "teilen_api", "geraete_api", "einwilligung_api", "modellzugang_api")
+ROUTEN_MODULE = ("geraet_api", "hinweise_api", "teilen_api", "geraete_api", "einwilligung_api", "modellzugang_api",
+                 "geraete_admin_api")
 MAX_JSON_BYTES = 64 * 1024
 
 _gate: AccessGate | None = None

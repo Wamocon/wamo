@@ -5,6 +5,8 @@ import { test } from "node:test";
 import {
   BROWSER_MAX_STUNDEN,
   DESKTOP_MAX_STUNDEN,
+  aal2Frisch,
+  aal2Zeitpunkt,
   anmeldeZeitpunkt,
   anmeldungAbgelaufen,
   authSpeicher,
@@ -156,4 +158,37 @@ test("ohne Speicher (privates Fenster) kein Absturz", () => {
   assert.equal(s.getItem("sb"), null);
   s.setItem("sb", "x");
   s.removeItem("sb");
+});
+
+test("Zeitpunkt des zweiten Faktors ist der späteste totp-Eintrag, nicht das Passwort", () => {
+  const t = jwt({
+    aal: "aal2",
+    amr: [{ method: "password", timestamp: 9000 }, { method: "totp", timestamp: 1000 }, { method: "totp", timestamp: 2000 }],
+  });
+  assert.equal(aal2Zeitpunkt(t), 2_000_000);
+  assert.equal(aal2Zeitpunkt(jwt({ aal: "aal2", amr: [{ method: "mfa/totp", timestamp: 5 }] })), 5000);
+  for (const kaputt of [
+    jwt({ aal: "aal1", amr: [{ method: "totp", timestamp: 5 }] }),
+    jwt({ aal: "aal2", amr: [{ method: "password", timestamp: 5 }] }),
+    jwt({ aal: "aal2", amr: [{ method: "totp", timestamp: "5" }] }),
+    jwt({ aal: "aal2", amr: [{ method: "totp", timestamp: -1 }] }),
+    jwt({ aal: "aal2", amr: "x" }),
+    jwt({ aal: "aal2" }),
+    "kein.jwt",
+    "",
+  ]) {
+    assert.equal(aal2Zeitpunkt(kaputt), null);
+  }
+});
+
+test("frischer zweiter Faktor: höchstens zwei Minuten alt, kaum aus der Zukunft", () => {
+  const jetzt = 1_000_000_000;
+  const vor = (s: number) => jwt({ aal: "aal2", amr: [{ method: "totp", timestamp: (jetzt - s * 1000) / 1000 }] });
+  assert.equal(aal2Frisch(vor(10), jetzt), true);
+  assert.equal(aal2Frisch(vor(120), jetzt), true);
+  assert.equal(aal2Frisch(vor(121), jetzt), false);
+  assert.equal(aal2Frisch(vor(-3), jetzt), true);
+  assert.equal(aal2Frisch(vor(-30), jetzt), false);
+  assert.equal(aal2Frisch(null, jetzt), false);
+  assert.equal(aal2Frisch(jwt({ aal: "aal1" }), jetzt), false);
 });

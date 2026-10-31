@@ -53,6 +53,37 @@ export function anmeldeZeitpunkt(accessToken: string): number | null {
   }
 }
 
+/** So alt darf der Code des zweiten Faktors höchstens sein, damit der Kern ändernde Admin-Aktionen annimmt (Kern: 120 Sekunden). */
+export const AAL2_FRISCH_MS = 120_000;
+
+/**
+ * Zeitpunkt des letzten Codes des zweiten Faktors in ms (spätester totp-Eintrag in amr) oder null. Das Token wird nur
+ * gelesen, nicht geprüft; erzwungen wird die Frist im Kern und in der Datenbank.
+ */
+export function aal2Zeitpunkt(accessToken: string): number | null {
+  try {
+    const claims = JSON.parse(base64urlText(accessToken.split(".")[1] ?? "")) as { aal?: unknown; amr?: unknown };
+    if (claims.aal !== "aal2" || !Array.isArray(claims.amr)) return null;
+    const stempel = claims.amr
+      .map((e) => {
+        if (typeof e !== "object" || e === null) return undefined;
+        const { method, timestamp } = e as { method?: unknown; timestamp?: unknown };
+        return method === "totp" || method === "mfa/totp" ? timestamp : undefined;
+      })
+      .filter((t): t is number => typeof t === "number" && Number.isFinite(t) && t > 0);
+    return stempel.length ? Math.max(...stempel) * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Ist der Code des zweiten Faktors im Token höchstens zwei Minuten alt? (Fünf Sekunden Vorlauf für die Uhren.) */
+export function aal2Frisch(accessToken: string | null | undefined, jetzt: number): boolean {
+  if (!accessToken) return false;
+  const zeit = aal2Zeitpunkt(accessToken);
+  return zeit !== null && zeit - jetzt <= 5_000 && jetzt - zeit <= AAL2_FRISCH_MS;
+}
+
 /** So weit darf der Anmeldezeitpunkt in der Zukunft liegen (Uhren von PC und Server laufen etwas auseinander). */
 const ZUKUNFT_MS = 5 * 60_000;
 

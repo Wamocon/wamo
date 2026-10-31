@@ -1,9 +1,11 @@
 "use client";
 
 import { memo, useEffect } from "react";
+import { zurGeraeteverwaltung } from "@/lib/einstellungenHash";
+import { hinweisTextAnzeige, istGeraeteHinweis } from "@/lib/geraeteVerwaltung";
 import { alsHinweise, kernJson, type Hinweis } from "@/lib/kernApi";
 import { createStore, useSelect } from "@/lib/store";
-import { zeigeToast } from "@/lib/wamo";
+import { wamo, zeigeToast } from "@/lib/wamo";
 
 /**
  * Hinweise an das eigene Profil (voice-core/hinweise_api.py, Tabelle hinweise): geteilte Arbeit, Änderungen an
@@ -119,11 +121,18 @@ export const Hinweise = memo(function Hinweise() {
 });
 
 function HinweisKarte({ h }: { h: Hinweis }) {
+  const admin = useSelect(wamo, (s) => s.profil?.rolle === "admin");
   return (
     <article className="hinweis-karte" data-art={h.art}>
       <p className="eyebrow">{ART_TEXT[h.art] ?? "Hinweis"}</p>
       <p className="hinweis-titel">{h.titel}</p>
-      {h.text && <p className="hinweis-text">{h.text}</p>}
+      {/* Die Texte der Datenbank nennen ein Skript, das es nicht gibt: angezeigt wird der Weg über die Karte (lib/geraeteVerwaltung.ts) */}
+      {h.text && <p className="hinweis-text">{hinweisTextAnzeige(h.text)}</p>}
+      {admin && istGeraeteHinweis(h.art) && (
+        <button type="button" className="btn-secondary btn-small hinweis-zur-karte" onClick={zurGeraeteverwaltung}>
+          Zur Geräteverwaltung
+        </button>
+      )}
       <button type="button" className="error-close" aria-label={`Gelesen: ${h.titel}`} onClick={() => void gelesen([h.id])}>
         Gelesen
       </button>
