@@ -29,8 +29,8 @@
 // ("[WAMO] ...", z. B. "Mikrofon liefert Ton: Gerät, Spitze -52 dBFS" oder "liefert nur Stille") und der
 // Windows-Mikrofonzugriff beim Start landen in logs/oberflaeche.log.
 //
-// Sicherheit: contextIsolation + sandbox, keine nodeIntegration. Die Seite darf nur Pegel mit Zustand
-// und einmalig die Randfarben melden; beides wird hier gegen eine feste Liste geprüft. Navigation und
+// Sicherheit: contextIsolation + sandbox, keine nodeIntegration. Die Seite darf nur Pegel mit Zustand,
+// einmalig die Randfarben und die Zahlen des Lichtrahmens (lichtrahmen.js) melden; alles wird hier geprüft. Navigation und
 // Weiterleitungen bleiben auf dem UI-Origin, keine Webviews, Mikrofon (nur Audio) nur für das
 // Hauptfenster mit der eigenen Oberfläche, fremde Seiten öffnen im normalen Browser.
 // Prozesse aus PID-Dateien werden nur beendet, wenn Programmname, Befehlszeile und Startzeit passen.
@@ -55,6 +55,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 const { GeraetFehler, erzeugeGeraet } = require("./geraet");
+const { fuerRandFenster, pruefeMarkierung, ruhezustand, sollZeichnen } = require("./lichtrahmen");
 const { powershellPfad, starteVollbildWaechter } = require("./vollbild");
 const {
   installieren,
@@ -561,6 +562,8 @@ function createOverlays() {
       },
     });
     win.setIgnoreMouseEvents(true); // Klicks gehen durch auf darunterliegende Programme
+    win.setContentProtection(true); // Rahmen und Welle erscheinen nicht in Bildschirmfotos für das Bildmodell
+    win.wamoBereich = display.bounds; // Bereich in DIP, aus dem die Markierung umgerechnet wird (getBounds rundet anders)
     win.setAlwaysOnTop(true, "screen-saver");
     win.setVisibleOnAllWorkspaces(true);
     // Der Rand lädt nur seine lokale Datei, nie etwas anderes
@@ -758,6 +761,8 @@ function energieschutz(an) {
   }
 }
 
+let letzterZustand = "idle"; // zuletzt gemeldeter Zustand der Oberfläche (Markierungen kommen mit Bezug darauf)
+
 ipcMain.on("levels", (event, sample) => {
   if (!fromMainUi(event)) return;
   const s = {
@@ -767,6 +772,7 @@ ipcMain.on("levels", (event, sample) => {
     speaker: Math.max(0, Math.min(7, Math.trunc(Number(sample?.speaker)) || 0)),
     zustand: ZUSTAENDE.has(sample?.zustand) ? sample.zustand : "idle",
   };
+  letzterZustand = s.zustand;
   energieschutz(s.zustand !== "offline");
   if (!borderOn) return; // Rand ausgeschaltet: nichts weiterreichen
   for (const w of overlays) if (!w.isDestroyed()) w.webContents.send("levels", s);
@@ -780,6 +786,39 @@ ipcMain.on("farben", (event, value) => {
   if (!geprueft) return;
   farben = geprueft;
   for (const w of overlays) if (!w.isDestroyed()) w.webContents.send("farben", farben);
+});
+
+// Lichtrahmen ums Zielfenster und Welle am Klickpunkt (lichtrahmen.js, markierung.js): Der Kern meldet nach gelungenen
+// Aktionen am Bildschirm Zahlen (Fensterrechteck, Klickpunkt, Monitor) mit der Gerätekennung des Laptops, der handelt. Hier
+// wird gezeichnet, wenn der Absender die eigene Oberfläche ist, die Werte stimmen, dieser Laptop der ist, der handelt, der
+// Rand sichtbar ist (Tray-Haken an, kein Vollbild) und keine Freigabe offen ist. Ohne eines davon passiert nichts.
+const markierungRate = ratenGrenze(20, 5_000);
+
+let kennungCache = { wert: null, bis: 0 };
+function eigeneKennung() {
+  if (Date.now() < kennungCache.bis) return kennungCache.wert;
+  let wert = null;
+  try {
+    wert = geraet.status().kennung ?? null;
+  } catch {
+    wert = null;
+  }
+  kennungCache = { wert, bis: Date.now() + 5_000 }; // geraet.json nicht bei jeder Markierung lesen
+  return wert;
+}
+
+ipcMain.on("markierung", (event, roh) => {
+  if (!fromMainUi(event) || !markierungRate()) return;
+  if (!randSoll() || ruhezustand(letzterZustand)) return;
+  const m = pruefeMarkierung(roh);
+  if (!m || !sollZeichnen(m, { eigeneKennung: eigeneKennung(), hostname: os.hostname() })) return;
+  const lebende = overlays.filter((w) => !w.isDestroyed());
+  const ziele = fuerRandFenster(m, screen, lebende.map((w) => w.wamoBereich ?? w.getBounds()));
+  // Rand-Fenster ohne Treffer bekommen null: ein Rahmen vom vorigen Ziel auf einem anderen Monitor verschwindet sofort
+  lebende.forEach((w, index) => {
+    const z = ziele.find((t) => t.index === index);
+    w.webContents.send("markierung", z ? { art: m.art, fenster: z.fenster, ...(z.punkt ? { punkt: z.punkt } : {}) } : null);
+  });
 });
 
 function checkRgb(c) {

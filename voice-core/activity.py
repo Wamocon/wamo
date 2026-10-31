@@ -31,6 +31,7 @@ DETAIL_KEYS = {
     "canvas_zeigen": "titel", "auf_bildschirm_klicken": "ziel", "bildschirm_ansehen": "frage",
     "merken": "art", "entwicklung_vorbereiten": "projekt", "maus_scrollen": "richtung",
     "aufgabe_verteilen": "art", "element_klicken": "beschreibung", "elemente_auflisten": "fenster",
+    "git_klonen": "repo", "github_repo_anlegen": "name",
 }
 
 
@@ -44,10 +45,11 @@ def _detail(name: str, args: dict) -> str:
 
 
 APPROVAL_ID_RE = re.compile(r"[0-9a-f]{16}")
-FREIGABE_AKTIONEN = ("powershell", "senden", "webseite", "klicken")
+FREIGABE_AKTIONEN = ("powershell", "senden", "webseite", "klicken", "github")
 # Nur diese Werkzeuge können eine Freigabe-Anfrage des Hosts liefern (auf_bildschirm_klicken über maus_klicken)
 FREIGABE_WERKZEUGE = frozenset({"powershell_lesen", "tastatur_tippen", "tasten_druecken", "webseite_oeffnen",
-                                "auf_bildschirm_klicken", "element_klicken", "element_text_setzen"})
+                                "auf_bildschirm_klicken", "element_klicken", "element_text_setzen",
+                                "github_repo_anlegen"})
 FREIGABE_DETAIL_ZEICHEN = 2000  # wie die Grenze der Oberfläche (ui/src/lib/nachrichten.ts)
 FREIGABE_KURZ_ZEICHEN = 200
 
@@ -106,6 +108,74 @@ def freigabe_karte(item: dict, projekt: str) -> dict:
     return {"type": "freigaben", "job": "pc", "projekt": projekt, "items": [item]}
 
 
+# ---------- Lichtrahmen am Laptop ----------
+# Der Host meldet nach gelungenen Aktionen am Bildschirm ein Rechteck (Zielfenster), bei Klicks den Punkt und den Monitor,
+# nur als ganze Zahlen (host/wamo_host.py _markierung). Der Kern prüft sie noch einmal, versieht sie mit der Gerätekennung
+# und reicht sie an die Oberfläche weiter; gezeichnet wird nur auf dem Laptop, der handelt (desktop/main.js vergleicht).
+MARKIERUNG_ARTEN = {
+    "fenster_fokussieren": "fokus", "tastatur_tippen": "text", "element_text_setzen": "text",
+    "tasten_druecken": "tasten", "maus_scrollen": "scrollen",
+    "auf_bildschirm_klicken": "klick", "element_klicken": "klick",
+}
+MARK_POS_MIN, MARK_POS_MAX = -32768, 32767  # wie host/windows_control.py und ui/src/lib/nachrichten.ts
+MARK_GROESSE_MAX = 32768
+GERAET_RE = re.compile(r"pc-[a-z0-9]+(?:-[a-z0-9]+)*")
+RECHNER_RE = re.compile(r"[A-Za-z0-9._-]{1,63}")
+
+
+def _ganz(wert: object) -> bool:
+    return isinstance(wert, int) and not isinstance(wert, bool)
+
+
+def _pos(wert: object) -> bool:
+    return _ganz(wert) and MARK_POS_MIN <= wert <= MARK_POS_MAX
+
+
+def _rechteck(wert: object) -> dict | None:
+    """Rechteck {x, y, b, h} aus genau diesen ganzen Zahlen innerhalb der Grenzen, sonst None."""
+    if not isinstance(wert, dict) or set(wert) != {"x", "y", "b", "h"}:
+        return None
+    if not (_pos(wert["x"]) and _pos(wert["y"])):
+        return None
+    if not all(_ganz(wert[k]) and 1 <= wert[k] <= MARK_GROESSE_MAX for k in ("b", "h")):
+        return None
+    return {k: wert[k] for k in ("x", "y", "b", "h")}
+
+
+def _punkt(wert: object, monitor: dict) -> dict | None:
+    """Klickpunkt {x, y} nur innerhalb des Monitors."""
+    if not isinstance(wert, dict) or set(wert) != {"x", "y"} or not (_pos(wert["x"]) and _pos(wert["y"])):
+        return None
+    inside = monitor["x"] <= wert["x"] < monitor["x"] + monitor["b"] and monitor["y"] <= wert["y"] < monitor["y"] + monitor["h"]
+    return {"x": wert["x"], "y": wert["y"]} if inside else None
+
+
+def markierung_nachricht(name: str, result: object, geraet: str | None, rechner: str | None) -> dict | None:
+    """Servernachricht {"type": "markierung", ...} für den Lichtrahmen oder None. Nur bei status=success eines Werkzeugs
+    aus MARKIERUNG_ARTEN und nur mit gültigen Zahlen; geraet ist die Kennung des Laptops (Tunnel je Gerät) oder None,
+    rechner sein Rechnername. Ein Titel oder Inhalt wird nie übernommen: nur die festen Felder fenster, monitor, punkt."""
+    art = MARKIERUNG_ARTEN.get(name)
+    data = _als_dict(result)
+    if art is None or not data or data.get("status") != "success":
+        return None
+    roh = data.get("markierung")
+    if not isinstance(roh, dict):
+        return None
+    fenster, monitor = _rechteck(roh.get("fenster")), _rechteck(roh.get("monitor"))
+    if fenster is None or monitor is None:
+        return None
+    if geraet is not None and not (isinstance(geraet, str) and len(geraet) <= 23 and GERAET_RE.fullmatch(geraet)):
+        return None  # eine Kennung, die nicht stimmt, ist kein "unbekannt": dann zeichnet kein Laptop
+    nachricht = {
+        "type": "markierung", "art": art, "geraet": geraet,
+        "rechner": rechner if isinstance(rechner, str) and RECHNER_RE.fullmatch(rechner) else None,
+        "fenster": fenster, "monitor": monitor,
+    }
+    if art == "klick" and (punkt := _punkt(roh.get("punkt"), monitor)) is not None:
+        nachricht["punkt"] = punkt
+    return nachricht
+
+
 def _status(result) -> str:
     try:
         data = json.loads(result) if isinstance(result, str) else result
@@ -128,18 +198,21 @@ def _status(result) -> str:
 class ActivityReporter(FrameProcessor):
     """on_ergebnis(name, argumente, ergebnis): sieht jedes Werkzeugergebnis (bot.py: Sperre des PCs).
     on_freigabe(anfrage) -> Karte oder None: macht aus needs_approval eine Freigabekarte (pc_freigaben.py).
-    Beide dürfen nach dem Bau der Pipeline gesetzt werden."""
+    markierung_von() -> (Gerätekennung, Rechnername) des gesteuerten Laptops: Mit ihm meldet der Reporter nach gelungenen
+    Aktionen am Bildschirm den Lichtrahmen (markierung_nachricht). Alle dürfen nach dem Bau der Pipeline gesetzt werden."""
 
     def __init__(
         self,
         *,
         on_ergebnis: Callable[[str, dict, object], Awaitable[None]] | None = None,
         on_freigabe: Callable[[dict], dict | None] | None = None,
+        markierung_von: Callable[[], tuple[str | None, str | None]] | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.on_ergebnis = on_ergebnis
         self.on_freigabe = on_freigabe
+        self.markierung_von = markierung_von  # (Gerätekennung, Rechnername) des gesteuerten Laptops; None = kein Rahmen
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -165,6 +238,14 @@ class ActivityReporter(FrameProcessor):
                     karte = None
                 if karte:
                     await self.push_frame(RTVIServerMessageFrame(data=karte))
+            if self.markierung_von is not None and not frame.error:
+                try:
+                    nachricht = markierung_nachricht(frame.function_name, frame.result, *self.markierung_von())
+                except Exception as e:  # noqa: BLE001 (der Rahmen ist nur eine Anzeige)
+                    logger.debug("Aktivität: Markierung nicht erstellt ({})", type(e).__name__)
+                    nachricht = None
+                if nachricht:
+                    await self.push_frame(RTVIServerMessageFrame(data=nachricht))
             if self.on_ergebnis is not None and not frame.error:
                 try:
                     await self.on_ergebnis(frame.function_name, frame.arguments or {}, frame.result)

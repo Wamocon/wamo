@@ -34,7 +34,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from activity import APPROVAL_ID_RE, freigabe_karte
+from activity import APPROVAL_ID_RE, freigabe_karte, markierung_nachricht
 from pc_host import pc_freigabe_entscheiden
 from persona import clean_inline
 
@@ -43,7 +43,7 @@ MAX_OFFEN = 5  # wie MAX_PENDING im Host
 MAX_ERGEBNIS_ZEICHEN = 800  # so viel vom Ergebnis des PCs bekommt das Sprachmodell
 SCHLIESSEN_TIMEOUT_SECS = 3.0
 AKTION_TEXT = {"powershell": "den PowerShell-Befehl", "senden": "das Senden", "webseite": "das Öffnen der Webseite",
-               "klicken": "den Klick"}
+               "klicken": "den Klick", "github": "das Anlegen des GitHub-Repositorys"}
 
 
 @dataclass
@@ -64,7 +64,8 @@ class PcFreigaben:
 
     client(): MCP-Client des Hosts; darf(): Rolle, Schalter und PC-Sperre (bot.darf_pc_freigeben);
     melden(text): Nachricht an das Sprachmodell (run_llm); fremdinhalt(): turn.taint; senden(nachricht): an die
-    Oberfläche (Karte, Aktivität); von: Anzeigename des Profils; pc_name(): Rechnername oder None.
+    Oberfläche (Karte, Aktivität, Lichtrahmen); von: Anzeigename des Profils; pc_name(): Rechnername oder None;
+    markierung_von(): (Gerätekennung, Rechnername) des Laptops für den Lichtrahmen oder None.
     """
 
     def __init__(
@@ -78,6 +79,7 @@ class PcFreigaben:
         senden: Callable[[dict], Awaitable[None]],
         von: str,
         pc_name: Callable[[], str | None] = lambda: None,
+        markierung_von: Callable[[], tuple[str | None, str | None]] | None = None,
         uhr: Callable[[], float] = time.monotonic,
     ):
         self._memory = memory
@@ -88,6 +90,7 @@ class PcFreigaben:
         self._senden = senden
         self._von = _ohne_klammern(clean_inline(von, 60)) or "Admin"
         self._pc_name = pc_name
+        self._markierung_von = markierung_von  # (Gerätekennung, Rechnername) für den Lichtrahmen; None = kein Rahmen
         self._uhr = uhr
         self._offen: dict[str, _Offen] = {}
         self._entschieden: deque[str] = deque(maxlen=50)  # zweiter Klick: nur protokollieren, nicht ansagen
@@ -191,6 +194,7 @@ class PcFreigaben:
             await self._senden(self._karte_fuer(offen))
         else:
             await self._aktivitaet(offen, "fertig" if status == "success" else "fehler")
+            await self._markierung(offen, ergebnis)
         self._fremdinhalt()
         await self._melden(self._ergebnis_text(offen.anfrage, ergebnis))
         return ergebnis
@@ -239,6 +243,17 @@ class PcFreigaben:
             with contextlib.suppress(Exception):
                 await self._senden({"type": "aktivitaet", "id": aid, "name": offen.anfrage["werkzeug"], "detail": "",
                                     "status": status})
+
+    async def _markierung(self, offen: _Offen, ergebnis: dict) -> None:
+        """Lichtrahmen für eine freigegebene Aktion (nur bei Erfolg, nur die Zahlen des Hosts)."""
+        if self._markierung_von is None:
+            return
+        try:
+            nachricht = markierung_nachricht(offen.anfrage["werkzeug"], ergebnis, *self._markierung_von())
+            if nachricht:
+                await self._senden(nachricht)
+        except Exception as e:  # noqa: BLE001 (der Rahmen ist nur eine Anzeige)
+            logger.debug("PC-Freigabe: Lichtrahmen nicht gesendet ({})", type(e).__name__)
 
     async def _melden_kurz(self, text: str) -> None:
         await self._melden(f"[PC-Freigabe: {text} Sag das in einem kurzen Satz.]")

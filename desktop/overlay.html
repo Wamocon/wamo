@@ -2,15 +2,15 @@
 <html lang="de">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'" />
     <title>WAMO Stimmen-Rand</title>
-    <style>
-      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
-      canvas { display: block; width: 100vw; height: 100vh; }
-    </style>
+    <link rel="stylesheet" href="overlay.css" />
   </head>
   <body>
     <canvas id="edge"></canvas>
+    <div id="rahmen" hidden></div>
+    <div id="welle" hidden></div>
     <script src="overlay.js"></script>
+    <script src="markierung.js"></script>
   </body>
 </html>

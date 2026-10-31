@@ -263,6 +263,20 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Projekte, Dokumente, Desktop und Downloads im Benutzerordner, nie in AppData oder versteckten Ordnern; `system_info`
   nennt Rechnername, Benutzer-, Projekte-Ordner), das Vorholen von Fenstern ohne Alt-Druck mit Nachprüfung des Fokus
   (verweigert Windows es, meldet der Host das, statt „ist vorne“ zu behaupten) und 20 s Zeitgrenze für Lesebefehle.
+- **GitHub im Host** (31.10.2026, `host/wamo_host.py`): `github_repo_anlegen` (Risikoklasse critical) legt ein Repository in
+  der Organisation an, nie im privaten Konto: `WAMO_GITHUB_ORG` aus der Umgebung des Hosts, sonst `Wamocon`, geprüft
+  gegen eine Allowlist-Regex. Es passiert nichts ohne die Freigabe-Karte (Organisation, Name, Sichtbarkeit und
+  Beschreibung stehen im Detail, öffentlich ist rot hervorgehoben und nur mit ausdrücklichem Wunsch), genau einmal, mit
+  Zeitgrenze 60 s, höchstens 5 Anfragen je Minute. Standard ist privat. `git_klonen` (change, ohne Karte) klont nur
+  nach `Projekte\<name>` (Regeln wie `ordner_anlegen`), nur aus der Organisation und aus Konten in
+  `WAMO_GITHUB_KLONEN_VON` (Liste mit Komma, Standard leer); liegt dort schon ein Klon mit demselben Remote, ist das
+  ein Erfolg (`vorhanden`), ein anderes Remote im selben Ordner ist ein Fehler. Die Remote-Adresse wird als Text aus
+  `.git/config` gelesen, in fremden Ordnern läuft kein git. Zeitgrenze 90 s (Tunnel: 100 s), 6 je Minute. Beide nutzen das
+  `gh` des Laptops, also die Anmeldung der Person: Der Host hält kein Token und reicht `GH_TOKEN`/`GITHUB_TOKEN` aus
+  seiner Umgebung nicht weiter. Ausgaben von gh und git erreichen das Modell nur als feste Sätze oder gefilterte, auf
+  300 Zeichen gekürzte Fehlerzeile (Tokens und Passwörter in Adressen entfernt); das Audit nennt Repository und
+  Sichtbarkeit, die Beschreibung nur als Prüfsumme. Beide ruhen bei gesperrtem Bildschirm und bei offener Freigabe.
+  Nicht enthalten: Vercel, Supabase, Admin-Helfer.
 - **Höchstalter der Anmeldung** (gemessen ab Passwort und Code, Claim `amr`): Der Kern lehnt Tokens ohne `amr` ab und
   erzwingt `WAMO_ANMELDUNG_MAX_STUNDEN` (Standard 168), auch für gecachte Tokens; eine laufende Sitzung endet beim
   Überschreiten, die Oberfläche meldet ab. Die Anmeldemaske hat „Angemeldet bleiben“ (in der Desktop-App
@@ -274,6 +288,19 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   `SHQueryUserNotificationState` ab; bei Vollbild-Programm, Direct3D-Vollbild und Präsentation (Werte 2, 3, 4) blendet
   sich der Rand aus, erst nach zwei gleichen Werten. Wert 7 (Store-App) zählt nicht, weil Store-Apps unter Windows 10
   und 11 auch im Fenster laufen. Der Wächter endet mit der App und startet nach einem Absturz nach 5 s neu.
+- **Lichtrahmen und Klickwelle** (31.10.2026): Handelt WAMO am Laptop (Fenster nach vorne, Element klicken, Text setzen,
+  Klicken, Scrollen, Tippen, Tasten, auch nach einer Freigabe), liegt ein roter Rahmen (`#F40E0E`) ums Zielfenster, bei
+  Klicks läuft eine Welle vom Klickpunkt aus; nach etwa 1,5 s verschwindet er. Der Host liefert im Ergebnis nur ganze
+  Zahlen mit Obergrenzen (`markierung`: `fenster`, `monitor`, bei Klicks `punkt`, Bildschirmpixel, Position
+  minus 32768 bis 32767, Größe 1 bis 32768), nie Titel, Programm oder Inhalt, und nur nach gelungenen Aktionen: bei Sperre,
+  offener Freigabe und Ablehnung fehlt sie. Der Kern prüft die Zahlen noch einmal (`voice-core/activity.py`), hängt die
+  Gerätekennung des Laptops an (Tunnel je Gerät, sonst den Rechnernamen) und schickt `markierung` an die Oberfläche
+  (`ui/src/lib/nachrichten.ts`), die sie bei gesperrtem Bildschirm oder offener Freigabe verwirft und sonst über
+  `window.wamoDesktop.markierung` an die App gibt. `desktop/lichtrahmen.js` prüft erneut und zeichnet nur auf dem Laptop,
+  dessen Kennung in `geraet.json` steht (ohne Kennung: gleicher Rechnername, ohne Namen nie); bei allen anderen Profilen und Geräten passiert nichts. Gezeichnet wird in `desktop/markierung.js` im
+  Stimmen-Rand: nicht anklickbar, nicht in Bildschirmfotos für das Bildmodell (Inhaltsschutz der Rand-Fenster), aus bei Vollbild (`vollbild.js`) und bei ausgeschaltetem Rand-Haken, aus bei offener
+  Freigabe und ohne Gespräch. Bei `prefers-reduced-motion` gibt es kein Ein- und Ausblenden und keine wachsende Welle,
+  nur einen stillen Rahmen und einen ruhenden Ring. Das Sprachmodell sieht die Zahlen im Werkzeugergebnis, mehr nicht.
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
   spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel). Mit
   `WAMO_STOPP_GRENZE` (Standard an) wählt der Kern die Wortgrenze selbst und schickt `leiser_stopp` mit `sofort`.
