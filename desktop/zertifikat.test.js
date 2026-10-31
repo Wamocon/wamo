@@ -8,7 +8,7 @@ const { X509Certificate } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { test } = require("node:test");
-const { WAMO_CA_SHA256, erzeugePruefer, ladeCa, pruefeKette, zwischenZertifikate } = require("./zertifikat");
+const { WAMO_CA_SHA256, erzeugePruefer, ladeCa, pruefeKette, pruefeSocket, zwischenZertifikate } = require("./zertifikat");
 
 const lies = (name) => fs.readFileSync(path.join(__dirname, "testdaten", name), "utf8");
 const CA = lies("ca.crt");
@@ -79,6 +79,24 @@ test("zwischenZertifikate liest die issuerCert-Kette und bricht bei Schleifen ab
   assert.deepEqual(zwischenZertifikate({ data: BLATT, issuerCert: schleife }), [ZW]);
   assert.deepEqual(zwischenZertifikate({ data: BLATT }), []);
   assert.deepEqual(zwischenZertifikate(undefined), []);
+});
+
+test("pruefeSocket: Kette einer Node-TLS-Verbindung (Blatt, Zwischenzertifikat) wird gegen die CA geprüft", () => {
+  const eintrag = (pem, aussteller) => {
+    const z = new X509Certificate(pem);
+    return { raw: z.raw, fingerprint256: z.fingerprint256, issuerCertificate: aussteller };
+  };
+  const zwEintrag = eintrag(ZW, undefined);
+  zwEintrag.issuerCertificate = zwEintrag; // Node verweist bei der Wurzel auf sich selbst: darf nicht endlos laufen
+  const socket = (blatt) => ({ getPeerCertificate: (voll) => (voll ? blatt : {}) });
+  const gut = socket(eintrag(BLATT, zwEintrag));
+  assert.deepEqual(pruefeSocket(gut, HOST, ca, JETZT), { ok: true });
+  assert.equal(pruefeSocket(gut, "192.168.178.1", ca, JETZT).ok, false);
+  assert.equal(pruefeSocket(socket(eintrag(BLATT, undefined)), HOST, ca, JETZT).ok, false, "ohne Zwischenzertifikat");
+  const fremd = eintrag(lies("fremdblatt.crt"), eintrag(lies("fremd.crt"), undefined));
+  assert.equal(pruefeSocket(socket(fremd), HOST, ca, JETZT).ok, false);
+  assert.equal(pruefeSocket({ getPeerCertificate: () => ({}) }, HOST, ca, JETZT).ok, false);
+  assert.equal(pruefeSocket({}, HOST, ca, JETZT).ok, false);
 });
 
 function frage(pruefer, anfrage) {

@@ -70,6 +70,35 @@ function pruefeKette({ blattPem, zwischenPem = [], ca, host, jetzt = Date.now() 
   return { ok: false, grund: "Kette zu lang" };
 }
 
+/**
+ * Kette einer fertig ausgehandelten TLS-Verbindung (Node) als PEM-Liste, Blatt zuerst. Wird für Anfragen aus dem
+ * Hauptprozess gebraucht: Das Node in Electron (BoringSSL) kann die IP-Namensbeschränkung der WAMO-CA nicht lesen und
+ * bricht mit "unsupported name constraint type" ab, deshalb prüft pruefeSocket die Kette hier selbst.
+ */
+function pemKetteVonSocket(socket) {
+  const liste = [];
+  const gesehen = new Set();
+  let z = socket?.getPeerCertificate?.(true);
+  while (z && z.raw && !gesehen.has(z.fingerprint256) && liste.length < MAX_KETTE) {
+    gesehen.add(z.fingerprint256);
+    liste.push(new X509Certificate(z.raw).toString());
+    z = z.issuerCertificate;
+  }
+  return liste;
+}
+
+/** Wie pruefeKette, aber für den Peer einer Node-TLS-Verbindung. */
+function pruefeSocket(socket, host, ca, jetzt = Date.now()) {
+  let kette;
+  try {
+    kette = pemKetteVonSocket(socket);
+  } catch {
+    return { ok: false, grund: "Kette nicht lesbar" };
+  }
+  if (kette.length === 0) return { ok: false, grund: "Kein Zertifikat vom Server" };
+  return pruefeKette({ blattPem: kette[0], zwischenPem: kette.slice(1), ca, host, jetzt });
+}
+
 /** PEM-Texte der Zwischenzertifikate aus dem Electron-Zertifikat (issuerCert-Kette, ohne das Blatt selbst). */
 function zwischenZertifikate(zertifikat) {
   const liste = [];
@@ -109,4 +138,4 @@ function erzeugePruefer({ ca, erlaubteHosts, jetzt = Date.now, log = () => {} })
   };
 }
 
-module.exports = { WAMO_CA_SHA256, erzeugePruefer, ladeCa, pruefeKette, zwischenZertifikate };
+module.exports = { WAMO_CA_SHA256, erzeugePruefer, ladeCa, pemKetteVonSocket, pruefeKette, pruefeSocket, zwischenZertifikate };

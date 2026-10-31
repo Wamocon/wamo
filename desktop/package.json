@@ -24,6 +24,10 @@
     "artifactName": "WAMO-Setup-${version}.${ext}",
     "publish": null,
     "asar": true,
+    "electronLanguages": [
+      "de",
+      "en-US"
+    ],
     "compression": "normal",
     "directories": {
       "output": "dist",
@@ -80,7 +84,7 @@
       "enableNodeCliInspectArguments": false,
       "enableEmbeddedAsarIntegrityValidation": true,
       "onlyLoadAppFromAsar": true,
-      "grantFileProtocolExtraPrivileges": false
+      "grantFileProtocolExtraPrivileges": true
     },
     "win": {
       "target": [

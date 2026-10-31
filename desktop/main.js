@@ -64,7 +64,7 @@ const path = require("node:path");
 const { GeraetFehler, erzeugeGeraet } = require("./geraet");
 const { erzeugeHostUmgebung } = require("./host-umgebung");
 const { adressen, loeseAuf, wirksameBetriebsart } = require("./installation");
-const { erzeugePruefer, ladeCa } = require("./zertifikat");
+const { erzeugePruefer, ladeCa, pruefeSocket } = require("./zertifikat");
 const { powershellPfad, starteVollbildWaechter } = require("./vollbild");
 const {
   installieren,
@@ -284,11 +284,12 @@ function isUp(url, pruefe) {
       resolve(false);
       return;
     }
-    // https: nur die WAMO-CA vertrauen (Node kennt den Windows-Speicher nicht); ohne geladene CA scheitert die Prüfung
-    const optionen = target.protocol === "https:" && WAMO_CA ? { ca: [WAMO_CA.toString()] } : {};
+    // https mit geladener WAMO-CA: Die Kette prüft pruefeSocket selbst (siehe zertifikat.js), bevor eine Antwort gelesen wird.
+    // Ohne geladene CA bleibt die normale strenge Prüfung von Node, die nur öffentliche CAs kennt.
+    const eigenePruefung = target.protocol === "https:" && WAMO_CA;
     let req;
     try {
-      req = client.get(target, optionen, (res) => {
+      req = client.get(target, eigenePruefung ? { rejectUnauthorized: false, agent: false } : {}, (res) => {
         let body = "";
         res.setEncoding("utf8");
         res.on("data", (d) => {
@@ -300,6 +301,15 @@ function isUp(url, pruefe) {
     } catch {
       resolve(false);
       return;
+    }
+    if (eigenePruefung) {
+      // Eigene Verbindung (agent: false). Kette nur prüfen, wenn Node sie nicht schon selbst als gültig kennt; bei einem
+      // Fehler wird die Anfrage abgebrochen, bevor eine Antwort gelesen wird.
+      req.on("socket", (s) =>
+        s.once("secureConnect", () => {
+          if (!s.authorized && !pruefeSocket(s, target.hostname, WAMO_CA).ok) req.destroy(new Error("Zertifikat nicht vertraut"));
+        }),
+      );
     }
     req.on("error", () => resolve(false));
     req.setTimeout(2000, () => {
