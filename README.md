@@ -394,6 +394,23 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Stoppwörter und echte Einwürfe wirken weiter), `WAMO_JA_WAECHTER` (`voice-core/ja_waechter.py`: ein kurzes Ja auf eine
   echte Rückfrage führt den Auftrag aus; greift nie bei offener Freigabe-Karte, Freigabe-Meldung im Verlauf oder
   Rückfragen zu Freigabe und Sicherheit). Messszenario `werkzeug_mhm` (zwei Rückmeldelaute während der Websuche).
+- **Fehlerbehebungen aus der Sitzung vom 31.10.2026** (Kern-Journal 12:43 bis 12:47, 15 Züge; alle Schalter Standard an, sie
+  ändern nur Fehlerfälle). `WAMO_ABBRUCH_HINWEIS` (`voice-core/werkzeug_wache.py`): Bricht eine Äußerung ein laufendes Werkzeug
+  ab, stand im Verlauf nur „CANCELLED“; das Modell hielt die Aktion für gescheitert oder vergaß den Auftrag (Bildschirm sehen
+  12:45:14, Scrollen 12:45:41). Jetzt steht dort „ohne Ergebnis, Auftrag offen“ (Lesewerkzeuge erneut aufrufen, Aktionen erst
+  prüfen). `WAMO_WERKZEUG_DOPPELT`: Dieselbe Öffnen-Aktion im selben Zug läuft nicht noch einmal (der Host fängt nur 6 s ab), eine
+  weitere Seite derselben Webseite bekommt einen Hinweis im Ergebnis, ab der vierten wird nicht mehr geöffnet; ein neuer
+  Beitrag der Person setzt zurück, gescheiterte Aufrufe zählen nicht. Die zwei Amazon-Suchen von 12:44:35 gehören zu zwei
+  Antworten des Modells hintereinander, nicht zu zwei gleichzeitigen Aufrufen; ob die Person beides wollte, zeigt das Log ohne
+  Inhalte nicht, deshalb wird nichts verboten. `WAMO_MARKER_FALLBACK` (`voice-core/marker_wache.py`): Fehlt der Satzende-Marker ●
+  (12:44:36 nach der Werkzeugrunde), gab Pipecat den Text erst am Ende der Antwort frei; jetzt sofort, ohne Textverlust.
+  `WAMO_LERNEN_HAUS_SECS` (Standard 15): Für Profile mit Claude-Zugang darf das Hausmodell für „lernen“ nur so lange brauchen
+  (gemma4-31b lief zweimal in die 45 s), danach 300 s Pause und gleich Claude. Verzögerungen im Protokoll: Zug 9 und 11 (+3,1 und
+  +3,7 s) sind ein ◐-Urteil nach dem Einwurf (erste Antwort 8 Token, 1,5 s Wartezeit, zweite Anfrage), Zug 14 (+2 s STT) und
+  Zug 8, 10 sind zu früh beendete Redebeiträge („weitergesprochen“), Zug 13 (+1,1 s) ist die Smart-Turn-Wartezeit. Wirken
+  erst mit den Messschaltern: `WAMO_RUECKMELDUNG_WERKZEUG` (Zug 10, Einwurf bei laufendem Werkzeug) und `WAMO_PAUSEN_PROMPT`
+  (Zug 9, 11). Harmlos: „No screen video transceiver“ (die Oberfläche sendet keinen Bildschirm) und „Media stream error“
+  beim Auflegen.
 - **Mikrofon-Wächter** (`ui/src/lib/mikrofon.ts`, `voice-core/audio_monitor.py`): Die Oberfläche misst die eigene Spur und
   warnt nach 3 s digitaler Stille, bei einer beendeten Spur ohne Ersatz, ohne Spur 5 s nach „Bot bereit“ und bei
   Mikrofonsperre durch Windows (Datenschutz für Desktop-Apps, `systemPreferences.getMediaAccessStatus`), jeweils mit
