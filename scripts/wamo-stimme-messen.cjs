@@ -6,7 +6,7 @@
 //
 //   node scripts/wamo-stimme-messen.cjs <lauf> [szenarien] [wiederholungen]   (szenarien: "einwurf:8,echo" nennt je Szenario die Wiederholungen)
 //
-// Szenarien (Komma): kurz, lang, einwurf, backchannel, geraeusch, echo, schnell, pause, werkzeug (Standard: alle).
+// Szenarien (Komma): fakten, kurz, lang, einwurf, backchannel, geraeusch, echo, schnell, pause, werkzeug, werkzeug_mhm (Standard: alle).
 //
 // Umgebung:
 //   WAMO_MESS_DIR     Messordner mit konto.json ({email, password, secret?}) und clips/ (python wamo_stimme.py clips)
@@ -43,8 +43,8 @@ const DIR = process.env.WAMO_MESS_DIR || process.cwd();
 const URL = process.env.WAMO_UI_URL || "http://127.0.0.1:3100";
 const REPO = process.env.WAMO_REPO || path.join(__dirname, "..");
 const [lauf, szenarioArg, wdhArg] = process.argv.slice(2);
-const ALLE = ["fakten", "kurz", "lang", "einwurf", "backchannel", "geraeusch", "echo", "schnell", "pause", "werkzeug"];
-const WIEDERHOLUNGEN = { fakten: 8, kurz: 5, lang: 3, einwurf: 6, backchannel: 5, geraeusch: 5, echo: 3, schnell: 5, pause: 6, werkzeug: 5 };
+const ALLE = ["fakten", "kurz", "lang", "einwurf", "backchannel", "geraeusch", "echo", "schnell", "pause", "werkzeug", "werkzeug_mhm"];
+const WIEDERHOLUNGEN = { fakten: 8, kurz: 5, lang: 3, einwurf: 6, backchannel: 5, geraeusch: 5, echo: 3, schnell: 5, pause: 6, werkzeug: 5, werkzeug_mhm: 5 };
 if (!lauf || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(lauf)) {
   console.error("Aufruf: node wamo-stimme-messen.cjs <lauf> [szenarien] [wiederholungen] (lauf: Buchstaben, Ziffern, . _ -)");
   process.exit(2);
@@ -338,6 +338,16 @@ function seite({ modus, echoPegel }) {
       return { ...(await warteAntwort(b.ende, 25, 70)), ok: true, luecke };
     },
     async werkzeug() { const q = sprich("frage_suche", { rolle: "frage" }); return { ...(await warteAntwort(q.ende, 30, 120, 9.0)), ok: true }; },
+    // Rückmeldelaut bei laufendem Werkzeug: Suchfrage, dann zwei Rückmeldelaute (2,5 s und 5,5 s nach dem Fragenende), während
+    // die Websuche läuft. Das Werkzeug darf nicht abbrechen: danach kommt das Ergebnis (Antwort mit mehreren Sekunden Sprache).
+    async werkzeug_mhm() {
+      const q = sprich("frage_suche", { rolle: "frage" });
+      await schlaf(Math.max(0, (q.ende - jetzt()) * 1000) + 2500);
+      sprich("mhm", { rolle: "werkzeug_mhm" });
+      await schlaf(3000);
+      sprich("ja_genau", { rolle: "werkzeug_mhm" });
+      return { ...(await warteAntwort(q.ende, 30, 120, 9.0)), ok: true };
+    },
   };
   window.__begruessung = async () => {
     await warteBis(() => botAktiv(), 25);

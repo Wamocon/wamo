@@ -292,6 +292,8 @@ KERN_MUSTER = [
     ("ducken", re.compile(r"Stimme gedämpft")),
     ("wiederaufnahme", re.compile(r"Wiederaufnahme")),
     ("wartesatz", re.compile(r"Wartesatz")),
+    ("zug_bei_werkzeug", re.compile(r"Zug bei laufendem Werkzeug")),
+    ("rueckmeldung_werkzeug", re.compile(r"Rückmeldung bei laufendem Werkzeug")),
     ("turn_wache", re.compile(r"Turn-Wache")),
 ]
 ZEIT = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\.(\d{3}) \|")
@@ -396,6 +398,13 @@ def analysiere_szenario(sz: dict, bot: np.ndarray, mic: np.ndarray, kern: list[d
                 r["luecken_800"] = sum(1 for x in lk if x >= 0.8)
         ereign = []
         for c in clips:
+            if c["rolle"] == "werkzeug_mhm":
+                # Rückmeldelaut bei laufendem Werkzeug: darf keinen Zug starten (Log) und das Werkzeug nicht abbrechen
+                wa = wall(c["t0"])
+                ereign.append({"rolle": "werkzeug_mhm", "name": c["name"],
+                               "zug_gestartet": len(im_fenster(kern, ("zug_bei_werkzeug", "weiche_unterbrechung", "einwurf"), wa, wa + 4.0)) > 0,
+                               "als_rueckmeldung": len(im_fenster(kern, ("rueckmeldung_werkzeug",), wa, wa + 4.0)) > 0})
+                continue
             if c["rolle"] not in ("einwurf", "backchannel", "geraeusch"):
                 continue
             ton = erster_ton(sm, rel(c["t0"]) - 0.05)
@@ -435,6 +444,14 @@ def analysiere_szenario(sz: dict, bot: np.ndarray, mic: np.ndarray, kern: list[d
             stille = [round((b2[0] - b1[1]) * 1000) for b1, b2 in zip(bl, bl[1:])]
             r["stille_zwischen_ms"] = max(stille) if stille else 0  # längste Stille zwischen Füllsatz und Ergebnis
             r["fuellsatz"] = len(bl) > 1 and (bl[0][1] - bl[0][0]) < 3.5  # kurzer erster Block vor dem Ergebnis
+        if sz["name"] == "werkzeug_mhm":
+            mhm = [c for c in clips if c["rolle"] == "werkzeug_mhm"]
+            letzte = max((c["t0"] + c["dauer"] for c in mhm), default=None)
+            bl = antwortbloecke(sh, rel(clips[0]["t0"] + clips[0]["dauer"]), b, trenner=1.2)
+            r["bloecke"] = len(bl)
+            # Ergebnis nach dem letzten Rückmeldelaut: ein Block, der danach beginnt oder darüber hinaus läuft, mit mindestens 3 s Sprache
+            r["ergebnis_nach_mhm"] = letzte is not None and any(e > rel(letzte) and (e - max(s0, rel(letzte))) >= 3.0 for s0, e in bl)
+            r["antwort_s"] = round(sum(e - s0 for s0, e in bl), 1)
         if sz["name"] == "schnell":
             r["antworten"] = len(antwortbloecke(sh, rel(clips[0]["t0"]) + 0.2, b))
             n = min(len(em), len(eh))
@@ -503,6 +520,12 @@ def zusammenfassen(daten: dict[str, list[dict]]) -> dict:
     wz = [r for r in daten.get("werkzeug", []) if r.get("ok")]
     z["werkzeug_stille_ms"] = [r["stille_zwischen_ms"] for r in wz if "stille_zwischen_ms" in r]
     z["werkzeug_fuellsatz"] = [bool(r.get("fuellsatz")) for r in wz]
+    wm = [r for r in daten.get("werkzeug_mhm", []) if r.get("ok")]
+    evs = [e for r in wm for e in r.get("ereignisse", []) if e["rolle"] == "werkzeug_mhm"]
+    z["werkzeug_mhm_ereignisse"] = len(evs)
+    z["werkzeug_mhm_zug"] = sum(1 for e in evs if e["zug_gestartet"])  # falscher Zug bei laufendem Werkzeug
+    z["werkzeug_mhm_rueckmeldung"] = sum(1 for e in evs if e["als_rueckmeldung"])
+    z["werkzeug_mhm_ergebnis"] = [bool(r.get("ergebnis_nach_mhm")) for r in wm]  # das Werkzeug lieferte sein Ergebnis
     sc = [r for r in daten.get("schnell", []) if r.get("ok")]
     z["schnell_antworten"] = [r["antworten"] for r in sc if "antworten" in r]
     z["schnell_ueberlappung_ms"] = [r["ueberlappung_ms"] for r in sc if "ueberlappung_ms" in r]
@@ -534,6 +557,9 @@ def drucken(name: str, z: dict) -> None:
               f" | Stimme gedämpft ms je Lauf {z['echo_gedaempft_ms']} | Antwortdauer s {z['echo_antwort_s']}")
     if z.get("werkzeug_fuellsatz"):
         print(f"  werkzeug    Stille zwischen Füllsatz und Ergebnis ms {_verteilung(z['werkzeug_stille_ms'])} | Füllsatz vorab {_anteil(z['werkzeug_fuellsatz'])}")
+    if z.get("werkzeug_mhm_ereignisse"):
+        print(f"  werkzeug+mhm {z['werkzeug_mhm_ereignisse']} Rückmeldelaute | Zug gestartet {z['werkzeug_mhm_zug']} | als Rückmeldung erkannt "
+              f"{z['werkzeug_mhm_rueckmeldung']} | Ergebnis kam {_anteil(z['werkzeug_mhm_ergebnis'])}")
     if z.get("schnell_antworten"):
         print(f"  schnell     Antworten je Doppelfrage {z['schnell_antworten']} | Überlappung ms {_verteilung(z['schnell_ueberlappung_ms'])}")
     for luecke in (1.5, 2.5):
