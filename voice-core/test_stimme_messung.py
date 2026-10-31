@@ -275,5 +275,23 @@ class ClipsTest(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(x - y))), 1e-3)
 
 
+class FolgeTonTest(unittest.TestCase):
+    """Antwortzeit nach dem Überlappen: vom Ende des Einwurfs bis zum Beginn der Folgeantwort."""
+
+    def test_folgeantwort_nach_dem_einwurf(self):
+        segs = [(1.0, 6.0), (9.5, 12.0)]  # WAMO redet, verstummt bei 6,0 s, antwortet ab 9,5 s
+        self.assertAlmostEqual(w.folge_ton(segs, 6.0, 8.0), 1.5)
+
+    def test_keine_folgeantwort(self):
+        self.assertIsNone(w.folge_ton([(1.0, 6.0)], 6.0, 8.0))
+
+    def test_aus_dem_signal(self):
+        env = w.huellkurve(signal([(1.0, 3.0), (6.0, 8.0)], 10.0), RATE)
+        segs = w.segmente(env, w.SCHWELLE_BOT)
+        tv = w.verstummen(segs, 1.5)
+        self.assertAlmostEqual(tv, 3.0, delta=0.05)
+        self.assertAlmostEqual(w.folge_ton(segs, tv, 4.5), 1.5, delta=0.05)
+
+
 if __name__ == "__main__":
     unittest.main()

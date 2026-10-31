@@ -205,6 +205,13 @@ def verstummen(segs: list[tuple[float, float]], ab: float, min_still: float = ST
     return None
 
 
+def folge_ton(segs: list[tuple[float, float]], verstummt: float, einwurf_ende: float) -> float | None:
+    """Antwortzeit nach dem Überlappen (Full-Duplex-Bench v1.5, "Response latency"): Sekunden vom Ende des Einwurfs bis zum
+    Beginn des ersten Abschnitts nach dem Verstummen (die Folgeantwort). None: WAMO sagte danach nichts mehr."""
+    beginn = next((s for s, _ in segs if s > verstummt), None)
+    return None if beginn is None else beginn - einwurf_ende
+
+
 def luecken(segs: list[tuple[float, float]], von: float, bis: float, trenner: float = 2.5) -> list[float]:
     """Stille zwischen aufeinanderfolgenden Abschnitten einer Antwort (Abschnitte in [von, bis]); eine Stille ab
     trenner trennt Antworten und zählt nicht."""
@@ -421,6 +428,8 @@ def analysiere_szenario(sz: dict, bot: np.ndarray, mic: np.ndarray, kern: list[d
                 ev["verpasst"] = tv is None or (tv - onset) > VERPASST_NACH_S
                 if tv is not None:
                     ev.update(schnitt_info(eh, tv))
+                    fol = folge_ton(sh, tv, rel(c["t0"] + c["dauer"]))
+                    ev["folge_ms"] = round(fol * 1000) if fol is not None else None
                 gr = im_fenster(kern, ("weiche_unterbrechung",), wa, wa + 6.0)
                 ev["grund"] = gr[0]["grund"] if gr else ""
             else:
@@ -498,6 +507,7 @@ def zusammenfassen(daten: dict[str, list[dict]]) -> dict:
     z["einwurf_verpasst"] = sum(1 for e in einw if e["verpasst"])
     z["verstummen_ms"] = [e["verstummen_ms"] for e in einw if e.get("verstummen_ms") is not None and not e["verpasst"]]
     z["reaktion_ms"] = [e["reaktion_ms"] for e in einw if e.get("reaktion_ms") is not None]
+    z["folge_ms"] = [e["folge_ms"] for e in einw if e.get("folge_ms") is not None]  # Antwortzeit nach dem Einwurf
     z["schnitt_hart"] = [bool(e["hart"]) for e in einw if e.get("hart") is not None]
     z["fall_ms"] = [e["fall_ms"] for e in einw if e.get("fall_ms") is not None]
     z["gruende"] = {}
@@ -544,6 +554,7 @@ def drucken(name: str, z: dict) -> None:
     if z.get("einwurf_gueltig") or z.get("einwurf_ungueltig"):
         print(f"  Einwurf     gültig {z['einwurf_gueltig']} (ungültig {z['einwurf_ungueltig']}), verpasst {z['einwurf_verpasst']}/{z['einwurf_gueltig']}"
               f" | erste Reaktion ms {_verteilung(z['reaktion_ms'])} | Verstummen ms {_verteilung(z['verstummen_ms'])}"
+              f" | Folgeantwort nach Einwurfende ms {_verteilung(z['folge_ms'])}"
               f" | hart abgeschnitten {_anteil(z['schnitt_hart'])}"
               f" | Auslauf ms {_verteilung(z['fall_ms'])} | Grund {z['gruende']}")
     for n in ("backchannel", "geraeusch"):

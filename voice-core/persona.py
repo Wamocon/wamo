@@ -3,8 +3,9 @@
 Platzhalter im Text: {name} (Anzeigename des Profils) und {anrede} (du oder Sie). Die Abschnitte
 für PC und Entwicklungsaufträge erscheinen nur, wenn das Profil diese Werkzeuge bekommt (admin).
 
-Zwei Erweiterungen sind je einzeln schaltbar (Standard aus, bis der Messweg die Kennzahlen bestätigt hat):
-WAMO_PERSONA_RUECKFRAGEN (Rückfragen begrenzen, Aufträge am Stück) und WAMO_PERSONA_PC_ORDNER (Ordner des PCs nie raten).
+Drei Erweiterungen sind je einzeln schaltbar (Standard aus, bis der Messweg die Kennzahlen bestätigt hat):
+WAMO_PERSONA_RUECKFRAGEN (Rückfragen begrenzen, Aufträge am Stück), WAMO_PERSONA_PC_ORDNER (Ordner des PCs nie raten) und
+WAMO_PERSONA_GESPRAECH (Gesprächsführung: Selbstkorrektur, Rückbezug, nicht wiederholen).
 
 Gedächtnisinhalte stehen in eigenen, ausdrücklich als Daten gekennzeichneten Abschnitten. Jeder
 Eintrag wird vorher auf eine Zeile ohne Steuerzeichen gekürzt, damit er keinen eigenen Abschnitt
@@ -108,7 +109,23 @@ Rückfragen
   bleibt dort; daran ändert ein „ja“ im Gespräch nichts.
 """
 
-PC_AM_STUECK_PROMPT = """- Mehrschrittige Aufträge am PC führst du am Stück aus, ohne zwischen den Schritten nachzufragen. Kleine Schritte
+# WAMO_PERSONA_GESPRAECH (Standard aus, bis gemessen): Gesprächsführung wie unter Menschen. Kein Satz darf eine Freigabe
+# ersetzen (der letzte Punkt hält das fest).
+GESPRAECH_PROMPT = """
+Gesprächsführung
+- Korrigiert sich {name} mitten im Satz („nein, ich meine ...“, „oder besser ...“), gilt nur die letzte Fassung. Geh auf
+  das Verworfene nicht ein und bestätige die Korrektur nicht.
+- Greif auf, was {name} vorhin gesagt hat, mit den Worten von {name}, statt es noch einmal zu erfragen. Was im Gespräch
+  oder im Gedächtnis schon steht, fragst du nicht ein zweites Mal.
+- Wiederhol nicht, was du oder {name} gerade gesagt hast. Bestätige mit dem Ergebnis, nicht mit einer Nacherzählung
+  („Erledigt, der Termin steht am Dienstag.“).
+- Stell höchstens eine Frage auf einmal. Hängt eine Frage von einer anderen ab, stell zuerst die erste.
+- Was {name} in der Oberfläche oder auf dem Bildschirm selbst sieht, liest du nicht vor; nenn den Kern in einem Satz.
+- Antwortet {name} auf dein Angebot nur mit „ja“ oder „mach“, führ es aus, statt neu anzusetzen. Eine Freigabe in der
+  Oberfläche ersetzt das nie.
+"""
+
+PC_AM_STUECK_PROMPT ="""- Mehrschrittige Aufträge am PC führst du am Stück aus, ohne zwischen den Schritten nachzufragen. Kleine Schritte
   kündigst du nicht an. Ist alles erledigt, sag in einem Satz, was fertig ist, und frag nicht, ob noch etwas zu tun ist.
   Nachrichten an andere, Kaufen, Löschen und Veröffentlichen bleiben davon ausgenommen: dort fragst du vorher einmal.
 """
@@ -268,6 +285,12 @@ def persona_pc_ordner_an(wert: str | None = None) -> bool:
     return schalter_an("WAMO_PERSONA_PC_ORDNER", wert)
 
 
+def persona_gespraech_an(wert: str | None = None) -> bool:
+    """WAMO_PERSONA_GESPRAECH: Gesprächsführung (Selbstkorrektur, Rückbezug, nicht wiederholen, eine Frage) im Prompt
+    (Standard aus, bis gemessen)."""
+    return schalter_an("WAMO_PERSONA_GESPRAECH", wert)
+
+
 def persona_browser_an(wert: str | None = None) -> bool:
     """WAMO_PERSONA_BROWSER: Browserinhalte zuerst mit browser_lesen lesen, Foto nur wenn Text nicht reicht (Standard an: es
     behebt, dass WAMO bei Browserseiten nur Fenstertitel und ein Foto eines geratenen Monitors hatte)."""
@@ -303,16 +326,20 @@ def build_system_prompt(
     pc_ordner: bool | None = None,
     browser: bool | None = None,
     tab: bool | None = None,
+    gespraech: bool | None = None,
 ) -> str:
     """pc_erreichbar=False (nur zusammen mit pc_werkzeuge): Hinweis, dass der PC gerade nicht erreichbar ist.
-    rueckfragen / pc_ordner / browser / tab: None liest den Schalter (WAMO_PERSONA_RUECKFRAGEN, WAMO_PERSONA_PC_ORDNER,
-    WAMO_PERSONA_BROWSER, WAMO_PERSONA_TAB)."""
+    rueckfragen / pc_ordner / browser / tab / gespraech: None liest den Schalter (WAMO_PERSONA_RUECKFRAGEN,
+    WAMO_PERSONA_PC_ORDNER, WAMO_PERSONA_BROWSER, WAMO_PERSONA_TAB, WAMO_PERSONA_GESPRAECH)."""
     values = {"name": clean_inline(name, MAX_NAME_CHARS) or "Gast", "anrede": ANREDE.get(anrede, "du")}
     rueckfragen = persona_rueckfragen_an() if rueckfragen is None else rueckfragen
     pc_ordner = persona_pc_ordner_an() if pc_ordner is None else pc_ordner
     browser = persona_browser_an() if browser is None else browser
     tab = persona_tab_an() if tab is None else tab
+    gespraech = persona_gespraech_an() if gespraech is None else gespraech
     parts = [_fill(BASE_VOR, values)]
+    if gespraech:
+        parts.append(_fill(GESPRAECH_PROMPT, values))
     if rueckfragen:
         parts.append(_fill(RUECKFRAGEN_PROMPT, values))
     parts.append(_fill(BASE_NACH, values))
