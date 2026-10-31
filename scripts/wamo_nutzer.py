@@ -21,6 +21,7 @@ die Authenticator-App ein (zweiter Faktor ist Pflicht).
 from __future__ import annotations
 
 import argparse
+import os
 import base64
 import getpass
 import json
@@ -129,7 +130,7 @@ def main() -> None:
     sub.add_parser("liste", help="WAMO-Profile anzeigen")
     for p in (add, lock, sub.choices["liste"]):
         p.add_argument("--schema", default="wamo_dev")
-        p.add_argument("--host", default="sokrates2")
+        p.add_argument("--host", default=os.environ.get("WAMO_SSH_HOST", "wamo-sokrates2"))
     args = parser.parse_args()
 
     if not SCHEMA_RE.match(args.schema):

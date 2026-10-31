@@ -31,6 +31,7 @@ Befehle (im Repo-Hauptordner):
 from __future__ import annotations
 
 import argparse
+import os
 import io
 import re
 import subprocess
@@ -41,7 +42,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 INFRA = ROOT / "infra" / "sokrates2"
 UI = ROOT / "ui"
-HOST = "sokrates2"
+HOST = os.environ.get("WAMO_SSH_HOST", "wamo-sokrates2")  # SSH-Alias des Dienstkontos wamocon (~/.ssh/config), per WAMO_SSH_HOST änderbar
 ZIEL = "wamo-infra"  # relativ zum Home von wamocon
 
 # Nicht in die Quellen: lokal Gebautes, Abhängigkeiten, Umgebungsdateien (.env, .env.local ... nie auf den Server)

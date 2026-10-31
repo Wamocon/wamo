@@ -36,7 +36,7 @@ _spec = importlib.util.spec_from_file_location("wamo_db_rolle", ROOT / "scripts"
 db_rolle = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(db_rolle)
 
-HOST = "sokrates2"
+HOST = os.environ.get("WAMO_SSH_HOST", "wamo-sokrates2")  # SSH-Alias des Dienstkontos wamocon (~/.ssh/config), per WAMO_SSH_HOST änderbar
 ROLLE = "wamo_core_s2"
 VERBINDUNGEN = 20
 ENV_HELFER = "sudo -n /usr/local/sbin/wamo-core-env"
