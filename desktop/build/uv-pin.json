@@ -1,0 +1,9 @@
+{
+  "name": "uv",
+  "version": "0.13.1",
+  "datei": "uv-x86_64-pc-windows-msvc.zip",
+  "url": "https://github.com/astral-sh/uv/releases/download/0.13.1/uv-x86_64-pc-windows-msvc.zip",
+  "sha256": "3b2661a463a5baea7f5076ea2b25ab71d77f36a6c0d809e5350651792f80a672",
+  "lizenz": "MIT oder Apache-2.0 (gewählt: MIT, Text in uv-LICENSE-MIT.txt)",
+  "quelle_der_pruefsumme": "uv-x86_64-pc-windows-msvc.zip.sha256 der GitHub-Veröffentlichung 0.13.1"
+}

@@ -28,3 +28,7 @@ konto.json
 *-mic.wav
 *.metriken.json
 .playwright-mcp/
+
+# Installer-Bau (desktop/package.json, Skript dist): Ergebnis und Zwischenspeicher nie committen
+desktop/dist/
+desktop/build-cache/

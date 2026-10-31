@@ -130,8 +130,25 @@ export type FreigabePunkt = {
 /** Entwicklungsauftrag, den das Profil vor dem Start bestätigen muss (Servernachricht "auftrag"). */
 export type Auftrag = { job: string; projekt: string; art: string; auftrag: string };
 
+/** Lichtrahmen am Laptop (host/wamo_host.py, voice-core/activity.py): nur ganze Zahlen in Bildschirmpixeln, nie Titel. */
+export type Rechteck = { x: number; y: number; b: number; h: number };
+export type Punkt = { x: number; y: number };
+export const MARKIERUNG_ARTEN = ["fokus", "klick", "text", "tasten", "scrollen"] as const;
+export type Markierung = {
+  art: (typeof MARKIERUNG_ARTEN)[number];
+  /** Kennung des Laptops, der handelt (Tunnel je Gerät); null beim lokalen Kern */
+  geraet: string | null;
+  /** Rechnername des gesteuerten PCs, wenn bekannt */
+  rechner: string | null;
+  fenster: Rechteck;
+  monitor: Rechteck;
+  /** nur bei Klicks: Punkt der Welle */
+  punkt?: Punkt;
+};
+
 export type ServerMessage =
   | { type: "canvas"; item: CanvasItem }
+  | ({ type: "markierung" } & Markierung)
   | ({ type: "aktivitaet" } & Pick<Activity, "id" | "name" | "detail" | "status">)
   | { type: "sprecher"; index: number }
   | { type: "leiser_stopp"; sofort?: boolean }
@@ -156,6 +173,39 @@ const oneOf = <T extends string>(v: unknown, werte: readonly T[]): v is T =>
 const optStr = (v: unknown, max = 80) => (isStr(v) && v.trim() ? v.trim().slice(0, max) : undefined);
 
 const CANVAS_KINDS = ["tabelle", "code", "dokument", "mermaid"] as const;
+
+// Grenzen wie host/windows_control.py (Windows rechnet Koordinaten mit 16 Bit), voice-core/activity.py und desktop/lichtrahmen.js
+export const MARK_POS_MIN = -32768;
+export const MARK_POS_MAX = 32767;
+export const MARK_GROESSE_MAX = 32768;
+const ganz = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v);
+const pos = (v: unknown): v is number => ganz(v) && v >= MARK_POS_MIN && v <= MARK_POS_MAX;
+const GERAET_KENNUNG = /^pc-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const RECHNERNAME = /^[A-Za-z0-9._-]{1,63}$/;
+
+function rechteck(v: unknown): Rechteck | null {
+  if (!isObj(v) || !pos(v.x) || !pos(v.y)) return null;
+  const { b, h } = v;
+  if (!ganz(b) || !ganz(h) || b < 1 || h < 1 || b > MARK_GROESSE_MAX || h > MARK_GROESSE_MAX) return null;
+  return { x: v.x, y: v.y, b, h };
+}
+
+/** Markierung des Lichtrahmens prüfen: feste Felder, ganze Zahlen mit Obergrenzen, sonst null. */
+function markierung(m: Roh): Markierung | null {
+  if (!oneOf(m.art, MARKIERUNG_ARTEN)) return null;
+  const fenster = rechteck(m.fenster);
+  const monitor = rechteck(m.monitor);
+  if (!fenster || !monitor) return null;
+  const geraet = m.geraet ?? null;
+  if (geraet !== null && !(isStr(geraet) && geraet.length <= 23 && GERAET_KENNUNG.test(geraet))) return null;
+  const rechner = m.rechner ?? null;
+  if (rechner !== null && !(isStr(rechner) && RECHNERNAME.test(rechner))) return null;
+  const ergebnis: Markierung = { art: m.art, geraet, rechner, fenster, monitor };
+  if (m.art === "klick" && isObj(m.punkt) && pos(m.punkt.x) && pos(m.punkt.y)) {
+    ergebnis.punkt = { x: m.punkt.x, y: m.punkt.y };
+  }
+  return ergebnis;
+}
 
 /** Grenzen gegen übergroße Canvas-Inhalte (Speicher, Darstellung). */
 export const CANVAS_MAX_ZEILEN = 500;
@@ -264,6 +314,10 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
     case "canvas": {
       const item = canvasItem(m.item);
       return item ? { type: "canvas", item } : null;
+    }
+    case "markierung": {
+      const mk = markierung(m);
+      return mk ? { type: "markierung", ...mk } : null;
     }
     case "aktivitaet":
       if (!isStr(m.id) || !m.id || !isStr(m.name) || !m.name || !oneOf(m.status, AKTIVITAET_STATUS)) return null;
