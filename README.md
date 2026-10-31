@@ -220,8 +220,12 @@ keine `.env`.
   aktualisiert (feste GUID). Einen automatischen Updater gibt es in diesem Paket nicht (`publish` ist `null`). Das Audit-Protokoll
   des Hosts (`host\wamo_audit.jsonl`) liegt im Installationsordner und geht bei Update oder Deinstallation verloren; ein fester
   Ort per `WAMO_AUDIT_LOG` braucht eine Änderung in `scripts/wamo-tunnel.ps1`.
-- Bekannt: Das mitgelieferte Electron 44.5.1 hat laut `npm audit` einen Hinweis zu Zwischenzertifikaten der Web-PKI (Fix in
-  44.10.1); die App lädt nur den eigenen Server. Anheben in einem eigenen Schritt, danach `npm test` und neu bauen.
+- **Electron 44.10.1** (exakt gepinnt, vorher 44.5.1): schließt den Hinweis von `npm audit` zu den Zwischenzertifikaten der
+  Web-PKI (Fix ab 44.9.1). Die Linie 44.x hat keine neuere Version; die Notizen der Versionen 44.6 bis 44.10 nennen keine
+  Breaking Changes, 44.9.0 behebt zusätzlich, dass `setCertificateVerifyProc` bei gleichzeitigen ersten Anfragen an einen Host
+  mitunter nicht griff. Nach dem Anheben geprüft: `npm test` (116 grün), Installer gebaut, `wamo-dist-pruefen.cjs` ohne Funde,
+  Fuses unverändert, Start der entpackten App ohne Absturz. Offene Funde von `npm audit` betreffen nur Bauwerkzeuge
+  (electron-builder und Unterpakete), nicht die ausgelieferte App.
 
 #### Texteingabe und Verbindungsfrist
 
