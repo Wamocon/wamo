@@ -480,8 +480,10 @@ Marke „Dieses Gerät“. Die Status zeigen Wort und Form (Raute wartet, Kreis 
   (in der Messung sagte das Modell den Füllsatz selbst, der Wächter löste nie aus). Abschalten mit `aus`, `0`, `nein`;
   ein unbekannter Wert gilt als an und wird einmal gewarnt (`voice-core/env_schalter.py`). Auf Sokrates-2 stehen alle
   Namen in der Liste erlaubter Werte (`infra/sokrates2/wamo_core_env.py`).
-- **Sprachpakete A und B** (31.10.2026, alle neuen Schalter Standard aus, bis der Messweg gegen den Büro-Kern bestätigt
-  hat, dass keine Kennzahl schlechter wird; nur das Lernen liegt nicht im Sprachpfad und ist an). `WAMO_TTS_SATZLEERZEICHEN`
+- **Sprachpakete A und B** (31.10.2026; Standardwerte nach der Messung vom 31.10.2026, siehe Tabelle „Schalter und
+  Standardwerte“ im Abschnitt „Stimme messen“: an sind `WAMO_PAUSEN_PROMPT`, `WAMO_RUECKMELDUNG_WERKZEUG` und das Lernen,
+  aus bleiben `WAMO_TTS_SATZLEERZEICHEN`, `WAMO_PERSONA_RUECKFRAGEN`, `WAMO_PERSONA_PC_ORDNER` und `WAMO_JA_WAECHTER`,
+  weil ihre Messung unvollständig ist). `WAMO_TTS_SATZLEERZEICHEN`
   (Leerzeichen am Ende jedes Textstücks für Soniox, damit das Satzzeichen nicht als „Punkt“ vorgelesen wird,
   `voice-core/soniox_tts.py`), `SONIOX_SPEED` (0,7 bis 1,3) und `SONIOX_REDUCE_SILENCE` (an/aus) für Tempo und Pausen
   (leer = Standard von Soniox; die Stimme selbst bleibt `SONIOX_VOICE`, die Wahl trifft die Hörprobe),
@@ -568,6 +570,60 @@ und 95. Perzentil bei 5 bis 8 Wiederholungen, die Stichproben sind klein):
 | Unterbrechungen durch Echo (4 Läufe, Echopegel 0,5) | 11 | 3 |
 | Größte Stille innerhalb einer Antwort | 1410 ms (p95), einmalige Stockung | 660 ms (p95) |
 | Erster Ton nach Faktenfrage | 2101 / 2314 ms | 2058 / 2924 ms (innerhalb der Streuung) |
+
+#### Sprachpakete A und B: Messung je Schalter (31.10.2026)
+
+Aufbau: Unterwegs, Claude Haiku, Oberfläche aus einer Kopie. Lauf `basis3` mit allen sechs Schaltern aus, danach je ein Lauf
+mit nur einem Schalter an, alle anderen aus. Zahlen sind Median / 95. Perzentil (bei 3 bis 8 Wiederholungen ist das 95.
+Perzentil praktisch der größte Wert). Ein Strich heißt: nicht gemessen. Die Läufe der anderen Schalter dienen zugleich als
+Streuung der Basis, weil in ihnen der jeweils geprüfte Schalter aus ist. Eine Verschlechterung gilt nur, wenn der Wert
+deutlich über dieser Streuung liegt.
+
+| Kennzahl | Basis | Satzleerzeichen | Rückfragen | PC-Ordner | Pausen-Prompt | Rückmeldung Werkzeug |
+| --- | --- | --- | --- | --- | --- | --- |
+| Verstummen nach Einwurf, ms | 1340 / 1910 (8) | 1400 / 1780 (7) | - | 1290 / 1960 (5) | 1315 / 2260 (6) | 1345 / 2480 (8) |
+| Erste hörbare Reaktion (Dämpfen), ms | 761 / 770 | 771 / 781 | - | 769 / 799 | 769 / 790 | 766 / 921 |
+| Verpasste Einwürfe | 0 von 8 | 0 von 7 | - | 0 von 5 | 0 von 6 | 0 von 8 |
+| Falsche Unterbrechungen (Rückmeldelaute, Log) | 0 von 15 | 0 von 16 | - | - | - | 0 von 15 |
+| Größte Stille in langen Antworten, p95 ms | 660 | 750 | 680 | 750 | 780 | 680 |
+| Erster Ton nach Faktenfrage, ms | 2316 / 3242 | 2416 / 3154 | 2840 / 3740 | - (Hausmodell) | 2336 / 2574 | 2617 / 2814 |
+| Erster Ton bei Websuche, ms | 2296 / 2791 | 2546 / 2682 | 2478 / 2621 | 2777 / 5852 | 2390 / 2481 | 2406 / 2441 |
+| Unterbrechungen durch Echo (4 Läufe) | 7 | - (Lauf abgebrochen) | - | - | - | 5 |
+| Pause: WAMO redet dazwischen (6 Pausen) | 0 | - | - | 0 | 0 | 1 |
+| Werkzeug+mhm: Zug gestartet (10 Laute) | 5 | 7 | 3 von 6 | 3 von 6 | 3 von 6 | 0 |
+| Werkzeug+mhm: als Rückmeldung erkannt | 0 | 0 | 0 | 0 | 0 | 8 |
+| Werkzeug+mhm: Ergebnis kam | 5 von 5 | 4 von 5 | 2 von 3 | 3 von 3 | 3 von 3 | 5 von 5 |
+
+Streuung der Läufe untereinander (Schalter jeweils irrelevant für die Kennzahl): Verstummen Median 1290 bis 1400 ms, p95 1780
+bis 2480 ms; größte Stille p95 660 bis 780 ms; erster Ton nach Faktenfrage Median 2316 bis 2617 ms (früher 2058 bis 2101 ms);
+Unterbrechungen durch Echo 3 bis 11 je 4 Läufe (frühere Läufe `vorher2` 11, `nachher2` 3, `basis3` 7); Zug bei Rückmeldelaut
+ohne den Schalter 21 von 38 Lauten.
+
+Schalter und Standardwerte (Stand 31.10.2026, Quelle `voice-core/env_schalter.py`, `STANDARDWERTE`; jeder Schalter
+abschaltbar mit `aus`, `0`, `nein`, einschaltbar mit `an`, `1`, `ja`):
+
+| Schalter | Standard | Begründung |
+| --- | --- | --- |
+| `WAMO_PAUSEN_PROMPT` | an | Lauf vollständig, alle Kennzahlen in der Streuung (Verstummen 1315 / 2260 ms, verpasst 0 von 6, erster Ton Fakten 2336 / 2574 ms, WAMO redet in den Pausen nie dazwischen). Der Nutzen (keine Floskel „Ich bin noch da“) zeigt sich in den Kennzahlen nicht, nur in der Hörprobe |
+| `WAMO_RUECKMELDUNG_WERKZEUG` | an | Zug bei Rückmeldelaut 0 von 10 statt 5 von 10 (und 21 von 38 in den Läufen ohne Schalter), Ergebnis kam 5 von 5, Median des Verstummens gleich (1345 gegen 1340 ms), keine verpassten Einwürfe, keine falschen Unterbrechungen. Das 95. Perzentil des Verstummens (2480 ms) ist der größte von 8 Werten und liegt knapp über den anderen Läufen (bis 2260 ms). Freigaben entscheidet nie die Sprache, Sätze mit Inhalt („Ja, bitte freigeben“) starten weiter einen Zug (`test_werkzeug_rueckmeldung.py`) |
+| `WAMO_TTS_SATZLEERZEICHEN` | aus | Lauf brach beim Echo-Szenario ab (Browser geschlossen), Echo und Pause nicht gemessen; die übrigen Kennzahlen in der Streuung. Nutzen (Satzzeichen nicht vorlesen) nur in der Hörprobe prüfbar |
+| `WAMO_PERSONA_RUECKFRAGEN` | aus | Lauf unvollständig (Datenbankausfall, Einwurf, Backchannel, Echo, Pause fehlen); erster Ton nach Faktenfrage 2840 ms gegen 2316 bis 2617 ms in den anderen Läufen, bei 6 Fragen nicht entscheidbar |
+| `WAMO_PERSONA_PC_ORDNER` | aus | Sitzung mit den Faktenfragen fiel auf ein Hausmodell (Datenbank nicht erreichbar), nicht gemessen; erster Ton bei Websuche p95 5852 ms gegen 2441 bis 2791 ms (ein Ausreißer bei 4 Antworten) |
+| `WAMO_JA_WAECHTER` | aus | Lauf nicht mehr zustande gekommen, nicht gemessen. Außerdem erfasst kein Szenario das „Ja“ auf eine Rückfrage, nötig wäre ein eigenes Szenario samt Freigabe-Testfällen im Messweg |
+
+Nicht gemessen und offen: `WAMO_JA_WAECHTER` (kein Lauf), Echo und Pause für `WAMO_TTS_SATZLEERZEICHEN`, Einwurf,
+Backchannel, Echo, Pause für `WAMO_PERSONA_RUECKFRAGEN`, Faktenfragen für `WAMO_PERSONA_PC_ORDNER`, die Kombination aller
+einzeln unauffälligen Schalter, eine zweite Basis für die Streuung. Ausfälle: In den Läufen fiel zweimal der Zugriff auf die
+Datenbank von Sokrates-2 aus (Zugang dann „nur Hausmodelle“, Auswertung warnt jetzt mit „ACHTUNG … Hausmodell“), und der
+Arbeitsspeicher des Messrechners war knapp (Oberfläche und Browser stürzten einmal ab). Die Messung zeigt nur, dass sich
+die Kennzahlen nicht verschlechtern; ob die Stimme besser klingt, entscheiden die Hörproben in
+`D:\tmp\stimme-hoerprobe2\` (`vorher-*` gegen `<schalter>-an-*`; jede Datei mischt Mikrofon und WAMO wie im Raum).
+Worauf man hört: `satzleerzeichen-an-antwort` (wird am Satzende „Punkt“ oder „Fragezeichen“ mitgesprochen, klingt das
+Satzende rund?), `pausenprompt-an-pause` (sagt WAMO nach „ähm,“ nichts oder genau einen kurzen Satz, nie „Ich bin noch da“),
+`werkzeugmhm-an-werkzeug_mhm` gegen `vorher-werkzeug_mhm` (nach „mhm“ und „ja genau“ während der Websuche läuft die Suche
+weiter und WAMO antwortet danach; vorher bricht sie oft ab und fängt neu an), `rueckfragen-an-antwort` und
+`pcordner-an-werkzeug` (Antwortlänge, Rückfragen), dazu `*-unterbrechung` und `*-backchannel` als Gegenprobe, dass
+Einwurf und „mhm“ unverändert klingen. Die Dateien wurden nur ausgewertet, nicht angehört.
 
 Nicht messbar verbessert: die Stille innerhalb von Antworten (Satzpausen 0,5 bis 0,65 s sind die Stimme selbst, die
 Stockung von 1,4 s im Lauf `vorher2` trat im Endstand nicht mehr auf, Ursache offen) und die Wartezeit bei Werkzeugen
