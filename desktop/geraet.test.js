@@ -40,7 +40,7 @@ process.on("exit", () => {
 });
 
 /** Testordner mit home, lokal und repo samt Einrichtungsskript; Programme sind ersetzt und werden aufgezeichnet. */
-function umgebung({ scheitere = () => false, echt = false } = {}) {
+function umgebung({ scheitere = () => false, echt = false, vorTunnel } = {}) {
   const wurzel = fs.mkdtempSync(path.join(os.tmpdir(), "wamo-geraet-test-"));
   aufzuraeumen.push(wurzel);
   const home = path.join(wurzel, "home");
@@ -67,6 +67,7 @@ function umgebung({ scheitere = () => false, echt = false } = {}) {
     systemRoot: "C:\\Windows",
     repo,
     hostname: () => "LAPTOP-07",
+    ...(vorTunnel ? { vorTunnel } : {}),
     hostFingerabdruecke: [HOST_FP], // im Test ist der Hostschlüssel ein Prüfwert, nicht der echte von Sokrates-2
     jetzt: () => zeit,
     ...(echt ? {} : { ausfuehren: ersatz }),
@@ -692,4 +693,23 @@ test("Schlüsseldatei: erst leer anlegen, Rechte setzen, dann den Inhalt schreib
   await u2.geraet.vorbereiten();
   assert.ok(reihenfolge.includes(0), "icacls läuft, solange die Schlüsseldatei noch leer ist");
   assert.ok(fs.statSync(path.join(u2.home, ".ssh", "id_ed25519_wamo_pc")).size > 100, "danach steht der Schlüssel darin");
+});
+
+test("vorTunnel: läuft vor dem Einrichtungsskript; ein Fehler dort verhindert den Start mit dem Text des Fehlers", async () => {
+  const reihenfolge = [];
+  let kaputt = true;
+  const u = umgebung({
+    vorTunnel: async () => {
+      reihenfolge.push("umgebung");
+      if (kaputt) throw Object.assign(new Error("intern"), { text: "Die Python-Umgebung des Hosts konnte nicht eingerichtet werden." });
+    },
+  });
+  await u.geraet.vorbereiten();
+  await u.geraet.signiere({ nonce: NONCE, userId: USER });
+  await assert.rejects(u.geraet.aktivieren(guteAntwort()), (e) => e instanceof GeraetFehler && /Python-Umgebung/.test(e.text) && !/intern/.test(e.text));
+  assert.equal(u.aufrufeVon("powershell.exe").length, 0);
+  kaputt = false;
+  await u.geraet.aktivieren(guteAntwort());
+  assert.deepEqual(reihenfolge, ["umgebung", "umgebung"]);
+  assert.equal(u.aufrufeVon("powershell.exe").length, 1);
 });

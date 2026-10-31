@@ -317,7 +317,8 @@ function standardAusfuehren(datei, args, optionen = {}) {
 
 /**
  * Optionen (alle für die Tests einstellbar): env, home, localAppData, systemRoot, repo, hostname (Funktion),
- * ausfuehren(datei, args, { frist }) -> Promise<{ stdout }>, fs, jetzt (Funktion, Millisekunden), sid, log(text).
+ * ausfuehren(datei, args, { frist }) -> Promise<{ stdout }>, fs, jetzt (Funktion, Millisekunden), sid, log(text),
+ * vorTunnel() (async, läuft vor dem Einrichtungsskript; wirft Fehler mit .text).
  */
 /** Tunnelziel und erlaubte Hostschlüssel-Fingerabdrücke aus Optionen (Tests), Umgebung des Hauptprozesses oder Standard. */
 function erwartetesZiel(opt, env) {
@@ -499,6 +500,14 @@ function erzeugeGeraet(opt = {}) {
   /** Das Einrichtungsskript für den Tunnel (härtet scripts und host, legt die Aufgabe an und startet sie). */
   async function starteTunnel() {
     if (!skript || !vorhanden(skript)) throw new GeraetFehler("Das Einrichtungsskript für den Tunnel fehlt.");
+    if (opt.vorTunnel) {
+      // Installierte App: erst muss die Python-Umgebung des Hosts stehen (host-umgebung.js), sonst startet der Überwacher nicht
+      try {
+        await opt.vorTunnel();
+      } catch (err) {
+        throw new GeraetFehler(typeof err?.text === "string" ? err.text : "Die Python-Umgebung des Hosts ist nicht bereit.");
+      }
+    }
     const powershell = path.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
     skriptLaeuft = true;
     try {
