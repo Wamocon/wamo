@@ -6,7 +6,7 @@ import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
 import { pcAutoLesen } from "@/lib/einstellungen";
 import type { GeraetBruecke } from "@/lib/geraet";
-import { parseServerMessage, type Auftrag, type ModellModus } from "@/lib/nachrichten";
+import { parseServerMessage, type Auftrag, type Markierung, type ModellModus } from "@/lib/nachrichten";
 import type { SchluesselArt } from "@/lib/schluesselhilfe";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
 import { textAbschicken, unterstuetztText } from "@/lib/textEingabe";
@@ -66,6 +66,7 @@ import {
   reduceBotTranscript,
   resetWamo,
   wamo,
+  wartetAufEntscheidung,
   zeigeToast,
   type Approval,
   type Caption,
@@ -86,6 +87,9 @@ declare global {
       levels: (sample: LevelSample & { zustand: string }) => void;
       /** Farben des Stimmen-Rands einmalig übergeben (ältere Desktop-Versionen kennen das nicht). */
       farben?: (farben: OverlayFarben) => void;
+      /** Lichtrahmen ums Zielfenster und Welle am Klickpunkt (nur Zahlen und Gerätekennung); die Desktop-App zeichnet nur auf
+       *  dem Laptop, der handelt. Ältere Desktop-Versionen kennen das nicht. */
+      markierung?: (markierung: Markierung) => void;
       /** Betriebsart Büro/Unterwegs, gehalten vom Hauptprogramm (lib/betriebsart.ts) */
       betriebsart?: BetriebsartBruecke;
       /** Rechnername dieses PCs (Autostart der PC-Steuerung nur, wenn der Kern genau diesen PC steuert) */
@@ -831,6 +835,14 @@ export function useWamo(): WamoAktionen {
                 setFehler({ art: "mikrofon", text: kernStilleText(msg.sekunden) });
               } else if (msg.zustand === "ok" && !stille.current.gemeldet && st.error?.art === "mikrofon") {
                 setFehler(null);
+              }
+            } else if (msg.type === "markierung") {
+              // Gesperrter Bildschirm oder offene Freigabe: kein Rahmen. Der Rest (Gerätekennung, Vollbild, Rand aus) prüft die App.
+              const st = wamo.get();
+              if (st.betrieb?.pc !== "gesperrt" && !wartetAufEntscheidung(st)) {
+                const { type: _typ, ...daten } = msg;
+                void _typ;
+                window.wamoDesktop?.markierung?.(daten);
               }
             } else {
               if (msg.type === "sitzung_beendet") kernEnde.current = msg.grund;
