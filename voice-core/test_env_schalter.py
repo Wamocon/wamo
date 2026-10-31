@@ -83,6 +83,7 @@ class StandardwerteTest(unittest.TestCase):
     ERWARTET = {
         "WAMO_TTS_SATZLEERZEICHEN": False, "WAMO_PERSONA_RUECKFRAGEN": False, "WAMO_PERSONA_PC_ORDNER": False,
         "WAMO_PAUSEN_PROMPT": True, "WAMO_RUECKMELDUNG_WERKZEUG": True, "WAMO_JA_WAECHTER": False,
+        "WAMO_PERSONA_GESPRAECH": False, "WAMO_WARTESATZ_MODELL": False,
     }
 
     def test_standardwerte_nach_der_messung(self):

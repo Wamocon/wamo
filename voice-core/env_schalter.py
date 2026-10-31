@@ -13,6 +13,10 @@ WAMO_PAUSEN_PROMPT, WAMO_RUECKMELDUNG_WERKZEUG und das Lernen ohne Momentaufnahm
   WAMO_LERNEN_OHNE_MOMENT      Lernen ohne Momentaufnahmen und Aufgabenstände (learning.py, Standard an)
   WAMO_RUECKMELDUNG_WERKZEUG   Rückmeldelaut bei laufendem Werkzeug startet keinen Zug (soft_interrupt.py)
   WAMO_JA_WAECHTER             Ja auf eine Rückfrage führt den Auftrag aus, statt erneut zu fragen (ja_waechter.py)
+Gesprächsoptimierung (docs/gespraech-optimierung.md, beide Standard aus bis zur Messung):
+  WAMO_PERSONA_GESPRAECH       Persona: Gesprächsführung (Selbstkorrektur, Rückbezug, nicht wiederholen, eine Frage)
+  WAMO_WARTESATZ_MODELL        ein kurzer Satz, wenn das Modell nach einer Anfrage zu lange kein Zeichen liefert (wartesatz.py);
+                               WAMO_WARTESATZ_MODELL_SECS: Zahl, Standard 2,5
 Fehlerbehebungen aus der Sitzung vom 31.10.2026 (Standard an, sie ändern kein Sprachverhalten, nur Fehlerfälle):
   WAMO_ABBRUCH_HINWEIS         abgebrochenes Werkzeug im Verlauf als "ohne Ergebnis, Auftrag offen" erklären (werkzeug_wache.py)
   WAMO_WERKZEUG_DOPPELT        dieselbe Öffnen-Aktion im selben Zug nicht wiederholen, weitere Seite mit Hinweis (werkzeug_wache.py)
@@ -61,6 +65,9 @@ STANDARDWERTE: dict[str, bool] = {
     "WAMO_RUECKMELDUNG_WERKZEUG": True,
     # AUS: nicht gemessen (der Lauf kam nicht mehr zustande); der Wächter braucht Messung UND die Freigabe-Prüfung.
     "WAMO_JA_WAECHTER": False,
+    # AUS: Gesprächsoptimierung, noch nicht gemessen (Messplan in docs/gespraech-optimierung.md, Abschnitt 5).
+    "WAMO_PERSONA_GESPRAECH": False,
+    "WAMO_WARTESATZ_MODELL": False,
 }
 
 

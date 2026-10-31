@@ -11,6 +11,12 @@ lösen nichts aus. Kein Dauergeschwätz: höchstens ein Wartesatz je Zug, nie zw
 Unterbrechung der Person verwirft ihn.
 
 Schalter: WAMO_WARTESATZ (an/aus, Standard aus), WAMO_WARTESATZ_SECS (Standard 0,9).
+
+Langsames Modell (WAMO_WARTESATZ_MODELL, Standard aus, WAMO_WARTESATZ_MODELL_SECS Standard 2,5; docs/gespraech-optimierung.md):
+Totzeit über etwa 1,5 s wirkt wie ein Aussetzer. Beginnt eine Modellantwort (LLMFullResponseStartFrame) und kommt danach
+2,5 s lang kein einziges Zeichen, kein Marker, kein Werkzeugaufruf und kein Antwortende, sagt WAMO einmal "Einen Moment.".
+Ein unvollständiger Satz der Person (Marker ◐ oder ○) liefert einen LLMMarkerFrame und löst nichts aus: dort wartet WAMO still,
+weil die Person noch denkt. Sprachaktivität der Person (Unterbrechung) verwirft den Satz.
 """
 
 from __future__ import annotations
@@ -30,18 +36,23 @@ from pipecat.frames.frames import (
     Frame,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
+    FunctionCallsStartedFrame,
     InterruptionFrame,
+    LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    LLMMarkerFrame,
     LLMTextFrame,
     TTSSpeakFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 NACH_SECS_STANDARD = 0.9
+MODELL_SECS_STANDARD = 2.5
 
 SAETZE_SUCHE = ("Moment, ich suche das kurz.", "Ich schaue kurz nach.", "Einen Augenblick, ich suche.")
 SAETZE_BILDSCHIRM = ("Moment, ich schaue mal.", "Ich sehe kurz nach.")
 SAETZE_STANDARD = ("Einen Moment.", "Moment, bin gleich so weit.", "Ich bin gleich so weit.")
+SAETZE_MODELL = ("Einen Moment.", "Moment, ich überlege kurz.", "Ich muss kurz nachdenken.")
 WERKZEUG_SAETZE = {
     "websuche": SAETZE_SUCHE,
     "bildschirm_ansehen": SAETZE_BILDSCHIRM,
@@ -55,6 +66,20 @@ def wartesatz_an(wert: str | None = None) -> bool:
     return schalter_an("WAMO_WARTESATZ", wert, standard=False)
 
 
+def wartesatz_modell_an(wert: str | None = None) -> bool:
+    """WAMO_WARTESATZ_MODELL, Standard aus bis zur Messung: ein Satz, wenn das Modell zu lange kein Zeichen liefert."""
+    return schalter_an("WAMO_WARTESATZ_MODELL", wert, standard=False)
+
+
+def wartesatz_modell_secs(wert: str | None = None) -> float:
+    """WAMO_WARTESATZ_MODELL_SECS: so lange darf das Modell nach der Anfrage schweigen (Standard 2,5, mindestens 0,5)."""
+    w = os.getenv("WAMO_WARTESATZ_MODELL_SECS") if wert is None else wert
+    try:
+        return max(0.5, float(w.replace(",", "."))) if w and w.strip() else MODELL_SECS_STANDARD
+    except ValueError:
+        return MODELL_SECS_STANDARD
+
+
 def wartesatz_secs(wert: str | None = None) -> float:
     w = os.getenv("WAMO_WARTESATZ_SECS") if wert is None else wert
     try:
@@ -64,16 +89,22 @@ def wartesatz_secs(wert: str | None = None) -> float:
 
 
 def satz_fuer(werkzeug: str, zuletzt: str | None, wuerfel: Callable[[tuple[str, ...]], str] = random.choice) -> str:
-    """Wartesatz zum Werkzeug, nie derselbe wie zuletzt."""
-    saetze = WERKZEUG_SAETZE.get(werkzeug, SAETZE_STANDARD)
+    """Wartesatz zum Werkzeug (Name "modell": langsames Modell), nie derselbe wie zuletzt."""
+    saetze = SAETZE_MODELL if werkzeug == "modell" else WERKZEUG_SAETZE.get(werkzeug, SAETZE_STANDARD)
     wahl = [s for s in saetze if s != zuletzt] or list(saetze)
     return wuerfel(tuple(wahl))
 
 
 class Wartesatz(FrameProcessor):
-    def __init__(self, *, nach_secs: float = NACH_SECS_STANDARD, **kwargs):
+    def __init__(self, *, nach_secs: float = NACH_SECS_STANDARD, werkzeug: bool = True,
+                 modell_secs: float | None = None, **kwargs):
+        """werkzeug: Wartesatz bei langen Werkzeugaufrufen (WAMO_WARTESATZ). modell_secs: Wartesatz, wenn das Modell so
+        lange schweigt (WAMO_WARTESATZ_MODELL), None = aus."""
         super().__init__(**kwargs)
         self._nach_secs = nach_secs
+        self._werkzeug = werkzeug
+        self._modell_secs = modell_secs
+        self._modell_task: asyncio.Task | None = None
         self._laufend: dict[str, asyncio.Task] = {}  # tool_call_id -> Zeitgeber
         self._zug_text = False  # das Modell hat in diesem Zug Text geliefert (es spricht oder hat gesprochen)
         self._spricht = False
@@ -85,7 +116,11 @@ class Wartesatz(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMFullResponseStartFrame) and direction == FrameDirection.DOWNSTREAM:
             self._zug_text = False
+            self._modell_starten()
+        elif isinstance(frame, (LLMMarkerFrame, LLMFullResponseEndFrame, FunctionCallsStartedFrame))                 and direction == FrameDirection.DOWNSTREAM:
+            self._modell_abbrechen()  # das Modell hat geantwortet (auch nur mit Marker) oder ist fertig
         elif isinstance(frame, LLMTextFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._modell_abbrechen()
             if frame.text.strip(" ●◐○"):
                 self._zug_text = True
                 self._gesagt_im_zug = False  # ein neuer Satz des Modells: ein späterer Wartesatz ist wieder erlaubt
@@ -97,12 +132,36 @@ class Wartesatz(FrameProcessor):
             self._alle_verwerfen()
             self._gesagt_im_zug = False
         elif isinstance(frame, FunctionCallInProgressFrame) and direction == FrameDirection.DOWNSTREAM:
-            self._starten(frame)
+            self._modell_abbrechen()
+            if self._werkzeug:
+                self._starten(frame)
         elif isinstance(frame, FunctionCallResultFrame) and direction == FrameDirection.DOWNSTREAM:
             task = self._laufend.pop(frame.tool_call_id, None)
             if task and not task.done():
                 task.cancel()
         await self.push_frame(frame, direction)
+
+    def _modell_starten(self):
+        self._modell_abbrechen()
+        if self._modell_secs is None:
+            return
+        self._modell_task = self.create_task(self._modell_nach_zeit(), name="wartesatz_modell")
+
+    def _modell_abbrechen(self):
+        task, self._modell_task = self._modell_task, None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _modell_nach_zeit(self):
+        await asyncio.sleep(self._modell_secs)
+        if self._modell_task is None or self._spricht or self._gesagt_im_zug:
+            return  # es klingt schon etwas, oder ein Wartesatz war in diesem Zug schon da
+        self._gesagt_im_zug = True
+        satz = satz_fuer("modell", self._zuletzt)
+        self._zuletzt = satz
+        self.gesprochen += 1
+        logger.info(f"{self}: Wartesatz, Modell antwortet seit {self._modell_secs} s nicht ({self.gesprochen})")
+        await self.push_frame(TTSSpeakFrame(satz, append_to_context=False))
 
     def _starten(self, frame: FunctionCallInProgressFrame):
         if frame.tool_call_id in self._laufend:
@@ -128,6 +187,7 @@ class Wartesatz(FrameProcessor):
             self._laufend.pop(tool_call_id, None)
 
     def _alle_verwerfen(self):
+        self._modell_abbrechen()
         for task in self._laufend.values():
             if not task.done():
                 task.cancel()

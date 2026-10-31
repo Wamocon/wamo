@@ -662,6 +662,20 @@ Stockung von 1,4 s im Lauf `vorher2` trat im Endstand nicht mehr auf, Ursache of
   (`unmute.interrupted_by_vad`), filtert aber „Mm hmm“ nicht und antwortet dann darauf. Übernommen wurde die frühe
   Reaktion (Dämpfen), nicht das Fehlen des Filters.
 
+#### Gesprächsoptimierung (31.10.2026)
+
+Recherche, Vergleich mit dem Code und Maßnahmenliste: `docs/gespraech-optimierung.md`. Umgesetzt sind zwei Schalter (beide
+Standard aus, bis gemessen) und eine Kennzahl:
+
+| Schalter | Standard | Wirkung |
+| --- | --- | --- |
+| `WAMO_PERSONA_GESPRAECH` | aus | Prompt-Block "Gesprächsführung": bei Selbstkorrektur gilt nur die letzte Fassung, Rückbezug statt Neufragen, nichts wiederholen, nur eine Frage, knappe Bestätigung. Eine Freigabe ersetzt das nie |
+| `WAMO_WARTESATZ_MODELL` | aus | Liefert das Modell nach einer Anfrage `WAMO_WARTESATZ_MODELL_SECS` (Standard 2,5) lang weder Zeichen noch Marker noch Werkzeugaufruf, sagt WAMO einmal "Einen Moment." (nicht im Verlauf). Ein unvollständiger Satz der Person (Marker ◐ und ○) löst nichts aus |
+
+Neue Kennzahl `folge_ton_ms` (Szenario `einwurf`): Zeit vom Ende des Einwurfs bis zum ersten Ton der Folgeantwort. Zu messen
+(Testprofil gesperrt, Messplan im Dokument, Abschnitt 5): Basis mit beiden Schaltern aus, je ein Lauf mit nur einem an, dazu
+ein Lauf mit `SONIOX_TTS_URL=wss://tts-rt.eu.soniox.com/tts-websocket` gegen den globalen Endpunkt.
+
 ## Nutzer und Gedächtnis
 
 | Befehl | Zweck |

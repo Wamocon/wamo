@@ -8,6 +8,10 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Gesprächsoptimierung (Recherche und Maßnahmen in `docs/gespraech-optimierung.md`): Schalter `WAMO_PERSONA_GESPRAECH`
+  (Prompt-Block Gesprächsführung: Selbstkorrektur, Rückbezug, nicht wiederholen, eine Frage) und `WAMO_WARTESATZ_MODELL`
+  mit `WAMO_WARTESATZ_MODELL_SECS` (ein kurzer Satz, wenn das Modell 2,5 s lang kein Zeichen liefert), beide Standard aus bis
+  zur Messung; Kennzahl `folge_ton_ms` im Messweg (Antwortzeit nach dem Einwurf).
 - Geräteverwaltung für Admins in den Einstellungen (Geräte und PC): Geräte freigeben, ablehnen, sperren, entsperren und
   widerrufen per Oberfläche statt per SQL. Bestätigungsdialog mit Fingerabdruck, frischem Code des zweiten Faktors (höchstens
   120 Sekunden alt) und Grund bei Sperre und Widerruf; Kern-API `GET /wamo/api/geraete/verwaltung` und
