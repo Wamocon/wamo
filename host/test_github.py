@@ -40,9 +40,12 @@ class _Basis(unittest.TestCase):
             mock.patch.object(host, "ORDNER_WURZELN", wurzeln), mock.patch.object(host, "_audit", side_effect=self.audit.append),
             mock.patch.object(host, "_gh_pfad", return_value=GH), mock.patch.object(host, "_git_pfad", return_value="git"),
             mock.patch.object(host, "_gh_lauf", side_effect=self._lauf), mock.patch.object(host, "FREIGABE_SCHLUESSEL", SCHLUESSEL),
+            mock.patch.object(host, "_ist_gesperrt", return_value=False),  # nie vom echten Bildschirm abhängig
         ):
             p.start()
             self.addCleanup(p.stop)
+        host.PENDING.clear()
+        self.addCleanup(host.PENDING.clear)
         host._rate_zeiten.clear()
         self.addCleanup(host._rate_zeiten.clear)
 
@@ -152,7 +155,7 @@ class AnlegenTests(_Basis):
         self.assertEqual(r, {"status": "error", "summary": "gh fehlt"})
 
     def test_gesperrt_und_offene_freigabe(self):
-        with mock.patch.object(host.wc, "is_locked", return_value=True):
+        with mock.patch.object(host, "_ist_gesperrt", return_value=True):
             self.assertEqual(self.anfrage("radar")["status"], "locked")
         self.anfrage("radar")  # offene Karte
         self.assertEqual(self.anfrage("anderes", offen_lassen=True)["status"], "wartet")
@@ -195,7 +198,7 @@ class AnlegenTests(_Basis):
 
     def test_gesperrt_nach_der_freigabe_haelt_die_anfrage_offen(self):
         antrag = self.anfrage("radar")
-        with mock.patch.object(host.wc, "is_locked", return_value=True):
+        with mock.patch.object(host, "_ist_gesperrt", return_value=True):
             self.assertEqual(host.entscheiden(antrag["approval_id"], True, SCHLUESSEL)["status"], "locked")
         self.assertEqual(self.laeufe, [])
         self.assertEqual(host.entscheiden(antrag["approval_id"], True, SCHLUESSEL)["status"], "success")
@@ -221,6 +224,12 @@ class AnlegenTests(_Basis):
                 self.assertIn(erwartet, r["summary"])
                 self.assertNotIn(GEHEIM, json.dumps(r))
         self.assertNotIn(GEHEIM, self.audit_text())
+
+    def test_gh_nach_der_freigabe_verschwunden_gibt_die_klare_meldung(self):
+        antrag = self.anfrage("radar")
+        with mock.patch.object(host, "_gh_pfad", side_effect=host.GhFehler("gh fehlt jetzt")):
+            r = host.entscheiden(antrag["approval_id"], True, SCHLUESSEL)
+        self.assertEqual(r, {"status": "error", "summary": "gh fehlt jetzt"})
 
     def test_zeitlimit(self):
         self.antwort = host.GhFehler("Zeitlimit von 60 s überschritten.")
@@ -259,6 +268,7 @@ class KlonenTests(_Basis):
         def lauf(argv):
             ziel = Path(argv[-1])
             (ziel / ".git").mkdir(parents=True)
+            (ziel / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
             (ziel / ".git" / "config").write_text(f'[core]\n\tbare = false\n[remote "origin"]\n\turl = {url}\n', encoding="utf-8")
             return 0, "", ""
         return lauf
@@ -306,7 +316,7 @@ class KlonenTests(_Basis):
                 host._rate_zeiten.clear()
                 r = self.klonen("radar")
                 self.assertEqual(r["status"], "error")
-                self.assertIn("anderes Repository", r["summary"])
+                self.assertIn("anderes oder unvollständiges Repository", r["summary"])
                 self.assertEqual(self.laeufe, [])
 
     def test_git_ordner_ohne_remote_ist_ein_fehler(self):
@@ -352,6 +362,37 @@ class KlonenTests(_Basis):
         self.antwort = (0, "", "")  # gh meldet Erfolg, aber es liegt nichts da
         self.assertEqual(self.klonen("radar")["status"], "error")
 
+    def test_ein_klon_zur_zeit(self):
+        self.assertTrue(host._KLON_LOCK.acquire(blocking=False))
+        try:
+            r = self.klonen("radar")
+        finally:
+            host._KLON_LOCK.release()
+        self.assertEqual(r["status"], "rejected")
+        self.assertIn("läuft", r["summary"])
+        self.assertEqual(self.laeufe, [])
+
+    def test_zielordner_belegt_meldet_nicht_das_repository_gibt_es_schon(self):
+        self.antwort = (128, "", "fatal: destination path 'x' already exists and is not an empty directory.")
+        self.assertIn("Zielordner", self.klonen("radar")["summary"])
+
+    def test_abgebrochener_klon_wird_aufgeraeumt_und_gilt_nie_als_vorhanden(self):
+        def halb(argv):
+            ziel = Path(argv[-1])
+            (ziel / ".git").mkdir(parents=True)
+            (ziel / ".git" / "config").write_text('[remote "origin"]\n\turl = https://github.com/Wamocon/radar\n', encoding="utf-8")
+            raise host.GhFehler("Zeitlimit von 90 s überschritten.")
+        self.antwort = halb
+        self.assertEqual(self.klonen("radar")["status"], "error")
+        self.assertFalse((self.projekte / "radar").exists())
+        # vorhanden, aber unvollständig (kein HEAD): kein Erfolg, nichts gelöscht, nichts geklont
+        (self.projekte / "halb" / ".git").mkdir(parents=True)
+        (self.projekte / "halb" / ".git" / "config").write_text('[remote "origin"]\n\turl = https://github.com/Wamocon/halb\n', encoding="utf-8")
+        self.laeufe.clear()
+        self.assertEqual(self.klonen("halb")["status"], "error")
+        self.assertTrue((self.projekte / "halb").exists())
+        self.assertEqual(self.laeufe, [])
+
     def test_zeitlimit_und_fehlendes_gh(self):
         self.antwort = host.GhFehler("Zeitlimit von 90 s überschritten.")
         self.assertIn("Zeitlimit", self.klonen("radar")["summary"])
@@ -359,7 +400,7 @@ class KlonenTests(_Basis):
             self.assertEqual(self.klonen("radar2"), {"status": "error", "summary": "gh fehlt"})
 
     def test_gesperrt_offene_freigabe_und_rate(self):
-        with mock.patch.object(host.wc, "is_locked", return_value=True):
+        with mock.patch.object(host, "_ist_gesperrt", return_value=True):
             self.assertEqual(self.klonen("radar")["status"], "locked")
         host.PENDING["0123456789abcdef"] = {"art": "powershell", "erstellt": host._jetzt(), "frist": 300, "command": "x"}
         self.assertEqual(self.klonen("radar")["status"], "wartet")
@@ -379,9 +420,31 @@ class KlonenTests(_Basis):
         self.assertEqual(self.laeufe, [])
 
 
+class LaufTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Prozess-Test für Windows")
+    def test_zeitlimit_beendet_den_prozess_und_meldet_klar(self):
+        import sys
+        import time
+        start = time.monotonic()
+        with self.assertRaises(host.GhFehler) as ctx:
+            host._gh_lauf([sys.executable, "-c", "import time; time.sleep(30)"], 1)
+        self.assertLess(time.monotonic() - start, 20)
+        self.assertIn("Zeitlimit", ctx.exception.text)
+
+    @unittest.skipUnless(os.name == "nt", "Prozess-Test für Windows")
+    def test_ausgabe_und_exit_code_ohne_shell(self):
+        import sys
+        rc, out, err = host._gh_lauf([sys.executable, "-c", "import sys; print('hallo & calc'); sys.stderr.write('e'); sys.exit(3)"], 20)
+        self.assertEqual((rc, out.strip(), err), (3, "hallo & calc", "e"))
+
+    def test_nicht_startbar(self):
+        with mock.patch.object(host.platform, "system", return_value="Windows"), self.assertRaises(host.GhFehler):
+            host._gh_lauf([r"C:\gibt\es\nicht.exe"], 5)
+
+
 class AusgabeTests(unittest.TestCase):
     def test_geheimnisse_werden_entfernt_und_gekuerzt(self):
-        for geheim in (GEHEIM, "github_pat_" + "A1" * 20, "Authorization: Bearer abc.def.ghi"):
+        for geheim in (GEHEIM, "github_pat_" + "A1" * 20, "Authorization: Bearer abc.def.ghi.jkl.mno", "Authorization: token abcdefghijklmnop1234"):
             self.assertNotIn(geheim.split()[-1], host._gh_ausgabe(f"Fehler {geheim} Ende"))
         self.assertNotIn("passwort123", host._gh_ausgabe("clone https://user:passwort123@github.com/x/y"))
         self.assertNotIn("\x1b", host._gh_ausgabe("\x1b[31mrot\x1b[0m"))

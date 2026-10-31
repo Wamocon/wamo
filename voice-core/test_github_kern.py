@@ -38,7 +38,7 @@ def test_werkzeuge_sind_fuers_modell_sichtbar_und_die_zeitleiste_zeigt_das_ziel(
 
 def test_klonen_hat_im_tunnel_mehr_zeit_als_der_standard():
     assert pc_tunnel.LANGE_WERKZEUGE["git_klonen"] > pc_tunnel.CALL_TIMEOUT_SECS
-    assert pc_tunnel.LANGE_WERKZEUGE["git_klonen"] > 90  # der Host gibt dem Klon 90 s
+    assert pc_tunnel.LANGE_WERKZEUGE["git_klonen"] >= 90 + 10 + 5  # Klon, Beenden des Prozessbaums, letztes Lesen
 
 
 def test_erfolg_beim_klonen_beweist_entsperrt():

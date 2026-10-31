@@ -1201,7 +1201,7 @@ GIT_KLONEN_PRO_MINUTE = 6
 GH_AUSGABE_MAX = 300
 # Zugangsdaten, die in einer Fehlermeldung stehen könnten: Tokens, Passwörter in Adressen, Bearer-Köpfe
 _GH_GEHEIM = re.compile(r"(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|(?<=//)[^/@\s:]+:[^/@\s]+(?=@)|"
-                        r"(?i:bearer\s+\S+))")
+                        r"(?i:(?:bearer|token)\s+[A-Za-z0-9._~+/=-]{12,}))")
 _GH_UMGEBUNG_RAUS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST")
 
 
@@ -1293,8 +1293,12 @@ def _git_pfad() -> str:
 def _gh_umgebung() -> dict:
     """Umgebung für gh und git: ohne Token aus dem Host-Prozess (es gilt allein die Anmeldung der Person), ohne Rückfragen."""
     env = {k: v for k, v in os.environ.items() if k not in _GH_UMGEBUNG_RAUS}
-    env.update({"GH_PROMPT_DISABLED": "1", "GIT_TERMINAL_PROMPT": "0", "GH_NO_UPDATE_NOTIFIER": "1", "NO_COLOR": "1",
-                "GH_SPINNER_DISABLED": "1"})
+    env.update({"GH_PROMPT_DISABLED": "1", "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+                "GH_NO_UPDATE_NOTIFIER": "1", "NO_COLOR": "1", "GH_SPINNER_DISABLED": "1"})
+    with contextlib.suppress(GhFehler):  # gh startet git über PATH: das geprüfte git steht vorn
+        git = Path(_git_pfad())
+        if git.is_absolute():
+            env["PATH"] = str(git.parent) + os.pathsep + env.get("PATH", "")
     return env
 
 
@@ -1321,7 +1325,7 @@ def _gh_lauf(argv: list[str], timeout: int) -> tuple[int, str, str]:
         raise GhFehler("Host läuft nicht unter Windows")
     try:
         p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                             encoding="utf-8", errors="replace", env=_gh_umgebung(),
+                             encoding="utf-8", errors="replace", env=_gh_umgebung(), cwd=str(HOME),
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except OSError as e:
         raise GhFehler(f"Programm nicht startbar ({type(e).__name__})") from e
@@ -1332,14 +1336,19 @@ def _gh_lauf(argv: list[str], timeout: int) -> tuple[int, str, str]:
         p.kill()
         with contextlib.suppress(Exception):
             p.communicate(timeout=5)
+        for pipe in (p.stdout, p.stderr):
+            with contextlib.suppress(Exception):
+                pipe.close()
         raise GhFehler(f"Zeitlimit von {timeout} s überschritten. Nicht wiederholen: die Person prüft Netz und "
                        "Anmeldung (gh auth status).") from None
     return p.returncode, out or "", err or ""
 
 
-def _gh_fehlertext(rc: int, err: str) -> str:
+def _gh_fehlertext(rc: int, err: str, klon: bool = False) -> str:
     """Bekannte Fehler in klare Sätze, sonst die gefilterte letzte Zeile."""
     low = err.lower()
+    if klon and "already exists" in low:
+        return "Der Zielordner ist belegt (läuft ein zweiter Klon?)."
     if "gh auth login" in low or "not logged in" in low or "authentication" in low or "bad credentials" in low:
         return "Die GitHub-Anmeldung fehlt oder ist abgelaufen: die Person macht am Laptop einmal 'gh auth login'."
     if "already exists" in low:
@@ -1351,7 +1360,7 @@ def _gh_fehlertext(rc: int, err: str) -> str:
     if "could not resolve host" in low or "unable to access" in low or "timed out" in low:
         return "GitHub ist von diesem Laptop gerade nicht erreichbar."
     letzte = next((z for z in reversed(err.strip().splitlines()) if z.strip()), "")
-    return f"gh meldete einen Fehler (Exit-Code {rc}): {_gh_ausgabe(letzte)}".rstrip(": ")
+    return f"gh meldete einen Fehler (Exit-Code {rc})" + (f": {_gh_ausgabe(letzte)}" if letzte.strip() else "")
 
 
 def _origin_url(ordner: Path) -> str | None:
@@ -1383,6 +1392,15 @@ def _gleiches_repo(url: str, besitzer: str, name: str) -> bool:
     return bool(m) and m.group(1).lower() == besitzer.lower() and m.group(2).lower() == name.lower()
 
 
+_KLON_LOCK = threading.Lock()  # ein Klon zur Zeit: kein zweiter ins selbe Ziel, kein Stau im Thread-Pool
+
+
+def _klon_vollstaendig(ziel: Path) -> bool:
+    """Sieht ein Git-Ordner fertig aus? Ein abgebrochener Klon hat schon .git/config mit origin, aber noch keinen HEAD."""
+    git = ziel / ".git"
+    return (git / "HEAD").is_file() and not (git / "shallow.lock").exists() and not (git / "index.lock").exists()
+
+
 def _git_klonen_ausfuehren(repo: object) -> dict:
     """Klont besitzer/name nach Projekte\\name (feste Wurzel, Regeln wie ordner_anlegen). Liegt dort schon ein Klon desselben
     Repositorys, ist das ein Erfolg; ein anderes Remote im selben Ordner ist ein Fehler."""
@@ -1390,25 +1408,40 @@ def _git_klonen_ausfuehren(repo: object) -> dict:
         besitzer, name = parse_repo(repo)
         ziel = validate_new_folder(str(PROJEKTE_DIR / name))
     except ValueError as e:
-        _audit({"tool": "git_klonen", "repo": str(repo)[:120], "risk": "rejected", "error": str(e)[:200]})
+        _audit({"tool": "git_klonen", "repo": _gh_ausgabe(repo, 120), "risk": "rejected", "error": str(e)[:200]})
         return {"status": "rejected", "summary": str(e)}
     voll = f"{besitzer}/{name}"
     if not _rate_ok("git_klonen", GIT_KLONEN_PRO_MINUTE):
         _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "Rate-Grenze"})
         return {"status": "rejected", "summary": "Zu viele Klone in kurzer Zeit. Bitte kurz warten."}
-    if ziel.exists():
-        if (ziel / ".git").is_dir():
+    if not _KLON_LOCK.acquire(blocking=False):
+        _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "Klon läuft schon"})
+        return {"status": "rejected", "summary": "Ein Klon läuft gerade noch. Bitte abwarten, dann noch einmal."}
+    try:
+        return _klonen_gesperrt(besitzer, name, voll, ziel)
+    finally:
+        _KLON_LOCK.release()
+
+
+def _klonen_gesperrt(besitzer: str, name: str, voll: str, ziel: Path) -> dict:
+    """Der Teil von git_klonen, der den Klon-Lock hält."""
+    try:
+        vorhanden = ziel.exists()
+        if vorhanden and (ziel / ".git").is_dir():
             url = _origin_url(ziel)
-            if url and _gleiches_repo(url, besitzer, name):
+            if url and _gleiches_repo(url, besitzer, name) and _klon_vollstaendig(ziel):
                 _audit({"tool": "git_klonen", "repo": voll, "risk": "change", "vorhanden": True})
                 return {"status": "success", "summary": f"{voll} ist schon nach {ziel.name} geklont", "pfad": str(ziel),
                         "vorhanden": True}
-            _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "anderes Remote"})
-            return {"status": "error", "summary": f"Im Ordner {ziel.name} liegt ein anderes Repository. Dorthin klont "
-                    "WAMO nicht; ein anderer Ordnername ist nicht vorgesehen."}
-        if not ziel.is_dir() or any(ziel.iterdir()):
+            _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "anderes Remote oder unvollständig"})
+            return {"status": "error", "summary": f"Im Ordner {ziel.name} liegt ein anderes oder unvollständiges Repository. "
+                    "Dorthin klont WAMO nicht; die Person räumt den Ordner selbst auf."}
+        if vorhanden and (not ziel.is_dir() or any(ziel.iterdir())):
             _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "Ordner belegt"})
             return {"status": "error", "summary": f"Den Ordner {ziel.name} gibt es schon und er ist kein Git-Repository."}
+    except OSError as e:
+        _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": f"Ordner nicht lesbar ({type(e).__name__})"})
+        return {"status": "error", "summary": f"Der Ordner {ziel.name} lässt sich nicht lesen ({type(e).__name__})."}
     try:
         gh = _gh_pfad()
         _git_pfad()
@@ -1416,17 +1449,23 @@ def _git_klonen_ausfuehren(repo: object) -> dict:
         _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "gh oder git fehlt"})
         return {"status": "error", "summary": e.text}
     _audit({"tool": "git_klonen", "repo": voll, "risk": "change"})
+    neu = not vorhanden
+    fehler = None
     try:
         PROJEKTE_DIR.mkdir(parents=True, exist_ok=True)
         rc, _out, err = _gh_lauf([gh, "repo", "clone", voll, str(ziel)], GIT_KLONEN_TIMEOUT_SECS)
+        if rc != 0 or not _klon_vollstaendig(ziel):
+            fehler = _gh_fehlertext(rc, err, klon=True) if rc != 0 else "Der Klon ist nicht vollständig angekommen."
     except OSError as e:
-        return {"status": "error", "summary": f"Projekte-Ordner nicht angelegt ({type(e).__name__})"}
+        _audit({"tool": "git_klonen", "repo": voll, "result": "error", "grund": f"Ordner ({type(e).__name__})"})
+        fehler = f"Projekte-Ordner nicht angelegt ({type(e).__name__})"
     except GhFehler as e:
-        _audit({"tool": "git_klonen", "repo": voll, "result": "error", "grund": "Zeitlimit oder Start"})
-        return {"status": "error", "summary": e.text}
-    if rc != 0 or not (ziel / ".git").is_dir():
-        _audit({"tool": "git_klonen", "repo": voll, "result": "error", "exit_code": rc})
-        return {"status": "error", "summary": _gh_fehlertext(rc, err)}
+        fehler = e.text
+    if fehler is not None:
+        if neu:  # ein halber Klon gälte beim nächsten Aufruf sonst als "schon geklont"
+            shutil.rmtree(ziel, ignore_errors=True)
+        _audit({"tool": "git_klonen", "repo": voll, "result": "error"})
+        return {"status": "error", "summary": fehler}
     _audit({"tool": "git_klonen", "repo": voll, "result": "success"})
     return {"status": "success", "summary": f"{voll} nach {ziel.name} geklont", "pfad": str(ziel), "vorhanden": False}
 
@@ -1485,7 +1524,10 @@ def _github_anlegen_ausfuehren(eintrag: dict) -> dict:
     org, name = eintrag["org"], validate_repo_name(eintrag["name"])
     if not GITHUB_OWNER_RE.fullmatch(org) or org != github_org():
         raise ValueError("Die Organisation hat sich seit der Anfrage geändert")
-    gh = _gh_pfad()
+    try:
+        gh = _gh_pfad()
+    except GhFehler as e:  # nach der Freigabe gelöscht oder deinstalliert: die klare Meldung statt "Nicht ausgeführt"
+        return {"status": "error", "summary": e.text}
     argv = [gh, "repo", "create", f"{org}/{name}", "--private" if eintrag["privat"] else "--public"]
     if eintrag["beschreibung"]:
         argv.append(f"--description={eintrag['beschreibung']}")  # ein Argument, nie als Schalter lesbar

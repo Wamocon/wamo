@@ -498,15 +498,28 @@ def window_rect(hwnd: int) -> dict | None:
         return None
 
 
-def monitor_rect(x: int, y: int) -> dict | None:
-    """Rechteck des Monitors, auf dem der Punkt liegt (mss, Bildschirmpixel), sonst None."""
-    try:
+_MONITORE_FRISCH_SECS = 2.0  # die Monitorliste ändert sich selten; mss je Aktion neu zu öffnen kostet Zeit im Sprachpfad
+_monitore: tuple[float, list[tuple[int, int, int, int]]] = (-1e9, [])
+
+
+def _monitorliste() -> list[tuple[int, int, int, int]]:
+    """(links, oben, breite, hoehe) je Monitor, höchstens _MONITORE_FRISCH_SECS alt."""
+    global _monitore
+    jetzt = time.monotonic()
+    if jetzt - _monitore[0] > _MONITORE_FRISCH_SECS:
         import mss
         _dpi_aware()
         with mss.mss() as sct:
-            for m in sct.monitors[1:]:
-                if m["left"] <= x < m["left"] + m["width"] and m["top"] <= y < m["top"] + m["height"]:
-                    return rechteck(int(m["left"]), int(m["top"]), int(m["width"]), int(m["height"]))
+            _monitore = (jetzt, [(int(m["left"]), int(m["top"]), int(m["width"]), int(m["height"])) for m in sct.monitors[1:]])
+    return _monitore[1]
+
+
+def monitor_rect(x: int, y: int) -> dict | None:
+    """Rechteck des Monitors, auf dem der Punkt liegt (mss, Bildschirmpixel), sonst None."""
+    try:
+        for links, oben, breite, hoehe in _monitorliste():
+            if links <= x < links + breite and oben <= y < oben + hoehe:
+                return rechteck(links, oben, breite, hoehe)
     except Exception:  # noqa: BLE001
         return None
     return None

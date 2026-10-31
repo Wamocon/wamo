@@ -260,5 +260,41 @@
     "required": [
       "element"
     ]
+  },
+  {
+    "name": "git_klonen",
+    "description": "Klont ein GitHub-Repository der Firma nach Projekte\\<name> (change, ohne Freigabe), mit dem gh des Laptops: repo =\n    name (Organisation Wamocon), besitzer/name oder die GitHub-Adresse. Ist es schon dort geklont, ist das ein Erfolg\n    (vorhanden=true). Danach mit oeffnen_mit im Editor öffnen. Pfade nie raten: das Ergebnis nennt den Ordner.",
+    "properties": {
+      "repo": {
+        "title": "Repo",
+        "type": "string"
+      }
+    },
+    "required": [
+      "repo"
+    ]
+  },
+  {
+    "name": "github_repo_anlegen",
+    "description": "Legt ein neues GitHub-Repository in der Organisation der Firma an (critical: nur per Freigabe-Karte, genau einmal).\n    Standard ist privat; öffentlich nur, wenn die Person es ausdrücklich will. Klont nicht: danach git_klonen. Statt über\n    github.com/new zu klicken.",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string"
+      },
+      "privat": {
+        "default": true,
+        "title": "Privat",
+        "type": "boolean"
+      },
+      "beschreibung": {
+        "default": "",
+        "title": "Beschreibung",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ]
   }
 ]

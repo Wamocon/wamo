@@ -248,10 +248,12 @@ class PcFreigaben:
         """Lichtrahmen für eine freigegebene Aktion (nur bei Erfolg, nur die Zahlen des Hosts)."""
         if self._markierung_von is None:
             return
-        with contextlib.suppress(Exception):
+        try:
             nachricht = markierung_nachricht(offen.anfrage["werkzeug"], ergebnis, *self._markierung_von())
             if nachricht:
                 await self._senden(nachricht)
+        except Exception as e:  # noqa: BLE001 (der Rahmen ist nur eine Anzeige)
+            logger.debug("PC-Freigabe: Lichtrahmen nicht gesendet ({})", type(e).__name__)
 
     async def _melden_kurz(self, text: str) -> None:
         await self._melden(f"[PC-Freigabe: {text} Sag das in einem kurzen Satz.]")
