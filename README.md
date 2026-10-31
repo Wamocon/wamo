@@ -891,7 +891,9 @@ Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGua
   Sokrates-2 (`192.168.178.136/32`) und die Ausgangsregel mit `--gateway 192.168.178.136/32`. Das Passwort entsteht am Ziel und
   geht ohne Bildschirm und ohne Argument per Pipe an Sokrates-2 (`wamo-rd-konto-einrichten.sh --fern`, dort `--uebernehmen --ziel NAME`,
   Aufruf im Kopf des Skripts). Danach das Ziel in `/etc/wamo-rd/ziele.toml` eintragen, `sudo systemctl reload wamo-firewall` und
-  `docker restart wamo-rd-web wamo-rd-zugang`.
+  `docker restart wamo-rd-web wamo-rd-zugang`. Braucht das Dienstkonto am Ziel ein sudo-Passwort (Caesar), richtet der Admin einmal
+  `infra/sparks/wamo-sudo-einrichten.sh` ein: sudo ohne Passwort nur für feste Befehlszeilen von vier root-eigenen Skripten unter
+  `/usr/local/lib/wamo-rd` (Rückweg `--zurueck`).
 - **Einschalten:** `WAMO_RD_AKTIV=ja` im Kern, erst nach dem Einrichten des Gateways (`wamo-rd-einrichten.sh`) und mit den Proben
   aus `wamo_rd_rauchtest.py`. Ohne den Schalter melden die Routen, dass der Fernzugriff nicht eingerichtet ist.
 - **Ein Code, ein Start:** Der Code der Authenticator-App gilt für genau einen Start (die Datenbank lehnt einen schon verwendeten

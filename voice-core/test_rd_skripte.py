@@ -54,6 +54,7 @@ SKRIPTE = [p for p in (
     "infra/sparks/wamo-rd-konto-einrichten.sh",
     "infra/sparks/wamo-rd-ziel-einrichten.sh",
     "infra/sparks/wamo-rd-ausgang-einrichten.sh",
+    "infra/sparks/wamo-sudo-einrichten.sh",
     "infra/sokrates2/wamo-rd-einrichten.sh",
     "infra/sokrates2/wamo-rd-rueckweg.sh",
 ) if (REPO / p).exists()]
@@ -381,6 +382,49 @@ AUSGANG = "infra/sparks/wamo-rd-ausgang-einrichten.sh"
 
 
 @unittest.skipUnless(LINUX and BASH, "Probelauf braucht Linux und GNU-Werkzeuge")
+class SudoFreigabeTests(Werkstatt):
+    SKRIPT = "infra/sparks/wamo-sudo-einrichten.sh"
+
+    def sudo(self, *args):
+        return self.lauf(self.SKRIPT, *args, extra={"WAMO_SUDO_WURZEL": str(self.wurzel)})
+
+    def test_trockenlauf_zeigt_feste_befehlszeilen_ohne_platzhalter_und_aendert_nichts(self):
+        r = self.sudo("--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("NOPASSWD: WAMO_RD_ZIEL", r.stdout)
+        befehle = [z.strip().rstrip(",\\ ").strip() for z in r.stdout.splitlines() if "/usr/local/lib/wamo-rd/" in z and "--" in z]
+        self.assertGreaterEqual(len(befehle), 9)
+        for b in befehle:
+            self.assertTrue(b.startswith("/usr/local/lib/wamo-rd/wamo-rd-") or b.startswith("/usr/local/lib/wamo-rd/xrdp-"), b)
+            self.assertNotIn("*", b)
+            self.assertNotIn("bash ", b)
+            self.assertNotRegex(b, r"--(entfernen|zurueck|rotieren|sperren)", b)
+        self.assertFalse(self.p("etc/sudoers.d").exists())
+        self.assertFalse(self.p("usr").exists())
+
+    def test_einrichten_legt_root_skripte_und_freigabe_an_und_der_rueckweg_raeumt_auf(self):
+        r = self.sudo("--benutzer", "dienst", "--ziel", "ziel2", "--quelle", "10.1.2.3/32")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = self.p("etc/sudoers.d/wamo-rd-ziel").read_text()
+        self.assertIn("dienst ALL=(root) NOPASSWD: WAMO_RD_ZIEL", text)
+        self.assertIn("wamo-rd-konto-einrichten.sh --fern --ziel ziel2", text)
+        self.assertIn("wamo-rd-ziel-einrichten.sh --quelle 10.1.2.3/32 --neustart", text)
+        self.assertEqual(stat.S_IMODE(os.stat(self.p("etc/sudoers.d/wamo-rd-ziel")).st_mode), 0o440)
+        for s in ("wamo-rd-konto-einrichten.sh", "wamo-rd-ziel-einrichten.sh", "wamo-rd-ausgang-einrichten.sh", "xrdp-einhegen.sh"):
+            self.assertEqual(stat.S_IMODE(os.stat(self.p("usr/local/lib/wamo-rd", s)).st_mode), 0o755, s)
+        r = self.sudo("--zurueck")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.p("etc/sudoers.d/wamo-rd-ziel").exists())
+        self.assertFalse(self.p("usr/local/lib/wamo-rd").exists())
+
+    def test_ungueltige_werte_werden_abgewiesen(self):
+        for args in (("--quelle", "0.0.0.0/0"), ("--quelle", "8.8.8.8/24"), ("--quelle", "192.168.0.0/8"), ("--ziel", "Gross"),
+                     ("--ziel", "a b"), ("--benutzer", "root;x"), ("--benutzer", "Gross"), ("--unbekannt",)):
+            r = self.sudo("--trocken", *args)
+            self.assertNotEqual(r.returncode, 0, args)
+            self.assertFalse(self.p("etc/sudoers.d").exists(), args)
+
+
 class AusgangsregelTests(Werkstatt):
     def setUp(self):
         super().setUp()
