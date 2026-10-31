@@ -378,7 +378,12 @@ def gate_pc_tools(
                 if urteil.eintrag is not None:
                     params = umhuellen(params, doppel, urteil)
             on_foreign_content()
-            await _original(params)
+            try:
+                await _original(params)
+            except BaseException:  # Ausnahme oder Abbruch: kein Ergebnis, die Aktion gilt nicht als getan
+                if doppel is not None and params.arguments:
+                    doppel.misserfolg(params.function_name, params.arguments)
+                raise
 
         if original is not None:
             handler.__dict__.update(getattr(original, "__dict__", {}))  # @tool_options übernehmen
@@ -713,8 +718,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             *([AbbruchHinweis(name="AbbruchHinweisVorne")] if abbruch_hinweis_an() else []),  # CANCELLED im Verlauf erklären (WAMO_ABBRUCH_HINWEIS)
             wache.vorne(),
             llm,
-            *([AbbruchHinweis(name="AbbruchHinweisHinten")] if abbruch_hinweis_an() else []),  # Anfragen von hinten (nach einem Abbruch)
             wache.hinten(),
+            *([AbbruchHinweis(name="AbbruchHinweisHinten")] if abbruch_hinweis_an() else []),  # Anfragen von hinten laufen stromaufwärts: erst hier, dann die Wache
             *([Wartesatz(nach_secs=wartesatz_secs())] if wartesatz_an() else []),  # langer Werkzeugaufruf: kurzer Satz
             aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
             tts,

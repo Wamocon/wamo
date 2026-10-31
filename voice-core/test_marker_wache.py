@@ -92,6 +92,14 @@ async def test_antwort_nach_gesprochenem_marker_im_selben_zug_wird_weiter_verwor
     assert texte(frames) == [] and d._wamo_marker_ergaenzt == 0
 
 
+async def test_spricht_die_person_wieder_wird_nichts_ergaenzt():
+    """Pipecat wertet ein ● bei sprechender Person als veraltet (◐); der Wächter löst das nicht aus."""
+    d, frames = dienst()
+    d._user_speaking = True
+    await d._push_turn_text("Die Seite ist offen.")
+    assert texte(frames) == [] and d._wamo_marker_ergaenzt == 0
+
+
 async def test_mehrere_antworten_nacheinander():
     d, frames = dienst()
     await d._push_turn_text("Erste Antwort.")

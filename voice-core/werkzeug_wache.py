@@ -103,7 +103,7 @@ def abbrueche_umschreiben(messages: list) -> int:
     n = 0
     namen: dict[str, str] | None = None
     for m in messages:
-        if isinstance(m, dict) and m.get("role") == "tool" and m.get("content") == CANCELLED:
+        if isinstance(m, dict) and m.get("role") == "tool" and isinstance(m.get("content"), str) and m["content"].startswith(CANCELLED):
             if namen is None:
                 namen = _werkzeug_namen(messages)
             m["content"] = abbruch_text(namen.get(str(m.get("tool_call_id"))))
@@ -126,8 +126,8 @@ class AbbruchHinweis(FrameProcessor):
         if isinstance(frame, LLMContextFrame):
             try:
                 n = abbrueche_umschreiben(frame.context.messages)
-            except Exception as e:  # noqa: BLE001 (der Hinweis ist eine Hilfe, er darf nie die Anfrage verhindern)
-                logger.warning("Abbruch-Hinweis nicht gesetzt ({})", type(e).__name__)
+            except Exception:  # noqa: BLE001 (der Hinweis ist eine Hilfe, er darf nie die Anfrage verhindern)
+                logger.opt(exception=True).warning("Abbruch-Hinweis nicht gesetzt")
                 n = 0
             if n:
                 self.umgeschrieben += n
@@ -186,11 +186,14 @@ def webseite_von(argumente: Mapping) -> str | None:
     url = argumente.get("url")
     if not isinstance(url, str):
         return None
+    text = url.strip()
+    if "://" not in text:
+        text = "//" + text  # "amazon.de/s?k=x" ohne Schema
     try:
-        host = (urlsplit(url.strip()).hostname or "").lower().removeprefix("www.")
+        host = (urlsplit(text).hostname or "").lower().removeprefix("www.")
     except ValueError:
         return None
-    return host or None
+    return host if host and " " not in host else None
 
 
 @dataclass
@@ -247,6 +250,14 @@ class DoppelWache:
         self._aufrufe.append(eintrag)
         urteil.eintrag = eintrag
         return urteil
+
+    def misserfolg(self, name: str, argumente: Mapping) -> None:
+        """Der Handler endete mit Ausnahme oder Abbruch, ohne Ergebnis: den Aufruf streichen."""
+        schluessel = _schluessel(argumente)
+        for e in list(self._aufrufe):
+            if e[0] == name and e[1] == schluessel:
+                self._aufrufe.remove(e)
+                return
 
     def erledigt(self, urteil: Urteil, ergebnis: object) -> None:
         """Meldet das Ergebnis eines ausgeführten Aufrufs. Ist die Aktion gescheitert, abgelehnt oder wartet auf eine Freigabe,

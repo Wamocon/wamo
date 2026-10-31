@@ -44,6 +44,7 @@ class MarkerFallback:
                 marker_fallback_an()
                 and self._turn_marker is None  # noch kein Urteil in dieser Antwort
                 and not self._user_turn_completion_voiced  # dann verwirft Pipecat die Antwort mit Absicht
+                and not self._user_speaking  # spricht die Person wieder, wertet Pipecat ein ● als veraltet (◐): nicht eingreifen
             ):
                 config = self._user_turn_completion_config
                 gesamt = self._turn_text_buffer + text

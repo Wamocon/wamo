@@ -4,6 +4,7 @@
 * 12:44:34 und 12:44:35 zwei Amazon-Suchen im selben Zug (zwei Antworten des Modells hintereinander).
 """
 
+import asyncio
 import json
 import unittest
 from unittest import mock
@@ -303,6 +304,45 @@ class GescheitertZaehltNichtTest(_ParamsMixin, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(len(aufrufe), 2)
         self.assertEqual(ergebnisse[2]["status"], "duplicate")
         self.assertNotIn("hinweis", ergebnisse[1])
+
+
+class AusnahmeTest(_ParamsMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_ausnahme_oder_abbruch_im_handler_streicht_den_aufruf(self):
+        """Review: ohne Ergebnis darf ein zweiter Versuch im selben Zug nicht als Doppelaufruf gelten."""
+        fehler = [RuntimeError("Host weg"), asyncio.CancelledError()]
+        aufrufe = []
+
+        async def host(params):
+            aufrufe.append(1)
+            if fehler:
+                raise fehler.pop(0)
+            await params.result_callback({"status": "success"})
+
+        doppel = DoppelWache(turn_nr=lambda: 1)
+        gated = bot.gate_pc_tools([FunctionSchema("webseite_oeffnen", "x", {}, [], handler=host)], lambda: True,
+                                  lambda: None, doppel)[0]
+        ergebnisse: list = []
+        url = "https://www.amazon.de"
+        with self.assertRaises(RuntimeError):
+            await gated.handler(self.params("webseite_oeffnen", url, ergebnisse))
+        with self.assertRaises(asyncio.CancelledError):
+            await gated.handler(self.params("webseite_oeffnen", url, ergebnisse))
+        await gated.handler(self.params("webseite_oeffnen", url, ergebnisse))
+        self.assertEqual(len(aufrufe), 3)
+        self.assertEqual(ergebnisse, [{"status": "success"}])
+
+
+class RandfaelleTest(unittest.TestCase):
+    def test_adresse_ohne_schema_zaehlt_zur_webseite(self):
+        self.assertEqual(webseite_von({"url": "amazon.de/s?k=x"}), "amazon.de")
+        w, _ = wache()
+        for i in range(SEITEN_MAX_JE_ZUG):
+            w.pruefen("webseite_oeffnen", {"url": f"amazon.de/s?k=t{i}"})
+        self.assertEqual(w.pruefen("webseite_oeffnen", {"url": "amazon.de/s?k=viel"}).aktion, "ueberspringen")
+
+    def test_cancelled_mit_zusatztext_wird_auch_umgeschrieben(self):
+        m = verlauf_mit_abbruch("maus_scrollen", ergebnis="CANCELLED: this tool call was cancelled before it returned a result")
+        self.assertEqual(abbrueche_umschreiben(m), 1)
 
 
 class TurnStateTest(unittest.TestCase):
