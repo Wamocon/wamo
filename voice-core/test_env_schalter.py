@@ -77,6 +77,31 @@ class EinstellungTest(unittest.TestCase):
             self.assertEqual(warnung.call_count, 1, wert)
 
 
+class StandardwerteTest(unittest.TestCase):
+    """Die Standardwerte der Sprachpakete A und B stehen an einer Stelle und bleiben abschaltbar."""
+
+    ERWARTET = {
+        "WAMO_TTS_SATZLEERZEICHEN": False, "WAMO_PERSONA_RUECKFRAGEN": False, "WAMO_PERSONA_PC_ORDNER": False,
+        "WAMO_PAUSEN_PROMPT": True, "WAMO_RUECKMELDUNG_WERKZEUG": True, "WAMO_JA_WAECHTER": False,
+    }
+
+    def test_standardwerte_nach_der_messung(self):
+        self.assertEqual(env_schalter.STANDARDWERTE, self.ERWARTET)
+        for name, soll in self.ERWARTET.items():
+            self.assertEqual(schalter_an(name, ""), soll, name)
+
+    def test_jeder_schalter_ist_in_beide_richtungen_umschaltbar(self):
+        for name in self.ERWARTET:
+            for wert in ("aus", "0", "nein"):
+                self.assertFalse(schalter_an(name, wert), f"{name}={wert}")
+            for wert in ("an", "1", "ja"):
+                self.assertTrue(schalter_an(name, wert), f"{name}={wert}")
+
+    def test_ein_expliziter_standard_geht_vor(self):
+        self.assertTrue(schalter_an("WAMO_PAUSEN_PROMPT", "", standard=True))
+        self.assertFalse(schalter_an("WAMO_PAUSEN_PROMPT", "", standard=False))
+
+
 NEUE_NAMEN = (
     "SONIOX_SPEED", "SONIOX_REDUCE_SILENCE", "WAMO_TTS_SATZLEERZEICHEN", "WAMO_PERSONA_RUECKFRAGEN", "WAMO_PERSONA_PC_ORDNER",
     "WAMO_PAUSEN_PROMPT", "WAMO_LERNEN_OHNE_MOMENT", "WAMO_RUECKMELDUNG_WERKZEUG", "WAMO_JA_WAECHTER", "WAMO_ECHO_MODUS",

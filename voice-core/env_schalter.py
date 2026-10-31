@@ -2,8 +2,8 @@
 WAMO_DUCKEN, WAMO_RUECKMELDUNG, WAMO_WARTESATZ). Leer oder nicht gesetzt gilt der Standard (meist an). Ein unbekannter Wert (Tippfehler im
 Notaus) bleibt an, wird aber einmal je Wert gewarnt.
 
-Neu (Sprachpakete A und B, jeder Schalter einzeln; Standard aus, bis der Messweg die Kennzahlen bestätigt hat, nur das
-Lernen ohne Momentaufnahmen ist an, weil es nicht im Sprachpfad liegt):
+Neu (Sprachpakete A und B, jeder Schalter einzeln; Standard je nach Messung vom 31.10.2026, siehe STANDARDWERTE unten: an sind
+WAMO_PAUSEN_PROMPT, WAMO_RUECKMELDUNG_WERKZEUG und das Lernen ohne Momentaufnahmen, die übrigen bleiben aus):
   WAMO_TTS_SATZLEERZEICHEN     Leerzeichen am Ende jedes Satzes, damit Soniox das Satzzeichen nicht vorliest (soniox_tts.py)
   WAMO_PERSONA_RUECKFRAGEN     Persona: Rückfragen begrenzen, Aufträge am Stück (persona.py)
   WAMO_PERSONA_PC_ORDNER       Persona: Ordner des PCs nie raten, per system_info erfragen (persona.py)
@@ -31,8 +31,43 @@ AN = ("an", "ein", "1", "ja", "true", "on", "yes", "y", "aktiv", "enabled")
 _GEWARNT: set[tuple[str, str]] = set()
 
 
-def schalter_an(name: str, wert: str | None = None, standard: bool = True) -> bool:
-    """Ist der Schalter name an? wert ersetzt die Umgebungsvariable (für Tests), standard gilt bei leerem Wert."""
+#: Standardwerte der Schalter aus den Sprachpaketen A und B (alle anderen Schalter sind ohne Eintrag hier standardmäßig an).
+#: Gemessen am 31.10.2026 mit scripts/wamo-stimme-messen.cjs (Unterwegs, Claude Haiku, Basis ohne die sechs Schalter, je
+#: Schalter ein Lauf mit nur diesem Schalter an; Zahlen sind Median / 95. Perzentil bei 3 bis 8 Wiederholungen, Tabelle und
+#: Streuung in der README, Abschnitt "Stimme messen"). Ein Schalter steht auf True nur, wenn alle Kennzahlen innerhalb der
+#: Streuung der Basis blieben UND der Lauf vollständig war; sonst bleibt er aus, mit Grund:
+STANDARDWERTE: dict[str, bool] = {
+    # AUS: Lauf brach beim Echo-Szenario ab (Browser geschlossen), Echo und Pause nicht gemessen; die übrigen Kennzahlen blieben
+    # in der Streuung (größte Lücke lang p95 750 ms bei 660 bis 780 ms in allen Läufen, Verstummen 1400 / 1780 ms). Der Nutzen
+    # (Satzzeichen nicht vorlesen) ist nur in der Hörprobe prüfbar.
+    "WAMO_TTS_SATZLEERZEICHEN": False,
+    # AUS: Lauf unvollständig (Einwurf, Backchannel, Echo, Pause fehlen, Datenbankausfall), erster Ton nach Faktenfrage
+    # 2840 / 3740 ms gegen 2316 / 3242 ms in der Basis (Läufe ohne diesen Schalter: p50 2316 bis 2617 ms, früher 2058 ms).
+    "WAMO_PERSONA_RUECKFRAGEN": False,
+    # AUS: die Sitzung mit den Faktenfragen fiel auf ein Hausmodell (Datenbank nicht erreichbar), erster Ton nach Faktenfrage
+    # nicht gemessen; erster Ton bei Werkzeug p95 5852 ms gegen 2791 ms in der Basis (ein Ausreißer bei 4 Antworten).
+    "WAMO_PERSONA_PC_ORDNER": False,
+    # AN: vollständiger Lauf, alle Kennzahlen innerhalb der Streuung (Verstummen 1315 / 2260 ms gegen 1340 / 1910 ms, verpasst
+    # 0 von 6, erster Ton Fakten 2336 / 2574 ms gegen 2316 / 3242 ms, Pause: WAMO redet dazwischen 0 von 6 wie in der Basis).
+    # Der Nutzen (keine Floskel "Ich bin noch da") zeigt sich in den Kennzahlen nicht, nur in der Hörprobe.
+    "WAMO_PAUSEN_PROMPT": True,
+    # AN: Zug bei Rückmeldelaut während des Werkzeugs 0 von 10 gegen 5 von 10 in der Basis (21 von 38 über alle Läufe ohne
+    # den Schalter), Ergebnis kam 5 von 5 wie in der Basis, Verstummen 1345 / 2480 ms gegen 1340 / 1910 ms (Median gleich),
+    # verpasste Einwürfe 0 von 8, falsche Unterbrechungen im Log 0 von 15. Auffällig, aber ohne Wirkweg: erste Reaktion p95
+    # 921 ms (sonst 770 bis 799) und im Szenario Pause 1 von 6 Pausen mit Rede dazwischen (sonst 0); der Schalter wirkt nur bei
+    # laufendem Werkzeug. Stoppwörter und echte Einwürfe wirken weiter,
+    # eine Freigabe entscheidet nie die Sprache (test_werkzeug_rueckmeldung.py).
+    "WAMO_RUECKMELDUNG_WERKZEUG": True,
+    # AUS: nicht gemessen (der Lauf kam nicht mehr zustande); der Wächter braucht Messung UND die Freigabe-Prüfung.
+    "WAMO_JA_WAECHTER": False,
+}
+
+
+def schalter_an(name: str, wert: str | None = None, standard: bool | None = None) -> bool:
+    """Ist der Schalter name an? wert ersetzt die Umgebungsvariable (für Tests), standard gilt bei leerem Wert
+    (ohne Angabe: der Eintrag in STANDARDWERTE, sonst an)."""
+    if standard is None:
+        standard = STANDARDWERTE.get(name, True)
     w = (os.getenv(name) if wert is None else wert) or ""
     w = w.strip().lower()
     if not w:
