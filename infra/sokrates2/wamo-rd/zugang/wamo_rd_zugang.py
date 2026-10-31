@@ -118,15 +118,18 @@ def guac_abmelden(token: str) -> int:
 
 
 def guac_aktive(token: str) -> int | None:
-    """Anzahl der offenen Verbindungen dieses Tokens; None, wenn das Token nicht mehr gilt oder Guacamole nicht antwortet."""
-    status, roh = _guac("GET", "/api/session/data/json/activeConnections?token=" + urllib.parse.quote(token, safe=""))
+    """Anzahl der offenen Tunnel dieses Tokens; None, wenn das Token nicht mehr gilt oder Guacamole nicht antwortet.
+
+    Gemessen gegen Guacamole 1.6.0: Das Modul der JSON-Anmeldung führt kein Verzeichnis aktiver Verbindungen
+    (activeConnections ist immer leer). Verlässlich ist /api/session/tunnels, die Liste der Tunnel der Sitzung."""
+    status, roh = _guac("GET", "/api/session/tunnels?token=" + urllib.parse.quote(token, safe=""))
     if status != 200:
         return None
     try:
         daten = json.loads(roh.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return None
-    return len(daten) if isinstance(daten, dict) else None
+    return len(daten) if isinstance(daten, list) else None
 
 
 # ---------- Ziele ----------

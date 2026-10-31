@@ -18,6 +18,13 @@ guacd erreicht nur die Ziele), Verbotsproben (Anmeldung ohne gültiges JSON, fal
 fremden Adresse, Methoden). Nur im Testmodus zusätzlich der positive Weg mit einem Zugangsdienst-Attrappe-Container in der
 festen vertrauten Adresse (gültiges JSON gibt ein Token, Abmelden macht es ungültig).
 
+Stufe 3 (Zugangsdienst wamo-rd-zugang) und die Ausgangsregel für das Konto wamo-rd (infra/sparks/wamo-rd-ausgang-einrichten.sh) gehören
+dazu: Im Testmodus startet der echte Zugangsdienst aus der Compose-Datei (ohne Anmeldung, die Probe nutzt eine Attrappe); mit --betrieb
+prüft der Rauchtest zusätzlich Härtung und Netze des Zugangsdienstes und, falls die Tabelle inet wamo_rd_ausgang geladen ist, als
+Benutzer wamo-rd (sudo -n -u wamo-rd) die Verbotsproben: kein Kern-Port, keine Supabase-Ports, kein Router, keine anderen Sparks,
+kein Loopback-Dienst, kein IPv6, dagegen Internet und DNS. Jede Verbotsprobe hat eine Kontrolle (derselbe Weg als wamocon ist offen),
+sonst zählt sie nicht als bestanden.
+
 Rückgabe 0, wenn nichts fehlschlug (übersprungene Proben zählen nicht als Fehler, werden aber genannt).
 """
 from __future__ import annotations
@@ -364,14 +371,23 @@ def testmodus(args: argparse.Namespace) -> int:
     env = {"WAMO_RD_PRAEFIX": p, "WAMO_RD_UID": uid, "WAMO_RD_GID": uid, "WAMO_RD_NETZ": netz_rd, "WAMO_RD_GUACD_NETZ": netz_guacd,
            "WAMO_RD_ZIEL_NETZ": netz_ziel, "WAMO_RD_GUACD_SUBNETZ": str(ipaddress.ip_network(sub_guacd)),
            "WAMO_RD_ZIEL_SUBNETZ": sub_ziel, "WAMO_RD_KEY": str(arbeit / "json.key"), "WAMO_RD_VERTRAUT": f"{vertraut_ip}/32",
-           "WAMO_RD_PROXY_REGEX": caddy_ip.replace(".", "[.]"), "WAMO_RD_GUACD_IP": guacd_ip}
+           "WAMO_RD_PROXY_REGEX": caddy_ip.replace(".", "[.]"), "WAMO_RD_GUACD_IP": guacd_ip,
+           "WAMO_RD_ZUGANG_IP": str(ipaddress.ip_network(sub_rd)[12]), "WAMO_RD_KERN_UID": "65101", "WAMO_RD_RUN": p + "run",
+           "WAMO_RD_ZIELE_DATEI": str(arbeit / "ziele.toml")}
     try:
         arbeit.mkdir(parents=True, exist_ok=True)
         (arbeit / "json.key").write_text(schluessel)  # ohne Zeilenumbruch: Guacamole liest die Datei unverändert
         (arbeit / "json.key").chmod(0o644)  # nur Testschlüssel; im Betrieb gilt 0640 root:wamo-rd-gateway
+        (arbeit / "ziele.toml").write_text("# leer: Stufe 1 hat keine Ziele\n", encoding="utf-8")
+        (arbeit / "override.yml").write_text(f"volumes:\n  {p}run:\n    name: {p}run\n", encoding="utf-8")
+        sh("docker", "volume", "create", p + "run", check=True)
+        sh("docker", "run", "--rm", "-v", f"{p}run:/r", ATTRAPPE_IMAGE, "sh", "-c", f"chown {uid}:65101 /r && chmod 2770 /r", check=True)
+        r = sh("docker", "build", "--tag", f"{p}rd-zugang:1", str(HIER / "wamo-rd" / "zugang"), timeout=600)
+        if not e.pruefe(r.returncode == 0, "Image des Zugangsdienstes baut", (r.stderr or "")[-200:]):
+            return e.summe()
         print(f"== Testaufbau {p} (Netze {sub_rd}, {sub_guacd}, {sub_ziel}; vertraute Adresse {vertraut_ip})")
         sh("docker", "network", "create", "--internal", "--subnet", sub_rd, "-o", "com.docker.network.bridge.inhibit_ipv4=true", netz_rd, check=True)
-        r = sh("docker", "compose", "-p", projekt, "-f", str(COMPOSE), "up", "-d", env=env, timeout=400)
+        r = sh("docker", "compose", "-p", projekt, "-f", str(COMPOSE), "-f", str(arbeit / "override.yml"), "up", "-d", env=env, timeout=400)
         if r.returncode != 0:
             e.fehler("docker compose up", (r.stderr or r.stdout)[-600:])
             return e.summe()
@@ -389,7 +405,7 @@ def testmodus(args: argparse.Namespace) -> int:
             sh("docker", "create", "--name", cname, "--network", netz_rd, "--ip", ip, "--cap-drop", "ALL", "-v",
                f"{arbeit}/json.key:/key:ro", ATTRAPPE_IMAGE, "sleep", "600", check=True)
             sh("docker", "start", cname, check=True)
-        if not e.pruefe(warte_gesund([web, guacd]), "Container werden gesund"):
+        if not e.pruefe(warte_gesund([web, guacd, p + "rd-zugang"]), "Container werden gesund"):
             print(sh("docker", "logs", "--tail", "40", web).stdout[-2000:])
             return e.summe()
         port = sh("docker", "port", caddy, "8080/tcp", check=True).stdout.split(":")[-1].strip()
@@ -397,6 +413,7 @@ def testmodus(args: argparse.Namespace) -> int:
         e.pruefe(warte_antwort(basis + "/"), "Caddy antwortet")
         netze = {"rd": netz_rd, "guacd": netz_guacd, "ziel": netz_ziel}
         pruefe_container(e, web, guacd, netze)
+        pruefe_zugang(e, p + "rd-zugang", netze)
         # Das Netz wamo-rd-netz gehört im Betrieb zu wamo-caddy; hier legt es der Test an. Vergleichbare Proben:
         pruefe_kopfzeilen(e, basis, None, nur_ein_fehlversuch=False)
 
@@ -478,6 +495,99 @@ def testmodus(args: argparse.Namespace) -> int:
 
 
 # ======================================================================== Betrieb
+def pruefe_zugang(e: Ergebnis, name: str, netze: dict[str, str]) -> None:
+    """Härtung und Netze des Zugangsdienstes (Stufe 3): nur Standardbibliothek, nur Socket, kein Port, keine Geheimnisse."""
+    print("== Zugangsdienst")
+    d = inspect(name)
+    if not e.pruefe(d is not None, f"{name} vorhanden"):
+        return
+    assert d is not None
+    st, hc, cfg = d["State"], d["HostConfig"], d["Config"]
+    e.pruefe(st.get("Running") is True and st.get("Health", {}).get("Status") == "healthy", f"{name} läuft und ist gesund", st.get("Health", {}).get("Status", "ohne Probe"))
+    e.pruefe(hc["ReadonlyRootfs"] is True, f"{name}: Dateisystem schreibgeschützt")
+    e.pruefe((hc.get("CapDrop") or []) == ["ALL"] and not hc.get("CapAdd"), f"{name}: alle Capabilities entfernt")
+    e.pruefe(any("no-new-privileges" in x for x in (hc.get("SecurityOpt") or [])) and hc.get("Privileged") is False, f"{name}: no-new-privileges, nicht privilegiert")
+    e.pruefe(bool(re.fullmatch(r"[1-9][0-9]*:[1-9][0-9]*", cfg.get("User", ""))), f"{name}: läuft nicht als root", cfg.get("User", "") or "leer")
+    e.pruefe(0 < hc["Memory"] <= 128 * 1024 * 1024 and 0 < (hc.get("PidsLimit") or 0) <= 64, f"{name}: Speicher- und Prozessgrenze")
+    e.pruefe(all(v is None for v in (d["NetworkSettings"].get("Ports") or {}).values()), f"{name}: veröffentlicht keinen Port")
+    quellen = [(m["Source"], m.get("RW")) for m in d.get("Mounts", []) if m.get("Type") in ("bind", "volume")]  # im Testmodus ist das Socket-Verzeichnis ein benanntes Volume
+    e.pruefe(len(quellen) == 2 and all("docker.sock" not in q for q, _ in quellen) and sum(1 for _, rw in quellen if rw is False) == 1,
+             f"{name}: genau zwei Einbindungen (Socket-Verzeichnis, Zielliste lesend)", ", ".join(q for q, _ in quellen))
+    e.pruefe(set(d["NetworkSettings"]["Networks"]) == {netze["rd"], netze["ziel"]}, f"{name}: nur in den Netzen rd und ziel", str(sorted(d["NetworkSettings"]["Networks"])))
+    umgebung = {z.split("=", 1)[0]: z.split("=", 1)[1] for z in cfg.get("Env", []) if "=" in z}
+    # GPG_KEY ist die öffentliche Schlüsselkennung des Python-Images, kein Geheimnis
+    e.pruefe(not [k for k in umgebung if k != "GPG_KEY" and re.search(r"KEY|SECRET|PASS|TOKEN", k, flags=re.I)], f"{name}: kein Schlüssel, kein Passwort, kein Token in der Umgebung")
+    e.pruefe(bool(re.fullmatch(r"[1-9][0-9]{2,}", umgebung.get("WAMO_RD_KERN_UID", ""))), f"{name}: Benutzerkennung des Kerns gesetzt", umgebung.get("WAMO_RD_KERN_UID", ""))
+
+
+# Läuft als der geprüfte Benutzer: Verbindungsversuch, Ausgabe OFFEN oder ZU (jedes Werkzeug, das fehlt, gibt nichts aus: "defekt")
+AUSGANG_PROBE = (
+    "import socket,sys\n"
+    "h,p,fam=sys.argv[1],int(sys.argv[2]),sys.argv[3]\n"
+    "s=socket.socket(socket.AF_INET6 if fam=='6' else socket.AF_INET)\n"
+    "s.settimeout(3)\n"
+    "try:\n"
+    "    s.connect((h,p)); print('OFFEN')\n"
+    "except OSError:\n"
+    "    print('ZU')\n"
+)
+AUSGANG_DNS = "import socket;socket.getaddrinfo('example.org',443,socket.AF_INET);print('OFFEN')"
+
+
+def probe_als(benutzer: str | None, host: str, port: int, fam: str = "4") -> str:
+    """'offen', 'zu' oder 'defekt' (die Probe selbst ging schief). benutzer None: als der aktuelle Benutzer."""
+    cmd = ["sudo", "-n", "-u", benutzer] if benutzer else []
+    r = sh(*cmd, "python3", "-I", "-c", AUSGANG_PROBE.replace("\\n", "\n"), host, str(port), fam, timeout=20)
+    aus = r.stdout.strip()
+    return {"OFFEN": "offen", "ZU": "zu"}.get(aus, "defekt")
+
+
+def ausgang_proben(e: Ergebnis, ziele: list[str]) -> None:
+    """Verbotsproben der Ausgangsregel für wamo-rd (infra/sparks/wamo-rd-ausgang-einrichten.sh), nur wenn die Tabelle geladen ist."""
+    print("== Ausgangsregel für wamo-rd (Proben als wamo-rd)")
+    r = sh("sudo", "-n", "nft", "list", "table", "inet", "wamo_rd_ausgang")
+    if r.returncode != 0:
+        e.skip("Ausgangsregel für wamo-rd", "Tabelle inet wamo_rd_ausgang nicht geladen oder sudo -n nft nicht möglich (Vorbedingung vor dem ersten Ziel Sokrates-2)")
+        return
+    e.pruefe("meta skuid wamo-rd jump wamo_rd" in r.stdout and "ip daddr @gesperrt4 counter" in r.stdout and "meta nfproto ipv6 counter" in r.stdout,
+             "Tabelle enthält die Regel für das Konto, die Sperre für LAN und Loopback und die Sperre für IPv6")
+    if sh("sudo", "-n", "-u", "wamo-rd", "true").returncode != 0:
+        e.skip("Proben als wamo-rd", "sudo -n -u wamo-rd nicht möglich")
+        return
+    eigene = "192.168.178.136"
+    verbot: list[tuple[str, str, int, str]] = [
+        ("Kern über Caddy (55444)", "127.0.0.1", 55444, "4"),
+        ("Kern über Caddy im LAN (55444)", eigene, 55444, "4"),
+        ("Supabase-API (55443) auf Loopback", "127.0.0.1", 55443, "4"),
+        ("Supabase-API (55443) im LAN", eigene, 55443, "4"),
+        ("Supavisor (55322)", "127.0.0.1", 55322, "4"),
+        ("Postgres (5432)", "127.0.0.1", 5432, "4"),
+        ("Oberfläche (55445)", "127.0.0.1", 55445, "4"),
+        ("Gateway-Seite (55446)", "127.0.0.1", 55446, "4"),
+        ("SSH auf Loopback", "127.0.0.1", 22, "4"),
+        ("SSH auf der LAN-Adresse", eigene, 22, "4"),
+        ("Router (80)", "192.168.178.1", 80, "4"),
+        ("Router (443)", "192.168.178.1", 443, "4"),
+        ("LiteLLM auf den Sparks (4000)", "192.168.178.75", 4000, "4"),
+        ("Docker-Brücke (22)", "172.17.0.1", 22, "4"),
+        ("IPv6 Loopback (22)", "::1", 22, "6"),
+    ]
+    for z in ziele:
+        verbot += [(f"Spark {z} (SSH)", z, 22, "4"), (f"Spark {z} (RDP)", z, 3389, "4")]
+    for name, host, port, fam in verbot:
+        kontrolle = probe_als(None, host, port, fam)
+        if kontrolle != "offen":
+            e.skip(f"wamo-rd erreicht {name} nicht", f"Kontrolle: auch ohne die Regel nicht erreichbar ({kontrolle})")
+            continue
+        e.pruefe(probe_als("wamo-rd", host, port, fam) == "zu", f"wamo-rd erreicht {name} nicht", f"{host}:{port}")
+    if probe_als(None, "1.1.1.1", 443) == "offen":
+        e.pruefe(probe_als("wamo-rd", "1.1.1.1", 443) == "offen", "wamo-rd erreicht das Internet (1.1.1.1:443)")
+        dns = sh("sudo", "-n", "-u", "wamo-rd", "python3", "-I", "-c", AUSGANG_DNS)
+        e.pruefe(dns.stdout.strip() == "OFFEN", "wamo-rd löst Namen auf (über den Stub 127.0.0.53)", (dns.stderr or dns.stdout).strip()[-100:])
+    else:
+        e.skip("wamo-rd erreicht das Internet", "dieser Rechner erreicht 1.1.1.1:443 selbst nicht")
+
+
 def lies_ziele(pfad: str = "/etc/wamo-rd/ziele.toml") -> list[str] | None:
     """Gültige Zieladressen wie in wamo-firewall.sh (IPv4, kein Loopback, Multicast, Link-Local, Docker-Bereich, höchstens 8).
     None, wenn die Datei nicht lesbar ist (dann lässt sich die Kette nicht mit ihr vergleichen)."""
@@ -507,6 +617,7 @@ def betrieb(args: argparse.Namespace) -> int:
     ca = args.ca
     netze = {"rd": "wamo-rd-netz", "guacd": "wamo-rd-guacd-netz", "ziel": "wamo-rd-ziel"}
     pruefe_container(e, "wamo-rd-web", "wamo-rd-guacd", netze)
+    pruefe_zugang(e, "wamo-rd-zugang", netze)
     pruefe_kopfzeilen(e, BETRIEB_URL, ca)
     print("== TLS")
     try:
@@ -569,6 +680,7 @@ def betrieb(args: argparse.Namespace) -> int:
         e.pruefe(re.search(r"--ctorigdstport 55446 (--ctdir ORIGINAL )?-j WAMO-FW-LAN", r.stdout) is not None, "Port 55446 nur für Loopback und Büro-LAN (WAMO-FW-LAN)")
     else:
         e.skip("Port 55446 in WAMO-FW", "sudo -n iptables nicht möglich")
+    ausgang_proben(e, ziele)
     return e.summe()
 
 

@@ -53,6 +53,7 @@ SKRIPTE = [p for p in (
     "infra/sparks/xrdp-einhegen.sh",
     "infra/sparks/wamo-rd-konto-einrichten.sh",
     "infra/sparks/wamo-rd-ziel-einrichten.sh",
+    "infra/sparks/wamo-rd-ausgang-einrichten.sh",
     "infra/sokrates2/wamo-rd-einrichten.sh",
     "infra/sokrates2/wamo-rd-rueckweg.sh",
 ) if (REPO / p).exists()]
@@ -366,6 +367,188 @@ class XrdpEinhegenTests(Werkstatt):
         self.assertNotIn("10.1.2.3", r.stdout)
 
 
+# ====================================================================================== Ausgangsregel für wamo-rd
+AUSGANG = "infra/sparks/wamo-rd-ausgang-einrichten.sh"
+
+
+@unittest.skipUnless(LINUX and BASH, "Probelauf braucht Linux und GNU-Werkzeuge")
+class AusgangsregelTests(Werkstatt):
+    def setUp(self):
+        super().setUp()
+        self.attrappe("nft", "systemctl")
+        self.ausgabe("nft.list_table", "", rc=1)  # die Tabelle steht noch nicht
+        os.makedirs(self.p("etc"))
+        self.p("etc/resolv.conf").write_text("nameserver 127.0.0.53\noptions edns0 trust-ad\n")
+        self.regeln = self.p("etc/wamo-rd-ausgang/regeln.nft")
+
+    def ausgang(self, *args, extra=None):
+        return self.lauf(AUSGANG, *args, extra={"WAMO_RD_AUSGANG_WURZEL": str(self.wurzel), **(extra or {})})
+
+    def test_trockenlauf_zeigt_die_regel_und_aendert_nichts(self):
+        r = self.ausgang("--trocken")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("meta skuid wamo-rd jump wamo_rd", r.stdout)
+        self.assertIn("[trocken]", r.stdout)
+        self.assertFalse(self.p("etc/wamo-rd-ausgang").exists())
+        self.assertFalse(self.p("etc/systemd").exists())
+        self.assertFalse(self.p("var").exists())
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(nft -f|systemctl (enable|restart|disable|daemon-reload))", z)
+
+    def test_regeltext_beschraenkt_nur_das_konto_und_erlaubt_nur_das_internet(self):
+        r = self.ausgang()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        t = self.regeln.read_text()
+        # eigene Tabelle, nie die Regeln anderer löschen
+        self.assertIn("table inet wamo_rd_ausgang", t)
+        self.assertEqual(t.count("delete table"), 1)
+        self.assertNotIn("flush", t)
+        # nur Pakete des Kontos laufen in die Kette; sonst keine Sprungregel
+        self.assertEqual(len(re.findall(r"meta skuid (\S+) jump", t)), 1)
+        self.assertIn("meta skuid wamo-rd jump wamo_rd", t)
+        self.assertIn("type filter hook output", t)
+        self.assertIn("policy accept", t)  # alle anderen Benutzer bleiben unberührt
+        for netz in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10", "224.0.0.0/3"):
+            self.assertIn(netz, t)
+        self.assertIn("meta nfproto ipv6 counter drop", t)
+        kette = t.split("chain wamo_rd {")[1]
+        zeilen = [z.strip() for z in kette.splitlines() if z.strip() and not z.strip().startswith(("}", "#"))]
+        # Reihenfolge: Rückantworten Gateway, DNS-Stub, IPv6 weg, LAN und Loopback weg, zuletzt Internet
+        self.assertTrue(zeilen[0].startswith("ip daddr 172.27.0.0/24 ct state established,related"), zeilen[0])
+        self.assertTrue(zeilen[1].startswith("ip daddr 127.0.0.53"), zeilen[1])
+        self.assertIn("dport 53", zeilen[1])
+        self.assertTrue(zeilen[2].startswith("meta nfproto ipv6"), zeilen[2])
+        self.assertTrue(zeilen[3].startswith("ip daddr @gesperrt4 counter drop"), zeilen[3])
+        self.assertEqual(zeilen[4].split(" comment")[0], "counter accept")
+        self.assertEqual(len(zeilen), 5)  # ohne --loopback-port keine Loopback-Freigabe
+        # das Gateway bekommt nur Antworten bestehender Verbindungen, nie neue Verbindungen
+        self.assertEqual(len(re.findall(r"ip daddr 172\.27\.0\.0/24", t)), 1)
+
+    def test_einrichten_legt_unit_und_dropins_an_und_prueft_vor_dem_laden(self):
+        r = self.ausgang()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        unit = self.p("etc/systemd/system/wamo-rd-ausgang.service").read_text()
+        self.assertIn("ExecStart=/usr/sbin/nft -f /etc/wamo-rd-ausgang/regeln.nft", unit)
+        self.assertIn("ExecStop=-/usr/sbin/nft delete table inet wamo_rd_ausgang", unit)
+        self.assertIn("Before=network-pre.target xrdp.service xrdp-sesman.service", unit)
+        # fail-closed: xrdp und xrdp-sesman starten nur mit geladener Regel
+        for d in ("xrdp-sesman.service.d", "xrdp.service.d"):
+            dropin = self.p("etc/systemd/system", d, "wamo-rd-ausgang.conf").read_text()
+            self.assertIn("Requires=wamo-rd-ausgang.service", dropin)
+            self.assertIn("After=wamo-rd-ausgang.service", dropin)
+        aufrufe = self.aufrufe()
+        pruef = [i for i, z in enumerate(aufrufe) if z.startswith("nft -c -f")]
+        laden = [i for i, z in enumerate(aufrufe) if z == "systemctl restart wamo-rd-ausgang.service"]
+        self.assertTrue(pruef and laden and pruef[0] < laden[0], aufrufe)
+        self.assertIn("systemctl enable wamo-rd-ausgang.service", aufrufe)
+        self.assertIn("systemctl daemon-reload", aufrufe)
+        for z in aufrufe:
+            self.assertNotRegex(z, r"^nft (add|delete|insert|flush)", z)
+            self.assertNotIn("flush", z)
+            self.assertNotRegex(z, r"^systemctl (stop|disable|mask)", z)
+        self.assertIn("gateway=172.27.0.0/24", self.p("var/lib/wamo-rd-ausgang/zustand").read_text())
+
+    def test_lehnt_nft_den_text_ab_bleibt_alles_wie_es_war(self):
+        self.ausgabe("nft", "", rc=1)
+        r = self.ausgang()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("lehnt", r.stderr)
+        self.assertFalse(self.regeln.exists())
+        self.assertFalse(self.p("etc/systemd/system/wamo-rd-ausgang.service").exists())
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("systemctl")])
+
+    def test_zweiter_lauf_aendert_nichts(self):
+        self.assertEqual(self.ausgang().returncode, 0)
+        self.ausgabe("nft.list_table", "table inet wamo_rd_ausgang {\n}\n", rc=0)  # jetzt steht sie
+        self.log.write_text("")
+        vorher = sha(self.regeln)
+        r = self.ausgang()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("unverändert", r.stdout)
+        self.assertEqual(sha(self.regeln), vorher)
+        self.assertFalse(self.p("var/backups").exists())
+        self.assertFalse([z for z in self.aufrufe() if z.startswith(("systemctl", "nft -c", "nft -f"))])
+
+    def test_geaenderte_angaben_sichern_die_alte_datei_und_laden_neu(self):
+        self.assertEqual(self.ausgang().returncode, 0)
+        alt = self.regeln.read_text()
+        self.ausgabe("nft.list_table", "x", rc=0)
+        self.log.write_text("")
+        r = self.ausgang("--loopback-port", "3350", "--loopback-port", "3350", "--loopback-port", "55")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        neu = self.regeln.read_text()
+        self.assertIn("ip daddr 127.0.0.1 tcp dport { 55, 3350 } counter accept", neu)
+        # die Freigabe steht VOR der Sperre für Loopback
+        self.assertLess(neu.index("tcp dport { 55, 3350 }"), neu.index("@gesperrt4 counter drop"))
+        sicherungen = os.listdir(self.p("var/backups/wamo-rd-ausgang"))
+        self.assertEqual(len(sicherungen), 1)
+        self.assertEqual(self.p("var/backups/wamo-rd-ausgang", sicherungen[0]).read_text(), alt)
+        self.assertIn("systemctl restart wamo-rd-ausgang.service", self.aufrufe())
+
+    def test_anderes_gateway_netz(self):
+        self.assertEqual(self.ausgang("--gateway", "172.30.0.0/24").returncode, 0)
+        t = self.regeln.read_text()
+        self.assertIn("ip daddr 172.30.0.0/24 ct state established,related", t)
+        self.assertNotIn("172.27.0.0/24", t)
+
+    def test_ungueltige_angaben(self):
+        for args in (["--gateway", "kein;netz"], ["--gateway", "10.0.0.0"], ["--gateway", "10.0.0.0/33"], ["--gateway"],
+                     ["--loopback-port", "0"], ["--loopback-port", "70000"], ["--loopback-port", "x"], ["--loopback-port", "22;rm"],
+                     ["--loopback-port"], ["--unbekannt"],
+                     sum((["--loopback-port", str(p)] for p in range(1, 10)), [])):
+            r = self.ausgang(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+        self.assertFalse(self.p("etc/wamo-rd-ausgang").exists())
+        r = self.lauf(AUSGANG, "--trocken", extra={"WAMO_RD_AUSGANG_WURZEL": "relativ/../pfad"})
+        self.assertEqual(r.returncode, 2)
+
+    def test_warnung_bei_fremdem_nameserver(self):
+        self.p("etc/resolv.conf").write_text("nameserver 192.168.178.1\n")
+        r = self.ausgang("--trocken")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("WARNUNG", r.stdout)
+        self.assertIn("192.168.178.1", r.stdout)
+
+    def test_zurueck_entfernt_nur_das_eigene(self):
+        self.assertEqual(self.ausgang().returncode, 0)
+        self.log.write_text("")
+        r = self.ausgang("--zurueck")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.regeln.exists())
+        self.assertFalse(self.p("etc/systemd/system/wamo-rd-ausgang.service").exists())
+        for d in ("xrdp-sesman.service.d", "xrdp.service.d"):
+            self.assertFalse(self.p("etc/systemd/system", d, "wamo-rd-ausgang.conf").exists())
+        self.assertFalse(self.p("var/lib/wamo-rd-ausgang/zustand").exists())
+        aufrufe = self.aufrufe()
+        self.assertIn("systemctl disable --now wamo-rd-ausgang.service", aufrufe)
+        self.assertIn("nft delete table inet wamo_rd_ausgang", aufrufe)
+        for z in aufrufe:
+            self.assertNotIn("flush", z)
+            self.assertNotRegex(z, r"^nft delete table inet (?!wamo_rd_ausgang$)", z)
+
+    def test_zurueck_im_trockenlauf_aendert_nichts(self):
+        self.assertEqual(self.ausgang().returncode, 0)
+        vorher = sha(self.regeln)
+        self.log.write_text("")
+        r = self.ausgang("--zurueck", "--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sha(self.regeln), vorher)
+        self.assertTrue(self.p("etc/systemd/system/wamo-rd-ausgang.service").exists())
+        self.assertFalse([z for z in self.aufrufe() if z.startswith(("systemctl disable", "nft delete"))])
+
+    def test_status_aendert_nichts(self):
+        self.assertEqual(self.ausgang().returncode, 0)
+        self.log.write_text("")
+        r = self.ausgang("--status")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Regeldatei", r.stdout)
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(nft (-f|delete|add)|systemctl (enable|restart|disable|stop|daemon-reload))", z)
+
+    def test_regeltext_ist_deterministisch(self):
+        self.assertEqual(self.ausgang("--trocken").stdout, self.ausgang("--trocken").stdout)
+
+
 # ====================================================================================== Stufe 1: Gateway, Caddy, Firewall
 RD = SOKRATES2 / "wamo-rd"
 
@@ -492,7 +675,7 @@ class GatewayDateiTests(unittest.TestCase):
         self.assertIsNone(re.search(r"(?i)passw|kennwort\s*=|secret\s*=|token\s*=", _ohne_kommentare(b)))
 
     def test_alle_dateien_ohne_gedankenstriche_und_cr(self):
-        dateien = [f for f in RD.rglob("*") if f.is_file()]
+        dateien = [f for f in RD.rglob("*") if f.is_file() and "__pycache__" not in f.parts]
         self.assertIn("wamo_rd_zugang.py", [f.name for f in dateien])
         for f in dateien + [SOKRATES2 / "wamo_rd_rauchtest.py", SOKRATES2 / "wamo-firewall.sh"]:
             roh = f.read_bytes()

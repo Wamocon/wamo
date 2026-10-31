@@ -212,7 +212,7 @@ def _start(client, **body):
 
 
 # ======================================================================== Anweisung
-def test_anweisung_ist_korrekt_signiert_verschluesselt_und_kurzlebig():
+def test_anweisung_ist_korrekt_signiert_verschluesselt_und_endet_mit_der_sitzung():
     ziel = api.Ziel("sokrates2", "Sokrates-2", "192.168.178.136", 3389)
     jetzt = time.time()
     data = api.anweisung_bauen(bytes.fromhex(SCHLUESSEL_HEX), SITZUNG, ziel, PASSWORT, jetzt=jetzt)
@@ -220,8 +220,8 @@ def test_anweisung_ist_korrekt_signiert_verschluesselt_und_kurzlebig():
     assert len(base64.b64decode(data)) % 16 == 0            # AES-Blöcke
     d = entschluesseln(data)
     assert d["username"] == "rd-9a1b2c3d4e5f"               # Kurzform, kein Name einer Person
-    assert abs(d["expires"] - (jetzt + api.ANWEISUNG_SECS) * 1000) < 2000
-    assert d["expires"] < (jetzt + 25) * 1000                # nach wenigen Sekunden abgelaufen
+    assert abs(d["expires"] - (jetzt + api.DAUER_SECS) * 1000) < 2000          # expires = Höchstende der Sitzung (Guacamole beendet sie damit)
+    assert d["expires"] <= (jetzt + 3600 + 2) * 1000                           # nie länger als die Höchstdauer
     verbindung = d["connections"][api.VERBINDUNG]
     assert verbindung["protocol"] == "rdp"
     p = verbindung["parameters"]
@@ -258,8 +258,8 @@ def test_schluessel_muss_128_bit_haben():
 
 def test_seiten_url_enthaelt_nur_das_sitzungstoken():
     url = api.seiten_url("https://192.168.178.136:55446", TOKEN)
-    assert url.startswith("https://192.168.178.136:55446/#/client/") and url.endswith(f"?token={TOKEN}")
-    kennung = url.split("/client/")[1].split("?")[0]
+    assert url.startswith(f"https://192.168.178.136:55446/?token={TOKEN}#/client/")
+    kennung = url.split("/client/")[1]
     assert re.fullmatch(r"[A-Za-z0-9]+", kennung)             # kein Schrägstrich, der die Route zerlegt
     assert base64.b64decode(kennung) == b"fernsitzung\0c\0json"
     assert PASSWORT not in url and "192.168.178.140" not in url

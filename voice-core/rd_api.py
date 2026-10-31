@@ -17,9 +17,13 @@ Wer eine Sitzung starten darf (alles muss stimmen, geprüft in dieser Reihenfolg
 
 Wie die Anmeldung am Gateway entsteht: Der Kern baut die Anweisung für Guacamoles "Encrypted JSON authentication" selbst
 (base64 von AES-128-CBC, Null-IV, über Signatur HMAC-SHA256 und JSON; Schlüssel aus /etc/wamo-rd/json.key). Sie enthält die
-Verbindung (RDP, Zielhost, Konto wamo-rd, Passwort aus /etc/wamo-rd/ziele.env) und läuft nach 20 Sekunden ab. Sie verlässt den
-Kern nur über den Unix-Socket zum Zugangsdienst (infra/sokrates2/wamo-rd/zugang/), der sie bei Guacamole einreicht und das
-Sitzungstoken zurückgibt. Der Browser bekommt NUR die Adresse der Gateway-Seite mit diesem Sitzungstoken; Passwort, Schlüssel,
+Verbindung (RDP, Zielhost, Konto wamo-rd, Passwort aus /etc/wamo-rd/ziele.env). Ihr Feld expires ist das Höchstende der Sitzung
+(Start + 60 Minuten): Gemessen gegen Guacamole 1.6.0 gilt expires nicht nur für das Einreichen, sondern für die ganze Sitzung, das
+Sitzungstoken wird mit Ablauf ungültig (pruefe_gegen_guacamole.py). Eine Anweisung nur für wenige Sekunden würde die Sitzung nach
+wenigen Sekunden unbenutzbar machen. Ein schon offener Tunnel läuft nach dem Ablauf allerdings weiter; ihn schließt der Zugangsdienst
+zur Frist (Token löschen, gemessen: schließt den Tunnel) und der Aufseher in diesem Modul. Das Zeitlimit hat damit drei Stellen.
+Die Anweisung verlässt den Kern nur über den Unix-Socket zum Zugangsdienst (infra/sokrates2/wamo-rd/zugang/), der sie bei Guacamole
+einreicht und das Sitzungstoken zurückgibt; sie liegt danach nirgends mehr (keine Datei, kein Log, kein Browser). Der Browser bekommt NUR die Adresse der Gateway-Seite mit diesem Sitzungstoken; Passwort, Schlüssel,
 Zielhost und Anweisung erreichen ihn nie und stehen in keinem Log und keiner Antwort.
 
 Verbindung (fest, nicht änderbar): RDP, Konto wamo-rd, keine Zwischenablage in beide Richtungen, kein Laufwerk, kein Drucker, kein
@@ -64,7 +68,6 @@ router = APIRouter()
 
 MAX_BODY = 2 * 1024
 DAUER_SECS = 3600                 # Höchstdauer einer Sitzung
-ANWEISUNG_SECS = 20               # so lange gilt die Anweisung für Guacamole nach dem Bauen
 MAX_GLEICHZEITIG = 3
 MAX_JE_STUNDE = 6
 LEERLAUF_MINUTEN = 10             # Hinweis für die Oberfläche; durchgesetzt am Ziel
@@ -203,11 +206,13 @@ def schluessel_lesen(pfad: Path | None = None) -> bytes | None:
 
 
 # ======================================================================== Anweisung für Guacamole
-def anweisung_bauen(schluessel: bytes, sitzung: str, ziel: Ziel, passwort: str, jetzt: float | None = None) -> str:
+def anweisung_bauen(schluessel: bytes, sitzung: str, ziel: Ziel, passwort: str, jetzt: float | None = None,
+                    gueltig_secs: float = DAUER_SECS) -> str:
     """Signierte und verschlüsselte Anmeldung für Guacamoles "Encrypted JSON authentication" (base64).
 
-    Format laut Handbuch von Guacamole: AES-128-CBC (Null-IV, PKCS7) über [HMAC-SHA256(JSON) || JSON], danach base64. Die
-    Anweisung gilt ANWEISUNG_SECS Sekunden (expires, Millisekunden). Der Benutzername ist nur eine Kurzform der Sitzung."""
+    Format laut Handbuch von Guacamole: AES-128-CBC (Null-IV, PKCS7) über [HMAC-SHA256(JSON) || JSON], danach base64. expires
+    (Millisekunden) ist das Höchstende der Sitzung (jetzt + gueltig_secs, Vorgabe 60 Minuten): Das Sitzungstoken wird mit Ablauf
+    ungültig, nicht erst das Einreichen. Der Benutzername ist nur eine Kurzform der Sitzung."""
     if len(schluessel) != 16:
         raise ValueError("Schlüssel muss 128 Bit haben")
     jetzt = time() if jetzt is None else jetzt
@@ -217,7 +222,7 @@ def anweisung_bauen(schluessel: bytes, sitzung: str, ziel: Ziel, passwort: str, 
         raise ValueError("verbotener Verbindungsparameter")
     daten = {
         "username": "rd-" + sitzung.replace("-", "")[:12],
-        "expires": int((jetzt + ANWEISUNG_SECS) * 1000),
+        "expires": int((jetzt + gueltig_secs) * 1000),
         "connections": {VERBINDUNG: {"protocol": parameter.pop("protocol"), "parameters": parameter}},
     }
     roh = json.dumps(daten, separators=(",", ":")).encode("utf-8")
@@ -229,9 +234,14 @@ def anweisung_bauen(schluessel: bytes, sitzung: str, ziel: Ziel, passwort: str, 
 
 
 def seiten_url(basis: str, token: str) -> str:
-    """Adresse der Gateway-Seite mit dem Sitzungstoken im Fragment (wird nie an einen Server gesendet, kein Referer)."""
+    """Adresse der Gateway-Seite: das Sitzungstoken als Abfrage, die Verbindung im Fragment.
+
+    Gemessen im Browser gegen Guacamole 1.6.0: Nur ein Token VOR dem Fragment (/?token=...#/client/...) nimmt die Seite an und öffnet
+    die Verbindung sofort; ein Token hinter dem Fragment (#/client/...?token=...) zeigt die Anmeldeseite. Das Token gelangt so als
+    Abfrage an den Server des Gateways (Caddy protokolliert keine Zugriffe, Referrer-Policy no-referrer); es gilt nur für diese
+    Sitzung und wird mit ihrem Ende ungültig."""
     kennung = base64.b64encode(f"{VERBINDUNG}\0c\0json".encode()).decode("ascii")
-    return f"{basis}/#/client/{kennung}?token={token}"
+    return f"{basis}/?token={token}#/client/{kennung}"
 
 
 # ======================================================================== Zugangsdienst
