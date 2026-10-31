@@ -101,6 +101,7 @@ from modellzugang import modellzugang_nachricht, zugang_laden
 from boss import Boss, entwicklung_quelle, modus_wirksam
 from kern_dienst import runner_vorbereiten
 from cache_waerme import vorwaermen
+from env_schalter import schalter_an
 from latenz import LatenzObserver, api_messen, latenz_log_an
 from pc_geraet import geraet_wache, rechnername_passt
 from schluessel_filter import SchluesselFilter, absichern
@@ -444,9 +445,34 @@ class Session:
     cleanup: Callable[[], Awaitable[None]]
 
 
-def pause_prompts(name: str) -> tuple[str, str]:
+def pausen_prompt_an(wert: str | None = None) -> bool:
+    """WAMO_PAUSEN_PROMPT: neue Texte nach einer Pause, ohne Floskeln wie "Ich bin noch da" (Standard aus, bis gemessen)."""
+    return schalter_an("WAMO_PAUSEN_PROMPT", wert, standard=False)
+
+
+def pause_prompts(name: str, neu: bool | None = None) -> tuple[str, str]:
     """Texte, mit denen Pipecat Claude nach einer Pause erneut fragt. Die englischen Standardtexte
-    führten dazu, dass Claude nur den Marker "●" ohne Text schickte: WAMO blieb stumm."""
+    führten dazu, dass Claude nur den Marker "●" ohne Text schickte: WAMO blieb stumm.
+
+    neu (None liest WAMO_PAUSEN_PROMPT): Nach einer kurzen Pause erledigt WAMO den Auftrag, wenn er klar ist, sonst
+    schreibt Claude nur ○ und WAMO wartet still weiter (Pipecat fragt nach der langen Frist ein zweites Mal). Erst die lange
+    Stille bekommt genau eine konkrete Frage. Der lange Text verbietet ◐ und ○, damit die Kette nach zwei Texten endet; beide
+    verbieten Floskeln wie "Ich bin noch da" und "Ich höre zu"."""
+    neu = pausen_prompt_an() if neu is None else neu
+    if neu:
+        short = (
+            f"{name} hat mitten im Satz kurz pausiert. Lies die letzten Bruchstücke zusammen. Ist klar, "
+            "was gewollt ist, erledige es jetzt (auch mit Werkzeug) und beginne mit ● und einem Leerzeichen. "
+            "Ist es nicht klar, schreib nur ○ und sonst nichts: dann wartest du still weiter. Nie ◐. "
+            "Sag nie, dass du noch da bist oder zuhörst, und lade nicht mit einer Floskel zum Weiterreden ein."
+        )
+        long = (
+            f"{name} ist seit ein paar Sekunden still. Ist aus dem Zusammenhang klar, was gewollt ist, "
+            "erledige es jetzt. Sonst stell genau eine konkrete Frage zum Thema, am besten nach der fehlenden Angabe. "
+            "WICHTIG: Beginne mit ● und einem Leerzeichen, dann dein Text. Nie ◐ oder ○, nie ● allein. "
+            "Sag nicht, dass du noch da bist, und frag nicht, ob jemand zuhört."
+        )
+        return short, long
     short = (
         f"{name} hat mitten im Satz kurz pausiert. Lies die letzten Bruchstücke zusammen. Ist klar, "
         "was gewollt ist, erledige es jetzt (auch mit Werkzeug). Sonst sag einen ganz kurzen deutschen "
