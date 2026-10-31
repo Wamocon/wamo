@@ -270,7 +270,7 @@ Eingaben in Textfeldern in Ruhe.
 | Verbrauch (`verbrauch`) | Kontingent des Max-Abos aus der Servernachricht `kontingent`: Sitzungslimit, Wochenlimit, Fable limit | Admin |
 | Sprache und Ton (`sprache`) | Mikrofonwahl, Spracherkennung und Sprachausgabe laut Betriebsmeldung | alle |
 | Darstellung (`darstellung`) | Normal, Fokus, Zentrale, Nacht | alle |
-| Geräte und PC (`geraete`) | Verbindungen, PC-Steuerung samt Autostart (nur Admin, nur Desktop-App), Betriebsart, Stand der Geräteeinrichtung | alle, PC-Steuerung nur Admin |
+| Geräte und PC (`geraete`) | Verbindungen, Geräteverwaltung (Freigeben, Sperren, Widerrufen), PC-Steuerung samt Autostart (nur Admin, nur Desktop-App), Betriebsart, Stand der Geräteeinrichtung | alle, Geräteverwaltung und PC-Steuerung nur Admin |
 | Teilen (`teilen`) | Geteilte Arbeit: mit mir, von mir, Dateien | alle |
 | Info (`info`) | Version, Kern, Hinweise an Admins | alle, Hinweise nur Admin |
 
@@ -282,6 +282,38 @@ echten Token bestätigt, die Seite sagt das dort auch (`ui/src/lib/verbrauch.ts`
 Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo-tunnel.ps1`: Host und Tunnel laufen damit
 unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
 sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
+
+### Geräte, Tunnel je Gerät und Geräteverwaltung
+
+Jeder persönliche Laptop hat einen eigenen Rücktunnel zu Sokrates-2: ein Gerät, ein ed25519-Schlüssel, ein Tunnelplatz
+(Benutzer `wamo-t-NN`, Ordner `/run/wamo-pc/tNN/`, NN von 01 bis 64). Die Desktop-App bindet den Laptop bei der Anmeldung
+(`POST /wamo/api/geraet/binden`, Migration 0002). Ein Mitglied ohne früheres Gerät wird dabei sofort `aktiv`; jedes Admin-Profil
+und jeder Gerätewechsel steht danach auf `beantragt`, bis ein Admin entscheidet. Status: `beantragt`, `aktiv`, `gesperrt`,
+`widerrufen` (endgültig). Nur `aktiv` zählt für den Abgleich der SSH-Schlüssel (`pc_abgleich_liste`).
+
+**Geräteverwaltung** (Einstellungen, Geräte und PC, Karte „Geräteverwaltung“, nur Admin): Das Entscheiden geschieht in der
+Oberfläche, nicht mehr in der Datenbank. Wartende Geräte stehen oben mit Kennung, Rechnername, Profil und dem Fingerabdruck in
+Vierergruppen; darunter die aktiven und gesperrten Geräte, widerrufene (letzte 90 Tage) eingeklappt. Der eigene Laptop trägt die
+Marke „Dieses Gerät“. Die Status zeigen Wort und Form (Raute wartet, Kreis aktiv, Quadrat gesperrt, Kreuz widerrufen).
+
+- **Aktionen:** freigeben (beantragt zu aktiv), ablehnen oder widerrufen (endgültig, Grund Pflicht), sperren (Grund Pflicht),
+  entsperren. Jede Aktion geht durch einen Bestätigungsdialog mit dem Fingerabdruck und dem Hinweis „Vergleiche ihn mit dem
+  Fingerabdruck am Laptop“; Freigeben und Entsperren verlangen das ausdrückliche Bestätigen des Vergleichs. Ein Admin darf sein
+  eigenes Gerät freigeben (sonst käme ein einzelner Admin nie an sein erstes Gerät), nur mit derselben Anzeige und einer Warnung.
+- **Frischer zweiter Faktor:** Der Dialog fragt bei jeder Aktion den Code der Authenticator-App ab (`mfa.challengeAndVerify`).
+  Der Kern nimmt ändernde Aktionen nur an, wenn der letzte `totp`-Zeitstempel im Claim `amr` höchstens 120 Sekunden alt ist
+  (`voice-core/geraete_admin_api.py`); die Datenbank prüft dieselbe Frist noch einmal.
+- **Kern-API** (`/wamo/api`, wie alle Routen mit Token, aal2 und aktivem Profil, zusätzlich Rolle admin): `GET /geraete/verwaltung`
+  (Liste ohne Schlüsselmaterial, mit Verlauf der letzten zehn Ereignisse) und `POST /geraete/verwaltung/aktion`
+  (`kennung`, `aktion`, `grund`, `fingerabdruck`). Grenzen je Admin: Liste 60 je Minute, Aktionen 10 je 10 Minuten. Eine doppelte
+  Aktion (zwei Admins gleichzeitig, Doppelklick) ist folgenlos und wird als „schon erledigt“ gemeldet.
+- **Datenbank (Migration 0014):** `wamo_core` bekommt kein Update-Recht auf `devices`, sondern nur die Ausführung zweier Funktionen,
+  `geraet_entscheiden` (feste Übergänge, Akteur muss aktiver Admin sein, Zeile gesperrt, Verlauf über die Trigger aus 0002) und
+  `geraete_verwaltung_liste`. Die Trigger aus 0002 bleiben maßgeblich. Prüfung: `supabase/tests/0014_geraete_verwaltung_test.sql`.
+- **Hinweise:** Die Texte der Migration 0002 verweisen auf ein Skript `wamo_geraete.py`, das es nicht gibt. Die Datenbank bleibt
+  unverändert (Migrationen sind nach dem Anwenden unveränderlich); die Oberfläche zeigt stattdessen den Weg über die Karte
+  und bietet an den Hinweisen für Admins den Knopf „Zur Geräteverwaltung“.
+- **Gemeinsame Geräte** (Drucker, Scanner und Ähnliches) und Notfälle ohne Oberfläche laufen weiter über `wamo_admin` (SQL).
 
 ### Sitzungen, Anmeldung und Freigaben
 
