@@ -877,5 +877,308 @@ class OpenTests(unittest.TestCase):
         launch.assert_called_once_with("chrome.exe", ["https://www.amazon.de/s?k=lampe"])
 
 
+class FokusTests(unittest.TestCase):
+    """Fenster vorholen ohne Alt-Druck, mit Nachprüfung (windows_control.focus) und die Aufrufer im Host."""
+
+    def _focus(self, vorne, iconic=False):
+        """focus() gegen Attrappen: vorne = Liste der Antworten von GetForegroundWindow, Rest bleibt bei der letzten."""
+        gui = mock.MagicMock()
+        gui.IsIconic.return_value = iconic
+        antworten = list(vorne)
+        gui.GetForegroundWindow.side_effect = lambda: antworten.pop(0) if len(antworten) > 1 else antworten[0]
+        user32, kernel32 = mock.MagicMock(), mock.MagicMock()
+        user32.GetWindowThreadProcessId.return_value = 11
+        kernel32.GetCurrentThreadId.return_value = 22
+        user32.AttachThreadInput.return_value = 1
+        con = mock.Mock(SW_RESTORE=9)
+        with mock.patch.object(host.wc, "_win32", return_value=(gui, None, con)), \
+             mock.patch.object(host.wc, "_thread_apis", return_value=(user32, kernel32)), \
+             mock.patch.object(host.wc.time, "sleep"):
+            ergebnis = host.wc.focus(42)
+        return ergebnis, gui, user32
+
+    @staticmethod
+    def _tasten(user32):
+        return [c.args[0] for c in user32.keybd_event.call_args_list]
+
+    def test_schon_vorne_tut_nichts(self):
+        ok, gui, user32 = self._focus([42])
+        self.assertTrue(ok)
+        gui.SetForegroundWindow.assert_not_called()
+        user32.keybd_event.assert_not_called()  # kein Alt: der Fokus im Fenster bleibt, wo er ist
+
+    def test_vorholen_ueber_eingabewarteschlange_ohne_taste(self):
+        # Antworten von GetForegroundWindow: Prüfung "schon vorne", Fenster vorne für die Verbindung, nach dem Vorholen
+        ok, gui, user32 = self._focus([7, 7, 42])
+        self.assertTrue(ok)
+        gui.SetForegroundWindow.assert_called_once_with(42)
+        user32.keybd_event.assert_not_called()
+        self.assertEqual([c.args for c in user32.AttachThreadInput.call_args_list], [(22, 11, True), (22, 11, False)])
+
+    def test_nie_alt_selbst_im_notfall(self):
+        ok, gui, user32 = self._focus([7])  # Windows lässt das Fenster nie nach vorne
+        self.assertFalse(ok)
+        tasten = self._tasten(user32)
+        self.assertEqual(tasten, [0x10, 0x10])  # nur Shift (Druck und Loslassen), nie Alt (0x12)
+        self.assertNotIn(0x12, tasten)
+
+    def test_minimiertes_fenster_wird_wiederhergestellt(self):
+        ok, gui, user32 = self._focus([7, 7, 42], iconic=True)
+        gui.ShowWindow.assert_called_once_with(42, 9)
+        self.assertTrue(ok)
+
+    def test_quelltext_hat_kein_alt(self):
+        import inspect
+        quelle = inspect.getsource(host.wc.focus)
+        self.assertNotIn("0x12", quelle)
+        self.assertNotIn("VK_MENU", quelle)
+
+    def test_fenster_fokussieren_meldet_verweigerung_statt_erfolg(self):
+        w = {"hwnd": 5, "titel": "Steuerung", "programm": "steuerung.exe"}
+        audit = []
+        with mock.patch.object(host.wc, "find_window", return_value=w), \
+             mock.patch.object(host.wc, "focus", return_value=False), \
+             mock.patch.object(host, "_audit", side_effect=audit.append):
+            ergebnis = host.fenster_fokussieren("Steuerung")
+        self.assertEqual(ergebnis["status"], "rejected")
+        self.assertNotIn("ist vorne", ergebnis["summary"])
+        self.assertTrue(any(e.get("grund") == "Fokus verweigert" for e in audit))
+
+    def test_fenster_fokussieren_erfolg_nur_bei_nachweis(self):
+        w = {"hwnd": 5, "titel": "Notiz", "programm": "notepad.exe"}
+        with mock.patch.object(host.wc, "find_window", return_value=w), mock.patch.object(host.wc, "focus", return_value=True):
+            self.assertEqual(host.fenster_fokussieren("Notiz")["status"], "success")
+
+    def test_tippen_mit_fenster_bricht_ab_wenn_fokus_verweigert(self):
+        w = {"hwnd": 5, "titel": "Notiz", "programm": "notepad.exe"}
+        with mock.patch.object(host.wc, "find_window", return_value=w), \
+             mock.patch.object(host.wc, "focus", return_value=False), \
+             mock.patch.object(host.wc, "foreground", return_value=dict(w)), \
+             mock.patch.object(host.wc, "type_text") as typed:
+            ergebnis = host.tastatur_tippen("Hallo", fenster="Notiz")
+        typed.assert_not_called()
+        self.assertEqual(ergebnis["status"], "rejected")
+
+    def test_tippen_mit_fenster_bricht_ab_wenn_anderes_fenster_vorne_liegt(self):
+        # focus meldet True, aber vorne liegt ein anderes Fenster: der Text darf dort nicht landen
+        w = {"hwnd": 5, "titel": "Notiz", "programm": "notepad.exe"}
+        with mock.patch.object(host.wc, "find_window", return_value=w), \
+             mock.patch.object(host.wc, "focus", return_value=True), \
+             mock.patch.object(host.wc, "foreground", return_value={"hwnd": 1, "titel": "Bank", "programm": "chrome.exe"}), \
+             mock.patch.object(host.wc, "type_text") as typed:
+            ergebnis = host.tastatur_tippen("Hallo", fenster="Notiz")
+        typed.assert_not_called()
+        self.assertEqual(ergebnis["status"], "rejected")
+
+    def test_tasten_mit_fenster_bricht_ab_wenn_fokus_verweigert(self):
+        w = {"hwnd": 5, "titel": "Notiz", "programm": "notepad.exe"}
+        with mock.patch.object(host.wc, "find_window", return_value=w), \
+             mock.patch.object(host.wc, "focus", return_value=False), \
+             mock.patch.object(host.wc, "foreground", return_value=dict(w)), mock.patch.object(host.wc, "press") as press:
+            self.assertEqual(host.tasten_druecken("tab", fenster="Notiz")["status"], "rejected")
+        press.assert_not_called()
+
+    def test_freigegebenes_senden_prueft_den_fokus(self):
+        # Vor einem freigegebenen Senden muss der Fokus nachweislich im Zielfenster liegen
+        teams = {"hwnd": 42, "titel": "Chat | Microsoft Teams", "programm": "ms-teams.exe"}
+        host.PENDING.clear()
+        with mock.patch.object(host.wc, "foreground", return_value=dict(teams)):
+            anfrage = host.tastatur_tippen("Bin gleich da\n")
+        with mock.patch.object(host, "FREIGABE_SCHLUESSEL", SCHLUESSEL), \
+             mock.patch.object(host.wc, "window_info", return_value=dict(teams)), \
+             mock.patch.object(host.wc, "focus", return_value=False), \
+             mock.patch.object(host.wc, "foreground", return_value=dict(teams)), \
+             mock.patch.object(host.wc, "type_text") as typed:
+            ergebnis = host.entscheiden(anfrage["approval_id"], True, SCHLUESSEL)
+        typed.assert_not_called()
+        self.assertEqual(ergebnis["status"], "error")
+        self.assertIn("nicht nach vorne", ergebnis["summary"])
+
+
+class LesezeitTests(unittest.TestCase):
+    def test_lesen_hat_20_sekunden(self):
+        self.assertEqual(host.READ_TIMEOUT_SECS, 20)
+        with mock.patch.object(host.platform, "system", return_value="Windows"), \
+             mock.patch.object(host.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+            host.powershell_lesen("Get-Date", "Test")
+        self.assertEqual(run.call_args.kwargs["timeout"], 20)
+
+    def test_zeitlimit_meldet_klar_und_heisst_nicht_wiederholen(self):
+        import subprocess
+        with mock.patch.object(host.platform, "system", return_value="Windows"), \
+             mock.patch.object(host.subprocess, "run", side_effect=subprocess.TimeoutExpired("powershell", 20)):
+            ergebnis = host.powershell_lesen("Get-ChildItem ~/Projekte", "Test")
+        self.assertEqual(ergebnis["status"], "error")
+        self.assertTrue(ergebnis["zeitlimit"])
+        self.assertIn("20 s", ergebnis["summary"])
+        self.assertIn("Nicht wiederholen", ergebnis["summary"])
+
+    def test_freigegebene_befehle_behalten_120_sekunden(self):
+        self.assertEqual(host.FREIGABE_TIMEOUT_SECS, 120)
+
+
+class OrdnerAnlegenTests(unittest.TestCase):
+    """ordner_anlegen: feste Wurzeln, Verbotsproben, Audit. Läuft in einem Wegwerf-Benutzerordner."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name).resolve()
+        self.projekte = self.home / "Projekte"
+        wurzeln = tuple(self.home / n for n in ("Projekte", "Documents", "Dokumente", "Desktop", "Downloads"))
+        for p in (mock.patch.object(host, "HOME", self.home), mock.patch.object(host, "PROJEKTE_DIR", self.projekte),
+                  mock.patch.object(host, "ORDNER_WURZELN", wurzeln)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.audit: list[dict] = []
+        p = mock.patch.object(host, "_audit", side_effect=self.audit.append)
+        p.start()
+        self.addCleanup(p.stop)
+        host._rate_zeiten.clear()
+        self.addCleanup(host._rate_zeiten.clear)
+
+    def test_legt_ordner_unter_projekte_an_mit_audit(self):
+        ziel = self.projekte / "radar"
+        ergebnis = host.ordner_anlegen(str(ziel))
+        self.assertEqual(ergebnis["status"], "success", ergebnis)
+        self.assertTrue(ziel.is_dir())
+        eintrag = [e for e in self.audit if e.get("tool") == "ordner_anlegen"][-1]
+        self.assertEqual((eintrag["risk"], eintrag["pfad"]), ("change", str(ziel)))
+
+    def test_projekte_selbst_und_tiefere_ebenen(self):
+        self.assertEqual(host.ordner_anlegen(str(self.projekte))["status"], "success")
+        self.assertEqual(host.ordner_anlegen(str(self.projekte / "a" / "b" / "c"))["status"], "success")
+        self.assertTrue((self.projekte / "a" / "b" / "c").is_dir())
+
+    def test_vorhandener_ordner_ist_kein_fehler(self):
+        (self.projekte / "radar").mkdir(parents=True)
+        ergebnis = host.ordner_anlegen(str(self.projekte / "radar"))
+        self.assertEqual(ergebnis["status"], "success")
+        self.assertIn("gibt es schon", ergebnis["summary"])
+
+    def test_verbotsproben(self):
+        nie = [
+            None, 42, "", "   ", "x" * 500, "Projekte\\radar", "radar", "~/../../Windows", "Projekte/../radar",
+            str(self.home / "AppData" / "Local" / "x"), str(self.home / "AppData"),
+            str(self.projekte / ".versteckt"), str(self.projekte / ".ssh"), str(self.projekte / "x" / ".git2" / ".y"),
+            str(self.home / ".ssh" / "neu"), str(self.home / ".aws"), str(self.projekte / "credentials"),
+            str(self.projekte / "wamo"), str(self.projekte / "wamo" / "neu"),
+            str(self.home / "neu"), str(self.home),
+            str(self.projekte / ".." / "AppData" / "x"), str(self.projekte / ".." / ".ssh" / "x"),
+            "C:\\Windows\\Temp\\x", "C:\\x", "D:\\x", "\\\\server\\share\\x", "//server/share/x",
+            str(self.projekte / "CON"), str(self.projekte / "nul.txt"), str(self.projekte / "LPT1"),
+            str(self.projekte / "ende."), str(self.projekte / "leer " / "x"),str(self.projekte / "a:b"),
+            str(self.projekte / "a<b"), str(self.projekte / "a|b"), str(self.projekte / ("n" * 101)),
+            str(self.projekte / "a\x00b"), str(self.projekte / "a\nb"),
+            str(self.projekte.joinpath(*["t"] * 7)),
+        ]
+        for pfad in nie:
+            with self.subTest(pfad=repr(pfad)[:60]):
+                ergebnis = host.ordner_anlegen(pfad)
+                self.assertEqual(ergebnis["status"], "rejected", ergebnis)
+        self.assertEqual(sorted(p.name for p in self.home.iterdir()), [])  # nichts angelegt
+        abgelehnt = [e for e in self.audit if e.get("tool") == "ordner_anlegen" and e.get("risk") == "rejected"]
+        self.assertEqual(len(abgelehnt), len(nie))
+
+    def test_datei_ist_kein_ordner(self):
+        self.projekte.mkdir()
+        (self.projekte / "datei").write_text("x")
+        self.assertEqual(host.ordner_anlegen(str(self.projekte / "datei"))["status"], "rejected")
+
+    def test_verknuepfung_nach_draussen_wird_nicht_gefolgt(self):
+        import subprocess
+        self.projekte.mkdir()
+        aussen = Path(self._tmp.name).parent / "wamo-ordner-test-aussen"
+        aussen.mkdir(exist_ok=True)
+        self.addCleanup(lambda: aussen.rmdir() if aussen.exists() else None)
+        link = self.projekte / "weg"
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(aussen)], capture_output=True)
+        if r.returncode != 0:
+            self.skipTest("Verzeichnisverknüpfung nicht möglich")
+        self.addCleanup(lambda: subprocess.run(["cmd", "/c", "rmdir", str(link)], capture_output=True))
+        ergebnis = host.ordner_anlegen(str(link / "neu"))
+        self.assertEqual(ergebnis["status"], "rejected")
+        self.assertFalse((aussen / "neu").exists())
+
+    def test_gesperrter_bildschirm_legt_nichts_an(self):
+        with mock.patch.object(host.wc, "is_locked", return_value=True):
+            ergebnis = host.ordner_anlegen(str(self.projekte / "radar"))
+        self.assertEqual(ergebnis["status"], "locked")
+        self.assertFalse(self.projekte.exists())
+
+    def test_rate_grenze(self):
+        for i in range(host.ORDNER_PRO_MINUTE):
+            self.assertEqual(host.ordner_anlegen(str(self.projekte / f"o{i}"))["status"], "success")
+        self.assertEqual(host.ordner_anlegen(str(self.projekte / "zuviel"))["status"], "rejected")
+        self.assertFalse((self.projekte / "zuviel").exists())
+
+    def test_keine_shell_im_spiel(self):
+        with mock.patch.object(host, "_powershell") as ps, mock.patch.object(host.subprocess, "Popen") as popen:
+            host.ordner_anlegen(str(self.projekte / "radar"))
+        ps.assert_not_called()
+        popen.assert_not_called()
+
+    def test_ist_kein_freigabe_werkzeug_und_steht_in_der_toolliste(self):
+        import asyncio
+        namen = {t.name for t in asyncio.run(host.mcp.list_tools())}
+        self.assertIn("ordner_anlegen", namen)
+        host.ordner_anlegen(str(self.projekte / "radar"))
+        self.assertEqual(host.PENDING, {})
+
+    def test_system_info_nennt_feste_pfade(self):
+        info = host.system_info()
+        self.assertEqual(info["status"], "success")
+        self.assertEqual(info["benutzerordner"], str(self.home))
+        self.assertEqual(info["benutzer"], self.home.name)
+        self.assertEqual(info["projekte_ordner"], str(self.projekte))
+        self.assertFalse(info["projekte_ordner_vorhanden"])
+        self.assertEqual(info["rechnername"], host.platform.node())
+        self.assertEqual(info["machine"], host.platform.node())
+        self.assertIn(str(self.projekte), info["ordner_anlegen_unter"])  # Projekte immer, auch wenn noch nicht da
+        self.assertNotIn(str(self.home / "Desktop"), info["ordner_anlegen_unter"])  # gibt es hier nicht
+        host.ordner_anlegen(str(self.projekte / "x"))
+        self.assertTrue(host.system_info()["projekte_ordner_vorhanden"])
+
+
+class SystemeigenschaftenTests(unittest.TestCase):
+    def test_umgebungsvariablen_und_systemeigenschaften(self):
+        for name in ("Systemeigenschaften", "umgebungsvariablen", "Umgebungsvariablen bearbeiten",
+                     "systemeigenschaften   öffnen"):
+            with self.subTest(name=name), mock.patch.object(host.Path, "is_file", return_value=True):
+                self.assertTrue(host.resolve_app(name).lower().endswith("systempropertiesadvanced.exe"))
+
+    def test_zusatzwoerter_gelten_nur_dort(self):
+        for name in ("chrome öffnen", "edge calc", "powershell starten", "notepad bitte", "umgebungsvariablen; calc",
+                     "umgebungsvariablen & calc", "umgebungsvariablen\ncalc", "systemeigenschaften/../x",
+                     "umgebungsvariablenx", "umgebungsvariablen " + "a" * 80):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                host.resolve_app(name)
+
+    def test_nicht_installiert_wird_gemeldet(self):
+        with mock.patch.object(host.Path, "is_file", return_value=False), \
+             mock.patch.object(host.shutil, "which", return_value=None):
+            with self.assertRaises(ValueError):
+                host.resolve_app("umgebungsvariablen")
+
+    def test_claude_code_findet_app_claude(self):
+        apps = [{"Name": "Claude", "AppID": "c"}, {"Name": "Visual Studio Code", "AppID": "v"}]
+        self.assertEqual(host.wc.pick_start_app("Claude Code", apps)["AppID"], "c")
+        self.assertEqual(host.wc.pick_start_app("claude", apps)["AppID"], "c")
+        # eine App mit genau diesem Namen schlägt das Kürzere
+        apps.append({"Name": "Claude Code", "AppID": "cc"})
+        self.assertEqual(host.wc.pick_start_app("Claude Code", apps)["AppID"], "cc")
+
+    def test_wortabgleich_umgeht_die_sperre_fuer_systemwerkzeuge_nicht(self):
+        apps = [{"Name": "Windows PowerShell", "AppID": "ps"}, {"Name": "PowerShell", "AppID": "p"},
+                {"Name": "Dienste", "AppID": "d"}]
+        for anfrage in ("PowerShell ISE", "Windows PowerShell x64", "Dienste verwalten"):
+            with self.subTest(anfrage=anfrage), self.assertRaises(ValueError):
+                host.wc.pick_start_app(anfrage, apps)
+        with self.assertRaises(ValueError):
+            host.wc.pick_start_app("Code Editor", [{"Name": "Kaffee", "AppID": "k"}])
+
+
 if __name__ == "__main__":
     unittest.main()
