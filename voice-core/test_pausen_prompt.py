@@ -106,9 +106,8 @@ class PausenKetteTest(unittest.IsolatedAsyncioTestCase):
 
         m.push_frame = push
         m._turn_reset = mock.AsyncMock()
-        m._incomplete_timeout_handler.__func__  # Methode existiert in Pipecat 1.12
         await UserTurnCompletionLLMServiceMixin._incomplete_timeout_handler(m, IncompleteType.LONG, 0.0)
-        nachrichten = [m for f in gesendet for m in getattr(f, "messages", [])]
+        nachrichten = [n for f in gesendet for n in getattr(f, "messages", [])]
         self.assertEqual(len(nachrichten), 1)
         _, lang = pause_prompts("Max", neu=True)
         self.assertEqual(nachrichten[0]["content"], lang)
