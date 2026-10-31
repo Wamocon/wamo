@@ -60,6 +60,13 @@ MAX_ANTWORT_BYTES = 8 * 1024 * 1024  # Bildschirmfotos als JPEG-Base64 liegen be
 MAX_ANTWORT_BYTES_GERAET = 4 * 1024 * 1024  # Laptops von Mitgliedern sind nicht vertrauenswürdig: kleinere Grenze
 AUFRUFE_JE_MINUTE_GERAET = 120
 OHNE_AUFRUFGRENZE = frozenset({"freigabe_entscheiden", "sperre_pruefen"})  # das Nein des Menschen zählt nie mit
+# Live-Bild (bildstrom.py): eigene Grenzen statt höherer Limits. Diese Werkzeuge zählen NICHT zu den 120 Aufrufen je
+# Minute, haben dafür eine eigene Minutengrenze, eine kurze Zeitgrenze und eine kleine Antwortgrenze (ein Bild ist
+# höchstens etwa 150 KB groß).
+BILD_WERKZEUGE = frozenset({"bild_holen", "live_bild_status", "live_bild_beenden"})
+BILD_AUFRUFE_JE_MINUTE = 200  # Host erlaubt 150 Bilder je Minute, dazu Statusfragen und das Ende
+BILD_TIMEOUT_SECS = 8.0
+MAX_ANTWORT_BYTES_BILD = 256 * 1024
 UEBERWACHUNG_SECS = 10.0
 UEBERWACHUNG_GETRENNT_SECS = 5.0
 NACHPRUEFEN_SECS = 1.0
@@ -202,6 +209,7 @@ class TunnelHost:
         self._max_antwort = max_antwort_bytes or MAX_ANTWORT_BYTES
         self._aufrufe_je_minute = aufrufe_je_minute
         self._aufrufe: deque[float] = deque()
+        self._bild_aufrufe: deque[float] = deque()
         # Accept-Encoding identity: ein Laptop darf keine komprimierte Antwort schicken, die sich beim Entpacken über die
         # Grenze aufbläht (die Grenze gilt für die Rohbytes, siehe _lies_begrenzt)
         kopf = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json",
@@ -231,7 +239,7 @@ class TunnelHost:
             self.erreichbar = ok
             self._wechsel.set()
 
-    async def _rpc(self, method: str, params: dict, timeout: float | None = None) -> dict:
+    async def _rpc(self, method: str, params: dict, timeout: float | None = None, max_antwort: int | None = None) -> dict:
         """Ein JSON-RPC-Aufruf. Gesamtzeit höchstens timeout (auch bei tröpfelnder Antwort), Antwort höchstens
         max_antwort_bytes, beim Lesen gezählt (nie erst komplett puffern). Nach einem 401 wird das Token einmal neu
         gelesen (nachladen) und die Anfrage wiederholt."""
@@ -250,7 +258,7 @@ class TunnelHost:
                         status = response.status_code
                         typ = response.headers.get("content-type", "")
                         if status == 200:
-                            daten = await _lies_begrenzt(response, self._max_antwort)
+                            daten = await _lies_begrenzt(response, min(self._max_antwort, max_antwort or self._max_antwort))
             except (httpx.TransportError, OSError, TimeoutError) as e:  # Socket fehlt, abgelehnt, abgerissen, zu langsam
                 self._melde(False)
                 if isinstance(e.__cause__, GegenstelleFalsch):
@@ -330,10 +338,14 @@ class TunnelHost:
 
     async def call_text(self, name: str, arguments: dict) -> str:
         """Ruft ein Werkzeug auf (auch bildschirmfoto und maus_klicken für screen.py) und liefert den Text."""
-        if name not in OHNE_AUFRUFGRENZE:
+        bild = name in BILD_WERKZEUGE
+        if bild:
+            self._bild_aufrufe_pruefen()
+        elif name not in OHNE_AUFRUFGRENZE:
             self._aufrufe_pruefen()
         result = await self._rpc("tools/call", {"name": name, "arguments": arguments},
-                                 timeout=LANGE_WERKZEUGE.get(name, CALL_TIMEOUT_SECS))
+                                 timeout=BILD_TIMEOUT_SECS if bild else LANGE_WERKZEUGE.get(name, CALL_TIMEOUT_SECS),
+                                 max_antwort=MAX_ANTWORT_BYTES_BILD if bild else None)
         texts = [c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict) and c.get("type") == "text"]
         text = "".join(t for t in texts if isinstance(t, str))
         return text or json.dumps({"status": "error", "summary": "Leere Antwort vom PC."}, ensure_ascii=False)
@@ -355,6 +367,15 @@ class TunnelHost:
         if len(self._aufrufe) >= self._aufrufe_je_minute:
             raise PcZuvieleAufrufe("Zu viele Aufrufe")
         self._aufrufe.append(jetzt)
+
+    def _bild_aufrufe_pruefen(self) -> None:
+        """Eigene Minutengrenze für das Live-Bild (BILD_AUFRUFE_JE_MINUTE), unabhängig von den übrigen Werkzeugen."""
+        jetzt = time.monotonic()
+        while self._bild_aufrufe and jetzt - self._bild_aufrufe[0] > 60.0:
+            self._bild_aufrufe.popleft()
+        if len(self._bild_aufrufe) >= BILD_AUFRUFE_JE_MINUTE:
+            raise PcZuvieleAufrufe("Zu viele Bildabrufe")
+        self._bild_aufrufe.append(jetzt)
 
     # ---------- Überwachung ----------
     async def ueberwache(

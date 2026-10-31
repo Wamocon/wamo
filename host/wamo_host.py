@@ -47,6 +47,7 @@ from urllib.parse import urlsplit
 
 from mcp.server.fastmcp import FastMCP
 
+import live_bild
 import uia_control
 import windows_control as wc
 
@@ -112,6 +113,7 @@ BLOCKED_PATTERNS = [
     r"Set-MpPreference.*Disable", r"\bbcdedit\b", r"\bcipher\s+/w\b", r"ConvertTo-SecureString",
     r"\bnet\s+user\b", r"Get-Credential", r"\bvssadmin\b", r"\bwbadmin\b",
     r"(password|passwort|kennwort)",
+    r"live-bild",  # der Schalter des Live-Bilds gehört der Person am Laptop (live_bild.py): kein Befehl berührt ihn
 ]
 
 PENDING: dict[str, dict] = {}
@@ -944,6 +946,103 @@ def bildschirmfoto(monitor: int = 0) -> dict:
     return {"status": "success", **shot}
 
 
+# ---------- Live-Bild (live_bild.py: der Host entscheidet bei jedem Bild selbst) ----------
+LIVE = live_bild.Live(None, None)  # --http setzt sie mit geraet.json; ohne diese Datei (stdio) gibt es kein Live-Bild
+_letzter_bild_grund: str | None = None
+BILD_AUDIT_JE = 100  # nur jedes hundertste Bild landet als Zähler im Audit (nie ein Bildinhalt)
+
+
+def _freigabe_offen() -> bool:
+    with _PENDING_LOCK:
+        _aufraeumen()
+        return bool(PENDING) or _laufend > 0
+
+
+def _bild_nein(status: str, grund: str, summary: str, **extra) -> dict:
+    """Kein Bild. Wechsel des Grundes landen im Audit (nicht jede Wiederholung)."""
+    global _letzter_bild_grund
+    if grund != _letzter_bild_grund:
+        _letzter_bild_grund = grund
+        _audit({"tool": "bild_holen", "risk": "rejected", "grund": grund})
+    return {"status": status, "grund": grund, "summary": summary, **extra}
+
+
+@mcp.tool()
+def live_bild_status() -> dict:
+    """Nur für den Voice-Core (nie für das Gesprächsmodell): darf am Laptop gerade ein Live-Bild entstehen? Ohne Bild."""
+    s = LIVE.schalter()
+    antwort = {"status": "success", "bereit": s["bereit"], "grund": s["grund"], "rest_s": s["rest_s"],
+               "summary": live_bild.GRUENDE.get(s["grund"] or "", "Das Live-Bild ist am Laptop eingeschaltet.")}
+    if s["bereit"]:
+        try:
+            antwort["monitore"] = wc.monitor_anzahl()
+        except Exception:  # noqa: BLE001 (nur eine Anzeige)
+            antwort["monitore"] = 1
+    return antwort
+
+
+def _bild_geschuetzt() -> bool:
+    """Vorne ein Passwort-, Anmelde- oder Adminfenster, oder irgendwo ein Passwortmanager sichtbar? Dann kein Bild."""
+    try:
+        ziel = wc.foreground()
+        wc.check_target(ziel["programm"], ziel["titel"])
+    except ValueError:
+        return True
+    return wc.verborgene_fenster_offen()
+
+
+@mcp.tool()
+async def bild_holen(zuschauer: str, monitor: int = 1) -> dict:
+    """Nur für den Voice-Core (nie für das Gesprächsmodell): ein Einzelbild des Laptops als JPEG für das Live-Bild (read).
+    Nur bei eingeschaltetem Schalter am Laptop, nie bei Sperre, offener Freigabe, Vollbild oder Passwortfenster."""
+    global _letzter_bild_grund
+    if locked := _gesperrt("bild_holen"):
+        return locked
+    schalter = LIVE.schalter()
+    if not schalter["bereit"]:
+        return _bild_nein("aus", schalter["grund"], live_bild.GRUENDE[schalter["grund"]])
+    if wc.hinweisfenster_zahl() < max(1, wc.monitor_anzahl()):
+        # Unabhängig von der Schalterdatei: Ohne den roten Rahmen auf jedem Monitor gibt es kein Bild
+        return _bild_nein("aus", "hinweis_fehlt", live_bild.GRUENDE["hinweis_fehlt"])
+    if _freigabe_offen():
+        return _bild_nein("pausiert", "freigabe", "Eine Freigabe ist offen: Das Bild ruht, bis sie entschieden ist.")
+    if _bild_geschuetzt():
+        return _bild_nein("pausiert", "geschuetzt", "Ein geschütztes Fenster ist offen (Passwort oder Anmeldung): Das Bild ruht.")
+    if wc.foreground_vollbild():
+        return _bild_nein("pausiert", "vollbild", "Ein Programm läuft im Vollbild: Das Bild ruht.")
+    if not (isinstance(monitor, int) and not isinstance(monitor, bool) and 1 <= monitor <= 16):
+        return _bild_nein("rejected", "monitor", "Monitor: eine Zahl von 1 bis 16.")
+    if not LIVE.zuschauer(zuschauer):
+        return _bild_nein("belegt", "zuschauer", "Dieser Laptop wird schon von einer anderen Ansicht gezeigt.")
+    warte = LIVE.takt()
+    if warte > 0:
+        return {"status": "langsamer", "grund": "takt", "warte_ms": int(warte * 1000) + 1,
+                "summary": "Zu schnell abgerufen."}
+    try:
+        bild = await asyncio.to_thread(wc.screenshot_live, monitor, live_bild.BILD_KANTE_MAX, live_bild.BILD_BYTES_MAX)
+    except ValueError as e:
+        return _bild_nein("rejected", "bild", str(e))
+    except Exception as e:  # noqa: BLE001 (Aufnahme gescheitert: kein Bild, der Host läuft weiter)
+        return _bild_nein("error", "aufnahme", f"Aufnahme nicht möglich ({type(e).__name__}).")
+    # Zwischen Prüfung und Aufnahme kann sich etwas geändert haben (Sperre, Schalter, Freigabe, Fenster): dann das Bild verwerfen
+    if _ist_gesperrt() or not LIVE.schalter()["bereit"] or _freigabe_offen() or _bild_geschuetzt():
+        del bild
+        return _bild_nein("pausiert", "geschuetzt", "Während der Aufnahme änderte sich etwas: Das Bild wurde verworfen.")
+    n = LIVE.bilder_im_lauf
+    if n == 1 or n % BILD_AUDIT_JE == 0 or _letzter_bild_grund is not None:
+        _letzter_bild_grund = None
+        _audit({"tool": "bild_holen", "risk": "read", "monitor": bild["monitor"], "bytes": bild["bytes"], "bilder": n})
+    return {"status": "success", "rest_s": schalter["rest_s"], **bild}
+
+
+@mcp.tool()
+def live_bild_beenden(zuschauer: str) -> dict:
+    """Nur für den Voice-Core: der Zuschauer hört auf, der Platz wird frei."""
+    LIVE.beenden(zuschauer)
+    _audit({"tool": "live_bild_beenden", "risk": "read"})
+    return {"status": "success", "summary": "Live-Bild beendet."}
+
+
 def _check_point(x: int, y: int) -> dict:
     left, top, right, bottom = wc.screen_bounds()
     if not (left <= x < right and top <= y < bottom):
@@ -1715,12 +1814,15 @@ if __name__ == "__main__":
         import host_http
 
         KANAL = "http"
+        _geraet_datei = (os.getenv("WAMO_HOST_GERAET_DATEI") or "").strip() or None
+        if _geraet_datei:
+            LIVE = live_bild.Live(live_bild.datei_neben(_geraet_datei), host_http.GeraetBindung(_geraet_datei))
         if log_datei := (os.getenv("WAMO_HOST_LOG") or "").strip():
             # Ohne Konsole (geplante Aufgabe): Meldungen von uvicorn in eine Datei; nie Token oder Header
             sys.stdout = sys.stderr = open(log_datei, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
         try:
             host_http.starte(mcp, BIND_HOST, BIND_PORT, os.getenv("WAMO_HOST_TOKEN_FILE"), audit=_audit,
-                             geraet_datei=(os.getenv("WAMO_HOST_GERAET_DATEI") or "").strip() or None)
+                             geraet_datei=_geraet_datei)
         except (host_http.TokenFehler, ValueError) as e:
             sys.exit(f"WAMO-Host startet nicht: {e}")
     else:

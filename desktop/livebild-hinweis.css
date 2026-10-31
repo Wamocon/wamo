@@ -1,0 +1,16 @@
+/* Hinweis am Laptop, solange das Live-Bild läuft: roter Rahmen um den ganzen Monitor und eine Plakette oben in der Mitte.
+   Bewusst NICHT vor Bildschirmfotos geschützt: Der Hinweis ist in jedem Bild zu sehen. WMC-Rot, Weiß, Schwarz; nie anklickbar. */
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+#rahmen {
+  position: fixed; inset: 0; box-sizing: border-box; pointer-events: none;
+  border: 6px solid #F40E0E;
+  box-shadow: inset 0 0 0 2px #ffffff;
+}
+#schild {
+  position: fixed; top: 6px; left: 50%; transform: translateX(-50%); margin: 0; padding: 8px 18px;
+  display: flex; align-items: center; gap: 10px; white-space: nowrap; pointer-events: none;
+  background: #000000; color: #ffffff; border: 2px solid #F40E0E; border-top: 0; border-radius: 0 0 10px 10px;
+  font: 700 18px/1.2 "Arial Narrow", "Liberation Sans Narrow", Arial, sans-serif; letter-spacing: 0.02em;
+}
+.punkt { width: 12px; height: 12px; border-radius: 50%; background: #F40E0E; box-shadow: 0 0 0 2px #ffffff; }
+#rest { color: #D9D9D9; font-variant-numeric: tabular-nums; }

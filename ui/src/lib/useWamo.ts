@@ -6,6 +6,7 @@ import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
 import { pcAutoLesen } from "@/lib/einstellungen";
 import type { GeraetBruecke } from "@/lib/geraet";
+import { bildAnzeigen, liveBildLoeschen } from "@/lib/liveBild";
 import { parseServerMessage, type Auftrag, type Markierung, type ModellModus } from "@/lib/nachrichten";
 import type { SchluesselArt } from "@/lib/schluesselhilfe";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
@@ -50,6 +51,7 @@ import {
 } from "@/lib/weicherStopp";
 import {
   HISTORY,
+  LIVE_BILD_AUS,
   applyServerMessage,
   beginneNutzerZug,
   entferneAblauf,
@@ -114,6 +116,9 @@ export type WamoAktionen = {
   entscheideAuftrag: (a: Auftrag, ja: boolean) => boolean;
   /** PC-Steuerung dieser Sitzung an- oder ausschalten (nur admin); true, wenn gesendet */
   pcSteuerung: (an: boolean) => boolean;
+  /** Live-Bild des eigenen Laptops (nur admin, voice-core/bildstrom.py): Ansicht öffnen, schließen, Monitor wählen;
+   *  true, wenn gesendet. Optional, damit die Vorschau ohne Kern auskommt. */
+  liveBild?: LiveBildAktionen;
   /** Text an WAMO schicken wie eine gesprochene Bitte (nur mit Verbindung, höchstens eine Sendung zugleich, Schlüssel
    *  werden vorher entfernt); true, wenn die Eingabe angenommen wurde (das Feld wird geleert). Optional, damit die
    *  Vorschau ohne Kern auskommt. Ersetzt nie eine Freigabe: die gibt nur der Klick auf die Karte (decide). */
@@ -127,6 +132,12 @@ export type WamoAktionen = {
   /** Modellzugang des Profils abfragen, eigenen Claude-Schlüssel hinterlegen oder löschen; true, wenn gesendet.
    *  Optional, damit die Vorschau ohne Kern auskommt. */
   modellzugang?: (anfrage: ModellzugangAnfrage) => boolean;
+};
+
+export type LiveBildAktionen = {
+  an: (monitor: number) => boolean;
+  aus: () => boolean;
+  monitor: (monitor: number) => boolean;
 };
 
 /** Der Schlüssel geht nur in dieser einen Nachricht an den eigenen Kern und wird im Browser nicht gespeichert.
@@ -145,6 +156,7 @@ type ClientMessage =
   | { type: "vergessen"; data: { id: string } }
   | { type: "auftrag_start"; data: { job: string; entscheidung: "ja" | "nein" } }
   | { type: "pc_steuerung"; data: { an: boolean } }
+  | { type: "bildstrom"; data: { aktion: "an" | "aus" | "monitor" | "ack"; monitor?: number; seq?: number } }
   | { type: "modellzugang"; data: ModellzugangAnfrage }
   | { type: "kontingent"; data: Record<string, never> };
 
@@ -392,6 +404,7 @@ export function useWamo(): WamoAktionen {
     lv.cut = false;
     const vomKern = kernEnde.current;
     kernEnde.current = null;
+    liveBildLoeschen(); // kein Bild bleibt nach dem Gespräch stehen
     if (grund === "unmount") return;
     wamo.set((s) => {
       const verfallen = s.approvals.length > 0 || s.auftraege.length > 0;
@@ -415,6 +428,7 @@ export function useWamo(): WamoAktionen {
         ...s,
         presence: "offline",
         betrieb: null, // Betriebsdaten gelten nur für eine laufende Verbindung
+        liveBild: LIVE_BILD_AUS,
         modellzugang: null, // wird beim nächsten Verbinden neu abgefragt
         approvals: [],
         auftraege: [],
@@ -836,6 +850,35 @@ export function useWamo(): WamoAktionen {
               } else if (msg.zustand === "ok" && !stille.current.gemeldet && st.error?.art === "mikrofon") {
                 setFehler(null);
               }
+            } else if (msg.type === "bild") {
+              // Nur zeichnen, wenn die Person die Ansicht geöffnet hat; erst nach dem Zeichnen bestätigen (Rückstau im Kern)
+              const st = wamo.get();
+              if (st.liveBild.geoeffnet && st.liveBild.zustand !== "aus") {
+                const seq = msg.seq;
+                void bildAnzeigen(msg.jpeg).then((gezeichnet) => {
+                  if (!gezeichnet) return;
+                  const ende = Date.now() + msg.restS * 1000;
+                  wamo.set((x) => {
+                    const l = x.liveBild;
+                    if (!l.geoeffnet || (l.zustand !== "wartet" && l.zustand !== "laeuft")) {
+                      liveBildLoeschen(); // ein spätes Bild nach Pause, Sperre oder Ende bleibt nie stehen
+                      return x;
+                    }
+                    if (l.zustand === "laeuft" && l.monitore === msg.monitore && l.monitor === msg.monitor && Math.abs((l.endeMs ?? 0) - ende) < 3000) {
+                      return x; // kein Render je Bild, wenn sich nichts Sichtbares ändert
+                    }
+                    return { ...x, liveBild: { ...l, zustand: "laeuft", monitor: msg.monitor, monitore: msg.monitore, endeMs: ende } };
+                  });
+                  const c = clientRef.current;
+                  if (c) {
+                    try {
+                      senden(c, { type: "bildstrom", data: { aktion: "ack", seq } });
+                    } catch {
+                      /* Verbindung weg: der Kern beendet die Ansicht selbst */
+                    }
+                  }
+                });
+              }
             } else if (msg.type === "markierung") {
               // Gesperrter Bildschirm oder offene Freigabe: kein Rahmen. Der Rest (Gerätekennung, Vollbild, Rand aus) prüft die App.
               const st = wamo.get();
@@ -978,6 +1021,39 @@ export function useWamo(): WamoAktionen {
       ansage: ja ? `Auftrag gestartet: ${a.art || a.projekt}` : `Auftrag verworfen: ${a.art || a.projekt}`,
     }));
     return true;
+  }, []);
+
+  // Live-Bild: nur senden; den Zustand meldet der Kern (Nachricht bildstrom), Bilder zeichnet lib/liveBild.ts
+  const liveBild = useMemo<LiveBildAktionen>(() => {
+    const sende = (data: { aktion: "an" | "aus" | "monitor"; monitor?: number }) => {
+      const client = clientRef.current;
+      const s = wamo.get();
+      if (!client || !istOnline(s) || s.profil?.rolle !== "admin") return false;
+      try {
+        senden(client, { type: "bildstrom", data });
+        return true;
+      } catch {
+        setFehler({ art: "sonst", text: "Das Live-Bild konnte nicht umgeschaltet werden." });
+        return false;
+      }
+    };
+    return {
+      an: (monitor) => {
+        wamo.set((s) => ({ ...s, liveBild: { ...s.liveBild, geoeffnet: true, zustand: "wartet", monitor } }));
+        if (sende({ aktion: "an", monitor })) return true;
+        wamo.set((s) => ({ ...s, liveBild: LIVE_BILD_AUS }));
+        return false;
+      },
+      aus: () => {
+        liveBildLoeschen();
+        wamo.set((s) => ({ ...s, liveBild: { ...LIVE_BILD_AUS, monitor: s.liveBild.monitor } }));
+        return sende({ aktion: "aus" });
+      },
+      monitor: (monitor) => {
+        wamo.set((s) => ({ ...s, liveBild: { ...s.liveBild, monitor } }));
+        return sende({ aktion: "monitor", monitor });
+      },
+    };
   }, []);
 
   // PC-Steuerung: nur senden; den Zustand meldet der Kern im Feld betrieb.pc_steuerung zurück
@@ -1196,6 +1272,7 @@ export function useWamo(): WamoAktionen {
       mikrofone,
       mikrofonWaehlen,
       modellzugang,
+      liveBild,
       textSenden,
     }),
     [
@@ -1210,6 +1287,7 @@ export function useWamo(): WamoAktionen {
       mikrofone,
       mikrofonWaehlen,
       modellzugang,
+      liveBild,
       textSenden,
     ],
   );

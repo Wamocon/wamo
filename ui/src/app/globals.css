@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
 @import "../components/einstellungen/einstellungen.css"; /* Einstellungsseite: Regeln unter .ez */
+@import "../components/liveBild.css"; /* Live-Bild des Laptops: Regeln mit Präfix .lb- */
 @import "../components/modellzugang.css"; /* Karte Modellzugang: Regeln mit Präfix .mz- */
 
 /* =====================================================================

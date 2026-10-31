@@ -20,6 +20,7 @@ Nachrichten an die Oberfläche (RTVI-Servernachrichten, zusätzlich zu canvas, a
   {"type": "profil", "name", "rolle"}                              beim Verbinden
   {"type": "betrieb", "modus", "ort", "modelle", "pc", "pc_latenz_ms"?}
                                                                    beim Verbinden und wenn der PC-Host steht
+  {"type": "bildstrom", ...} und {"type": "bild", ...}             Live-Bild des eigenen Laptops (bildstrom.py)
   {"type": "gemerkt", "bereich", "status", "text", "id"}           nach jedem gespeicherten Gedächtniseintrag
   {"type": "mikrofon", "zustand": "still"|"fehlt"|"ok", "sekunden"}
                                                                    10 s nur digitale Stille vom Mikrofon, "fehlt": 5 s gar
@@ -29,6 +30,8 @@ Nachrichten von der Oberfläche:
   {"type": "freigabe", "data": {"job": "pc", "id", "entscheidung"}}
                                           Freigabe einer kritischen PC-Aktion (pc_freigaben.py; nur admin, PC-Steuerung
                                           an, Sitzung hält die PC-Sperre), geprüft vor den Entwicklungsaufträgen
+  {"type": "bildstrom", "data": {"aktion", ...}}
+                                          Live-Bild des eigenen Laptops (bildstrom.py; nur admin mit gebundenem Gerät)
   {"type": "freigabe", "data": {...}}     sonst Freigabe für Entwicklungsaufträge (nur admin)
 Live-Untertitel: Pipecat sendet bot-output (mit Wortfortschritt aus den Soniox-Zeitstempeln) und
 user-transcription von selbst; RTVIObserverParams bleiben dafür auf dem Standard (eingeschaltet).
@@ -120,6 +123,7 @@ from pc_host import (
     register_modus,
     sperre_aus_ergebnis,
 )
+from bildstrom import NICHT_ERLAUBT as BILD_NICHT_ERLAUBT, Bildstrom
 from pc_freigaben import PcFreigaben
 from persona import build_system_prompt
 from screen import PC_OFF, foto as screen_foto, register_screen_tools
@@ -145,6 +149,8 @@ load_dotenv(override=True)
 def _configure_logging() -> None:
     """Standard INFO (WAMO_LOG_LEVEL): INFO enthält keine Gesprächsinhalte, die stehen nur in DEBUG."""
     level = (os.getenv("WAMO_LOG_LEVEL") or "INFO").strip().upper()
+    if level == "TRACE":  # TRACE schriebe ganze Frames (auch Bilder des Live-Bilds) ins Log: höchstens DEBUG
+        level = "DEBUG"
     logger.remove()
     # diagnose=False: loguru schriebe sonst bei Ausnahmen die Werte lokaler Variablen (Tokens, Schlüssel) ins Log
     try:
@@ -742,12 +748,27 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                                    modell_modus=modus_wirksam(zugang), modell_quelle=zugang.quelle,
                                    modell_hinweis=llm_wahl.grund))
 
+    async def ansage(text: str) -> None:
+        """Kurze Meldung im Gespräch (Live-Bild an oder aus): wird gesprochen, das Modell erfährt es ohne zu antworten."""
+        if state["live"]:
+            await task.queue_frames([TTSSpeakFrame(text),
+                                     LLMMessagesAppendFrame(messages=[{"role": "user", "content": f"Systemhinweis: {text}"}],
+                                                            run_llm=False)])
+
+    # Live-Bild des eigenen Laptops: nur Admin mit gebundenem Gerät (Tunnel je Gerät), PC-Steuerung an, Sperre gehalten
+    bild = Bildstrom(
+        client=lambda: pc_client, darf=lambda: bool(is_admin and geraet_zugang is not None and pc_allowed()),
+        senden=send, ansage=ansage, aufruf=call_host_tool,
+    ) if (pc_client is not None and is_admin and geraet_zugang is not None) else None
+
     async def set_sperre(gesperrt: bool) -> None:
         """Bildschirm am PC gesperrt oder entsperrt (Werkzeugergebnis, Tunnel-Probe, system_info)."""
         if gesperrt == state["pc_gesperrt"]:
             return
         state["pc_gesperrt"] = gesperrt
         logger.info("PC-Bildschirm {}", "gesperrt" if gesperrt else "entsperrt")
+        if gesperrt and bild is not None:
+            await bild.stoppen("Der Bildschirm am Laptop ist gesperrt. Das Live-Bild ist beendet.")
         # Lokal (stdio) gibt es keine Tunnel-Probe: solange gesperrt, regelmäßig nachfragen, damit die Anzeige
         # nach dem Entsperren nicht stehen bleibt
         probe = state["sperr_probe"]
@@ -854,6 +875,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         state["pc_steuerung"] = False
         sitzung.pc_lease_freigeben()
         state["pc_tools"] = False
+        if bild is not None:
+            await bild.stoppen("Dein Laptop wurde gesperrt oder die Freigabe wurde widerrufen. Das Live-Bild ist beendet.")
         wachter = state["pc_waechter"]
         if wachter is not None and wachter is not asyncio.current_task():
             wachter.cancel()
@@ -925,8 +948,16 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 an = False
                 sitzung.pc_lease_freigeben()
             state["pc_steuerung"] = an
+            if not an and bild is not None:
+                await bild.stoppen("Die PC-Steuerung ist aus. Das Live-Bild ist beendet.")
             logger.info("PC-Steuerung {}{}", "an" if an else "aus", " (andere Sitzung steuert)" if state["pc_belegt"] else "")
             await send_betrieb()
+        elif msg.type == "bildstrom":
+            # Live-Bild: ohne Admin, gebundenes Gerät und PC-Steuerung gibt es nichts (Bilder sendet nur bildstrom.py)
+            if bild is None:
+                await send({"type": "bildstrom", "zustand": "aus", "grund": "nicht_erlaubt", "text": BILD_NICHT_ERLAUBT})
+            else:
+                await bild.nachricht(data)
         elif msg.type == "freigabe" and data.get("job") == "pc":
             # PC-Freigabe vor den Entwicklungsaufträgen. Ohne PC-Werkzeuge (z. B. Mitglied) gibt es keine.
             if freigaben is None:
@@ -1037,6 +1068,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         """Eine neue Sitzung desselben Profils hat übernommen (sitzungen.py). Die PC-Sperre ist schon weg; hier nur
         melden. Getrennt wird von außen; endet die Verbindung nicht von selbst, räumt der Rückfall unten auf."""
         state["pc_steuerung"] = False
+        if bild is not None:
+            await bild.stoppen(grund, melden=False)
         logger.info("Sitzung abgelöst: {}", grund)
         with contextlib.suppress(Exception):
             await send({"type": "sitzung_beendet", "grund": grund})
@@ -1067,6 +1100,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 hintergrund.cancel()
         state["pc_steuerung"] = False
         sitzung.pc_lease_freigeben()
+        if bild is not None:  # Trennen, Abmelden, Pipeline-Ende: das Live-Bild endet mit der Sitzung (Platz im Host frei)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(bild.stoppen("Die Sitzung ist beendet.", melden=False), CLEANUP_DB_TIMEOUT_SECS)
         if cancel_task:
             with contextlib.suppress(Exception):
                 await task.cancel()
