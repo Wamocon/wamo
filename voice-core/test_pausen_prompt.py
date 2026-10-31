@@ -5,6 +5,7 @@ Stille bekommt genau eine konkrete Frage. Die Kette darf nicht endlos laufen: de
 """
 
 import asyncio
+import os
 import re
 import unittest
 from unittest import mock
@@ -26,16 +27,21 @@ class _Modell(UserTurnCompletionLLMServiceMixin, FrameProcessor):
 
 
 class PausenPromptTest(unittest.TestCase):
-    def test_standard_ist_aus_und_liefert_die_alten_texte(self):
-        self.assertFalse(pausen_prompt_an(""))
+    def test_standard_ist_an_und_aus_liefert_die_alten_texte(self):
+        # Standard an seit der Messung vom 31.10.2026 (env_schalter.STANDARDWERTE); aus bleibt der Notaus
+        self.assertTrue(pausen_prompt_an(""))
         kurz, lang = pause_prompts("Max", neu=False)
         self.assertIn("Beispiel: ● Bin noch da, sag einfach Bescheid.", lang)
         self.assertIn("Nie ◐ oder ○", kurz)
-        self.assertEqual(pause_prompts("Max"), (kurz, lang), "ohne gesetzte Umgebungsvariable gilt aus")
+        with mock.patch.dict(os.environ, {"WAMO_PAUSEN_PROMPT": ""}):
+            self.assertEqual(pause_prompts("Max"), pause_prompts("Max", neu=True), "ohne Umgebungsvariable gilt an")
+        with mock.patch.dict(os.environ, {"WAMO_PAUSEN_PROMPT": "aus"}):
+            self.assertEqual(pause_prompts("Max"), (kurz, lang))
 
     def test_schalter(self):
         self.assertTrue(pausen_prompt_an("an"))
-        self.assertFalse(pausen_prompt_an("aus"))
+        for wert in ("aus", "0", "nein"):
+            self.assertFalse(pausen_prompt_an(wert), wert)
 
     def test_neu_ohne_floskeln_und_ohne_beispielsatz(self):
         kurz, lang = pause_prompts("Max", neu=True)
