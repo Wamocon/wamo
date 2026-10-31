@@ -43,10 +43,16 @@ SCHEMAS = [
     FunctionSchema(
         name="bildschirm_ansehen",
         description=(
-            "Schaut auf den Bildschirm (Monitor mit dem Fenster vorne) und beantwortet eine Frage dazu, "
-            "z. B. 'Was ist gerade offen?', 'Was steht in der letzten Nachricht?'. Dauert 2 bis 4 s."
+            "Schaut per Bildmodell auf den Bildschirm und beantwortet eine Frage dazu, z. B. 'Was ist gerade offen?', "
+            "'Was steht in der letzten Nachricht?'. Dauert 2 bis 4 s und ist ungenauer als Text: Was in einem Browser "
+            "steht, liest browser_lesen (Titel, Adresse, Tabs, Seitentext), Elemente eines Programms listet "
+            "elemente_auflisten. Dieses Werkzeug nur, wenn Text nicht reicht (Bilder, Diagramme, Layout, Programme ohne "
+            "UI-Elemente). Ohne fenster gilt der Monitor mit dem Fenster vorne, bei mehreren Monitoren oft nicht der "
+            "Browser: mit fenster (Teil des Titels oder Programmname, Monitor steht in fenster_auflisten und "
+            "browser_lesen) wird nur dieses Fenster angesehen, auch wenn es nicht vorne liegt."
         ),
-        properties={"frage": {"type": "string"}},
+        properties={"frage": {"type": "string"},
+                    "fenster": {"type": "string", "description": "Teil des Fenstertitels oder Programmname, leer = Monitor vorne"}},
         required=["frage"],
     ),
     FunctionSchema(
@@ -69,11 +75,18 @@ class BildschirmGesperrt(RuntimeError):
     """Der Host meldet status=locked: der Bildschirm am PC ist gesperrt."""
 
 
-async def _shot(pc_client) -> dict:
-    raw = await call_host_tool(pc_client, "bildschirmfoto", {"monitor": 0})
+class FotoAbgelehnt(RuntimeError):
+    """Der Host lehnt das Foto ab (zum Beispiel: Fenster nicht gefunden oder minimiert). Der Text kommt vom Host."""
+
+
+async def _shot(pc_client, fenster: str = "") -> dict:
+    """Foto vom Host: der Monitor mit dem Fenster vorne oder, mit fenster, nur dieses Fenster (kein falscher Monitor)."""
+    raw = await call_host_tool(pc_client, "bildschirmfoto", {"monitor": 0, **({"fenster": fenster} if fenster else {})})
     shot = json.loads(raw)
     if shot.get("status") == "locked":
         raise BildschirmGesperrt(str(shot.get("summary") or "Der Bildschirm ist gesperrt."))
+    if shot.get("status") == "rejected":
+        raise FotoAbgelehnt(str(shot.get("summary") or "Das Foto ist nicht erlaubt.")[:200])
     if shot.get("status") != "success":
         raise RuntimeError(shot.get("summary", "Bildschirmfoto fehlgeschlagen"))
     return shot
@@ -84,8 +97,8 @@ async def foto(pc_client) -> Bild:
     return Bild((await _shot(pc_client))["jpeg_base64"])
 
 
-async def describe(pc_client, frage: str, zugang: Zugang) -> str:
-    shot = await _shot(pc_client)
+async def describe(pc_client, frage: str, zugang: Zugang, fenster: str = "") -> str:
+    shot = await (_shot(pc_client, fenster) if fenster else _shot(pc_client))
     antwort = await anfrage(
         "vision",
         zugang=zugang,
@@ -206,10 +219,14 @@ def register_screen_tools(
             await params.result_callback({"antwort": "Kein Zugriff auf den PC."})
             return
         try:
-            antwort = await describe(client, str(params.arguments.get("frage", "Was ist zu sehen?"))[:500], zugang)
+            antwort = await describe(client, str(params.arguments.get("frage", "Was ist zu sehen?"))[:500], zugang,
+                                     str(params.arguments.get("fenster") or "").strip()[:100])
             on_foreign_content()
         except BildschirmGesperrt:
             await params.result_callback({"status": "locked", "antwort": GESPERRT_TEXT})
+            return
+        except FotoAbgelehnt as e:
+            await params.result_callback({"status": "rejected", "antwort": str(e)})
             return
         except Exception as e:  # Bildschirm ist optional; das Gespräch läuft weiter
             logger.warning("bildschirm_ansehen: {}", type(e).__name__)
