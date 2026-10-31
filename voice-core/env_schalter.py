@@ -7,6 +7,7 @@ Lernen ohne Momentaufnahmen ist an, weil es nicht im Sprachpfad liegt):
   WAMO_TTS_SATZLEERZEICHEN     Leerzeichen am Ende jedes Satzes, damit Soniox das Satzzeichen nicht vorliest (soniox_tts.py)
   WAMO_PERSONA_RUECKFRAGEN     Persona: Rückfragen begrenzen, Aufträge am Stück (persona.py)
   WAMO_PERSONA_PC_ORDNER       Persona: Ordner des PCs nie raten, per system_info erfragen (persona.py)
+  WAMO_PERSONA_BROWSER         Persona: Browserinhalte zuerst mit browser_lesen lesen, Foto nur wenn Text nicht reicht (Standard an)
   WAMO_PAUSEN_PROMPT           Texte nach einer Pause ohne "Ich bin noch da" (bot.py, pause_prompts)
   WAMO_LERNEN_OHNE_MOMENT      Lernen ohne Momentaufnahmen und Aufgabenstände (learning.py, Standard an)
   WAMO_RUECKMELDUNG_WERKZEUG   Rückmeldelaut bei laufendem Werkzeug startet keinen Zug (soft_interrupt.py)
