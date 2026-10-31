@@ -15,6 +15,7 @@
   const ABBLENDEN_MS = 350;
   const WELLE_MS = 800;
   const MIN_KANTE = 8; // kleinere Rechtecke zeichnet niemand
+  const WELLE_ABSTAND_MS = 400; // höchstens etwa 2 Wellen je Sekunde (WCAG 2.3.1: nie mehr als 3 Blitze)
 
   /** Rechteck in die Fenstergröße einpassen; null, wenn es ungültig ist oder (fast) nichts übrig bleibt. */
   function rahmenGeometrie(f, breite, hoehe) {
@@ -34,23 +35,24 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { rahmenGeometrie, welleGeometrie, HALTEN_MS, ABBLENDEN_MS, WELLE_MS };
+    module.exports = { rahmenGeometrie, welleGeometrie, HALTEN_MS, ABBLENDEN_MS, WELLE_MS, WELLE_ABSTAND_MS };
   }
   if (typeof document === "undefined" || !window.overlay || !window.overlay.onMarkierung) return;
 
-  const reduziert = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const bewegungReduziert = () => matchMedia("(prefers-reduced-motion: reduce)").matches; // live, nicht nur beim Start
   const rahmen = document.getElementById("rahmen");
   const welle = document.getElementById("welle");
   if (!rahmen || !welle) return;
   let rahmenTimer = 0;
   let ausTimer = 0;
   let welleTimer = 0;
+  let letzteWelle = 0;
 
   function rahmenWeg(sofort) {
     clearTimeout(rahmenTimer);
     clearTimeout(ausTimer);
     rahmen.classList.remove("an");
-    if (sofort || reduziert) rahmen.hidden = true;
+    if (sofort || bewegungReduziert()) rahmen.hidden = true;
     else ausTimer = setTimeout(() => (rahmen.hidden = true), ABBLENDEN_MS);
   }
 
@@ -67,7 +69,10 @@
 
   window.overlay.onMarkierung((m) => {
     const f = m && rahmenGeometrie(m.fenster, window.innerWidth, window.innerHeight);
-    if (!f) return;
+    if (!f) {
+      alleWeg(); // null oder nichts Sichtbares: Reste vom vorigen Ziel (anderer Monitor) entfernen
+      return;
+    }
     clearTimeout(rahmenTimer);
     clearTimeout(ausTimer);
     Object.assign(rahmen.style, { left: `${f.x}px`, top: `${f.y}px`, width: `${f.b}px`, height: `${f.h}px` });
@@ -77,7 +82,9 @@
     rahmenTimer = setTimeout(() => rahmenWeg(false), HALTEN_MS);
 
     const p = m.art === "klick" ? welleGeometrie(m.punkt, window.innerWidth, window.innerHeight) : null;
-    if (p) {
+    const jetzt = performance.now();
+    if (p && jetzt - letzteWelle >= WELLE_ABSTAND_MS) {
+      letzteWelle = jetzt;
       welleWeg();
       Object.assign(welle.style, { left: `${p.x}px`, top: `${p.y}px` });
       welle.hidden = false;

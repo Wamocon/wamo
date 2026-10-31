@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { test } = require("node:test");
 const { fuerRandFenster, pruefeMarkierung, pruefePunkt, pruefeRechteck, ruhezustand, sollZeichnen } = require("./lichtrahmen");
-const { ABBLENDEN_MS, HALTEN_MS, WELLE_MS, rahmenGeometrie, welleGeometrie } = require("./markierung");
+const { ABBLENDEN_MS, HALTEN_MS, WELLE_ABSTAND_MS, WELLE_MS, rahmenGeometrie, welleGeometrie } = require("./markierung");
 
 const FENSTER = { x: 100, y: 50, b: 800, h: 600 };
 const MONITOR = { x: 0, y: 0, b: 1920, h: 1080 };
@@ -66,30 +66,28 @@ test("Markierung: ohne Kennung oder Rechnername sind null erlaubt", () => {
 // ---------- Gerätekennung: nur der Laptop, der handelt, zeichnet ----------
 test("kein Rahmen bei fremder Gerätekennung", () => {
   const m = pruefeMarkierung(gut({ geraet: "pc-anderer" }));
-  assert.equal(sollZeichnen(m, { eigeneKennung: "pc-wmc-laptop", hostname: "WMC-PC", betriebsart: "buero" }), false);
-  assert.equal(sollZeichnen(m, { eigeneKennung: "pc-wmc-laptop", hostname: "WMC-PC", betriebsart: "unterwegs" }), false);
+  assert.equal(sollZeichnen(m, { eigeneKennung: "pc-wmc-laptop", hostname: "WMC-PC" }), false);
 });
 
 test("Rahmen bei eigener Gerätekennung", () => {
   const m = pruefeMarkierung(gut());
-  assert.equal(sollZeichnen(m, { eigeneKennung: "pc-wmc-laptop", hostname: "ANDERS", betriebsart: "buero" }), true);
+  assert.equal(sollZeichnen(m, { eigeneKennung: "pc-wmc-laptop", hostname: "ANDERS" }), true);
 });
 
 test("mit Gerätekennung und ohne eigene Kennung zeichnet kein Laptop", () => {
   const m = pruefeMarkierung(gut());
   for (const eigene of [null, undefined, "", 42]) {
-    assert.equal(sollZeichnen(m, { eigeneKennung: eigene, hostname: "WMC-PC", betriebsart: "unterwegs" }), false);
+    assert.equal(sollZeichnen(m, { eigeneKennung: eigene, hostname: "WMC-PC" }), false);
   }
 });
 
-test("ohne Gerätekennung entscheidet der Rechnername, ohne ihn nur die Betriebsart Unterwegs", () => {
+test("ohne Gerätekennung entscheidet der Rechnername, ohne ihn zeichnet kein Laptop", () => {
   const mitName = pruefeMarkierung(gut({ geraet: null }));
-  assert.equal(sollZeichnen(mitName, { hostname: "wmc-pc", betriebsart: "buero" }), true);
-  assert.equal(sollZeichnen(mitName, { hostname: "ANDERER-PC", betriebsart: "unterwegs" }), false);
+  assert.equal(sollZeichnen(mitName, { hostname: "wmc-pc" }), true);
+  assert.equal(sollZeichnen(mitName, { hostname: "ANDERER-PC" }), false);
   const ohneName = pruefeMarkierung(gut({ geraet: null, rechner: null }));
-  assert.equal(sollZeichnen(ohneName, { hostname: "WMC-PC", betriebsart: "unterwegs" }), true);
-  assert.equal(sollZeichnen(ohneName, { hostname: "WMC-PC", betriebsart: "buero" }), false);
-  assert.equal(sollZeichnen(null, { betriebsart: "unterwegs" }), false);
+  assert.equal(sollZeichnen(ohneName, { hostname: "WMC-PC" }), false);
+  assert.equal(sollZeichnen(null, {}), false);
 });
 
 test("offene Freigabe und kein Gespräch: kein Rahmen", () => {
@@ -155,22 +153,32 @@ test("Geometrie im Rand-Fenster: einpassen, winzige und ungültige Rechtecke weg
   assert.equal(welleGeometrie(undefined, 1920, 1080), null);
 });
 
-test("Zeiten: der Rahmen verschwindet nach kurzer Zeit von selbst", () => {
+test("Zeiten: der Rahmen verschwindet nach kurzer Zeit von selbst, Wellen höchstens etwa 2 je Sekunde", () => {
   assert.ok(HALTEN_MS >= 800 && HALTEN_MS <= 3000);
   assert.ok(ABBLENDEN_MS <= 500);
   assert.ok(WELLE_MS <= 1000);
+  assert.ok(WELLE_ABSTAND_MS >= 334); // WCAG 2.3.1: weniger als 3 Blitze je Sekunde
+  assert.match(lies("overlay.css"), /transition-duration:\s*120ms/);
+});
+
+test("Rand-Fenster sind aus Bildschirmfotos ausgenommen und main.js merkt den Bereich je Monitor", () => {
+  const js = lies("main.js");
+  assert.match(js, /win\.setContentProtection\(true\)/);
+  assert.match(js, /win\.wamoBereich = display\.bounds/);
 });
 
 // ---------- Rand-Fenster: klick-durchlässig, WMC-Rot, reduzierte Bewegung (Quelltext-Prüfung) ----------
 const lies = (datei) => fs.readFileSync(path.join(__dirname, datei), "utf8");
 
-test("overlay.html: nicht anklickbar, WMC-Rot, respektiert prefers-reduced-motion", () => {
+test("overlay.html und overlay.css: nicht anklickbar, WMC-Rot, respektiert prefers-reduced-motion", () => {
   const html = lies("overlay.html");
-  assert.match(html, /pointer-events:\s*none/);
-  assert.match(html, /#F40E0E/i);
-  assert.match(html, /prefers-reduced-motion:\s*reduce/);
+  const css = lies("overlay.css");
+  assert.match(css, /pointer-events:\s*none/);
+  assert.match(css, /#F40E0E/i);
+  assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.match(html, /<title>WAMO Stimmen-Rand<\/title>/); // Namensvertrag
   assert.doesNotMatch(html, /<script>[^<]/); // keine Inline-Skripte (CSP script-src 'self')
+  assert.doesNotMatch(html, /<style>|unsafe-inline/); // Stil nur aus der Datei
 });
 
 test("markierung.js: berücksichtigt reduzierte Bewegung und räumt bei Freigabe oder Ende auf", () => {

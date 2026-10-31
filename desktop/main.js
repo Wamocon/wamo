@@ -562,6 +562,8 @@ function createOverlays() {
       },
     });
     win.setIgnoreMouseEvents(true); // Klicks gehen durch auf darunterliegende Programme
+    win.setContentProtection(true); // Rahmen und Welle erscheinen nicht in Bildschirmfotos für das Bildmodell
+    win.wamoBereich = display.bounds; // Bereich in DIP, aus dem die Markierung umgerechnet wird (getBounds rundet anders)
     win.setAlwaysOnTop(true, "screen-saver");
     win.setVisibleOnAllWorkspaces(true);
     // Der Rand lädt nur seine lokale Datei, nie etwas anderes
@@ -792,25 +794,31 @@ ipcMain.on("farben", (event, value) => {
 // Rand sichtbar ist (Tray-Haken an, kein Vollbild) und keine Freigabe offen ist. Ohne eines davon passiert nichts.
 const markierungRate = ratenGrenze(20, 5_000);
 
+let kennungCache = { wert: null, bis: 0 };
 function eigeneKennung() {
+  if (Date.now() < kennungCache.bis) return kennungCache.wert;
+  let wert = null;
   try {
-    return geraet.status().kennung ?? null;
+    wert = geraet.status().kennung ?? null;
   } catch {
-    return null;
+    wert = null;
   }
+  kennungCache = { wert, bis: Date.now() + 5_000 }; // geraet.json nicht bei jeder Markierung lesen
+  return wert;
 }
 
 ipcMain.on("markierung", (event, roh) => {
   if (!fromMainUi(event) || !markierungRate()) return;
   if (!randSoll() || ruhezustand(letzterZustand)) return;
   const m = pruefeMarkierung(roh);
-  if (!m || !sollZeichnen(m, { eigeneKennung: eigeneKennung(), hostname: os.hostname(), betriebsart })) return;
+  if (!m || !sollZeichnen(m, { eigeneKennung: eigeneKennung(), hostname: os.hostname() })) return;
   const lebende = overlays.filter((w) => !w.isDestroyed());
-  const ziele = fuerRandFenster(m, screen, lebende.map((w) => w.getBounds()));
-  for (const z of ziele) {
-    const nachricht = { art: m.art, fenster: z.fenster, ...(z.punkt ? { punkt: z.punkt } : {}) };
-    lebende[z.index].webContents.send("markierung", nachricht);
-  }
+  const ziele = fuerRandFenster(m, screen, lebende.map((w) => w.wamoBereich ?? w.getBounds()));
+  // Rand-Fenster ohne Treffer bekommen null: ein Rahmen vom vorigen Ziel auf einem anderen Monitor verschwindet sofort
+  lebende.forEach((w, index) => {
+    const z = ziele.find((t) => t.index === index);
+    w.webContents.send("markierung", z ? { art: m.art, fenster: z.fenster, ...(z.punkt ? { punkt: z.punkt } : {}) } : null);
+  });
 });
 
 function checkRgb(c) {

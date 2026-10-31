@@ -283,9 +283,8 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Gerätekennung des Laptops an (Tunnel je Gerät, sonst den Rechnernamen) und schickt `markierung` an die Oberfläche
   (`ui/src/lib/nachrichten.ts`), die sie bei gesperrtem Bildschirm oder offener Freigabe verwirft und sonst über
   `window.wamoDesktop.markierung` an die App gibt. `desktop/lichtrahmen.js` prüft erneut und zeichnet nur auf dem Laptop,
-  dessen Kennung in `geraet.json` steht (ohne Kennung: gleicher Rechnername, ohne Namen nur in der Betriebsart
-  Unterwegs); bei allen anderen Profilen und Geräten passiert nichts. Gezeichnet wird in `desktop/markierung.js` im
-  Stimmen-Rand: nicht anklickbar, aus bei Vollbild (`vollbild.js`) und bei ausgeschaltetem Rand-Haken, aus bei offener
+  dessen Kennung in `geraet.json` steht (ohne Kennung: gleicher Rechnername, ohne Namen nie); bei allen anderen Profilen und Geräten passiert nichts. Gezeichnet wird in `desktop/markierung.js` im
+  Stimmen-Rand: nicht anklickbar, nicht in Bildschirmfotos für das Bildmodell (Inhaltsschutz der Rand-Fenster), aus bei Vollbild (`vollbild.js`) und bei ausgeschaltetem Rand-Haken, aus bei offener
   Freigabe und ohne Gespräch. Bei `prefers-reduced-motion` gibt es kein Ein- und Ausblenden und keine wachsende Welle,
   nur einen stillen Rahmen und einen ruhenden Ring. Das Sprachmodell sieht die Zahlen im Werkzeugergebnis, mehr nicht.
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,

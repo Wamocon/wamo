@@ -66,15 +66,14 @@ function pruefeMarkierung(roh) {
 /**
  * Soll auf DIESEM Laptop gezeichnet werden? Nur wenn er der ist, der handelt:
  *  - mit Gerätekennung (Tunnel je Gerät): nur bei genau der eigenen Kennung (geraet.json); ohne eigene Kennung nie;
- *  - ohne Kennung (lokaler Kern oder alter Tunnel): nur bei gleichem Rechnernamen; ohne Namen nur in der Betriebsart
- *    Unterwegs, denn dort steuert der Kern auf diesem PC nur diesen PC.
- * kontext: { eigeneKennung, hostname, betriebsart }.
+ *  - ohne Kennung (lokaler Kern oder alter Tunnel): nur bei gleichem Rechnernamen; ohne Namen nie (im Zweifel kein Rahmen).
+ * kontext: { eigeneKennung, hostname }.
  */
-function sollZeichnen(m, { eigeneKennung = null, hostname = "", betriebsart = "buero" } = {}) {
+function sollZeichnen(m, { eigeneKennung = null, hostname = "" } = {}) {
   if (!m) return false;
   if (m.geraet !== null) return typeof eigeneKennung === "string" && m.geraet === eigeneKennung;
   if (m.rechner !== null) return String(hostname).toLowerCase() === m.rechner.toLowerCase();
-  return betriebsart === "unterwegs";
+  return false;
 }
 
 /** Kann in der Oberfläche der Rahmen gerade nicht stehen? (offene Freigabe, kein Gespräch) */

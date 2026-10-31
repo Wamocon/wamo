@@ -642,7 +642,7 @@ def fenster_fokussieren(fenster: str) -> dict:
     if not wc.focus(w["hwnd"]):
         _audit({"tool": "fenster_fokussieren", "titel": w["titel"], "risk": "rejected", "grund": "Fokus verweigert"})
         return {"status": "rejected", "summary": FOKUS_VERWEIGERT.format(titel=w["titel"][:60])}
-    return {"status": "success", "summary": f"{w['titel']} ist vorne", **_markierung(w["hwnd"])}
+    return {"status": "success", "summary": f"{w['titel']} ist vorne", **_markierung(w.get("hwnd"))}
 
 
 FOKUS_VERWEIGERT = ("Windows hat {titel!r} nicht nach vorne gelassen (zum Beispiel weil das Fenster mit höheren "
@@ -824,7 +824,7 @@ def tastatur_tippen(text: str, fenster: str = "") -> dict:
         _audit({"tool": "tastatur_tippen", "risk": "rejected", "error": str(e)})
         return {"status": "rejected", "summary": f"Tippen abgebrochen: {e}"}
     return {"status": "success", "summary": f"{len(text)} Zeichen in {target['titel'][:60]} getippt",
-            **_markierung(target["hwnd"])}
+            **_markierung(target.get("hwnd"))}
 
 
 @mcp.tool()
@@ -848,7 +848,7 @@ def tasten_druecken(kombination: str, fenster: str = "") -> dict:
     _audit({"tool": "tasten_druecken", "kombination": kombination, "ziel": target["titel"][:120], "risk": "change"})
     wc.press(codes)
     return {"status": "success", "summary": f"{kombination} in {target['titel'][:60]} gedrueckt",
-            **_markierung(target["hwnd"])}
+            **_markierung(target.get("hwnd"))}
 
 
 @mcp.tool()
@@ -978,7 +978,7 @@ def maus_klicken(x: int, y: int, taste: str = "links", doppelt: bool = False, be
             "ziel": target["titel"][:120], "programm": target["programm"], "risk": "change"})
     wc.click(x, y, taste, bool(doppelt))
     return {"status": "success", "summary": f"Klick bei {x},{y} in {target['titel'][:60]}",
-            **_markierung(target["hwnd"], (x, y))}
+            **_markierung(target.get("hwnd"), (x, y))}
 
 
 @mcp.tool()
@@ -999,7 +999,7 @@ def maus_scrollen(richtung: str = "runter", schritte: int = 5) -> dict:
     _audit({"tool": "maus_scrollen", "richtung": richtung, "schritte": steps, "ziel": target["titel"][:120], "risk": "change"})
     wc.scroll(x, y, steps if richtung == "hoch" else -steps)
     return {"status": "success", "summary": f"{steps} Schritte {richtung} in {target['titel'][:60]}",
-            **_markierung(target["hwnd"])}
+            **_markierung(target.get("hwnd"))}
 
 
 # ---------- UI Automation: Elemente bedienen, ohne die Maus zu übernehmen (uia_control.py) ----------
@@ -1143,7 +1143,7 @@ def element_klicken(element: int, fenster: str = "", beschreibung: str = "") -> 
         _audit({"tool": "element_klicken", "risk": "rejected", "error": str(e)[:200], **ziel_audit})
         return {"status": "rejected", "summary": str(e)}
     return {"status": "success", "summary": f"„{knoten.name[:60]}“ in {ziel['titel'][:60]} angeklickt "
-            f"{ergebnis.get('hinweis', '')}".strip(), **_markierung(ziel["hwnd"])}
+            f"{ergebnis.get('hinweis', '')}".strip(), **_markierung(ziel.get("hwnd"))}
 
 
 @mcp.tool()
@@ -1183,7 +1183,7 @@ def element_text_setzen(element: int, text: str, fenster: str = "", beschreibung
         _audit({"tool": "element_text_setzen", "risk": "rejected", "error": str(e)[:200], **ziel_audit})
         return {"status": "rejected", "summary": str(e)}
     return {"status": "success", "summary": f"{len(text)} Zeichen in „{knoten.name[:60]}“ ({ziel['titel'][:60]}) gesetzt",
-            **_markierung(ziel["hwnd"])}
+            **_markierung(ziel.get("hwnd"))}
 
 
 UNBEKANNT = {"status": "error", "summary": "Unbekannte oder abgelaufene Freigabe."}
@@ -1315,18 +1315,18 @@ def _ausfuehren(eintrag: dict) -> dict:
         except ValueError as e:
             return {"status": "error", "summary": f"Abgebrochen ({e}). Ein Teil kann schon getippt sein, bitte prüfen."}
         return {"status": "success", "summary": f"Nachricht in {ziel['titel'][:60]} getippt und gesendet",
-                **_markierung(ziel["hwnd"])}
+                **_markierung(ziel.get("hwnd"))}
     if art == "tasten":
         ziel = _zielfenster(eintrag)
         wc.press(eintrag["codes"])
         return {"status": "success", "summary": f"{eintrag['kombination']} in {ziel['titel'][:60]} gedrückt",
-                **_markierung(ziel["hwnd"])}
+                **_markierung(ziel.get("hwnd"))}
     if art == "klick":
         _check_point(eintrag["x"], eintrag["y"])
         _passt_zur_anfrage(wc.window_at(eintrag["x"], eintrag["y"]), eintrag)
         wc.click(eintrag["x"], eintrag["y"], eintrag["taste"], eintrag["doppelt"])
         return {"status": "success", "summary": f"Klick bei {eintrag['x']},{eintrag['y']} in {eintrag['titel'][:60]}",
-                **_markierung(eintrag["hwnd"], (eintrag["x"], eintrag["y"]))}
+                **_markierung(eintrag.get("hwnd"), (eintrag["x"], eintrag["y"]))}
     if art in ("uia_klick", "uia_text"):
         # Ohne Fokuswechsel und ohne Maus: Fenster und Element müssen noch dieselben sein wie bei der Anfrage
         info = wc.window_info(eintrag["hwnd"])
@@ -1336,11 +1336,11 @@ def _ausfuehren(eintrag: dict) -> dict:
             wc.check_input_target(info["programm"], info["titel"])
             hinweis = UIA.klicken(eintrag["hwnd"], None, knoten).get("hinweis", "")
             return {"status": "success", "summary": f"„{knoten.name[:60]}“ in {info['titel'][:60]} angeklickt {hinweis}".strip(),
-                    **_markierung(eintrag["hwnd"])}
+                    **_markierung(eintrag.get("hwnd"))}
         wc.check_typing_target(info["programm"], info["titel"])
         UIA.text_setzen(eintrag["hwnd"], None, knoten, eintrag["text"])
         return {"status": "success", "summary": f"Text in „{knoten.name[:60]}“ in {info['titel'][:60]} gesetzt",
-                **_markierung(eintrag["hwnd"])}
+                **_markierung(eintrag.get("hwnd"))}
     if art == "webseite":
         url = validate_url(eintrag["url"])  # die DNS-Auflösung kann sich seit der Anfrage geändert haben
         _launch(resolve_app(eintrag["browser"]), [url])
