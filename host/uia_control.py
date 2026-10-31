@@ -24,6 +24,7 @@ Nummernliste stehen nur reine Daten (Knoten). Tests ersetzen den COM-Zugriff dur
 
 from __future__ import annotations
 
+import gc
 import re
 import threading
 import time
@@ -37,6 +38,7 @@ MAX_ELEMENTE_GRENZE = 200
 MAX_KNOTEN = 2500  # so viele Knoten besucht der Lauf höchstens
 WALK_SECS = 6.0  # Zeitbudget des Laufs durch den Baum
 SNAPSHOT_SECS = 12.0  # so lange wartet der Host auf einen ganzen Lauf (hängende Programme)
+MAX_FAEDEN = 4  # so viele Arbeitsfäden leben höchstens gleichzeitig (hängende Programme halten ihren Faden fest)
 AKTION_SECS = 8.0  # so lange wartet der Host auf Invoke und Co. (öffnet sich ein Dialog, hängt Invoke)
 NUMMER_GUELTIG_SECS = 180
 NAME_MAX = 80
@@ -45,7 +47,8 @@ TEXT_MAX = 2000
 
 PASSWORT_NAME = re.compile(
     r"(passwor|kennwort|password|passcode|passphrase|geheim|secret|\bpin\b|\bcvv\b|\bcvc\b|\botp\b|\btan\b|"
-    r"zugangscode|sicherheitscode|security code)", re.IGNORECASE)
+    r"zugangscode|sicherheitscode|security code|\btoken\b|api[ _-]?key|schlüssel|\biban\b|kreditkarte|card number|"
+    r"kartennummer)", re.IGNORECASE)
 ADRESSFELD_NAME = re.compile(r"(adress|address|omnibox|location bar|suchleiste|search bar|\burl\b)", re.IGNORECASE)
 
 # UIA-Steuerelementtypen -> deutsche Bezeichnung
@@ -70,13 +73,14 @@ class UiaFehler(ValueError):
     """Eine Aktion ist nicht möglich oder nicht erlaubt; die Meldung geht an das Sprachmodell (kein Stacktrace)."""
 
 
+MELDUNG_KEINE_ANTWORT = "Das Programm antwortet nicht auf UI Automation (hängt es?)."
 VERALTET = ("Die Elemente-Nummern sind veraltet (das Fenster hat sich geändert oder die Liste ist zu alt). "
             "Bitte elemente_auflisten noch einmal aufrufen.")
 
 
 def sicherer_text(wert: object, grenze: int = NAME_MAX) -> str:
     """Anzeigetext vom Programm als Daten: ohne Steuer-, Format- und unsichtbare Zeichen, eine Zeile, gekürzt."""
-    text = wert if isinstance(wert, str) else ""
+    text = unicodedata.normalize("NFKC", wert) if isinstance(wert, str) else ""  # vollbreite Zeichen wie "Ｓｅｎｄｅｎ"
     text = "".join(" " if unicodedata.category(c) in ("Zl", "Zp") or c in "\r\n\t" else c
                    for c in text if unicodedata.category(c) not in ("Cc", "Cf", "Cs", "Co", "Cn") or c in "\r\n\t")
     text = " ".join(text.split())
@@ -145,6 +149,9 @@ class Backend:
         """was: invoke, toggle, auswahl, aufklappen, wert_setzen, wert_lesen. Liefert bei wert_lesen den Wert."""
         raise NotImplementedError
 
+    def faden_ende(self) -> None:
+        """Wird am Ende jedes Arbeitsfadens aufgerufen (COM-Abmeldung); die Attrappe braucht nichts."""
+
 
 class UiaSchicht:
     """Nummernliste je Fenster und die Aktionen darauf. Eine Instanz je Host."""
@@ -154,6 +161,7 @@ class UiaSchicht:
         self._uhr = uhr
         self._listen: dict[int, Liste] = {}
         self._lock = threading.RLock()
+        self._faeden = threading.BoundedSemaphore(MAX_FAEDEN)
 
     @property
     def backend(self) -> Backend:
@@ -162,11 +170,14 @@ class UiaSchicht:
         return self._backend
 
     # ---------- Lauf im Arbeitsfaden ----------
-    @staticmethod
-    def _arbeiten(fn: Callable[[dict], object], secs: float) -> tuple[bool, object]:
+    def _arbeiten(self, fn: Callable[[dict], object], secs: float) -> tuple[bool, object]:
         """Führt fn(phase) in einem eigenen Faden aus. Rückgabe (fertig, Ergebnis). Läuft der Faden nach secs noch,
-        ist fertig False und das Ergebnis die letzte Phase (der Faden läuft als Daemon weiter und stört niemanden)."""
-        phase = {"p": "start"}
+        ist fertig False und das Ergebnis die Phase, in der er steckt. Der Aufrufer setzt dann phase["abbruch"]
+        (unter phase["sperre"]): Ein Faden, der noch vor der Aktion steckt, führt sie später nie mehr aus und
+        verändert auch keine Nummern mehr. Läuft er schon in der Aktion, gilt sie als ausgelöst."""
+        if not self._faeden.acquire(blocking=False):
+            raise UiaFehler("UI Automation ist gerade belegt (ein Programm antwortet nicht). Bitte später noch einmal.")
+        phase = {"p": "start", "abbruch": False, "sperre": threading.Lock()}
         ergebnis: dict = {}
 
         def lauf() -> None:
@@ -174,12 +185,19 @@ class UiaSchicht:
                 ergebnis["wert"] = fn(phase)
             except BaseException as e:  # noqa: BLE001 (wird im Aufrufer neu geworfen)
                 ergebnis["fehler"] = e
+            finally:
+                try:
+                    self.backend.faden_ende()
+                finally:
+                    self._faeden.release()
 
         faden = threading.Thread(target=lauf, name="wamo-uia", daemon=True)
         faden.start()
         faden.join(secs)
         if faden.is_alive():
-            return False, phase["p"]
+            with phase["sperre"]:
+                phase["abbruch"] = True
+                return False, phase["p"]
         if "fehler" in ergebnis:
             fehler = ergebnis["fehler"]
             if isinstance(fehler, UiaFehler):
@@ -195,13 +213,13 @@ class UiaSchicht:
 
         def lauf(phase: dict):
             phase["p"] = "momentaufnahme"
-            return self.backend.momentaufnahme(hwnd, tiefe, maximal, bool(auch_texte))
+            paare, gekuerzt = self.backend.momentaufnahme(hwnd, tiefe, maximal, bool(auch_texte))
+            return [k for k, _ in paare], gekuerzt  # nur Daten verlassen den Faden, nie COM-Zeiger
 
         fertig, wert = self._arbeiten(lauf, SNAPSHOT_SECS)
         if not fertig:
-            raise UiaFehler("Das Programm antwortet nicht auf UI Automation (hängt es?). Es wurde nichts verändert.")
-        paare, gekuerzt = wert
-        knoten = [k for k, _ in paare]
+            raise UiaFehler(MELDUNG_KEINE_ANTWORT + " Es wurde nichts verändert.")
+        knoten, gekuerzt = wert
         liste = Liste(hwnd=hwnd, programm=programm, zeit=self._uhr(), knoten=knoten,
                       aufbau=aufbau_von(knoten), auch_texte=bool(auch_texte), tiefe=tiefe,
                       gekuerzt=gekuerzt, maximal=maximal)
@@ -242,21 +260,31 @@ class UiaSchicht:
                                                                                                 MAX_ELEMENTE_GRENZE, True)
         paare, _ = self.backend.momentaufnahme(hwnd, tiefe, maximal, texte)
         if liste is not None and aufbau_von([k for k, _ in paare]) != liste.aufbau:
-            self.vergessen(hwnd)
+            self._vergessen_aus_faden(hwnd, phase)
             raise UiaFehler(VERALTET)
         for k, handle in paare:
             if k.schluessel == ziel.schluessel:
                 return k, handle
-        self.vergessen(hwnd)
+        self._vergessen_aus_faden(hwnd, phase)
         raise UiaFehler(VERALTET)
 
+    def _vergessen_aus_faden(self, hwnd: int, phase: dict) -> None:
+        """Wie vergessen, aber nicht aus einem Faden, den der Aufrufer schon aufgegeben hat (er könnte eine inzwischen
+        neu aufgelistete Liste löschen)."""
+        with phase["sperre"]:
+            if not phase["abbruch"]:
+                self.vergessen(hwnd)
+
     def _handeln(self, hwnd: int, liste: Liste | None, ziel: Knoten, was: str, text: str | None, secs: float,
-                 vorher: Callable[[Knoten], str] | None = None) -> tuple[bool, object]:
+                 vorher: Callable[[Knoten], None] | None = None) -> tuple[bool, object]:
         def lauf(phase: dict):
             k, handle = self._frisch(hwnd, liste, ziel, phase)
             if vorher is not None:
                 vorher(k)  # Prüfung am frischen Zustand (aktiv, nicht schreibgeschützt, ...)
-            phase["p"] = "aktion"
+            with phase["sperre"]:
+                if phase["abbruch"]:
+                    raise UiaFehler("abgebrochen")  # der Aufrufer hat schon "nichts passiert" gemeldet
+                phase["p"] = "aktion"
             return self.backend.tun(handle, was, text)
 
         return self._arbeiten(lauf, secs)
@@ -274,10 +302,9 @@ class UiaSchicht:
             raise UiaFehler("Passwortfelder bedient WAMO nicht.")
         muster = self._muster_fuer_klick(ziel)
 
-        def vorher(k: Knoten) -> str:
+        def vorher(k: Knoten) -> None:
             if not k.aktiv:
                 raise UiaFehler(f"„{k.name}“ ist deaktiviert")
-            return ""
 
         fertig, wert = self._handeln(hwnd, liste, ziel, muster, None, AKTION_SECS, vorher)
         if not fertig:
@@ -285,7 +312,7 @@ class UiaSchicht:
                 self.vergessen(hwnd)
                 return {"ausgefuehrt": True, "muster": muster, "ruecklauf": False,
                         "hinweis": "Der Klick ist ausgelöst, das Programm antwortet noch nicht (öffnet sich ein Dialog?)."}
-            raise UiaFehler("Das Programm antwortet nicht auf UI Automation. Es wurde nichts angeklickt.")
+            raise UiaFehler(MELDUNG_KEINE_ANTWORT + " Es wurde nichts angeklickt.")
         return {"ausgefuehrt": True, "muster": muster, "ruecklauf": True}
 
     def text_setzen(self, hwnd: int, liste: Liste | None, ziel: Knoten, text: str) -> dict:
@@ -293,30 +320,28 @@ class UiaSchicht:
             raise UiaFehler(f"Text fehlt oder ist länger als {TEXT_MAX} Zeichen")
         pruefe_beschreibbar(ziel)
 
-        def vorher(k: Knoten) -> str:
+        def vorher(k: Knoten) -> None:
             pruefe_beschreibbar(k)
-            return ""
 
         fertig, _ = self._handeln(hwnd, liste, ziel, "wert_setzen", text, AKTION_SECS, vorher)
         if not fertig:
-            raise UiaFehler("Das Programm antwortet nicht auf UI Automation. Der Text wurde nicht gesetzt.")
+            raise UiaFehler(MELDUNG_KEINE_ANTWORT + " Der Text wurde nicht gesetzt.")
         return {"ausgefuehrt": True, "zeichen": len(text)}
 
     def lesen(self, hwnd: int, liste: Liste, ziel: Knoten) -> dict:
         if ziel.geschuetzt:
             raise UiaFehler("Passwortfelder liest WAMO nicht.")
 
-        def vorher(k: Knoten) -> str:
+        def vorher(k: Knoten) -> None:
             if k.geschuetzt:
                 raise UiaFehler("Passwortfelder liest WAMO nicht.")
-            return ""
 
-        art = "wert_lesen" if "wert" in ziel.muster else "name_lesen"
-        fertig, wert = self._handeln(hwnd, liste, ziel, art, None, AKTION_SECS, vorher)
+        if "wert" not in ziel.muster:
+            return {"wert": sicherer_text(ziel.name, WERT_MAX), "gekuerzt": False}  # nur der Anzeigename
+        fertig, wert = self._handeln(hwnd, liste, ziel, "wert_lesen", None, AKTION_SECS, vorher)
         if not fertig:
-            raise UiaFehler("Das Programm antwortet nicht auf UI Automation.")
-        text = sicherer_text(wert if art == "wert_lesen" else ziel.name, WERT_MAX)
-        return {"wert": text, "gekuerzt": len(str(wert or "")) > WERT_MAX}
+            raise UiaFehler(MELDUNG_KEINE_ANTWORT)
+        return {"wert": sicherer_text(wert, WERT_MAX), "gekuerzt": len(str(wert or "")) > WERT_MAX}
 
 
 def pruefe_beschreibbar(k: Knoten) -> None:
@@ -358,6 +383,7 @@ class ComUia(Backend):
     def __init__(self) -> None:
         self._modul = None
         self._lock = threading.Lock()
+        self._lokal = threading.local()
 
     def _lade(self):
         """comtypes und die generierte Typbibliothek (einmal je Prozess). Fehler heißen UiaFehler."""
@@ -375,11 +401,24 @@ class ComUia(Backend):
 
     def _anmelden(self):
         comtypes, uia = self._lade()
-        try:
-            comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
-        except OSError:
-            pass  # Faden ist schon angemeldet (anderer Modus): weiter
+        if not getattr(self._lokal, "angemeldet", False):
+            try:
+                comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+                self._lokal.angemeldet = True
+            except OSError:
+                pass  # Faden ist schon in einem anderen Modus angemeldet: weiter, aber nicht abmelden
         return comtypes, uia
+
+    def faden_ende(self) -> None:
+        """COM-Zeiger freigeben, dann den Faden abmelden (nur wenn er von hier angemeldet wurde)."""
+        if self._modul is None or not getattr(self._lokal, "angemeldet", False):
+            return
+        gc.collect()
+        try:
+            self._modul[0].CoUninitialize()
+        except OSError:
+            pass
+        self._lokal.angemeldet = False
 
     def momentaufnahme(self, hwnd: int, tiefe: int, maximal: int, auch_texte: bool):
         import ctypes
@@ -423,7 +462,10 @@ class ComUia(Backend):
             try:
                 kind = walker.GetFirstChildElement(el)
                 index = 0
-                while kind and len(kinder) < 400:
+                while kind:
+                    if len(kinder) >= 400:
+                        gekuerzt = True
+                        break
                     kinder.append((kind, ebene + 1, pfad + (index,)))
                     index += 1
                     kind = walker.GetNextSiblingElement(kind)
@@ -443,7 +485,7 @@ class ComUia(Backend):
                 return None
             name = sicherer_text(el.CurrentName)
             muster = self._muster(uia, el, typ)
-            if typ not in BEDIENBAR and not muster and not (auch_texte and typ in ("Text", "Dokument") and name):
+            if typ not in BEDIENBAR and not muster and not (auch_texte and typ in ANZEIGE_TYPEN and name):
                 return None
             try:
                 rid = tuple(int(x) for x in el.GetRuntimeId())

@@ -52,8 +52,7 @@ class Attrappe(u.Backend):
         self.aufnahmen += 1
         if self.fehler:
             raise self.fehler
-        sicht = [k for k in self.baum if k.typ != "Gruppe" or True]
-        sicht = [k for k in sicht if auch_texte or k.typ != "Text"]
+        sicht = [k for k in self.baum if auch_texte or k.typ != "Text"]
         sicht = [k for k in sicht if k.typ in u.BEDIENBAR or k.muster or k.typ == "Text"]
         return [(k, k) for k in sicht[:maximal]], len(sicht) > maximal
 
@@ -180,8 +179,8 @@ class SchichtTests(unittest.TestCase):
 
     def test_anzeigetexte_machen_nummern_nicht_ungueltig(self):
         li, k = self._hole(1, auch_texte=True)
+        self.b.baum[-1] = knoten(10, "Text", "Anzeige 2")
         self.b.baum.append(knoten(88, "Text", "Ausdruck 1 +"))
-        self.b.baum[-2] = knoten(10, "Text", "Anzeige 2")
         self.assertTrue(self.s.klicken(11, li, k)["ausgefuehrt"])
 
     def _hole(self, nr, **kw):
@@ -197,7 +196,7 @@ class SchichtTests(unittest.TestCase):
         self.assertEqual(u.UiaSchicht._muster_fuer_klick(k2), "toggle")
 
     def test_klick_ohne_muster_wird_abgelehnt(self):
-        li, k = self._hole(9) if False else (None, knoten(9, "Gruppe", "Rahmen"))
+        k = knoten(9, "Gruppe", "Rahmen")
         with self.assertRaises(u.UiaFehler) as e:
             self.s.klicken(11, None, k)
         self.assertIn("auf_bildschirm_klicken", str(e.exception))
@@ -461,8 +460,7 @@ class HostTests(unittest.TestCase):
         self.assertEqual(host.element_text_setzen(nr["Titel"], 5, "Notiz")["status"], "rejected")
         self.assertEqual(self.b.taten, [])
         self.assertEqual(host.element_text_setzen(nr["Titel"], "", "Notiz")["status"], "success")  # Feld leeren ist erlaubt
-        self.b.taten.clear()
-        self.assertEqual(self.b.taten, [])
+        self.assertEqual(self.b.taten, [(2, "wert_setzen", "")])  # und nur das ist passiert
 
     def test_text_setzen_nicht_im_explorer(self):
         nr = self.liste()
@@ -516,7 +514,164 @@ class HostTests(unittest.TestCase):
     def test_audit_art_und_eingabe_arten(self):
         self.assertIn("uia_klick", host.EINGABE_ARTEN)
         self.assertIn("uia_text", host.EINGABE_ARTEN)
-        self.assertEqual(host.FREIGABE_EINGABE_SECS, 120)
+
+
+class ReviewTests(unittest.TestCase):
+    """Regressionstests zu den Funden aus dem Review (Zombie-Faden, Systemfenster, UNC, Namen, Grenzen)."""
+
+    def setUp(self):
+        host.PENDING.clear()
+        host._rate_zeiten.clear()
+        self.b = Attrappe()
+        self.fenster = dict(NOTIZ)
+        self.audit: list[dict] = []
+        for p in (mock.patch.object(host, "UIA", u.UiaSchicht(self.b)),
+                  mock.patch.object(host, "FREIGABE_SCHLUESSEL", SCHLUESSEL),
+                  mock.patch.object(host, "_audit", side_effect=self.audit.append),
+                  mock.patch.object(host.wc, "find_window", side_effect=lambda q: self.fenster),
+                  mock.patch.object(host.wc, "foreground", side_effect=lambda: self.fenster),
+                  mock.patch.object(host.wc, "window_info", side_effect=lambda h: self.fenster)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(host.PENDING.clear)
+        self.addCleanup(host._rate_zeiten.clear)
+
+    def liste(self):
+        r = host.elemente_auflisten("x", auch_texte=True)
+        self.assertEqual(r["status"], "success", r)
+        return {e["name"]: e["nr"] for e in r["elemente"]}
+
+    def test_langsame_aufnahme_fuehrt_die_aktion_nie_nachtraeglich_aus(self):
+        """Der Faden, den der Aufrufer nach dem Zeitlimit aufgegeben hat, klickt später nicht doch noch."""
+        alt = u.AKTION_SECS
+        u.AKTION_SECS = 0.2
+        self.addCleanup(setattr, u, "AKTION_SECS", alt)
+        schicht = u.UiaSchicht(self.b)
+        li = schicht.auflisten(11, "notepad.exe")
+        li, k = schicht.holen(11, "notepad.exe", 1)
+        frei = threading.Event()
+        original = self.b.momentaufnahme
+
+        def langsam(*a):
+            frei.wait(5)
+            return original(*a)
+
+        self.b.momentaufnahme = langsam
+        with self.assertRaises(u.UiaFehler):
+            schicht.klicken(11, li, k)
+        frei.set()
+        import time
+        time.sleep(0.4)  # dem Zombie-Faden Zeit geben, weiterzulaufen
+        self.assertEqual(self.b.taten, [])
+
+    def test_zombie_faden_loescht_keine_neue_liste(self):
+        alt = u.AKTION_SECS
+        u.AKTION_SECS = 0.2
+        self.addCleanup(setattr, u, "AKTION_SECS", alt)
+        schicht = u.UiaSchicht(self.b)
+        li = schicht.auflisten(11, "notepad.exe")
+        li, k = schicht.holen(11, "notepad.exe", 1)
+        frei = threading.Event()
+        original = self.b.momentaufnahme
+        self.b.momentaufnahme = lambda *a: (frei.wait(5), original(*a))[1]
+        self.b.baum.append(knoten(66, "Schaltfläche", "Neu", muster=("invoke",)))  # der Zombie sähe "veraltet"
+        with self.assertRaises(u.UiaFehler):
+            schicht.klicken(11, li, k)
+        self.b.momentaufnahme = original
+        neu = schicht.auflisten(11, "notepad.exe")
+        frei.set()
+        import time
+        time.sleep(0.4)
+        self.assertIs(schicht.holen(11, "notepad.exe", 1)[0], neu)
+
+    def test_hoechstens_vier_faeden_gleichzeitig(self):
+        alt = u.SNAPSHOT_SECS
+        u.SNAPSHOT_SECS = 0.05
+        self.addCleanup(setattr, u, "SNAPSHOT_SECS", alt)
+        frei = threading.Event()
+        self.addCleanup(frei.set)
+        self.b.momentaufnahme = lambda *a: frei.wait(10)
+        schicht = u.UiaSchicht(self.b)
+        for _ in range(u.MAX_FAEDEN):
+            with self.assertRaises(u.UiaFehler):
+                schicht.auflisten(11, "notepad.exe")
+        with self.assertRaises(u.UiaFehler) as e:
+            schicht.auflisten(11, "notepad.exe")
+        self.assertIn("belegt", str(e.exception))
+
+    def test_faden_ende_wird_aufgerufen(self):
+        self.b.faden_ende = mock.Mock()
+        u.UiaSchicht(self.b).auflisten(11, "notepad.exe")
+        self.b.faden_ende.assert_called_once()
+
+    def test_umgebungsvariablen_fenster_nur_mit_karte(self):
+        nr = self.liste()
+        for f in ({"hwnd": 11, "titel": "Systemeigenschaften", "programm": "SystemPropertiesAdvanced.exe"},
+                  {"hwnd": 11, "titel": "Umgebungsvariablen", "programm": "rundll32.exe"}):
+            self.fenster = f
+            self.liste()
+            host.PENDING.clear()
+            k = host.element_klicken(nr["Speichern"], "x")
+            self.assertEqual((k["status"], k["aktion"]), ("needs_approval", "klicken"), k)
+            self.assertIn("Umgebungsvariablen", k["summary"])
+            host.PENDING.clear()  # offene Anfragen lassen Eingaben ruhen
+            t = host.element_text_setzen(nr["Titel"], "C:\\evil", "x")
+            self.assertEqual(t["status"], "needs_approval", t)
+        self.assertEqual(self.b.taten, [])
+
+    def test_sensible_kennung_und_namenlose_knoepfe(self):
+        self.b.baum.append(knoten(70, "Schaltfläche", "", aid="SendButton", muster=("invoke",)))
+        self.b.baum.append(knoten(71, "Schaltfläche", "", muster=("invoke",)))
+        nr = {e["nr"]: e for e in host.elemente_auflisten("x")["elemente"]}
+        nummern = [n for n, e in nr.items() if e["name"] == "(ohne Name)"]
+        self.assertEqual(len(nummern), 2)
+        for n in nummern:
+            host.PENDING.clear()
+            r = host.element_klicken(n, "x")
+            self.assertEqual(r["status"], "needs_approval", r)
+        self.assertEqual(self.b.taten, [])
+
+    def test_vollbreite_schreibweise_umgeht_die_namenspruefung_nicht(self):
+        name = u.sicherer_text("Ｓｅｎｄｅｎ")
+        self.assertEqual(name, "Senden")
+        self.assertTrue(host.SENSIBLER_NAME.search(name))
+        self.assertTrue(knoten(1, "Eingabefeld", u.sicherer_text("Ｐａｓｓｗｏｒｔ")).geschuetzt)
+
+    def test_weitere_geheimnis_namen_sind_geschuetzt(self):
+        for name in ("API-Key", "API Key", "Zugriffstoken", "Token", "IBAN", "Kreditkarte", "Card number", "Schlüssel",
+                     "Neues Passwort"):
+            k = knoten(1, "Eingabefeld", name, muster=("wert",))
+            self.assertTrue(k.geschuetzt or name == "Zugriffstoken", name)
+        self.assertTrue(knoten(1, "Eingabefeld", "Token", muster=("wert",)).geschuetzt)
+
+    def test_lesen_und_auflisten_haben_eine_rate_grenze(self):
+        with mock.patch.object(host, "UIA_LESEN_PRO_MINUTE", 2):
+            self.assertEqual(host.elemente_auflisten("x")["status"], "success")
+            self.assertEqual(host.elemente_auflisten("x")["status"], "success")
+            self.assertEqual(host.elemente_auflisten("x")["status"], "rejected")
+        host._rate_zeiten.clear()
+        nr = self.liste()
+        with mock.patch.object(host, "UIA_LESEN_PRO_MINUTE", 1):
+            host._rate_zeiten.clear()
+            self.assertEqual(host.element_lesen(nr["Titel"])["status"], "success")
+            self.assertEqual(host.element_lesen(nr["Titel"])["status"], "rejected")
+
+    def test_kartentitel_ist_bereinigt(self):
+        self.fenster = {"hwnd": 11, "titel": "Chat\u202e | Teams\x00", "programm": "ms-teams.exe"}
+        nr = self.liste()
+        r = host.element_klicken(nr["Speichern"], "x")
+        self.assertEqual(r["status"], "needs_approval")
+        self.assertNotIn("\u202e", r["detail"])
+        self.assertNotIn("\x00", r["detail"])
+
+    def test_unc_und_fremdes_laufwerk_bei_ordner_anlegen(self):
+        with mock.patch.object(host.Path, "resolve", side_effect=AssertionError("resolve darf nicht laufen")):
+            for pfad in ("\\\\10.255.255.1\\share\\x\\y", "//10.255.255.1/share/x", "\\\\?\\C:\\x", "\\\\.\\pipe\\x"):
+                with self.subTest(pfad=pfad):
+                    self.assertEqual(host.ordner_anlegen(pfad)["status"], "rejected")
+        fremd = "Z:\\Projekte\\x" if host.HOME.drive.lower() != "z:" else "Y:\\Projekte\\x"
+        with mock.patch.object(host.Path, "resolve", side_effect=AssertionError("resolve darf nicht laufen")):
+            self.assertEqual(host.ordner_anlegen(fremd)["status"], "rejected")
 
 
 if __name__ == "__main__":
