@@ -20,6 +20,8 @@ export class KernFehler extends Error {
   constructor(
     readonly status: number,
     text: string,
+    /** maschinenlesbarer Grund, wenn der Kern einen mitschickt (zum Beispiel zweiter_faktor_zu_alt) */
+    readonly code: string | null = null,
   ) {
     super(text);
   }
@@ -59,14 +61,17 @@ function abmelden(grund: string) {
 
 async function fehlerAus(antwort: Response): Promise<KernFehler> {
   let text = `Fehler ${antwort.status}`;
+  let code: string | null = null;
   try {
     const daten: unknown = await antwort.json();
     const detail = (daten as { detail?: unknown })?.detail;
     if (typeof detail === "string" && detail) text = detail.slice(0, 200);
+    const kennung = (daten as { code?: unknown })?.code;
+    if (typeof kennung === "string" && /^[a-z0-9_]{1,40}$/.test(kennung)) code = kennung;
   } catch {
     // kein JSON: Standardtext
   }
-  return new KernFehler(antwort.status, text);
+  return new KernFehler(antwort.status, text, code);
 }
 
 async function anfrage<T>(

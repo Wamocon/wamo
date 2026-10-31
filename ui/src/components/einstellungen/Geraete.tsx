@@ -18,6 +18,7 @@ import { geraeteAnzeige } from "@/lib/geraeteAnzeige";
 import { useSelect } from "@/lib/store";
 import { istOnline, wamo, zeigeToast } from "@/lib/wamo";
 import { Block } from "./Block";
+import { GeraeteVerwaltung } from "./GeraeteVerwaltung";
 
 /** So lange wartet der Schalter auf die Rückmeldung des Kerns, danach ist er wieder bedienbar. */
 const SCHALT_WARTEN_MS = 5000;
@@ -181,7 +182,7 @@ const EinrichtungStand = memo(function EinrichtungStand() {
 });
 
 /**
- * Abschnitt "Geräte und PC": Status der Verbindungen (jeder), PC-Steuerung samt Autostart (nur Admin), Betriebsart
+ * Abschnitt "Geräte und PC": Status der Verbindungen (jeder), Geräteverwaltung und PC-Steuerung samt Autostart (nur Admin), Betriebsart
  * (wo es etwas zu wählen gibt) und der Stand der Geräteeinrichtung (nur Desktop-App). Welche Blöcke es gibt, entscheidet
  * geraeteBloecke (lib/einstellungenAbschnitte.ts).
  */
@@ -195,6 +196,11 @@ export const GeraeteAbschnitt = memo(function GeraeteAbschnitt({ onPcSteuerung }
       {bloecke.includes("status") && (
         <Block titel="Verbindungen">
           <StatusDetails kompakt={false} />
+        </Block>
+      )}
+      {bloecke.includes("verwaltung") && (
+        <Block titel="Geräteverwaltung">
+          <GeraeteVerwaltung />
         </Block>
       )}
       {bloecke.includes("pc") && (
