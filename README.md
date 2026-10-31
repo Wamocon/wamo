@@ -873,6 +873,25 @@ Tests (`code`, `analyse`, `bewerter`, `einbettung`, `latenz`, `kennenlernen`; Cl
   halten oder beim Anmelden eine kurze Aufwärmanfrage über LiteLLM schicken und alle 5 Minuten wiederholen, solange
   eine Sitzung offen ist.
 
+## Fernzugriff (Remote Desktop der Sparks)
+
+Der Admin kann von unterwegs den Bildschirm von Sokrates-1, Sokrates-2 und Caesar öffnen (Konzept `docs/remote-desktop.md`,
+Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGuard ins Büronetz, der Zugang läuft über WAMO:
+
+- **Einstieg:** Einstellungen, Abschnitt Fernzugriff (nur Admin). Karte mit den Zielen und ihrem Zustand (frei, belegt, nicht
+  erreichbar). „Verbinden“ fragt den Code der Authenticator-App ab (höchstens 120 Sekunden alt, bei jedem Start neu) und öffnet
+  die Sitzung in einem eigenen Tab. Die Karte zeigt die Restzeit und trennt auf Knopfdruck.
+- **Grenzen:** 60 Minuten Höchstdauer, 10 Minuten Leerlauf, ein Zuschauer je Ziel, höchstens 3 Sitzungen gleichzeitig, 6 Starts
+  je Stunde und Profil. Keine Zwischenablage, kein Laufwerk, kein Drucker, kein Ton, keine Aufzeichnung. Protokolliert werden nur
+  wer, welches Ziel, Start, Ende und Grund (Tabelle `rd_sitzungen`, Migration 0015).
+- **Ziele:** Die Zielliste liegt als root-Datei auf Sokrates-2 (`/etc/wamo-rd/ziele.toml`), aus der Anfrage kommt nur der Name.
+  Angemeldet wird am Spark als Konto `wamo-rd` ohne sudo, docker und SSH. Auf Sokrates-2 darf dieses Konto per Ausgangsregel
+  (`infra/sparks/wamo-rd-ausgang-einrichten.sh`) nur das Internet erreichen, nicht Kern, Datenbank, LAN oder andere Sparks.
+- **Einschalten:** `WAMO_RD_AKTIV=ja` im Kern, erst nach dem Einrichten des Gateways (`wamo-rd-einrichten.sh`) und mit den Proben
+  aus `wamo_rd_rauchtest.py`. Ohne den Schalter melden die Routen, dass der Fernzugriff nicht eingerichtet ist.
+- **Offen:** Die Zertifikatsprüfung gegen xrdp ist noch nicht angeheftet (`ignore-cert`), das Gateway ist nur im Büronetz und über
+  WireGuard erreichbar.
+
 ## Sicherheitsmodell
 
 - Zugang nur mit Konto im WAMO-Supabase, zweitem Faktor und aktivem Profil; jede Unsicherheit führt zur Ablehnung.

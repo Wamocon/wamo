@@ -8,6 +8,15 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Fernzugriff auf die Sparks (Remote Desktop über das Gateway auf Sokrates-2, Stufen 3 und 4 von `docs/remote-desktop.md`):
+  Kern-API `GET /wamo/api/rd/ziele`, `POST /wamo/api/rd/start` und `POST /wamo/api/rd/ende` (`voice-core/rd_api.py`, Schalter
+  `WAMO_RD_AKTIV`, Standard nein). Nur Rolle admin mit frischem zweiten Faktor (Code höchstens 120 Sekunden alt) bei jedem Start;
+  feste Zielliste, ein Zuschauer je Ziel, höchstens 60 Minuten Dauer, 10 Minuten Leerlauf, keine Zwischenablage, kein Laufwerk,
+  keine Aufzeichnung. Der Kern baut die signierte Anweisung für Guacamole selbst, der Browser bekommt nur die Adresse mit dem
+  Sitzungstoken. Migration 0015 (`rd_sitzungen`, Protokoll nur wer, Ziel, Start, Ende, Grund), Zugangsdienst-Gerüst in
+  `infra/sokrates2/wamo-rd/zugang/` mit Prüfung gegen das echte Guacamole, Ausgangsregel `infra/sparks/wamo-rd-ausgang-einrichten.sh`
+  (das Konto `wamo-rd` erreicht nur das Internet) und neuer Abschnitt Fernzugriff in den Einstellungen (nur Admin). Noch nicht
+  ausgerollt.
 - Gesprächsoptimierung (Recherche und Maßnahmen in `docs/gespraech-optimierung.md`): Schalter `WAMO_PERSONA_GESPRAECH`
   (Prompt-Block Gesprächsführung: Selbstkorrektur, Rückbezug, nicht wiederholen, eine Frage) und `WAMO_WARTESATZ_MODELL`
   mit `WAMO_WARTESATZ_MODELL_SECS` (ein kurzer Satz, wenn das Modell 2,5 s lang kein Zeichen liefert), beide Standard aus bis
