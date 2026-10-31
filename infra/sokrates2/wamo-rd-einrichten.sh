@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Remote-Desktop-Gateway auf Sokrates-2 (Stufe 1 des Konzepts docs/remote-desktop.md): Gateway OHNE Ziel und OHNE Zugangsdienst.
-# Container wamo-rd-web (Apache Guacamole) und wamo-rd-guacd, HTTPS 55446 über wamo-caddy, Firewall, Benutzer wamo-rd-gateway,
-# Schlüssel für die JSON-Anmeldung. Als wamocon ausführen (Docker-Gruppe, Dateien in /home/wamocon), nicht mit sudo; für Firewall
+# Remote-Desktop-Gateway auf Sokrates-2 (Stufe 1 und 3 des Konzepts docs/remote-desktop.md): Gateway OHNE Ziel, mit Zugangsdienst.
+# Container wamo-rd-web (Apache Guacamole), wamo-rd-guacd und wamo-rd-zugang, HTTPS 55446 über wamo-caddy, Firewall, Benutzer
+# wamo-rd-gateway, Schlüssel für die JSON-Anmeldung, Socket-Verzeichnis /run/wamo-rd für den Kern. Als wamocon ausführen (Docker-Gruppe, Dateien in /home/wamocon), nicht mit sudo; für Firewall
 # und Konten ruft das Skript selbst "sudo -n" auf. Wiederholbar (idempotent).
 #
 # Ablage: Der Ordner liegt im Home von wamocon, nie in /tmp. Vom PC aus (wie bei wamo-ui, siehe README Abschnitt "Ablage"):
@@ -9,23 +9,27 @@
 #   ssh sokrates2 "bash ~/wamo-infra/wamo-rd-einrichten.sh --trocken"          # zeigt nur an, was geschehen würde
 #   ssh sokrates2 "bash ~/wamo-infra/wamo-rd-einrichten.sh"                     # alles
 #
-#   bash wamo-rd-einrichten.sh [alles|konto|bilder|firewall|caddy|start|pruefen|status] [--trocken]
+#   bash wamo-rd-einrichten.sh [alles|konto|bilder|firewall|caddy|start|pruefen|kern|status] [--trocken]
 #
 #   konto      Benutzer wamo-rd-gateway (kein Login, keine Gruppen), /etc/wamo-rd, /var/lib/wamo-rd, Schlüssel json.key
-#              (zufällig, 0640 root:wamo-rd-gateway, wird nie ausgegeben), leere Zielliste ziele.toml
-#   bilder     die beiden Images über ihren Digest holen (nur wenn sie fehlen)
+#              (zufällig, 0640 root:wamo-rd-gateway, wird nie ausgegeben), leere Zielliste ziele.toml, Socket-Verzeichnis
+#              /run/wamo-rd (2770 wamo-rd-gateway:wamo-core, per tmpfiles.d auch nach einem Neustart)
+#   bilder     die beiden Guacamole-Images über ihren Digest holen (nur wenn sie fehlen) und das Image des Zugangsdienstes bauen
 #   firewall   Port 55446 und die Ketten WAMO-FW-RD und WAMO-FW-RDIN (wamo-firewall-einrichten.sh, per systemctl reload)
 #   caddy      Site-Datei erzeugen und prüfen, Compose von wamo-caddy anwenden (Port 55446, Netz wamo-rd-netz), Caddy neu laden.
 #              Legt wamo-caddy EINMAL neu an, wenn sich dessen Compose ändert: 55443 bis 55445 sind dann wenige Sekunden weg.
 #              Das geschieht nur ohne laufende Sitzung des Kerns.
-#   start      Container wamo-rd-guacd und wamo-rd-web starten und auf "gesund" warten
+#   start      Container wamo-rd-guacd, wamo-rd-web und wamo-rd-zugang starten und auf "gesund" warten
 #   pruefen    Rauchtest gegen den Betrieb (wamo_rd_rauchtest.py --betrieb)
+#   kern       NICHT Teil von "alles": den Kern anbinden (systemd-Drop-in für wamo-core: Gruppe wamo-rd-gateway für Schlüssel und
+#              Zugangsdaten, WAMO_RD_AKTIV=ja) und wamo-core neu starten, aber nur ohne laufende Sitzung. Erst danach gibt es den
+#              Fernzugriff in WAMO. Rückweg: wamo-rd-rueckweg.sh (Drop-in weg, Kern neu starten) oder WAMO_RD_AKTIV=nein.
 #   status     nur anzeigen
 #   --trocken  Lesen und Prüfen wie sonst, aber jede Änderung (sudo, docker pull/run, Dateien, Caddy, Firewall) nur anzeigen
 #
-# Reihenfolge bei "alles": konto, bilder, firewall, caddy, start, pruefen. Rückweg: wamo-rd-rueckweg.sh.
-# Es werden keine Ziele eingetragen, kein Passwort angelegt und kein Zugangsdienst gestartet. Ohne Zugangsdienst kann sich
-# niemand anmelden (die Webanwendung nimmt nur ein signiertes JSON aus der festen Adresse des Zugangsdienstes an).
+# Reihenfolge bei "alles": konto, bilder, firewall, caddy, start, pruefen; danach bewusst "kern". Rückweg: wamo-rd-rueckweg.sh.
+# Es werden keine Ziele eingetragen und kein Passwort angelegt. Ohne den Kern kann sich niemand anmelden (die Webanwendung nimmt
+# nur ein signiertes JSON an, das allein der Kern bauen kann, und nur aus der festen Adresse des Zugangsdienstes).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -36,6 +40,12 @@ ETC_RD=/etc/wamo-rd
 VAR_RD=/var/lib/wamo-rd
 SCHLUESSEL="$ETC_RD/json.key"
 ZIELE="$ETC_RD/ziele.toml"
+RUN_RD=/run/wamo-rd
+TMPFILES=/etc/tmpfiles.d/wamo-rd.conf
+KERN_BENUTZER=wamo-core
+KERN_DROPIN_DIR=/etc/systemd/system/wamo-core.service.d
+KERN_DROPIN="$KERN_DROPIN_DIR/wamo-rd.conf"
+ZUGANG_BILD=wamo-rd-zugang:1
 DIENST_BENUTZER=wamo-rd-gateway
 RD_PORT=55446
 RD_URL="https://192.168.178.136:$RD_PORT"
@@ -50,9 +60,9 @@ TROCKEN=nein
 BEFEHL=alles
 for arg in "$@"; do
   case "$arg" in
-    alles|konto|bilder|firewall|caddy|start|pruefen|status) BEFEHL="$arg" ;;
+    alles|konto|bilder|firewall|caddy|start|pruefen|kern|status) BEFEHL="$arg" ;;
     --trocken) TROCKEN=ja ;;
-    *) echo "Aufruf: $0 [alles|konto|bilder|firewall|caddy|start|pruefen|status] [--trocken]" >&2; exit 2 ;;
+    *) echo "Aufruf: $0 [alles|konto|bilder|firewall|caddy|start|pruefen|kern|status] [--trocken]" >&2; exit 2 ;;
   esac
 done
 
@@ -85,13 +95,15 @@ if [ "$TROCKEN" = nein ]; then
   [ "$(id -un)" = wamocon ] || fehler "Bitte als wamocon ausführen (nicht mit sudo)."
   pruefe_herkunft
 fi
-for f in wamo-rd/docker-compose.yml wamo-rd/wamo-rd.caddy.vorlage wamo-rd/ziele.toml.beispiel wamo-firewall.sh \
+for f in wamo-rd/docker-compose.yml wamo-rd/wamo-rd.caddy.vorlage wamo-rd/ziele.toml.beispiel wamo-rd/zugang/Dockerfile \
+  wamo-rd/zugang/wamo_rd_zugang.py wamo-firewall.sh \
   wamo-firewall-einrichten.sh wamo-caddy/docker-compose.yml wamo_rd_rauchtest.py; do
   [ -f "$HERE/$f" ] || fehler "$HERE/$f fehlt (infra/sokrates2 vollständig verteilen)."
 done
 
-# Die beiden Images stehen nur in der Compose-Datei (eine Quelle der Wahrheit)
-bilder_liste() { grep -E '^[[:space:]]+image: ' "$COMPOSE_QUELLE" | sed -E 's/^[[:space:]]+image:[[:space:]]+//' | tr -d '\r'; }
+# Die beiden Guacamole-Images stehen nur in der Compose-Datei (eine Quelle der Wahrheit); gezogen wird nur, was einen Digest trägt.
+# Das Image des Zugangsdienstes (wamo-rd-zugang:1) wird gebaut, nie gezogen.
+bilder_liste() { grep -E '^[[:space:]]+image: .*@sha256:' "$COMPOSE_QUELLE" | sed -E 's/^[[:space:]]+image:[[:space:]]+//' | tr -d '\r'; }
 
 # Ruhe: keine Sitzung im Kern (wie wamo-ui-einrichten.sh): ein Neustart von wamo-caddy unterbräche das Gespräch kurz
 kern_ruhig() {
@@ -172,6 +184,20 @@ konto() {
   tu sudo -n passwd -l "$DIENST_BENUTZER"
   tu sudo -n install -d -m 0750 -o root -g "$DIENST_BENUTZER" "$ETC_RD"
   tu sudo -n install -d -m 0750 -o "$DIENST_BENUTZER" -g "$DIENST_BENUTZER" "$VAR_RD"
+  # Socket-Verzeichnis des Zugangsdienstes: gehört dem Dienst, Gruppe des Kerns, setgid (der Socket erbt die Gruppe wamo-core,
+  # Modus 0660). /run ist flüchtig: tmpfiles.d legt das Verzeichnis nach jedem Neustart wieder an.
+  if getent group "$KERN_BENUTZER" >/dev/null 2>&1; then
+    if [ "$TROCKEN" = ja ]; then
+      printf '  [trocken] %s (d %s 2770 %s %s) und systemd-tmpfiles --create\n' "$TMPFILES" "$RUN_RD" "$DIENST_BENUTZER" "$KERN_BENUTZER"
+    else
+      printf '# WAMO Remote Desktop: Socket-Verzeichnis des Zugangsdienstes (infra/sokrates2/wamo-rd-einrichten.sh)\nd %s 2770 %s %s -\n' \
+        "$RUN_RD" "$DIENST_BENUTZER" "$KERN_BENUTZER" | sudo -n tee "$TMPFILES" >/dev/null
+      sudo -n chmod 0644 "$TMPFILES"
+      sudo -n systemd-tmpfiles --create "$TMPFILES"
+    fi
+  else
+    muss "Gruppe $KERN_BENUTZER fehlt (der Kern ist auf diesem Rechner nicht eingerichtet)."
+  fi
   if [ "$TROCKEN" = ja ]; then
     echo "  [trocken] Schlüssel $SCHLUESSEL (32 Hexzeichen aus openssl rand, 0640 root:$DIENST_BENUTZER), falls er fehlt; wird nie ausgegeben"
   elif sudo -n test -f "$SCHLUESSEL"; then
@@ -207,6 +233,9 @@ bilder() {
       echo "    Architektur $arch (Host $(uname -m))"
     fi
   done < <(bilder_liste)
+  # Zugangsdienst: wird aus dem Quelltext im Repo gebaut (Basis über Digest, nur Standardbibliothek); ein erneuter Lauf baut neu
+  echo "  Zugangsdienst $ZUGANG_BILD bauen"
+  tu docker build --tag "$ZUGANG_BILD" "$HERE/wamo-rd/zugang"
 }
 
 # ---------- Firewall
@@ -307,7 +336,7 @@ caddy() {
 
 # ---------- Container
 start() {
-  echo "== Container wamo-rd-guacd und wamo-rd-web"
+  echo "== Container wamo-rd-guacd, wamo-rd-web und wamo-rd-zugang"
   local uid gid
   if id "$DIENST_BENUTZER" >/dev/null 2>&1; then
     uid="$(id -u "$DIENST_BENUTZER")"
@@ -319,25 +348,36 @@ start() {
   fi
   [[ "$uid" =~ ^[0-9]+$ ]] && [[ "$gid" =~ ^[0-9]+$ ]] && [ "$uid" -ge 100 ] && [ "$gid" -ge 100 ] \
     || fehler "Unerwartete Kennung von $DIENST_BENUTZER ($uid:$gid)."
+  local kern_uid
+  if id "$KERN_BENUTZER" >/dev/null 2>&1; then
+    kern_uid="$(id -u "$KERN_BENUTZER")"
+  elif [ "$TROCKEN" = ja ]; then
+    kern_uid=990
+  else
+    fehler "Benutzer $KERN_BENUTZER fehlt (der Kern ist auf diesem Rechner nicht eingerichtet)."
+  fi
+  [[ "$kern_uid" =~ ^[0-9]+$ ]] && [ "$kern_uid" -ge 100 ] || fehler "Unerwartete Kennung von $KERN_BENUTZER ($kern_uid)."
   tu install -d -m 755 "$BASIS"
   tu install -m 644 "$COMPOSE_QUELLE" "$COMPOSE"
   if [ "$TROCKEN" = ja ]; then
-    echo "  [trocken] WAMO_RD_UID=$uid WAMO_RD_GID=$gid docker compose -f $COMPOSE up -d"
+    echo "  [trocken] WAMO_RD_UID=$uid WAMO_RD_GID=$gid WAMO_RD_KERN_UID=$kern_uid docker compose -f $COMPOSE up -d"
     return 0
   fi
   docker network inspect wamo-rd-netz >/dev/null 2>&1 || fehler "Netz wamo-rd-netz fehlt (zuerst der Schritt caddy)."
-  WAMO_RD_UID="$uid" WAMO_RD_GID="$gid" docker compose -f "$COMPOSE" up -d
+  docker image inspect "$ZUGANG_BILD" >/dev/null 2>&1 || fehler "Image $ZUGANG_BILD fehlt (zuerst der Schritt bilder)."
+  [ -d "$RUN_RD" ] || fehler "$RUN_RD fehlt (zuerst der Schritt konto)."
+  WAMO_RD_UID="$uid" WAMO_RD_GID="$gid" WAMO_RD_KERN_UID="$kern_uid" docker compose -f "$COMPOSE" up -d
   local c ok
   for _ in $(seq 1 60); do
     ok=ja
-    for c in wamo-rd-guacd wamo-rd-web; do
+    for c in wamo-rd-guacd wamo-rd-web wamo-rd-zugang; do
       [ "$(docker inspect -f '{{.State.Health.Status}}' "$c" 2>/dev/null || echo fehlt)" = healthy ] || ok=nein
     done
     [ "$ok" = ja ] && break
     sleep 2
   done
-  [ "$ok" = ja ] || { docker logs --tail 30 wamo-rd-web >&2 || true; fehler "Container sind nach 2 Minuten nicht gesund."; }
-  echo "  beide Container gesund"
+  [ "$ok" = ja ] || { docker logs --tail 30 wamo-rd-web >&2 || true; docker logs --tail 30 wamo-rd-zugang >&2 || true; fehler "Container sind nach 2 Minuten nicht gesund."; }
+  echo "  alle drei Container gesund"
 }
 
 pruefen() {
@@ -347,6 +387,32 @@ pruefen() {
     return 0
   fi
   python3 -I "$HERE/wamo_rd_rauchtest.py" --betrieb --ca "$CA"
+}
+
+# ---------- Kern anbinden (bewusst nicht Teil von "alles")
+kern() {
+  echo "== Kern anbinden (Fernzugriff in WAMO einschalten)"
+  id "$KERN_BENUTZER" >/dev/null 2>&1 || muss "Benutzer $KERN_BENUTZER fehlt."
+  if [ "$TROCKEN" = nein ]; then
+    docker inspect -f '{{.State.Health.Status}}' wamo-rd-zugang 2>/dev/null | grep -q '^healthy$' \
+      || fehler "wamo-rd-zugang läuft nicht gesund (zuerst die Schritte bilder und start)."
+    kern_ruhig || fehler "Abbruch: Gerade läuft eine Sitzung. wamo-core wird neu gestartet, sobald niemand spricht (Skript erneut ausführen)."
+  fi
+  local inhalt
+  inhalt="$(printf '# WAMO Remote Desktop (infra/sokrates2/wamo-rd-einrichten.sh kern). Entfernen: wamo-rd-rueckweg.sh\n[Service]\nSupplementaryGroups=%s\nEnvironment=WAMO_RD_AKTIV=ja\nEnvironment=WAMO_RD_URL=%s\n' "$DIENST_BENUTZER" "$RD_URL")"
+  if [ "$TROCKEN" = ja ]; then
+    printf '  [trocken] %s:\n%s\n' "$KERN_DROPIN" "$inhalt"
+    echo "  [trocken] systemctl daemon-reload; systemctl restart wamo-core"
+    return 0
+  fi
+  sudo -n install -d -m 0755 "$KERN_DROPIN_DIR"
+  printf '%s\n' "$inhalt" | sudo -n tee "$KERN_DROPIN" >/dev/null
+  sudo -n chmod 0644 "$KERN_DROPIN"
+  sudo -n systemctl daemon-reload
+  sudo -n systemctl restart wamo-core
+  sleep 5
+  systemctl is-active --quiet wamo-core || fehler "wamo-core läuft nach dem Neustart nicht (journalctl -u wamo-core). Rückweg: wamo-rd-rueckweg.sh"
+  echo "  wamo-core neu gestartet, Fernzugriff eingeschaltet (WAMO_RD_AKTIV=ja)"
 }
 
 status() {
@@ -371,6 +437,7 @@ case "$BEFEHL" in
   caddy) vorpruefung; caddy ;;
   start) start ;;
   pruefen) pruefen ;;
+  kern) kern ;;
   alles)
     vorpruefung
     konto

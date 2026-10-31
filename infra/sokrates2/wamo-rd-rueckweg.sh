@@ -5,7 +5,11 @@
 #   ssh sokrates2 "bash ~/wamo-infra/wamo-rd-rueckweg.sh --entfernen"     # zusätzlich Images, Compose-Ordner, Schlüssel, Benutzer
 #
 # Was geschieht ohne --entfernen:
-#   1. Container wamo-rd-web und wamo-rd-guacd und ihre Netze wamo-rd-guacd-netz und wamo-rd-ziel entfernen (docker compose down)
+#   0. Kern abkoppeln: das Drop-in /etc/systemd/system/wamo-core.service.d/wamo-rd.conf entfernen (Gruppe, WAMO_RD_AKTIV=ja). Der
+#      Kern läuft weiter und meldet den Fernzugriff erst nach seinem nächsten Neustart als nicht eingeschaltet; ohne Gateway
+#      scheitert jeder Start bis dahin mit einer Fehlermeldung. Wer sofort will: sudo systemctl restart wamo-core (unterbricht Gespräche).
+#   1. Container wamo-rd-web, wamo-rd-guacd und wamo-rd-zugang und ihre Netze wamo-rd-guacd-netz und wamo-rd-ziel entfernen
+#      (docker compose down); der Socket in /run/wamo-rd verschwindet mit dem Zugangsdienst
 #   2. Caddy-Site wamo-rd.caddy entfernen und Caddy neu laden (55443 bis 55445 bleiben unberührt)
 # Was bleibt: Port 55446 im Compose von wamo-caddy, das Netz wamo-rd-netz (gehört zu wamo-caddy), die Regeln in der
 # WAMO-Firewall (Port 55446, Ketten WAMO-FW-RD und WAMO-FW-RDIN) und die Dateien in /etc/wamo-rd. Ohne Site-Datei lauscht Caddy
@@ -13,7 +17,7 @@
 # auch entfernen will, spielt die vorige Fassung von wamo-firewall.sh und wamo-caddy/docker-compose.yml ein (git revert, dann
 # wamo-firewall-einrichten.sh bzw. wamo-core-caddy.sh).
 #
-# Zusätzlich mit --entfernen: Images (Guacamole), /home/wamocon/wamo-rd, /etc/wamo-rd/json.key, die leere Zielliste (nur wenn sie
+# Zusätzlich mit --entfernen: Images (Guacamole, Zugangsdienst), /home/wamocon/wamo-rd, tmpfiles.d-Eintrag und /run/wamo-rd, /etc/wamo-rd/json.key, die leere Zielliste (nur wenn sie
 # der Vorlage entspricht) und das leere Verzeichnis, der Benutzer wamo-rd-gateway. /var/lib/wamo-rd (Protokoll) bleibt, wenn
 # es nicht leer ist.
 set -euo pipefail
@@ -25,6 +29,10 @@ SITE_DATEI="$CADDY_DIR/etc/kern/wamo-rd.caddy"
 ETC_RD=/etc/wamo-rd
 VAR_RD=/var/lib/wamo-rd
 DIENST_BENUTZER=wamo-rd-gateway
+KERN_DROPIN=/etc/systemd/system/wamo-core.service.d/wamo-rd.conf
+TMPFILES=/etc/tmpfiles.d/wamo-rd.conf
+RUN_RD=/run/wamo-rd
+ZUGANG_BILD=wamo-rd-zugang:1
 # Schutz vor einer verirrten Umgebungsvariablen: gelöscht wird nur ein Ordner namens wamo-rd, nie die Wurzel oder ein Home
 case "$BASIS" in /?*/wamo-rd) ;; *) echo "Ungültiger Ordner WAMO_RD_BASIS: $BASIS" >&2; exit 2 ;; esac
 
@@ -60,14 +68,23 @@ if [ "$TROCKEN" = nein ]; then
   pruefe_herkunft
 fi
 
-echo "== 1. Container wamo-rd-web und wamo-rd-guacd, Netze"
+echo "== 0. Kern abkoppeln"
+if [ "$TROCKEN" = ja ] || [ -f "$KERN_DROPIN" ]; then
+  tu sudo -n rm -f "$KERN_DROPIN"
+  tu sudo -n systemctl daemon-reload
+  echo "  Drop-in entfernt. wamo-core übernimmt es beim nächsten Neustart (sudo systemctl restart wamo-core)"
+else
+  echo "  kein Drop-in vorhanden"
+fi
+
+echo "== 1. Container wamo-rd-web, wamo-rd-guacd und wamo-rd-zugang, Netze"
 if [ -f "$BASIS/docker-compose.yml" ]; then
-  tu env -u WAMO_RD_UID -u WAMO_RD_GID docker compose -f "$BASIS/docker-compose.yml" down --remove-orphans
+  tu env -u WAMO_RD_UID -u WAMO_RD_GID WAMO_RD_KERN_UID=1000 docker compose -f "$BASIS/docker-compose.yml" down --remove-orphans
 else
   echo "  kein Compose in $BASIS"
 fi
-# Nur die beiden festen Namen, nie ein Muster
-tu docker rm -f wamo-rd-web wamo-rd-guacd
+# Nur die festen Namen, nie ein Muster
+tu docker rm -f wamo-rd-web wamo-rd-guacd wamo-rd-zugang
 tu docker network rm wamo-rd-guacd-netz wamo-rd-ziel || true
 echo "  entfernt (das Netz wamo-rd-netz gehört zu wamo-caddy und bleibt)"
 
@@ -92,8 +109,11 @@ if [ "$ENTFERNEN" = ja ]; then
     while read -r bild; do
       [ -n "$bild" ] || continue
       tu docker image rm "$bild" || true
-    done < <(grep -E '^[[:space:]]+image: ' "$HERE/wamo-rd/docker-compose.yml" | sed -E 's/^[[:space:]]+image:[[:space:]]+//' | tr -d '\r')
+    done < <(grep -E '^[[:space:]]+image: .*@sha256:' "$HERE/wamo-rd/docker-compose.yml" | sed -E 's/^[[:space:]]+image:[[:space:]]+//' | tr -d '\r')
   fi
+  tu docker image rm "$ZUGANG_BILD" || true
+  tu sudo -n rm -f "$TMPFILES"
+  tu sudo -n rmdir "$RUN_RD" 2>/dev/null || true
   # nur ein Ordner, der wirklich das Compose-Projekt wamo-rd enthält
   if [ -f "$BASIS/docker-compose.yml" ] && grep -q '^name: wamo-rd$' "$BASIS/docker-compose.yml"; then
     tu rm -rf "$BASIS"

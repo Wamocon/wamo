@@ -1,0 +1,83 @@
+/* Fernzugriff (Einstellungen, Geräte und PC sowie eigener Abschnitt, nur Admin; components/einstellungen/Fernzugriff.tsx).
+   WMC-Farben über die Variablen aus globals.css (Rot, Schwarz, Weiß, Grautöne, kein Blau), Schrift Arial Narrow über
+   --font-wmc. Globale Regeln mit Präfix .fz-: Die Turbopack-Regel für *.css (next.config.ts) lässt CSS-Module nicht
+   als Module gelten. Zustände zeigen immer Form und Wort, nie nur Farbe. */
+.fz { display: grid; gap: 14px; min-width: 0; }
+.fz-kopf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; justify-content: space-between; }
+.fz-meldung { margin: 0; padding: 10px 14px; border-left: 4px solid var(--rule-strong); background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 0 8px 8px 0; font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
+.fz-meldung:empty { padding: 0; border: 0; background: none; min-height: 0; } /* nicht verborgen: Live-Region und Fokusziel bleiben bestehen */
+.fz-meldung[data-art="fehler"] { border-left-color: var(--accent); font-weight: 700; }
+.fz-meldung:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.fz-gruppe { display: grid; gap: 10px; min-width: 0; }
+.fz-gruppe-titel { margin: 0; font: 700 17px/1.2 var(--font-wmc); }
+.fz-liste { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.fz-karte {
+  display: grid; gap: 8px; min-width: 0; padding: 14px 16px;
+  border: 1px solid var(--rule); border-left: 4px solid var(--rule-strong); border-radius: 0 10px 10px 0;
+  background: var(--kz-karte, var(--bg));
+}
+.fz-karte[data-status="frei"] { border-left-color: var(--ink); }
+.fz-karte[data-eigene] { border-left-color: var(--accent); }
+.fz-karte[data-status="nicht_erreichbar"] { opacity: 0.85; }
+.fz-karte-kopf { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.fz-name { margin: 0; font: 700 20px/1.2 var(--font-wmc); overflow-wrap: anywhere; }
+.fz-zeile { margin: 0; font-size: 15px; line-height: 1.4; color: var(--ink-soft); }
+.fz-klein { font-size: 14px; line-height: 1.4; color: var(--ink-soft); margin: 0; }
+
+/* Zustand: Form und Wort (Kreis = frei, Quadrat = belegt, Kreuz = nicht erreichbar) */
+.fz-status { display: inline-flex; align-items: center; gap: 8px; font: 700 15px/1.2 var(--font-wmc); padding: 3px 10px 3px 8px; border: 1px solid var(--rule-strong); border-radius: 4px; }
+.fz-status[data-status="belegt"] { box-shadow: inset 3px 0 0 var(--accent); }
+.fz-marke { position: relative; flex: none; width: 14px; height: 14px; }
+.fz-marke[data-form="kreis"] { border-radius: 50%; background: var(--ink); }
+.fz-marke[data-form="quadrat"] { box-shadow: inset 0 0 0 3px var(--accent); }
+.fz-marke[data-form="kreuz"]::before, .fz-marke[data-form="kreuz"]::after {
+  content: ""; position: absolute; left: 50%; top: -1px; width: 2px; height: 16px; margin-left: -1px; background: var(--ink-soft); transform: rotate(45deg);
+}
+.fz-marke[data-form="kreuz"]::after { transform: rotate(-45deg); }
+.fz-tag { font: 700 12px/1 var(--font-wmc); letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 8px; border: 1px solid var(--ink); border-radius: 4px; background: var(--ink); color: var(--bg); }
+
+.fz-aktionen { display: flex; flex-wrap: wrap; gap: 8px; }
+.fz-aktionen button, .fz-aktionen .fz-link { min-height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
+.fz-link { text-decoration: none; }
+
+/* Laufende Sitzung: Restzeit gut lesbar, bei knapper Zeit hervorgehoben (Rahmen und Wort, nicht nur Farbe) */
+.fz-sitzung {
+  display: grid; gap: 10px; min-width: 0; padding: 14px 16px;
+  border: 2px solid var(--ink); border-left: 6px solid var(--accent); border-radius: 0 10px 10px 0; background: var(--kz-karte, var(--bg));
+}
+.fz-sitzung[data-knapp] { border-color: var(--accent); }
+.fz-rest { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.fz-rest-label { font-size: 15px; color: var(--ink-soft); }
+.fz-rest-wert { font: 700 32px/1 var(--font-code); letter-spacing: 0.02em; }
+.fz-sitzung[data-knapp] .fz-rest-wert::after { content: " (knapp)"; font: 700 15px var(--font-wmc); color: var(--accent); }
+
+/* Dialog: natives <dialog> (Fokusfalle und Escape vom Browser) */
+.fz-dialog {
+  width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 0;
+  background: var(--bg); color: var(--ink); border: 2px solid var(--ink); border-radius: 12px;
+}
+.fz-dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+.fz-dialog-form { display: grid; gap: 14px; padding: 20px 22px 22px; }
+.fz-dialog-titel { margin: 0; position: relative; padding-top: 14px; font: 700 24px/1.15 var(--font-wmc); }
+.fz-dialog-titel::before { content: ""; position: absolute; top: 0; left: 0; width: 36px; height: 4px; border-radius: 2px; background: var(--accent); }
+.fz-hinweis { display: grid; gap: 8px; padding: 10px 12px; border-left: 4px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 0 8px 8px 0; }
+.fz-hinweis p { margin: 0; font-size: 16px; line-height: 1.45; }
+.fz-feld { display: grid; gap: 5px; }
+.fz-feld label { font-size: 15px; font-weight: 700; }
+.fz-feld input[type="text"] {
+  min-height: 48px; padding: 8px 10px; background: var(--bg); color: var(--ink);
+  border: 1px solid var(--rule-strong); border-radius: 4px; font: 400 17px var(--font-wmc);
+}
+.fz-feld input[type="text"]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.fz-feld .fz-code { font: 700 24px/1 var(--font-code); letter-spacing: 0.3em; max-width: 12ch; }
+.fz-feld [aria-invalid="true"] { border-color: var(--accent); border-width: 2px; }
+.fz-fehler { margin: 0; padding: 10px 12px; border-left: 4px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 0 8px 8px 0; font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+.fz-fehler:empty { padding: 0; border: 0; background: none; }
+.fz-dialog-knoepfe { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.fz-dialog-knoepfe button { min-height: 44px; }
+@media (max-width: 859.98px) {
+  .fz-dialog-form { padding: 16px 16px 18px; }
+  .fz-dialog-knoepfe { flex-direction: column-reverse; }
+  .fz-dialog-knoepfe button { width: 100%; }
+  .fz-aktionen button, .fz-aktionen .fz-link { flex: 1 1 140px; }
+}

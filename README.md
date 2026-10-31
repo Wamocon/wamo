@@ -873,6 +873,33 @@ Tests (`code`, `analyse`, `bewerter`, `einbettung`, `latenz`, `kennenlernen`; Cl
   halten oder beim Anmelden eine kurze Aufwärmanfrage über LiteLLM schicken und alle 5 Minuten wiederholen, solange
   eine Sitzung offen ist.
 
+## Fernzugriff (Remote Desktop der Sparks)
+
+Der Admin kann von unterwegs den Bildschirm von Sokrates-1, Sokrates-2 und Caesar öffnen (Konzept `docs/remote-desktop.md`,
+Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGuard ins Büronetz, der Zugang läuft über WAMO:
+
+- **Einstieg:** Einstellungen, Abschnitt Fernzugriff (nur Admin). Karte mit den Zielen und ihrem Zustand (frei, belegt, nicht
+  erreichbar). „Verbinden“ fragt den Code der Authenticator-App ab (höchstens 120 Sekunden alt, bei jedem Start neu) und öffnet
+  die Sitzung in einem eigenen Tab. Die Karte zeigt die Restzeit und trennt auf Knopfdruck.
+- **Grenzen:** 60 Minuten Höchstdauer, 10 Minuten Leerlauf, ein Zuschauer je Ziel, höchstens 3 Sitzungen gleichzeitig, 6 Starts
+  je Stunde und Profil. Keine Zwischenablage, kein Laufwerk, kein Drucker, kein Ton, keine Aufzeichnung. Protokolliert werden nur
+  wer, welches Ziel, Start, Ende und Grund (Tabelle `rd_sitzungen`, Migration 0015).
+- **Ziele:** Die Zielliste liegt als root-Datei auf Sokrates-2 (`/etc/wamo-rd/ziele.toml`), aus der Anfrage kommt nur der Name.
+  Angemeldet wird am Spark als Konto `wamo-rd` ohne sudo, docker und SSH. Auf Sokrates-2 darf dieses Konto per Ausgangsregel
+  (`infra/sparks/wamo-rd-ausgang-einrichten.sh`) nur das Internet erreichen, nicht Kern, Datenbank, LAN oder andere Sparks.
+- **Einschalten:** `WAMO_RD_AKTIV=ja` im Kern, erst nach dem Einrichten des Gateways (`wamo-rd-einrichten.sh`) und mit den Proben
+  aus `wamo_rd_rauchtest.py`. Ohne den Schalter melden die Routen, dass der Fernzugriff nicht eingerichtet ist.
+- **Ein Code, ein Start:** Der Code der Authenticator-App gilt für genau einen Start (die Datenbank lehnt einen schon verwendeten
+  oder älteren Code ab, ein am Gateway gescheiterter Start zählt nicht). Ein zweiter Tunnel mit demselben Sitzungstoken (zweiter
+  Tab oder zweites Gerät) schließt die Sitzung nach 15 Sekunden Schonfrist.
+- **Neustart immer gemeinsam:** `docker restart wamo-rd-web wamo-rd-zugang`. Der Zugangsdienst hält seinen Zustand nur im
+  Speicher, Tokens und offene Tunnel liegen im Gateway. Nur den Zugangsdienst neu zu starten ließe Tunnel ohne Zeitlimit weiterlaufen.
+- **Offen (bekannt, bewusst nicht behoben):** Die Zertifikatsprüfung gegen xrdp ist noch nicht angeheftet (`ignore-cert`, im LAN
+  zwischen Gateway und Ziel könnte jemand mitlesen). Das Sitzungstoken steht in der Adresse und damit im Browserverlauf, bis die
+  Sitzung endet. Der Kern prüft den Zugangsdienst am Socket nicht per Benutzerkennung (der Ordner gehört `wamo-rd-gateway:wamo-core`
+  mit Modus 2770). Beim Ablösen einer eigenen Sitzung kann der alte Tunnel kurz weiterlaufen, wenn das Gateway nicht antwortet. Das
+  Gateway ist nur im Büronetz und über WireGuard erreichbar.
+
 ## Sicherheitsmodell
 
 - Zugang nur mit Konto im WAMO-Supabase, zweitem Faktor und aktivem Profil; jede Unsicherheit führt zur Ablehnung.

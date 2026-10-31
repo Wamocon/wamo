@@ -25,6 +25,7 @@ import type { WamoAktionen } from "@/lib/useWamo";
 import { wamo } from "@/lib/wamo";
 import { DarstellungAbschnitt, InfoAbschnitt, KontoAbschnitt, SpracheAbschnitt } from "./Abschnitte";
 import { Block } from "./Block";
+import { Fernzugriff } from "./Fernzugriff";
 import { GeraeteAbschnitt } from "./Geraete";
 import { VerbrauchAbschnitt } from "./Verbrauch";
 
@@ -218,6 +219,11 @@ export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props)
                 )}
                 {wirksam === "darstellung" && <DarstellungAbschnitt />}
                 {wirksam === "geraete" && <GeraeteAbschnitt onPcSteuerung={aktionen.pcSteuerung} />}
+                {wirksam === "fernzugriff" && (
+                  <Block titel="Desktop der Sparks">
+                    <Fernzugriff />
+                  </Block>
+                )}
                 {wirksam === "teilen" && (
                   <Block titel="Geteilte Arbeit">
                     <GeteiltBereich />

@@ -3795,6 +3795,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "asyncpg" },
+    { name = "cryptography" },
     { name = "httpx" },
     { name = "loguru" },
     { name = "pipecat-ai", extra = ["anthropic", "mcp", "runner", "webrtc"] },
@@ -3812,6 +3813,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.30" },
+    { name = "cryptography", specifier = "==50.0.2" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "pipecat-ai", extras = ["anthropic", "mcp", "runner", "silero", "soniox", "webrtc"], specifier = ">=1.12,<2" },

@@ -18,6 +18,7 @@ import { geraeteAnzeige } from "@/lib/geraeteAnzeige";
 import { useSelect } from "@/lib/store";
 import { istOnline, wamo, zeigeToast } from "@/lib/wamo";
 import { Block } from "./Block";
+import { Fernzugriff } from "./Fernzugriff";
 import { GeraeteVerwaltung } from "./GeraeteVerwaltung";
 
 /** So lange wartet der Schalter auf die Rückmeldung des Kerns, danach ist er wieder bedienbar. */
@@ -182,7 +183,7 @@ const EinrichtungStand = memo(function EinrichtungStand() {
 });
 
 /**
- * Abschnitt "Geräte und PC": Status der Verbindungen (jeder), Geräteverwaltung und PC-Steuerung samt Autostart (nur Admin), Betriebsart
+ * Abschnitt "Geräte und PC": Status der Verbindungen (jeder), Geräteverwaltung, PC-Steuerung samt Autostart und Fernzugriff (nur Admin), Betriebsart
  * (wo es etwas zu wählen gibt) und der Stand der Geräteeinrichtung (nur Desktop-App). Welche Blöcke es gibt, entscheidet
  * geraeteBloecke (lib/einstellungenAbschnitte.ts).
  */
@@ -206,6 +207,11 @@ export const GeraeteAbschnitt = memo(function GeraeteAbschnitt({ onPcSteuerung }
       {bloecke.includes("pc") && (
         <Block titel="PC-Steuerung">
           <PcSteuerungSchalter onSchalten={onPcSteuerung} />
+        </Block>
+      )}
+      {bloecke.includes("fernzugriff") && (
+        <Block titel="Fernzugriff">
+          <Fernzugriff />
         </Block>
       )}
       {bloecke.includes("betriebsart") && (
