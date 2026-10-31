@@ -522,7 +522,9 @@ def webseite_oeffnen(url: str, browser: str = "chrome", neuer_tab: bool = False)
     Tab). Fuer Suchen auf Shops direkt die Such-URL bauen, z. B. https://www.amazon.de/s?k=wohnzimmer+lampe.
     browser: chrome oder edge. neuer_tab=true NUR auf ausdruecklichen Wunsch der Person (dann ein neuer Tab). Ist kein
     Fenster des Browsers offen oder laesst sich der aktive Tab nicht bedienen, oeffnet sich ein neuer Tab und das
-    Ergebnis nennt den Grund. Das Ergebnis sagt, was passiert ist (tab: aktuell oder neu)."""
+    Ergebnis nennt den Grund. Das Ergebnis sagt, was passiert ist (tab: aktuell oder neu). Eine Suche auf einer schon
+    offenen Seite: entweder per Such-URL im selben Tab (dieses Werkzeug, Standard) oder ueber das Suchfeld der Seite
+    (elemente_auflisten, element_text_setzen, dann Enter mit tasten_druecken)."""
     if locked := _gesperrt("webseite_oeffnen"):
         return locked
     neu = _als_wahrheit(neuer_tab)
