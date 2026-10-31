@@ -327,6 +327,37 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Projekte, Dokumente, Desktop und Downloads im Benutzerordner, nie in AppData oder versteckten Ordnern; `system_info`
   nennt Rechnername, Benutzer-, Projekte-Ordner), das Vorholen von Fenstern ohne Alt-Druck mit Nachprüfung des Fokus
   (verweigert Windows es, meldet der Host das, statt „ist vorne“ zu behaupten) und 20 s Zeitgrenze für Lesebefehle.
+- **Browser lesen statt raten** (31.10.2026, `host/uia_control.py`, `host/wamo_host.py`): `browser_lesen` (read) liefert für
+  das oberste oder benannte Fenster von Chrome, Edge, Firefox oder Brave Titel und Adresse des aktiven Tabs, die Titel
+  der Tabs (höchstens 20), den Seitentext in Lesereihenfolge (Überschriften mit `#`, Absätze, Listen mit `-`, Links als
+  `[Text]`, Schaltflächen und Eingabefelder mit Namen und Inhalt) und den Monitor des Fensters (Zählung wie
+  `bildschirmfoto`; `fenster_auflisten` und `elemente_auflisten` nennen ihn ebenfalls). Der Text kommt in Abschnitten
+  von etwa 6000 Zeichen (`abschnitt=2` liest weiter, `gekuerzt` und `abschnitte` sagen, ob es mehr gibt), standardmäßig
+  nur der sichtbare Teil (`nur_sichtbar=false` für die ganze Seite). Ohne `fenster` gilt das oberste Browserfenster, auch
+  wenn ein anderes Fenster vorne liegt, nie die eigene Oberfläche. Das Ergebnis trägt die Marke `vertrauen:
+  unvertrauenswuerdig` samt Hinweis und Schlusszeile, und weil `browser_lesen` in `LLM_TOOLS` steht, färbt
+  `gate_pc_tools` den Zug als Fremdinhalt (kein Lernen). Die Wächter sind dieselben wie bei den UIA-Werkzeugen (Sperr-
+  Erkennung, Zielfenster-Prüfung, Rate-Grenze 60 je Minute), dazu: keine Passwort-, Anmelde-, Zugangsdaten- und
+  Zahlungsseiten, Passwort-, Karten-, PIN- und IBAN-Felder nie mit Wert (auch unter harmlosem Namen, wenn der Wert wie eine
+  Kartennummer aussieht), Adressen ohne Zugangsdaten, Fragment und geheim klingende Parameter, Tabs und Adressleiste nur
+  aus der Browser-Oberfläche (eine Seite kann sie nicht vortäuschen), keine Cookies, kein Skript, kein Debugging-Port.
+  Das Audit nennt Programm, Domain und Zahlen, nie Titel, Text oder Werte. Gemessen mit selbst gestarteten Instanzen
+  (Chrome 155, Edge 156, eigenes Profil, ohne `--force-renderer-accessibility`): Chrome und Edge liefern die Seite nach
+  dem ersten UIA-Zugriff von selbst; der erste Zugriff kann leer sein, deshalb wiederholt der Host bis zu 7 s (Chrome kalt
+  0,5 bis 1,9 s, Edge kalt 5,9 s, danach 0,2 bis 0,8 s). Amazon-Suche: 2750 Knoten, 61 000 Zeichen in 11 Abschnitten,
+  der sichtbare Teil 4200 Zeichen. Die Baumtiefe 8 reichte für Webseiten nie (das Dokument liegt bei Tiefe 7, der Inhalt
+  bis Tiefe 14): `elemente_auflisten` liefert deshalb unter einem Webdokument bis zu 80 Ebenen, gelesen mit einem
+  Zwischenspeicher (gemessen 0,25 s statt 3 s je Seite), und listet die Fensterknöpfe des Browsers (Schließen beendet alle
+  Tabs) nicht mehr auf. `bildschirmfoto` hat zusätzlich `fenster` (nur dieses Fenster, auch auf einem anderen Monitor
+  oder hinter einem anderen Fenster; was darüber liegt, ist mit auf dem Bild), `bildschirm_ansehen` reicht es durch.
+  Reihenfolge für das Modell: erst `browser_lesen` (Text), dann `elemente_auflisten` zum Bedienen, ein Bild nur, wenn Text
+  nicht reicht (Bilder, Diagramme, Layout). **Grenzen:** Firefox ist nicht gemessen (kein Firefox auf dem Testrechner;
+  die Schicht sucht den Dokumentknoten über den Steuerelementtyp, UIA in Firefox ist dünner), die Absatzgrenzen im Text
+  werden aus den Abständen auf dem Bildschirm geschätzt (Chrome und Edge liefern Absätze als lose Textstücke), Inhalte
+  in Canvas, Bildern und PDF-Viewern fehlen (dafür bleibt `bildschirm_ansehen` mit `fenster`), eine ganz neue Seite liefert
+  kurz nur den Rahmen, und die Barrierefreiheit des Browsers bleibt nach dem ersten Zugriff eingeschaltet (etwas mehr
+  Speicher im Browser). Verdeckte oder minimierte Fenster gelten als „nicht sichtbar“: dann liefert `browser_lesen` die
+  ganze Seite statt nichts.
 - **GitHub im Host** (31.10.2026, `host/wamo_host.py`): `github_repo_anlegen` (Risikoklasse critical) legt ein Repository in
   der Organisation an, nie im privaten Konto: `WAMO_GITHUB_ORG` aus der Umgebung des Hosts, sonst `Wamocon`, geprüft
   gegen eine Allowlist-Regex. Es passiert nichts ohne die Freigabe-Karte (Organisation, Name, Sichtbarkeit und

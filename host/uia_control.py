@@ -328,7 +328,10 @@ def seite_zeilen(knoten: list[SeitenKnoten], nur_sichtbar: bool = True) -> list[
                     elif luecke >= 0 and puffer and not puffer[-1][-1:].isspace() and not name[:1].isspace():
                         puffer.append(" ")  # nächste Bildschirmzeile desselben Absatzes
                 unten = max(unten or 0, k.oben + k.hoehe)
-            puffer.append(name if k.typ == "Text" else "[" + " ".join(name.split()) + "]")
+            stueck = name if k.typ == "Text" else "[" + " ".join(name.split()) + "]"
+            if k.typ == "Link" and puffer and puffer[-1] == stueck:
+                continue  # Shops liefern dasselbe Link-Stück oft doppelt (Bild und Titel verlinken beide)
+            puffer.append(stueck)
         elif k.typ in EINZELNE_TYPEN:
             if name.strip():
                 ueberspringen = k.tiefe
@@ -720,23 +723,26 @@ class ComUia(Backend):
             walker = auto.ControlViewWalker
         except Exception as e:  # noqa: BLE001
             raise UiaFehler(f"Das Fenster ist für UI Automation nicht erreichbar ({type(e).__name__})") from e
+        browser = self._browser_oberflaeche(wurzel)
         for versuch in range(DOKUMENT_VERSUCHE):
-            ergebnis, gekuerzt, web = self._lauf(auto, uia, wurzel, walker, tiefe, maximal, auch_texte)
+            ergebnis, gekuerzt, web = self._lauf(auto, uia, wurzel, walker, tiefe, maximal, auch_texte, browser)
             # Chrome und Edge schalten die Barrierefreiheit erst beim ersten Zugriff ein: dann fehlt die Webseite noch
             # und erscheint bei der Folgeabfrage (gemessen: erster Lauf 37 Knoten, zweiter 228).
-            if web or not self._browser_oberflaeche(wurzel) or versuch == DOKUMENT_VERSUCHE - 1:
+            if web or not browser or versuch == DOKUMENT_VERSUCHE - 1:
                 break
             time.sleep(DOKUMENT_WARTE_SECS)
         return ergebnis, gekuerzt
 
     @staticmethod
     def _browser_oberflaeche(wurzel) -> bool:
+        """Fenster eines Chromium- oder Firefox-Programms (Chrome, Edge, Brave, Firefox; auch Electron-Programme)?"""
         try:
-            return wurzel.CurrentFrameworkId in ("Chrome", "Gecko")
+            klasse = wurzel.CurrentClassName or ""
         except Exception:  # noqa: BLE001
             return False
+        return klasse.startswith(("Chrome_WidgetWin", "MozillaWindowClass"))
 
-    def _lauf(self, auto, uia, wurzel, walker, tiefe: int, maximal: int, auch_texte: bool):
+    def _lauf(self, auto, uia, wurzel, walker, tiefe: int, maximal: int, auch_texte: bool, browser: bool = False):
         """Ein Lauf durch den Baum: (Liste aus (Knoten, Handle), gekürzt, wurde ein Webdokument gelesen)."""
         ergebnis: list[tuple[Knoten, object]] = []
         besucht = 0
@@ -762,7 +768,8 @@ class ComUia(Backend):
                 except Exception:  # noqa: BLE001
                     continue
                 knoten = self._knoten(uia, el, pfad, auch_texte)
-                if knoten is not None and knoten.typ == "Schaltfläche" and ebene <= 6 and FENSTERKNOEPFE.match(knoten.name):
+                if (browser and knoten is not None and knoten.typ == "Schaltfläche" and ebene <= 6
+                        and FENSTERKNOEPFE.match(knoten.name)):
                     knoten = None  # Fensterknöpfe des Browsers (Schließen würde alle Tabs beenden)
                 if knoten is not None:
                     if len(ergebnis) >= maximal:

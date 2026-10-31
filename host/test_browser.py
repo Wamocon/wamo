@@ -89,6 +89,16 @@ class SeitentextTests(unittest.TestCase):
              sk(1, "Text", "Zweiter Absatz.", oben=821, hoehe=19)]  # Abstand 19 px: neuer Absatz
         self.assertEqual(u.seite_zeilen(k), ["Eine [Lampe] ist ein Gerät, das Licht macht.", "Zweiter Absatz."])
 
+    def test_doppelter_link_im_selben_block_nur_einmal(self):
+        k = [sk(1, "Link", "VASAGLE Stehlampe"), sk(1, "Link", "VASAGLE Stehlampe"), sk(1, "Text", " 21,99 €")]
+        self.assertEqual(u.seite_zeilen(k), ["[VASAGLE Stehlampe] 21,99 €"])
+
+    def test_fensterknoepfe_des_browsers_gehoeren_nicht_in_die_liste(self):
+        for name in ("Minimieren", "Maximieren", "Schließen", "Wiederherstellen", "Close"):
+            self.assertTrue(u.FENSTERKNOEPFE.match(name), name)
+        for name in ("Tab schließen", "Schließen und speichern", "Suchen"):
+            self.assertFalse(u.FENSTERKNOEPFE.match(name), name)  # nur die Knöpfe des Fensters, nicht die der Seite
+
     def test_ohne_lage_reihenfolge_im_baum(self):
         self.assertEqual(u.seite_zeilen([sk(1, "Text", "a"), sk(1, "Text", "b")]), ["ab"])
 
