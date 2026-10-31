@@ -5,19 +5,19 @@
 #   Browser ──HTTPS 55446──> wamo-caddy ──HTTP 8080 (Netz wamo-rd-netz)──> wamo-rd-web (Apache Guacamole, Webanwendung)
 #   wamo-rd-web ──guacd-Protokoll 4822 (Netz wamo-rd-guacd-netz)──> wamo-rd-guacd ──RDP 3389 (Netz wamo-rd-ziel)──> Ziel (Spark)
 #
-# Stufe 1: Das Gateway läuft OHNE Ziel und OHNE Zugangsdienst. Die Webanwendung hat keine Datenbank, keine Benutzerliste und
-# kein Gast-Konto; angemeldet wird nur mit einem signierten und verschlüsselten JSON ("Encrypted JSON authentication"), das
-# allein der Zugangsdienst (Stufe 3) erzeugen kann und nur aus seiner festen Adresse (JSON_TRUSTED_NETWORKS) annimmt. Ohne
-# Zugangsdienst gibt es keinen Weg hinein. Der Schlüssel liegt in /etc/wamo-rd/json.key (0640 root:wamo-rd-gateway), nie in
-# der Umgebung des Containers und nie in docker inspect.
+# Stufe 1 und 3: Das Gateway läuft OHNE Ziel in der Webanwendung. Sie hat keine Datenbank, keine Benutzerliste und kein
+# Gast-Konto; angemeldet wird nur mit einem signierten und verschlüsselten JSON ("Encrypted JSON authentication"), das allein der
+# Kern erzeugen kann (nur er kennt den Schlüssel) und das nur aus der festen Adresse des Zugangsdienstes (JSON_TRUSTED_NETWORKS)
+# angenommen wird. Ohne Kern und Zugangsdienst gibt es keinen Weg hinein. Der Schlüssel liegt in /etc/wamo-rd/json.key
+# (0640 root:wamo-rd-gateway), nie in der Umgebung eines Containers und nie in docker inspect.
 #
 # Netze (alle mit fester Adresse, damit die Firewall sie kennt; Vorprüfung gegen Überschneidungen macht das Einrichtungsskript):
-#   wamo-rd-netz        172.26.0.0/24  intern, ohne Adresse am Host: Caddy, wamo-rd-web (später der Zugangsdienst). Legt wamo-caddy an.
+#   wamo-rd-netz        172.26.0.0/24  intern, ohne Adresse am Host: Caddy, wamo-rd-web, wamo-rd-zugang (172.26.0.10). Legt wamo-caddy an.
 #   wamo-rd-guacd-netz  172.26.1.0/29  intern, ohne Adresse am Host: nur wamo-rd-web und wamo-rd-guacd (guacd spricht kein TLS
 #                                      und keine Anmeldung, deshalb ist er für Caddy unerreichbar). guacd lauscht NUR auf seiner
 #                                      festen Adresse 172.26.1.3 in diesem Netz, nicht im Netz wamo-rd-ziel: Prozesse auf dem Host
 #                                      erreichen ihn über die Brücke 172.27.0.1 nicht.
-#   wamo-rd-ziel        172.27.0.0/24  nicht intern: nur wamo-rd-guacd. Nach außen lässt die Firewall (Kette WAMO-FW-RD in
+#   wamo-rd-ziel        172.27.0.0/24  nicht intern: wamo-rd-guacd und der Zugangsdienst (nur für dessen Probe). Nach außen lässt die Firewall (Kette WAMO-FW-RD in
 #                                      wamo-firewall.sh) ausschließlich TCP 3389 zu den Zielen aus /etc/wamo-rd/ziele.toml durch;
 #                                      ohne Ziel geht gar nichts hinaus.
 #
@@ -129,6 +129,50 @@ services:
         aliases:
           - ${WAMO_RD_PRAEFIX:-wamo-}rd-web
       guacd: {}
+
+  # Zugangsdienst (Stufe 3): reicht die vom Kern gebaute Anweisung bei der Webanwendung ein und gibt das Sitzungstoken zurück.
+  # Kennt weder den Schlüssel noch ein Passwort. Schnittstelle nur der Unix-Socket /run/wamo-rd/ctl.sock (Modus 0660, Gruppe
+  # wamo-core über das setgid-Verzeichnis, SO_PEERCRED prüft die Benutzerkennung des Kerns), kein Netzport. Feste Adresse im
+  # Netz wamo-rd-netz = die vertraute Adresse der Webanwendung (JSON_TRUSTED_NETWORKS). Im Netz wamo-rd-ziel nur für die
+  # Erreichbarkeitsprobe (TCP-Verbindung zu den Zielen aus ziele.toml; die Kette WAMO-FW-RD lässt von dort ohnehin nur TCP 3389 zu
+  # den eingetragenen Zielen hinaus). Das Image baut wamo-rd-einrichten.sh (docker build), Compose zieht nichts.
+  zugang:
+    <<: *wamo-rd
+    image: ${WAMO_RD_PRAEFIX:-wamo-}rd-zugang:1
+    build:
+      context: ./zugang
+    container_name: ${WAMO_RD_PRAEFIX:-wamo-}rd-zugang
+    depends_on:
+      web:
+        condition: service_healthy
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    volumes:
+      # Verzeichnis des Sockets (auf dem Host root-Besitz verhindert, dass Dritte den Socket ersetzen: 2770 wamo-rd-gateway:wamo-core)
+      - ${WAMO_RD_RUN:-/run/wamo-rd}:/run/wamo-rd
+      # nur die Zielliste (keine Geheimnisse); Änderung der Liste: docker restart wamo-rd-zugang
+      - ${WAMO_RD_ZIELE_DATEI:-/etc/wamo-rd/ziele.toml}:/etc/wamo-rd-ziele.toml:ro
+    environment:
+      WAMO_RD_KERN_UID: ${WAMO_RD_KERN_UID:?WAMO_RD_KERN_UID setzen (Benutzerkennung von wamo-core)}
+      WAMO_RD_GUAC_HOST: ${WAMO_RD_PRAEFIX:-wamo-}rd-web
+      WAMO_RD_SOCKET: /run/wamo-rd/ctl.sock
+      WAMO_RD_ZIELE: /etc/wamo-rd-ziele.toml
+    healthcheck:
+      test: ["CMD", "python", "-I", "-c", "import os,stat,sys; sys.exit(0 if stat.S_ISSOCK(os.stat('/run/wamo-rd/ctl.sock').st_mode) else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      rd:
+        ipv4_address: ${WAMO_RD_ZUGANG_IP:-172.26.0.10}
+        aliases:
+          - ${WAMO_RD_PRAEFIX:-wamo-}rd-zugang
+      ziel: {}
 
 networks:
   rd:

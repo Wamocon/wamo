@@ -380,17 +380,24 @@ class GatewayDateiTests(unittest.TestCase):
 
     def test_images_nur_ueber_digest(self):
         bilder = re.findall(r"^\s+image:\s+(\S+)", self.compose, flags=re.M)
-        self.assertEqual(len(bilder), 2)
-        for b in bilder:
+        self.assertEqual(len(bilder), 3)
+        gezogen = [b for b in bilder if "@" in b]
+        self.assertEqual(len(gezogen), 2)
+        for b in gezogen:
             self.assertRegex(b, r"^guacamole/(guacd|guacamole):1\.6\.0@sha256:[0-9a-f]{64}$")
+        # der Zugangsdienst wird gebaut, nie gezogen (pull_policy: never aus dem Anker)
+        self.assertEqual([b for b in bilder if "@" not in b], ["${WAMO_RD_PRAEFIX:-wamo-}rd-zugang:1"])
+        dockerfile = (RD / "zugang" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertRegex(dockerfile, r"(?m)^FROM python:3\.13-alpine@sha256:[0-9a-f]{64}$")
 
     def test_haertung_wie_wamo_ui(self):
         for soll in ("pull_policy: never", "read_only: true", "- ALL", "no-new-privileges:true", "init: true",
                      "restart: unless-stopped", "mem_limit: 768m", "mem_limit: 256m", "pids_limit: 256", "pids_limit: 128",
-                     "cpus: 1.0", "noexec", "max-size", 'user: "${WAMO_RD_UID:-65534}:${WAMO_RD_GID:-65534}"'):
+                     "cpus: 1.0", "noexec", "max-size", 'user: "${WAMO_RD_UID:-65534}:${WAMO_RD_GID:-65534}"',
+                     "mem_limit: 128m", "pids_limit: 64", "cpus: 0.5"):
             self.assertIn(soll, self.compose)
         self.assertEqual(self.compose.count("cap_drop:"), 1)  # im gemeinsamen Anker beider Dienste
-        self.assertEqual(self.compose.count("<<: *wamo-rd"), 2)
+        self.assertEqual(self.compose.count("<<: *wamo-rd"), 3)
         for verboten in ("privileged", "network_mode", "pid:", "ipc:", "docker.sock", "cap_add", "ports:", "expose:", "devices:",
                          "extra_hosts", "host.docker.internal", "JSON_SECRET_KEY:", "POSTGRESQL_", "MYSQL_", "LDAP_", "env_file",
                          "TOTP_", "OPENID_", "SAML_"):
@@ -404,9 +411,32 @@ class GatewayDateiTests(unittest.TestCase):
         # echte Absenderadresse hinter Caddy; vertraut wird nur Caddy (feste Adresse), nicht jedes private Netz
         self.assertIn('REMOTE_IP_VALVE_ENABLED: "true"', self.compose)
         self.assertIn("REMOTE_IP_VALVE_INTERNAL_PROXIES: ${WAMO_RD_PROXY_REGEX:-172[.]26[.]0[.]2}", self.compose)
-        # ein Bind-Mount, nämlich der Schlüssel (lesend)
-        self.assertEqual(self.compose.count("volumes:"), 1)
+        # Die Webanwendung mountet genau den Schlüssel (lesend); den Schlüssel sieht kein anderer Container
+        self.assertEqual(self.compose.count("volumes:"), 2)
         self.assertEqual(len(re.findall(r"^\s+- \$\{WAMO_RD_KEY:[^}]*\}:/run/wamo-rd/json\.key:ro$", self.compose, flags=re.M)), 1)
+        web = self.compose.split("\n  web:\n")[1].split("\n  zugang:\n")[0]
+        self.assertIn("json.key:ro", web)
+        zugang = self.compose.split("\n  zugang:\n")[1].split("\nnetworks:")[0]
+        self.assertNotIn("json.key", zugang)
+        self.assertNotIn("ziele.env", zugang)
+        self.assertNotIn("PASSWORT", zugang.upper())
+
+    def test_zugangsdienst(self):
+        zugang = self.compose.split("\n  zugang:\n")[1].split("\nnetworks:")[0]
+        # genau zwei Bind-Mounts: das Socket-Verzeichnis und die Zielliste (lesend, ohne Geheimnisse)
+        mounts = re.findall(r"^\s+- (\$\{WAMO_RD_[A-Z_]+:-[^}]*\}:\S+)$", zugang, flags=re.M)
+        self.assertEqual(mounts, ["${WAMO_RD_RUN:-/run/wamo-rd}:/run/wamo-rd",
+                                  "${WAMO_RD_ZIELE_DATEI:-/etc/wamo-rd/ziele.toml}:/etc/wamo-rd-ziele.toml:ro"])
+        # feste Adresse = vertraute Adresse der Webanwendung (JSON_TRUSTED_NETWORKS)
+        self.assertIn("ipv4_address: ${WAMO_RD_ZUGANG_IP:-172.26.0.10}", zugang)
+        self.assertIn("172.26.0.10/32", self.compose)
+        self.assertIn("WAMO_RD_KERN_UID: ${WAMO_RD_KERN_UID:?", zugang)   # ohne Benutzerkennung des Kerns startet er nicht
+        self.assertIn("service_healthy", zugang)
+        for verboten in ("ports:", "expose:", "privileged", "docker.sock", "cap_add", "env_file", "JSON_SECRET"):
+            self.assertNotIn(verboten, zugang, verboten)
+        # im Netz mit Ausgang nur für die Erreichbarkeitsprobe; die Firewall lässt dort nur TCP 3389 zu den Zielen durch
+        self.assertIn("ziel: {}", zugang)
+        self.assertIn("rd:\n        ipv4_address", zugang)
 
     def test_netze(self):
         self.assertRegex(self.compose, r"guacd:\s+name: \$\{WAMO_RD_GUACD_NETZ:-wamo-rd-guacd-netz\}\s+internal: true")
@@ -416,7 +446,7 @@ class GatewayDateiTests(unittest.TestCase):
         ziel = self.compose.split("  ziel:\n", 2)[-1]
         self.assertNotIn("internal", ziel)
         # guacd allein hat das Netz mit Ausgang; die Webanwendung hängt nur in rd und guacd
-        web = self.compose.split("  web:\n")[1].split("\nnetworks:")[0]
+        web = self.compose.split("\n  web:\n")[1].split("\n  zugang:\n")[0]
         self.assertNotIn("ziel", web)
         guacd = self.compose.split("\n  guacd:\n")[1].split("\n  web:\n")[0]
         self.assertIn("ziel: {}", guacd)
@@ -462,7 +492,9 @@ class GatewayDateiTests(unittest.TestCase):
         self.assertIsNone(re.search(r"(?i)passw|kennwort\s*=|secret\s*=|token\s*=", _ohne_kommentare(b)))
 
     def test_alle_dateien_ohne_gedankenstriche_und_cr(self):
-        for f in list(RD.iterdir()) + [SOKRATES2 / "wamo_rd_rauchtest.py", SOKRATES2 / "wamo-firewall.sh"]:
+        dateien = [f for f in RD.rglob("*") if f.is_file()]
+        self.assertIn("wamo_rd_zugang.py", [f.name for f in dateien])
+        for f in dateien + [SOKRATES2 / "wamo_rd_rauchtest.py", SOKRATES2 / "wamo-firewall.sh"]:
             roh = f.read_bytes()
             self.assertNotIn(b"\r", roh, f.name)
             t = roh.decode("utf-8")
