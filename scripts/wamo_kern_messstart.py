@@ -22,6 +22,9 @@ _ORIGINAL = dotenv.load_dotenv
 
 
 def _laden(*args, **kwargs):
+    if not args and "dotenv_path" not in kwargs:
+        # wie in bot.py gesucht (Arbeitsordner voice-core), nicht ab dieser Datei
+        args = (dotenv.find_dotenv(usecwd=True),)
     ergebnis = _ORIGINAL(*args, **kwargs)
     os.environ.update(FEST)
     return ergebnis

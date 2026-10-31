@@ -595,7 +595,7 @@ deutlich über dieser Streuung liegt.
 | Werkzeug+mhm: Ergebnis kam | 5 von 5 | 4 von 5 | 2 von 3 | 3 von 3 | 3 von 3 | 5 von 5 |
 
 Streuung der Läufe untereinander (Schalter jeweils irrelevant für die Kennzahl): Verstummen Median 1290 bis 1400 ms, p95 1780
-bis 2480 ms; größte Stille p95 660 bis 780 ms; erster Ton nach Faktenfrage Median 2316 bis 2617 ms (früher 2058 bis 2101 ms);
+bis 2260 ms (mit dem Lauf zu `WAMO_RUECKMELDUNG_WERKZEUG` 2480 ms); größte Stille p95 660 bis 780 ms; erster Ton nach Faktenfrage Median 2316 bis 2617 ms (früher 2058 bis 2101 ms);
 Unterbrechungen durch Echo 3 bis 11 je 4 Läufe (frühere Läufe `vorher2` 11, `nachher2` 3, `basis3` 7); Zug bei Rückmeldelaut
 ohne den Schalter 21 von 38 Lauten.
 
@@ -605,7 +605,7 @@ abschaltbar mit `aus`, `0`, `nein`, einschaltbar mit `an`, `1`, `ja`):
 | Schalter | Standard | Begründung |
 | --- | --- | --- |
 | `WAMO_PAUSEN_PROMPT` | an | Lauf vollständig, alle Kennzahlen in der Streuung (Verstummen 1315 / 2260 ms, verpasst 0 von 6, erster Ton Fakten 2336 / 2574 ms, WAMO redet in den Pausen nie dazwischen). Der Nutzen (keine Floskel „Ich bin noch da“) zeigt sich in den Kennzahlen nicht, nur in der Hörprobe |
-| `WAMO_RUECKMELDUNG_WERKZEUG` | an | Zug bei Rückmeldelaut 0 von 10 statt 5 von 10 (und 21 von 38 in den Läufen ohne Schalter), Ergebnis kam 5 von 5, Median des Verstummens gleich (1345 gegen 1340 ms), keine verpassten Einwürfe, keine falschen Unterbrechungen. Das 95. Perzentil des Verstummens (2480 ms) ist der größte von 8 Werten und liegt knapp über den anderen Läufen (bis 2260 ms). Freigaben entscheidet nie die Sprache, Sätze mit Inhalt („Ja, bitte freigeben“) starten weiter einen Zug (`test_werkzeug_rueckmeldung.py`) |
+| `WAMO_RUECKMELDUNG_WERKZEUG` | an | Zug bei Rückmeldelaut 0 von 10 statt 5 von 10 (und 21 von 38 in den Läufen ohne Schalter), Ergebnis kam 5 von 5, Median des Verstummens gleich (1345 gegen 1340 ms), keine verpassten Einwürfe, keine falschen Unterbrechungen. Das 95. Perzentil des Verstummens (2480 ms) ist der größte von 8 Werten und liegt knapp über den anderen Läufen (bis 2260 ms), ebenso die erste Reaktion p95 921 ms (sonst 770 bis 799 ms, ein Ausreißer). Im Szenario Pause redete WAMO einmal dazwischen (1 von 6, sonst 0): der Schalter wirkt nur bei laufendem Werkzeug und im Szenario Pause läuft keines, vermutlich Zufall bei kleiner Stichprobe, ausgeschlossen ist es nicht Freigaben entscheidet nie die Sprache, Sätze mit Inhalt („Ja, bitte freigeben“) starten weiter einen Zug (`test_werkzeug_rueckmeldung.py`) |
 | `WAMO_TTS_SATZLEERZEICHEN` | aus | Lauf brach beim Echo-Szenario ab (Browser geschlossen), Echo und Pause nicht gemessen; die übrigen Kennzahlen in der Streuung. Nutzen (Satzzeichen nicht vorlesen) nur in der Hörprobe prüfbar |
 | `WAMO_PERSONA_RUECKFRAGEN` | aus | Lauf unvollständig (Datenbankausfall, Einwurf, Backchannel, Echo, Pause fehlen); erster Ton nach Faktenfrage 2840 ms gegen 2316 bis 2617 ms in den anderen Läufen, bei 6 Fragen nicht entscheidbar |
 | `WAMO_PERSONA_PC_ORDNER` | aus | Sitzung mit den Faktenfragen fiel auf ein Hausmodell (Datenbank nicht erreichbar), nicht gemessen; erster Ton bei Websuche p95 5852 ms gegen 2441 bis 2791 ms (ein Ausreißer bei 4 Antworten) |

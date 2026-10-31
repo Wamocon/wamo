@@ -53,7 +53,9 @@ STANDARDWERTE: dict[str, bool] = {
     "WAMO_PAUSEN_PROMPT": True,
     # AN: Zug bei Rückmeldelaut während des Werkzeugs 0 von 10 gegen 5 von 10 in der Basis (21 von 38 über alle Läufe ohne
     # den Schalter), Ergebnis kam 5 von 5 wie in der Basis, Verstummen 1345 / 2480 ms gegen 1340 / 1910 ms (Median gleich),
-    # verpasste Einwürfe 0 von 8, falsche Unterbrechungen im Log 0 von 15. Stoppwörter und echte Einwürfe wirken weiter,
+    # verpasste Einwürfe 0 von 8, falsche Unterbrechungen im Log 0 von 15. Auffällig, aber ohne Wirkweg: erste Reaktion p95
+    # 921 ms (sonst 770 bis 799) und im Szenario Pause 1 von 6 Pausen mit Rede dazwischen (sonst 0); der Schalter wirkt nur bei
+    # laufendem Werkzeug. Stoppwörter und echte Einwürfe wirken weiter,
     # eine Freigabe entscheidet nie die Sprache (test_werkzeug_rueckmeldung.py).
     "WAMO_RUECKMELDUNG_WERKZEUG": True,
     # AUS: nicht gemessen (der Lauf kam nicht mehr zustande); der Wächter braucht Messung UND die Freigabe-Prüfung.

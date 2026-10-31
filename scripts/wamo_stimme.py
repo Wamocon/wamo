@@ -599,7 +599,7 @@ def auswerten(ordner: Path, laeufe: list[str]) -> None:
         drucken(lauf, z)
         haus = hausmodell_sitzungen(ordner / f"{lauf}.kern.log")
         if haus:
-            print(f"  ACHTUNG: {haus} Sitzung(en) liefen auf Hausmodell statt Claude (Datenbank oder Netz): diese Szenarien wiederholen")
+            print(f"  ACHTUNG: {haus} Gesprächsmodell-Auswahl(en) fielen auf ein Hausmodell statt Claude (Datenbank oder Netz): diese Szenarien wiederholen")
 
 
 def hoerprobe(ordner: Path, lauf: str, ziel: Path, label: str) -> None:
