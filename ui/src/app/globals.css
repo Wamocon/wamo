@@ -2,6 +2,7 @@
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
 @import "../components/einstellungen/einstellungen.css"; /* Einstellungsseite: Regeln unter .ez */
 @import "../components/einstellungen/geraeteVerwaltung.css"; /* Geräteverwaltung der Admins: Regeln mit Präfix .gv- */
+@import "../components/einstellungen/fernzugriff.css"; /* Fernzugriff der Admins: Regeln mit Präfix .fz- */
 @import "../components/liveBild.css"; /* Live-Bild des Laptops: Regeln mit Präfix .lb- */
 @import "../components/modellzugang.css"; /* Karte Modellzugang: Regeln mit Präfix .mz- */
 
