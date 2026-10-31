@@ -69,6 +69,45 @@ test("auch ein sehr langer Satz wird zügig geprüft (keine Rückverfolgungsfall
   assert.ok(performance.now() - start < 500);
 });
 
+test("ein Buchstabe für Buchstabe diktierter Schlüssel (rund 100 Zeichen) wird ganz entfernt", () => {
+  const buchstaben = "a b c d e f g h i j k l m n o p q r s t u v w x y z ".repeat(4);
+  assert.equal(schluesselEntfernen(`s k a n t o a t null eins ${buchstaben}`).text.trim(), SCHLUESSEL_MARKE);
+  assert.equal(schluesselEntfernen("S K Strich A N T Strich O A T null eins A B C D E F G H").text, SCHLUESSEL_MARKE);
+});
+
+test("unsichtbare Zeichen und Unicode-Striche umgehen den Filter nicht", () => {
+  for (const satz of [
+    "s\u200Bk-ant-api03-GEHEIMgeheim-0123456789abcdef",
+    "sk\u2011ant\u2011api03\u2011GEHEIMgeheim0123456789abcdef",
+    "sk\u00ADant-api03-GEHEIMgeheim0123456789abcdef",
+    "\uFEFFsk-ant-oat01-GEHEIMgeheim0123456789abcdef",
+  ]) {
+    const { text, entfernt } = schluesselEntfernen(satz);
+    assert.equal(entfernt, true, satz);
+    assert.ok(ohneGeheimnis(text), text);
+  }
+});
+
+test("ein Satz ohne Schlüssel bleibt Zeichen für Zeichen erhalten (keine Normalisierung)", () => {
+  const satz = "Straße \u2013 Café\u200B ok";
+  assert.deepEqual(schluesselEntfernen(satz), { text: satz, entfernt: false });
+});
+
+test("Grenze 499, 500, 501 Zeichen und ein Emoji an der Grenze", () => {
+  assert.equal(bereiteText("x".repeat(499))?.text.length, 499);
+  assert.equal(bereiteText("x".repeat(500))?.text.length, 500);
+  assert.equal(bereiteText("x".repeat(501))?.text.length, 500);
+  const emoji = bereiteText("x".repeat(499) + "\u{1F600}")?.text ?? "";
+  assert.ok(!/[\uD800-\uDBFF]$/.test(emoji), "kein halbes Surrogatpaar am Ende");
+});
+
+test("ein beim Kürzen halbierter Marker geht nicht mit", () => {
+  const t = bereiteText("x ".repeat(245) + API);
+  assert.ok(t);
+  assert.ok(!t.text.includes("[Schl"), t.text.slice(-30));
+  assert.ok(ohneGeheimnis(t.text));
+});
+
 // ---------- Vorbereitung ----------
 
 test("leere und leere-nach-Trimmen Eingaben ergeben nichts", () => {
@@ -138,11 +177,12 @@ afterEach(() => mock.restoreAll());
 test("ein getippter Schlüssel erreicht weder Kern noch Anzeige noch Meldung noch Konsole, das Feld wird geleert", async () => {
   const { w, aufrufe, ok } = wege();
   assert.equal(textAbschicken(`Merk dir ${API} bitte`, w), true, "true: das Feld wird geleert");
+  await warte();
   ok();
   await warte();
   assert.deepEqual(
     aufrufe.map((a) => a.was),
-    ["hinweis", "senden", "angenommen"],
+    ["hinweis", "angenommen", "senden"],
   );
   for (const a of aufrufe) assert.ok(ohneGeheimnis(a.text), `${a.was}: ${a.text}`);
   assert.equal(aufrufe.find((a) => a.was === "senden")?.text, `Merk dir ${SCHLUESSEL_MARKE} bitte`);
@@ -154,6 +194,7 @@ test("ein Schlüssel in jeder Schreibweise geht nie an den Kern", async () => {
   for (const satz of SAETZE_MIT_SCHLUESSEL) {
     const { w, aufrufe, ok } = wege();
     textAbschicken(`Hallo ${satz}`, w);
+    await warte();
     ok();
     await warte();
     for (const a of aufrufe) assert.ok(ohneGeheimnis(a.text), `${a.was}: ${a.text}`);
@@ -196,6 +237,7 @@ test("nie zwei Sendungen zugleich: die zweite bleibt im Feld, danach geht es wie
   assert.equal(textAbschicken("eins", w), true);
   assert.equal(besetzt.wert, true);
   assert.equal(textAbschicken("zwei", w), false);
+  await warte();
   assert.equal(aufrufe.filter((a) => a.was === "senden").length, 1);
   ok();
   await warte();
@@ -206,25 +248,28 @@ test("nie zwei Sendungen zugleich: die zweite bleibt im Feld, danach geht es wie
 test("schlägt das Senden fehl, kommt eine Meldung und die Sperre wird gelöst", async () => {
   const { w, aufrufe, besetzt, fehl } = wege();
   textAbschicken("Hallo", w);
+  await warte();
   fehl();
   await warte();
   assert.deepEqual(
     aufrufe.map((a) => a.was),
-    ["senden", "fehler"],
+    ["angenommen", "senden", "fehler"],
   );
   assert.equal(besetzt.wert, false);
 });
 
-test("nach einem Trennen wird die späte Antwort nicht mehr in die Anzeige übernommen", async () => {
-  const lebt = { wert: true };
-  const { w, aufrufe, ok } = wege({ aktuell: () => lebt.wert });
+test("wirft senden synchron, wird die Sperre gelöst und es kommt eine Meldung", async () => {
+  const { w, aufrufe, besetzt } = wege({
+    senden: () => {
+      throw new Error("sofort");
+    },
+  });
   textAbschicken("Hallo", w);
-  lebt.wert = false;
-  ok();
   await warte();
+  assert.equal(besetzt.wert, false);
   assert.deepEqual(
     aufrufe.map((a) => a.was),
-    ["senden"],
+    ["angenommen", "fehler"],
   );
 });
 
@@ -289,6 +334,10 @@ test("Text nimmt nur ein Kern mit Protokoll 2 oder neuer an", () => {
   assert.equal(unterstuetztText(undefined), false);
   assert.equal(unterstuetztText({ version: "2.1.0" }), false);
   assert.equal(unterstuetztText("zwei"), false);
+});
+
+test("ist die Anzeige schon übernommen, kommt bei einem Fehler nur eine Meldung dazu", () => {
+  assert.match(eingabeHinweis({ entscheidungen: 0, werkzeugLaeuft: false, kernOhneText: true }) ?? "", /keinen getippten Text/);
 });
 
 test("der Hinweis unter der Eingabe nennt zuerst die Freigabe, dann die laufende Arbeit", () => {

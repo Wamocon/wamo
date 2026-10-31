@@ -18,17 +18,29 @@ export const SCHLUESSEL_MARKE = "[Schlüssel entfernt]";
 
 // Gleiche Erkennung wie der Kern (voice-core/schluessel_filter.py): genaue Form und gesprochene Form
 const GENAU = /sk-ant-[A-Za-z0-9_-]{6,}/gi;
+const BINDESTRICHE = /[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g; // Unicode-Striche, die wie ein Bindestrich aussehen
 const SEP = "(?:[\\s\\-_–—.]|strich|minus|bindestrich|dash){0,3}";
 const SKANT = `\\bs${SEP}k${SEP}a${SEP}n${SEP}t`;
 const ART = `(?:api|oat|a${SEP}p${SEP}i|o${SEP}a${SEP}t)`;
-const LOCKER = new RegExp(`${SKANT}${SEP}${ART}${SEP}\\d{0,2}(?:${SEP}[A-Za-z0-9]{1,6}){3,60}`, "gi");
+const LOCKER = new RegExp(`${SKANT}${SEP}${ART}${SEP}\\d{0,2}(?:${SEP}[A-Za-z0-9]{1,6}){3,200}`, "gi");
 const ANFANG = new RegExp(`${SKANT}${SEP}${ART}\\w*`, "gi");
 
 /** Ersetzt Schlüssel im Text durch die Marke. entfernt: es wurde etwas ersetzt. */
 export function schluesselEntfernen(text: string): { text: string; entfernt: boolean } {
   if (!text) return { text, entfernt: false };
-  const neu = text.replace(GENAU, SCHLUESSEL_MARKE).replace(LOCKER, SCHLUESSEL_MARKE).replace(ANFANG, SCHLUESSEL_MARKE);
-  return { text: neu, entfernt: neu !== text };
+  // Reihenfolge wie im Kern: erst die genaue Form (die lockere würde sonst die Wörter nach dem Schlüssel mitnehmen).
+  // Vorher: Unicode-Normalisierung, unsichtbare Zeichen (U+200B, U+00AD, U+FEFF) entfernen, Unicode-Striche glätten.
+  const glatt = text.normalize("NFKC").replace(/\p{Cf}/gu, "").replace(BINDESTRICHE, "-");
+  const neu = glatt.replace(GENAU, SCHLUESSEL_MARKE).replace(LOCKER, SCHLUESSEL_MARKE).replace(ANFANG, SCHLUESSEL_MARKE);
+  // Ohne Fund bleibt der Text genau wie eingegeben (die Glättung gilt nur, wenn ein Schlüssel da war)
+  return neu !== glatt ? { text: neu, entfernt: true } : { text, entfernt: false };
+}
+
+/** Auf höchstens n UTF-16-Einheiten kürzen, ohne ein Surrogatpaar (Emoji) in der Mitte zu teilen. */
+function kuerzeSicher(text: string, n: number): string {
+  if (text.length <= n) return text;
+  const k = text.slice(0, n);
+  return /[\uD800-\uDBFF]$/.test(k) ? k.slice(0, -1) : k;
 }
 
 export type VorbereiteterText = {
@@ -46,11 +58,11 @@ export type VorbereiteterText = {
  */
 export function bereiteText(roh: string): VorbereiteterText | null {
   // Obergrenze vor dem Filtern: der Filter soll nie unbegrenzt lange Eingaben prüfen müssen
-  const eingabe = roh.slice(0, MAX_TEXT * 4).replace(/[\p{Cc}\u2028\u2029]+/gu, " ").trim();
+  const eingabe = kuerzeSicher(roh, MAX_TEXT * 4).replace(/[\p{Cc}\u2028\u2029]+/gu, " ").trim();
   if (!eingabe) return null;
   const { text, entfernt } = schluesselEntfernen(eingabe);
-  const gekuerzt = text.slice(0, MAX_TEXT).trim();
-  // Ein abgeschnittenes Stück der Marke ist keine Nachricht
+  // Kürzen ohne ein Surrogatpaar zu teilen; ein beim Kürzen halbierter Marker bleibt nicht stehen
+  const gekuerzt = kuerzeSicher(text, MAX_TEXT).replace(/\[Schl[^\]]{0,19}$/u, "").trim();
   const rest = gekuerzt.split(SCHLUESSEL_MARKE).join("").replace(/[\s.,;:!?-]+/g, "");
   return { text: gekuerzt, geschwaerzt: entfernt, senden: rest.length > 0 };
 }
@@ -74,7 +86,8 @@ export type TextWege = {
   /** Meldung ohne Fehlercharakter (Schlüssel entfernt) */
   hinweis: (text: string) => void;
   fehler: (art: "verbindung" | "dienst" | "sonst", text: string) => void;
-  /** Der Kern hat die Nachricht angenommen: in die Anzeige übernehmen */
+  /** Die Nachricht geht jetzt los: in die Anzeige übernehmen (sofort, damit die Reihenfolge stimmt; bei einem Fehler
+   *  folgt eine Meldung) */
   angenommen: (text: string) => void;
   /** Gehört der Rückruf noch zur selben Verbindung? */
   aktuell: () => boolean;
@@ -101,16 +114,18 @@ export function textAbschicken(roh: string, w: TextWege): boolean {
   if (t.geschwaerzt) w.hinweis(schluesselHinweis(t.senden));
   if (!t.senden) return true; // nur ein Schlüssel: nichts senden, das Feld wird trotzdem geleert
   w.setzeBesetzt(true);
-  w.senden(t.text)
+  w.angenommen(t.text);
+  // Promise.resolve().then: auch ein synchron werfendes senden löst die Sperre wieder
+  Promise.resolve()
+    .then(() => w.senden(t.text))
     .then(
-      () => {
-        if (w.aktuell()) w.angenommen(t.text);
-      },
+      () => undefined,
       () => {
         if (w.aktuell()) w.fehler("sonst", "Die Nachricht konnte nicht gesendet werden. Bitte noch einmal versuchen.");
       },
     )
-    .finally(() => w.setzeBesetzt(false));
+    .finally(() => w.setzeBesetzt(false))
+    .catch(() => undefined);
   return true;
 }
 
@@ -130,6 +145,8 @@ export type EingabeLage = {
   entscheidungen: number;
   /** ein Werkzeug läuft gerade */
   werkzeugLaeuft: boolean;
+  /** Gespräch läuft, aber der Kern nimmt keinen Text an (Feld gesperrt) */
+  kernOhneText?: boolean;
 };
 
 /** Kurzer Hinweis unter der Eingabepille oder null. Freigaben haben Vorrang, denn sie sind sicherheitsrelevant. */
@@ -137,6 +154,7 @@ export function eingabeHinweis(l: EingabeLage): string | null {
   if (l.entscheidungen > 0) {
     return "Freigaben gibst du nur mit Klick auf die Karte. Ein getipptes Ja ersetzt sie nicht.";
   }
+  if (l.kernOhneText) return "Dieser Kern nimmt keinen getippten Text an. Bitte sprich mit WAMO.";
   if (l.werkzeugLaeuft) return "WAMO arbeitet gerade. Eine neue Nachricht unterbricht die Arbeit.";
   return null;
 }

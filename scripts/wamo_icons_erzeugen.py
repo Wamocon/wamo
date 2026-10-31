@@ -48,6 +48,8 @@ def wortmarke(logo: Image.Image) -> Image.Image:
     alpha = logo.convert("RGBA").getchannel("A")
     breite, hoehe = alpha.size
     belegt = [alpha.crop((0, y, breite, y + 1)).getbbox() is not None for y in range(hoehe)]
+    if not any(belegt):
+        raise SystemExit("Das Logo hat keinen Alphakanal mit Inhalt.")
     anfang = next(y for y, b in enumerate(belegt) if b)
     letzte = max(y for y, b in enumerate(belegt) if b)
     # Lücken zwischen belegten Zeilen: (Länge, erste leere Zeile)
@@ -67,7 +69,10 @@ def wortmarke(logo: Image.Image) -> Image.Image:
             ende = start - 1
     block = alpha.crop((0, anfang, breite, ende + 1))
     box = block.getbbox()
-    return block.crop(box) if box else block
+    marke = block.crop(box) if box else block
+    if not 2.8 < marke.width / marke.height < 3.8:  # Wortmarke ist rund 3,3 mal so breit wie hoch
+        raise SystemExit("Die Wortmarke wurde falsch zugeschnitten (Seitenverhältnis); das Logo hat sich geändert?")
+    return marke
 
 
 def symbol(marke: Image.Image, kante: int, anteil: float) -> Image.Image:

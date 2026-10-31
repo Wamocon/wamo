@@ -431,10 +431,15 @@ export function useWamo(): WamoAktionen {
       fertig: () => wamo.get().betrieb !== null,
       verlaengern: async (n) => {
         try {
-          const status = await navigator.permissions?.query({ name: "microphone" as PermissionName });
+          // Safari (iPhone) kennt die Abfrage teils nicht oder antwortet nie: höchstens 2 s warten
+          const status = await Promise.race([
+            navigator.permissions.query({ name: "microphone" as PermissionName }),
+            new Promise<null>((r) => setTimeout(() => r(null), 2000)),
+          ]);
           return sollVerlaengern(status?.state, n);
         } catch {
-          return false; // Zustand nicht lesbar (ältere Browser): die Frist gilt
+          // Zustand nicht lesbar: einmal um 20 s verlängern (die Person liest vielleicht noch die Mikrofonfrage), dann gilt die Frist
+          return n < 1;
         }
       },
       beiAblauf: () => teardown("frist", fristMeldung(wamo.get().kern)),
@@ -1009,14 +1014,23 @@ export function useWamo(): WamoAktionen {
       setzeBesetzt: (b) => {
         if (genRef.current === gen) textLaeuft.current = b;
       },
+      // höchstens 10 s warten, sonst bleibt das Feld nicht für immer gesperrt
       senden: (text) =>
         clientRef.current
-          ? clientRef.current.sendText(text, { run_immediately: true, audio_response: true })
+          ? Promise.race([
+              clientRef.current.sendText(text, { run_immediately: true, audio_response: true }),
+              new Promise<never>((_, nein) => setTimeout(() => nein(new Error("Zeitüberschreitung")), 10_000)),
+            ])
           : Promise.reject(new Error("keine Verbindung")),
       hinweis: (text) => setFehler({ art: "hinweis", text }),
       fehler: (art, text) => setFehler({ art, text }),
       angenommen: (text) => {
-        if (wamo.get().presence === "speaking") planeSchnitt(cutTimer);
+        if (wamo.get().presence === "speaking") {
+          // Unterbrechung durch Tippen: Stimmlinie und Rand zeigen sie wie bei einem gesprochenen Einwurf
+          levelsRef.current.cut = true;
+          levelsRef.current.cutAt = performance.now();
+          planeSchnitt(cutTimer);
+        }
         wamo.set((s) => nimmeTextAuf(s, text));
       },
       aktuell: () => genRef.current === gen,

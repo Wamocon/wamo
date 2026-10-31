@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState, type FormEvent } from "react";
+import { memo, useRef, useState, type FormEvent } from "react";
 import { VoiceLine } from "@/components/VoiceLine";
 import { useSelect } from "@/lib/store";
 import { eingabeHinweis, MAX_TEXT } from "@/lib/textEingabe";
@@ -26,21 +26,26 @@ const Eingabepille = memo(function Eingabepille({ onMikro, senden }: { onMikro: 
     eingabeHinweis({
       entscheidungen: s.approvals.length + s.auftraege.length,
       werkzeugLaeuft: istOnline(s) && laeuftWerkzeug(s),
+      kernOhneText: Boolean(senden) && istOnline(s) && !s.textMoeglich,
     }),
   );
   const [text, setText] = useState("");
+  const feld = useRef<HTMLInputElement>(null);
   const aktiv = Boolean(senden) && online && textMoeglich;
   const platzhalter = aktiv
     ? "Frag WAMO etwas …"
     : online && senden
-      ? "Dieser Kern nimmt keinen Text an"
+      ? "Kein Text möglich, sprich mit WAMO"
       : "Sprich einfach mit WAMO";
 
   const abschicken = (e: FormEvent) => {
     e.preventDefault();
     const t = text.trim();
     if (!t || !senden || !aktiv) return;
-    if (senden(t)) setText("");
+    if (senden(t)) {
+      setText("");
+      feld.current?.focus(); // der Fokus bleibt im Feld, auch wenn der Senden-Knopf sich sperrt
+    }
   };
 
   return (
@@ -63,6 +68,7 @@ const Eingabepille = memo(function Eingabepille({ onMikro, senden }: { onMikro: 
           </svg>
         </button>
         <input
+          ref={feld}
           type="text"
           className="kz-pille-feld"
           aria-label="Nachricht an WAMO"
@@ -82,7 +88,7 @@ const Eingabepille = memo(function Eingabepille({ onMikro, senden }: { onMikro: 
           </svg>
         </button>
       </form>
-      <p id="kz-pille-hinweis" className="kz-pille-hinweis" hidden={!hinweis}>
+      <p id="kz-pille-hinweis" className="kz-pille-hinweis" role="status" hidden={!hinweis}>
         {hinweis}
       </p>
     </div>
