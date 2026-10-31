@@ -7,6 +7,7 @@ import { gespraechsStartSetzen } from "@/components/kommando/ansicht";
 import { istDarstellung, darstellungSetzen } from "@/components/kommando/darstellung";
 import { LoginGate } from "@/components/LoginGate";
 import { WamoAnsicht } from "@/components/WamoAnsicht";
+import { bildAnzeigen, liveBildLoeschen } from "@/lib/liveBild";
 import { stilleText } from "@/lib/mikrofon";
 import { bereiteText, schluesselHinweis } from "@/lib/textEingabe";
 import type { WamoAktionen } from "@/lib/useWamo";
@@ -15,6 +16,7 @@ import {
   entferneMemo,
   historyRef,
   initialState,
+  LIVE_BILD_AUS,
   levelsRef,
   logEintrag,
   nimmeTextAuf,
@@ -56,6 +58,8 @@ import {
  * Einstellungen (Adresse mit Hash, zum Beispiel /?vorschau=1&rolle=admin#einstellungen/verbrauch):
  *   &kontingent=beispiel            Kontingent mit drei Limits (sonst leer: noch keine Angaben)
  *   &kontingent=alt                 Kontingent, dessen Fenster schon vorbei ist
+ *   &livebild=laeuft                Live-Bild des Laptops (Attrappenbild, kein echter Bildschirm); auch wartet, pausiert, zu
+ *                                   (geschlossen); &monitore=1 für einen einzigen Monitor; setzt PC-Steuerung an
  *   &zugang=beide                   Claude-Schlüssel und Claude-Code-Token hinterlegt (sonst nichts hinterlegt)
  */
 
@@ -105,6 +109,34 @@ const DOKUMENT: CanvasItem = {
   text: "## Ergebnis\nDrei von vier Testfällen sind **bestanden**.\n- Zugang stabil\n- Export braucht `pdf-engine` 2.1",
 };
 
+/** Attrappenbild für die Vorschau des Live-Bilds: gezeichnetes Fenster, nichts vom echten Bildschirm. */
+function attrappenBild(): string {
+  const c = document.createElement("canvas");
+  c.width = 960;
+  c.height = 540;
+  const g = c.getContext("2d");
+  if (!g) return "";
+  g.fillStyle = "#d9d9d9";
+  g.fillRect(0, 0, 960, 540);
+  g.fillStyle = "#ffffff";
+  g.fillRect(60, 50, 560, 400);
+  g.fillStyle = "#000000";
+  g.fillRect(60, 50, 560, 34);
+  g.fillStyle = "#f40e0e";
+  g.fillRect(60, 80, 560, 4);
+  g.fillStyle = "#6b6b6b";
+  for (let i = 0; i < 9; i++) g.fillRect(84, 112 + i * 34, 300 + ((i * 53) % 190), 12);
+  g.fillStyle = "#f3f3f3";
+  g.fillRect(660, 90, 240, 300);
+  g.fillStyle = "#000000";
+  g.font = "bold 26px Arial";
+  g.fillText("Attrappe", 690, 140);
+  g.fillText("Beispielfenster", 690, 176);
+  g.fillStyle = "#f40e0e";
+  g.fillRect(0, 500, 960, 40);
+  return c.toDataURL("image/jpeg", 0.8).replace(/^data:image\/jpeg;base64,/, "");
+}
+
 const KEINE_AKTIONEN: WamoAktionen = {
   connect: async () => {},
   disconnect: async () => {},
@@ -121,6 +153,21 @@ const KEINE_AKTIONEN: WamoAktionen = {
   pcSteuerung: (an) => {
     wamo.set((s) => (s.betrieb ? { ...s, betrieb: { ...s.betrieb, pcSteuerung: an ? "an" : "aus" } } : s));
     return true;
+  },
+  liveBild: {
+    an: (monitor) => {
+      wamo.set((s) => ({ ...s, liveBild: { ...s.liveBild, geoeffnet: true, zustand: "wartet", monitor } }));
+      return true;
+    },
+    aus: () => {
+      liveBildLoeschen();
+      wamo.set((s) => ({ ...s, liveBild: { ...LIVE_BILD_AUS, monitor: s.liveBild.monitor } }));
+      return true;
+    },
+    monitor: (monitor) => {
+      wamo.set((s) => ({ ...s, liveBild: { ...s.liveBild, monitor } }));
+      return true;
+    },
   },
   schliesseFehler: () => wamo.set((s) => ({ ...s, error: null })),
   mikrofone: async () => [
@@ -281,7 +328,7 @@ function beispiel(): { state: WamoState; presence: Presence } {
           pc: pc === "getrennt" || pc === "gesperrt" || pc === "aus" ? pc : "verbunden",
           ort: "cloud",
           pcLatenzMs: 12,
-          pcSteuerung: param("pcsteuerung") === "an" ? "an" : "aus",
+          pcSteuerung: param("pcsteuerung") === "an" || param("livebild") ? "an" : "aus",
           entwicklung: param("entwicklung") === "aus" ? "aus" : "an",
         },
     micOn: true,
@@ -338,6 +385,26 @@ function Hauptvorschau() {
       );
     }
     h.seq++;
+    // Live-Bild: Zustand setzen, bei "laeuft" ein Attrappenbild zeichnen (nach dem Einhängen der Ansicht)
+    const lb = param("livebild");
+    let lbTimer: ReturnType<typeof setTimeout> | null = null;
+    if (lb && state.betrieb) {
+      const monitore = Number(param("monitore")) === 1 ? 1 : 3;
+      if (lb !== "zu") {
+        wamo.set((s) => ({
+          ...s,
+          liveBild: {
+            geoeffnet: true,
+            zustand: lb === "wartet" ? "wartet" : lb === "pausiert" ? "pausiert" : "laeuft",
+            grund: lb === "pausiert" ? "vollbild" : lb === "wartet" ? "schalter_aus" : undefined,
+            monitor: 1,
+            monitore,
+            endeMs: Date.now() + 14 * 60_000 + 12_000,
+          },
+        }));
+        if (lb === "laeuft") lbTimer = setTimeout(() => void bildAnzeigen(attrappenBild()), 300);
+      }
+    }
     let tick = 0;
     const id = setInterval(() => {
       tick++;
@@ -350,6 +417,7 @@ function Hauptvorschau() {
     return () => {
       clearInterval(id);
       if (autoTimer) clearTimeout(autoTimer);
+      if (lbTimer) clearTimeout(lbTimer);
       resetWamo();
     };
   }, [state, presence]);

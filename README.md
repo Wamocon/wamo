@@ -361,6 +361,36 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   Stimmen-Rand: nicht anklickbar, nicht in Bildschirmfotos für das Bildmodell (Inhaltsschutz der Rand-Fenster), aus bei Vollbild (`vollbild.js`) und bei ausgeschaltetem Rand-Haken, aus bei offener
   Freigabe und ohne Gespräch. Bei `prefers-reduced-motion` gibt es kein Ein- und Ausblenden und keine wachsende Welle,
   nur einen stillen Rahmen und einen ruhenden Ring. Das Sprachmodell sieht die Zahlen im Werkzeugergebnis, mehr nicht.
+- **Live-Bild des eigenen Laptops** (31.10.2026, Paket E, Entscheidung des Nutzers mit Auflagen): Admin sieht den Bildschirm
+  seines eigenen, gebundenen Laptops als Einzelbilder (JPEG, höchstens etwa 2 je Sekunde, 1280 Pixel Kante, höchstens
+  110 KB) in einer Ansicht der Kommandozentrale (Chip „Live-Bild“, Karte im Canvas-Bereich) mit Monitorwahl (Reihenfolge von
+  links, Hinweis bei nur einem Monitor), Lupe und Restzeit bis zum automatischen Ende. Erzwungen wird es an drei Stellen:
+  *Am Laptop* (`desktop/livebild.js`, Tray-Menü „Live-Bild einschalten …“): Standard aus, nur die Person am Laptop schaltet
+  ein, nach einem Einwilligungsdialog mit Inhalt, Zweck, Dauer und Datenschutz (Hinweis auf Kundendaten und fremde Chats);
+  die Einwilligung gilt je Laptop und Besitzer und wird bei neuer Bindung neu verlangt. Der Schalter ist die Datei
+  `%LOCALAPPDATA%\WAMO\live-bild.json` (`an`, `bis` höchstens 30 Minuten, Herzschlag alle 2 s, `sichtbar`); beim Start,
+  Beenden, Ablauf und Wechsel der Bindung steht dort `aus`. Solange er an ist, zeigt jeder Monitor einen roten Rahmen mit
+  Plakette (`livebild-hinweis.*`, bewusst nicht vor Bildschirmfotos geschützt, also in jedem Bild zu sehen) und das
+  Tray-Symbol ist rot. *Im Host* (`host/live_bild.py`, Werkzeuge `bild_holen`, `live_bild_status`, `live_bild_beenden`, nie in
+  `LLM_TOOLS`): Der Host prüft bei jedem Bild selbst Schalterdatei (Kennung und Besitzer wie `geraet.json`, Stufe `admin`,
+  Einwilligung, Ablauf, Herzschlag höchstens 6 s alt, Hinweis sichtbar), zählt unabhängig davon die Hinweisfenster der App
+  (eines je Monitor), und liefert nichts bei gesperrtem Bildschirm, offener Freigabe, Vollbild, Passwortfenster vorne oder
+  einem Passwortmanager irgendwo sichtbar; ein Bild wird verworfen, wenn sich währenddessen etwas ändert. Höchstens ein
+  Zuschauer (12 s Frist), 0,35 s Abstand, 150 Bilder je Minute. Befehle, die `live-bild` nennen, sind gesperrt, die Fenster der
+  App (`wamo.exe`, `electron.exe`, Titel „WAMO …“) bedient der Host nie. *Im Kern* (`voice-core/bildstrom.py`): nur Admin mit
+  gebundenem Gerät (Tunnel je Gerät), PC-Steuerung an und gehaltener Sperre; ein Bild nach dem anderen (die Oberfläche
+  bestätigt jedes, ohne Bestätigung nach 10 s Ende), 15 Minuten Höchstdauer, Ende bei Sperre, Trennen, Abmelden, Ablösung,
+  Entzug des Geräts und ausgeschalteter PC-Steuerung; WAMO sagt Anfang und Ende. Tunnelgrenzen: eigene Zählung
+  (`BILD_AUFRUFE_JE_MINUTE = 200`), die 120 allgemeinen Aufrufe je Minute und 4 MB bleiben, Bildantworten höchstens 256 KB, Zeitgrenze 8 s.
+  Weg der Bilder: Servernachricht `bild` der bestehenden, angemeldeten Sitzung (kein neuer Port, keine zweite Anmeldung,
+  gebunden an Sitzung, Rolle und Gerät); der Rückstau durch die Bestätigung hält Untertitel und Gespräch im selben
+  Datenkanal frei. Keine Aufzeichnung: Bilder liegen nur im Arbeitsspeicher (Host, Kern, Browser), nie in Datenbank,
+  Gedächtnis, Verlauf, Audit, Log (`WAMO_LOG_LEVEL=TRACE` wird auf DEBUG begrenzt), Store oder Datei und nie bei einem Sprachmodell;
+  das bestehende Werkzeug `bildschirmfoto` bleibt unverändert. Restrisiken: Passwortfelder in Fenstern, die nicht
+  Passwortmanager sind, lassen sich per UI Automation nicht erkennen; ein von einem Admin auf einer Freigabekarte bestätigter,
+  verschleierter PowerShell-Befehl könnte die Schalterdatei schreiben (der Host zählt dann trotzdem die Hinweisfenster);
+  Fernklick und Fernsteuerung (Paket F) gibt es nicht. Noch offen: Probelauf mit der installierten App an einem echten Laptop
+  (Hinweisfenster-Erkennung, Datenkanal mit Bildern von rund 150 KB) und eine Betriebsvereinbarung beziehungsweise Information der Beschäftigten.
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
   spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel). Mit
   `WAMO_STOPP_GRENZE` (Standard an) wählt der Kern die Wortgrenze selbst und schickt `leiser_stopp` mit `sofort`.
