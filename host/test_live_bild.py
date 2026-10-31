@@ -212,6 +212,8 @@ class WerkzeugTests(LiveTestBasis):
             mock.patch.object(host.wc, "foreground", return_value={"hwnd": 1, "titel": "Notizen", "programm": "notepad.exe"}),
             mock.patch.object(host.wc, "foreground_vollbild", return_value=False),
             mock.patch.object(host.wc, "monitor_anzahl", return_value=2),
+            mock.patch.object(host.wc, "hinweisfenster_zahl", return_value=2),
+            mock.patch.object(host.wc, "verborgene_fenster_offen", return_value=False),
         ]
         for p in patches:
             p.start()
@@ -280,6 +282,28 @@ class WerkzeugTests(LiveTestBasis):
                 self.assertEqual(self.holen()["grund"], "geschuetzt")
         self.aufnahme.assert_not_called()
 
+    def test_ohne_hinweisfenster_je_monitor_kein_bild_auch_bei_gueltiger_datei(self):
+        for anzahl in (0, 1):
+            with mock.patch.object(host.wc, "hinweisfenster_zahl", return_value=anzahl):
+                e = self.holen()
+            self.assertEqual((e["status"], e["grund"]), ("aus", "hinweis_fehlt"))
+        self.aufnahme.assert_not_called()
+
+    def test_passwortmanager_im_hintergrund_blendet_aus(self):
+        with mock.patch.object(host.wc, "verborgene_fenster_offen", return_value=True):
+            e = self.holen()
+        self.assertEqual((e["status"], e["grund"]), ("pausiert", "geschuetzt"))
+        self.aufnahme.assert_not_called()
+
+    def test_aenderung_waehrend_der_aufnahme_verwirft_das_bild(self):
+        def aufnahme(*_a):
+            self.schreibe(an=False)  # die Person schaltet gerade aus
+            return {"monitor": 1, "monitore": 2, "breite": 8, "hoehe": 8, "bytes": 5, "jpeg_base64": FALSCHES_BILD}
+        self.aufnahme.side_effect = aufnahme
+        e = self.holen()
+        self.assertNotEqual(e["status"], "success")
+        self.assertNotIn("jpeg_base64", e)
+
     def test_hinweis_ausgefallen_stoppt_das_bild(self):
         self.schreibe(herzschlag=self.uhr.t - 60)
         self.assertEqual(self.holen()["grund"], "hinweis_fehlt")
@@ -344,6 +368,22 @@ class WerkzeugTests(LiveTestBasis):
     def test_werkzeuge_sind_registriert_aber_nicht_fuer_das_modell(self):
         namen = {t.name for t in asyncio.run(host.mcp.list_tools())}
         self.assertTrue({"bild_holen", "live_bild_status", "live_bild_beenden"} <= namen)
+
+
+class FensterTests(unittest.TestCase):
+    def test_hinweisfenster_werden_gezaehlt_nur_von_der_eigenen_app(self):
+        fenster = [("WAMO Live-Bild Hinweis", "WAMO.exe"), ("WAMO Live-Bild Hinweis", "electron.exe"),
+                   ("WAMO Live-Bild Hinweis", "notepad.exe"), ("Notizen", "WAMO.exe")]
+        with mock.patch.object(host.wc, "_sichtbare_fenster_aller_art", return_value=fenster):
+            self.assertEqual(host.wc.hinweisfenster_zahl(), 2)
+            self.assertFalse(host.wc.verborgene_fenster_offen())
+        with mock.patch.object(host.wc, "_sichtbare_fenster_aller_art", return_value=[("KeePass", "KeePass.exe")]):
+            self.assertTrue(host.wc.verborgene_fenster_offen())
+
+    def test_fehler_beim_auflisten_gilt_als_unsicher(self):
+        with mock.patch.object(host.wc, "_sichtbare_fenster_aller_art", side_effect=OSError):
+            self.assertEqual(host.wc.hinweisfenster_zahl(), 0)
+            self.assertTrue(host.wc.verborgene_fenster_offen())
 
 
 class SchalterSchutzTests(unittest.TestCase):

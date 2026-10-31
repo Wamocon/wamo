@@ -860,6 +860,10 @@ export function useWamo(): WamoAktionen {
                   const ende = Date.now() + msg.restS * 1000;
                   wamo.set((x) => {
                     const l = x.liveBild;
+                    if (!l.geoeffnet || (l.zustand !== "wartet" && l.zustand !== "laeuft")) {
+                      liveBildLoeschen(); // ein spätes Bild nach Pause, Sperre oder Ende bleibt nie stehen
+                      return x;
+                    }
                     if (l.zustand === "laeuft" && l.monitore === msg.monitore && l.monitor === msg.monitor && Math.abs((l.endeMs ?? 0) - ende) < 3000) {
                       return x; // kein Render je Bild, wenn sich nichts Sichtbares ändert
                     }

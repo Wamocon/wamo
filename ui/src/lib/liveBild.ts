@@ -8,7 +8,9 @@
  * die Person die Ansicht selbst geöffnet hat (WamoState.liveBild.geoeffnet).
  */
 
-/** Zeichnet ein Bild auf die Fläche der Ansicht. */
+const BILD_KANTE_MAX = 4096;
+
+/** Zeichnet ein Bild auf die Fläche der Ansicht (das Bild wird danach geschlossen, nicht aufheben). */
 export type Zeichner = (bild: ImageBitmap) => void;
 
 let zeichner: Zeichner | null = null;
@@ -43,12 +45,14 @@ export async function bildAnzeigen(jpeg: string): Promise<boolean> {
   try {
     const bytes = base64ZuBytes(jpeg);
     const bitmap = await createImageBitmap(new Blob([bytes as BlobPart], { type: "image/jpeg" }));
-    if (nr !== lauf || zeichner !== ziel) {
+    try {
+      // Die gemeldeten Maße stimmen mit dem Bild überein und bleiben unter der Grenze (kein kleines JPEG mit riesiger Fläche)
+      if (nr !== lauf || zeichner !== ziel || bitmap.width > BILD_KANTE_MAX || bitmap.height > BILD_KANTE_MAX) return false;
+      ziel(bitmap);
+      return true;
+    } finally {
       bitmap.close();
-      return false;
     }
-    ziel(bitmap);
-    return true;
   } catch {
     return false;
   }
@@ -68,6 +72,8 @@ export function restZeit(sekunden: number): string {
 
 /** Erklärung zu einem Grund, wenn der Kern keinen Text mitschickt. */
 export const GRUND_TEXT: Record<string, string> = {
+  hinweis_fehlt: "Der rote Hinweis am Laptop ist nicht sichtbar. Ohne ihn gibt es kein Bild.",
+  abgelaufen: "Die Zeit des Live-Bilds am Laptop ist abgelaufen. Die Person am Laptop schaltet es erneut ein.",
   nicht_erlaubt: "Das Live-Bild gibt es nur für Admins an ihrem eigenen Laptop, wenn die PC-Steuerung an ist.",
   schalter_aus: "Am Laptop ist das Live-Bild aus. Die Person am Laptop schaltet es im Tray-Menü von WAMO ein.",
   keine_einwilligung: "Die Person am Laptop muss dem Live-Bild dort erst zustimmen.",

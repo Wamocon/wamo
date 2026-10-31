@@ -531,6 +531,7 @@ export function applyServerMessage(msg: ServerMessage) {
     case "bildstrom":
       wamo.set((s) => {
         if (!s.liveBild.geoeffnet && msg.zustand !== "aus") return s; // ohne Öffnen durch die Person gibt es keine Ansicht
+        // Ein "aus" auf eine nie geöffnete Ansicht (zum Beispiel nicht_erlaubt) zeigt nur den Grund in der geschlossenen Karte
         const neu: LiveBildStand =
           msg.zustand === "aus"
             ? { ...LIVE_BILD_AUS, grund: msg.grund, text: msg.text, monitor: s.liveBild.monitor }
@@ -546,7 +547,12 @@ export function applyServerMessage(msg: ServerMessage) {
         return {
           ...s,
           liveBild: neu,
-          ansage: msg.zustand === "laeuft" && s.liveBild.zustand !== "laeuft" ? "Live-Bild läuft" : msg.zustand === "aus" ? "Live-Bild beendet" : s.ansage,
+          ansage:
+            msg.zustand === "laeuft" && s.liveBild.zustand !== "laeuft"
+              ? "Live-Bild läuft"
+              : msg.zustand === "aus" && s.liveBild.geoeffnet
+                ? "Live-Bild beendet"
+                : s.ansage,
         };
       });
       if (msg.zustand === "aus") liveBildLoeschen();

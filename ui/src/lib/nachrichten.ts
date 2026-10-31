@@ -344,6 +344,7 @@ function liveBildFrame(m: Roh): LiveBildFrame | null {
   const { jpeg } = m;
   if (!isStr(jpeg) || jpeg.length < 8 || jpeg.length > LIVE_BILD_B64_MAX || !jpeg.startsWith("/9j/") || !B64.test(jpeg)) return null;
   if (!ganzIn(m.seq, 1, 2 ** 31) || !ganzIn(m.monitor, 1, LIVE_BILD_MONITOR_MAX) || !ganzIn(m.monitore, 1, LIVE_BILD_MONITOR_MAX)) return null;
+  if (m.monitor > m.monitore) return null;
   if (!ganzIn(m.breite, 1, 4096) || !ganzIn(m.hoehe, 1, 4096) || !ganzIn(m.rest_s, 0, 86_400)) return null;
   return { seq: m.seq, monitor: m.monitor, monitore: m.monitore, breite: m.breite, hoehe: m.hoehe, jpeg, restS: m.rest_s };
 }
@@ -368,7 +369,7 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         zustand: m.zustand,
         grund: isStr(m.grund) && /^[a-z_]{1,40}$/.test(m.grund) ? m.grund : undefined,
         text: isStr(m.text) && m.text.trim() ? sauber(m.text.trim(), 300, false) : undefined,
-        monitor: ganzIn(m.monitor, 1, LIVE_BILD_MONITOR_MAX) ? m.monitor : undefined,
+        monitor: ganzIn(m.monitor, 1, LIVE_BILD_MONITOR_MAX) && !(ganzIn(m.monitore, 1, LIVE_BILD_MONITOR_MAX) && m.monitor > m.monitore) ? m.monitor : undefined,
         monitore: ganzIn(m.monitore, 1, LIVE_BILD_MONITOR_MAX) ? m.monitore : undefined,
         restS: ganzIn(m.rest_s, 0, 86_400) ? m.rest_s : undefined,
       };

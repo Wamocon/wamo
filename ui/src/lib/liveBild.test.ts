@@ -37,6 +37,7 @@ test("ungültige Bilder werden verworfen", () => {
     frame({ monitor: 17 }),
     frame({ breite: 5000 }),
     frame({ hoehe: "450" }),
+    frame({ monitor: 3, monitore: 2 }), // Monitor gibt es nicht
     frame({ rest_s: -1 }),
     frame({ rest_s: undefined }),
   ];
@@ -101,4 +102,13 @@ test("Restzeit als m:ss, nie negativ", () => {
   assert.equal(restZeit(65), "1:05");
   assert.equal(restZeit(900), "15:00");
   assert.equal(restZeit(-4), "0:00");
+});
+
+test("ein spätes Bild nach dem Ende wird nicht gezeichnet", async () => {
+  let gezeichnet = 0;
+  const abmelden = zeichnerSetzen(() => (gezeichnet += 1), () => {});
+  // createImageBitmap gibt es in Node nicht: das Bild scheitert beim Dekodieren, gezeichnet wird nie
+  assert.equal(await bildAnzeigen(JPEG), false);
+  assert.equal(gezeichnet, 0);
+  abmelden();
 });

@@ -700,7 +700,13 @@ function zeigeLiveHinweise(bisMs) {
     win.webContents.on("will-navigate", (event) => event.preventDefault());
     win.webContents.on("will-redirect", (event) => event.preventDefault());
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    void win.loadFile(path.join(__dirname, "livebild-hinweis.html"), { query: { bis: String(bisMs) } });
+    // Fällt ein Hinweisfenster aus (Absturz, Ladefehler, hängt), endet das Live-Bild: kein Bild ohne roten Rahmen
+    const aus = (grund) => liveBild.ausschalten(`Hinweis am Laptop ausgefallen (${grund})`);
+    win.webContents.on("did-finish-load", () => (win.wamoGeladen = true));
+    win.webContents.on("did-fail-load", (_e, code) => code !== -3 && aus("Ladefehler")); // -3: abgebrochen (Fenster wird gerade entfernt)
+    win.webContents.on("render-process-gone", () => aus("Prozess beendet"));
+    win.on("unresponsive", () => aus("reagiert nicht"));
+    win.loadFile(path.join(__dirname, "livebild-hinweis.html"), { query: { bis: String(bisMs) } }).catch(() => aus("Ladefehler"));
     win.once("ready-to-show", () => win.showInactive());
     return win;
   });
@@ -713,7 +719,12 @@ function entferneLiveHinweise() {
 
 /** Ist der Hinweis zu sehen? Alle Fenster sichtbar und kein Vollbild-Programm vorne (dann wäre er verdeckt). */
 function liveHinweisSichtbar() {
-  return !vollbild && liveHinweise.length > 0 && liveHinweise.every((w) => !w.isDestroyed() && w.isVisible());
+  return (
+    !vollbild &&
+    liveHinweise.length > 0 &&
+    liveHinweise.length === screen.getAllDisplays().length &&
+    liveHinweise.every((w) => !w.isDestroyed() && w.wamoGeladen === true && w.isVisible())
+  );
 }
 
 /** Rotes Tray-Symbol mit weißem Ring, solange das Live-Bild läuft. */
@@ -768,7 +779,7 @@ async function liveBildUmschalten() {
   const r = await liveBild.einschalten();
   if (!r.ok) {
     // Hat die Person abgelehnt, ist keine weitere Meldung nötig; sonst sagt eine Meldung, warum es nicht geht
-    if (!/Einwilligung/.test(r.grund ?? "")) await dialog.showMessageBox({ type: "info", title: EINWILLIGUNG.titel, message: r.grund ?? "Das Live-Bild lässt sich nicht einschalten.", buttons: ["OK"] });
+    if (!r.abgelehnt) await dialog.showMessageBox({ type: "info", title: EINWILLIGUNG.titel, message: r.grund ?? "Das Live-Bild lässt sich nicht einschalten.", buttons: ["OK"] });
   }
 }
 

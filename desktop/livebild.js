@@ -61,6 +61,7 @@ function erzeugeLiveBild(opt) {
   let an = false;
   let bis = 0;
   let timer = null;
+  let fehlschlaege = 0; // aufeinanderfolgende Schreibfehler im Herzschlag
   let gebunden = null; // Kennung und Besitzer beim Einschalten: eine neue Bindung beendet das Live-Bild
   let frage = null; // laufender Dialog: nie zwei zugleich
 
@@ -83,11 +84,33 @@ function erzeugeLiveBild(opt) {
     return { kennung: g.kennung, besitzer: g.besitzer.toLowerCase(), stufe: g.stufe === "admin" ? "admin" : "mitglied" };
   }
 
+  function warte(ms) {
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    } catch {
+      /* ohne Pause weiter */
+    }
+  }
+
+  /** Atomar schreiben. Unter Windows scheitert das Umbenennen, solange der Host die Datei gerade liest: kurz wiederholen,
+   *  zuletzt direkt schreiben (die Datei ist klein, der Host liest sie ohnehin bei jeder Anfrage neu). */
   function schreibeAtomar(pfad, inhalt) {
     const tmp = `${pfad}.neu`;
+    const text = JSON.stringify(inhalt);
     dsys.mkdirSync(opt.datenOrdner, { recursive: true });
-    dsys.writeFileSync(tmp, JSON.stringify(inhalt), { encoding: "utf8" });
-    dsys.renameSync(tmp, pfad);
+    for (let versuch = 0; versuch < 3; versuch += 1) {
+      try {
+        dsys.writeFileSync(tmp, text, { encoding: "utf8" });
+        dsys.renameSync(tmp, pfad);
+        return;
+      } catch (err) {
+        if (versuch === 2) {
+          dsys.writeFileSync(pfad, text, { encoding: "utf8" }); // wirft, wenn auch das nicht geht
+          return;
+        }
+        warte(25 * (versuch + 1));
+      }
+    }
   }
 
   function hatEinwilligung(g) {
@@ -148,8 +171,11 @@ function erzeugeLiveBild(opt) {
     }
     try {
       schreibeSchalter();
+      fehlschlaege = 0;
     } catch (err) {
-      ausschalten(`Schalterdatei nicht beschreibbar (${err.code ?? err.message})`);
+      // Ein einzelner Fehlschlag beendet nichts (der Host prüft den Herzschlag ohnehin); mehrere in Folge schon
+      fehlschlaege += 1;
+      if (fehlschlaege >= 3) ausschalten(`Schalterdatei nicht beschreibbar (${err.code ?? err.message})`);
     }
   }
 
@@ -175,7 +201,7 @@ function erzeugeLiveBild(opt) {
       } finally {
         frage = null;
       }
-      if (!ja) return { ok: false, grund: "Ohne Einwilligung bleibt das Live-Bild aus." };
+      if (!ja) return { ok: false, abgelehnt: true, grund: "Ohne Einwilligung bleibt das Live-Bild aus." };
       try {
         merkeEinwilligung(g);
       } catch (err) {
@@ -186,9 +212,10 @@ function erzeugeLiveBild(opt) {
     if (geraet()?.kennung !== g.kennung) return { ok: false, grund: "Der Laptop wurde währenddessen neu gebunden." };
     an = true;
     gebunden = g;
+    fehlschlaege = 0;
     bis = jetzt() + DAUER_MS;
-    opt.hinweis?.(true, bis);
     try {
+      opt.hinweis?.(true, bis);
       schreibeSchalter();
     } catch (err) {
       ausschalten(`Schalterdatei nicht beschreibbar (${err.code ?? err.message})`);

@@ -149,6 +149,8 @@ load_dotenv(override=True)
 def _configure_logging() -> None:
     """Standard INFO (WAMO_LOG_LEVEL): INFO enthält keine Gesprächsinhalte, die stehen nur in DEBUG."""
     level = (os.getenv("WAMO_LOG_LEVEL") or "INFO").strip().upper()
+    if level == "TRACE":  # TRACE schriebe ganze Frames (auch Bilder des Live-Bilds) ins Log: höchstens DEBUG
+        level = "DEBUG"
     logger.remove()
     # diagnose=False: loguru schriebe sonst bei Ausnahmen die Werte lokaler Variablen (Tokens, Schlüssel) ins Log
     try:

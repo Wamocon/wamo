@@ -981,6 +981,16 @@ def live_bild_status() -> dict:
     return antwort
 
 
+def _bild_geschuetzt() -> bool:
+    """Vorne ein Passwort-, Anmelde- oder Adminfenster, oder irgendwo ein Passwortmanager sichtbar? Dann kein Bild."""
+    try:
+        ziel = wc.foreground()
+        wc.check_target(ziel["programm"], ziel["titel"])
+    except ValueError:
+        return True
+    return wc.verborgene_fenster_offen()
+
+
 @mcp.tool()
 async def bild_holen(zuschauer: str, monitor: int = 1) -> dict:
     """Nur für den Voice-Core (nie für das Gesprächsmodell): ein Einzelbild des Laptops als JPEG für das Live-Bild (read).
@@ -991,13 +1001,13 @@ async def bild_holen(zuschauer: str, monitor: int = 1) -> dict:
     schalter = LIVE.schalter()
     if not schalter["bereit"]:
         return _bild_nein("aus", schalter["grund"], live_bild.GRUENDE[schalter["grund"]])
+    if wc.hinweisfenster_zahl() < max(1, wc.monitor_anzahl()):
+        # Unabhängig von der Schalterdatei: Ohne den roten Rahmen auf jedem Monitor gibt es kein Bild
+        return _bild_nein("aus", "hinweis_fehlt", live_bild.GRUENDE["hinweis_fehlt"])
     if _freigabe_offen():
         return _bild_nein("pausiert", "freigabe", "Eine Freigabe ist offen: Das Bild ruht, bis sie entschieden ist.")
-    try:
-        ziel = wc.foreground()
-        wc.check_target(ziel["programm"], ziel["titel"])  # Passwort-, Anmelde- und Adminfenster nie
-    except ValueError:
-        return _bild_nein("pausiert", "geschuetzt", "Vorne liegt ein geschütztes Fenster: Das Bild ruht.")
+    if _bild_geschuetzt():
+        return _bild_nein("pausiert", "geschuetzt", "Ein geschütztes Fenster ist offen (Passwort oder Anmeldung): Das Bild ruht.")
     if wc.foreground_vollbild():
         return _bild_nein("pausiert", "vollbild", "Ein Programm läuft im Vollbild: Das Bild ruht.")
     if not (isinstance(monitor, int) and not isinstance(monitor, bool) and 1 <= monitor <= 16):
@@ -1014,6 +1024,10 @@ async def bild_holen(zuschauer: str, monitor: int = 1) -> dict:
         return _bild_nein("rejected", "bild", str(e))
     except Exception as e:  # noqa: BLE001 (Aufnahme gescheitert: kein Bild, der Host läuft weiter)
         return _bild_nein("error", "aufnahme", f"Aufnahme nicht möglich ({type(e).__name__}).")
+    # Zwischen Prüfung und Aufnahme kann sich etwas geändert haben (Sperre, Schalter, Freigabe, Fenster): dann das Bild verwerfen
+    if _ist_gesperrt() or not LIVE.schalter()["bereit"] or _freigabe_offen() or _bild_geschuetzt():
+        del bild
+        return _bild_nein("pausiert", "geschuetzt", "Während der Aufnahme änderte sich etwas: Das Bild wurde verworfen.")
     n = LIVE.bilder_im_lauf
     if n == 1 or n % BILD_AUDIT_JE == 0 or _letzter_bild_grund is not None:
         _letzter_bild_grund = None

@@ -4,8 +4,10 @@ Das Live-Bild zeigt alles, was am Laptop offen ist. Deshalb entscheidet der HOST
 Oberfläche), und zwar bei jedem einzelnen Bild:
 
   * Schalter am Laptop: Die Desktop-App der Person am Laptop schreibt %LOCALAPPDATA%\\WAMO\\live-bild.json (neben
-    geraet.json). Standard ist AUS. Kein Werkzeug des Hosts schreibt diese Datei, und PowerShell-Befehle, die sie
-    erwähnen, sind gesperrt (wamo_host.BLOCKED_PATTERNS). Der Kern kann den Schalter also nicht fernschalten.
+    geraet.json). Standard ist AUS. Kein Werkzeug des Hosts schreibt diese Datei, PowerShell-Befehle, die sie nennen,
+    sind gesperrt (wamo_host.BLOCKED_PATTERNS), und die Fenster der Desktop-App bedient der Host nie. Ein verschleierter
+    Befehl, den ein Admin auf einer Freigabekarte bestätigt, könnte die Datei trotzdem schreiben (Restrisiko). Darum
+    zählt der Host zusätzlich selbst die Hinweisfenster der App (windows_control.hinweisfenster_zahl).
   * Der Schalter gilt nur, wenn Kennung und Besitzer in der Datei zu geraet.json passen und die Stufe dort "admin" ist
     (ein Mitglieder-Laptop liefert nie ein Bild), die Einwilligung erteilt ist, "bis" nicht abgelaufen ist (höchstens
     eine Stunde je Einschalten) und der Hinweis am Laptop lebt: Die App erneuert alle 2 s einen Herzschlag und meldet,
@@ -29,7 +31,7 @@ from pathlib import Path
 DATEI_NAME = "live-bild.json"
 DATEI_MAX_BYTES = 4096
 EINWILLIGUNG_VERSION = 1
-HERZSCHLAG_MAX_SECS = 8.0  # so alt darf der Herzschlag der Desktop-App höchstens sein
+HERZSCHLAG_MAX_SECS = 6.0  # so alt darf der Herzschlag der Desktop-App höchstens sein
 ZUKUNFT_TOLERANZ_SECS = 2.0
 EINSCHALTEN_MAX_SECS = 3600  # "bis" liegt höchstens so weit in der Zukunft
 MIN_ABSTAND_SECS = 0.35  # höchstens etwa 2,8 Bilder je Sekunde

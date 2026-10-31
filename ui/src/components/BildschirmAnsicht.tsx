@@ -1,11 +1,17 @@
 "use client";
 
-import { memo, useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { useJetzt } from "@/components/kommando/useJetzt";
 import { GRUND_TEXT, liveBildLoeschen, restZeit, zeichnerSetzen } from "@/lib/liveBild";
 import { useSelect } from "@/lib/store";
 import type { LiveBildAktionen } from "@/lib/useWamo";
 import { istOnline, wamo } from "@/lib/wamo";
+
+const TITEL_ID = "lb-titel";
+const VERSTECKT_MAX_MS = 30_000; // so lange darf die Ansicht unsichtbar sein (Tab im Hintergrund, Fenster im Tray), dann endet sie
+
+/** Fokus auf die Überschrift, wenn sich die Karte ändert (der gedrückte Knopf verschwindet sonst). */
+const fokusAufTitel = () => requestAnimationFrame(() => document.getElementById(TITEL_ID)?.focus());
 
 const LUPE_KANTE = 168; // Pixel der Lupe auf dem Bildschirm
 const LUPE_FAKTOR = 2.5;
@@ -22,7 +28,6 @@ export const useLiveBildErlaubt = () =>
 export const BildschirmAnsicht = memo(function BildschirmAnsicht({ aktionen }: { aktionen: LiveBildAktionen }) {
   const erlaubt = useLiveBildErlaubt();
   const stand = useSelect(wamo, (s) => s.liveBild);
-  const titelId = useId();
   const offen = stand.geoeffnet;
   const zustand = stand.zustand;
 
@@ -36,8 +41,8 @@ export const BildschirmAnsicht = memo(function BildschirmAnsicht({ aktionen }: {
 
   if (!erlaubt && !offen) return null;
   return (
-    <section className="lb" aria-labelledby={titelId} data-zustand={zustand}>
-      <h2 id={titelId} className="lb-titel">
+    <section className="lb" aria-labelledby={TITEL_ID} data-zustand={zustand}>
+      <h2 id={TITEL_ID} className="lb-titel" tabIndex={-1}>
         Live-Bild des Laptops
       </h2>
       {offen ? <Offen aktionen={aktionen} /> : <Geschlossen aktionen={aktionen} />}
@@ -60,7 +65,10 @@ function Geschlossen({ aktionen }: { aktionen: LiveBildAktionen }) {
         </p>
       )}
       <div className="lb-aktionen">
-        <button type="button" className="btn-secondary btn-small" onClick={() => aktionen.an(monitor)}>
+        <button type="button" className="btn-secondary btn-small" onClick={() => {
+            aktionen.an(monitor);
+            fokusAufTitel();
+          }}>
           Live-Bild öffnen
         </button>
       </div>
@@ -81,7 +89,6 @@ function Offen({ aktionen }: { aktionen: LiveBildAktionen }) {
   const lupeFlaeche = useRef<HTMLCanvasElement>(null);
   const [lupe, setLupe] = useState(false);
   const [lupePos, setLupePos] = useState<{ x: number; y: number } | null>(null);
-  const hatBild = useRef(false);
   const takt = useJetzt(1000);
 
   const lupeZeichnen = useCallback((pos: { x: number; y: number } | null) => {
@@ -115,15 +122,16 @@ function Offen({ aktionen }: { aktionen: LiveBildAktionen }) {
             c.height = bild.height;
           }
           ctx.drawImage(bild, 0, 0);
-          hatBild.current = true;
           lupeZeichnen(pos.current);
         }
-        bild.close();
       },
       () => {
+        // Hauptfläche UND Lupe leeren: nach Pause, Sperre oder Ende bleibt kein Ausschnitt stehen
         const c = flaeche.current;
         c?.getContext("2d")?.clearRect(0, 0, c.width, c.height);
-        hatBild.current = false;
+        const l = lupeFlaeche.current;
+        l?.getContext("2d")?.clearRect(0, 0, l.width, l.height);
+        setLupePos(null);
       },
     );
     return () => {
@@ -131,6 +139,22 @@ function Offen({ aktionen }: { aktionen: LiveBildAktionen }) {
       knoten?.getContext("2d")?.clearRect(0, 0, knoten.width, knoten.height);
     };
   }, [lupeZeichnen]);
+
+  // Ansicht unsichtbar (Tab im Hintergrund, Fenster im Tray): nach 30 s beenden, damit niemand unbemerkt weiter überträgt
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pruefen = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (document.visibilityState === "hidden") timer = setTimeout(() => aktionen.aus(), VERSTECKT_MAX_MS);
+    };
+    document.addEventListener("visibilitychange", pruefen);
+    pruefen();
+    return () => {
+      document.removeEventListener("visibilitychange", pruefen);
+      if (timer) clearTimeout(timer);
+    };
+  }, [aktionen]);
 
   // Pause, Warten, Sperre: kein Bild stehen lassen
   useEffect(() => {
@@ -140,6 +164,15 @@ function Offen({ aktionen }: { aktionen: LiveBildAktionen }) {
   const rest = stand.endeMs ? Math.max(0, Math.round((stand.endeMs - takt.datum) / 1000)) : null;
   const text = stand.text || (stand.grund ? GRUND_TEXT[stand.grund] : "") || ZUSTAND_TEXT[stand.zustand];
 
+  const monitorTaste = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (stand.monitore < 2) return;
+    const d = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    if (!d) return;
+    e.preventDefault();
+    const n = ((stand.monitor - 1 + d + stand.monitore) % stand.monitore) + 1;
+    aktionen.monitor(n);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(".lb-monitore [aria-checked='true']")?.focus());
+  };
   const lupeBewegt = (e: PointerEvent<HTMLDivElement>) => {
     if (!lupe) return;
     const r = e.currentTarget.getBoundingClientRect();
@@ -174,12 +207,13 @@ function Offen({ aktionen }: { aktionen: LiveBildAktionen }) {
       </div>
 
       <div className="lb-werkzeuge">
-        <div role="radiogroup" aria-label="Monitor" className="betriebsart-wahl lb-monitore">
+        <div role="radiogroup" aria-label="Monitor" className="betriebsart-wahl lb-monitore" onKeyDown={monitorTaste}>
           {Array.from({ length: stand.monitore }, (_, i) => i + 1).map((n) => (
             <button
               key={n}
               type="button"
               role="radio"
+              tabIndex={stand.monitor === n || (stand.monitor > stand.monitore && n === 1) ? 0 : -1}
               aria-checked={stand.monitor === n}
               data-an={stand.monitor === n ? "" : undefined}
               disabled={stand.monitore < 2}
@@ -192,7 +226,14 @@ function Offen({ aktionen }: { aktionen: LiveBildAktionen }) {
         <button type="button" className="kz-chip" aria-pressed={lupe} onClick={() => setLupe((l) => !l)}>
           Lupe
         </button>
-        <button type="button" className="btn-secondary btn-small lb-zu" onClick={() => aktionen.aus()}>
+        <button
+          type="button"
+          className="btn-secondary btn-small lb-zu"
+          onClick={() => {
+            aktionen.aus();
+            fokusAufTitel();
+          }}
+        >
           Live-Bild beenden
         </button>
       </div>
@@ -203,7 +244,9 @@ function Offen({ aktionen }: { aktionen: LiveBildAktionen }) {
         data-leer={stand.zustand !== "laeuft" ? "" : undefined}
         data-lupe={lupe ? "" : undefined}
         tabIndex={lupe ? 0 : -1}
+        role={lupe ? "group" : undefined}
         aria-label={lupe ? "Bild mit Lupe, Pfeiltasten bewegen die Lupe" : undefined}
+        onContextMenu={(e) => e.preventDefault()} // kein "Bild speichern": das Bild wird nie gespeichert
         onPointerMove={lupeBewegt}
         onPointerLeave={() => setLupePos(null)}
         onKeyDown={lupeTaste}
@@ -216,7 +259,7 @@ function Offen({ aktionen }: { aktionen: LiveBildAktionen }) {
           width={LUPE_KANTE}
           height={LUPE_KANTE}
           aria-hidden="true"
-          hidden={!lupe || !lupePos}
+          hidden={!lupe || !lupePos || stand.zustand !== "laeuft"}
           style={lupePos ? { left: `calc(${lupePos.x * 100}% - ${LUPE_KANTE / 2}px)`, top: `calc(${lupePos.y * 100}% - ${LUPE_KANTE + 12}px)` } : undefined}
         />
       </div>

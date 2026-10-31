@@ -57,6 +57,14 @@ TEXT_PAUSIERT = {
     "vollbild": "Am Laptop läuft ein Programm im Vollbild: Das Bild ruht.",
     "geschuetzt": "Am Laptop liegt ein geschütztes Fenster vorne (Passwort oder Anmeldung): Das Bild ruht.",
 }
+TEXT_AUS = {
+    "schalter_aus": "Am Laptop wurde das Live-Bild ausgeschaltet.",
+    "abgelaufen": "Die Zeit des Live-Bilds am Laptop ist abgelaufen.",
+    "hinweis_fehlt": "Der rote Hinweis am Laptop ist nicht sichtbar.",
+    "keine_einwilligung": "Die Einwilligung am Laptop fehlt.",
+    "stufe": "Dieser Laptop gehört keinem Admin.",
+    "nicht_eingerichtet": "Dieser Laptop ist nicht für das Live-Bild eingerichtet.",
+}
 TEXT_ENDE = {
     "locked": "Der Bildschirm am Laptop ist gesperrt. Das Live-Bild ist beendet.",
     "belegt": "Dieser Laptop wird schon in einer anderen Ansicht gezeigt.",
@@ -204,8 +212,7 @@ class Bildstrom:
                 return NICHT_ERLAUBT
             if grund != letzter_grund:
                 letzter_grund = grund
-                text = status.get("summary") if isinstance(status.get("summary"), str) else ""
-                await self._melden("wartet", grund=grund, text=text[:300])
+                await self._melden("wartet", grund=grund if grund in TEXT_AUS else "schalter_aus")
             if self._jetzt() - start > self._warten_max:
                 return "Am Laptop wurde das Live-Bild nicht eingeschaltet. Es ist beendet."
             await self._schlaf(self._status_secs)
@@ -254,8 +261,8 @@ class Bildstrom:
             elif art in ("locked", "belegt"):
                 return TEXT_ENDE[art]
             elif art == "aus":
-                text = antwort.get("summary") if isinstance(antwort.get("summary"), str) else ""
-                return (text[:300] or "Am Laptop wurde das Live-Bild ausgeschaltet.") + " Das Live-Bild ist beendet."
+                # Feste Texte nach Grundcode: Text vom Laptop gelangt nie in die Meldung (und damit nie ins Sprachmodell)
+                return TEXT_AUS.get(antwort.get("grund"), TEXT_AUS["schalter_aus"]) + " Das Live-Bild ist beendet."
             else:
                 fehler += 1
             if fehler >= FEHLER_MAX:

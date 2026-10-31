@@ -239,3 +239,39 @@ test("der Hinweis am Laptop ist nicht vor Bildschirmfotos geschützt und nicht a
   const html = fs.readFileSync(path.join(__dirname, "livebild-hinweis.html"), "utf8");
   assert.ok(html.includes("<title>WAMO Live-Bild Hinweis</title>"));
 });
+
+test("Ablehnung ist als abgelehnt gekennzeichnet; andere Fehler nicht", async () => {
+  const u = umgebung({ antwort: false });
+  try {
+    assert.equal((await u.live.einschalten()).abgelehnt, true);
+  } finally {
+    u.aufraeumen();
+  }
+  const v = umgebung({ geraetJson: false });
+  try {
+    assert.equal((await v.live.einschalten()).abgelehnt, undefined);
+  } finally {
+    v.aufraeumen();
+  }
+});
+
+test("scheitert das Umbenennen (Host liest gerade), wird wiederholt und zuletzt direkt geschrieben", async () => {
+  const u = umgebung();
+  const echt = fs.renameSync;
+  let versuche = 0;
+  try {
+    await u.live.einschalten();
+    fs.renameSync = () => {
+      versuche += 1;
+      throw Object.assign(new Error("busy"), { code: "EBUSY" });
+    };
+    u.uhr.t += 2000;
+    u.live.tick(); // darf nicht ausschalten
+    assert.equal(u.live.status().an, true);
+    assert.equal(u.datei().herzschlag, u.uhr.t / 1000);
+    assert.ok(versuche >= 3);
+  } finally {
+    fs.renameSync = echt;
+    u.aufraeumen();
+  }
+});

@@ -472,6 +472,44 @@ def screenshot_live(monitor: int, kante_max: int, max_bytes: int) -> dict:
             "bytes": len(daten), "jpeg_base64": base64.b64encode(daten).decode("ascii")}
 
 
+# Passwortmanager und Anmeldedialoge: sind sie irgendwo sichtbar, ruht das Live-Bild (auch im Hintergrund)
+LIVE_VERBERGEN_EXES = {"keepass.exe", "keepassxc.exe", "1password.exe", "bitwarden.exe", "dashlane.exe", "consent.exe",
+                       "credentialuibroker.exe"}
+HINWEIS_TITEL = "WAMO Live-Bild Hinweis"  # Fenstertitel aus desktop/livebild-hinweis.html (Namensvertrag)
+
+
+def _sichtbare_fenster_aller_art() -> list[tuple[str, str]]:
+    """(Titel, Programm) aller sichtbaren Fenster oberster Ebene, ohne Filter für Werkzeug- und Besitzerfenster."""
+    win32gui, _, _ = _win32()
+    gefunden: list[tuple[str, str]] = []
+
+    def besuche(hwnd, _):
+        if win32gui.IsWindowVisible(hwnd):
+            gefunden.append((_title(hwnd), _exe_of(hwnd)))
+        return True
+
+    win32gui.EnumWindows(besuche, None)
+    return gefunden
+
+
+def hinweisfenster_zahl() -> int:
+    """Wie viele sichtbare Hinweisfenster der Desktop-App (roter Rahmen des Live-Bilds) gibt es? Unabhängig von der
+    Schalterdatei: ohne ein Fenster je Monitor kommt kein Bild. Jeder Fehler zählt als keins."""
+    try:
+        return sum(1 for titel, exe in _sichtbare_fenster_aller_art()
+                   if titel == HINWEIS_TITEL and exe.lower() in WAMO_UI_EXES)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def verborgene_fenster_offen() -> bool:
+    """Ist ein Passwortmanager oder Anmeldedialog sichtbar (auch hinter anderen Fenstern)? Fehler zählen als ja."""
+    try:
+        return any(exe.lower() in LIVE_VERBERGEN_EXES for _titel, exe in _sichtbare_fenster_aller_art())
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def monitor_anzahl() -> int:
     import mss
 
