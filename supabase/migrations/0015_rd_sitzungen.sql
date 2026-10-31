@@ -35,7 +35,7 @@ end $$;
 -- ---------- Tabelle ----------
 create table if not exists __SCHEMA__.rd_sitzungen (
   id        uuid primary key default gen_random_uuid(),
-  profil_id uuid not null references __SCHEMA__.profiles(user_id) on delete cascade,
+  profil_id uuid not null references __SCHEMA__.profiles(user_id) on delete restrict,  -- Protokoll bleibt, Profile nur sperren
   ziel      text not null,
   start_at  timestamptz not null default now(),
   bis_at    timestamptz not null,   -- hartes Höchstende (Start + Dauer), das der Kern und das Gateway durchsetzen
@@ -43,6 +43,11 @@ create table if not exists __SCHEMA__.rd_sitzungen (
   ende_at   timestamptz,
   grund     text
 );
+
+-- Tabelle aus einem früheren Lauf: Fremdschlüssel auf restrict umstellen (das Protokoll bleibt, wenn ein Profil verschwindet)
+alter table __SCHEMA__.rd_sitzungen drop constraint if exists rd_sitzungen_profil_id_fkey;
+alter table __SCHEMA__.rd_sitzungen add constraint rd_sitzungen_profil_id_fkey
+  foreign key (profil_id) references __SCHEMA__.profiles(user_id) on delete restrict;
 
 alter table __SCHEMA__.rd_sitzungen drop constraint if exists rd_sitzungen_ziel_form;
 alter table __SCHEMA__.rd_sitzungen add constraint rd_sitzungen_ziel_form check (ziel ~ '^[a-z0-9]{1,16}$');
@@ -118,6 +123,13 @@ begin
   -- vergessene Sitzungen schließen: Höchstende plus 2 Minuten Nachfrist (Kern und Gateway beenden sie vorher selbst)
   update __SCHEMA__.rd_sitzungen s set ende_at = now(), grund = 'zeitlimit'
    where s.ende_at is null and s.bis_at < now() - interval '2 minutes';
+
+  -- Der Code gilt für genau einen Start: Hat dieses Profil schon mit demselben oder einem jüngeren Code gestartet, ist er
+  -- verbraucht. Ein Start, der am Gateway scheiterte (grund 'fehler'), zählt nicht, damit ein Wiederholen möglich bleibt.
+  if exists (select 1 from __SCHEMA__.rd_sitzungen s
+              where s.profil_id = p_profil and s.aal2_at >= p_aal2_zeit and coalesce(s.grund, '') <> 'fehler') then
+    raise exception 'rd_sitzung_beginnen: der zweite Faktor wurde schon für einen Start verwendet' using errcode = '23514';
+  end if;
 
   if (select count(*) from __SCHEMA__.rd_sitzungen s where s.profil_id = p_profil and s.start_at > now() - interval '1 hour')
        >= p_max_je_stunde then

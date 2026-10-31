@@ -889,8 +889,16 @@ Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGua
   (`infra/sparks/wamo-rd-ausgang-einrichten.sh`) nur das Internet erreichen, nicht Kern, Datenbank, LAN oder andere Sparks.
 - **Einschalten:** `WAMO_RD_AKTIV=ja` im Kern, erst nach dem Einrichten des Gateways (`wamo-rd-einrichten.sh`) und mit den Proben
   aus `wamo_rd_rauchtest.py`. Ohne den Schalter melden die Routen, dass der Fernzugriff nicht eingerichtet ist.
-- **Offen:** Die Zertifikatsprüfung gegen xrdp ist noch nicht angeheftet (`ignore-cert`), das Gateway ist nur im Büronetz und über
-  WireGuard erreichbar.
+- **Ein Code, ein Start:** Der Code der Authenticator-App gilt für genau einen Start (die Datenbank lehnt einen schon verwendeten
+  oder älteren Code ab, ein am Gateway gescheiterter Start zählt nicht). Ein zweiter Tunnel mit demselben Sitzungstoken (zweiter
+  Tab oder zweites Gerät) schließt die Sitzung nach 15 Sekunden Schonfrist.
+- **Neustart immer gemeinsam:** `docker restart wamo-rd-web wamo-rd-zugang`. Der Zugangsdienst hält seinen Zustand nur im
+  Speicher, Tokens und offene Tunnel liegen im Gateway. Nur den Zugangsdienst neu zu starten ließe Tunnel ohne Zeitlimit weiterlaufen.
+- **Offen (bekannt, bewusst nicht behoben):** Die Zertifikatsprüfung gegen xrdp ist noch nicht angeheftet (`ignore-cert`, im LAN
+  zwischen Gateway und Ziel könnte jemand mitlesen). Das Sitzungstoken steht in der Adresse und damit im Browserverlauf, bis die
+  Sitzung endet. Der Kern prüft den Zugangsdienst am Socket nicht per Benutzerkennung (der Ordner gehört `wamo-rd-gateway:wamo-core`
+  mit Modus 2770). Beim Ablösen einer eigenen Sitzung kann der alte Tunnel kurz weiterlaufen, wenn das Gateway nicht antwortet. Das
+  Gateway ist nur im Büronetz und über WireGuard erreichbar.
 
 ## Sicherheitsmodell
 

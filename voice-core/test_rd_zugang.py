@@ -275,6 +275,30 @@ async def test_aufseher_getrennt_nach_offener_verbindung(guac):
     assert z.fertig[SITZUNG][0] == "getrennt" and token in guac.deletes
 
 
+async def test_zweiter_tunnel_mit_demselben_token_schliesst_nach_der_schonfrist(guac):
+    z = zugang.Zustand()
+    token = (await zugang.befehl(z, anmelden()))["token"]
+    guac.tokens[token] = 2                                             # zweiter Tab oder zweites Gerät mit demselben Token
+    await zugang.aufseher_runde(z)
+    assert SITZUNG in z.sitzungen                                      # Schonfrist: ein Neuladen öffnet kurz zwei Tunnel
+    guac.tokens[token] = 1
+    await zugang.aufseher_runde(z)
+    assert z.sitzungen[SITZUNG].mehrfach_seit is None                  # wieder ein Tunnel: die Frist beginnt neu
+    guac.tokens[token] = 2
+    await zugang.aufseher_runde(z)
+    z.sitzungen[SITZUNG].mehrfach_seit -= zugang.MEHRFACH_SECS + 1
+    await zugang.aufseher_runde(z)
+    assert z.fertig[SITZUNG][0] == "beendet" and token in guac.deletes
+
+
+async def test_paralleles_anmelden_mit_derselben_sitzung_ergibt_nur_ein_token(guac):
+    z = zugang.Zustand()
+    a, b = await asyncio.gather(zugang.befehl(z, anmelden()), zugang.befehl(z, anmelden()))
+    assert sorted([a["ok"], b["ok"]]) == [False, True]
+    assert (a if not a["ok"] else b)["code"] == "schon_da"
+    assert len(guac.posts) == 1 and len(z.sitzungen) == 1
+
+
 async def test_aufseher_token_nicht_mehr_gueltig(guac):
     z = zugang.Zustand()
     token = (await zugang.befehl(z, anmelden()))["token"]

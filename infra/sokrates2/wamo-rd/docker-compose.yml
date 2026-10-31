@@ -154,7 +154,10 @@ services:
     volumes:
       # Verzeichnis des Sockets (auf dem Host root-Besitz verhindert, dass Dritte den Socket ersetzen: 2770 wamo-rd-gateway:wamo-core)
       - ${WAMO_RD_RUN:-/run/wamo-rd}:/run/wamo-rd
-      # nur die Zielliste (keine Geheimnisse); Änderung der Liste: docker restart wamo-rd-zugang
+      # nur die Zielliste (keine Geheimnisse). Neustart IMMER gemeinsam, erst web, dann zugang (zum Beispiel nach einer
+      # Änderung der Liste): docker restart wamo-rd-web wamo-rd-zugang. Der Zugangsdienst hält seinen Zustand nur im Speicher,
+      # die Tokens und offenen Tunnel liegen in wamo-rd-web. Nur zugang neu zu starten ließe Tunnel unbeobachtet weiterlaufen
+      # (kein Zeitlimit, ein zweiter Zuschauer möglich).
       - ${WAMO_RD_ZIELE_DATEI:-/etc/wamo-rd/ziele.toml}:/etc/wamo-rd-ziele.toml:ro
     environment:
       WAMO_RD_KERN_UID: ${WAMO_RD_KERN_UID:?WAMO_RD_KERN_UID setzen (Benutzerkennung von wamo-core)}

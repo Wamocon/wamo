@@ -61,7 +61,9 @@ while [ $# -gt 0 ]; do
     --status) NUR_STATUS=ja ;;
     --gateway)
       shift
-      [ $# -gt 0 ] && [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] || { echo "Ungültiger Wert für --gateway (a.b.c.d/nn)." >&2; exit 2; }
+      # nur ein privates Netz (10/8, 172.16/12, 192.168/16) mit Präfix /16 bis /32: ein weites Netz wie /0 ließe Antworten an alle Ziele zu
+      [ $# -gt 0 ] && [[ "$1" =~ ^(10\.([0-9]{1,3}\.){2}[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3})/(1[6-9]|2[0-9]|3[0-2])$ ]] \
+        || { echo "Ungültiger Wert für --gateway (privates Netz a.b.c.d/nn mit nn von 16 bis 32)." >&2; exit 2; }
       GATEWAY="$1"
       ;;
     --loopback-port)

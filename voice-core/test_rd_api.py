@@ -282,6 +282,9 @@ adresse = "ziel.example.org"
 name = "sokrates2"
 adresse = "192.168.178.99"
 [[ziel]]
+name = "zweitname"
+adresse = "192.168.178.136"
+[[ziel]]
 name = "port0"
 adresse = "192.168.178.7"
 port = 0

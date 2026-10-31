@@ -171,6 +171,8 @@ def ziele_laden(pfad: Path | None = None) -> dict[str, Ziel]:
             continue
         if ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local:
             continue
+        if any(vorhanden.adresse == adresse for vorhanden in aus.values()):
+            continue  # ein Rechner, ein Name: sonst hebelten zwei Namen die Grenze "ein Zuschauer je Ziel" aus
         titel = " ".join(anzeige.split())[:40] if isinstance(anzeige, str) and anzeige.strip() else name
         aus[name] = Ziel(name=name, anzeige=titel, adresse=adresse, port=port)
     return aus

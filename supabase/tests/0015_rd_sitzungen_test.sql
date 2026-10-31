@@ -111,6 +111,9 @@ do $$ declare r record; a uuid; b uuid; begin
   perform wamo_testhilfe.gleich(r.abgeloest_id, a, 'alte Sitzung abgeloest');
   perform wamo_testhilfe.gleich((select grund from __SCHEMA__.rd_sitzungen where id = a), 'abgeloest', 'Grund abgeloest');
   perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.rd_sitzungen where ende_at is null and ziel = 'sokrates1'), 1::bigint, 'genau eine offene Sitzung je Ziel');
+  -- ein Code gilt für genau einen Start: ein älterer Code als der des letzten Starts ist verbraucht
+  perform wamo_testhilfe.fehler($f$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a1', 'sokrates1', 3600, clock_timestamp() - interval '100 seconds')$f$, '23514');
+  perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.rd_sitzungen where ende_at is null and ziel = 'sokrates1'), 1::bigint, 'verbrauchter Code lässt die laufende Sitzung unberührt');
 end $$;
 reset role;
 

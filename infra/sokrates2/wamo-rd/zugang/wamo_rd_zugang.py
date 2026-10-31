@@ -58,6 +58,7 @@ PROBE_TIMEOUT = 2.0
 AUFSEHER_TAKT = float(os.environ.get("WAMO_RD_AUFSEHER_TAKT", "10"))
 NICHT_GEOEFFNET_SECS = float(os.environ.get("WAMO_RD_NICHT_GEOEFFNET_SECS", "180"))
 GETRENNT_SECS = float(os.environ.get("WAMO_RD_GETRENNT_SECS", "60"))
+MEHRFACH_SECS = float(os.environ.get("WAMO_RD_MEHRFACH_SECS", "15"))  # Schonfrist für zwei Tunnel mit demselben Token
 FERTIG_BEHALTEN_SECS = 600.0
 MAX_FERTIG = 64
 GRUENDE = ("beendet", "abgeloest", "zeitlimit", "getrennt", "nicht_geoeffnet", "profil_inaktiv", "kern_neustart", "fehler")
@@ -77,10 +78,12 @@ class Sitzung:
     frist: float
     verbunden: bool = False
     zuletzt_aktiv: float = 0.0
+    mehrfach_seit: float | None = None  # seit wann mehr als ein Tunnel mit diesem Token offen ist (ein Zuschauer je Ziel)
 
 
 @dataclass
 class Zustand:
+    anmelde_sperre: asyncio.Lock = field(default_factory=asyncio.Lock)  # Prüfung und Eintragen eines Anmeldens nacheinander
     sitzungen: dict[str, Sitzung] = field(default_factory=dict)
     fertig: dict[str, tuple[str, float]] = field(default_factory=dict)  # Sitzung -> (Grund, Zeitpunkt)
 
@@ -213,20 +216,21 @@ async def befehl(z: Zustand, anfrage: dict) -> dict:
         if (not isinstance(data, str) or not 100 <= len(data) <= MAX_ZEILE - 512 or not BASE64_RE.fullmatch(data)
                 or isinstance(max_secs, bool) or not isinstance(max_secs, int) or not 60 <= max_secs <= MAX_SECS):
             return {"ok": False, "code": "angaben_ungueltig"}
-        if sitzung in z.sitzungen:
-            return {"ok": False, "code": "schon_da"}
-        if len(z.sitzungen) >= MAX_SITZUNGEN:
-            return {"ok": False, "code": "voll"}
-        try:
-            status, token = await asyncio.to_thread(guac_anmelden, data)
-        except OSError:
-            protokoll(f"anmelden sitzung={kurz(sitzung)} gateway_nicht_erreichbar")
-            return {"ok": False, "code": "gateway_nicht_erreichbar"}
-        if token is None:
-            protokoll(f"anmelden sitzung={kurz(sitzung)} abgelehnt status={status}")
-            return {"ok": False, "code": "abgelehnt" if status in (401, 403, 429) else "gateway_fehler"}
-        jetzt = time.monotonic()
-        z.sitzungen[sitzung] = Sitzung(token=token, start=jetzt, frist=jetzt + max_secs)
+        async with z.anmelde_sperre:  # gleiche Sitzungs-ID oder volle Liste: Prüfung und Eintragen dürfen sich nicht überholen
+            if sitzung in z.sitzungen:
+                return {"ok": False, "code": "schon_da"}
+            if len(z.sitzungen) >= MAX_SITZUNGEN:
+                return {"ok": False, "code": "voll"}
+            try:
+                status, token = await asyncio.to_thread(guac_anmelden, data)
+            except OSError:
+                protokoll(f"anmelden sitzung={kurz(sitzung)} gateway_nicht_erreichbar")
+                return {"ok": False, "code": "gateway_nicht_erreichbar"}
+            if token is None:
+                protokoll(f"anmelden sitzung={kurz(sitzung)} abgelehnt status={status}")
+                return {"ok": False, "code": "abgelehnt" if status in (401, 403, 429) else "gateway_fehler"}
+            jetzt = time.monotonic()
+            z.sitzungen[sitzung] = Sitzung(token=token, start=jetzt, frist=jetzt + max_secs)
         protokoll(f"angemeldet sitzung={kurz(sitzung)} max_secs={max_secs}")
         return {"ok": True, "token": token}
 
@@ -263,6 +267,14 @@ async def aufseher_runde(z: Zustand) -> None:
         elif offen > 0:
             s.verbunden = True
             s.zuletzt_aktiv = jetzt
+            if offen > 1:
+                # ein Zuschauer je Ziel: ein zweiter Tunnel mit demselben Token (zweiter Tab, zweites Gerät) schließt die Sitzung,
+                # sobald er länger als die Schonfrist besteht (ein Neuladen der Seite öffnet kurz zwei Tunnel)
+                s.mehrfach_seit = jetzt if s.mehrfach_seit is None else s.mehrfach_seit
+                if jetzt - s.mehrfach_seit >= MEHRFACH_SECS:
+                    await sitzung_beenden(z, sitzung, "beendet")
+            else:
+                s.mehrfach_seit = None
         elif s.verbunden and jetzt - s.zuletzt_aktiv >= GETRENNT_SECS:
             await sitzung_beenden(z, sitzung, "getrennt")
         elif not s.verbunden and jetzt - s.start >= NICHT_GEOEFFNET_SECS:
