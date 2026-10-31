@@ -63,6 +63,7 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.utils.http import connection_limits
 
 from env_schalter import zahl_im_bereich
+from marker_wache import MarkerFallback
 from schluessel import schwaerzen
 
 Anbieter = Literal["claude", "litellm"]
@@ -655,7 +656,7 @@ class _Verbrauch:
         await super().start_llm_usage_metrics(tokens)
 
 
-class LiteLLMService(_Verbrauch, OpenAILLMService):
+class LiteLLMService(MarkerFallback, _Verbrauch, OpenAILLMService):
     """Pipecat-Dienst für das LiteLLM-Gateway (OpenAI-kompatibel).
 
     Nicht jedes Modell hinter dem Gateway kennt die Rolle "developer" (Pipecat schickt damit z. B.
@@ -687,7 +688,7 @@ class LiteLLMService(_Verbrauch, OpenAILLMService):
         )
 
 
-class ClaudeService(_Verbrauch, AnthropicLLMService):
+class ClaudeService(MarkerFallback, _Verbrauch, AnthropicLLMService):
     """Anthropic-Dienst einer Sitzung mit dem Client des Profils."""
 
     _wamo_anbieter = "claude"
