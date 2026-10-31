@@ -163,6 +163,33 @@ python scripts\wamo_ui_sokrates2.py einrichten       # Firewall, Caddy, Image ba
 python scripts\wamo_ui_sokrates2.py status           # Zustand; bauen = nur Image und Container, pruefen = Header, TLS, Härtung
 ```
 
+#### Texteingabe und Verbindungsfrist
+
+Die Eingabepille der Kommandozentrale sendet getippten Text wie eine gesprochene Bitte (`useWamo.textSenden`, RTVI
+`send-text`, Antwort mit Stimme; die Nachricht unterbricht eine laufende Antwort wie ein Einwurf). Das Feld ist nur
+aktiv, wenn ein Gespräch läuft und der Kern Protokoll 2 oder neuer meldet (`textMoeglich`); sonst steht es ehrlich
+gesperrt da. Ein Schlüssel (`sk-ant-…`, auch gesprochen geschrieben) wird schon im Browser entfernt (`ui/src/lib/textEingabe.ts`),
+zusätzlich filtert ihn der Kern (`voice-core/schluessel_filter.py`). Getippter Text ersetzt nie eine Freigabe: Karten
+beantwortet nur der Klick. Kommt nach dem Verbinden 20 Sekunden lang keine Betriebsmeldung (Büro-Kern ohne WireGuard),
+bricht die Oberfläche ab und zeigt eine Meldung mit „Erneut verbinden“ (`ui/src/lib/verbindungsfrist.ts`); steht die
+Mikrofonfrage des Browsers noch offen, wird weiter gewartet.
+
+#### App auf dem iPhone
+
+Die Oberfläche ist als App installierbar (`ui/src/app/manifest.ts`, Symbole aus `scripts/wamo_icons_erzeugen.py`, Abstände
+für Notch und Home-Balken über `env(safe-area-inset-*)` in `globals.css`). Das Manifest enthält nur Namen, Farben und Symbole.
+Einrichtung am iPhone (nur Betriebsart Büro, also im Büro-LAN oder über WireGuard; die PC-Steuerung bleibt der Desktop-App vorbehalten):
+
+1. `infra/sokrates2/wamo-ca.crt` aufs iPhone bringen (AirDrop oder Mail an sich selbst) und öffnen: „Profil geladen“.
+2. Einstellungen, Allgemein, VPN und Geräteverwaltung: das Profil „WAMO CA“ installieren.
+3. Einstellungen, Allgemein, Info, Zertifikatsvertrauenseinstellungen: dem Zertifikat der WAMO-CA vollständig vertrauen (Schalter an).
+   Ohne diesen Schritt gibt es weder Anmeldung noch WebRTC.
+4. In Safari `https://192.168.178.136:55445` öffnen, anmelden (zweiter Faktor), dann Teilen, „Zum Home-Bildschirm“.
+
+**Offen:** Das Mikrofon und WebRTC im Standalone-Modus von iOS sind nur an einem echten Gerät prüfbar und noch nicht
+geprüft. Bis dahin gilt die App-Installation nicht als Lösung; Hilfsweise bleibt Safari im normalen Tab. Symbole
+neu erzeugen: `python scripts/wamo_icons_erzeugen.py` (Pillow nötig).
+
 #### Einstellungen in der Oberfläche
 
 Alle Formulare und Schalter liegen auf der Einstellungsseite (Zahnrad in der Kopfzeile oder „Einstellungen öffnen“ in der
