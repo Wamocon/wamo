@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { memo, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type SyntheticEvent } from "react";
 import { GERAETEVERWALTUNG_ID } from "@/lib/einstellungenAbschnitte";
 import {
   aktionenFuer,
@@ -41,7 +41,7 @@ function Fingerabdruck({ fp }: { fp: string | null }) {
       <span className="gv-fp-praefix">{g.praefix}</span>
       {g.gruppen.map((x, i) => (
         <span key={i} className="gv-fp-gruppe">
-          {x}
+          {x}{" "}
         </span>
       ))}
     </p>
@@ -92,9 +92,9 @@ function GeraeteKarte({
           {g.bindung === "automatisch" && <span className="gv-tag">Automatisch gebunden</span>}
         </div>
         <div>
-          <h5 id={titelId} className="gv-name">
+          <h6 id={titelId} className="gv-name">
             {g.name}
-          </h5>
+          </h6>
           <span className="gv-kennung">{g.kennung}</span>
         </div>
         <dl className="gv-daten">
@@ -182,9 +182,7 @@ function BestaetigungsDialog({
     const d = dialog.current;
     if (d && !d.open) d.showModal();
     fokus(ersterAutofokus);
-    return () => {
-      if (d?.open) d.close();
-    };
+    // Kein close() beim Abbau: Der Dialog verschwindet mit dem Element aus dem DOM (der Fokus wird unten von Hand gesetzt)
     // einmal beim Öffnen: der Dialog wird je Gerät und Aktion neu aufgebaut (key)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -233,16 +231,14 @@ function BestaetigungsDialog({
     }
   };
 
-  // Escape: der Browser schließt das Dialogfenster selbst; währenddessen läuft eine Anfrage, die nicht abbrechbar ist
-  const beiAbbruch = (e: Event) => {
-    e.preventDefault();
+  // Escape: Während eine Anfrage läuft, bleibt der Dialog offen (sie ist nicht abbrechbar). Sonst schließt der Browser ihn
+  // und meldet das über close; so bleibt der Zustand von React auch bei einem zweiten Escape gleich dem des Browsers.
+  const beiAbbruch = (e: SyntheticEvent<HTMLDialogElement>) => {
+    if (laeuft.current) e.preventDefault();
+  };
+  const beiSchliessen = () => {
     if (!laeuft.current) onAbbrechen();
   };
-  useEffect(() => {
-    const d = dialog.current;
-    d?.addEventListener("cancel", beiAbbruch);
-    return () => d?.removeEventListener("cancel", beiAbbruch);
-  });
   // Die Einstellungsseite schließt sich bei Escape; im Dialog gilt Escape nur für den Dialog
   const beiTaste = (e: KeyboardEvent<HTMLDialogElement>) => {
     if (e.key === "Escape") e.stopPropagation();
@@ -250,7 +246,7 @@ function BestaetigungsDialog({
 
   const fehlerFeld = fehler?.feld ?? null;
   return (
-    <dialog ref={dialog} className="gv-dialog" aria-labelledby={`${id}-titel`} aria-describedby={`${id}-text`} onKeyDown={beiTaste}>
+    <dialog ref={dialog} className="gv-dialog" aria-labelledby={`${id}-titel`} aria-describedby={`${id}-text`} onKeyDown={beiTaste} onCancel={beiAbbruch} onClose={beiSchliessen}>
       <form className="gv-dialog-form" onSubmit={(e) => void absenden(e)} noValidate>
         <h4 id={`${id}-titel`} className="gv-dialog-titel">
           {b.titel}
@@ -318,7 +314,7 @@ function BestaetigungsDialog({
             onChange={(e) => setEingabe((alt) => ({ ...alt, code: e.target.value }))}
           />
           <span id={`${id}-codehilfe`} className="gv-zaehler">
-            Jede Änderung an einem Gerät braucht einen frischen Code, auch wenn du dich gerade angemeldet hast.
+            Jede Änderung an einem Gerät braucht einen aktuellen Code, höchstens zwei Minuten alt, auch wenn du dich gerade angemeldet hast.
           </span>
         </div>
         <p id={`${id}-fehler`} ref={fehlerRef} className="gv-fehler" role="alert" tabIndex={-1}>
@@ -344,7 +340,10 @@ const LEER: ListenStand = { liste: null, lage: "laedt", ladefehler: "" };
 const stand = createStore<ListenStand>(LEER);
 let runde = 0; // gegen Überholen: nur die Antwort der letzten Anfrage zählt
 
+let karteOffen = false; // nur solange die Karte da ist, trägt eine Antwort etwas in den Store ein
+
 async function laden() {
+  if (!karteOffen) return;
   const meine = ++runde;
   try {
     const neu = await geraeteLaden();
@@ -378,12 +377,14 @@ export const GeraeteVerwaltung = memo(function GeraeteVerwaltung() {
   const dialogOffen = useRef(false);
 
   useEffect(() => {
+    karteOffen = true;
     void laden();
     const uhr = setInterval(() => {
       if (document.visibilityState === "visible" && !dialogOffen.current) void laden();
     }, AUFFRISCHEN_MS);
     return () => {
       clearInterval(uhr);
+      karteOffen = false;
       leeren();
     };
   }, []);
@@ -422,7 +423,7 @@ export const GeraeteVerwaltung = memo(function GeraeteVerwaltung() {
   const zeige = (g: Geraet) => <GeraeteKarte key={g.kennung} g={g} hier={istDieserLaptop(g, kennungHier)} onAktion={oeffnen} />;
 
   return (
-    <div className="gv" id={GERAETEVERWALTUNG_ID} tabIndex={-1}>
+    <div className="gv" id={GERAETEVERWALTUNG_ID} tabIndex={-1} role="region" aria-label="Geräteverwaltung">
       <p className="ez-text">
         Hier gibst du die Geräte der Profile frei, sperrst sie oder entziehst ihnen den Zugang. Jede Änderung braucht den
         aktuellen Code deiner Authenticator-App und wird im Verlauf des Geräts festgehalten.

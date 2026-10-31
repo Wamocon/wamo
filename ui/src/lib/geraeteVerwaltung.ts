@@ -57,12 +57,13 @@ const istStatus = (v: unknown): v is GeraeteStatus => typeof v === "string" && (
 /** Steuer-, Bidi- und Zero-Width-Zeichen (wie voice-core/geraete_admin_api.py: STEUER_RE) */
 const STEUER_MUSTER = "[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]";
 const STEUER = new RegExp(STEUER_MUSTER, "g");
-const HAT_STEUER = new RegExp(STEUER_MUSTER);
+// im Grund sind Tab und Zeilenumbruch erlaubt (mehrzeiliges Feld); sie werden zu Leerzeichen
+const HAT_STEUER = new RegExp("[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]");
 
 /** Text zur Anzeige: Steuerzeichen werden zu Leerzeichen, der Rest gekürzt; leer ergibt null. */
 export function sauber(v: unknown, grenze: number): string | null {
   if (typeof v !== "string") return null;
-  const t = v.replace(STEUER, " ").replace(/\s+/g, " ").trim().slice(0, grenze);
+  const t = Array.from(v.replace(STEUER, " ").replace(/\s+/g, " ").trim()).slice(0, grenze).join("");
   return t || null;
 }
 
@@ -229,7 +230,7 @@ const VERGLEICH_HINWEIS = "Vergleiche ihn mit dem Fingerabdruck am Laptop.";
 export { VERGLEICH_HINWEIS };
 
 function besitzer(g: Geraet): string {
-  return g.profilName ?? "dem Besitzer";
+  return g.profilName ?? "unbekanntes Profil";
 }
 
 /** Alles, was der Dialog zu dieser Aktion zeigen und verlangen muss. Reine Funktion: dieselbe Eingabe, dieselbe Regel. */
@@ -382,7 +383,8 @@ export function fehlerBehandlung(f: { status: number; text: string; code?: strin
   }
   if (f.status === 400) return { text, dialogOffen: true, neuLaden: false, feld: text.includes("Grund") ? "grund" : null };
   if (f.status === 0 || f.status >= 500) {
-    return { text: `${text} Ob die Aktion gelaufen ist, zeigt die Liste. Bitte prüfe sie.`, dialogOffen: false, neuLaden: true, feld: null };
+    const satz = /[.!?]$/.test(text) ? text : `${text}.`;
+    return { text: `${satz} Ob die Aktion gelaufen ist, zeigt die Liste. Bitte prüfe sie.`, dialogOffen: false, neuLaden: true, feld: null };
   }
   if (f.status === 404 || f.status === 409) return { text, dialogOffen: false, neuLaden: true, feld: null };
   return { text, dialogOffen: false, neuLaden: false, feld: null };

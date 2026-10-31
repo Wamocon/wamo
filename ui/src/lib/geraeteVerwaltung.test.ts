@@ -352,3 +352,21 @@ test("Texte der Oberfläche enthalten keine Gedankenstriche", async () => {
   assert.ok(texte.length > 1000, "die Texte wurden gefunden");
   assert.ok(!texte.includes(" - "), "kein Gedankenstrich im Fließtext");
 });
+
+test("Grund darf mehrzeilig sein, Zeilenumbruch wird zum Leerzeichen", () => {
+  const umbruch = String.fromCharCode(10);
+  assert.deepEqual(grundPruefen(`Laptop verloren${umbruch}und nicht gemeldet`, true), { ok: true, wert: "Laptop verloren und nicht gemeldet" });
+  assert.equal(grundPruefen(`abc${String.fromCharCode(0)}`, true).ok, false);
+});
+
+test("sauber zerschneidet kein Zeichenpaar an der Grenze", () => {
+  const laptop = String.fromCodePoint(0x1f4bb);
+  assert.equal(sauber(`a${laptop}b`, 2), `a${laptop}`);
+});
+
+test("Meldung bei fehlender Antwort ist ein ganzer Satz", () => {
+  const f = fehlerBehandlung({ status: 0, text: "Zeitüberschreitung" });
+  assert.equal(f.text, "Zeitüberschreitung. Ob die Aktion gelaufen ist, zeigt die Liste. Bitte prüfe sie.");
+  const g = fehlerBehandlung({ status: 503, text: "Die Datenbank ist weg." });
+  assert.equal(g.text, "Die Datenbank ist weg. Ob die Aktion gelaufen ist, zeigt die Liste. Bitte prüfe sie.");
+});

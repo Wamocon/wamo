@@ -6,7 +6,7 @@
 .gv:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
 .gv-kopf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; justify-content: space-between; }
 .gv-meldung { margin: 0; padding: 10px 14px; border-left: 4px solid var(--rule-strong); background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 0 8px 8px 0; font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
-.gv-meldung:empty { display: none; }
+.gv-meldung:empty { padding: 0; border: 0; background: none; min-height: 0; } /* nicht verborgen: Live-Region und Fokusziel bleiben bestehen */
 .gv-meldung[data-art="fehler"] { border-left-color: var(--accent); font-weight: 700; }
 .gv-meldung:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .gv-gruppe { display: grid; gap: 10px; min-width: 0; }
@@ -81,7 +81,7 @@
 .gv-check input { flex: none; width: 22px; height: 22px; margin: 1px 0 0; accent-color: var(--accent); cursor: pointer; }
 .gv-check:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
 .gv-fehler { margin: 0; padding: 10px 12px; border-left: 4px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 0 8px 8px 0; font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
-.gv-fehler:empty { display: none; }
+.gv-fehler:empty { padding: 0; border: 0; background: none; }
 .gv-dialog-knoepfe { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
 @media (max-width: 859.98px) {
   .gv-daten { grid-template-columns: 1fr; gap: 0; }

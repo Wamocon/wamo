@@ -39,9 +39,14 @@ export async function codeBestaetigen(code: string): Promise<CodeErgebnis> {
     if (!faktor) return { ok: false, text: "Für dieses Konto ist kein Authenticator eingerichtet." };
     const { error: pruefFehler } = await supabase.auth.mfa.challengeAndVerify({ factorId: faktor.id, code });
     if (pruefFehler) {
+      // Nur eine echte Ablehnung des Codes heißt "passt nicht"; Netz- und Serverfehler sind etwas anderes
+      if (pruefFehler.status === 429) return { ok: false, text: "Zu viele Versuche. Bitte in ein paar Minuten noch einmal." };
+      const abgelehnt = pruefFehler.code === "mfa_verification_failed" || pruefFehler.status === 400 || pruefFehler.status === 422;
       return {
         ok: false,
-        text: pruefFehler.status === 429 ? "Zu viele Versuche. Bitte in ein paar Minuten noch einmal." : "Der Code passt nicht. Nimm den aktuellen aus der App.",
+        text: abgelehnt
+          ? "Der Code passt nicht. Nimm den aktuellen aus der App."
+          : "Der zweite Faktor lässt sich gerade nicht abfragen. Bitte gleich noch einmal versuchen.",
       };
     }
     const token = await accessToken();

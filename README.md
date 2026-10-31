@@ -310,6 +310,12 @@ Marke „Dieses Gerät“. Die Status zeigen Wort und Form (Raute wartet, Kreis 
 - **Datenbank (Migration 0014):** `wamo_core` bekommt kein Update-Recht auf `devices`, sondern nur die Ausführung zweier Funktionen,
   `geraet_entscheiden` (feste Übergänge, Akteur muss aktiver Admin sein, Zeile gesperrt, Verlauf über die Trigger aus 0002) und
   `geraete_verwaltung_liste`. Die Trigger aus 0002 bleiben maßgeblich. Prüfung: `supabase/tests/0014_geraete_verwaltung_test.sql`.
+- **Grenze der Prüfung:** Die Datenbank sieht kein Token. Rolle, Anmeldung und die Frische des Codes prüft der Kern; die Datenbank
+  prüft Akteur und Zeit erneut, kann sie aber nicht beglaubigen. Ein übernommener Kern könnte beides selbst setzen. Dagegen
+  melden sich jede Freigabe und jedes Entsperren mit Kennung, Fingerabdruck und Akteur bei allen Admins (Hinweis `system`),
+  und der Verlauf in `device_events` hält jede Änderung fest. Die Frist von 120 Sekunden gilt für ein Zeitfenster, nicht für
+  einen einzelnen Code. Noch nicht an einem echten GoTrue erprobt: dass ein erneutes `challengeAndVerify` den Zeitstempel im Claim
+  `amr` erneuert (die Oberfläche prüft das nach dem Bestätigen und meldet es sonst).
 - **Hinweise:** Die Texte der Migration 0002 verweisen auf ein Skript `wamo_geraete.py`, das es nicht gibt. Die Datenbank bleibt
   unverändert (Migrationen sind nach dem Anwenden unveränderlich); die Oberfläche zeigt stattdessen den Weg über die Karte
   und bietet an den Hinweisen für Admins den Knopf „Zur Geräteverwaltung“.
