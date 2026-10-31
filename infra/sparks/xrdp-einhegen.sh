@@ -50,6 +50,8 @@ ZUSTAND="$ZUSTAND_DIR/zustand"
 NFT_DIR="$WURZEL/etc/wamo-xrdp"
 NFT_DATEI="$NFT_DIR/sperre.nft"
 UNIT="$WURZEL/etc/systemd/system/wamo-xrdp-sperre.service"
+# xrdp startet nur, wenn die Sperre geladen ist (fail-closed): schlägt nft -f fehl, bleibt xrdp aus
+DROPIN="$WURZEL/etc/systemd/system/xrdp.service.d/wamo-sperre.conf"
 UFW_USER_DATEIEN=("$WURZEL/etc/ufw/user.rules" "$WURZEL/etc/ufw/user6.rules")
 
 TROCKEN=nein
@@ -257,6 +259,11 @@ sesman_datei_ersetzen() {
   local tmp
   tmp="$(mktemp "$SESMAN.neu.XXXXXX")"
   cat > "$tmp"
+  # Ein abgebrochener Erzeuger (awk) darf keine leere oder halbe Datei in Betrieb setzen
+  if [ ! -s "$tmp" ] || ! grep -q '^\[' "$tmp"; then
+    rm -f "$tmp"
+    fehler "Neue sesman.ini ist leer oder unvollständig, nichts geändert."
+  fi
   chmod --reference="$SESMAN" "$tmp"
   chown --reference="$SESMAN" "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$SESMAN"
@@ -311,6 +318,7 @@ sperre_ufw() {
   ufw_regel 1 allow from "$QUELLE" to any port "$PORT" proto tcp comment "$MARKE"
   ufw_regel 2 deny proto tcp from any to any port "$PORT" comment "$MARKE"
   zustand_setzen sperre ufw
+  zustand_setzen quelle "$QUELLE"
   if [ "$TROCKEN" = nein ]; then ufw status numbered | grep -E "$PORT" | sed 's/^/  /' || true; fi
 }
 
@@ -362,7 +370,7 @@ sperre_nft() {
   fi
   sicherung_anlegen
   if [ "$TROCKEN" = nein ]; then
-    install -d -m 755 "$NFT_DIR" "$(dirname "$UNIT")"
+    install -d -m 755 "$NFT_DIR" "$(dirname "$UNIT")" "$(dirname "$DROPIN")"
     printf '%s\n' "$neu_nft" > "$NFT_DATEI.neu"
     # Erst prüfen, dann übernehmen (nft -c ändert nichts)
     nft -c -f "$NFT_DATEI.neu" || { rm -f "$NFT_DATEI.neu"; fehler "nft lehnt die Regeln ab, nichts geändert."; }
@@ -371,14 +379,19 @@ sperre_nft() {
     printf '%s\n' "$neu_unit" > "$UNIT.neu"
     install -m 644 "$UNIT.neu" "$UNIT"
     rm -f "$UNIT.neu"
+    printf '# WAMO: xrdp nur mit geladener Sperre für Port %s (xrdp-einhegen.sh)\n[Unit]\nRequires=wamo-xrdp-sperre.service\nAfter=wamo-xrdp-sperre.service\n' "$PORT" > "$DROPIN.neu"
+    install -m 644 "$DROPIN.neu" "$DROPIN"
+    rm -f "$DROPIN.neu"
   else
     echo "  [trocken] Datei $NFT_DATEI:"
     sed 's/^/    /' <<<"$neu_nft"
     echo "  [trocken] Unit $UNIT (Type=oneshot, lädt die Datei beim Start)"
+    echo "  [trocken] Drop-in $DROPIN (xrdp.service braucht die Sperre: Requires und After)"
   fi
   tu systemctl daemon-reload
   tu systemctl enable --now wamo-xrdp-sperre.service
   zustand_setzen sperre nft
+  zustand_setzen quelle "$QUELLE"
   if [ "$TROCKEN" = nein ]; then nft list table inet "$NFT_TABELLE" 2>/dev/null | sed 's/^/  /' || true; fi
 }
 
@@ -438,7 +451,10 @@ einhegen() {
 # ---------- Rückweg
 zurueck() {
   echo "== Rückweg"
-  local vorher art f
+  local vorher art f q
+  # die Quelle, mit der eingerichtet wurde (nicht der Vorgabewert), damit der Rückweg die richtige Regel entfernt
+  q="$(zustand_lesen quelle)"
+  if [[ "$q" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$ ]]; then QUELLE="$q"; fi
   vorher="$(zustand_lesen allowrootlogin_vorher)"
   if [ -n "$vorher" ] && [ -r "$SESMAN" ]; then
     if [ "$vorher" = "<fehlt>" ]; then
@@ -479,10 +495,11 @@ zurueck() {
         nft delete table inet "$NFT_TABELLE" 2>/dev/null || true
       fi
     fi
-    for f in "$UNIT" "$NFT_DATEI"; do
+    for f in "$DROPIN" "$UNIT" "$NFT_DATEI"; do
       tu rm -f "$f"
     done
     tu rmdir "$NFT_DIR" 2>/dev/null || true
+    tu rmdir "$(dirname "$DROPIN")" 2>/dev/null || true
     tu systemctl daemon-reload
   fi
   if [ "$TROCKEN" = nein ]; then rm -f "$ZUSTAND"; rmdir "$ZUSTAND_DIR" 2>/dev/null || true; fi

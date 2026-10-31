@@ -14,7 +14,9 @@
 # Netze (alle mit fester Adresse, damit die Firewall sie kennt; Vorprüfung gegen Überschneidungen macht das Einrichtungsskript):
 #   wamo-rd-netz        172.26.0.0/24  intern, ohne Adresse am Host: Caddy, wamo-rd-web (später der Zugangsdienst). Legt wamo-caddy an.
 #   wamo-rd-guacd-netz  172.26.1.0/29  intern, ohne Adresse am Host: nur wamo-rd-web und wamo-rd-guacd (guacd spricht kein TLS
-#                                      und keine Anmeldung, deshalb ist er für Caddy unerreichbar)
+#                                      und keine Anmeldung, deshalb ist er für Caddy unerreichbar). guacd lauscht NUR auf seiner
+#                                      festen Adresse 172.26.1.3 in diesem Netz, nicht im Netz wamo-rd-ziel: Prozesse auf dem Host
+#                                      erreichen ihn über die Brücke 172.27.0.1 nicht.
 #   wamo-rd-ziel        172.27.0.0/24  nicht intern: nur wamo-rd-guacd. Nach außen lässt die Firewall (Kette WAMO-FW-RD in
 #                                      wamo-firewall.sh) ausschließlich TCP 3389 zu den Zielen aus /etc/wamo-rd/ziele.toml durch;
 #                                      ohne Ziel geht gar nichts hinaus.
@@ -60,18 +62,20 @@ services:
     pids_limit: 128
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m
+    # Das Image startet guacd sonst mit -b 0.0.0.0; hier nur auf der Adresse des internen Netzes
+    entrypoint: ["/opt/guacamole/sbin/guacd", "-f", "-b", "${WAMO_RD_GUACD_IP:-172.26.1.3}", "-L", "info"]
     environment:
-      LOG_LEVEL: info
       HOME: /tmp
     healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "4822"]
+      test: ["CMD", "nc", "-z", "${WAMO_RD_GUACD_IP:-172.26.1.3}", "4822"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 10s
     networks:
-      - guacd
-      - ziel
+      guacd:
+        ipv4_address: ${WAMO_RD_GUACD_IP:-172.26.1.3}
+      ziel: {}
 
   web:
     <<: *wamo-rd
@@ -94,7 +98,7 @@ services:
       WEBAPP_CONTEXT: ROOT
       HOME: /tmp
       JAVA_OPTS: "-Xms64m -Xmx384m -XX:MaxMetaspaceSize=160m -XX:+UseSerialGC"
-      GUACD_HOSTNAME: ${WAMO_RD_PRAEFIX:-wamo-}rd-guacd
+      GUACD_HOSTNAME: ${WAMO_RD_GUACD_IP:-172.26.1.3}
       GUACD_PORT: "4822"
       # Anmeldung nur mit signiertem JSON; kein JDBC, kein LDAP, keine Benutzerliste (die Erweiterung wird allein durch die
       # JSON_*-Variablen eingeschaltet, andere Erweiterungen bleiben aus). Der Schlüssel wird aus der Datei gelesen.

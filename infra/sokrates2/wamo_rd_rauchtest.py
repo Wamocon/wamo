@@ -27,8 +27,11 @@ import base64
 import http.client as httpclient
 import ipaddress
 import json
+import os
 import re
 import secrets
+import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -48,7 +51,7 @@ NAME_RE = re.compile(r"^[a-z0-9]{1,12}$")
 # Im Zugangsdienst-Attrappe-Container: baut das signierte und verschlüsselte JSON ("Encrypted JSON authentication") und
 # reicht es bei der Webanwendung ein. Kommandozeile: Ziel-URL, Modus (gut, falsch, abgelaufen), Schlüsseldatei.
 ATTRAPPE_CODE = r"""
-import base64, hashlib, hmac, json, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+import base64, json, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 url, modus, keydatei = sys.argv[1:4]
 xff = sys.argv[4] if len(sys.argv) > 4 else ""
 key = open(keydatei).read().strip()
@@ -74,9 +77,13 @@ except urllib.error.HTTPError as e:
 # ======================================================================== Hilfen
 def sh(*cmd: str, check: bool = False, timeout: float = 180, eingabe: str | None = None,
        env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    import os
-    r = subprocess.run(list(cmd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                       input=eingabe, env={**os.environ, **(env or {})})
+    try:
+        r = subprocess.run(list(cmd), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                           input=eingabe, env={**os.environ, **(env or {})})
+    except subprocess.TimeoutExpired:
+        r = subprocess.CompletedProcess(list(cmd), 124, "", "Zeitüberschreitung")
+    except FileNotFoundError as ex:
+        r = subprocess.CompletedProcess(list(cmd), 127, "", f"Programm fehlt: {ex}")
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} -> {r.returncode}\n{r.stdout}\n{r.stderr}")
     return r
@@ -111,7 +118,7 @@ class Ergebnis:
 
 
 def inspect(name: str) -> dict | None:
-    r = sh("docker", "inspect", name)
+    r = sh("docker", "container", "inspect", name)
     if r.returncode != 0:
         return None
     return json.loads(r.stdout)[0]
@@ -141,12 +148,22 @@ def http(url: str, methode: str = "GET", daten: dict | None = None, ca: str | No
 
 
 def tcp_von(container: str, host: str, port: int) -> str:
-    """'offen', wenn der Container die Verbindung aufbauen kann, sonst 'zu' (keine Route, verworfen, abgelehnt, Zeitüberschreitung)."""
+    """'offen': Verbindung steht. 'zu': keine Route, verworfen, abgelehnt oder Zeitüberschreitung. 'defekt': die Probe selbst
+    ging schief (kein Host angegeben, Container fehlt, Werkzeug fehlt); ein defekte Probe zählt nie als bestanden."""
+    if not host:
+        return "defekt"
     if container.endswith("guacd"):
         cmd = ["docker", "exec", container, "nc", "-w", "3", "-z", host, str(port)]
     else:  # bash ist im Image der Webanwendung vorhanden, nc nicht
         cmd = ["docker", "exec", container, "timeout", "4", "bash", "-c", f"exec 3<>/dev/tcp/{host}/{port}"]
-    return "offen" if sh(*cmd, timeout=20).returncode == 0 else "zu"
+    r = sh(*cmd, timeout=20)
+    if r.returncode == 0:
+        return "offen"
+    text = (r.stdout + r.stderr).lower()
+    if r.returncode in (126, 127) or any(t in text for t in ("no such container", "is not running", "executable file not found",
+                                                             "oci runtime", "error response from daemon", "programm fehlt")):
+        return "defekt"
+    return "zu"
 
 
 def container_ip(container: str, netz: str) -> str:
@@ -218,7 +235,7 @@ def pruefe_kopfzeilen(e: Ergebnis, basis: str, ca: str | None, nur_ein_fehlversu
     skripte = re.search(r"script-src ([^;]*);", csp)
     e.pruefe(skripte is not None and skripte[1] == "'self' 'unsafe-eval'",
              "CSP: Skripte nur von der eigenen Herkunft (eval nur für AngularJS), keine Inline-Skripte", skripte[1] if skripte else "")
-    e.pruefe(("x-frame-options", ["DENY"]) in k.items(), "X-Frame-Options DENY")
+    e.pruefe(k.get("x-frame-options") == ["DENY"], "X-Frame-Options DENY")
     e.pruefe(k.get("referrer-policy") == ["no-referrer"], "Referrer-Policy no-referrer")
     e.pruefe(k.get("x-content-type-options") == ["nosniff"], "X-Content-Type-Options nosniff")
     e.pruefe(k.get("cross-origin-opener-policy") == ["same-origin"] and k.get("cross-origin-resource-policy") == ["same-origin"],
@@ -229,7 +246,8 @@ def pruefe_kopfzeilen(e: Ergebnis, basis: str, ca: str | None, nur_ein_fehlversu
     e.pruefe("server" not in k and "x-powered-by" not in k, "weder Server noch X-Powered-By sichtbar", str(k.get("server")))
     e.pruefe("access-control-allow-origin" not in k, "kein CORS")
     for c in k.get("set-cookie", []):
-        e.pruefe("httponly" in c.lower() and "samesite" in c.lower(), "Cookie mit HttpOnly und SameSite", c.split("=")[0])
+        e.pruefe("httponly" in c.lower() and "samesite" in c.lower() and (basis.startswith("http://") or "secure" in c.lower()),
+                 "Cookie mit HttpOnly, SameSite und (über HTTPS) Secure", c.split("=")[0])
     # Methoden und Anmeldung
     for methode in ("PUT", "PATCH", "OPTIONS", "TRACE"):
         try:
@@ -253,9 +271,6 @@ def pruefe_kopfzeilen(e: Ergebnis, basis: str, ca: str | None, nur_ein_fehlversu
     s, _, _ = http(basis + "/api/session/tunnels?token=" + secrets.token_hex(32), ca=ca)
     e.pruefe(s in (401, 403), "erfundenes Token am Tunnel abgewiesen", str(s))
     e.pruefe(http(basis + "/api/languages", ca=ca)[0] == 200, "Seite lädt ohne Konto (nur statische Teile)")
-    # Es gibt weder Konten noch Anmeldeerweiterungen
-    s, _, body = http(basis + "/api/extensions", ca=ca)
-    e.pruefe(s != 200 or b"jdbc" not in body.lower(), "keine Datenbank-Erweiterung geladen")
 
 
 # ======================================================================== Testmodus
@@ -294,14 +309,39 @@ def aufraeumen_praefix(p: str) -> None:
     for n in sh("docker", "volume", "ls", "--format", "{{.Name}}", "--filter", f"name=^{p}").stdout.split():
         if n.startswith(p):
             sh("docker", "volume", "rm", "-f", sicher(n))
+    # Nachprüfung: Reste mit dem Präfix melden, nie andere Namen anfassen
+    rest = [n for art in (("ps", "-a", "--format", "{{.Names}}"), ("network", "ls", "--format", "{{.Name}}"))
+            for n in sh("docker", *art).stdout.split() if n.startswith(p)]
+    if rest:
+        print(f"WARNUNG: nach dem Aufräumen noch vorhanden: {', '.join(rest)}", file=sys.stderr)
+
+
+def arbeitsordner(p: str) -> Path:
+    """Fester Ordner je Testaufbau (die Bind-Mounts der Container zeigen darauf, auch bei --behalten)."""
+    return Path(tempfile.gettempdir()).resolve() / (p + "arbeit")
 
 
 def warte_gesund(namen: list[str], sekunden: int = 150) -> bool:
-    ende = time.time() + sekunden
-    while time.time() < ende:
-        if all((inspect(n) or {}).get("State", {}).get("Health", {}).get("Status") == "healthy" for n in namen):
+    ende = time.monotonic() + sekunden
+    while time.monotonic() < ende:
+        zustaende = [(inspect(n) or {}).get("State", {}) for n in namen]
+        if all(z.get("Health", {}).get("Status") == "healthy" for z in zustaende):
             return True
+        if any(z.get("Status") in ("exited", "dead") for z in zustaende):
+            return False
         time.sleep(3)
+    return False
+
+
+def warte_antwort(url: str, sekunden: int = 30) -> bool:
+    ende = time.monotonic() + sekunden
+    while time.monotonic() < ende:
+        try:
+            if http(url, timeout=5)[0] == 200:
+                return True
+        except OSError:
+            pass
+        time.sleep(1)
     return False
 
 
@@ -317,17 +357,18 @@ def testmodus(args: argparse.Namespace) -> int:
     fremd_ip = str(ipaddress.ip_network(sub_rd)[11])
     caddy_ip = str(ipaddress.ip_network(sub_rd)[2])
     web, guacd, caddy, zugang, fremd = p + "rd-web", p + "rd-guacd", p + "caddy", p + "zugang", p + "fremd"
-    tmp = tempfile.TemporaryDirectory(prefix="wamo-test-rd-")
-    arbeit = Path(tmp.name)
+    arbeit = arbeitsordner(p)
     schluessel = secrets.token_hex(16)
-    (arbeit / "json.key").write_text(schluessel)  # ohne Zeilenumbruch: Guacamole liest die Datei unverändert
-    (arbeit / "json.key").chmod(0o644)  # nur Testschlüssel; im Betrieb gilt 0640 root:wamo-rd-gateway
+    guacd_ip = str(ipaddress.ip_network(sub_guacd)[3])
     uid = "65100"
     env = {"WAMO_RD_PRAEFIX": p, "WAMO_RD_UID": uid, "WAMO_RD_GID": uid, "WAMO_RD_NETZ": netz_rd, "WAMO_RD_GUACD_NETZ": netz_guacd,
            "WAMO_RD_ZIEL_NETZ": netz_ziel, "WAMO_RD_GUACD_SUBNETZ": str(ipaddress.ip_network(sub_guacd)),
            "WAMO_RD_ZIEL_SUBNETZ": sub_ziel, "WAMO_RD_KEY": str(arbeit / "json.key"), "WAMO_RD_VERTRAUT": f"{vertraut_ip}/32",
-           "WAMO_RD_PROXY_REGEX": caddy_ip.replace(".", "[.]")}
+           "WAMO_RD_PROXY_REGEX": caddy_ip.replace(".", "[.]"), "WAMO_RD_GUACD_IP": guacd_ip}
     try:
+        arbeit.mkdir(parents=True, exist_ok=True)
+        (arbeit / "json.key").write_text(schluessel)  # ohne Zeilenumbruch: Guacamole liest die Datei unverändert
+        (arbeit / "json.key").chmod(0o644)  # nur Testschlüssel; im Betrieb gilt 0640 root:wamo-rd-gateway
         print(f"== Testaufbau {p} (Netze {sub_rd}, {sub_guacd}, {sub_ziel}; vertraute Adresse {vertraut_ip})")
         sh("docker", "network", "create", "--internal", "--subnet", sub_rd, "-o", "com.docker.network.bridge.inhibit_ipv4=true", netz_rd, check=True)
         r = sh("docker", "compose", "-p", projekt, "-f", str(COMPOSE), "up", "-d", env=env, timeout=400)
@@ -353,7 +394,7 @@ def testmodus(args: argparse.Namespace) -> int:
             return e.summe()
         port = sh("docker", "port", caddy, "8080/tcp", check=True).stdout.split(":")[-1].strip()
         basis = f"http://127.0.0.1:{port}"
-        time.sleep(2)
+        e.pruefe(warte_antwort(basis + "/"), "Caddy antwortet")
         netze = {"rd": netz_rd, "guacd": netz_guacd, "ziel": netz_ziel}
         pruefe_container(e, web, guacd, netze)
         # Das Netz wamo-rd-netz gehört im Betrieb zu wamo-caddy; hier legt es der Test an. Vergleichbare Proben:
@@ -361,10 +402,16 @@ def testmodus(args: argparse.Namespace) -> int:
 
         print("== Isolation (aus den Containern)")
         e.pruefe(tcp_von(web, guacd, 4822) == "offen", "Kontrolle: web erreicht guacd:4822 (Probe funktioniert)")
-        for host, port_ in (("1.1.1.1", 443), ("8.8.8.8", 53), ("host.docker.internal", 22), ("169.254.169.254", 80)):
+        e.pruefe(tcp_von(guacd, web, 8080) == "offen", "Kontrolle: guacd erreicht die Webanwendung im Netz wamo-rd-guacd-netz (nc funktioniert)")
+        for host, port_ in (("1.1.1.1", 443), ("8.8.8.8", 53), ("169.254.169.254", 80), (sub_ziel.split("/")[0][:-1] + "1", 22)):
             e.pruefe(tcp_von(web, host, port_) == "zu", f"web erreicht {host}:{port_} nicht")
         e.pruefe(tcp_von(guacd, container_ip(caddy, netz_rd), 8080) == "zu", "guacd erreicht Caddy im Netz wamo-rd-netz nicht")
         e.pruefe(tcp_von(guacd, container_ip(zugang, netz_rd), 22) == "zu", "guacd erreicht das Netz wamo-rd-netz nicht")
+        # guacd lauscht nur an seiner Adresse im internen Netz, nicht im Netz mit Ausgang (Host und Dritte erreichen ihn dort nicht)
+        sh("docker", "network", "connect", netz_ziel, fremd, check=True)
+        ziel_ip = container_ip(guacd, netz_ziel)
+        e.pruefe(tcp_von(fremd, web, 8080) == "offen", "Kontrolle: der Fremd-Container erreicht die Webanwendung (bash-Probe funktioniert)")
+        e.pruefe(bool(ziel_ip) and tcp_von(fremd, ziel_ip, 4822) == "zu", "guacd:4822 ist im Netz wamo-rd-ziel nicht erreichbar", ziel_ip)
         e.skip("guacd erreicht nur die Ziele", "Ausgangskette WAMO-FW-RD gibt es nur auf dem Server; Regeltext wird in test_rd_skripte.py geprüft")
 
         print("== Anmeldung: nur mit gültigem JSON aus der vertrauten Adresse")
@@ -406,8 +453,12 @@ def testmodus(args: argparse.Namespace) -> int:
             e.pruefe(s == 200 and list(json.loads(body)) == ["rauchtest"], "keine fremden Benutzer sichtbar", f"HTTP {s}")
             s, _, _ = http(f"{basis}/api/session/data/json/connections/test/parameters?token={token}")
             e.pruefe(s in (401, 403), "Verbindungsparameter (Adresse, Zugangsdaten) für das Token nicht lesbar", f"HTTP {s}")
-            s, _, _ = http(f"{basis}/api/session/data/json/users/rauchtest?token={token}", methode="PUT", daten={})
-            e.pruefe(s in (405, 401, 403), "Schreiben auf Benutzer abgewiesen", f"HTTP {s}")
+            s, _, _ = http(f"{basis}/api/session/data/json/users/rauchtest?token={token}", methode="DELETE")
+            e.pruefe(s in (401, 403, 404, 405), "Benutzer löschen abgewiesen", f"HTTP {s}")
+            s, _, body = http(f"{basis}/api/session/data/json/users?token={token}")
+            e.pruefe(s == 200 and list(json.loads(body)) == ["rauchtest"], "Benutzer ist danach noch da", f"HTTP {s}")
+            e.pruefe(isinstance(antwort, dict) and antwort.get("availableDataSources") == ["json"],
+                     "nur die Datenquelle json ist aktiv (kein JDBC, LDAP, SSO)", str(antwort.get("availableDataSources")) if isinstance(antwort, dict) else "")
             s, _, _ = http(f"{basis}/api/tokens/{token}", methode="DELETE")
             e.pruefe(s in (200, 204), "Abmelden (DELETE) wirkt", f"HTTP {s}")
             s, _, _ = http(f"{basis}/api/session/data/json/connectionGroups/ROOT/tree?token={token}")
@@ -420,17 +471,35 @@ def testmodus(args: argparse.Namespace) -> int:
         return e.summe()
     finally:
         if not args.behalten:
-            aufraeumen_praefix(p)
-            tmp.cleanup()
+            try:
+                aufraeumen_praefix(p)
+            finally:
+                shutil.rmtree(arbeit, ignore_errors=True)
 
 
 # ======================================================================== Betrieb
-def lies_ziele(pfad: str = "/etc/wamo-rd/ziele.toml") -> list[str]:
+def lies_ziele(pfad: str = "/etc/wamo-rd/ziele.toml") -> list[str] | None:
+    """Gültige Zieladressen wie in wamo-firewall.sh (IPv4, kein Loopback, Multicast, Link-Local, Docker-Bereich, höchstens 8).
+    None, wenn die Datei nicht lesbar ist (dann lässt sich die Kette nicht mit ihr vergleichen)."""
     try:
         text = Path(pfad).read_text(encoding="utf-8")
     except OSError:
-        return []
-    return re.findall(r'^\s*adresse\s*=\s*"(\d{1,3}(?:\.\d{1,3}){3})"', text, flags=re.M)
+        return None
+    ergebnis: list[str] = []
+    docker = ipaddress.ip_network("172.16.0.0/12")
+    for a in re.findall(r'^\s*adresse\s*=\s*"([^"]*)"', text, flags=re.M):
+        try:
+            ip = ipaddress.ip_address(a)
+        except ValueError:
+            continue
+        if ip.version != 4 or ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local or ip.is_reserved or ip in docker:
+            continue
+        if re.search(r"(^|\.)0\d", a):
+            continue
+        ergebnis.append(a)
+        if len(ergebnis) == 8:
+            break
+    return ergebnis
 
 
 def betrieb(args: argparse.Namespace) -> int:
@@ -442,20 +511,25 @@ def betrieb(args: argparse.Namespace) -> int:
     print("== TLS")
     try:
         ctx = ssl.create_default_context(cafile=ca)
-        import socket
-        with socket.create_connection(("192.168.178.136", 55446), timeout=10) as s, ctx.wrap_socket(s, server_hostname="192.168.178.136") as t:
+        host_, port_ = urlsplit(BETRIEB_URL).hostname or "", urlsplit(BETRIEB_URL).port or 443
+        with socket.create_connection((host_, port_), timeout=10) as s, ctx.wrap_socket(s, server_hostname=host_) as t:
             e.ok("Zertifikat der WAMO-CA gilt für 192.168.178.136:55446", t.version() or "")
     except Exception as ex:  # noqa: BLE001
         e.fehler("TLS-Prüfung", repr(ex))
 
-    print("== Anmeldung aus dem Netz (ohne Schlüssel, ohne vertraute Adresse)")
-    r = sh("docker", "exec", "wamo-caddy", "wget", "-q", "-S", "-O", "/dev/null", "--post-data=data=AAAA", "http://wamo-rd-web:8080/api/tokens")
-    e.pruefe(" 403 " in r.stderr or " 401 " in r.stderr, "direkt an die Webanwendung (nicht vertraute Adresse, ohne Signatur) abgewiesen",
-             (r.stderr.strip().splitlines() or ["keine Antwort"])[0].strip())
-
     print("== Isolation (aus den Containern)")
-    e.pruefe(tcp_von("wamo-rd-web", "wamo-rd-guacd", 4822) == "offen", "Kontrolle: web erreicht guacd:4822 (Probe funktioniert)")
-    ziele = lies_ziele()
+    guacd_ip = container_ip("wamo-rd-guacd", "wamo-rd-guacd-netz")
+    e.pruefe(tcp_von("wamo-rd-web", guacd_ip, 4822) == "offen", "Kontrolle: web erreicht guacd:4822 (bash-Probe funktioniert)", guacd_ip)
+    e.pruefe(tcp_von("wamo-rd-guacd", "wamo-rd-web", 8080) == "offen", "Kontrolle: guacd erreicht die Webanwendung (nc-Probe funktioniert)")
+    ziel_ip = container_ip("wamo-rd-guacd", "wamo-rd-ziel")
+    try:  # der Host selbst (dieses Skript) darf guacd über die Brücke 172.27.0.1 nicht erreichen
+        socket.create_connection((ziel_ip, 4822), timeout=3).close()
+        host_erreicht = True
+    except OSError:
+        host_erreicht = False
+    e.pruefe(bool(ziel_ip) and not host_erreicht, "Host erreicht guacd:4822 im Netz wamo-rd-ziel nicht", ziel_ip)
+    gelesen = lies_ziele()
+    ziele = gelesen or []
     lan_proben = [("1.1.1.1", 443), ("8.8.8.8", 53), ("192.168.178.1", 80), ("192.168.178.136", 22), ("192.168.178.136", 55443),
                   ("192.168.178.136", 55321), ("172.17.0.1", 22)]
     for host, port in lan_proben:
@@ -470,25 +544,31 @@ def betrieb(args: argparse.Namespace) -> int:
             continue
         # Ein Ziel selbst darf auf anderen Ports als 3389 ebenfalls nicht erreichbar sein; nur (Ziel, 3389) ist erlaubt
         e.pruefe(tcp_von("wamo-rd-guacd", host, port) == "zu", f"guacd erreicht {host}:{port} nicht")
-    if ziele:
-        for z in ziele:
-            e.ok(f"Ziel {z}:3389 (erlaubt): {tcp_von('wamo-rd-guacd', z, 3389)}", "Hinweis, ob das Ziel gerade antwortet")
-    else:
-        e.ok("Zielliste ist leer: guacd hat keinen erlaubten Ausgang")
+    if gelesen is None:
+        e.skip("Zielliste", "/etc/wamo-rd/ziele.toml nicht lesbar")
+    for z in ziele:
+        print(f"  info     Ziel {z}:3389 (erlaubt) antwortet: {tcp_von('wamo-rd-guacd', z, 3389)}")
     r = sh("sudo", "-n", "iptables", "-w", "5", "-S", "WAMO-FW-RD")
     if r.returncode == 0:
         regeln = r.stdout
         e.pruefe("-A WAMO-FW-RD -j DROP" in regeln and "-A WAMO-FW-RD ! -i br-+ -j DROP" in regeln, "Kette WAMO-FW-RD verwirft den Rest")
         freigaben = re.findall(r"-A WAMO-FW-RD -d (\S+)/32 -p tcp -m tcp --dport 3389 -j RETURN", regeln)
-        e.pruefe(sorted(freigaben) == sorted(ziele), "Freigaben der Kette entsprechen genau der Zielliste", f"{freigaben} / {ziele}")
+        if gelesen is not None:
+            e.pruefe(sorted(freigaben) == sorted(ziele), "Freigaben der Kette entsprechen genau der Zielliste (leer: kein Ausgang)", f"{freigaben} / {ziele}")
     else:
         e.skip("Regeln der Kette WAMO-FW-RD", "sudo -n iptables nicht möglich")
     r = sh("sudo", "-n", "iptables", "-w", "5", "-S", "INPUT")
     if r.returncode == 0:
-        e.pruefe(re.search(r"^-A INPUT -s 172\.27\.0\.0/24 -j WAMO-FW-RDIN$", r.stdout, flags=re.M) is not None, "INPUT: Pakete des Gateways an den Host gehen durch WAMO-FW-RDIN")
+        zeilen = r.stdout.splitlines()
+        e.pruefe(len(zeilen) > 1 and zeilen[1] == "-A INPUT -s 172.27.0.0/24 -j WAMO-FW-RDIN",
+                 "INPUT: Pakete des Gateways an den Host gehen als erste Regel durch WAMO-FW-RDIN (vor ufw)", (zeilen[1] if len(zeilen) > 1 else "leer"))
+    else:
+        e.skip("INPUT-Sprung nach WAMO-FW-RDIN", "sudo -n iptables nicht möglich")
     r = sh("sudo", "-n", "iptables", "-w", "5", "-S", "WAMO-FW")
     if r.returncode == 0:
         e.pruefe(re.search(r"--ctorigdstport 55446 (--ctdir ORIGINAL )?-j WAMO-FW-LAN", r.stdout) is not None, "Port 55446 nur für Loopback und Büro-LAN (WAMO-FW-LAN)")
+    else:
+        e.skip("Port 55446 in WAMO-FW", "sudo -n iptables nicht möglich")
     return e.summe()
 
 
@@ -506,10 +586,18 @@ def main() -> int:
     if not NAME_RE.fullmatch(args.name):
         print("Ungültiger --name (a-z, 0-9, höchstens 12 Zeichen)", file=sys.stderr)
         return 2
+    if args.betrieb and not args.ca:
+        ap.error("--betrieb braucht --ca (WAMO-CA)")
     if args.aufraeumen:
-        aufraeumen_praefix(f"wamo-test-rd-{args.name}-")
+        praefix = f"wamo-test-rd-{args.name}-"
+        aufraeumen_praefix(praefix)
+        shutil.rmtree(arbeitsordner(praefix), ignore_errors=True)
         return 0
-    return betrieb(args) if args.betrieb else testmodus(args)
+    try:
+        return betrieb(args) if args.betrieb else testmodus(args)
+    except Exception as ex:  # noqa: BLE001  (Zusammenfassung statt Traceback, damit der Aufrufer ein Ergebnis hat)
+        print(f"  FEHLER   Rauchtest abgebrochen: {ex!r}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

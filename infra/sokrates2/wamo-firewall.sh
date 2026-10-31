@@ -80,9 +80,12 @@ lies_ziele() {
     wert="${wert%%#*}"
     wert="$(tr -d " \t\r\"'" <<<"$wert")"
     ok=ja
-    if [[ "$wert" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-      for o in "${BASH_REMATCH[@]:1}"; do (( 10#$o <= 255 )) || ok=nein; done
-      { [ "$wert" != 0.0.0.0 ] && [[ "$wert" != 127.* ]]; } || ok=nein
+    # vier Zahlen ohne führende Nullen (iptables läse sie als oktal), nie Loopback, Multicast, Link-Local und nie ein Docker-Netz
+    if [[ "$wert" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]]; then
+      for o in "${BASH_REMATCH[@]:1}"; do (( o <= 255 )) || ok=nein; done
+      if (( BASH_REMATCH[1] == 0 || BASH_REMATCH[1] == 127 || BASH_REMATCH[1] >= 224 )) \
+        || (( BASH_REMATCH[1] == 169 && BASH_REMATCH[2] == 254 )) \
+        || (( BASH_REMATCH[1] == 172 && BASH_REMATCH[2] >= 16 && BASH_REMATCH[2] <= 31 )); then ok=nein; fi
     else
       ok=nein
     fi

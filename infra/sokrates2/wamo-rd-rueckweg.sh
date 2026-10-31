@@ -94,8 +94,15 @@ if [ "$ENTFERNEN" = ja ]; then
       tu docker image rm "$bild" || true
     done < <(grep -E '^[[:space:]]+image: ' "$HERE/wamo-rd/docker-compose.yml" | sed -E 's/^[[:space:]]+image:[[:space:]]+//' | tr -d '\r')
   fi
-  tu rm -rf "$BASIS"
+  # nur ein Ordner, der wirklich das Compose-Projekt wamo-rd enthält
+  if [ -f "$BASIS/docker-compose.yml" ] && grep -q '^name: wamo-rd$' "$BASIS/docker-compose.yml"; then
+    tu rm -rf "$BASIS"
+  elif [ -e "$BASIS" ]; then
+    echo "  $BASIS enthält kein Compose-Projekt wamo-rd und bleibt"
+  fi
   tu sudo -n rm -f "$ETC_RD/json.key"
+  # ziele.env enthält Passwörter und darf nicht an einer verwaisten Gruppe zurückbleiben
+  tu sudo -n rm -f "$ETC_RD/ziele.env"
   if [ "$TROCKEN" = ja ] || { [ -f "$HERE/wamo-rd/ziele.toml.beispiel" ] && sudo -n cmp -s "$HERE/wamo-rd/ziele.toml.beispiel" "$ETC_RD/ziele.toml"; }; then
     tu sudo -n rm -f "$ETC_RD/ziele.toml"
   else

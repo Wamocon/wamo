@@ -17,6 +17,7 @@ import gzip
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -41,6 +42,11 @@ def _bash():
 
 
 BASH = _bash()
+
+# Nur diese echten Werkzeuge sieht ein Skript im Probelauf; alles andere (ufw, nft, systemctl, docker, apt, useradd, sudo ...)
+# gibt es nur als Attrappe, sonst fehlt es ganz. So kann ein Probelauf nie etwas Echtes tun, auch nicht als root im Container.
+HARMLOS = ("bash sh sed awk grep egrep cat install mkdir cp mv rm rmdir chmod chown date tr head tail cut sort find stat mktemp "
+           "cmp diff paste dirname basename ls touch zcat gzip env seq wc sleep uname readlink ln tee true false").split()
 
 # Alle Skripte dieser Funktion (Pfad relativ zum Repo). Stufe 1 und 2 ergänzen die Liste, sobald es sie gibt.
 SKRIPTE = [p for p in (
@@ -107,6 +113,11 @@ class Werkstatt(unittest.TestCase):
         self.att.mkdir()
         self.log = Path(self.tmp.name) / "aufrufe.log"
         self.log.write_text("")
+        for werkzeug in HARMLOS:
+            echt = shutil.which(werkzeug)
+            if echt and not (self.bin / werkzeug).exists():
+                (self.bin / werkzeug).symlink_to(echt)
+        (self.bin / "python3").symlink_to(sys.executable)
 
     def attrappe(self, *namen):
         for n in namen:
@@ -124,11 +135,11 @@ class Werkstatt(unittest.TestCase):
     def aufrufe(self):
         return self.log.read_text().splitlines()
 
-    def lauf(self, skript, *args, extra=None, pfad_nur_attrappen=False):
-        pfad = str(self.bin) + os.pathsep + os.environ["PATH"]
-        env = {"PATH": pfad, "ATTRAPPE_LOG": str(self.log), "ATTRAPPE_DIR": str(self.att),
+    def lauf(self, skript, *args, extra=None):
+        env = {"PATH": str(self.bin), "ATTRAPPE_LOG": str(self.log), "ATTRAPPE_DIR": str(self.att),
                "HOME": self.tmp.name, "LC_ALL": "C", **(extra or {})}
-        return subprocess.run([BASH, str(REPO / skript), *args], capture_output=True, text=True, env=env, timeout=120)
+        return subprocess.run([BASH, str(REPO / skript), *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              env=env, timeout=120)
 
     def p(self, *teile):
         return self.wurzel.joinpath(*[t.lstrip("/") for t in teile])
@@ -139,11 +150,12 @@ class AllgemeinTests(unittest.TestCase):
     def test_skripte_ohne_gedankenstriche_eval_cr_und_selbsttaetiges_update(self):
         self.assertTrue(SKRIPTE)
         for name in SKRIPTE:
-            text = (REPO / name).read_text(encoding="utf-8")
+            roh = (REPO / name).read_bytes()
+            self.assertNotIn(b"\r", roh, name)  # Textmodus würde CRLF verdecken
+            text = roh.decode("utf-8")
             code = "\n".join(z for z in text.splitlines() if not z.lstrip().startswith("#"))
             self.assertNotIn(chr(0x2014), text, name)
             self.assertNotIn(chr(0x2013), text, name)
-            self.assertNotIn("\r", text, name)
             self.assertIn("set -euo pipefail", text, name)
             self.assertIsNone(re.search(r"\beval\b", code), name)
             self.assertIsNone(re.search(r"\brm\s+-[a-z]*r[a-z]*f?\s+(/|\$\w+\s)", code), name)
@@ -162,14 +174,14 @@ class SyntaxTests(unittest.TestCase):
     def test_bash_n(self):
         for name in SKRIPTE + ["infra/sokrates2/wamo-firewall.sh"]:
             with self.subTest(skript=name):
-                r = subprocess.run([BASH, "-n", str(REPO / name)], capture_output=True, text=True)
+                r = subprocess.run([BASH, "-n", str(REPO / name)], capture_output=True, text=True, encoding="utf-8", errors="replace")
                 self.assertEqual(r.returncode, 0, r.stderr)
 
     @unittest.skipUnless(shutil.which("shellcheck"), "shellcheck nicht vorhanden")
     def test_shellcheck(self):
         for name in SKRIPTE:
             with self.subTest(skript=name):
-                r = subprocess.run(["shellcheck", "-S", "warning", str(REPO / name)], capture_output=True, text=True)
+                r = subprocess.run(["shellcheck", "-S", "warning", str(REPO / name)], capture_output=True, text=True, encoding="utf-8", errors="replace")
                 self.assertEqual(r.returncode, 0, r.stdout)
 
 
@@ -265,6 +277,10 @@ class XrdpEinhegenTests(Werkstatt):
         self.assertEqual(regeln.count("delete table"), 1)
         unit = self.p("etc/systemd/system/wamo-xrdp-sperre.service").read_text()
         self.assertIn("ExecStart=/usr/sbin/nft -f /etc/wamo-xrdp/sperre.nft", unit)
+        # fail-closed: xrdp startet nur mit geladener Sperre
+        dropin = self.p("etc/systemd/system/xrdp.service.d/wamo-sperre.conf").read_text()
+        self.assertIn("Requires=wamo-xrdp-sperre.service", dropin)
+        self.assertIn("After=wamo-xrdp-sperre.service", dropin)
         aufrufe = self.aufrufe()
         self.assertTrue(any(z.startswith("nft -c -f") for z in aufrufe))
         self.assertIn("systemctl enable --now wamo-xrdp-sperre.service", aufrufe)
@@ -281,6 +297,7 @@ class XrdpEinhegenTests(Werkstatt):
         self.assertEqual(self.sesman.read_text(), SESMAN_INI)
         self.assertFalse(self.p("etc/wamo-xrdp/sperre.nft").exists())
         self.assertFalse(self.p("etc/systemd/system/wamo-xrdp-sperre.service").exists())
+        self.assertFalse(self.p("etc/systemd/system/xrdp.service.d/wamo-sperre.conf").exists())
         self.assertFalse(self.p("var/lib/wamo-xrdp/zustand").exists())
         self.assertIn("systemctl disable --now wamo-xrdp-sperre.service", self.aufrufe())
         self.assertTrue([f for f in os.listdir(self.p("etc/xrdp")) if f.startswith("sesman.ini.vor-wamo-")])
@@ -401,9 +418,14 @@ class GatewayDateiTests(unittest.TestCase):
         # guacd allein hat das Netz mit Ausgang; die Webanwendung hängt nur in rd und guacd
         web = self.compose.split("  web:\n")[1].split("\nnetworks:")[0]
         self.assertNotIn("ziel", web)
-        guacd = self.compose.split("  guacd:\n")[1].split("  web:\n")[0]
-        self.assertIn("- ziel", guacd)
-        self.assertNotIn("- rd", guacd)
+        guacd = self.compose.split("\n  guacd:\n")[1].split("\n  web:\n")[0]
+        self.assertIn("ziel: {}", guacd)
+        self.assertNotIn("rd:", guacd.replace("guacd:", ""))
+        # guacd lauscht nur auf seiner Adresse im internen Netz, nie auf 0.0.0.0 (der Host erreicht ihn über die Brücke sonst)
+        self.assertIn('entrypoint: ["/opt/guacamole/sbin/guacd", "-f", "-b", "${WAMO_RD_GUACD_IP:-172.26.1.3}"', guacd)
+        self.assertNotIn("0.0.0.0", guacd)
+        self.assertIn("ipv4_address: ${WAMO_RD_GUACD_IP:-172.26.1.3}", guacd)
+        self.assertIn("GUACD_HOSTNAME: ${WAMO_RD_GUACD_IP:-172.26.1.3}", web)
 
     def test_caddy_compose_veroeffentlicht_genau_einen_neuen_port_und_ein_netz(self):
         c = _ohne_kommentare((SOKRATES2 / "wamo-caddy" / "docker-compose.yml").read_text(encoding="utf-8"))
@@ -441,10 +463,11 @@ class GatewayDateiTests(unittest.TestCase):
 
     def test_alle_dateien_ohne_gedankenstriche_und_cr(self):
         for f in list(RD.iterdir()) + [SOKRATES2 / "wamo_rd_rauchtest.py", SOKRATES2 / "wamo-firewall.sh"]:
-            t = f.read_text(encoding="utf-8")
+            roh = f.read_bytes()
+            self.assertNotIn(b"\r", roh, f.name)
+            t = roh.decode("utf-8")
             self.assertNotIn(chr(0x2014), t, f.name)
             self.assertNotIn(chr(0x2013), t, f.name)
-            self.assertNotIn("\r", t, f.name)
 
 
 @unittest.skipUnless(BASH, "keine Bash vorhanden")
@@ -456,7 +479,7 @@ class FirewallRegelnTests(Werkstatt):
             (self.wurzel / "ziele.toml").write_text(ziele_text, encoding="utf-8")
         env = {"PATH": os.environ["PATH"], "WAMO_FW_RD_ZIELE": str(self.wurzel / "ziele.toml"),
                "WAMO_FW_CONF": str(self.wurzel / "gibt-es-nicht.conf")}
-        return subprocess.run([BASH, str(SOKRATES2 / "wamo-firewall.sh"), "regeln"], capture_output=True, text=True, env=env, timeout=60)
+        return subprocess.run([BASH, str(SOKRATES2 / "wamo-firewall.sh"), "regeln"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
 
     def test_port_55446_wie_die_anderen_lan_ports(self):
         r = self.regeln()
@@ -481,7 +504,8 @@ class FirewallRegelnTests(Werkstatt):
     def test_ziele_werden_gelesen_und_ungueltige_ausgelassen(self):
         r = self.regeln('[[ziel]]\nname = "a"\nadresse = "192.168.178.136"  # Sokrates-2\n[[ziel]]\nadresse="10.0.0.5"\n'
                         '# adresse = "1.1.1.1"\nadresse = "300.1.1.1"\nadresse = "127.0.0.1"\nadresse = "0.0.0.0"\nadresse = "a.b.c.d"\n'
-                        'adresse = "1.2.3.4; reboot"\n')
+                        'adresse = "1.2.3.4; reboot"\nadresse = "010.0.0.1"\nadresse = "172.20.0.5"\nadresse = "169.254.1.1"\n'
+                        'adresse = "224.0.0.1"\n')
         self.assertEqual(r.returncode, 0, r.stderr)
         rd = [z for z in r.stdout.splitlines() if z.startswith("-A WAMO-FW-RD ") and "RETURN" in z]
         self.assertEqual(rd, ["-A WAMO-FW-RD -d 192.168.178.136/32 -p tcp --dport 3389 -j RETURN",
@@ -518,13 +542,14 @@ class FirewallRegelnTests(Werkstatt):
 
     def test_regeln_laden_in_einem_wegwerf_namensraum(self):
         # Mit echtem iptables nur in einem eigenen Netzwerk-Namensraum (unshare), nie am Host
-        if not (LINUX and shutil.which("iptables-restore") and shutil.which("unshare") and os.geteuid() == 0):
-            self.skipTest("braucht Linux, root und iptables (siehe Rauchtest im Container)")
+        if not (LINUX and shutil.which("iptables-restore") and shutil.which("unshare") and os.geteuid() == 0
+                and subprocess.run(["unshare", "-n", "true"], capture_output=True).returncode == 0):
+            self.skipTest("braucht Linux, root, iptables und unshare -n (siehe Rauchtest im Container)")
         r = self.regeln()
         pfad = self.wurzel / "regeln.txt"
         pfad.write_text(r.stdout)
-        p = subprocess.run(["unshare", "-n", "sh", "-c", f"iptables -N DOCKER-USER && iptables-restore --noflush < {pfad} && iptables -S WAMO-FW-RD"],
-                           capture_output=True, text=True)
+        p = subprocess.run(["unshare", "-n", "sh", "-c", f"iptables -N DOCKER-USER && iptables-restore --noflush < {shlex.quote(str(pfad))} && iptables -S WAMO-FW-RD"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(p.returncode, 0, p.stderr)
 
 
@@ -575,7 +600,7 @@ class EinrichtenTrockenTests(Werkstatt):
         self.assertEqual(self.lauf("infra/sokrates2/wamo-rd-rueckweg.sh", "--unbekannt").returncode, 2)
 
     def test_ohne_trocken_nur_als_wamocon(self):
-        if subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip() == "wamocon":
+        if subprocess.run(["id", "-un"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip() == "wamocon":
             self.skipTest("läuft als wamocon")
         r = self.lauf("infra/sokrates2/wamo-rd-einrichten.sh", "status")
         self.assertEqual(r.returncode, 1)
@@ -586,7 +611,7 @@ class EinrichtenTrockenTests(Werkstatt):
         (self.caddy / "etc" / "kern" / "wamo-rd.caddy").write_text("x")
         basis = Path(self.tmp.name) / "wamo-rd"
         basis.mkdir()
-        (basis / "docker-compose.yml").write_text("name: x\n")
+        (basis / "docker-compose.yml").write_text("name: wamo-rd\n")
         for args in ((), ("--entfernen",)):
             r = self.trocken("infra/sokrates2/wamo-rd-rueckweg.sh", *args)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -594,6 +619,7 @@ class EinrichtenTrockenTests(Werkstatt):
             self.assertIn("docker rm -f wamo-rd-web wamo-rd-guacd", r.stdout)
             self.assertIn("caddy reload", r.stdout)
             if args:
+                self.assertIn("sudo -n rm -f /etc/wamo-rd/ziele.env", r.stdout)  # Passwörter nicht an einer verwaisten Gruppe lassen
                 self.assertIn("userdel", r.stdout)
                 self.assertIn("docker image rm guacamole/guacd:1.6.0@sha256:", r.stdout)
                 self.assertIn("rm -rf " + str(basis), r.stdout)
@@ -602,6 +628,18 @@ class EinrichtenTrockenTests(Werkstatt):
         for z in self.aufrufe():
             self.assertNotRegex(z, r"^(sudo|userdel)\b", z)
             self.assertNotRegex(z, r"^docker (rm|network rm|image rm|compose|exec)\b", z)
+
+    def test_rueckweg_loescht_nur_ein_compose_projekt_wamo_rd(self):
+        basis = Path(self.tmp.name) / "wamo-rd"
+        basis.mkdir()
+        (basis / "docker-compose.yml").write_text("name: anderes\n")
+        r = self.trocken("infra/sokrates2/wamo-rd-rueckweg.sh", "--entfernen")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("rm -rf", r.stdout)
+        self.assertIn("bleibt", r.stdout)
+        # ein Pfad, der nicht auf /wamo-rd endet, wird gar nicht angenommen
+        r = self.lauf("infra/sokrates2/wamo-rd-rueckweg.sh", "--trocken", extra={"WAMO_RD_BASIS": "/home"})
+        self.assertEqual(r.returncode, 2)
 
     def test_rueckweg_fasst_nichts_ausserhalb_an(self):
         code = _ohne_kommentare((SOKRATES2 / "wamo-rd-rueckweg.sh").read_text(encoding="utf-8"))
@@ -729,7 +767,8 @@ class KontoTests(Werkstatt):
         self.konto_vorhanden()
         (self.att / "id.gruppen").write_text("wamo-rd wamo-rd-ts docker\n")
         r = self.konto("--rotieren")
-        self.assertEqual(r.returncode, 0)  # rotieren prüft die Gruppen nicht, anlegen und status schon
+        self.assertEqual(r.returncode, 1)  # auch die Rotation prüft vorher Gruppen, sudo und SSH
+        self.assertFalse((self.att / "chpasswd.stdin").exists())
         r = self.konto()
         self.assertEqual(r.returncode, 1)
         self.assertIn("docker", r.stderr)
@@ -753,6 +792,15 @@ class KontoTests(Werkstatt):
         self.assertEqual(self.konto("--status").returncode, 0)
         self.ausgabe("sshd", "port 22\nallowusers wamocon wamo-rd-gateway\n")  # Namensteil zählt nicht als Treffer
         self.assertEqual(self.konto("--status").returncode, 0)
+
+    def test_ssh_muster_gilt_nicht_als_gesperrt(self):
+        self.konto_vorhanden()
+        self.ausgabe("sshd", "port 22\nallowusers wamo*\n")
+        r = self.konto("--status")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Muster", r.stderr)
+        self.ausgabe("sshd", "port 22\nallowgroups admins\n")
+        self.assertEqual(self.konto("--status").returncode, 1)
 
     def test_ohne_gateway_gruppe_kein_passwort(self):
         self.ausgabe("getent.group_wamo-rd-gateway", "", rc=2)
@@ -917,6 +965,15 @@ class ZielEinrichtenTests(Werkstatt):
         self.assertEqual(r.returncode, 1)
         self.assertIn("genau ein Mitglied", r.stderr)
 
+    def test_xsessionrc_als_link_wird_abgewiesen(self):
+        ziel = Path(self.tmp.name) / "fremd.txt"
+        ziel.write_text("unberuehrt\n")
+        self.xsession.symlink_to(ziel)
+        r = self.ziel()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("symbolischer Link", r.stderr)
+        self.assertEqual(ziel.read_text(), "unberuehrt\n")
+
     def test_fremde_xsessionrc_wird_nicht_ueberschrieben(self):
         self.xsession.write_text("export MEINS=1\n")
         r = self.ziel()
@@ -929,6 +986,77 @@ class ZielEinrichtenTests(Werkstatt):
         self.assertIn("from 192.168.178.136/32 to any port 3389", r.stdout)
         self.assertEqual(self.ziel("--quelle", "alle; reboot").returncode, 2)
         self.assertEqual(self.ziel("--quelle").returncode, 2)
+
+
+@unittest.skipUnless(sys.version_info >= (3, 10), "Rauchtest braucht Python 3.10 oder neuer")
+class RauchtestHilfenTests(unittest.TestCase):
+    """Die Logik des Rauchtests ohne Docker: sh wird durch eine Attrappe ersetzt."""
+
+    def laden(self):
+        import importlib.util
+        spez = importlib.util.spec_from_file_location("wamo_rd_rauchtest_t", SOKRATES2 / "wamo_rd_rauchtest.py")
+        m = importlib.util.module_from_spec(spez)
+        spez.loader.exec_module(m)
+        return m
+
+    def antwort(self, cmd, rc=0, out="", err=""):
+        return subprocess.CompletedProcess(list(cmd), rc, out, err)
+
+    def test_aufraeumen_entfernt_nur_den_eigenen_praefix(self):
+        m = self.laden()
+        aufrufe = []
+
+        def falsch(*cmd, **kw):
+            aufrufe.append(cmd)
+            if cmd[:2] == ("docker", "ps"):
+                return self.antwort(cmd, out="wamo-rd-web\nwamo-caddy\nwamo-test-rd-t12-x\nwamo-test-rd-t1-a\nwamo-test-ui-t1-a\n")
+            if cmd[:3] == ("docker", "network", "ls"):
+                return self.antwort(cmd, out="bridge\nwamo-rd-netz\nwamo-test-rd-t1-netz\n")
+            if cmd[:3] == ("docker", "volume", "ls"):
+                return self.antwort(cmd, out="wamo-test-rd-t1-v\nsupabase_db\n")
+            return self.antwort(cmd)
+
+        m.sh = falsch
+        m.aufraeumen_praefix("wamo-test-rd-t1-")
+        entfernt = [c[-1] for c in aufrufe if c[:2] == ("docker", "rm") or c[:3] in (("docker", "network", "rm"), ("docker", "volume", "rm"))]
+        self.assertEqual(sorted(entfernt), ["wamo-test-rd-t1-a", "wamo-test-rd-t1-netz", "wamo-test-rd-t1-v"])
+
+    def test_ungueltige_praefixe_werden_verweigert(self):
+        m = self.laden()
+        m.sh = lambda *c, **k: self.antwort(c)
+        for p in ("wamo-", "wamo-test-rd-", "wamo-test-rd-t1", "wamo-test-ui-t1-", "wamo-test-rd-T1-", "wamo-test-rd-a.b-", ""):
+            with self.assertRaises(RuntimeError, msg=p):
+                m.aufraeumen_praefix(p)
+        self.assertIsNone(m.NAME_RE.fullmatch("t1; rm"))
+        self.assertIsNotNone(m.NAME_RE.fullmatch("t1"))
+
+    def test_zielliste_wie_in_der_firewall(self):
+        m = self.laden()
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "ziele.toml"
+            f.write_text('adresse = "192.168.178.136"\nadresse = "10.0.0.5" # x\nadresse = "127.0.0.1"\nadresse = "0.0.0.0"\n'
+                         'adresse = "172.20.0.5"\nadresse = "169.254.0.1"\nadresse = "224.0.0.1"\nadresse = "010.0.0.1"\nadresse = "abc"\n')
+            self.assertEqual(m.lies_ziele(str(f)), ["192.168.178.136", "10.0.0.5"])
+            self.assertIsNone(m.lies_ziele(str(Path(d) / "gibt-es-nicht")))
+            f.write_text("".join(f'adresse = "10.9.9.{n}"\n' for n in range(1, 15)))
+            self.assertEqual(len(m.lies_ziele(str(f))), 8)
+
+    def test_tcp_probe_unterscheidet_zu_und_defekt(self):
+        m = self.laden()
+        for rc, err, soll in ((0, "", "offen"), (1, "bash: connect: Connection refused", "zu"), (124, "", "zu"),
+                              (1, "Error response from daemon: container x is not running", "defekt"), (127, "", "defekt"),
+                              (126, "", "defekt"), (1, "OCI runtime exec failed", "defekt")):
+            m.sh = lambda *c, rc=rc, err=err, **k: self.antwort(c, rc=rc, err=err)
+            self.assertEqual(m.tcp_von("wamo-rd-web", "1.2.3.4", 80), soll, (rc, err))
+            self.assertEqual(m.tcp_von("wamo-rd-guacd", "1.2.3.4", 80), soll, (rc, err))
+        self.assertEqual(m.tcp_von("wamo-rd-web", "", 80), "defekt")
+
+    def test_sh_meldet_fehlendes_programm_und_zeitueberschreitung(self):
+        m = self.laden()
+        r = m.sh("gibt-es-bestimmt-nicht-xyz")
+        self.assertEqual(r.returncode, 127)
+        r = m.sh(sys.executable, "-c", "import time; time.sleep(5)", timeout=0.2)
+        self.assertEqual(r.returncode, 124)
 
 
 if __name__ == "__main__":

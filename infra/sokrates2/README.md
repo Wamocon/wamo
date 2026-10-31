@@ -1161,8 +1161,8 @@ ssh -t caesar "sudo bash ~/xrdp-einhegen.sh --zurueck"    # Rückweg
 
 Das Skript aktualisiert nichts. Steht ein Update an (CVE-2025-68670), sagt es das und nennt den Befehl (`apt changelog xrdp`,
 dann bewusst `sudo apt-get install --only-upgrade xrdp`). Sicherungen: `/etc/xrdp/sesman.ini.vor-wamo-ZEITSTEMPEL`, `/var/backups/wamo-xrdp`.
-Läuft auf Caesar kein ufw, entsteht eine eigene nftables-Tabelle `inet wamo_xrdp` (fremde Regeln bleiben unberührt) und die Unit
-`wamo-xrdp-sperre.service`.
+Läuft auf Caesar kein ufw, entsteht eine eigene nftables-Tabelle `inet wamo_xrdp` (fremde Regeln bleiben unberührt), die Unit
+`wamo-xrdp-sperre.service` und ein Drop-in `xrdp.service.d/wamo-sperre.conf`, das xrdp nur mit geladener Sperre starten lässt (fail-closed).
 
 **Stufe 1: Gateway ohne Ziel einrichten** (als `wamocon` auf Sokrates-2, Ablage wie in Abschnitt 12):
 
@@ -1200,9 +1200,15 @@ Sokrates-2 (Isolation aus den Containern, Zielliste gegen die Kette `WAMO-FW-RD`
 (im Browser belegt). Die Herkunft 55446 hält kein WAMO-Token, kein `'unsafe-inline'` für Skripte, keine fremde Quelle. (b) `POST /api/tokens`
 bleibt offen, weil die Oberfläche damit ihr Sitzungstoken erneuert; abgesichert durch `JSON_TRUSTED_NETWORKS` und die Sperre nach
 3 Fehlversuchen (15 Minuten). (c) `wamo-caddy` hängt im Netz `wamo-rd-netz` wie bei `wamo-ui` und erreicht die Webanwendung; `guacd`
-(unauthentisiert, kein TLS) liegt in einem eigenen internen Netz, das nur die Webanwendung teilt. (d) Pakete an den Host aus dem Netz
+(unauthentisiert, kein TLS) liegt in einem eigenen internen Netz, das nur die Webanwendung teilt, und lauscht nur auf seiner festen
+Adresse 172.26.1.3 dort, nie im Netz `wamo-rd-ziel` (sonst erreichte ihn jeder Prozess auf dem Host über 172.27.0.1; der Rauchtest prüft es). (d) Pakete an den Host aus dem Netz
 `wamo-rd-ziel` gehen durch `WAMO-FW-RDIN` (nur TCP 3389, dann entscheidet ufw); sie ist die einzige Ergänzung in `INPUT` (ein Sprung an
 Position 1). (e) Die Laufzeit der Sitzung (60 Minuten, Verlängerung) setzt der Zugangsdienst in Stufe 3 durch, nicht dieses Gateway.
+(f) Der Sprung nach `WAMO-FW-RDIN` steht nach einem Neustart oder `ufw reload` womöglich nicht mehr an erster Stelle von `INPUT`; der Rauchtest
+(`--betrieb`) prüft die Position, `sudo systemctl reload wamo-firewall` stellt sie wieder her. (g) Die Sperre von Guacamole zählt Fehlversuche je Absenderadresse
+(3, dann 15 Minuten): Der Zugangsdienst (Stufe 3) darf ein abgelehntes JSON nicht wiederholen und muss Schlüssel und Uhrzeit vor dem Senden prüfen, sonst sperrt er sich selbst;
+sein Schlüssel gehört nie als Argument eines Programms (kein `openssl enc -K` im echten Dienst). (h) `ignore-cert` am Ziel bleibt bis zum Pinning des Zertifikats
+(`cert-fingerprints` in Guacamole 1.6) ein Rest; solange nur das lokale Ziel Sokrates-2 läuft, bleibt der Weg auf dem Host.
 
 **Stufe 2: Konto und Ziel Sokrates-2** (am Ziel, mit `sudo`; Passwort tippt der Nutzer selbst). Entscheidung: xrdp. Begründung: Das Konzept
 (Abschnitt 2.1) nennt xrdp als Zielzustand, weil nur er auf dieser Hardware (NVIDIA GB10, Xorg ohne Monitor) nachweislich läuft; GRD im
@@ -1216,6 +1222,10 @@ ssh -t sokrates2 "sudo apt-get install xrdp xorgxrdp"      # bewusst von Hand; v
 ssh -t sokrates2 "sudo bash ~/wamo-infra-sparks/wamo-rd-ziel-einrichten.sh --trocken"
 ssh -t sokrates2 "sudo bash ~/wamo-infra-sparks/wamo-rd-ziel-einrichten.sh --neustart"
 ```
+
+**Vorbedingung vor dem ersten Ziel Sokrates-2 (offene Entscheidung):** Auf Sokrates-2 ist die Desktopsitzung von `wamo-rd` ein Prozess auf demselben Host und
+erreicht damit alle Dienste auf Loopback (die Firewall lässt Loopback überall durch). Die Ausgangsregel `meta skuid wamo-rd` (nur Internet, weder Loopback noch LAN,
+Konzept Abschnitt 5.2) ist deshalb dort schon vor dem ersten Ziel nötig; sie ist nicht Teil von Stufe 2. Sokrates-1 und Caesar haben das Problem nicht.
 
 Danach das Ziel in `/etc/wamo-rd/ziele.toml` eintragen (Vorlage `wamo-rd/ziele.toml.beispiel`) und `sudo systemctl reload wamo-firewall`.
 Rückweg: `wamo-rd-ziel-einrichten.sh --zurueck` (Konfigurationen aus `.vor-wamo-rd-*`, Sperre weg, `.xsessionrc` weg) und

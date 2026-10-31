@@ -159,6 +159,7 @@ datei_einrichten() {
     rm -f "$arbeit"
     return 0
   fi
+  if [ ! -s "$arbeit" ]; then rm -f "$arbeit"; fehler "Neue $datei ist leer, nichts geändert."; fi
   cp -p "$datei" "$datei.vor-wamo-rd-$ZEIT"
   chmod --reference="$datei" "$arbeit"
   chown --reference="$datei" "$arbeit" 2>/dev/null || true
@@ -211,6 +212,7 @@ sitzung() {
 export GNOME_SHELL_SESSION_MODE=ubuntu
 export XDG_CURRENT_DESKTOP=ubuntu:GNOME
 export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg"
+  [ ! -L "$XSESSIONRC" ] || fehler "$XSESSIONRC ist ein symbolischer Link, Abbruch."
   if [ -f "$XSESSIONRC" ] && [ "$(cat "$XSESSIONRC")" = "$inhalt" ]; then
     echo "  $XSESSIONRC: schon eingerichtet"
     return 0
@@ -221,10 +223,14 @@ export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg"
   if [ "$TROCKEN" = ja ]; then
     echo "  [trocken] $XSESSIONRC anlegen (Besitzer $KONTO, 0644)"
   else
-    printf '%s\n' "$inhalt" > "$XSESSIONRC.neu"
-    chmod 0644 "$XSESSIONRC.neu"
-    if [ -z "$WURZEL" ]; then chown "$KONTO:$KONTO" "$XSESSIONRC.neu"; fi
-    mv -f "$XSESSIONRC.neu" "$XSESSIONRC"
+    # Das Home gehört dem Konto: mktemp legt mit zufälligem Namen und O_EXCL an (kein vorab gelegter Link wird verfolgt),
+    # chown -h und mv -T wirken auf die Datei bzw. den Link selbst, nie auf dessen Ziel
+    local tmp
+    tmp="$(mktemp "$XSESSIONRC.XXXXXX")"
+    printf '%s\n' "$inhalt" > "$tmp"
+    chmod 0644 "$tmp"
+    if [ -z "$WURZEL" ]; then chown -h "$KONTO:$KONTO" "$tmp"; fi
+    mv -T -f "$tmp" "$XSESSIONRC"
     echo "  $XSESSIONRC angelegt"
   fi
 }

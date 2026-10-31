@@ -103,6 +103,10 @@ ssh_pruefen() {
   ausgabe="$(sshd -T -C "user=$KONTO,host=localhost,addr=192.168.178.136" 2>/dev/null || true)"
   [ -n "$ausgabe" ] || { echo "  SSH: Konfiguration ohne root nicht lesbar, bitte von Hand prüfen (sshd -T)"; return 0; }
   erlaubt="$(grep -iE '^allowusers ' <<<"$ausgabe" || true)"
+  # Muster mit * oder ? in AllowUsers und eine AllowGroups-Liste lassen sich hier nicht sicher auswerten: dann nicht als gesperrt zählen
+  if grep -qE '[*?]' <<<"$erlaubt" || grep -qiE '^allowgroups ' <<<"$ausgabe"; then
+    fehler "SSH: AllowUsers mit Muster oder AllowGroups lässt sich nicht sicher auswerten. Bitte DenyUsers $KONTO in sshd setzen."
+  fi
   if grep -iqE "^denyusers (.* )?$KONTO( |\$)" <<<"$ausgabe"; then
     echo "  SSH: gesperrt (DenyUsers)"
   elif [ -n "$erlaubt" ] && ! grep -qE "[[:space:]]$KONTO([[:space:]]|\$)" <<<"$erlaubt"; then
@@ -181,6 +185,7 @@ rotieren() {
   echo "== Passwort von $KONTO rotieren"
   gateway_pruefen
   konto_da || fehler "Konto $KONTO fehlt: zuerst ohne Option ausführen."
+  if [ "$TROCKEN" = nein ]; then gruppen_pruefen; sudo_pruefen; ssh_pruefen; fi
   passwort_setzen
   if [ "$TROCKEN" = nein ]; then echo "  Das Gateway liest die Datei beim nächsten Verbindungsaufbau; laufende Sitzungen bleiben bestehen."; fi
 }
