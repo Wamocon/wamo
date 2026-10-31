@@ -391,8 +391,10 @@ def monitor_of_foreground() -> int:
     return 1
 
 
-def screenshot(monitor: int = 0) -> dict:
-    """JPEG eines Monitors (0 = der mit dem Fenster vorne) plus Umrechnung Bild -> Bildschirm."""
+def screenshot(monitor: int = 0, region: dict | None = None) -> dict:
+    """JPEG eines Monitors (0 = der mit dem Fenster vorne) plus Umrechnung Bild -> Bildschirm. Mit region (x, y, b, h in
+    Bildschirmpixeln, z. B. aus window_rect) nur dieser Ausschnitt; monitor ist dann der Monitor mit seiner Mitte, und
+    left/top/width/height beschreiben den Ausschnitt (Klickpunkte rechnen sich damit wie sonst um)."""
     import base64
     import io
 
@@ -401,10 +403,22 @@ def screenshot(monitor: int = 0) -> dict:
 
     _dpi_aware()
     with mss.mss() as sct:
-        index = monitor or monitor_of_foreground()
-        if not 1 <= index < len(sct.monitors):
-            raise ValueError(f"Monitor {monitor} gibt es nicht (1 bis {len(sct.monitors) - 1})")
-        m = sct.monitors[index]
+        if region is not None:
+            gesamt = sct.monitors[0]
+            links, oben = max(region["x"], gesamt["left"]), max(region["y"], gesamt["top"])
+            rechts = min(region["x"] + region["b"], gesamt["left"] + gesamt["width"])
+            unten = min(region["y"] + region["h"], gesamt["top"] + gesamt["height"])
+            if rechts <= links or unten <= oben:
+                raise ValueError("Das Fenster liegt außerhalb der Bildschirme")
+            m = {"left": links, "top": oben, "width": rechts - links, "height": unten - oben}
+            cx, cy = links + m["width"] // 2, oben + m["height"] // 2
+            index = next((i for i, mon in enumerate(sct.monitors[1:], start=1)
+                          if mon["left"] <= cx < mon["left"] + mon["width"] and mon["top"] <= cy < mon["top"] + mon["height"]), 1)
+        else:
+            index = monitor or monitor_of_foreground()
+            if not 1 <= index < len(sct.monitors):
+                raise ValueError(f"Monitor {monitor} gibt es nicht (1 bis {len(sct.monitors) - 1})")
+            m = sct.monitors[index]
         raw = sct.grab(m)
     img = Image.frombytes("RGB", raw.size, raw.rgb)
     scale = min(1.0, MAX_IMAGE_EDGE / max(img.size))
@@ -512,6 +526,22 @@ def _monitorliste() -> list[tuple[int, int, int, int]]:
         with mss.mss() as sct:
             _monitore = (jetzt, [(int(m["left"]), int(m["top"]), int(m["width"]), int(m["height"])) for m in sct.monitors[1:]])
     return _monitore[1]
+
+
+def monitor_nummer(rect: dict | None) -> tuple[int | None, int]:
+    """(Nummer, Anzahl) der Monitore. Die Nummer zählt wie bildschirmfoto (ab 1) und gehört zum Monitor, auf dem die Mitte
+    des Rechtecks liegt; None, wenn das Rechteck fehlt oder auf keinem Monitor liegt."""
+    if rect is None:
+        return None, 0
+    try:
+        monitore = _monitorliste()
+    except Exception:  # noqa: BLE001
+        return None, 0
+    cx, cy = rect["x"] + rect["b"] // 2, rect["y"] + rect["h"] // 2
+    for i, (links, oben, breite, hoehe) in enumerate(monitore, start=1):
+        if links <= cx < links + breite and oben <= cy < oben + hoehe:
+            return i, len(monitore)
+    return None, len(monitore)
 
 
 def monitor_rect(x: int, y: int) -> dict | None:
