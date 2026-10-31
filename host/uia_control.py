@@ -83,6 +83,15 @@ def sicherer_text(wert: object, grenze: int = NAME_MAX) -> str:
     return text if len(text) <= grenze else text[: grenze - 1] + "…"
 
 
+ANZEIGE_TYPEN = frozenset({"Text", "Dokument"})  # Anzeigetexte ändern sich ständig und gehören nicht zum Aufbau
+
+
+def aufbau_von(knoten) -> tuple:
+    """Aufbau eines Fensters aus seinen Knoten: bedienbare Elemente und Gruppen; reine Anzeigetexte zählen nicht
+    (im Rechner erscheint nach dem ersten Klick ein neuer Ausdruck-Text, das macht keine Nummer ungültig)."""
+    return tuple(k.aufbau for k in knoten if k.typ not in ANZEIGE_TYPEN)
+
+
 @dataclass(frozen=True)
 class Knoten:
     """Ein Element des Fensters als reine Daten (keine COM-Zeiger)."""
@@ -194,7 +203,7 @@ class UiaSchicht:
         paare, gekuerzt = wert
         knoten = [k for k, _ in paare]
         liste = Liste(hwnd=hwnd, programm=programm, zeit=self._uhr(), knoten=knoten,
-                      aufbau=tuple(k.aufbau for k in knoten), auch_texte=bool(auch_texte), tiefe=tiefe,
+                      aufbau=aufbau_von(knoten), auch_texte=bool(auch_texte), tiefe=tiefe,
                       gekuerzt=gekuerzt, maximal=maximal)
         with self._lock:
             self._listen[hwnd] = liste  # ersetzt die frühere Liste dieses Fensters: ihre Nummern sind damit ungültig
@@ -232,7 +241,7 @@ class UiaSchicht:
         tiefe, maximal, texte = (liste.tiefe, liste.maximal, liste.auch_texte) if liste else (MAX_TIEFE,
                                                                                                 MAX_ELEMENTE_GRENZE, True)
         paare, _ = self.backend.momentaufnahme(hwnd, tiefe, maximal, texte)
-        if liste is not None and tuple(k.aufbau for k, _ in paare) != liste.aufbau:
+        if liste is not None and aufbau_von([k for k, _ in paare]) != liste.aufbau:
             self.vergessen(hwnd)
             raise UiaFehler(VERALTET)
         for k, handle in paare:

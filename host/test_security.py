@@ -1094,7 +1094,7 @@ class OrdnerAnlegenTests(unittest.TestCase):
         aussen.mkdir(exist_ok=True)
         self.addCleanup(lambda: aussen.rmdir() if aussen.exists() else None)
         link = self.projekte / "weg"
-        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(aussen)], capture_output=True, text=True)
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(aussen)], capture_output=True)
         if r.returncode != 0:
             self.skipTest("Verzeichnisverknüpfung nicht möglich")
         self.addCleanup(lambda: subprocess.run(["cmd", "/c", "rmdir", str(link)], capture_output=True))

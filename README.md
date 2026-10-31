@@ -220,6 +220,22 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   steht in der Tabelle `actions` (pending, approved oder rejected, running, done oder failed). Das Ergebnis bekommt
   WAMO als Daten. Lokal erzeugt der Kern das Geheimnis je Host-Start, im Büro liegt es in
   `%LOCALAPPDATA%\WAMO\host-freigabe` und als `WAMO_PC_HOST_FREIGABE` in `/etc/wamo/core.env`.
+- **Bedienung ohne Mausübernahme** (`host/uia_control.py`, Windows UI Automation über `comtypes`, MIT, exakt gepinnt):
+  `elemente_auflisten` (read) nummeriert die bedienbaren Elemente eines Fensters (Name, Typ, Zustand; höchstens 8 Ebenen
+  und 120 Einträge; Passwortfelder ohne Wert und gesperrt), `element_klicken` (change, per Invoke-, Toggle- oder
+  Auswahl-Muster), `element_text_setzen` (change, Value-Muster, ersetzt den Inhalt, nie in Passwortfelder und
+  Adressleisten) und `element_lesen` (read). Das Fenster muss nicht vorne liegen, Maus und Fokus der Person bleiben
+  unberührt. Davor stehen dieselben Wächter wie bei Maus und Tastatur: Zielfenster-Prüfung (keine Konsolen, Admin-,
+  Anmelde-, Passwortfenster, nie die eigene Oberfläche), Sperr-Erkennung, Ruhen bei offener Freigabe, Rate-Grenze
+  (60 je Minute und Werkzeug), Audit ohne Textinhalte. Klicks und Text in Mail- und Messenger-Fenstern sowie Klicks auf
+  Elemente mit Namen wie Senden, Bezahlen, Löschen, Veröffentlichen gehen nur über die Freigabe-Karte (Elementname und
+  Fenstertitel stehen darauf). Die Nummern gelten nur für die letzte Liste desselben Fensters, höchstens 3 Minuten, und
+  verfallen, sobald sich der Aufbau ändert; vor jeder Aktion wird der Baum frisch gelesen und das Element
+  wiedererkannt. Das Sprachmodell soll zuerst auflisten und dann klicken; `auf_bildschirm_klicken` und `maus_klicken`
+  bleiben der Rückfall für Zeichenflächen. Weitere Host-Werkzeuge dieser Stufe: `ordner_anlegen` (change, nur unter
+  Projekte, Dokumente, Desktop und Downloads im Benutzerordner, nie in AppData oder versteckten Ordnern; `system_info`
+  nennt Rechnername, Benutzer-, Projekte-Ordner), das Vorholen von Fenstern ohne Alt-Druck mit Nachprüfung des Fokus
+  (verweigert Windows es, meldet der Host das, statt „ist vorne“ zu behaupten) und 20 s Zeitgrenze für Lesebefehle.
 - **Höchstalter der Anmeldung** (gemessen ab Passwort und Code, Claim `amr`): Der Kern lehnt Tokens ohne `amr` ab und
   erzwingt `WAMO_ANMELDUNG_MAX_STUNDEN` (Standard 168), auch für gecachte Tokens; eine laufende Sitzung endet beim
   Überschreiten, die Oberfläche meldet ab. Die Anmeldemaske hat „Angemeldet bleiben“ (in der Desktop-App
