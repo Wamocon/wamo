@@ -8,6 +8,7 @@ import { istDarstellung, darstellungSetzen } from "@/components/kommando/darstel
 import { LoginGate } from "@/components/LoginGate";
 import { WamoAnsicht } from "@/components/WamoAnsicht";
 import { stilleText } from "@/lib/mikrofon";
+import { bereiteText, schluesselHinweis } from "@/lib/textEingabe";
 import type { WamoAktionen } from "@/lib/useWamo";
 import {
   HISTORY,
@@ -16,6 +17,7 @@ import {
   initialState,
   levelsRef,
   logEintrag,
+  nimmeTextAuf,
   resetWamo,
   wamo,
   zeigeMemo,
@@ -103,7 +105,7 @@ const DOKUMENT: CanvasItem = {
   text: "## Ergebnis\nDrei von vier Testfällen sind **bestanden**.\n- Zugang stabil\n- Export braucht `pdf-engine` 2.1",
 };
 
-const KEINE_AKTIONEN: WamoAktionen & { textSenden?: (text: string) => boolean } = {
+const KEINE_AKTIONEN: WamoAktionen = {
   connect: async () => {},
   disconnect: async () => {},
   decide: (a) => {
@@ -126,9 +128,12 @@ const KEINE_AKTIONEN: WamoAktionen & { textSenden?: (text: string) => boolean } 
     { id: "vorschau-2", label: "Headset-Mikrofon" },
   ],
   mikrofonWaehlen: () => true,
-  // Texteingabe simulieren: der Text erscheint als Nutzerzeile der Untertitel
-  textSenden: (text) => {
-    wamo.set((s) => ({ ...s, caption: { ...s.caption, userDone: text, userLive: "", userLogged: false } }));
+  // Texteingabe simulieren: gleiche Vorbereitung wie im Gespräch (Schlüssel entfernt), der Text erscheint als Nutzerzeile
+  textSenden: (roh) => {
+    const t = bereiteText(roh);
+    if (!t) return false;
+    if (t.geschwaerzt) wamo.set((s) => ({ ...s, error: { art: "hinweis", text: schluesselHinweis(t.senden) } }));
+    if (t.senden) wamo.set((s) => nimmeTextAuf(s, t.text));
     return true;
   },
 };
@@ -160,6 +165,7 @@ function beispiel(): { state: WamoState; presence: Presence } {
         ? { art: "mikrofon", text: stilleText("Mikrofon (DisplayLink Audio)") }
         : null,
     mikrofon: online ? "Onboard MIC (Intel Smart Sound)" : null,
+    textMoeglich: online,
     // Beispielstand, damit die Karte Modellzugang in der Vorschau keinen echten Kern abfragt
     modellzugang:
       param("zugang") === "beide"

@@ -9,6 +9,8 @@ import type { GeraetBruecke } from "@/lib/geraet";
 import { parseServerMessage, type Auftrag, type ModellModus } from "@/lib/nachrichten";
 import type { SchluesselArt } from "@/lib/schluesselhilfe";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
+import { textAbschicken, unterstuetztText } from "@/lib/textEingabe";
+import { erstelleFrist, fristMeldung, sollVerlaengern } from "@/lib/verbindungsfrist";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
 import {
   anzeigePegel,
@@ -49,6 +51,7 @@ import {
 import {
   HISTORY,
   applyServerMessage,
+  beginneNutzerZug,
   entferneAblauf,
   entferneMemo,
   gesprochen,
@@ -57,13 +60,13 @@ import {
   leereCaption,
   levelsRef,
   logEintrag,
+  nimmeTextAuf,
   overlayZustand,
   reduceBotOutput,
   reduceBotTranscript,
   resetWamo,
   wamo,
   zeigeToast,
-  ZUG_LEER,
   type Approval,
   type Caption,
   type Fehler,
@@ -107,6 +110,10 @@ export type WamoAktionen = {
   entscheideAuftrag: (a: Auftrag, ja: boolean) => boolean;
   /** PC-Steuerung dieser Sitzung an- oder ausschalten (nur admin); true, wenn gesendet */
   pcSteuerung: (an: boolean) => boolean;
+  /** Text an WAMO schicken wie eine gesprochene Bitte (nur mit Verbindung, höchstens eine Sendung zugleich, Schlüssel
+   *  werden vorher entfernt); true, wenn die Eingabe angenommen wurde (das Feld wird geleert). Optional, damit die
+   *  Vorschau ohne Kern auskommt. Ersetzt nie eine Freigabe: die gibt nur der Klick auf die Karte (decide). */
+  textSenden?: (text: string) => boolean;
   /** Fehlermeldung schließen */
   schliesseFehler: () => void;
   /** angeschlossene Mikrofone (ohne die Windows-Aliase), leer ohne Verbindung */
@@ -202,6 +209,14 @@ function setCaption(update: (c: Caption) => Caption) {
 
 function setFehler(error: Fehler | null) {
   wamo.set((s) => ({ ...s, error }));
+}
+
+/** Nach einer Unterbrechung den ungesagten Rest 2 s durchgestrichen zeigen, dann entfernen (Sprechen und Tippen). */
+function planeSchnitt(timer: { current: ReturnType<typeof setTimeout> | null }) {
+  if (timer.current) clearTimeout(timer.current);
+  timer.current = setTimeout(() => {
+    setCaption((c) => (c.interrupted ? { ...c, text: gesprochen(c), interrupted: false } : c));
+  }, 2000);
 }
 
 /** Nutzertext einarbeiten (endgültig oder Zwischenstand); ein schon geloggter Beitrag beginnt neu. */
@@ -330,14 +345,20 @@ export function useWamo(): WamoAktionen {
   // Grund, mit dem der Kern die Sitzung beendet hat (sitzung_beendet, z. B. neue Sitzung dieses Profils): beim
   // folgenden Trennen bleibt diese Meldung stehen statt "Verbindung getrennt"
   const kernEnde = useRef<string | null>(null);
+  // Läuft gerade das Senden einer getippten Nachricht? Höchstens eine Sendung zugleich.
+  const textLaeuft = useRef(false);
+  // Verbindungs-Watchdog (lib/verbindungsfrist.ts): ohne Betriebsmeldung nach 20 s Abbruch mit Meldung
+  const fristRef = useRef<ReturnType<typeof erstelleFrist> | null>(null);
 
   /**
    * Gemeinsamer Abbau für "Gespräch beenden", Verbindungsabbruch und Verlassen der Seite:
    * Generation weiterzählen, Client trennen, Pegel nullen, AudioContext schließen, Wiedergabe
    * stoppen. Offene Freigaben verfallen (sie gehen nur über die laufende Verbindung).
    */
-  const teardown = useCallback((grund: "nutzer" | "getrennt" | "unmount") => {
+  const teardown = useCallback((grund: "nutzer" | "getrennt" | "unmount" | "frist", meldung?: Fehler) => {
     genRef.current += 1;
+    fristRef.current?.stoppe();
+    textLaeuft.current = false;
     pcAuto.current = { aktiv: false, gesendet: false, manuellAus: false, wartet: false };
     const client = clientRef.current;
     clientRef.current = null;
@@ -381,6 +402,8 @@ export function useWamo(): WamoAktionen {
             ? "Verbindung getrennt. Verbindung weg, Freigabe verfällt (auch offene Entwicklungsaufträge)."
             : "Verbindung getrennt.",
         };
+      } else if (grund === "frist" && meldung) {
+        error = meldung;
       } else if (grund === "nutzer" && verfallen) {
         error = { art: "hinweis", text: "Gespräch beendet. Offene Freigaben und Aufträge sind verfallen." };
       }
@@ -392,12 +415,42 @@ export function useWamo(): WamoAktionen {
         approvals: [],
         auftraege: [],
         micOn: true,
+        textMoeglich: false,
         mikrofon: null,
         error,
-        ansage: !war ? s.ansage : grund === "getrennt" ? "Verbindung getrennt" : "Gespräch beendet",
+        ansage: grund === "frist" ? "Keine Antwort vom Kern" : !war ? s.ansage : grund === "getrennt" ? "Verbindung getrennt" : "Gespräch beendet",
       };
     });
   }, []);
+
+  // Watchdog: Kommt nach dem Start der Verbindung binnen 20 s keine Betriebsmeldung, ist der Aufbau hängen geblieben.
+  // Solange der Browser die Person noch nach dem Mikrofon fragt, wird weiter gewartet (kein hängender Aufbau).
+  useEffect(() => {
+    const frist = erstelleFrist({
+      gen: () => genRef.current,
+      fertig: () => wamo.get().betrieb !== null,
+      verlaengern: async (n) => {
+        try {
+          const status = await navigator.permissions?.query({ name: "microphone" as PermissionName });
+          return sollVerlaengern(status?.state, n);
+        } catch {
+          return false; // Zustand nicht lesbar (ältere Browser): die Frist gilt
+        }
+      },
+      beiAblauf: () => teardown("frist", fristMeldung(wamo.get().kern)),
+    });
+    fristRef.current = frist;
+    // Offline oder Betriebsmeldung da: keine Frist mehr nötig (deckt auch Abbrüche, die nicht über teardown laufen)
+    const abo = wamo.subscribe(() => {
+      const s = wamo.get();
+      if (s.presence === "offline" || s.betrieb !== null) frist.stoppe();
+    });
+    return () => {
+      abo();
+      frist.stoppe();
+      fristRef.current = null;
+    };
+  }, [teardown]);
 
   // Desktop-App: Farben des Stimmen-Rands einmalig übergeben (Quelle: CSS-Variablen)
   useEffect(() => {
@@ -636,9 +689,15 @@ export function useWamo(): WamoAktionen {
         enableMic: true,
         enableCam: false,
         callbacks: {
-          onBotReady: () => {
+          onBotReady: (bereit) => {
             if (!aktuell()) return;
-            wamo.set((s) => ({ ...s, presence: "idle", error: null, ansage: "Verbunden" }));
+            wamo.set((s) => ({
+              ...s,
+              presence: "idle",
+              error: null,
+              ansage: "Verbunden",
+              textMoeglich: unterstuetztText(bereit?.version),
+            }));
             // Kam bis dahin keine eigene Mikrofonspur (Öffnen schlug lautlos fehl), hört WAMO nichts: nicht schweigen
             setTimeout(() => {
               const st = wamo.get();
@@ -653,24 +712,13 @@ export function useWamo(): WamoAktionen {
           },
           onUserStartedSpeaking: () => {
             if (!aktuell()) return;
-            const speaking = wamo.get().presence === "speaking";
-            if (speaking) {
+            if (wamo.get().presence === "speaking") {
               // Unterbrechung: cut für Stimmlinie und Rand, cutAt für den Kern (geht nicht verloren)
               levelsRef.current.cut = true;
               levelsRef.current.cutAt = performance.now();
-              if (cutTimer.current) clearTimeout(cutTimer.current);
-              // den ungesagten Rest 2 s durchgestrichen zeigen, dann entfernen
-              cutTimer.current = setTimeout(() => {
-                setCaption((c) => (c.interrupted ? { ...c, text: gesprochen(c), interrupted: false } : c));
-              }, 2000);
+              planeSchnitt(cutTimer);
             }
-            wamo.set((s) => {
-              let caption = s.caption;
-              if (speaking) caption = { ...caption, interrupted: true };
-              else if (caption.turnEnd) caption = { ...caption, ...ZUG_LEER };
-              if (caption.userLogged) caption = { ...caption, userDone: "", userLive: "", userLogged: false };
-              return { ...s, presence: "listening", caption, turn: s.turn + 1 };
-            });
+            wamo.set(beginneNutzerZug);
           },
           onUserStoppedSpeaking: () => {
             if (aktuell()) setPresence("thinking");
@@ -707,7 +755,9 @@ export function useWamo(): WamoAktionen {
           onUserInput: (d) => {
             if (!aktuell()) return;
             seen.current.userInput = true;
-            if (d.input_type === "backchannel" || !d.text) return; // "mhm" nicht anzeigen
+            // "mhm" nicht anzeigen. Getippten Text (chat) zeigt textSenden selbst, schon von Schlüsseln befreit: ein Echo
+            // des Kerns würde ihn doppelt zeigen.
+            if (d.input_type === "backchannel" || d.input_type === "chat" || !d.text) return;
             userText(d.text, d.final);
           },
           onUserTranscript: (d) => {
@@ -797,6 +847,7 @@ export function useWamo(): WamoAktionen {
         },
       });
       clientRef.current = client;
+      fristRef.current?.starte(gen);
 
       try {
         // Der Voice-Core lässt nur aktive WAMO-Profile mit zweitem Faktor herein (voice-core/auth_gate.py).
@@ -940,6 +991,36 @@ export function useWamo(): WamoAktionen {
       return false;
     }
     return true;
+  }, []);
+
+  // Texteingabe: eine getippte Nachricht geht wie eine gesprochene Bitte an WAMO (RTVI send-text, der Kern antwortet mit
+  // Stimme). Der Text wird nie geloggt und nie auf Vorrat gehalten; ein Schlüssel wird vor dem Senden entfernt
+  // (lib/textEingabe.ts). Mit "run_immediately" unterbricht die Nachricht eine laufende Antwort, wie ein Einwurf.
+  // Eine Freigabe ersetzt sie nie: Freigaben und Aufträge gehen nur über decide und entscheideAuftrag.
+  const textSenden = useCallback((roh: string): boolean => {
+    const gen = genRef.current;
+    return textAbschicken(roh, {
+      bereit: () => {
+        const st = wamo.get();
+        if (!clientRef.current || !istOnline(st)) return "offline";
+        return st.textMoeglich ? "ok" : "kein_text";
+      },
+      besetzt: () => textLaeuft.current,
+      setzeBesetzt: (b) => {
+        if (genRef.current === gen) textLaeuft.current = b;
+      },
+      senden: (text) =>
+        clientRef.current
+          ? clientRef.current.sendText(text, { run_immediately: true, audio_response: true })
+          : Promise.reject(new Error("keine Verbindung")),
+      hinweis: (text) => setFehler({ art: "hinweis", text }),
+      fehler: (art, text) => setFehler({ art, text }),
+      angenommen: (text) => {
+        if (wamo.get().presence === "speaking") planeSchnitt(cutTimer);
+        wamo.set((s) => nimmeTextAuf(s, text));
+      },
+      aktuell: () => genRef.current === gen,
+    });
   }, []);
 
   // Kontingent des Max-Abos (Einstellungen, Abschnitt Verbrauch): den gespeicherten Stand einmal je Verbindung beim
@@ -1089,6 +1170,7 @@ export function useWamo(): WamoAktionen {
       mikrofone,
       mikrofonWaehlen,
       modellzugang,
+      textSenden,
     }),
     [
       connect,
@@ -1102,6 +1184,7 @@ export function useWamo(): WamoAktionen {
       mikrofone,
       mikrofonWaehlen,
       modellzugang,
+      textSenden,
     ],
   );
 }
