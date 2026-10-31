@@ -101,10 +101,12 @@ from modellzugang import modellzugang_nachricht, zugang_laden
 from boss import Boss, entwicklung_quelle, modus_wirksam
 from kern_dienst import runner_vorbereiten
 from cache_waerme import vorwaermen
+from env_schalter import schalter_an
 from latenz import LatenzObserver, api_messen, latenz_log_an
 from pc_geraet import geraet_wache, rechnername_passt
 from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
+from ja_waechter import JaWaechter, ja_waechter_an
 from turn_wache import TurnWache
 from wartesatz import Wartesatz, wartesatz_an, wartesatz_secs
 from pc_host import (
@@ -131,9 +133,10 @@ from soft_interrupt import (
     echo_modus_an,
     kuerze_auf_gehoertes,
     ohne_letzte_woerter,
+    rueckmeldung_werkzeug_an,
     stopp_grenze_an,
 )
-from soniox_tts import LazySonioxTTSService
+from soniox_tts import LazySonioxTTSService, stimme_einstellung
 from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
 
 load_dotenv(override=True)
@@ -274,7 +277,8 @@ def soniox_tts() -> LazySonioxTTSService:
     return LazySonioxTTSService(
         api_key=os.environ["SONIOX_API_KEY"],
         url=SONIOX_TTS_URL,
-        settings=SonioxTTSService.Settings(voice=SONIOX_VOICE, language=Language.DE),
+        # Tempo und Pausen nur, wenn SONIOX_SPEED / SONIOX_REDUCE_SILENCE gesetzt sind (stimme_einstellung); sonst Standard
+        settings=SonioxTTSService.Settings(voice=SONIOX_VOICE, language=Language.DE, **stimme_einstellung()),
     )
 
 
@@ -443,9 +447,34 @@ class Session:
     cleanup: Callable[[], Awaitable[None]]
 
 
-def pause_prompts(name: str) -> tuple[str, str]:
+def pausen_prompt_an(wert: str | None = None) -> bool:
+    """WAMO_PAUSEN_PROMPT: neue Texte nach einer Pause, ohne Floskeln wie "Ich bin noch da" (Standard aus, bis gemessen)."""
+    return schalter_an("WAMO_PAUSEN_PROMPT", wert, standard=False)
+
+
+def pause_prompts(name: str, neu: bool | None = None) -> tuple[str, str]:
     """Texte, mit denen Pipecat Claude nach einer Pause erneut fragt. Die englischen Standardtexte
-    führten dazu, dass Claude nur den Marker "●" ohne Text schickte: WAMO blieb stumm."""
+    führten dazu, dass Claude nur den Marker "●" ohne Text schickte: WAMO blieb stumm.
+
+    neu (None liest WAMO_PAUSEN_PROMPT): Nach einer kurzen Pause erledigt WAMO den Auftrag, wenn er klar ist, sonst
+    schreibt Claude nur ○ und WAMO wartet still weiter (Pipecat fragt nach der langen Frist ein zweites Mal). Erst die lange
+    Stille bekommt genau eine konkrete Frage. Der lange Text verbietet ◐ und ○, damit die Kette nach zwei Texten endet; beide
+    verbieten Floskeln wie "Ich bin noch da" und "Ich höre zu"."""
+    neu = pausen_prompt_an() if neu is None else neu
+    if neu:
+        short = (
+            f"{name} hat mitten im Satz kurz pausiert. Lies die letzten Bruchstücke zusammen. Ist klar, "
+            "was gewollt ist, erledige es jetzt (auch mit Werkzeug) und beginne mit ● und einem Leerzeichen. "
+            "Ist es nicht klar, schreib nur ○ und sonst nichts: dann wartest du still weiter. Nie ◐. "
+            "Sag nie, dass du noch da bist oder zuhörst, und lade nicht mit einer Floskel zum Weiterreden ein."
+        )
+        long = (
+            f"{name} ist seit ein paar Sekunden still. Ist aus dem Zusammenhang klar, was gewollt ist, "
+            "erledige es jetzt. Sonst stell genau eine konkrete Frage zum Thema, am besten nach der fehlenden Angabe. "
+            "WICHTIG: Beginne mit ● und einem Leerzeichen, dann dein Text. Nie ◐ oder ○, nie ● allein. "
+            "Sag nicht, dass du noch da bist, und frag nicht, ob jemand zuhört."
+        )
+        return short, long
     short = (
         f"{name} hat mitten im Satz kurz pausiert. Lies die letzten Bruchstücke zusammen. Ist klar, "
         "was gewollt ist, erledige es jetzt (auch mit Werkzeug). Sonst sag einen ganz kurzen deutschen "
@@ -614,6 +643,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                         gesprochen=soft_gate.kuerzlich_gesprochen if echo_filter_an() else None,
                         beurteilt=soft_gate.beurteilt,  # Rückmeldung oder Echo: Dämpfung zurücknehmen
                         echo_modus=echo_filter_an() and echo_modus_an(),  # bei erkennbarem Echo unterbricht nur ein Stoppwort
+                        # Rückmeldelaut bei laufendem Werkzeug startet keinen Zug (WAMO_RUECKMELDUNG_WERKZEUG)
+                        werkzeug_laeuft=soft_gate.werkzeug_laeuft if rueckmeldung_werkzeug_an() else None,
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.
@@ -644,6 +675,18 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
     # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
     wache = TurnWache()
+
+    def freigabe_offen() -> bool:
+        """Wartet eine Freigabe (PC-Freigabe-Karte oder Entwicklungsauftrag)? Dann greift der Ja-Wächter nie."""
+        # Fail closed: fehlt ein erwartetes Attribut (Umbenennung), gilt eine Freigabe als offen
+        try:
+            if freigaben is not None and freigaben._offen:
+                return True
+            return dev is not None and any(j.pending for j in dev._jobs.values())
+        except AttributeError:
+            logger.warning("Ja-Wächter: Freigabe-Zustand nicht lesbar, es gilt als offen")
+            return True
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -653,6 +696,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             SpeakerTracker(),  # wer spricht -> Farbe im Stimmen-Rand
             user_agg,
             soft_gate,
+            *([JaWaechter(offen=freigabe_offen, gefaerbt=lambda: turn.tainted)] if ja_waechter_an() else []),  # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER)
             wache.vorne(),
             llm,
             wache.hinten(),

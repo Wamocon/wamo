@@ -152,6 +152,29 @@ class KernLogTest(unittest.TestCase):
         self.assertAlmostEqual(ev[2]["t"] - ev[0]["t"], 2.167, places=2)
         self.assertEqual(ev[3]["zug"]["ms"]["ausgabe"], 1800)
 
+    def test_werkzeug_ereignisse(self):
+        text = (
+            "2026-10-31 10:00:00.100 | INFO | g - Zug bei laufendem Werkzeug, es wird abgebrochen\n"
+            "2026-10-31 10:00:01.100 | INFO | s - Rückmeldung bei laufendem Werkzeug, kein Zug, das Werkzeug läuft weiter (insgesamt 1)\n"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "k.log"
+            p.write_text(text, encoding="utf-8")
+            arten = [e["art"] for e in w.kern_ereignisse(p)]
+        self.assertEqual(arten, ["zug_bei_werkzeug", "rueckmeldung_werkzeug"])
+
+    def test_werkzeug_mhm_kennzahlen(self):
+        daten = {"werkzeug_mhm": [
+            {"ok": True, "ergebnis_nach_mhm": True, "ereignisse": [
+                {"rolle": "werkzeug_mhm", "name": "mhm", "zug_gestartet": False, "als_rueckmeldung": True},
+                {"rolle": "werkzeug_mhm", "name": "ja_genau", "zug_gestartet": False, "als_rueckmeldung": True}]},
+            {"ok": True, "ergebnis_nach_mhm": False, "ereignisse": [
+                {"rolle": "werkzeug_mhm", "name": "mhm", "zug_gestartet": True, "als_rueckmeldung": False}]},
+        ]}
+        z = w.zusammenfassen(daten)
+        self.assertEqual((z["werkzeug_mhm_ereignisse"], z["werkzeug_mhm_zug"], z["werkzeug_mhm_rueckmeldung"]), (3, 1, 2))
+        self.assertEqual(z["werkzeug_mhm_ergebnis"], [True, False])
+
     def test_fehlende_datei(self):
         self.assertEqual(w.kern_ereignisse(Path("gibt-es-nicht.log")), [])
 

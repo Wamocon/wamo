@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
+from env_schalter import schalter_an
 from llm_anbieter import LLMFehler, Zugang, anfrage, json_aus_text
 from memory import BEREICHE, MemoryStore, initial_status
 from persona import clean_inline
@@ -74,6 +75,20 @@ Regeln:
 - wichtigkeit von 1 (Detail) bis 5 (prägt jedes Gespräch).
 - Gibt es nichts Neues, liefere eine leere Liste."""
 
+# Zusatzregeln (WAMO_LERNEN_OHNE_MOMENT, Standard an: das Lernen liegt nicht im Sprachpfad, ein Prompt-Text ändert weder
+# Unterbrechungen noch Sprachausgabe). Im gemeinsamen Gedächtnis wirken Einträge für alle, Tagesstände würden dort verwirren.
+OHNE_MOMENT_REGELN = """
+- Keine Momentaufnahmen und keine Aufgabenstände: nichts, was nur heute oder gerade stimmt ("ist gerade angemeldet",
+  "hat X angelegt", "arbeitet heute an Y", Preise, Wetter oder Zahlen aus einer Suche). Halte nur fest, was auch in einigen
+  Wochen noch stimmt. Im Bereich gemeinsam gilt das besonders streng.
+- Nur was wirklich passiert ist: eine misslungene oder abgelehnte Bitte, ein Versuch ohne Ergebnis oder ein Wunsch, der
+  nicht erfüllt wurde, ist kein Fakt."""
+
+
+def ohne_moment_an(wert: str | None = None) -> bool:
+    """WAMO_LERNEN_OHNE_MOMENT: Lern-Prompt mit den Regeln gegen Momentaufnahmen (Standard an)."""
+    return schalter_an("WAMO_LERNEN_OHNE_MOMENT", wert)
+
 
 @dataclass(frozen=True)
 class Gemerkt:
@@ -89,8 +104,14 @@ def _clean(text: str) -> str:
     return text.lstrip(TURN_MARKERS).strip()
 
 
-def system_prompt(name: str) -> str:
-    return SYSTEM_TEMPLATE.format(name=clean_inline(name, 60) or "die Person", max_entries=MAX_ENTRIES)
+def system_prompt(name: str, ohne_moment: bool | None = None) -> str:
+    """Der Prompt der Auswertung. ohne_moment None liest WAMO_LERNEN_OHNE_MOMENT. Die Zusatzregeln stehen hinter den
+    festen Regeln, vor der Zeile über die leere Liste."""
+    text = SYSTEM_TEMPLATE.format(name=clean_inline(name, 60) or "die Person", max_entries=MAX_ENTRIES)
+    if not (ohne_moment_an() if ohne_moment is None else ohne_moment):
+        return text
+    ende = "\n- Gibt es nichts Neues, liefere eine leere Liste."
+    return text.replace(ende, OHNE_MOMENT_REGELN + ende, 1)
 
 
 def transcript_text(transcript: list[tuple[str, str]], name: str) -> str:
