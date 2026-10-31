@@ -247,6 +247,19 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
   (in der Messung sagte das Modell den Füllsatz selbst, der Wächter löste nie aus). Abschalten mit `aus`, `0`, `nein`;
   ein unbekannter Wert gilt als an und wird einmal gewarnt (`voice-core/env_schalter.py`). Auf Sokrates-2 stehen alle
   Namen in der Liste erlaubter Werte (`infra/sokrates2/wamo_core_env.py`).
+- **Sprachpakete A und B** (31.10.2026, alle neuen Schalter Standard aus, bis der Messweg gegen den Büro-Kern bestätigt
+  hat, dass keine Kennzahl schlechter wird; nur das Lernen liegt nicht im Sprachpfad und ist an). `WAMO_TTS_SATZLEERZEICHEN`
+  (Leerzeichen am Ende jedes Textstücks für Soniox, damit das Satzzeichen nicht als „Punkt“ vorgelesen wird,
+  `voice-core/soniox_tts.py`), `SONIOX_SPEED` (0,7 bis 1,3) und `SONIOX_REDUCE_SILENCE` (an/aus) für Tempo und Pausen
+  (leer = Standard von Soniox; die Stimme selbst bleibt `SONIOX_VOICE`, die Wahl trifft die Hörprobe),
+  `WAMO_PERSONA_RUECKFRAGEN` (höchstens eine Rückfrage je Auftrag, Aufträge am Stück, keine Anschlussfrage, Freigaben
+  unberührt), `WAMO_PERSONA_PC_ORDNER` (Ordner des PCs nie raten, mit `system_info` erfragen), `WAMO_PAUSEN_PROMPT` (Texte
+  nach einer Pause ohne „Ich bin noch da“; nach der kurzen Pause erledigen oder still warten, nach der langen genau eine
+  Frage), `WAMO_LERNEN_OHNE_MOMENT` (Standard an: Lern-Prompt ohne Momentaufnahmen und Aufgabenstände),
+  `WAMO_RUECKMELDUNG_WERKZEUG` (ein „mhm“ bei laufendem Werkzeug startet keinen Zug und bricht es nicht ab, Nachlauf 4 s;
+  Stoppwörter und echte Einwürfe wirken weiter), `WAMO_JA_WAECHTER` (`voice-core/ja_waechter.py`: ein kurzes Ja auf eine
+  echte Rückfrage führt den Auftrag aus; greift nie bei offener Freigabe-Karte, Freigabe-Meldung im Verlauf oder
+  Rückfragen zu Freigabe und Sicherheit). Messszenario `werkzeug_mhm` (zwei Rückmeldelaute während der Websuche).
 - **Mikrofon-Wächter** (`ui/src/lib/mikrofon.ts`, `voice-core/audio_monitor.py`): Die Oberfläche misst die eigene Spur und
   warnt nach 3 s digitaler Stille, bei einer beendeten Spur ohne Ersatz, ohne Spur 5 s nach „Bot bereit“ und bei
   Mikrofonsperre durch Windows (Datenschutz für Desktop-Apps, `systemPreferences.getMediaAccessStatus`), jeweils mit
@@ -274,7 +287,7 @@ sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
 Der Test spielt über ein virtuelles Mikrofon Sprechproben und Geräusche gegen einen lokalen Kern (Unterwegs) und nimmt
 WAMOs Ausgabestrom, das Mikrofon und die Lautstärke des Wiedergabeelements mit einer gemeinsamen Uhr auf. Die Person
 spricht immer dann, wenn WAMO in einem bestimmten Zustand ist („seit 5 s am Sprechen“). Szenarien: `fakten`, `kurz`,
-`lang`, `einwurf`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`. Voraussetzung: ein temporäres
+`lang`, `einwurf`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`, `werkzeug_mhm`. Voraussetzung: ein temporäres
 Testkonto (`scripts/wamo_nutzer.py anlegen`, danach `sperren`), `konto.json` im Messordner (nicht im Repo), Oberfläche aus
 einer Kopie gebaut (`NEXT_PUBLIC_VOICE_CORE_URL=http://127.0.0.1:7861`).
 
