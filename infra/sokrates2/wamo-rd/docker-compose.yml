@@ -1,0 +1,145 @@
+# Remote-Desktop-Gateway auf Sokrates-2 (Container wamo-rd-web und wamo-rd-guacd, eigenes Compose-Projekt, getrennt von
+# supabase-wamo, wamo-caddy und wamo-ui). Konzept: docs/remote-desktop.md. Eingerichtet durch infra/sokrates2/wamo-rd-einrichten.sh,
+# auf dem Server in /home/wamocon/wamo-rd.
+#
+#   Browser ──HTTPS 55446──> wamo-caddy ──HTTP 8080 (Netz wamo-rd-netz)──> wamo-rd-web (Apache Guacamole, Webanwendung)
+#   wamo-rd-web ──guacd-Protokoll 4822 (Netz wamo-rd-guacd-netz)──> wamo-rd-guacd ──RDP 3389 (Netz wamo-rd-ziel)──> Ziel (Spark)
+#
+# Stufe 1: Das Gateway läuft OHNE Ziel und OHNE Zugangsdienst. Die Webanwendung hat keine Datenbank, keine Benutzerliste und
+# kein Gast-Konto; angemeldet wird nur mit einem signierten und verschlüsselten JSON ("Encrypted JSON authentication"), das
+# allein der Zugangsdienst (Stufe 3) erzeugen kann und nur aus seiner festen Adresse (JSON_TRUSTED_NETWORKS) annimmt. Ohne
+# Zugangsdienst gibt es keinen Weg hinein. Der Schlüssel liegt in /etc/wamo-rd/json.key (0640 root:wamo-rd-gateway), nie in
+# der Umgebung des Containers und nie in docker inspect.
+#
+# Netze (alle mit fester Adresse, damit die Firewall sie kennt; Vorprüfung gegen Überschneidungen macht das Einrichtungsskript):
+#   wamo-rd-netz        172.26.0.0/24  intern, ohne Adresse am Host: Caddy, wamo-rd-web (später der Zugangsdienst). Legt wamo-caddy an.
+#   wamo-rd-guacd-netz  172.26.1.0/29  intern, ohne Adresse am Host: nur wamo-rd-web und wamo-rd-guacd (guacd spricht kein TLS
+#                                      und keine Anmeldung, deshalb ist er für Caddy unerreichbar)
+#   wamo-rd-ziel        172.27.0.0/24  nicht intern: nur wamo-rd-guacd. Nach außen lässt die Firewall (Kette WAMO-FW-RD in
+#                                      wamo-firewall.sh) ausschließlich TCP 3389 zu den Zielen aus /etc/wamo-rd/ziele.toml durch;
+#                                      ohne Ziel geht gar nichts hinaus.
+#
+# Die Platzhalter mit Vorgabe (WAMO_RD_PRAEFIX, WAMO_RD_*_NETZ, *_SUBNETZ, WAMO_RD_KEY) setzt nur der Rauchtest
+# (infra/sokrates2/wamo_rd_rauchtest.py) auf Namen mit wamo-test-; im Betrieb gelten die Vorgaben. WAMO_RD_UID und WAMO_RD_GID
+# (Benutzer wamo-rd-gateway) setzt das Einrichtungsskript.
+#
+# Images: die offiziellen Fassungen 1.6.0 von Apache Guacamole, über den Digest des Multi-Arch-Index festgehalten (arm64 ist
+# darin enthalten, geprüft am 31.10.2026 mit docker buildx imagetools inspect). Aktualisieren: neuen Digest holen, hier
+# eintragen, wamo-rd-einrichten.sh bilder, Rauchtest, Rückweg ist der alte Digest (git revert).
+name: wamo-rd
+
+x-wamo-rd: &wamo-rd
+  # Die Images zieht das Skript (docker pull über den Digest); Compose startet nur, was schon da ist
+  pull_policy: never
+  init: true
+  restart: unless-stopped
+  # Benutzer wamo-rd-gateway (kein Login, keine Gruppen), ohne Linux-Capabilities, ohne neue Rechte, Dateisystem schreibgeschützt
+  user: "${WAMO_RD_UID:-65534}:${WAMO_RD_GID:-65534}"
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  ulimits:
+    nofile: 4096
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  guacd:
+    <<: *wamo-rd
+    image: guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f
+    container_name: ${WAMO_RD_PRAEFIX:-wamo-}rd-guacd
+    # Der C-Code von guacd (FreeRDP) ist die größte technische Angriffsfläche: knapp bemessen
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    environment:
+      LOG_LEVEL: info
+      HOME: /tmp
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "4822"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - guacd
+      - ziel
+
+  web:
+    <<: *wamo-rd
+    image: guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
+    container_name: ${WAMO_RD_PRAEFIX:-wamo-}rd-web
+    depends_on:
+      guacd:
+        condition: service_healthy
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1.0
+    pids_limit: 256
+    # Der Entrypoint des Images legt Konfiguration und Tomcat-Arbeitsordner unter /tmp an (GUACAMOLE_HOME, CATALINA_BASE)
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=160m,uid=${WAMO_RD_UID:-65534},gid=${WAMO_RD_GID:-65534}
+    volumes:
+      - ${WAMO_RD_KEY:-/etc/wamo-rd/json.key}:/run/wamo-rd/json.key:ro
+    environment:
+      # Webanwendung unter "/" statt "/guacamole/"
+      WEBAPP_CONTEXT: ROOT
+      HOME: /tmp
+      JAVA_OPTS: "-Xms64m -Xmx384m -XX:MaxMetaspaceSize=160m -XX:+UseSerialGC"
+      GUACD_HOSTNAME: ${WAMO_RD_PRAEFIX:-wamo-}rd-guacd
+      GUACD_PORT: "4822"
+      # Anmeldung nur mit signiertem JSON; kein JDBC, kein LDAP, keine Benutzerliste (die Erweiterung wird allein durch die
+      # JSON_*-Variablen eingeschaltet, andere Erweiterungen bleiben aus). Der Schlüssel wird aus der Datei gelesen.
+      JSON_SECRET_KEY_FILE: /run/wamo-rd/json.key
+      # Nur der Zugangsdienst (feste Adresse im Netz wamo-rd-netz, Stufe 3) darf ein JSON einreichen
+      JSON_TRUSTED_NETWORKS: ${WAMO_RD_VERTRAUT:-172.26.0.10/32}
+      # Die Webanwendung sieht hinter Caddy sonst nur dessen Adresse: Sperre nach Fehlversuchen und JSON_TRUSTED_NETWORKS
+      # würden dann alle Absender gleich behandeln. Mit dem RemoteIpValve gilt die Adresse, die Caddy aus der Verbindung
+      # einträgt (X-Forwarded-For, von Caddy gesetzt und nie vom Client übernommen). Vertraut wird allein der Adresse von Caddy
+      # (fest 172.26.0.2); die Vorgabe von Tomcat würde jedes private Netz als Proxy ansehen.
+      REMOTE_IP_VALVE_ENABLED: "true"
+      REMOTE_IP_VALVE_INTERNAL_PROXIES: ${WAMO_RD_PROXY_REGEX:-172[.]26[.]0[.]2}
+      # Fehlversuche sperren die Quelladresse (Erweiterung guacamole-auth-ban, im Image eingeschaltet)
+      BAN_ENABLED: "true"
+      BAN_MAX_INVALID_ATTEMPTS: "3"
+      BAN_ADDRESS_DURATION: "900"
+      # Leerlauf der API-Sitzung in Minuten (laufende Verbindungen halten sie am Leben); Standard wäre 60
+      API_SESSION_TIMEOUT: "15"
+    healthcheck:
+      # Das Image bringt weder curl noch wget mit: die Probe spricht HTTP über bash
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /api/languages HTTP/1.0\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    networks:
+      rd:
+        aliases:
+          - ${WAMO_RD_PRAEFIX:-wamo-}rd-web
+      guacd: {}
+
+networks:
+  rd:
+    name: ${WAMO_RD_NETZ:-wamo-rd-netz}
+    external: true
+  guacd:
+    name: ${WAMO_RD_GUACD_NETZ:-wamo-rd-guacd-netz}
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"
+    ipam:
+      config:
+        - subnet: ${WAMO_RD_GUACD_SUBNETZ:-172.26.1.0/29}
+  ziel:
+    name: ${WAMO_RD_ZIEL_NETZ:-wamo-rd-ziel}
+    ipam:
+      config:
+        - subnet: ${WAMO_RD_ZIEL_SUBNETZ:-172.27.0.0/24}

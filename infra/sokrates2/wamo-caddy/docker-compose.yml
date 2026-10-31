@@ -4,6 +4,7 @@
 #   https://192.168.178.136:55443  ->  Envoy des WAMO-Stacks (http, Port 55321)
 #   https://192.168.178.136:55444  ->  WAMO-Kern (wamo-core.service) über den Unix-Socket /run/wamo-core/core.sock
 #   https://192.168.178.136:55445  ->  WAMO-Oberfläche (Container wamo-ui über das interne Netz wamo-ui-netz)
+#   https://192.168.178.136:55446  ->  Remote-Desktop-Gateway (Container wamo-rd-web über das interne Netz wamo-rd-netz)
 #
 # Der Container läuft als wamocon (1000:1000) ohne Linux-Capabilities und mit schreibgeschütztem Dateisystem.
 # Schreiben darf er nur in data/ (Serverzertifikate) und config/. Unter /ca sieht er nur Root-Zertifikat und
@@ -33,9 +34,14 @@ services:
       - "0.0.0.0:55444:55444"
       # Oberfläche (Browser-Betrieb, wamo-ui-einrichten.sh); ohne Site-Datei lauscht Caddy hier nicht
       - "0.0.0.0:55445:55445"
+      # Remote-Desktop-Gateway (wamo-rd-einrichten.sh); ohne Site-Datei lauscht Caddy hier nicht
+      - "0.0.0.0:55446:55446"
     networks:
-      - default
-      - ui
+      default: {}
+      ui: {}
+      rd:
+        # feste Adresse: Die Webanwendung des Gateways vertraut allein ihr als Proxy (REMOTE_IP_VALVE_INTERNAL_PROXIES)
+        ipv4_address: 172.26.0.2
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -75,3 +81,13 @@ networks:
     ipam:
       config:
         - subnet: 172.25.0.0/24
+  # Netz zum Remote-Desktop-Gateway (Container wamo-rd-web, Stufe 3 auch der Zugangsdienst): internal, ohne Weg nach außen;
+  # nur Caddy und die Gateway-Container hängen darin (docs/remote-desktop.md, Abschnitt 6)
+  rd:
+    name: wamo-rd-netz
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"
+    ipam:
+      config:
+        - subnet: 172.26.0.0/24

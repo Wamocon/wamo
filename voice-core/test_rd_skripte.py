@@ -345,5 +345,270 @@ class XrdpEinhegenTests(Werkstatt):
         self.assertNotIn("10.1.2.3", r.stdout)
 
 
+# ====================================================================================== Stufe 1: Gateway, Caddy, Firewall
+RD = SOKRATES2 / "wamo-rd"
+
+
+def _ohne_kommentare(text):
+    return "\n".join(z for z in text.splitlines() if not z.lstrip().startswith("#"))
+
+
+class GatewayDateiTests(unittest.TestCase):
+    def setUp(self):
+        self.compose = _ohne_kommentare((RD / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    def test_images_nur_ueber_digest(self):
+        bilder = re.findall(r"^\s+image:\s+(\S+)", self.compose, flags=re.M)
+        self.assertEqual(len(bilder), 2)
+        for b in bilder:
+            self.assertRegex(b, r"^guacamole/(guacd|guacamole):1\.6\.0@sha256:[0-9a-f]{64}$")
+
+    def test_haertung_wie_wamo_ui(self):
+        for soll in ("pull_policy: never", "read_only: true", "- ALL", "no-new-privileges:true", "init: true",
+                     "restart: unless-stopped", "mem_limit: 768m", "mem_limit: 256m", "pids_limit: 256", "pids_limit: 128",
+                     "cpus: 1.0", "noexec", "max-size", 'user: "${WAMO_RD_UID:-65534}:${WAMO_RD_GID:-65534}"'):
+            self.assertIn(soll, self.compose)
+        self.assertEqual(self.compose.count("cap_drop:"), 1)  # im gemeinsamen Anker beider Dienste
+        self.assertEqual(self.compose.count("<<: *wamo-rd"), 2)
+        for verboten in ("privileged", "network_mode", "pid:", "ipc:", "docker.sock", "cap_add", "ports:", "expose:", "devices:",
+                         "extra_hosts", "host.docker.internal", "JSON_SECRET_KEY:", "POSTGRESQL_", "MYSQL_", "LDAP_", "env_file",
+                         "TOTP_", "OPENID_", "SAML_"):
+            self.assertNotIn(verboten, self.compose, verboten)
+
+    def test_anmeldung_nur_ueber_json_aus_einer_adresse(self):
+        self.assertIn("JSON_SECRET_KEY_FILE: /run/wamo-rd/json.key", self.compose)
+        self.assertIn("${WAMO_RD_KEY:-/etc/wamo-rd/json.key}:/run/wamo-rd/json.key:ro", self.compose)
+        self.assertRegex(self.compose, r"JSON_TRUSTED_NETWORKS: \$\{WAMO_RD_VERTRAUT:-172\.26\.0\.10/32\}")
+        self.assertIn('BAN_ENABLED: "true"', self.compose)
+        # echte Absenderadresse hinter Caddy; vertraut wird nur Caddy (feste Adresse), nicht jedes private Netz
+        self.assertIn('REMOTE_IP_VALVE_ENABLED: "true"', self.compose)
+        self.assertIn("REMOTE_IP_VALVE_INTERNAL_PROXIES: ${WAMO_RD_PROXY_REGEX:-172[.]26[.]0[.]2}", self.compose)
+        # ein Bind-Mount, nämlich der Schlüssel (lesend)
+        self.assertEqual(self.compose.count("volumes:"), 1)
+        self.assertEqual(len(re.findall(r"^\s+- \$\{WAMO_RD_KEY:[^}]*\}:/run/wamo-rd/json\.key:ro$", self.compose, flags=re.M)), 1)
+
+    def test_netze(self):
+        self.assertRegex(self.compose, r"guacd:\s+name: \$\{WAMO_RD_GUACD_NETZ:-wamo-rd-guacd-netz\}\s+internal: true")
+        self.assertIn("172.26.1.0/29", self.compose)
+        self.assertIn("172.27.0.0/24", self.compose)
+        self.assertRegex(self.compose, r"rd:\s+name: \$\{WAMO_RD_NETZ:-wamo-rd-netz\}\s+external: true")
+        ziel = self.compose.split("  ziel:\n", 2)[-1]
+        self.assertNotIn("internal", ziel)
+        # guacd allein hat das Netz mit Ausgang; die Webanwendung hängt nur in rd und guacd
+        web = self.compose.split("  web:\n")[1].split("\nnetworks:")[0]
+        self.assertNotIn("ziel", web)
+        guacd = self.compose.split("  guacd:\n")[1].split("  web:\n")[0]
+        self.assertIn("- ziel", guacd)
+        self.assertNotIn("- rd", guacd)
+
+    def test_caddy_compose_veroeffentlicht_genau_einen_neuen_port_und_ein_netz(self):
+        c = _ohne_kommentare((SOKRATES2 / "wamo-caddy" / "docker-compose.yml").read_text(encoding="utf-8"))
+        self.assertIn('"0.0.0.0:55446:55446"', c)
+        self.assertRegex(c, r"rd:\s+name: wamo-rd-netz\s+internal: true\s+driver_opts:\s+com\.docker\.network\.bridge\.inhibit_ipv4: \"true\"\s+ipam:\s+config:\s+- subnet: 172\.26\.0\.0/24")
+        self.assertRegex(c, r"networks:\s+default: \{\}\s+ui: \{\}\s+rd:\s+(#[^\n]*\s+)?ipv4_address: 172\.26\.0\.2")
+        self.assertEqual(len(re.findall(r'"0\.0\.0\.0:\d+:\d+"', c)), 4)
+
+    def test_caddy_vorlage(self):
+        v = (RD / "wamo-rd.caddy.vorlage").read_text(encoding="utf-8")
+        code = _ohne_kommentare(v)
+        for platzhalter in ("__ADRESSE__", "__TLS__", "__WSS__"):
+            self.assertIn(platzhalter, code)
+        self.assertIn("frame-ancestors 'none'", code)
+        self.assertIn("default-src 'none'", code)
+        self.assertIn("script-src 'self' 'unsafe-eval';", code)  # AngularJS von Guacamole braucht eval, sonst bleibt die Seite leer
+        self.assertNotIn("script-src 'self' 'unsafe-inline'", code)
+        self.assertEqual(code.count("unsafe-eval"), 1)
+        self.assertIn("path /app.css", code)
+        for kopf in ("Referrer-Policy", "X-Content-Type-Options", "X-Frame-Options", "Permissions-Policy", "Cross-Origin-Opener-Policy",
+                     "Cross-Origin-Resource-Policy", "Cache-Control"):
+            self.assertIn(">" + kopf, code)
+        self.assertIn("clipboard-read=()", code)
+        self.assertIn("not method GET HEAD POST DELETE", code)
+        self.assertNotIn("Access-Control", code)
+        self.assertNotIn("iframe", code.lower())
+        # die Abweisungen stehen VOR dem Durchreichen (route erzwingt die Reihenfolge)
+        self.assertLess(code.index("respond @methode"), code.index("reverse_proxy"))
+        self.assertIn("route {", code)
+
+    def test_beispiel_zielliste_ist_leer(self):
+        b = (RD / "ziele.toml.beispiel").read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"^[^#\n]*adresse", b, flags=re.M))
+        self.assertIsNone(re.search(r"(?i)passw|kennwort\s*=|secret\s*=|token\s*=", _ohne_kommentare(b)))
+
+    def test_alle_dateien_ohne_gedankenstriche_und_cr(self):
+        for f in list(RD.iterdir()) + [SOKRATES2 / "wamo_rd_rauchtest.py", SOKRATES2 / "wamo-firewall.sh"]:
+            t = f.read_text(encoding="utf-8")
+            self.assertNotIn(chr(0x2014), t, f.name)
+            self.assertNotIn(chr(0x2013), t, f.name)
+            self.assertNotIn("\r", t, f.name)
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class FirewallRegelnTests(Werkstatt):
+    """wamo-firewall.sh regeln gibt aus, was start setzen würde (ohne root, ohne iptables)."""
+
+    def regeln(self, ziele_text=None):
+        if ziele_text is not None:
+            (self.wurzel / "ziele.toml").write_text(ziele_text, encoding="utf-8")
+        env = {"PATH": os.environ["PATH"], "WAMO_FW_RD_ZIELE": str(self.wurzel / "ziele.toml"),
+               "WAMO_FW_CONF": str(self.wurzel / "gibt-es-nicht.conf")}
+        return subprocess.run([BASH, str(SOKRATES2 / "wamo-firewall.sh"), "regeln"], capture_output=True, text=True, env=env, timeout=60)
+
+    def test_port_55446_wie_die_anderen_lan_ports(self):
+        r = self.regeln()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("-A WAMO-FW -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 55446 -j WAMO-FW-LAN", r.stdout)
+        # die bisherigen Ports bleiben unverändert
+        for port in (55443, 55444, 55445, 55322, 56543):
+            self.assertIn(f"--ctorigdstport {port} -j WAMO-FW-LAN", r.stdout)
+        self.assertIn("--ctorigdstport 55321 -j WAMO-FW-HTTP", r.stdout)
+
+    def test_ohne_ziele_geht_nichts_hinaus(self):
+        r = self.regeln()  # Datei fehlt
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rd = [z for z in r.stdout.splitlines() if z.startswith("-A WAMO-FW-RD ")]
+        self.assertEqual(rd[0], "-A WAMO-FW-RD ! -i br-+ -j DROP")
+        self.assertEqual(rd[-1], "-A WAMO-FW-RD -j DROP")
+        self.assertFalse([z for z in rd if "RETURN" in z])
+        self.assertIn("-A WAMO-FW -s 172.27.0.0/24 -j WAMO-FW-RD", r.stdout)
+        r = self.regeln("# nur Kommentar\n")
+        self.assertFalse([z for z in r.stdout.splitlines() if z.startswith("-A WAMO-FW-RD ") and "RETURN" in z])
+
+    def test_ziele_werden_gelesen_und_ungueltige_ausgelassen(self):
+        r = self.regeln('[[ziel]]\nname = "a"\nadresse = "192.168.178.136"  # Sokrates-2\n[[ziel]]\nadresse="10.0.0.5"\n'
+                        '# adresse = "1.1.1.1"\nadresse = "300.1.1.1"\nadresse = "127.0.0.1"\nadresse = "0.0.0.0"\nadresse = "a.b.c.d"\n'
+                        'adresse = "1.2.3.4; reboot"\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rd = [z for z in r.stdout.splitlines() if z.startswith("-A WAMO-FW-RD ") and "RETURN" in z]
+        self.assertEqual(rd, ["-A WAMO-FW-RD -d 192.168.178.136/32 -p tcp --dport 3389 -j RETURN",
+                              "-A WAMO-FW-RD -d 10.0.0.5/32 -p tcp --dport 3389 -j RETURN"])
+        self.assertIn("ungültig", r.stderr)
+        self.assertNotIn("1.1.1.1", r.stdout)
+        self.assertNotIn("reboot", r.stdout)
+
+    def test_hoechstens_acht_ziele(self):
+        r = self.regeln("".join(f'adresse = "10.9.9.{n}"\n' for n in range(1, 13)))
+        self.assertEqual(len([z for z in r.stdout.splitlines() if z.startswith("-A WAMO-FW-RD -d ")]), 8)
+
+    def test_host_kette_laesst_nur_3389_zur_entscheidung_durch(self):
+        r = self.regeln()
+        rdin = [z for z in r.stdout.splitlines() if z.startswith("-A WAMO-FW-RDIN ")]
+        self.assertEqual(rdin[0], "-A WAMO-FW-RDIN -p tcp --dport 3389 -j RETURN")
+        self.assertEqual(rdin[-1], "-A WAMO-FW-RDIN -j DROP")
+        self.assertEqual(len(rdin), 3)
+
+    def test_nur_eigene_ketten_und_kein_flush(self):
+        r = self.regeln()
+        for z in r.stdout.splitlines():
+            if z.startswith(":"):
+                self.assertTrue(z.startswith(":WAMO-FW"), z)
+            if z.startswith("-A "):
+                self.assertTrue(z.split()[1].startswith("WAMO-FW"), z)
+        code = _ohne_kommentare((SOKRATES2 / "wamo-firewall.sh").read_text(encoding="utf-8"))
+        self.assertNotIn("iptables -F", code)
+        self.assertNotIn("-P INPUT", code)
+        self.assertNotIn("-P FORWARD", code)
+        # INPUT wird nur um genau einen Sprung für das Netz des Gateways ergänzt
+        self.assertEqual(len(re.findall(r"ipt -I INPUT", code)), 1)
+        self.assertIn('ipt -I INPUT 1 -s "$NETZ_RD_ZIEL" -j "$KETTE_RDIN"', code)
+
+    def test_regeln_laden_in_einem_wegwerf_namensraum(self):
+        # Mit echtem iptables nur in einem eigenen Netzwerk-Namensraum (unshare), nie am Host
+        if not (LINUX and shutil.which("iptables-restore") and shutil.which("unshare") and os.geteuid() == 0):
+            self.skipTest("braucht Linux, root und iptables (siehe Rauchtest im Container)")
+        r = self.regeln()
+        pfad = self.wurzel / "regeln.txt"
+        pfad.write_text(r.stdout)
+        p = subprocess.run(["unshare", "-n", "sh", "-c", f"iptables -N DOCKER-USER && iptables-restore --noflush < {pfad} && iptables -S WAMO-FW-RD"],
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+
+@unittest.skipUnless(LINUX and BASH, "Probelauf braucht Linux und GNU-Werkzeuge")
+class EinrichtenTrockenTests(Werkstatt):
+    def setUp(self):
+        super().setUp()
+        self.attrappe("docker", "sudo", "ss", "systemctl", "curl", "iptables", "openssl", "useradd", "userdel")
+        self.caddy = Path(self.tmp.name) / "caddy"
+        (self.caddy / "etc" / "kern").mkdir(parents=True)
+        self.ausgabe("docker.image_inspect", "", rc=1)  # Images fehlen noch: docker pull wird gezeigt
+
+    def trocken(self, skript, *args):
+        return self.lauf(skript, "--trocken", *args, extra={"WAMO_RD_CADDY_DIR": str(self.caddy),
+                                                             "WAMO_RD_BASIS": str(Path(self.tmp.name) / "wamo-rd")})
+
+    def test_einrichten_trocken_aendert_nichts(self):
+        r = self.trocken("infra/sokrates2/wamo-rd-einrichten.sh")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[trocken]", r.stdout)
+        for erwartet in ("useradd --system --user-group --no-create-home", "install -d -m 0750 -o root -g wamo-rd-gateway /etc/wamo-rd",
+                         "docker pull guacamole/guacd:1.6.0@sha256:", "docker pull guacamole/guacamole:1.6.0@sha256:",
+                         "wamo-firewall-einrichten.sh", "Compose von wamo-caddy ändern", "docker compose -f", "wamo_rd_rauchtest.py --betrieb"):
+            self.assertIn(erwartet, r.stdout)
+        # nichts mit Wirkung wurde wirklich aufgerufen
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(sudo|useradd|userdel|openssl|curl)\b", z)
+            self.assertNotRegex(z, r"^docker (pull|run|rm|network (create|rm|connect)|compose (up|down)|exec|stop|start|restart|cp|build|volume)\b", z)
+        self.assertEqual(list((self.caddy / "etc" / "kern").iterdir()), [])
+        self.assertFalse((Path(self.tmp.name) / "wamo-rd").exists())
+
+    def test_trockenlauf_zeigt_den_schluessel_nie(self):
+        r = self.trocken("infra/sokrates2/wamo-rd-einrichten.sh", "konto")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(re.search(r"\b[0-9a-f]{32}\b", r.stdout + r.stderr))
+        self.assertIn("wird nie ausgegeben", r.stdout)
+        code = _ohne_kommentare((SOKRATES2 / "wamo-rd-einrichten.sh").read_text(encoding="utf-8"))
+        # der Schlüssel läuft nur durch eine Pipe in die Datei: nie als Argument, nie in einer Variablen, nie per echo/printf
+        self.assertIn("openssl rand -hex 16 | tr -d '\\n' | sudo -n bash -c 'umask 0137; cat > \"$1\"' _ \"$SCHLUESSEL\"", code)
+        self.assertNotRegex(code, r"(echo|printf)[^\n]*\$\(?openssl")
+        self.assertNotRegex(code, r"\w+=\"?\$\(openssl rand")
+
+    def test_einzelne_befehle_und_falsche_aufrufe(self):
+        for befehl in ("konto", "bilder", "firewall", "caddy", "start", "pruefen", "status"):
+            r = self.trocken("infra/sokrates2/wamo-rd-einrichten.sh", befehl)
+            self.assertEqual(r.returncode, 0, (befehl, r.stdout, r.stderr))
+        self.assertEqual(self.lauf("infra/sokrates2/wamo-rd-einrichten.sh", "--unbekannt").returncode, 2)
+        self.assertEqual(self.lauf("infra/sokrates2/wamo-rd-rueckweg.sh", "--unbekannt").returncode, 2)
+
+    def test_ohne_trocken_nur_als_wamocon(self):
+        if subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip() == "wamocon":
+            self.skipTest("läuft als wamocon")
+        r = self.lauf("infra/sokrates2/wamo-rd-einrichten.sh", "status")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("als wamocon", r.stderr)
+        self.assertEqual(self.aufrufe(), [])
+
+    def test_rueckweg_trocken(self):
+        (self.caddy / "etc" / "kern" / "wamo-rd.caddy").write_text("x")
+        basis = Path(self.tmp.name) / "wamo-rd"
+        basis.mkdir()
+        (basis / "docker-compose.yml").write_text("name: x\n")
+        for args in ((), ("--entfernen",)):
+            r = self.trocken("infra/sokrates2/wamo-rd-rueckweg.sh", *args)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("docker compose -f", r.stdout)
+            self.assertIn("docker rm -f wamo-rd-web wamo-rd-guacd", r.stdout)
+            self.assertIn("caddy reload", r.stdout)
+            if args:
+                self.assertIn("userdel", r.stdout)
+                self.assertIn("docker image rm guacamole/guacd:1.6.0@sha256:", r.stdout)
+                self.assertIn("rm -rf " + str(basis), r.stdout)
+        self.assertTrue((self.caddy / "etc" / "kern" / "wamo-rd.caddy").exists())
+        self.assertTrue(basis.exists())
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(sudo|userdel)\b", z)
+            self.assertNotRegex(z, r"^docker (rm|network rm|image rm|compose|exec)\b", z)
+
+    def test_rueckweg_fasst_nichts_ausserhalb_an(self):
+        code = _ohne_kommentare((SOKRATES2 / "wamo-rd-rueckweg.sh").read_text(encoding="utf-8"))
+        # nur die festen Namen, nie ein Muster
+        self.assertIn("docker rm -f wamo-rd-web wamo-rd-guacd", code)
+        self.assertNotRegex(code, r"docker (ps|container ls|network ls|image ls)[^\n]*\|\s*xargs")
+        self.assertNotIn("docker system prune", code)
+        self.assertNotIn("docker volume prune", code)
+        self.assertNotIn("docker network prune", code)
+        self.assertNotIn("wamo-caddy_default", code)
+
+
 if __name__ == "__main__":
     unittest.main()
