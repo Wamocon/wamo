@@ -106,6 +106,7 @@ from latenz import LatenzObserver, api_messen, latenz_log_an
 from pc_geraet import geraet_wache, rechnername_passt
 from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
+from ja_waechter import JaWaechter, ja_waechter_an
 from turn_wache import TurnWache
 from wartesatz import Wartesatz, wartesatz_an, wartesatz_secs
 from pc_host import (
@@ -674,6 +675,13 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
     # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
     wache = TurnWache()
+
+    def freigabe_offen() -> bool:
+        """Wartet eine Freigabe (PC-Freigabe-Karte oder Entwicklungsauftrag)? Dann greift der Ja-Wächter nie."""
+        if freigaben is not None and getattr(freigaben, "_offen", None):
+            return True
+        return dev is not None and any(getattr(j, "pending", None) for j in getattr(dev, "_jobs", {}).values())
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -683,6 +691,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             SpeakerTracker(),  # wer spricht -> Farbe im Stimmen-Rand
             user_agg,
             soft_gate,
+            *([JaWaechter(offen=freigabe_offen)] if ja_waechter_an() else []),  # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER)
             wache.vorne(),
             llm,
             wache.hinten(),
