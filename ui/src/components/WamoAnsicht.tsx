@@ -7,7 +7,7 @@ import { Einstellungen } from "@/components/einstellungen/Einstellungen";
 import { EINSTELLUNGEN_KNOPF_ID } from "@/components/einstellungen/EinstellungenLink";
 import { Auftraege, Freigaben } from "@/components/Freigaben";
 import { GemerktHinweis } from "@/components/GemerktHinweis";
-import { Bedienung, type TextSenden } from "@/components/kommando/Bedienung";
+import { Bedienung } from "@/components/kommando/Bedienung";
 import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
@@ -128,12 +128,6 @@ const Ansage = memo(function Ansage() {
 });
 
 /**
- * Optionale Erweiterung von WamoAktionen: Text an WAMO senden (Texteingabe der Eingabepille).
- * Bietet useWamo die Aktion an, wird die Eingabepille ohne weitere Änderung aktiv.
- */
-type MitText = WamoAktionen & { textSenden?: TextSenden };
-
-/**
  * Hauptansicht "Kommandozentrale" (kommando/Rahmen.tsx). Abschnitte abonnieren eigene Store-Ausschnitte,
  * deshalb rendert hier nichts im Worttakt neu. Ab 1100 px drei Spalten: links Hinweise (Gedächtnis, geteilte
  * Arbeit, Stand der Einstellungen), in der Mitte der Kern mit Untertiteln, Eingabepille und Canvas, rechts Reiter für
@@ -205,7 +199,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
       bedienung={
         <Bedienung
           onMikro={aktionen.toggleMic}
-          senden={(aktionen as MitText).textSenden}
+          senden={aktionen.textSenden}
           verlaufOffen={verlaufOffen}
           onVerlauf={toggleVerlauf}
         />
