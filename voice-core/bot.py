@@ -132,6 +132,7 @@ from soft_interrupt import (
     echo_modus_an,
     kuerze_auf_gehoertes,
     ohne_letzte_woerter,
+    rueckmeldung_werkzeug_an,
     stopp_grenze_an,
 )
 from soniox_tts import LazySonioxTTSService, stimme_einstellung
@@ -641,6 +642,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                         gesprochen=soft_gate.kuerzlich_gesprochen if echo_filter_an() else None,
                         beurteilt=soft_gate.beurteilt,  # Rückmeldung oder Echo: Dämpfung zurücknehmen
                         echo_modus=echo_filter_an() and echo_modus_an(),  # bei erkennbarem Echo unterbricht nur ein Stoppwort
+                        # Rückmeldelaut bei laufendem Werkzeug startet keinen Zug (WAMO_RUECKMELDUNG_WERKZEUG)
+                        werkzeug_laeuft=soft_gate.werkzeug_laeuft if rueckmeldung_werkzeug_an() else None,
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.
