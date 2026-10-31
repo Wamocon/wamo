@@ -1128,6 +1128,119 @@ hat, kann das Protokoll samt Kette neu rechnen (wie beim Anker). (e) Offen für 
 `migrieren`, `umschalten` (die Liste in `release_anker.py` muss dann bewusst erweitert werden), echte Datenbank mit
 `wamo_release`, Socket für Personen mit Token.
 
+## 16. Remote Desktop (Gateway), Stufen 0 bis 2 (vorbereitet am 31.10.2026, noch nicht ausgerollt)
+
+Konzept und Begründungen: `docs/remote-desktop.md`. Ziel: Ein Admin bedient unterwegs (WireGuard der Fritzbox, WAMO-App) den Desktop
+der Sparks über ein Gateway auf Sokrates-2 (Apache Guacamole, Weg A). Gebaut sind nur die Stufen 0 bis 2 im Repo; die Anmeldung über
+WAMO (`rd_api.py`, Zugangsdienst), die Oberfläche und die weiteren Ziele folgen in den Stufen 3 bis 7. Ohne Zugangsdienst kann sich
+niemand am Gateway anmelden.
+
+**Grenzen (Entscheidung vom 31.10.2026).** Höchstens 60 Minuten je Sitzung, 10 Minuten Leerlauf (am Ziel durch `IdleTimeLimit`),
+ein Zuschauer je Ziel, frischer zweiter Faktor (höchstens 120 Sekunden alt) bei jedem Start, nur Rolle `admin`; keine Zwischenablage,
+keine Laufwerke, kein Ton, keine Aufzeichnung. Das Konto `wamo-rd` hat kein sudo, keine Gruppe `docker`, kein SSH; sein Ausgang soll
+nur ins Internet gehen, nicht ins LAN (Stufe 8 des Konzepts, nft-Regel `meta skuid wamo-rd` am Ziel; Empfehlung des Konzepts übernommen).
+
+**Bausteine.**
+
+| Baustein | Datei | Stufe |
+| --- | --- | --- |
+| xrdp auf Caesar einhegen (Root-Anmeldung aus, Port 3389 nur vom Gateway) | `infra/sparks/xrdp-einhegen.sh` | 0 |
+| Gateway: Container, Netze, Caddy-Site 55446, Firewall | `infra/sokrates2/wamo-rd/`, `wamo-rd-einrichten.sh`, `wamo-rd-rueckweg.sh`, Ketten `WAMO-FW-RD` und `WAMO-FW-RDIN` in `wamo-firewall.sh`, Port und Netz in `wamo-caddy/docker-compose.yml` | 1 |
+| Rauchtest (Testmodus ohne Server, Betrieb mit `--betrieb`) | `wamo_rd_rauchtest.py` | 1 |
+| Konto `wamo-rd` mit Passwort nur in `/etc/wamo-rd/ziele.env` | `infra/sparks/wamo-rd-konto-einrichten.sh` | 2 |
+| xrdp als Ziel (Sokrates-2 zuerst) | `infra/sparks/wamo-rd-ziel-einrichten.sh` | 2 |
+
+**Stufe 0: xrdp auf Caesar einhegen (macht der Nutzer selbst, `sudo` verlangt dort ein Passwort).** Zuerst ansehen, dann ausführen:
+
+```bash
+scp infra/sparks/xrdp-einhegen.sh caesar:                 # in das eigene Home, nie nach /tmp
+ssh -t caesar "sudo bash ~/xrdp-einhegen.sh --trocken"    # zeigt Version, Patchstand, geplante Regeln; ändert nichts
+ssh -t caesar "sudo bash ~/xrdp-einhegen.sh --neustart"   # Root-Anmeldung aus, Port 3389 nur von Sokrates-2 und lokal
+ssh -t caesar "sudo bash ~/xrdp-einhegen.sh --zurueck"    # Rückweg
+```
+
+Das Skript aktualisiert nichts. Steht ein Update an (CVE-2025-68670), sagt es das und nennt den Befehl (`apt changelog xrdp`,
+dann bewusst `sudo apt-get install --only-upgrade xrdp`). Sicherungen: `/etc/xrdp/sesman.ini.vor-wamo-ZEITSTEMPEL`, `/var/backups/wamo-xrdp`.
+Läuft auf Caesar kein ufw, entsteht eine eigene nftables-Tabelle `inet wamo_xrdp` (fremde Regeln bleiben unberührt), die Unit
+`wamo-xrdp-sperre.service` und ein Drop-in `xrdp.service.d/wamo-sperre.conf`, das xrdp nur mit geladener Sperre starten lässt (fail-closed).
+
+**Stufe 1: Gateway ohne Ziel einrichten** (als `wamocon` auf Sokrates-2, Ablage wie in Abschnitt 12):
+
+```bash
+ssh sokrates2 "rm -rf ~/wamo-infra" && scp -r infra/sokrates2 sokrates2:wamo-infra && ssh sokrates2 "chmod -R go-w ~/wamo-infra"
+ssh sokrates2 "bash ~/wamo-infra/wamo-rd-einrichten.sh --trocken"     # nur anzeigen
+ssh sokrates2 "bash ~/wamo-infra/wamo-rd-einrichten.sh"               # konto, bilder, firewall, caddy, start, pruefen
+ssh sokrates2 "bash ~/wamo-infra/wamo-rd-rueckweg.sh"                 # Rückweg (Container, Netze, Site); mit --entfernen auch Images, Schlüssel, Benutzer
+```
+
+Der Lauf legt `wamo-caddy` einmal neu an (Port 55446, Netz `wamo-rd-netz`): 55443 bis 55445 sind wenige Sekunden weg, deshalb nur ohne
+laufende Sitzung des Kerns (das Skript prüft es). Reihenfolge, wenn man einzeln vorgeht: `konto`, `bilder`, `firewall`, `caddy`, `start`, `pruefen`.
+Das Netz `wamo-rd-netz` gehört zu `wamo-caddy`; die Netze `wamo-rd-guacd-netz` und `wamo-rd-ziel` legt das Compose-Projekt `wamo-rd` an.
+Die Zielliste `/etc/wamo-rd/ziele.toml` ist zu Beginn leer: Die Firewall lässt vom Gateway dann nichts hinaus. Ein Ziel erst mit
+Stufe 2 eintragen, danach `sudo systemctl reload wamo-firewall`.
+
+Härtung der Container wie bei `wamo-ui` (read-only, `cap_drop: ALL`, `no-new-privileges`, Benutzer `wamo-rd-gateway`, Speicher-, CPU- und
+Prozessgrenzen, kein veröffentlichter Port). Images: die offiziellen Fassungen 1.6.0 von `guacamole/guacamole` und `guacamole/guacd`,
+am 31.10.2026 mit `docker buildx imagetools inspect` als arm64 belegt und über den Digest des Multi-Arch-Index festgehalten; ein
+eigener Bau ist nicht nötig. Anmeldung nur mit signiertem JSON aus der festen Adresse des Zugangsdienstes (`JSON_TRUSTED_NETWORKS`,
+Schlüssel aus `/etc/wamo-rd/json.key`, 0640 `root:wamo-rd-gateway`, ohne Zeilenumbruch); Fehlversuche sperren die Absenderadresse
+(Erweiterung `ban`). Die echte Absenderadresse hinter Caddy liefert der RemoteIpValve, vertraut wird allein Caddy (feste Adresse 172.26.0.2).
+
+*Aktualisierungsplan.* Neuen Digest holen (`docker buildx imagetools inspect guacamole/guacamole:<Version>`), in
+`wamo-rd/docker-compose.yml` eintragen, `wamo-rd-einrichten.sh bilder start`, `python3 wamo_rd_rauchtest.py --betrieb --ca ...`;
+Rückweg ist der alte Digest (`git revert`). Vor jeder Aktualisierung die Sicherheitsseite des Projekts auf neue CVEs prüfen.
+
+*Rauchtest.* `python infra/sokrates2/wamo_rd_rauchtest.py` baut den Stack aus der echten Compose-Datei und der echten Caddy-Vorlage mit dem
+Namensraum `wamo-test-rd-t1-` (eigene Netze, Caddy mit HTTP), prüft Gesundheit, Härtung, Kopfzeilen, Isolation und alle Verbotsproben
+(JSON von fremder Adresse, falsche Signatur, abgelaufen, gefälschtes `X-Forwarded-For`) sowie den positiven Weg (Zugangsdienst-Attrappe),
+und räumt ab; `--behalten` lässt ihn für eine Browserprobe stehen. `--betrieb --ca wamo-ca.crt` prüft die laufenden Container auf
+Sokrates-2 (Isolation aus den Containern, Zielliste gegen die Kette `WAMO-FW-RD`).
+
+*Bekannte Grenzen.* (a) Die Oberfläche von Guacamole (AngularJS) braucht `'unsafe-eval'` in `script-src`; sonst bleibt die Seite leer
+(im Browser belegt). Die Herkunft 55446 hält kein WAMO-Token, kein `'unsafe-inline'` für Skripte, keine fremde Quelle. (b) `POST /api/tokens`
+bleibt offen, weil die Oberfläche damit ihr Sitzungstoken erneuert; abgesichert durch `JSON_TRUSTED_NETWORKS` und die Sperre nach
+3 Fehlversuchen (15 Minuten). (c) `wamo-caddy` hängt im Netz `wamo-rd-netz` wie bei `wamo-ui` und erreicht die Webanwendung; `guacd`
+(unauthentisiert, kein TLS) liegt in einem eigenen internen Netz, das nur die Webanwendung teilt, und lauscht nur auf seiner festen
+Adresse 172.26.1.3 dort, nie im Netz `wamo-rd-ziel` (sonst erreichte ihn jeder Prozess auf dem Host über 172.27.0.1; der Rauchtest prüft es). (d) Pakete an den Host aus dem Netz
+`wamo-rd-ziel` gehen durch `WAMO-FW-RDIN` (nur TCP 3389, dann entscheidet ufw); sie ist die einzige Ergänzung in `INPUT` (ein Sprung an
+Position 1). (e) Die Laufzeit der Sitzung (60 Minuten, Verlängerung) setzt der Zugangsdienst in Stufe 3 durch, nicht dieses Gateway.
+(f) Der Sprung nach `WAMO-FW-RDIN` steht nach einem Neustart oder `ufw reload` womöglich nicht mehr an erster Stelle von `INPUT`; der Rauchtest
+(`--betrieb`) prüft die Position, `sudo systemctl reload wamo-firewall` stellt sie wieder her. (g) Die Sperre von Guacamole zählt Fehlversuche je Absenderadresse
+(3, dann 15 Minuten): Der Zugangsdienst (Stufe 3) darf ein abgelehntes JSON nicht wiederholen und muss Schlüssel und Uhrzeit vor dem Senden prüfen, sonst sperrt er sich selbst;
+sein Schlüssel gehört nie als Argument eines Programms (kein `openssl enc -K` im echten Dienst). (h) `ignore-cert` am Ziel bleibt bis zum Pinning des Zertifikats
+(`cert-fingerprints` in Guacamole 1.6) ein Rest; solange nur das lokale Ziel Sokrates-2 läuft, bleibt der Weg auf dem Host.
+
+**Stufe 2: Konto und Ziel Sokrates-2** (am Ziel, mit `sudo`; Passwort tippt der Nutzer selbst). Entscheidung: xrdp. Begründung: Das Konzept
+(Abschnitt 2.1) nennt xrdp als Zielzustand, weil nur er auf dieser Hardware (NVIDIA GB10, Xorg ohne Monitor) nachweislich läuft; GRD im
+Systemmodus ist dort ungeprüft und braucht zwei Anmeldungen. Gebaut ist deshalb nur xrdp.
+
+```bash
+scp infra/sparks/* sokrates2:wamo-infra-sparks/            # vorher: ssh sokrates2 "mkdir -p ~/wamo-infra-sparks"
+ssh -t sokrates2 "sudo bash ~/wamo-infra-sparks/wamo-rd-konto-einrichten.sh --trocken"   # dann ohne --trocken
+ssh -t sokrates2 "sudo env WAMO_XRDP_QUELLE=172.27.0.0/24 bash ~/wamo-infra-sparks/xrdp-einhegen.sh --nur-sperre"
+ssh -t sokrates2 "sudo apt-get install xrdp xorgxrdp"      # bewusst von Hand; vorher apt changelog xrdp, CVE-2025-68670
+ssh -t sokrates2 "sudo bash ~/wamo-infra-sparks/wamo-rd-ziel-einrichten.sh --trocken"
+ssh -t sokrates2 "sudo bash ~/wamo-infra-sparks/wamo-rd-ziel-einrichten.sh --neustart"
+```
+
+**Vorbedingung vor dem ersten Ziel Sokrates-2 (offene Entscheidung):** Auf Sokrates-2 ist die Desktopsitzung von `wamo-rd` ein Prozess auf demselben Host und
+erreicht damit alle Dienste auf Loopback (die Firewall lässt Loopback überall durch). Die Ausgangsregel `meta skuid wamo-rd` (nur Internet, weder Loopback noch LAN,
+Konzept Abschnitt 5.2) ist deshalb dort schon vor dem ersten Ziel nötig; sie ist nicht Teil von Stufe 2. Sokrates-1 und Caesar haben das Problem nicht.
+
+Danach das Ziel in `/etc/wamo-rd/ziele.toml` eintragen (Vorlage `wamo-rd/ziele.toml.beispiel`) und `sudo systemctl reload wamo-firewall`.
+Rückweg: `wamo-rd-ziel-einrichten.sh --zurueck` (Konfigurationen aus `.vor-wamo-rd-*`, Sperre weg, `.xsessionrc` weg) und
+`wamo-rd-konto-einrichten.sh --entfernen` (oder `--sperren`). Die Passwortrotation ist `wamo-rd-konto-einrichten.sh --rotieren`
+(alle 90 Tage und nach jedem Verdacht). Das Passwort steht nur in `/etc/wamo-rd/ziele.env`, nie auf dem Bildschirm, im Protokoll oder
+in einem Argument. Die Sitzung entsteht nur für `wamo-rd` (eigene Xorg-Sitzung, Display ab `:10`); die Konsole von `wamocon` wird
+nie berührt. Anmeldung nur für die Gruppe `wamo-rd-ts` (`AlwaysGroupCheck=true`), Ende bei Trennung nach 15 Minuten, Leerlauf nach 10.
+
+*Prüfpunkte am Ziel (Stufe 2 des Konzepts).* (1) GRD als Alternative: `grdctl --system` im Systemmodus testen; läuft es ohne zweite Anmeldung
+unter Xorg und NVIDIA 580, ist es wegen des unprivilegierten Dienstes vorzuziehen, sonst bleibt xrdp. (2) Schließt die Sitzung sofort,
+fehlt meist `allowed_users=anybody` in `/etc/X11/Xwrapper.config`; ebenso prüfen, dass xorgxrdp keinen Platz an `seat0` belegt. (3) Zertifikat:
+xrdp stellt ein selbstsigniertes aus; das Gateway nutzt vorerst `ignore-cert`, Pinning ist zu prüfen. (4) Ob `DELETE /api/session/tokens`
+einen laufenden Tunnel sofort beendet (Stufe 3). (5) `wamo-rd` darf nur lesen, was für alle lesbar ist: Homes der anderen auf 0750 oder
+enger prüfen (`ls -ld /home/*`).
+
 ---
 
 WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn

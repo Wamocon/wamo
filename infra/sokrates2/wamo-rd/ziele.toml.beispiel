@@ -1,0 +1,14 @@
+# Ziele des Remote-Desktop-Gateways (docs/remote-desktop.md). Vorlage; wamo-rd-einrichten.sh legt daraus beim ersten Lauf
+# /etc/wamo-rd/ziele.toml an und lässt eine vorhandene Datei unverändert. Keine Geheimnisse: Kennwörter stehen nie hier,
+# sondern in /etc/wamo-rd/ziele.env (Stufe 2, wamo-rd-konto-einrichten.sh).
+#
+# Stufe 1: Die Liste ist leer. Das Gateway kann dann nirgendwohin verbinden, und die Firewall (Kette WAMO-FW-RD in
+# wamo-firewall.sh) lässt vom Gateway nichts hinaus.
+#
+# Ein Ziel wird erst mit Stufe 2 eingetragen (Sokrates-2 zuerst), danach  sudo systemctl reload wamo-firewall  :
+#
+# [[ziel]]
+# name = "sokrates2"
+# anzeige = "Sokrates-2"
+# adresse = "192.168.178.136"    # nur IPv4-Adresse; die Firewall öffnet genau TCP 3389 zu dieser Adresse
+# port = 3389
