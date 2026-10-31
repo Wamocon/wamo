@@ -54,6 +54,7 @@ BRAUCHT_FINGERABDRUCK = ("freigeben", "entsperren")
 GRUND_MIN, GRUND_MAX = 3, 200
 FINGERABDRUCK_RE = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 STEUER_RE = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+GRUND_STEUER_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")  # Tab und Zeilenumbruch sind im Grund erlaubt (mehrzeiliges Feld)
 STATUS = ("beantragt", "aktiv", "gesperrt", "widerrufen")
 ERGEBNISSE = ("ok", "schon", "nicht_moeglich", "unbekannt", "konflikt", "besitzer_inaktiv")
 
@@ -100,7 +101,7 @@ def grund_pruefen(roh: object, aktion: str) -> str | None:
     """Grund bereinigt (Leerraum beschnitten) oder None. Wirft HTTPException 400, wenn er fehlt (Pflicht) oder ungültig ist."""
     if roh is not None and not isinstance(roh, str):
         raise HTTPException(400, "Der Grund muss ein Text sein")
-    if isinstance(roh, str) and STEUER_RE.search(roh):
+    if isinstance(roh, str) and GRUND_STEUER_RE.search(roh):
         raise HTTPException(400, "Der Grund enthält Steuerzeichen")
     grund = " ".join(roh.split()) if isinstance(roh, str) else ""
     if len(grund) > GRUND_MAX:
@@ -120,7 +121,7 @@ def _drosseln(user_id: str, art: str, grenze: tuple[int, float], jetzt: float | 
         raise HTTPException(429, "Zu viele Anfragen, bitte in ein paar Minuten noch einmal")
     q.append(jetzt)
     if len(_versuche) > 500:  # abgelaufene Admins aufräumen
-        for k in [k for k, d in _versuche.items() if not d or jetzt - d[-1] > 600.0]:
+        for k in [k for k, d in _versuche.items() if not d or jetzt - d[-1] > max(LISTE_GRENZE[1], AKTION_GRENZE[1])]:
             del _versuche[k]
 
 
@@ -240,8 +241,8 @@ async def liste(request: Request, response: Response) -> dict:
     return {"geraete": geraete}
 
 
-@router.post("/geraete/verwaltung/aktion")
-async def aktion(request: Request, response: Response):
+@router.post("/geraete/verwaltung/aktion", response_model=None)
+async def aktion(request: Request, response: Response) -> dict | JSONResponse:
     ich = await _admin(request)
     _drosseln(ich.user_id, "aktion", AKTION_GRENZE)
     response.headers["Cache-Control"] = "no-store"
@@ -284,13 +285,14 @@ async def aktion(request: Request, response: Response):
         logger.warning("Geräteverwaltung: {} für {} fehlgeschlagen ({}, {})", was, kennung, type(e).__name__, code)
         if code == "42501":
             raise HTTPException(403, "Dir fehlt die Berechtigung: Nur aktive Admins verwalten Geräte") from e
-        if code == "23514":
+        meldung = str(e).lower()
+        if code == "23514" and ("zweite faktor" in meldung or "aal2" in meldung):
             return JSONResponse({"detail": "Der zweite Faktor ist zu alt. Bitte den Code noch einmal eingeben.",
                                  "code": CODE_AAL2}, status_code=403, headers={"Cache-Control": "no-store"})
         if code in ("22023", "22004"):
             raise HTTPException(400, "Die Angaben wurden von der Datenbank abgelehnt") from e
-        raise HTTPException(503, "Die Datenbank ist gerade nicht erreichbar. Es wurde nichts geändert, "
-                                 "bitte gleich noch einmal versuchen.") from e
+        raise HTTPException(503, "Die Datenbank hat nicht sauber geantwortet. Ob die Aktion gelaufen ist, zeigt die Liste. "
+                                 "Bitte neu laden und den Stand prüfen.") from e
     ergebnis = zeile["ergebnis"] if zeile is not None else None
     if ergebnis not in ERGEBNISSE:
         logger.error("Geräteverwaltung: unerwartete Antwort der Datenbank")

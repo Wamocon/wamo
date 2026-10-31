@@ -277,7 +277,7 @@ def test_aktion_zweiter_faktor_knapp_genug(client, db, ctx):
 
 
 def test_aktion_datenbank_lehnt_zu_alten_faktor_ab(client, db):
-    e = asyncpg.CheckViolationError("x")
+    e = asyncpg.CheckViolationError("geraet_entscheiden: der zweite Faktor ist älter als 120 Sekunden")
     db.fehler = None
 
     async def fetchrow(sql, *a):
@@ -286,6 +286,37 @@ def test_aktion_datenbank_lehnt_zu_alten_faktor_ab(client, db):
     db.fetchrow = fetchrow
     r = _post(client)
     assert r.status_code == 403 and r.json()["code"] == api.CODE_AAL2
+
+
+def test_andere_pruefungsfehler_sind_kein_zweiter_faktor(client, db):
+    async def fetchrow(sql, *a):
+        raise asyncpg.CheckViolationError("devices: Statuswechsel nicht erlaubt")
+
+    db.fetchrow = fetchrow
+    r = _post(client)
+    assert r.status_code == 503 and "code" not in r.json()
+
+
+@pytest.mark.parametrize("fehler,status", [
+    (asyncpg.InsufficientPrivilegeError("x"), 403), (asyncpg.InvalidParameterValueError("x"), 400),
+    (asyncpg.PostgresConnectionError("weg"), 503), (OSError("weg"), 503),
+])
+def test_fehler_der_funktion_selbst(client, db, fehler, status):
+    async def fetchrow(sql, *a):
+        raise fehler
+
+    db.fetchrow = fetchrow
+    r = _post(client, aktion="sperren", grund="Laptop verloren", fingerabdruck=None)
+    assert r.status_code == status
+    if status == 503:
+        assert "nichts geändert" not in r.json()["detail"]      # nach einem Verbindungsfehler ist offen, ob es gelaufen ist
+
+
+def test_grund_darf_mehrzeilig_sein(client, db):
+    db.antwort = {"kennung": KENNUNG, "vorher": "aktiv", "nachher": "gesperrt", "ergebnis": "ok"}
+    r = _post(client, aktion="sperren", grund="Laptop verloren" + chr(10) + "und nicht gemeldet", fingerabdruck=None)
+    assert r.status_code == 200
+    assert db.sql[-1][1][3] == "Laptop verloren und nicht gemeldet"
 
 
 # ---------- Aktion: Eingaben ----------
