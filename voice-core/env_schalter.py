@@ -25,8 +25,24 @@ AN = ("an", "ein", "1", "ja", "true", "on", "yes", "y", "aktiv", "enabled")
 _GEWARNT: set[tuple[str, str]] = set()
 
 
-def schalter_an(name: str, wert: str | None = None, standard: bool = True) -> bool:
-    """Ist der Schalter name an? wert ersetzt die Umgebungsvariable (für Tests), standard gilt bei leerem Wert."""
+#: Standardwerte der Schalter aus den Sprachpaketen A und B (alle anderen Schalter sind ohne Eintrag hier standardmäßig an).
+#: Ein Schalter steht hier nur, wenn er vom Normalfall abweicht oder seine Messung begründet werden soll. Die Begründung
+#: mit Zahlen steht je Schalter in der Zeile darüber und in der README (Tabelle "Schalter und Standardwerte").
+STANDARDWERTE: dict[str, bool] = {
+    "WAMO_TTS_SATZLEERZEICHEN": False,
+    "WAMO_PERSONA_RUECKFRAGEN": False,
+    "WAMO_PERSONA_PC_ORDNER": False,
+    "WAMO_PAUSEN_PROMPT": False,
+    "WAMO_RUECKMELDUNG_WERKZEUG": False,
+    "WAMO_JA_WAECHTER": False,
+}
+
+
+def schalter_an(name: str, wert: str | None = None, standard: bool | None = None) -> bool:
+    """Ist der Schalter name an? wert ersetzt die Umgebungsvariable (für Tests), standard gilt bei leerem Wert
+    (ohne Angabe: der Eintrag in STANDARDWERTE, sonst an)."""
+    if standard is None:
+        standard = STANDARDWERTE.get(name, True)
     w = (os.getenv(name) if wert is None else wert) or ""
     w = w.strip().lower()
     if not w:

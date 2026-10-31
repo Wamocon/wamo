@@ -568,6 +568,15 @@ def drucken(name: str, z: dict) -> None:
             print(f"  Pause {luecke} s WAMO redet dazwischen: {_anteil(d)}")
 
 
+def hausmodell_sitzungen(pfad: Path) -> int:
+    """Sitzungen im Kern-Log, deren Gesprächsmodell ein Hausmodell war. Fällt die Datenbank beim Laden des Zugangs aus,
+    nutzt der Kern nur Hausmodelle: die Zahlen einer solchen Sitzung sind mit Claude nicht vergleichbar."""
+    if not pfad.exists():
+        return 0
+    text = ANSI.sub("", pfad.read_text(encoding="utf-8", errors="replace"))
+    return len(re.findall(r"Boss: gespraech -> .*\(Zugang haus", text))
+
+
 def lauf_analysieren(ordner: Path, lauf: str) -> dict[str, list[dict]]:
     j = json.loads((ordner / f"{lauf}.json").read_text(encoding="utf-8"))
     kern = kern_ereignisse(ordner / f"{lauf}.kern.log")
@@ -588,17 +597,24 @@ def auswerten(ordner: Path, laeufe: list[str]) -> None:
         (ordner / f"{lauf}.metriken.json").write_text(
             json.dumps({"kennzahlen": z, "wiederholungen": daten}, ensure_ascii=False, indent=1), encoding="utf-8")
         drucken(lauf, z)
+        haus = hausmodell_sitzungen(ordner / f"{lauf}.kern.log")
+        if haus:
+            print(f"  ACHTUNG: {haus} Sitzung(en) liefen auf Hausmodell statt Claude (Datenbank oder Netz): diese Szenarien wiederholen")
 
 
 def hoerprobe(ordner: Path, lauf: str, ziel: Path, label: str) -> None:
-    """Drei Hörproben (10 bis 20 s): Einwurf mitten im Satz, Rückmeldelaut, Werkzeugaufruf. Mikrofon und das, was die Person
+    """Hörproben (10 bis 20 s): Einwurf mitten im Satz, Rückmeldelaut, Werkzeugaufruf, lange Antwort, Pause mitten im Satz,
+    Rückmeldelaut bei laufendem Werkzeug (fehlt das Szenario im Lauf, wird die Probe übersprungen). Mikrofon und das, was die Person
     hört (Ausgabestrom mal Lautstärke), gemischt in Mono."""
     if not NAME_RE.match(lauf) or not NAME_RE.match(label):
         sys.exit("lauf und label dürfen nur Buchstaben, Ziffern, Punkt, Unterstrich und Bindestrich enthalten.")
     j = json.loads((ordner / f"{lauf}.json").read_text(encoding="utf-8"))
     ziel.mkdir(parents=True, exist_ok=True)
     plan = {"unterbrechung": ("einwurf", "einwurf", -7.0, 11.0), "backchannel": ("backchannel", "backchannel", -6.0, 12.0),
-            "werkzeug": ("werkzeug", "frage", -1.0, 17.0)}
+            "werkzeug": ("werkzeug", "frage", -1.0, 17.0),
+            # Pakete A und B: lange Antwort (Satzende, Betonung), Pause mitten im Satz, Rückmeldelaut bei laufendem Werkzeug
+            "antwort": ("lang", "frage", -1.0, 17.0), "pause": ("pause", "pause_a", -1.0, 16.0),
+            "werkzeug_mhm": ("werkzeug_mhm", "werkzeug_mhm", -4.0, 16.0)}
     for name, (szenario, rolle, vor, nach) in plan.items():
         sz = next((s for s in j["szenarien"] if s["name"] == szenario), None)
         if sz is None:

@@ -196,7 +196,7 @@ WERKZEUG_MAX_SECS = 120.0  # ein Werkzeug, dessen Ergebnis nie ankam, hält die 
 def rueckmeldung_werkzeug_an(wert: str | None = None) -> bool:
     """WAMO_RUECKMELDUNG_WERKZEUG: ein Rückmeldelaut bei laufendem Werkzeug startet keinen Zug und bricht es nicht ab
     (Standard aus, bis der Messweg die Kennzahlen bestätigt hat)."""
-    return schalter_an("WAMO_RUECKMELDUNG_WERKZEUG", wert, standard=False)
+    return schalter_an("WAMO_RUECKMELDUNG_WERKZEUG", wert)
 
 
 def hat_stoppwort(text: str) -> bool:

@@ -449,7 +449,7 @@ class Session:
 
 def pausen_prompt_an(wert: str | None = None) -> bool:
     """WAMO_PAUSEN_PROMPT: neue Texte nach einer Pause, ohne Floskeln wie "Ich bin noch da" (Standard aus, bis gemessen)."""
-    return schalter_an("WAMO_PAUSEN_PROMPT", wert, standard=False)
+    return schalter_an("WAMO_PAUSEN_PROMPT", wert)
 
 
 def pause_prompts(name: str, neu: bool | None = None) -> tuple[str, str]:

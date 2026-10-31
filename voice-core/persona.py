@@ -234,12 +234,12 @@ def clean_inline(text: object, limit: int = MAX_ENTRY_CHARS) -> str:
 
 def persona_rueckfragen_an(wert: str | None = None) -> bool:
     """WAMO_PERSONA_RUECKFRAGEN: Rückfragen begrenzen und Aufträge am Stück (Standard aus, bis gemessen)."""
-    return schalter_an("WAMO_PERSONA_RUECKFRAGEN", wert, standard=False)
+    return schalter_an("WAMO_PERSONA_RUECKFRAGEN", wert)
 
 
 def persona_pc_ordner_an(wert: str | None = None) -> bool:
     """WAMO_PERSONA_PC_ORDNER: Ordner des PCs nie raten, sondern mit system_info erfragen (Standard aus, bis gemessen)."""
-    return schalter_an("WAMO_PERSONA_PC_ORDNER", wert, standard=False)
+    return schalter_an("WAMO_PERSONA_PC_ORDNER", wert)
 
 
 def _fill(template: str, values: dict[str, str]) -> str:
