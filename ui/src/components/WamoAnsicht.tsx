@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { ActivityTimeline } from "@/components/ActivityFeed";
+import { BildschirmAnsicht } from "@/components/BildschirmAnsicht";
 import { CanvasBereich } from "@/components/Canvas";
 import { Einstellungen } from "@/components/einstellungen/Einstellungen";
 import { EINSTELLUNGEN_KNOPF_ID } from "@/components/einstellungen/EinstellungenLink";
@@ -204,7 +205,12 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           onVerlauf={toggleVerlauf}
         />
       }
-      canvas={<CanvasBereich />}
+      canvas={
+        <>
+          {aktionen.liveBild && <BildschirmAnsicht aktionen={aktionen.liveBild} />}
+          <CanvasBereich />
+        </>
+      }
       hinweise={<Hinweise />}
       auftraege={
         <>

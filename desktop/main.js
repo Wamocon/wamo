@@ -10,6 +10,9 @@
 //   CSS-Variablen der Oberfläche (ui/src/lib/stimmfarben.ts), sie sind nur dort definiert.
 //   Bei Vollbild-Programmen (Spiele, Videos, Präsentationen) blendet sich der Rand aus (vollbild.js); sichtbar ist er
 //   nur, wenn der Tray-Haken "Stimmen-Rand" an ist und kein Vollbild läuft (randSichtbarkeit).
+// * Live-Bild (livebild.js): ein Schalter im Tray-Menü, Standard aus, nur die Person am Laptop schaltet ihn ein (nach einer
+//   Einwilligung). Solange er an ist, zeigt dieser Laptop einen roten Rahmen mit Plakette (nicht vor Bildschirmfotos
+//   geschützt) und das Tray-Symbol ist rot. Der Host liefert nur Bilder, wenn der Schalter an ist und dieser Hinweis lebt.
 // * Tray-Symbol mit "Mit Windows starten"; Schließen versteckt nur ins Tray, das Gespräch bleibt.
 // * Startet bei Bedarf Voice-Core und UI selbst (WAMO_MANAGE_SERVICES=off schaltet das ab). Die UI
 //   läuft als Produktions-Build (next build einmalig, dann next start nur auf 127.0.0.1);
@@ -45,6 +48,7 @@
 const {
   app,
   BrowserWindow,
+  dialog,
   Menu,
   Tray,
   ipcMain,
@@ -62,6 +66,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 const { GeraetFehler, erzeugeGeraet } = require("./geraet");
+const { erzeugeLiveBild, EINWILLIGUNG } = require("./livebild");
 const { fuerRandFenster, pruefeMarkierung, ruhezustand, sollZeichnen } = require("./lichtrahmen");
 const { erzeugeHostUmgebung } = require("./host-umgebung");
 const { adressen, loeseAuf, wirksameBetriebsart } = require("./installation");
@@ -147,6 +152,9 @@ if (process.platform === "win32") app.setAppUserModelId("de.wamocon.wamo");
 let mainWin = null;
 let tray = null;
 let overlays = [];
+let liveHinweise = []; // roter Rahmen mit Plakette am Laptop, solange das Live-Bild läuft (livebild.js)
+let liveBis = 0;
+let liveIcon = null;
 let borderOn = true;
 let vollbild = false; // Vollbild-Programm vorne (vollbild.js, entprellt)
 let vollbildWaechter = null;
@@ -662,7 +670,117 @@ function overlaysSpaeter() {
   overlayTimer = setTimeout(() => {
     overlayTimer = null;
     createOverlays();
+    if (liveBild.status().an) zeigeLiveHinweise(liveBis);
   }, 300);
+}
+
+// ---------- Live-Bild: Hinweis am Laptop und Schalter (livebild.js) ----------
+/** Roter Rahmen und Plakette auf jedem Monitor. Bewusst ohne setContentProtection: Der Hinweis ist in jedem Bildschirmfoto zu sehen. */
+function zeigeLiveHinweise(bisMs) {
+  entferneLiveHinweise();
+  liveBis = bisMs;
+  liveHinweise = screen.getAllDisplays().map((display) => {
+    const { x, y, width, height } = display.bounds;
+    const win = new BrowserWindow({
+      x, y, width, height,
+      transparent: true,
+      frame: false,
+      resizable: false,
+      movable: false,
+      focusable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      alwaysOnTop: true,
+      show: false,
+      webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, webviewTag: false, backgroundThrottling: false },
+    });
+    win.setIgnoreMouseEvents(true);
+    win.setAlwaysOnTop(true, "screen-saver");
+    win.setVisibleOnAllWorkspaces(true);
+    win.webContents.on("will-navigate", (event) => event.preventDefault());
+    win.webContents.on("will-redirect", (event) => event.preventDefault());
+    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    // Fällt ein Hinweisfenster aus (Absturz, Ladefehler, hängt), endet das Live-Bild: kein Bild ohne roten Rahmen
+    const aus = (grund) => liveBild.ausschalten(`Hinweis am Laptop ausgefallen (${grund})`);
+    win.webContents.on("did-finish-load", () => (win.wamoGeladen = true));
+    win.webContents.on("did-fail-load", (_e, code) => code !== -3 && aus("Ladefehler")); // -3: abgebrochen (Fenster wird gerade entfernt)
+    win.webContents.on("render-process-gone", () => aus("Prozess beendet"));
+    win.on("unresponsive", () => aus("reagiert nicht"));
+    win.loadFile(path.join(__dirname, "livebild-hinweis.html"), { query: { bis: String(bisMs) } }).catch(() => aus("Ladefehler"));
+    win.once("ready-to-show", () => win.showInactive());
+    return win;
+  });
+}
+
+function entferneLiveHinweise() {
+  liveHinweise.forEach((w) => !w.isDestroyed() && w.destroy());
+  liveHinweise = [];
+}
+
+/** Ist der Hinweis zu sehen? Alle Fenster sichtbar und kein Vollbild-Programm vorne (dann wäre er verdeckt). */
+function liveHinweisSichtbar() {
+  return (
+    !vollbild &&
+    liveHinweise.length > 0 &&
+    liveHinweise.length === screen.getAllDisplays().length &&
+    liveHinweise.every((w) => !w.isDestroyed() && w.wamoGeladen === true && w.isVisible())
+  );
+}
+
+/** Rotes Tray-Symbol mit weißem Ring, solange das Live-Bild läuft. */
+function liveSymbol() {
+  if (liveIcon) return liveIcon;
+  const n = 32;
+  const puffer = Buffer.alloc(n * n * 4); // BGRA
+  for (let y = 0; y < n; y += 1) {
+    for (let x = 0; x < n; x += 1) {
+      const d = Math.hypot(x - 15.5, y - 15.5);
+      const i = (y * n + x) * 4;
+      if (d > 15) continue;
+      const rot = d <= 11;
+      puffer[i] = rot ? 0x0e : 0xff;
+      puffer[i + 1] = rot ? 0x0e : 0xff;
+      puffer[i + 2] = rot ? 0xf4 : 0xff;
+      puffer[i + 3] = 0xff;
+    }
+  }
+  liveIcon = nativeImage.createFromBitmap(puffer, { width: n, height: n });
+  return liveIcon;
+}
+
+const datenOrdnerWamo = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "WAMO");
+const liveBild = erzeugeLiveBild({
+  datenOrdner: datenOrdnerWamo,
+  log: (text) => console.log(`[Live-Bild] ${text}`),
+  // Einwilligung am Laptop: Dialog mit Inhalt, Zweck, Dauer und Datenschutz; Standard der Taste ist "Abbrechen"
+  fragen: async () => {
+    const r = await dialog.showMessageBox({
+      type: "question",
+      title: EINWILLIGUNG.titel,
+      message: EINWILLIGUNG.frage,
+      detail: EINWILLIGUNG.detail,
+      buttons: [EINWILLIGUNG.zustimmen, EINWILLIGUNG.ablehnen],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    return r.response === 0;
+  },
+  hinweis: (an, bisMs) => (an ? zeigeLiveHinweise(bisMs) : entferneLiveHinweise()),
+  sichtbar: liveHinweisSichtbar,
+  geaendert: () => aktualisiereTray(),
+});
+
+async function liveBildUmschalten() {
+  if (liveBild.status().an) {
+    liveBild.ausschalten("von der Person am Laptop ausgeschaltet");
+    return;
+  }
+  const r = await liveBild.einschalten();
+  if (!r.ok) {
+    // Hat die Person abgelehnt, ist keine weitere Meldung nötig; sonst sagt eine Meldung, warum es nicht geht
+    if (!r.abgelehnt) await dialog.showMessageBox({ type: "info", title: EINWILLIGUNG.titel, message: r.grund ?? "Das Live-Bild lässt sich nicht einschalten.", buttons: ["OK"] });
+  }
 }
 
 // Nicht gepackte App: Windows muss electron.exe MIT dem App-Ordner starten
@@ -700,7 +818,13 @@ function createTray() {
 /** Tray-Menü (neu aufgebaut, wenn sich die Betriebsart ändert). */
 function aktualisiereTray() {
   if (!tray) return;
-  tray.setToolTip(betriebsart === "buero" ? "WAMO (Büro, Kern auf Sokrates-2)" : "WAMO (Unterwegs, Kern auf diesem PC)");
+  const live = liveBild.status();
+  tray.setImage(live.an ? liveSymbol() : nativeImage.createFromPath(iconPath()));
+  tray.setToolTip(
+    live.an
+      ? "WAMO: Live-Bild läuft, dieser Bildschirm wird übertragen"
+      : betriebsart === "buero" ? "WAMO (Büro, Kern auf Sokrates-2)" : "WAMO (Unterwegs, Kern auf diesem PC)",
+  );
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "WAMO öffnen", click: showMain },
@@ -731,6 +855,11 @@ function aktualisiereTray() {
           borderOn = item.checked;
           randSichtbarkeit();
         },
+      },
+      {
+        // Standard aus; nur die Person am Laptop schaltet es ein (mit Einwilligung), nur auf dem Laptop eines Admins
+        label: live.an ? "Live-Bild ausschalten (läuft)" : "Live-Bild einschalten …",
+        click: () => void liveBildUmschalten(),
       },
       {
         label: "Mit Windows starten",
@@ -951,6 +1080,7 @@ app.whenReady().then(async () => {
   schreibeLog("oberflaeche", `${new Date().toISOString()} info [WAMO-Desktop] Windows-Mikrofonzugriff: ${mikrofonStatus()}`);
   // Audio bekommt Vorrang, wenn Chrome & Co. beim Öffnen kurz die CPU belegen (Aussetzer)
   setInterval(raisePriority, 5000);
+  liveBild.start(); // ein Schalter aus einem Absturz wird gelöscht: Standard ist aus
   createTray();
   createMainWindow(); // sofort mit Ladeseite, nicht erst nach dem Hochfahren der Dienste
   // Installierte App: Python-Umgebung des Hosts im Hintergrund einrichten (einmalig); bis sie steht, bleibt der Host aus
@@ -979,6 +1109,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   quitting = true;
+  liveBild.ausschalten("App beendet");
   geraet.stoppe();
   vollbildWaechter?.stop();
   vollbildWaechter = null;
