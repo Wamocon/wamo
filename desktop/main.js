@@ -22,6 +22,13 @@
 // * Einrichtung des Laptops bei der Anmeldung (geraet.js, nur Büro): eigener Geräteschlüssel, Bindung an das Profil über
 //   den Kern, Tunnel zu Sokrates-2; ein Wächter stößt die Aufgabe "WAMO Tunnel" an, wenn ihr Überwacher schweigt.
 //
+// * Zwei Formen (installation.js): Entwicklermodus (nicht paketiert, alles aus dem Repository) und installierte App
+//   (Installer, siehe README "Windows-Installer"). Installiert gibt es nur die Betriebsart Büro: Die Oberfläche kommt von
+//   Sokrates-2, Host und Skripte liegen unter resources/, die Python-Umgebung des Hosts richtet host-umgebung.js ein, Logs
+//   und Einstellungen liegen unter %APPDATA%\WAMO. Der Unterwegs-Kern ist dort nicht verfügbar und im Tray ausgegraut.
+// * Die WAMO-CA gilt nur innerhalb der App (zertifikat.js), nie als Änderung am Windows-Speicher und nie über
+//   --ignore-certificate-errors.
+//
 // Umgebung: WAMO_UI_URL, WAMO_VOICE_CORE_URL (http oder https), WAMO_MANAGE_SERVICES, WAMO_UI_DEV,
 // WAMO_VEIL_CM, WAMO_LOG_LEVEL (an den Voice-Core; Standard INFO, nie DEBUG), WAMO_VOLLBILD_LOG=1 (Rohwerte des
 // Vollbild-Wächters in logs/vollbild.log), WAMO_BERECHTIGUNG_LOG=1 (jede Berechtigungsanfrage und -prüfung in
@@ -55,6 +62,9 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 const { GeraetFehler, erzeugeGeraet } = require("./geraet");
+const { erzeugeHostUmgebung } = require("./host-umgebung");
+const { adressen, loeseAuf, wirksameBetriebsart } = require("./installation");
+const { erzeugePruefer, ladeCa } = require("./zertifikat");
 const { powershellPfad, starteVollbildWaechter } = require("./vollbild");
 const {
   installieren,
@@ -65,6 +75,11 @@ const {
   ratenGrenze,
 } = require("./berechtigungen");
 
+// Die installierte App hat eigene Daten (%APPDATA%\WAMO), getrennt vom Entwicklermodus (%APPDATA%\wamo-desktop): Beide
+// dürfen nebeneinander installiert sein, ohne Einstellungen, Cookies oder die Sperre der Einzelinstanz zu teilen.
+// Muss vor requestSingleInstanceLock stehen, weil die Sperre im userData-Ordner liegt.
+if (app.isPackaged) app.setPath("userData", path.join(app.getPath("appData"), "WAMO"));
+
 // Zweite Instanz: sofort zurückkehren, bevor irgendetwas registriert oder gestartet wird. Sonst würde
 // sie beim Beenden die Dienste der ersten Instanz stoppen (killStale, stopServices). Die erste Instanz
 // holt über "second-instance" ihr Fenster nach vorne.
@@ -73,19 +88,49 @@ if (!app.requestSingleInstanceLock()) {
   return;
 }
 
-const UI_URL = process.env.WAMO_UI_URL || "http://localhost:3000";
-const VOICE_CORE_URL = process.env.WAMO_VOICE_CORE_URL || "http://localhost:7860";
-const REPO = path.resolve(__dirname, "..");
-const UI_DIR = path.join(REPO, "ui");
-// Nur http(s): bei file:, data: o. ä. wäre der Origin "null", und sameOrigin() ließe jeden solchen Origin zu
-if (!/^https?:$/.test(new URL(UI_URL).protocol)) {
-  console.error("WAMO_UI_URL muss eine http- oder https-Adresse sein.");
+// Pfade je Form der Installation (installation.js): Entwickler = Repository über desktop/, installiert = resources/
+const PFADE = loeseAuf({
+  istPaketiert: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  verzeichnis: __dirname,
+  userData: app.getPath("userData"),
+});
+let ADRESSEN;
+try {
+  // Nur http(s) (installiert nur https): bei file:, data: o. ä. wäre der Origin "null", und sameOrigin() ließe jeden solchen zu
+  ADRESSEN = adressen(PFADE, process.env);
+} catch (err) {
+  console.error(err.message);
   app.exit(1);
   return;
 }
-const geraet = erzeugeGeraet({ repo: REPO, log: (text) => console.log(`[Gerät] ${text}`) }); // geraet.js
+const UI_URL = ADRESSEN.uiUrl;
+const VOICE_CORE_URL = ADRESSEN.kernUrl;
+const UI_DIR = PFADE.uiDir;
 const UI_ORIGIN = new URL(UI_URL).origin;
-const LOG_DIR = path.join(__dirname, "logs");
+const LOG_DIR = PFADE.logDir;
+// Die WAMO-CA (feste Prüfsumme, zertifikat.js): Node-Anfragen der App an die Oberfläche und der Prüfer für Chromium
+let WAMO_CA = null;
+try {
+  WAMO_CA = ladeCa(fs.readFileSync(PFADE.caDatei, "utf8"));
+} catch (err) {
+  console.error(`WAMO-CA nicht geladen (${err.message}); https-Ziele mit der WAMO-CA werden dann nicht vertraut.`);
+}
+// Installierte App: Python-Umgebung des Hosts einmalig mit dem mitgelieferten uv einrichten (host-umgebung.js)
+const hostUmgebung = PFADE.hostUmgebungVerwalten
+  ? erzeugeHostUmgebung({
+      hostDir: PFADE.hostDir,
+      uvDatei: PFADE.uvDatei,
+      cacheDir: path.join(app.getPath("userData"), "uv-cache"),
+      pythonDir: path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "WAMO", "python"),
+      log: (text) => console.log(`[Host-Umgebung] ${text}`),
+    })
+  : null;
+const geraet = erzeugeGeraet({
+  repo: PFADE.ressourcen,
+  log: (text) => console.log(`[Gerät] ${text}`),
+  vorTunnel: hostUmgebung ? () => hostUmgebung.bereit() : undefined,
+}); // geraet.js
 const LOG_MAX_BYTES = 5 * 1024 * 1024; // je Logdatei höchstens 5 MB
 const LOG_DATEIEN = 3; // name.log, name.log.1, name.log.2
 const LOG_LEVEL = ["INFO", "WARNING", "ERROR"].includes(process.env.WAMO_LOG_LEVEL) ? process.env.WAMO_LOG_LEVEL : "INFO";
@@ -111,8 +156,8 @@ const kinder = {}; // Dienstname -> laufender Kindprozess aus diesem Lauf
 
 // ---------- Einstellungen je Gerät (Betriebsart) ----------
 const BETRIEBSARTEN = ["buero", "unterwegs"];
-const STANDARD_BETRIEBSART = "unterwegs"; // bis die Betriebsart Büro abgenommen ist
-let betriebsart = STANDARD_BETRIEBSART;
+// Standard Unterwegs, bis die Betriebsart Büro abgenommen ist; ohne lokalen Kern (installierte App) gilt nur Büro
+let betriebsart = wirksameBetriebsart(undefined, PFADE);
 
 function einstellungsDatei() {
   return path.join(app.getPath("userData"), "einstellungen.json");
@@ -121,9 +166,9 @@ function einstellungsDatei() {
 function ladeEinstellungen() {
   try {
     const roh = JSON.parse(fs.readFileSync(einstellungsDatei(), "utf8"));
-    if (BETRIEBSARTEN.includes(roh?.betriebsart)) betriebsart = roh.betriebsart;
+    betriebsart = wirksameBetriebsart(roh?.betriebsart, PFADE);
   } catch {
-    betriebsart = STANDARD_BETRIEBSART; // fehlt oder kaputt: Standard
+    betriebsart = wirksameBetriebsart(undefined, PFADE); // fehlt oder kaputt: Standard
   }
 }
 
@@ -138,6 +183,7 @@ function speichereEinstellungen() {
 /** Betriebsart umschalten: speichern, lokalen Kern starten oder (nur den eigenen) stoppen, alle informieren. */
 async function setzeBetriebsart(art) {
   if (!BETRIEBSARTEN.includes(art)) return betriebsart;
+  if (wirksameBetriebsart(art, PFADE) !== art) return betriebsart; // Unterwegs gibt es ohne lokalen Kern nicht
   if (art !== betriebsart) {
     betriebsart = art;
     try {
@@ -238,9 +284,11 @@ function isUp(url, pruefe) {
       resolve(false);
       return;
     }
+    // https: nur die WAMO-CA vertrauen (Node kennt den Windows-Speicher nicht); ohne geladene CA scheitert die Prüfung
+    const optionen = target.protocol === "https:" && WAMO_CA ? { ca: [WAMO_CA.toString()] } : {};
     let req;
     try {
-      req = client.get(target, (res) => {
+      req = client.get(target, optionen, (res) => {
         let body = "";
         res.setEncoding("utf8");
         res.on("data", (d) => {
@@ -417,10 +465,10 @@ function istLoopback(url) {
 
 /** Lokalen Voice-Core starten, aber nur in "unterwegs" und nur, wenn nicht schon einer läuft. */
 async function starteKernWennNoetig() {
-  if (process.env.WAMO_MANAGE_SERVICES === "off" || betriebsart !== "unterwegs" || kinder["voice-core"]) return;
+  if (!PFADE.lokalerKernMoeglich || process.env.WAMO_MANAGE_SERVICES === "off" || betriebsart !== "unterwegs" || kinder["voice-core"]) return;
   if (await coreIstDa()) return;
   const uv = path.join(os.homedir(), ".local", "bin", "uv.exe");
-  startService("voice-core", fs.existsSync(uv) ? uv : "uv", ["run", "bot.py"], path.join(REPO, "voice-core"), {
+  startService("voice-core", fs.existsSync(uv) ? uv : "uv", ["run", "bot.py"], PFADE.voiceCoreDir, {
     WAMO_LOG_LEVEL: LOG_LEVEL,
   });
 }
@@ -433,7 +481,7 @@ async function ensureServices() {
   // Büro: Der Kern läuft auf Sokrates-2, lokal wird keiner gestartet (und auf keinen gewartet)
   await starteKernWennNoetig();
   // Die UI nur dann selbst starten, wenn sie auf diesem Rechner laufen soll
-  if (istLoopback(UI_URL) && !(await uiIstDa())) {
+  if (UI_DIR && istLoopback(UI_URL) && !(await uiIstDa())) {
     killStale("ui");
     const nextBin = path.join(UI_DIR, "node_modules", "next", "dist", "bin", "next");
     const port = new URL(UI_URL).port || "3000";
@@ -652,8 +700,10 @@ function aktualisiereTray() {
             click: () => void setzeBetriebsart("buero"),
           },
           {
-            label: "Unterwegs (Kern auf diesem PC)",
+            // Ohne lokalen Kern (installierte App) ehrlich ausgegraut statt still wirkungslos
+            label: PFADE.lokalerKernMoeglich ? "Unterwegs (Kern auf diesem PC)" : "Unterwegs (in dieser Installation nicht verfügbar)",
             type: "radio",
+            enabled: PFADE.lokalerKernMoeglich,
             checked: betriebsart === "unterwegs",
             click: () => void setzeBetriebsart("unterwegs"),
           },
@@ -836,12 +886,25 @@ app.whenReady().then(async () => {
   // für die Standard-Session und jede weitere (Partitionen), die später entsteht
   installieren(session.defaultSession, istEigeneUi, entscheide);
   app.on("session-created", (ses) => installieren(ses, istEigeneUi, entscheide));
+  // Die WAMO-CA gilt nur hier, nur für den Servernamen der Oberfläche (und des Kerns auf demselben Server)
+  const ziel = new URL(UI_URL);
+  if (WAMO_CA && ziel.protocol === "https:") {
+    const pruefer = erzeugePruefer({
+      ca: WAMO_CA,
+      erlaubteHosts: [ziel.hostname],
+      log: (text) => schreibeLog("oberflaeche", `${new Date().toISOString()} warn [WAMO-Desktop] ${text}`),
+    });
+    session.defaultSession.setCertificateVerifyProc(pruefer);
+    app.on("session-created", (ses) => ses.setCertificateVerifyProc(pruefer));
+  }
   ladeEinstellungen(); // Betriebsart vor dem Start der Dienste (Büro: kein lokaler Kern)
   schreibeLog("oberflaeche", `${new Date().toISOString()} info [WAMO-Desktop] Windows-Mikrofonzugriff: ${mikrofonStatus()}`);
   // Audio bekommt Vorrang, wenn Chrome & Co. beim Öffnen kurz die CPU belegen (Aussetzer)
   setInterval(raisePriority, 5000);
   createTray();
   createMainWindow(); // sofort mit Ladeseite, nicht erst nach dem Hochfahren der Dienste
+  // Installierte App: Python-Umgebung des Hosts im Hintergrund einrichten (einmalig); bis sie steht, bleibt der Host aus
+  hostUmgebung?.bereit().catch((err) => schreibeLog("oberflaeche", `${new Date().toISOString()} warn [WAMO-Desktop] ${err.text ?? err.message}`));
   await ensureServices();
   if (await uiIstDa()) void mainWin.loadURL(UI_URL);
   else zeigeStart("fehler", "Zeitüberschreitung beim Start");
