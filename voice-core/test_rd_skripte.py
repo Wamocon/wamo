@@ -252,6 +252,15 @@ class XrdpEinhegenTests(Werkstatt):
             self.assertNotIn("disable", z)
         self.assertTrue(any(f.startswith("user.rules.") for f in os.listdir(self.p("var/backups/wamo-xrdp"))))
 
+    def test_ufw_mit_deutscher_ausgabe_gilt_als_aktiv(self):
+        # Auf Sokrates-2 meldet ufw "Status: Aktiv": Das Skript darf deshalb nicht auf nft ausweichen (dort griffe danach iptables)
+        self.ausgabe("ufw.status", "Status: Aktiv\n\nZu   Aktion  Von\n22/tcp ALLOW  Anywhere\n")
+        self.ausgabe("ufw.status_numbered", "Status: Aktiv\n\n     Zu      Aktion  Von\n[ 1] 22/tcp   ALLOW IN  Anywhere\n")
+        r = self.xrdp("--trocken", "--nur-sperre")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("über ufw", r.stdout)
+        self.assertNotIn("nftables", r.stdout)
+
     def test_zweiter_lauf_aendert_nichts_mehr(self):
         self.ufw_aktiv()
         self.assertEqual(self.xrdp().returncode, 0)
@@ -376,7 +385,9 @@ class AusgangsregelTests(Werkstatt):
     def setUp(self):
         super().setUp()
         self.attrappe("nft", "systemctl")
-        self.ausgabe("nft.list_table", "", rc=1)  # die Tabelle steht noch nicht
+        # Das Skript prüft nach dem Laden, ob die Tabelle steht. Die Attrappe kennt nur eine feste Antwort, darum gilt sie von Anfang
+        # an als geladen (Zustand nach dem Laden); Tests für den Fall "Tabelle fehlt" setzen rc=1 selbst.
+        self.ausgabe("nft.list_table", "table inet wamo_rd_ausgang {\n}\n", rc=0)
         os.makedirs(self.p("etc"))
         self.p("etc/resolv.conf").write_text("nameserver 127.0.0.53\noptions edns0 trust-ad\n")
         self.regeln = self.p("etc/wamo-rd-ausgang/regeln.nft")

@@ -111,8 +111,9 @@ ist_aus() { case "$(tr '[:upper:]' '[:lower:]' <<<"${1:-}")" in false|0|no|off) 
 ufw_aktiv() {
   local s
   hat ufw || return 1
-  s="$(ufw status 2>/dev/null || true)"
-  [[ "$s" == "Status: active"* ]]
+  # LC_ALL=C: ufw übersetzt die Ausgabe (deutsch "Status: Aktiv"); beide Schreibweisen gelten, falls die Sprache doch durchschlägt
+  s="$(LC_ALL=C ufw status 2>/dev/null || true)"
+  [[ "$s" == "Status: active"* || "$s" == "Status: Aktiv"* ]]
 }
 ufw_lesbar() { hat ufw && ufw status >/dev/null 2>&1; }
 
