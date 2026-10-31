@@ -122,3 +122,10 @@ test("Der Paketname des Skripts und die Gerätedatei zeigen auf vorhandene Skrip
     assert.ok(fs.existsSync(path.join(__dirname, "..", "scripts", s)), s);
   }
 });
+
+test("Der Installer gibt ALLE ANWENDUNGSPAKETE Lesezugriff auf den Installationsordner (sonst startet Electron nicht)", () => {
+  const nsh = fs.readFileSync(path.join(__dirname, "build", "installer.nsh"), "utf8");
+  assert.match(nsh, /!macro customInstall/);
+  assert.match(nsh, /icacls\.exe" "\$INSTDIR" \/grant \*S-1-15-2-1:\(OI\)\(CI\)\(RX\)/);
+  assert.doesNotMatch(nsh, /\/grant[^\n]*(F|M|W)\)/, "nur Lesen und Ausführen");
+});
