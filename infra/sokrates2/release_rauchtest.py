@@ -164,7 +164,8 @@ def verbotsprobe_socket(sockpfad: str, benutzer: list[str], text: str) -> None:
         except ValueError:
             pruefe(f"Socket als {b} abgewiesen", False, (r.stdout + r.stderr)[:200])
             continue
-        ok = (not a["verbunden"]) or (a["antwort"].get("ok") is False and a["antwort"].get("grund") == "benutzer")
+        # wamo-core darf verbinden (status, anfordern), aber nie zurueck oder abbrechen: dann zählt "recht" wie "benutzer"
+        ok = (not a["verbunden"]) or (a["antwort"].get("ok") is False and a["antwort"].get("grund") in ("benutzer", "recht"))
         schicht = f"Dateirechte: {a['fehler']}" if not a["verbunden"] else "SO_PEERCRED"
         pruefe(f"Socket als {b} abgewiesen ({schicht})", ok, str(a)[:200])
 
@@ -397,7 +398,7 @@ def teil_b(M, benutzer: list[str], root: bool) -> None:
             if "GESCHRIEBEN" in r.stdout:
                 schlecht.append(ordner)
         pruefe(f"{b} kann in keinem Ordner des Release-Dienstes schreiben", not schlecht, ", ".join(schlecht))
-    verbotsprobe_socket(P.socket, benutzer, "status")
+    verbotsprobe_socket(P.socket, benutzer, "zurueck alles --trocken")  # nie status: der Kern darf status
     a = frage(P.socket, "status")
     pruefe("status am echten Socket als root", a["ok"] and a["audit"]["kette"] == "ok", json.dumps(a)[:300])
     pruefe("Anker erreichbar (Zusatzgruppe und Socket des Ankers)", a.get("anker", {}).get("erreichbar") is True,
