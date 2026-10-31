@@ -13,6 +13,7 @@
 //   WAMO_UI_URL       Oberfläche (Standard http://127.0.0.1:3100), gebaut mit NEXT_PUBLIC_VOICE_CORE_URL=http://127.0.0.1:7861
 //   WAMO_REPO         Hauptordner des Repos (Standard: Ordner über scripts/)
 //   KERN_ENV          zusätzliche Umgebung des Kerns, "A=1;B=2" (Schalter zum Vergleichen)
+//   WAMO_PYTHON       Python des Kerns (Standard: voice-core/.venv im Repo; im Worktree das venv des Hauptordners)
 //   KEIN_KERN=1       Kern nicht starten (läuft schon auf 7861)
 //   ECHO_PEGEL        Pegel der Echo-Simulation im Szenario echo (Standard 0.5, 120 ms Verzögerung)
 //   PLAYWRIGHT_MODUL  Pfad oder Name von playwright(-core); der Browser ist das installierte Chrome
@@ -101,9 +102,12 @@ async function kernStarten() {
     if (i < 1) throw new Error("KERN_ENV: Eintrag ohne Namen oder ohne = : " + paar.split("=")[0]);
     env[paar.slice(0, i).trim()] = paar.slice(i + 1).trim();
   }
-  const python = path.join(REPO, "voice-core", ".venv", "Scripts", "python.exe");
+  // Ein Arbeitsordner (Worktree) hat kein eigenes venv: WAMO_PYTHON zeigt dann auf das venv des Hauptordners.
+  const python = process.env.WAMO_PYTHON || path.join(REPO, "voice-core", ".venv", "Scripts", "python.exe");
   const ui = new globalThis.URL(URL);
-  kern = spawn(python, ["bot.py", "--port", "7861", "--allowed-origins", ui.origin, ui.origin.replace("127.0.0.1", "localhost")], {
+  // Die .env des Kerns (override=True) darf Profil und Schalter der Messung nicht überschreiben: eigener Starter
+  env.WAMO_MESS_FEST = ["WAMO_CLAUDE_SCHLUESSEL_PROFIL", ...(process.env.KERN_ENV || "").split(";").filter(Boolean).map((p) => p.split("=")[0].trim())].join(",");
+  kern = spawn(python, [path.join(__dirname, "wamo_kern_messstart.py"), "bot.py", "--port", "7861", "--allowed-origins", ui.origin, ui.origin.replace("127.0.0.1", "localhost")], {
     cwd: path.join(REPO, "voice-core"), env, stdio: ["ignore", fd, fd], windowsHide: true,
   });
   for (let i = 0; i < 120; i++) {

@@ -23,7 +23,7 @@ Ablauf
     (WAMO_ECHO_FILTER=aus schaltet das ab). Ein einzelnes Wort aus WAMOs letzten Sekunden ("Montag" nach "Montag oder
     Dienstag?") zählt erst, wenn die Erkennung es endgültig meldet; Echo läuft weiter und wird dann zu einer Folge.
     Stoppwörter, Fragewörter, Verneinungen und alles, was WAMO nicht gesagt hat, wirken sofort wie bisher.
-  * Werkzeuge (WAMO_RUECKMELDUNG_WERKZEUG, Standard aus bis zur Messung): Solange ein Werkzeug läuft, das eine Unterbrechung
+  * Werkzeuge (WAMO_RUECKMELDUNG_WERKZEUG, Standard an seit der Messung vom 31.10.2026): Solange ein Werkzeug läuft, das eine Unterbrechung
     abbrechen würde, und bis WERKZEUG_NACHLAUF_SECS nach seinem Ergebnis (bis die Antwort beginnt), schweigt WAMO. Dann
     startete jedes erkannte Wort, auch ein "mhm", einen Zug, das Gate unterbrach sofort und Pipecat brach das Werkzeug ab
     (Websuche, Bildschirm, Aufträge). Mit dem Schalter gelten in dieser Zeit dieselben Regeln wie beim Sprechen:
@@ -195,8 +195,8 @@ WERKZEUG_MAX_SECS = 120.0  # ein Werkzeug, dessen Ergebnis nie ankam, hält die 
 
 def rueckmeldung_werkzeug_an(wert: str | None = None) -> bool:
     """WAMO_RUECKMELDUNG_WERKZEUG: ein Rückmeldelaut bei laufendem Werkzeug startet keinen Zug und bricht es nicht ab
-    (Standard aus, bis der Messweg die Kennzahlen bestätigt hat)."""
-    return schalter_an("WAMO_RUECKMELDUNG_WERKZEUG", wert, standard=False)
+    (Standard an seit der Messung vom 31.10.2026)."""
+    return schalter_an("WAMO_RUECKMELDUNG_WERKZEUG", wert)
 
 
 def hat_stoppwort(text: str) -> bool:

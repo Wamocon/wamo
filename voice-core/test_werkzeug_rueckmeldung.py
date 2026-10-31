@@ -139,6 +139,14 @@ class StrategieTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ausgeloest, [True], text)
             self.assertEqual(bekannt, [])
 
+    async def test_freigabe_und_auftraege_sind_kein_rueckmeldelaut(self):
+        # Eine Freigabe entscheidet allein die Oberfläche; gesprochene Sätze mit Inhalt (auch mit "Ja" davor) bleiben echte
+        # Einwürfe und starten einen Zug, damit das Modell auf die Freigabe-Karte verweisen kann.
+        for text in ("Ja, bitte freigeben", "Ja, mach das auf dem PC", "Okay, dann lösch die Datei"):
+            _, ausgeloest, bekannt, _ = await self.lauf(text, True, interim=False)
+            self.assertEqual(ausgeloest, [True], text)
+            self.assertEqual(bekannt, [], text)
+
     async def test_ohne_laufendes_werkzeug_alles_wie_bisher(self):
         # Wer schweigt und kein Werkzeug läuft, startet mit jedem Wort einen Zug, auch mit "Mhm" (Pipecat-Standard)
         _, ausgeloest, _, _ = await self.lauf("Mhm", False)
@@ -177,10 +185,12 @@ class StrategieTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SchalterTest(unittest.TestCase):
-    def test_standard_aus(self):
-        self.assertFalse(rueckmeldung_werkzeug_an(""))
+    def test_standard_an_und_abschaltbar(self):
+        # Standard an seit der Messung vom 31.10.2026 (env_schalter.STANDARDWERTE)
+        self.assertTrue(rueckmeldung_werkzeug_an(""))
         self.assertTrue(rueckmeldung_werkzeug_an("an"))
-        self.assertFalse(rueckmeldung_werkzeug_an("aus"))
+        for wert in ("aus", "0", "nein"):
+            self.assertFalse(rueckmeldung_werkzeug_an(wert), wert)
 
 
 if __name__ == "__main__":

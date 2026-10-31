@@ -54,7 +54,7 @@ TEMPO_MIN, TEMPO_MAX = 0.7, 1.3  # Bereich, den Soniox für speed annimmt
 
 def satz_leerzeichen_an(wert: str | None = None) -> bool:
     """WAMO_TTS_SATZLEERZEICHEN: Leerzeichen am Ende jedes Textstücks für Soniox (Standard aus, bis gemessen)."""
-    return schalter_an("WAMO_TTS_SATZLEERZEICHEN", wert, standard=False)
+    return schalter_an("WAMO_TTS_SATZLEERZEICHEN", wert)
 
 
 def fuer_soniox(text: str, an: bool | None = None) -> str:
