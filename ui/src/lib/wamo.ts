@@ -7,10 +7,12 @@ import type {
   Betrieb,
   Gemerkt,
   Kontingent,
+  LiveBildZustand,
   Modellzugang,
   Profil,
   ServerMessage,
 } from "@/lib/nachrichten";
+import { liveBildLoeschen } from "./liveBild.ts"; // relativ aus demselben Grund
 import { createStore } from "./store.ts"; // relativ, damit node:test diese Datei laden kann (textEingabe.test.ts)
 
 /**
@@ -86,6 +88,20 @@ export type Fehler = {
   art: "verbindung" | "dienst" | "anmeldung" | "mikrofon" | "sonst" | "hinweis";
 };
 
+/** Live-Bild des eigenen Laptops: nur der Zustand, nie ein Bild (die Bilder liegen kurz in lib/liveBild.ts). */
+export type LiveBildStand = {
+  /** die Person hat die Ansicht geöffnet; ohne das zeichnet die Oberfläche nie ein Bild */
+  geoeffnet: boolean;
+  zustand: LiveBildZustand;
+  grund?: string;
+  text?: string;
+  monitor: number;
+  monitore: number;
+  /** Ende der Ansicht (Date.now), aus der Restzeit des letzten Bildes */
+  endeMs?: number;
+};
+export const LIVE_BILD_AUS: LiveBildStand = { geoeffnet: false, zustand: "aus", monitor: 1, monitore: 1 };
+
 export type WamoState = {
   presence: Presence;
   error: Fehler | null;
@@ -105,6 +121,7 @@ export type WamoState = {
   modellzugang: Modellzugang | null;
   /** Kontingent des Max-Abos (Sitzungs-, Wochen- und Modell-Wochenlimit), null bis der Kern es meldet; die Anzeige folgt */
   kontingent: Kontingent | null;
+  liveBild: LiveBildStand;
   memos: Memo[];
   micOn: boolean;
   /** Der Kern der laufenden Verbindung nimmt getippten Text an (Protokollversion aus "Bot bereit", lib/textEingabe.ts) */
@@ -142,6 +159,7 @@ export const initialState: WamoState = {
   profil: null,
   modellzugang: null,
   kontingent: null,
+  liveBild: LIVE_BILD_AUS,
   memos: [],
   micOn: true,
   textMoeglich: false,
@@ -369,6 +387,7 @@ export function resetWamo(state: WamoState = initialState) {
   memoRest.clear();
   levelsRef.current = { user: 0, bot: 0, cut: false, speaker: 0 };
   historyRef.current = { samples: [], seq: 0 };
+  liveBildLoeschen();
   wamo.set(() => state);
 }
 
@@ -509,6 +528,31 @@ export function applyServerMessage(msg: ServerMessage) {
       wamo.set((s) => ({ ...s, kontingent: stand }));
       return;
     }
+    case "bildstrom":
+      wamo.set((s) => {
+        if (!s.liveBild.geoeffnet && msg.zustand !== "aus") return s; // ohne Öffnen durch die Person gibt es keine Ansicht
+        const neu: LiveBildStand =
+          msg.zustand === "aus"
+            ? { ...LIVE_BILD_AUS, grund: msg.grund, text: msg.text, monitor: s.liveBild.monitor }
+            : {
+                ...s.liveBild,
+                zustand: msg.zustand,
+                grund: msg.grund,
+                text: msg.text,
+                monitor: msg.monitor ?? s.liveBild.monitor,
+                monitore: msg.monitore ?? s.liveBild.monitore,
+                endeMs: msg.restS !== undefined ? Date.now() + msg.restS * 1000 : s.liveBild.endeMs,
+              };
+        return {
+          ...s,
+          liveBild: neu,
+          ansage: msg.zustand === "laeuft" && s.liveBild.zustand !== "laeuft" ? "Live-Bild läuft" : msg.zustand === "aus" ? "Live-Bild beendet" : s.ansage,
+        };
+      });
+      if (msg.zustand === "aus") liveBildLoeschen();
+      return;
+    case "bild":
+      return; // behandelt useWamo (zeichnen und bestätigen, lib/liveBild.ts); das Bild kommt nie in den Store
     case "leiser_stopp":
     case "stimme_leiser":
     case "mikrofon":
