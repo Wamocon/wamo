@@ -54,7 +54,7 @@ MESSAGING_TITLE = re.compile(
 # Freigabekarten. Groß geschrieben und allein stehend, damit "wamo - Visual Studio Code" oder "WAMO-Konzept.docx"
 # weiter gehen.
 WAMO_UI_EXES = {"electron.exe"}
-WAMO_UI_TITLE = re.compile(r"^WAMO(?![-.\w])")
+WAMO_UI_TITLE = re.compile(r"(^|[|,]\s*)WAMO(?![-.\w])")  # auch "Einstellungen | WAMO" (Titel der Unterseiten)
 # Adressleiste von Browsern und Explorer: Strg+L, Alt+D, F6
 ADDRESS_BAR_COMBOS = {frozenset({0x11, ord("L")}), frozenset({0x12, ord("D")}), frozenset({0x75})}
 # Senden in Mail- und Messenger-Fenstern: Enter, Strg+Enter, Strg+Umschalt+Enter, Alt+S, Leertaste (auf "Senden")

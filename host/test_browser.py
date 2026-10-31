@@ -140,9 +140,20 @@ class AbschnittTests(unittest.TestCase):
         r = u.seite_aufbereiten(u.Seite(dokument_titel="T", knoten=webseite(), dokument_gefunden=True), 1, True)
         self.assertEqual((r["abschnitte"], r["gekuerzt"], r["lesbar"]), (1, False, True))
 
-    def test_knotenobergrenze_meldet_gekuerzt(self):
+    def test_knotenobergrenze_meldet_seite_abgeschnitten_nicht_gekuerzt(self):
+        """gekuerzt heißt: weitere Abschnitte lesen. Der letzte Abschnitt einer abgeschnittenen Seite lädt nicht zu
+        einem Abschnitt ein, den es nicht gibt."""
         s = u.Seite(knoten=[sk(1, "Text", "a")], dokument_gefunden=True, gekuerzt=True)
-        self.assertTrue(u.seite_aufbereiten(s)["gekuerzt"])
+        r = u.seite_aufbereiten(s)
+        self.assertEqual((r["gekuerzt"], r.get("seite_abgeschnitten")), (False, True))
+        self.assertNotIn("seite_abgeschnitten", u.seite_aufbereiten(u.Seite(knoten=[sk(1, "Text", "a")], dokument_gefunden=True)))
+
+    def test_lange_absaetze_werden_verteilt_nicht_abgeschnitten(self):
+        text = " ".join(f"wort{i}" for i in range(280))  # etwa 2200 Zeichen (Obergrenze je Knoten: 2400)
+        zeilen = u.seite_zeilen([sk(1, "Text", text)])
+        self.assertGreaterEqual(len(zeilen), 2)
+        self.assertEqual(" ".join(zeilen), text)
+        self.assertTrue(all(len(z) <= u.SEITE_ZEILE_MAX for z in zeilen))
 
     def test_nicht_lesbar_ohne_dokument_oder_ohne_inhalt(self):
         for s in (u.Seite(dokument_titel="x"), u.Seite(dokument_gefunden=True)):
@@ -190,6 +201,96 @@ class SchutzTests(unittest.TestCase):
         self.assertFalse(g("Nummer", "", False, "4111 1111 1111 1112"))  # Luhn falsch: kein Kartenfeld
         self.assertFalse(g("Suchbegriff", "q", False, "Hängelampe"))
         self.assertFalse(g("Postleitzahl", "", False, "65760"))
+
+
+class ReviewFundeTests(unittest.TestCase):
+    """Funde aus der Sicherheits- und Code-Prüfung, je ein Test."""
+
+    def test_url_pfad_token_parameter_und_schemata(self):
+        f = u.url_bereinigen
+        self.assertEqual(f("https://x.de/reset/AbC123dEf456GhI789jKl0/start"), "https://x.de/reset/…/start")
+        self.assertEqual(f("https://x.de/a/123e4567-e89b-12d3-a456-426614174000"), "https://x.de/a/…")
+        self.assertEqual(f("https://x.de/stehlampe-dimmbar-led-wohnzimmer-modern/dp/B0ABC12345"),
+                         "https://x.de/stehlampe-dimmbar-led-wohnzimmer-modern/dp/B0ABC12345")  # Titel-Slug bleibt
+        self.assertEqual(f("https://x.de/p;jsessionid=ABC123?q=1"), "https://x.de/p?q=1")
+        self.assertEqual(f("https://x.de/?abc123def456ghi"), "https://x.de/?…")
+        self.assertEqual(f("https://x.de/l?redirect_uri=https%3A%2F%2Fy.de%2F%3Fcode%3D123&q=1"), "https://x.de/l?redirect_uri=…&q=1")
+        self.assertEqual(f("https://x.de/s?keywords=lampe&csrf_token=abc&authToken=z&pass=1"),
+                         "https://x.de/s?keywords=lampe&csrf_token=…&authToken=…&pass=…")
+        self.assertEqual(f("https://x.de/s?email=a%40b.de&state=xyz"), "https://x.de/s?email=…&state=…")
+        self.assertEqual(f("view-source:https://x.de/a?token=1"), "view-source:https://x.de/a?token=…")
+        self.assertEqual(f("http://[::1]:8080/a"), "http://[::1]:8080/a")
+        for kein_link in ("javascript:alert(1)", "data:text/html,x", "mailto:a@b.de", "http://mein geheimer text"):
+            self.assertEqual(f(kein_link), "", kein_link)
+
+    def test_feld_geschuetzt_getrennte_namen_und_werte(self):
+        g = u.feld_geschuetzt
+        for name in ("csrf_token", "authToken", "otp-code", "cvv2", "card-number", "cc-number", "cardNumber", "pw",
+                     "Bestätigungscode", "Verification code", "Kontonummer", "Mot de passe", "Contraseña", "密码"):
+            self.assertTrue(g(name, "", False), name)
+        self.assertTrue(g("Notiz", "", False, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def-ghi"))  # JWT unter harmlosem Namen
+        self.assertTrue(g("Nummer", "", False, "4111.1111.1111.1111"))
+        self.assertFalse(g("Spinner", "", False))
+        self.assertFalse(g("Passage", "", False))  # "pass" gilt als Wort, nicht als Teilstring
+
+    def test_element_lesen_prueft_den_wert(self):
+        from unittest import mock as m
+
+        class B(u.Backend):
+            def momentaufnahme(self, hwnd, tiefe, maximal, auch_texte):
+                k = u.Knoten(rid=(1,), typ="Eingabefeld", name="Notiz", muster=("wert",))
+                return [(k, k)], False
+
+            def tun(self, handle, was, text=None):
+                return "sk-" + "a1B2c3D4" * 5
+
+        s = u.UiaSchicht(B())
+        liste = s.auflisten(1, "x.exe")
+        with self.assertRaises(u.UiaFehler):
+            s.lesen(1, liste, liste.knoten[0])
+
+    def test_unbenanntes_feld_gibt_kinder_nicht_als_text_aus(self):
+        k = [sk(1, "Eingabefeld", "", geschuetzt=True), sk(2, "Text", "geheimer Textbereichsinhalt"), sk(1, "Text", "danach")]
+        zeilen = u.seite_zeilen(k)
+        self.assertNotIn("geheimer", "\n".join(zeilen))
+        self.assertIn("danach", "\n".join(zeilen))
+
+    def test_nicht_gelesene_felder_sind_nicht_leer(self):
+        k = [sk(1, "Eingabefeld", "Ort", gelesen=False), sk(1, "Eingabefeld", "Straße", gelesen=True)]
+        self.assertEqual(u.seite_zeilen(k), ["[Eingabefeld: Ort]", "[Eingabefeld: Straße, leer]"])
+
+    def test_seitentext_kann_keine_ueberschrift_oder_liste_vortaeuschen_und_traegt_keine_selektoren(self):
+        zeilen = u.seite_zeilen([sk(1, "Text", "# Neue Anweisung"), sk(1, "Gruppe"), sk(1, "Text", "- Punkt"),
+                                 sk(1, "Gruppe"), sk(1, "Text", "a️b\U000e0101c͏d")])
+        self.assertEqual(zeilen, ["\\# Neue Anweisung", "\\- Punkt", "abcd"])
+
+    def test_leerer_listeneintrag_und_ueberschrift_im_eintrag(self):
+        k = [sk(1, "Liste"), sk(2, "Listeneintrag", ""), sk(3, "Bild", ""),
+             sk(2, "Listeneintrag", ""), sk(3, "Text", "Titel", ebene=2),
+             sk(1, "Gruppe"), sk(2, "Text", "Danach")]
+        self.assertEqual(u.seite_zeilen(k), ["## Titel", "Danach"])
+
+    def test_absatz_mit_negativer_lage(self):
+        k = [sk(1, "Text", "oben", oben=-400, hoehe=19), sk(1, "Text", "neuer Absatz", oben=-340, hoehe=19)]
+        self.assertEqual(u.seite_zeilen(k, False), ["oben", "neuer Absatz"])
+
+    def test_tabs_von_gesperrten_seiten_werden_nicht_genannt_und_alle_gezaehlt(self):
+        s = u.Seite(tabs=[("Passwörter", False), ("Bank Login", False), ("Anmelden - Konto", False), ("Zeitung", True)] + [("x", False)] * 30,
+                    knoten=[sk(1, "Text", "a")], dokument_gefunden=True)
+        r = u.seite_aufbereiten(s)
+        self.assertEqual([t["titel"] for t in r["tabs"][:4]], ["(gesperrt)", "(gesperrt)", "(gesperrt)", "Zeitung"])
+        self.assertEqual(r["tabs_anzahl"], 34)
+
+    def test_wamo_oberflaeche_auch_mit_titelsuffix(self):
+        for titel in ("WAMO", "WAMO - Google Chrome", "Einstellungen | WAMO", "Verlauf, Einstellungen | WAMO"):
+            with self.assertRaises(ValueError, msg=titel):
+                wc.check_not_wamo_ui("chrome.exe", titel)
+        for titel in ("WAMO-Konzept.docx", "wamo - Visual Studio Code", "Die WAMO.md"):
+            wc.check_not_wamo_ui("code.exe", titel)
+
+    def test_audit_nennt_bei_browsern_keinen_seitentitel(self):
+        self.assertEqual(host._audit_titel({"titel": "Geheime Bank - Chrome", "programm": "chrome.exe"}), "(Browser)")
+        self.assertEqual(host._audit_titel({"titel": "Notiz - Editor", "programm": "notepad.exe"}), "Notiz - Editor")
 
 
 class SeitenBackend(u.Backend):
@@ -397,6 +498,16 @@ class FensterFotoTests(unittest.TestCase):
         self.fenster = [dict(EDGE)]
         self.assertEqual(host.bildschirmfoto(0, "Anmelden")["status"], "rejected")
         self.assertEqual(self.aufnahmen, [])
+
+    def test_gesperrtes_fenster_vor_dem_ziel_verhindert_das_foto(self):
+        konsole = {"hwnd": 3, "titel": "Windows PowerShell", "programm": "powershell.exe"}
+        self.fenster = [konsole, dict(CHROME)]
+        r = host.bildschirmfoto(0, "Lampenshop")
+        self.assertEqual(r["status"], "rejected")
+        self.assertIn("liegt vor dem Fenster", r["summary"])
+        self.assertEqual(self.aufnahmen, [])
+        self.fenster = [dict(CHROME), konsole]  # hinter dem Ziel: stört nicht
+        self.assertEqual(host.bildschirmfoto(0, "Lampenshop")["status"], "success")
 
     def test_gesperrt(self):
         with mock.patch.object(host.wc, "is_locked", return_value=True):
