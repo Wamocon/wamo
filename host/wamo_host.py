@@ -397,6 +397,8 @@ RUECKFALL_GRUND = {
     "ziel_gewechselt": "das Fenster vor dem Abschicken gewechselt hat",
 }
 ENTER = [0x0D]
+ADRESSE_RATE_PRO_MINUTE = 12  # Seiten im aktiven Tab je Minute (überschreibt den Tab der Person: keine Flut)
+_TAB_LOCK = threading.Lock()  # Fokus, Adressleiste und Enter zweier Aufrufe nie ineinander verschränken
 
 
 def _browser_name(browser: object) -> str:
@@ -412,6 +414,8 @@ def _browser_fenster_nutzbar(w: dict, browser: str) -> None:
     wc.check_input_target(w["programm"], w["titel"])
     if SEITE_GESPERRT_TITEL.search(w["titel"] or ""):
         raise ValueError("Passwort-, Zugangsdaten- und Zahlungsseiten bedient WAMO nicht")
+    if wc.is_messaging(w["programm"], w["titel"]):  # ein Entwurf im Webmail oder Messenger darf nicht überschrieben werden
+        raise ValueError("Mail- und Messenger-Seiten bedient WAMO hier nicht")
 
 
 def _browser_ziel(browser: str) -> dict | None:
@@ -429,9 +433,17 @@ def _browser_ziel(browser: str) -> dict | None:
     return None
 
 
-def _im_aktiven_tab(ziel: dict, url: str, browser: str) -> str:
-    """Lädt url im aktiven Tab des Fensters ziel. Leer bei Erfolg, sonst der Code des Rückfalls (RUECKFALL_GRUND) oder
-    "gesperrt". Enter geht nur ab, wenn das Fenster nachweislich vorne liegt, nicht gesperrt ist und noch taugt."""
+def _im_aktiven_tab(ziel: dict, url: str, browser: str) -> str | None:
+    """Lädt url im aktiven Tab des Fensters ziel. None bei Erfolg, sonst der Code des Rückfalls (RUECKFALL_GRUND) oder
+    "gesperrt". Enter geht nur ab, wenn das Fenster nachweislich vorne liegt, nicht gesperrt ist und noch taugt und die
+    Adressleiste unmittelbar davor noch genau die Adresse zeigt und den Tastaturfokus hat (sonst träfe Enter die Seite).
+    Ein kleines Zeitfenster zwischen dieser letzten Kontrolle und dem Tastendruck lässt sich ohne Debug-Port nicht
+    schließen."""
+    with _TAB_LOCK:
+        return _im_aktiven_tab_gesperrt(ziel, url, browser)
+
+
+def _im_aktiven_tab_gesperrt(ziel: dict, url: str, browser: str) -> str | None:
     def vorne_ist_ziel() -> bool:
         vorne = wc.foreground()
         if vorne["hwnd"] != ziel["hwnd"]:
@@ -457,12 +469,21 @@ def _im_aktiven_tab(ziel: dict, url: str, browser: str) -> str:
     try:
         if not vorne_ist_ziel():
             return "ziel_gewechselt"
-    except ValueError:
+    except Exception:  # noqa: BLE001 (ValueError: Fenster taugt nicht mehr, sonst Windows-API)
         return "ziel_gewechselt"
-    except Exception:  # noqa: BLE001
-        return "ziel_gewechselt"
-    wc.press(ENTER)
-    return ""
+    try:
+        UIA.adresse_pruefen(ziel["hwnd"], url)  # unmittelbar vor Enter: Wert und Fokus der Adressleiste noch wie geprüft
+    except uia_control.AdresseAbweichend:
+        return "adresse_abweichend"
+    except uia_control.UiaFehler:
+        return "adressleiste"
+    if _ist_gesperrt():
+        return "gesperrt"
+    try:
+        wc.press(ENTER)
+    except Exception:  # noqa: BLE001 (SendInput verweigert: nichts abgeschickt, Rückfall)
+        return "fokus"
+    return None
 
 
 def _seite_plan(browser: str, neuer_tab: bool) -> tuple[dict | None, str, str]:
@@ -485,8 +506,10 @@ def _seite_laden(url: str, browser: str, neuer_tab: bool, ziel: dict | None) -> 
     if ziel is not None and not neuer_tab:
         code = _im_aktiven_tab(ziel, url, browser)
         if code == "gesperrt":
+            _audit({"tool": "webseite_oeffnen", "risk": "locked", "grund": "Bildschirm gesperrt", "tab": TAB_AKTUELL,
+                    "weg": WEG_UIA})
             return dict(GESPERRT)
-        if code == "":
+        if code is None:
             nummer, _ = _monitor_nummer(ziel["hwnd"])
             ort = f", Monitor {nummer}" if nummer is not None else ""
             return {"status": "success", "tab": TAB_AKTUELL, "weg": WEG_UIA, "browser": browser,
@@ -495,6 +518,10 @@ def _seite_laden(url: str, browser: str, neuer_tab: bool, ziel: dict | None) -> 
                     **_markierung(ziel.get("hwnd"))}
         _audit({"tool": "webseite_oeffnen", "risk": "change", "browser": browser, "tab": TAB_NEU, "weg": WEG_START,
                 "rueckfall": code})
+    if _ist_gesperrt():  # der Weg über die Adressleiste kann Sekunden gedauert haben: auch der Rückfall startet nie gesperrt
+        _audit({"tool": "webseite_oeffnen", "risk": "locked", "grund": "Bildschirm gesperrt", "tab": TAB_NEU,
+                "weg": WEG_START})
+        return dict(GESPERRT)
     _launch(resolve_app(browser), [url])
     if code == "gewuenscht":
         grund = "so gewünscht"
@@ -543,6 +570,12 @@ def webseite_oeffnen(url: str, browser: str = "chrome", neuer_tab: bool = False)
             "Oberfläche freigeben; bis dahin passiert nichts.",
             {"url": safe_url[:200], "tab": TAB_NEU if neu else TAB_AKTUELL})
     ziel, tab, weg = _seite_plan(browser_name, neu)
+    if weg == WEG_UIA:  # Fenster nach vorn und Enter: wie jede Eingabe, bei offener Freigabe ruht sie
+        if vorab := _eingabe_vorab("webseite_oeffnen"):
+            return vorab
+        if not _rate_ok("webseite_oeffnen", ADRESSE_RATE_PRO_MINUTE):
+            _audit({"tool": "webseite_oeffnen", "risk": "rejected", "grund": "Rate-Grenze"})
+            return {"status": "rejected", "summary": "Zu viele Seiten in kurzer Zeit. Bitte kurz warten."}
     if dup := _duplicate("webseite_oeffnen", url=safe_url, tab=tab, weg=weg):
         return dup
     _audit({"tool": "webseite_oeffnen", "url": safe_url, "browser": browser_name, "risk": "change", "tab": tab,

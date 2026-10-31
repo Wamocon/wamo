@@ -29,15 +29,28 @@ class AdressBackend(u.Backend):
         self.aufrufe: list[tuple[int, str]] = []
         self.antwort = None  # None: genau die Adresse und Fokus; sonst Wert, Dict oder Ausnahme
         self.fehler: Exception | None = None
+        self.gesetzt = ""
+        self.lesen_antwort = None  # None: wie gesetzt und mit Fokus; sonst Dict oder Ausnahme (Kontrolle vor Enter)
+        self.lesungen = 0
 
-    def adresse_setzen(self, hwnd, url):
+    def adresse_setzen(self, hwnd, url, vor_aktion=None):
         self.aufrufe.append((hwnd, url))
         self.ereignisse.append("adresse")
         if self.fehler:
             raise self.fehler
+        if vor_aktion is not None:
+            vor_aktion()
+        self.gesetzt = url
         if self.antwort is None:
             return {"wert": url, "fokus": True}
         return self.antwort
+
+    def adresse_lesen(self, hwnd):
+        self.lesungen += 1
+        self.ereignisse.append("pruefen")
+        if isinstance(self.lesen_antwort, Exception):
+            raise self.lesen_antwort
+        return self.lesen_antwort if self.lesen_antwort is not None else {"wert": self.gesetzt, "fokus": True}
 
 
 class TabTest(unittest.TestCase):
@@ -46,6 +59,7 @@ class TabTest(unittest.TestCase):
     def setUp(self):
         host.PENDING.clear()
         host._recent_actions.clear()
+        host._rate_zeiten.clear()
         self.ereignisse: list[str] = []
         self.audit: list[dict] = []
         self.fenster = [dict(CHROME)]
@@ -87,6 +101,7 @@ class TabTest(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.addCleanup(host._recent_actions.clear)
+        self.addCleanup(host._rate_zeiten.clear)
         self.addCleanup(host.PENDING.clear)
 
     def eintraege(self):
@@ -103,7 +118,7 @@ class AktiverTabTests(TabTest):
         self.assertIn("Amazon.de", r["fenster"])
         self.launch.assert_not_called()
         self.assertEqual(self.b.aufrufe, [(7, URL)])
-        self.assertEqual(self.ereignisse, ["fokus", "adresse", ("enter", [0x0D])])  # erst vorne, dann Adresse, dann Enter
+        self.assertEqual(self.ereignisse, ["fokus", "adresse", "pruefen", ("enter", [0x0D])])  # vorne, Adresse, Kontrolle, Enter
 
     def test_ergebnis_traegt_die_markierung_des_fensters(self):
         self.assertIn("markierung", host.webseite_oeffnen(URL))
@@ -262,9 +277,9 @@ class RueckfallTests(TabTest):
     def test_fenster_wechselt_vor_dem_enter(self):
         orig = self.b.adresse_setzen
 
-        def setzen(hwnd, url):
+        def setzen(hwnd, url, vor_aktion=None):
             self.vorne = dict(WAMO_UI)  # nach dem Setzen liegt die eigene Oberfläche vorne
-            return orig(hwnd, url)
+            return orig(hwnd, url, vor_aktion)
 
         self.b.adresse_setzen = setzen
         r = host.webseite_oeffnen(URL)
@@ -273,9 +288,9 @@ class RueckfallTests(TabTest):
     def test_anderes_fenster_vorne_vor_dem_enter(self):
         orig = self.b.adresse_setzen
 
-        def setzen(hwnd, url):
+        def setzen(hwnd, url, vor_aktion=None):
             self.vorne = dict(CHROME2)
-            return orig(hwnd, url)
+            return orig(hwnd, url, vor_aktion)
 
         self.b.adresse_setzen = setzen
         self._neu(host.webseite_oeffnen(URL), "gewechselt", "ziel_gewechselt")
@@ -283,9 +298,9 @@ class RueckfallTests(TabTest):
     def test_titel_wird_zur_anmeldeseite_vor_dem_enter(self):
         orig = self.b.adresse_setzen
 
-        def setzen(hwnd, url):
+        def setzen(hwnd, url, vor_aktion=None):
             self.vorne = dict(CHROME, titel="Anmelden - Google Chrome")
-            return orig(hwnd, url)
+            return orig(hwnd, url, vor_aktion)
 
         self.b.adresse_setzen = setzen
         self._neu(host.webseite_oeffnen(URL), "gewechselt", "ziel_gewechselt")
@@ -306,6 +321,91 @@ class RueckfallTests(TabTest):
         self.press.assert_not_called()
 
 
+class ReviewTests(TabTest):
+    """Funde aus dem Review: Kontrolle direkt vor Enter, Abbruch des Fadens, Mail/Messenger, offene Freigabe, Rate."""
+
+    def test_kontrolle_vor_enter_faengt_fokus_in_der_seite_ab(self):
+        self.b.lesen_antwort = {"wert": URL, "fokus": False}  # die Person hat in die Seite geklickt
+        r = host.webseite_oeffnen(URL)
+        self.assertEqual((r["tab"], r["rueckfall"]), ("neu", "adressleiste"))
+        self.press.assert_not_called()
+
+    def test_kontrolle_vor_enter_faengt_nachtraegliche_ergaenzung_ab(self):
+        self.b.lesen_antwort = {"wert": URL + "x", "fokus": True}
+        r = host.webseite_oeffnen(URL)
+        self.assertEqual((r["tab"], r["rueckfall"]), ("neu", "adresse_abweichend"))
+        self.press.assert_not_called()
+
+    def test_kontrolle_nicht_lesbar_ist_rueckfall(self):
+        self.b.lesen_antwort = u.UiaFehler("x")
+        self.assertEqual(host.webseite_oeffnen(URL)["rueckfall"], "adressleiste")
+        self.press.assert_not_called()
+
+    def test_abgebrochener_faden_greift_spaeter_nicht_mehr_ein(self):
+        import threading
+        import time
+        eingriffe = []
+        freigabe = threading.Event()
+
+        def langsam(hwnd, url, vor_aktion=None):
+            freigabe.wait(2)  # haengt, bis der Host aufgegeben hat
+            try:
+                vor_aktion()
+            except u.UiaFehler:
+                return {"wert": "", "fokus": False}
+            eingriffe.append(url)
+            return {"wert": url, "fokus": True}
+
+        self.b.adresse_setzen = langsam
+        with mock.patch.object(u, "ADRESSE_SECS", 0.05):
+            r = host.webseite_oeffnen(URL)
+        freigabe.set()
+        time.sleep(0.2)
+        self.assertEqual(r["rueckfall"], "adressleiste")
+        self.assertEqual(eingriffe, [])  # SetFocus und SetValue wurden nicht mehr ausgefuehrt
+
+    def test_mail_und_messenger_seiten_werden_nicht_ueberschrieben(self):
+        for titel in ("Posteingang - max@firma.de - Gmail - Google Chrome", "WhatsApp Web - Google Chrome",
+                      "Microsoft Teams - Google Chrome"):
+            with self.subTest(titel=titel):
+                host._recent_actions.clear()
+                self.launch.reset_mock()
+                self.fenster = [dict(CHROME, titel=titel)]
+                self.assertEqual(host.webseite_oeffnen(URL)["tab"], "neu")
+                self.assertEqual(self.b.aufrufe, [])
+
+    def test_offene_freigabe_haelt_den_aktiven_tab_an_aber_nicht_den_neuen(self):
+        host._neue_freigabe("powershell", command="x")
+        self.assertEqual(host.webseite_oeffnen(URL)["status"], "wartet")
+        self.assertEqual((self.fokussiert, self.b.aufrufe), ([], []))
+        self.assertEqual(host.webseite_oeffnen(URL, "chrome", neuer_tab=True)["tab"], "neu")
+
+    def test_rate_grenze_nur_fuer_den_aktiven_tab(self):
+        with mock.patch.object(host, "ADRESSE_RATE_PRO_MINUTE", 2):
+            host._rate_zeiten.pop("webseite_oeffnen", None)
+            for i in range(2):
+                self.assertEqual(host.webseite_oeffnen(f"https://www.amazon.de/s?k={i}")["status"], "success")
+            self.assertEqual(host.webseite_oeffnen("https://www.amazon.de/s?k=x")["status"], "rejected")
+        host._rate_zeiten.pop("webseite_oeffnen", None)
+
+    def test_enter_scheitert_mit_rueckfall_statt_rohem_fehler(self):
+        self.press.side_effect = OSError("SendInput")
+        self.assertEqual(host.webseite_oeffnen(URL)["tab"], "neu")
+
+    def test_gesperrt_nach_fehlgeschlagener_adressleiste_startet_nichts(self):
+        self.b.fehler = u.UiaFehler("x")
+        self.gesperrt = [False, False, True]  # vorab frei, danach vor dem Rueckfall gesperrt
+        r = host.webseite_oeffnen(URL)
+        self.assertEqual(r["status"], "locked")
+        self.launch.assert_not_called()
+        self.assertTrue(any(e.get("risk") == "locked" for e in self.eintraege()))
+
+    def test_sperre_vor_enter_steht_im_audit(self):
+        self.gesperrt = [False, False, True]
+        self.assertEqual(host.webseite_oeffnen(URL)["status"], "locked")
+        self.assertTrue(any(e.get("risk") == "locked" for e in self.eintraege()))
+
+
 class SperreTests(TabTest):
     def test_gesperrter_bildschirm_vorab(self):
         self.gesperrt = [True]
@@ -315,7 +415,7 @@ class SperreTests(TabTest):
         self.press.assert_not_called()
 
     def test_sperre_zwischen_adresse_und_enter_sendet_nichts_und_startet_nichts(self):
-        self.gesperrt = [False, True]  # Vorab frei, vor dem Enter gesperrt
+        self.gesperrt = [False, False, True]  # Vorab (zweimal) frei, vor dem Enter gesperrt
         r = host.webseite_oeffnen(URL)
         self.assertEqual(r["status"], "locked")
         self.press.assert_not_called()
