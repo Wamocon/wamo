@@ -27,6 +27,7 @@ from werkzeug_wache import (
     abbruch_text,
     abbrueche_umschreiben,
     hinweis_anhaengen,
+    ist_misserfolg,
     webseite_von,
     werkzeug_doppelt_an,
 )
@@ -201,15 +202,17 @@ class HinweisAnhaengenTest(unittest.TestCase):
         self.assertEqual(hinweis_anhaengen(5, "H"), 5)
 
 
-class GateMitWacheTest(unittest.IsolatedAsyncioTestCase):
-    """gate_pc_tools mit Wache: der Host-Handler wird beim Überspringen nicht aufgerufen, ein Hinweis erreicht das Ergebnis."""
-
+class _ParamsMixin:
     def params(self, name: str, url: str, ergebnisse: list) -> FunctionCallParams:
         async def callback(ergebnis, *args, **kwargs):
             ergebnisse.append(ergebnis)
 
         return FunctionCallParams(function_name=name, tool_call_id=f"id-{url}", arguments={"url": url}, llm=mock.Mock(),
                                   pipeline_worker=mock.Mock(), context=LLMContext(), result_callback=callback)
+
+
+class GateMitWacheTest(_ParamsMixin, unittest.IsolatedAsyncioTestCase):
+    """gate_pc_tools mit Wache: der Host-Handler wird beim Überspringen nicht aufgerufen, ein Hinweis erreicht das Ergebnis."""
 
     async def test_ablauf_wie_im_protokoll(self):
         aufrufe = []
@@ -266,6 +269,40 @@ class GateMitWacheTest(unittest.IsolatedAsyncioTestCase):
         an["wert"] = True
         await gated.handler(self.params("webseite_oeffnen", "https://www.amazon.de", ergebnisse))
         self.assertEqual(len(aufrufe), 1)
+
+
+class MisserfolgTest(unittest.TestCase):
+    def test_erkennung(self):
+        for ergebnis in ({"status": "error"}, '{"status": "rejected", "summary": "x"}', {"status": "needs_approval"},
+                         {"status": "locked"}, {"ok": False}, {"status": "BLOCKED"}):
+            self.assertTrue(ist_misserfolg(ergebnis), ergebnis)
+        for ergebnis in ({"status": "success"}, '{"status": "duplicate"}', "geöffnet", None, 5, "{kaputt"):
+            self.assertFalse(ist_misserfolg(ergebnis), ergebnis)
+
+
+class GescheitertZaehltNichtTest(_ParamsMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_abgelehnter_aufruf_darf_wiederholt_werden(self):
+        """Freigabe offen oder Fehler: die Aktion hat nicht stattgefunden, ein zweiter Versuch ist kein Doppelaufruf."""
+        antworten = [{"status": "needs_approval", "approval_id": "x"}, {"status": "success"}, {"status": "success"}]
+        aufrufe = []
+
+        async def host(params):
+            aufrufe.append(1)
+            await params.result_callback(antworten[len(aufrufe) - 1])
+
+        turn = TurnState()
+        turn.new_user_turn("Öffne Amazon")
+        doppel = DoppelWache(turn_nr=lambda: turn.turn_nr)
+        gated = bot.gate_pc_tools([FunctionSchema("webseite_oeffnen", "x", {}, [], handler=host)], lambda: True,
+                                  lambda: None, doppel)[0]
+        ergebnisse: list = []
+        url = "https://www.amazon.de/s?k=Fahrrad"
+        await gated.handler(self.params("webseite_oeffnen", url, ergebnisse))  # wartet auf Freigabe
+        await gated.handler(self.params("webseite_oeffnen", url, ergebnisse))  # gelingt
+        await gated.handler(self.params("webseite_oeffnen", url, ergebnisse))  # jetzt wirklich doppelt
+        self.assertEqual(len(aufrufe), 2)
+        self.assertEqual(ergebnisse[2]["status"], "duplicate")
+        self.assertNotIn("hinweis", ergebnisse[1])
 
 
 class TurnStateTest(unittest.TestCase):

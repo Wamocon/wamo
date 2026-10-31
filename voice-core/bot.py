@@ -108,7 +108,7 @@ from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from ja_waechter import JaWaechter, ja_waechter_an
 from turn_wache import TurnWache
-from werkzeug_wache import AbbruchHinweis, DoppelWache, abbruch_hinweis_an, mit_hinweis, werkzeug_doppelt_an
+from werkzeug_wache import AbbruchHinweis, DoppelWache, abbruch_hinweis_an, umhuellen, werkzeug_doppelt_an
 from wartesatz import Wartesatz, wartesatz_an, wartesatz_secs
 from pc_host import (
     call_host_tool,
@@ -375,8 +375,8 @@ def gate_pc_tools(
                 if urteil.aktion == "ueberspringen":
                     await params.result_callback(urteil.ergebnis)
                     return
-                if urteil.hinweis:
-                    params = mit_hinweis(params, urteil.hinweis)
+                if urteil.eintrag is not None:
+                    params = umhuellen(params, doppel, urteil)
             on_foreign_content()
             await _original(params)
 
@@ -798,6 +798,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def melde_llm(text: str) -> None:
         """Kurze Nachricht an das Sprachmodell, das dann antwortet (Ergebnis einer PC-Freigabe)."""
         if state["live"]:
+            turn.turn_nr += 1  # eine Meldung von WAMO selbst (z. B. nach einer Freigabe) ist ein neuer Anlass, kein Doppelaufruf
             await task.queue_frames([LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)])
 
     # Freigaben kritischer PC-Aktionen (pc_freigaben.py): nur mit PC-Werkzeugen; die Karte entsteht in activity.py

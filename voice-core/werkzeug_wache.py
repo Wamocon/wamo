@@ -202,6 +202,7 @@ class Urteil:
     ergebnis: dict | None = None
     hinweis: str | None = None
     grund: str = ""
+    eintrag: tuple | None = None  # der gemerkte Aufruf; DoppelWache.erledigt() streicht ihn, wenn die Aktion scheiterte
 
 
 @dataclass
@@ -242,8 +243,36 @@ class DoppelWache:
                 urteil = Urteil(hinweis=HINWEIS_WEITERE_SEITE.format(n=len(frueher)), grund="weitere_seite")
                 logger.info("Werkzeug-Wache: weitere Seite derselben Webseite im selben Zug, {:.1f} s nach der vorigen",
                             jetzt - frueher[-1])
-        self._aufrufe.append((name, schluessel, seite, jetzt))
+        eintrag = (name, schluessel, seite, jetzt)
+        self._aufrufe.append(eintrag)
+        urteil.eintrag = eintrag
         return urteil
+
+    def erledigt(self, urteil: Urteil, ergebnis: object) -> None:
+        """Meldet das Ergebnis eines ausgeführten Aufrufs. Ist die Aktion gescheitert, abgelehnt oder wartet auf eine Freigabe,
+        zählt sie nicht als getan: Der Aufruf wird gestrichen und darf wiederholt werden."""
+        if urteil.eintrag is not None and ist_misserfolg(ergebnis):
+            try:
+                self._aufrufe.remove(urteil.eintrag)
+            except ValueError:
+                pass  # schon gestrichen oder der Zug hat gewechselt
+
+
+MISSERFOLG = frozenset({"error", "rejected", "blocked", "needs_approval", "locked", "wartet", "nicht_gefunden"})
+
+
+def ist_misserfolg(ergebnis: object) -> bool:
+    """Hat die Aktion nicht stattgefunden (Fehler, abgelehnt, gesperrt, wartet auf Freigabe)? Unlesbares gilt als Erfolg,
+    damit eine echte Wiederholung nicht fälschlich erlaubt wird."""
+    daten = ergebnis
+    if isinstance(ergebnis, str):
+        try:
+            daten = json.loads(ergebnis)
+        except ValueError:
+            return False
+    if not isinstance(daten, dict):
+        return False
+    return str(daten.get("status", "")).lower() in MISSERFOLG or daten.get("ok") is False
 
 
 def hinweis_anhaengen(ergebnis: object, hinweis: str) -> object:
@@ -261,11 +290,15 @@ def hinweis_anhaengen(ergebnis: object, hinweis: str) -> object:
     return ergebnis
 
 
-def mit_hinweis(params, hinweis: str):
-    """Kopie der Aufrufparameter, deren Ergebnis den Hinweis trägt (result_callback wird umhüllt)."""
+def umhuellen(params, wache: DoppelWache, urteil: Urteil):
+    """Kopie der Aufrufparameter, deren Ergebnis die Wache erfährt (gescheiterte Aufrufe zählen nicht) und gegebenenfalls
+    den Hinweis trägt (result_callback wird umhüllt)."""
     original = params.result_callback
 
     async def result_callback(ergebnis, *args, **kwargs):
-        await original(hinweis_anhaengen(ergebnis, hinweis), *args, **kwargs)
+        wache.erledigt(urteil, ergebnis)
+        if urteil.hinweis:
+            ergebnis = hinweis_anhaengen(ergebnis, urteil.hinweis)
+        await original(ergebnis, *args, **kwargs)
 
     return dataclasses.replace(params, result_callback=result_callback)
