@@ -17,7 +17,10 @@ def _sauberer_host():
     sie selbst, der Echttest in test_security.py nutzt die echte Prüfung)."""
     wamo_host.PENDING.clear()
     wamo_host._recent_actions.clear()
-    with mock.patch.object(wamo_host.wc, "is_locked", return_value=False):
+    # Keine echten Fenster: webseite_oeffnen sähe sonst den Browser der Person und lüde die Adresse dort (Tests, die
+    # Fenster brauchen, setzen list_windows selbst)
+    with mock.patch.object(wamo_host.wc, "is_locked", return_value=False), \
+         mock.patch.object(wamo_host.wc, "list_windows", return_value=[]):
         yield
     wamo_host.PENDING.clear()
     wamo_host._recent_actions.clear()

@@ -208,6 +208,15 @@ def test_werkzeug_bool_liste_und_laenge():
     assert bw.werkzeuge_pruefen(tabelle, [("canvas_zeigen", {"zeilen": [["a"]]})]) != []
 
 
+def test_neuer_tab_wird_nicht_ungefragt_gesetzt():
+    """31.10.2026: Seiten und Suchen laden im bereits geöffneten Tab; neuer_tab=true wäre hier ein Fehler."""
+    fall = next(f for f in FAELLE if f.id == "p10")
+    url = "https://www.amazon.de/s?k=usb-c+kabel"
+    assert bw.werkzeuge_pruefen(fall, [("webseite_oeffnen", {"url": url})]) == []
+    assert bw.werkzeuge_pruefen(fall, [("webseite_oeffnen", {"url": url, "neuer_tab": False})]) == []
+    assert bw.werkzeuge_pruefen(fall, [("webseite_oeffnen", {"url": url, "neuer_tab": True})]) != []
+
+
 def test_ohne_werkzeug_kein_aufruf():
     assert bw.werkzeuge_pruefen(_fall(), []) == []
     assert bw.werkzeuge_pruefen(_fall(), [("aktuelle_zeit", {})]) == ["unerwartet: aktuelle_zeit"]
