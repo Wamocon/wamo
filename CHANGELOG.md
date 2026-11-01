@@ -8,6 +8,17 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Freigabe-Dienst des Ankers, Schritt 1.4a (`infra/sokrates2/anker/freigabe.py`): Regeln für die Freigabe einer Release-Anfrage durch
+  einen Admin. Token (ES256, Algorithmus fest, Aussteller und Zielgruppe geprüft), frischer zweiter Faktor über den jüngsten
+  `totp`-Eintrag (höchstens 60 Sekunden, nicht aus der Zukunft), Bindung an die gesehene Commit-ID und Tree-ID, Drosselung auf
+  monotoner Uhr, einheitliche Antwort für Nicht-Admins, Abbildung der Trigger-Sätze aus Migration 0013 auf feste Codes. Ohne Netz
+  und ohne Datenbank, mit Attrappe; 47 Tests, unabhängige Sicherheitsprüfung. Prozess, Caddy-Route und Datenbankanbindung folgen
+  (Schritt 1.4b).
+- Fernzugriff, weitere Ziele und Einrichtung (Ergänzung): Sokrates-1 und Caesar als Ziele; Passwort-Übergabe vom Ziel an das Gateway
+  ohne Bildschirm und Argument (`wamo-rd-konto-einrichten.sh --fern` und `--uebernehmen`); `wamo-sudo-einrichten.sh` (sudo ohne
+  Passwort nur für feste Befehlszeilen root-eigener Skripte); `wamo-rd-ziel-einrichten.sh` macht den TLS-Schlüssel für xrdp lesbar
+  (Gruppe `ssl-cert`) und startet die Sitzung mit eigener `~/startwm.sh` (das Systemskript `90xbrlapi` hielt sie auf Servern ohne
+  Braillezeile an); `xrdp-einhegen.sh` erkennt `ufw` auch bei deutscher Ausgabe.
 - Fernzugriff auf die Sparks (Remote Desktop über das Gateway auf Sokrates-2, Stufen 3 und 4 von `docs/remote-desktop.md`):
   Kern-API `GET /wamo/api/rd/ziele`, `POST /wamo/api/rd/start` und `POST /wamo/api/rd/ende` (`voice-core/rd_api.py`, Schalter
   `WAMO_RD_AKTIV`, Standard nein). Nur Rolle admin mit frischem zweiten Faktor (Code höchstens 120 Sekunden alt) bei jedem Start;
