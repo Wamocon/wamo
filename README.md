@@ -887,6 +887,13 @@ Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGua
 - **Ziele:** Die Zielliste liegt als root-Datei auf Sokrates-2 (`/etc/wamo-rd/ziele.toml`), aus der Anfrage kommt nur der Name.
   Angemeldet wird am Spark als Konto `wamo-rd` ohne sudo, docker und SSH. Auf Sokrates-2 darf dieses Konto per Ausgangsregel
   (`infra/sparks/wamo-rd-ausgang-einrichten.sh`) nur das Internet erreichen, nicht Kern, Datenbank, LAN oder andere Sparks.
+- **Beim Einrichten eines Ziels gefunden (Ende-zu-Ende-Probe 1.11.):** Zwei Dinge verhinderten den Desktop, `wamo-rd-ziel-einrichten.sh`
+  behebt beide. (1) xrdp kann mit `security_layer=tls` seinen Schlüssel nicht lesen, solange der Benutzer `xrdp` nicht in der
+  Gruppe `ssl-cert` ist (im Gateway "Security negotiation failed", Fehler 769). (2) `Xsession.d/90xbrlapi` wartet auf einem
+  Server ohne Braillezeile für immer, die Sitzung bleibt schwarz; das Konto startet deshalb mit eigener `~/startwm.sh` direkt
+  `gnome-session --session=ubuntu`. Probe ohne Anmeldung am Kern: Anweisung als Dienstbenutzer des Kerns bauen, beim Zugangsdienst
+  einreichen, Websocket-Tunnel öffnen, alle 4 Sekunden `nop` senden (sonst "User is not responding", Fehler 776) und die Prozesse
+  von `wamo-rd` ansehen (`gnome-shell` muss laufen, es müssen hunderte `blob`-Anweisungen eintreffen).
 - **Weitere Ziele (Sokrates-1, Caesar):** Dasselbe Konto und xrdp wie auf Sokrates-2, dazu Port 3389 nur für die LAN-Adresse von
   Sokrates-2 (`192.168.178.136/32`) und die Ausgangsregel mit `--gateway 192.168.178.136/32`. Das Passwort entsteht am Ziel und
   geht ohne Bildschirm und ohne Argument per Pipe an Sokrates-2 (`wamo-rd-konto-einrichten.sh --fern`, dort `--uebernehmen --ziel NAME`,
