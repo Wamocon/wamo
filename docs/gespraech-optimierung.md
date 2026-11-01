@@ -318,7 +318,18 @@ Befunde:
    natürlicher werden, entscheiden die Hörproben.
 4. **Die Basis deckt sich mit den früheren Läufen** (erster Ton Median 2,3 s, keine verpassten Einwürfe, Dämpfen ab etwa 770 ms).
 
-Entscheidung: Beide Schalter bleiben AUS. Für `WAMO_WARTESATZ_MODELL` ist ein Bestätigungslauf mit der Standardschwelle
-(`pause:6,fakten:8,werkzeug:5`) der nächste Schritt, danach ein Hörvergleich. Für `WAMO_PERSONA_GESPRAECH` entscheidet der
+**Bestätigungslauf mit der Standardschwelle (`wartesatz25`, `WAMO_WARTESATZ_MODELL=an`, keine Schwelle gesetzt, 1.11.2026,
+`pause:6, fakten:8, werkzeug:5, einwurf:6`):** Der Wartesatz hat in 31 Zügen kein einziges Mal gefeuert. In den Pausen redete WAMO nie
+dazwischen (0 von 6, Pause 1,5 s und 2,5 s je 0 von 3). Erster Ton Fakten 2257 / 2674 ms (Basis 2338 / 3344), Pause 2034 ms
+(Basis 1980), verpasste Einwürfe 0 von 6, Verstummen 1160 / 1390 ms (Basis 1290 / 2060), Folgeantwort nach Einwurfende 2058 ms (Basis
+2261). Alle Werte liegen in der Streuung der Basis. Der Schalter stört bei 2,5 s also nicht. Ein Nutzen ist damit noch nicht belegt,
+weil in diesem Lauf kein Zug länger als 2,5 s schwieg; er zeigt sich nur in langsamen Zügen (in der Basis etwa 1 von 46, im
+Gesprächs-Lauf 5 von 46). Die Stille zwischen Füllsatz und Ergebnis bei Werkzeugen (p50 8340 ms) betrifft er nicht: Dafür gibt es
+den eigenen Werkzeug-Wartesatz.
+
+Entscheidung: Beide Schalter bleiben AUS, bis der Nutzer die Hörproben gehört hat. Der Hörvergleich ist auf Wunsch des Nutzers
+zurückgestellt. Für `WAMO_WARTESATZ_MODELL` spricht nach den Messungen nichts gegen das Einschalten bei der Standardschwelle von
+2,5 s; zu hören bleibt, ob "Einen Moment." im Gespräch angenehm klingt. Für `WAMO_PERSONA_GESPRAECH` entscheidet allein der
 Hörvergleich mit dem von Hand gesprochenen Satz aus Abschnitt 5. Hörproben: `D:\tmp\stimme-hoerprobe3\` (`basis4-*`, `gespraech-*`,
-`wartesatz-*`). Messdaten: `D:\tmp\wamo-stimme3\mess\` (`basis4`, `gespraech`, `wartesatzmodell`).
+`wartesatz-*`, der Lauf mit der Standardschwelle ist nur ausgewertet, nicht als Hörprobe erzeugt). Messdaten: `D:\tmp\wamo-stimme3\mess\`
+(`basis4`, `gespraech`, `wartesatzmodell`, `wartesatz25`).
