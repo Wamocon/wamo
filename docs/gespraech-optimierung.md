@@ -251,7 +251,8 @@ Erlaubnislisten ergänzt: `infra/sokrates2/wamo_core_env.py` und `scripts/wamo_k
 
 ## 5. Was gemessen werden muss (nach Freigabe des Testprofils)
 
-Das Testprofil `wamo.stimmtest.1022@wamocon.com` ist gesperrt und wird nicht reaktiviert. Vorbereitet ist:
+Das Testprofil `wamo.stimmtest.1022@wamocon.com` ist gesperrt und wird nur mit Freigabe des Nutzers für eine Messung kurz
+reaktiviert (so am 1.11.2026, Ergebnis in Abschnitt 7). Vorbereitet ist:
 
 1. Basis: alle Schalter aus (`KERN_ENV="WAMO_PERSONA_GESPRAECH=aus;WAMO_WARTESATZ_MODELL=aus"`), Szenarien
    `fakten:8,kurz:5,einwurf:8,backchannel:6,pause:6,werkzeug:5`, Lauf `basis4`.
@@ -278,3 +279,46 @@ Einheitstests mit aufgezeichneten Zeiten laufen ohne Testprofil: `voice-core\tes
 - Full-Duplex-Bench "v3" ist nur in einer Wörterbuchseite genannt.
 - Öffentliche Demos mit REA wurden nicht erneut beobachtet; die Auswertung der Demo unmute.sh steht in der README.
 - Smart Turn v3.2 hat keine Änderungsliste auf der Seite, ob v3.2 in Pipecat 1.12 enthalten ist, ist nicht geprüft.
+
+## 7. Messergebnis vom 1.11.2026
+
+Aufbau wie in Abschnitt 5: Unterwegs (lokaler Kern, Haiku), Oberfläche frisch aus `main` gebaut, Testprofil für die Dauer der
+Läufe aktiv und danach wieder gesperrt. Je Lauf `fakten:8, kurz:5, einwurf:8, backchannel:6, pause:6, werkzeug:5`. Zahlen sind
+Median / 95. Perzentil bei 5 bis 8 Wiederholungen, jeder Lauf ist ein einzelner Durchgang. Der Lauf `wartesatzmodell` nutzte
+absichtlich die Schwelle `WAMO_WARTESATZ_MODELL_SECS=0.8`, damit man das Auslösen überhaupt sieht.
+
+| Kennzahl | Basis (beide Schalter aus) | `WAMO_PERSONA_GESPRAECH` an | `WAMO_WARTESATZ_MODELL` an (0,8 s) |
+| --- | --- | --- | --- |
+| Erster Ton, Faktenfrage, ms | 2338 / 3344 | 2272 / 2914 | 1902 / 2334 |
+| Erster Ton, kurze Antwort, ms | 2313 / 3113 | 2303 / 3093 | 1831 / 1873 |
+| Erster Ton, Werkzeug, ms | 2351 / 2413 | 2231 / 2513 | 1851 / 1861 |
+| Größte Lücke, kurze Antwort, p95 ms | 2090 | 1440 | 1580 |
+| Verpasste Einwürfe | 0 von 7 | 0 von 8 | 0 von 8 |
+| Verstummen nach Einwurf, ms | 1290 / 2060 | 1485 / 1950 | 1270 / 2120 |
+| Folgeantwort nach Einwurfende, ms (`folge_ton_ms`) | 2261 | 3234 | 76 (der Wartesatz) |
+| Falsche Unterbrechung durch Rückmeldelaute (Log) | 0 | 0 | 0 |
+| Pause: WAMO redet dazwischen | 0 von 6 | 0 von 6 | 6 von 6 |
+| Wartesatz ausgelöst | nicht möglich | nicht möglich | 45 von 63 Zügen |
+
+Modell-Schweigezeit nach der Anfrage (Zeit von `llm_start` bis `llm_token`, aus den Latenzzeilen des Kerns, je 46 Züge):
+Basis Median 1032 ms, p90 1368 ms, höchstens 5299 ms, über 2500 ms in 1 Zug, über 800 ms in 35 Zügen. Mit
+`WAMO_PERSONA_GESPRAECH`: Median 1090 ms, p90 2666 ms, höchstens 8513 ms, über 2500 ms in 5 Zügen.
+
+Befunde:
+
+1. **`WAMO_WARTESATZ_MODELL` bei 0,8 s ist unbrauchbar, bei der Standardschwelle von 2,5 s plausibel.** Das Modell schweigt im
+   Normalfall etwa 1 s, bei 0,8 s feuert der Satz in 45 von 63 Zügen und redet in jede Pause hinein. Bei 2,5 s träfe er in der
+   Basis 1 von 46 Zügen, im Gesprächs-Lauf 5 von 46, also genau die Züge mit 3 bis 8 Sekunden Stille. Ein Lauf mit der
+   Standardschwelle im Messweg fehlt noch; die Zahlen stammen aus den Latenzzeilen, nicht aus einer Messung des Schalters.
+2. **Die schnelleren ersten Töne im Lauf `wartesatzmodell` (etwa 400 ms) sind der Streuung des Modells zuzurechnen**, nicht dem
+   Schalter: Er kann das Modell nicht beschleunigen. Der Wert gilt nicht als Gewinn.
+3. **`WAMO_PERSONA_GESPRAECH` verändert die messbaren Kennzahlen nicht sicher.** Erster Ton und Lücken liegen in der Streuung. Die
+   Folgeantwort nach einem Einwurf liegt mit 3234 gegen 2261 ms höher (kleine Stichprobe, ein Lauf), die Stille zwischen
+   Füllsatz und Ergebnis beim Werkzeug schwankt stark (p50 0 gegen 6060 ms, p95 7250 gegen 8180 ms). Ob die Antworten
+   natürlicher werden, entscheiden die Hörproben.
+4. **Die Basis deckt sich mit den früheren Läufen** (erster Ton Median 2,3 s, keine verpassten Einwürfe, Dämpfen ab etwa 770 ms).
+
+Entscheidung: Beide Schalter bleiben AUS. Für `WAMO_WARTESATZ_MODELL` ist ein Bestätigungslauf mit der Standardschwelle
+(`pause:6,fakten:8,werkzeug:5`) der nächste Schritt, danach ein Hörvergleich. Für `WAMO_PERSONA_GESPRAECH` entscheidet der
+Hörvergleich mit dem von Hand gesprochenen Satz aus Abschnitt 5. Hörproben: `D:\tmp\stimme-hoerprobe3\` (`basis4-*`, `gespraech-*`,
+`wartesatz-*`). Messdaten: `D:\tmp\wamo-stimme3\mess\` (`basis4`, `gespraech`, `wartesatzmodell`).
