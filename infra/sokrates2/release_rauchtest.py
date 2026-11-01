@@ -43,7 +43,7 @@ except ImportError:
 sys.dont_write_bytecode = True  # beim Import aus der Installation darf kein __pycache__ neben die Prüfsumme geraten
 HIER = os.path.dirname(os.path.realpath(__file__))
 PRODUKTIV_APP = "/opt/wamo-release/app"
-ID = [0]
+ID = [time.time_ns() >> 4 & 0x0FFFFFFFFFFFFFFF]   # je Lauf neu: der laufende Dienst merkt sich Kennungen und lehnt Wiederholungen ab
 ERGEBNIS = {"ok": 0, "fehler": 0, "uebersprungen": 0}
 ADMIN = "123e4567-e89b-12d3-a456-426614174000"
 NICHT_ADMIN = "223e4567-e89b-12d3-a456-426614174000"
