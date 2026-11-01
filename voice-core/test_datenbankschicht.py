@@ -413,8 +413,9 @@ def tearDownModule():
 def plain_verbinden(z):
     import psycopg as p
 
+    # ohne Startoptionen wie hinter Supavisor: Die Grenzen müssen aus der Transaktion selbst kommen
     return p.connect(host=z.host, port=z.port, dbname=z.dbname, user=z.user, password=z.password, sslmode="disable",
-                     connect_timeout=3, options="-c statement_timeout=5000", autocommit=False)
+                     connect_timeout=3, autocommit=False)
 
 
 def pg_als(rolle: str, port: int | None = None) -> W.Pg:
@@ -541,6 +542,15 @@ class EchteDatenbankTests(unittest.TestCase):
                         "values (%s::uuid, %s::uuid, %s, %s, now())", (a, ADMIN, COMMIT, TREE))
         self.assertEqual(m.exception.sqlstate, "42501")
         self.assertEqual(len(core.zeilen(f"select 1 from {SCHEMA}.release_anfragen")), 1)
+
+    def test_zeitgrenzen_gelten_in_der_transaktion_auch_wenn_der_pooler_startoptionen_ignoriert(self):
+        psql("alter role t_release set statement_timeout = '10s'; alter role t_release set lock_timeout = '0';")
+        pg = pg_als("t_release")
+        self.assertEqual(pg.eine("select current_setting('statement_timeout'), current_setting('lock_timeout')"), ("5s", "3s"))
+        # und sie bremsen wirklich: eine Anweisung über 5 s wird abgebrochen (57014), neutral als dauerhaft eingeordnet
+        with self.assertRaises(W.PgFehler) as m:
+            pg.zeilen("select pg_sleep(7)")
+        self.assertEqual(m.exception.sqlstate, "57014")
 
     def test_verbindung_zu_totem_port_ist_vorlaeufig(self):
         with self.assertRaises(RDB.DatenbankFehler):

@@ -13,7 +13,9 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   für beide Dienste. Geprüft gegen ein echtes Wegwerf-Postgres mit den echten Migrationen und Rollen (28 Tests, unabhängige
   Sicherheitsprüfung, Funde umgesetzt). Dabei gefunden und behoben: Migration `0016_release_freigaben_lesen` (der Trigger aus
   0013 verlangte für `FOR SHARE` ein Update-Recht, das der Release-Dienst bewusst nicht hat, er hätte nie auf `veroeffentlicht`
-  schalten können). Noch auf keinem Server angewendet, noch nicht in den Diensten verdrahtet.
+  schalten können). 0016 ist auf `wamo_dev` und `wamo_test` angewendet; die Login-Rollen `wamo_release_s2` und `wamo_anker_s2` mit
+  root-eigenen Zugangsdateien richtet `scripts/wamo_dienst_db.py` ein und prüft sie über Supavisor mit TLS verify-full. Die Zeitgrenzen
+  gelten als `SET LOCAL` in jeder Transaktion, weil Supavisor Startoptionen ignoriert. Noch nicht in den Diensten verdrahtet.
 - Freigabe-Dienst des Ankers, Schritt 1.4a (`infra/sokrates2/anker/freigabe.py`): Regeln für die Freigabe einer Release-Anfrage durch
   einen Admin. Token (ES256, Algorithmus fest, Aussteller und Zielgruppe geprüft), frischer zweiter Faktor über den jüngsten
   `totp`-Eintrag (höchstens 60 Sekunden, nicht aus der Zukunft), Bindung an die gesehene Commit-ID und Tree-ID, Drosselung auf

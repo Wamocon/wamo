@@ -191,6 +191,11 @@ class Pg:
         c = self._conn()
         try:
             with c.cursor() as cur:
+                # Supavisor ignoriert die Startoptionen der Verbindung (gemessen auf Sokrates-2: statement_timeout blieb bei der
+                # Einstellung der Rolle). Die Grenzen gelten deshalb in jeder Transaktion selbst, auch bei einem Pooler.
+                cur.execute(f"set local statement_timeout = {ANWEISUNG_MS}")
+                cur.execute(f"set local lock_timeout = {SPERRE_MS}")
+                cur.execute("set local idle_in_transaction_session_timeout = 10000")
                 ergebnis = arbeit(cur)
             c.commit()
             return ergebnis
