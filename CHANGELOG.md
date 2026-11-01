@@ -8,6 +8,12 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Datenbankschicht für Release-Dienst und Freigabe-Dienst (`infra/sokrates2/pg/`): Verbindung mit TLS verify-full und festen
+  Zeitgrenzen, strenge Prüfung von Zugangsdatei und CA-Datei, bereinigte `PG*`-Umgebung, Fehlerabbildung ohne Servertext, Adapter
+  für beide Dienste. Geprüft gegen ein echtes Wegwerf-Postgres mit den echten Migrationen und Rollen (28 Tests, unabhängige
+  Sicherheitsprüfung, Funde umgesetzt). Dabei gefunden und behoben: Migration `0016_release_freigaben_lesen` (der Trigger aus
+  0013 verlangte für `FOR SHARE` ein Update-Recht, das der Release-Dienst bewusst nicht hat, er hätte nie auf `veroeffentlicht`
+  schalten können). Noch auf keinem Server angewendet, noch nicht in den Diensten verdrahtet.
 - Freigabe-Dienst des Ankers, Schritt 1.4a (`infra/sokrates2/anker/freigabe.py`): Regeln für die Freigabe einer Release-Anfrage durch
   einen Admin. Token (ES256, Algorithmus fest, Aussteller und Zielgruppe geprüft), frischer zweiter Faktor über den jüngsten
   `totp`-Eintrag (höchstens 60 Sekunden, nicht aus der Zukunft), Bindung an die gesehene Commit-ID und Tree-ID, Drosselung auf
