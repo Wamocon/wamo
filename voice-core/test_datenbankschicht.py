@@ -339,8 +339,73 @@ class PgOhneDatenbankTests(unittest.TestCase):
             rdb.ereignis_anhaengen(None, "ok", {"x": "y" * 5000})
 
 
+class DatenbankAusUmgebungTests(unittest.TestCase):
+    """wamo_release.datenbank_aus_umgebung: echte Datenbank nur mit Schema UND gültiger Zugangsdatei, sonst ehrlich ohne."""
+
+    def setUp(self):
+        import wamo_release as R
+
+        self.R = R
+        self.tmp = tempfile.TemporaryDirectory(prefix="dbumgebung-")
+        self.addCleanup(self.tmp.cleanup)
+        self.stderr = mock.patch("sys.stderr", new_callable=__import__("io").StringIO)
+        self.fehler = self.stderr.start()
+        self.addCleanup(self.stderr.stop)
+
+    def mit(self, schema, datei_pfad):
+        umgebung = {"WAMO_RELEASE_SCHEMA": schema} if schema is not None else {}
+        return mock.patch.multiple(self.R, ZUGANG_DATEI=str(datei_pfad)), mock.patch.dict(os.environ, umgebung, clear=False)
+
+    def lauf(self, schema, datei_pfad):
+        a, b = self.mit(schema, datei_pfad)
+        with a, b:
+            if schema is None:
+                os.environ.pop("WAMO_RELEASE_SCHEMA", None)
+            return self.R.datenbank_aus_umgebung()
+
+    def test_ohne_schema_keine_datenbank(self):
+        p = datei(Path(self.tmp.name), "host=h\n")
+        self.assertIsInstance(self.lauf(None, p), RDB.OhneDatenbank)
+        self.assertIsInstance(self.lauf("", p), RDB.OhneDatenbank)
+
+    def test_ohne_zugangsdatei_keine_datenbank(self):
+        self.assertIsInstance(self.lauf("wamo_dev", Path(self.tmp.name) / "fehlt"), RDB.OhneDatenbank)
+
+    def test_ungueltige_datei_oder_schema_keine_datenbank_und_kein_inhalt_im_journal(self):
+        p = datei(Path(self.tmp.name), f"unsinn {PASSWORT}\n")
+        self.assertIsInstance(self.lauf("wamo_dev", p), RDB.OhneDatenbank)
+        self.assertIsInstance(self.lauf("wamo_prod; drop", p), RDB.OhneDatenbank)
+        self.assertNotIn(PASSWORT, self.fehler.getvalue())
+        self.assertIn("Datenbank nicht angeschlossen", self.fehler.getvalue())
+
+    def test_gueltige_datei_ergibt_die_echte_datenbank(self):
+        ziel = W.Ziel("h.example", 5432, "postgres", "wamo_release_s2.wamo", PASSWORT, "/ca.crt")
+        with mock.patch.object(W, "zugangsdatei_lesen", return_value=ziel):
+            p = Path(self.tmp.name) / "egal"
+            p.write_text("x", encoding="utf-8")
+            db = self.lauf("wamo_dev", p)
+        self.assertIsInstance(db, RPG.ReleaseDatenbank)
+        self.assertNotIn(PASSWORT, repr(db.__dict__))
+        self.assertNotIn(PASSWORT, self.fehler.getvalue())
+
+    def test_pylib_wird_hinten_angehaengt(self):
+        p = Path(self.tmp.name) / "fehlt"
+        pfad = list(sys.path)
+        try:
+            ziel = W.Ziel("h.example", 5432, "postgres", "u", PASSWORT, "/ca.crt")
+            q = Path(self.tmp.name) / "da"
+            q.write_text("x", encoding="utf-8")
+            with mock.patch.object(W, "zugangsdatei_lesen", return_value=ziel):
+                self.lauf("wamo_dev", q)
+            self.assertEqual(sys.path.count(self.R.PYLIB), 1)
+            self.assertEqual(sys.path[-1], self.R.PYLIB)
+            self.assertIsInstance(self.lauf("wamo_dev", p), RDB.OhneDatenbank)
+        finally:
+            sys.path[:] = pfad
+
+
 # ================================================================================================ Teil 2: echtes Postgres
-ADMIN = "123e4567-e89b-12d3-a456-426614174000"
+ADMIN ="123e4567-e89b-12d3-a456-426614174000"
 ADMIN2 = "223e4567-e89b-12d3-a456-426614174000"
 MITGLIED = "323e4567-e89b-12d3-a456-426614174000"
 KEIN_PROFIL = "923e4567-e89b-12d3-a456-426614174000"

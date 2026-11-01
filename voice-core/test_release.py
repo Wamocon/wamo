@@ -1938,7 +1938,14 @@ class QuelltextTests(unittest.TestCase):
             for verboten in ("subprocess", "os.system", "os.popen", "os.exec", "shell=True", "eval(", "exec(", "pickle",
                              "import requests", "urllib", "http.client", "AF_INET", "socket.create_connection", "anthropic",
                              "os.environ", "getenv", "__import__", "importlib"):
+                if verboten == "os.environ" and datei.name == "wamo_release.py":
+                    continue  # genau eine Ausnahme, unten geprüft: das Schema der Datenbank
                 self.assertNotIn(verboten, text, (datei.name, verboten))
+
+    def test_umgebung_wird_nur_fuer_das_schema_gelesen(self):
+        text = (RELEASE / "wamo_release.py").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r"os\.environ\.get\([^)]*\)", text), ['os.environ.get("WAMO_RELEASE_SCHEMA", "")'])
+        self.assertEqual(text.count("os.environ"), 1)
 
     def test_keine_gedankenstriche_in_den_texten(self):
         lang, kurz = chr(0x2014), chr(0x2013)
@@ -1957,7 +1964,7 @@ class QuelltextTests(unittest.TestCase):
 
     def test_nur_standardbibliothek(self):
         import ast
-        eigene = {d.stem for d in self.DATEIEN}
+        eigene = {d.stem for d in self.DATEIEN} | {"release_pg", "wamo_pg"}   # die beiden liegen in pg/, erst zur Laufzeit geladen
         for datei in self.DATEIEN:
             for knoten in ast.walk(ast.parse(datei.read_text(encoding="utf-8"))):
                 module = []

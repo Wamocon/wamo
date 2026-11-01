@@ -1,0 +1,18 @@
+# WAMO Release-Dienst: Ausgang des Benutzers wamo-release nur zur Datenbank (Supavisor, Port 55322 auf Sokrates-2).
+# Eigene Tabelle, fremde Tabellen und Regeln bleiben unberührt. Nur Pakete von Sockets des Benutzers wamo-release laufen in die
+# Kette; alles außer der einen Verbindung wird verworfen (auch IPv6, Loopback, LAN, Internet). Unix-Sockets sind kein Netzverkehr
+# und bleiben unberührt (der Dienst spricht darüber mit Anker und Kern). Die Unit wamo-release.service verlangt diese Tabelle
+# (Requires), der Dienst startet ohne sie nicht. Zusätzlich beschränkt systemd selbst (IPAddressDeny=any, IPAddressAllow nur diese
+# Adresse, RestrictAddressFamilies=AF_UNIX AF_INET); die Regel hier ergänzt die Beschränkung auf den einen Port.
+table inet wamo_release_ausgang
+delete table inet wamo_release_ausgang
+table inet wamo_release_ausgang {
+	chain ausgang {
+		type filter hook output priority -10; policy accept;
+		meta skuid wamo-release jump wamo_release
+	}
+	chain wamo_release {
+		ip daddr 192.168.178.136 tcp dport 55322 counter accept comment "nur die Datenbank (Supavisor)"
+		counter drop comment "alles andere verworfen"
+	}
+}

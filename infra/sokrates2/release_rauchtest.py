@@ -14,7 +14,8 @@ samt Manipulation. Es wird nichts am echten System geändert und kein Anker gefr
 Teil B (--produktiv): Die echte Installation wird nur gelesen und angesprochen: Rechte der Ordner und Dateien, Prüfsumme,
 Dienst aktiv ohne Capabilities, Schreibproben als wamo, wamo-core und nobody (müssen scheitern), Socket-Rechte, Aufruf des
 echten Sockets als diese Benutzer (müssen abgewiesen werden), `status` als root (Anker erreichbar?) und eine Anfrage, die in
-diesem Schritt abgelehnt werden muss (keine Datenbank). Der echte Socket schreibt dabei Zeilen ins Audit-Protokoll.
+diesem Schritt abgelehnt werden muss (Sperre oder kein Admin), dazu die Netzproben als wamo-release (nur die Datenbank auf
+192.168.178.136:55322 ist erreichbar, SSH und Internet nicht). Der echte Socket schreibt dabei Zeilen ins Audit-Protokoll.
 Exit 0 nur, wenn alles bestanden ist.
 """
 
@@ -133,6 +134,32 @@ def frage(sockpfad: str, text: str, roh: bool = False) -> dict:
 def als_benutzer(benutzer: str, argv: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["runuser", "-u", benutzer, "--", sys.executable, "-I", "-c", *argv],
                           capture_output=True, text=True, timeout=30, cwd="/")
+
+
+NETZPROBE = "\n".join([
+    "import socket, sys",
+    "s = socket.socket(); s.settimeout(3)",
+    "try:",
+    "    s.connect((sys.argv[1], int(sys.argv[2]))); print('VERBUNDEN')",
+    "except OSError as e:",
+    "    print('ABGELEHNT', type(e).__name__)",
+])
+DB_ADRESSE = ("192.168.178.136", 55322)
+
+
+def netzproben(vorhanden: bool, db_soll_da: bool) -> None:
+    """Der Benutzer wamo-release erreicht nur die Datenbank (nft-Tabelle wamo_release_ausgang und IPAddressAllow)."""
+    if not vorhanden:
+        return uebersprungen("Netzproben", "Benutzer wamo-release existiert nicht")
+    for ziel, port, name in (("192.168.178.136", 22, "SSH auf Sokrates-2"), ("192.168.178.1", 80, "Router im LAN"),
+                             ("1.1.1.1", 443, "Internet")):
+        r = als_benutzer("wamo-release", [NETZPROBE, ziel, str(port)])
+        pruefe(f"wamo-release erreicht {name} nicht", "ABGELEHNT" in r.stdout, (r.stdout + r.stderr)[:200])
+    r = als_benutzer("wamo-release", [NETZPROBE, DB_ADRESSE[0], str(DB_ADRESSE[1])])
+    if db_soll_da:
+        pruefe("wamo-release erreicht die Datenbank (Supavisor)", "VERBUNDEN" in r.stdout, (r.stdout + r.stderr)[:200])
+    rc, aus = kommando(["nft", "list", "table", "inet", "wamo_release_ausgang"])
+    pruefe("nft-Tabelle wamo_release_ausgang geladen", rc == 0 and "drop" in aus, aus[:200])
 
 
 def kommando(argv: list[str]) -> tuple[int, str]:
@@ -405,8 +432,12 @@ def teil_b(M, benutzer: list[str], root: bool) -> None:
            json.dumps(a.get("anker"))[:100])
     pruefe("Installation ohne Abweichung", a.get("installation") == "ok", json.dumps(a.get("installation_probleme"))[:200])
     a = frage(P.socket, f"anfordern main {ADMIN}")
-    erwartet = a.get("grund") in ("datenbank_fehlt", "gesperrt")  # Gerüst: keine Datenbank, und die Sperre ist nach der Einrichtung gesetzt
+    # Sperre nach der Einrichtung gesetzt; ohne Sperre lehnt die echte Datenbank die Test-UUID als Nicht-Admin ab
+    erwartet = a.get("grund") in ("datenbank_fehlt", "gesperrt", "kein_admin")
     pruefe("anfordern wird in diesem Schritt abgelehnt", erwartet and not a.get("ok"), json.dumps(a)[:200])
+    s = frage(P.socket, "status")
+    print(f"  Hinweis: Datenbank {s.get('datenbank')}")
+    netzproben(benutzer_vorhanden("wamo-release"), s.get("datenbank") == "angeschlossen")
     pruefe("freigeben wird nie angenommen", frage(P.socket, f"freigeben {ADMIN}").get("grund") == "freigabe_nur_beim_anker")
     print(f"  Hinweis: Die Kette hat {frage(P.socket, 'status')['audit']['zeilen']} Zeilen")
     rc, aus = kommando(["systemd-analyze", "security", "wamo-release.service", "--no-pager"])

@@ -1430,11 +1430,34 @@ class Server:
                 os.unlink(self.dienst.p.socket)
 
 
+ZUGANG_DATEI = "/etc/wamo-release/db.zugang"   # root-eigen, Gruppe wamo-release 0640 (scripts/wamo_dienst_db.py)
+PYLIB = "/opt/wamo-release/pylib"               # psycopg, hash-gesichert und root-eigen (release-einrichten.sh)
+
+
+def datenbank_aus_umgebung() -> Datenbank:
+    """Die echte Datenbank (Rolle wamo_release), wenn das Schema in WAMO_RELEASE_SCHEMA steht und die Zugangsdatei gültig ist.
+    Sonst wie bisher OhneDatenbank: Jede Frage scheitert ehrlich, der Dienst lehnt das Anfordern ab. Nie ein Text der Datenbank oder
+    der Zugangsdatei im Journal, nur die Art des Fehlers."""
+    schema = os.environ.get("WAMO_RELEASE_SCHEMA", "")
+    if not schema or not os.path.exists(ZUGANG_DATEI):
+        return OhneDatenbank()
+    try:
+        if PYLIB not in sys.path:
+            sys.path.append(PYLIB)  # hinten angehängt: Standardbibliothek und eigene Module gehen vor, nichts in PYLIB verdeckt sie
+        from release_pg import ReleaseDatenbank
+        from wamo_pg import Pg, zugangsdatei_lesen
+
+        return ReleaseDatenbank(Pg(zugangsdatei_lesen(ZUGANG_DATEI), anwendung="wamo-release"), schema)
+    except Exception as e:  # noqa: BLE001  ImportError, ValueError (Schema), ZugangsdateiFehler: alles heißt "keine Datenbank"
+        print(f"Datenbank nicht angeschlossen ({type(e).__name__}).", file=sys.stderr)
+        return OhneDatenbank()
+
+
 def dienst_main() -> int:
     if not sys.platform.startswith("linux") or os.geteuid() == 0:
         print("Der Dienst läuft nur unter Linux und nie als root.", file=sys.stderr)
         return 1
-    dienst = Dienst()
+    dienst = Dienst(db=datenbank_aus_umgebung())
     dienst.wiederaufnehmen(abgleich=False)  # der Abgleich mit der Datenbank folgt in der Wache, wenn der Socket schon steht
     server = Server(dienst)
     server.binden()
