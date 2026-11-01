@@ -425,6 +425,7 @@ class SudoFreigabeTests(Werkstatt):
             self.assertFalse(self.p("etc/sudoers.d").exists(), args)
 
 
+@unittest.skipUnless(LINUX and BASH, "Probelauf braucht Linux und GNU-Werkzeuge")
 class AusgangsregelTests(Werkstatt):
     def setUp(self):
         super().setUp()
