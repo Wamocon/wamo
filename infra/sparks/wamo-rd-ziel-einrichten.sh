@@ -30,7 +30,12 @@
 #                         [Sessions] KillDisconnected=true, DisconnectedTimeLimit=900, IdleTimeLimit=600
 #   /etc/xrdp/xrdp.ini    [Globals] security_layer=tls, crypt_level=high, ssl_protocols=TLSv1.2, TLSv1.3
 #                         [Channels] rdpdr=false, rdpsnd=false, cliprdr=false (keine Laufwerke, kein Ton, keine Zwischenablage)
-#   /home/wamo-rd/.xsessionrc  GNOME-Sitzung unter Xorg für das Konto (nur diese Datei im Home)
+#   /home/wamo-rd/startwm.sh   GNOME-Sitzung unter Xorg für das Konto (nur diese Datei im Home). Das Konto startet damit
+#                         gnome-session selbst und nicht über /etc/X11/Xsession: Dessen Skript 90xbrlapi wartet im Vordergrund auf
+#                         einen Braille-Dienst und hält die Sitzung auf einem Server ohne Braillezeile vor dem Desktop an
+#                         (schwarzer Bildschirm). xrdp nimmt die Datei über EnableUserWindowManager=true (Vorgabe).
+#   Gruppe ssl-cert           Benutzer xrdp wird aufgenommen, falls er den TLS-Schlüssel /etc/xrdp/key.pem sonst nicht lesen kann
+#                         (ohne das nimmt xrdp mit security_layer=tls keine Verbindung an; wirkt nach dem Neustart von xrdp)
 #   Port 3389: nur --quelle und Loopback (xrdp-einhegen.sh --nur-sperre: ufw oder eigene nftables-Tabelle wamo_xrdp)
 # Nicht geändert: Pakete, Dienste ein/aus (xrdp bleibt, wie er ist), die Sitzung von wamocon, GRD, sshd.
 #
@@ -45,7 +50,8 @@ GRUPPE_TS=wamo-rd-ts
 QUELLE=172.27.0.0/24
 SESMAN="$WURZEL/etc/xrdp/sesman.ini"
 XRDP_INI="$WURZEL/etc/xrdp/xrdp.ini"
-XSESSIONRC="$WURZEL/home/wamo-rd/.xsessionrc"
+STARTWM="$WURZEL/home/wamo-rd/startwm.sh"
+XSESSIONRC="$WURZEL/home/wamo-rd/.xsessionrc"   # frühere Fassung dieses Skripts (wird bei Bedarf entfernt)
 MARKE="# WAMO Remote Desktop (wamo-rd-ziel-einrichten.sh)"
 
 if [ -n "$WURZEL" ]; then
@@ -208,31 +214,63 @@ konfiguration() {
 sitzung() {
   echo "== Sitzung von $KONTO (GNOME unter Xorg)"
   local inhalt
-  inhalt="$MARKE
+  inhalt="#!/bin/sh
+$MARKE
 export GNOME_SHELL_SESSION_MODE=ubuntu
 export XDG_CURRENT_DESKTOP=ubuntu:GNOME
-export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg"
-  [ ! -L "$XSESSIONRC" ] || fehler "$XSESSIONRC ist ein symbolischer Link, Abbruch."
-  if [ -f "$XSESSIONRC" ] && [ "$(cat "$XSESSIONRC")" = "$inhalt" ]; then
-    echo "  $XSESSIONRC: schon eingerichtet"
+export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg
+export XDG_SESSION_TYPE=x11
+export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"
+export DBUS_SESSION_BUS_ADDRESS=\"unix:path=\$XDG_RUNTIME_DIR/bus\"
+exec gnome-session --session=ubuntu"
+  [ ! -L "$STARTWM" ] || fehler "$STARTWM ist ein symbolischer Link, Abbruch."
+  # Eine .xsessionrc aus einer früheren Fassung dieses Skripts wird nicht mehr gebraucht und entfernt, eine fremde bleibt
+  if [ -f "$XSESSIONRC" ] && [ ! -L "$XSESSIONRC" ] && head -n1 "$XSESSIONRC" | grep -qF "$MARKE"; then
+    tu rm -f "$XSESSIONRC"
+  fi
+  if [ -f "$STARTWM" ] && [ "$(cat "$STARTWM")" = "$inhalt" ]; then
+    echo "  $STARTWM: schon eingerichtet"
     return 0
   fi
-  if [ -f "$XSESSIONRC" ] && ! head -n1 "$XSESSIONRC" | grep -qF "$MARKE"; then
-    fehler "$XSESSIONRC existiert und stammt nicht von diesem Skript, Abbruch."
+  if [ -f "$STARTWM" ] && ! sed -n '2p' "$STARTWM" | grep -qF "$MARKE"; then
+    fehler "$STARTWM existiert und stammt nicht von diesem Skript, Abbruch."
   fi
   if [ "$TROCKEN" = ja ]; then
-    echo "  [trocken] $XSESSIONRC anlegen (Besitzer $KONTO, 0644)"
+    echo "  [trocken] $STARTWM anlegen (Besitzer $KONTO, 0755)"
   else
     # Das Home gehört dem Konto: mktemp legt mit zufälligem Namen und O_EXCL an (kein vorab gelegter Link wird verfolgt),
     # chown -h und mv -T wirken auf die Datei bzw. den Link selbst, nie auf dessen Ziel
     local tmp
-    tmp="$(mktemp "$XSESSIONRC.XXXXXX")"
+    tmp="$(mktemp "$STARTWM.XXXXXX")"
     printf '%s\n' "$inhalt" > "$tmp"
-    chmod 0644 "$tmp"
+    chmod 0755 "$tmp"
     if [ -z "$WURZEL" ]; then chown -h "$KONTO:$KONTO" "$tmp"; fi
-    mv -T -f "$tmp" "$XSESSIONRC"
-    echo "  $XSESSIONRC angelegt"
+    mv -T -f "$tmp" "$STARTWM"
+    echo "  $STARTWM angelegt"
   fi
+}
+
+tls_schluessel() {
+  # Mit security_layer=tls braucht xrdp (Benutzer xrdp) Leserecht auf /etc/xrdp/key.pem. Das Paket verlinkt dorthin den
+  # Schlüssel der Gruppe ssl-cert (0640 root:ssl-cert), trägt xrdp aber nicht in diese Gruppe ein: ohne Eintrag lehnt xrdp jede
+  # TLS-Verbindung ab ("Cannot read private key file", im Gateway "Security negotiation failed", Fehler 769).
+  echo "== TLS-Schlüssel von xrdp"
+  local key grp modus
+  key="$(readlink -f "$WURZEL/etc/xrdp/key.pem" 2>/dev/null || true)"
+  if [ -z "$key" ] || [ ! -f "$key" ]; then
+    echo "  kein Schlüssel unter /etc/xrdp/key.pem, nichts zu tun"
+    return 0
+  fi
+  grp="${WAMO_RD_ZIEL_SCHLUESSELGRUPPE:-$(stat -c %G "$key")}"
+  modus="$(stat -c %a "$key")"
+  if id -nG xrdp 2>/dev/null | tr ' ' '\n' | grep -qx "$grp"; then
+    echo "  xrdp ist in der Gruppe $grp, der Schlüssel ist lesbar"
+    return 0
+  fi
+  [ "$grp" = ssl-cert ] || fehler "Der Schlüssel $key gehört der Gruppe $grp, nicht ssl-cert. Bitte von Hand lösen (xrdp muss ihn lesen können). Abbruch."
+  (( (8#$modus & 8#040) != 0 )) || fehler "Der Schlüssel $key hat den Modus $modus ohne Leserecht für die Gruppe. Abbruch."
+  tu usermod -aG ssl-cert xrdp
+  echo "  xrdp in die Gruppe ssl-cert aufgenommen (wirkt nach dem Neustart von xrdp)"
 }
 
 neustart() {
@@ -266,7 +304,7 @@ status() {
       "rdpdr=$(ini_wert "$XRDP_INI" Channels rdpdr), rdpsnd=$(ini_wert "$XRDP_INI" Channels rdpsnd), cliprdr=$(ini_wert "$XRDP_INI" Channels cliprdr)"
   fi
   if hat ss; then echo "  Lauscht auf Port 3389: $(ss -tlnH 'sport = :3389' 2>/dev/null | awk '{ print $4 }' | paste -sd' ' - || true)"; fi
-  [ -f "$XSESSIONRC" ] && echo "  $XSESSIONRC: vorhanden" || echo "  $XSESSIONRC: fehlt"
+  [ -f "$STARTWM" ] && echo "  $STARTWM: vorhanden" || echo "  $STARTWM: fehlt"
 }
 
 zurueck() {
@@ -287,7 +325,10 @@ zurueck() {
       echo "  $datei: keine Sicherung dieses Skripts, nichts wiederherzustellen"
     fi
   done
-  if [ -f "$XSESSIONRC" ] && head -n1 "$XSESSIONRC" | grep -qF "$MARKE"; then
+  if [ -f "$STARTWM" ] && [ ! -L "$STARTWM" ] && sed -n '2p' "$STARTWM" | grep -qF "$MARKE"; then
+    tu rm -f "$STARTWM"
+  fi
+  if [ -f "$XSESSIONRC" ] && [ ! -L "$XSESSIONRC" ] && head -n1 "$XSESSIONRC" | grep -qF "$MARKE"; then
     tu rm -f "$XSESSIONRC"
   fi
   local zusatz=()
@@ -308,6 +349,7 @@ else
   sperre
   konfiguration
   sitzung
+  tls_schluessel
   neustart
   echo
   status

@@ -1192,7 +1192,8 @@ class ZielEinrichtenTests(Werkstatt):
         self.ausgabe("ufw.status", "Status: active\n")
         self.ausgabe("ufw.status_numbered", "Status: active\n\n[ 1] 22/tcp ALLOW IN Anywhere\n")
         self.ausgabe("nft.list_table", "", rc=1)
-        self.xsession = self.p("home/wamo-rd/.xsessionrc")
+        self.xsession = self.p("home/wamo-rd/startwm.sh")
+        self.alte_xsessionrc = self.p("home/wamo-rd/.xsessionrc")
 
     def ziel(self, *args):
         return self.lauf(ZIEL_SKRIPT, *args, extra={"WAMO_RD_ZIEL_WURZEL": str(self.wurzel)})
@@ -1206,6 +1207,46 @@ class ZielEinrichtenTests(Werkstatt):
             elif aktuell == abschnitt and z.split("=", 1)[0].strip() == schluessel:
                 wert = z.split("=", 1)[1].strip()
         return wert
+
+    def schluessel(self, modus=0o640):
+        key = self.p("etc/xrdp/key.pem")
+        key.write_text("schluessel")
+        key.chmod(modus)
+        return key
+
+    def test_tls_schluessel_ohne_datei_aendert_nichts(self):
+        r = self.ziel()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("kein Schlüssel unter /etc/xrdp/key.pem", r.stdout)
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("usermod")])
+
+    def test_tls_schluessel_nimmt_xrdp_in_die_gruppe_ssl_cert_auf(self):
+        self.attrappe("usermod")
+        self.schluessel()
+        r = self.lauf(ZIEL_SKRIPT, extra={"WAMO_RD_ZIEL_WURZEL": str(self.wurzel), "WAMO_RD_ZIEL_SCHLUESSELGRUPPE": "ssl-cert"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("usermod -aG ssl-cert xrdp", self.aufrufe())
+        self.assertIn("xrdp in die Gruppe ssl-cert aufgenommen", r.stdout)
+
+    def test_tls_schluessel_im_trockenlauf_zeigt_nur_an(self):
+        self.attrappe("usermod")
+        self.schluessel()
+        r = self.lauf(ZIEL_SKRIPT, "--trocken", extra={"WAMO_RD_ZIEL_WURZEL": str(self.wurzel), "WAMO_RD_ZIEL_SCHLUESSELGRUPPE": "ssl-cert"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[trocken] usermod -aG ssl-cert xrdp", r.stdout)
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("usermod")])
+
+    def test_tls_schluessel_mit_fremder_gruppe_oder_ohne_gruppenrecht_bricht_ab(self):
+        self.attrappe("usermod")
+        self.schluessel()
+        r = self.lauf(ZIEL_SKRIPT, extra={"WAMO_RD_ZIEL_WURZEL": str(self.wurzel), "WAMO_RD_ZIEL_SCHLUESSELGRUPPE": "andere"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("nicht ssl-cert", r.stderr)
+        self.schluessel(0o600)
+        r = self.lauf(ZIEL_SKRIPT, extra={"WAMO_RD_ZIEL_WURZEL": str(self.wurzel), "WAMO_RD_ZIEL_SCHLUESSELGRUPPE": "ssl-cert"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("ohne Leserecht für die Gruppe", r.stderr)
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("usermod")])
 
     def test_trockenlauf_aendert_nichts(self):
         vorher = (sha(self.sesman), sha(self.xrdp_ini))
@@ -1247,8 +1288,12 @@ class ZielEinrichtenTests(Werkstatt):
         self.assertEqual((len(s), len(x)), (1, 1))
         self.assertEqual(self.p("etc/xrdp", s[0]).read_text(), SESMAN_INI)
         # nur die eine Datei im Home des Kontos
-        self.assertIn("export XDG_CURRENT_DESKTOP=ubuntu:GNOME", self.xsession.read_text())
-        self.assertEqual(os.listdir(self.p("home/wamo-rd")), [".xsessionrc"])
+        text = self.xsession.read_text()
+        self.assertIn("export XDG_CURRENT_DESKTOP=ubuntu:GNOME", text)
+        self.assertTrue(text.endswith("exec gnome-session --session=ubuntu\n"), text)   # startet den Desktop selbst, nicht über Xsession
+        self.assertTrue(text.startswith("#!/bin/sh\n"))
+        self.assertEqual(stat.S_IMODE(os.stat(self.xsession).st_mode), 0o755)
+        self.assertEqual(os.listdir(self.p("home/wamo-rd")), ["startwm.sh"])
         # Sperre nur für das Netz des Gateways
         aufrufe = self.aufrufe()
         self.assertIn("ufw insert 1 allow from 172.27.0.0/24 to any port 3389 proto tcp comment wamo-xrdp", aufrufe)
@@ -1298,7 +1343,17 @@ class ZielEinrichtenTests(Werkstatt):
         self.assertEqual(r.returncode, 1)
         self.assertIn("genau ein Mitglied", r.stderr)
 
-    def test_xsessionrc_als_link_wird_abgewiesen(self):
+    def test_alte_xsessionrc_dieses_skripts_wird_entfernt_eine_fremde_bleibt(self):
+        self.alte_xsessionrc.write_text("# WAMO Remote Desktop (wamo-rd-ziel-einrichten.sh)\nexport GNOME_SHELL_SESSION_MODE=ubuntu\n")
+        self.assertEqual(self.ziel().returncode, 0)
+        self.assertFalse(self.alte_xsessionrc.exists())
+        self.assertTrue(self.xsession.exists())
+        self.xsession.unlink()
+        self.alte_xsessionrc.write_text("export MEINS=1\n")
+        self.assertEqual(self.ziel().returncode, 0)
+        self.assertEqual(self.alte_xsessionrc.read_text(), "export MEINS=1\n")
+
+    def test_startwm_als_link_wird_abgewiesen(self):
         ziel = Path(self.tmp.name) / "fremd.txt"
         ziel.write_text("unberuehrt\n")
         self.xsession.symlink_to(ziel)
@@ -1307,7 +1362,7 @@ class ZielEinrichtenTests(Werkstatt):
         self.assertIn("symbolischer Link", r.stderr)
         self.assertEqual(ziel.read_text(), "unberuehrt\n")
 
-    def test_fremde_xsessionrc_wird_nicht_ueberschrieben(self):
+    def test_fremde_startwm_wird_nicht_ueberschrieben(self):
         self.xsession.write_text("export MEINS=1\n")
         r = self.ziel()
         self.assertEqual(r.returncode, 1)
