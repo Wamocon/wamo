@@ -205,7 +205,7 @@ pylib() {
   # nicht in der Sperrdatei steht (auch eine neuere Fassung desselben Namens); --no-deps, weil die Sperrdatei alles nennt.
   env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C.UTF-8 HOME=/nonexistent PIP_CONFIG_FILE=/dev/null \
     "$PYTHON" -I -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir --no-compile \
-    --disable-pip-version-check --quiet --target "$neu" -r "$HERE/pg/requirements.lock" \
+    --disable-pip-version-check --root-user-action=ignore --quiet --target "$neu" -r "$HERE/pg/requirements.lock" \
     || { rm -rf "$neu"; echo "pip-Installation aus pg/requirements.lock fehlgeschlagen, Abbruch." >&2; exit 1; }
   find "$neu" -name '__pycache__' -prune -exec rm -rf {} +
   find "$neu" -type l -exec rm -f {} +                      # nichts, was aus dem Ordner herauszeigt
@@ -213,7 +213,8 @@ pylib() {
   chmod -R go-w,a+rX "$neu"
   ( cd "$neu" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$BASIS/.pylib.summen" )
   # Import-Probe mit genau dem Interpreter des Dienstes: ohne Datenbank, nur ob psycopg samt eingebauter libpq lädt
-  PYTHONPATH="$neu" "$PYTHON" -E -s -B -c 'import psycopg; psycopg.pq.version()' \
+  # (-E ignoriert PYTHONPATH, darum der Pfad als Argument und per sys.path.append wie im Dienst)
+  "$PYTHON" -E -s -B -c 'import sys; sys.path.append(sys.argv[1]); import psycopg; print("  psycopg", psycopg.__version__, "libpq", psycopg.pq.version())' "$neu" \
     || { rm -rf "$neu" "$BASIS/.pylib.summen"; echo "psycopg lässt sich nicht laden (Architektur? libpq?), Abbruch." >&2; exit 1; }
   install -o root -g root -m 0644 "$BASIS/.pylib.summen" "$BASIS/pylib.SHA256SUMS"
   rm -f "$BASIS/.pylib.summen"
