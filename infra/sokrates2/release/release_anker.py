@@ -5,11 +5,12 @@ Der Release-Dienst erreicht den Anker nur über dessen Unix-Socket und nur mit d
     status                   Sperre, Zustand, Prüfung des Audit-Protokolls des Ankers
     rueckweg ui|kern|alles   zurück auf den letzten guten Stand (auch mit --trocken)
     sperre an                setzt die Sperre (mit --trocken nur der Plan)
+    klassifiziere <id>       Schutzschicht: der Anker ordnet das Diff der Anfrage ein und schreibt Art und Treffer (Schritt 3a)
+    migrieren|bereitstellen|umschalten <id>   die Vorwärtsbefehle (Schritt 1.4e); der Anker liest die Anfrage und die Freigabe selbst aus der Datenbank
 
 Nie `sperre aus`: Der Anker erlaubt es dem Benutzer wamo-release ohnehin nicht (ERLAUBT im Anker), und dieser Client
-kann den Befehl nicht einmal bauen. Die Vorwärtsbefehle des Ankers (bereitstellen, migrieren, umschalten, klassifiziere)
-sind in diesem Schritt ebenfalls nicht erreichbar; die Stufe 1 erweitert die Liste, und das ist eine Änderung an diesem
-Programm. Gegenstelle: Der Socket muss root gehören (SO_PEERCRED), sonst wird nichts gesendet. Antworten sind höchstens
+kann den Befehl nicht einmal bauen. Die Vorwärtsbefehle tragen nur die Kennung der Anfrage; was sie tun, bestimmt der Anker aus der Datenbank, nie dieser
+Client. Eine Erweiterung der Liste ist eine Änderung an diesem Programm. Gegenstelle: Der Socket muss root gehören (SO_PEERCRED), sonst wird nichts gesendet. Antworten sind höchstens
 8 KiB, ASCII-JSON und werden streng geprüft; alles andere zählt als "Anker nicht erreichbar" (fail closed).
 """
 
@@ -27,12 +28,18 @@ from typing import Callable
 ANTWORT_MAX = 8192
 ZEIT_KURZ_S = 5.0  # status und sperre
 ZEIT_RUECKWEG_S = {"ui": 150.0, "kern": 200.0, "alles": 330.0}  # die Schritte des Ankers haben 120 und 180 Sekunden
+ZEIT_VORWAERTS_S = {"klassifiziere": 60.0, "migrieren": 330.0, "bereitstellen": 420.0, "umschalten": 250.0}   # Migrationen und die Schritte des Kerns dauern
+UUID_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 
 # Die einzigen Anfragen, die dieser Client senden kann: (Befehl, Argument-Muster, --trocken erlaubt)
 ERLAUBT = {
     "status": (None, False),
     "rueckweg": (re.compile(r"ui|kern|alles"), True),
     "sperre": (re.compile(r"an"), True),
+    "klassifiziere": (UUID_RE, True),
+    "migrieren": (UUID_RE, True),
+    "bereitstellen": (UUID_RE, True),
+    "umschalten": (UUID_RE, True),
 }
 
 
@@ -144,6 +151,12 @@ class AnkerClient:
     def rueckweg(self, komponente: str, trocken: bool = False) -> Antwort:
         zeile = zeile_bauen("rueckweg", komponente, trocken)
         return self._senden(zeile, ZEIT_RUECKWEG_S[komponente])
+
+    def vorwaerts(self, befehl: str, anfrage: str, trocken: bool = False) -> Antwort:
+        """klassifiziere, migrieren, bereitstellen oder umschalten für genau eine Anfrage. Der Anker prüft alles Weitere selbst."""
+        if befehl not in ZEIT_VORWAERTS_S:
+            raise Verboten(f"Befehl {befehl!r} ist kein Vorwärtsbefehl")
+        return self._senden(zeile_bauen(befehl, anfrage, trocken), ZEIT_VORWAERTS_S[befehl])
 
     def sperre_an(self, trocken: bool = False) -> Antwort:
         return self._senden(zeile_bauen("sperre", "an", trocken), ZEIT_KURZ_S)

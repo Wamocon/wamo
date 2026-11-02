@@ -914,15 +914,21 @@ class ZustandsdateiTests(ReleaseTest):
 
 # ==================================================================== Anker-Client
 class AnkerClientTests(unittest.TestCase):
-    def test_nur_drei_befehle_und_nie_sperre_aus(self):
-        self.assertEqual(set(RA.ERLAUBT), {"status", "rueckweg", "sperre"})
+    def test_nur_diese_befehle_und_nie_sperre_aus(self):
+        self.assertEqual(set(RA.ERLAUBT), {"status", "rueckweg", "sperre", "klassifiziere", "migrieren", "bereitstellen", "umschalten"})
         RA.zeile_bauen("status")
+        for befehl in ("klassifiziere", "migrieren", "bereitstellen", "umschalten"):   # nur mit der Kennung einer Anfrage, auch als Trockenlauf
+            for trocken in (False, True):
+                zeile = RA.zeile_bauen(befehl, "0b9f2c1e-4a6d-4f0e-9a1b-2c3d4e5f6a7b", trocken)
+                self.assertRegex(zeile.decode(), rf"^[0-9a-f]{{32}} {befehl} 0b9f2c1e-4a6d-4f0e-9a1b-2c3d4e5f6a7b( --trocken)?\n$")
         RA.zeile_bauen("rueckweg", "alles", True)
         RA.zeile_bauen("sperre", "an")
         RA.zeile_bauen("sperre", "an", True)
         for befehl, arg, trocken in (("sperre", "aus", False), ("sperre", "aus", True), ("sperre", None, False),
                                      ("umschalten", None, False), ("bereitstellen", None, False), ("migrieren", None, False),
                                      ("pruefe-sonder", "1", False), ("lokal", None, False), ("klassifiziere", None, False),
+                                     ("klassifiziere", "1", False), ("migrieren", "x;id", False), ("bereitstellen", "../x", False),
+                                     ("umschalten", "0B9F2C1E-4A6D-4F0E-9A1B-2C3D4E5F6A7B", False), ("umschalten", "0b9f2c1e-4a6d-4f0e-9a1b-2c3d4e5f6a7b ", False),
                                      ("status", "alles", False), ("status", None, True), ("rueckweg", None, False),
                                      ("rueckweg", "../ui", False), ("rueckweg", "ui;id", False), ("rueckweg", "sonst", False),
                                      ("sperre", "an;aus", False), ("", None, False), ("SPERRE", "an", False)):
@@ -1929,7 +1935,7 @@ class QuelltextTests(unittest.TestCase):
     # Der Kern des Dienstes: startet keinen Prozess und hat kein Netz (die Regeln unten). Die Erweiterungen aus Schritt 1.3 (Git-Spiegel und GitHub
     # lesend) brauchen git und openssl; sie haben ihre eigenen, schärferen Tests in test_quelle.py und werden vom Kern nicht importiert.
     KERN = ("release_anker.py", "release_automat.py", "release_db.py", "release_kette.py", "release_stufen.py", "wamo_release.py")
-    ERWEITERUNGEN = ("quelle.py", "stufen_quelle.py")
+    ERWEITERUNGEN = ("quelle.py", "stufen_echt.py", "stufen_quelle.py", "wamo_release_dienst.py")
     DATEIEN = [RELEASE / n for n in KERN]
 
     def test_es_gibt_die_erwarteten_dateien(self):
@@ -1945,7 +1951,7 @@ class QuelltextTests(unittest.TestCase):
                 elif isinstance(knoten, ast.ImportFrom) and knoten.level == 0:
                     namen = [(knoten.module or "").split(".")[0]]
                 for n in namen:
-                    self.assertNotIn(n, ("quelle", "stufen_quelle", "pruefer_client", "pruefer_archiv"), datei.name)
+                    self.assertNotIn(n, ("quelle", "stufen_quelle", "stufen_echt", "wamo_release_dienst", "pruefer_client", "pruefer_archiv"), datei.name)
 
     def test_dieser_schritt_startet_keinen_prozess_und_hat_kein_netz(self):
         for datei in self.DATEIEN:

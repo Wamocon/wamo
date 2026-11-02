@@ -47,7 +47,7 @@ class TextTests(unittest.TestCase):
                      "RestrictNamespaces=yes", "LockPersonality=yes", "RestrictSUIDSGID=yes", "ProtectKernelTunables=yes",
                      "ReadWritePaths=/var/lib/wamo-release /run/wamo-release /var/log/wamo-release",
                      "ExecStartPre=/usr/bin/python3 -E -s -B /opt/wamo-release/app/wamo_release.py selbstpruefung",
-                     "ExecStart=/usr/bin/python3 -E -s -B /opt/wamo-release/app/wamo_release.py dienst",
+                     "ExecStart=/usr/bin/python3 -E -s -B /opt/wamo-release/app/wamo_release_dienst.py dienst",
                      "Requires=wamo-anker.service wamo-release-ausgang.service", "After=wamo-anker.service wamo-release-ausgang.service",
                      "PartOf=wamo-anker.service", "Environment=WAMO_RELEASE_SCHEMA=wamo_dev",
                      "SupplementaryGroups=wamocon", "LimitCORE=0",
