@@ -533,10 +533,13 @@ class StufenTests(unittest.TestCase):
         s.pruefen(ctx({"basis_commit": B, "c1_commit": C1}), 2)
         self.assertEqual(self.quelle.spiegel.archive, [(B, R), (B, C1), (B, C1)])
 
-    def test_runde_3_ist_noch_nicht_verfuegbar(self):
+    def test_runde_3_prueft_v_und_ohne_v_commit_gar_nichts(self):
         e = self.stufe().pruefen(ctx({"basis_commit": B, "c1_commit": C1}), 3)
-        self.assertEqual((e.art, e.grund), ("fehler", "stufe_nicht_verfuegbar"))
+        self.assertEqual((e.art, e.grund), ("fehler", "commit_fehlt"))   # Runde 3 läuft auf V; ohne ihn wird nichts geprüft
         self.assertEqual(self.aufrufe, [])
+        for runde in (0, 4, -1):
+            e = self.stufe().pruefen(ctx({"basis_commit": B, "c1_commit": C1}), runde)
+            self.assertEqual((e.art, e.grund), ("fehler", "stufe_nicht_verfuegbar"), runde)
 
     def test_fehlende_oder_ungueltige_commits(self):
         for daten in ({}, {"basis_commit": B}, {"c1_commit": C1}, {"basis_commit": "main", "c1_commit": C1}, {"basis_commit": B, "c1_commit": "x" * 40},

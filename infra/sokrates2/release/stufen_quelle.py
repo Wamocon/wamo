@@ -6,7 +6,7 @@ Stufen bleiben, wie sie sind (NichtVerfuegbar: sie melden ehrlich "stufe_nicht_v
 Welche Commits geprüft werden (Basis ist immer basis_commit):
     Runde 1  c1_commit
     Runde 2  r_commit, außer der Refactor wurde verworfen (refactor_verworfen) oder fehlt: dann c1_commit
-    Runde 3  noch nicht verfügbar: Sie braucht die Klassifizierung des Ankers (klasse, treffer_anzahl), die es erst mit Schritt 4 gibt.
+    Runde 3  v_commit (der Release-Commit V). Die Zeilen schutzschicht und version_bytegleich und die Klassifizierung ergänzt EchteStufen (stufen_echt.py).
 
 Ergebnis.daten enthält nur pruefstand (Zeilen des Läufers). Meldet der Läufer windows_pruefung_noetig (Änderungen in host/ oder desktop/, die unter Linux nicht
 getestet werden können), kommt die Zeile windows_tests mit "uebersprungen" dazu: Sie ist in der Karte sichtbar und kein stilles "ok".
@@ -32,6 +32,8 @@ class QuellenStufen(NichtVerfuegbar):
     def _neu(self, daten: dict, runde: int) -> str | None:
         if runde == 1:
             return daten.get("c1_commit")
+        if runde == 3:
+            return daten.get("v_commit")
         if daten.get("refactor_verworfen") or not daten.get("r_commit"):
             return daten.get("c1_commit")
         return daten.get("r_commit")
@@ -39,7 +41,7 @@ class QuellenStufen(NichtVerfuegbar):
     def pruefen(self, ctx: Kontext, runde: int) -> Ergebnis:  # pruefung1, pruefung2, pruefung3
         from pruefer_client import PrueferFehler
         from quelle import QuelleFehler
-        if runde not in (1, 2):
+        if runde not in (1, 2, 3):
             return Ergebnis.fehler("stufe_nicht_verfuegbar")
         if ctx.abgebrochen():
             return Ergebnis.fehler("abgebrochen")

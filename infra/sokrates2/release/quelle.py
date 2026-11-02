@@ -116,6 +116,17 @@ class Spiegel:
         except QuelleFehler:
             return False
 
+    def lese_datei(self, commit: str, pfad: str, max_bytes: int = 1 << 20) -> bytes | None:
+        """Der Inhalt einer Datei in einem Commit (höchstens max_bytes) oder None, wenn es sie dort nicht gibt. Der Pfad ist fest vom Aufrufer, nie aus einer Anfrage."""
+        self._sha(commit)
+        if not re.fullmatch(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+){0,4}", pfad):
+            raise QuelleFehler("pfad_ungueltig")
+        try:
+            roh = self._git(["cat-file", "blob", f"{commit}:{pfad}"])
+        except QuelleFehler:
+            return None
+        return roh[:max_bytes]
+
     @staticmethod
     def _sha(commit: str) -> None:
         if not isinstance(commit, str) or not SHA_RE.fullmatch(commit):

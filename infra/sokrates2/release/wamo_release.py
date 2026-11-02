@@ -1453,11 +1453,12 @@ def datenbank_aus_umgebung() -> Datenbank:
         return OhneDatenbank()
 
 
-def dienst_main() -> int:
+def dienst_main(stufen: Stufen | None = None) -> int:
+    """stufen: die Stufen des Weges. Der Kern kennt nur die Schnittstelle; wamo_release_dienst.py setzt die echten ein (der Kern importiert sie nie)."""
     if not sys.platform.startswith("linux") or os.geteuid() == 0:
         print("Der Dienst läuft nur unter Linux und nie als root.", file=sys.stderr)
         return 1
-    dienst = Dienst(db=datenbank_aus_umgebung())
+    dienst = Dienst(db=datenbank_aus_umgebung(), stufen=stufen)
     dienst.wiederaufnehmen(abgleich=False)  # der Abgleich mit der Datenbank folgt in der Wache, wenn der Socket schon steht
     server = Server(dienst)
     server.binden()
