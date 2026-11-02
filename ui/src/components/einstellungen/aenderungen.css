@@ -1,0 +1,21 @@
+/* Abschnitt "Änderungen" (Selbstüberarbeitung, Schritt 1.5): Regeln mit Präfix .ae-. Kein Blau; Rot (--accent) nur für Lagen, die einen Menschen brauchen.
+   Jeder Zustand steht auch als Text da, Form und Farbe sind nur Beigabe. */
+.ae-lage { display: grid; gap: 6px; padding: 12px 14px; border-left: 4px solid var(--kz-rand); background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 0 8px 8px 0; }
+.ae-lage[data-lage="stoerung"], .ae-lage[data-lage="gesperrt"], .ae-lage[data-lage="nicht_erreichbar"], .ae-lage[data-lage="wartet"] { border-left-color: var(--accent); }
+.ae-lage[data-lage="bereit"], .ae-lage[data-lage="arbeit"] { border-left-color: var(--ink); }
+.ae-lage-marke { font: 700 13px/1.2 var(--font-wmc); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-soft); }
+.ae-lage .ez-text { margin: 0; }
+.ae-aktionen { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+
+.ae-weg { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; counter-reset: schritt; }
+.ae-weg li { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 2px 0; font-size: 15px; line-height: 1.3; }
+.ae-marke { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--rule-strong); box-sizing: border-box; }
+.ae-weg li[data-zustand="fertig"] .ae-marke { background: var(--ink); border-color: var(--ink); }
+.ae-weg li[data-zustand="aktuell"] .ae-marke { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--accent); }
+.ae-weg li[data-zustand="aktuell"] .ae-titel { font-weight: 700; }
+.ae-weg li[data-zustand="offen"] { color: var(--ink-soft); }
+.ae-titel { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.ae-zustand { flex: none; font-size: 13px; color: var(--ink-soft); }
+.ae-weg li[data-zustand="aktuell"] .ae-zustand { color: var(--ink); font-weight: 700; }
+
+.ae-zuletzt { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }

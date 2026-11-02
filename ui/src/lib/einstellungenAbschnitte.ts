@@ -20,6 +20,7 @@ export const ABSCHNITT_IDS = [
   "darstellung",
   "geraete",
   "fernzugriff",
+  "aenderungen",
   "teilen",
   "info",
 ] as const;
@@ -45,6 +46,12 @@ export const ABSCHNITTE: readonly Abschnitt[] = [
     id: "fernzugriff",
     titel: "Fernzugriff",
     kurz: "Desktop der Sparks unterwegs bedienen",
+    nurAdmin: true,
+  },
+  {
+    id: "aenderungen",
+    titel: "Änderungen",
+    kurz: "Stand der Selbstüberarbeitung von WAMO",
     nurAdmin: true,
   },
   { id: "teilen", titel: "Teilen", kurz: "Geteilte Dokumente und Dateien" },

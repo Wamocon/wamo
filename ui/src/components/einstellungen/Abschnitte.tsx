@@ -52,8 +52,8 @@ export const KontoAbschnitt = memo(function KontoAbschnitt({
           ]}
         />
         <p className="ez-klein">
-          Zum Profilwechsel meldest du dich ab und mit dem anderen Profil wieder an. PC-Werkzeuge, Entwicklung und
-          Verbrauch sehen nur Profile mit der Rolle Admin.
+          Zum Profilwechsel meldest du dich ab und mit dem anderen Profil wieder an. PC-Werkzeuge, Entwicklung,
+          Verbrauch und Änderungen sehen nur Profile mit der Rolle Admin.
         </p>
       </Block>
       <Block titel="Abmelden">

@@ -28,6 +28,7 @@ import { Block } from "./Block";
 import { Fernzugriff } from "./Fernzugriff";
 import { GeraeteAbschnitt } from "./Geraete";
 import { VerbrauchAbschnitt } from "./Verbrauch";
+import { AenderungenAbschnitt } from "./Aenderungen";
 
 /**
  * Die Einstellungsseite: eine Ansicht der Hauptseite, kein eigener Pfad (siehe lib/einstellungenAbschnitte.ts). Ab 860 px
@@ -224,6 +225,7 @@ export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props)
                     <Fernzugriff />
                   </Block>
                 )}
+                {wirksam === "aenderungen" && <AenderungenAbschnitt />}
                 {wirksam === "teilen" && (
                   <Block titel="Geteilte Arbeit">
                     <GeteiltBereich />
