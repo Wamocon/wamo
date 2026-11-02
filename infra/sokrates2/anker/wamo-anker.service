@@ -1,13 +1,12 @@
 # WAMO-Notanker auf Sokrates-2 (Schritt 0.1 der Selbstüberarbeitung). Installiert durch infra/sokrates2/anker-einrichten.sh.
 #
-# Läuft als root, aber ohne jede Capability (CapabilityBoundingSet leer): Der Anker schreibt nur in Dateien, die root
-# gehören, und ruft feste Skripte unter /usr/local/lib/wamo-anker/schritte. Lauscht nur auf dem Unix-Socket
-# /run/wamo-anker/anker.sock (2750 root:wamocon, Socket 0660; zusätzlich SO_PEERCRED im Programm).
-# Spätere Schritte (1.1 UI, 2.4 Kern) erweitern ReadWritePaths, Capabilities und Adressfamilien nur dort, wo ihr Skript
-# es braucht (zum Beispiel CAP_DAC_OVERRIDE für den Docker-Socket). Jede Erweiterung ist eine Änderung am Anker.
+# Läuft als root mit wenigen Capabilities (siehe CapabilityBoundingSet) und ruft feste, per Prüfsumme gesicherte Skripte unter
+# /usr/local/lib/wamo-anker/schritte. Lauscht nur auf dem Unix-Socket /run/wamo-anker/anker.sock (2750 root:wamocon, Socket 0660; zusätzlich
+# SO_PEERCRED im Programm). Bis Schritt 1.3 lief die Unit ohne jede Capability und ohne Schreibrechte außerhalb ihrer vier Ordner; seit den
+# Rückweg- und Vorwärtsschritten (1.4d, 1.4e) ist sie genau so weit geöffnet, wie diese Skripte es brauchen. Jede weitere Erweiterung ist eine
+# Änderung am Anker und gehört in den Rauchtest und in die Doku.
 # Vor dem Start prüft ExecStartPre die Prüfsummen der installierten Dateien (fail closed).
-# Startet der Dienst auf dem Server wider Erwarten nicht, sind MemoryDenyWriteExecute und SystemCallFilter die ersten
-# Verdächtigen (journalctl -u wamo-anker); die Unit wurde auf Sokrates-2 noch nicht erprobt.
+# Startet der Dienst auf dem Server wider Erwarten nicht, ist MemoryDenyWriteExecute der erste Verdächtige (journalctl -u wamo-anker).
 [Unit]
 Description=WAMO-Notanker (Rückweg, Sperre, Sonderfreigabe-Prüfung)
 After=local-fs.target
@@ -27,10 +26,13 @@ WorkingDirectory=/
 Environment=PYTHONDONTWRITEBYTECODE=1
 UMask=0077
 
-ReadWritePaths=/run/wamo-anker /var/lib/wamo-anker /var/log/wamo-anker /etc/wamo-anker
+# Schritt 1.4d/1.4e: genau die Orte, die die Schritt-Skripte beschreiben (am 02.11.2026 in einer Wegwerf-Unit mit denselben Eigenschaften erprobt):
+# der Kern (Releases, Slots, Cache des Baus, Drop-ins der Vorlage, Aktivierung), der Socketordner des Kerns, der Caddy-Ordner mit slot.inc und
+# wamo-ui-aktiv.inc und der Arbeitsordner der Oberfläche. Alles andere bleibt schreibgeschützt.
+ReadWritePaths=/run/wamo-anker /var/lib/wamo-anker /var/log/wamo-anker /etc/wamo-anker /opt/wamo-core /var/cache/wamo-core-build /etc/systemd/system/wamo-core@.service.d /etc/systemd/system/multi-user.target.wants /run/wamo-core /home/wamocon/wamo-tls/caddy /home/wamocon/wamo-ui
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=read-only
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
@@ -47,16 +49,18 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 RemoveIPC=yes
-CapabilityBoundingSet=
+# Nur, was die Schritte brauchen: Besitzer setzen (chown, install -o), Dateien anderer Besitzer lesen und schreiben (Caddy-Ordner gehört wamocon),
+# als wamo-core den Import prüfen (runuser) und Prozesse beenden. Keine Netz-, Modul-, Zeit- oder Mount-Rechte.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_FSETID CAP_SETUID CAP_SETGID CAP_KILL
 AmbientCapabilities=
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged
-SystemCallErrorNumber=EPERM
-RestrictAddressFamilies=AF_UNIX
+# AF_UNIX: eigener Socket, systemd, Docker. AF_INET nur zur eigenen Adresse und zu den Docker-Netzen von Caddy (Gesundheitsprobe der Oberfläche über
+# https://192.168.178.136:55445; die Antwort kommt aus dem Netz des Containers). Alles andere bleibt verboten.
+RestrictAddressFamilies=AF_UNIX AF_INET
 IPAddressDeny=any
-MemoryMax=128M
-TasksMax=64
+IPAddressAllow=192.168.178.136/32 127.0.0.0/8 172.24.0.0/24 172.25.0.0/24
+MemoryMax=1G
+TasksMax=256
 LimitNOFILE=256
 
 [Install]

@@ -50,6 +50,35 @@ class SyntaxTests(unittest.TestCase):
             self.assertNotIn("\u2013", text)
             self.assertNotIn("\r", text)
 
+    def test_geoeffnete_unit_bleibt_eng(self):
+        """Die Unit ist nur so weit offen, wie die Schritt-Skripte es brauchen (erprobt am 02.11.2026): eine Erweiterung muss hier bewusst nachgezogen werden."""
+        unit = (INFRA / "anker" / "wamo-anker.service").read_text(encoding="utf-8")
+        werte = {}
+        for z in unit.splitlines():
+            if z and not z.startswith(("#", "[")) and "=" in z:
+                k, _, v = z.partition("=")
+                werte.setdefault(k, []).append(v)
+        self.assertEqual(werte["CapabilityBoundingSet"], ["CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_FSETID CAP_SETUID CAP_SETGID CAP_KILL"])
+        for verboten in ("CAP_SYS_ADMIN", "CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_SYS_MODULE", "CAP_SYS_PTRACE", "CAP_SYS_TIME", "CAP_MKNOD", "CAP_NET_BIND_SERVICE"):
+            self.assertNotIn(verboten, werte["CapabilityBoundingSet"][0])
+        self.assertEqual(werte["AmbientCapabilities"], [""])
+        pfade = werte["ReadWritePaths"][0].split()
+        for p in pfade:
+            self.assertTrue(p.startswith("/") and p not in ("/", "/etc", "/home", "/usr", "/var", "/opt", "/run", "/root"), p)   # nie ein ganzer Systemordner
+        self.assertEqual(sorted(pfade), sorted(["/run/wamo-anker", "/var/lib/wamo-anker", "/var/log/wamo-anker", "/etc/wamo-anker", "/opt/wamo-core",
+                                                "/var/cache/wamo-core-build", "/etc/systemd/system/wamo-core@.service.d", "/etc/systemd/system/multi-user.target.wants",
+                                                "/run/wamo-core", "/home/wamocon/wamo-tls/caddy", "/home/wamocon/wamo-ui"]))
+        self.assertEqual(werte["ProtectHome"], ["read-only"])
+        self.assertEqual(werte["ProtectSystem"], ["strict"])
+        self.assertEqual(werte["RestrictAddressFamilies"], ["AF_UNIX AF_INET"])
+        self.assertEqual(werte["IPAddressDeny"], ["any"])   # Internet bleibt zu: nur die eigene Adresse und die zwei Docker-Netze von Caddy
+        self.assertEqual(werte["IPAddressAllow"], ["192.168.178.136/32 127.0.0.0/8 172.24.0.0/24 172.25.0.0/24"])
+        self.assertNotIn("SystemCallFilter", werte)   # bewusst entfernt: ~@privileged verbietet chown und setuid
+        for muss in ("NoNewPrivileges", "PrivateTmp", "PrivateDevices", "ProtectKernelModules", "ProtectKernelTunables", "RestrictNamespaces", "LockPersonality",
+                     "MemoryDenyWriteExecute", "RestrictSUIDSGID", "RemoveIPC"):
+            self.assertEqual(werte[muss], ["yes"], muss)
+        self.assertEqual(werte["MemoryMax"], ["1G"])
+
     def test_unit_und_wrapper_sind_fest_verdrahtet(self):
         unit = (INFRA / "anker" / "wamo-anker.service").read_text(encoding="utf-8")
         for zeile in ("User=root", "CapabilityBoundingSet=", "NoNewPrivileges=yes", "ProtectSystem=strict",

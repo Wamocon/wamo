@@ -221,6 +221,7 @@ GRUENDE = {
 }
 
 
+sys.dont_write_bytecode = True   # der Anker schreibt nie in seinen eigenen Ordner: sonst meldete seine Installationsprüfung __pycache__ als Abweichung vom Manifest
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))   # python -I nimmt den Ordner des Skripts nicht auf; vorwaerts.py liegt daneben (root-eigen, Prüfsumme)
 try:
     from vorwaerts import VorwaertsFehler
