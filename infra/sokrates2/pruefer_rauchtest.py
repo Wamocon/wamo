@@ -12,6 +12,8 @@ Teil C: Die Sandbox selbst: Wer sie ist, was sie sieht, wohin sie schreiben darf
 Teil D: Zeitlimit (nach dem Limit bleibt kein Prozess übrig) und Aufräumen der Arbeitsordner.
 Teil F: Der Annahme-Dienst, der Weg vom Release-Dienst in die Sandbox: Socket nur für wamo-release, Missbrauchsfälle im Archiv, volle Läufe über den
         Socket als wamo-release (grün, kaputt, Link im Stand) und eine zweite Anfrage während eines Laufs ("belegt").
+Teil G: Die Quelle (Schritt 1.3) mit echtem Git und dem echten Annahme-Dienst, ohne GitHub: Spiegel aus einem lokalen Repository, Archiv aus dem
+        Objektspeicher, die Stufe pruefen des Release-Dienstes (QuellenStufen) für eine gute und eine kaputte Änderung. Braucht /opt/wamo-release/app/quelle.py.
 Teil E: Der ganze Weg mit einem kleinen Projekt: grüner Stand, absichtlich kaputter Test, untergeschobener Schlüssel, Lockfile-Änderung mit
         Audit, dazu ein Test, der aus dem Code heraus Adressen im Inneren und im Internet anzusprechen versucht (muss scheitern).
 Es wird nichts am System geändert. Der Rauchtest schreibt nur in Wegwerf-Ordner unter /var/tmp und in die Arbeitsordner der Läufe.
@@ -622,6 +624,66 @@ def teil_f(schnell: bool) -> None:
     pruefe("keine Instanz der Annahme bleibt zurück", not r.stdout.strip(), r.stdout)
 
 
+# ------------------------------------------------------------------------------------------------ Teil G
+RELEASE_APP = "/opt/wamo-release/app"
+
+
+def teil_g() -> None:
+    """Die Quelle (Schritt 1.3) mit echtem Git und dem echten Annahme-Dienst, ohne GitHub: ein lokales Repository ersetzt die Quelle. Die Stufe pruefen des
+    Release-Dienstes holt zwei Commits aus dem Spiegel und schickt sie als Archiv in die Sandbox."""
+    print("Teil G: Quelle und Stufe pruefen (Git-Spiegel, Archiv aus dem Objektspeicher, Annahme-Dienst, Sandbox)")
+    if not os.path.isfile(os.path.join(RELEASE_APP, "quelle.py")):
+        uebersprungen("Teil G", f"{RELEASE_APP}/quelle.py fehlt (release-einrichten.sh noch nicht mit Schritt 1.3 gelaufen)")
+        return
+    sys.path.insert(0, RELEASE_APP)
+    import threading as _th
+    import quelle as Q
+    import stufen_quelle as SQ
+    from release_stufen import Kontext
+    genv = {"PATH": "/usr/bin:/bin", "HOME": "/root", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.org", "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.org", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def g(cwd: str, *a: str) -> str:
+        return subprocess.run(["/usr/bin/git", *a], cwd=cwd, env=genv, capture_output=True, text=True, check=True).stdout.strip()
+
+    def ctx(daten: dict) -> Kontext:
+        return Kontext("a" * 8, "main", "p", "pruefung1", 1, daten, time.monotonic() + 3000, _th.Event())
+
+    with tempfile.TemporaryDirectory(dir="/var/tmp", prefix="pruefer-quelle.") as t:
+        os.chmod(t, 0o755)
+        projekt = os.path.join(t, "origin")
+        os.makedirs(projekt)
+        g(projekt, "init", "-q", "-b", "main")
+        if not pruefe("kleines Projekt mit Sperrdateien angelegt (uv lock, npm lock)", baue_projekt(projekt, t)):
+            return
+        g(projekt, "add", "-A")
+        g(projekt, "commit", "-q", "-m", "basis")
+        basis = g(projekt, "rev-parse", "HEAD")
+        schreibe(projekt, "voice-core/test_netz.py", TEST_NETZ)
+        g(projekt, "add", "-A")
+        g(projekt, "commit", "-q", "-m", "gut")
+        gut = g(projekt, "rev-parse", "HEAD")
+        schreibe(projekt, "voice-core/test_kaputt.py", "def test_kaputt():\n    assert 1 == 2\n")
+        g(projekt, "add", "-A")
+        g(projekt, "commit", "-q", "-m", "kaputt")
+        kaputt = g(projekt, "rev-parse", "HEAD")
+        spiegel = Q.Spiegel(os.path.join(t, "spiegel.git"), projekt, datei_erlaubt=True)
+        pruefe("G0 der Spiegel holt main und kennt den Kopf", spiegel.aktualisieren() == kaputt)
+        pruefe("G0 die Basis ist Vorfahre des neuen Stands", spiegel.ist_vorfahre(basis, kaputt) and not spiegel.ist_vorfahre(kaputt, basis))
+        stufen = SQ.QuellenStufen(Q.Quelle(spiegel))
+        e = stufen.pruefen(ctx({"basis_commit": basis, "c1_commit": gut}), 1)
+        ps = e.daten.get("pruefstand", {})
+        pruefe("G1 gute Änderung: die Stufe liefert ok mit acht grünen Zeilen aus der Sandbox", e.art == "ok" and len(ps) == 8 and all(v == "ok" for v in ps.values()), f"{e.art} {e.grund} {ps}")
+        e = stufen.pruefen(ctx({"basis_commit": gut, "c1_commit": kaputt}), 1)
+        ps = e.daten.get("pruefstand", {})
+        pruefe("G2 kaputter Test: die Stufe liefert tests=fehler (ein Ergebnis, kein Absturz)", e.art == "ok" and ps.get("tests") == "fehler" and ps.get("bauen") == "ok", f"{e.art} {e.grund} {ps}")
+        e = stufen.pruefen(ctx({"basis_commit": basis, "c1_commit": gut, "r_commit": kaputt}), 2)
+        pruefe("G3 Runde 2 prüft r_commit", e.art == "ok" and e.daten["pruefstand"].get("tests") == "fehler", f"{e.art} {e.grund}")
+        e = stufen.pruefen(ctx({"basis_commit": basis, "c1_commit": "0" * 40}), 1)
+        pruefe("G4 ein Commit, den es nicht gibt, ist ein Fehler mit kurzem Grund", e.art == "fehler" and e.grund.startswith(("quelle_", "pruefstrecke_")), f"{e.art} {e.grund}")
+    pruefe("nach Teil G ist die Zwischenablage leer", os.listdir("/srv/wamo-pruefer/annahme") == [])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Rauchtest der WAMO-Prüfer-Sandbox")
     ap.add_argument("--schnell", action="store_true", help="ohne Teil E (Läufe mit Paketen aus dem Netz)")
@@ -642,6 +704,10 @@ def main() -> int:
     else:
         teil_e()
     teil_f(args.schnell)
+    if args.schnell:
+        uebersprungen("Teil G", "--schnell")
+    else:
+        teil_g()
     print(f"Ergebnis: {ERGEBNIS['ok']} bestanden, {ERGEBNIS['fehler']} fehlgeschlagen, {ERGEBNIS['uebersprungen']} übersprungen")
     return 0 if ERGEBNIS["fehler"] == 0 else 1
 
