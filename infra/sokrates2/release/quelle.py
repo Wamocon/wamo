@@ -31,6 +31,10 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 REF_MAIN = "refs/heads/main"
 API = "https://api.github.com"
 ANTWORT_MAX = 1024 * 1024
+# Lokale Quelle eines anderen Benutzers (wamocon): git verweigert sonst wegen fremden Eigentums ("dubious ownership"). Bei lokalem Transport verwirft git die
+# Konfiguration von der Befehlszeile für den Kindprozess, also bleibt nur die globale Datei: root-eigen, enthält nur safe.directory für genau diesen Pfad.
+GIT_QUELLE_KONFIG = "/etc/wamo-release/git-quelle.gitconfig"
+LOKAL_RE = re.compile(r"/var/lib/wamo-quelle/[a-z0-9][a-z0-9._-]{0,39}\.git")
 LS_TREE_RE = re.compile(rb"(\d{6}) (blob|tree|commit) ([0-9a-f]{40}) +(\d+|-)\t(.*)", re.S)
 
 
@@ -43,9 +47,9 @@ class QuelleFehler(Exception):
 
 
 # ------------------------------------------------------------------------------------------------ git
-def git_umgebung(token: str | None = None, proxy: str | None = None) -> dict[str, str]:
+def git_umgebung(token: str | None = None, proxy: str | None = None, globale_konfig: str | None = None) -> dict[str, str]:
     """Saubere Umgebung: nichts aus der Umgebung des Dienstes. Das Token (falls vorhanden) steht als Kopfzeile in der Git-Konfiguration aus der Umgebung."""
-    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": globale_konfig or "/dev/null",
            "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/false", "GIT_OPTIONAL_LOCKS": "0"}
     if proxy:
         env["https_proxy"] = env["HTTPS_PROXY"] = proxy
@@ -56,7 +60,7 @@ def git_umgebung(token: str | None = None, proxy: str | None = None) -> dict[str
 
 
 def git_aufruf(argumente: list[str], *, spiegel: str | None = None, token: str | None = None, proxy: str | None = None, eingabe: bytes | None = None,
-               zeit: float = 300.0, datei_erlaubt: bool = False) -> bytes:
+               zeit: float = 300.0, datei_erlaubt: bool = False, globale_konfig: str | None = None) -> bytes:
     protokolle = ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always"] + (["-c", "protocol.file.allow=always"] if datei_erlaubt else [])
     argv = [GIT, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "core.askPass=", "-c", "transfer.fsckObjects=true",
             "-c", "fetch.fsckObjects=true", "-c", "uploadpack.packObjectsHook=", "-c", "advice.detachedHead=false", *protokolle]
@@ -64,7 +68,7 @@ def git_aufruf(argumente: list[str], *, spiegel: str | None = None, token: str |
         argv += ["--git-dir", spiegel]
     argv += argumente
     try:
-        p = subprocess.run(argv, input=eingabe, capture_output=True, timeout=zeit, env=git_umgebung(token, proxy), cwd="/" if os.name == "posix" else None)
+        p = subprocess.run(argv, input=eingabe, capture_output=True, timeout=zeit, env=git_umgebung(token, proxy, globale_konfig), cwd="/" if os.name == "posix" else None)
     except subprocess.TimeoutExpired:
         raise QuelleFehler("git_zeitlimit", argumente[0]) from None
     except OSError as e:
@@ -86,7 +90,8 @@ class Spiegel:
         if not os.path.isfile(os.path.join(self.pfad, "HEAD")):
             git_aufruf(["init", "--bare", "--quiet", self.pfad], datei_erlaubt=self.datei_erlaubt)
         git_aufruf(["fetch", "--force", "--no-tags", "--no-recurse-submodules", "--quiet", self.url, f"+{REF_MAIN}:{REF_MAIN}"], spiegel=self.pfad,
-                   token=token, proxy=self.proxy, datei_erlaubt=self.datei_erlaubt)
+                   token=token, proxy=self.proxy, datei_erlaubt=self.datei_erlaubt,
+                   globale_konfig=GIT_QUELLE_KONFIG if self.datei_erlaubt and self.url.startswith("/") else None)
         return self.kopf()
 
     def kopf(self, ref: str = REF_MAIN) -> str:
@@ -307,6 +312,11 @@ def quelle_aus_datei(pfad: str, spiegel_pfad: str = "/var/lib/wamo-release/spieg
             k, _, v = z.partition("=")
             w[k.strip()] = v.strip()
     url = w.get("WAMO_QUELLE_URL", "")
+    if LOKAL_RE.fullmatch(url):
+        # Lokale Quelle (Entscheidung Niko 02.11.2026, bis die zweite GitHub-App und der Netzweg da sind): ein Bare-Repository auf diesem Rechner, in das
+        # wamocon per SSH Commits ablegt (wamo-quelle-einrichten.sh). Der Release-Dienst liest nur, genau wie bei GitHub; ob der Stand stimmt, entscheidet allein die
+        # Freigabe über Commit und Tree, nie der Weg, auf dem der Commit hierher kam.
+        return Quelle(Spiegel(spiegel_pfad, url, None, datei_erlaubt=True), None)
     if not url.startswith("https://"):
         raise QuelleFehler("url_ungueltig")
     proxy = w.get("WAMO_QUELLE_PROXY") or None

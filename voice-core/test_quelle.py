@@ -431,6 +431,45 @@ class KonfigTests(unittest.TestCase):
         with self.assertRaises(Q.QuelleFehler):
             Q.quelle_aus_datei(self.pfad)
 
+    def test_lokale_quelle_nur_unter_dem_festen_ordner(self):
+        Path(self.pfad).write_text("WAMO_QUELLE_URL=/var/lib/wamo-quelle/wamo.git\n")
+        q = Q.quelle_aus_datei(self.pfad, "/var/lib/x/spiegel.git")
+        self.assertIsNone(q.app)
+        self.assertTrue(q.spiegel.datei_erlaubt)
+        self.assertEqual((q.spiegel.url, q.spiegel.proxy), ("/var/lib/wamo-quelle/wamo.git", None))
+        for schlecht in ("/var/lib/wamo-quelle/../etc/x.git", "/var/lib/wamo-quelle/a/b.git", "/etc/wamo.git", "/var/lib/wamo-quelle/.git", "wamo.git",
+                         "/var/lib/wamo-quelle/wamo.git/", "/var/lib/wamo-quelle/-x.git", "/var/lib/wamo-quelle/wamo", "file:///var/lib/wamo-quelle/wamo.git"):
+            Path(self.pfad).write_text(f"WAMO_QUELLE_URL={schlecht}\n")
+            with self.assertRaises(Q.QuelleFehler, msg=schlecht):
+                Q.quelle_aus_datei(self.pfad)
+
+    def test_lokaler_pfad_nutzt_die_root_eigene_globale_datei_https_nie(self):
+        # git verwirft bei lokalem Transport die Konfiguration von der Befehlszeile für den Kindprozess: freigegeben wird über GIT_CONFIG_GLOBAL
+        gesehen = []
+        echt = Q.subprocess.run
+        for n in ("s.git", "s2.git"):   # vorhandener Spiegel: git init entfällt, der Aufruf des Holens wird sichtbar
+            os.makedirs(os.path.join(self.tmp.name, n))
+            Path(os.path.join(self.tmp.name, n, "HEAD")).write_text("ref: refs/heads/main" + chr(10))
+
+        def fang(argv, **kw):
+            gesehen.append((argv, kw["env"]))
+            raise OSError("nur mitgelesen")
+        Q.subprocess.run = fang
+        try:
+            with self.assertRaises(Q.QuelleFehler):
+                Q.Spiegel(os.path.join(self.tmp.name, "s.git"), "/var/lib/wamo-quelle/wamo.git", datei_erlaubt=True).aktualisieren()
+            lokal = list(gesehen)
+            gesehen.clear()
+            with self.assertRaises(Q.QuelleFehler):
+                Q.Spiegel(os.path.join(self.tmp.name, "s2.git"), "https://github.com/Wamocon/wamo.git").aktualisieren()
+        finally:
+            Q.subprocess.run = echt
+        self.assertEqual(Q.GIT_QUELLE_KONFIG, "/etc/wamo-release/git-quelle.gitconfig")
+        self.assertEqual(lokal[0][1]["GIT_CONFIG_GLOBAL"], Q.GIT_QUELLE_KONFIG)
+        self.assertEqual(gesehen[0][1]["GIT_CONFIG_GLOBAL"], "/dev/null")
+        for argv, _ in lokal + gesehen:
+            self.assertFalse(any("safe.directory" in a for a in argv))   # nie per -c: dort wirkt es nicht und wäre nur Täuschung
+
     def test_ohne_app_nur_spiegel_mit_app_beides(self):
         Path(self.pfad).write_text("# Kommentar\nWAMO_QUELLE_URL=https://github.com/Wamocon/wamo.git\nWAMO_QUELLE_PROXY=http://127.0.0.1:18082\n")
         q = Q.quelle_aus_datei(self.pfad, "/var/lib/x/spiegel.git")
