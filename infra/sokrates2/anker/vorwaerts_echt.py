@@ -10,11 +10,13 @@ Rolle wamo_anker. Läuft nur im Anker (root). Nichts hier führt Code aus dem Re
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 from typing import Callable
 
+from schutz import aenderungen_lesen
 from vorwaerts import COMMIT_RE, UUID_RE, Vorwaerts, VorwaertsFehler
 
 GIT = "/usr/bin/git"
@@ -55,6 +57,16 @@ class QuelleGit:
         if not COMMIT_RE.fullmatch(sha):
             raise VorwaertsFehler("quelle_ohne_commit")
         return sha
+
+    def aenderungen(self, basis: str, neu: str) -> list[tuple[str, bytes]]:
+        """Die geänderten Pfade zwischen zwei Commits der Quelle: [(Status, Pfad)], alter und neuer Pfad zählen einzeln (ohne Umbenennungserkennung)."""
+        if not (COMMIT_RE.fullmatch(basis) and COMMIT_RE.fullmatch(neu)):
+            raise VorwaertsFehler("commit_ungueltig")
+        roh = self._git(["diff", "--name-status", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", "--full-index", basis, neu, "--"])
+        try:
+            return aenderungen_lesen(roh)
+        except ValueError:
+            raise VorwaertsFehler("diff_form") from None
 
     def extrahiere(self, commit: str, ziel: str, pfade: tuple[str, ...]) -> None:
         if not COMMIT_RE.fullmatch(commit):
@@ -198,6 +210,22 @@ class AnkerPg:
         if z is None:
             return None
         return dict(zip(("status", "quelle", "art", "v_commit", "tree_id", "version_final"), z))
+
+    def anfrage_stand(self, kennung: str) -> dict | None:
+        """Status, Art und die Commits, die zur Klassifizierung gehören (nur lesend)."""
+        if not UUID_RE.fullmatch(kennung):
+            return None
+        z = self.pg.eine(f"select status, art, basis_commit, c1_commit, r_commit, v_commit from {self.s}.release_anfragen where id = %s::uuid", (kennung,))
+        if z is None:
+            return None
+        return dict(zip(("status", "art", "basis_commit", "c1_commit", "r_commit", "v_commit"), z))
+
+    def klassifizierung_setzen(self, kennung: str, art: str, treffer: list[str]) -> None:
+        """Schreibt Art und Treffer (nur der Anker darf das; die Art lässt sich nur anheben, das prüft die Datenbank)."""
+        z = self.pg.eine(f"update {self.s}.release_anfragen set art = %s, schutz_treffer = %s::jsonb where id = %s::uuid returning 1",
+                         (art, json.dumps(treffer, ensure_ascii=True, separators=(",", ":")), kennung))
+        if z is None:
+            raise VorwaertsFehler("klassifizierung_nicht_gesetzt")
 
     def freigabe_gilt(self, kennung: str, commit: str, baum: str) -> bool:
         z = self.pg.eine(f"select {self.s}.release_freigabe_nicht_widerrufen(%s::uuid, %s, %s)", (kennung, commit, baum))

@@ -9,6 +9,7 @@ müssen zur Freigabe passen) und legt nur Dateien in einen root-eigenen Arbeitso
                       angewendete Datei bekommt ihre Prüfsumme in schema_migrations.sha256 (setzt nur der Anker, ein Trigger sperrt jede Änderung).
   bereitstellen <id>  Status veroeffentlicht. Migrieren, dann das Release des Kerns bauen und auf dem freien Slot starten (noch ohne Umschalten),
                       danach Status bereitgestellt.
+  klassifiziere <id>  Status pruefung1 bis pruefung3. Schutzschicht: Art und Treffer des Diffs zwischen Basis und jüngstem Stand (schutz.py), vom Anker in die Datenbank geschrieben.
   umschalten <id>     Status bereitgestellt. Der Kern schaltet auf den bereitgestellten Slot (erst nach der Gesundheitsprobe, mit Nachlauf), danach Status
                       umgeschaltet. Die Bewährung und der Eintrag "letzte gute" folgen nach der Bewährung, nicht hier.
 
@@ -25,6 +26,8 @@ import os
 import re
 import shutil
 
+import schutz
+
 SCHEMAS = ("wamo_test", "wamo_dev")
 UUID_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
@@ -32,6 +35,7 @@ VERSION_RE = re.compile(r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9
 MIGRATION_RE = re.compile(r"(\d{4}_[a-z0-9_]+)\.sql")   # die Rückwege (.down.sql) laufen nie vorwärts
 SCHRITTE_ORDNER = ("voice-core", "supabase/migrations")
 STATUS = {"migrieren": "veroeffentlicht", "bereitstellen": "veroeffentlicht", "umschalten": "bereitgestellt"}
+KLASSIFIZIEREN_STATUS = ("pruefung1", "pruefung2", "pruefung3")
 
 
 class VorwaertsFehler(Exception):
@@ -170,7 +174,31 @@ class Vorwaerts:
         self.db.status_setzen(kennung, "bereitgestellt", "umgeschaltet")
         return {"release": a["name"], "slot": slot, "version": a["version"], "commit": a["commit"]}
 
+    # ---------------------------------------------------------------- klassifizieren
+    def klassifizieren(self, kennung: str, trocken: bool = False) -> dict:
+        """Schutzschicht (Konzept E.2): Der Anker bildet das Diff zwischen Basis und dem jüngsten Stand der Anfrage selbst aus den Git-Objekten der Quelle und
+        schreibt Art und Treffer in die Datenbank (das darf nur er). Vor der Freigabe, in den Stufen pruefung1 bis pruefung3. Die Art lässt sich nur anheben:
+        Eine Anfrage, die einmal sonder war, bleibt es."""
+        if not UUID_RE.fullmatch(kennung or ""):
+            raise VorwaertsFehler("anfrage_ungueltig")
+        a = self.db.anfrage_stand(kennung)
+        if a is None:
+            raise VorwaertsFehler("anfrage_unbekannt")
+        if a.get("status") not in KLASSIFIZIEREN_STATUS:
+            raise VorwaertsFehler("status_falsch", str(a.get("status")))
+        basis = a.get("basis_commit")
+        neu = next((a[k] for k in ("v_commit", "r_commit", "c1_commit") if a.get(k)), None)
+        if not (isinstance(basis, str) and COMMIT_RE.fullmatch(basis) and isinstance(neu, str) and COMMIT_RE.fullmatch(neu)):
+            raise VorwaertsFehler("anfrage_unvollstaendig")
+        erg = schutz.klassifizieren(self.quelle.aenderungen(basis, neu))
+        art = "sonder" if erg["klasse"] != "normal" or a.get("art") == "sonder" else "normal"
+        if not trocken:
+            self.db.klassifizierung_setzen(kennung, art, erg["treffer"])
+        return {"klasse": erg["klasse"], "art": art, "treffer_anzahl": erg["treffer_anzahl"], "treffer_sha": erg["treffer_sha"], "trocken": trocken or None}
+
     def ausfuehren(self, befehl: str, kennung: str, trocken: bool = False) -> dict:
+        if befehl == "klassifiziere":
+            return self.klassifizieren(kennung, trocken)
         if befehl not in STATUS:
             raise VorwaertsFehler("befehl_unbekannt")
         return getattr(self, befehl)(kennung, trocken)

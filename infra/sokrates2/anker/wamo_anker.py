@@ -174,6 +174,7 @@ BEFEHLE = {
     "bereitstellen": Spez(arg=ANFRAGE_ID_RE, trocken=True, schreibend=True, vorwaerts=True),
     "migrieren": Spez(arg=ANFRAGE_ID_RE, trocken=True, schreibend=True, vorwaerts=True),
     "umschalten": Spez(arg=ANFRAGE_ID_RE, trocken=True, schreibend=True, vorwaerts=True),
+    "klassifiziere": Spez(arg=ANFRAGE_ID_RE, trocken=True),   # schreibt nur Art und Treffer in die Datenbank, vor der Freigabe; die Sperre hält ihn nicht an (er ändert nichts am System)
 }
 _ALLE = frozenset((set(BEFEHLE) - {"sperre"}) | {"sperre:an", "sperre:aus"})  # Rechte; "sperre" zählt je Argument
 # Wer darf was. Namen werden bei jeder Verbindung zu uid aufgelöst; ein fehlender Benutzer passt auf niemanden.
@@ -183,7 +184,7 @@ _ALLE = frozenset((set(BEFEHLE) - {"sperre"}) | {"sperre:an", "sperre:aus"})  # 
 ERLAUBT = {
     "root": _ALLE,
     "wamocon": _ALLE,
-    "wamo-release": frozenset({"status", "rueckweg", "sperre:an", "pruefe-sonder", "bereitstellen", "migrieren", "umschalten"}),
+    "wamo-release": frozenset({"status", "rueckweg", "sperre:an", "pruefe-sonder", "bereitstellen", "migrieren", "umschalten", "klassifiziere"}),
 }
 
 GRUENDE = {
@@ -950,6 +951,8 @@ class Anker:
             return self.cmd_pruefe_sonder(str(anf.arg))
         if anf.befehl in VORWAERTS_BEFEHLE:
             return self.cmd_vorwaerts(anf)
+        if anf.befehl == "klassifiziere":
+            return self.cmd_klassifiziere(anf)
         return self._antwort(False, "nicht_verfuegbar")
 
     @contextlib.contextmanager
@@ -1004,6 +1007,25 @@ class Anker:
             return self._vorwaerts_aufruf(anf, True)
         with self._schreibsperre():
             return self._vorwaerts_aufruf(anf, False)
+
+    def cmd_klassifiziere(self, anf: Anfrage) -> dict:
+        """Schutzschicht: Art und Treffer des Diffs (vorwaerts.py, schutz.py). Ändert nur zwei Spalten der Datenbank, deshalb keine Schreibsperre und kein Schritt-Skript."""
+        if self._vorwaerts_fabrik is None:
+            return self._antwort(False, "nicht_verfuegbar")
+        if self._vorwaerts is None:
+            try:
+                self._vorwaerts = self._vorwaerts_fabrik()
+            except Exception as e:  # noqa: BLE001 (Datenbank oder Zugangsdatei fehlen: ehrlich nicht verfügbar, nichts geändert)
+                print(f"wamo-anker: Klassifizierung nicht verfügbar ({type(e).__name__})", file=sys.stderr)
+                return self._antwort(False, "nicht_verfuegbar", detail="mitspieler")
+        try:
+            erg = self._vorwaerts.ausfuehren("klassifiziere", str(anf.arg), anf.trocken)
+        except VorwaertsFehler as e:
+            self.protokolliere("klassifiziere", 1.0, ok=False, code=e.code)
+            return self._antwort(False, "vorwaerts_fehlgeschlagen", detail=_sauber(f"{e.code} {e.detail}".strip(), 80))
+        self.protokolliere("klassifiziere", 1.0, ok=True, klasse=erg["klasse"], treffer=erg["treffer_anzahl"], trocken=anf.trocken or None)
+        return self._antwort(True, text="Trockenlauf" if anf.trocken else "in Ordnung", trocken=anf.trocken or None,
+                             ergebnis={k: erg[k] for k in ("klasse", "art", "treffer_anzahl", "treffer_sha")})
 
     def _vorwaerts_aufruf(self, anf: Anfrage, trocken: bool) -> dict:
         try:
