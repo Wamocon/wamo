@@ -5,6 +5,7 @@ import { PipecatClient, RTVIError } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
 import { pcAutoLesen } from "@/lib/einstellungen";
+import { einstellungenOeffnen } from "@/lib/einstellungenHash";
 import type { GeraetBruecke } from "@/lib/geraet";
 import { bildAnzeigen, liveBildLoeschen } from "@/lib/liveBild";
 import { parseServerMessage, type Auftrag, type Markierung, type ModellModus } from "@/lib/nachrichten";
@@ -879,6 +880,9 @@ export function useWamo(): WamoAktionen {
                   }
                 });
               }
+            } else if (msg.type === "fernzugriff_oeffnen") {
+              // Nur den Dialog zeigen (Einstellungen, Abschnitt Fernzugriff). Das Starten erfordert dort Admin-Rolle und einen frischen Code.
+              einstellungenOeffnen("fernzugriff");
             } else if (msg.type === "markierung") {
               // Gesperrter Bildschirm oder offene Freigabe: kein Rahmen. Der Rest (Gerätekennung, Vollbild, Rand aus) prüft die App.
               const st = wamo.get();

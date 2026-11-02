@@ -212,6 +212,14 @@ PC_UNREACHABLE_PROMPT = """
   ganz normal weiter.
 """
 
+FERNZUGRIFF_PROMPT = """
+- Fernzugriff auf die Sparks: {name} kann sich die Bildschirme der Sparks (Sokrates 1, Sokrates 2 und Caesar) im Browser
+  ansehen und bedienen. Das geht in den Einstellungen unter Fernzugriff. Du startest es nie selbst. Will {name} einen
+  Spark sehen oder bedienen, rufst du fernzugriff_oeffnen auf und sagst in einem Satz, dass der Fernzugriff offen ist und
+  dass {name} dort den Code der Authenticator-App eingeben muss. Das Live-Bild ist etwas anderes: Es zeigt den Bildschirm
+  des PCs, nie den eines Sparks.
+"""
+
 DEV_PROMPT = """
 Entwicklungsaufträge
 - Du kannst Software-Aufträge an Claude Code geben: planen, umsetzen, Fehler beheben, prüfen,
@@ -327,8 +335,10 @@ def build_system_prompt(
     browser: bool | None = None,
     tab: bool | None = None,
     gespraech: bool | None = None,
+    fernzugriff: bool = False,
 ) -> str:
-    """pc_erreichbar=False (nur zusammen mit pc_werkzeuge): Hinweis, dass der PC gerade nicht erreichbar ist.
+    """fernzugriff=True (nur Admin mit eingeschaltetem Fernzugriff): WAMO kennt den Fernzugriff auf die Sparks und das Werkzeug
+    fernzugriff_oeffnen. pc_erreichbar=False (nur zusammen mit pc_werkzeuge): Hinweis, dass der PC gerade nicht erreichbar ist.
     rueckfragen / pc_ordner / browser / tab / gespraech: None liest den Schalter (WAMO_PERSONA_RUECKFRAGEN,
     WAMO_PERSONA_PC_ORDNER, WAMO_PERSONA_BROWSER, WAMO_PERSONA_TAB, WAMO_PERSONA_GESPRAECH)."""
     values = {"name": clean_inline(name, MAX_NAME_CHARS) or "Gast", "anrede": ANREDE.get(anrede, "du")}
@@ -356,6 +366,8 @@ def build_system_prompt(
         parts.append(_fill(pc, values))
         if not pc_erreichbar:
             parts.append(_fill(PC_UNREACHABLE_PROMPT, values))
+    if fernzugriff:
+        parts.append(_fill(FERNZUGRIFF_PROMPT, values))
     parts.append(_fill(DEV_PROMPT if entwicklung else DEV_LOCKED_PROMPT, values))
     parts.append(_fill(ZUGANG_PROMPT, values))
 
