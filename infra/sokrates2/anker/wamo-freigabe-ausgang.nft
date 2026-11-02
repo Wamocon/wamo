@@ -1,0 +1,18 @@
+# WAMO Freigabe-Dienst: Ausgang des Benutzers wamo-anker nur zur Datenbank (Supavisor, Port 55322) und zum Schlüsselsatz von GoTrue
+# (Caddy, Port 55443), beide auf Sokrates-2 (192.168.178.136). Eigene Tabelle, fremde Tabellen und Regeln bleiben unberührt. Nur
+# Pakete von Sockets des Benutzers wamo-anker laufen in die Kette; alles außer den zwei Zielen wird verworfen (auch IPv6, Loopback,
+# LAN, Internet). Unix-Sockets sind kein Netzverkehr und bleiben unberührt. Docker setzt für veröffentlichte Ports schon vor dieser
+# Kette ein DNAT auf den Container; darum gilt das ursprüngliche Ziel der Verbindung aus der Verbindungsverfolgung (ct original), nicht
+# die Adresse im Paket. Die Unit wamo-freigabe.service verlangt diese Tabelle (Requires), der Dienst startet ohne sie nicht.
+table inet wamo_freigabe_ausgang
+delete table inet wamo_freigabe_ausgang
+table inet wamo_freigabe_ausgang {
+	chain ausgang {
+		type filter hook output priority -10; policy accept;
+		meta skuid wamo-anker jump wamo_freigabe
+	}
+	chain wamo_freigabe {
+		ct original ip daddr 192.168.178.136 ct original proto-dst { 55322, 55443 } counter accept comment "nur Datenbank und Schlüsselsatz"
+		counter drop comment "alles andere verworfen"
+	}
+}
