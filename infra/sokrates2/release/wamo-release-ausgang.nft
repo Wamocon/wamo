@@ -1,4 +1,6 @@
 # WAMO Release-Dienst: Ausgang des Benutzers wamo-release nur zur Datenbank (Supavisor, Port 55322 auf Sokrates-2).
+# Docker setzt für den veröffentlichten Port 55322 schon vor dieser Kette ein DNAT auf den Container (172.23.0.5:5432). Darum
+# gilt das ursprüngliche Ziel der Verbindung aus der Verbindungsverfolgung (ct original), nicht die Adresse im Paket.
 # Eigene Tabelle, fremde Tabellen und Regeln bleiben unberührt. Nur Pakete von Sockets des Benutzers wamo-release laufen in die
 # Kette; alles außer der einen Verbindung wird verworfen (auch IPv6, Loopback, LAN, Internet). Unix-Sockets sind kein Netzverkehr
 # und bleiben unberührt (der Dienst spricht darüber mit Anker und Kern). Die Unit wamo-release.service verlangt diese Tabelle
@@ -12,7 +14,7 @@ table inet wamo_release_ausgang {
 		meta skuid wamo-release jump wamo_release
 	}
 	chain wamo_release {
-		ip daddr 192.168.178.136 tcp dport 55322 counter accept comment "nur die Datenbank (Supavisor)"
+		ct original ip daddr 192.168.178.136 ct original proto-dst 55322 counter accept comment "nur die Datenbank (Supavisor)"
 		counter drop comment "alles andere verworfen"
 	}
 }

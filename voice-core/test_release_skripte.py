@@ -42,7 +42,7 @@ class TextTests(unittest.TestCase):
         zeilen = [z.strip() for z in unit.splitlines() if z.strip() and not z.startswith("#")]
         for soll in ("User=wamo-release", "Group=wamo-release", "CapabilityBoundingSet=", "AmbientCapabilities=",
                      "NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes",
-                     "RestrictAddressFamilies=AF_UNIX AF_INET", "IPAddressDeny=any", "IPAddressAllow=192.168.178.136/32", "SystemCallFilter=@system-service",
+                     "RestrictAddressFamilies=AF_UNIX AF_INET", "IPAddressDeny=any", "IPAddressAllow=192.168.178.136/32 172.23.0.0/16", "SystemCallFilter=@system-service",
                      "SystemCallFilter=~@privileged", "SystemCallArchitectures=native", "MemoryDenyWriteExecute=yes",
                      "RestrictNamespaces=yes", "LockPersonality=yes", "RestrictSUIDSGID=yes", "ProtectKernelTunables=yes",
                      "ReadWritePaths=/var/lib/wamo-release /run/wamo-release /var/log/wamo-release",
@@ -58,7 +58,7 @@ class TextTests(unittest.TestCase):
                          "AF_PACKET", "User=root", "PermissionsStartOnly"):
             self.assertFalse(any(verboten in z for z in zeilen), verboten)
         self.assertEqual([z for z in zeilen if z.startswith(("Environment=WAMO", "IPAddressAllow"))],
-                         ["Environment=WAMO_RELEASE_SCHEMA=wamo_dev", "IPAddressAllow=192.168.178.136/32"])
+                         ["Environment=WAMO_RELEASE_SCHEMA=wamo_dev", "IPAddressAllow=192.168.178.136/32 172.23.0.0/16"])
         self.assertNotIn("/etc/wamo-release", [p for z in zeilen if z.startswith("InaccessiblePaths=") for p in z[18:].split()
                                                 if p.lstrip("-") == "/etc/wamo-release"])  # der Dienst muss db.zugang lesen können
 
@@ -68,7 +68,7 @@ class TextTests(unittest.TestCase):
         self.assertIn("meta skuid wamo-release jump wamo_release", regeln)
         erlaubt = [z for z in regeln if " accept" in z and "policy" not in z]
         self.assertEqual(len(erlaubt), 1)
-        self.assertTrue(erlaubt[0].startswith("ip daddr 192.168.178.136 tcp dport 55322 "), erlaubt[0])
+        self.assertTrue(erlaubt[0].startswith("ct original ip daddr 192.168.178.136 ct original proto-dst 55322 "), erlaubt[0])  # Docker-DNAT
         self.assertTrue(any(z.startswith("counter drop") for z in regeln))
         self.assertLess([i for i, z in enumerate(regeln) if " accept" in z][0], [i for i, z in enumerate(regeln) if "drop" in z][0])
         einheit = (RELEASE / "wamo-release-ausgang.service").read_text(encoding="utf-8")
