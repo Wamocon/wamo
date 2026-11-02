@@ -1926,11 +1926,26 @@ class StatusTests(ReleaseTest):
 
 # ==================================================================== Quelltext
 class QuelltextTests(unittest.TestCase):
-    DATEIEN = sorted(RELEASE.glob("*.py"))
+    # Der Kern des Dienstes: startet keinen Prozess und hat kein Netz (die Regeln unten). Die Erweiterungen aus Schritt 1.3 (Git-Spiegel und GitHub
+    # lesend) brauchen git und openssl; sie haben ihre eigenen, schärferen Tests in test_quelle.py und werden vom Kern nicht importiert.
+    KERN = ("release_anker.py", "release_automat.py", "release_db.py", "release_kette.py", "release_stufen.py", "wamo_release.py")
+    ERWEITERUNGEN = ("quelle.py", "stufen_quelle.py")
+    DATEIEN = [RELEASE / n for n in KERN]
 
     def test_es_gibt_die_erwarteten_dateien(self):
-        self.assertEqual([d.name for d in self.DATEIEN], ["release_anker.py", "release_automat.py", "release_db.py",
-                                                         "release_kette.py", "release_stufen.py", "wamo_release.py"])
+        self.assertEqual(sorted(d.name for d in RELEASE.glob("*.py")), sorted(self.KERN + self.ERWEITERUNGEN))   # keine weitere Datei unbemerkt
+
+    def test_der_kern_importiert_die_erweiterungen_nicht(self):
+        import ast
+        for datei in self.DATEIEN:
+            for knoten in ast.walk(ast.parse(datei.read_text(encoding="utf-8"))):
+                namen = []
+                if isinstance(knoten, ast.Import):
+                    namen = [a.name.split(".")[0] for a in knoten.names]
+                elif isinstance(knoten, ast.ImportFrom) and knoten.level == 0:
+                    namen = [(knoten.module or "").split(".")[0]]
+                for n in namen:
+                    self.assertNotIn(n, ("quelle", "stufen_quelle", "pruefer_client", "pruefer_archiv"), datei.name)
 
     def test_dieser_schritt_startet_keinen_prozess_und_hat_kein_netz(self):
         for datei in self.DATEIEN:

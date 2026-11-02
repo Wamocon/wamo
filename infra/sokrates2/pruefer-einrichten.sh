@@ -271,7 +271,7 @@ if [ -z "$WURZEL" ]; then
     cat > "$ETC/proxy-pakete.env" <<'ENV'
 # Proxy "pakete" der Prüfer-Sandbox: Loopback-Adresse und die einzigen erlaubten Namen (wörtlich, ohne Platzhalter).
 LISTEN=127.0.0.1:18080
-ERLAUBT=registry.npmjs.org,pypi.org,files.pythonhosted.org,github.com,api.github.com,fonts.googleapis.com,fonts.gstatic.com
+ERLAUBT=registry.npmjs.org,pypi.org,files.pythonhosted.org,github.com,api.github.com
 ENV
     chmod 0644 "$ETC/proxy-pakete.env"
     # Proxy "claude": nur die Claude-Schnittstelle. Er gehört zur Claude-Stufe (Review und Refactor, Schritt 3.3), deren Sandbox keinen Zugang zu
