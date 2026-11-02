@@ -180,6 +180,10 @@ Protokoll in einer Datei (`/var/lib/wamo-rd/audit.jsonl`, Abschnitt 5). Kein Gas
 Die Ziel-Liste steht in `/etc/wamo-rd/ziele.toml` (Namen, Adressen, Anzeigenamen; keine Geheimnisse). Eine Tabelle für das Protokoll
 in `wamo_*` ist denkbar, aber erst nötig, wenn die Oberfläche die Historie anzeigen soll (Stufe 8).
 
+### 3.5 Sprachweg: WAMO kennt den Fernzugriff (Nachtrag 02.11.2026)
+
+Der Fernzugriff war zunächst nur ein Knopf in den Einstellungen. Auf die Bitte, die Monitore der Sparks zu zeigen, konnte WAMO deshalb nur antworten, dass er das nicht kenne: Weder die Persona noch ein Werkzeug erwähnten ihn. Jetzt gilt (nur für Admins und nur bei `WAMO_RD_AKTIV=ja`): Die Persona kennt den Fernzugriff (`persona.FERNZUGRIFF_PROMPT`), und das Werkzeug `fernzugriff_oeffnen` schickt die Servernachricht `fernzugriff_oeffnen` an die Oberfläche, die den Abschnitt Fernzugriff öffnet. Die Stimme startet **nie** eine Sitzung: Das Ziel wählt der Nutzer im Dialog, und jeder Start verlangt weiter den frischen Code der Authenticator-App. Die Nachricht trägt keine Nutzdaten (kein Ziel, keine Adresse, kein Token), und der Handler berührt `rd_api` nie.
+
 ## 4. Frage C: Zugang unterwegs (WireGuard)
 
 | Punkt | Befund | Folge |

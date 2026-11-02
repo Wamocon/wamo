@@ -151,6 +151,17 @@ WEBSUCHE_SCHEMA = FunctionSchema(
     required=["anfrage"],
 )
 
+FERNZUGRIFF_SCHEMA = FunctionSchema(
+    name="fernzugriff_oeffnen",
+    description=(
+        "Öffnet in der Oberfläche den Fernzugriff auf die Sparks (Sokrates 1, Sokrates 2, Caesar), damit der Nutzer sich den "
+        "Bildschirm eines Sparks ansieht. Startet nie selbst eine Sitzung: Der Nutzer wählt dort das Ziel und bestätigt mit dem "
+        "Code der Authenticator-App. Nur aufrufen, wenn der Nutzer einen Spark sehen oder bedienen will."
+    ),
+    properties={},
+    required=[],
+)
+
 CANVAS_SCHEMA = FunctionSchema(
     name="canvas_zeigen",
     description=(
@@ -310,10 +321,11 @@ def jetzt_text(now: datetime | None = None) -> dict:
 
 
 def register_tools(
-    llm, memory: MemoryStore, identity: Identity, turn: TurnState | None = None, *, zugang: Zugang
+    llm, memory: MemoryStore, identity: Identity, turn: TurnState | None = None, *, zugang: Zugang, fernzugriff: bool = False
 ) -> ToolsSchema:
     """Registriert die Handler am LLM und liefert das Schema für den Kontext. zugang: Modellzugang des
-    Profils (Websuche über Anthropic nur mit eigenem Schlüssel, sonst SearXNG)."""
+    Profils (Websuche über Anthropic nur mit eigenem Schlüssel, sonst SearXNG). fernzugriff: nur für Admins bei
+    eingeschaltetem Fernzugriff; das Werkzeug öffnet nur den Dialog in der Oberfläche und startet nie eine Sitzung."""
     turn = turn or TurnState()
 
     async def aktuelle_zeit(params: FunctionCallParams):
@@ -372,10 +384,18 @@ def register_tools(
         logger.info("canvas: {}", item["kind"])
         await params.result_callback({"angezeigt": True})
 
+    async def fernzugriff_oeffnen(params: FunctionCallParams):
+        # Nur die Aufforderung an die Oberfläche, den Dialog zu zeigen. Die Sitzung startet der Nutzer dort selbst, mit frischem Code.
+        await params.llm.push_frame(RTVIServerMessageFrame(data={"type": "fernzugriff_oeffnen"}))
+        logger.info("fernzugriff: Dialog in der Oberfläche angefordert")
+        await params.result_callback({"geoeffnet": True, "hinweis": "Der Nutzer wählt den Spark und gibt den Code der Authenticator-App ein."})
+
     llm.register_function("aktuelle_zeit", aktuelle_zeit)
     llm.register_function("merken", merken)
     llm.register_function("websuche", websuche, timeout_secs=40)
     llm.register_function("canvas_zeigen", canvas_zeigen)
-    return ToolsSchema(
-        standard_tools=[ZEIT_SCHEMA, merken_schema(identity.name), WEBSUCHE_SCHEMA, CANVAS_SCHEMA]
-    )
+    standard = [ZEIT_SCHEMA, merken_schema(identity.name), WEBSUCHE_SCHEMA, CANVAS_SCHEMA]
+    if fernzugriff and identity.is_admin:  # zusätzlich zum Schalter des Aufrufers: nie für Mitglieder
+        llm.register_function("fernzugriff_oeffnen", fernzugriff_oeffnen)
+        standard.append(FERNZUGRIFF_SCHEMA)
+    return ToolsSchema(standard_tools=standard)

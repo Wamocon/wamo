@@ -530,6 +530,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     geraet_zugang = await pc_zugang(identity) if register_modus() else None
     pc_enabled = geraet_zugang is not None if register_modus() else pc_host_fuer(identity)
     entwicklung = is_admin and entwicklung_enabled()
+    # Fernzugriff auf die Sparks (rd_api): WAMO kennt ihn und kann den Dialog öffnen, nur für Admins und nur bei eingeschaltetem Schalter
+    from rd_api import aktiv as rd_aktiv
+    fernzugriff = is_admin and rd_aktiv()
     if entwicklung and (problem := entwicklung_problem()):
         logger.error("Entwicklungsaufträge aus: {}", problem)
         entwicklung = False
@@ -548,7 +551,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     def prompt_for(recall: Recall) -> str:
         return build_system_prompt(
             identity.name, identity.anrede, recall.persoenlich, recall.gemeinsam,
-            pc_werkzeuge=pc_enabled, entwicklung=entwicklung, pc_erreichbar=not state["pc_weg"],
+            pc_werkzeuge=pc_enabled, entwicklung=entwicklung, pc_erreichbar=not state["pc_weg"], fernzugriff=fernzugriff,
         )
 
     # Gedächtnis je Sitzung laden (kein prozessweiter Cache: jedes Profil sieht nur seins).
@@ -586,7 +589,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Fremdinhalte im laufenden Zug (Websuche, Bildschirm, PC, Entwicklungs-Ergebnisse) merken: kein
     # sofort wirksames gemeinsames Wissen (M4) und kein Lernen aus diesen Abschnitten.
     turn = TurnState(transcript_len=lambda: len(transcript))
-    standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang).standard_tools)
+    standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, fernzugriff=fernzugriff).standard_tools)
     dev: DevAgent | None = None
     if entwicklung:
         # Entwicklungsaufträge an Claude Code; Start und Freigaben per Klick in der UI (dev_agent.py). Mit eigenem
