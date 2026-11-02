@@ -1,0 +1,27 @@
+# Treiber und Bibliotheken des Freigabe-Dienstes (infra/sokrates2/anker/freigabe_dienst.py): psycopg 3 mit eingebauter libpq, PyJWT
+# und cryptography (ES256-Prüfung), dazu deren Abhängigkeiten cffi und pycparser. Nur für Sokrates-2 (Ubuntu 24.04, aarch64, Python 3.12).
+# Installation durch freigabe-einrichten.sh:
+#   python3 -m pip install --no-deps --only-binary=:all: --require-hashes --target <ordner> -r requirements-freigabe.lock
+# Jede Datei ist mit ihrer Prüfsumme festgehalten; pip lehnt alles andere ab. Von cryptography stehen alle aarch64-Wheels, die pip für
+# Python 3.12 wählen kann (abi3 für cp311 und cp39, je manylinux2014, 2_28 und 2_34), damit die Wahl von pip nie an der Prüfsumme scheitert.
+# Erneuern: Fassungen prüfen, Wheels mit pip download --only-binary=:all: --platform manylinux2014_aarch64 --python-version 3.12 laden,
+# Prüfsummen aller in Frage kommenden Wheels (PyPI-Seite "Download files") hier eintragen.
+psycopg==3.3.6 \
+    --hash=sha256:a1db9f7148b06a28606767efaca51fa6f9398c5c0a3810519be69d7000bdb631
+psycopg-binary==3.3.6 \
+    --hash=sha256:37d40450659401600e6d043ff586c89a71a69f33cbb8bcdba6cdb2569beecdbe
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+pyjwt==2.15.1 \
+    --hash=sha256:42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193
+pycparser==3.12 \
+    --hash=sha256:a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e
+cffi==2.1.1 \
+    --hash=sha256:68e62fe11f30d5ca8289242866f0a5291402d8529ca2178ab8afc5c9694ae890
+cryptography==50.0.2 \
+    --hash=sha256:79def8d059362e7831389ed3be0ecdf58a89386e1271e35dd9f5af84e81bffd0 \
+    --hash=sha256:f9f6143a8c75945eb960d9eb98905a441394abfa24afaae239d514ffb2586480 \
+    --hash=sha256:87e9ce85beb6b328ba370cc6e6aea483c92617b4c95b1d33a49297eb662bfb04 \
+    --hash=sha256:c5e67125c7dca78d199ec4e116aa93dbb83494808ecbb8211a2cb09b1bf41dbd \
+    --hash=sha256:dfe9763530994147d9af1def057a5b9658b00e8f8fe8743d144d1e0911c2e454 \
+    --hash=sha256:0ddc924c04591c2811ca024d62ecad4f7f6f08af8939c211438f48a16bd23602

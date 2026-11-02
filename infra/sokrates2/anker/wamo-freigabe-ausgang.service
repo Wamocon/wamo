@@ -1,0 +1,14 @@
+[Unit]
+Description=WAMO-Freigabe-Dienst: Ausgangsregel (nur Datenbank und Schlüsselsatz)
+Documentation=file:///opt/wamo-freigabe/app/wamo-freigabe-ausgang.nft
+Before=wamo-freigabe.service
+ConditionPathExists=/etc/wamo-freigabe-ausgang/regeln.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/wamo-freigabe-ausgang/regeln.nft
+ExecStop=/usr/sbin/nft delete table inet wamo_freigabe_ausgang
+
+[Install]
+WantedBy=multi-user.target
