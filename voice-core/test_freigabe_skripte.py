@@ -46,19 +46,20 @@ class TextTests(unittest.TestCase):
                      "RestrictAddressFamilies=AF_UNIX AF_INET", "IPAddressDeny=any",
                      "IPAddressAllow=192.168.178.136/32 172.23.0.0/16 172.24.0.0/24", "SystemCallFilter=@system-service",
                      "SystemCallFilter=~@privileged", "SystemCallArchitectures=native", "RestrictNamespaces=yes", "LockPersonality=yes",
-                     "RestrictSUIDSGID=yes", "ProtectKernelTunables=yes", "RuntimeDirectory=wamo-freigabe", "RuntimeDirectoryMode=0750",
+                     "RestrictSUIDSGID=yes", "ProtectKernelTunables=yes", "ReadWritePaths=/run/wamo-freigabe",
                      "ExecStartPre=/usr/bin/python3 -E -s -B /opt/wamo-freigabe/app/freigabe_dienst.py selbstpruefung",
                      "ExecStart=/usr/bin/python3 -E -s -B /opt/wamo-freigabe/app/freigabe_dienst.py dienst",
                      "Requires=wamo-freigabe-ausgang.service", "After=wamo-freigabe-ausgang.service", "LimitCORE=0",
                      "InaccessiblePaths=-/etc/wamo -/etc/wamo-geraete -/etc/wamo-release",
-                     "Environment=WAMO_FREIGABE_SCHEMA=wamo_dev", "Environment=WAMO_FREIGABE_PEERS=0",
+                     "Environment=WAMO_FREIGABE_SCHEMA=wamo_dev", "Environment=WAMO_FREIGABE_PEERS=0,1000",
                      "Environment=WAMO_FREIGABE_JWKS_URL=https://192.168.178.136:55443/auth/v1/.well-known/jwks.json",
                      "Environment=WAMO_FREIGABE_ISS=https://192.168.178.136:55443/auth/v1", "Environment=WAMO_FREIGABE_AUD=authenticated"):
             self.assertIn(soll, zeilen)
         self.assertEqual(len([z for z in zeilen if z.startswith(("ExecStart", "ExecStop", "ExecReload"))]), 2)
         for verboten in ("EnvironmentFile", "ExecStartPre=+", "ExecStart=+", "AmbientCapabilities=CAP", "AF_INET6", "AF_NETLINK",
-                         "AF_PACKET", "User=root", "PermissionsStartOnly", "ReadWritePaths"):
-            self.assertFalse(any(verboten in z for z in zeilen), verboten)
+                         "AF_PACKET", "User=root", "PermissionsStartOnly", "RuntimeDirectory"):
+            self.assertFalse(any(verboten in z for z in zeilen), verboten)   # RuntimeDirectory: der Ordner bleibt (tmpfiles.d), sonst verliert Caddy den Mount
+        self.assertEqual([z for z in zeilen if z.startswith("ReadWritePaths")], ["ReadWritePaths=/run/wamo-freigabe"])   # schreiben darf er nur dort
         self.assertFalse(any(z.startswith("InaccessiblePaths=") and "/etc/wamo-anker" in z for z in zeilen))  # das Zertifikat liegt dort
 
     def test_ausgangsregel_erlaubt_genau_zwei_ziele(self):
@@ -258,6 +259,78 @@ class ProbelaufTests(unittest.TestCase):
                 self.assertEqual(r.returncode, 1)
                 self.assertIn("Geheimnisdatei", r.stderr)
                 os.unlink(datei)
+
+
+class CaddyRouteTests(unittest.TestCase):
+    """Schritt 1.4c: Die Route POST /wamo/release/<id>/freigeben auf 55444 geht am Kern vorbei an den Freigabe-Dienst."""
+
+    def site(self) -> str:
+        return (INFRA / "wamo-caddy" / "kern" / "wamo-core.caddy").read_text(encoding="utf-8")
+
+    def code(self, text: str) -> list[str]:
+        return [z.strip() for z in text.splitlines() if z.strip() and not z.strip().startswith("#")]
+
+    def test_route_geht_nur_fuer_den_einen_pfad_an_den_freigabe_dienst(self):
+        z = self.code(self.site())
+        self.assertIn("method POST OPTIONS", z)
+        self.assertIn("path_regexp ^/wamo/release/[0-9a-f-]+/freigeben$", z)
+        self.assertIn("handle @freigeben {", z)
+        self.assertEqual([x for x in z if "freigabe.sock" in x], ["reverse_proxy unix//run/wamo-freigabe/freigabe.sock {"])
+        self.assertEqual([x for x in z if "core.sock" in x], ["reverse_proxy unix//run/wamo-core/core.sock {"])   # der Kern bleibt, wie er war
+        self.assertEqual(z.count("handle {"), 1)   # der Rest geht wie bisher an den Kern
+        self.assertNotIn("{8}", self.site())   # geschweifte Klammern im Muster würde Caddy als Platzhalter lesen
+
+    def test_die_route_faengt_nichts_anderes_ab(self):
+        text = self.site()
+        pfad = re.search(r"path_regexp (\S+)", text)[1]
+        muster = re.compile(pfad)
+        gut = "/wamo/release/0b9f2c1e-4a6d-4f0e-9a1b-2c3d4e5f6a7b/freigeben"
+        self.assertTrue(muster.search(gut))
+        for fremd in ("/wamo/release/x/freigeben/mehr", "/wamo/release//freigeben", "/wamo/release/../start/freigeben", "/wamo/api/dateien", "/start",
+                      "/wamo/release/abc", "/wamo/release/ABC/freigeben", "/x/wamo/release/ab/freigeben"):
+            self.assertIsNone(muster.search(fremd), fremd)
+
+    def test_cors_nur_fuer_die_feste_oberflaeche_und_kleine_anfragen(self):
+        text = self.site()
+        m = re.search(r"header_regexp ui Origin (\S+)", text)
+        ursprung = re.compile(m[1])
+        for ok in ("https://192.168.178.136:55445", "https://sokrates2:55445", "https://spark-651f.local:55445"):
+            self.assertTrue(ursprung.fullmatch(ok), ok)
+        for fremd in ("https://192.168.178.136:55444", "http://192.168.178.136:55445", "https://evil.example:55445", "https://192x168y178z136:55445",
+                      "https://192.168.178.136:55445.evil.example", "null", "*"):
+            self.assertIsNone(ursprung.fullmatch(fremd), fremd)
+        z = self.code(text)
+        self.assertIn('Access-Control-Allow-Origin "{http.regexp.ui.0}"', z)   # nie ein fester Stern
+        self.assertNotIn("Access-Control-Allow-Credentials", text)
+        self.assertNotIn('Access-Control-Allow-Origin "*"', text)
+        self.assertIn("max_size 4KB", z)
+
+    def test_compose_bindet_den_ordner_nur_lesend_ein(self):
+        z = self.code((INFRA / "wamo-caddy" / "docker-compose.yml").read_text(encoding="utf-8"))
+        self.assertIn("- /run/wamo-freigabe:/run/wamo-freigabe:ro", z)
+        self.assertIn("- /run/wamo-core:/run/wamo-core:ro", z)
+        self.assertIn('user: "1000:1000"', z)   # deshalb: Peers 0 und 1000 und die Gruppe wamocon am Ordner
+
+    def test_caddy_skript_prueft_den_ordner_und_sichert_die_alte_site(self):
+        text = (INFRA / "wamo-core-caddy.sh").read_text(encoding="utf-8")
+        self.assertIn('"wamo-anker:wamocon:2750"', text)
+        self.assertIn("wamo-core.caddy.vorher", text)
+        self.assertIn("--route-zurueck", text)
+        self.assertNotIn(chr(0x2014), text)
+        if BASH:
+            self.assertEqual(subprocess.run([BASH, "-n", str(INFRA / "wamo-core-caddy.sh")], capture_output=True, text=True).returncode, 0)
+
+    def test_einrichtung_legt_den_ordner_mit_gruppe_und_setgid_an(self):
+        text = (INFRA / "freigabe-einrichten.sh").read_text(encoding="utf-8")
+        self.assertIn("d /run/wamo-freigabe 2750 $BENUTZER wamocon -", text)
+        self.assertIn("systemd-tmpfiles --create", text)
+        rueck = (INFRA / "freigabe-rueckweg.sh").read_text(encoding="utf-8")
+        self.assertIn("$TMPFILES", rueck)
+
+    def test_peers_enthalten_nur_root_und_wamocon(self):
+        unit = (ANKER / "wamo-freigabe.service").read_text(encoding="utf-8")
+        self.assertIn("Environment=WAMO_FREIGABE_PEERS=0,1000", unit)
+        self.assertNotRegex(unit, r"WAMO_FREIGABE_PEERS=[^\n]*\b(?!0\b|1000\b)\d+")
 
 
 @unittest.skipUnless(LINUX and os.geteuid() != 0, "Rauchtest Teil A braucht Linux")

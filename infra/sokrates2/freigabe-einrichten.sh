@@ -46,6 +46,7 @@ AUSGANG_DIR="$WURZEL/etc/wamo-freigabe-ausgang"
 AUSGANG_UNIT="$WURZEL/etc/systemd/system/wamo-freigabe-ausgang.service"
 UNIT="$WURZEL/etc/systemd/system/wamo-freigabe.service"
 SOCKET="$WURZEL/run/wamo-freigabe/freigabe.sock"
+TMPFILES="$WURZEL/etc/tmpfiles.d/wamo-freigabe.conf"
 BENUTZER=wamo-anker
 PYTHON=/usr/bin/python3
 MODULE=(freigabe_dienst.py freigabe.py)      # liegen in anker/
@@ -229,6 +230,17 @@ if [ -z "$WURZEL" ]; then
     nft -c -f "$AUSGANG_DIR/regeln.nft" || { echo "Die Ausgangsregel ist ungültig (nft -c), Abbruch." >&2; exit 1; }
     install -o root -g root -m 0644 "$HERE/anker/wamo-freigabe-ausgang.service" "$AUSGANG_UNIT"
     sed -i 's/\r$//' "$AUSGANG_UNIT"
+    # Laufordner: bleibt über Neustarts bestehen, Gruppe wamocon mit Setgid-Bit (der Socket erbt sie), damit der Container wamo-caddy (1000:1000)
+    # den Socket erreicht; ohne diese Gruppe käme nur root hin. Docker braucht den Ordner vor dem Mount (sonst legte er ihn als root an).
+    getent group wamocon >/dev/null || { echo "Gruppe wamocon fehlt (Zugang von Caddy zum Socket), Abbruch." >&2; exit 1; }
+    mkdir -p "$(dirname "$TMPFILES")"
+    cat > "$TMPFILES" <<TMP
+# WAMO-Freigabe-Dienst: Ordner des Sockets. 2750 $BENUTZER:wamocon: nur der Dienst schreibt, die Gruppe wamocon (Caddy) erreicht den
+# Socket freigabe.sock (0660); das Setgid-Bit vererbt die Gruppe. Im Programm prüft SO_PEERCRED zusätzlich jeden Aufrufer.
+d /run/wamo-freigabe 2750 $BENUTZER wamocon -
+TMP
+    chmod 0644 "$TMPFILES"
+    systemd-tmpfiles --create "$TMPFILES"
     install -o root -g root -m 0644 "$HERE/anker/wamo-freigabe.service" "$UNIT"
     sed -i 's/\r$//' "$UNIT"
     systemd-analyze verify "$AUSGANG_UNIT" "$UNIT" 2>&1 | grep -v '^$' | sed 's/^/  verify: /' || true

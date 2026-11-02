@@ -3,8 +3,9 @@
 #
 # Läuft als unprivilegierter Systembenutzer wamo-anker, ohne jede Capability. Nimmt Freigaben von Admins entgegen (Konzept E.2): prüft
 # das Token der Sitzung (Signatur gegen den Schlüsselsatz von GoTrue, aal2, zweiter Faktor höchstens 60 Sekunden alt) und schreibt die
-# Freigabe in die Datenbank als Rolle wamo_anker_s2. Lauscht auf /run/wamo-freigabe/freigabe.sock (Ordner 0750 wamo-anker, Socket
-# 0660; zusätzlich SO_PEERCRED im Programm: nur die Benutzer aus WAMO_FREIGABE_PEERS, am Anfang nur root). Der Code liegt root-eigen
+# Freigabe in die Datenbank als Rolle wamo_anker_s2. Lauscht auf /run/wamo-freigabe/freigabe.sock (Ordner 2750 wamo-anker:wamocon, vom Typ
+# tmpfiles.d; das Setgid-Bit gibt dem Socket die Gruppe wamocon, Modus 0660; zusätzlich SO_PEERCRED im Programm: nur die Benutzer aus
+# WAMO_FREIGABE_PEERS, das sind root (0) und wamocon (1000), also der Container wamo-caddy, der als 1000:1000 läuft). Der Code liegt root-eigen
 # unter /opt/wamo-freigabe/app, die Bibliotheken unter /opt/wamo-freigabe/pylib; vor jedem Start prüft ExecStartPre ihre Prüfsummen
 # (fail closed).
 #
@@ -34,15 +35,17 @@ Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
 WorkingDirectory=/
-RuntimeDirectory=wamo-freigabe
-RuntimeDirectoryMode=0750
+# Kein RuntimeDirectory=: Der Ordner /run/wamo-freigabe bleibt über Neustarts des Dienstes bestehen (tmpfiles.d, freigabe-einrichten.sh). Der
+# Container wamo-caddy bindet ihn ein (Route /wamo/release/<id>/freigeben); ein RuntimeDirectory legte bei jedem Neustart einen neuen
+# Ordner an, und Caddy sähe den alten ohne Socket.
+ReadWritePaths=/run/wamo-freigabe
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUTF8=1
 Environment=WAMO_FREIGABE_SCHEMA=wamo_dev
 Environment=WAMO_FREIGABE_JWKS_URL=https://192.168.178.136:55443/auth/v1/.well-known/jwks.json
 Environment=WAMO_FREIGABE_ISS=https://192.168.178.136:55443/auth/v1
 Environment=WAMO_FREIGABE_AUD=authenticated
-Environment=WAMO_FREIGABE_PEERS=0
+Environment=WAMO_FREIGABE_PEERS=0,1000
 UMask=0077
 
 # Der Dienst schreibt nichts außer dem Socket im eigenen Laufordner; Geheimnisordner anderer Dienste sind unsichtbar

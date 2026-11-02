@@ -32,6 +32,7 @@ KONFIG="$WURZEL/etc/wamo-freigabe"
 AUSGANG_DIR="$WURZEL/etc/wamo-freigabe-ausgang"
 AUSGANG_UNIT="$WURZEL/etc/systemd/system/wamo-freigabe-ausgang.service"
 UNIT="$WURZEL/etc/systemd/system/wamo-freigabe.service"
+TMPFILES="$WURZEL/etc/tmpfiles.d/wamo-freigabe.conf"
 LAUF="$WURZEL/run/wamo-freigabe"
 
 pruefe_herkunft() {
@@ -100,7 +101,7 @@ loesche_ordner "$PYLIB"
 if [ -e "$PYLIB.vorher" ]; then loesche_ordner "$PYLIB.vorher"; fi
 loesche_ordner "$KONFIG"
 loesche_ordner "$AUSGANG_DIR"
-tu "löscht $UNIT, $AUSGANG_UNIT und pylib.SHA256SUMS" rm -f -- "$UNIT" "$AUSGANG_UNIT" "$BASIS/pylib.SHA256SUMS"
+tu "löscht $UNIT, $AUSGANG_UNIT, $TMPFILES und pylib.SHA256SUMS" rm -f -- "$UNIT" "$AUSGANG_UNIT" "$TMPFILES" "$BASIS/pylib.SHA256SUMS"
 if [ -z "$WURZEL" ]; then tu "systemctl daemon-reload" systemctl daemon-reload; fi
 if [ -d "$BASIS" ] && [ -z "$(ls -A "$BASIS" 2>/dev/null)" ]; then tu "löscht den leeren Ordner $BASIS" rmdir -- "$BASIS"; fi
 
