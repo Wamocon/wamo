@@ -101,6 +101,9 @@ for py in anker/wamo_anker.py anker_rauchtest.py; do
   "$PYTHON" -I -c 'import ast, sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' "$HERE/$py" \
     || { echo "Syntaxfehler in $py" >&2; exit 1; }
 done
+for f in wamo-ui-umschalten.sh wamo-core-slots.sh wamo-caddy/kern/slot.inc.vorlage wamo-caddy/kern/slot.inc.legacy; do
+  [ -f "$HERE/$f" ] || { echo "Fehlt: $HERE/$f (Rückweg-Schritte des Ankers)" >&2; exit 1; }
+done
 if find "$HERE/anker" \( -name '.env*' -o -name 'geheim*' -o -name '*.pem' -o -name '*.key' \) | grep -q .; then
   echo "Im Anker-Ordner liegt eine Geheimnisdatei, Abbruch." >&2; exit 1
 fi
@@ -136,6 +139,13 @@ programme() {
       install "${OWN[@]}" -m 0755 "$f" "$neu/schritte/$(basename "$f")"
     done
   fi
+  # Rückweg-Schritte (Schritt 1.4d): dieselben Skripte wie im Betrieb, aber als root-eigene Kopien mit Prüfsumme. Der Anker startet nie etwas aus dem Home von
+  # wamocon. Beide Skripte erkennen ihren Namen und brauchen nur die Vorlagen daneben: rueckweg-ui = wamo-ui-umschalten.sh (anker-rueckweg),
+  # rueckweg-kern = wamo-core-slots.sh (rueckweg-zu). Gesetzt wird nur der Name, nichts aus der Anfrage.
+  install "${OWN[@]}" -m 0755 "$HERE/wamo-ui-umschalten.sh" "$neu/schritte/rueckweg-ui"
+  install "${OWN[@]}" -m 0755 "$HERE/wamo-core-slots.sh" "$neu/schritte/rueckweg-kern"
+  install "${OWN[@]}" -m 0644 "$HERE/wamo-caddy/kern/slot.inc.vorlage" "$neu/schritte/slot.inc.vorlage"
+  install "${OWN[@]}" -m 0644 "$HERE/wamo-caddy/kern/slot.inc.legacy" "$neu/schritte/slot.inc.legacy"
   find "$neu" -type f -exec sed -i 's/\r$//' {} +   # Windows-Zeilenenden aus der Ablage entfernen
   ( cd "$neu" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$neu.summen" )
   mv "$neu.summen" "$neu/SHA256SUMS"
