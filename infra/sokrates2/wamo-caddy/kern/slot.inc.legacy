@@ -1,0 +1,5 @@
+# Vor der Umstellung auf Kern-Slots (Schritt 2.2): nur die Standardroute auf den Socket der alten Unit wamo-core.service.
+# Die Oberfläche fragt /wamo/slot, bekommt hier die Antwort der Zugangskontrolle des Kerns (kein Slot) und startet wie bisher mit /start.
+handle {
+	import kern_weiter /run/wamo-core/core.sock
+}

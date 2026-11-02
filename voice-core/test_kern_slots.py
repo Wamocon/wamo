@@ -98,9 +98,16 @@ class Skript(unittest.TestCase):
                      "go-w", "chown -R root:root"):
             self.assertIn(muss, t, muss)
         self.assertNotIn(chr(0x2014), t)
-        self.assertNotIn("wamo-core.service restart", t)   # die laufende alte Unit wird nie angefasst
-        self.assertNotIn("systemctl restart", t)
-        self.assertNotIn("systemctl start", t)
+        self.assertNotIn("systemctl restart", t)   # nichts wird je neu gestartet, nur gestartet und gestoppt
+        # die alte Unit wird nur von den beiden Umstellungs-Befehlen angefasst, und erst nachdem Slot a antwortet
+        for zeile in t.splitlines():
+            if re.search(r"systemctl (disable|enable|start|stop)", zeile) and "wamo-core.service" in zeile:
+                self.assertTrue(zeile.strip().startswith(("systemctl disable --now wamo-core.service", "systemctl enable --now wamo-core.service")), zeile)
+        umstellen = t[t.index("cmd_umstellen() {"):t.index("cmd_umstellung_zurueck() {")]
+        self.assertLess(umstellen.index("ruhe_pruefen wamo-core.service"), umstellen.index("systemctl start wamo-core@a.service"))
+        self.assertLess(umstellen.index("warte_auf_slot a"), umstellen.index("cmd_inc a"))
+        self.assertLess(umstellen.index("cmd_inc a"), umstellen.index("systemctl disable --now wamo-core.service"))   # Caddy zeigt auf a, bevor die alte Unit endet
+        self.assertIn("RUHE_MIN", t)
 
     def test_release_name_wird_streng_geprueft(self):
         m = re.search(r"NAME_RE='([^']+)'", SKRIPT.read_text(encoding="utf-8"))
@@ -113,6 +120,103 @@ class Skript(unittest.TestCase):
     def test_zeilenenden_lf(self):
         for p in (SKRIPT, VORLAGE, VORPRUEFUNG):
             self.assertNotIn(b"\r\n", p.read_bytes(), p.name)
+
+
+CADDY = INFRA / "wamo-caddy" / "kern"
+
+
+def inc_text(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", "wamo-core-slots.sh", "inc-text", *args], cwd=str(INFRA), capture_output=True, text=True)
+
+
+def code(text: str) -> str:
+    """Der Text ohne Kommentarzeilen."""
+    return chr(10).join(z for z in text.splitlines() if not z.lstrip().startswith("#")) + chr(10)
+
+
+@unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "braucht bash unter Linux")
+class IncludeDatei(unittest.TestCase):
+    def test_legacy_ist_nur_die_standardroute_der_alten_unit(self):
+        t = code(inc_text("legacy").stdout)
+        self.assertIn("import kern_weiter /run/wamo-core/core.sock", t)
+        self.assertNotIn("/wamo/slot", t)
+        self.assertNotIn("/i/a/", t)
+        self.assertEqual(t.count("handle"), 1)
+
+    def test_aktiver_slot_a(self):
+        t = code(inc_text("a").stdout)
+        self.assertIn('respond "a" 200', t)
+        self.assertIn("Cache-Control no-store", t)
+        self.assertIn("handle /i/a/* {", t)
+        self.assertIn("handle /i/b/* {", t)
+        self.assertIn("uri strip_prefix /i/a", t)
+        self.assertIn("uri strip_prefix /i/b", t)
+        self.assertRegex(t, r"handle \{\n\timport kern_weiter /run/wamo-core/core-a\.sock\n\}")
+        self.assertNotIn("409", t)   # ohne auslaufende Instanz kein Abweisen
+        self.assertNotIn("@", t.replace("@ui", "").replace("@vorab", ""))   # kein offener Platzhalter
+
+    def test_auslaufende_instanz_bekommt_409_mit_dem_aktiven_slot_und_cors(self):
+        t = code(inc_text("b", "auslaufend", "a").stdout)
+        self.assertIn("handle /i/a/start {", t)
+        self.assertIn('respond `{"slot":"b"}` 409', t)
+        self.assertIn("respond @vorab 204", t)   # der Preflight des Browsers muss durchgehen, sonst sieht die Oberfläche den Status nie
+        self.assertIn("Access-Control-Allow-Headers \"Authorization, Content-Type\"", t)
+        self.assertLess(t.index("handle /i/a/start"), t.index("handle /i/a/*"))   # die engere Route zuerst
+        self.assertRegex(t, r"handle \{\n\timport kern_weiter /run/wamo-core/core-b\.sock\n\}")
+
+    def test_ungueltige_aufrufe(self):
+        for args in (("c",), ("a", "auslaufend", "a"), ("a", "auslaufend", "x"), ("a", "stoppen", "b"), ("legacy", "auslaufend", "b"), ("",)):
+            with self.subTest(args=args):
+                p = inc_text(*args)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertEqual(p.stdout, "")
+
+    def test_slot_antwort_darf_jeder_ursprung_lesen_aber_nur_dort(self):
+        # Die Desktop-App läuft auf localhost, die Oberfläche im LAN auf 55445: beide müssen den Slot lesen können, sonst startete die App
+        # ohne Slot-Pfad und ihre Sitzung geriete beim nächsten Umschalten auf die falsche Instanz.
+        t = code(inc_text("a", "auslaufend", "b").stdout)
+        slot = t[t.index("handle /wamo/slot {"):t.index("handle /i/b/start {")]
+        self.assertIn('Access-Control-Allow-Origin "*"', slot)
+        for geschuetzt in ("handle /i/a/* {", "handle /i/b/* {"):   # alles andere bleibt bei der Zugangskontrolle des Kerns (kein CORS-Kopf von Caddy)
+            block = t[t.index(geschuetzt):]
+            block = block[:block.index("}\n")]
+            self.assertNotIn("Access-Control", block)
+        self.assertNotIn("Access-Control", t[t.index("handle {\n"):])
+
+
+class CaddySite(unittest.TestCase):
+    def test_site_bindet_die_include_datei_ein_und_behaelt_die_grenzen(self):
+        t = (CADDY / "wamo-core.caddy").read_text(encoding="utf-8")
+        self.assertIn("import /etc/caddy/kern/slot.inc", t)
+        self.assertIn("(kern_weiter) {", t)
+        self.assertIn("max_size 26MiB", t)
+        self.assertIn("max_size 512KB", t)
+        self.assertIn("reverse_proxy unix/{args[0]}", t)
+        self.assertIn("flush_interval -1", t)
+        self.assertIn("response_header_timeout 60s", t)
+        self.assertNotIn("core.sock", t.split("(kern_weiter)")[1].split("https://")[0])   # der Socket kommt nur über das Argument
+        self.assertIn("@freigeben", t)   # die Freigabe-Route bleibt und steht vor der Include-Datei
+        self.assertLess(t.index("handle @freigeben"), t.index("import /etc/caddy/kern/slot.inc"))
+
+    def test_grenze_gilt_auch_hinter_dem_slot_pfad(self):
+        t = (CADDY / "wamo-core.caddy").read_text(encoding="utf-8")
+        muster = re.search(r"@dateien path_regexp (\S+)", t).group(1)
+        r = re.compile(muster)
+        for gut in ("/wamo/api/dateien", "/wamo/api/dateien/abc", "/i/a/wamo/api/dateien", "/i/b/wamo/api/dateien/x"):
+            self.assertTrue(r.match(gut), gut)
+        for schlecht in ("/wamo/api/dateienxyz", "/i/c/wamo/api/dateien", "/wamo/api/andere", "/start"):
+            self.assertFalse(r.match(schlecht), schlecht)
+
+    def test_caddy_skript_legt_die_include_datei_an_und_ueberschreibt_keine_auswahl(self):
+        t = (INFRA / "wamo-core-caddy.sh").read_text(encoding="utf-8")
+        self.assertIn("slot.inc.legacy", t)
+        self.assertIn('[ -f "$CADDY_DIR/etc/kern/slot.inc" ] || install', t)
+
+    def test_legacy_datei_und_vorlage_ohne_gedankenstriche(self):
+        for n in ("slot.inc.legacy", "slot.inc.vorlage"):
+            t = (CADDY / n).read_text(encoding="utf-8")
+            self.assertNotIn(chr(0x2014), t)
+            self.assertNotIn(chr(0x2013), t)
 
 
 class Vorpruefung(unittest.TestCase):

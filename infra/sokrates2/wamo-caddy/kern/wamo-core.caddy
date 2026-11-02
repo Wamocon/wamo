@@ -3,6 +3,28 @@
 #
 # Signalisierung (Start, WebRTC-Offer, ICE) und das Anmelde-Token gehen nur verschlüsselt durchs LAN. Der Kern
 # lauscht ausschließlich auf dem Unix-Socket; die Medien (UDP) laufen direkt zwischen Browser und Kern.
+# Weiterleitung an eine Kern-Instanz (Argument: Unix-Socket). Die Grenzen sind für alle Wege gleich: SDP-Offers sind wenige Kilobyte groß (die
+# Zugangskontrolle des Kerns begrenzt zusätzlich auf 256 KB). Nur geteilte Dateien (/wamo/api/dateien, Datei oder neue Fassung, auch hinter
+# einem Slot-Pfad) dürfen bis 26 MiB groß sein; der Kern begrenzt selbst auf 25 MiB. Beide Pfadgruppen schließen sich aus, sonst griffe die
+# engere Grenze zusätzlich. request_body läuft vor "uri strip_prefix", deshalb erkennt der Ausdruck den Slot-Pfad mit.
+(kern_weiter) {
+	@dateien path_regexp ^(/i/[ab])?/wamo/api/dateien(/.*)?$
+	@sonst not path_regexp ^(/i/[ab])?/wamo/api/dateien(/.*)?$
+	request_body @dateien {
+		max_size 26MiB
+	}
+	request_body @sonst {
+		max_size 512KB
+	}
+	reverse_proxy unix/{args[0]} {
+		flush_interval -1
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 60s
+		}
+	}
+}
+
 https://192.168.178.136:55444, https://sokrates2:55444, https://spark-651f.local:55444 {
 	tls internal
 
@@ -37,24 +59,8 @@ https://192.168.178.136:55444, https://sokrates2:55444, https://spark-651f.local
 		}
 	}
 
-	handle {
-		# SDP-Offers sind wenige Kilobyte groß (die Zugangskontrolle des Kerns begrenzt zusätzlich auf 256 KB).
-		# Nur geteilte Dateien (/wamo/api/dateien, Datei oder neue Fassung) dürfen bis 26 MiB groß sein; der Kern begrenzt
-		# selbst auf 25 MiB. Beide Pfadgruppen schließen sich aus, sonst griffe die engere Grenze zusätzlich.
-		@dateien path /wamo/api/dateien /wamo/api/dateien/*
-		@sonst not path /wamo/api/dateien /wamo/api/dateien/*
-		request_body @dateien {
-			max_size 26MiB
-		}
-		request_body @sonst {
-			max_size 512KB
-		}
-		reverse_proxy unix//run/wamo-core/core.sock {
-			flush_interval -1
-			transport http {
-				dial_timeout 3s
-				response_header_timeout 60s
-			}
-		}
-	}
+	# Kern-Slots (Schritt 2.2): welche Instanz neue Sitzungen bekommt, steht in der Include-Datei slot.inc (Pfade /i/a/ und /i/b/, /wamo/slot und
+	# die Standardroute). Sie wird nie von Hand geändert, sondern von wamo-core-slots.sh (Anker) erzeugt und mit "caddy reload" geschaltet.
+	# Vor der Umstellung auf Slots enthält sie nur die Standardroute auf den Socket der alten Unit (slot.inc.legacy).
+	import /etc/caddy/kern/slot.inc
 }
