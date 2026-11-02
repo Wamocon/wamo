@@ -21,10 +21,12 @@ Die Mitspieler (Datenbank, Quelle, Werk) werden eingesetzt; vorwaerts_echt.py ba
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import os
 import re
 import shutil
+import time
 
 import schutz
 
@@ -36,6 +38,10 @@ MIGRATION_RE = re.compile(r"(\d{4}_[a-z0-9_]+)\.sql")   # die Rückwege (.down.s
 SCHRITTE_ORDNER = ("voice-core", "supabase/migrations")
 STATUS = {"migrieren": "veroeffentlicht", "bereitstellen": "veroeffentlicht", "umschalten": "bereitgestellt"}
 KLASSIFIZIEREN_STATUS = ("pruefung1", "pruefung2", "pruefung3")
+BEWAEHRUNG_S = 1800        # so lange muss der neue Kern gesund gewesen sein (Konzept G, Bewährung)
+PROBE_ABSTAND_S = 10.0     # höchstens eine Probe in diesem Abstand, gleich wie oft der Release-Dienst fragt
+PROBEN_SCHLECHT_MAX = 3    # so viele nicht gesunde Proben hintereinander lösen den Rückweg aus
+ZEIT_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 
 class VorwaertsFehler(Exception):
@@ -54,6 +60,7 @@ def release_name(version_final: str, commit: str) -> str:
 class Vorwaerts:
     def __init__(self, db, quelle, werk, arbeit: str, schemas: tuple[str, ...] = SCHEMAS):
         self.db, self.quelle, self.werk, self.arbeit, self.schemas = db, quelle, werk, arbeit, schemas
+        self._proben: dict[str, dict] = {}   # je Anfrage: Zeit der letzten Probe und nicht gesunde Proben in Folge (nur im Speicher: nach einem Neustart beginnt die Zählung neu)
 
     # ---------------------------------------------------------------- Prüfungen
     def _anfrage(self, befehl: str, kennung: str) -> dict:
@@ -195,6 +202,53 @@ class Vorwaerts:
         if not trocken:
             self.db.klassifizierung_setzen(kennung, art, erg["treffer"])
         return {"klasse": erg["klasse"], "art": art, "treffer_anzahl": erg["treffer_anzahl"], "treffer_sha": erg["treffer_sha"], "trocken": trocken or None}
+
+    # ---------------------------------------------------------------- bewaehren
+    def bewaehren(self, kennung: str, zugang, trocken: bool = False) -> dict:
+        """Bewährung des umgeschalteten Kerns (Konzept G). Der Release-Dienst fragt wiederholt; jede Frage ist eine einzige Probe, nie eine Schleife im Anker.
+
+          * gesund und seit BEWAEHRUNG_S aktiv   letzte gute Stand := aktiver Stand, Status bewaehrt
+          * PROBEN_SCHLECHT_MAX Proben in Folge nicht gesund   Rückweg des Kerns, Status zurueckgenommen
+          * sonst   stand laeuft (mit der Restzeit)
+
+        zugang stellt der Anker bereit: aktiv() -> Eintrag des aktiven Kerns oder None, jetzt() -> Sekunden, festhalten(eintrag) -> schreibt letzte_gute,
+        zurueck() -> True, wenn der Rückweg des Kerns gelungen ist. Mit trocken=True wird weder geprobt noch geändert."""
+        if not UUID_RE.fullmatch(kennung or ""):
+            raise VorwaertsFehler("anfrage_ungueltig")
+        a = self.db.anfrage_stand(kennung)
+        if a is None:
+            raise VorwaertsFehler("anfrage_unbekannt")
+        if a.get("status") == "bewaehrt":
+            return {"stand": "bewaehrt"}
+        if a.get("status") != "umgeschaltet":
+            raise VorwaertsFehler("status_falsch", str(a.get("status")))
+        aktiv = zugang.aktiv()
+        if not (isinstance(aktiv, dict) and isinstance(aktiv.get("seit"), str) and ZEIT_RE.fullmatch(aktiv["seit"])):
+            raise VorwaertsFehler("kein_aktiver_stand")
+        jetzt = zugang.jetzt()
+        rest = max(0, int(BEWAEHRUNG_S - (jetzt - calendar.timegm(time.strptime(aktiv["seit"], "%Y-%m-%dT%H:%M:%SZ")))))
+        if trocken:
+            return {"stand": "laeuft", "rest_s": rest, "trocken": True}
+        p = self._proben.setdefault(kennung, {"zeit": None, "schlecht": 0})
+        if p["zeit"] is not None and jetzt - p["zeit"] < PROBE_ABSTAND_S:
+            return {"stand": "laeuft", "rest_s": rest, "schlecht": p["schlecht"]}   # zu früh für die nächste Probe: nichts zählt
+        p["zeit"] = jetzt
+        if not self.werk.kern_probe():
+            p["schlecht"] += 1
+            if p["schlecht"] < PROBEN_SCHLECHT_MAX:
+                return {"stand": "laeuft", "rest_s": rest, "schlecht": p["schlecht"]}
+            if not zugang.zurueck():
+                raise VorwaertsFehler("rueckweg_fehlgeschlagen")
+            self.db.status_setzen(kennung, "umgeschaltet", "zurueckgenommen")
+            self._proben.pop(kennung, None)
+            return {"stand": "zurueckgenommen"}
+        p["schlecht"] = 0
+        if rest > 0:
+            return {"stand": "laeuft", "rest_s": rest, "schlecht": 0}
+        zugang.festhalten(aktiv)   # erst der Stand, dann der Status: bricht es dazwischen ab, wiederholt der nächste Aufruf beides ohne Schaden
+        self.db.status_setzen(kennung, "umgeschaltet", "bewaehrt")
+        self._proben.pop(kennung, None)
+        return {"stand": "bewaehrt"}
 
     def ausfuehren(self, befehl: str, kennung: str, trocken: bool = False) -> dict:
         if befehl == "klassifiziere":

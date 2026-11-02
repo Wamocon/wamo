@@ -108,6 +108,9 @@ class Stufen:
     def umschalten(self, ctx: Kontext) -> Ergebnis:  # bereitgestellt: der Anker schaltet um
         raise NotImplementedError
 
+    def bewaehren(self, ctx: Kontext) -> Ergebnis:  # umgeschaltet: Bewährung durch den Anker; "wartet", solange sie läuft
+        raise NotImplementedError
+
 
 class NichtVerfuegbar(Stufen):
     """Standard im Betrieb von Schritt 0.3: Keine Stufe ist gefüllt, jede meldet es ehrlich."""
@@ -116,7 +119,7 @@ class NichtVerfuegbar(Stufen):
         return Ergebnis.fehler("stufe_nicht_verfuegbar")
 
     arbeiten = uebernehmen = pruefen = reviewen = refaktorieren = _nein
-    version_waehlen = veroeffentlichen = bereitstellen = umschalten = _nein
+    version_waehlen = veroeffentlichen = bereitstellen = umschalten = bewaehren = _nein
 
 
 def _pruefen_standard(_ctx: Kontext, runde: int) -> Ergebnis:
@@ -137,6 +140,7 @@ STANDARD = {
     "veroeffentlichen": Ergebnis.ok(),
     "bereitstellen": Ergebnis.ok(),
     "umschalten": Ergebnis.ok(),
+    "bewaehren": Ergebnis.ok(),
 }
 
 
@@ -196,8 +200,11 @@ class Attrappe(Stufen):
     def umschalten(self, ctx: Kontext) -> Ergebnis:
         return self._lauf("umschalten", ctx)
 
+    def bewaehren(self, ctx: Kontext) -> Ergebnis:
+        return self._lauf("bewaehren", ctx)
 
-# Zuordnung Zustand -> Aufruf (Stufe, Runde); angefragt, wartet_freigabe und umgeschaltet haben keine eigene Stufe
+
+# Zuordnung Zustand -> Aufruf (Stufe, Runde); angefragt und wartet_freigabe haben keine eigene Stufe
 def aufruf(stufen: Stufen, status: str) -> Callable[[Kontext], Ergebnis] | None:
     tabelle: dict[str, Callable[[Kontext], Ergebnis]] = {
         "arbeit": stufen.arbeiten,
@@ -211,5 +218,6 @@ def aufruf(stufen: Stufen, status: str) -> Callable[[Kontext], Ergebnis] | None:
         "freigegeben": stufen.veroeffentlichen,
         "veroeffentlicht": stufen.bereitstellen,
         "bereitgestellt": stufen.umschalten,
+        "umgeschaltet": stufen.bewaehren,
     }
     return tabelle.get(status)
