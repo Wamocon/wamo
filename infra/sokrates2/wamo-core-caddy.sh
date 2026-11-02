@@ -52,7 +52,7 @@ if [ "${1:-}" = --route-zurueck ]; then
 fi
 [ -z "${1:-}" ] || { echo "Aufruf: $0 [--zurueck|--route-zurueck]" >&2; exit 2; }
 
-for f in wamo-caddy/Caddyfile wamo-caddy/docker-compose.yml wamo-caddy/kern/wamo-core.caddy; do
+for f in wamo-caddy/Caddyfile wamo-caddy/docker-compose.yml wamo-caddy/kern/wamo-core.caddy wamo-caddy/kern/slot.inc.legacy; do
   [ -f "$HERE/$f" ] || { echo "$HERE/$f fehlt." >&2; exit 1; }
 done
 eigen="$(stat -c '%U:%g:%a' /run/wamo-core 2>/dev/null || true)"
@@ -74,6 +74,12 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/etc/kern"
 install -m 644 "$HERE/wamo-caddy/Caddyfile" "$TMP/etc/Caddyfile"
 install -m 644 "$HERE/wamo-caddy/kern/wamo-core.caddy" "$TMP/etc/kern/wamo-core.caddy"
+# Kern-Slots (Schritt 2.2): die Site bindet etc/kern/slot.inc ein. Eine live gesetzte Auswahl bleibt, sonst gilt die Standardroute der alten Unit.
+if [ -f "$CADDY_DIR/etc/kern/slot.inc" ]; then
+  install -m 644 "$CADDY_DIR/etc/kern/slot.inc" "$TMP/etc/kern/slot.inc"
+else
+  install -m 644 "$HERE/wamo-caddy/kern/slot.inc.legacy" "$TMP/etc/kern/slot.inc"
+fi
 chmod 755 "$TMP" "$TMP/etc" "$TMP/etc/kern"
 docker run --rm -v "$TMP/etc:/etc/caddy:ro" "$CADDY_IMAGE" caddy adapt --config /etc/caddy/Caddyfile >/dev/null
 echo "  Caddyfile gültig"
@@ -84,6 +90,7 @@ install -m 644 "$TMP/etc/Caddyfile" "$CADDY_DIR/etc/Caddyfile"
 if [ -f "$CADDY_DIR/etc/kern/wamo-core.caddy" ] && ! cmp -s "$TMP/etc/kern/wamo-core.caddy" "$CADDY_DIR/etc/kern/wamo-core.caddy"; then
   cp -p "$CADDY_DIR/etc/kern/wamo-core.caddy" "$CADDY_DIR/etc/kern/wamo-core.caddy.vorher"   # Endung .vorher: wird vom Import "kern/*.caddy" nicht geladen
 fi
+[ -f "$CADDY_DIR/etc/kern/slot.inc" ] || install -m 644 "$TMP/etc/kern/slot.inc" "$CADDY_DIR/etc/kern/slot.inc"   # vor der Site, die sie einbindet
 install -m 644 "$TMP/etc/kern/wamo-core.caddy" "$CADDY_DIR/etc/kern/wamo-core.caddy"
 alt_id="$(docker ps -q -f name=^wamo-caddy$)"
 if ! cmp -s "$HERE/wamo-caddy/docker-compose.yml" "$CADDY_DIR/docker-compose.yml"; then

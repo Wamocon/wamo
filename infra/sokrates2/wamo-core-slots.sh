@@ -6,6 +6,10 @@
 #   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh release v0.1.0-abc123"  baut /opt/wamo-core/releases/<name> aus ~/wamo-infra/kern
 #   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh slot b v0.1.0-abc123"   setzt /opt/wamo-core/slots/b (nur für einen Slot, der nicht läuft)
 #   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh status"
+#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh inc a"               schaltet Caddy: neue Sitzungen auf Slot a (Include-Datei slot.inc, caddy reload)
+#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh inc a auslaufend b"   dasselbe, und Slot b nimmt keinen neuen /start mehr an (409)
+#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh inc legacy"           Rückweg auf die Standardroute der alten Unit
+#   bash wamo-core-slots.sh inc-text a [auslaufend b]                              gibt nur den Text aus (ohne root, für Tests)
 #
 # Aufbau:  /opt/wamo-core/releases/<name>/voice-core   Code (root, nur Laufzeitdateien)
 #          /opt/wamo-core/releases/<name>/venv         eigenes venv aus uv.lock des Release
@@ -19,16 +23,19 @@ BENUTZER=wamo-core
 PYTHON=/usr/bin/python3
 UNIT=/etc/systemd/system/wamo-core@.service
 NAME_RE='^v[0-9A-Za-z._-]{1,40}$'
+CADDY_ETC=/home/wamocon/wamo-tls/caddy/etc/kern   # wird als /etc/caddy/kern in den Container von wamo-caddy eingehängt
+CADDY_BESITZER=wamocon
 
-[ "$(id -u)" = 0 ] || { echo "Bitte als root ausführen (sudo)." >&2; exit 1; }
 befehl="${1:-status}"
 [ "$#" -eq 0 ] || shift
 
 fehler() { echo "wamo-core-slots: $*" >&2; exit 1; }
+root_pflicht() { [ "$(id -u)" = 0 ] || fehler "Bitte als root ausführen (sudo)."; }
 slot_pruefen() { case "${1:-}" in a|b) ;; *) fehler "Slot muss a oder b sein" ;; esac; }
 name_pruefen() { [[ "${1:-}" =~ $NAME_RE ]] || fehler "Release-Name ungültig (erlaubt: v plus Buchstaben, Ziffern, Punkt, Strich, Unterstrich)"; }
 
 cmd_einrichten() {
+  root_pflicht
   [ -x "$APP/tools/uv" ] || fehler "$APP/tools/uv fehlt (zuerst wamo-core-einrichten.sh)"
   install -d -o root -g "$BENUTZER" -m 0750 "$APP/releases" "$APP/slots"
   install -o root -g root -m 0644 "$HERE/wamo-core@.service" "$UNIT"
@@ -41,6 +48,7 @@ cmd_einrichten() {
 }
 
 cmd_release() {
+  root_pflicht
   name="${1:-}"; name_pruefen "$name"
   quelle="${2:-$HERE/kern}"
   ziel="$APP/releases/$name"
@@ -72,6 +80,7 @@ cmd_release() {
 }
 
 cmd_slot() {
+  root_pflicht
   slot_pruefen "${1:-}"; name_pruefen "${2:-}"
   slot="$1"; name="$2"
   [ -f "$APP/releases/$name/voice-core/bot.py" ] && [ -x "$APP/releases/$name/venv/bin/python" ] || fehler "Release $name fehlt oder ist unvollständig"
@@ -93,10 +102,63 @@ cmd_status() {
   echo "Alte Unit wamo-core.service: $(systemctl is-active wamo-core.service 2>/dev/null || true)"
 }
 
+# Text der Include-Datei für Caddy: legacy (Standardroute auf die alte Unit) oder ein aktiver Slot, optional mit auslaufender Instanz
+modus_pruefen() { case "${1:-}" in legacy|a|b) ;; *) fehler "inc: legacy | a | b [auslaufend a|b]" ;; esac; }
+
+inc_text() {
+  local modus="${1:-}" aus="${3:-}"
+  modus_pruefen "$modus"
+  if [ "$modus" = legacy ]; then
+    [ -z "${2:-}" ] || fehler "inc legacy kennt keine auslaufende Instanz"
+    cat "$HERE/wamo-caddy/kern/slot.inc.legacy"
+    return 0
+  fi
+  if [ -n "${2:-}" ]; then
+    [ "$2" = auslaufend ] || fehler "inc: der dritte Teil muss auslaufend heißen"
+    slot_pruefen "$aus"
+    [ "$aus" != "$modus" ] || fehler "inc: der aktive Slot kann nicht auslaufen"
+    sed -e 's/^#AUSLAUF# //' "$HERE/wamo-caddy/kern/slot.inc.vorlage" | sed -e "s/@AKTIV@/$modus/g" -e "s/@AUSLAUFEND@/$aus/g"
+  else
+    sed -e '/^#AUSLAUF# /d' "$HERE/wamo-caddy/kern/slot.inc.vorlage" | sed -e "s/@AKTIV@/$modus/g"
+  fi
+}
+
+cmd_inc() {
+  root_pflicht
+  modus_pruefen "${1:-}"
+  [ -d "$CADDY_ETC" ] || fehler "$CADDY_ETC fehlt (zuerst wamo-core-caddy.sh)"
+  # Aktiv darf nur ein Slot sein, dessen Instanz läuft: sonst bekäme Caddy einen Socket, den es nicht gibt
+  if [ "$1" != legacy ]; then
+    systemctl is-active --quiet "wamo-core@$1.service" || fehler "wamo-core@$1 läuft nicht: erst starten und prüfen, dann schalten"
+    [ -S "/run/wamo-core/core-$1.sock" ] || fehler "/run/wamo-core/core-$1.sock fehlt"
+  fi
+  neu="$(mktemp "$CADDY_ETC/.slot.inc.XXXXXX")"
+  trap 'rm -f "$neu"' EXIT
+  inc_text "$@" > "$neu"
+  chown "$CADDY_BESITZER":"$CADDY_BESITZER" "$neu"
+  chmod 0644 "$neu"
+  alt=""
+  if [ -f "$CADDY_ETC/slot.inc" ]; then
+    alt="$CADDY_ETC/slot.inc.vorher"
+    cp -p "$CADDY_ETC/slot.inc" "$alt"
+  fi
+  mv -f "$neu" "$CADDY_ETC/slot.inc"
+  trap - EXIT
+  if ! docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+    echo "caddy reload fehlgeschlagen, vorige Fassung wird wiederhergestellt." >&2
+    if [ -n "$alt" ]; then mv -f "$alt" "$CADDY_ETC/slot.inc"; else rm -f "$CADDY_ETC/slot.inc"; fi
+    docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || true
+    exit 1
+  fi
+  echo "Caddy schaltet jetzt: $*"
+}
+
 case "$befehl" in
   einrichten) cmd_einrichten ;;
   release) cmd_release "$@" ;;
   slot) cmd_slot "$@" ;;
   status) cmd_status ;;
-  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | status" ;;
+  inc) cmd_inc "$@" ;;
+  inc-text) inc_text "$@" ;;
+  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | status" ;;
 esac

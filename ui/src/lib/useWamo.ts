@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { PipecatClient, RTVIError } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
+import { aktiverSlot, startUrl } from "@/lib/kernSlot";
 import { pcAutoLesen } from "@/lib/einstellungen";
 import { einstellungenOeffnen } from "@/lib/einstellungenHash";
 import type { GeraetBruecke } from "@/lib/geraet";
@@ -637,7 +638,7 @@ export function useWamo(): WamoAktionen {
   }, [teardown]);
 
   const connect = useCallback(async () => {
-    // erneut = zweiter Versuch nach erneuerter Sitzung (nur einmal, nach 401)
+    // erneut = zweiter Versuch nach erneuerter Sitzung (nur einmal, nach 401 oder 409)
     const starte = async (erneut: boolean): Promise<void> => {
       teardown("unmount"); // Reste eines früheren Versuchs abbauen, ohne Meldung
       // Geräte-Einstellung beim Start festhalten: ein Umschalten mitten im Gespräch wirkt erst beim nächsten
@@ -930,7 +931,11 @@ export function useWamo(): WamoAktionen {
         const headers = new Headers(session ? { Authorization: `Bearer ${session.access_token}` } : {});
         authHeaders.current = headers;
         tokenAblauf.current = session?.expires_at ? session.expires_at * 1000 : null;
-        await client.startBotAndConnect({ endpoint: `${kern}/start`, headers });
+        // Kern-Slots (Konzept A.2): die Sitzung startet auf dem aktiven Slot und bleibt über den Pfad /i/<slot>/ auf dieser Instanz.
+        // Kennt der Server keinen Slot (älterer Stand), gilt wie bisher ${kern}/start.
+        const slot = await aktiverSlot(kern);
+        if (!aktuell()) return;
+        await client.startBotAndConnect({ endpoint: startUrl(kern, slot), headers });
         // inzwischen abgebrochen: die gerade entstandene Sitzung sofort wieder schließen
         if (!aktuell()) void client.disconnect().catch(() => undefined);
         else void gewuenschtesMikrofon(client, micMeter.current?.track, aktuell);
@@ -951,6 +956,11 @@ export function useWamo(): WamoAktionen {
           wamo.set((s) => ({ ...s, presence: "offline" }));
           neuAnmelden("Deine Anmeldung ist zu alt. Bitte neu anmelden.");
           return;
+        }
+        if (status === 409 && !erneut) {
+          // Die Instanz läuft aus (neue Fassung ist aktiv, Konzept A.4): einmal mit frisch erfragtem Slot und neuem Client wiederholen
+          // (wie die Wiederholung nach 401: starte() legt einen neuen Client an)
+          return starte(true);
         }
         if (status === 401 && !erneut) {
           // einmal die Sitzung erneuern und mit frischem Token und neuem Client wiederholen
