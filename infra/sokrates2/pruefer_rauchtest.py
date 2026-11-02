@@ -192,7 +192,7 @@ def teil_a() -> None:
     print("Teil A: Installation")
     for pfad in (BASIS, APP, WERK, "/srv/wamo-pruefer", "/srv/wamo-pruefer/lauf", "/etc/wamo-pruefer", "/usr/local/lib/wamo-pruefer"):
         pruefe(f"{pfad} gehört root und ist nicht beschreibbar", root_eigen(pfad) and stat.S_ISDIR(info(pfad).st_mode), str(info(pfad)))
-    for pfad in (LAUF_SH, f"{APP}/pruefer_lauf.py", f"{APP}/pruefer_proxy.py", f"{APP}/pruefer_scans.py", f"{APP}/SHA256SUMS", "/etc/wamo-pruefer/regeln.nft",
+    for pfad in (LAUF_SH, f"{APP}/pruefer_lauf.py", f"{APP}/pruefer_proxy.py", f"{APP}/pruefer_scans.py", f"{APP}/migration_lint.py", f"{APP}/SHA256SUMS", "/etc/wamo-pruefer/regeln.nft",
                  "/etc/wamo-pruefer/proxy-pakete.env", "/etc/apparmor.d/wamo-pruefer-bwrap"):
         pruefe(f"{pfad} gehört root und ist nicht beschreibbar", root_eigen(pfad), str(info(pfad)))
     st = info("/usr/local/lib/wamo-pruefer/bwrap")

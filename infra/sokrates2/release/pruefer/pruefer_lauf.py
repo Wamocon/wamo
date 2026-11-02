@@ -7,8 +7,8 @@ Ordner (Basis und neuer Stand), vergleicht sie, führt die Stufen nacheinander a
      "sonder": false, "neue_pakete": [["rich", "13.0.0"]]}
 
 Stufen mit Werkzeugen (bauen, tests, typen_lint) laufen über einen austauschbaren Ausführer; die Stufen ohne Werkzeug (secret_scan,
-fremdverweis, wirkungsflaechen, abhaengigkeiten) sind pruefer_scans. Die Zeilen schutzschicht (Anker) und version_bytegleich (Git) liefert
-dieser Läufer nie, und migrations_lint (Schritt 2.5) nur als "fehler", sobald eine Migration geändert wurde (fail closed, bis es das Lint gibt).
+fremdverweis, wirkungsflaechen, abhaengigkeiten) sind pruefer_scans, migrations_lint ist migration_lint. Die Zeilen schutzschicht (Anker) und version_bytegleich (Git) liefert
+dieser Läufer nie.
 
 Der Läufer wirft nie wegen des Inhalts des geprüften Codes: Jede Panne einer Stufe ist ein "fehler" mit kurzem Grund. Die Ausgabe der
 Werkzeuge wird auf druckbare Zeichen und wenige Zeilen am Ende gekürzt.
@@ -31,6 +31,7 @@ from typing import Callable
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
+import migration_lint as ML  # noqa: E402
 import pruefer_scans as S  # noqa: E402
 
 DATEI_MAX = 2 * 1024 * 1024
@@ -290,10 +291,6 @@ def aus_befund(b: S.Befund) -> Stufe:
     return Stufe(b.zeile, b.treffer_anzahl, b.fehler)
 
 
-def migrationen_geaendert(dateien: list[S.Datei]) -> bool:
-    return any(d.pfad.startswith("supabase/migrations/") for d in dateien)
-
-
 def lauf(basis: str, neu: str, runde: int, muster_zeilen: list[str], ausfuehrer: Ausfuehrer | None = None,
          grund: dict[str, str] | None = None, auch_audit: bool = True) -> dict:
     ausfuehrer = ausfuehrer or ausfuehren_echt   # erst beim Aufruf aufgelöst: Tests und Kommandozeile können ihn ersetzen
@@ -335,10 +332,11 @@ def lauf(basis: str, neu: str, runde: int, muster_zeilen: list[str], ausfuehrer:
                 if a.wert != "ok":
                     s = a
         elif name == "migrations_lint":
-            s = Stufe("fehler", fehler="migrations_lint_fehlt") if migrationen_geaendert(baum.dateien) else Stufe("ok")
+            scans[name] = ML.migration_lint(baum.dateien, baum.pfade)
+            s = aus_befund(scans[name])
         else:  # nicht erreichbar, solange RUNDEN stimmt
             s = Stufe("fehler", fehler="unbekannte_stufe")
-        if fruehe_fehler and name in ("secret_scan", "fremdverweis", "wirkungsflaechen", "abhaengigkeiten"):
+        if fruehe_fehler and name in ("secret_scan", "fremdverweis", "wirkungsflaechen", "abhaengigkeiten", "migrations_lint"):
             s = Stufe("fehler", fehler=fruehe_fehler)   # der Baum war zu groß: nicht vollständig geprüft
         stufen[name] = s
     wirk = scans.get("wirkungsflaechen")

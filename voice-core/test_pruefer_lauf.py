@@ -266,10 +266,17 @@ class LaufTests(Baeume):
         self.assertEqual(a[a.index("--select") + 1], "F,B,S,E7,E9")
         self.assertNotIn("--fix", a)
 
-    def test_migration_geaendert_ist_ohne_lint_ein_fehler(self):
+    def test_migration_ohne_down_und_lock_timeout_faellt_im_lint_durch(self):
         self.schreibe(self.neu, "supabase/migrations/0017_x.sql", "select 1;")
         erg, _ = self.starte()
-        self.assertEqual((erg["pruefstand"]["migrations_lint"], erg["details"]["migrations_lint"]["fehler"]), ("fehler", "migrations_lint_fehlt"))
+        self.assertEqual(erg["pruefstand"]["migrations_lint"], "fehler")
+        self.assertGreaterEqual(erg["details"]["migrations_lint"]["treffer_anzahl"], 2)   # down_fehlt und lock_timeout
+
+    def test_saubere_migration_besteht_das_lint(self):
+        self.schreibe(self.neu, "supabase/migrations/0017_x.sql", "set local lock_timeout = '5s';\nselect 1;\n")
+        self.schreibe(self.neu, "supabase/migrations/0017_x.down.sql", "select 1;\n")
+        erg, _ = self.starte()
+        self.assertEqual(erg["pruefstand"]["migrations_lint"], "ok")
 
     def test_lockfile_aenderung_loest_den_audit_aus(self):
         alt = 'version = 1\n[[package]]\nname = "a"\nversion = "1"\nsource = { registry = "https://pypi.org/simple" }\n'
