@@ -22,3 +22,4 @@ Caddyfile text eol=lf
 *.beispiel text eol=lf
 *.toml text eol=lf
 *.lock text eol=lf
+*.apparmor text eol=lf
