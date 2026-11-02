@@ -102,10 +102,10 @@ else
 fi
 [ "$TROCKEN" = 0 ] || echo "Trockenlauf: nichts wird geändert."
 
-PRUEFER_PY=(migration_lint.py pruefer_annahme.py pruefer_archiv.py pruefer_bruecke.py pruefer_client.py pruefer_lauf.py pruefer_proxy.py pruefer_scans.py)
+PRUEFER_PY=(migprobe_dienst.py migration_lint.py migration_probe.py pruefer_annahme.py pruefer_archiv.py pruefer_bruecke.py pruefer_client.py pruefer_lauf.py pruefer_proxy.py pruefer_scans.py)
 echo "== 0. Prüfungen (nur lesend)"
 for datei in "${PRUEFER_PY[@]/#/release/pruefer/}" pruefer/wamo-pruefer-lauf.sh pruefer/wamo-pruefer-ausgang.nft \
-  pruefer/wamo-pruefer-ausgang.service "pruefer/wamo-pruefer-proxy@.service" pruefer/wamo-pruefer-annahme.socket "pruefer/wamo-pruefer-annahme@.service" pruefer/wamo-pruefer-bwrap.apparmor \
+  pruefer/wamo-pruefer-ausgang.service "pruefer/wamo-pruefer-proxy@.service" pruefer/wamo-pruefer-annahme.socket "pruefer/wamo-pruefer-annahme@.service" pruefer/wamo-migprobe.socket "pruefer/wamo-migprobe@.service" pruefer/wamo-pruefer-bwrap.apparmor \
   pruefer/requirements-werkzeuge.lock pruefer/pruefer.conf.beispiel pruefer_rauchtest.py; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei" >&2; exit 1; }
 done
@@ -288,11 +288,13 @@ ENV
     install -o root -g root -m 0644 "$HERE/pruefer/wamo-pruefer-proxy@.service" "$UNIT_DIR/wamo-pruefer-proxy@.service"
     install -o root -g root -m 0644 "$HERE/pruefer/wamo-pruefer-annahme.socket" "$UNIT_DIR/wamo-pruefer-annahme.socket"
     install -o root -g root -m 0644 "$HERE/pruefer/wamo-pruefer-annahme@.service" "$UNIT_DIR/wamo-pruefer-annahme@.service"
-    sed -i 's/\r$//' "$UNIT_DIR/wamo-pruefer-ausgang.service" "$UNIT_DIR/wamo-pruefer-proxy@.service" "$UNIT_DIR/wamo-pruefer-annahme.socket" "$UNIT_DIR/wamo-pruefer-annahme@.service"
+    install -o root -g root -m 0644 "$HERE/pruefer/wamo-migprobe.socket" "$UNIT_DIR/wamo-migprobe.socket"
+    install -o root -g root -m 0644 "$HERE/pruefer/wamo-migprobe@.service" "$UNIT_DIR/wamo-migprobe@.service"
+    sed -i 's/\r$//' "$UNIT_DIR/wamo-pruefer-ausgang.service" "$UNIT_DIR/wamo-pruefer-proxy@.service" "$UNIT_DIR/wamo-pruefer-annahme.socket" "$UNIT_DIR/wamo-pruefer-annahme@.service" "$UNIT_DIR/wamo-migprobe.socket" "$UNIT_DIR/wamo-migprobe@.service"
     systemd-analyze verify "$UNIT_DIR/wamo-pruefer-ausgang.service" "$UNIT_DIR/wamo-pruefer-proxy@pakete.service" 2>&1 \
       | grep -v '^$' | sed 's/^/  verify: /' || true
     systemctl daemon-reload
-    systemctl enable wamo-pruefer-ausgang.service wamo-pruefer-proxy@pakete.service wamo-pruefer-proxy@claude.service wamo-pruefer-annahme.socket >/dev/null 2>&1
+    systemctl enable wamo-pruefer-ausgang.service wamo-pruefer-proxy@pakete.service wamo-pruefer-proxy@claude.service wamo-pruefer-annahme.socket wamo-migprobe.socket >/dev/null 2>&1
     systemctl restart wamo-pruefer-ausgang.service
     nft list table inet wamo_pruefer_ausgang >/dev/null || { echo "Die Tabelle wamo_pruefer_ausgang fehlt, Abbruch." >&2; exit 1; }
     systemctl restart wamo-pruefer-proxy@pakete.service wamo-pruefer-proxy@claude.service
@@ -302,7 +304,8 @@ ENV
     done
     systemctl is-active wamo-pruefer-proxy@pakete.service | sed 's/^/  Proxy pakete: /' || true
     systemctl is-active wamo-pruefer-proxy@claude.service | sed 's/^/  Proxy claude: /' || true
-    systemctl restart wamo-pruefer-annahme.socket
+    systemctl restart wamo-pruefer-annahme.socket wamo-migprobe.socket
+    systemctl is-active wamo-migprobe.socket | sed 's/^/  Migrationsprobe-Socket: /' || true
     systemctl is-active wamo-pruefer-annahme.socket | sed 's/^/  Annahme-Socket: /' || true
   }
   block "legt $ETC/regeln.nft, $ETC/proxy-pakete.env und die Units an, lädt die Ausgangsregeln und startet den Proxy" dienste

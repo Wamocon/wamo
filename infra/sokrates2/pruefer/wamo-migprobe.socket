@@ -1,0 +1,17 @@
+[Unit]
+Description=WAMO-Migrationsprobe: Socket (nur root, vom Annahme-Dienst der Prüfer-Sandbox)
+Documentation=file:///opt/wamo-pruefer/app/migprobe_dienst.py
+ConditionPathExists=/opt/wamo-pruefer/app/migprobe_dienst.py
+
+[Socket]
+ListenStream=/run/wamo-migprobe/probe.sock
+SocketUser=root
+SocketGroup=root
+SocketMode=0600
+DirectoryMode=0700
+Accept=yes
+MaxConnections=4
+MaxConnectionsPerSource=4
+
+[Install]
+WantedBy=sockets.target
