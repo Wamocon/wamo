@@ -154,6 +154,15 @@ class Skript(unittest.TestCase):
             self.assertIn(muss, a, muss)
         self.assertLess(a.index("Die Bewährung läuft noch"), a.index("systemctl stop"))   # beendet wird zuletzt
 
+    def test_probe_ist_eine_einzelne_gesundheitsprobe_des_aktiven_slots(self):
+        t = SKRIPT.read_text(encoding="utf-8")
+        p = t[t.index("cmd_probe() {"):t.index("cmd_rueckweg_kern() {")]
+        for muss in ("root_pflicht", 'akt="$(aktiver_slot)"', "--unix-socket", "http://localhost/start", 'systemctl is-active --quiet "wamo-core@$akt.service"', 'echo "SLOT $akt"'):
+            self.assertIn(muss, p, muss)
+        self.assertNotIn("sleep", p)   # eine Probe, keine Schleife: die Wiederholung gehört dem Anker
+        self.assertNotIn("cmd_rueckweg_kern", p)   # und sie ändert nichts
+        self.assertIn("  probe) cmd_probe ;;", t)
+
     def test_release_name_wird_streng_geprueft(self):
         m = re.search(r"NAME_RE='([^']+)'", SKRIPT.read_text(encoding="utf-8"))
         muster = re.compile(m.group(1))

@@ -174,6 +174,7 @@ BEFEHLE = {
     "bereitstellen": Spez(arg=ANFRAGE_ID_RE, trocken=True, schreibend=True, vorwaerts=True),
     "migrieren": Spez(arg=ANFRAGE_ID_RE, trocken=True, schreibend=True, vorwaerts=True),
     "umschalten": Spez(arg=ANFRAGE_ID_RE, trocken=True, schreibend=True, vorwaerts=True),
+    "bewaehren": Spez(arg=ANFRAGE_ID_RE, trocken=True),   # eine Probe des umgeschalteten Kerns; nach 30 Minuten Gesundheit der letzte gute Stand, bei drei schlechten Proben der Rückweg
     "klassifiziere": Spez(arg=ANFRAGE_ID_RE, trocken=True),   # schreibt nur Art und Treffer in die Datenbank, vor der Freigabe; die Sperre hält ihn nicht an (er ändert nichts am System)
 }
 _ALLE = frozenset((set(BEFEHLE) - {"sperre"}) | {"sperre:an", "sperre:aus"})  # Rechte; "sperre" zählt je Argument
@@ -184,7 +185,7 @@ _ALLE = frozenset((set(BEFEHLE) - {"sperre"}) | {"sperre:an", "sperre:aus"})  # 
 ERLAUBT = {
     "root": _ALLE,
     "wamocon": _ALLE,
-    "wamo-release": frozenset({"status", "rueckweg", "sperre:an", "pruefe-sonder", "bereitstellen", "migrieren", "umschalten", "klassifiziere"}),
+    "wamo-release": frozenset({"status", "rueckweg", "sperre:an", "pruefe-sonder", "bereitstellen", "migrieren", "umschalten", "klassifiziere", "bewaehren"}),
 }
 
 GRUENDE = {
@@ -953,6 +954,8 @@ class Anker:
             return self.cmd_vorwaerts(anf)
         if anf.befehl == "klassifiziere":
             return self.cmd_klassifiziere(anf)
+        if anf.befehl == "bewaehren":
+            return self.cmd_bewaehren(anf)
         return self._antwort(False, "nicht_verfuegbar")
 
     @contextlib.contextmanager
@@ -990,10 +993,8 @@ class Anker:
                    "fuellgrad_prozent": round(self.audit.fuellgrad() * 100, 1)},
             installation="ok" if not probleme else "abweichung", installation_probleme=probleme or None)
 
-    # --- bereitstellen, migrieren, umschalten (vorwaerts.py)
-    def cmd_vorwaerts(self, anf: Anfrage) -> dict:
-        """Die Vorwärtsbefehle. Der Anker liest Anfrage und Freigabe selbst aus der Datenbank (vorwaerts.py); hier nur Aufruf, Zeitgrenze, Sperre gegen
-        Gleichzeitiges, Prüfung des Schritt-Skripts des Kerns und das Nachführen der Zustandsdatei. Fehler kommen als Code, nie als Text aus der Quelle."""
+    def _mitspieler(self) -> dict | None:
+        """Baut beim ersten Aufruf die Mitspieler der Vorwärtsbefehle (Datenbank, Quelle, Werk). Gibt eine Fehlerantwort zurück, wenn es sie nicht gibt, sonst None."""
         if self._vorwaerts_fabrik is None:
             return self._antwort(False, "nicht_verfuegbar")
         if self._vorwaerts is None:
@@ -1002,22 +1003,66 @@ class Anker:
             except Exception as e:  # noqa: BLE001 (Datenbank oder Zugangsdatei fehlen: ehrlich nicht verfügbar, nichts geändert)
                 print(f"wamo-anker: Vorwärtsbefehle nicht verfügbar ({type(e).__name__})", file=sys.stderr)
                 return self._antwort(False, "nicht_verfuegbar", detail="mitspieler")
+        return None
+
+    # --- bereitstellen, migrieren, umschalten (vorwaerts.py)
+    def cmd_vorwaerts(self, anf: Anfrage) -> dict:
+        """Die Vorwärtsbefehle. Der Anker liest Anfrage und Freigabe selbst aus der Datenbank (vorwaerts.py); hier nur Aufruf, Zeitgrenze, Sperre gegen
+        Gleichzeitiges, Prüfung des Schritt-Skripts des Kerns und das Nachführen der Zustandsdatei. Fehler kommen als Code, nie als Text aus der Quelle."""
+        fehler = self._mitspieler()
+        if fehler:
+            return fehler
         schritt_pruefen(self.p, "kern-slots")   # das Skript, über das der Kern bereitgestellt und umgeschaltet wird: Besitzer, Rechte und Prüfsumme
         if anf.trocken:
             return self._vorwaerts_aufruf(anf, True)
         with self._schreibsperre():
             return self._vorwaerts_aufruf(anf, False)
 
+    def cmd_bewaehren(self, anf: Anfrage) -> dict:
+        """Eine Probe der Bewährung (vorwaerts.py). Ändert höchstens den letzten guten Stand und den Status; das geschieht unter der Schreibsperre. Protokolliert wird nur, was sich ändert."""
+        fehler = self._mitspieler()
+        if fehler:
+            return fehler
+        schritt_pruefen(self.p, "kern-slots")
+        anker = self
+
+        class Zugang:
+            def aktiv(inner):
+                try:
+                    return stand_laden(anker.p.stand, anker.p.vertrauens_uid)["komponenten"]["kern"]["aktiv"]
+                except ZustandDefekt:
+                    return None
+
+            def jetzt(inner):
+                return anker.uhr()
+
+            def festhalten(inner, eintrag):
+                stand = stand_laden(anker.p.stand, anker.p.vertrauens_uid)
+                stand["komponenten"]["kern"]["letzte_gute"] = dict(eintrag)
+                stand_schreiben(anker.p.stand, stand)
+
+            def zurueck(inner):
+                return bool(anker._rueckweg(("kern",), False, False).get("ok"))
+
+        try:
+            with self._schreibsperre():
+                erg = self._vorwaerts.bewaehren(str(anf.arg), Zugang(), anf.trocken)
+        except VorwaertsFehler as e:
+            self.protokolliere("bewaehren", 1.0, ok=False, code=e.code)
+            return self._antwort(False, "vorwaerts_fehlgeschlagen", detail=_sauber(f"{e.code} {e.detail}".strip(), 80))
+        except (OSError, ZustandDefekt) as e:
+            self.protokolliere("bewaehren", 1.0, ok=False, code=type(e).__name__)
+            return self._antwort(False, "zustand_nicht_schreibbar")
+        if erg["stand"] != "laeuft":   # nur die Entscheidung kommt ins Protokoll, nicht jede Probe (die Datei ist begrenzt und nur anhängbar)
+            self.protokolliere("bewaehren", 1.0, ok=True, stand=erg["stand"])
+        felder = {k: erg[k] for k in ("stand", "rest_s", "schlecht") if k in erg}
+        return self._antwort(True, text="Trockenlauf" if anf.trocken else "in Ordnung", trocken=anf.trocken or None, ergebnis=felder)
+
     def cmd_klassifiziere(self, anf: Anfrage) -> dict:
         """Schutzschicht: Art und Treffer des Diffs (vorwaerts.py, schutz.py). Ändert nur zwei Spalten der Datenbank, deshalb keine Schreibsperre und kein Schritt-Skript."""
-        if self._vorwaerts_fabrik is None:
-            return self._antwort(False, "nicht_verfuegbar")
-        if self._vorwaerts is None:
-            try:
-                self._vorwaerts = self._vorwaerts_fabrik()
-            except Exception as e:  # noqa: BLE001 (Datenbank oder Zugangsdatei fehlen: ehrlich nicht verfügbar, nichts geändert)
-                print(f"wamo-anker: Klassifizierung nicht verfügbar ({type(e).__name__})", file=sys.stderr)
-                return self._antwort(False, "nicht_verfuegbar", detail="mitspieler")
+        fehler = self._mitspieler()
+        if fehler:
+            return fehler
         try:
             erg = self._vorwaerts.ausfuehren("klassifiziere", str(anf.arg), anf.trocken)
         except VorwaertsFehler as e:

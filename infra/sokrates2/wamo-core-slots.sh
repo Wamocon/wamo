@@ -314,6 +314,16 @@ cmd_bewaehren() {
   echo "Bewährung bestanden: Slot $akt war $min Minuten gesund."
 }
 
+# Eine einzelne Gesundheitsprobe des aktiven Slots (für die Bewährung durch den Anker): Ausgabe "SLOT x", Exit 0 nur, wenn der Slot antwortet und seine Unit läuft
+cmd_probe() {
+  root_pflicht
+  local akt code
+  akt="$(aktiver_slot)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 --unix-socket "/run/wamo-core/core-$akt.sock" http://localhost/start || true)"
+  echo "SLOT $akt"
+  [ "$code" = 401 ] && systemctl is-active --quiet "wamo-core@$akt.service"
+}
+
 cmd_rueckweg_kern() {
   root_pflicht
   local alt neu
@@ -426,11 +436,12 @@ case "$befehl" in
   dropins-spiegeln) cmd_dropins_spiegeln ;;
   umschalten-kern) cmd_umschalten_kern "$@" ;;
   bewaehren) cmd_bewaehren "$@" ;;
+  probe) cmd_probe ;;
   ausleiten) cmd_ausleiten ;;
   rueckweg-kern) cmd_rueckweg_kern ;;
   rueckweg-zu) cmd_rueckweg_zu "$@" ;;
   bereiten) cmd_bereiten "$@" ;;
   schalten) cmd_schalten "$@" ;;
   umstellung-zurueck) cmd_umstellung_zurueck ;;
-  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | dropins-spiegeln | umstellen <release> | umstellung-zurueck | umschalten-kern <release> | bewaehren [min] | ausleiten | rueckweg-kern | rueckweg-zu <version> <commit> <slot> | bereiten <release> | schalten <release> | status" ;;
+  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | dropins-spiegeln | umstellen <release> | umstellung-zurueck | umschalten-kern <release> | bewaehren [min] | probe | ausleiten | rueckweg-kern | rueckweg-zu <version> <commit> <slot> | bereiten <release> | schalten <release> | status" ;;
 esac

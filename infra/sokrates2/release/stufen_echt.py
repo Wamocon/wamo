@@ -10,6 +10,7 @@ EchteStufen baut auf QuellenStufen (Prüfstrecke in der Sandbox) auf und füllt 
   veroeffentlichen   Die Quelle ist die lokale Quelle, main ist schon dort. Die Stufe prüft nur, dass V (und sein Tree) noch in main liegt.
   bereitstellen      Befehl bereitstellen des Ankers (migrieren, Kern bauen und auf dem freien Slot starten). Der Anker setzt den Status; der Dienst beobachtet ihn.
   umschalten         Befehl umschalten des Ankers.
+  bewaehren          Befehl bewaehren des Ankers, eine Probe je Aufruf. Der Anker entscheidet: nach 30 gesunden Minuten bewährt, nach drei schlechten Proben Rückweg.
 
 Nichts hier führt Code aus dem Repository aus, öffnet ein Netz oder spricht mit der Datenbank. Der Anker liest die Anfrage und die Freigabe selbst; diese Stufen geben ihm nur
 die Kennung. Fehlerkennungen sind kurze Codes, nie Texte aus Git, dem Anker oder Dateien.
@@ -220,3 +221,22 @@ class EchteStufen(QuellenStufen):
 
     def umschalten(self, ctx: Kontext) -> Ergebnis:
         return self._anker_schritt(ctx, "umschalten", ("umgeschaltet",))
+
+    def bewaehren(self, ctx: Kontext) -> Ergebnis:
+        """Eine Probe. Läuft die Bewährung noch oder ist der Anker gerade beschäftigt oder nicht erreichbar, heißt das warten (die Frist des Zustands beendet es sonst über den Rückweg)."""
+        if ctx.abgebrochen():
+            return Ergebnis.fehler("abgebrochen")
+        try:
+            a = self.anker.vorwaerts("bewaehren", ctx.anfrage)
+        except AnkerFehler:
+            return Ergebnis.wartet()
+        if not a.ok:
+            if a.grund in ("belegt", "nicht_verfuegbar"):
+                return Ergebnis.wartet()
+            return Ergebnis.fehler(_code("anker_", str(a.daten.get("detail") or "").split(" ")[0] or a.grund or "abgelehnt"))
+        stand = (a.daten.get("ergebnis") or {}).get("stand")
+        if stand == "bewaehrt":
+            return Ergebnis.ok()
+        if stand == "laeuft":
+            return Ergebnis.wartet()
+        return Ergebnis.fehler("bewaehrung_gescheitert")   # zurueckgenommen oder eine unbekannte Antwort

@@ -915,9 +915,9 @@ class ZustandsdateiTests(ReleaseTest):
 # ==================================================================== Anker-Client
 class AnkerClientTests(unittest.TestCase):
     def test_nur_diese_befehle_und_nie_sperre_aus(self):
-        self.assertEqual(set(RA.ERLAUBT), {"status", "rueckweg", "sperre", "klassifiziere", "migrieren", "bereitstellen", "umschalten"})
+        self.assertEqual(set(RA.ERLAUBT), {"status", "rueckweg", "sperre", "klassifiziere", "migrieren", "bereitstellen", "umschalten", "bewaehren"})
         RA.zeile_bauen("status")
-        for befehl in ("klassifiziere", "migrieren", "bereitstellen", "umschalten"):   # nur mit der Kennung einer Anfrage, auch als Trockenlauf
+        for befehl in ("klassifiziere", "migrieren", "bereitstellen", "umschalten", "bewaehren"):   # nur mit der Kennung einer Anfrage, auch als Trockenlauf
             for trocken in (False, True):
                 zeile = RA.zeile_bauen(befehl, "0b9f2c1e-4a6d-4f0e-9a1b-2c3d4e5f6a7b", trocken)
                 self.assertRegex(zeile.decode(), rf"^[0-9a-f]{{32}} {befehl} 0b9f2c1e-4a6d-4f0e-9a1b-2c3d4e5f6a7b( --trocken)?\n$")
@@ -1112,7 +1112,7 @@ class LaufTests(ReleaseTest):
                                     "veroeffentlicht", "bereitgestellt", "umgeschaltet", "bewaehrt"])
         self.assertEqual([a[0] for a in self.stufen.aufrufe],
                          ["uebernehmen", "pruefen", "version_waehlen", "pruefen", "veroeffentlichen", "bereitstellen",
-                          "umschalten"])
+                          "umschalten", "bewaehren"])
         self.assertEqual([a[1] for a in self.stufen.aufrufe if a[0] == "pruefen"], [1, 3])
 
     def test_weg_selbst_bis_zum_ende(self):
@@ -1755,7 +1755,8 @@ class WiederaufnahmeTests(ReleaseTest):
         d = self.neu()
         self.assertEqual(self.anfrage(d)["status"], "umgeschaltet")
         self.db.anker_setzt(self.anfrage(d)["id"], "bewaehrt")
-        d.arbeite_einmal()
+        d.arbeite_einmal()   # die Stufe der Bewährung fragt den Anker (hier die Attrappe: bewährt) ...
+        d.arbeite_einmal()   # ... danach folgt der Dienst der Datenbank
         self.assertEqual(self.endgrund(d), ("bewaehrt", None))
 
     def test_uhr_nach_neustart_zaehlt_weiter(self):
