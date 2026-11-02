@@ -92,7 +92,7 @@ class ProbelaufTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         lib = self.pfad("usr", "local", "lib", "wamo-anker")
         self.assertEqual(sorted(os.listdir(lib)),
-                         ["SHA256SUMS", "anker_rauchtest.py", "schritte", "wamo-anker.sh", "wamo_anker.py"])
+                         ["SHA256SUMS", "anker_rauchtest.py", "schritte", "vorwaerts.py", "vorwaerts_echt.py", "wamo-anker.sh", "wamo_anker.py", "wamo_pg.py"])
         summen = subprocess.run(["sha256sum", "-c", "--quiet", "SHA256SUMS"], cwd=lib, capture_output=True, text=True)
         self.assertEqual(summen.returncode, 0, summen.stderr)
         self.assertEqual(oct(os.stat(self.pfad("var", "lib", "wamo-anker")).st_mode & 0o777), "0o700")
@@ -144,12 +144,12 @@ class ProbelaufTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         lib = self.pfad("usr", "local", "lib", "wamo-anker")
         schritte = os.path.join(lib, "schritte")
-        self.assertEqual(sorted(os.listdir(schritte)), ["rueckweg-kern", "rueckweg-ui", "slot.inc.legacy", "slot.inc.vorlage"])
-        for schritt, quelle in (("rueckweg-ui", "wamo-ui-umschalten.sh"), ("rueckweg-kern", "wamo-core-slots.sh")):
+        self.assertEqual(sorted(os.listdir(schritte)), ["kern-slots", "rueckweg-kern", "rueckweg-ui", "slot.inc.legacy", "slot.inc.vorlage"])
+        for schritt, quelle in (("rueckweg-ui", "wamo-ui-umschalten.sh"), ("rueckweg-kern", "wamo-core-slots.sh"), ("kern-slots", "wamo-core-slots.sh")):
             self.assertEqual(Path(os.path.join(schritte, schritt)).read_bytes(), Path(INFRA / quelle).read_bytes().replace(b"\r\n", b"\n"), schritt)
             self.assertTrue(os.access(os.path.join(schritte, schritt), os.X_OK), schritt)
         manifest = Path(os.path.join(lib, "SHA256SUMS")).read_text()
-        for n in ("rueckweg-ui", "rueckweg-kern", "slot.inc.vorlage", "slot.inc.legacy"):
+        for n in ("rueckweg-ui", "rueckweg-kern", "kern-slots", "slot.inc.vorlage", "slot.inc.legacy"):
             self.assertIn(f"./schritte/{n}", manifest, n)
 
     def test_rueckweg_kern_als_schritt_prueft_die_parameter_streng(self):
