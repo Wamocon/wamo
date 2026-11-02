@@ -109,6 +109,29 @@ class Skript(unittest.TestCase):
         self.assertLess(umstellen.index("cmd_inc a"), umstellen.index("systemctl disable --now wamo-core.service"))   # Caddy zeigt auf a, bevor die alte Unit endet
         self.assertIn("RUHE_MIN", t)
 
+    def test_kern_release_ohne_luecke_pruefen_zuerst_schalten_dann_nachlauf_dann_auslaufen(self):
+        t = SKRIPT.read_text(encoding="utf-8")
+        f = t[t.index("cmd_umschalten_kern() {"):t.index("# Bewährung:")]
+        reihenfolge = ["wurde nicht gesund", 'cmd_inc "$neu"\n', "sleep \"${NACHLAUF_S:-60}\"", 'cmd_inc "$neu" auslaufend "$alt"']
+        positionen = [f.index(x) for x in reihenfolge]
+        self.assertEqual(positionen, sorted(positionen))
+        self.assertLess(f.index("warte_auf_slot"), f.index('cmd_inc "$neu"\n'))   # erst gesund, dann geschaltet
+        self.assertIn("nichts umgeschaltet", f)   # ein ungesunder neuer Slot lässt den alten unberührt
+        self.assertIn("erst ausleiten", f)          # ein laufender freier Slot wird nie überfahren
+
+    def test_bewaehrung_rueckweg_und_ausleiten(self):
+        t = SKRIPT.read_text(encoding="utf-8")
+        b = t[t.index("cmd_bewaehren() {"):t.index("cmd_rueckweg_kern() {")]
+        self.assertIn('[ "$schlecht" -ge 3 ]', b)   # dreimal hintereinander nicht gesund
+        self.assertIn("cmd_rueckweg_kern", b)
+        r = t[t.index("cmd_rueckweg_kern() {"):t.index("# Beendet die auslaufende Instanz")]
+        self.assertIn("kein schneller Rückweg", r)   # läuft die vorige Instanz nicht mehr, wird nicht geraten
+        self.assertIn('cmd_inc "$alt" auslaufend "$neu"', r)
+        a = t[t.index("cmd_ausleiten() {"):]
+        for muss in ("BEWAEHRUNG_S:-1800", 'sitzungen_von "$alt")" = 0', "ruhe_pruefen", "Die Bewährung läuft noch"):
+            self.assertIn(muss, a, muss)
+        self.assertLess(a.index("Die Bewährung läuft noch"), a.index("systemctl stop"))   # beendet wird zuletzt
+
     def test_release_name_wird_streng_geprueft(self):
         m = re.search(r"NAME_RE='([^']+)'", SKRIPT.read_text(encoding="utf-8"))
         muster = re.compile(m.group(1))

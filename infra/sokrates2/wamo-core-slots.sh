@@ -11,6 +11,10 @@
 #   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh inc legacy"           Rückweg auf die Standardroute der alten Unit
 #   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh umstellen <release>"  einmalig: Live-Betrieb von wamo-core.service auf Slot a (nur bei Ruhe)
 #   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh umstellung-zurueck"    zurück auf wamo-core.service und die Standardroute
+#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh umschalten-kern <release>"  Kern-Release ohne Lücke: freien Slot starten, prüfen, Caddy umschalten, nach dem Nachlauf die alte Instanz auslaufen lassen
+#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh bewaehren [minuten]"        überwacht den neuen Slot (Standard 30 Minuten), bei Ausfall automatisch zurück
+#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh ausleiten"                  beendet die auslaufende Instanz, wenn sie keine Sitzung mehr hat und die Bewährung vorbei ist
+#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh rueckweg-kern"              schaltet auf die vorige Instanz zurück (solange sie noch läuft)
 #   bash wamo-core-slots.sh inc-text a [auslaufend b]                              gibt nur den Text aus (ohne root, für Tests)
 #
 # Aufbau:  /opt/wamo-core/releases/<name>/voice-core   Code (root, nur Laufzeitdateien)
@@ -206,6 +210,85 @@ cmd_umstellung_zurueck() {
   echo "Zurückgestellt: wamo-core.service bedient wieder alle Sitzungen, die Slots sind beendet."
 }
 
+# Der Slot, auf den Caddy neue Sitzungen schickt (steht in der Include-Datei, die dieses Skript erzeugt)
+aktiver_slot() {
+  local a
+  a="$(awk '/^handle \{$/ {f=1; next} f && /import kern_weiter/ {print $3; exit}' "$CADDY_ETC/slot.inc" 2>/dev/null | sed -n 's#.*/core-\([ab]\)\.sock$#\1#p')"
+  [ -n "$a" ] || fehler "aktiver Slot nicht lesbar (slot.inc ist die Standardroute der alten Unit oder fehlt: erst umstellen)"
+  echo "$a"
+}
+anderer_slot() { [ "$1" = a ] && echo b || echo a; }
+
+# Sitzungen einer Instanz: Dateien der Brücke (Kern mit Schritt 2.3); ältere Kerne kennen sie nicht, dann zählt die Ruhe im Journal
+sitzungen_von() {
+  local n=0
+  [ -d /run/wamo-core/sitzungen ] && n="$(find /run/wamo-core/sitzungen -maxdepth 1 -name "*.$1" ! -name '*.abloesen.*' 2>/dev/null | wc -l)"
+  echo "$n"
+}
+
+# Kern-Release ohne Lücke (Konzept A.4): erst startet der freie Slot und wird geprüft (nichts ist umgeschaltet, wenn das scheitert), dann
+# schickt Caddy neue Sitzungen dorthin, laufende bleiben auf ihrem Pfad. Nach dem Nachlauf nimmt die alte Instanz keinen neuen /start mehr an.
+cmd_umschalten_kern() {
+  root_pflicht
+  name="${1:-}"; name_pruefen "$name"
+  alt="$(aktiver_slot)"; neu="$(anderer_slot "$alt")"
+  systemctl is-active --quiet "wamo-core@$alt.service" || fehler "aktiver Slot $alt läuft nicht: kein geordneter Wechsel (umstellung-zurueck oder Slot starten)"
+  ! systemctl is-active --quiet "wamo-core@$neu.service" || fehler "Slot $neu läuft noch (erst ausleiten)"
+  cmd_slot "$neu" "$name"
+  systemctl start "wamo-core@$neu.service"
+  if ! ( warte_auf_slot "$neu" ); then
+    systemctl stop "wamo-core@$neu.service" || true
+    fehler "Slot $neu wurde nicht gesund: nichts umgeschaltet, Slot $alt bedient weiter"
+  fi
+  cmd_inc "$neu"
+  echo "Neue Sitzungen gehen jetzt auf Slot $neu (Release $name). Nachlauf ${NACHLAUF_S:-60} s, dann nimmt Slot $alt keinen neuen Start mehr an."
+  sleep "${NACHLAUF_S:-60}"
+  cmd_inc "$neu" auslaufend "$alt"
+  echo "Slot $alt läuft aus ($(sitzungen_von "$alt") Sitzungen, die Brücke zählt nur Kerne ab Schritt 2.3). Weiter mit: ausleiten (nach der Bewährung) oder rueckweg-kern."
+}
+
+# Bewährung: der aktive Slot muss antworten; dreimal hintereinander nicht gesund heißt zurück auf die vorige Instanz
+cmd_bewaehren() {
+  root_pflicht
+  min="${1:-30}"
+  [[ "$min" =~ ^[0-9]{1,3}$ ]] || fehler "bewaehren: Minuten als Zahl"
+  akt="$(aktiver_slot)"
+  ende=$(( $(date +%s) + min * 60 )); schlecht=0
+  while [ "$(date +%s)" -lt "$ende" ]; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 --unix-socket "/run/wamo-core/core-$akt.sock" http://localhost/start || true)"
+    if [ "$code" = 401 ] && systemctl is-active --quiet "wamo-core@$akt.service"; then schlecht=0; else schlecht=$(( schlecht + 1 )); fi
+    if [ "$schlecht" -ge 3 ]; then
+      echo "Slot $akt ist nicht gesund (3 Proben): automatischer Rückweg." >&2
+      cmd_rueckweg_kern || true
+      exit 1
+    fi
+    sleep "${PROBE_S:-10}"
+  done
+  echo "Bewährung bestanden: Slot $akt war $min Minuten gesund."
+}
+
+cmd_rueckweg_kern() {
+  root_pflicht
+  neu="$(aktiver_slot)"; alt="$(anderer_slot "$neu")"
+  systemctl is-active --quiet "wamo-core@$alt.service" || fehler "Slot $alt läuft nicht mehr: kein schneller Rückweg (das vorige Release erneut bereitstellen)"
+  [ -S "/run/wamo-core/core-$alt.sock" ] || fehler "/run/wamo-core/core-$alt.sock fehlt"
+  cmd_inc "$alt" auslaufend "$neu"
+  echo "Zurück auf Slot $alt. Slot $neu nimmt keine neue Sitzung mehr an; seine laufenden enden von selbst."
+}
+
+# Beendet die auslaufende Instanz, aber nur ohne Sitzung und nach der Bewährung (so lange bleibt der Rückweg sofort möglich)
+cmd_ausleiten() {
+  root_pflicht
+  akt="$(aktiver_slot)"; alt="$(anderer_slot "$akt")"
+  systemctl is-active --quiet "wamo-core@$alt.service" || { echo "Nichts auszuleiten: Slot $alt läuft nicht."; return 0; }
+  alter=$(( $(date +%s) - $(stat -c %Y "$CADDY_ETC/slot.inc") ))
+  [ "$alter" -ge "${BEWAEHRUNG_S:-1800}" ] || fehler "Die Bewährung läuft noch ($alter s von ${BEWAEHRUNG_S:-1800} s): der Rückweg soll sofort möglich bleiben"
+  [ "$(sitzungen_von "$alt")" = 0 ] || fehler "Slot $alt hat noch $(sitzungen_von "$alt") Sitzung(en)"
+  ruhe_pruefen "wamo-core@$alt.service"
+  systemctl stop "wamo-core@$alt.service"
+  echo "Slot $alt beendet. Aktiv bleibt Slot $akt."
+}
+
 case "$befehl" in
   einrichten) cmd_einrichten ;;
   release) cmd_release "$@" ;;
@@ -214,6 +297,10 @@ case "$befehl" in
   inc) cmd_inc "$@" ;;
   inc-text) inc_text "$@" ;;
   umstellen) cmd_umstellen "$@" ;;
+  umschalten-kern) cmd_umschalten_kern "$@" ;;
+  bewaehren) cmd_bewaehren "$@" ;;
+  ausleiten) cmd_ausleiten ;;
+  rueckweg-kern) cmd_rueckweg_kern ;;
   umstellung-zurueck) cmd_umstellung_zurueck ;;
-  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | umstellen <release> | umstellung-zurueck | status" ;;
+  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | umstellen <release> | umstellung-zurueck | umschalten-kern <release> | bewaehren [min] | ausleiten | rueckweg-kern | status" ;;
 esac
