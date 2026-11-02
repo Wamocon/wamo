@@ -1,0 +1,27 @@
+# WAMO Prüfer-Sandbox: Ausgangsregeln für zwei Benutzer (Konzept docs/selbstueberarbeitung.md D.3).
+# Eigene Tabelle, fremde Tabellen und Regeln bleiben unberührt. Unix-Sockets sind kein Netzverkehr und bleiben unberührt.
+#
+# wamo-pruefer (die Sandbox, führt fremden Code aus): erreicht im Netz des Servers nichts. Die Sandbox läuft ohnehin in einem eigenen
+# Netz (bwrap --unshare-net) und kommt nur über einen Unix-Socket zum Proxy; diese Regel ist der Rückfall, falls der Benutzer je ohne
+# Sandbox gestartet wird. Weder DNS, noch Loopback-Dienste (Supavisor, Caddy, Dienste von WAMO), noch IPv6, LAN, Docker oder Internet.
+# Verworfen wird mit "reject", damit Werkzeuge sofort scheitern statt zu hängen.
+#
+# wamo-pruefer-proxy (der Proxy, geht ins Internet): darf nichts, was nicht öffentlich ist. Der Proxy prüft jede aufgelöste Adresse
+# selbst (pruefer_proxy.adresse_oeffentlich); diese Regel und IPAddressDeny in der Unit sind zwei weitere Schichten dahinter.
+# Loopback bleibt offen (Antworten an die Sandbox, Namensauflösung über systemd-resolved auf 127.0.0.53).
+table inet wamo_pruefer_ausgang
+delete table inet wamo_pruefer_ausgang
+table inet wamo_pruefer_ausgang {
+	chain ausgang {
+		type filter hook output priority -10; policy accept;
+		meta skuid wamo-pruefer jump sandbox
+		meta skuid wamo-pruefer-proxy jump proxy
+	}
+	chain sandbox {
+		counter reject with icmpx type admin-prohibited comment "alles abgewiesen"
+	}
+	chain proxy {
+		ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 240.0.0.0/4 } counter reject with icmpx type admin-prohibited comment "kein privates Netz"
+		ip6 daddr { fc00::/7, fe80::/10, ff00::/8 } counter reject with icmpx type admin-prohibited comment "kein privates Netz (IPv6)"
+	}
+}

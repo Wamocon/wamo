@@ -320,7 +320,7 @@ class SocketTests(T.ReleaseTest):
         faden = threading.Thread(target=beenden, daemon=True)
         faden.start()
         try:
-            with mock.patch.object(R.os, "geteuid", return_value=4711), mock.patch.object(R, "Dienst", lambda: d):
+            with mock.patch.object(R.os, "geteuid", return_value=4711), mock.patch.object(R, "Dienst", lambda **_kw: d):   # dienst_main übergibt seit der Datenbankanbindung db=
                 rc = R.dienst_main()
         finally:
             signal.signal(signal.SIGTERM, alt[0])

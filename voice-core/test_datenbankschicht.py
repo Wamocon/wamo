@@ -52,6 +52,7 @@ PASSWORT = "Zq8vL2mN5xR7tB3kW9pD"  # nur für Tests, 20 Zeichen
 
 def datei(verzeichnis: Path, inhalt: str, name="db.zugang", modus=0o640) -> Path:
     p = verzeichnis / name
+    p.unlink(missing_ok=True)   # eine Datei aus einem früheren Durchlauf kann schreibgeschützt sein (0400), das verträgt Linux nicht beim Überschreiben
     p.write_text(inhalt, encoding="utf-8")
     if POSIX:
         p.chmod(modus)
