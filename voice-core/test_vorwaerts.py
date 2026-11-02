@@ -521,6 +521,13 @@ class VorwaertsImAnker(unittest.TestCase):
 
 
 class Quelltext(unittest.TestCase):
+    def test_der_anker_schreibt_keinen_bytecode_in_seinen_ordner(self):
+        # Fehler der ersten Einrichtung: __pycache__ im Ordner des Ankers wurde von seiner eigenen Installationsprüfung als Abweichung gemeldet
+        t = (ANKER / "wamo_anker.py").read_text(encoding="utf-8")
+        self.assertIn("sys.dont_write_bytecode = True", t)
+        self.assertLess(t.index("sys.dont_write_bytecode = True"), t.index("from vorwaerts import"))
+
+
     def test_keine_gedankenstriche_und_keine_shell(self):
         for n in ("vorwaerts.py", "vorwaerts_echt.py"):
             t = (ANKER / n).read_text(encoding="utf-8")
