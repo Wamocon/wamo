@@ -172,7 +172,7 @@ if sys.platform == "win32":
 
 # Standard: EU-Endpunkte (Datenschutz); .env kann umstellen
 SONIOX_STT_URL = os.getenv("SONIOX_STT_URL") or "wss://stt-rt.eu.soniox.com/transcribe-websocket"
-SONIOX_TTS_URL = os.getenv("SONIOX_TTS_URL") or "wss://tts-rt.soniox.com/tts-websocket"
+SONIOX_TTS_URL = os.getenv("SONIOX_TTS_URL") or "wss://tts-rt.eu.soniox.com/tts-websocket"
 SONIOX_DEFAULT_VOICE = "Bryce"  # Standardstimme von Pipecat 1.12 (SonioxTTSService)
 SONIOX_VOICE = os.getenv("SONIOX_VOICE") or SONIOX_DEFAULT_VOICE
 # Fachbegriffe für die Spracherkennung. Bewusst nur "terms", kein "general": ein allgemeiner
