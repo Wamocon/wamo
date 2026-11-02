@@ -1,0 +1,81 @@
+# WAMO Voice-Core als Slot (Schritt 2.1 der Selbstüberarbeitung, Konzept docs/selbstueberarbeitung.md Abschnitt A).
+# Vorlage: wamo-core@a.service und wamo-core@b.service laufen nebeneinander. Je Instanz ein eigener Socket
+# (/run/wamo-core/core-<slot>.sock) und ein eigener Release-Ordner (/opt/wamo-core/slots/<slot> ist ein Verweis auf
+# /opt/wamo-core/releases/<name> mit voice-core/ und venv/). Caddy hält jede Sitzung über den Pfad /i/<slot>/ auf ihrer Instanz.
+#
+# Dieselbe Härtung wie wamo-core.service. Die alte Unit bleibt bis zur Umstellung (wamo-core-slots.sh umstellen) unberührt;
+# beide dürfen nicht gleichzeitig laufen (die Vorprüfung verlangt je Instanz genau ihren Socket).
+[Unit]
+Description=WAMO Voice-Core, Slot %i (Betriebsart Büro)
+After=network-online.target docker.service
+Wants=network-online.target
+ConditionPathExists=/opt/wamo-core/slots/%i/voice-core/bot.py
+
+[Service]
+Type=simple
+User=wamo-core
+Group=wamo-core
+WorkingDirectory=/opt/wamo-core/slots/%i/voice-core
+EnvironmentFile=/etc/wamo/core.env
+Environment=WAMO_SLOT=%i
+Environment=WAMO_BETRIEB=buero
+Environment=WAMO_CORE_UDS=/run/wamo-core/core-%i.sock
+Environment=WAMO_PC_HOST=on
+Environment=WAMO_PC_HOST_SOCKET=/run/wamo-tunnel/pc.sock
+Environment=WAMO_PC_REGISTER=an
+Environment=WAMO_PC_SOCKET_WURZEL=/run/wamo-pc
+Environment=SUPABASE_URL=https://192.168.178.136:55443
+Environment=WAMO_CA_FILE=/opt/wamo-core/wamo-ca.crt
+Environment=PIPECAT_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+Environment=WAMO_ENTWICKLUNG=aus
+Environment=WAMO_LOG_LEVEL=INFO
+Environment=WAMO_CHANNEL=buero
+Environment=HOME=/var/lib/wamo-core
+Environment=XDG_CACHE_HOME=/var/cache/wamo-core
+Environment=NUMBA_CACHE_DIR=/var/cache/wamo-core/numba
+Environment=HF_HUB_OFFLINE=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+ExecStartPre=/opt/wamo-core/bin/wamo-core-vorpruefung
+ExecStart=/opt/wamo-core/slots/%i/venv/bin/python bot.py -t webrtc
+ExecStopPost=-/usr/bin/rm -f /run/wamo-core/core-%i.sock
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+StateDirectory=wamo-core
+StateDirectoryMode=0700
+CacheDirectory=wamo-core
+CacheDirectoryMode=0700
+ReadWritePaths=/run/wamo-core
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=4G
+TasksMax=512
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
