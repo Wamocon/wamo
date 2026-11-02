@@ -139,7 +139,7 @@ WAMO-Stand (Sitzungsprotokoll 31.10.2026, `D:\tmp\sitzung-log\kern-sitzung-2026-
 | erster Ton | +330 | Soniox-TTS, globaler Endpunkt `tts-rt.soniox.com` |
 | erster Ton gesamt | 1400 bis 1900 | 11 von 15 Zügen; Ausreißer 3607, 4370, 4801, 6090 ms |
 
-Die STT nutzt den EU-Endpunkt, die TTS den globalen (`bot.py` Zeilen 174 und 175). Der Hostname `tts-rt.eu.soniox.com` löst
+Stand 02.11.2026: STT und TTS nutzen die EU-Endpunkte (`bot.py` Zeilen 174 und 175); der EU-Schlüssel wird von den globalen Adressen mit 401 abgelehnt, `tts-rt.eu.soniox.com` liefert Audio (geprüft). Bis 31.10. nutzte die TTS den globalen Endpunkt. Der Hostname `tts-rt.eu.soniox.com` löst
 auf (Cloudflare, HTTP 404 auf die Wurzel, geprüft am 31.10.2026); ob er als Sprachausgabe-Endpunkt gilt und schneller
 ist, steht in keiner Quelle (die Pipecat-Seite nennt nur den globalen). Das ist eine Messfrage, kein Codeproblem.
 

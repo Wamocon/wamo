@@ -96,8 +96,8 @@ gemeinsamem Gedächtnis.
   vorbereitet, aber noch nicht angewendet. Bis dahin gibt es im Büro keinen Freigabeweg (fehlender Freigabe-Schlüssel:
   nichts wird freigegeben), unterwegs wirkt alles nach dem nächsten Start der Desktop-App.
 
-- Soniox: Der Schlüssel gehört zu einem US-Projekt, die Spracherkennung läuft deshalb vorerst über den US-Endpunkt.
-  Für EU-Datenhaltung EU-Schlüssel anlegen und `SONIOX_STT_URL` und `SONIOX_TTS_URL` auf `*.eu.soniox.com` stellen.
+- Soniox: Der Schlüssel gehört seit 02.11.2026 zu einem EU-Projekt. Erkennung und Sprachausgabe laufen über `stt-rt.eu.soniox.com` und
+  `tts-rt.eu.soniox.com` (Standard in `voice-core/bot.py`). Die US-Adressen lehnen EU-Schlüssel mit 401 ab, die Region gilt je Projekt.
 - Weitere PCs: `infra/sokrates2/wamo-ca.crt` importieren (ein `certutil`-Befehl, siehe `infra/sokrates2/README.md`,
   Abschnitt 5.2 und die Anleitung für den Browser in Abschnitt 12.3). Seit 19.10.2026 gilt Stufe 2: HTTP 55321 ist im LAN geschlossen, nur noch HTTPS 55443.
 - Zugangsschlüssel auf Sokrates-2 enger fassen (Repo-gebundene GitHub-Token, Lese-Token, Jira-Konto nur lesend),
