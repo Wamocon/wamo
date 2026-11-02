@@ -1,24 +1,18 @@
 # Erzeugt von wamo-core-slots.sh (inc), nicht von Hand ändern. Aktiver Slot: @AKTIV@. Eingebunden von wamo-core.caddy (Schritt 2.2).
 # Die Oberfläche fragt /wamo/slot und startet mit /i/<slot>/start; jede Sitzung bleibt über ihren Pfad auf ihrer Instanz.
+# Die Antwort ist ein einzelner Buchstabe und nicht vertraulich: jeder Ursprung darf sie lesen (die Desktop-App läuft auf localhost, die Oberfläche
+# im Büro-LAN auf 55445). Ohne Token, ohne Cookies. Geschützt bleibt alles andere durch die Zugangskontrolle des Kerns.
 handle /wamo/slot {
-	@ui header_regexp ui Origin ^https://(192\.168\.178\.136|sokrates2|spark-651f\.local):55445$
-	header @ui {
-		Access-Control-Allow-Origin "{http.regexp.ui.0}"
-		Vary Origin
-	}
+	header Access-Control-Allow-Origin "*"
 	header Cache-Control no-store
 	respond "@AKTIV@" 200
 }
 # Die auslaufende Instanz nimmt keine neue Sitzung mehr an: 409 mit dem aktiven Slot, die Oberfläche wiederholt einmal mit frischem Slot.
 #AUSLAUF# handle /i/@AUSLAUFEND@/start {
-#AUSLAUF# 	@ui header_regexp ui Origin ^https://(192\.168\.178\.136|sokrates2|spark-651f\.local):55445$
-#AUSLAUF# 	header @ui {
-#AUSLAUF# 		Access-Control-Allow-Origin "{http.regexp.ui.0}"
-#AUSLAUF# 		Access-Control-Allow-Methods "POST, OPTIONS"
-#AUSLAUF# 		Access-Control-Allow-Headers "Authorization, Content-Type"
-#AUSLAUF# 		Access-Control-Max-Age "600"
-#AUSLAUF# 		Vary Origin
-#AUSLAUF# 	}
+#AUSLAUF# 	header Access-Control-Allow-Origin "*"
+#AUSLAUF# 	header Access-Control-Allow-Methods "POST, OPTIONS"
+#AUSLAUF# 	header Access-Control-Allow-Headers "Authorization, Content-Type"
+#AUSLAUF# 	header Access-Control-Max-Age "600"
 #AUSLAUF# 	@vorab method OPTIONS
 #AUSLAUF# 	respond @vorab 204
 #AUSLAUF# 	respond `{"slot":"@AKTIV@"}` 409

@@ -9,6 +9,8 @@
 #   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh inc a"               schaltet Caddy: neue Sitzungen auf Slot a (Include-Datei slot.inc, caddy reload)
 #   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh inc a auslaufend b"   dasselbe, und Slot b nimmt keinen neuen /start mehr an (409)
 #   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh inc legacy"           Rückweg auf die Standardroute der alten Unit
+#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh umstellen <release>"  einmalig: Live-Betrieb von wamo-core.service auf Slot a (nur bei Ruhe)
+#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh umstellung-zurueck"    zurück auf wamo-core.service und die Standardroute
 #   bash wamo-core-slots.sh inc-text a [auslaufend b]                              gibt nur den Text aus (ohne root, für Tests)
 #
 # Aufbau:  /opt/wamo-core/releases/<name>/voice-core   Code (root, nur Laufzeitdateien)
@@ -153,6 +155,57 @@ cmd_inc() {
   echo "Caddy schaltet jetzt: $*"
 }
 
+# Ruhe: im Journal der angegebenen Unit steht seit N Minuten nichts (eine laufende Sitzung schreibt laufend)
+ruhe_pruefen() {
+  local unit="$1" min="${RUHE_MIN:-15}" n
+  # nicht angemeldete, abgelehnte Aufrufe (Gesundheitsproben) sind keine Aktivität; jede Sitzung schreibt dagegen laufend
+  n="$(journalctl -u "$unit" --since "-${min}min" --no-pager 2>/dev/null | grep -vc -e '^-- ' -e 'No entries' -e 'Zugang abgelehnt' -e ' 401 Unauthorized' || true)"
+  [ "${n:-0}" = 0 ] || fehler "$unit war in den letzten $min Minuten aktiv ($n Zeilen im Journal): nicht umstellen (RUHE_MIN anpassen oder warten)"
+}
+
+warte_auf_slot() {
+  local slot="$1" code=""
+  for _ in $(seq 1 45); do
+    if [ -S "/run/wamo-core/core-$slot.sock" ]; then
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 --unix-socket "/run/wamo-core/core-$slot.sock" http://localhost/start || true)"
+      [ "$code" = 401 ] && return 0
+    fi
+    systemctl is-active --quiet "wamo-core@$slot.service" || fehler "wamo-core@$slot ist ausgefallen (journalctl -u wamo-core@$slot)"
+    sleep 2
+  done
+  fehler "wamo-core@$slot antwortet nicht mit 401 auf /start (letzter Code: ${code:-keiner})"
+}
+
+# Einmalige Umstellung: erst startet Slot a neben der alten Unit, dann schaltet Caddy um, dann endet die alte Unit. Neue Sitzungen sehen keine Lücke.
+cmd_umstellen() {
+  root_pflicht
+  name="${1:-}"; name_pruefen "$name"
+  systemctl is-active --quiet wamo-core.service || fehler "wamo-core.service läuft nicht: nichts umzustellen (Rückweg: umstellung-zurueck)"
+  ! systemctl is-active --quiet wamo-core@a.service || fehler "wamo-core@a läuft schon"
+  ruhe_pruefen wamo-core.service
+  cmd_slot a "$name"
+  systemctl start wamo-core@a.service
+  warte_auf_slot a
+  cmd_inc a
+  systemctl disable --now wamo-core.service >/dev/null 2>&1
+  systemctl enable wamo-core@a.service >/dev/null 2>&1
+  echo "Umgestellt: Slot a (Release $name) bedient neue Sitzungen, wamo-core.service ist beendet und deaktiviert."
+  echo "Rückweg: sudo bash wamo-core-slots.sh umstellung-zurueck"
+}
+
+cmd_umstellung_zurueck() {
+  root_pflicht
+  systemctl enable --now wamo-core.service >/dev/null 2>&1 || fehler "wamo-core.service ließ sich nicht starten"
+  for _ in $(seq 1 45); do
+    [ -S /run/wamo-core/core.sock ] && [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 --unix-socket /run/wamo-core/core.sock http://localhost/start || true)" = 401 ] && break
+    sleep 2
+  done
+  [ -S /run/wamo-core/core.sock ] || fehler "wamo-core.service antwortet nicht"
+  cmd_inc legacy
+  systemctl disable --now wamo-core@a.service wamo-core@b.service >/dev/null 2>&1 || true
+  echo "Zurückgestellt: wamo-core.service bedient wieder alle Sitzungen, die Slots sind beendet."
+}
+
 case "$befehl" in
   einrichten) cmd_einrichten ;;
   release) cmd_release "$@" ;;
@@ -160,5 +213,7 @@ case "$befehl" in
   status) cmd_status ;;
   inc) cmd_inc "$@" ;;
   inc-text) inc_text "$@" ;;
-  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | status" ;;
+  umstellen) cmd_umstellen "$@" ;;
+  umstellung-zurueck) cmd_umstellung_zurueck ;;
+  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | umstellen <release> | umstellung-zurueck | status" ;;
 esac

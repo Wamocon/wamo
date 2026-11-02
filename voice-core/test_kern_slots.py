@@ -98,9 +98,16 @@ class Skript(unittest.TestCase):
                      "go-w", "chown -R root:root"):
             self.assertIn(muss, t, muss)
         self.assertNotIn(chr(0x2014), t)
-        self.assertNotIn("wamo-core.service restart", t)   # die laufende alte Unit wird nie angefasst
-        self.assertNotIn("systemctl restart", t)
-        self.assertNotIn("systemctl start", t)
+        self.assertNotIn("systemctl restart", t)   # nichts wird je neu gestartet, nur gestartet und gestoppt
+        # die alte Unit wird nur von den beiden Umstellungs-Befehlen angefasst, und erst nachdem Slot a antwortet
+        for zeile in t.splitlines():
+            if re.search(r"systemctl (disable|enable|start|stop)", zeile) and "wamo-core.service" in zeile:
+                self.assertTrue(zeile.strip().startswith(("systemctl disable --now wamo-core.service", "systemctl enable --now wamo-core.service")), zeile)
+        umstellen = t[t.index("cmd_umstellen() {"):t.index("cmd_umstellung_zurueck() {")]
+        self.assertLess(umstellen.index("ruhe_pruefen wamo-core.service"), umstellen.index("systemctl start wamo-core@a.service"))
+        self.assertLess(umstellen.index("warte_auf_slot a"), umstellen.index("cmd_inc a"))
+        self.assertLess(umstellen.index("cmd_inc a"), umstellen.index("systemctl disable --now wamo-core.service"))   # Caddy zeigt auf a, bevor die alte Unit endet
+        self.assertIn("RUHE_MIN", t)
 
     def test_release_name_wird_streng_geprueft(self):
         m = re.search(r"NAME_RE='([^']+)'", SKRIPT.read_text(encoding="utf-8"))
@@ -164,12 +171,17 @@ class IncludeDatei(unittest.TestCase):
                 self.assertNotEqual(p.returncode, 0)
                 self.assertEqual(p.stdout, "")
 
-    def test_cors_ursprung_wie_bei_der_freigabe_route(self):
-        site = (CADDY / "wamo-core.caddy").read_text(encoding="utf-8")
-        regel = re.search(r"header_regexp ui Origin (\S+)", site).group(1)
-        for text in ((CADDY / "slot.inc.vorlage").read_text(encoding="utf-8"),):
-            for fundort in re.findall(r"header_regexp ui Origin (\S+)", text):
-                self.assertEqual(fundort, regel)
+    def test_slot_antwort_darf_jeder_ursprung_lesen_aber_nur_dort(self):
+        # Die Desktop-App läuft auf localhost, die Oberfläche im LAN auf 55445: beide müssen den Slot lesen können, sonst startete die App
+        # ohne Slot-Pfad und ihre Sitzung geriete beim nächsten Umschalten auf die falsche Instanz.
+        t = code(inc_text("a", "auslaufend", "b").stdout)
+        slot = t[t.index("handle /wamo/slot {"):t.index("handle /i/b/start {")]
+        self.assertIn('Access-Control-Allow-Origin "*"', slot)
+        for geschuetzt in ("handle /i/a/* {", "handle /i/b/* {"):   # alles andere bleibt bei der Zugangskontrolle des Kerns (kein CORS-Kopf von Caddy)
+            block = t[t.index(geschuetzt):]
+            block = block[:block.index("}\n")]
+            self.assertNotIn("Access-Control", block)
+        self.assertNotIn("Access-Control", t[t.index("handle {\n"):])
 
 
 class CaddySite(unittest.TestCase):
