@@ -225,8 +225,9 @@ def teil_a(A, benutzer: list[str], root: bool) -> None:
 
             # Sperre
             pruefe("sperre an", frage(sock, "sperre an")["ok"] and os.path.exists(p.sperre))
-            a = frage(sock, "umschalten")
-            pruefe("sperre an blockiert Vorwärtsbefehle", a.get("grund") == "gesperrt", str(a)[:200])
+            # Vorwärtsbefehle verlangen eine Anfrage-ID (seit 1.4e); die Sperre greift vor jedem Datenbankzugriff
+            antworten = [frage(sock, f"{b} 00000000-0000-4000-8000-000000000000") for b in ("migrieren", "bereitstellen", "umschalten")]
+            pruefe("sperre an blockiert Vorwärtsbefehle", all(a.get("grund") == "gesperrt" for a in antworten), str(antworten)[:200])
             pruefe("rueckweg bleibt unter der Sperre möglich", frage(sock, "rueckweg ui")["ok"])
             pruefe("sperre aus", frage(sock, "sperre aus")["ok"] and not os.path.exists(p.sperre))
 
