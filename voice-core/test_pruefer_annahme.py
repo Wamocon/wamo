@@ -319,6 +319,31 @@ class DienstTests(unittest.TestCase):
         self.assertTrue(a["ok"])
         self.assertEqual((a["exit"], a["ergebnis"]["pruefstand"]["tests"]), (1, "fehler"))
 
+    def test_geaenderte_migrationen_gehen_durch_die_probe_und_ein_fehler_macht_die_stufe_rot(self):
+        import dataclasses
+        mig = (b"WAMO-PRUEFEN 1 1\n" + b"D basis\nD neu\nD neu/supabase\nD neu/supabase/migrations\n"
+               + datei("neu/supabase/migrations/0001_a.sql", b"select 1;\n") + b"END\n")
+        for wert, fehler, erwartet_exit in (("fehler", "frisch_hin_m0001:zweit", 1), ("ok", "", 0)):
+            d = Dienst(self, LAUF_ERGEBNIS.format(inhalt='{"pruefstand": {"migrations_lint": "ok"}, "details": {"migrations_lint": {"treffer_anzahl": 0, "fehler": ""}}}', code=0))
+            aufrufe = []
+            d.cfg = dataclasses.replace(d.cfg, probe=lambda neu, wurzel, w=wert, f=fehler: aufrufe.append((neu, wurzel)) or {"wert": w, "fehler": f})
+            code, a = d.anfrage(mig)
+            self.assertEqual(code, 0)
+            self.assertEqual(len(aufrufe), 1)
+            self.assertTrue(aufrufe[0][0].endswith("neu") and os.path.basename(aufrufe[0][1]).startswith("a."))
+            self.assertEqual((a["exit"], a["ergebnis"]["pruefstand"]["migrations_lint"]), (erwartet_exit, "ok" if wert == "ok" else "fehler"))
+            self.assertEqual(a["ergebnis"]["details"]["migrations_lint"]["frisch"], wert)
+            if fehler:
+                self.assertEqual(a["ergebnis"]["details"]["migrations_lint"]["fehler"], fehler)
+
+    def test_ohne_geaenderte_migrationen_gibt_es_keine_probe(self):
+        import dataclasses
+        d = Dienst(self)
+        aufrufe = []
+        d.cfg = dataclasses.replace(d.cfg, probe=lambda *a: aufrufe.append(a) or {"wert": "fehler", "fehler": "x"})
+        self.assertEqual(d.anfrage(GUT)[1]["exit"], 0)
+        self.assertEqual(aufrufe, [])
+
     def test_fremde_benutzer_werden_vor_dem_ersten_byte_abgewiesen(self):
         d = Dienst(self)
         for peer in (None, 1001, 999, 65534):
@@ -384,7 +409,7 @@ class DienstTests(unittest.TestCase):
 class QuelltextTests(unittest.TestCase):
     def test_nur_standardbibliothek_und_keine_gedankenstriche(self):
         erlaubt = {"__future__", "argparse", "json", "os", "re", "shutil", "socket", "stat", "struct", "subprocess", "sys", "tempfile", "time", "dataclasses",
-                   "typing", "pruefer_archiv", "pwd"}
+                   "typing", "pruefer_archiv", "migration_probe", "pwd"}
         for name in ("pruefer_archiv.py", "pruefer_annahme.py", "pruefer_client.py"):
             text = (PRUEFER / name).read_text(encoding="utf-8")
             self.assertNotIn(chr(0x2014), text, name)

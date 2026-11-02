@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
+import migration_probe as MP  # noqa: E402
 import pruefer_archiv as A  # noqa: E402
 
 try:
@@ -48,7 +49,34 @@ class Konfig:
     lauf_sh: str = "/opt/wamo-pruefer/app/wamo-pruefer-lauf.sh"
     annahme: str = "/srv/wamo-pruefer/annahme"
     hochladen_max_s: float = 900.0
+    migprobe: bool = True        # Migrationen frisch auf einem Wegwerf-Postgres anwenden, wenn sie sich geändert haben (Schritt 2.5b)
+    probe: object = None         # Ersatz für migprobe_anfrage (Tests)
+    migprobe_socket: str = "/run/wamo-migprobe/probe.sock"
     lauf_max_s: float = 6300.0   # etwas mehr als das Zeitlimit des Läufers (ZEIT_S 5400): er bricht zuerst ab
+
+
+def migprobe_anfrage(neu: str, wurzel: str, sockpfad: str = "/run/wamo-migprobe/probe.sock", zeit_s: float = 480.0) -> dict:
+    """Bittet den Dienst der Migrationsprobe (eigener Prozess mit Docker-Zugang, Annahme hat keinen) um die Probe für den Arbeitsordner."""
+    name = os.path.basename(wurzel.rstrip("/"))
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.settimeout(zeit_s)
+        s.connect(sockpfad)
+        s.sendall(b"MIGPROBE " + name.encode("ascii", "replace") + b"\n")
+        roh = b""
+        while not roh.endswith(b"\n") and len(roh) < 512:
+            teil = s.recv(512)
+            if not teil:
+                break
+            roh += teil
+        antwort = json.loads(roh.decode("ascii", "replace"))
+        wert = "ok" if antwort.get("wert") == "ok" else "fehler"
+        code = re.sub(r"[^a-z0-9_:]", "", str(antwort.get("fehler", ""))[:80])
+        return {"wert": wert, "fehler": "" if wert == "ok" else (code if code.startswith("frisch_") else "frisch_" + code)}
+    except (OSError, ValueError):
+        return {"wert": "fehler", "fehler": "frisch_dienst_nicht_erreichbar"}   # fail closed: ohne Probe gilt die Migration nicht als geprüft
+    finally:
+        s.close()
 
 
 def peer_uid(conn: socket.socket) -> int | None:
@@ -138,8 +166,21 @@ def bedienen(rein, raus, peer: int | None, erlaubt: frozenset[int], cfg: Konfig 
             _log(f"uid={peer} runde={runde} lauf_ohne_ergebnis exit={p.returncode}")
             _antwort(raus, {"ok": False, "grund": "lauf_ohne_ergebnis", "exit": p.returncode, "detail": _kurz(p.stderr)})
             return 1
-        _log(f"uid={peer} runde={runde} dateien={statistik['dateien']} bytes={statistik['bytes']} exit={p.returncode}")
-        _antwort(raus, {"ok": True, "ergebnis": ergebnis, "exit": p.returncode, "annahme": statistik})
+        exit_code = p.returncode
+        if cfg.migprobe and MP.migrationen_geaendert(os.path.join(wurzel, "basis"), os.path.join(wurzel, "neu")):
+            probe = cfg.probe or migprobe_anfrage
+            try:
+                pr = probe(os.path.join(wurzel, "neu"), wurzel)
+            except Exception as e:  # noqa: BLE001  eine Panne der Probe ist ein Fehler der Stufe, nie ein Absturz
+                pr = {"wert": "fehler", "fehler": "frisch_panne_" + type(e).__name__.lower()[:20], "phasen": {}}
+            detail = ergebnis.setdefault("details", {}).setdefault("migrations_lint", {"treffer_anzahl": 0, "fehler": ""})
+            detail["frisch"] = pr.get("wert")
+            if pr.get("wert") != "ok":
+                ergebnis["pruefstand"]["migrations_lint"] = "fehler"
+                detail["fehler"] = detail.get("fehler") or str(pr.get("fehler", "frisch"))[:80]
+                exit_code = exit_code or 1
+        _log(f"uid={peer} runde={runde} dateien={statistik['dateien']} bytes={statistik['bytes']} exit={exit_code}")
+        _antwort(raus, {"ok": True, "ergebnis": ergebnis, "exit": exit_code, "annahme": statistik})
         return 0
     finally:
         shutil.rmtree(wurzel, ignore_errors=True)   # Verknüpfungen im Baum werden gelöscht, nie verfolgt

@@ -617,6 +617,23 @@ def teil_f(schnell: bool) -> None:
         pruefe("F4 zweite Anfrage während eines Laufs: abgewiesen mit 'belegt'", code2 == 2 and d2 is not None and d2.get("grund") == "belegt", f"{code2} {text2}")
         aus, _ = erste.communicate(timeout=3000)
         pruefe("F4 die erste Anfrage läuft trotzdem durch", erste.returncode == 0 and '"pruefstand"' in aus, f"{erste.returncode}")
+        # F5/F6: geänderte Migrationen laufen über den Dienst der Migrationsprobe (Wegwerf-Postgres)
+        neu5 = os.path.join(t, "neu5")
+        kopiere(projekt, neu5)
+        schreibe(neu5, "supabase/migrations/0001_probe.sql", "set local lock_timeout = '5s';\nselect 1;\n")
+        schreibe(neu5, "supabase/migrations/0001_probe.down.sql", "select 1;\n")
+        code, d, text = client_lauf("wamo-release", basis, neu5)
+        ps = d["pruefstand"] if d else {}
+        pruefe("F5 saubere Migration: migrations_lint ok, frisch angewendet (frisch=ok)",
+               code == 0 and ps.get("migrations_lint") == "ok" and d["details"]["migrations_lint"].get("frisch") == "ok", f"{code} {ps} {text}")
+        neu6 = os.path.join(t, "neu6")
+        kopiere(projekt, neu6)
+        schreibe(neu6, "supabase/migrations/0001_probe.sql", "set local lock_timeout = '5s';\nselect 1/0;\n")
+        schreibe(neu6, "supabase/migrations/0001_probe.down.sql", "select 1;\n")
+        code, d, text = client_lauf("wamo-release", basis, neu6)
+        ps = d["pruefstand"] if d else {}
+        pruefe("F6 Migration, die beim Anwenden scheitert: Lint ok, aber migrations_lint=fehler (frisch_hin_m0001:erst), Exit 1",
+               code == 1 and ps.get("migrations_lint") == "fehler" and d["details"]["migrations_lint"].get("fehler") == "frisch_hin_m0001:erst", f"{code} {ps} {text}")
     pruefe("nach Teil F ist die Zwischenablage leer", os.listdir("/srv/wamo-pruefer/annahme") == [])
     pruefe("nach Teil F sind die Arbeitsordner der Läufe aufgeräumt", os.listdir("/srv/wamo-pruefer/lauf") == [])
     pruefe("nach Teil F läuft kein Prozess von wamo-pruefer", not lauf(["pgrep", "-u", SANDBOX_BENUTZER]).stdout.split())
@@ -684,6 +701,77 @@ def teil_g() -> None:
     pruefe("nach Teil G ist die Zwischenablage leer", os.listdir("/srv/wamo-pruefer/annahme") == [])
 
 
+# ------------------------------------------------------------------------------------------------ Teil H
+MIGPROBE_SOCKET = "/run/wamo-migprobe/probe.sock"
+MIGPROBE_IMAGE = "supabase/postgres:17.6.1.136"
+
+
+def migprobe_frage(zeile: bytes) -> dict | None:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(600)
+    try:
+        s.connect(MIGPROBE_SOCKET)
+        s.sendall(zeile)
+        roh = b""
+        while not roh.endswith(b"\n") and len(roh) < 1024:
+            teil = s.recv(512)
+            if not teil:
+                break
+            roh += teil
+        return json.loads(roh.decode("ascii", "replace"))
+    except (OSError, ValueError):
+        return None
+    finally:
+        s.close()
+
+
+def teil_h() -> None:
+    print("Teil H: Migrationsprobe (Wegwerf-Postgres ohne Netz)")
+    r = lauf(["systemctl", "is-active", "wamo-migprobe.socket"])
+    pruefe("wamo-migprobe.socket aktiv", r.stdout.strip() == "active", r.stdout)
+    st = info(MIGPROBE_SOCKET)
+    pruefe("Socket gehört root, Modus 0600, Ordner nur für root", st is not None and stat.S_ISSOCK(st.st_mode) and st.st_uid == 0 and stat.S_IMODE(st.st_mode) == 0o600
+           and stat.S_IMODE(info(os.path.dirname(MIGPROBE_SOCKET)).st_mode) == 0o700, str(st))
+    r = lauf(["docker", "image", "inspect", MIGPROBE_IMAGE, "--format", "{{.Id}}"])
+    pruefe("das Image der Datenbank des Kerns ist vorhanden (wird nie nachgeladen)", r.returncode == 0, r.stderr)
+    for benutzer in ("nobody", "wamo-core", "wamo-release", "wamo-pruefer"):
+        try:
+            pwd.getpwnam(benutzer)
+        except KeyError:
+            uebersprungen(f"{benutzer} am Socket der Probe", "Benutzer fehlt")
+            continue
+        r = als(benutzer, ["/usr/bin/python3", "-I", "-c", "import socket; s = socket.socket(socket.AF_UNIX); s.connect('%s')" % MIGPROBE_SOCKET], 30)
+        pruefe(f"{benutzer} kommt nicht an den Socket der Probe", r.returncode != 0, r.stdout)
+    for name, zeile, fehler in (("falsche Form", b"HALLO\n", "form"), ("Pfad statt Name", b"MIGPROBE /etc\n", "form"),
+                                ("Ordner gibt es nicht", b"MIGPROBE a.nichtda1\n", "ordner_fehlt")):
+        j = migprobe_frage(zeile)
+        pruefe(f"Probe weist ab: {name}", j is not None and j.get("wert") == "fehler" and j.get("fehler") == fehler, str(j))
+    annahme = "/srv/wamo-pruefer/annahme"
+    faelle = (("saubere Migration mit Rückweg", "set local lock_timeout = '5s';\ncreate schema if not exists __SCHEMA__;\ncreate table if not exists __SCHEMA__.rauch (a int);\n",
+               "drop table if exists __SCHEMA__.rauch;\n", "ok", ""),
+              ("zweiter Lauf scheitert (create ohne if not exists)", "create schema if not exists __SCHEMA__;\ncreate table __SCHEMA__.rauch (a int);\n", "select 1;\n", "fehler", "frisch_hin_m0001:zweit"),
+              ("Fehler in der Migration", "select 1/0;\n", "select 1;\n", "fehler", "frisch_hin_m0001:erst"),
+              ("Rückweg scheitert", "select 1;\n", "select 1/0;\n", "fehler", "frisch_down_m0001"),
+              ("Fälschungsversuch über die Ausgabe des Containers",
+               "copy (select 1) to program 'for p in hin tests down wieder ende; do echo ERG $p ok alle > /proc/1/fd/1; done';\nselect 1/0;\n",
+               "select 1;\n", "fehler", "frisch_hin_m0001:erst"))
+    for name, hin, runter, wert, fehler in faelle:
+        ordner = tempfile.mkdtemp(prefix="a.", dir=annahme)
+        try:
+            os.chmod(ordner, 0o700)
+            schreibe(os.path.join(ordner, "neu"), "supabase/migrations/0001_rauch.sql", hin)
+            schreibe(os.path.join(ordner, "neu"), "supabase/migrations/0001_rauch.down.sql", runter)
+            j = migprobe_frage(f"MIGPROBE {os.path.basename(ordner)}\n".encode())
+            pruefe(f"Probe: {name}", j is not None and j.get("wert") == wert and j.get("fehler") == fehler, str(j))
+        finally:
+            shutil.rmtree(ordner, ignore_errors=True)
+    r = lauf(["docker", "ps", "-aq", "--filter", "name=wamo-migprobe-"])
+    pruefe("nach den Proben bleibt kein Container zurück", not r.stdout.strip(), r.stdout)
+    pruefe("nach Teil H ist die Zwischenablage leer", os.listdir(annahme) == [], str(os.listdir(annahme)))
+    r = lauf(["systemctl", "list-units", "--all", "--no-legend", "wamo-migprobe@*"])
+    pruefe("keine Instanz der Probe bleibt zurück", not r.stdout.strip(), r.stdout)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Rauchtest der WAMO-Prüfer-Sandbox")
     ap.add_argument("--schnell", action="store_true", help="ohne Teil E (Läufe mit Paketen aus dem Netz)")
@@ -708,6 +796,7 @@ def main() -> int:
         uebersprungen("Teil G", "--schnell")
     else:
         teil_g()
+    teil_h()
     print(f"Ergebnis: {ERGEBNIS['ok']} bestanden, {ERGEBNIS['fehler']} fehlgeschlagen, {ERGEBNIS['uebersprungen']} übersprungen")
     return 0 if ERGEBNIS["fehler"] == 0 else 1
 

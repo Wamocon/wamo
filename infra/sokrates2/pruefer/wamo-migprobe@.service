@@ -1,0 +1,41 @@
+[Unit]
+Description=WAMO-Migrationsprobe: eine Anfrage (Wegwerf-Postgres ohne Netz)
+Documentation=file:///opt/wamo-pruefer/app/migprobe_dienst.py
+After=docker.service
+CollectMode=inactive-or-failed
+
+# Nur dieser Dienst darf an den Docker-Socket; der Annahme-Dienst der Sandbox liest unvertraute Archive und bleibt ohne Docker.
+# Der Dienst nimmt eine Zeile "MIGPROBE a.XXXXXXXX" an und startet damit einen Container ohne Netz (migration_probe.py).
+[Service]
+Type=simple
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+WorkingDirectory=/opt/wamo-pruefer/app
+ExecStartPre=/usr/bin/sha256sum -c --quiet SHA256SUMS
+ExecStart=/usr/bin/python3 -I -B /opt/wamo-pruefer/app/migprobe_dienst.py
+Environment=DOCKER_CONFIG=/tmp/docker-config
+KillMode=control-group
+RuntimeMaxSec=900
+TimeoutStopSec=30
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=/srv/wamo-pruefer/annahme /run
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+MemoryMax=512M
+TasksMax=64
+LimitNOFILE=1024
