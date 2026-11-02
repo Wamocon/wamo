@@ -1,0 +1,14 @@
+[Unit]
+Description=WAMO-Release-Dienst: Ausgangsregel (nur Datenbank)
+Documentation=file:///opt/wamo-release/app/wamo-release-ausgang.nft
+Before=wamo-release.service
+ConditionPathExists=/etc/wamo-release-ausgang/regeln.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/wamo-release-ausgang/regeln.nft
+ExecStop=/usr/sbin/nft delete table inet wamo_release_ausgang
+
+[Install]
+WantedBy=multi-user.target

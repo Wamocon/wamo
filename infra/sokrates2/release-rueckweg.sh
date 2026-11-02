@@ -8,7 +8,7 @@
 #
 # Den Dienst abzuschalten gefährdet nichts: Er führt nie selbst etwas aus, alles Schaltende liegt beim Notanker, und der
 # Rückweg der Produktion (wamo-anker rueckweg) braucht ihn nicht.
-# --entfernen löscht Programme, Unit, Verknüpfung, tmpfiles-Datei, Laufordner und zustand.json. Bewusst NICHT gelöscht,
+# --entfernen löscht Programme, Treiber (pylib), Ausgangsregel, Unit, Verknüpfung, tmpfiles-Datei, Laufordner und zustand.json. Bewusst NICHT gelöscht,
 # sondern gesichert oder behalten:
 #   Audit-Protokoll   wird nach /var/backups/wamo-release/audit.<Zeit>.jsonl verschoben (Beweismittel, nie gelöscht)
 #   zustand.json      eine Kopie liegt daneben im Sicherungsordner
@@ -37,6 +37,9 @@ SICHERUNG="$WURZEL/var/backups/wamo-release"
 UNIT="$WURZEL/etc/systemd/system/wamo-release.service"
 TMPFILES="$WURZEL/etc/tmpfiles.d/wamo-release.conf"
 LAUF="$WURZEL/run/wamo-release"
+PYLIB="$BASIS/pylib"
+AUSGANG_DIR="$WURZEL/etc/wamo-release-ausgang"
+AUSGANG_UNIT="$WURZEL/etc/systemd/system/wamo-release-ausgang.service"
 
 pruefe_herkunft() {
   local erlaubt uid modus pfad
@@ -60,7 +63,7 @@ tu() {
 # Löschen nur für die festen Ordner des Release-Dienstes (nie ein leerer Pfad, nie die Wurzel, nie ein Link)
 loesche_ordner() {
   case "$1" in
-    "$APP"|"$APP.vorher"|"$DATEN"|"$LAUF") ;;
+    "$APP"|"$APP.vorher"|"$PYLIB"|"$PYLIB.vorher"|"$DATEN"|"$LAUF"|"$AUSGANG_DIR") ;;
     *) echo "Unerwarteter Pfad zum Löschen: $1" >&2; exit 1 ;;
   esac
   if [ -z "$1" ] || [ "$1" = / ] || [ -L "$1" ]; then echo "Pfad nicht erlaubt: $1" >&2; exit 1; fi
@@ -86,6 +89,7 @@ fi
 echo "== 1. Dienst aus"
 if [ -z "$WURZEL" ]; then
   tu "stoppt und deaktiviert wamo-release.service" systemctl disable --now wamo-release.service || true
+  tu "stoppt und deaktiviert die Ausgangsregel (löscht die nft-Tabelle wamo_release_ausgang)" \n    systemctl disable --now wamo-release-ausgang.service || true
   echo "  wamo-release: $(systemctl is-active wamo-release.service 2>/dev/null || true)"
 fi
 tu "löscht $LAUF/ctl.sock" rm -f -- "$LAUF/ctl.sock"
@@ -116,7 +120,10 @@ echo "== 3. Programme, Unit und Verknüpfungen entfernen"
 if [ -L "$BIN" ]; then tu "löscht die Verknüpfung $BIN" rm -f -- "$BIN"; fi
 loesche_ordner "$APP"
 if [ -e "$APP.vorher" ]; then loesche_ordner "$APP.vorher"; fi
-tu "löscht $UNIT und $TMPFILES" rm -f -- "$UNIT" "$TMPFILES"
+loesche_ordner "$PYLIB"
+if [ -e "$PYLIB.vorher" ]; then loesche_ordner "$PYLIB.vorher"; fi
+loesche_ordner "$AUSGANG_DIR"
+tu "löscht $UNIT, $AUSGANG_UNIT, $TMPFILES und pylib.SHA256SUMS" rm -f -- "$UNIT" "$AUSGANG_UNIT" "$TMPFILES" "$BASIS/pylib.SHA256SUMS"
 if [ -z "$WURZEL" ]; then tu "systemctl daemon-reload" systemctl daemon-reload; fi
 if [ -d "$BASIS" ] && [ -z "$(ls -A "$BASIS" 2>/dev/null)" ]; then tu "löscht den leeren Ordner $BASIS" rmdir -- "$BASIS"; fi
 

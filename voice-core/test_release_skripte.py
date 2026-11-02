@@ -42,20 +42,49 @@ class TextTests(unittest.TestCase):
         zeilen = [z.strip() for z in unit.splitlines() if z.strip() and not z.startswith("#")]
         for soll in ("User=wamo-release", "Group=wamo-release", "CapabilityBoundingSet=", "AmbientCapabilities=",
                      "NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes",
-                     "RestrictAddressFamilies=AF_UNIX", "IPAddressDeny=any", "SystemCallFilter=@system-service",
+                     "RestrictAddressFamilies=AF_UNIX AF_INET", "IPAddressDeny=any", "IPAddressAllow=192.168.178.136/32 172.23.0.0/16", "SystemCallFilter=@system-service",
                      "SystemCallFilter=~@privileged", "SystemCallArchitectures=native", "MemoryDenyWriteExecute=yes",
                      "RestrictNamespaces=yes", "LockPersonality=yes", "RestrictSUIDSGID=yes", "ProtectKernelTunables=yes",
                      "ReadWritePaths=/var/lib/wamo-release /run/wamo-release /var/log/wamo-release",
                      "ExecStartPre=/usr/bin/python3 -E -s -B /opt/wamo-release/app/wamo_release.py selbstpruefung",
                      "ExecStart=/usr/bin/python3 -E -s -B /opt/wamo-release/app/wamo_release.py dienst",
-                     "Requires=wamo-anker.service", "After=wamo-anker.service", "PartOf=wamo-anker.service",
+                     "Requires=wamo-anker.service wamo-release-ausgang.service", "After=wamo-anker.service wamo-release-ausgang.service",
+                     "PartOf=wamo-anker.service", "Environment=WAMO_RELEASE_SCHEMA=wamo_dev",
                      "SupplementaryGroups=wamocon", "LimitCORE=0",
-                     "InaccessiblePaths=-/etc/wamo -/etc/wamo-geraete -/etc/wamo-release -/etc/wamo-anker"):
+                     "InaccessiblePaths=-/etc/wamo -/etc/wamo-geraete -/etc/wamo-anker"):
             self.assertIn(soll, zeilen)
         self.assertEqual(len([z for z in zeilen if z.startswith(("ExecStart", "ExecStop", "ExecReload"))]), 2)
-        for verboten in ("EnvironmentFile", "ExecStartPre=+", "ExecStart=+", "AmbientCapabilities=CAP", "RestrictAddressFamilies=AF_INET",
-                         "User=root", "IPAddressAllow", "PermissionsStartOnly", "Environment=WAMO"):
+        for verboten in ("EnvironmentFile", "ExecStartPre=+", "ExecStart=+", "AmbientCapabilities=CAP", "AF_INET6", "AF_NETLINK",
+                         "AF_PACKET", "User=root", "PermissionsStartOnly"):
             self.assertFalse(any(verboten in z for z in zeilen), verboten)
+        self.assertEqual([z for z in zeilen if z.startswith(("Environment=WAMO", "IPAddressAllow"))],
+                         ["Environment=WAMO_RELEASE_SCHEMA=wamo_dev", "IPAddressAllow=192.168.178.136/32 172.23.0.0/16"])
+        self.assertNotIn("/etc/wamo-release", [p for z in zeilen if z.startswith("InaccessiblePaths=") for p in z[18:].split()
+                                                if p.lstrip("-") == "/etc/wamo-release"])  # der Dienst muss db.zugang lesen können
+
+    def test_ausgangsregel_erlaubt_nur_die_datenbank(self):
+        nft = (RELEASE / "wamo-release-ausgang.nft").read_text(encoding="utf-8")
+        regeln = [z.strip() for z in nft.splitlines() if z.strip() and not z.lstrip().startswith("#")]
+        self.assertIn("meta skuid wamo-release jump wamo_release", regeln)
+        erlaubt = [z for z in regeln if " accept" in z and "policy" not in z]
+        self.assertEqual(len(erlaubt), 1)
+        self.assertTrue(erlaubt[0].startswith("ct original ip daddr 192.168.178.136 ct original proto-dst 55322 "), erlaubt[0])  # Docker-DNAT
+        self.assertTrue(any(z.startswith("counter drop") for z in regeln))
+        self.assertLess([i for i, z in enumerate(regeln) if " accept" in z][0], [i for i, z in enumerate(regeln) if "drop" in z][0])
+        einheit = (RELEASE / "wamo-release-ausgang.service").read_text(encoding="utf-8")
+        self.assertIn("Before=wamo-release.service", einheit)
+        self.assertIn("ExecStart=/usr/sbin/nft -f /etc/wamo-release-ausgang/regeln.nft", einheit)
+        for text in (nft, einheit):
+            self.assertNotIn(chr(0x2014), text)
+            self.assertNotIn("\r", text)
+
+    def test_sperrdatei_nennt_nur_psycopg_mit_pruefsummen(self):
+        sperre = (INFRA / "pg" / "requirements.lock").read_text(encoding="utf-8")
+        eintraege = re.findall(r"^([A-Za-z0-9_.-]+)==([0-9.]+) \\\n\s+--hash=sha256:([0-9a-f]{64})$", sperre, re.M)
+        self.assertEqual(sorted(e[0] for e in eintraege), ["psycopg", "psycopg-binary", "typing-extensions"])
+        self.assertEqual(len(re.findall(r"--hash=", sperre)), 3)
+        self.assertNotIn("--index-url", sperre)
+        self.assertNotIn("--extra-index-url", sperre)
 
     def test_wrapper_ist_fest_verdrahtet(self):
         wrapper = (RELEASE / "wamo-release.sh").read_text(encoding="utf-8")
@@ -63,9 +92,14 @@ class TextTests(unittest.TestCase):
 
     def test_modulliste_des_skripts_ist_vollstaendig(self):
         text = (INFRA / "release-einrichten.sh").read_text(encoding="utf-8")
-        m = re.search(r"MODULE=\((.*?)\)", text)
+        m = re.search(r"^MODULE=\((.*?)\)", text, re.M)
         self.assertIsNotNone(m)
         self.assertEqual(sorted(m[1].split()), sorted(p.name for p in RELEASE.glob("*.py")))
+        pg = re.search(r"^PG_MODULE=\((.*?)\)", text, re.M)
+        self.assertIsNotNone(pg)
+        self.assertEqual(sorted(pg[1].split()), ["release_pg.py", "wamo_pg.py"])
+        for name in pg[1].split():
+            self.assertTrue((INFRA / "pg" / name).is_file(), name)
 
     def test_skripte_ohne_gedankenstriche_eval_und_cr(self):
         for name in SKRIPTE + ("release/wamo-release.sh",):
@@ -81,7 +115,8 @@ class TextTests(unittest.TestCase):
         erlaubt = ("/opt/wamo-release", "/usr/local/bin/wamo-release", "/var/lib/wamo-release", "/var/log/wamo-release",
                    "/var/backups/wamo-release", "/run/wamo-release", "/etc/tmpfiles.d/wamo-release.conf",
                    "/etc/systemd/system/wamo-release.service", "/etc/systemd/system/wamo-anker.service",
-                   "/usr/sbin/nologin", "/usr/bin/python3", "/dev/null", "/var/lib", "/var/log", "/var/backups", "/run",
+                   "/etc/systemd/system/wamo-release-ausgang.service", "/etc/wamo-release-ausgang", "/etc/wamo-release/db.zugang",
+                   "/usr/sbin", "/usr/bin", "/dev/null", "/var/lib", "/var/log", "/var/backups", "/run",
                    "/opt", "/etc/tmpfiles.d/", "/etc/systemd/system/", "/usr/local/bin", "/tmp/release-probe")
         for name in SKRIPTE:
             code = "\n".join(z for z in (INFRA / name).read_text(encoding="utf-8").splitlines() if not z.lstrip().startswith("#"))
@@ -151,7 +186,7 @@ class ProbelaufTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         app = self.pfad("opt", "wamo-release", "app")
         self.assertEqual(sorted(os.listdir(app)), sorted(["SHA256SUMS", "release_rauchtest.py", "wamo-release.sh",
-                                                          *[p.name for p in RELEASE.glob("*.py")]]))
+                                                          "release_pg.py", "wamo_pg.py", *[p.name for p in RELEASE.glob("*.py")]]))
         summen = subprocess.run(["sha256sum", "-c", "--quiet", "SHA256SUMS"], cwd=app, capture_output=True, text=True)
         self.assertEqual(summen.returncode, 0, summen.stderr)
         self.assertEqual(oct(os.stat(self.pfad("var", "lib", "wamo-release")).st_mode & 0o777), "0o700")

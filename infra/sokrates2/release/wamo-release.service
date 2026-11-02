@@ -1,7 +1,7 @@
 # WAMO-Release-Dienst auf Sokrates-2 (Schritt 0.3 der Selbstüberarbeitung: Gerüst). Installiert durch
 # infra/sokrates2/release-einrichten.sh, Rückweg: release-rueckweg.sh.
 #
-# Läuft als unprivilegierter Systembenutzer wamo-release, ohne jede Capability und ohne Netz (nur Unix-Sockets).
+# Läuft als unprivilegierter Systembenutzer wamo-release, ohne jede Capability, mit Netz nur zur Datenbank (und Unix-Sockets).
 # Lauscht auf /run/wamo-release/ctl.sock (Ordner 2750 wamo-release:wamo-core, Socket 0660; zusätzlich SO_PEERCRED im
 # Programm: nur root und wamo-core). Spricht mit dem Notanker nur über /run/wamo-anker/anker.sock (status, rueckweg,
 # sperre an; nie sperre aus). Schreibt nur nach /var/lib/wamo-release, /var/log/wamo-release und /run/wamo-release.
@@ -19,8 +19,8 @@
 # gegen die Tests geprüft worden (ohne systemd, andere Architektur).
 [Unit]
 Description=WAMO-Release-Dienst (Gerüst: Zustandsautomat, Audit-Kette, Zugang zum Notanker)
-Requires=wamo-anker.service
-After=wamo-anker.service
+Requires=wamo-anker.service wamo-release-ausgang.service
+After=wamo-anker.service wamo-release-ausgang.service
 PartOf=wamo-anker.service
 ConditionPathExists=/opt/wamo-release/app/SHA256SUMS
 StartLimitIntervalSec=300
@@ -40,12 +40,13 @@ TimeoutStopSec=360
 WorkingDirectory=/
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUTF8=1
+Environment=WAMO_RELEASE_SCHEMA=wamo_dev
 UMask=0077
 
 ReadWritePaths=/var/lib/wamo-release /run/wamo-release /var/log/wamo-release
 # Die Zusatzgruppe wamocon soll nur zum Anker führen: Geheimnisordner anderer Dienste sind für diesen Dienst unsichtbar
 # (das Home verbirgt ProtectHome=yes)
-InaccessiblePaths=-/etc/wamo -/etc/wamo-geraete -/etc/wamo-release -/etc/wamo-anker
+InaccessiblePaths=-/etc/wamo -/etc/wamo-geraete -/etc/wamo-anker
 LimitCORE=0
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -72,8 +73,13 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
 SystemCallErrorNumber=EPERM
-RestrictAddressFamilies=AF_UNIX
+# Netz nur zur Datenbank (Stufe 1): Unix-Sockets für Anker und Kern, IPv4 nur zur eigenen LAN-Adresse (dort lauscht Supavisor)
+# und zum Docker-Netz supabase-wamo_default (172.23.0.0/16): Docker ändert das Ziel lokaler Verbindungen auf den veröffentlichten
+# Port per DNAT auf die Container-Adresse, und der Filter von systemd sieht erst die geänderte Adresse. Das Ziel 192.168.178.136:55322
+# und sonst nichts erzwingt die nft-Tabelle wamo_release_ausgang (ct original, wamo-release-ausgang.service, oben verlangt).
+RestrictAddressFamilies=AF_UNIX AF_INET
 IPAddressDeny=any
+IPAddressAllow=192.168.178.136/32 172.23.0.0/16
 MemoryMax=256M
 TasksMax=64
 LimitNOFILE=256

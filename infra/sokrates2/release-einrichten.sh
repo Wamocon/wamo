@@ -18,6 +18,10 @@
 #   /opt/wamo-release/app                root:root 0755: die Python-Module des Dienstes, wamo-release.sh,
 #                                        release_rauchtest.py und SHA256SUMS (Prüfsumme aller Dateien; ExecStartPre prüft sie
 #                                        vor jedem Start). Der bisherige Baum liegt bis zum bestandenen Abschluss als app.vorher daneben.
+#   /opt/wamo-release/pylib              root:root: psycopg samt libpq (pip nur mit Prüfsummen aus pg/requirements.lock),
+#                                        dazu pylib.SHA256SUMS. Der Dienst hängt den Ordner hinten an sys.path an.
+#   /etc/wamo-release-ausgang/regeln.nft und wamo-release-ausgang.service: nft-Tabelle wamo_release_ausgang, der Benutzer
+#                                        wamo-release erreicht nur 192.168.178.136:55322 (Supavisor); der Dienst verlangt sie
 #   /usr/local/bin/wamo-release          Verknüpfung auf wamo-release.sh (Aufruf als root: sudo wamo-release status)
 #   /var/lib/wamo-release                wamo-release 0700: zustand.json (legt der Dienst an)
 #   /var/log/wamo-release                wamo-release 0750: audit.jsonl (Hashkette, chattr +a)
@@ -48,6 +52,10 @@ BENUTZER=wamo-release
 KERN=wamo-core
 PYTHON=/usr/bin/python3
 MODULE=(release_anker.py release_automat.py release_db.py release_kette.py release_stufen.py wamo_release.py)
+PG_MODULE=(release_pg.py wamo_pg.py)   # Datenbankschicht, liegt in pg/ (geteilt mit dem Freigabe-Dienst)
+PYLIB="$BASIS/pylib"                   # psycopg, nur aus pg/requirements.lock mit Prüfsummen
+AUSGANG_DIR="$WURZEL/etc/wamo-release-ausgang"
+AUSGANG_UNIT="$WURZEL/etc/systemd/system/wamo-release-ausgang.service"
 OWN=(-o root -g root)
 DIENST_OWN=(-o "$BENUTZER" -g "$BENUTZER")
 if [ -n "$WURZEL" ]; then            # Probelauf: Dateien gehören dem Aufrufer, der Interpreter darf abweichen
@@ -95,12 +103,13 @@ fi
 [ "$TROCKEN" = 0 ] || echo "Trockenlauf: nichts wird geändert."
 
 echo "== 0. Prüfungen (nur lesend)"
-for datei in "${MODULE[@]/#/release/}" release/wamo-release.sh release/wamo-release.service release_rauchtest.py; do
+for datei in "${MODULE[@]/#/release/}" "${PG_MODULE[@]/#/pg/}" release/wamo-release.sh release/wamo-release.service \
+  release/wamo-release-ausgang.service release/wamo-release-ausgang.nft pg/requirements.lock release_rauchtest.py; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei" >&2; exit 1; }
 done
 [ -x "$PYTHON" ] || { echo "Fehlt: $PYTHON" >&2; exit 1; }
 "$PYTHON" -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' || { echo "Python 3.9 oder neuer nötig." >&2; exit 1; }
-for py in "${MODULE[@]/#/release/}" release_rauchtest.py; do
+for py in "${MODULE[@]/#/release/}" "${PG_MODULE[@]/#/pg/}" release_rauchtest.py; do
   "$PYTHON" -I -c 'import ast, sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' "$HERE/$py" \
     || { echo "Syntaxfehler in $py" >&2; exit 1; }
 done
@@ -110,6 +119,13 @@ fi
 if [ -z "$WURZEL" ]; then
   command -v systemctl >/dev/null || { echo "Fehlt: systemctl" >&2; exit 1; }
   command -v chattr >/dev/null || { echo "Fehlt: chattr (Paket e2fsprogs)" >&2; exit 1; }
+  command -v nft >/dev/null || { echo "Fehlt: nft (Paket nftables)" >&2; exit 1; }
+  "$PYTHON" -I -m pip --version >/dev/null 2>&1 || { echo "Fehlt: pip für $PYTHON (Paket python3-pip)" >&2; exit 1; }
+  if [ -f /etc/wamo-release/db.zugang ]; then
+    echo "  Zugangsdatei /etc/wamo-release/db.zugang vorhanden (Inhalt wird nicht gelesen)"
+  else
+    echo "  Hinweis: /etc/wamo-release/db.zugang fehlt, der Dienst läuft dann ohne Datenbank (scripts/wamo_dienst_db.py einrichten release)"
+  fi
   [ -f /etc/systemd/system/wamo-anker.service ] || { echo "Der Notanker ist nicht eingerichtet (zuerst anker-einrichten.sh)." >&2; exit 1; }
   getent group wamocon >/dev/null || { echo "Gruppe wamocon fehlt (Zugang zum Socket des Ankers)." >&2; exit 1; }
   getent group "$KERN" >/dev/null || { echo "Gruppe $KERN fehlt (zuerst wamo-core-einrichten.sh)." >&2; exit 1; }
@@ -156,6 +172,9 @@ programme() {
   for m in "${MODULE[@]}"; do
     install "${OWN[@]}" -m 0644 "$HERE/release/$m" "$neu/$m"
   done
+  for m in "${PG_MODULE[@]}"; do
+    install "${OWN[@]}" -m 0644 "$HERE/pg/$m" "$neu/$m"
+  done
   install "${OWN[@]}" -m 0755 "$HERE/release/wamo-release.sh" "$neu/wamo-release.sh"
   install "${OWN[@]}" -m 0644 "$HERE/release_rauchtest.py" "$neu/release_rauchtest.py"
   find "$neu" -type f -exec sed -i 's/\r$//' {} +   # Windows-Zeilenenden aus der Ablage entfernen
@@ -174,7 +193,42 @@ programme() {
   fi
   echo "  $(wc -l < "$APP/SHA256SUMS") Dateien, Prüfsumme geprüft"
 }
-block "baut $APP neu aus release/ und release_rauchtest.py, schreibt SHA256SUMS, prüft sie, tauscht dann aus" programme
+block "baut $APP neu aus release/, pg/ und release_rauchtest.py, schreibt SHA256SUMS, prüft sie, tauscht dann aus" programme
+
+echo "== 3b. Treiber nach $PYLIB (pip nur mit Prüfsummen aus pg/requirements.lock)"
+pylib() {
+  local neu
+  if [ -n "$WURZEL" ]; then echo "  (Probelauf: kein pip, kein Netz)"; return 0; fi
+  rm -rf -- "$BASIS"/.pylib.neu.*
+  neu="$(mktemp -d "$BASIS/.pylib.neu.XXXXXX")"
+  # Saubere Umgebung: keine PIP_*-Einstellungen, kein Benutzerordner. --require-hashes lehnt jede Datei ab, deren Prüfsumme
+  # nicht in der Sperrdatei steht (auch eine neuere Fassung desselben Namens); --no-deps, weil die Sperrdatei alles nennt.
+  env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C.UTF-8 HOME=/nonexistent PIP_CONFIG_FILE=/dev/null \
+    "$PYTHON" -I -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir --no-compile \
+    --disable-pip-version-check --root-user-action=ignore --quiet --target "$neu" -r "$HERE/pg/requirements.lock" \
+    || { rm -rf "$neu"; echo "pip-Installation aus pg/requirements.lock fehlgeschlagen, Abbruch." >&2; exit 1; }
+  find "$neu" -name '__pycache__' -prune -exec rm -rf {} +
+  find "$neu" -type l -exec rm -f {} +                      # nichts, was aus dem Ordner herauszeigt
+  chown -R root:root "$neu"
+  chmod -R go-w,a+rX "$neu"
+  ( cd "$neu" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$BASIS/.pylib.summen" )
+  # Import-Probe mit genau dem Interpreter des Dienstes: ohne Datenbank, nur ob psycopg samt eingebauter libpq lädt
+  # (-E ignoriert PYTHONPATH, darum der Pfad als Argument und per sys.path.append wie im Dienst)
+  "$PYTHON" -E -s -B -c 'import sys; sys.path.append(sys.argv[1]); import psycopg; print("  psycopg", psycopg.__version__, "libpq", psycopg.pq.version())' "$neu" \
+    || { rm -rf "$neu" "$BASIS/.pylib.summen"; echo "psycopg lässt sich nicht laden (Architektur? libpq?), Abbruch." >&2; exit 1; }
+  install -o root -g root -m 0644 "$BASIS/.pylib.summen" "$BASIS/pylib.SHA256SUMS"
+  rm -f "$BASIS/.pylib.summen"
+  rm -rf "$PYLIB.vorher"
+  if [ -e "$PYLIB" ]; then mv "$PYLIB" "$PYLIB.vorher"; fi
+  if ! mv "$neu" "$PYLIB"; then
+    if [ -e "$PYLIB.vorher" ]; then mv "$PYLIB.vorher" "$PYLIB"; fi
+    echo "Austausch von $PYLIB fehlgeschlagen, bisheriger Stand wiederhergestellt." >&2
+    exit 1
+  fi
+  rm -rf "$PYLIB.vorher"
+  echo "  $(wc -l < "$BASIS/pylib.SHA256SUMS") Dateien, psycopg lädt"
+}
+block "installiert psycopg (hash-gesichert) nach $PYLIB, schreibt pylib.SHA256SUMS, prüft den Import, tauscht dann aus" pylib
 
 echo "== 4. Aufruf $BIN"
 verknuepfung() {
@@ -210,11 +264,20 @@ d /run/wamo-release 2750 $BENUTZER $KERN -
 TMP
     chmod 0644 "$TMPFILES"
     systemd-tmpfiles --create "$TMPFILES"
+    # Ausgangsregel zuerst: Der Dienst verlangt sie (Requires), startet ohne sie nicht. Erst prüfen (nft -c), dann laden.
+    install -d -o root -g root -m 0755 "$AUSGANG_DIR"
+    install -o root -g root -m 0644 "$HERE/release/wamo-release-ausgang.nft" "$AUSGANG_DIR/regeln.nft"
+    sed -i 's/\r$//' "$AUSGANG_DIR/regeln.nft"
+    nft -c -f "$AUSGANG_DIR/regeln.nft" || { echo "Die Ausgangsregel ist ungültig (nft -c), Abbruch." >&2; exit 1; }
+    install -o root -g root -m 0644 "$HERE/release/wamo-release-ausgang.service" "$AUSGANG_UNIT"
+    sed -i 's/\r$//' "$AUSGANG_UNIT"
     install -o root -g root -m 0644 "$HERE/release/wamo-release.service" "$UNIT"
     sed -i 's/\r$//' "$UNIT"
-    systemd-analyze verify "$UNIT" 2>&1 | grep -v '^$' | sed 's/^/  verify: /' || true
+    systemd-analyze verify "$AUSGANG_UNIT" "$UNIT" 2>&1 | grep -v '^$' | sed 's/^/  verify: /' || true
     systemctl daemon-reload
-    systemctl enable wamo-release.service >/dev/null 2>&1
+    systemctl enable wamo-release-ausgang.service wamo-release.service >/dev/null 2>&1
+    systemctl restart wamo-release-ausgang.service
+    nft list table inet wamo_release_ausgang >/dev/null || { echo "Die Tabelle wamo_release_ausgang fehlt, Abbruch." >&2; exit 1; }
     systemctl restart wamo-release.service
     for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCKET" ] && break; sleep 1; done
     systemctl is-active wamo-release.service | sed 's/^/  Dienst: /' || true
@@ -225,13 +288,15 @@ TMP
       exit 1
     fi
   }
-  block "legt $TMPFILES und $UNIT an, aktiviert und startet wamo-release.service" dienst
+  block "legt $TMPFILES, $AUSGANG_DIR/regeln.nft, $AUSGANG_UNIT und $UNIT an, lädt die Ausgangsregel, startet wamo-release.service" dienst
 
   echo "== 7. Prüfung"
   if [ "$TROCKEN" = 1 ]; then
     echo "  [trocken] würde 'wamo-release status' ausführen"
   else
     ( cd "$APP" && sha256sum -c --quiet SHA256SUMS ) && echo "  Prüfsumme der Installation stimmt"
+    ( cd "$PYLIB" && sha256sum -c --quiet "$BASIS/pylib.SHA256SUMS" ) && echo "  Prüfsumme der Treiber stimmt"
+    echo "  Ausgangsregel: $(nft list table inet wamo_release_ausgang | grep -c 'counter') Regeln geladen"
     stat -c '  %n %U:%G %a' "$APP" "$APP/wamo_release.py" "$DATEN" "$LOG" "$LOG/audit.jsonl"
     if ! "$BIN" status; then
       echo "wamo-release status meldete einen Fehler. Der bisherige Baum liegt noch in $APP.vorher." >&2
