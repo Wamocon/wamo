@@ -122,8 +122,7 @@ class TextTests(unittest.TestCase):
         text = (INFRA / "pruefer-einrichten.sh").read_text(encoding="utf-8")
         m = re.search(r"^ERLAUBT=(.*)$", text, re.M)
         self.assertIsNotNone(m)
-        self.assertEqual(sorted(m[1].split(",")), ["api.github.com", "files.pythonhosted.org", "fonts.googleapis.com", "fonts.gstatic.com", "github.com", "pypi.org",
-                                                  "registry.npmjs.org"])   # die zwei Schrift-Hosts: next/font/google holt Roboto Condensed zur Bauzeit
+        self.assertEqual(sorted(m[1].split(",")), ["api.github.com", "files.pythonhosted.org", "github.com", "pypi.org", "registry.npmjs.org"])   # keine Schrift-Hosts: die Oberfläche liefert die Schrift selbst aus
         self.assertIn("LISTEN=127.0.0.1:18080", text)
         # der Claude-Proxy kennt genau einen Namen, und die Paketquellen kennen Claude nicht
         alle = re.findall(r"^ERLAUBT=(.*)$", text, re.M)

@@ -1,14 +1,17 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
-import { Roboto_Condensed } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
 // WMC-Schrift ist Arial Narrow (lokal installiert). Roboto Condensed nur als Webfont-Ersatz,
 // falls Arial Narrow und Liberation Sans Narrow fehlen: kein Vorladen, der Browser holt sie nur bei Bedarf.
-const condensed = Roboto_Condensed({
+// Die Dateien liegen im Repo (app/fonts, Herkunft und Lizenz dort): Bau und Betrieb holen nichts bei Google.
+const condensed = localFont({
   variable: "--font-condensed",
-  subsets: ["latin"],
-  weight: ["400", "700"],
+  src: [
+    { path: "./fonts/roboto-condensed-latin-400-normal.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/roboto-condensed-latin-700-normal.woff2", weight: "700", style: "normal" },
+  ],
   display: "swap",
   preload: false,
 });

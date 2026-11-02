@@ -1,8 +1,7 @@
 """Erlaubnisliste-Proxy für die Prüfer-Sandbox (Konzept docs/selbstueberarbeitung.md D.3, Schritt 1.2b).
 
 Die Prüfer-Sandbox hat kein eigenes Netz. Sie erreicht nur zwei Proxys auf Loopback, und jeder erlaubt genau eine feste Liste von Domains:
-  * Proxy "pakete": registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, api.github.com, dazu fonts.googleapis.com und
-    fonts.gstatic.com (die Oberfläche holt Roboto Condensed zur Bauzeit über next/font/google)
+  * Proxy "pakete": registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, api.github.com
   * Proxy "claude": api.anthropic.com
 Der Proxy kennt nur CONNECT auf Port 443 (TLS-Tunnel, er sieht den Inhalt nie). Alles andere wird abgewiesen, ohne eine Verbindung nach
 draußen aufzubauen. Die Namensauflösung macht der Proxy selbst, die Sandbox braucht kein DNS:
