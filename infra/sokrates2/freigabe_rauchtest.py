@@ -13,6 +13,10 @@ Exit 0 nur, wenn alles bestanden ist. Nie in der Ausgabe: Token, Schlüssel, Zug
 
 from __future__ import annotations
 
+import sys
+
+sys.dont_write_bytecode = True  # als root nie .pyc in den geschützten Programmordner schreiben (sonst schlägt die Prüfsumme an)
+
 import argparse
 import json
 import os
@@ -149,12 +153,15 @@ def teil_b() -> None:
         pruefe(f"Socket als {b} abgewiesen", "ABGELEHNT" in r.stdout, (r.stdout + r.stderr)[:150])
     # als wamo-anker: Datenbank und Schlüsselsatz mit genau dem Code und den Einstellungen des Dienstes
     code = ("import sys, os\nsys.path.insert(0, sys.argv[1])\nimport freigabe_dienst as D\nfrom wamo_pg import Pg, zugangsdatei_lesen\n"
+            "import jwt, psycopg, cryptography\nprint('LIBS', all(m.__file__.startswith(D.PYLIB + '/') for m in (jwt, psycopg, cryptography)), jwt.__version__)\n"
             "z = zugangsdatei_lesen(D.ZUGANG_DATEI)\nprint('DB', Pg(z, anwendung='wamo-freigabe').zeilen('select 1'))\n"
             "q = D.JwksQuelle(lambda: D.jwks_abrufen(sys.argv[2], z.sslrootcert))\ntry:\n q('x')\nexcept KeyError:\n pass\nprint('SCHLUESSEL', len(q._schluessel))\n")
     jwks = subprocess.run(["systemctl", "show", "-p", "Environment", "--value", "wamo-freigabe.service"], capture_output=True, text=True).stdout
     url_jwks = next((t.split("=", 1)[1] for t in jwks.split() if t.startswith("WAMO_FREIGABE_JWKS_URL=")), "")
     r = als_benutzer(BENUTZER, code, APP, url_jwks)
     pruefe("Datenbank antwortet auf select 1 (Rolle wamo_anker_s2)", r.returncode == 0 and "DB " in r.stdout, (r.stdout + r.stderr)[-200:])
+    pruefe("PyJWT, cryptography und psycopg kommen aus dem gesicherten Ordner, nicht aus dem System", "LIBS True" in r.stdout,
+           (r.stdout + r.stderr)[-200:])
     n = [z for z in r.stdout.splitlines() if z.startswith("SCHLUESSEL")]
     pruefe("Schlüsselsatz von GoTrue ladbar (mindestens ein ES256-Schlüssel)", bool(n) and int(n[0].split()[1]) >= 1, (r.stdout + r.stderr)[-200:])
     netz = ("import socket, sys\ns = socket.socket(); s.settimeout(3)\ntry:\n s.connect((sys.argv[1], int(sys.argv[2]))); print('VERBUNDEN')\n"

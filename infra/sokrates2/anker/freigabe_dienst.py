@@ -40,8 +40,21 @@ from http.server import BaseHTTPRequestHandler
 from typing import Callable
 
 PYLIB = "/opt/wamo-freigabe/pylib"  # PyJWT, cryptography, psycopg: hash-gesichert und root-eigen (freigabe-einrichten.sh)
-if os.path.isdir(PYLIB) and PYLIB not in sys.path:
-    sys.path.append(PYLIB)  # hinten angehängt: Standardbibliothek und eigene Module gehen vor, nichts in PYLIB verdeckt sie
+
+
+def pylib_einhaengen(pfad: str, pfade: list[str] | None = None) -> None:
+    """Hängt den Ordner mit den gesicherten Bibliotheken hinter die Standardbibliothek und VOR die Systempakete (dist-packages,
+    site-packages). So gewinnen die Fassungen mit Prüfsumme gegen gleichnamige Pakete des Systems (Ubuntu liefert PyJWT 2.7.0 mit),
+    und nichts in diesem Ordner verdeckt die Standardbibliothek oder die eigenen Module."""
+    pfade = sys.path if pfade is None else pfade
+    if pfad in pfade:
+        return
+    stelle = next((i for i, p in enumerate(pfade) if p.endswith(("dist-packages", "site-packages"))), len(pfade))
+    pfade.insert(stelle, pfad)
+
+
+if os.path.isdir(PYLIB):
+    pylib_einhaengen(PYLIB)
 
 import jwt  # noqa: E402
 from freigabe import FEHLER, FreigabeFehler, Freigabedienst, fehler  # noqa: E402

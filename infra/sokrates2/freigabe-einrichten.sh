@@ -190,8 +190,9 @@ pylib() {
   chown -R root:root "$neu"
   chmod -R go-w,a+rX "$neu"
   ( cd "$neu" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$BASIS/.pylib.summen" )
-  # Import-Probe mit genau dem Interpreter des Dienstes (-E ignoriert PYTHONPATH, darum der Pfad als Argument wie im Dienst)
-  "$PYTHON" -E -s -B -c 'import sys; sys.path.append(sys.argv[1]); import psycopg, jwt; from cryptography.hazmat.primitives.asymmetric import ec; ec.generate_private_key(ec.SECP256R1()); print("  psycopg", psycopg.__version__, "PyJWT", jwt.__version__)' "$neu" \
+  # Import-Probe mit genau dem Interpreter des Dienstes (-E ignoriert PYTHONPATH, darum der Pfad als Argument). Der Ordner kommt vor die
+  # Systempakete wie im Dienst, und die Probe verlangt, dass die Module wirklich daraus kommen (Ubuntu liefert eigene, ältere Fassungen mit).
+  "$PYTHON" -E -s -B -c 'import sys; d = sys.argv[1]; i = next((k for k, p in enumerate(sys.path) if p.endswith(("dist-packages", "site-packages"))), len(sys.path)); sys.path.insert(i, d); import psycopg, jwt, cryptography; from cryptography.hazmat.primitives.asymmetric import ec; ec.generate_private_key(ec.SECP256R1()); assert all(m.__file__.startswith(d + "/") for m in (psycopg, jwt, cryptography)), "Modul nicht aus dem gesicherten Ordner"; print("  psycopg", psycopg.__version__, "PyJWT", jwt.__version__, "cryptography", cryptography.__version__)' "$neu" \
     || { rm -rf "$neu" "$BASIS/.pylib.summen"; echo "Bibliotheken lassen sich nicht laden (Architektur?), Abbruch." >&2; exit 1; }
   install -o root -g root -m 0644 "$BASIS/.pylib.summen" "$BASIS/pylib.SHA256SUMS"
   rm -f "$BASIS/.pylib.summen"

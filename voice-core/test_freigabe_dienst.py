@@ -120,6 +120,29 @@ class AnwendungTests(Basis):
         self.assertIsNone(self.db.freigaben[0]["quell_ip"])
 
 
+class SuchpfadTests(unittest.TestCase):
+    PYLIB = "/opt/wamo-freigabe/pylib"
+
+    def test_gesicherter_ordner_kommt_vor_die_systempakete_und_hinter_die_standardbibliothek(self):
+        pfade = ["/opt/wamo-freigabe/app", "/usr/lib/python312.zip", "/usr/lib/python3.12", "/usr/lib/python3.12/lib-dynload",
+                 "/usr/local/lib/python3.12/dist-packages", "/usr/lib/python3/dist-packages"]
+        D.pylib_einhaengen(self.PYLIB, pfade)
+        self.assertEqual(pfade.index(self.PYLIB), 4)
+        self.assertLess(pfade.index("/usr/lib/python3.12"), pfade.index(self.PYLIB))
+        self.assertLess(pfade.index(self.PYLIB), pfade.index("/usr/lib/python3/dist-packages"))
+
+    def test_ohne_systempakete_hinten_und_nie_doppelt(self):
+        pfade = ["/app", "/usr/lib/python3.12"]
+        D.pylib_einhaengen(self.PYLIB, pfade)
+        D.pylib_einhaengen(self.PYLIB, pfade)
+        self.assertEqual(pfade, ["/app", "/usr/lib/python3.12", self.PYLIB])
+
+    def test_site_packages_einer_umgebung_zaehlt_wie_dist_packages(self):
+        pfade = ["/app", "/usr/lib/python3.12", "/venv/lib/python3.12/site-packages"]
+        D.pylib_einhaengen(self.PYLIB, pfade)
+        self.assertEqual(pfade.index(self.PYLIB), 2)
+
+
 # ------------------------------------------------------------------------------------------------ Schlüsselquelle
 def jwk(key, kid, **extra) -> dict:
     return {**jwt.algorithms.ECAlgorithm.to_jwk(key.public_key(), as_dict=True), "kid": kid, "use": "sig", **extra}
