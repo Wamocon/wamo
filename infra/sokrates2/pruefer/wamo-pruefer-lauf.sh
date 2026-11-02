@@ -6,6 +6,7 @@
 #
 #   wamo-pruefer-lauf.sh lauf --basis <ordner> --neu <ordner> --runde <1|2|3> --ausgabe <datei.json>
 #                             [--fremdverweise <datei>] [--ohne-audit] [--behalten]
+#                             (ohne --fremdverweise gilt /etc/wamo-anker/fremdverweise.txt; fehlt sie, bricht der Lauf ab)
 #   wamo-pruefer-lauf.sh befehl [--neu <ordner>] [--zeit <s>] [--behalten] -- <befehl> [argumente ...]
 #
 # Die Ordner werden in einen frischen Arbeitsordner unter /srv/wamo-pruefer/lauf kopiert (Links bleiben Links und werden
@@ -45,6 +46,7 @@ BENUTZER=wamo-pruefer
 PROXY_ADRESSE=http://127.0.0.1:18080       # die Brücke in der Sandbox (pruefer_bruecke.py) lauscht dort im eigenen Netz
 PROXY_SOCKET=/run/wamo-pruefer-proxy/pakete.sock
 KONF=$APP/pruefer.conf
+FREMD_STANDARD=/etc/wamo-anker/fremdverweise.txt   # Mustervorlage des Fremdverweis-Greps: liegt im Anker-Ordner, nie im Repo
 
 # Standardwerte; pruefer.conf (root:root 0644) darf sie überschreiben
 ZEIT_S=5400
@@ -120,7 +122,15 @@ if [ "$modus" = lauf ]; then
   case "$ausgabe" in /*) ;; *) fehler "--ausgabe muss ein absoluter Pfad sein" ;; esac
   [ ! -L "$ausgabe" ] || fehler "--ausgabe ist ein Link"
   [ -d "$(dirname "$ausgabe")" ] || fehler "Ordner der Ausgabe fehlt"
-  [ -z "$fremd" ] || { [ -f "$fremd" ] && [ ! -L "$fremd" ] || fehler "--fremdverweise ist keine Datei"; }
+  if [ -z "$fremd" ]; then
+    fremd="$FREMD_STANDARD"
+    [ -f "$fremd" ] && [ ! -L "$fremd" ] || fehler "die Mustervorlage fehlt: $fremd (Handarbeit, steht nicht im Repo; siehe Konzept D.3)"
+    if [ "$(stat -c '%u' "$fremd")" != 0 ] || [ $(( 8#$(stat -c '%a' "$fremd") & 8#022 )) -ne 0 ]; then
+      fehler "$fremd gehört nicht root oder ist beschreibbar"
+    fi
+  else
+    [ -f "$fremd" ] && [ ! -L "$fremd" ] || fehler "--fremdverweise ist keine Datei"
+  fi
 fi
 
 # Höchstens ein Lauf zugleich

@@ -1,0 +1,20 @@
+[Unit]
+Description=WAMO-Prüfer-Sandbox: Annahme (Socket nur für wamo-release)
+Documentation=file:///opt/wamo-pruefer/app/pruefer_annahme.py
+After=wamo-pruefer-ausgang.service
+Requires=wamo-pruefer-ausgang.service
+ConditionPathExists=/opt/wamo-pruefer/app/pruefer_annahme.py
+
+[Socket]
+# Der Socket gehört dem Release-Dienst und ist nur für ihn verbindbar (0600); der Dienst prüft zusätzlich per SO_PEERCRED (root oder wamo-release).
+ListenStream=/run/wamo-pruefer-annahme/annahme.sock
+SocketUser=wamo-release
+SocketGroup=wamo-release
+SocketMode=0600
+DirectoryMode=0755
+Accept=yes
+MaxConnections=2
+MaxConnectionsPerSource=2
+
+[Install]
+WantedBy=sockets.target

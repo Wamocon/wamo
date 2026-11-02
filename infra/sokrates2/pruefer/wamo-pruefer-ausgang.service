@@ -1,7 +1,7 @@
 [Unit]
 Description=WAMO-Prüfer-Sandbox: Ausgangsregeln (Sandbox nur zum Proxy, Proxy nur öffentlich)
 Documentation=file:///opt/wamo-pruefer/app/wamo-pruefer-ausgang.nft
-Before=wamo-pruefer-proxy@pakete.service
+Before=wamo-pruefer-proxy@pakete.service wamo-pruefer-proxy@claude.service
 ConditionPathExists=/etc/wamo-pruefer/regeln.nft
 
 [Service]

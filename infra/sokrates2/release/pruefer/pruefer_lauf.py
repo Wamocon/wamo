@@ -37,6 +37,7 @@ DATEI_MAX = 2 * 1024 * 1024
 GESAMT_MAX = 200 * 1024 * 1024
 DATEIEN_MAX = 20000
 ENDE_ZEICHEN = 1500
+VOLL_MAX = 16 * 1024 * 1024
 AUSLASSEN = frozenset({".git", "node_modules", ".venv", "__pycache__", ".next", "dist", ".pytest_cache", ".ruff_cache"})
 PLATZHALTER_URL = "https://platzhalter.invalid"
 PROXY_PAKETE = "http://127.0.0.1:18080"
@@ -95,6 +96,7 @@ AUDITS = (Befehl("ui", ("npm", "audit", "--omit=dev", "--audit-level=high"), 300
 class Ausgang:
     code: int | None           # None: Zeitlimit
     ende: str = ""
+    voll: str = ""             # die ganze Ausgabe (bis VOLL_MAX Zeichen), nur für Werkzeuge, deren Ausgabe maschinell gelesen wird (ruff)
 
 
 def kuerzen(roh: bytes | str, n: int = ENDE_ZEICHEN) -> str:
@@ -125,7 +127,7 @@ def ausfuehren_echt(befehl: Befehl, wurzel: str, env: dict[str, str]) -> Ausgang
         return Ausgang(127, f"Werkzeug nicht startbar: {type(e).__name__}")
     try:
         aus, _ = p.communicate(timeout=befehl.zeit_s)
-        return Ausgang(p.returncode, kuerzen(aus or b""))
+        return Ausgang(p.returncode, kuerzen(aus or b""), (aus or b"")[:VOLL_MAX].decode("utf-8", errors="replace"))
     except subprocess.TimeoutExpired:
         try:
             os.killpg(p.pid, signal.SIGKILL)
@@ -136,6 +138,63 @@ def ausfuehren_echt(befehl: Befehl, wurzel: str, env: dict[str, str]) -> Ausgang
 
 
 Ausfuehrer = Callable[[Befehl, str, dict[str, str]], Ausgang]
+
+
+# ------------------------------------------------------------------------------------------------ ruff: neue Funde gegen die Basis
+# Das Repo hat keine ruff-Konfiguration und viele alte Funde. Das Tor ist darum "keine neuen Funde": gezählt wird je Datei und Regel, und ein Stand
+# fällt durch, wenn eine Zahl gegenüber der Basis steigt (oder eine Datei samt Funden neu dazukommt). Regeln: F (Pyflakes), B (Bugbear), S (Bandit),
+# E7 und E9 (Anweisungs- und Syntaxfehler); Formatfragen (E501 und Verwandte) gehören nicht zu diesem Tor. S101 (assert) ist Stil in Python-Tests und
+# gilt nirgends als Fund; die übrigen S-Regeln gelten in Testdateien nicht (dort stehen Attrappen für Kennwörter, Sockets und Pfade).
+RUFF_REGELN = "F,B,S,E7,E9"
+RUFF_IGNORIERT = frozenset({"S101"})
+RUFF_TESTDATEI = re.compile(r"(^|/)(test_[^/]*\.py|[^/]*_test\.py|conftest\.py|tests?/)")
+RUFF_BEFEHL = Befehl(".", ("ruff", "check", "--isolated", "--no-cache", "--select", RUFF_REGELN, "--output-format", "json", "--exit-zero", "."), 600)
+
+
+def ruff_zaehlen(roh: str, wurzel: str) -> dict[tuple[str, str], int]:
+    """(Pfad relativ zur Wurzel, Regel) -> Anzahl. Wirft ValueError bei einer Ausgabe, die kein ruff-JSON ist."""
+    try:
+        funde = json.loads(roh)
+    except ValueError as e:
+        raise ValueError("kein JSON") from e
+    if not isinstance(funde, list):
+        raise ValueError("keine Liste")
+    wurzel = wurzel.rstrip("/") + "/"
+    zaehler: dict[tuple[str, str], int] = {}
+    for f in funde:
+        if not isinstance(f, dict) or not isinstance(f.get("code"), str) or not isinstance(f.get("filename"), str):
+            raise ValueError("unerwartete Form")
+        pfad = f["filename"]
+        pfad = pfad[len(wurzel):] if pfad.startswith(wurzel) else pfad
+        code = f["code"]
+        if code in RUFF_IGNORIERT or (code.startswith("S") and RUFF_TESTDATEI.search(pfad)):
+            continue
+        zaehler[(pfad, code)] = zaehler.get((pfad, code), 0) + 1
+    return zaehler
+
+
+def ruff_stufe(basis: str, neu: str, ausfuehrer: Ausfuehrer, grund: dict[str, str]) -> Stufe:
+    zaehler = []
+    for wurzel in (basis, neu):
+        try:
+            erg = ausfuehrer(RUFF_BEFEHL, wurzel, umgebung(RUFF_BEFEHL, grund))
+        except Exception:  # noqa: BLE001
+            return Stufe("fehler", fehler="ruff_panne")
+        if erg.code is None:
+            return Stufe("fehler", fehler="ruff_zeitlimit", ende=erg.ende)
+        if erg.code != 0:
+            return Stufe("fehler", fehler=f"ruff_exit_{erg.code}", ende=erg.ende)
+        try:
+            zaehler.append(ruff_zaehlen(erg.voll, wurzel))
+        except ValueError as e:
+            return Stufe("fehler", fehler=f"ruff_ausgabe:{e}")
+    alt, jetzt = zaehler
+    neue = sorted(((p, c, n - alt.get((p, c), 0)) for (p, c), n in jetzt.items() if n > alt.get((p, c), 0)))
+    if not neue:
+        return Stufe("ok")
+    # nur Pfad, Regel und Menge: nie der Wortlaut eines Fundes
+    ende = "; ".join(f"{p} {c} +{n}" for p, c, n in neue[:12]) + (f"; und {len(neue) - 12} weitere" if len(neue) > 12 else "")
+    return Stufe("fehler", treffer_anzahl=sum(n for _, _, n in neue), fehler=f"ruff_neue_funde:{sum(n for _, _, n in neue)}", ende=ende)
 
 
 # ------------------------------------------------------------------------------------------------ Bäume vergleichen
@@ -254,6 +313,8 @@ def lauf(basis: str, neu: str, runde: int, muster_zeilen: list[str], ausfuehrer:
                 s = Stufe("uebersprungen", fehler="bauen_fehlgeschlagen")   # ohne Bau sind Tests und Lint sinnlos; "uebersprungen" lässt das Tor zu
             else:
                 s = werkzeugstufe(name, PLAENE[name](), neu, ausfuehrer, grund)
+                if name == "typen_lint" and s.wert == "ok" and any(n.endswith(".py") for n in baum.pfade):
+                    s = ruff_stufe(basis, neu, ausfuehrer, grund)
         elif name == "secret_scan":
             scans[name] = S.secret_scan(baum.dateien, baum.pfade)
             s = aus_befund(scans[name])

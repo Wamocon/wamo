@@ -13,9 +13,11 @@ Group=wamo-pruefer-proxy
 # LISTEN (host:port auf Loopback) und ERLAUBT (Namen, durch Komma getrennt) stehen in /etc/wamo-pruefer/proxy-%i.env (root:root 0644, keine Geheimnisse)
 EnvironmentFile=/etc/wamo-pruefer/proxy-%i.env
 WorkingDirectory=/opt/wamo-pruefer/app
+# Beide Instanzen (pakete, claude) teilen den Ordner (Preserve): Das Ende der einen darf den Socket der anderen nicht löschen.
 # Unix-Socket für die Sandbox (sie hat ein eigenes Netz und sieht nur diese Datei); der Proxy macht ihn selbst verbindbar
 RuntimeDirectory=wamo-pruefer-proxy
 RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 ExecStartPre=/usr/bin/sha256sum -c --quiet SHA256SUMS
 ExecStart=/usr/bin/python3 -I -B /opt/wamo-pruefer/app/pruefer_proxy.py --name %i --listen ${LISTEN} --unix /run/wamo-pruefer-proxy/%i.sock --erlaubt ${ERLAUBT}
 Restart=on-failure

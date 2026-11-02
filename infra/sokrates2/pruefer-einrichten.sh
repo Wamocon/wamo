@@ -25,8 +25,9 @@
 #   /srv/wamo-pruefer/lauf               root:root 0755: Arbeitsordner der Läufe (je Lauf frisch, danach gelöscht)
 #   /usr/local/lib/wamo-pruefer/bwrap    Kopie von /usr/bin/bwrap, root:wamo-pruefer 0750
 #   /etc/apparmor.d/wamo-pruefer-bwrap   erlaubt NUR dieser Kopie Benutzer-Namensräume (das System-bwrap bleibt gesperrt)
-#   /etc/wamo-pruefer                    regeln.nft (Tabelle wamo_pruefer_ausgang), proxy-pakete.env (Listen und Domainliste)
-#   systemd: wamo-pruefer-ausgang.service, wamo-pruefer-proxy@.service (Instanz pakete, 127.0.0.1:18080), aktiviert und gestartet
+#   /etc/wamo-pruefer                    regeln.nft (Tabelle wamo_pruefer_ausgang), proxy-pakete.env und proxy-claude.env (Listen und Domainlisten)
+#   systemd: wamo-pruefer-ausgang.service, wamo-pruefer-proxy@.service (Instanzen pakete 127.0.0.1:18080 und claude 127.0.0.1:18081),
+#            aktiviert und gestartet
 # Es wird nichts im Anker, im Release-Dienst, in wamo-core, wamo-geraete, /etc/wamo oder /etc/wamo-anker verändert.
 set -euo pipefail
 
@@ -101,10 +102,10 @@ else
 fi
 [ "$TROCKEN" = 0 ] || echo "Trockenlauf: nichts wird geändert."
 
-PRUEFER_PY=(pruefer_bruecke.py pruefer_lauf.py pruefer_proxy.py pruefer_scans.py)
+PRUEFER_PY=(pruefer_annahme.py pruefer_archiv.py pruefer_bruecke.py pruefer_client.py pruefer_lauf.py pruefer_proxy.py pruefer_scans.py)
 echo "== 0. Prüfungen (nur lesend)"
 for datei in "${PRUEFER_PY[@]/#/release/pruefer/}" pruefer/wamo-pruefer-lauf.sh pruefer/wamo-pruefer-ausgang.nft \
-  pruefer/wamo-pruefer-ausgang.service "pruefer/wamo-pruefer-proxy@.service" pruefer/wamo-pruefer-bwrap.apparmor \
+  pruefer/wamo-pruefer-ausgang.service "pruefer/wamo-pruefer-proxy@.service" pruefer/wamo-pruefer-annahme.socket "pruefer/wamo-pruefer-annahme@.service" pruefer/wamo-pruefer-bwrap.apparmor \
   pruefer/requirements-werkzeuge.lock pruefer/pruefer.conf.beispiel pruefer_rauchtest.py; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei" >&2; exit 1; }
 done
@@ -153,6 +154,7 @@ verzeichnisse() {
   done
   mkdir -p "$(dirname "$BASIS")" "$(dirname "$ARBEIT")" "$(dirname "$ETC")" "$(dirname "$BWRAP_KOPIE")"
   install -d "${OWN[@]}" -m 0755 "$BASIS" "$ARBEIT" "$ARBEIT/lauf" "$ETC"
+  install -d "${OWN[@]}" -m 0700 "$ARBEIT/annahme"   # Zwischenablage des Annahme-Dienstes: nur root
 }
 block "legt an: $BASIS, $ARBEIT (mit lauf/), $ETC (alle root, 0755)" verzeichnisse
 
@@ -272,22 +274,36 @@ LISTEN=127.0.0.1:18080
 ERLAUBT=registry.npmjs.org,pypi.org,files.pythonhosted.org,github.com,api.github.com,fonts.googleapis.com,fonts.gstatic.com
 ENV
     chmod 0644 "$ETC/proxy-pakete.env"
+    # Proxy "claude": nur die Claude-Schnittstelle. Er gehört zur Claude-Stufe (Review und Refactor, Schritt 3.3), deren Sandbox keinen Zugang zu
+    # Paketquellen hat, und umgekehrt: "Code ausführen und Token halten geschieht nie im selben Prozess" (Konzept D.3). Die Sandbox der
+    # Prüfstrecke bindet seinen Socket nie ein.
+    cat > "$ETC/proxy-claude.env" <<'ENV'
+# Proxy "claude" der Prüfer-Sandbox: Loopback-Adresse und der einzige erlaubte Name.
+LISTEN=127.0.0.1:18081
+ERLAUBT=api.anthropic.com
+ENV
+    chmod 0644 "$ETC/proxy-claude.env"
     install -o root -g root -m 0644 "$HERE/pruefer/pruefer.conf.beispiel" "$BASIS/pruefer.conf.beispiel"
     install -o root -g root -m 0644 "$HERE/pruefer/wamo-pruefer-ausgang.service" "$UNIT_DIR/wamo-pruefer-ausgang.service"
     install -o root -g root -m 0644 "$HERE/pruefer/wamo-pruefer-proxy@.service" "$UNIT_DIR/wamo-pruefer-proxy@.service"
-    sed -i 's/\r$//' "$UNIT_DIR/wamo-pruefer-ausgang.service" "$UNIT_DIR/wamo-pruefer-proxy@.service"
+    install -o root -g root -m 0644 "$HERE/pruefer/wamo-pruefer-annahme.socket" "$UNIT_DIR/wamo-pruefer-annahme.socket"
+    install -o root -g root -m 0644 "$HERE/pruefer/wamo-pruefer-annahme@.service" "$UNIT_DIR/wamo-pruefer-annahme@.service"
+    sed -i 's/\r$//' "$UNIT_DIR/wamo-pruefer-ausgang.service" "$UNIT_DIR/wamo-pruefer-proxy@.service" "$UNIT_DIR/wamo-pruefer-annahme.socket" "$UNIT_DIR/wamo-pruefer-annahme@.service"
     systemd-analyze verify "$UNIT_DIR/wamo-pruefer-ausgang.service" "$UNIT_DIR/wamo-pruefer-proxy@pakete.service" 2>&1 \
       | grep -v '^$' | sed 's/^/  verify: /' || true
     systemctl daemon-reload
-    systemctl enable wamo-pruefer-ausgang.service wamo-pruefer-proxy@pakete.service >/dev/null 2>&1
+    systemctl enable wamo-pruefer-ausgang.service wamo-pruefer-proxy@pakete.service wamo-pruefer-proxy@claude.service wamo-pruefer-annahme.socket >/dev/null 2>&1
     systemctl restart wamo-pruefer-ausgang.service
     nft list table inet wamo_pruefer_ausgang >/dev/null || { echo "Die Tabelle wamo_pruefer_ausgang fehlt, Abbruch." >&2; exit 1; }
-    systemctl restart wamo-pruefer-proxy@pakete.service
+    systemctl restart wamo-pruefer-proxy@pakete.service wamo-pruefer-proxy@claude.service
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-      if "$PYTHON" -I -c 'import socket; socket.create_connection(("127.0.0.1", 18080), 1).close()' 2>/dev/null; then break; fi
+      if "$PYTHON" -I -c 'import socket; socket.create_connection(("127.0.0.1", 18080), 1).close(); socket.create_connection(("127.0.0.1", 18081), 1).close()' 2>/dev/null; then break; fi
       sleep 1
     done
-    systemctl is-active wamo-pruefer-proxy@pakete.service | sed 's/^/  Proxy: /' || true
+    systemctl is-active wamo-pruefer-proxy@pakete.service | sed 's/^/  Proxy pakete: /' || true
+    systemctl is-active wamo-pruefer-proxy@claude.service | sed 's/^/  Proxy claude: /' || true
+    systemctl restart wamo-pruefer-annahme.socket
+    systemctl is-active wamo-pruefer-annahme.socket | sed 's/^/  Annahme-Socket: /' || true
   }
   block "legt $ETC/regeln.nft, $ETC/proxy-pakete.env und die Units an, lädt die Ausgangsregeln und startet den Proxy" dienste
 
@@ -298,9 +314,9 @@ ENV
     ( cd "$APP" && sha256sum -c --quiet SHA256SUMS ) && echo "  Prüfsumme der Programme stimmt"
     ( cd "$WERK" && sha256sum -c --quiet "$BASIS/werkzeuge.SHA256SUMS" ) && echo "  Prüfsumme der Werkzeuge stimmt"
     echo "  Ausgangsregeln: $(nft list table inet wamo_pruefer_ausgang | grep -c 'counter') Regeln geladen"
-    "$PYTHON" -I -c 'import socket; socket.create_connection(("127.0.0.1", 18080), 2).close()' \
-      || { echo "Der Proxy antwortet nicht auf 127.0.0.1:18080. Logs: journalctl -u wamo-pruefer-proxy@pakete -n 50" >&2; exit 1; }
-    echo "  Proxy antwortet auf 127.0.0.1:18080"
+    "$PYTHON" -I -c 'import socket; socket.create_connection(("127.0.0.1", 18080), 2).close(); socket.create_connection(("127.0.0.1", 18081), 2).close()' \
+      || { echo "Ein Proxy antwortet nicht (18080 pakete, 18081 claude). Logs: journalctl -u wamo-pruefer-proxy@pakete -u wamo-pruefer-proxy@claude -n 50" >&2; exit 1; }
+    echo "  Proxys antworten auf 127.0.0.1:18080 (pakete) und 127.0.0.1:18081 (claude)"
     stat -c '  %n %U:%G %a' "$BASIS" "$APP" "$WERK" "$ARBEIT" "$BWRAP_KOPIE"
     rm -rf "$APP.vorher"   # erst jetzt: der neue Stand läuft und besteht die Prüfung
   fi

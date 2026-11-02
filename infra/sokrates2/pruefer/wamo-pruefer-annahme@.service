@@ -1,0 +1,40 @@
+[Unit]
+Description=WAMO-Prüfer-Sandbox: Annahme einer Anfrage
+Documentation=file:///opt/wamo-pruefer/app/pruefer_annahme.py
+
+[Service]
+# Läuft als root (der Läufer startet die Sandbox über systemd-run). Je Verbindung ein Prozess; die Verbindung ist Ein- und Ausgabe.
+Type=simple
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+WorkingDirectory=/opt/wamo-pruefer/app
+ExecStartPre=/usr/bin/sha256sum -c --quiet SHA256SUMS
+ExecStart=/usr/bin/python3 -I -B /opt/wamo-pruefer/app/pruefer_annahme.py
+CollectMode=inactive-or-failed
+KillMode=control-group
+RuntimeMaxSec=7200
+TimeoutStopSec=30
+
+# Härtung: root, aber nur mit den Fähigkeiten, die der Läufer braucht (Besitzer setzen, fremde Dateien lesen und löschen, Prozesse des Sandbox-Benutzers beenden)
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_FSETID CAP_KILL CAP_SETGID CAP_SETUID
+ProtectSystem=strict
+ReadWritePaths=/srv/wamo-pruefer /run /usr/local/lib/wamo-pruefer
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+MemoryMax=2G
+TasksMax=256
+LimitNOFILE=4096

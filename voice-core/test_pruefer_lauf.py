@@ -56,7 +56,8 @@ class FakeAusfuehrer:
         self.aufrufe.append((befehl.ordner, befehl.argv, env))
         if self.panne:
             raise RuntimeError("Panne mit geheimem Text")
-        return self.ergebnisse.get((befehl.ordner, befehl.argv[0] + " " + " ".join(befehl.argv[1:2])), L.Ausgang(0))
+        standard = L.Ausgang(0, "", "[]") if befehl.argv[0] == "ruff" else L.Ausgang(0)   # ruff liefert bei null Funden eine leere JSON-Liste
+        return self.ergebnisse.get((befehl.ordner, befehl.argv[0] + " " + " ".join(befehl.argv[1:2])), standard)
 
 
 class BaumvergleichTests(Baeume):
@@ -201,6 +202,69 @@ class LaufTests(Baeume):
         self.setUp()
         self.schreibe(self.neu, "voice-core/x.py", "x = 1\n")
         self.assertFalse(self.starte()[0]["windows_pruefung_noetig"])
+
+    # --- ruff: nur neue Funde gegenüber der Basis zählen
+    def ruff_lauf(self, alt, neu_funde, code=0, rohneu=None, py=True):
+        if py:
+            self.beide("voice-core/x.py", "x = 1\n")
+        basis, neu = self.basis, self.neu
+
+        class RuffAusfuehrer(FakeAusfuehrer):
+            def __call__(self_, befehl, wurzel, env):
+                if befehl.argv[0] == "ruff":
+                    self_.aufrufe.append((befehl.ordner, befehl.argv, env))
+                    funde = alt if wurzel == basis else neu_funde
+                    roh = rohneu if (rohneu is not None and wurzel == neu) else json.dumps(
+                        [{"code": c, "filename": f"{wurzel}/{p}", "message": f"GEHEIMER TEXT {p}"} for p, c, n in funde for _ in range(n)])
+                    return L.Ausgang(code, "", roh)
+                return super().__call__(befehl, wurzel, env)
+        return self.starte(ausfuehrer=RuffAusfuehrer())
+
+    def test_ruff_gleiche_funde_sind_in_ordnung(self):
+        erg, aus = self.ruff_lauf([("voice-core/a.py", "F401", 3)], [("voice-core/a.py", "F401", 3)])
+        self.assertEqual(erg["pruefstand"]["typen_lint"], "ok")
+        self.assertEqual(sum(1 for a in aus.aufrufe if a[1][0] == "ruff"), 2)   # Basis und neuer Stand
+
+    def test_ruff_weniger_funde_sind_in_ordnung(self):
+        erg, _ = self.ruff_lauf([("voice-core/a.py", "F401", 3), ("voice-core/b.py", "B008", 1)], [("voice-core/a.py", "F401", 1)])
+        self.assertEqual(erg["pruefstand"]["typen_lint"], "ok")
+
+    def test_ruff_neuer_fund_faellt_durch_ohne_wortlaut(self):
+        erg, _ = self.ruff_lauf([("voice-core/a.py", "F401", 3)], [("voice-core/a.py", "F401", 4), ("voice-core/neu.py", "S603", 1)])
+        d = erg["details"]["typen_lint"]
+        self.assertEqual(erg["pruefstand"]["typen_lint"], "fehler")
+        self.assertEqual((d["fehler"], d["treffer_anzahl"]), ("ruff_neue_funde:2", 2))
+        self.assertIn("voice-core/a.py F401 +1", d["ende"])
+        self.assertIn("voice-core/neu.py S603 +1", d["ende"])
+        self.assertNotIn("GEHEIMER TEXT", json.dumps(erg))
+
+    def test_ruff_s_regeln_gelten_nicht_in_testdateien_und_assert_nie(self):
+        funde = [("voice-core/test_x.py", "S105", 2), ("voice-core/tests/y.py", "S106", 1), ("voice-core/a.py", "S101", 5), ("voice-core/conftest.py", "S311", 1)]
+        erg, _ = self.ruff_lauf([], funde)
+        self.assertEqual(erg["pruefstand"]["typen_lint"], "ok")
+        erg, _ = self.ruff_lauf([], [("voice-core/test_x.py", "F401", 1)])   # F bleibt auch in Tests ein Fund
+        self.assertEqual(erg["pruefstand"]["typen_lint"], "fehler")
+
+    def test_ruff_fehlerfaelle_sind_fehler_und_kein_absturz(self):
+        self.assertEqual(self.ruff_lauf([], [], code=2)[0]["details"]["typen_lint"]["fehler"], "ruff_exit_2")
+        self.assertEqual(self.ruff_lauf([], [], rohneu="kein json")[0]["details"]["typen_lint"]["fehler"], "ruff_ausgabe:kein JSON")
+        self.assertEqual(self.ruff_lauf([], [], rohneu="{}")[0]["details"]["typen_lint"]["fehler"], "ruff_ausgabe:keine Liste")
+        self.assertEqual(self.ruff_lauf([], [], rohneu='[{"code": 1}]')[0]["details"]["typen_lint"]["fehler"], "ruff_ausgabe:unerwartete Form")
+        erg, _ = self.starte(ausfuehrer=FakeAusfuehrer(panne=True))
+        self.assertEqual(erg["details"]["bauen"]["fehler"].split(":")[0], "ausfuehrer_panne")
+
+    def test_ruff_laeuft_nur_mit_python_dateien_und_nach_erfolgreichem_lint(self):
+        _, aus = self.ruff_lauf([], [], py=False)
+        self.assertFalse(any(a[1][0] == "ruff" for a in aus.aufrufe))
+        erg, aus = self.starte(ausfuehrer=FakeAusfuehrer({("ui", "npm run"): L.Ausgang(1, "Lint kaputt")}))
+        self.assertFalse(any(a[1][0] == "ruff" for a in aus.aufrufe))
+
+    def test_ruff_befehl_ist_fest_und_ohne_projektkonfiguration(self):
+        a = L.RUFF_BEFEHL.argv
+        for muss in ("--isolated", "--no-cache", "--exit-zero", "json"):
+            self.assertIn(muss, a)
+        self.assertEqual(a[a.index("--select") + 1], "F,B,S,E7,E9")
+        self.assertNotIn("--fix", a)
 
     def test_migration_geaendert_ist_ohne_lint_ein_fehler(self):
         self.schreibe(self.neu, "supabase/migrations/0017_x.sql", "select 1;")
