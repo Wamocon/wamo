@@ -11,7 +11,7 @@ set -eu
 
 fehler() { echo "wamo-core-Vorprüfung: $*" >&2; exit 1; }
 
-for d in /opt/wamo-core/app/voice-core /opt/wamo-core/app /opt/wamo-core /opt /; do
+for d in /opt/wamo-core/app/voice-core /opt/wamo-core/app /opt/wamo-core /opt / "/opt/wamo-core/slots/${WAMO_SLOT:-x}/voice-core" "/opt/wamo-core/slots/${WAMO_SLOT:-x}"; do
   [ ! -e "$d/.env" ] || fehler "$d/.env gefunden (würde die Unit überschreiben), bitte entfernen"
 done
 for name in SONIOX_API_KEY SUPABASE_PUBLISHABLE_KEY WAMO_DATABASE_URL; do
@@ -23,7 +23,18 @@ case "${WAMO_DATABASE_URL:-}" in
   *) fehler "WAMO_DATABASE_URL ohne sslmode=verify-full" ;;
 esac
 [ "${WAMO_ENTWICKLUNG:-aus}" = aus ] || fehler "WAMO_ENTWICKLUNG muss aus sein"
-[ "${WAMO_CORE_UDS:-}" = /run/wamo-core/core.sock ] || fehler "WAMO_CORE_UDS unerwartet"
+slot="${WAMO_SLOT:-}"
+if [ -n "$slot" ]; then
+  # Slot-Betrieb (wamo-core@a, wamo-core@b): genau der eigene Socket, und der Slot zeigt auf ein vollständiges, root-eigenes Release
+  case "$slot" in a|b) ;; *) fehler "WAMO_SLOT muss a oder b sein" ;; esac
+  [ "${WAMO_CORE_UDS:-}" = "/run/wamo-core/core-$slot.sock" ] || fehler "WAMO_CORE_UDS passt nicht zum Slot $slot"
+  ziel="$(readlink -f "/opt/wamo-core/slots/$slot" 2>/dev/null || true)"
+  case "$ziel" in /opt/wamo-core/releases/?*) ;; *) fehler "Slot $slot zeigt nicht in /opt/wamo-core/releases ($ziel)" ;; esac
+  [ -f "$ziel/voice-core/bot.py" ] && [ -x "$ziel/venv/bin/python" ] || fehler "Release $ziel unvollständig (voice-core/bot.py oder venv fehlt)"
+  [ "$(stat -c '%U' "$ziel" "$ziel/voice-core" "$ziel/venv" | sort -u)" = root ] || fehler "Release $ziel gehört nicht root"
+else
+  [ "${WAMO_CORE_UDS:-}" = /run/wamo-core/core.sock ] || fehler "WAMO_CORE_UDS unerwartet"
+fi
 eigen="$(stat -c '%U:%g:%a' /run/wamo-core 2>/dev/null || true)"
 [ "$eigen" = "wamo-core:1000:750" ] || fehler "/run/wamo-core hat $eigen statt wamo-core:1000:750 (systemd-tmpfiles --create /etc/tmpfiles.d/wamo-core.conf)"
 [ -r "${WAMO_CA_FILE:-/nicht}" ] || fehler "WAMO_CA_FILE nicht lesbar"
