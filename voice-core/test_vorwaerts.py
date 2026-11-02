@@ -529,7 +529,7 @@ class Quelltext(unittest.TestCase):
 
 
     def test_keine_gedankenstriche_und_keine_shell(self):
-        for n in ("vorwaerts.py", "vorwaerts_echt.py"):
+        for n in ("vorwaerts.py", "vorwaerts_echt.py", "schutz.py"):
             t = (ANKER / n).read_text(encoding="utf-8")
             self.assertNotIn(chr(0x2014), t, n)
             self.assertNotIn(chr(0x2013), t, n)

@@ -184,7 +184,7 @@ class EingabeTests(AnkerTest):
         self.pruefe(("0123456789abcdef " + "a" * 200 + "\n").encode(), "zeile_zu_lang")
 
     def test_unbekannte_befehle(self):
-        for befehl in ("reboot", "shutdown", "rm", "bash", "sh", "docker", "sudo", "exec", "klassifiziere", "bewaehrung",
+        for befehl in ("reboot", "shutdown", "rm", "bash", "sh", "docker", "sudo", "exec", "klassifizier", "bewaehrung",
                        "statusx", "stat", "rueckwegs"):
             with self.subTest(befehl=befehl):
                 self.pruefe(f"{self.ID} {befehl}\n".encode(), "befehl_unbekannt")
@@ -348,8 +348,8 @@ class RechteTests(AnkerTest):
         alle = {"sperre:an", "sperre:aus"} | {n for n in A.BEFEHLE if n != "sperre"}  # unabhängig aus der Tabelle abgeleitet
         self.assertEqual(set(A.ERLAUBT["root"]), alle)
         self.assertEqual(set(A.ERLAUBT["wamocon"]), alle)
-        # lesen, zurückrollen, sperren, die (immer ablehnende) Prüfung der Sonderfreigabe und die Vorwärtsbefehle (die Sperre hält sie an)
-        self.assertEqual(set(A.ERLAUBT["wamo-release"]), {"status", "rueckweg", "sperre:an", "pruefe-sonder", "bereitstellen", "migrieren", "umschalten"})
+        # lesen, zurückrollen, sperren, die (immer ablehnende) Prüfung der Sonderfreigabe, die Vorwärtsbefehle (die Sperre hält sie an) und die Klassifizierung
+        self.assertEqual(set(A.ERLAUBT["wamo-release"]), {"status", "rueckweg", "sperre:an", "pruefe-sonder", "bereitstellen", "migrieren", "umschalten", "klassifiziere"})
 
     def test_jeder_fehlercode_hat_einen_text(self):
         """Ein fehlender Text löste früher einen KeyError im Fehlerzweig aus und ließ den Client ohne Antwort."""

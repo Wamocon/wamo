@@ -121,7 +121,7 @@ class ProbelaufTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         lib = self.pfad("usr", "local", "lib", "wamo-anker")
         self.assertEqual(sorted(os.listdir(lib)),
-                         ["SHA256SUMS", "anker_rauchtest.py", "schritte", "vorwaerts.py", "vorwaerts_echt.py", "wamo-anker.sh", "wamo_anker.py", "wamo_pg.py"])
+                         ["SHA256SUMS", "anker_rauchtest.py", "schritte", "schutz.py", "vorwaerts.py", "vorwaerts_echt.py", "wamo-anker.sh", "wamo_anker.py", "wamo_pg.py"])
         summen = subprocess.run(["sha256sum", "-c", "--quiet", "SHA256SUMS"], cwd=lib, capture_output=True, text=True)
         self.assertEqual(summen.returncode, 0, summen.stderr)
         self.assertEqual(oct(os.stat(self.pfad("var", "lib", "wamo-anker")).st_mode & 0o777), "0o700")
