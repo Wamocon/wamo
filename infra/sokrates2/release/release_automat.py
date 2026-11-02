@@ -53,8 +53,8 @@ VOM_ANKER = frozenset({"freigegeben", "bereitgestellt", "umgeschaltet", "bewaehr
 BELEGE = frozenset({"stufe", "datenbank", "abbruch", "zeit", "fehler", "zurueck", "sperre"})
 BELEG_ABBRUCH = frozenset({"abbruch", "zeit", "fehler", "zurueck", "sperre"})
 
-BEOBACHTEN = frozenset({"wartet_freigabe", "umgeschaltet"})  # keine eigene Arbeit, nur auf die Datenbank schauen
-ANKER_FOLGE = frozenset({"veroeffentlicht", "bereitgestellt"})  # Arbeit ruft den Anker, danach beobachten
+BEOBACHTEN = frozenset({"wartet_freigabe"})  # keine eigene Arbeit, nur auf die Datenbank schauen
+ANKER_FOLGE = frozenset({"veroeffentlicht", "bereitgestellt", "umgeschaltet"})  # Arbeit ruft den Anker, danach beobachten (umgeschaltet: die Bewährung, Schritt 3c)
 BEREITGESTELLT_AB = REIHENFOLGE.index("bereitgestellt")  # ab hier ist etwas ausgerollt: Ende nur über den Rückweg
 # Ab hier kann der Anker schon etwas getan haben (die Arbeit von veroeffentlicht ruft ihn): Jedes Ende der Anfrage verlangt
 # zuerst einen gelungenen Rückweg. Die Datenbank kennt von veroeffentlicht aus nur abgebrochen, ab bereitgestellt auch

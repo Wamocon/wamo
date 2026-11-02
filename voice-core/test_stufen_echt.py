@@ -81,6 +81,8 @@ class StufenAnker:
             return wert
         if befehl == "klassifiziere":
             return RA.Antwort(True, None, {"ok": True, "ergebnis": dict(self.klasse)})
+        if befehl == "bewaehren":
+            return RA.Antwort(True, None, {"ok": True, "ergebnis": {"stand": "bewaehrt"}})
         return RA.Antwort(True, None, {"ok": True})
 
     def namen(self):
@@ -377,8 +379,8 @@ class BereitstellenUmschalten(Grundlage):
         self.assertEqual(self.anker.aufrufe, [])
 
 
-class GanzerWeg(TR.ReleaseTest):
-    """Der Zustandsautomat des Dienstes mit den echten Stufen, einer echten Quelle und einem falschen Anker bis zur Bewährung."""
+class WegGrundlage(TR.ReleaseTest):
+    """Der Zustandsautomat des Dienstes mit den echten Stufen, einer echten Quelle und einem falschen Anker (ohne eigene Tests)."""
 
     def setUp(self):
         super().setUp()
@@ -395,6 +397,8 @@ class GanzerWeg(TR.ReleaseTest):
         self.stufen = SE.EchteStufen(quelle, self.stufen_anker, pruefen_mit=pruefen_attrappe())
         self.d = self.neu()
 
+
+class GanzerWeg(WegGrundlage):
     def test_von_main_bis_bewaehrt(self):
         self.anfordern(self.d)
         self.lauf(self.d)
@@ -402,7 +406,7 @@ class GanzerWeg(TR.ReleaseTest):
         wege = self.uebergaenge()
         self.assertEqual([n for _, n in wege], list(AU.WEG["main"][1:]))
         befehle = [a[0] for a in self.stufen_anker.aufrufe if a[0] != "status"]
-        self.assertEqual(befehle, ["klassifiziere", "klassifiziere", "bereitstellen", "umschalten"])   # Runde 1, Runde 3, dann die Anker-Schritte
+        self.assertEqual(befehle, ["klassifiziere", "klassifiziere", "bereitstellen", "umschalten", "bewaehren"])   # Runde 1, Runde 3, die Anker-Schritte, die Bewährung
 
     def test_sonder_ohne_zweiten_admin_bleibt_gesperrt(self):
         self.stufen_anker.klasse = {"klasse": "sonder", "art": "sonder", "treffer_anzahl": 2, "treffer_sha": "c" * 64}

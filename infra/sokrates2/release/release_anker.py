@@ -6,6 +6,7 @@ Der Release-Dienst erreicht den Anker nur über dessen Unix-Socket und nur mit d
     rueckweg ui|kern|alles   zurück auf den letzten guten Stand (auch mit --trocken)
     sperre an                setzt die Sperre (mit --trocken nur der Plan)
     klassifiziere <id>       Schutzschicht: der Anker ordnet das Diff der Anfrage ein und schreibt Art und Treffer (Schritt 3a)
+    bewaehren <id>           eine Probe der Bewährung des umgeschalteten Kerns (Schritt 3c); der Anker entscheidet über bewaehrt und Rückweg
     migrieren|bereitstellen|umschalten <id>   die Vorwärtsbefehle (Schritt 1.4e); der Anker liest die Anfrage und die Freigabe selbst aus der Datenbank
 
 Nie `sperre aus`: Der Anker erlaubt es dem Benutzer wamo-release ohnehin nicht (ERLAUBT im Anker), und dieser Client
@@ -28,7 +29,7 @@ from typing import Callable
 ANTWORT_MAX = 8192
 ZEIT_KURZ_S = 5.0  # status und sperre
 ZEIT_RUECKWEG_S = {"ui": 150.0, "kern": 200.0, "alles": 330.0}  # die Schritte des Ankers haben 120 und 180 Sekunden
-ZEIT_VORWAERTS_S = {"klassifiziere": 60.0, "migrieren": 330.0, "bereitstellen": 420.0, "umschalten": 250.0}   # Migrationen und die Schritte des Kerns dauern
+ZEIT_VORWAERTS_S = {"klassifiziere": 60.0, "migrieren": 330.0, "bereitstellen": 420.0, "umschalten": 250.0, "bewaehren": 250.0}   # Migrationen und die Schritte des Kerns dauern
 UUID_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 
 # Die einzigen Anfragen, die dieser Client senden kann: (Befehl, Argument-Muster, --trocken erlaubt)
@@ -40,6 +41,7 @@ ERLAUBT = {
     "migrieren": (UUID_RE, True),
     "bereitstellen": (UUID_RE, True),
     "umschalten": (UUID_RE, True),
+    "bewaehren": (UUID_RE, True),
 }
 
 

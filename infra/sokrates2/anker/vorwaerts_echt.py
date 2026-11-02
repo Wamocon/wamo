@@ -186,6 +186,11 @@ class WerkDocker:
             raise VorwaertsFehler("kern_ausgabe")
         return m.group(1).decode()
 
+    def kern_probe(self) -> bool:
+        """Eine einzelne Gesundheitsprobe des aktiven Kern-Slots (Schritt-Skript kern-slots probe). Nur Exit 0 heißt gesund; Zeit und Fehler heißen nicht gesund."""
+        rc, _ = self._lauf([self.schritt_kern, "probe"], None, 20.0)
+        return rc == 0
+
     def kern_bereiten(self, name: str, ordner: str) -> str:
         if not os.path.isdir(os.path.join(self.releases, name)):
             self._kern("release", name, ordner, zeit=170.0)
