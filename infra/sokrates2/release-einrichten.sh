@@ -51,8 +51,9 @@ SOCKET="$WURZEL/run/wamo-release/ctl.sock"
 BENUTZER=wamo-release
 KERN=wamo-core
 PYTHON=/usr/bin/python3
-MODULE=(release_anker.py release_automat.py release_db.py release_kette.py release_stufen.py wamo_release.py)
+MODULE=(quelle.py release_anker.py release_automat.py release_db.py release_kette.py release_stufen.py stufen_quelle.py wamo_release.py)
 PG_MODULE=(release_pg.py wamo_pg.py)   # Datenbankschicht, liegt in pg/ (geteilt mit dem Freigabe-Dienst)
+PRUEFER_MODULE=(pruefer_archiv.py pruefer_client.py)   # Weg in die Prüfer-Sandbox (Annahme-Dienst), liegt in release/pruefer/ (geteilt mit der Sandbox)
 PYLIB="$BASIS/pylib"                   # psycopg, nur aus pg/requirements.lock mit Prüfsummen
 AUSGANG_DIR="$WURZEL/etc/wamo-release-ausgang"
 AUSGANG_UNIT="$WURZEL/etc/systemd/system/wamo-release-ausgang.service"
@@ -103,13 +104,13 @@ fi
 [ "$TROCKEN" = 0 ] || echo "Trockenlauf: nichts wird geändert."
 
 echo "== 0. Prüfungen (nur lesend)"
-for datei in "${MODULE[@]/#/release/}" "${PG_MODULE[@]/#/pg/}" release/wamo-release.sh release/wamo-release.service \
+for datei in "${MODULE[@]/#/release/}" "${PG_MODULE[@]/#/pg/}" "${PRUEFER_MODULE[@]/#/release/pruefer/}" release/wamo-release.sh release/wamo-release.service \
   release/wamo-release-ausgang.service release/wamo-release-ausgang.nft pg/requirements.lock release_rauchtest.py; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei" >&2; exit 1; }
 done
 [ -x "$PYTHON" ] || { echo "Fehlt: $PYTHON" >&2; exit 1; }
 "$PYTHON" -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' || { echo "Python 3.9 oder neuer nötig." >&2; exit 1; }
-for py in "${MODULE[@]/#/release/}" "${PG_MODULE[@]/#/pg/}" release_rauchtest.py; do
+for py in "${MODULE[@]/#/release/}" "${PG_MODULE[@]/#/pg/}" "${PRUEFER_MODULE[@]/#/release/pruefer/}" release_rauchtest.py; do
   "$PYTHON" -I -c 'import ast, sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' "$HERE/$py" \
     || { echo "Syntaxfehler in $py" >&2; exit 1; }
 done
@@ -171,6 +172,9 @@ programme() {
   install -d "${OWN[@]}" -m 0755 "$neu"
   for m in "${MODULE[@]}"; do
     install "${OWN[@]}" -m 0644 "$HERE/release/$m" "$neu/$m"
+  done
+  for m in "${PRUEFER_MODULE[@]}"; do
+    install "${OWN[@]}" -m 0644 "$HERE/release/pruefer/$m" "$neu/$m"
   done
   for m in "${PG_MODULE[@]}"; do
     install "${OWN[@]}" -m 0644 "$HERE/pg/$m" "$neu/$m"

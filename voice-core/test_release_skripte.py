@@ -186,7 +186,8 @@ class ProbelaufTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         app = self.pfad("opt", "wamo-release", "app")
         self.assertEqual(sorted(os.listdir(app)), sorted(["SHA256SUMS", "release_rauchtest.py", "wamo-release.sh",
-                                                          "release_pg.py", "wamo_pg.py", *[p.name for p in RELEASE.glob("*.py")]]))
+                                                          "release_pg.py", "wamo_pg.py", "pruefer_archiv.py", "pruefer_client.py",
+                                                          *[p.name for p in RELEASE.glob("*.py")]]))
         summen = subprocess.run(["sha256sum", "-c", "--quiet", "SHA256SUMS"], cwd=app, capture_output=True, text=True)
         self.assertEqual(summen.returncode, 0, summen.stderr)
         self.assertEqual(oct(os.stat(self.pfad("var", "lib", "wamo-release")).st_mode & 0o777), "0o700")

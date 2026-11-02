@@ -18,6 +18,7 @@ import json
 import os
 import socket
 import sys
+from typing import BinaryIO, Callable
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
@@ -36,6 +37,13 @@ class PrueferFehler(Exception):
 
 
 def pruefen(basis: str, neu: str, runde: int, sockpfad: str = SOCKET, warten_s: float = WARTEN_ZEIT_S) -> dict:
+    """Zwei Ordner als Basis und neuer Stand."""
+    return pruefen_mit(lambda raus: A.schreibe_archiv(raus, {"basis": basis, "neu": neu}), runde, sockpfad, warten_s)
+
+
+def pruefen_mit(schreiber: Callable[[BinaryIO], object], runde: int, sockpfad: str = SOCKET, warten_s: float = WARTEN_ZEIT_S) -> dict:
+    """schreiber(ausgang) schreibt das Archiv (zum Beispiel direkt aus Git, quelle.Spiegel.schreibe_archiv). Ein Fehler des Schreibers (QuelleFehler, ArchivFehler,
+    OSError) kommt unverändert zum Aufrufer, nachdem die Verbindung geschlossen wurde; der Dienst bekommt dann ein unvollständiges Archiv und verwirft es."""
     if runde not in (1, 2, 3):
         raise ValueError("runde muss 1, 2 oder 3 sein")
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -48,10 +56,12 @@ def pruefen(basis: str, neu: str, runde: int, sockpfad: str = SOCKET, warten_s: 
         raus = s.makefile("wb")
         try:
             raus.write(f"WAMO-PRUEFEN 1 {runde}\n".encode())
-            A.schreibe_archiv(raus, {"basis": basis, "neu": neu})
+            schreiber(raus)
             raus.flush()
-        except (OSError, BrokenPipeError):
+        except (ConnectionError, BrokenPipeError):
             pass   # der Dienst kann schon mit einer Ablehnung geantwortet haben; sie steht in der Antwort
+        except OSError as e:
+            raise PrueferFehler("senden_fehlgeschlagen", type(e).__name__) from None
         finally:
             try:
                 raus.close()
