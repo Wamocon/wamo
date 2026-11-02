@@ -24,6 +24,11 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Als Schritt-Skript des Ankers heißt diese Datei rueckweg-kern (root-eigene, per Prüfsumme gesicherte Kopie in /usr/local/lib/wamo-anker/schritte):
+# Der Anker ruft sie mit Version, Commit und Slot aus seiner Zustandsdatei auf. Die Vorlagen der Include-Datei liegen dann neben dem Skript.
+if [ "$(basename "$0")" = rueckweg-kern ]; then set -- rueckweg-zu "$@"; fi
+VORLAGEN="$HERE/wamo-caddy/kern"
+[ -d "$VORLAGEN" ] || VORLAGEN="$HERE"
 APP=/opt/wamo-core
 BENUTZER=wamo-core
 PYTHON=/usr/bin/python3
@@ -122,16 +127,16 @@ inc_text() {
   modus_pruefen "$modus"
   if [ "$modus" = legacy ]; then
     [ -z "${2:-}" ] || fehler "inc legacy kennt keine auslaufende Instanz"
-    cat "$HERE/wamo-caddy/kern/slot.inc.legacy"
+    cat "$VORLAGEN/slot.inc.legacy"
     return 0
   fi
   if [ -n "${2:-}" ]; then
     [ "$2" = auslaufend ] || fehler "inc: der dritte Teil muss auslaufend heißen"
     slot_pruefen "$aus"
     [ "$aus" != "$modus" ] || fehler "inc: der aktive Slot kann nicht auslaufen"
-    sed -e 's/^#AUSLAUF# //' "$HERE/wamo-caddy/kern/slot.inc.vorlage" | sed -e "s/@AKTIV@/$modus/g" -e "s/@AUSLAUFEND@/$aus/g"
+    sed -e 's/^#AUSLAUF# //' "$VORLAGEN/slot.inc.vorlage" | sed -e "s/@AKTIV@/$modus/g" -e "s/@AUSLAUFEND@/$aus/g"
   else
-    sed -e '/^#AUSLAUF# /d' "$HERE/wamo-caddy/kern/slot.inc.vorlage" | sed -e "s/@AKTIV@/$modus/g"
+    sed -e '/^#AUSLAUF# /d' "$VORLAGEN/slot.inc.vorlage" | sed -e "s/@AKTIV@/$modus/g"
   fi
 }
 
@@ -320,6 +325,38 @@ cmd_rueckweg_kern() {
   echo "Zurück auf Slot $alt. Slot $neu nimmt keine neue Sitzung mehr an; seine laufenden enden von selbst."
 }
 
+# Rückweg des Ankers (Schritt rueckweg-kern): neue Sitzungen gehen wieder auf diesen Slot, in dem genau das Release der letzten guten Fassung läuft.
+# Idempotent. Läuft der Slot nicht, wird er (mit seinem Verweis auf dieses Release) gestartet und erst nach der Gesundheitsprobe geschaltet.
+# Version und Commit stammen aus der Zustandsdatei des Ankers, nie aus einer Anfrage; der Release-Name ist <Version>-<erste 7 Zeichen des Commits>.
+cmd_rueckweg_zu() {
+  local ver="${1:-}" commit="${2:-}" slot="${3:-}" name anderer
+  [[ "$ver" =~ ^v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$ ]] || fehler "rueckweg-zu: Version ungültig"
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fehler "rueckweg-zu: Commit ungültig"
+  slot_pruefen "$slot"
+  name="$ver-${commit:0:7}"
+  name_pruefen "$name"
+  root_pflicht   # erst nach der Prüfung der Parameter: so lassen sie sich ohne root testen
+  anderer="$(anderer_slot "$slot")"
+  dropins_spiegeln
+  if systemctl is-active --quiet "wamo-core@$slot.service"; then
+    [ "$(basename "$(readlink "$APP/slots/$slot" 2>/dev/null)")" = "$name" ] || fehler "Slot $slot läuft mit einem anderen Release als $name: kein Rückweg dorthin"
+  else
+    cmd_slot "$slot" "$name"
+    systemctl start "wamo-core@$slot.service"
+    if ! ( warte_auf_slot "$slot" ); then
+      systemctl stop "wamo-core@$slot.service" || true
+      fehler "Slot $slot wurde nicht gesund: nichts umgeschaltet"
+    fi
+  fi
+  systemctl enable "wamo-core@$slot.service" >/dev/null 2>&1
+  if systemctl is-active --quiet "wamo-core@$anderer.service"; then
+    cmd_inc "$slot" auslaufend "$anderer"
+  else
+    cmd_inc "$slot"
+  fi
+  echo "Rückweg: Slot $slot (Release $name) bedient neue Sitzungen."
+}
+
 # Beendet die auslaufende Instanz, aber nur ohne Sitzung und nach der Bewährung (so lange bleibt der Rückweg sofort möglich)
 cmd_ausleiten() {
   root_pflicht
@@ -349,6 +386,7 @@ case "$befehl" in
   bewaehren) cmd_bewaehren "$@" ;;
   ausleiten) cmd_ausleiten ;;
   rueckweg-kern) cmd_rueckweg_kern ;;
+  rueckweg-zu) cmd_rueckweg_zu "$@" ;;
   umstellung-zurueck) cmd_umstellung_zurueck ;;
-  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | dropins-spiegeln | umstellen <release> | umstellung-zurueck | umschalten-kern <release> | bewaehren [min] | ausleiten | rueckweg-kern | status" ;;
+  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | dropins-spiegeln | umstellen <release> | umstellung-zurueck | umschalten-kern <release> | bewaehren [min] | ausleiten | rueckweg-kern | rueckweg-zu <version> <commit> <slot> | status" ;;
 esac

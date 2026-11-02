@@ -139,6 +139,32 @@ class ProbelaufTests(unittest.TestCase):
         self.assertIn("./schritte/rueckweg-ui", manifest)
         self.assertTrue(os.access(self.pfad("usr", "local", "lib", "wamo-anker", "schritte", "rueckweg-ui"), os.X_OK))
 
+    def test_rueckweg_schritte_sind_root_eigene_kopien_der_betriebsskripte_mit_vorlagen(self):
+        r = self.lauf("anker-einrichten.sh")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lib = self.pfad("usr", "local", "lib", "wamo-anker")
+        schritte = os.path.join(lib, "schritte")
+        self.assertEqual(sorted(os.listdir(schritte)), ["rueckweg-kern", "rueckweg-ui", "slot.inc.legacy", "slot.inc.vorlage"])
+        for schritt, quelle in (("rueckweg-ui", "wamo-ui-umschalten.sh"), ("rueckweg-kern", "wamo-core-slots.sh")):
+            self.assertEqual(Path(os.path.join(schritte, schritt)).read_bytes(), Path(INFRA / quelle).read_bytes().replace(b"\r\n", b"\n"), schritt)
+            self.assertTrue(os.access(os.path.join(schritte, schritt), os.X_OK), schritt)
+        manifest = Path(os.path.join(lib, "SHA256SUMS")).read_text()
+        for n in ("rueckweg-ui", "rueckweg-kern", "slot.inc.vorlage", "slot.inc.legacy"):
+            self.assertIn(f"./schritte/{n}", manifest, n)
+
+    def test_rueckweg_kern_als_schritt_prueft_die_parameter_streng(self):
+        self.lauf("anker-einrichten.sh")
+        schritt = self.pfad("usr", "local", "lib", "wamo-anker", "schritte", "rueckweg-kern")
+        gut = "a" * 40
+        for argv, text in ((["v1.2", gut, "a"], "Version ungültig"), (["v1.2.3", "xyz", "a"], "Commit ungültig"), (["v1.2.3", gut, "c"], "Slot muss a oder b sein"),
+                           (["v1.2.3; ls", gut, "a"], "Version ungültig"), (["v1.2.3", gut.upper(), "a"], "Commit ungültig"), ([], "Version ungültig")):
+            with self.subTest(argv=argv):
+                p = subprocess.run([BASH, schritt, *argv], capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn(text, p.stderr)
+        p = subprocess.run([BASH, schritt, "v1.2.3", gut, "a"], capture_output=True, text=True, timeout=30)
+        self.assertIn("Bitte als root", p.stderr)   # gültige Parameter kommen bis zur Root-Pflicht, nie weiter
+
     def test_rueckweg_entfernt_behaelt_aber_sperre_und_sichert_audit(self):
         self.lauf("anker-einrichten.sh")
         r = self.lauf("anker-rueckweg.sh", "--entfernen")
