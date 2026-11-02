@@ -101,7 +101,7 @@ for py in anker/wamo_anker.py anker_rauchtest.py; do
   "$PYTHON" -I -c 'import ast, sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' "$HERE/$py" \
     || { echo "Syntaxfehler in $py" >&2; exit 1; }
 done
-for f in wamo-ui-umschalten.sh wamo-core-slots.sh wamo-caddy/kern/slot.inc.vorlage wamo-caddy/kern/slot.inc.legacy; do
+for f in wamo-ui-umschalten.sh wamo-core-slots.sh wamo-caddy/kern/slot.inc.vorlage wamo-caddy/kern/slot.inc.legacy anker/vorwaerts.py anker/vorwaerts_echt.py pg/wamo_pg.py; do
   [ -f "$HERE/$f" ] || { echo "Fehlt: $HERE/$f (Rückweg-Schritte des Ankers)" >&2; exit 1; }
 done
 if find "$HERE/anker" \( -name '.env*' -o -name 'geheim*' -o -name '*.pem' -o -name '*.key' \) | grep -q .; then
@@ -132,6 +132,10 @@ programme() {
   install -d "${OWN[@]}" -m 0755 "$neu" "$neu/schritte"
   install "${OWN[@]}" -m 0644 "$HERE/anker/wamo_anker.py" "$neu/wamo_anker.py"
   install "${OWN[@]}" -m 0755 "$HERE/anker/wamo-anker.sh" "$neu/wamo-anker.sh"
+  # Vorwärtsbefehle (Schritt 1.4d): der Anker importiert sie aus seinem eigenen, root-eigenen Ordner; der Treiber der Datenbank kommt aus der hash-gesicherten pylib
+  install "${OWN[@]}" -m 0644 "$HERE/anker/vorwaerts.py" "$neu/vorwaerts.py"
+  install "${OWN[@]}" -m 0644 "$HERE/anker/vorwaerts_echt.py" "$neu/vorwaerts_echt.py"
+  install "${OWN[@]}" -m 0644 "$HERE/pg/wamo_pg.py" "$neu/wamo_pg.py"
   install "${OWN[@]}" -m 0644 "$HERE/anker_rauchtest.py" "$neu/anker_rauchtest.py"
   if [ -d "$HERE/anker/schritte" ]; then   # Schritt-Skripte späterer Stufen (rueckweg-ui, rueckweg-kern)
     for f in "$HERE"/anker/schritte/*; do
@@ -144,6 +148,7 @@ programme() {
   # rueckweg-kern = wamo-core-slots.sh (rueckweg-zu). Gesetzt wird nur der Name, nichts aus der Anfrage.
   install "${OWN[@]}" -m 0755 "$HERE/wamo-ui-umschalten.sh" "$neu/schritte/rueckweg-ui"
   install "${OWN[@]}" -m 0755 "$HERE/wamo-core-slots.sh" "$neu/schritte/rueckweg-kern"
+  install "${OWN[@]}" -m 0755 "$HERE/wamo-core-slots.sh" "$neu/schritte/kern-slots"   # dieselbe Datei unter dem Namen für bereiten, schalten und release
   install "${OWN[@]}" -m 0644 "$HERE/wamo-caddy/kern/slot.inc.vorlage" "$neu/schritte/slot.inc.vorlage"
   install "${OWN[@]}" -m 0644 "$HERE/wamo-caddy/kern/slot.inc.legacy" "$neu/schritte/slot.inc.legacy"
   find "$neu" -type f -exec sed -i 's/\r$//' {} +   # Windows-Zeilenenden aus der Ablage entfernen

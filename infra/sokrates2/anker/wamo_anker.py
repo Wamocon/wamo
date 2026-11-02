@@ -155,6 +155,7 @@ ANFRAGE_ID_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[1-9][0
 ZEILE_RE = re.compile(
     r"(?P<id>[0-9a-f]{16,32}) (?P<befehl>[a-z][a-z-]{1,19})(?: (?P<arg>[a-z0-9][a-z0-9-]{0,39}))?(?P<trocken> --trocken)?")
 KOMPONENTEN = ("ui", "kern")
+VORWAERTS_BEFEHLE = ("bereitstellen", "migrieren", "umschalten")
 
 
 @dataclass(frozen=True)
@@ -170,9 +171,9 @@ BEFEHLE = {
     "rueckweg": Spez(arg=re.compile(r"ui|kern|alles"), trocken=True, schreibend=True),
     "sperre": Spez(arg=re.compile(r"an|aus"), trocken=True, schreibend=True),
     "pruefe-sonder": Spez(arg=ANFRAGE_ID_RE),
-    "bereitstellen": Spez(trocken=True, schreibend=True, vorwaerts=True),
-    "migrieren": Spez(trocken=True, schreibend=True, vorwaerts=True),
-    "umschalten": Spez(trocken=True, schreibend=True, vorwaerts=True),
+    "bereitstellen": Spez(arg=ANFRAGE_ID_RE, trocken=True, schreibend=True, vorwaerts=True),
+    "migrieren": Spez(arg=ANFRAGE_ID_RE, trocken=True, schreibend=True, vorwaerts=True),
+    "umschalten": Spez(arg=ANFRAGE_ID_RE, trocken=True, schreibend=True, vorwaerts=True),
 }
 _ALLE = frozenset((set(BEFEHLE) - {"sperre"}) | {"sperre:an", "sperre:aus"})  # Rechte; "sperre" zählt je Argument
 # Wer darf was. Namen werden bei jeder Verbindung zu uid aufgelöst; ein fehlender Benutzer passt auf niemanden.
@@ -182,7 +183,7 @@ _ALLE = frozenset((set(BEFEHLE) - {"sperre"}) | {"sperre:an", "sperre:aus"})  # 
 ERLAUBT = {
     "root": _ALLE,
     "wamocon": _ALLE,
-    "wamo-release": frozenset({"status", "rueckweg", "sperre:an", "pruefe-sonder"}),
+    "wamo-release": frozenset({"status", "rueckweg", "sperre:an", "pruefe-sonder", "bereitstellen", "migrieren", "umschalten"}),
 }
 
 GRUENDE = {
@@ -215,8 +216,18 @@ GRUENDE = {
     "nicht_verfuegbar": "Noch nicht verfügbar (kommt mit Stufe 1 und 2)",
     "sonder_gesperrt": "Sonderfreigabe ist in dieser Ausbaustufe nicht verfügbar (Stufe 4)",
     "antwort_zu_gross": "Antwort zu groß",
+    "vorwaerts_fehlgeschlagen": "Vorwärtsbefehl abgelehnt oder fehlgeschlagen (Code in detail)",
     "intern": "Interner Fehler, nichts wurde geändert",
 }
+
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))   # python -I nimmt den Ordner des Skripts nicht auf; vorwaerts.py liegt daneben (root-eigen, Prüfsumme)
+try:
+    from vorwaerts import VorwaertsFehler
+except ImportError:  # ältere Installation oder Test ohne das Modul: dann gibt es auch keine Mitspieler
+    class VorwaertsFehler(Exception):  # type: ignore[no-redef]
+        code = "unbekannt"
+        detail = ""
 
 
 class MitCode(Exception):
@@ -790,8 +801,11 @@ class Anker:
     def __init__(self, pfade: Pfade = PFADE, erlaubt: dict[str, frozenset] | None = None,
                  ausfuehren: Callable[[list[str], float], tuple[int, bytes]] = schritt_ausfuehren,
                  uhr: Callable[[], float] = time.time,
-                 aufloesen: Callable[[str], int | None] = name_zu_uid):
+                 aufloesen: Callable[[str], int | None] = name_zu_uid,
+                 vorwaerts_fabrik: Callable[[], object] | None = None):
         self.p = pfade
+        self._vorwaerts_fabrik = vorwaerts_fabrik   # baut beim ersten Vorwärtsbefehl die Mitspieler (Datenbank, Quelle, Werk); ohne sie: nicht_verfuegbar
+        self._vorwaerts = None
         self.erlaubt = ERLAUBT if erlaubt is None else erlaubt
         self.ausfuehren = ausfuehren
         self.uhr = uhr
@@ -854,8 +868,10 @@ class Anker:
     def _wirkung(self, anf: Anfrage) -> str | None:
         """"rueckweg" oder "sperre", wenn die Anfrage etwas ändern wird, sonst None. Davon hängt ab, wie viel Platz im
         Protokoll ihr zusteht: Anfragen ohne Wirkung dürfen den Platz für einen echten Rückweg nie aufbrauchen."""
+        if anf.befehl in VORWAERTS_BEFEHLE and not anf.trocken and self._vorwaerts_fabrik is not None:
+            return "vorwaerts"   # ändert Datenbank und Kern: die Protokollzeile vorher ist Pflicht
         if anf.trocken or anf.befehl not in ("sperre", "rueckweg"):
-            return None  # auch die reservierten Vorwärtsbefehle: sie tun noch nichts
+            return None
         if anf.befehl == "sperre":
             zustand = sperre_zustand(self.p)
             return "sperre" if zustand in ("an", "aus") and zustand != str(anf.arg) else None
@@ -931,7 +947,9 @@ class Anker:
             return self.cmd_sperre(str(anf.arg), anf.trocken, name)
         if anf.befehl == "pruefe-sonder":
             return self.cmd_pruefe_sonder(str(anf.arg))
-        return self._antwort(False, "nicht_verfuegbar")  # bereitstellen, migrieren, umschalten
+        if anf.befehl in VORWAERTS_BEFEHLE:
+            return self.cmd_vorwaerts(anf)
+        return self._antwort(False, "nicht_verfuegbar")
 
     @contextlib.contextmanager
     def _schreibsperre(self):
@@ -967,6 +985,47 @@ class Anker:
             audit={"kette": "ok" if ok else "defekt", "zeilen": zeilen, "letzter_hash": letzter, "grund": grund,
                    "fuellgrad_prozent": round(self.audit.fuellgrad() * 100, 1)},
             installation="ok" if not probleme else "abweichung", installation_probleme=probleme or None)
+
+    # --- bereitstellen, migrieren, umschalten (vorwaerts.py)
+    def cmd_vorwaerts(self, anf: Anfrage) -> dict:
+        """Die Vorwärtsbefehle. Der Anker liest Anfrage und Freigabe selbst aus der Datenbank (vorwaerts.py); hier nur Aufruf, Zeitgrenze, Sperre gegen
+        Gleichzeitiges, Prüfung des Schritt-Skripts des Kerns und das Nachführen der Zustandsdatei. Fehler kommen als Code, nie als Text aus der Quelle."""
+        if self._vorwaerts_fabrik is None:
+            return self._antwort(False, "nicht_verfuegbar")
+        if self._vorwaerts is None:
+            try:
+                self._vorwaerts = self._vorwaerts_fabrik()
+            except Exception as e:  # noqa: BLE001 (Datenbank oder Zugangsdatei fehlen: ehrlich nicht verfügbar, nichts geändert)
+                print(f"wamo-anker: Vorwärtsbefehle nicht verfügbar ({type(e).__name__})", file=sys.stderr)
+                return self._antwort(False, "nicht_verfuegbar", detail="mitspieler")
+        schritt_pruefen(self.p, "kern-slots")   # das Skript, über das der Kern bereitgestellt und umgeschaltet wird: Besitzer, Rechte und Prüfsumme
+        if anf.trocken:
+            return self._vorwaerts_aufruf(anf, True)
+        with self._schreibsperre():
+            return self._vorwaerts_aufruf(anf, False)
+
+    def _vorwaerts_aufruf(self, anf: Anfrage, trocken: bool) -> dict:
+        try:
+            erg = self._vorwaerts.ausfuehren(anf.befehl, str(anf.arg), trocken)
+        except VorwaertsFehler as e:
+            self.protokolliere("vorwaerts", 1.0, befehl=anf.befehl, ok=False, code=e.code)
+            return self._antwort(False, "vorwaerts_fehlgeschlagen", detail=_sauber(f"{e.code} {e.detail}".strip(), 80))
+        self.protokolliere("vorwaerts", 1.0, befehl=anf.befehl, ok=True, release=_sauber(erg.get("release") or "", 60) or None, trocken=trocken or None)
+        if anf.befehl == "umschalten" and not trocken:
+            self._kern_aktiv_eintragen(erg)
+        felder = {k: erg[k] for k in ("release", "slot", "plan", "angewendet") if k in erg}
+        return self._antwort(True, text="Trockenlauf" if trocken else "in Ordnung", trocken=trocken or None, ergebnis=felder)
+
+    def _kern_aktiv_eintragen(self, erg: dict) -> None:
+        """Nach dem Umschalten steht der neue Slot als aktiv in der Zustandsdatei. 'letzte gute' folgt erst nach bestandener Bewährung (nicht hier)."""
+        try:
+            stand = stand_laden(self.p.stand, self.p.vertrauens_uid)
+            eintrag = {"version": f"v{erg['version']}", "commit": erg["commit"], "ziel": erg["slot"], "seit": zeit_iso(self.uhr())}
+            if VERSION_RE.fullmatch(eintrag["version"]) and COMMIT_RE.fullmatch(eintrag["commit"]) and ZIEL_RE["kern"].fullmatch(eintrag["ziel"]):
+                stand["komponenten"]["kern"]["aktiv"] = eintrag
+                stand_schreiben(self.p.stand, stand)
+        except (OSError, ZustandDefekt, KeyError):
+            self.protokolliere("vorwaerts", 1.0, befehl="umschalten", zustand="nicht_nachgefuehrt")
 
     # --- sperre
     def cmd_sperre(self, arg: str, trocken: bool, name: str) -> dict:
@@ -1182,7 +1241,11 @@ def dienst_main() -> int:
     if not sys.platform.startswith("linux") or os.geteuid() != 0:
         print("Der Dienst läuft nur unter Linux als root.", file=sys.stderr)
         return 1
-    server = Server(Anker())
+    def fabrik():
+        import vorwaerts_echt  # erst beim ersten Vorwärtsbefehl: Datenbank-Treiber und Zugangsdatei sind für Status und Rückweg nicht nötig
+        return vorwaerts_echt.vorwaerts_fabrik()
+
+    server = Server(Anker(vorwaerts_fabrik=fabrik))
     server.binden()
     signal.signal(signal.SIGTERM, server.anhalten)
     signal.signal(signal.SIGINT, server.anhalten)

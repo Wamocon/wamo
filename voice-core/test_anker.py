@@ -169,7 +169,9 @@ class EingabeTests(AnkerTest):
             "sperre aus --trocken": ("sperre", "aus", True),
             "pruefe-sonder 42": ("pruefe-sonder", "42", False),
             f"pruefe-sonder {UUID}": ("pruefe-sonder", UUID, False),
-            "umschalten": ("umschalten", None, False),
+            "umschalten 7": ("umschalten", "7", False),
+            f"migrieren {UUID}": ("migrieren", UUID, False),
+            "bereitstellen 7 --trocken": ("bereitstellen", "7", True),
         }
         for text, (befehl, arg, trocken) in faelle.items():
             with self.subTest(text=text):
@@ -262,7 +264,7 @@ class EingabeTests(AnkerTest):
 
     def test_argumente_pflicht_oder_verboten(self):
         for text in ("status ui", "sperre", "sperre ein", "rueckweg", "rueckweg ui kern", "rueckweg server", "pruefe-sonder",
-                     "pruefe-sonder abc", "pruefe-sonder 0", "pruefe-sonder 1234567890123456789", "umschalten ui"):
+                     "pruefe-sonder abc", "pruefe-sonder 0", "pruefe-sonder 1234567890123456789", "umschalten ui", "umschalten", "migrieren", "bereitstellen x", "migrieren 0"):
             with self.subTest(text=text):
                 with self.assertRaises(A.Abgelehnt):
                     A.parse_zeile(f"{self.ID} {text}\n".encode())
@@ -346,8 +348,8 @@ class RechteTests(AnkerTest):
         alle = {"sperre:an", "sperre:aus"} | {n for n in A.BEFEHLE if n != "sperre"}  # unabhängig aus der Tabelle abgeleitet
         self.assertEqual(set(A.ERLAUBT["root"]), alle)
         self.assertEqual(set(A.ERLAUBT["wamocon"]), alle)
-        # bis Stufe 1 nur lesen, zurückrollen, sperren und die (immer ablehnende) Prüfung der Sonderfreigabe
-        self.assertEqual(set(A.ERLAUBT["wamo-release"]), {"status", "rueckweg", "sperre:an", "pruefe-sonder"})
+        # lesen, zurückrollen, sperren, die (immer ablehnende) Prüfung der Sonderfreigabe und die Vorwärtsbefehle (die Sperre hält sie an)
+        self.assertEqual(set(A.ERLAUBT["wamo-release"]), {"status", "rueckweg", "sperre:an", "pruefe-sonder", "bereitstellen", "migrieren", "umschalten"})
 
     def test_jeder_fehlercode_hat_einen_text(self):
         """Ein fehlender Text löste früher einen KeyError im Fehlerzweig aus und ließ den Client ohne Antwort."""
@@ -892,15 +894,15 @@ class SperreTests(AnkerTest):
     def test_sperre_blockiert_alle_vorwaertsbefehle(self):
         for befehl in self.VORWAERTS:
             with self.subTest(befehl=befehl, sperre="aus"):
-                self.assertEqual(self.sende(befehl)["grund"], "nicht_verfuegbar")  # nicht gesperrt, aber noch nicht gebaut
+                self.assertEqual(self.sende(befehl + " 7")["grund"], "nicht_verfuegbar")  # nicht gesperrt, aber ohne Mitspieler (vorwaerts_fabrik) nicht verfügbar
         self.sende("sperre an")
         for befehl in self.VORWAERTS:
             for name in ("root", "wamocon", "wamo-release"):
                 for zusatz in ("", " --trocken"):
                     with self.subTest(befehl=befehl, name=name, zusatz=zusatz):
-                        antwort = self.sende(befehl + zusatz, name)
-                        # wamo-release darf die Vorwärtsbefehle bis Stufe 1 gar nicht erst: "recht" vor "gesperrt"
-                        self.assertEqual(antwort["grund"], "recht" if name == "wamo-release" else "gesperrt")
+                        antwort = self.sende(f"{befehl} 7{zusatz}", name)
+                        # alle drei dürfen die Vorwärtsbefehle senden (der Release-Dienst ruft sie später); die Sperre hält sie an
+                        self.assertEqual(antwort["grund"], "gesperrt")
                         self.assertFalse(antwort["ok"])
 
     def test_alle_schreibenden_vorwaertsbefehle_sind_in_der_tabelle_markiert(self):
@@ -922,7 +924,7 @@ class SperreTests(AnkerTest):
     def test_defekte_sperre_gilt_als_gesetzt(self):
         os.mkdir(self.p.sperre)  # Ordner statt Datei
         self.assertEqual(A.sperre_zustand(self.p), "defekt")
-        self.assertEqual(self.sende("umschalten")["grund"], "gesperrt")
+        self.assertEqual(self.sende("umschalten 7")["grund"], "gesperrt")
         self.assertEqual(self.sende("sperre aus")["grund"], "sperre_defekt")  # wird nicht blind gelöscht
         self.assertEqual(self.sende("sperre an")["grund"], "sperre_defekt")
         self.assertTrue(os.path.isdir(self.p.sperre))
@@ -935,7 +937,7 @@ class SperreTests(AnkerTest):
         except (OSError, NotImplementedError):
             self.skipTest("Links nicht möglich")
         self.assertEqual(A.sperre_zustand(self.p), "defekt")
-        self.assertEqual(self.sende("bereitstellen")["grund"], "gesperrt")
+        self.assertEqual(self.sende("bereitstellen 7")["grund"], "gesperrt")
 
     def test_nicht_lesbare_sperre_gilt_als_gesetzt(self):
         class Os(_Platte):
@@ -953,7 +955,7 @@ class SperreTests(AnkerTest):
     def test_beschreibbarer_ordner_macht_die_sperre_unsicher(self):
         os.chmod(self.p.konfig, 0o777)
         self.assertEqual(A.sperre_zustand(self.p), "defekt")
-        self.assertEqual(self.sende("migrieren")["grund"], "gesperrt")
+        self.assertEqual(self.sende("migrieren 7")["grund"], "gesperrt")
 
     def test_sperrdatei_fehlender_ordner_gilt_als_gesetzt(self):
         os.rmdir(self.p.konfig)
@@ -1242,7 +1244,7 @@ class TrockenTests(AnkerTest):
 
     def test_trocken_unter_sperre_fuer_vorwaertsbefehle(self):
         self.sende("sperre an")
-        self.assertEqual(self.sende("umschalten --trocken")["grund"], "gesperrt")
+        self.assertEqual(self.sende("umschalten 7 --trocken")["grund"], "gesperrt")
 
 
 # ================================================================ Status und Installation
@@ -1414,7 +1416,7 @@ class ClientTests(AnkerTest):
     def test_formatiere(self):
         self.schritte_anlegen()
         self.stand_setzen(ui_aktiv=NEU_UI, ui_letzte_gute=GUT_UI)
-        for befehl in ("status", "rueckweg ui --trocken", "sperre an", "pruefe-sonder 3", "umschalten"):
+        for befehl in ("status", "rueckweg ui --trocken", "sperre an", "pruefe-sonder 3", "umschalten 7"):
             with self.subTest(befehl=befehl):
                 text = "\n".join(A.formatiere(self.sende(befehl)))
                 self.assertTrue(text)
@@ -1732,7 +1734,7 @@ class SocketTests(AnkerTest):
         self.starte()
         uid = os.getuid()
         for args, exit_code in ((["status"], 0), (["sperre", "an"], 0), (["sperre", "an", "--trocken"], 0),
-                                (["pruefe-sonder", "7"], 1), (["umschalten"], 1), (["--json", "status"], 0)):
+                                (["pruefe-sonder", "7"], 1), (["umschalten", "7"], 1), (["--json", "status"], 0)):
             with self.subTest(args=args):
                 ausgabe = io.StringIO()
                 with contextlib.redirect_stdout(ausgabe):

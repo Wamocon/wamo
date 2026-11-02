@@ -357,6 +357,48 @@ cmd_rueckweg_zu() {
   echo "Rückweg: Slot $slot (Release $name) bedient neue Sitzungen."
 }
 
+# Für den Anker (Schritt kern-slots, Vorwärtsbefehle): bereiten startet das Release auf dem freien Slot, schaltet aber nichts; schalten schickt danach neue
+# Sitzungen dorthin. Beide nennen den Slot in einer letzten Zeile "SLOT a|b". Das Release kommt nur als Name, geprüft wie überall.
+cmd_bereiten() {
+  root_pflicht
+  local name="${1:-}" akt frei
+  name_pruefen "$name"
+  [ -f "$APP/releases/$name/voice-core/bot.py" ] || fehler "Release $name fehlt (zuerst: release $name <ordner>)"
+  dropins_spiegeln
+  akt="$(aktiver_slot)"; frei="$(anderer_slot "$akt")"
+  if systemctl is-active --quiet "wamo-core@$frei.service"; then
+    [ "$(basename "$(readlink "$APP/slots/$frei" 2>/dev/null)")" = "$name" ] || fehler "Slot $frei läuft mit einem anderen Release (erst ausleiten)"
+  else
+    cmd_slot "$frei" "$name" >/dev/null
+    systemctl start "wamo-core@$frei.service"
+    if ! ( warte_auf_slot "$frei" ); then
+      systemctl stop "wamo-core@$frei.service" || true
+      fehler "Slot $frei wurde nicht gesund: nichts umgeschaltet"
+    fi
+  fi
+  echo "Release $name läuft auf Slot $frei, noch nicht geschaltet."
+  echo "SLOT $frei"
+}
+
+cmd_schalten() {
+  root_pflicht
+  local name="${1:-}" akt ziel s
+  name_pruefen "$name"
+  akt="$(aktiver_slot)"; ziel=""
+  for s in a b; do
+    if systemctl is-active --quiet "wamo-core@$s.service" && [ "$(basename "$(readlink "$APP/slots/$s" 2>/dev/null)")" = "$name" ]; then ziel="$s"; fi
+  done
+  [ -n "$ziel" ] || fehler "Kein laufender Slot mit dem Release $name (zuerst: bereiten)"
+  if [ "$ziel" != "$akt" ]; then
+    systemctl enable "wamo-core@$ziel.service" >/dev/null 2>&1
+    cmd_inc "$ziel"
+    sleep "${NACHLAUF_S:-60}"
+    cmd_inc "$ziel" auslaufend "$akt"
+  fi
+  echo "Neue Sitzungen gehen auf Slot $ziel (Release $name)."
+  echo "SLOT $ziel"
+}
+
 # Beendet die auslaufende Instanz, aber nur ohne Sitzung und nach der Bewährung (so lange bleibt der Rückweg sofort möglich)
 cmd_ausleiten() {
   root_pflicht
@@ -387,6 +429,8 @@ case "$befehl" in
   ausleiten) cmd_ausleiten ;;
   rueckweg-kern) cmd_rueckweg_kern ;;
   rueckweg-zu) cmd_rueckweg_zu "$@" ;;
+  bereiten) cmd_bereiten "$@" ;;
+  schalten) cmd_schalten "$@" ;;
   umstellung-zurueck) cmd_umstellung_zurueck ;;
-  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | dropins-spiegeln | umstellen <release> | umstellung-zurueck | umschalten-kern <release> | bewaehren [min] | ausleiten | rueckweg-kern | rueckweg-zu <version> <commit> <slot> | status" ;;
+  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | dropins-spiegeln | umstellen <release> | umstellung-zurueck | umschalten-kern <release> | bewaehren [min] | ausleiten | rueckweg-kern | rueckweg-zu <version> <commit> <slot> | bereiten <release> | schalten <release> | status" ;;
 esac
