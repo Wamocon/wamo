@@ -151,9 +151,9 @@ class LaufTests(Baeume):
         self.assertFalse(any(a[1][:3] == ("uv", "run", "--frozen") for a in aus.aufrufe))
 
     def test_test_fehler_und_zeitlimit(self):
-        erg, _ = self.starte(ausfuehrer=FakeAusfuehrer({("host", "uv run"): L.Ausgang(1, "2 failed")}))
+        erg, _ = self.starte(ausfuehrer=FakeAusfuehrer({("geraete", "uv run"): L.Ausgang(1, "2 failed")}))
         self.assertEqual(erg["pruefstand"]["tests"], "fehler")
-        self.assertTrue(erg["details"]["tests"]["fehler"].startswith("exit_1:host:"))
+        self.assertTrue(erg["details"]["tests"]["fehler"].startswith("exit_1:geraete:"))
         erg, _ = self.starte(ausfuehrer=FakeAusfuehrer({("ui", "npm test"): L.Ausgang(None, "haengt")}))
         self.assertTrue(erg["details"]["tests"]["fehler"].startswith("zeitlimit:ui:"))
 
@@ -190,6 +190,17 @@ class LaufTests(Baeume):
         erg, _ = self.starte()
         self.assertEqual(erg["pruefstand"]["wirkungsflaechen"], "ok")
         self.assertTrue(erg["sonder"])
+
+    def test_aenderung_an_host_oder_desktop_verlangt_die_windows_pruefung(self):
+        for pfad in ("host/tools.py", "desktop/main.js", "host/test_tab.py"):
+            self.setUp()
+            self.schreibe(self.neu, pfad, "x\n")
+            erg, aus = self.starte()
+            self.assertTrue(erg["windows_pruefung_noetig"], pfad)
+            self.assertNotIn(("host", ("uv", "run")), [(o, a[:2]) for o, a, _ in aus.aufrufe])   # host wird hier nicht getestet
+        self.setUp()
+        self.schreibe(self.neu, "voice-core/x.py", "x = 1\n")
+        self.assertFalse(self.starte()[0]["windows_pruefung_noetig"])
 
     def test_migration_geaendert_ist_ohne_lint_ein_fehler(self):
         self.schreibe(self.neu, "supabase/migrations/0017_x.sql", "select 1;")
@@ -254,7 +265,7 @@ class PlanTests(unittest.TestCase):
 
     def test_nur_feste_werkzeuge_ohne_shell(self):
         for b in self.alle():
-            self.assertIn(b.argv[0], {"uv", "npm", "npx"}, b)
+            self.assertIn(b.argv[0], {"uv", "npm", "npx", "pip-audit"}, b)
             self.assertTrue(all(isinstance(a, str) and a for a in b.argv))
             self.assertFalse(any(z in " ".join(b.argv) for z in (";", "&&", "|", "`", "$(", "sudo", "curl", "bash", "sh -c")), b)
             self.assertNotIn("..", b.ordner)
@@ -270,6 +281,15 @@ class PlanTests(unittest.TestCase):
             if b.argv[0] == "uv":
                 self.assertIn("--frozen", b.argv)
                 self.assertIn("--ignore-glob=test_integration_*", b.argv)
+
+    def test_windows_pakete_werden_unter_linux_nicht_getestet_aber_gebaut_und_geaudittet(self):
+        getestet = {b.ordner for b in L.plan_tests() if b.argv[0] == "uv"}
+        self.assertEqual(getestet, {"voice-core", "geraete"})
+        self.assertEqual({b.ordner for b in L.plan_tests() if b.argv[0] == "npm"}, {"ui"})   # desktop ist eine Windows-Anwendung: gebaut, nicht getestet
+        self.assertNotIn("host", getestet)
+        self.assertIn("host", {b.ordner for b in L.plan_bauen()})
+        self.assertIn("host", {b.ordner for b in L.AUDITS})
+        self.assertEqual(L.WINDOWS_PFADE, ("host/", "desktop/"))
 
     def test_ordner_skripte_und_sperrdateien_gibt_es_im_repo(self):
         for p in L.PYTHON_PAKETE:

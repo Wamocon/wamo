@@ -1,7 +1,8 @@
 """Erlaubnisliste-Proxy für die Prüfer-Sandbox (Konzept docs/selbstueberarbeitung.md D.3, Schritt 1.2b).
 
 Die Prüfer-Sandbox hat kein eigenes Netz. Sie erreicht nur zwei Proxys auf Loopback, und jeder erlaubt genau eine feste Liste von Domains:
-  * Proxy "pakete": registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, api.github.com
+  * Proxy "pakete": registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, api.github.com, dazu fonts.googleapis.com und
+    fonts.gstatic.com (die Oberfläche holt Roboto Condensed zur Bauzeit über next/font/google)
   * Proxy "claude": api.anthropic.com
 Der Proxy kennt nur CONNECT auf Port 443 (TLS-Tunnel, er sieht den Inhalt nie). Alles andere wird abgewiesen, ohne eine Verbindung nach
 draußen aufzubauen. Die Namensauflösung macht der Proxy selbst, die Sandbox braucht kein DNS:
@@ -20,8 +21,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ipaddress
+import os
 import re
 import socket
+import stat
 import sys
 import time
 from typing import Awaitable, Callable
@@ -203,10 +206,23 @@ async def serve(proxy: Proxy, host: str, port: int) -> asyncio.AbstractServer:
     return await asyncio.start_server(proxy.bediene, host, port, limit=KOPF_MAX + 1024, backlog=64)
 
 
+async def serve_unix(proxy: Proxy, pfad: str) -> asyncio.AbstractServer:
+    """Zusätzlich zu Loopback: ein Unix-Socket für die Sandbox, die ein eigenes Netz hat (bwrap --unshare-net) und nur diese Datei sieht.
+    Der Socket ist für alle Benutzer verbindbar (0666): Er gibt nur die feste Liste frei, genau wie der Loopback-Port."""
+    if os.path.lexists(pfad):
+        if not stat.S_ISSOCK(os.lstat(pfad).st_mode):
+            raise ValueError("der Pfad des Sockets ist belegt und kein Socket")
+        os.unlink(pfad)   # Rest eines früheren Laufs
+    server = await asyncio.start_unix_server(proxy.bediene, path=pfad, limit=KOPF_MAX + 1024, backlog=64)
+    os.chmod(pfad, 0o666)
+    return server
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Erlaubnisliste-Proxy der Prüfer-Sandbox")
     ap.add_argument("--name", required=True, choices=("pakete", "claude"))
     ap.add_argument("--listen", required=True, help="host:port auf Loopback")
+    ap.add_argument("--unix", help="zusätzlich: Pfad eines Unix-Sockets (für die Sandbox mit eigenem Netz)")
     ap.add_argument("--erlaubt", required=True, help="Namen, durch Komma getrennt")
     a = ap.parse_args(argv)
     host, _, port = a.listen.rpartition(":")
@@ -214,9 +230,13 @@ def main(argv: list[str]) -> int:
 
     async def start() -> None:
         server = await serve(proxy, host, int(port))
-        print(f"proxy {a.name} lauscht auf {a.listen}, erlaubt: {sorted(proxy.erlaubt)}", file=sys.stderr, flush=True)
+        unix_server = await serve_unix(proxy, a.unix) if a.unix else None
+        print(f"proxy {a.name} lauscht auf {a.listen}{' und ' + a.unix if a.unix else ''}, erlaubt: {sorted(proxy.erlaubt)}", file=sys.stderr, flush=True)
         async with server:
-            await server.serve_forever()
+            if unix_server is not None:
+                await asyncio.gather(server.serve_forever(), unix_server.serve_forever())
+            else:
+                await server.serve_forever()
 
     try:
         asyncio.run(start())

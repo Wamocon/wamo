@@ -1316,7 +1316,10 @@ class VorfahrenTests(AnkerTest):
         self.assertTrue(any("für alle beschreibbar" in t for t in A.vorfahren_unsicher(self.p)))
         self.assertTrue(any("beschreibbar" in t for t in A.installation_pruefen(self.p)))
         os.chmod(self.tmp.name, 0o777 | stat.S_ISVTX)  # Sticky-Bit wie bei /tmp: fremde Einträge lassen sich nicht ersetzen
-        self.assertEqual(A.vorfahren_unsicher(self.p), [])
+        # Hier geht es um den Zweig "für alle"; die Gruppe prüft test_gruppe_mit_mitgliedern. Ohne die Attrappe hängt das Ergebnis davon ab, ob die
+        # Hauptgruppe des Testbenutzers weitere Mitglieder hat (auf Entwicklungsrechnern und in der Prüfer-Sandbox ist es der Benutzer selbst).
+        with mock.patch.object(A, "_gruppe_hat_mitglieder", return_value=False):
+            self.assertEqual(A.vorfahren_unsicher(self.p), [])
 
     def test_fremder_besitzer(self):
         p = A.Pfade.unter(self.tmp.name, vertrauens_uid=os.getuid() + 1)

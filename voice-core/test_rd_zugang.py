@@ -356,7 +356,10 @@ async def test_socket_erlaubt_nur_die_benutzerkennung_des_kerns(guac, tmp_path):
         assert antwort["ok"] is True
         assert json.loads(await _zeile(pfad, b"kein json\n")) == {"ok": False, "code": "zeile_ungueltig"}
         assert json.loads(await _zeile(pfad, b"[1,2]\n")) == {"ok": False, "code": "zeile_ungueltig"}
-        zu_gross = await _zeile(pfad, b"{" + b"x" * 40000 + b"}\n")
+        try:
+            zu_gross = await _zeile(pfad, b"{" + b"x" * 40000 + b"}\n")
+        except ConnectionError:   # der Dienst schließt, während noch Ungelesenes ansteht: ein Reset ist genauso eine Abweisung
+            zu_gross = b""
         assert zu_gross == b"" or json.loads(zu_gross)["ok"] is False
     finally:
         aufgabe.cancel()
@@ -368,7 +371,11 @@ async def test_socket_erlaubt_nur_die_benutzerkennung_des_kerns(guac, tmp_path):
             break
         await asyncio.sleep(0.05)
     try:
-        assert await _zeile(pfad2, json.dumps(anmelden(SITZUNG2)).encode() + b"\n") == b""
+        try:
+            antwort2 = await _zeile(pfad2, json.dumps(anmelden(SITZUNG2)).encode() + b"\n")
+        except ConnectionError:   # der Dienst trennt die fremde Kennung sofort: ein Reset ist genauso "keine Antwort"
+            antwort2 = b""
+        assert antwort2 == b""
         assert len(guac.posts) == 1                                    # nur die erste Anmeldung kam durch
     finally:
         aufgabe.cancel()

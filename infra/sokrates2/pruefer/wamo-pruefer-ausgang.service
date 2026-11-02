@@ -1,0 +1,14 @@
+[Unit]
+Description=WAMO-Prüfer-Sandbox: Ausgangsregeln (Sandbox nur zum Proxy, Proxy nur öffentlich)
+Documentation=file:///opt/wamo-pruefer/app/wamo-pruefer-ausgang.nft
+Before=wamo-pruefer-proxy@pakete.service
+ConditionPathExists=/etc/wamo-pruefer/regeln.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/wamo-pruefer/regeln.nft
+ExecStop=/usr/sbin/nft delete table inet wamo_pruefer_ausgang
+
+[Install]
+WantedBy=multi-user.target

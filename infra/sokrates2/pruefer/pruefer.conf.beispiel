@@ -1,0 +1,11 @@
+# Beispiel für /opt/wamo-pruefer/pruefer.conf (root:root 0644, wird von wamo-pruefer-lauf.sh eingelesen).
+# Ohne diese Datei gelten die Standardwerte aus dem Skript. Keine Geheimnisse hier.
+#ZEIT_S=5400          # Zeitlimit eines Laufs in Sekunden (Obergrenze ZEIT_MAX_S)
+#ZEIT_MAX_S=14400
+#SPEICHER_MAX=24G     # Arbeitsspeicher der Zelle (MemoryMax), Swap ist aus
+#CPU_QUOTA=1000%      # 10 von 20 Kernen
+#PROZESSE_MAX=4096
+#TMP_MB=4096          # Größe von /tmp in der Sandbox
+#OFFENE_DATEIEN=16384
+#DATEI_MAX_MB=4096    # größte Datei, die ein Prozess schreiben darf
+#KOPIE_MAX_MB=1024    # größte Quelle (Basis oder neuer Stand), die der Läufer annimmt

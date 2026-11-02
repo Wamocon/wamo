@@ -1,0 +1,10 @@
+# WAMO: nur diese bwrap-Kopie (root:wamo-pruefer 0750) darf Benutzer-Namensräume anlegen (Prüfer-Sandbox).
+# Ubuntu sperrt sie sonst (kernel.apparmor_restrict_unprivileged_userns=1); das System-bwrap bleibt gesperrt.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile wamo-pruefer-bwrap /usr/local/lib/wamo-pruefer/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/wamo-pruefer-bwrap>
+}

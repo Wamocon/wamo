@@ -89,7 +89,8 @@ fi
 echo "== 1. Dienst aus"
 if [ -z "$WURZEL" ]; then
   tu "stoppt und deaktiviert wamo-release.service" systemctl disable --now wamo-release.service || true
-  tu "stoppt und deaktiviert die Ausgangsregel (löscht die nft-Tabelle wamo_release_ausgang)" \n    systemctl disable --now wamo-release-ausgang.service || true
+  tu "stoppt und deaktiviert die Ausgangsregel (löscht die nft-Tabelle wamo_release_ausgang)" \
+    systemctl disable --now wamo-release-ausgang.service || true
   echo "  wamo-release: $(systemctl is-active wamo-release.service 2>/dev/null || true)"
 fi
 tu "löscht $LAUF/ctl.sock" rm -f -- "$LAUF/ctl.sock"

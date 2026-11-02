@@ -246,7 +246,8 @@ class FileTests(unittest.TestCase):
         self.assertEqual(d("Write", {"file_path": str(PROJECT.parent / "anderes" / "x.ts")}, PROJECT)[0], "block")
         self.assertEqual(d("Edit", {"file_path": str(PROJECT / ".." / "x.ts")}, PROJECT)[0], "block")
         self.assertEqual(d("Read", {"file_path": "C:\\Users\\beispiel\\.ssh\\id_ed25519"}, PROJECT)[0], "block")
-        self.assertEqual(d("Edit", {"file_path": "C:\\Users\\beispiel\\Projekte\\wamo\\voice-core\\bot.py"}, PROJECT)[0], "block")
+        if os.name == "nt":   # ein Windows-Pfad ist unter Linux kein Pfad im Sinne des Wächters
+            self.assertEqual(d("Edit", {"file_path": "C:\\Users\\beispiel\\Projekte\\wamo\\voice-core\\bot.py"}, PROJECT)[0], "block")
         self.assertEqual(d("Read", {"file_path": str(g.REPO_ROOT / "voice-core" / "dev_guard.py")}, PROJECT)[0], "block")
         self.assertEqual(d("Grep", {"pattern": "x", "path": str(g.REPO_ROOT)}, PROJECT)[0], "block")
         self.assertEqual(d("Glob", {"pattern": "*", "path": str(PROJECT)}, PROJECT)[0], "allow")
@@ -296,8 +297,9 @@ class ReviewRegressionTests(unittest.TestCase):
                 self.assertEqual(bash(cmd), "allow")
 
     def test_more_bypasses(self):
-        self.assertEqual(bash("cat D:/IDEA/Projekt/w''amo/voice-core/.env"), "block")
-        self.assertEqual(bash('cat D:/IDEA/Projekt/w""amo/x'), "block")
+        if os.name == "nt":   # Laufwerkspfade gibt es nur unter Windows
+            self.assertEqual(bash("cat D:/IDEA/Projekt/w''amo/voice-core/.env"), "block")
+            self.assertEqual(bash('cat D:/IDEA/Projekt/w""amo/x'), "block")
         for cmd in ["rm -rf ~/*", "rm -rf ~/Documents", "rm -r -f /", "rm -rf /*", "rm -rf $HOME"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(bash(cmd), "block")

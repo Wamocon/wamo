@@ -44,6 +44,11 @@ RUNDEN = {1: ("bauen", "tests", "typen_lint", "secret_scan", "fremdverweis", "ab
           2: ("bauen", "tests", "typen_lint", "secret_scan", "fremdverweis", "abhaengigkeiten", "migrations_lint", "wirkungsflaechen"),
           3: ("bauen", "tests", "secret_scan", "fremdverweis")}
 PYTHON_PAKETE = ("voice-core", "host", "geraete")
+# host (Windows-Steuerung des PCs: Fenster, Tabs, PowerShell) und desktop (Electron-Anwendung für Windows) lassen sich unter Linux nicht sinnvoll testen:
+# Ihre Tests verlangen Windows (cmd, C:\...-Pfade, Fenstersteuerung). Gebaut und geprüft (Audit) werden sie hier, getestet nicht. Ändert ein Stand
+# etwas darin, meldet der Läufer ausdrücklich windows_pruefung_noetig, und die Freigabe darf das nicht übergehen.
+PYTHON_TEST_PAKETE = ("voice-core", "geraete")
+WINDOWS_PFADE = ("host/", "desktop/")
 NODE_PAKETE = ("ui", "desktop")
 
 
@@ -65,8 +70,9 @@ def plan_bauen() -> tuple[Befehl, ...]:
 
 def plan_tests() -> tuple[Befehl, ...]:
     return (*(Befehl(p, ("uv", "run", "--frozen", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--ignore-glob=test_integration_*"), 1800)
-              for p in PYTHON_PAKETE),
-            *(Befehl(p, ("npm", "test"), 900) for p in NODE_PAKETE))
+              for p in PYTHON_TEST_PAKETE),
+            # Node 22 meldet für ein Paket ohne "type" eine Warnung über die Konsole, und ein UI-Test zählt Konsolenaufrufe (auf Node 24 gibt es die Warnung nicht)
+            Befehl("ui", ("npm", "test"), 900, (("NODE_NO_WARNINGS", "1"),)))
 
 
 def plan_typen_lint() -> tuple[Befehl, ...]:
@@ -74,7 +80,14 @@ def plan_typen_lint() -> tuple[Befehl, ...]:
 
 
 PLAENE: dict[str, Callable[[], tuple[Befehl, ...]]] = {"bauen": plan_bauen, "tests": plan_tests, "typen_lint": plan_typen_lint}
-AUDITS = (Befehl("ui", ("npm", "audit", "--omit=dev", "--audit-level=high"), 300), Befehl("voice-core", ("uv", "run", "--frozen", "pip-audit"), 300))
+def _audit_python(paket: str) -> tuple[Befehl, Befehl]:
+    """pip-audit ist ein festes Werkzeug außerhalb des Projekts (Konzept D.3): erst die gesperrten Pakete des Projekts ausgeben, dann prüfen."""
+    datei = f"/tmp/pruefer-audit-{paket}.txt"
+    return (Befehl(paket, ("uv", "export", "--frozen", "--no-dev", "--no-hashes", "--no-emit-project", "-o", datei), 300),
+            Befehl(paket, ("pip-audit", "-r", datei, "--no-deps", "--disable-pip", "--progress-spinner", "off"), 300))
+
+
+AUDITS = (Befehl("ui", ("npm", "audit", "--omit=dev", "--audit-level=high"), 300), *(b for p in PYTHON_PAKETE for b in _audit_python(p)))
 
 
 # ------------------------------------------------------------------------------------------------ Ausführung
@@ -272,6 +285,7 @@ def lauf(basis: str, neu: str, runde: int, muster_zeilen: list[str], ausfuehrer:
     return {"runde": runde, "pruefstand": {k: v.wert for k, v in stufen.items()}, "details": {k: v.als_dict() for k, v in stufen.items()},
             "sonder": bool(wirk and wirk.sonder), "neue_pakete": [list(p) for p in (abh.neue_pakete if abh else [])][:200],
             "geaenderte_dateien": len(baum.dateien),
+            "windows_pruefung_noetig": any(d.pfad.startswith(WINDOWS_PFADE) for d in baum.dateien),
             "treffer": {k: [{"pfad": t.pfad, "zeile": t.zeile, "art": t.art, "detail": t.detail} for t in b.treffer[:50]] for k, b in scans.items()}}
 
 
