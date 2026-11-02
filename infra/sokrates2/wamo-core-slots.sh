@@ -31,6 +31,11 @@ UNIT=/etc/systemd/system/wamo-core@.service
 NAME_RE='^v[0-9A-Za-z._-]{1,40}$'
 CADDY_ETC=/home/wamocon/wamo-tls/caddy/etc/kern   # wird als /etc/caddy/kern in den Container von wamo-caddy eingehängt
 CADDY_BESITZER=wamocon
+# Einstellungen, die andere Einrichtungsskripte der alten Unit als Drop-in mitgeben (erlaubter Ursprung der Oberfläche, Fernzugriff): sie gelten
+# auch für die Slots. Ein Slot ohne sie weist die Oberfläche ab (CORS) und kennt den Fernzugriff nicht (Fehler der ersten Umstellung, 02.11.2026).
+DROPIN_ALT="${WAMO_DROPIN_ALT:-/etc/systemd/system/wamo-core.service.d}"
+DROPIN_NEU="${WAMO_DROPIN_NEU:-/etc/systemd/system/wamo-core@.service.d}"
+DROPIN_MARKE="# gespiegelt von wamo-core.service.d durch wamo-core-slots.sh, nicht von Hand ändern"
 
 befehl="${1:-status}"
 [ "$#" -eq 0 ] || shift
@@ -42,6 +47,7 @@ name_pruefen() { [[ "${1:-}" =~ $NAME_RE ]] || fehler "Release-Name ungültig (e
 
 cmd_einrichten() {
   root_pflicht
+  dropins_spiegeln
   [ -x "$APP/tools/uv" ] || fehler "$APP/tools/uv fehlt (zuerst wamo-core-einrichten.sh)"
   install -d -o root -g "$BENUTZER" -m 0750 "$APP/releases" "$APP/slots"
   install -o root -g root -m 0644 "$HERE/wamo-core@.service" "$UNIT"
@@ -160,6 +166,35 @@ cmd_inc() {
   echo "Caddy schaltet jetzt: $*"
 }
 
+# Spiegelt die Drop-ins der alten Unit in die Vorlage (und löscht gespiegelte, die es oben nicht mehr gibt). Eigene Drop-ins der Vorlage bleiben,
+# erkennbar daran, dass sie nicht mit der Marke beginnen.
+dropins_spiegeln() {
+  local f n
+  if [ -d "$DROPIN_ALT" ]; then
+    install -d -m 0755 "$DROPIN_NEU"
+    for f in "$DROPIN_ALT"/*.conf; do
+      [ -f "$f" ] || continue
+      n="$(basename "$f")"
+      { echo "$DROPIN_MARKE"; cat "$f"; } > "$DROPIN_NEU/.$n.neu"
+      chmod 0644 "$DROPIN_NEU/.$n.neu"
+      mv -f "$DROPIN_NEU/.$n.neu" "$DROPIN_NEU/$n"
+    done
+  fi
+  [ -d "$DROPIN_NEU" ] || return 0
+  for f in "$DROPIN_NEU"/*.conf; do
+    [ -f "$f" ] || continue
+    [ "$(head -n 1 "$f")" = "$DROPIN_MARKE" ] || continue
+    [ -f "$DROPIN_ALT/$(basename "$f")" ] || rm -f "$f"
+  done
+  if [ -z "${WAMO_DROPIN_NEU:-}" ]; then systemctl daemon-reload; fi
+}
+
+cmd_dropins_spiegeln() {
+  [ -n "${WAMO_DROPIN_NEU:-}" ] || root_pflicht
+  dropins_spiegeln
+  echo "Drop-ins gespiegelt: $(ls -1 "$DROPIN_NEU" 2>/dev/null | grep -c '\.conf$' || true) in $DROPIN_NEU"
+}
+
 # Ruhe: im Journal der angegebenen Unit steht seit N Minuten nichts (eine laufende Sitzung schreibt laufend)
 ruhe_pruefen() {
   local unit="$1" min="${RUHE_MIN:-15}" n
@@ -185,6 +220,7 @@ warte_auf_slot() {
 cmd_umstellen() {
   root_pflicht
   local name
+  dropins_spiegeln
   name="${1:-}"; name_pruefen "$name"
   systemctl is-active --quiet wamo-core.service || fehler "wamo-core.service läuft nicht: nichts umzustellen (Rückweg: umstellung-zurueck)"
   ! systemctl is-active --quiet wamo-core@a.service || fehler "wamo-core@a läuft schon"
@@ -233,6 +269,7 @@ sitzungen_von() {
 cmd_umschalten_kern() {
   root_pflicht
   local name alt neu
+  dropins_spiegeln
   name="${1:-}"; name_pruefen "$name"
   alt="$(aktiver_slot)"; neu="$(anderer_slot "$alt")"
   systemctl is-active --quiet "wamo-core@$alt.service" || fehler "aktiver Slot $alt läuft nicht: kein geordneter Wechsel (umstellung-zurueck oder Slot starten)"
@@ -307,10 +344,11 @@ case "$befehl" in
   inc) cmd_inc "$@" ;;
   inc-text) inc_text "$@" ;;
   umstellen) cmd_umstellen "$@" ;;
+  dropins-spiegeln) cmd_dropins_spiegeln ;;
   umschalten-kern) cmd_umschalten_kern "$@" ;;
   bewaehren) cmd_bewaehren "$@" ;;
   ausleiten) cmd_ausleiten ;;
   rueckweg-kern) cmd_rueckweg_kern ;;
   umstellung-zurueck) cmd_umstellung_zurueck ;;
-  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | umstellen <release> | umstellung-zurueck | umschalten-kern <release> | bewaehren [min] | ausleiten | rueckweg-kern | status" ;;
+  *) fehler "Befehl: einrichten | release <name> [<ordner>] | slot <a|b> <name> | inc <legacy|a|b> [auslaufend <a|b>] | dropins-spiegeln | umstellen <release> | umstellung-zurueck | umschalten-kern <release> | bewaehren [min] | ausleiten | rueckweg-kern | status" ;;
 esac

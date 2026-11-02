@@ -229,6 +229,54 @@ class IncludeDatei(unittest.TestCase):
         self.assertNotIn("Access-Control", t[t.index("handle {\n"):])
 
 
+@unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "braucht bash unter Linux")
+class DropinsSpiegeln(unittest.TestCase):
+    """Fehler der ersten Umstellung: Die Drop-ins der alten Unit (Ursprung der Oberfläche, Fernzugriff) fehlten den Slots, die Oberfläche bekam 400."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.alt = Path(self.tmp.name) / "alt.d"
+        self.neu = Path(self.tmp.name) / "neu.d"
+        self.alt.mkdir()
+
+    def lauf(self):
+        env = {"PATH": os.environ["PATH"], "WAMO_DROPIN_ALT": str(self.alt), "WAMO_DROPIN_NEU": str(self.neu)}
+        return subprocess.run(["bash", "wamo-core-slots.sh", "dropins-spiegeln"], cwd=str(INFRA), env=env, capture_output=True, text=True)
+
+    def test_dateien_werden_mit_marke_gespiegelt(self):
+        (self.alt / "wamo-ui.conf").write_text("[Service]\nEnvironment=PIPECAT_ALLOWED_ORIGINS=https://x:55445\n", encoding="utf-8")
+        (self.alt / "wamo-rd.conf").write_text("[Service]\nSupplementaryGroups=wamo-rd-gateway\n", encoding="utf-8")
+        (self.alt / "kein-conf.txt").write_text("nicht", encoding="utf-8")
+        p = self.lauf()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(sorted(os.listdir(self.neu)), ["wamo-rd.conf", "wamo-ui.conf"])
+        t = (self.neu / "wamo-ui.conf").read_text(encoding="utf-8")
+        self.assertTrue(t.startswith("# gespiegelt von wamo-core.service.d"))
+        self.assertIn("PIPECAT_ALLOWED_ORIGINS=https://x:55445", t)
+
+    def test_geaenderte_und_entfernte_dropins_folgen_eigene_bleiben(self):
+        (self.alt / "wamo-ui.conf").write_text("[Service]\nEnvironment=A=1\n", encoding="utf-8")
+        (self.alt / "wamo-rd.conf").write_text("[Service]\nEnvironment=B=1\n", encoding="utf-8")
+        self.lauf()
+        self.neu.joinpath("eigen.conf").write_text("[Service]\nEnvironment=C=1\n", encoding="utf-8")   # gehört nur der Vorlage
+        (self.alt / "wamo-ui.conf").write_text("[Service]\nEnvironment=A=2\n", encoding="utf-8")
+        (self.alt / "wamo-rd.conf").unlink()
+        self.assertEqual(self.lauf().returncode, 0)
+        self.assertIn("A=2", (self.neu / "wamo-ui.conf").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(os.listdir(self.neu)), ["eigen.conf", "wamo-ui.conf"])   # gespiegeltes weg, eigenes bleibt
+
+    def test_ohne_dropins_der_alten_unit_bleibt_alles_ruhig(self):
+        shutil.rmtree(self.alt)
+        self.assertEqual(self.lauf().returncode, 0)
+
+    def test_umstellen_und_umschalten_kern_spiegeln_vor_dem_start(self):
+        t = SKRIPT.read_text(encoding="utf-8")
+        for funktion in ("cmd_umstellen", "cmd_umschalten_kern", "cmd_einrichten"):
+            kopf = t[t.index(funktion + "() {"):][:200]
+            self.assertIn("dropins_spiegeln", kopf, funktion)
+
+
 class CaddySite(unittest.TestCase):
     def test_site_bindet_die_include_datei_ein_und_behaelt_die_grenzen(self):
         t = (CADDY / "wamo-core.caddy").read_text(encoding="utf-8")
