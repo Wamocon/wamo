@@ -81,10 +81,12 @@ echo "== 1. Proxy und Regeln aus"
 if [ -z "$WURZEL" ]; then
   tu "beendet laufende Prüfungen (Einheiten wamo-pruefer-lauf-*)" \
     bash -c 'systemctl stop "wamo-pruefer-lauf-*.service" 2>/dev/null; pkill -KILL -u wamo-pruefer 2>/dev/null; true'
-  tu "stoppt und deaktiviert den Proxy pakete" systemctl disable --now wamo-pruefer-proxy@pakete.service || true
+  tu "stoppt und deaktiviert den Annahme-Socket" systemctl disable --now wamo-pruefer-annahme.socket || true
+  tu "beendet laufende Anfragen an die Annahme" bash -c 'systemctl stop "wamo-pruefer-annahme@*.service" 2>/dev/null; true'
+  tu "stoppt und deaktiviert die Proxys pakete und claude" systemctl disable --now wamo-pruefer-proxy@pakete.service wamo-pruefer-proxy@claude.service || true
   tu "stoppt und deaktiviert die Ausgangsregeln (löscht die nft-Tabelle wamo_pruefer_ausgang)" \
     systemctl disable --now wamo-pruefer-ausgang.service || true
-  echo "  Proxy: $(systemctl is-active wamo-pruefer-proxy@pakete.service 2>/dev/null || true)"
+  echo "  Proxy pakete: $(systemctl is-active wamo-pruefer-proxy@pakete.service 2>/dev/null || true), claude: $(systemctl is-active wamo-pruefer-proxy@claude.service 2>/dev/null || true)"
 fi
 
 if [ "$ENTFERNEN" = 0 ]; then
@@ -96,7 +98,7 @@ echo "== 2. Units, Profil und Ordner entfernen"
 if [ -z "$WURZEL" ] && [ -f "$APPARMOR" ]; then
   tu "entlädt das AppArmor-Profil wamo-pruefer-bwrap" apparmor_parser -R "$APPARMOR" || true
 fi
-tu "löscht die Units und das AppArmor-Profil" rm -f -- "$UNIT_DIR/wamo-pruefer-ausgang.service" "$UNIT_DIR/wamo-pruefer-proxy@.service" "$APPARMOR"
+tu "löscht die Units und das AppArmor-Profil" rm -f -- "$UNIT_DIR/wamo-pruefer-ausgang.service" "$UNIT_DIR/wamo-pruefer-proxy@.service" "$UNIT_DIR/wamo-pruefer-annahme.socket" "$UNIT_DIR/wamo-pruefer-annahme@.service" "$APPARMOR"
 if [ -z "$WURZEL" ]; then
   tu "systemctl daemon-reload" systemctl daemon-reload
   tu "löscht /run/wamo-pruefer.lock" rm -f -- /run/wamo-pruefer.lock

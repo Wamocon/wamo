@@ -17,6 +17,7 @@ import re
 import struct
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -1083,8 +1084,8 @@ class GithubAppTests(unittest.TestCase):
         self.fake.waehrend_post = lambda: os.kill(os.getpid(), sig.SIGTERM)  # kommt mitten in der Token-Erzeugung
         with D._signale(D._als_ausnahme), self.assertRaises(D._Beendet):
             with D.github_token_fuer_lauf(JOB, "umsetzung", None, self.app()):
-                for _ in range(100):  # das aufgeschobene Signal kommt spätestens hier an
-                    pass
+                for _ in range(100):  # das aufgeschobene Signal kommt spätestens hier an (echte Zeit statt leerer Durchläufe: auf einem kalten Rechner reichten 100 nicht)
+                    time.sleep(0.01)
         self.assertEqual(len(self.fake.widerrufe()), 1)
 
     # ------------------------------------------------------------ Echter Einstiegspunkt cmd_start

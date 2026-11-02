@@ -10,6 +10,8 @@ Teil A: Installation (nur lesen): Besitzer und Rechte, Prüfsummen, Dienste, Aus
 Teil B: Der Proxy "pakete" lässt nur zu, was in der Liste steht (CONNECT auf Port 443), und weist alles andere ab.
 Teil C: Die Sandbox selbst: Wer sie ist, was sie sieht, wohin sie schreiben darf, welche Adressen sie erreicht (nur den Proxy).
 Teil D: Zeitlimit (nach dem Limit bleibt kein Prozess übrig) und Aufräumen der Arbeitsordner.
+Teil F: Der Annahme-Dienst, der Weg vom Release-Dienst in die Sandbox: Socket nur für wamo-release, Missbrauchsfälle im Archiv, volle Läufe über den
+        Socket als wamo-release (grün, kaputt, Link im Stand) und eine zweite Anfrage während eines Laufs ("belegt").
 Teil E: Der ganze Weg mit einem kleinen Projekt: grüner Stand, absichtlich kaputter Test, untergeschobener Schlüssel, Lockfile-Änderung mit
         Audit, dazu ein Test, der aus dem Code heraus Adressen im Inneren und im Internet anzusprechen versucht (muss scheitern).
 Es wird nichts am System geändert. Der Rauchtest schreibt nur in Wegwerf-Ordner unter /var/tmp und in die Arbeitsordner der Läufe.
@@ -19,6 +21,7 @@ Exit 0 nur, wenn alles bestanden ist.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -40,6 +43,7 @@ WERK = "/opt/wamo-pruefer/werkzeuge"
 BASIS = "/opt/wamo-pruefer"
 LAUF_SH = f"{APP}/wamo-pruefer-lauf.sh"
 PROXY = ("127.0.0.1", 18080)
+PROXY_CLAUDE = ("127.0.0.1", 18081)
 SANDBOX_BENUTZER = "wamo-pruefer"
 PROXY_BENUTZER = "wamo-pruefer-proxy"
 ERGEBNIS = {"ok": 0, "fehler": 0, "uebersprungen": 0}
@@ -205,7 +209,7 @@ def teil_a() -> None:
             pruefe(f"Benutzer {b}: nologin, keine weiteren Gruppen", u.pw_shell.endswith("nologin") and gruppen == [b], f"{u.pw_shell} {gruppen}")
         except KeyError:
             pruefe(f"Benutzer {b} vorhanden", False)
-    for unit in ("wamo-pruefer-ausgang.service", "wamo-pruefer-proxy@pakete.service"):
+    for unit in ("wamo-pruefer-ausgang.service", "wamo-pruefer-proxy@pakete.service", "wamo-pruefer-proxy@claude.service"):
         r = lauf(["systemctl", "is-active", unit])
         pruefe(f"{unit} aktiv", r.stdout.strip() == "active", r.stdout)
     r = lauf(["nft", "list", "table", "inet", "wamo_pruefer_ausgang"])
@@ -227,9 +231,9 @@ def teil_a() -> None:
 
 
 # ------------------------------------------------------------------------------------------------ Teil B
-def connect_antwort(ziel: str, pfad_zeile: str | None = None) -> str:
+def connect_antwort(ziel: str, pfad_zeile: str | None = None, proxy: tuple[str, int] = PROXY) -> str:
     """Schickt eine Zeile an den Proxy und liefert die erste Antwortzeile (oder 'keine Antwort')."""
-    s = socket.create_connection(PROXY, timeout=15)
+    s = socket.create_connection(proxy, timeout=15)
     try:
         s.sendall((pfad_zeile if pfad_zeile is not None else f"CONNECT {ziel} HTTP/1.1\r\nHost: {ziel}\r\n\r\n").encode())
         s.settimeout(15)
@@ -263,6 +267,16 @@ def teil_b() -> None:
     pruefe("GET über den Proxy wird abgewiesen", " 200" not in a, a)
     a = connect_antwort("", "CONNECT pypi.org:443 HTTP/1.1\r\n" + "X: " + "a" * 5000 + "\r\n\r\n")
     pruefe("zu langer Kopf wird abgewiesen", " 200" not in a, a)
+    print("Teil B2: Proxy claude")
+    a = connect_antwort("api.anthropic.com:443", proxy=PROXY_CLAUDE)
+    pruefe("CONNECT api.anthropic.com:443 wird aufgebaut", " 200" in a, a)
+    for ziel, text in (("pypi.org:443", "Paketquellen gehören nicht in die Claude-Stufe"), ("registry.npmjs.org:443", "npm"), ("github.com:443", "GitHub"),
+                       ("example.com:443", "fremde Domain"), ("api.anthropic.com:22", "Port 22"), ("160.79.104.10:443", "IP-Adresse"),
+                       ("192.168.178.136:55322", "Datenbank im LAN"), ("claude.ai:443", "andere Anthropic-Namen")):
+        a = connect_antwort(ziel, proxy=PROXY_CLAUDE)
+        pruefe(f"claude-Proxy: CONNECT {ziel} abgewiesen ({text})", " 200" not in a and a.startswith(("HTTP/1.1 4", "HTTP/1.1 5", "keine Antwort")), a)
+    a = connect_antwort("api.anthropic.com:443")   # am Paketproxy
+    pruefe("Paketproxy: api.anthropic.com abgewiesen (Claude und Pakete bleiben getrennt)", " 200" not in a, a)
 
 
 # ------------------------------------------------------------------------------------------------ Teil C
@@ -430,6 +444,15 @@ def teil_e() -> None:
         ps = d["pruefstand"] if d else {}
         pruefe("E4 neue Sperrdateien: neue Pakete werden gemeldet und der Audit läuft über den Proxy", d is not None and len(d.get("neue_pakete", [])) > 0 and ps.get("abhaengigkeiten") == "ok",
                f"{code} {ps} {d and d['details'].get('abhaengigkeiten')} {text[-400:]}")
+        # E3b: ein neuer ruff-Fund (ungenutzter Import) schließt das Tor, ohne dass der Wortlaut im Ergebnis steht
+        neu3b = os.path.join(t, "neu3b")
+        kopiere(projekt, neu3b)
+        schreibe(neu3b, "voice-core/lint_neu.py", "import os\n")
+        code, d, text = fuehre_lauf(basis, neu3b, os.path.join(t, "e3b.json"))
+        ps = d["pruefstand"] if d else {}
+        pruefe("E3b ein neuer ruff-Fund (F401): typen_lint=fehler, nur Datei und Regel im Ergebnis",
+               code == 1 and ps.get("typen_lint") == "fehler" and d["details"]["typen_lint"]["fehler"] == "ruff_neue_funde:1"
+               and "voice-core/lint_neu.py F401 +1" in d["details"]["typen_lint"]["ende"], f"{code} {ps} {d and d['details'].get('typen_lint')}")
         # E4b: bekannte Lücke (idna 3.10, PYSEC-2026-215, behoben in 3.15): der Audit muss die Stufe rot machen
         neu4b = os.path.join(t, "neu4b")
         kopiere(projekt, neu4b)
@@ -455,6 +478,150 @@ def teil_e() -> None:
     pruefe("nach Teil E läuft kein Prozess von wamo-pruefer", not lauf(["pgrep", "-u", SANDBOX_BENUTZER]).stdout.split())
 
 
+# ------------------------------------------------------------------------------------------------ Teil F
+ANNAHME_SOCKET = "/run/wamo-pruefer-annahme/annahme.sock"
+CLIENT_PY = f"{APP}/pruefer_client.py"
+# Läuft als anderer Benutzer: schickt rohe Bytes (base64 im Argument) an den Annahme-Dienst und gibt die Antwort aus.
+SENDER = (
+    "import base64, socket, sys\n"
+    "s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+    "s.settimeout(30)\n"
+    "try:\n"
+    "    s.connect(sys.argv[1])\n"
+    "except OSError as e:\n"
+    "    print('NICHT_VERBUNDEN ' + type(e).__name__)\n"
+    "    sys.exit(0)\n"
+    "try:\n"
+    "    s.sendall(base64.b64decode(sys.argv[2]))\n"
+    "    s.shutdown(socket.SHUT_WR)\n"
+    "except OSError:\n"
+    "    pass\n"
+    "d = b''\n"
+    "try:\n"
+    "    while True:\n"
+    "        t = s.recv(65536)\n"
+    "        if not t:\n"
+    "            break\n"
+    "        d += t\n"
+    "except OSError:\n"
+    "    pass\n"
+    "print('ANTWORT ' + d.decode('utf-8', 'replace').strip())\n"
+)
+
+
+def als(benutzer: str, argv: list[str], zeit: int = 3000) -> subprocess.CompletedProcess:
+    return lauf(["runuser", "-u", benutzer, "--", *argv], timeout=zeit)
+
+
+def senden(benutzer: str, roh: bytes) -> str:
+    r = als(benutzer, ["/usr/bin/python3", "-I", "-c", SENDER, ANNAHME_SOCKET, base64.b64encode(roh).decode()], 120)
+    return (r.stdout + r.stderr).strip()
+
+
+def antwort_json(text: str) -> dict | None:
+    if not text.startswith("ANTWORT "):
+        return None
+    try:
+        d = json.loads(text[8:])
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def client_lauf(benutzer: str, basis: str, neu: str, runde: int = 1) -> tuple[int, dict | None, str]:
+    r = als(benutzer, ["/usr/bin/python3", "-I", "-B", CLIENT_PY, "--basis", basis, "--neu", neu, "--runde", str(runde)])
+    try:
+        d = json.loads(r.stdout) if r.stdout.strip() else None
+    except ValueError:
+        d = None
+    return r.returncode, d, (r.stdout + r.stderr)[-500:]
+
+
+def teil_f(schnell: bool) -> None:
+    print("Teil F: Annahme-Dienst (der Weg vom Release-Dienst in die Sandbox)")
+    r = lauf(["systemctl", "is-active", "wamo-pruefer-annahme.socket"])
+    pruefe("wamo-pruefer-annahme.socket aktiv", r.stdout.strip() == "active", r.stdout)
+    st = info(ANNAHME_SOCKET)
+    try:
+        release_uid = pwd.getpwnam("wamo-release").pw_uid
+    except KeyError:
+        release_uid = -1
+    pruefe("Socket gehört wamo-release, Modus 0600", st is not None and stat.S_ISSOCK(st.st_mode) and st.st_uid == release_uid and stat.S_IMODE(st.st_mode) == 0o600, str(st))
+    pruefe("Ordner des Sockets gehört root und ist nicht beschreibbar", root_eigen(os.path.dirname(ANNAHME_SOCKET)))
+    pruefe("Zwischenablage /srv/wamo-pruefer/annahme gehört root, Modus 0700", (info("/srv/wamo-pruefer/annahme") is not None
+           and info("/srv/wamo-pruefer/annahme").st_uid == 0 and stat.S_IMODE(info("/srv/wamo-pruefer/annahme").st_mode) == 0o700))
+    for benutzer in ("nobody", "wamo-core", "wamo-pruefer", "wamo-pruefer-proxy"):
+        try:
+            pwd.getpwnam(benutzer)
+        except KeyError:
+            uebersprungen(f"{benutzer} am Annahme-Socket", "Benutzer fehlt")
+            continue
+        t = senden(benutzer, b"WAMO-PRUEFEN 1 1\nEND\n")
+        pruefe(f"{benutzer} kommt nicht an den Annahme-Socket", t.startswith("NICHT_VERBUNDEN"), t)
+    kopf = b"WAMO-PRUEFEN 1 1\n"
+    faelle = (("falscher Kopf", b"HALLO\nEND\n", "kopf"), ("Runde 9", b"WAMO-PRUEFEN 1 9\nEND\n", "kopf"), ("Runde 0", b"WAMO-PRUEFEN 1 0\nEND\n", "kopf"),
+              ("Pfad nach oben", kopf + b"D neu\nD neu/../../x\nEND\n", "archiv_ungueltig"), ("absoluter Pfad", kopf + b"D /etc\nEND\n", "archiv_ungueltig"),
+              ("Pfad außerhalb von basis und neu", kopf + b"D etc\nEND\n", "archiv_ungueltig"),
+              ("Schreiben durch einen Link", kopf + b"L neu/l\nF 1 - neu/l/x\nx\nEND\n", "archiv_ungueltig"),
+              ("doppelter Eintrag", kopf + b"D neu\nD neu\nEND\n", "archiv_ungueltig"),
+              ("zu große Datei (nichts wird gelesen)", kopf + b"F 99999999999 - neu/x\n", "archiv_ungueltig"),
+              ("abgebrochener Inhalt", kopf + b"F 10 - neu/a\nab", "archiv_ungueltig"),
+              ("unbekannte Eintragsart", kopf + b"X neu\nEND\n", "archiv_ungueltig"), ("Inhalt nach END", kopf + b"END\nD neu\n", "archiv_ungueltig"),
+              ("Steuerzeichen im Namen", kopf + b"D neu/a\x01b\nEND\n", "archiv_ungueltig"))
+    for name, roh, grund in faelle:
+        j = antwort_json(senden("wamo-release", roh))
+        pruefe(f"Annahme weist ab: {name}", j is not None and j.get("ok") is False and j.get("grund") == grund, str(j))
+    pruefe("nach den Missbrauchsfällen liegt nichts in der Zwischenablage", os.listdir("/srv/wamo-pruefer/annahme") == [], str(os.listdir("/srv/wamo-pruefer/annahme")))
+    pruefe("nichts außerhalb des Arbeitsordners entstanden", not any(os.path.exists(p) for p in ("/srv/wamo-pruefer/x", "/srv/x", "/etc/x", "/srv/wamo-pruefer/annahme/x")))
+    if schnell:
+        uebersprungen("Teil F, volle Läufe über den Socket", "--schnell")
+        return
+    with tempfile.TemporaryDirectory(dir="/var/tmp", prefix="pruefer-annahme.") as t:
+        os.chmod(t, 0o755)
+        projekt = os.path.join(t, "projekt")
+        os.makedirs(projekt)
+        if not pruefe("kleines Projekt mit Sperrdateien angelegt", baue_projekt(projekt, t)):
+            return
+        basis, neu = os.path.join(t, "basis"), os.path.join(t, "neu")
+        kopiere(projekt, basis)
+        kopiere(projekt, neu)
+        schreibe(neu, "voice-core/test_netz.py", TEST_NETZ)
+        code, d, text = client_lauf("wamo-release", basis, neu)
+        ps = d["pruefstand"] if d else {}
+        pruefe("F1 wamo-release schickt zwei Stände: grünes Ergebnis über den Socket (Exit 0, jede Stufe ok)",
+               code == 0 and d is not None and len(ps) == 8 and all(v == "ok" for v in ps.values()), f"{code} {ps} {text}")
+        pruefe("F1 die Netzprobe im Test lief in der Sandbox (nicht im Dienst) und besteht", ps.get("tests") == "ok")
+        neu2 = os.path.join(t, "neu2")
+        kopiere(projekt, neu2)
+        schreibe(neu2, "voice-core/test_kaputt.py", "def test_kaputt():\n    assert 1 == 2\n")
+        code, d, text = client_lauf("wamo-release", basis, neu2)
+        ps = d["pruefstand"] if d else {}
+        pruefe("F2 kaputter Test: Exit 1, tests=fehler", code == 1 and ps.get("tests") == "fehler", f"{code} {ps} {text}")
+        neu3 = os.path.join(t, "neu3")
+        kopiere(projekt, neu3)
+        os.symlink("/etc", os.path.join(neu3, "verweis"))
+        code, d, text = client_lauf("wamo-release", basis, neu3)
+        ps = d["pruefstand"] if d else {}
+        pruefe("F3 ein Link im Stand kommt als ungültiger Link an: bauen=fehler (link_im_baum), /etc bleibt unberührt",
+               ps.get("bauen") == "fehler" and d["details"]["bauen"]["fehler"] == "link_im_baum", f"{code} {ps}")
+        # F4: zwei Anfragen zugleich: die zweite bekommt "belegt", die erste läuft durch
+        neu4 = os.path.join(t, "neu4")
+        kopiere(projekt, neu4)
+        schreibe(neu4, "voice-core/test_langsam.py", "import time\n\n\ndef test_langsam():\n    time.sleep(25)\n")   # hält den ersten Lauf lange genug offen
+        erste = subprocess.Popen(["runuser", "-u", "wamo-release", "--", "/usr/bin/python3", "-I", "-B", CLIENT_PY, "--basis", basis, "--neu", neu4,
+                                  "--runde", "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(7)
+        code2, d2, text2 = client_lauf("wamo-release", basis, neu)
+        pruefe("F4 zweite Anfrage während eines Laufs: abgewiesen mit 'belegt'", code2 == 2 and d2 is not None and d2.get("grund") == "belegt", f"{code2} {text2}")
+        aus, _ = erste.communicate(timeout=3000)
+        pruefe("F4 die erste Anfrage läuft trotzdem durch", erste.returncode == 0 and '"pruefstand"' in aus, f"{erste.returncode}")
+    pruefe("nach Teil F ist die Zwischenablage leer", os.listdir("/srv/wamo-pruefer/annahme") == [])
+    pruefe("nach Teil F sind die Arbeitsordner der Läufe aufgeräumt", os.listdir("/srv/wamo-pruefer/lauf") == [])
+    pruefe("nach Teil F läuft kein Prozess von wamo-pruefer", not lauf(["pgrep", "-u", SANDBOX_BENUTZER]).stdout.split())
+    r = lauf(["systemctl", "list-units", "--all", "--no-legend", "wamo-pruefer-annahme@*"])
+    pruefe("keine Instanz der Annahme bleibt zurück", not r.stdout.strip(), r.stdout)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Rauchtest der WAMO-Prüfer-Sandbox")
     ap.add_argument("--schnell", action="store_true", help="ohne Teil E (Läufe mit Paketen aus dem Netz)")
@@ -474,6 +641,7 @@ def main() -> int:
         uebersprungen("Teil E", "--schnell")
     else:
         teil_e()
+    teil_f(args.schnell)
     print(f"Ergebnis: {ERGEBNIS['ok']} bestanden, {ERGEBNIS['fehler']} fehlgeschlagen, {ERGEBNIS['uebersprungen']} übersprungen")
     return 0 if ERGEBNIS["fehler"] == 0 else 1
 

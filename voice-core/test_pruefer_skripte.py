@@ -83,8 +83,9 @@ class TextTests(unittest.TestCase):
         for verboten in ("--share-net", "--bind / ", "--bind /etc", "--bind /home", "--bind /srv", "--bind /run", "--bind /var",
                          "--setenv ANTHROPIC", "--setenv TOKEN", "eval ", "--cap-add", "--dev-bind"):
             self.assertNotIn(verboten, code)
-        self.assertNotIn("/etc/wamo", code)
+        self.assertNotIn("/etc/wamo", code.replace("/etc/wamo-anker/fremdverweise.txt", "").replace("/etc/wamo-pruefer", ""))
         self.assertNotIn("wamo-release", code)
+        self.assertEqual(code.count("/etc/wamo-anker"), 1)   # nur die Festlegung des Ortes der Mustervorlage; alles andere nutzt die Variable
 
     def test_lauf_skript_gibt_nur_ein_gepruftes_ergebnis_weiter(self):
         code = _code(PRUEFER / "wamo-pruefer-lauf.sh")
@@ -124,7 +125,15 @@ class TextTests(unittest.TestCase):
         self.assertEqual(sorted(m[1].split(",")), ["api.github.com", "files.pythonhosted.org", "fonts.googleapis.com", "fonts.gstatic.com", "github.com", "pypi.org",
                                                   "registry.npmjs.org"])   # die zwei Schrift-Hosts: next/font/google holt Roboto Condensed zur Bauzeit
         self.assertIn("LISTEN=127.0.0.1:18080", text)
-        self.assertNotIn("anthropic", text)   # der Claude-Proxy gehört zu D.4, nicht in diese Stufe
+        # der Claude-Proxy kennt genau einen Namen, und die Paketquellen kennen Claude nicht
+        alle = re.findall(r"^ERLAUBT=(.*)$", text, re.M)
+        self.assertEqual(alle, [m[1], "api.anthropic.com"])
+        self.assertNotIn("anthropic", m[1])
+        self.assertIn("LISTEN=127.0.0.1:18081", text)
+        # die Sandbox der Prüfstrecke bindet den Claude-Proxy nie ein: Code ausführen und Token halten nie im selben Prozess
+        lauf = (INFRA / "pruefer" / "wamo-pruefer-lauf.sh").read_text(encoding="utf-8")
+        self.assertNotIn("18081", lauf)
+        self.assertNotIn("claude.sock", lauf)
 
     def test_modulliste_des_skripts_ist_vollstaendig(self):
         text = (INFRA / "pruefer-einrichten.sh").read_text(encoding="utf-8")
@@ -157,7 +166,8 @@ class TextTests(unittest.TestCase):
 
     def test_keine_geheimnisse_und_keine_fremden_dienste(self):
         for name in SKRIPTE:
-            code = _code(INFRA / name)
+            # einzige erlaubte Ausnahme: der feste Ort der Mustervorlage des Fremdverweis-Greps (Anker-Ordner, nicht im Repo)
+            code = chr(10).join(z for z in _code(INFRA / name).splitlines() if not z.startswith("FREMD_STANDARD=/etc/wamo-anker/fremdverweise.txt"))
             for muster in (r"/etc/wamo[/\s\"]", r"/etc/wamo-anker", r"/etc/wamo-release", r"core\.env", r"password", r"\btee\b",
                            r"/usr/local/lib/wamo-anker", r"wamo-core\.service", r"wamo-geraete\.service", r"wamo-release\.service", r"/home/"):
                 for zeile in code.splitlines():
