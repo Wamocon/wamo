@@ -43,6 +43,13 @@ test("Fernzugriff: eigener Abschnitt und Block nur für Admins", () => {
   assert.deepEqual(parseHash("#einstellungen/fernzugriff"), { offen: true, abschnitt: "fernzugriff" });
 });
 
+test("Änderungen: eigener Abschnitt nur für Admins", () => {
+  assert.ok(ids("admin").includes("aenderungen"));
+  for (const rolle of ["mitglied", null] as const) assert.ok(!ids(rolle).includes("aenderungen"), `Rolle ${rolle}`);
+  assert.equal(abschnitteFuer({ rolle: "admin" }).find((a) => a.id === "aenderungen")?.nurAdmin, true);
+  assert.deepEqual(parseHash("#einstellungen/aenderungen"), { offen: true, abschnitt: "aenderungen" });
+});
+
 test("Texte der Gliederung ohne Gedankenstrich", () => {
   for (const a of ABSCHNITTE) assert.ok(!/[–—]|\s-\s/.test(`${a.titel} ${a.kurz}`), a.id);
 });
