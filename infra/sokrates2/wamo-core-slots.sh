@@ -131,6 +131,7 @@ inc_text() {
 
 cmd_inc() {
   root_pflicht
+  local tmp vorher
   modus_pruefen "${1:-}"
   [ -d "$CADDY_ETC" ] || fehler "$CADDY_ETC fehlt (zuerst wamo-core-caddy.sh)"
   # Aktiv darf nur ein Slot sein, dessen Instanz läuft: sonst bekäme Caddy einen Socket, den es nicht gibt
@@ -138,21 +139,21 @@ cmd_inc() {
     systemctl is-active --quiet "wamo-core@$1.service" || fehler "wamo-core@$1 läuft nicht: erst starten und prüfen, dann schalten"
     [ -S "/run/wamo-core/core-$1.sock" ] || fehler "/run/wamo-core/core-$1.sock fehlt"
   fi
-  neu="$(mktemp "$CADDY_ETC/.slot.inc.XXXXXX")"
-  trap 'rm -f "$neu"' EXIT
-  inc_text "$@" > "$neu"
-  chown "$CADDY_BESITZER":"$CADDY_BESITZER" "$neu"
-  chmod 0644 "$neu"
-  alt=""
+  tmp="$(mktemp "$CADDY_ETC/.slot.inc.XXXXXX")"
+  trap 'rm -f "$tmp"' EXIT
+  inc_text "$@" > "$tmp"
+  chown "$CADDY_BESITZER":"$CADDY_BESITZER" "$tmp"
+  chmod 0644 "$tmp"
+  vorher=""
   if [ -f "$CADDY_ETC/slot.inc" ]; then
-    alt="$CADDY_ETC/slot.inc.vorher"
-    cp -p "$CADDY_ETC/slot.inc" "$alt"
+    vorher="$CADDY_ETC/slot.inc.vorher"
+    cp -p "$CADDY_ETC/slot.inc" "$vorher"
   fi
-  mv -f "$neu" "$CADDY_ETC/slot.inc"
+  mv -f "$tmp" "$CADDY_ETC/slot.inc"
   trap - EXIT
   if ! docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
     echo "caddy reload fehlgeschlagen, vorige Fassung wird wiederhergestellt." >&2
-    if [ -n "$alt" ]; then mv -f "$alt" "$CADDY_ETC/slot.inc"; else rm -f "$CADDY_ETC/slot.inc"; fi
+    if [ -n "$vorher" ]; then mv -f "$vorher" "$CADDY_ETC/slot.inc"; else rm -f "$CADDY_ETC/slot.inc"; fi
     docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || true
     exit 1
   fi
@@ -183,6 +184,7 @@ warte_auf_slot() {
 # Einmalige Umstellung: erst startet Slot a neben der alten Unit, dann schaltet Caddy um, dann endet die alte Unit. Neue Sitzungen sehen keine Lücke.
 cmd_umstellen() {
   root_pflicht
+  local name
   name="${1:-}"; name_pruefen "$name"
   systemctl is-active --quiet wamo-core.service || fehler "wamo-core.service läuft nicht: nichts umzustellen (Rückweg: umstellung-zurueck)"
   ! systemctl is-active --quiet wamo-core@a.service || fehler "wamo-core@a läuft schon"
@@ -230,6 +232,7 @@ sitzungen_von() {
 # schickt Caddy neue Sitzungen dorthin, laufende bleiben auf ihrem Pfad. Nach dem Nachlauf nimmt die alte Instanz keinen neuen /start mehr an.
 cmd_umschalten_kern() {
   root_pflicht
+  local name alt neu
   name="${1:-}"; name_pruefen "$name"
   alt="$(aktiver_slot)"; neu="$(anderer_slot "$alt")"
   systemctl is-active --quiet "wamo-core@$alt.service" || fehler "aktiver Slot $alt läuft nicht: kein geordneter Wechsel (umstellung-zurueck oder Slot starten)"
@@ -240,6 +243,7 @@ cmd_umschalten_kern() {
     systemctl stop "wamo-core@$neu.service" || true
     fehler "Slot $neu wurde nicht gesund: nichts umgeschaltet, Slot $alt bedient weiter"
   fi
+  systemctl enable "wamo-core@$neu.service" >/dev/null 2>&1   # nach einem Neustart des Servers soll der aktive Slot wieder laufen
   cmd_inc "$neu"
   echo "Neue Sitzungen gehen jetzt auf Slot $neu (Release $name). Nachlauf ${NACHLAUF_S:-60} s, dann nimmt Slot $alt keinen neuen Start mehr an."
   sleep "${NACHLAUF_S:-60}"
@@ -250,6 +254,7 @@ cmd_umschalten_kern() {
 # Bewährung: der aktive Slot muss antworten; dreimal hintereinander nicht gesund heißt zurück auf die vorige Instanz
 cmd_bewaehren() {
   root_pflicht
+  local min akt ende schlecht code
   min="${1:-30}"
   [[ "$min" =~ ^[0-9]{1,3}$ ]] || fehler "bewaehren: Minuten als Zahl"
   akt="$(aktiver_slot)"
@@ -269,9 +274,11 @@ cmd_bewaehren() {
 
 cmd_rueckweg_kern() {
   root_pflicht
+  local alt neu
   neu="$(aktiver_slot)"; alt="$(anderer_slot "$neu")"
   systemctl is-active --quiet "wamo-core@$alt.service" || fehler "Slot $alt läuft nicht mehr: kein schneller Rückweg (das vorige Release erneut bereitstellen)"
   [ -S "/run/wamo-core/core-$alt.sock" ] || fehler "/run/wamo-core/core-$alt.sock fehlt"
+  systemctl enable "wamo-core@$alt.service" >/dev/null 2>&1
   cmd_inc "$alt" auslaufend "$neu"
   echo "Zurück auf Slot $alt. Slot $neu nimmt keine neue Sitzung mehr an; seine laufenden enden von selbst."
 }
@@ -279,6 +286,7 @@ cmd_rueckweg_kern() {
 # Beendet die auslaufende Instanz, aber nur ohne Sitzung und nach der Bewährung (so lange bleibt der Rückweg sofort möglich)
 cmd_ausleiten() {
   root_pflicht
+  local akt alt alter
   akt="$(aktiver_slot)"; alt="$(anderer_slot "$akt")"
   systemctl is-active --quiet "wamo-core@$alt.service" || { echo "Nichts auszuleiten: Slot $alt läuft nicht."; return 0; }
   alter=$(( $(date +%s) - $(stat -c %Y "$CADDY_ETC/slot.inc") ))
@@ -286,7 +294,9 @@ cmd_ausleiten() {
   [ "$(sitzungen_von "$alt")" = 0 ] || fehler "Slot $alt hat noch $(sitzungen_von "$alt") Sitzung(en)"
   ruhe_pruefen "wamo-core@$alt.service"
   systemctl stop "wamo-core@$alt.service"
-  echo "Slot $alt beendet. Aktiv bleibt Slot $akt."
+  systemctl disable "wamo-core@$alt.service" >/dev/null 2>&1 || true
+  systemctl enable "wamo-core@$akt.service" >/dev/null 2>&1 || true
+  echo "Slot $alt beendet und für den Neustart abgewählt. Aktiv bleibt Slot $akt."
 }
 
 case "$befehl" in

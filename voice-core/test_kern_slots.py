@@ -119,6 +119,28 @@ class Skript(unittest.TestCase):
         self.assertIn("nichts umgeschaltet", f)   # ein ungesunder neuer Slot lässt den alten unberührt
         self.assertIn("erst ausleiten", f)          # ein laufender freier Slot wird nie überfahren
 
+    def test_nach_einem_neustart_des_servers_laeuft_der_aktive_slot(self):
+        # Praxisprobe: Aktiviert war nur wamo-core@a; nach einem Reboot hätte Caddy auf b gezeigt und a wäre gelaufen
+        t = SKRIPT.read_text(encoding="utf-8")
+        u = t[t.index("cmd_umschalten_kern() {"):t.index("# Bewährung:")]
+        self.assertLess(u.index('systemctl enable "wamo-core@$neu.service"'), u.index('cmd_inc "$neu"\n'))   # erst aktiviert, dann geschaltet
+        r = t[t.index("cmd_rueckweg_kern() {"):t.index("# Beendet die auslaufende Instanz")]
+        self.assertIn('systemctl enable "wamo-core@$alt.service"', r)
+        a = t[t.index("cmd_ausleiten() {"):t.index("\ncase \"$befehl\" in")]
+        self.assertIn('systemctl disable "wamo-core@$alt.service"', a)
+        self.assertIn('systemctl enable "wamo-core@$akt.service"', a)
+
+    def test_befehle_ueberschreiben_keine_globalen_variablen_des_aufrufers(self):
+        # Fehler der ersten Praxisprobe: cmd_inc setzte die globalen Namen neu und alt und zerstörte damit die Werte von umschalten-kern
+        t = SKRIPT.read_text(encoding="utf-8")
+        inc = t[t.index("cmd_inc() {"):][:1500]
+        self.assertIn("local tmp vorher", inc)
+        self.assertNotRegex(inc[:inc.index("echo \"Caddy schaltet")], r"\b(neu|alt)=")
+        for funktion, namen in (("cmd_umschalten_kern", "name alt neu"), ("cmd_rueckweg_kern", "alt neu"), ("cmd_ausleiten", "akt alt alter"),
+                                ("cmd_bewaehren", "min akt ende schlecht code"), ("cmd_umstellen", "name")):
+            kopf = t[t.index(funktion + "() {"):][:120]
+            self.assertIn("local " + namen, kopf, funktion)
+
     def test_bewaehrung_rueckweg_und_ausleiten(self):
         t = SKRIPT.read_text(encoding="utf-8")
         b = t[t.index("cmd_bewaehren() {"):t.index("cmd_rueckweg_kern() {")]
