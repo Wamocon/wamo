@@ -18,7 +18,7 @@
 # Was das Skript am System ändert (nur WAMO):
 #   Benutzer wamo-pruefer                System, nologin, keine weiteren Gruppen: führt in der Sandbox fremden Code aus
 #   Benutzer wamo-pruefer-proxy          System, nologin: der Proxy, geht ins Internet, sieht nur öffentliche Adressen
-#   /opt/wamo-pruefer/app                root:root 0755: Läufer (pruefer_lauf.py, pruefer_scans.py), Proxy, wamo-pruefer-lauf.sh,
+#   /opt/wamo-pruefer/app                root:root 0755: Läufer (pruefer_lauf.py, pruefer_scans.py, migration_lint.py), Proxy, wamo-pruefer-lauf.sh,
 #                                        Rauchtest, SHA256SUMS (ExecStartPre des Proxys prüft sie vor jedem Start)
 #   /opt/wamo-pruefer/werkzeuge          root:root: Node (feste Fassung, Prüfsumme festgelegt), uv, ruff und pip-audit (pip nur mit
 #                                        Prüfsummen aus pruefer/requirements-werkzeuge.lock), dazu werkzeuge.SHA256SUMS
@@ -102,7 +102,7 @@ else
 fi
 [ "$TROCKEN" = 0 ] || echo "Trockenlauf: nichts wird geändert."
 
-PRUEFER_PY=(pruefer_annahme.py pruefer_archiv.py pruefer_bruecke.py pruefer_client.py pruefer_lauf.py pruefer_proxy.py pruefer_scans.py)
+PRUEFER_PY=(migration_lint.py pruefer_annahme.py pruefer_archiv.py pruefer_bruecke.py pruefer_client.py pruefer_lauf.py pruefer_proxy.py pruefer_scans.py)
 echo "== 0. Prüfungen (nur lesend)"
 for datei in "${PRUEFER_PY[@]/#/release/pruefer/}" pruefer/wamo-pruefer-lauf.sh pruefer/wamo-pruefer-ausgang.nft \
   pruefer/wamo-pruefer-ausgang.service "pruefer/wamo-pruefer-proxy@.service" pruefer/wamo-pruefer-annahme.socket "pruefer/wamo-pruefer-annahme@.service" pruefer/wamo-pruefer-bwrap.apparmor \
