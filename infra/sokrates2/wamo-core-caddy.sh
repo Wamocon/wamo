@@ -3,9 +3,11 @@
 # (Docker-Gruppe, Dateien in /home/wamocon/wamo-tls/caddy gehören wamocon), nicht mit sudo:
 #   ssh sokrates2 "bash ~/wamo-infra/wamo-core-caddy.sh"            # einrichten oder aktualisieren
 #   ssh sokrates2 "bash ~/wamo-infra/wamo-core-caddy.sh --zurueck"  # Site entfernen (Port lauscht dann nicht mehr)
+#   ssh sokrates2 "bash ~/wamo-infra/wamo-core-caddy.sh --route-zurueck"  # nur die Freigabe-Route weg: die Site der Version vor dem letzten Einrichten
+#                                                                       # (Datei wamo-core.caddy.vorher) wird wiederhergestellt, der Kern bleibt erreichbar
 #
-# Voraussetzungen (prüft das Skript): /run/wamo-core aus wamo-core-einrichten.sh (sonst legte Docker das Verzeichnis
-# als root an) und die Firewall-Regel für 55444, bevor der Port veröffentlicht wird.
+# Voraussetzungen (prüft das Skript): /run/wamo-core aus wamo-core-einrichten.sh und /run/wamo-freigabe aus freigabe-einrichten.sh (sonst
+# legte Docker die Verzeichnisse als root an) und die Firewall-Regel für 55444, bevor der Port veröffentlicht wird.
 # Ein geänderter Port oder Mount erzwingt eine Neuanlage des Containers: HTTPS 55443 ist dann wenige Sekunden weg.
 set -euo pipefail
 
@@ -41,13 +43,22 @@ if [ "${1:-}" = --zurueck ]; then
   echo "Site 55444 entfernt (Port und Mount bleiben im Compose, ohne Site lauscht Caddy dort nicht)."
   exit 0
 fi
-[ -z "${1:-}" ] || { echo "Aufruf: $0 [--zurueck]" >&2; exit 2; }
+if [ "${1:-}" = --route-zurueck ]; then
+  [ -f "$CADDY_DIR/etc/kern/wamo-core.caddy.vorher" ] || { echo "Keine Sicherung (wamo-core.caddy.vorher), nichts wiederherzustellen." >&2; exit 1; }
+  install -m 644 "$CADDY_DIR/etc/kern/wamo-core.caddy.vorher" "$CADDY_DIR/etc/kern/wamo-core.caddy"
+  neu_laden
+  echo "Site 55444 auf die Fassung vor der Freigabe-Route zurückgesetzt."
+  exit 0
+fi
+[ -z "${1:-}" ] || { echo "Aufruf: $0 [--zurueck|--route-zurueck]" >&2; exit 2; }
 
 for f in wamo-caddy/Caddyfile wamo-caddy/docker-compose.yml wamo-caddy/kern/wamo-core.caddy; do
   [ -f "$HERE/$f" ] || { echo "$HERE/$f fehlt." >&2; exit 1; }
 done
 eigen="$(stat -c '%U:%g:%a' /run/wamo-core 2>/dev/null || true)"
 [ "$eigen" = "wamo-core:1000:750" ] || { echo "/run/wamo-core: $eigen (zuerst sudo bash wamo-core-einrichten.sh)." >&2; exit 1; }
+freigabe="$(stat -c '%U:%G:%a' /run/wamo-freigabe 2>/dev/null || true)"
+[ "$freigabe" = "wamo-anker:wamocon:2750" ] || { echo "/run/wamo-freigabe: $freigabe (zuerst sudo bash freigabe-einrichten.sh)." >&2; exit 1; }
 /usr/local/sbin/wamo-firewall regeln | grep -q 'ctorigdstport 55444' \
   || { echo "Firewall ohne Regel für 55444 (zuerst wamo-core-einrichten.sh)." >&2; exit 1; }
 sudo -n iptables -w 5 -S WAMO-FW 2>/dev/null | grep -q 'ctorigdstport 55444' \
@@ -70,6 +81,9 @@ echo "  Caddyfile gültig"
 echo "== 2. Installieren"
 install -d -m 755 "$CADDY_DIR/etc/kern"
 install -m 644 "$TMP/etc/Caddyfile" "$CADDY_DIR/etc/Caddyfile"
+if [ -f "$CADDY_DIR/etc/kern/wamo-core.caddy" ] && ! cmp -s "$TMP/etc/kern/wamo-core.caddy" "$CADDY_DIR/etc/kern/wamo-core.caddy"; then
+  cp -p "$CADDY_DIR/etc/kern/wamo-core.caddy" "$CADDY_DIR/etc/kern/wamo-core.caddy.vorher"   # Endung .vorher: wird vom Import "kern/*.caddy" nicht geladen
+fi
 install -m 644 "$TMP/etc/kern/wamo-core.caddy" "$CADDY_DIR/etc/kern/wamo-core.caddy"
 alt_id="$(docker ps -q -f name=^wamo-caddy$)"
 if ! cmp -s "$HERE/wamo-caddy/docker-compose.yml" "$CADDY_DIR/docker-compose.yml"; then

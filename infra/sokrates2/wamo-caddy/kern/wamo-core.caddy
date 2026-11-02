@@ -5,22 +5,56 @@
 # lauscht ausschließlich auf dem Unix-Socket; die Medien (UDP) laufen direkt zwischen Browser und Kern.
 https://192.168.178.136:55444, https://sokrates2:55444, https://spark-651f.local:55444 {
 	tls internal
-	# SDP-Offers sind wenige Kilobyte groß (die Zugangskontrolle des Kerns begrenzt zusätzlich auf 256 KB).
-	# Nur geteilte Dateien (/wamo/api/dateien, Datei oder neue Fassung) dürfen bis 26 MiB groß sein; der Kern begrenzt
-	# selbst auf 25 MiB. Beide Pfadgruppen schließen sich aus, sonst griffe die engere Grenze zusätzlich.
-	@dateien path /wamo/api/dateien /wamo/api/dateien/*
-	@sonst not path /wamo/api/dateien /wamo/api/dateien/*
-	request_body @dateien {
-		max_size 26MiB
+
+	# Freigabe einer Änderung (Selbstüberarbeitung, Schritt 1.4c): genau POST /wamo/release/<id>/freigeben geht am Kern vorbei an den Freigabe-Dienst
+	# des Ankers (Unix-Socket /run/wamo-freigabe/freigabe.sock). Er prüft das Token selbst (Signatur, aal2, zweiter Faktor höchstens 60 Sekunden
+	# alt); Caddy prüft nichts davon. Der Pfad ist hier absichtlich locker (Hex und Bindestriche), der Dienst verlangt das genaue UUID-Format und
+	# antwortet sonst mit 404. Die Antwort darf nur die Oberfläche (feste Ursprünge auf 55445) im Browser lesen. Alle anderen Pfade und Methoden
+	# gehen wie bisher an den Kern. Rückweg: wamo-core-caddy.sh --route-zurueck.
+	@freigeben {
+		method POST OPTIONS
+		path_regexp ^/wamo/release/[0-9a-f-]+/freigeben$
 	}
-	request_body @sonst {
-		max_size 512KB
+	handle @freigeben {
+		@ui header_regexp ui Origin ^https://(192\.168\.178\.136|sokrates2|spark-651f\.local):55445$
+		header @ui {
+			Access-Control-Allow-Origin "{http.regexp.ui.0}"
+			Access-Control-Allow-Methods "POST, OPTIONS"
+			Access-Control-Allow-Headers "Authorization, Content-Type"
+			Access-Control-Max-Age "600"
+			Vary Origin
+		}
+		@vorab method OPTIONS
+		respond @vorab 204
+		request_body {
+			max_size 4KB
+		}
+		reverse_proxy unix//run/wamo-freigabe/freigabe.sock {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 20s
+			}
+		}
 	}
-	reverse_proxy unix//run/wamo-core/core.sock {
-		flush_interval -1
-		transport http {
-			dial_timeout 3s
-			response_header_timeout 60s
+
+	handle {
+		# SDP-Offers sind wenige Kilobyte groß (die Zugangskontrolle des Kerns begrenzt zusätzlich auf 256 KB).
+		# Nur geteilte Dateien (/wamo/api/dateien, Datei oder neue Fassung) dürfen bis 26 MiB groß sein; der Kern begrenzt
+		# selbst auf 25 MiB. Beide Pfadgruppen schließen sich aus, sonst griffe die engere Grenze zusätzlich.
+		@dateien path /wamo/api/dateien /wamo/api/dateien/*
+		@sonst not path /wamo/api/dateien /wamo/api/dateien/*
+		request_body @dateien {
+			max_size 26MiB
+		}
+		request_body @sonst {
+			max_size 512KB
+		}
+		reverse_proxy unix//run/wamo-core/core.sock {
+			flush_interval -1
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 60s
+			}
 		}
 	}
 }

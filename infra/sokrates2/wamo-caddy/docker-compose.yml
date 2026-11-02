@@ -53,6 +53,9 @@ services:
       - ./config:/config
       # Socket des Kerns, nur lesend (Verzeichnis 0750 wamo-core:wamocon, angelegt per tmpfiles.d vor Docker)
       - /run/wamo-core:/run/wamo-core:ro
+      # Socket des Freigabe-Dienstes (Route /wamo/release/<id>/freigeben auf 55444), nur lesend (Ordner 2750 wamo-anker:wamocon, angelegt per
+      # tmpfiles.d vor Docker; der Container läuft als 1000:1000 und erreicht den Socket über die Gruppe wamocon)
+      - /run/wamo-freigabe:/run/wamo-freigabe:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
       interval: 30s
