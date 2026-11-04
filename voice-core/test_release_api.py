@@ -100,7 +100,7 @@ def test_sicht_enthaelt_nur_bekannte_felder(dienst):
     assert s["anker"] == {"erreichbar": True, "sperre": "an"}
     assert (s["modus"], s["datenbank"], s["arbeiter"], s["audit_kette"], s["installation"]) == ("geruest", "angeschlossen", "frei", "ok", "ok")
     assert s["anfrage"]["id"] == KENNUNG and s["anfrage"]["schritt"] == 2 and s["anfrage"]["version"] == "0.1.1"
-    assert "profil" not in s["anfrage"]   # die Person hinter der Anfrage geht die Oberfläche nichts an
+    assert s["anfrage"]["profil"] == ADMIN   # der Client reicht es nur an die Route weiter; sie macht daraus von_mir und entfernt es (unten)
     text = json.dumps(s)
     assert "a" * 64 not in text   # kein Hash der Audit-Kette
 
@@ -235,3 +235,166 @@ def test_nur_get_und_kein_schreibender_weg(client, dienst):
 
 def test_route_ist_im_kern_registriert():
     assert "release_api" in wamo_api.ROUTEN_MODULE
+
+
+# ------------------------------------------------------------------------------------------------ Commit, Tree, Prüfstand und der Block pruefung (Schritt 1.5)
+V_COMMIT, TREE = "d" * 40, "e" * 40
+ANDERES_PROFIL = "223e4567-e89b-12d3-a456-426614174000"
+
+
+def neue_anfrage(**zusatz):
+    a = dict(STATUS["anfrage"], status="wartet_freigabe", v_commit=V_COMMIT, tree_id=TREE, treffer_anzahl=2, klasse="sonder",
+             pruefstand={"bauen": "ok", "tests": "ok", "secret_scan": "ok", "fremdverweis": "ok", "version_bytegleich": "ok", "schutzschicht": "ok"})
+    a.update(zusatz)
+    return a
+
+
+def block():
+    return {"diff": {"anzahl": 2, "hinzu": 7, "weg": 1, "binaer": 1, "gekappt": False,
+                     "dateien": [{"s": "M", "p": "voice-core/bot.py", "a": 6, "d": 1}, {"s": "A", "p": "ui/bild.png", "a": None, "d": None}]},
+            "wirkung": {"anzahl": 2, "nach_art": {"netzziel": 1, "geheimnisname": 1}, "sonder_hinweis": True, "neue_pakete": 1, "windows": False,
+                        "treffer": [{"p": "host/a.py", "z": 3, "a": "netzziel", "d": "example.org"}, {"p": "host/b.py", "z": 9, "a": "geheimnisname", "d": "core.env"}]},
+            "empfehlung": {"stufe": "minor", "version": "0.2.0", "feat": 1, "fix": 0, "sonst": 2, "unkonventionell": 0, "major_null": False}}
+
+
+@pytest.fixture
+def mit_dienst_antwort(monkeypatch):
+    """Ersetzt den Socket durch eine feste Antwort (läuft auch unter Windows)."""
+    def setze(anfrage_dict):
+        monkeypatch.setattr(C, "anfrage", lambda *_a, **_k: dict(STATUS, anfrage=anfrage_dict))
+    return setze
+
+
+def test_sicht_prueft_commit_und_tree():
+    s = C.ansicht(dict(STATUS, anfrage=neue_anfrage()))["anfrage"]
+    assert (s["v_commit"], s["tree_id"], s["treffer_anzahl"]) == (V_COMMIT, TREE, 2)
+    assert s["pruefstand"]["schutzschicht"] == "ok" and len(s["pruefstand"]) == 6
+    assert C._commit("a" * 40) == "a" * 40
+    for schlecht in ("A" * 40, "a" * 39, "a" * 41, "a" * 64, "g" * 40, "a" * 39 + "\n", " " + "a" * 39, "../" + "a" * 37, 5, None, ["a" * 40], {"a": 1}, True):
+        assert C._commit(schlecht) is None, schlecht
+
+
+def test_falsche_hex_werte_fallen_weg(client, mit_dienst_antwort):
+    mit_dienst_antwort(neue_anfrage(v_commit="Z" * 40, tree_id="e" * 64))
+    a = client.get("/wamo/api/release/status").json()["anfrage"]
+    assert (a["v_commit"], a["tree_id"]) == (None, None)
+    assert a["status"] == "wartet_freigabe"   # der Rest der Anfrage bleibt
+    for k in ("v_commit", "tree_id"):
+        for schlecht in ("1" * 40 + "x", "", "abc", 40, "a" * 40 + "\x00"):
+            mit_dienst_antwort(neue_anfrage(**{k: schlecht}))
+            assert client.get("/wamo/api/release/status").json()["anfrage"][k] is None
+
+
+def test_sicht_kappt_listen_und_texte():
+    p = block()
+    p["diff"]["dateien"] = [{"s": "M", "p": f"ordner/ä‮{i}/" + "x" * 300, "a": i, "d": 0} for i in range(100)]
+    p["wirkung"]["treffer"] = [{"p": "p/" + "y" * 300, "z": i, "a": "netzziel", "d": "\x1b[31m" + "d" * 300 + "\n"} for i in range(100)]
+    p["wirkung"]["nach_art"] = {"netzziel": 3, "boese art": 1, "x" * 50: 2, "prozess": "viele", "sudo": 10**9}
+    s = C.ansicht(dict(STATUS, anfrage=neue_anfrage(pruefstand={f"zeile_{i:02d}": "ok" for i in range(40)}, pruefung=p)), mit_pruefung=True)["anfrage"]
+    assert len(s["pruefstand"]) == 16
+    d, w = s["pruefung"]["diff"], s["pruefung"]["wirkung"]
+    assert len(d["dateien"]) == C.DATEIEN_MAX == 20 and len(w["treffer"]) == C.TREFFER_MAX == 15
+    for e in d["dateien"]:
+        assert len(e["p"]) <= 70 and e["p"].isascii() and "?" in e["p"] and "‮" not in e["p"]
+    for e in w["treffer"]:
+        assert len(e["p"]) <= 70 and len(e["d"]) <= 40 and e["d"].isascii() and "\x1b" not in e["d"] and "\n" not in e["d"]
+    assert w["nach_art"] == {"netzziel": 3}   # nur Wörter der Liste mit gültiger Zahl
+
+
+def test_sicht_laesst_nur_bekannte_formen_durch():
+    p = block()
+    p["diff"]["FREMD1"] = "x"
+    p["diff"]["dateien"][0]["FREMD2"] = "y"
+    p["wirkung"]["treffer"][0]["FREMD3"] = "z"
+    p["empfehlung"]["FREMD4"] = "rm"
+    p["FREMD5"] = {"a": 1}
+    s = C.ansicht(dict(STATUS, anfrage=neue_anfrage(pruefung=p, zusatz="x")), mit_pruefung=True)["anfrage"]
+    assert set(s["pruefung"]) == {"diff", "wirkung", "empfehlung"}
+    assert set(s["pruefung"]["diff"]) == {"anzahl", "hinzu", "weg", "binaer", "gekappt", "dateien"}
+    assert set(s["pruefung"]["diff"]["dateien"][0]) == {"s", "p", "a", "d"}
+    assert set(s["pruefung"]["wirkung"]) == {"anzahl", "nach_art", "sonder_hinweis", "neue_pakete", "windows", "treffer"}
+    assert set(s["pruefung"]["wirkung"]["treffer"][0]) == {"p", "z", "a", "d"}
+    assert set(s["pruefung"]["empfehlung"]) == {"stufe", "version", "feat", "fix", "sonst", "unkonventionell", "major_null"}
+    assert "zusatz" not in s
+    text = json.dumps(s)
+    for fremd in ("FREMD1", "FREMD2", "FREMD3", "FREMD4", "FREMD5"):
+        assert fremd not in text
+    assert s["pruefung"]["diff"]["dateien"][1] == {"s": "A", "p": "ui/bild.png", "a": None, "d": None}   # Binärdateien bleiben null
+
+
+def test_falsche_formen_der_pruefung_fallen_auf_none():
+    def sicht(p):
+        return C.ansicht(dict(STATUS, anfrage=neue_anfrage(pruefung=p)), mit_pruefung=True)["anfrage"]["pruefung"]
+    for kaputt in ("text", ["a"], 5, True, {}, {"diff": 1, "wirkung": "x", "empfehlung": []}):
+        assert sicht(kaputt) is None, kaputt
+    teile = sicht({"diff": "kaputt", "wirkung": block()["wirkung"], "empfehlung": dict(block()["empfehlung"], stufe="gigantisch")})
+    assert teile["diff"] is None and teile["empfehlung"] is None and teile["wirkung"]["anzahl"] == 2   # jeder Teil für sich
+    for aenderung in ({"gekappt": "ja"}, {"anzahl": -1}, {"hinzu": True}, {"weg": 10**12}, {"dateien": "x"}, {"binaer": None}):
+        p = block()
+        p["diff"].update(aenderung)
+        assert sicht(p)["diff"] is None, aenderung
+    p = block()
+    p["diff"]["dateien"] = [{"s": "Z", "p": "a", "a": 1, "d": 1}, {"s": "M", "p": 5, "a": 1, "d": 1}, {"s": "M", "p": "b", "a": "1", "d": 1}, {"s": "M", "p": "c", "a": 10**9, "d": 1},
+                            {"s": "M", "p": "ok", "a": 1, "d": 2}, 7, None]
+    assert sicht(p)["diff"]["dateien"] == [{"s": "M", "p": "ok", "a": 1, "d": 2}]   # ungültige Einträge fallen einzeln weg
+    for stufe in ("keine", "patch", "minor", "major"):
+        assert sicht(dict(block(), empfehlung=dict(block()["empfehlung"], stufe=stufe)))["empfehlung"]["stufe"] == stufe
+    for aenderung in ({"version": "1.2"}, {"version": "v1.2.3"}, {"version": 5}, {"major_null": "nein"}, {"feat": -1}, {"fix": 10**9}, {"stufe": "Major"}, {"stufe": None}):
+        assert sicht(dict(block(), empfehlung=dict(block()["empfehlung"], **aenderung)))["empfehlung"] is None, aenderung
+    assert sicht(dict(block(), empfehlung=dict(block()["empfehlung"], version="")))["empfehlung"]["version"] == ""   # unbekannte Basis: leere Nummer
+    p = block()
+    p["wirkung"]["treffer"] = [{"p": "a", "z": 1, "a": "unbekannte_art", "d": ""}, {"p": "a", "z": -1, "a": "netzziel", "d": ""}, {"p": "a", "z": 1, "a": "netzziel", "d": "ok"}]
+    assert sicht(p)["wirkung"]["treffer"] == [{"p": "a", "z": 1, "a": "netzziel", "d": "ok"}]
+    for aenderung in ({"sonder_hinweis": 1}, {"windows": None}, {"neue_pakete": 10**6}, {"nach_art": []}, {"treffer": {}}, {"anzahl": "2"}):
+        p = block()
+        p["wirkung"].update(aenderung)
+        assert sicht(p)["wirkung"] is None, aenderung
+
+
+def test_pruefung_nur_mit_ausdruecklicher_freigabe_der_route():
+    antwort = dict(STATUS, anfrage=neue_anfrage(pruefung=block()))
+    assert C.ansicht(antwort)["anfrage"]["pruefung"] is None   # das Sprachwerkzeug (ohne mit_pruefung) bekommt den Pfadblock nie
+    assert C.ansicht(antwort, mit_pruefung=True)["anfrage"]["pruefung"]["diff"]["dateien"][0]["p"] == "voice-core/bot.py"
+    import inspect
+    assert inspect.signature(C.status).parameters["mit_pruefung"].default is False
+    assert "mit_pruefung=True" in open(api.__file__, encoding="utf-8").read()
+
+
+def test_von_mir_statt_profil(client, mit_dienst_antwort):
+    mit_dienst_antwort(neue_anfrage(profil=ADMIN, pruefung=block()))
+    r = client.get("/wamo/api/release/status")
+    a = r.json()["anfrage"]
+    assert a["von_mir"] is True and "profil" not in a
+    assert ADMIN not in r.text   # die Kennung der Person steht nirgends in der Antwort
+    mit_dienst_antwort(neue_anfrage(profil=ANDERES_PROFIL))
+    r = client.get("/wamo/api/release/status")
+    assert r.json()["anfrage"]["von_mir"] is False and ANDERES_PROFIL not in r.text and "profil" not in r.json()["anfrage"]
+    for schlecht in (None, 5, "kein profil", "", ADMIN + "x", ADMIN.upper()):
+        mit_dienst_antwort(neue_anfrage(profil=schlecht))
+        a = client.get("/wamo/api/release/status").json()["anfrage"]
+        assert a["von_mir"] is False and "profil" not in a, schlecht   # auch die Großschreibung gilt nicht: der Client lässt nur die Form des Dienstes durch
+
+
+def test_route_liefert_den_vertrag(client, mit_dienst_antwort):
+    mit_dienst_antwort(neue_anfrage(profil=ADMIN, pruefung=block()))
+    a = client.get("/wamo/api/release/status").json()["anfrage"]
+    assert set(a) == {"id", "status", "quelle", "schritt", "schritte", "seit", "frist_bis", "versuch", "fertig", "version", "klasse", "v_commit", "tree_id", "von_mir",
+                      "treffer_anzahl", "pruefstand", "pruefung"}
+    assert (a["v_commit"], a["tree_id"], a["von_mir"], a["treffer_anzahl"]) == (V_COMMIT, TREE, True, 2)
+    assert a["pruefung"] == block()
+
+
+def test_alter_dienst_ohne_pruefung_funktioniert(client, mit_dienst_antwort):
+    mit_dienst_antwort(STATUS["anfrage"])   # die Antwort eines Dienstes vor dieser Änderung
+    r = client.get("/wamo/api/release/status")
+    assert r.status_code == 200
+    a = r.json()["anfrage"]
+    assert (a["v_commit"], a["tree_id"], a["von_mir"], a["treffer_anzahl"], a["pruefstand"], a["pruefung"]) == (None, None, True, 0, {}, None)
+    assert a["status"] == "pruefung1" and a["schritt"] == 2
+    assert r.json()["verfuegbar"] is True
+
+
+def test_keine_anfrage_bleibt_null(client, mit_dienst_antwort):
+    mit_dienst_antwort(None)
+    j = client.get("/wamo/api/release/status").json()
+    assert j["verfuegbar"] is True and j["anfrage"] is None
