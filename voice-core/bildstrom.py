@@ -1,7 +1,7 @@
 """Live-Bild des eigenen Laptops in der Oberfläche (Betriebsart Büro, Tunnel je Gerät).
 
-Was der Host entscheidet (host/live_bild.py, bei jedem Bild): Schalter AM Laptop (Standard aus, nur die Person am Laptop
-schaltet ihn ein, nicht fernschaltbar), Einwilligung, Hinweis am Laptop sichtbar, Laptop eines Admins, kein gesperrter
+Was der Host entscheidet (host/live_bild.py, bei jedem Bild): Schalter AM Laptop (Standard aus; ihn setzt nur die Desktop-App am
+Laptop, per Tray-Menü oder, seit 04.11.2026, auf eine Fernanfrage des Besitzers mit frischem Code, siehe bild_fern.py), Einwilligung, Hinweis am Laptop sichtbar, Laptop eines Admins, kein gesperrter
 Bildschirm, keine offene Freigabe, kein Vollbild, kein Passwortfenster, ein Zuschauer, Bilder je Sekunde und je Minute.
 
 Was dieser Kern zusätzlich erzwingt:
@@ -20,6 +20,10 @@ Nachrichten von der Oberfläche (RTVI-Client-Nachricht "bildstrom"):
   {"aktion": "aus"}                 beenden
   {"aktion": "monitor", "monitor": n}
   {"aktion": "ack", "seq": n}       Bild n angezeigt
+  {"aktion": "anfordern", "token": "<Zugangstoken mit frischem Code>", "monitor": 1}
+                                    Fernanfrage (04.11.2026): bittet den Laptop, das Live-Bild einzuschalten, und startet die
+                                    Ansicht. Der Kern prüft vorher (fern_pruefen), dass das Token zu dieser Sitzung gehört und
+                                    der Code höchstens 120 s alt ist. Der Token wird nie geloggt oder weitergegeben.
 Nachrichten an die Oberfläche (Servernachrichten):
   {"type": "bildstrom", "zustand": "aus"|"wartet"|"laeuft"|"pausiert", "grund"?, "text"?, "monitore"?, "monitor"?, "rest_s"?}
   {"type": "bild", "seq", "monitor", "monitore", "breite", "hoehe", "jpeg" (Base64), "rest_s"}
@@ -57,7 +61,10 @@ TEXT_PAUSIERT = {
     "vollbild": "Am Laptop läuft ein Programm im Vollbild: Das Bild ruht.",
     "geschuetzt": "Am Laptop liegt ein geschütztes Fenster vorne (Passwort oder Anmeldung): Das Bild ruht.",
 }
+FERN_ABSTAND_SECS = 10.0  # höchstens eine Fernanfrage je Abstand und Sitzung
 TEXT_AUS = {
+    "angefordert": "Die Anfrage ging an den Laptop. Ich warte, bis er das Live-Bild einschaltet.",
+    "fern_abgelehnt": "Die Anfrage ist nicht möglich.",
     "schalter_aus": "Am Laptop wurde das Live-Bild ausgeschaltet.",
     "abgelaufen": "Die Zeit des Live-Bilds am Laptop ist abgelaufen.",
     "hinweis_fehlt": "Der rote Hinweis am Laptop ist nicht sichtbar.",
@@ -109,7 +116,11 @@ class Bildstrom:
         ack_frist: float = ACK_FRIST_SECS,
         status_secs: float = STATUS_SECS,
         warten_max: float = WARTEN_MAX_SECS,
+        fern_pruefen: Callable[[object], Awaitable[str | None]] | None = None,
     ):
+        self._fern_pruefen = fern_pruefen  # None: keine Fernanfrage; sonst Text des Problems oder None (Token passt, Code frisch)
+        self._letzte_fern = -1e9
+        self._angefordert = False
         self._client = client
         self._darf = darf
         self._senden = senden
@@ -145,6 +156,41 @@ class Bildstrom:
             if _ganz(daten.get("seq"), 0, 2**31) == self._seq and self._ausstehend:
                 self._ausstehend = False
                 self._ack.set()
+        elif aktion == "anfordern":
+            await self._anfordern(daten)
+
+    async def _anfordern(self, daten: dict) -> None:
+        """Fernanfrage: erst Token und Code prüfen, dann den Host bitten, die Desktop-App am Laptop entscheiden zu lassen,
+        dann die Ansicht starten (sie wartet auf den Schalter). Der Token geht nie in ein Log oder eine Antwort."""
+        monitor = _ganz(daten.get("monitor"), 1, MONITOR_MAX) or 1
+        if self._fern_pruefen is None or not self._darf() or self._client() is None:
+            await self._melden("aus", grund="nicht_erlaubt", text=NICHT_ERLAUBT)
+            return
+        jetzt = self._jetzt()
+        if jetzt - self._letzte_fern < FERN_ABSTAND_SECS:
+            await self._melden("aus", grund="fern_abgelehnt", text="Bitte einen Moment warten und dann noch einmal anfordern.")
+            return
+        self._letzte_fern = jetzt
+        try:
+            problem = await self._fern_pruefen(daten.get("token"))
+        except Exception as e:  # noqa: BLE001 (nie den Token oder Servertext in die Meldung)
+            logger.warning("Live-Bild: Prüfung der Fernanfrage gescheitert ({})", type(e).__name__)
+            problem = "Die Prüfung ist gerade nicht möglich. Bitte gleich noch einmal versuchen."
+        if problem:
+            await self._melden("aus", grund="fern_abgelehnt", text=problem[:200])
+            return
+        try:
+            antwort = await self._frage("live_bild_anfordern", {})
+        except PcNichtErreichbar:
+            await self._melden("aus", grund="ende", text="Der Laptop ist nicht erreichbar.")
+            return
+        if antwort.get("status") != "success":
+            text = antwort.get("summary") if isinstance(antwort.get("summary"), str) else "Die Anfrage ist nicht möglich."
+            await self._melden("aus", grund="fern_abgelehnt", text=text[:200])
+            return
+        logger.info("Live-Bild: Fernanfrage an den Laptop gestellt ({})", antwort.get("grund") or "gestellt")
+        self._angefordert = antwort.get("grund") != "schon_an"
+        await self._starten(monitor)
 
     async def _starten(self, monitor: int) -> None:
         self._monitor = monitor
@@ -212,6 +258,8 @@ class Bildstrom:
                 return NICHT_ERLAUBT
             if grund != letzter_grund:
                 letzter_grund = grund
+                if self._angefordert and grund == "schalter_aus":
+                    grund = "angefordert"  # die Anfrage ist unterwegs: nicht "ausgeschaltet", sondern "warte"
                 await self._melden("wartet", grund=grund if grund in TEXT_AUS else "schalter_aus")
             if self._jetzt() - start > self._warten_max:
                 return "Am Laptop wurde das Live-Bild nicht eingeschaltet. Es ist beendet."
@@ -289,6 +337,7 @@ class Bildstrom:
         war_gemeldet = self._laeuft_gemeldet
         self._laeuft_gemeldet = False
         self._ausstehend = False
+        self._angefordert = False
         self.zustand = "aus"
         client = self._client()
         if zuschauer and client is not None:

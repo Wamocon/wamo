@@ -96,7 +96,8 @@ if [ "$TROCKEN" = nein ]; then
   pruefe_herkunft
 fi
 for f in wamo-rd/docker-compose.yml wamo-rd/wamo-rd.caddy.vorlage wamo-rd/ziele.toml.beispiel wamo-rd/zugang/Dockerfile \
-  wamo-rd/zugang/wamo_rd_zugang.py wamo-firewall.sh \
+  wamo-rd/zugang/wamo_rd_zugang.py wamo-rd/erweiterung/jar_bauen.py wamo-rd/erweiterung/guac-manifest.json \
+  wamo-rd/erweiterung/wamo-eingabe.js wamo-rd/erweiterung/wamo-eingabe.css wamo-firewall.sh \
   wamo-firewall-einrichten.sh wamo-caddy/docker-compose.yml wamo_rd_rauchtest.py; do
   [ -f "$HERE/$f" ] || fehler "$HERE/$f fehlt (infra/sokrates2 vollständig verteilen)."
 done
@@ -359,6 +360,16 @@ start() {
   [[ "$kern_uid" =~ ^[0-9]+$ ]] && [ "$kern_uid" -ge 100 ] || fehler "Unerwartete Kennung von $KERN_BENUTZER ($kern_uid)."
   tu install -d -m 755 "$BASIS"
   tu install -m 644 "$COMPOSE_QUELLE" "$COMPOSE"
+  # Erweiterung "WAMO Eingabe" (Tastaturleiste): als Jar in $BASIS/gateway-home/extensions, den Ordner hängt Compose schreibgeschützt ein
+  tu install -d -m 755 "$BASIS/gateway-home" "$BASIS/gateway-home/extensions"
+  if [ "$TROCKEN" = ja ]; then
+    echo "  [trocken] wamo-eingabe.jar aus $HERE/wamo-rd/erweiterung nach $BASIS/gateway-home/extensions bauen"
+  else
+    python3 "$HERE/wamo-rd/erweiterung/jar_bauen.py" "$BASIS/gateway-home/extensions/wamo-eingabe.jar.neu" \
+      && chmod 644 "$BASIS/gateway-home/extensions/wamo-eingabe.jar.neu" \
+      && mv -f "$BASIS/gateway-home/extensions/wamo-eingabe.jar.neu" "$BASIS/gateway-home/extensions/wamo-eingabe.jar" \
+      || fehler "Die Erweiterung wamo-eingabe.jar ließ sich nicht bauen."
+  fi
   if [ "$TROCKEN" = ja ]; then
     echo "  [trocken] WAMO_RD_UID=$uid WAMO_RD_GID=$gid WAMO_RD_KERN_UID=$kern_uid docker compose -f $COMPOSE up -d"
     return 0

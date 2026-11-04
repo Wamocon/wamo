@@ -1,0 +1,7 @@
+{
+    "guacamoleVersion": "*",
+    "name": "WAMO Eingabe",
+    "namespace": "wamo-eingabe",
+    "js": ["wamo-eingabe.js"],
+    "css": ["wamo-eingabe.css"]
+}

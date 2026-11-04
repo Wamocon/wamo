@@ -356,3 +356,83 @@ def test_bildwerkzeuge_sind_nie_fuer_das_modell():
     import pc_host
     for name in pc_tunnel.BILD_WERKZEUGE:
         assert name not in pc_host.LLM_TOOLS
+
+
+# ---------- Fernanfrage vom Handy (04.11.2026) ----------
+async def _immer_ok(_token):
+    return None
+
+
+async def test_fernanfrage_prueft_zuerst_bittet_den_laptop_und_startet_die_ansicht():
+    pruefungen = []
+
+    async def pruefen(token):
+        pruefungen.append(token)
+
+    a = Aufbau({"live_bild_anfordern": [{"status": "success", "grund": None}]}, fern_pruefen=pruefen)
+    await a.strom.nachricht({"aktion": "anfordern", "token": "a.b.c", "monitor": 2})
+    await a.quittiere_bis(1)
+    assert pruefungen == ["a.b.c"]
+    namen = [n for n, _ in a.aufrufe]
+    assert namen.index("live_bild_anfordern") < namen.index("live_bild_status") < namen.index("bild_holen")
+    assert ("live_bild_anfordern", {}) in a.aufrufe
+    assert "a.b.c" not in json.dumps(a.gesendet) + json.dumps(a.aufrufe), "der Token geht nie weiter"
+    assert a.zustaende()[0] == "laeuft"
+    await a.strom.stoppen("Ende.")
+
+
+async def test_fernanfrage_wartet_mit_dem_text_angefordert_statt_ausgeschaltet():
+    a = Aufbau({"live_bild_anfordern": [{"status": "success", "grund": None}],
+                "live_bild_status": [{"status": "success", "bereit": False, "grund": "schalter_aus"},
+                                     {"status": "success", "bereit": True, "monitore": 1}]}, fern_pruefen=_immer_ok)
+    await a.strom.nachricht({"aktion": "anfordern", "token": "a.b.c"})
+    await a.quittiere_bis(1)
+    wartet = [d for d in a.gesendet if d["type"] == "bildstrom" and d["zustand"] == "wartet"]
+    assert wartet and wartet[0]["grund"] == "angefordert"
+    await a.strom.stoppen("Ende.")
+
+
+async def test_fernanfrage_ohne_pruefer_oder_ohne_erlaubnis_fragt_den_laptop_nie():
+    for kwargs, darf in (({}, True), ({"fern_pruefen": _immer_ok}, False)):
+        a = Aufbau({"live_bild_anfordern": [{"status": "success"}]}, darf=darf, **kwargs)
+        await a.strom.nachricht({"aktion": "anfordern", "token": "a.b.c"})
+        assert a.aufrufe == []
+        assert a.gesendet[-1]["zustand"] == "aus" and a.gesendet[-1]["grund"] == "nicht_erlaubt"
+
+
+async def test_fernanfrage_mit_altem_code_oder_fremdem_token_wird_abgelehnt():
+    async def zu_alt(_token):
+        return "Der Code ist zu alt."
+
+    a = Aufbau({"live_bild_anfordern": [{"status": "success"}]}, fern_pruefen=zu_alt)
+    await a.strom.nachricht({"aktion": "anfordern", "token": "a.b.c"})
+    assert a.aufrufe == [], "ohne bestandene Prüfung wird der Laptop nie gefragt"
+    assert (a.gesendet[-1]["zustand"], a.gesendet[-1]["grund"], a.gesendet[-1]["text"]) == ("aus", "fern_abgelehnt", "Der Code ist zu alt.")
+
+    async def kaputt(_token):
+        raise RuntimeError("geheimer Servertext mit Token abc.def.ghi")
+
+    b = Aufbau({"live_bild_anfordern": [{"status": "success"}]}, fern_pruefen=kaputt)
+    await b.strom.nachricht({"aktion": "anfordern", "token": "a.b.c"})
+    assert b.aufrufe == []
+    assert "geheimer" not in json.dumps(b.gesendet) and "abc.def" not in json.dumps(b.gesendet)
+
+
+async def test_fernanfrage_hoechstens_alle_zehn_sekunden_und_laptop_kann_ablehnen():
+    a = Aufbau({"live_bild_anfordern": [{"status": "rejected", "grund": "stufe", "summary": "Dieser Laptop gehört keinem Admin."}]},
+               fern_pruefen=_immer_ok)
+    await a.strom.nachricht({"aktion": "anfordern", "token": "a.b.c"})
+    assert a.gesendet[-1]["text"] == "Dieser Laptop gehört keinem Admin."
+    assert a.zustaende() == ["aus"], "bei Ablehnung startet keine Ansicht"
+    anzahl = len(a.aufrufe)
+    await a.strom.nachricht({"aktion": "anfordern", "token": "a.b.c"})
+    assert len(a.aufrufe) == anzahl, "zu schnell hintereinander"
+    a.uhr.t += bildstrom.FERN_ABSTAND_SECS + 1
+    await a.strom.nachricht({"aktion": "anfordern", "token": "a.b.c"})
+    assert len(a.aufrufe) == anzahl + 1
+
+
+async def test_fernanfrage_laptop_nicht_erreichbar():
+    a = Aufbau({"live_bild_anfordern": [pc_tunnel.PcNichtErreichbar("weg")]}, fern_pruefen=_immer_ok)
+    await a.strom.nachricht({"aktion": "anfordern", "token": "a.b.c"})
+    assert a.gesendet[-1]["zustand"] == "aus" and "nicht erreichbar" in a.gesendet[-1]["text"]

@@ -7,14 +7,14 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { DAUER_MAX_MS, DAUER_MS, EINWILLIGUNG, HERZSCHLAG_MS, erzeugeLiveBild } = require("./livebild");
+const { DAUER_MAX_MS, DAUER_MS, EINWILLIGUNG, EINWILLIGUNG_VERSION, HERZSCHLAG_MS, erzeugeLiveBild } = require("./livebild");
 
 const BESITZER = "11111111-2222-3333-4444-555555555555";
 
 function umgebung({ stufe = "admin", geraetJson = true, antwort = true, sichtbar = true } = {}) {
   const ordner = fs.mkdtempSync(path.join(os.tmpdir(), "wamo-live-"));
   const uhr = { t: 1_700_000_000_000 };
-  const protokoll = { fragen: 0, hinweis: [], geaendert: 0, timer: [] };
+  const protokoll = { fragen: 0, hinweis: [], geaendert: 0, timer: [], meldungen: [] };
   const zustand = { antwort, sichtbar };
   if (geraetJson) {
     fs.writeFileSync(path.join(ordner, "geraet.json"), JSON.stringify({ v: 1, kennung: "pc-test", besitzer: BESITZER, stufe }));
@@ -29,6 +29,7 @@ function umgebung({ stufe = "admin", geraetJson = true, antwort = true, sichtbar
     hinweis: (an, bis) => protokoll.hinweis.push([an, bis]),
     sichtbar: () => zustand.sichtbar,
     geaendert: () => (protokoll.geaendert += 1),
+    melden: (titel, text) => protokoll.meldungen.push([titel, text]),
     setInterval: (fn, ms) => {
       const t = { fn, ms, unref() {} };
       protokoll.timer.push(t);
@@ -99,7 +100,7 @@ test("die Datei enthält alles, was der Host prüft", async () => {
     const d = u.datei();
     assert.equal(d.v, 1);
     assert.equal(d.an, true);
-    assert.equal(d.einwilligung, 1);
+    assert.equal(d.einwilligung, EINWILLIGUNG_VERSION);
     assert.equal(d.kennung, "pc-test");
     assert.equal(d.besitzer, BESITZER);
     assert.equal(d.sichtbar, true);
@@ -272,6 +273,159 @@ test("scheitert das Umbenennen (Host liest gerade), wird wiederholt und zuletzt 
     assert.ok(versuche >= 3);
   } finally {
     fs.renameSync = echt;
+    u.aufraeumen();
+  }
+});
+
+// ---------- Fernanfrage vom Handy (04.11.2026) ----------
+function anfrageSchreiben(u, aenderungen = {}) {
+  const inhalt = { v: 1, id: "ab".repeat(8), ts: u.uhr.t / 1000, kennung: "pc-test", besitzer: BESITZER, ...aenderungen };
+  fs.writeFileSync(path.join(u.ordner, "live-bild-anfrage.json"), typeof aenderungen === "string" ? aenderungen : JSON.stringify(inhalt));
+}
+const anfrageDa = (u) => fs.existsSync(path.join(u.ordner, "live-bild-anfrage.json"));
+async function mitEinwilligung(u) {
+  await u.live.einschalten(); // der Dialog am Laptop (Einwilligung), einmalig
+  u.live.ausschalten();
+  u.protokoll.fragen = 0;
+}
+
+test("Fernanfrage: mit Einwilligung am Laptop schaltet sie ein, ohne Dialog, mit Meldung, und die Datei ist weg", async () => {
+  const u = umgebung();
+  try {
+    await mitEinwilligung(u);
+    anfrageSchreiben(u);
+    const r = await u.live.anfrageVerarbeiten();
+    assert.equal(r.ok, true);
+    assert.equal(u.live.status().an, true);
+    assert.equal(u.protokoll.fragen, 0, "per Fernanfrage nie ein Dialog");
+    assert.equal(anfrageDa(u), false, "einmalig");
+    assert.equal(u.protokoll.meldungen.length, 1);
+    assert.deepEqual(u.protokoll.hinweis.at(-1)[0], true, "roter Rahmen");
+    assert.ok(u.datei().bis * 1000 - u.uhr.t <= DAUER_MS);
+  } finally {
+    u.aufraeumen();
+  }
+});
+
+test("Fernanfrage ohne Einwilligung am Laptop: nichts wird eingeschaltet, nie eine Frage, Meldung erklärt es", async () => {
+  const u = umgebung();
+  try {
+    anfrageSchreiben(u);
+    const r = await u.live.anfrageVerarbeiten();
+    assert.equal(r.ok, false);
+    assert.equal(u.live.status().an, false);
+    assert.equal(u.protokoll.fragen, 0);
+    assert.equal(anfrageDa(u), false);
+    assert.match(u.protokoll.meldungen[0][1], /Einwilligung/);
+  } finally {
+    u.aufraeumen();
+  }
+});
+
+test("Fernanfrage: zu alt, aus der Zukunft, fremdes Gerät, fremder Besitzer, kaputt oder zu groß wird verworfen", async () => {
+  const faelle = [
+    { ts: 0 },
+    { ts: 1_700_000_000 - 61 },
+    { ts: 1_700_000_000 + 30 },
+    { kennung: "pc-anderer" },
+    { besitzer: "99999999-2222-3333-4444-555555555555" },
+    { v: 2 },
+    { ts: "jetzt" },
+    "kein json",
+    "x".repeat(9000),
+  ];
+  for (const f of faelle) {
+    const u = umgebung();
+    try {
+      await mitEinwilligung(u);
+      typeof f === "string" ? anfrageSchreiben(u, f) : anfrageSchreiben(u, f);
+      if (typeof f === "string") fs.writeFileSync(path.join(u.ordner, "live-bild-anfrage.json"), f);
+      const r = await u.live.anfrageVerarbeiten();
+      assert.equal(r.ok, false, JSON.stringify(f).slice(0, 60));
+      assert.equal(u.live.status().an, false);
+      assert.equal(anfrageDa(u), false, "auch verworfene Anfragen werden gelöscht");
+    } finally {
+      u.aufraeumen();
+    }
+  }
+});
+
+test("Fernanfrage: nie auf dem Laptop eines Mitglieds, nie ohne geraet.json, nichts zu tun ohne Datei", async () => {
+  const m = umgebung({ stufe: "mitglied" });
+  try {
+    anfrageSchreiben(m);
+    assert.equal((await m.live.anfrageVerarbeiten()).ok, false);
+    assert.equal(m.live.status().an, false);
+  } finally {
+    m.aufraeumen();
+  }
+  const o = umgebung({ geraetJson: false });
+  try {
+    anfrageSchreiben(o);
+    assert.equal((await o.live.anfrageVerarbeiten()).ok, false);
+    assert.equal(o.live.status().an, false);
+  } finally {
+    o.aufraeumen();
+  }
+  const k = umgebung();
+  try {
+    assert.deepEqual(await k.live.anfrageVerarbeiten(), { ok: false, keine: true });
+    assert.equal(k.protokoll.meldungen.length, 0);
+  } finally {
+    k.aufraeumen();
+  }
+});
+
+test("Fernanfrage bei laufendem Live-Bild verlängert nichts und meldet nicht noch einmal; start löscht alte Anfragen", async () => {
+  const u = umgebung();
+  try {
+    await mitEinwilligung(u);
+    anfrageSchreiben(u);
+    await u.live.anfrageVerarbeiten();
+    const bis = u.datei().bis;
+    u.uhr.t += 5000;
+    anfrageSchreiben(u, { id: "ef".repeat(8) });
+    const r = await u.live.anfrageVerarbeiten();
+    assert.equal(r.schonAn, true);
+    assert.equal(u.datei().bis, bis);
+    assert.equal(u.protokoll.meldungen.length, 1);
+    u.live.ausschalten();
+    anfrageSchreiben(u, { id: "12".repeat(8) });
+    u.live.start();
+    assert.equal(anfrageDa(u), false, "eine Anfrage aus einem früheren Lauf zählt nie");
+  } finally {
+    u.aufraeumen();
+  }
+});
+
+test("Fernanfrage: dieselbe Anfrage zählt nur einmal, auch wenn die Datei bleibt", async () => {
+  const u = umgebung();
+  try {
+    await mitEinwilligung(u);
+    anfrageSchreiben(u);
+    assert.equal((await u.live.anfrageVerarbeiten()).ok, true);
+    u.live.ausschalten("im Tray ausgeschaltet");
+    anfrageSchreiben(u); // dieselbe id: die Datei war nicht gelöscht
+    const r = await u.live.anfrageVerarbeiten();
+    assert.equal(r.ok, false);
+    assert.equal(u.live.status().an, false, "eine ausgeschaltete Person bekommt es nicht wieder eingeschaltet");
+    anfrageSchreiben(u, { id: "cd".repeat(8) }); // eine neue id gilt
+    assert.equal((await u.live.anfrageVerarbeiten()).ok, true);
+  } finally {
+    u.aufraeumen();
+  }
+});
+
+test("Einwilligung der Version 1 gilt nicht für den Fernstart (der Text nannte ihn nicht)", async () => {
+  const u = umgebung();
+  try {
+    fs.writeFileSync(path.join(u.ordner, "live-bild-einwilligung.json"), JSON.stringify({ v: 1, kennung: "pc-test", besitzer: BESITZER }));
+    anfrageSchreiben(u);
+    const r = await u.live.anfrageVerarbeiten();
+    assert.equal(r.ok, false);
+    assert.equal(u.live.status().an, false);
+    assert.equal(u.protokoll.fragen, 0);
+  } finally {
     u.aufraeumen();
   }
 });

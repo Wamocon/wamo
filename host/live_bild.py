@@ -4,7 +4,9 @@ Das Live-Bild zeigt alles, was am Laptop offen ist. Deshalb entscheidet der HOST
 Oberfläche), und zwar bei jedem einzelnen Bild:
 
   * Schalter am Laptop: Die Desktop-App der Person am Laptop schreibt %LOCALAPPDATA%\\WAMO\\live-bild.json (neben
-    geraet.json). Standard ist AUS. Kein Werkzeug des Hosts schreibt diese Datei, PowerShell-Befehle, die sie nennen,
+    geraet.json), per Tray-Menü oder auf eine Fernanfrage des Besitzers (live-bild-anfrage.json, siehe anfrage_stellen; die App
+    prüft sie selbst und schaltet nur bei vorhandener Einwilligung ein). Standard ist AUS. Kein Werkzeug des Hosts schreibt
+    diese Datei, PowerShell-Befehle, die sie nennen,
     sind gesperrt (wamo_host.BLOCKED_PATTERNS), und die Fenster der Desktop-App bedient der Host nie. Ein verschleierter
     Befehl, den ein Admin auf einer Freigabekarte bestätigt, könnte die Datei trotzdem schreiben (Restrisiko). Darum
     zählt der Host zusätzlich selbst die Hinweisfenster der App (windows_control.hinweisfenster_zahl).
@@ -22,15 +24,22 @@ Dieses Modul entscheidet nur; aufgenommen wird in wamo_host.bild_holen (windows_
 from __future__ import annotations
 
 import json
+import os
 import re
+import secrets
 import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
 DATEI_NAME = "live-bild.json"
+# Fernanfrage (Entscheidung Niko 04.11.2026): Der Admin bittet vom Handy aus, mit frischem Code, das Live-Bild am eigenen Laptop
+# einzuschalten. Der Host schreibt dafür NUR diese Anfragedatei (neben geraet.json); den Schalter live-bild.json schreibt weiterhin
+# allein die Desktop-App, und zwar erst nach eigener Prüfung (Einwilligung am Laptop liegt vor, Besitzer, Alter, roter Rahmen).
+ANFRAGE_DATEI_NAME = "live-bild-anfrage.json"
+ANFRAGE_ABSTAND_SECS = 15.0  # höchstens eine Anfrage je Abstand
 DATEI_MAX_BYTES = 4096
-EINWILLIGUNG_VERSION = 1
+EINWILLIGUNG_VERSION = 2  # wie desktop/livebild.js; 2 = Einwilligung nennt den Fernstart vom Handy (04.11.2026)
 HERZSCHLAG_MAX_SECS = 6.0  # so alt darf der Herzschlag der Desktop-App höchstens sein
 ZUKUNFT_TOLERANZ_SECS = 2.0
 EINSCHALTEN_MAX_SECS = 3600  # "bis" liegt höchstens so weit in der Zukunft
@@ -66,6 +75,36 @@ class Live:
         self._letztes_bild = -1e9
         self._bilder: deque[float] = deque()
         self._zaehler = 0
+        self._letzte_anfrage = -1e9
+
+    # ---------- Fernanfrage ----------
+    def anfrage_stellen(self) -> dict:
+        """Bittet die Desktop-App am Laptop, das Live-Bild einzuschalten. Schreibt nur live-bild-anfrage.json mit Kennung und
+        Besitzer des gebundenen Laptops und der Zeit. Gibt {"ok": bool, "grund": code | None} zurück; die App entscheidet danach
+        selbst (ohne Einwilligung am Laptop, bei anderem Besitzer oder älter als 60 s tut sie nichts)."""
+        if self._datei is None or self._bindung is None:
+            return {"ok": False, "grund": "nicht_eingerichtet"}
+        gerat = self._bindung.werte()
+        if gerat is None:
+            return {"ok": False, "grund": "nicht_eingerichtet"}
+        kennung, besitzer, stufe = gerat
+        if stufe != "admin":
+            return {"ok": False, "grund": "stufe"}
+        if self.schalter()["bereit"]:
+            return {"ok": True, "grund": "schon_an"}
+        jetzt = self._takt()
+        if jetzt - self._letzte_anfrage < ANFRAGE_ABSTAND_SECS:
+            return {"ok": False, "grund": "zu_schnell"}
+        pfad = self._datei.with_name(ANFRAGE_DATEI_NAME)
+        tmp = pfad.with_name(ANFRAGE_DATEI_NAME + ".neu")
+        inhalt = {"v": 1, "id": secrets.token_hex(8), "ts": self._uhr(), "kennung": kennung, "besitzer": besitzer.lower()}
+        try:
+            tmp.write_text(json.dumps(inhalt), encoding="utf-8")
+            os.replace(tmp, pfad)
+        except OSError:
+            return {"ok": False, "grund": "schreibfehler"}
+        self._letzte_anfrage = jetzt
+        return {"ok": True, "grund": None}
 
     # ---------- Schalter ----------
     def _datei_lesen(self) -> dict | None:

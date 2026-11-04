@@ -1,0 +1,26 @@
+/* WAMO Eingabe: Tastaturleiste der Fernsitzung. WMC-Farben: Rot #F40E0E, Weiß, Schwarz, Grau, kein Blau. */
+.wamo-tk-knopf {
+    position: fixed; right: 12px; bottom: 12px; z-index: 2147483000;
+    width: 52px; height: 52px; border-radius: 26px; border: 2px solid #fff;
+    background: #F40E0E; color: #fff; font: 28px/1 Arial, sans-serif; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .5); touch-action: manipulation;
+}
+.wamo-tk-knopf[hidden], .wamo-tk[hidden] { display: none; }
+.wamo-tk {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 2147483001;
+    padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); background: #000; color: #fff;
+    font-family: "Arial Narrow", Arial, sans-serif; border-top: 2px solid #F40E0E;
+}
+.wamo-tk-zeile { display: flex; gap: 6px; margin-top: 6px; }
+.wamo-tk-zeile:first-child { margin-top: 0; }
+.wamo-tk-feld {
+    flex: 1 1 auto; min-width: 0; height: 44px; padding: 0 10px; border: 1px solid #6B6B6B; border-radius: 6px;
+    background: #fff; color: #000; font-size: 16px; /* 16 Pixel: iOS vergrößert sonst die Seite beim Antippen */
+}
+.wamo-tk-taste {
+    flex: 1 1 0; min-width: 44px; height: 44px; padding: 0 6px; border: 1px solid #6B6B6B; border-radius: 6px;
+    background: #F3F3F3; color: #000; font: 16px "Arial Narrow", Arial, sans-serif; cursor: pointer; touch-action: manipulation;
+}
+.wamo-tk-taste:active { background: #D9D9D9; }
+.wamo-tk-taste[aria-pressed="true"] { background: #F40E0E; color: #fff; border-color: #fff; }
+.wamo-tk-knopf:focus-visible, .wamo-tk-taste:focus-visible, .wamo-tk-feld:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }

@@ -44,6 +44,11 @@ def gate_setzen(gate: AccessGate | None) -> None:
     _gate = gate
 
 
+def gate_holen() -> AccessGate | None:
+    """Die Zugangskontrolle (für Prüfungen innerhalb einer Sitzung, z. B. bild_fern.py)."""
+    return _gate
+
+
 def bearer(request: Request) -> str:
     werte = [v for k, v in request.headers.items() if k.lower() == "authorization"]
     if len(werte) != 1 or werte[0][:7].lower() != "bearer ":

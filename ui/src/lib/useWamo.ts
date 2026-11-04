@@ -140,6 +140,9 @@ export type LiveBildAktionen = {
   an: (monitor: number) => boolean;
   aus: () => boolean;
   monitor: (monitor: number) => boolean;
+  /** Fernanfrage (Handy): bittet den eigenen Laptop um das Live-Bild. token = Zugangstoken NACH der Eingabe eines frischen Codes
+   *  der Authenticator-App; der Kern prüft ihn, die Desktop-App am Laptop entscheidet danach selbst. Das Token wird nicht gespeichert. */
+  anfordern: (monitor: number, token: string) => boolean;
 };
 
 /** Der Schlüssel geht nur in dieser einen Nachricht an den eigenen Kern und wird im Browser nicht gespeichert.
@@ -158,7 +161,7 @@ type ClientMessage =
   | { type: "vergessen"; data: { id: string } }
   | { type: "auftrag_start"; data: { job: string; entscheidung: "ja" | "nein" } }
   | { type: "pc_steuerung"; data: { an: boolean } }
-  | { type: "bildstrom"; data: { aktion: "an" | "aus" | "monitor" | "ack"; monitor?: number; seq?: number } }
+  | { type: "bildstrom"; data: { aktion: "an" | "aus" | "monitor" | "ack" | "anfordern"; monitor?: number; seq?: number; token?: string } }
   | { type: "modellzugang"; data: ModellzugangAnfrage }
   | { type: "kontingent"; data: Record<string, never> };
 
@@ -1039,7 +1042,7 @@ export function useWamo(): WamoAktionen {
 
   // Live-Bild: nur senden; den Zustand meldet der Kern (Nachricht bildstrom), Bilder zeichnet lib/liveBild.ts
   const liveBild = useMemo<LiveBildAktionen>(() => {
-    const sende = (data: { aktion: "an" | "aus" | "monitor"; monitor?: number }) => {
+    const sende = (data: { aktion: "an" | "aus" | "monitor" | "anfordern"; monitor?: number; token?: string }) => {
       const client = clientRef.current;
       const s = wamo.get();
       if (!client || !istOnline(s) || s.profil?.rolle !== "admin") return false;
@@ -1066,6 +1069,12 @@ export function useWamo(): WamoAktionen {
       monitor: (monitor) => {
         wamo.set((s) => ({ ...s, liveBild: { ...s.liveBild, monitor } }));
         return sende({ aktion: "monitor", monitor });
+      },
+      anfordern: (monitor, token) => {
+        wamo.set((s) => ({ ...s, liveBild: { ...s.liveBild, geoeffnet: true, zustand: "wartet", monitor, grund: undefined, text: undefined } }));
+        if (sende({ aktion: "anfordern", monitor, token })) return true;
+        wamo.set((s) => ({ ...s, liveBild: LIVE_BILD_AUS }));
+        return false;
       },
     };
   }, []);

@@ -703,6 +703,47 @@ class GatewayDateiTests(unittest.TestCase):
         self.assertRegex(c, r"networks:\s+default: \{\}\s+ui: \{\}\s+rd:\s+(#[^\n]*\s+)?ipv4_address: 172\.26\.0\.2")
         self.assertEqual(len(re.findall(r'"0\.0\.0\.0:\d+:\d+"', c)), 4)
 
+    def test_eingabe_erweiterung_wird_gebaut_und_eingehaengt(self):
+        """Tastaturleiste für Handy und Laptop (Test 04.11.2026): Jar mit Manifest, nur lesend in den Webcontainer eingehängt."""
+        import json
+        import subprocess
+        import tempfile
+        import zipfile
+
+        erw = RD / "erweiterung"
+        with tempfile.TemporaryDirectory() as t:
+            jar = Path(t) / "wamo-eingabe.jar"
+            subprocess.run([sys.executable, "-I", str(erw / "jar_bauen.py"), str(jar)], check=True)
+            erneut = Path(t) / "zweites.jar"
+            subprocess.run([sys.executable, "-I", str(erw / "jar_bauen.py"), str(erneut)], check=True)
+            self.assertEqual(jar.read_bytes(), erneut.read_bytes(), "gleicher Inhalt gibt gleiche Datei")
+            with zipfile.ZipFile(jar) as z:
+                self.assertEqual(sorted(z.namelist()), ["guac-manifest.json", "wamo-eingabe.css", "wamo-eingabe.js"])
+                manifest = json.loads(z.read("guac-manifest.json"))
+        self.assertEqual(manifest["js"], ["wamo-eingabe.js"])
+        self.assertEqual(manifest["css"], ["wamo-eingabe.css"])
+        self.assertEqual(manifest["namespace"], "wamo-eingabe")
+        compose = (RD / "docker-compose.yml").read_text(encoding="utf-8")
+        code = _ohne_kommentare(compose)
+        self.assertIn(":/etc/guacamole:ro", code)  # Der Entrypoint nimmt GUACAMOLE_HOME als Vorlage (die Variable selbst überschreibt er)
+        self.assertNotIn("GUACAMOLE_HOME_TEMPLATE:", code)
+        skript = (RD.parent / "wamo-rd-einrichten.sh").read_text(encoding="utf-8")
+        self.assertIn("jar_bauen.py", skript)
+        self.assertNotIn("http://", (erw / "wamo-eingabe.js").read_text(encoding="utf-8"), "kein Weg nach draußen")
+        self.assertNotIn("fetch(", (erw / "wamo-eingabe.js").read_text(encoding="utf-8"))
+        self.assertNotIn("XMLHttpRequest", (erw / "wamo-eingabe.js").read_text(encoding="utf-8"))
+
+    def test_eingabe_erweiterung_reine_teile(self):
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node fehlt")
+        erw = RD / "erweiterung"
+        r = subprocess.run([node, "--test", str(erw / "wamo-eingabe.test.js")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout[-800:] + r.stderr[-400:])
+
     def test_caddy_vorlage(self):
         v = (RD / "wamo-rd.caddy.vorlage").read_text(encoding="utf-8")
         code = _ohne_kommentare(v)

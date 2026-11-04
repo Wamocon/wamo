@@ -1,8 +1,10 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { memo, useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent } from "react";
 import { useJetzt } from "@/components/kommando/useJetzt";
+import { codeBestaetigen } from "@/lib/geraeteVerwaltungApi";
 import { GRUND_TEXT, liveBildLoeschen, restZeit, zeichnerSetzen } from "@/lib/liveBild";
+import { accessToken } from "@/lib/supabase";
 import { useSelect } from "@/lib/store";
 import type { LiveBildAktionen } from "@/lib/useWamo";
 import { istOnline, wamo } from "@/lib/wamo";
@@ -50,14 +52,127 @@ export const BildschirmAnsicht = memo(function BildschirmAnsicht({ aktionen }: {
   );
 });
 
+/**
+ * Fernanfrage (Entscheidung Niko 04.11.2026): Am Handy gibt es keinen Tray. Hier bittet der Admin seinen eigenen Laptop um das
+ * Live-Bild, mit einem frischen Code der Authenticator-App. Der Kern prüft Token und Code, die Desktop-App am Laptop schaltet nur
+ * ein, wenn dort die Einwilligung schon vorliegt, und zeigt den roten Rahmen. Das Token geht nur in diese eine Nachricht.
+ */
+function Anfordern({ aktionen, monitor }: { aktionen: LiveBildAktionen; monitor: number }) {
+  const [offen, setOffen] = useState(false);
+  const [code, setCode] = useState("");
+  const [fehler, setFehler] = useState("");
+  const [beschaeftigt, setBeschaeftigt] = useState(false);
+  const laeuft = useRef(false);
+  const feld = useRef<HTMLInputElement>(null);
+  const id = useId();
+
+  const abschicken = async (e: FormEvent) => {
+    e.preventDefault();
+    if (laeuft.current) return;
+    const sauber = code.replace(/\s+/g, "");
+    if (!/^\d{6}$/.test(sauber)) {
+      setFehler("Bitte die sechs Ziffern aus der Authenticator-App eingeben.");
+      feld.current?.focus();
+      return;
+    }
+    laeuft.current = true;
+    setBeschaeftigt(true);
+    setFehler("");
+    try {
+      const bestaetigt = await codeBestaetigen(sauber);
+      if (!bestaetigt.ok) {
+        setFehler(bestaetigt.text);
+        setCode("");
+        feld.current?.focus();
+        return;
+      }
+      const token = await accessToken();
+      if (!token) {
+        setFehler("Die Anmeldung ist nicht mehr gültig. Bitte lade die Seite neu.");
+        return;
+      }
+      if (aktionen.anfordern(monitor, token)) {
+        setOffen(false);
+        setCode("");
+        fokusAufTitel();
+      } else {
+        setFehler("Die Anfrage konnte nicht gesendet werden.");
+      }
+    } finally {
+      laeuft.current = false;
+      setBeschaeftigt(false);
+    }
+  };
+
+  if (!offen) {
+    return (
+      <button
+        type="button"
+        className="btn-secondary btn-small"
+        onClick={() => {
+          setOffen(true);
+          requestAnimationFrame(() => feld.current?.focus());
+        }}
+      >
+        Vom Laptop einschalten lassen
+      </button>
+    );
+  }
+  return (
+    <form className="lb-code" onSubmit={abschicken} noValidate>
+      <label htmlFor={`${id}-code`}>Code der Authenticator-App</label>
+      <div className="lb-code-zeile">
+        <input
+          ref={feld}
+          id={`${id}-code`}
+          className="lb-code-feld"
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          maxLength={7}
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          aria-describedby={fehler ? `${id}-fehler` : undefined}
+          disabled={beschaeftigt}
+        />
+        <button type="submit" className="btn-secondary btn-small" disabled={beschaeftigt}>
+          {beschaeftigt ? "Prüfe …" : "Anfordern"}
+        </button>
+        <button
+          type="button"
+          className="btn-secondary btn-small"
+          disabled={beschaeftigt}
+          onClick={() => {
+            setOffen(false);
+            setCode("");
+            setFehler("");
+          }}
+        >
+          Abbrechen
+        </button>
+      </div>
+      {fehler && (
+        <p id={`${id}-fehler`} className="lb-hinweis" role="alert">
+          {fehler}
+        </p>
+      )}
+      <p className="lb-klein">
+        Am Laptop leuchtet dann der rote Rahmen, und es erscheint eine Meldung. Das geht nur, wenn dort das Live-Bild schon einmal
+        eingewilligt wurde. Es läuft höchstens 30 Minuten.
+      </p>
+    </form>
+  );
+}
+
 function Geschlossen({ aktionen }: { aktionen: LiveBildAktionen }) {
   const { text, grund, monitor } = useSelect(wamo, (s) => s.liveBild);
   const erklaerung = text || (grund ? GRUND_TEXT[grund] : undefined);
   return (
     <>
       <p className="lb-text">
-        Du siehst den Bildschirm deines eigenen Laptops, solange du das Live-Bild dort im Tray-Menü von WAMO eingeschaltet hast.
-        Am Laptop leuchtet dann ein roter Rahmen. Es wird nichts aufgezeichnet oder gespeichert.
+        Du siehst den Bildschirm deines eigenen Laptops, solange das Live-Bild dort eingeschaltet ist: im Tray-Menü von WAMO am Laptop
+        oder von hier aus mit einem Code der Authenticator-App. Am Laptop leuchtet dann ein roter Rahmen. Es wird nichts aufgezeichnet
+        oder gespeichert.
       </p>
       {erklaerung && (
         <p className="lb-hinweis" role="status">
@@ -71,6 +186,7 @@ function Geschlossen({ aktionen }: { aktionen: LiveBildAktionen }) {
           }}>
           Live-Bild öffnen
         </button>
+        <Anfordern aktionen={aktionen} monitor={monitor} />
       </div>
     </>
   );
@@ -237,6 +353,7 @@ function Offen({ aktionen }: { aktionen: LiveBildAktionen }) {
           Live-Bild beenden
         </button>
       </div>
+      {stand.zustand === "wartet" && <Anfordern aktionen={aktionen} monitor={stand.monitor} />}
       {stand.monitore < 2 && <p className="lb-klein">Dieser Laptop hat nur einen Monitor, eine Auswahl gibt es nicht.</p>}
 
       <div

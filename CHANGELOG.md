@@ -6,6 +6,23 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ## [Unveröffentlicht]
 
+### Hinzugefügt
+
+- Live-Bild vom Handy einschalten (Entscheidung Niko 04.11.2026): Der Admin gibt in der Ansicht einen frischen Code der
+  Authenticator-App ein und bittet den eigenen Laptop um das Live-Bild. Der Kern prüft Token (gleiches Profil, Admin) und Alter
+  des Codes (höchstens 120 s, `bild_fern.py`), der Host legt nur `live-bild-anfrage.json` ab (`live_bild_anfordern`, nur für den
+  Kern), und die Desktop-App am Laptop prüft selbst noch einmal (Gerätekennung, Besitzer, höchstens 60 s alt, Stufe admin,
+  Einwilligung am Laptop liegt schon vor, einmalig, nie ein Dialog) und schaltet erst dann ein, mit rotem Rahmen und Meldung
+  am Laptop, höchstens 30 Minuten. Die Einwilligung am Laptop hat jetzt die Version 2 und nennt den Fernstart (Befund der
+  unabhängigen Prüfung): Wer vorher eingewilligt hat, wird beim nächsten Einschalten am Laptop noch einmal gefragt, erst dann gilt der
+  Fernstart. Jede Fernanfrage zählt nur einmal (Kennung), auch wenn sich die Datei nicht löschen ließ. Ohne frühere Einwilligung am Laptop bleibt alles aus. Wirkt nach neuem Kern-Release und neuem
+  Desktop-Installer.
+- Fernzugriff: Tastaturleiste für Handy und Laptop (Erweiterung `WAMO Eingabe` für Guacamole, `infra/sokrates2/wamo-rd/erweiterung/`).
+  Ein Tastatur-Knopf öffnet ein Eingabefeld (am Handy erscheint dort die Bildschirmtastatur des Geräts) und die fehlenden Tasten
+  Esc, Tab, Pfeile, Entf, Pos1, Ende, Bild auf und ab sowie einrastendes Strg, Alt und Win. Alles läuft über die vorhandene
+  Verbindung, es entsteht kein neuer Weg nach draußen. Das Einrichtungsskript baut das Jar und Compose hängt es schreibgeschützt in
+  `/etc/guacamole` ein (zwei Einbindungen im Webcontainer, der Rauchtest erwartet jetzt zwei).
+
 ### Behoben
 
 - Test vom 04.11.2026 am Laptop: Der Fernzugriff auf die Sparks zeigte ein schwarzes Fenster. Ursache: Die CSP des Gateways
