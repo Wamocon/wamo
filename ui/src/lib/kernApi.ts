@@ -43,6 +43,11 @@ function basisUrl(): string {
   throw new KernFehler(0, "Kein sicherer Kern eingerichtet");
 }
 
+/** Ursprung des Kerns (https oder Loopback) für Aufrufe, die NICHT unter /wamo/api liegen, zum Beispiel die Freigabe-Route des Ankers. */
+export function kernBasis(): string {
+  return basisUrl();
+}
+
 async function frischesToken(): Promise<string | null> {
   const supabase = getSupabase();
   if (!supabase) return null;
