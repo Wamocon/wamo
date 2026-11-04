@@ -209,9 +209,10 @@ def pruefe_container(e: Ergebnis, web: str, guacd: str, netze: dict[str, str], k
                  f"{name}: eigene Namensräume")
         quellen = [m["Source"] for m in d.get("Mounts", []) if m.get("Type") == "bind"]
         e.pruefe(all("docker.sock" not in q for q in quellen), f"{name}: kein Docker-Socket")
-        erlaubt_binds = 1 if name == web else 0
+        erlaubt_binds = 2 if name == web else 0  # web: der Schlüssel und die Erweiterung "WAMO Eingabe", beide nur lesend
         e.pruefe(len(quellen) == erlaubt_binds and all(m.get("RW") is False for m in d.get("Mounts", []) if m.get("Type") == "bind"),
-                 f"{name}: nur {'der Schlüssel (lesend)' if erlaubt_binds else 'keine Einbindungen vom Host'}", ", ".join(quellen) or "keine")
+                 f"{name}: nur {'Schlüssel und Erweiterung (beide lesend)' if erlaubt_binds else 'keine Einbindungen vom Host'}",
+                 ", ".join(quellen) or "keine")
         e.pruefe(set(d["NetworkSettings"]["Networks"]) == rollen, f"{name}: nur in den Netzen {sorted(rollen)}",
                  str(sorted(d["NetworkSettings"]["Networks"])))
         umgebung = {z.split("=", 1)[0]: z.split("=", 1)[1] for z in cfg.get("Env", []) if "=" in z}

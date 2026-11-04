@@ -6,6 +6,14 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ## [Unveröffentlicht]
 
+### Hinzugefügt
+
+- Fernzugriff: Tastaturleiste für Handy und Laptop (Erweiterung `WAMO Eingabe` für Guacamole, `infra/sokrates2/wamo-rd/erweiterung/`).
+  Ein Tastatur-Knopf öffnet ein Eingabefeld (am Handy erscheint dort die Bildschirmtastatur des Geräts) und die fehlenden Tasten
+  Esc, Tab, Pfeile, Entf, Pos1, Ende, Bild auf und ab sowie einrastendes Strg, Alt und Win. Alles läuft über die vorhandene
+  Verbindung, es entsteht kein neuer Weg nach draußen. Das Einrichtungsskript baut das Jar und Compose hängt es schreibgeschützt in
+  `/etc/guacamole` ein (zwei Einbindungen im Webcontainer, der Rauchtest erwartet jetzt zwei).
+
 ### Behoben
 
 - Test vom 04.11.2026 am Laptop: Der Fernzugriff auf die Sparks zeigte ein schwarzes Fenster. Ursache: Die CSP des Gateways
