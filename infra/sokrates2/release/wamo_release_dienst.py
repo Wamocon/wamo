@@ -29,7 +29,8 @@ def stufen_bauen():
         if quelle is None:
             print("Keine Quelle eingerichtet, die Stufen sind nicht verfügbar.", file=sys.stderr)
             return NichtVerfuegbar()
-        return EchteStufen(quelle, AnkerClient(W.PFADE.anker_socket))
+        # Die Funde der Wirkungsflächen für die Karte liegen als kleine Dateien im Zustandsordner (reine Anzeige, außerhalb der Hashkette)
+        return EchteStufen(quelle, AnkerClient(W.PFADE.anker_socket), anzeige_ordner=W.PFADE.zustand + "/anzeige")
     except Exception as e:  # noqa: BLE001  jede Panne beim Aufbau heißt "keine Stufen", nie ein Absturz des Dienstes
         print(f"Stufen nicht aufgebaut ({type(e).__name__}).", file=sys.stderr)
         return NichtVerfuegbar()

@@ -69,8 +69,8 @@ def bump_art(alt: str | None, neu: str) -> str:
 
 
 class EchteStufen(QuellenStufen):
-    def __init__(self, quelle, anker: AnkerClient, pruefen_mit=None, sockpfad: str | None = None):
-        super().__init__(quelle, pruefen_mit, sockpfad)
+    def __init__(self, quelle, anker: AnkerClient, pruefen_mit=None, sockpfad: str | None = None, anzeige_ordner: str | None = None):
+        super().__init__(quelle, pruefen_mit, sockpfad, anzeige_ordner)
         self.anker = anker
 
     # ------------------------------------------------------------ Hilfen

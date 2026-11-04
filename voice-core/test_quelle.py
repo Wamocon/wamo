@@ -585,7 +585,7 @@ class QuelltextTests(unittest.TestCase):
             self.assertNotIn(chr(0x2014), t, name)
             self.assertNotIn(chr(0x2013), t, name)
         erlaubt = {"__future__", "base64", "json", "os", "re", "subprocess", "time", "urllib.error", "urllib.request", "typing", "release_stufen", "pruefer_archiv",
-                   "pruefer_client", "quelle"}
+                   "pruefer_client", "quelle", "release_anzeige", "release_kette", "contextlib", "threading", "collections"}
         for name in ("quelle.py", "stufen_quelle.py"):
             for zeile in (RELEASE / name).read_text(encoding="utf-8").splitlines():
                 if zeile.startswith(("import ", "from ")) or zeile.startswith("        import ") or zeile.startswith("        from "):
