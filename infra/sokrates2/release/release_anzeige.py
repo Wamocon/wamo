@@ -48,9 +48,21 @@ def _zahl(wert: object, grenze: int = ZAHL_MAX) -> int:
     return max(0, min(wert, grenze))
 
 
+# Teile, die ein Mensch bei der Freigabe immer sehen soll: Sie stehen im Diff zuerst, auch wenn die Änderung klein ist (reine Anzeige, die
+# Einstufung macht allein der Anker). Sonst fiele eine kleine Änderung an der Schutzschicht bei mehr als 20 Dateien aus der Liste.
+VORRANG_PRAEFIXE = ("infra/sokrates2/anker/", "infra/sokrates2/release/", "voice-core/dev_guard.py", "voice-core/wamo_anker.py",
+                    "supabase/", ".github/", "CLAUDE.md")
+
+
 def pfad_sauber(pfad: object) -> str:
-    """Nur harmlose ASCII-Zeichen, höchstens 70 Zeichen (sauber aus release_kette)."""
-    return sauber(pfad, PFAD_MAX)
+    """Nur harmlose ASCII-Zeichen, höchstens 70 Zeichen. Zu lange Pfade werden LINKS gekürzt ("..." und das Ende): Der Dateiname bleibt sichtbar."""
+    voll = sauber(pfad, 400)
+    return voll if len(voll) <= PFAD_MAX else "..." + voll[-(PFAD_MAX - 3):]
+
+
+def _vorrang(pfad: object) -> int:
+    """0 für Pfade der Schutzschicht und des Release-Wegs (zuerst zeigen), sonst 1."""
+    return 0 if isinstance(pfad, str) and pfad.startswith(VORRANG_PRAEFIXE) else 1
 
 
 # ------------------------------------------------------------------------------------------------ Diff
@@ -61,12 +73,12 @@ def diff_block(eintraege: Iterable[tuple], abgeschnitten: bool = False) -> dict:
         status, pfad, a, d = e
         status = status if isinstance(status, str) and status in STATUS_ERLAUBT else "M"   # unbekannte Status (U, X) zählen als geändert
         binaer = a is None or d is None
-        liste.append((status, pfad_sauber(pfad), None if binaer else _zahl(a), None if binaer else _zahl(d)))
-    hinzu = sum(a for _, _, a, _ in liste if a is not None)
-    weg = sum(d for _, _, _, d in liste if d is not None)
-    binaer = sum(1 for _, _, a, _ in liste if a is None)
-    liste.sort(key=lambda x: (-((x[2] or 0) + (x[3] or 0)), x[1]))
-    dateien = [{"s": s, "p": p, "a": a, "d": d} for s, p, a, d in liste[:DATEIEN_MAX]]
+        liste.append((status, pfad_sauber(pfad), None if binaer else _zahl(a), None if binaer else _zahl(d), _vorrang(pfad)))
+    hinzu = sum(x[2] for x in liste if x[2] is not None)
+    weg = sum(x[3] for x in liste if x[3] is not None)
+    binaer = sum(1 for x in liste if x[2] is None)
+    liste.sort(key=lambda x: (x[4], -((x[2] or 0) + (x[3] or 0)), x[1]))   # Schutzschicht zuerst, dann die größten Änderungen
+    dateien = [{"s": s, "p": p, "a": a, "d": d} for s, p, a, d, _ in liste[:DATEIEN_MAX]]
     return {"anzahl": min(len(liste), SUMME_MAX), "hinzu": min(hinzu, SUMME_MAX), "weg": min(weg, SUMME_MAX), "binaer": binaer,
             "gekappt": bool(abgeschnitten or len(liste) > DATEIEN_MAX), "dateien": dateien}
 

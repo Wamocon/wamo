@@ -218,6 +218,27 @@ class ReineLogikTests(unittest.TestCase):
         self.assertTrue(all(erlaubt.fullmatch(d["p"]) for d in block["dateien"]))
         self.assertEqual(RA.pfad_sauber("ok/pfad-1_2.v3/datei.ts"), "ok/pfad-1_2.v3/datei.ts")
 
+    def test_lange_pfade_werden_links_gekuerzt_der_dateiname_bleibt(self):
+        lang = "voice-core/" + "verzeichnis/" * 12 + "wamo_anker.py"
+        s = RA.pfad_sauber(lang)
+        self.assertEqual(len(s), 70)
+        self.assertTrue(s.startswith("...") and s.endswith("wamo_anker.py"))
+        self.assertEqual(RA.pfad_sauber("kurz/pfad.py"), "kurz/pfad.py")
+
+    def test_schutzschicht_steht_im_diff_immer_vorn_auch_bei_kleiner_aenderung(self):
+        grosse = [("M", f"ui/src/gross{i}.ts", 500 + i, 100) for i in range(30)]
+        klein = [("M", "infra/sokrates2/anker/freigabe.py", 1, 0), ("M", "supabase/migrations/0099_x.sql", 2, 0),
+                 ("M", "voice-core/dev_guard.py", 1, 1)]
+        block = RA.diff_block(grosse + klein)
+        pfade = [d["p"] for d in block["dateien"]]
+        self.assertEqual(len(pfade), 20)
+        self.assertEqual(sorted(pfade[:3]), sorted(["infra/sokrates2/anker/freigabe.py", "supabase/migrations/0099_x.sql", "voice-core/dev_guard.py"]))
+        self.assertTrue(block["gekappt"])
+        self.assertEqual(block["anzahl"], 33)
+        # ohne Schutzschicht bleibt die Reihenfolge nach Größe
+        nur = RA.diff_block(grosse)["dateien"]
+        self.assertEqual(nur[0]["p"], "ui/src/gross29.ts")
+
     def test_zahlen_haben_obergrenzen_und_status_ist_begrenzt(self):
         block = RA.diff_block([("M", "a", 10**12, -5), ("X", "b", True, 3), ("R", "c", "7", 7), ("T", "d", 1, 1)])
         stand = {d["p"]: d for d in block["dateien"]}

@@ -63,6 +63,15 @@ function FreigabeDialog({ anfrage, pflichtHaken, onZu, onAusgang }: { anfrage: A
   const [fehler, setFehler] = useState("");
   const [beschaeftigt, setBeschaeftigt] = useState(false);
   const dateien = anfrage.pruefung?.diff?.anzahl ?? null;
+  // Die Fassung, die der Dialog beim Öffnen zeigte: genau diese wird freigegeben. Wechselt sie, während der Dialog offen ist (die Karte fragt
+  // weiter ab), schließt der Dialog und sendet nichts, damit nie still eine andere Fassung freigegeben wird als die, die gelesen wurde.
+  const [fassung] = useState(() => ({ id: anfrage.id, v_commit: anfrage.v_commit, tree_id: anfrage.tree_id }));
+  const geaendert = anfrage.id !== fassung.id || anfrage.v_commit !== fassung.v_commit || anfrage.tree_id !== fassung.tree_id;
+  useEffect(() => {
+    if (geaendert && !laeuft.current) {
+      onAusgang({ text: "Die Änderung hat sich geändert, während der Dialog offen war. Bitte lies die neue Fassung und gib dann frei.", art: "fehler", neuLaden: false });
+    }
+  }, [geaendert, onAusgang]);
 
   useEffect(() => {
     const d = dialog.current;
@@ -82,7 +91,8 @@ function FreigabeDialog({ anfrage, pflichtHaken, onZu, onAusgang }: { anfrage: A
     const sauber = code.replace(/\s+/g, "");
     if (!/^\d{6}$/.test(sauber)) return zeigeFehler("Bitte gib die sechs Ziffern aus der Authenticator-App ein.");
     if (pflichtHaken && !haken) return zeigeFehler("Bitte bestätige, dass die Änderung die Schutzschicht berührt und du sie geprüft hast.");
-    const body = freigabeBody(anfrage);
+    if (geaendert) return zeigeFehler("Die Änderung hat sich geändert. Bitte schließe den Dialog und lies die neue Fassung.");
+    const body = freigabeBody({ ...anfrage, ...fassung });
     if (!body) return zeigeFehler("Commit und Baum fehlen. Bitte lade die Karte neu.");
     laeuft.current = true;
     setBeschaeftigt(true);
@@ -95,7 +105,7 @@ function FreigabeDialog({ anfrage, pflichtHaken, onZu, onAusgang }: { anfrage: A
       if (!token || !codeFrisch(aal2Zeitpunkt(token), Date.now())) {
         return zeigeFehler("Der Code ist nicht mehr frisch genug. Bitte gib gleich noch einen neuen Code ein.", true);
       }
-      const r = await freigebenSenden(anfrage.id, body.commit_id, body.tree_id, token);
+      const r = await freigebenSenden(fassung.id, body.commit_id, body.tree_id, token);
       if (r.ok) return onAusgang({ text: erfolgText(r.giltS), art: "ok", neuLaden: true });
       const f = fehlerFuer(r.code, r.status);
       if (f.erfolg) return onAusgang({ text: f.text, art: "ok", neuLaden: f.neuLaden });
@@ -133,11 +143,11 @@ function FreigabeDialog({ anfrage, pflichtHaken, onZu, onAusgang }: { anfrage: A
           </div>
           <div>
             <dt>Commit</dt>
-            <dd className="num">{anfrage.v_commit?.slice(0, 12)}</dd>
+            <dd className="num">{fassung.v_commit?.slice(0, 12)}</dd>
           </div>
           <div>
             <dt>Baum</dt>
-            <dd className="num">{anfrage.tree_id?.slice(0, 12)}</dd>
+            <dd className="num">{fassung.tree_id?.slice(0, 12)}</dd>
           </div>
           {dateien !== null && (
             <div>

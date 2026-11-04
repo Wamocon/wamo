@@ -37,7 +37,8 @@ VERSION_PFLICHT = ("ui/package.json", "voice-core/pyproject.toml")
 PROJECT_RE = re.compile(r"(?ms)^\[project\][ \t]*\r?$(.*?)(?=^\[|\Z)")
 PYPROJECT_VERSION_RE = re.compile(r'(?m)^[ \t]*version[ \t]*=[ \t]*"([^"\r\n]{1,40})"[ \t]*(?:#.*)?\r?$')
 TREFFER_SHA_RE = re.compile(r"[0-9a-f]{64}")
-ANZEIGE_PAUSE_S = 30.0   # so lange gilt ein Misserfolg der Anzeige, bevor erneut gerechnet wird (ein Erfolg gilt, solange der Dienst läuft)
+ANZEIGE_PAUSE_S = 30.0   # so lange gilt ein Misserfolg der Anzeige, bevor erneut gerechnet wird
+ANZEIGE_ERFOLG_S = 120.0  # so lange gilt ein Erfolg: danach wird neu gerechnet, damit nach einem Wechsel des laufenden Kerns (Basis des Diffs) kein alter Diff stehen bleibt
 BEREITS_RE = re.compile(r"status_falsch (\w+) statt")   # Detail des Ankers, wenn ein früherer Lauf schon weiter war
 
 
@@ -139,13 +140,13 @@ class EchteStufen(QuellenStufen):
             return None   # eine andere Abfrage rechnet gerade: status wartet nie darauf
         try:
             gemerkt = self._anzeige_cache.get(schluessel)
-            if gemerkt is not None and (gemerkt[0] is not None or time.monotonic() < gemerkt[1]):
+            if gemerkt is not None and time.monotonic() < gemerkt[1]:
                 return json.loads(json.dumps(gemerkt[0])) if gemerkt[0] is not None else None
             try:
                 block = self._anzeige_rechnen(basis_daten, v)
             except Exception:  # noqa: BLE001  die Anzeige ist nie Pflicht, ein Fehler heißt: keine Anzeige
                 block = None
-            self._anzeige_cache[schluessel] = (block, time.monotonic() + ANZEIGE_PAUSE_S)
+            self._anzeige_cache[schluessel] = (block, time.monotonic() + (ANZEIGE_ERFOLG_S if block is not None else ANZEIGE_PAUSE_S))
             while len(self._anzeige_cache) > 8:
                 self._anzeige_cache.pop(next(iter(self._anzeige_cache)))
             return json.loads(json.dumps(block)) if block is not None else None
