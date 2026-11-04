@@ -91,7 +91,7 @@ class SchalterTests(LiveTestBasis):
                 self.assertFalse(self.live.schalter()["bereit"])
 
     def test_ohne_einwilligung_nie(self):
-        for wert in (None, 0, 2, "1", True):
+        for wert in (None, 0, 1, 3, "2", True):  # 1 = alte Einwilligung ohne Fernstart
             with self.subTest(wert=wert):
                 self.schreibe(einwilligung=wert)
                 self.assertEqual(self.live.schalter()["grund"], "keine_einwilligung")
@@ -122,6 +122,54 @@ class SchalterTests(LiveTestBasis):
         self.assertFalse(self.live.schalter()["bereit"])
         self.datei.write_text("[1]", encoding="utf-8")
         self.assertFalse(self.live.schalter()["bereit"])
+
+
+class FernanfrageTests(LiveTestBasis):
+    """Fernanfrage vom Handy: der Host schreibt nur die Anfragedatei, nie den Schalter."""
+
+    def anfrage(self):
+        return self.datei.with_name(live_bild.ANFRAGE_DATEI_NAME)
+
+    def test_anfrage_schreibt_nur_die_anfragedatei(self):
+        r = self.live.anfrage_stellen()
+        self.assertEqual(r, {"ok": True, "grund": None})
+        daten = json.loads(self.anfrage().read_text(encoding="utf-8"))
+        self.assertEqual((daten["v"], daten["kennung"], daten["besitzer"], daten["ts"]), (1, KENNUNG, BESITZER, self.uhr.t))
+        self.assertRegex(daten["id"], r"^[0-9a-f]{16}$")
+        self.assertFalse(self.datei.exists(), "den Schalter schreibt nur die Desktop-App")
+        self.assertFalse(self.anfrage().with_name(live_bild.ANFRAGE_DATEI_NAME + ".neu").exists())
+
+    def test_schon_an_schreibt_nichts(self):
+        self.schreibe()
+        self.assertEqual(self.live.anfrage_stellen(), {"ok": True, "grund": "schon_an"})
+        self.assertFalse(self.anfrage().exists())
+
+    def test_abstand_zwischen_anfragen(self):
+        self.assertTrue(self.live.anfrage_stellen()["ok"])
+        self.assertEqual(self.live.anfrage_stellen()["grund"], "zu_schnell")
+        self.takt.t += live_bild.ANFRAGE_ABSTAND_SECS + 1
+        self.assertTrue(self.live.anfrage_stellen()["ok"])
+
+    def test_nie_fuer_mitglieder_ungebundene_oder_ohne_datei(self):
+        self.neu(FesteBindung(stufe="mitglied"))
+        self.assertEqual(self.live.anfrage_stellen()["grund"], "stufe")
+        self.neu(FesteBindung(stufe=None))
+        self.assertEqual(self.live.anfrage_stellen()["grund"], "nicht_eingerichtet")
+        self.assertEqual(live_bild.Live(None, None).anfrage_stellen()["grund"], "nicht_eingerichtet")
+        self.assertFalse(self.anfrage().exists())
+
+    def test_nicht_beschreibbar_ist_kein_absturz(self):
+        self.datei = Path(self.ordner.name) / "fehlt" / live_bild.DATEI_NAME  # Ordner gibt es nicht
+        self.neu()
+        self.assertEqual(self.live.anfrage_stellen()["grund"], "schreibfehler")
+
+    def test_host_werkzeug_prueft_gesperrten_bildschirm_und_meldet_text(self):
+        with mock.patch.object(host, "LIVE", self.live), mock.patch.object(host, "_gesperrt", return_value=None):
+            r = host.live_bild_anfordern()
+        self.assertEqual((r["status"], r["grund"]), ("success", None))
+        with mock.patch.object(host, "LIVE", self.live), \
+                mock.patch.object(host, "_gesperrt", return_value={"status": "locked", "summary": "gesperrt"}):
+            self.assertEqual(host.live_bild_anfordern()["status"], "locked")
 
 
 class ZuschauerTaktTests(LiveTestBasis):

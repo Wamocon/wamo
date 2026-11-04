@@ -124,6 +124,7 @@ from pc_host import (
     register_modus,
     sperre_aus_ergebnis,
 )
+import bild_fern
 from bildstrom import NICHT_ERLAUBT as BILD_NICHT_ERLAUBT, Bildstrom
 from pc_freigaben import PcFreigaben
 from persona import build_system_prompt
@@ -781,9 +782,15 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                                                             run_llm=False)])
 
     # Live-Bild des eigenen Laptops: nur Admin mit gebundenem Gerät (Tunnel je Gerät), PC-Steuerung an, Sperre gehalten
+    def zugangstor():
+        import wamo_api  # erst hier: wamo_api wird nach bot.py geladen
+        return wamo_api.gate_holen()
+
     bild = Bildstrom(
         client=lambda: pc_client, darf=lambda: bool(is_admin and geraet_zugang is not None and pc_allowed()),
         senden=send, ansage=ansage, aufruf=call_host_tool,
+        # Fernanfrage vom Handy: Token dieser Sitzung mit frischem Code des zweiten Faktors (bild_fern.py)
+        fern_pruefen=bild_fern.pruefer(identity.user_id, zugangstor),
     ) if (pc_client is not None and is_admin and geraet_zugang is not None) else None
 
     async def set_sperre(gesperrt: bool) -> None:

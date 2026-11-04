@@ -93,6 +93,10 @@ services:
       - /tmp:rw,nosuid,nodev,size=160m,uid=${WAMO_RD_UID:-65534},gid=${WAMO_RD_GID:-65534}
     volumes:
       - ${WAMO_RD_KEY:-/etc/wamo-rd/json.key}:/run/wamo-rd/json.key:ro
+      # Erweiterung "WAMO Eingabe" (Tastaturleiste für Handy und Laptop): ein Jar im Ordner extensions. Der Entrypoint des Images
+      # nimmt den Inhalt von /etc/guacamole (= GUACAMOLE_HOME) als Vorlage und verlinkt die Jars in sein Arbeitsverzeichnis unter
+      # /tmp. Das Einrichtungsskript baut das Jar aus infra/sokrates2/wamo-rd/erweiterung.
+      - ${WAMO_RD_HOME:-/home/wamocon/wamo-rd/gateway-home}:/etc/guacamole:ro
     environment:
       # Webanwendung unter "/" statt "/guacamole/"
       WEBAPP_CONTEXT: ROOT

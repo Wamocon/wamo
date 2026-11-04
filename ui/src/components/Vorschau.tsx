@@ -168,6 +168,10 @@ const KEINE_AKTIONEN: WamoAktionen = {
       wamo.set((s) => ({ ...s, liveBild: { ...s.liveBild, monitor } }));
       return true;
     },
+    anfordern: (monitor) => {
+      wamo.set((s) => ({ ...s, liveBild: { ...s.liveBild, geoeffnet: true, zustand: "wartet", monitor } }));
+      return true;
+    },
   },
   schliesseFehler: () => wamo.set((s) => ({ ...s, error: null })),
   mikrofone: async () => [

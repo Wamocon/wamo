@@ -87,7 +87,8 @@ class PersonaPaketATests(unittest.TestCase):
         self.assertNotIn("Rückfragen\n", aus)
         self.assertNotIn("system_info", aus)
         self.assertIn("Sag in einem kurzen Satz, was du tust.", aus)
-        self.assertEqual(self.bauen(), aus, "ohne gesetzte Umgebungsvariable gilt aus")
+        self.assertEqual(self.bauen(), self.bauen(rueckfragen=True, pc_ordner=False),
+                         "ohne gesetzte Umgebungsvariable gilt Rückfragen an (seit 04.11.2026), Ordner aus")
 
     def test_standard_prompt_ist_byteidentisch_zum_alten(self):
         import hashlib
@@ -97,7 +98,7 @@ class PersonaPaketATests(unittest.TestCase):
         # WAMO_PERSONA_BROWSER (Browser-Erkennung) und WAMO_PERSONA_TAB (Tab-Verhalten, 31.10.2026) sind standardmäßig an
         # und ändern den Standard-Prompt bewusst: mit "aus" bleibt der Prompt byteidentisch zum alten (gleiche Prüfsummen).
         # Der neue Standard (mit Tab-Regel) steht in PersonaTabTests.
-        with mock.patch.dict(os.environ, {"WAMO_PERSONA_RUECKFRAGEN": "", "WAMO_PERSONA_PC_ORDNER": "",
+        with mock.patch.dict(os.environ, {"WAMO_PERSONA_RUECKFRAGEN": "aus", "WAMO_PERSONA_PC_ORDNER": "",
                                           "WAMO_PERSONA_BROWSER": "aus", "WAMO_PERSONA_TAB": "aus"}):
             voll = build_system_prompt("Max", "du", ["x"], ["y"], pc_werkzeuge=True, entwicklung=True, pc_erreichbar=False)
             kurz = build_system_prompt("Max", "sie", pc_werkzeuge=False)
@@ -110,7 +111,8 @@ class PersonaPaketATests(unittest.TestCase):
     def test_schalter_aus_der_umgebung(self):
         from persona import persona_pc_ordner_an, persona_rueckfragen_an
 
-        self.assertFalse(persona_rueckfragen_an(""))
+        self.assertTrue(persona_rueckfragen_an(""))  # seit 04.11.2026 Standard an
+        self.assertFalse(persona_rueckfragen_an("aus"))
         self.assertTrue(persona_rueckfragen_an("an"))
         self.assertFalse(persona_pc_ordner_an(""))
         self.assertTrue(persona_pc_ordner_an("an"))

@@ -25,10 +25,26 @@ __ADRESSE__ {
 		max_size 64KB
 	}
 	# Alle Kopfzeilen mit ">" werden nach dem Upstream gesetzt und können von Tomcat nicht überschrieben werden.
-	header {
+	# Guacamole misst die Größe der Anzeige mit einem <object>, das eine leere Seite der eigenen Herkunft lädt. Ohne Erlaubnis
+	# bleibt die Anzeige 0x0, der Tunnel wird nie geöffnet und das Fenster bleibt schwarz (Test 04.11.2026). Nur diese eine
+	# leere Seite darf von der eigenen Herkunft eingebettet werden (SAMEORIGIN); alle anderen Seiten bleiben bei DENY.
+	@blank path /app/element/templates/blank.html
+	@normal not path /app/element/templates/blank.html
+	header @blank {
 		>-Server
 		>-X-Powered-By
-		>Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; media-src 'self'; connect-src 'self' __WSS__; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'"
+		>Content-Security-Policy "default-src 'none'; frame-ancestors 'self'"
+		>Referrer-Policy "no-referrer"
+		>X-Content-Type-Options "nosniff"
+		>X-Frame-Options "SAMEORIGIN"
+		>Cross-Origin-Opener-Policy "same-origin"
+		>Cross-Origin-Resource-Policy "same-origin"
+		>Cache-Control "no-store"
+	}
+	header @normal {
+		>-Server
+		>-X-Powered-By
+		>Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; media-src 'self'; connect-src 'self' __WSS__; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'self'; frame-src 'self'"
 		>Referrer-Policy "no-referrer"
 		>X-Content-Type-Options "nosniff"
 		>X-Frame-Options "DENY"

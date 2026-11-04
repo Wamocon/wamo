@@ -114,6 +114,43 @@ class PowershellTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(host.classify(cmd), "critical")
 
+    def test_harmlose_lesebefehle_brauchen_keine_freigabe(self):
+        """Sitzung 04.11.2026: diese vier Befehle verlangten je eine Freigabe, obwohl sie nur lesen."""
+        for cmd in [
+            'Get-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server" -Name fDenyTSConnections'
+            ' | Select-Object fDenyTSConnections',
+            'Get-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies" '
+            '-ErrorAction SilentlyContinue | Select-Object *',
+            'Get-ChildItem -Path "$env:USERPROFILE\\Projekte" -Recurse -Filter "*hook*" -ErrorAction SilentlyContinue'
+            ' | Select-Object FullName',
+            'Get-ChildItem -Path "$env:USERPROFILE\\Projekte\\x" -Recurse -Include "*hook*","*pre-commit*" '
+            '-ErrorAction SilentlyContinue | Select-Object FullName',
+            "Get-Service TermService | Select-Object Status, StartType",
+        ]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(host.classify(cmd), "read")
+
+    def test_erweiterungen_lassen_keine_umgehung_zu(self):
+        for cmd in [
+            "Get-ChildItem $env:PATH", "Get-ChildItem $env:USERPROFILEX", "Get-Content $env:USERPROFILE\\.ssh\\id_rsa",
+            'Get-ChildItem -Path "$env:USERPROFILE" -Recurse -Filter "id_*" | Get-Content',   # Inhalt über Pipe
+            'Get-ChildItem -Path "$env:USERPROFILE" -Filter "*.pem"',                        # Zugangsdaten
+            "Get-Content \"$env:USERPROFILE\\WAM*\\host-token\"",                            # Stern im Pfad
+            "Get-ChildItem -Path ~\\Pro* ",
+            'Get-ItemProperty "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" | Select-Object *',
+            'Get-ItemProperty "HKCU:\\Software\\Microsoft\\Office" | Select-Object *',
+            'Get-ItemProperty "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\..\\..\\Lsa"',
+            "Get-ItemProperty HKLM:\\SAM\\SAM", "Get-Item Registry::HKEY_LOCAL_MACHINE\\SAM",
+            'Set-ItemProperty "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server" -Name fDenyTSConnections -Value 0',
+            'Get-Process | Select-Object * | Remove-Item',
+        ]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(host.classify(cmd), "critical")
+
+    def test_feste_variablen_werden_eingesetzt(self):
+        self.assertEqual(host.expand_safe_vars("Get-ChildItem $env:USERPROFILE\\x"), f"Get-ChildItem {host.HOME}\\x")
+        self.assertEqual(host.expand_safe_vars("$env:PATH"), "$env:PATH")
+
     def test_pending_is_bounded(self):
         host.PENDING.clear()
         for i in range(host.MAX_PENDING + 5):
