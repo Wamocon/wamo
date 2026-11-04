@@ -31,6 +31,7 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 REF_MAIN = "refs/heads/main"
 API = "https://api.github.com"
 ANTWORT_MAX = 1024 * 1024
+DIFF_BYTES_MAX = 8 * 1024 * 1024   # so viel von der Ausgabe der Anzeige-Abfragen (diff, log) wird höchstens gelesen
 # Lokale Quelle eines anderen Benutzers (wamocon): git verweigert sonst wegen fremden Eigentums ("dubious ownership"). Bei lokalem Transport verwirft git die
 # Konfiguration von der Befehlszeile für den Kindprozess, also bleibt nur die globale Datei: root-eigen, enthält nur safe.directory für genau diesen Pfad.
 GIT_QUELLE_KONFIG = "/etc/wamo-release/git-quelle.gitconfig"
@@ -126,6 +127,48 @@ class Spiegel:
         except QuelleFehler:
             return None
         return roh[:max_bytes]
+
+    def diff_uebersicht(self, basis: str, neu: str, max_dateien: int = 5000) -> tuple[list[tuple], bool]:
+        """Welche Dateien zwischen zwei Commits anders sind, nur lesend und nur Zahlen und Pfade: [(Status, Pfad, hinzu, weg)], dazu ob die Liste abgeschnitten wurde.
+
+        Status ist der Buchstabe aus --name-status (A, M, D, T, ...), hinzu und weg sind None bei Binärdateien. Keine Umbenennungserkennung, kein externes Diff-Programm, kein
+        Textumwandler (sie liefen als Programm aus der Repository-Konfiguration); Hooks und Konfiguration sind über _git aus. Kein Inhalt einer Zeile kommt hierher."""
+        self._sha(basis)
+        self._sha(neu)
+        gemeinsam = ["diff", "--no-renames", "--no-ext-diff", "--no-textconv", "-z"]
+        status_roh = self._git(gemeinsam + ["--name-status", basis, neu, "--"], zeit=5.0)[:DIFF_BYTES_MAX]
+        zahlen_roh = self._git(gemeinsam + ["--numstat", basis, neu, "--"], zeit=5.0)[:DIFF_BYTES_MAX]
+        zahlen: dict[bytes, tuple[int | None, int | None]] = {}
+        for eintrag in zahlen_roh.split(b"\0"):
+            teile = eintrag.split(b"\t", 2)
+            if len(teile) != 3:
+                continue
+            a, d, pfad = teile
+            zahlen[pfad] = (int(a), int(d)) if a.isdigit() and d.isdigit() else (None, None)   # "-" bei Binärdateien
+        stuecke = status_roh.split(b"\0")
+        ergebnis: list[tuple] = []
+        abgeschnitten = False
+        i = 0
+        while i + 1 < len(stuecke):
+            status, pfad = stuecke[i].decode("ascii", "replace"), stuecke[i + 1]
+            i += 2
+            if status[:1] in ("R", "C"):   # nicht erwartet (--no-renames); der zweite Pfad gehört zum Eintrag
+                i += 1
+            if len(ergebnis) >= max_dateien:
+                abgeschnitten = True
+                break
+            a, d = zahlen.get(pfad, (0, 0))
+            ergebnis.append((status[:1], pfad.decode("utf-8", "replace"), a, d))
+        return ergebnis, abgeschnitten
+
+    def titel_stufen(self, basis: str, neu: str) -> dict[str, int]:
+        """Zählwerte je Stufe aus den Commit-Nachrichten zwischen basis und neu (ohne Merge-Commits, höchstens 500). Die Titel verlassen die Funktion nie: Heraus kommen nur
+        Zahlen (feat, fix, sonst, bruch, unkonventionell, commits)."""
+        import release_anzeige as RA
+        self._sha(basis)
+        self._sha(neu)
+        roh = self._git(["log", "--no-merges", "-n", str(RA.COMMITS_MAX), "--format=%B%x00", f"{basis}..{neu}", "--"], zeit=5.0)[:DIFF_BYTES_MAX]
+        return RA.titel_zaehlen(roh.decode("utf-8", "replace").split("\0"))
 
     @staticmethod
     def _sha(commit: str) -> None:
