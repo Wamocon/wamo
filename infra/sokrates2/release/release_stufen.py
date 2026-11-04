@@ -111,6 +111,11 @@ class Stufen:
     def bewaehren(self, ctx: Kontext) -> Ergebnis:  # umgeschaltet: Bewährung durch den Anker; "wartet", solange sie läuft
         raise NotImplementedError
 
+    def anzeige(self, daten: dict) -> dict | None:
+        """Reine Anzeige für den Befehl status (nur in pruefung3 und wartet_freigabe): der Block pruefung {diff, wirkung, empfehlung} (release_anzeige.py) oder None.
+        Kein Tor und kein Teil der Hashkette; ein Fehler oder eine Ausnahme heißt für den Dienst einfach "keine Anzeige"."""
+        return None
+
 
 class NichtVerfuegbar(Stufen):
     """Standard im Betrieb von Schritt 0.3: Keine Stufe ist gefüllt, jede meldet es ehrlich."""
@@ -153,6 +158,7 @@ class Attrappe(Stufen):
         self.aufrufe: list[tuple] = []
         self._zaehler: dict[str, int] = {}
         self._schloss = threading.Lock()
+        self.anzeige_aufrufe = 0   # zählt nur die Anzeige (sie steht nicht in aufrufe, damit Tests der Stufenfolge unverändert bleiben)
 
     def setze(self, name: str, wert: object) -> None:
         with self._schloss:
@@ -202,6 +208,15 @@ class Attrappe(Stufen):
 
     def bewaehren(self, ctx: Kontext) -> Ergebnis:
         return self._lauf("bewaehren", ctx)
+
+    def anzeige(self, daten: dict) -> dict | None:
+        """skript["anzeige"]: ein Block, eine Ausnahme (wird geworfen) oder eine Funktion (daten) -> Block. Ohne Eintrag: keine Anzeige."""
+        with self._schloss:
+            self.anzeige_aufrufe += 1
+            wert = self.skript.get("anzeige")
+        if isinstance(wert, BaseException):
+            raise wert
+        return wert(daten) if callable(wert) else wert
 
 
 # Zuordnung Zustand -> Aufruf (Stufe, Runde); angefragt und wartet_freigabe haben keine eigene Stufe
