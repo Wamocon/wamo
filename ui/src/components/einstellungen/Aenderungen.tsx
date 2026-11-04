@@ -30,11 +30,12 @@ const ZUSTAND_TEXT = { fertig: "fertig", aktuell: "jetzt", offen: "offen" } as c
 const DATEI_STATUS = { A: "neu", M: "geändert", D: "gelöscht", T: "Art geändert" } as const;
 const ART_TEXT: Record<string, string> = {
   prozess: "Prozesse starten",
-  netz: "Netzzugriffe",
-  datei: "Dateizugriffe",
-  geheimnis: "Geheimnisse und Umgebung",
-  datenbank: "Datenbank",
-  rechte: "Rechte und Dienste",
+  auswerten: "Code auswerten",
+  serialisierung: "Unsichere Serialisierung",
+  netzcode: "Netzwerkcode",
+  sudo: "Rechteerhöhung",
+  netzziel: "Neue Netzziele",
+  geheimnisname: "Neue Geheimnisnamen",
 };
 
 /** Geänderte Dateien als Tabelle: Pfade kommen aus Git und sind bereinigt, Anzeige nur als Text (React maskiert). */
