@@ -713,6 +713,15 @@ class GatewayDateiTests(unittest.TestCase):
         self.assertIn("script-src 'self' 'unsafe-eval';", code)  # AngularJS von Guacamole braucht eval, sonst bleibt die Seite leer
         self.assertNotIn("script-src 'self' 'unsafe-inline'", code)
         self.assertEqual(code.count("unsafe-eval"), 1)
+        # Guacamole misst die Größe der Anzeige mit einem <object> auf die eigene leere Seite (app/element/templates/blank.html).
+        # Bei object-src 'none' bleibt die Anzeige 0x0, der Tunnel wird nie geöffnet und das Fenster bleibt schwarz (Test 04.11.2026).
+        self.assertIn("object-src 'self'; frame-src 'self'", code)
+        self.assertNotIn("object-src 'none'", code)
+        # nur die leere Seite darf eingebettet werden, jede andere Seite bleibt gegen Einbetten geschützt
+        self.assertIn("@blank path /app/element/templates/blank.html", code)
+        self.assertEqual(code.count("SAMEORIGIN"), 1)
+        self.assertIn('>X-Frame-Options "DENY"', code)
+        self.assertIn("@normal not path /app/element/templates/blank.html", code)  # alles außer der leeren Seite bleibt streng
         self.assertIn("path /app.css", code)
         for kopf in ("Referrer-Policy", "X-Content-Type-Options", "X-Frame-Options", "Permissions-Policy", "Cross-Origin-Opener-Policy",
                      "Cross-Origin-Resource-Policy", "Cache-Control"):

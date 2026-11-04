@@ -314,18 +314,92 @@ def resolve_app(name: object) -> str:
     raise ValueError(f"{name} ist auf diesem PC nicht installiert")
 
 
+# Drei Gruppen reiner Lesebefehle, die früher unnötig eine Freigabe brauchten (Sitzung 04.11.2026: 7 Freigaben in 7 Minuten):
+# (1) feste Variablen mit harmlosem Inhalt, die der Host selbst einsetzt (kein "$" im geprüften Befehl),
+# (2) Platzhalter nur als Wert von -Filter/-Include/-Exclude eines Listenbefehls und "Select-Object *",
+# (3) wenige Registry-Schlüssel ohne Zugangsdaten (Fernzugriff, Richtlinien, Windows-Version).
+SICHERE_VARIABLEN = ("USERPROFILE", "LOCALAPPDATA", "APPDATA", "USERNAME", "COMPUTERNAME")
+_VARIABLE = re.compile(r"\$env:(" + "|".join(SICHERE_VARIABLEN) + r")(?![A-Za-z0-9_])", re.IGNORECASE)
+_MUSTER_ELEMENT = r"(?:\"[\w.*\- ]{1,60}\"|'[\w.*\- ]{1,60}'|[\w.*\-]{1,60})"
+_MUSTER_ARG = re.compile(
+    rf"(?<![\w-])-(?:Filter|Include|Exclude)\s+{_MUSTER_ELEMENT}(?:\s*,\s*{_MUSTER_ELEMENT})*", re.IGNORECASE)
+_EIGENSCHAFTEN_STERN = re.compile(r"^(Select-Object|Format-List|Format-Table)\b(.*?)(?<![\w-])\*(?=\s|$)", re.IGNORECASE)
+LISTEN_CMDLETS = re.compile(
+    r"^(Get-ChildItem|Select-Object|Sort-Object|Measure-Object|Where-Object|Group-Object|Format-List|Format-Table)(\s|$)",
+    re.IGNORECASE)
+UNSAFE_OHNE_STERN = re.compile(r"[\x00-\x1f\x7f{}()\[\]$@<>;&`%?]")
+_REG_ANY = re.compile(r"(?i)\bHKEY_\w+|\bRegistry::|\bHK(?:LM|CU|CR|U|CC):")
+_REG_PFAD = re.compile(r"\"(HK(?:LM|CU):[^\"]*)\"|'(HK(?:LM|CU):[^']*)'|(?<![\w:'\"])(HK(?:LM|CU):[^\s'\"|,]*)", re.IGNORECASE)
+_REG_ERLAUBT = re.compile(
+    r"^HK(?:LM|CU):[\\/]+(?:"
+    r"SYSTEM[\\/]CurrentControlSet[\\/]Control[\\/]Terminal Server(?:[\\/][\w .-]+)*"
+    r"|SYSTEM[\\/]CurrentControlSet[\\/]Services[\\/]TermService(?:[\\/][\w .-]+)*"
+    r"|SOFTWARE[\\/]Policies(?:[\\/][\w .-]+)*"
+    r"|SOFTWARE[\\/]Microsoft[\\/]Windows[\\/]CurrentVersion[\\/]Policies(?:[\\/][\w .-]+)*"
+    r"|SOFTWARE[\\/]Microsoft[\\/]Windows NT[\\/]CurrentVersion"
+    r")[\\/]*$", re.IGNORECASE)
+_REG_CMDLETS = re.compile(
+    r"(Get-ItemProperty|Get-ItemPropertyValue|Get-ChildItem|Get-Item|Test-Path|Select-Object|Where-Object|Sort-Object|"
+    r"Format-\w+|Measure-Object|Group-Object)(\s|$)", re.IGNORECASE)
+
+
+def expand_safe_vars(command: object) -> object:
+    """Setzt die festen, harmlosen Variablen ($env:USERPROFILE ...) selbst ein. Alles andere mit $ bleibt unverändert."""
+    if not isinstance(command, str):
+        return command
+    werte = {
+        "USERPROFILE": str(HOME), "LOCALAPPDATA": os.environ.get("LOCALAPPDATA", ""),
+        "APPDATA": os.environ.get("APPDATA", ""), "USERNAME": os.environ.get("USERNAME", ""),
+        "COMPUTERNAME": platform.node(),
+    }
+
+    def _ersetze(m: re.Match) -> str:
+        wert = werte.get(m.group(1).upper(), "")
+        return wert if wert and not re.search(r"[\"'`$\r\n]", wert) else m.group(0)
+    return _VARIABLE.sub(_ersetze, command)
+
+
+def _sterne_ok(command: str, segments: list[str]) -> bool:
+    """Jedes '*' steht entweder als Eigenschaftswahl (Select-Object *) oder als Muster von -Filter/-Include/-Exclude,
+    und dann besteht die ganze Pipeline nur aus Listenbefehlen (keine Inhalte: kein Get-Content, Select-String ...)."""
+    if "*" not in command:
+        return True
+    ohne_eigenschaft = " | ".join(_EIGENSCHAFTEN_STERN.sub(lambda m: m.group(1) + m.group(2), s) for s in segments)
+    ohne_muster = _MUSTER_ARG.sub(" ", ohne_eigenschaft)
+    if "*" in ohne_muster:
+        return False
+    if _MUSTER_ARG.search(ohne_eigenschaft) and not all(LISTEN_CMDLETS.match(s) for s in segments):
+        return False
+    return True
+
+
+def _registry_ok(command: str, segments: list[str]) -> bool:
+    """True, wenn keine Registry vorkommt oder nur erlaubte Schlüssel gelesen werden."""
+    if not _REG_ANY.search(command):
+        return True
+    pfade = [next(g for g in m.groups() if g) for m in _REG_PFAD.finditer(command)]
+    if not pfade or len(pfade) != len(_REG_ANY.findall(command)):
+        return False
+    if any(".." in p or not _REG_ERLAUBT.match(p.strip()) for p in pfade):
+        return False
+    return all(_REG_CMDLETS.match(s) for s in segments)
+
+
 def classify(command: object) -> str:
     """read | critical | blocked. Unbekanntes ist nie 'read'."""
     if not isinstance(command, str) or not command.strip() or len(command) > MAX_COMMAND_LEN:
         return "blocked"
     if any(re.search(p, command, re.IGNORECASE) for p in BLOCKED_PATTERNS):
         return "blocked"
-    if UNSAFE_READ_CHARS.search(command) or ESCAPE_TOKENS.search(command) or SENSITIVE_READ.search(command):
+    command = expand_safe_vars(command)
+    if UNSAFE_OHNE_STERN.search(command) or ESCAPE_TOKENS.search(command) or SENSITIVE_READ.search(command):
         return "critical"
     if NETWORK_CMDLETS.search(command) or UNC_PATH.search(command):
         return "critical"
     segments = [s.strip() for s in command.split("|")]
     if not all(READ_CMDLET.match(s) for s in segments):
+        return "critical"
+    if not _sterne_ok(command, segments) or not _registry_ok(command, segments):
         return "critical"
     if not _paths_in_home(command, segments):
         return "critical"
@@ -342,7 +416,7 @@ def _paths_in_home(command: str, segments: list[str]) -> bool:
         except (OSError, ValueError, RuntimeError):
             return False
     for segment in segments:
-        if PATH_CMDLETS.match(segment) and not ABS_PATH.search(segment):
+        if PATH_CMDLETS.match(segment) and not ABS_PATH.search(segment) and not _REG_PFAD.search(segment):
             return False  # relativer oder fehlender Pfad: würde im Ordner des Hosts lesen
     return True
 
@@ -1062,6 +1136,7 @@ def powershell_lesen(command: str, reason: str) -> dict:
     Format/Measure). Alles, was etwas veraendert, wird NICHT ausgefuehrt, sondern als Freigabe-
     Anfrage gestellt (status=needs_approval), die ein Admin freigeben muss. `reason` = wofür,
     wird protokolliert."""
+    command = expand_safe_vars(command)  # fest eingesetzt: geprüft und ausgeführt wird dieselbe Zeichenfolge
     risk = classify(command)
     if locked := _gesperrt("powershell_lesen"):  # auch Lesen nicht: niemand sieht, wer am PC spricht
         return locked
@@ -1074,7 +1149,8 @@ def powershell_lesen(command: str, reason: str) -> dict:
         return _anfrage(
             "powershell_lesen", "powershell", {"command": command}, "powershell", "PowerShell-Befehl ausführen",
             command, f"PowerShell auf {platform.node()}",
-            "Das verändert etwas am PC. Ein Admin muss es in der Oberfläche freigeben; bis dahin passiert nichts.",
+            "Dieser Befehl ließ sich nicht sicher als reines Lesen einstufen. Ein Admin muss ihn in der Oberfläche freigeben; "
+            "bis dahin passiert nichts.",
             {"befehl": str(command)[:300]}, anlass=anlass)
     result = _powershell(command)
     _audit({"tool": "powershell_lesen", "result": result["status"]})

@@ -46,9 +46,11 @@ STANDARDWERTE: dict[str, bool] = {
     # in der Streuung (größte Lücke lang p95 750 ms bei 660 bis 780 ms in allen Läufen, Verstummen 1400 / 1780 ms). Der Nutzen
     # (Satzzeichen nicht vorlesen) ist nur in der Hörprobe prüfbar.
     "WAMO_TTS_SATZLEERZEICHEN": False,
-    # AUS: Lauf unvollständig (Einwurf, Backchannel, Echo, Pause fehlen, Datenbankausfall), erster Ton nach Faktenfrage
-    # 2840 / 3740 ms gegen 2316 / 3242 ms in der Basis (Läufe ohne diesen Schalter: p50 2316 bis 2617 ms, früher 2058 ms).
-    "WAMO_PERSONA_RUECKFRAGEN": False,
+    # AN seit 04.11.2026 (Entscheidung Niko nach dem Test: zu viele Rückfragen, etwa neun "Soll ich ...?" in 15 Minuten).
+    # Die Messung vom 01.11. war unvollständig (Einwurf, Backchannel, Echo, Pause fehlen, Datenbankausfall); der erste Ton
+    # nach Faktenfrage lag bei 2840 / 3740 ms gegen 2316 / 3242 ms in der Basis, bei 6 Fragen nicht entscheidbar. Abschalten
+    # bleibt per WAMO_PERSONA_RUECKFRAGEN=aus möglich.
+    "WAMO_PERSONA_RUECKFRAGEN": True,
     # AUS: die Sitzung mit den Faktenfragen fiel auf ein Hausmodell (Datenbank nicht erreichbar), erster Ton nach Faktenfrage
     # nicht gemessen; erster Ton bei Werkzeug p95 5852 ms gegen 2791 ms in der Basis (ein Ausreißer bei 4 Antworten).
     "WAMO_PERSONA_PC_ORDNER": False,
