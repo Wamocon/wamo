@@ -15,6 +15,15 @@
 .lb-hinweis { margin: 0; padding: 8px 10px; border-left: 4px solid var(--rule-strong); background: var(--surface); font-size: 15px; line-height: 1.4; }
 .lb-aktionen { display: flex; gap: 8px; flex-wrap: wrap; }
 .lb-klein { margin: 0; font-size: 14px; color: var(--ink-soft); }
+/* Fernanfrage: Code der Authenticator-App (16 Pixel Schrift: iOS vergrößert sonst die Seite beim Antippen) */
+.lb-code { display: grid; gap: 8px; min-width: 0; }
+.lb-code label { font: 700 14px/1.3 var(--font-wmc); }
+.lb-code-zeile { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lb-code-feld {
+  width: 9ch; min-height: 44px; padding: 0 10px; border: 1px solid var(--rule-strong); border-radius: 8px;
+  background: var(--surface); color: var(--ink); font: 700 20px/1 var(--font-wmc); letter-spacing: 0.2em; text-align: center;
+}
+.lb-code-feld:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .lb-kopf { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
 .lb-zustand { margin: 0; display: flex; align-items: center; gap: 8px; font: 700 16px/1.3 var(--font-wmc); }

@@ -1324,6 +1324,27 @@ async def bild_holen(zuschauer: str, monitor: int = 1) -> dict:
 
 
 @mcp.tool()
+def live_bild_anfordern() -> dict:
+    """Nur für den Voice-Core (nie für das Gesprächsmodell): bittet die Desktop-App am Laptop, das Live-Bild einzuschalten
+    (Fernanfrage des Admins vom Handy, der Kern hat vorher einen frischen Code des zweiten Faktors geprüft). Der Host schreibt
+    nur die Anfragedatei; den Schalter setzt die App erst nach eigener Prüfung (Einwilligung am Laptop, roter Rahmen)."""
+    if locked := _gesperrt("live_bild_anfordern"):
+        return locked
+    r = LIVE.anfrage_stellen()
+    _audit({"tool": "live_bild_anfordern", "risk": "change", "ergebnis": r["grund"] or "gestellt"})
+    texte = {
+        None: "Die Anfrage ging an den Laptop.",
+        "schon_an": "Das Live-Bild ist am Laptop schon eingeschaltet.",
+        "zu_schnell": "Die letzte Anfrage ist erst Sekunden her. Bitte kurz warten.",
+        "stufe": "Dieser Laptop gehört keinem Admin.",
+        "nicht_eingerichtet": "Dieser Laptop ist nicht für das Live-Bild eingerichtet.",
+        "schreibfehler": "Die Anfrage ließ sich am Laptop nicht ablegen.",
+    }
+    return {"status": "success" if r["ok"] else "rejected", "grund": r["grund"],
+            "summary": texte.get(r["grund"], "Die Anfrage ist nicht möglich.")}
+
+
+@mcp.tool()
 def live_bild_beenden(zuschauer: str) -> dict:
     """Nur für den Voice-Core: der Zuschauer hört auf, der Platz wird frei."""
     LIVE.beenden(zuschauer)

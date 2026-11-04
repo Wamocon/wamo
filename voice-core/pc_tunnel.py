@@ -63,7 +63,7 @@ OHNE_AUFRUFGRENZE = frozenset({"freigabe_entscheiden", "sperre_pruefen"})  # das
 # Live-Bild (bildstrom.py): eigene Grenzen statt höherer Limits. Diese Werkzeuge zählen NICHT zu den 120 Aufrufen je
 # Minute, haben dafür eine eigene Minutengrenze, eine kurze Zeitgrenze und eine kleine Antwortgrenze (ein Bild ist
 # höchstens etwa 150 KB groß).
-BILD_WERKZEUGE = frozenset({"bild_holen", "live_bild_status", "live_bild_beenden"})
+BILD_WERKZEUGE = frozenset({"bild_holen", "live_bild_status", "live_bild_beenden", "live_bild_anfordern"})
 BILD_AUFRUFE_JE_MINUTE = 200  # Host erlaubt 150 Bilder je Minute, dazu Statusfragen und das Ende
 BILD_TIMEOUT_SECS = 8.0
 MAX_ANTWORT_BYTES_BILD = 256 * 1024

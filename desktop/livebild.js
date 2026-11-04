@@ -1,8 +1,9 @@
 // WAMO-Desktop: Schalter am Laptop für das Live-Bild (reines Node-Modul, ohne electron-Import).
 //
 // Das Live-Bild zeigt, was auf diesem Laptop zu sehen ist. Deshalb entscheidet hier nur die Person am Laptop:
-//  * Standard ist AUS. Eingeschaltet wird nur über das Tray-Menü der App (main.js), nie über die Oberfläche im Fenster, nie
-//    über den Kern. Die Brücke window.wamoDesktop kennt dafür keinen Befehl.
+//  * Standard ist AUS. Eingeschaltet wird über das Tray-Menü der App (main.js) oder, seit 04.11.2026, auf eine Fernanfrage des
+//    Besitzers vom Handy (anfrageVerarbeiten): nur wenn die Einwilligung am Laptop schon vorliegt, mit rotem Rahmen und Meldung
+//    am Laptop. Nie über die Oberfläche im Fenster. Die Brücke window.wamoDesktop kennt dafür keinen Befehl.
 //  * Vor dem ersten Einschalten (und nach jeder neuen Bindung des Laptops) fragt ein Dialog nach der Einwilligung mit
 //    Inhalt, Zweck, Dauer und Datenschutz (EINWILLIGUNG_TEXT). Ohne Zustimmung bleibt alles aus.
 //  * Der Schalter ist eine Datei, %LOCALAPPDATA%\WAMO\live-bild.json (neben geraet.json). Sie gilt nur für DIESEN Laptop
@@ -20,6 +21,7 @@ const EINWILLIGUNG_VERSION = 1;
 const DAUER_MS = 30 * 60 * 1000; // so lange gilt ein Einschalten; danach schaltet die Person neu ein
 const DAUER_MAX_MS = 60 * 60 * 1000; // der Host akzeptiert höchstens eine Stunde
 const HERZSCHLAG_MS = 2000;
+const ANFRAGE_MAX_ALTER_S = 60; // eine Fernanfrage gilt höchstens so lange (der Kern wartet nur kurz auf den Schalter)
 const DATEI_MAX = 8192;
 const RE_KENNUNG = /^pc-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const RE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -58,6 +60,7 @@ function erzeugeLiveBild(opt) {
   const datei = path.join(opt.datenOrdner, "live-bild.json");
   const einwilligungsDatei = path.join(opt.datenOrdner, "live-bild-einwilligung.json");
   const geraetDatei = path.join(opt.datenOrdner, "geraet.json");
+  const anfrageDatei = path.join(opt.datenOrdner, "live-bild-anfrage.json");
   let an = false;
   let bis = 0;
   let timer = null;
@@ -185,12 +188,17 @@ function erzeugeLiveBild(opt) {
     return Boolean(g && g.stufe === "admin");
   }
 
-  async function einschalten() {
+  /** optionen.anfrage: Einschalten auf Anfrage vom Handy des Besitzers (anfrageVerarbeiten). Dann gibt es keinen Dialog: Die
+   *  Einwilligung muss schon am Laptop gegeben worden sein, sonst bleibt alles aus. */
+  async function einschalten(optionen = {}) {
     if (an) return { ok: true, schonAn: true };
     const g = geraet();
     if (!g) return { ok: false, grund: "Dieser Laptop ist noch nicht eingerichtet." };
     if (g.stufe !== "admin") return { ok: false, grund: "Das Live-Bild gibt es nur auf dem Laptop eines Admins." };
     if (frage) return { ok: false, grund: "Die Einwilligungsfrage ist schon offen." };
+    if (!hatEinwilligung(g) && optionen.anfrage === true) {
+      return { ok: false, grund: "Am Laptop fehlt die Einwilligung. Die Person am Laptop schaltet das Live-Bild einmal im Tray-Menü ein." };
+    }
     if (!hatEinwilligung(g)) {
       frage = Promise.resolve().then(() => opt.fragen());
       let ja = false;
@@ -228,17 +236,76 @@ function erzeugeLiveBild(opt) {
     return { ok: true };
   }
 
-  /** Beim Start: einen übrig gebliebenen Schalter (Absturz) löschen. */
+  /** Beim Start: einen übrig gebliebenen Schalter (Absturz) und eine alte Anfrage löschen. */
   function start() {
     try {
       schreibeAtomar(datei, { v: 1, an: false });
     } catch (err) {
       log(`Schalterdatei nicht geschrieben (${err.code ?? err.message})`);
     }
+    try {
+      dsys.unlinkSync(anfrageDatei);
+    } catch {
+      /* keine Anfrage da */
+    }
+  }
+
+  /**
+   * Fernanfrage vom Handy (Entscheidung Niko 04.11.2026): Der Host legt live-bild-anfrage.json ab, nachdem der Kern einen frischen
+   * Code des zweiten Faktors des Besitzers geprüft hat. Diese Funktion (main.js ruft sie alle 2 s) prüft selbst noch einmal und
+   * schaltet nur ein, wenn ALLES stimmt: Datei von diesem Laptop (Kennung) und seinem Besitzer, höchstens 60 s alt, Stufe admin,
+   * Einwilligung am Laptop liegt vor (nie eine Frage per Fernanfrage), nicht schon an. Die Datei wird in jedem Fall zuerst
+   * gelöscht (einmalig). Der rote Rahmen am Laptop und die Meldung (opt.melden) zeigen, dass jemand zusieht; Dauer wie sonst.
+   */
+  async function anfrageVerarbeiten() {
+    let roh;
+    try {
+      roh = dsys.readFileSync(anfrageDatei, "utf8");
+    } catch {
+      return { ok: false, keine: true };
+    }
+    try {
+      dsys.unlinkSync(anfrageDatei);
+    } catch {
+      /* ein zweiter Durchlauf liest sie noch einmal: Alter und Kennung prüfen sie wieder */
+    }
+    let a = null;
+    try {
+      a = roh.length <= DATEI_MAX ? JSON.parse(roh) : null;
+    } catch {
+      a = null;
+    }
+    const g = geraet();
+    const t = jetzt() / 1000;
+    const gueltig =
+      istObjekt(a) &&
+      a.v === 1 &&
+      typeof a.ts === "number" &&
+      Number.isFinite(a.ts) &&
+      t - a.ts <= ANFRAGE_MAX_ALTER_S &&
+      a.ts - t <= 2 &&
+      g !== null &&
+      a.kennung === g.kennung &&
+      typeof a.besitzer === "string" &&
+      a.besitzer.toLowerCase() === g.besitzer;
+    if (!gueltig) {
+      log("Fernanfrage verworfen (ungültig, zu alt oder für ein anderes Gerät)");
+      return { ok: false, verworfen: true };
+    }
+    const r = await einschalten({ anfrage: true });
+    if (r.ok && !r.schonAn) {
+      log("Live-Bild auf Anfrage vom Handy eingeschaltet");
+      opt.melden?.("WAMO Live-Bild", "Das Live-Bild wurde von deinem Handy angefordert und läuft. Du erkennst es am roten Rahmen. Im Tray-Menü schaltest du es aus.");
+    } else if (!r.ok) {
+      log(`Fernanfrage nicht ausgeführt (${r.grund ?? "unbekannt"})`);
+      opt.melden?.("WAMO Live-Bild", r.grund ?? "Die Anfrage vom Handy konnte nicht ausgeführt werden.");
+    }
+    return r;
   }
 
   return {
     start,
+    anfrageVerarbeiten,
     einschalten,
     ausschalten,
     tick,

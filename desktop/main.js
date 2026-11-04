@@ -53,6 +53,7 @@ const {
   Tray,
   ipcMain,
   nativeImage,
+  Notification,
   powerSaveBlocker,
   screen,
   session,
@@ -769,6 +770,14 @@ const liveBild = erzeugeLiveBild({
   hinweis: (an, bisMs) => (an ? zeigeLiveHinweise(bisMs) : entferneLiveHinweise()),
   sichtbar: liveHinweisSichtbar,
   geaendert: () => aktualisiereTray(),
+  // Meldung am Laptop, wenn das Live-Bild auf Anfrage vom Handy startet (oder nicht startet)
+  melden: (titel, text) => {
+    try {
+      new Notification({ title: titel, body: text }).show();
+    } catch {
+      /* ohne Meldung geht es trotzdem weiter: der rote Rahmen zeigt das Live-Bild an */
+    }
+  },
 });
 
 async function liveBildUmschalten() {
@@ -1081,6 +1090,8 @@ app.whenReady().then(async () => {
   // Audio bekommt Vorrang, wenn Chrome & Co. beim Öffnen kurz die CPU belegen (Aussetzer)
   setInterval(raisePriority, 5000);
   liveBild.start(); // ein Schalter aus einem Absturz wird gelöscht: Standard ist aus
+  // Fernanfrage vom Handy (live-bild-anfrage.json, vom Host abgelegt): alle 2 s prüfen, die App entscheidet selbst
+  setInterval(() => void liveBild.anfrageVerarbeiten().catch(() => {}), 2000).unref?.();
   createTray();
   createMainWindow(); // sofort mit Ladeseite, nicht erst nach dem Hochfahren der Dienste
   // Installierte App: Python-Umgebung des Hosts im Hintergrund einrichten (einmalig); bis sie steht, bleibt der Host aus
