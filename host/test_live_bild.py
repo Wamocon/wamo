@@ -91,7 +91,7 @@ class SchalterTests(LiveTestBasis):
                 self.assertFalse(self.live.schalter()["bereit"])
 
     def test_ohne_einwilligung_nie(self):
-        for wert in (None, 0, 2, "1", True):
+        for wert in (None, 0, 1, 3, "2", True):  # 1 = alte Einwilligung ohne Fernstart
             with self.subTest(wert=wert):
                 self.schreibe(einwilligung=wert)
                 self.assertEqual(self.live.schalter()["grund"], "keine_einwilligung")

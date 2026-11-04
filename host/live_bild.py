@@ -39,7 +39,7 @@ DATEI_NAME = "live-bild.json"
 ANFRAGE_DATEI_NAME = "live-bild-anfrage.json"
 ANFRAGE_ABSTAND_SECS = 15.0  # höchstens eine Anfrage je Abstand
 DATEI_MAX_BYTES = 4096
-EINWILLIGUNG_VERSION = 1
+EINWILLIGUNG_VERSION = 2  # wie desktop/livebild.js; 2 = Einwilligung nennt den Fernstart vom Handy (04.11.2026)
 HERZSCHLAG_MAX_SECS = 6.0  # so alt darf der Herzschlag der Desktop-App höchstens sein
 ZUKUNFT_TOLERANZ_SECS = 2.0
 EINSCHALTEN_MAX_SECS = 3600  # "bis" liegt höchstens so weit in der Zukunft

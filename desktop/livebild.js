@@ -17,7 +17,9 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const EINWILLIGUNG_VERSION = 1;
+// Version 2 (04.11.2026): Der Text nennt jetzt den Fernstart vom Handy. Eine Einwilligung der Version 1 gilt nicht dafür; der Host
+// (host/live_bild.py) prüft dieselbe Zahl, beide wechseln gemeinsam.
+const EINWILLIGUNG_VERSION = 2;
 const DAUER_MS = 30 * 60 * 1000; // so lange gilt ein Einschalten; danach schaltet die Person neu ein
 const DAUER_MAX_MS = 60 * 60 * 1000; // der Host akzeptiert höchstens eine Stunde
 const HERZSCHLAG_MS = 2000;
@@ -33,7 +35,8 @@ const EINWILLIGUNG = {
   detail: [
     "Inhalt: Das Live-Bild überträgt als einzelne Bilder, was auf dem Bildschirm dieses Laptops zu sehen ist. Dabei können Kundendaten, E-Mails und Chats anderer Personen sichtbar sein.",
     "Zweck: Du siehst deinen eigenen Laptop von unterwegs oder von einem anderen Gerät aus in deiner WAMO-Ansicht.",
-    `Dauer: Das Live-Bild läuft höchstens ${DAUER_MS / 60000} Minuten. Es endet früher bei Sperre, Abmelden, Trennen oder wenn niemand mehr zusieht. Danach schaltest du es hier neu ein.`,
+    "Fernstart: Mit dieser Einwilligung kannst du das Live-Bild auch von deinem Handy oder einem anderen Gerät aus einschalten, ohne dass du am Laptop sitzt. Dafür gibst du dort einen frischen Code deiner Authenticator-App ein. Dieser Laptop zeigt dann den roten Rahmen und eine Meldung.",
+    `Dauer: Das Live-Bild läuft höchstens ${DAUER_MS / 60000} Minuten. Es endet früher bei Sperre, Abmelden, Trennen oder wenn niemand mehr zusieht. Danach schaltest du es hier oder per Fernstart neu ein.`,
     "Datenschutz: Nichts wird aufgezeichnet oder gespeichert. Die Bilder gehen nur an deine eigene Sitzung, nie an ein Sprachmodell. Solange das Bild läuft, zeigt dieser Laptop einen roten Rahmen. Passwortfelder lassen sich nicht automatisch ausblenden: Schließe vorher Fenster, die niemand sehen soll.",
     "Du kannst das Live-Bild jederzeit im Tray-Menü von WAMO ausschalten.",
   ].join("\n\n"),
@@ -61,6 +64,7 @@ function erzeugeLiveBild(opt) {
   const einwilligungsDatei = path.join(opt.datenOrdner, "live-bild-einwilligung.json");
   const geraetDatei = path.join(opt.datenOrdner, "geraet.json");
   const anfrageDatei = path.join(opt.datenOrdner, "live-bild-anfrage.json");
+  const gesehen = []; // Kennungen schon bearbeiteter Fernanfragen
   let an = false;
   let bis = 0;
   let timer = null;
@@ -277,8 +281,14 @@ function erzeugeLiveBild(opt) {
     }
     const g = geraet();
     const t = jetzt() / 1000;
+    // Jede Anfrage zählt nur einmal, auch wenn sich die Datei nicht löschen ließ (Windows, Virenscanner)
+    const neu = istObjekt(a) && typeof a.id === "string" && /^[0-9a-f]{16}$/.test(a.id) && !gesehen.includes(a.id);
+    if (neu) {
+      gesehen.push(a.id);
+      if (gesehen.length > 20) gesehen.shift();
+    }
     const gueltig =
-      istObjekt(a) &&
+      neu &&
       a.v === 1 &&
       typeof a.ts === "number" &&
       Number.isFinite(a.ts) &&

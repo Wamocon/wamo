@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { DAUER_MAX_MS, DAUER_MS, EINWILLIGUNG, HERZSCHLAG_MS, erzeugeLiveBild } = require("./livebild");
+const { DAUER_MAX_MS, DAUER_MS, EINWILLIGUNG, EINWILLIGUNG_VERSION, HERZSCHLAG_MS, erzeugeLiveBild } = require("./livebild");
 
 const BESITZER = "11111111-2222-3333-4444-555555555555";
 
@@ -100,7 +100,7 @@ test("die Datei enthält alles, was der Host prüft", async () => {
     const d = u.datei();
     assert.equal(d.v, 1);
     assert.equal(d.an, true);
-    assert.equal(d.einwilligung, 1);
+    assert.equal(d.einwilligung, EINWILLIGUNG_VERSION);
     assert.equal(d.kennung, "pc-test");
     assert.equal(d.besitzer, BESITZER);
     assert.equal(d.sichtbar, true);
@@ -384,15 +384,47 @@ test("Fernanfrage bei laufendem Live-Bild verlängert nichts und meldet nicht no
     await u.live.anfrageVerarbeiten();
     const bis = u.datei().bis;
     u.uhr.t += 5000;
-    anfrageSchreiben(u);
+    anfrageSchreiben(u, { id: "ef".repeat(8) });
     const r = await u.live.anfrageVerarbeiten();
     assert.equal(r.schonAn, true);
     assert.equal(u.datei().bis, bis);
     assert.equal(u.protokoll.meldungen.length, 1);
     u.live.ausschalten();
-    anfrageSchreiben(u);
+    anfrageSchreiben(u, { id: "12".repeat(8) });
     u.live.start();
     assert.equal(anfrageDa(u), false, "eine Anfrage aus einem früheren Lauf zählt nie");
+  } finally {
+    u.aufraeumen();
+  }
+});
+
+test("Fernanfrage: dieselbe Anfrage zählt nur einmal, auch wenn die Datei bleibt", async () => {
+  const u = umgebung();
+  try {
+    await mitEinwilligung(u);
+    anfrageSchreiben(u);
+    assert.equal((await u.live.anfrageVerarbeiten()).ok, true);
+    u.live.ausschalten("im Tray ausgeschaltet");
+    anfrageSchreiben(u); // dieselbe id: die Datei war nicht gelöscht
+    const r = await u.live.anfrageVerarbeiten();
+    assert.equal(r.ok, false);
+    assert.equal(u.live.status().an, false, "eine ausgeschaltete Person bekommt es nicht wieder eingeschaltet");
+    anfrageSchreiben(u, { id: "cd".repeat(8) }); // eine neue id gilt
+    assert.equal((await u.live.anfrageVerarbeiten()).ok, true);
+  } finally {
+    u.aufraeumen();
+  }
+});
+
+test("Einwilligung der Version 1 gilt nicht für den Fernstart (der Text nannte ihn nicht)", async () => {
+  const u = umgebung();
+  try {
+    fs.writeFileSync(path.join(u.ordner, "live-bild-einwilligung.json"), JSON.stringify({ v: 1, kennung: "pc-test", besitzer: BESITZER }));
+    anfrageSchreiben(u);
+    const r = await u.live.anfrageVerarbeiten();
+    assert.equal(r.ok, false);
+    assert.equal(u.live.status().an, false);
+    assert.equal(u.protokoll.fragen, 0);
   } finally {
     u.aufraeumen();
   }
