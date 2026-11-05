@@ -1,7 +1,7 @@
 // Karte "Änderungen" (Schritt 1.5): die strenge Prüfung der Antwort des Kerns, der Weg einer Anfrage und die Texte der Lage.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { abgeschlossenText, alsStatus, ansicht, SCHRITT_TITEL, schrittZeilen, WEG, type Stand } from "./aenderungen.ts";
+import { abgeschlossenText, alsStatus, ansicht, SCHRITT_TITEL, schrittZeilen, versionHinweise, WEG, type Stand } from "./aenderungen.ts";
 
 const ID = "0b9f2c1e-4a6d-4f0e-9a1b-2c3d4e5f6a7b";
 
@@ -121,14 +121,65 @@ test("bei einer Sperre wartet nichts auf Freigabe (es geht ohnehin nichts weiter
   assert.equal(a.wartetAufFreigabe, false);
 });
 
-test("Hinweise: Gerüstmodus, angehalten, Installation, fehlender Diff", () => {
-  const h = ansicht(alsStand(stand({ angehalten: "Wartung", installation: "abweichung", anfrage: anfrage("pruefung1") }))).hinweise.join(" ");
+test("Hinweise: Gerüstmodus, angehalten, Installation, fehlender Diff erst ab der Prüfung 3", () => {
+  const h = ansicht(alsStand(stand({ angehalten: "Wartung", installation: "abweichung", anfrage: anfrage("pruefung3") }))).hinweise.join(" ");
   assert.match(h, /Gerüstmodus/);
   assert.match(h, /angehalten: Wartung/);
   assert.match(h, /Prüfsumme/);
-  assert.match(h, /Diff, Wirkungsflächen und Versionsvorschlag liefert der Release-Dienst noch nicht/);
+  assert.match(h, /Diff, Wirkungsflächen und Versionsempfehlung sind gerade nicht verfügbar/);
+  const frueh = ansicht(alsStand(stand({ anfrage: anfrage("pruefung1") }))).hinweise.join(" ");
+  assert.doesNotMatch(frueh, /Diff/, "vor der Prüfung 3 gibt es noch keinen Diff, das ist kein Mangel");
   assert.deepEqual(ansicht(alsStand(stand({ modus: "betrieb" }))).hinweise, []);
 });
+
+const HEX_A = "a".repeat(40);
+const HEX_B = "b".repeat(40);
+const PRUEFUNG = {
+  diff: { anzahl: 2, hinzu: 10, weg: 3, binaer: 0, gekappt: false, dateien: [{ s: "M", p: "voice-core/bot.py", a: 8, d: 3 }, { s: "A", p: "ui/neu.ts", a: 2, d: 0 }] },
+  wirkung: { anzahl: 1, nach_art: { prozess: 1 }, sonder_hinweis: false, neue_pakete: 0, windows: false, treffer: [{ p: "voice-core/bot.py", z: 12, a: "prozess", d: "subprocess" }] },
+  empfehlung: { stufe: "minor", version: "0.2.0", feat: 1, fix: 0, sonst: 0, unkonventionell: 0, major_null: false },
+};
+
+test("Prüfung, Commit und Baum werden übernommen", () => {
+  const s = alsStand(stand({ anfrage: anfrage("wartet_freigabe", "main", { v_commit: HEX_A, tree_id: HEX_B, von_mir: true, treffer_anzahl: 0, pruefstand: { bauen: "ok", tests: "fehler", secret_scan: "ueberspringen" }, pruefung: PRUEFUNG }) }));
+  const a = s.anfrage!;
+  assert.equal(a.v_commit, HEX_A);
+  assert.equal(a.tree_id, HEX_B);
+  assert.equal(a.von_mir, true);
+  assert.deepEqual(a.pruefstand, { bauen: "ok", tests: "fehler" }, "unbekannte Werte fallen weg");
+  assert.equal(a.pruefung?.diff?.dateien.length, 2);
+  assert.equal(a.pruefung?.empfehlung?.version, "0.2.0");
+  const z = ansicht(s).anfrage!;
+  assert.deepEqual(z.pruefstandZeilen, [{ name: "bauen", wert: "bestanden" }, { name: "tests", wert: "FEHLER" }]);
+});
+
+test("Prüfung: falsche Formen fallen weg, Pfade ohne Steuer- und Bidi-Zeichen, Listen gekappt", () => {
+  const a = alsStand(stand({ anfrage: anfrage("wartet_freigabe", "main", { v_commit: "XYZ", tree_id: HEX_B.toUpperCase(), pruefung: "kaputt" }) })).anfrage!;
+  assert.equal(a.v_commit, null);
+  assert.equal(a.tree_id, null, "nur kleine Hex-Zeichen, genau 40");
+  assert.equal(a.pruefung, null);
+  const viele = Array.from({ length: 50 }, (_, i) => ({ s: "M", p: `datei${i}‮\u0000.ts`, a: 1, d: 1 }));
+  const p = alsStand(stand({ anfrage: anfrage("wartet_freigabe", "main", { pruefung: { diff: { anzahl: 50, hinzu: 50, weg: 50, binaer: 0, gekappt: true, dateien: [...viele, { s: "X", p: "falsch" }] } } }) })).anfrage!.pruefung!;
+  assert.equal(p.diff!.dateien.length, 20);
+  assert.doesNotMatch(p.diff!.dateien[0].p, /[^\x20-\x7e]/);
+  const lang = alsStand(stand({ anfrage: anfrage("wartet_freigabe", "main", { pruefung: { diff: { dateien: [{ s: "M", p: "x".repeat(500), a: -5, d: 1.5 }] } } }) })).anfrage!.pruefung!;
+  assert.equal(lang.diff!.dateien[0].p.length, 70);
+  assert.equal(lang.diff!.dateien[0].a, null, "negative und gebrochene Zahlen fallen weg");
+  assert.equal(lang.diff!.dateien[0].d, null);
+});
+
+test("Versionshinweise: nur Warnung, nennt Abweichung, Sprung auf 1.0.0 und unübliche Titel", () => {
+  const mit = (version: string | null, e: Record<string, unknown>) =>
+    alsStand(stand({ anfrage: anfrage("wartet_freigabe", "main", { version, pruefung: { empfehlung: { ...PRUEFUNG.empfehlung, ...e } } }) })).anfrage!;
+  assert.match(ansicht(alsStand(stand({ anfrage: anfrage("wartet_freigabe", "main", { version: "0.1.0", pruefung: { empfehlung: PRUEFUNG.empfehlung } }) }))).anfrage!.versionHinweise[0], /nennen 0\.1\.0.*0\.2\.0/);
+  assert.match(versionHinweiseVon(mit("0.2.0", {})).join(" "), /passt zu den Commit-Titeln/);
+  assert.match(versionHinweiseVon(mit("0.2.0", { stufe: "keine", version: null })).join(" "), /keine neue Versionsnummer/);
+  assert.match(versionHinweiseVon(mit("0.2.0", { major_null: true, unkonventionell: 2 })).join(" "), /1\.0\.0[\s\S]*2 Commit-Titel/);
+});
+
+function versionHinweiseVon(a: ReturnType<typeof alsStand>["anfrage"] & object): string[] {
+  return versionHinweise(a);
+}
 
 test("die Zeilen nennen Sperre, Datenbank, Arbeiter und Protokoll", () => {
   const z = Object.fromEntries(ansicht(alsStand(stand({ datenbank: "fehlt", arbeiter: "haengt" }))).zeilen.map((x) => [x.name, x.wert]));

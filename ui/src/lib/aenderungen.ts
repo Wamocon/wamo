@@ -23,7 +23,40 @@ export type Anfrage = {
   fertig: boolean;
   version: string | null;
   klasse: string | null;
+  /** die Anfrage stammt von dir (der Kern vergleicht das Profil; die Kennung selbst bekommt die Oberfläche nie) */
+  von_mir: boolean;
+  /** Commit und Baum, die die Freigabe bindet (je 40 Hex-Zeichen), nur ab der Prüfung 3 */
+  v_commit: string | null;
+  tree_id: string | null;
+  treffer_anzahl: number | null;
+  /** Name der Prüfstufe zu ok, fehler oder uebersprungen */
+  pruefstand: Record<string, "ok" | "fehler" | "uebersprungen">;
+  pruefung: Pruefung | null;
 };
+
+export type DiffDatei = { s: "A" | "M" | "D" | "T"; p: string; a: number | null; d: number | null };
+export type Diff = { anzahl: number; hinzu: number; weg: number; binaer: number; gekappt: boolean; dateien: DiffDatei[] };
+export type WirkungTreffer = { p: string; z: number; a: string; d: string };
+export type Wirkung = {
+  anzahl: number;
+  nach_art: Record<string, number>;
+  sonder_hinweis: boolean;
+  neue_pakete: number;
+  windows: boolean;
+  treffer: WirkungTreffer[];
+};
+export type EmpfehlungStufe = "keine" | "patch" | "minor" | "major";
+export type Empfehlung = {
+  stufe: EmpfehlungStufe;
+  version: string | null;
+  feat: number;
+  fix: number;
+  sonst: number;
+  unkonventionell: number;
+  major_null: boolean;
+};
+/** Was der Release-Dienst über die Änderung weiß (Diff, Wirkungsflächen, Versionsempfehlung). Jeder Teil kann fehlen. */
+export type Pruefung = { diff: Diff | null; wirkung: Wirkung | null; empfehlung: Empfehlung | null };
 
 export type Abgeschlossen = { id: string; status: string | null; grund: string | null };
 
@@ -59,9 +92,73 @@ const zahlOderNull = (x: unknown, max = 100): number | null => (typeof x === "nu
 const eines = <T extends string>(x: unknown, erlaubt: readonly T[], standard: T): T =>
   typeof x === "string" && (erlaubt as readonly string[]).includes(x) ? (x as T) : standard;
 
+const HEX40 = /^[0-9a-f]{40}$/;
+/** Pfade kommen aus Git und sind Daten: nur sichtbares ASCII, der Rest wird zu "?", höchstens 70 Zeichen. */
+const pfadText = (x: unknown): string => (typeof x === "string" ? x.replace(/[^\x20-\x7e]/g, "?").slice(0, 70) : "?");
+const kleineZahl = (x: unknown, max = 1_000_000): number => zahlOderNull(x, max) ?? 0;
+
+function alsDiff(x: unknown): Diff | null {
+  if (!istObjekt(x)) return null;
+  const dateien: DiffDatei[] = [];
+  for (const e of Array.isArray(x.dateien) ? x.dateien.slice(0, 20) : []) {
+    if (!istObjekt(e) || (e.s !== "A" && e.s !== "M" && e.s !== "D" && e.s !== "T")) continue;
+    dateien.push({ s: e.s, p: pfadText(e.p), a: zahlOderNull(e.a, 10_000_000), d: zahlOderNull(e.d, 10_000_000) });
+  }
+  return { anzahl: kleineZahl(x.anzahl), hinzu: kleineZahl(x.hinzu, 100_000_000), weg: kleineZahl(x.weg, 100_000_000), binaer: kleineZahl(x.binaer), gekappt: x.gekappt === true, dateien };
+}
+
+function alsWirkung(x: unknown): Wirkung | null {
+  if (!istObjekt(x)) return null;
+  const nachArt: Record<string, number> = {};
+  if (istObjekt(x.nach_art)) {
+    for (const [k, v] of Object.entries(x.nach_art).slice(0, 12)) {
+      if (WORT.test(k)) nachArt[k] = kleineZahl(v);
+    }
+  }
+  const treffer: WirkungTreffer[] = [];
+  for (const e of Array.isArray(x.treffer) ? x.treffer.slice(0, 8) : []) {
+    if (istObjekt(e)) treffer.push({ p: pfadText(e.p), z: kleineZahl(e.z, 10_000_000), a: wortOderNull(e.a) ?? "unbekannt", d: textOderNull(pfadText(e.d), 70) ?? "" });
+  }
+  return { anzahl: kleineZahl(x.anzahl), nach_art: nachArt, sonder_hinweis: x.sonder_hinweis === true, neue_pakete: kleineZahl(x.neue_pakete), windows: x.windows === true, treffer };
+}
+
+function alsEmpfehlung(x: unknown): Empfehlung | null {
+  if (!istObjekt(x)) return null;
+  return {
+    stufe: eines(x.stufe, ["keine", "patch", "minor", "major"] as const, "keine"),
+    version: typeof x.version === "string" && VERSION.test(x.version) ? x.version : null,
+    feat: kleineZahl(x.feat, 500),
+    fix: kleineZahl(x.fix, 500),
+    sonst: kleineZahl(x.sonst, 500),
+    unkonventionell: kleineZahl(x.unkonventionell, 500),
+    major_null: x.major_null === true,
+  };
+}
+
+function alsPruefung(x: unknown): Pruefung | null {
+  if (!istObjekt(x)) return null;
+  const p = { diff: alsDiff(x.diff), wirkung: alsWirkung(x.wirkung), empfehlung: alsEmpfehlung(x.empfehlung) };
+  return p.diff || p.wirkung || p.empfehlung ? p : null;
+}
+
+function alsPruefstand(x: unknown): Record<string, "ok" | "fehler" | "uebersprungen"> {
+  const aus: Record<string, "ok" | "fehler" | "uebersprungen"> = {};
+  if (!istObjekt(x)) return aus;
+  for (const [k, v] of Object.entries(x).slice(0, 16)) {
+    if (WORT.test(k) && (v === "ok" || v === "fehler" || v === "uebersprungen")) aus[k] = v;
+  }
+  return aus;
+}
+
 function alsAnfrage(x: unknown): Anfrage | null {
   if (!istObjekt(x) || typeof x.id !== "string" || !UUID.test(x.id)) return null;
   return {
+    von_mir: x.von_mir === true,
+    v_commit: typeof x.v_commit === "string" && HEX40.test(x.v_commit) ? x.v_commit : null,
+    tree_id: typeof x.tree_id === "string" && HEX40.test(x.tree_id) ? x.tree_id : null,
+    treffer_anzahl: zahlOderNull(x.treffer_anzahl, 100_000),
+    pruefstand: alsPruefstand(x.pruefstand),
+    pruefung: alsPruefung(x.pruefung),
     id: x.id,
     status: wortOderNull(x.status),
     quelle: x.quelle === "selbst" || x.quelle === "main" ? x.quelle : null,
@@ -159,10 +256,41 @@ export type Ansicht = {
   hinweise: string[];
   /** Beschriftungsliste "Dienste" */
   zeilen: { name: string; wert: string }[];
-  anfrage: { id: string; kurz: string; quelleText: string; versionText: string | null; fristText: string | null; schritte: SchrittZeile[] } | null;
-  /** Die Anfrage wartet auf eine Freigabe (die Freigabe selbst folgt, sobald der Release-Dienst Diff und Versionsvorschlag liefert) */
+  anfrage: {
+    id: string;
+    kurz: string;
+    quelleText: string;
+    versionText: string | null;
+    fristText: string | null;
+    schritte: SchrittZeile[];
+    pruefung: Pruefung | null;
+    /** der Prüfstand als Zeilen mit Text je Stufe */
+    pruefstandZeilen: { name: string; wert: string }[];
+    /** Zeile zur Version: Paketdateien gegen Empfehlung, mit Warnungen */
+    versionHinweise: string[];
+  } | null;
+  /** Die Anfrage wartet auf eine Freigabe */
   wartetAufFreigabe: boolean;
 };
+
+const PRUEFSTAND_TEXT = { ok: "bestanden", fehler: "FEHLER", uebersprungen: "übersprungen" } as const;
+
+/** Die Version der Paketdateien gegen die Empfehlung aus den Commit-Titeln: nur eine Warnung, nie ein Tor. */
+export function versionHinweise(a: Anfrage): string[] {
+  const e = a.pruefung?.empfehlung;
+  if (!e) return [];
+  const aus: string[] = [];
+  if (e.stufe === "keine") {
+    aus.push("Die Commit-Titel verlangen keine neue Versionsnummer.");
+  } else if (e.version && a.version && e.version !== a.version) {
+    aus.push(`Die Paketdateien nennen ${a.version}, nach den Commit-Titeln wäre ${e.version} (${e.stufe}) passend.`);
+  } else if (e.version) {
+    aus.push(`Die Version ${e.version} passt zu den Commit-Titeln (${e.stufe}).`);
+  }
+  if (e.major_null) aus.push("Ein Sprung auf 1.0.0 braucht deine ausdrückliche Entscheidung.");
+  if (e.unkonventionell > 0) aus.push(`${e.unkonventionell} Commit-Titel folgen nicht dem üblichen Muster und zählen als Fehlerbehebung.`);
+  return aus;
+}
 
 export const NICHT_ERREICHBAR_TEXT: Record<string, string> = {
   nicht_verfuegbar: "Der Release-Dienst ist nicht erreichbar.",
@@ -198,7 +326,9 @@ export function ansicht(status: Status | null, fehler: string | null = null): An
   }
   if (s.angehalten) hinweise.push(`Der Dienst ist angehalten: ${s.angehalten}.`);
   if (s.installation === "abweichung") hinweise.push("Die installierten Dateien des Release-Dienstes weichen von der Prüfsumme ab.");
-  if (a) hinweise.push("Diff, Wirkungsflächen und Versionsvorschlag liefert der Release-Dienst noch nicht, die Freigabe folgt, sobald sie da sind.");
+  if (a && !a.pruefung && (a.status === "pruefung3" || a.status === "wartet_freigabe")) {
+    hinweise.push("Diff, Wirkungsflächen und Versionsempfehlung sind gerade nicht verfügbar. Die Freigabe bleibt möglich, sie bindet Commit und Baum.");
+  }
   const zeilen = [
     { name: "Release-Dienst", wert: `läuft${s.version ? `, Version ${s.version}` : ""}${s.bereit ? "" : ", nicht bereit"}` },
     { name: "Sperre des Notankers", wert: SPERRE_TEXT[s.anker.sperre] },
@@ -214,6 +344,9 @@ export function ansicht(status: Status | null, fehler: string | null = null): An
         versionText: a.version,
         fristText: a.frist_bis,
         schritte: schrittZeilen(a),
+        pruefung: a.pruefung,
+        pruefstandZeilen: Object.entries(a.pruefstand).map(([name, wert]) => ({ name, wert: PRUEFSTAND_TEXT[wert] })),
+        versionHinweise: versionHinweise(a),
       }
     : null;
   const wartet = a?.status === "wartet_freigabe";

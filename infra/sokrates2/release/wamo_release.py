@@ -54,7 +54,7 @@ from release_automat import (
     ANFRAGEN_JE_TAG, ANKER_BERUEHRT_AB, ANKER_FOLGE, BEOBACHTEN, BEREITGESTELLT_AB, DB_SCHREIBBAR, DB_SPALTEN, ENDZUSTAENDE,
     GESAMT_FRIST_S, GRUND_RE, PRUEFSTAND_PFLICHT, REIHENFOLGE, SCHUTZ_SELBST_FREIGESCHALTET, STUFE_RUNDE,
     TAG_S, UUID_RE, VERSUCHE_MAX, WAL_EREIGNISSE, WEG, ZustandDefekt, anwenden, daten_pruefen, frist_ablauf, leerer_zustand,
-    naechster, zustand_pruefen,
+    naechster, zustand_pruefen, HEX_RE, pruefstand_pruefen,
 )
 from release_db import Datenbank, DatenbankAbgelehnt, DatenbankFehler, DatenbankFehlt, OhneDatenbank
 from release_kette import (
@@ -66,6 +66,8 @@ from release_stufen import Ergebnis, Kontext, NichtVerfuegbar, Stufen, aufruf
 VERSION = "0.1"
 ZEILE_MAX = 160  # Anfrage samt Zeilenende
 ANTWORT_MAX = 8192
+ANZEIGE_STATUS = frozenset({"pruefung3", "wartet_freigabe"})   # nur hier fragt status die Stufen nach der Anzeige (Diff, Wirkung, Empfehlung)
+PRUEFUNG_MAX = 3200   # so groß darf der Block pruefung in der Antwort höchstens sein (release_anzeige kappt schon auf 3000)
 LESE_ZEIT_S = 3.0
 GESAMT_ZEIT_S = 5.0
 CLIENT_ZEIT_S = 420.0
@@ -634,15 +636,46 @@ class Dienst:
         return self.cmd_zurueck(anf.args[0], anf.trocken)
 
     # --- Hilfen für Befehle
-    def _ansicht(self, a: dict | None) -> dict | None:
+    def _ansicht(self, a: dict | None, anzeige: bool = False) -> dict | None:
+        """Die Sicht auf eine Anfrage. Mit anzeige=True (nur der Befehl status, nie unter dem Schloss) kommen die Felder für die Karte dazu: v_commit, tree_id,
+        treffer_anzahl, pruefstand und, nur in pruefung3 und wartet_freigabe, der Block pruefung. Was fehlt, fehlt als Schlüssel (kein null)."""
         if a is None:
             return None
         d = a["daten"]
         weg = WEG[a["quelle"]]
-        return {"id": a["id"], "status": a["status"], "quelle": a["quelle"], "profil": a["profil"], "seq": a["seq"],
-                "schritt": weg.index(a["status"]), "schritte": len(weg), "seit": zeit_iso(a["seit"]),
-                "frist_bis": zeit_iso(frist_ablauf(a)), "versuch": a["versuch"], "fertig": a["fertig"],
-                "version": d.get("version_final"), "klasse": d.get("klasse")}
+        ansicht = {"id": a["id"], "status": a["status"], "quelle": a["quelle"], "profil": a["profil"], "seq": a["seq"],
+                   "schritt": weg.index(a["status"]), "schritte": len(weg), "seit": zeit_iso(a["seit"]),
+                   "frist_bis": zeit_iso(frist_ablauf(a)), "versuch": a["versuch"], "fertig": a["fertig"],
+                   "version": d.get("version_final"), "klasse": d.get("klasse")}
+        if anzeige:
+            ansicht.update(self._anzeige_felder(a))
+        return ansicht
+
+    def _anzeige_felder(self, a: dict) -> dict:
+        """Zusätzliche Felder der Karte aus den festgehaltenen Werten und der Anzeige der Stufen. Ein Fehler hier bricht status nie."""
+        d = a["daten"]
+        zusatz: dict = {}
+        for k in ("v_commit", "tree_id"):
+            v = d.get(k)
+            if isinstance(v, str) and HEX_RE.fullmatch(v):
+                zusatz[k] = v
+        n = d.get("treffer_anzahl")
+        if isinstance(n, int) and not isinstance(n, bool) and 0 <= n <= 200:
+            zusatz["treffer_anzahl"] = n
+        if "pruefstand" in d:
+            try:
+                zusatz["pruefstand"] = pruefstand_pruefen(d["pruefstand"])   # höchstens 16 Einträge, Namen und Werte streng
+            except ValueError:
+                pass
+        if a["status"] in ANZEIGE_STATUS:
+            try:
+                block = self.stufen.anzeige(copy.deepcopy(d))
+                if isinstance(block, dict) and block and set(block) <= {"diff", "wirkung", "empfehlung"} \
+                        and len(json.dumps(block, separators=(",", ":"), ensure_ascii=True)) <= PRUEFUNG_MAX:
+                    zusatz["pruefung"] = block
+            except Exception:  # noqa: BLE001  die Anzeige ist nie Pflicht: kaputt heißt "keine Anzeige", nie ein Fehler von status
+                pass
+        return zusatz
 
     def _vorwaerts_pruefen(self) -> None:
         if self._defekt or not self._bereit:
@@ -677,7 +710,7 @@ class Dienst:
         arbeit = "frei" if self._arbeit_seit is None else ("haengt" if self.haenger else "beschaeftigt")
         return self._antwort(
             True, text="Release-Dienst läuft", version=VERSION, zeit=zeit_iso(self.uhr()), modus="geruest",
-            bereit=bereit and defekt is None, defekt=defekt, anfrage=self._ansicht(z["anfrage"]),
+            bereit=bereit and defekt is None, defekt=defekt, anfrage=self._ansicht(z["anfrage"], anzeige=True),
             abgeschlossen=[{k: e[k] for k in ("id", "status", "grund")} for e in z["abgeschlossen"][-5:]],
             angehalten=self._angehalten,
             anker={"erreichbar": sperre != "unbekannt", "sperre": sperre}, datenbank=datenbank, arbeiter=arbeit,

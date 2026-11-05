@@ -7,6 +7,7 @@ Freigabe-Dienst und Anker aus test_release.py). Teil 4: der Start (Quelle fehlt,
 
 import copy
 import io
+import json
 import os
 import shutil
 import sys
@@ -481,6 +482,145 @@ class Start(unittest.TestCase):
         t = (RELEASE / "wamo_release.py").read_text(encoding="utf-8")
         for name in ("stufen_echt", "stufen_quelle", "wamo_release_dienst", "import quelle"):
             self.assertNotIn(name, t.replace("wamo_release_dienst.py setzt", ""), name)
+
+
+B_COMMIT, C1_COMMIT, ANDERER = "a" * 40, "b" * 40, "c" * 40
+
+
+def laeufer_ergebnis(runde=1, wirkung=True):
+    """Antwort des Läufers (pruefer_lauf.py) mit Wirkungsflächen; Runde 3 hat sie nicht."""
+    erg = {"runde": runde, "pruefstand": {"bauen": "ok", "tests": "ok", "secret_scan": "ok", "fremdverweis": "ok"}, "details": {}, "sonder": False, "neue_pakete": [],
+           "geaenderte_dateien": 4, "windows_pruefung_noetig": False, "treffer": {}}
+    if wirkung:
+        erg["pruefstand"]["wirkungsflaechen"] = "ok"
+        erg["details"]["wirkungsflaechen"] = {"treffer_anzahl": 3, "fehler": ""}
+        erg["sonder"], erg["neue_pakete"], erg["windows_pruefung_noetig"] = True, [["rich", "13.0.0"]], True
+        erg["treffer"] = {"wirkungsflaechen": [{"pfad": "host/a.py", "zeile": 3, "art": "netzziel", "detail": "example.org"},
+                                               {"pfad": "host/b.py", "zeile": 9, "art": "geheimnisname", "detail": "core.env"}],
+                          "secret_scan": [{"pfad": "x/geheim.py", "zeile": 1, "art": "schluessel", "detail": ""}]}
+    return erg
+
+
+class Wirkungsflaechen(unittest.TestCase):
+    """Die Funde der Wirkungsflächen für die Karte (stufen_quelle.py): laufen ohne Git und ohne Sandbox, mit einer Attrappe des Läufers."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="anzeige-")
+        self.addCleanup(self.tmp.cleanup)
+        self.ordner = os.path.join(self.tmp.name, "anzeige")
+
+    def stufen(self, ergebnisse=None, ordner="standard"):
+        import stufen_quelle as SQ
+        antworten = list(ergebnisse or [laeufer_ergebnis(1)])
+
+        def pruefen_mit(schreiber, runde, sockpfad):
+            return antworten.pop(0) if len(antworten) > 1 else antworten[0]
+        return SQ.QuellenStufen(object(), pruefen_mit, "/x", self.ordner if ordner == "standard" else ordner)
+
+    def lauf(self, stufen, runde=1, neu=C1_COMMIT):
+        return stufen.pruefen(kontext({"basis_commit": B_COMMIT, "c1_commit": C1_COMMIT, "v_commit": neu}, status="pruefung%d" % runde), runde)
+
+    def test_wirkungsflaechen_werden_fuer_die_karte_gemerkt(self):
+        s = self.stufen()
+        erg = self.lauf(s)
+        self.assertEqual(erg.art, "ok")
+        self.assertEqual(set(erg.daten), {"pruefstand"})   # die Hashkette und der Automat sehen davon nichts
+        f = s.funde_fuer(B_COMMIT, C1_COMMIT)
+        self.assertEqual((f["treffer_anzahl"], f["sonder"], f["neue_pakete"], f["geaenderte_dateien"], f["windows_pruefung_noetig"]), (3, True, 1, 4, True))
+        self.assertEqual([t["pfad"] for t in f["treffer"]], ["host/a.py", "host/b.py"])   # nur die Funde der Wirkungsflächen, nicht die des Geheimnis-Scans
+        self.assertEqual(set(f["treffer"][0]), {"pfad", "zeile", "art", "detail"})
+        f["treffer"].clear()
+        self.assertEqual(len(s.funde_fuer(B_COMMIT, C1_COMMIT)["treffer"]), 2)   # der Aufrufer ändert nichts am Gemerkten
+        self.assertEqual(os.listdir(self.ordner), [f"{B_COMMIT}-{C1_COMMIT}.json"])
+        self.assertIsNone(s.funde_fuer(B_COMMIT, ANDERER))
+        self.assertIsNone(s.funde_fuer("kein sha", C1_COMMIT))
+        self.assertIsNone(s.funde_fuer(None, None))
+
+    def test_ohne_ordner_bleibt_es_im_speicher(self):
+        s = self.stufen(ordner=None)
+        self.lauf(s)
+        self.assertEqual(s.funde_fuer(B_COMMIT, C1_COMMIT)["treffer_anzahl"], 3)
+        self.assertFalse(os.path.exists(self.ordner))
+
+    def test_anzeige_nach_neustart_aus_datei(self):
+        self.lauf(self.stufen())
+        neu = self.stufen()   # ein frischer Dienst: leerer Speicher, dieselbe Datei
+        f = neu.funde_fuer(B_COMMIT, C1_COMMIT)
+        self.assertEqual((f["treffer_anzahl"], f["sonder"], len(f["treffer"])), (3, True, 2))
+        d = json.loads(Path(self.ordner, f"{B_COMMIT}-{C1_COMMIT}.json").read_text(encoding="ascii"))
+        self.assertEqual(set(d), {"v", "basis", "neu", "treffer", "treffer_anzahl", "sonder", "neue_pakete", "geaenderte_dateien", "windows_pruefung_noetig"})
+        if os.name == "posix":
+            self.assertEqual(os.stat(Path(self.ordner, f"{B_COMMIT}-{C1_COMMIT}.json")).st_mode & 0o777, 0o600)
+        self.assertEqual([n for n in os.listdir(self.ordner) if n.endswith(".tmp")], [])   # nichts Halbes bleibt liegen
+
+    def test_anzeige_nur_wenn_v_gleich_c1(self):
+        s = self.stufen([laeufer_ergebnis(1), laeufer_ergebnis(3, wirkung=False)])
+        self.lauf(s, 1)
+        self.assertIsNotNone(s.funde_fuer(B_COMMIT, C1_COMMIT))   # V gleich C1: die Funde von Runde 1 gelten auch für V
+        self.assertIsNone(s.funde_fuer(B_COMMIT, ANDERER))   # V ungleich C1: unbekannt
+        self.lauf(s, 3, neu=C1_COMMIT)   # Runde 3 hat keine Wirkungsflächen und überschreibt nichts
+        self.assertEqual(s.funde_fuer(B_COMMIT, C1_COMMIT)["treffer_anzahl"], 3)
+        self.lauf(s, 3, neu=ANDERER)
+        self.assertIsNone(s.funde_fuer(B_COMMIT, ANDERER))   # auch ein Lauf auf einem anderen V erfindet keine Funde
+
+    def test_fremde_oder_zu_grosse_datei_wird_verworfen(self):
+        import stufen_quelle as SQ
+        self.lauf(self.stufen())
+        gut = json.loads(Path(self.ordner, f"{B_COMMIT}-{C1_COMMIT}.json").read_text(encoding="ascii"))
+        datei = Path(self.ordner, f"{B_COMMIT}-{ANDERER}.json")
+        faelle = {
+            "zu gross": json.dumps({**gut, "neu": ANDERER, "treffer": [{"pfad": "x" * 300, "zeile": 1, "art": "a", "detail": "d"}] * 60}).replace('"v"', ' ' * SQ.ANZEIGE_DATEI_MAX + '"v"'),
+            "anderes Paar": json.dumps({**gut, "neu": C1_COMMIT}),
+            "zusätzlicher Schlüssel": json.dumps({**gut, "neu": ANDERER, "befehl": "x"}),
+            "fehlender Schlüssel": json.dumps({k: v for k, v in {**gut, "neu": ANDERER}.items() if k != "sonder"}),
+            "falscher Typ": json.dumps({**gut, "neu": ANDERER, "treffer_anzahl": "3"}),
+            "Zahl zu groß": json.dumps({**gut, "neu": ANDERER, "treffer_anzahl": 10**9}),
+            "Wahrheitswert als Zahl": json.dumps({**gut, "neu": ANDERER, "neue_pakete": True}),
+            "falsche Fassung": json.dumps({**gut, "neu": ANDERER, "v": 2}),
+            "Treffer mit Zusatz": json.dumps({**gut, "neu": ANDERER, "treffer": [{"pfad": "a", "zeile": 1, "art": "a", "detail": "d", "x": 1}]}),
+            "zu viele Treffer": json.dumps({**gut, "neu": ANDERER, "treffer": [{"pfad": "a", "zeile": 1, "art": "a", "detail": "d"}] * 51}),
+            "kein Objekt": "[1, 2, 3]",
+            "kein JSON": "{kaputt",
+            "leer": "",
+            "tief verschachtelt": "[" * 5000,
+        }
+        for name, inhalt in faelle.items():
+            datei.write_text(inhalt, encoding="ascii")
+            s = self.stufen()
+            self.assertIsNone(s.funde_fuer(B_COMMIT, ANDERER), name)
+        datei.write_bytes(b'{"v": 1, "x": "\xff\xfe"}')   # kein ASCII
+        self.assertIsNone(self.stufen().funde_fuer(B_COMMIT, ANDERER))
+        datei.unlink()
+        datei.mkdir()   # ein Ordner an der Stelle der Datei
+        self.assertIsNone(self.stufen().funde_fuer(B_COMMIT, ANDERER))
+        self.assertIsNotNone(self.stufen().funde_fuer(B_COMMIT, C1_COMMIT))   # die gute Datei daneben bleibt gültig
+
+    def test_fremde_form_aus_dem_laeufer_wird_nicht_gemerkt(self):
+        import stufen_quelle as SQ
+        for roh in (None, "text", [], {"pruefstand": "x"}, {"pruefstand": {"bauen": "ok"}}, {"pruefstand": {"wirkungsflaechen": "ok"}, "treffer": "x", "neue_pakete": "x"}):
+            f = SQ.funde_aus_lauf(roh)
+            self.assertTrue(f is None or f["treffer"] == [] and f["neue_pakete"] == 0, roh)
+        gross = laeufer_ergebnis(1)
+        gross["treffer"]["wirkungsflaechen"] = [{"pfad": "p" * 1000, "zeile": -5, "art": "a" * 100, "detail": "d" * 1000}] * 500
+        gross["neue_pakete"] = [["p", "1"]] * 900
+        gross["details"]["wirkungsflaechen"]["treffer_anzahl"] = 10**6
+        f = SQ.funde_aus_lauf(gross)
+        self.assertEqual((len(f["treffer"]), len(f["treffer"][0]["pfad"]), f["treffer"][0]["zeile"], f["neue_pakete"], f["treffer_anzahl"]), (50, 300, 0, 200, 50))
+
+    def test_alte_dateien_werden_aufgeraeumt(self):
+        import stufen_quelle as SQ
+        s = self.stufen()
+        os.makedirs(self.ordner)
+        for i in range(SQ.ANZEIGE_AUFBEWAHREN + 6):
+            p = Path(self.ordner, f"{i:040x}-{C1_COMMIT}.json")
+            p.write_text("{}")
+            os.utime(p, (1000 + i, 1000 + i))
+        Path(self.ordner, "fremd.txt").write_text("bleibt")
+        self.lauf(s)
+        namen = os.listdir(self.ordner)
+        self.assertEqual(len([n for n in namen if n.endswith(".json")]), SQ.ANZEIGE_AUFBEWAHREN)
+        self.assertIn("fremd.txt", namen)   # nur Dateien unseres Namensmusters werden angefasst
+        self.assertIn(f"{B_COMMIT}-{C1_COMMIT}.json", namen)
 
 
 class Quelltext(unittest.TestCase):

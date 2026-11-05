@@ -8,6 +8,10 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Karte "Änderungen" (Schritt 4 und 1.5b des Gesamtplans): Der Release-Dienst nennt im `status` Commit, Baum, Prüfstand, Diff, Wirkungsflächen und eine
+  Versionsempfehlung aus den Commit-Titeln (nur als Warnung). Die Karte zeigt sie und bietet den Dialog "Änderung freigeben" mit frischem Code
+  (höchstens 45 Sekunden alt beim Senden) an; gesendet wird an den Freigabe-Dienst des Ankers mit genau Commit und Baum. Sonderfreigaben mit Pflicht-Haken,
+  eigene Anfragen nicht selbst freigebbar, gesperrte nie. Anker und Freigabe-Dienst unverändert.
 - Live-Bild vom Handy einschalten (Entscheidung Niko 04.11.2026): Der Admin gibt in der Ansicht einen frischen Code der
   Authenticator-App ein und bittet den eigenen Laptop um das Live-Bild. Der Kern prüft Token (gleiches Profil, Admin) und Alter
   des Codes (höchstens 120 s, `bild_fern.py`), der Host legt nur `live-bild-anfrage.json` ab (`live_bild_anfordern`, nur für den

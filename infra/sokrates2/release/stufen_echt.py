@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 
 from release_anker import AnkerClient, AnkerFehler
 from release_automat import KLASSEN, VERSION_RE, version_tupel
@@ -35,6 +37,8 @@ VERSION_PFLICHT = ("ui/package.json", "voice-core/pyproject.toml")
 PROJECT_RE = re.compile(r"(?ms)^\[project\][ \t]*\r?$(.*?)(?=^\[|\Z)")
 PYPROJECT_VERSION_RE = re.compile(r'(?m)^[ \t]*version[ \t]*=[ \t]*"([^"\r\n]{1,40})"[ \t]*(?:#.*)?\r?$')
 TREFFER_SHA_RE = re.compile(r"[0-9a-f]{64}")
+ANZEIGE_PAUSE_S = 30.0   # so lange gilt ein Misserfolg der Anzeige, bevor erneut gerechnet wird
+ANZEIGE_ERFOLG_S = 120.0  # so lange gilt ein Erfolg: danach wird neu gerechnet, damit nach einem Wechsel des laufenden Kerns (Basis des Diffs) kein alter Diff stehen bleibt
 BEREITS_RE = re.compile(r"status_falsch (\w+) statt")   # Detail des Ankers, wenn ein früherer Lauf schon weiter war
 
 
@@ -69,9 +73,11 @@ def bump_art(alt: str | None, neu: str) -> str:
 
 
 class EchteStufen(QuellenStufen):
-    def __init__(self, quelle, anker: AnkerClient, pruefen_mit=None, sockpfad: str | None = None):
-        super().__init__(quelle, pruefen_mit, sockpfad)
+    def __init__(self, quelle, anker: AnkerClient, pruefen_mit=None, sockpfad: str | None = None, anzeige_ordner: str | None = None):
+        super().__init__(quelle, pruefen_mit, sockpfad, anzeige_ordner)
         self.anker = anker
+        self._anzeige_schloss = threading.Lock()
+        self._anzeige_cache: dict[tuple[str, str], tuple[dict | None, float]] = {}   # (basis_commit, v_commit) -> (Block oder None, wann erneut versuchen)
 
     # ------------------------------------------------------------ Hilfen
     def _kern_aktiv(self) -> tuple[str | None, str | None]:
@@ -120,6 +126,49 @@ class EchteStufen(QuellenStufen):
                 raise QuelleFehler("version_ungueltig")
             aus[pfad] = v
         return aus
+
+    # ------------------------------------------------------------ Anzeige für die Karte (kein Tor, nicht in der Hashkette)
+    def anzeige(self, daten: dict) -> dict | None:
+        """Diff, Wirkungsflächen und Versionsempfehlung für den Befehl status. Gerechnet wird einmal je (basis_commit, v_commit); ein Misserfolg wird 30 Sekunden gemerkt, damit
+        ein Abrufen im Takt nicht jedes Mal Git und den Anker belastet. Die Basis des Diffs ist der laufende Kern. Die Empfehlung ist nur eine Warnung: version_vorschlag, bump und
+        version_final bleiben unberührt. Bei jedem Misserfolg None (nie ein Text aus Git)."""
+        basis_daten, v = daten.get("basis_commit"), daten.get("v_commit")
+        if not (isinstance(basis_daten, str) and isinstance(v, str) and SHA_RE.fullmatch(basis_daten) and SHA_RE.fullmatch(v)):
+            return None
+        schluessel = (basis_daten, v)
+        if not self._anzeige_schloss.acquire(blocking=False):
+            return None   # eine andere Abfrage rechnet gerade: status wartet nie darauf
+        try:
+            gemerkt = self._anzeige_cache.get(schluessel)
+            if gemerkt is not None and time.monotonic() < gemerkt[1]:
+                return json.loads(json.dumps(gemerkt[0])) if gemerkt[0] is not None else None
+            try:
+                block = self._anzeige_rechnen(basis_daten, v)
+            except Exception:  # noqa: BLE001  die Anzeige ist nie Pflicht, ein Fehler heißt: keine Anzeige
+                block = None
+            self._anzeige_cache[schluessel] = (block, time.monotonic() + (ANZEIGE_ERFOLG_S if block is not None else ANZEIGE_PAUSE_S))
+            while len(self._anzeige_cache) > 8:
+                self._anzeige_cache.pop(next(iter(self._anzeige_cache)))
+            return json.loads(json.dumps(block)) if block is not None else None
+        finally:
+            self._anzeige_schloss.release()
+
+    def _anzeige_rechnen(self, basis_daten: str, v: str) -> dict | None:
+        import release_anzeige as AZ
+        from quelle import QuelleFehler
+        basis, version = self._kern_aktiv()
+        if basis is None:
+            return None
+        sp = self.quelle.spiegel
+        try:
+            eintraege, abgeschnitten = sp.diff_uebersicht(basis, v)
+            zaehler = sp.titel_stufen(basis, v)
+        except QuelleFehler:
+            return None
+        diff = AZ.diff_block(eintraege, abgeschnitten)
+        empf = AZ.empfehlung(zaehler, AZ.ausserhalb_von_docs(eintraege, abgeschnitten), version)
+        wirkung = AZ.wirkung_block(self.funde_fuer(basis_daten, v))   # bei der Quelle main ist V gleich C1: die Funde von Runde 1 gelten
+        return AZ.pruefung_block(diff, wirkung, empf)
 
     # ------------------------------------------------------------ Stufen
     def uebernehmen(self, ctx: Kontext) -> Ergebnis:

@@ -1931,12 +1931,197 @@ class StatusTests(ReleaseTest):
             self.assertTrue(R.installation_pruefen(self.p), schlecht[:20])
 
 
+# ==================================================================== Anzeige für die Karte (Schritt 1.5, Befehl status)
+def voller_block():
+    """Der größte Block pruefung, den release_anzeige.py liefert (alles am Anschlag, dann gekappt)."""
+    import release_anzeige as AZ
+    diff = AZ.diff_block([("M", ("verzeichnis/" * 6) + f"datei{i}.py", 999_999, 999_999) for i in range(60)])
+    wirkung = AZ.wirkung_block({"treffer": [{"pfad": ("host/" * 20) + f"{i}.py", "zeile": 999_999, "art": "geheimnisname", "detail": "x" * 80} for i in range(50)],
+                                "treffer_anzahl": 50, "sonder": True, "neue_pakete": 200, "windows_pruefung_noetig": True})
+    return AZ.pruefung_block(diff, wirkung, AZ.empfehlung({"feat": 9, "fix": 9, "sonst": 9, "unkonventionell": 9}, True, "0.1.0"))
+
+
+ALTE_FELDER = {"id", "status", "quelle", "profil", "seq", "schritt", "schritte", "seit", "frist_bis", "versuch", "fertig", "version", "klasse"}
+
+
+class AnzeigeTests(ReleaseTest):
+    def block(self):
+        return {"diff": {"anzahl": 1, "hinzu": 3, "weg": 1, "binaer": 0, "gekappt": False, "dateien": [{"s": "M", "p": "voice-core/a.py", "a": 3, "d": 1}]},
+                "empfehlung": {"stufe": "patch", "version": "0.1.1", "feat": 0, "fix": 1, "sonst": 0, "unkonventionell": 0, "major_null": False}}
+
+    def test_status_nennt_commit_und_tree_bei_wartet_freigabe(self):
+        self.stufen.setze("anzeige", self.block())
+        self.anfordern()
+        self.lauf(bis="pruefung1")
+        a = self.sende("status")["anfrage"]
+        self.assertEqual(set(a), ALTE_FELDER)   # vor der Versionswahl gibt es weder Commit noch Block
+        self.assertNotIn("v_commit", a)
+        self.assertNotIn("pruefung", a)
+        self.assertEqual(self.stufen.anzeige_aufrufe, 0)   # die Stufen werden nur in pruefung3 und wartet_freigabe gefragt
+        self.lauf(bis="wartet_freigabe")
+        a = self.sende("status")["anfrage"]
+        self.assertEqual(a["status"], "wartet_freigabe")
+        self.assertEqual((a["v_commit"], a["tree_id"], a["treffer_anzahl"], a["profil"]), ("d" * 40, "e" * 40, 0, ADMIN))
+        self.assertEqual(a["pruefstand"], {n: "ok" for n in AU.PRUEFSTAND_PFLICHT[3]})
+        self.assertEqual(a["pruefung"], self.block())
+        self.assertEqual(self.stufen.anzeige_aufrufe, 1)
+
+    def test_status_in_pruefung3_hat_schon_den_block(self):
+        self.stufen.setze("anzeige", self.block())
+        self.bringe_nach("pruefung3")
+        a = self.sende("status")["anfrage"]
+        self.assertEqual((a["status"], a["v_commit"], a["pruefung"]), ("pruefung3", "d" * 40, self.block()))
+
+    def test_status_ohne_anzeige_bleibt_wie_vorher(self):
+        self.anfordern()
+        self.assertEqual(set(self.sende("status")["anfrage"]), ALTE_FELDER)   # genau die alten Felder, nichts Neues
+        self.lauf(bis="wartet_freigabe")   # die Attrappe liefert keine Anzeige
+        a = self.sende("status")["anfrage"]
+        self.assertEqual(set(a), ALTE_FELDER | {"v_commit", "tree_id", "treffer_anzahl", "pruefstand"})
+        self.assertNotIn("pruefung", a)
+        self.d.stufen = ST.NichtVerfuegbar()   # und ebenso die Stufen des Betriebs ohne Quelle
+        self.assertNotIn("pruefung", self.sende("status")["anfrage"])
+        r = self.sende("status")
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.anfrage()["daten"]["version_vorschlag"], "0.1.1")   # die Anzeige ändert nichts am Zustand
+        self.assertEqual(self.anfrage()["daten"]["version_final"], "0.1.1")
+
+    def test_status_mit_vollem_diff_bleibt_unter_ANTWORT_MAX(self):
+        voll = voller_block()
+        self.stufen.setze("anzeige", voll)
+        self.bringe_nach("wartet_freigabe")
+        for i in range(5):   # der Verlauf ist auch voll: fünf abgeschlossene Anfragen
+            self.d._z["abgeschlossen"].append({"id": f"{i:032x}", "profil": ADMIN, "status": "abgebrochen", "grund": "abgebrochen_extern", "start": JETZT, "ende": JETZT})
+        r = self.sende("status")
+        daten = R.antwort_bytes(r)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["anfrage"]["pruefung"], voll)
+        self.assertLessEqual(len(daten), R.ANTWORT_MAX)
+        self.assertLessEqual(len(daten), R.ANTWORT_MAX - 1000, len(daten))   # und mit Luft
+        daten.decode("ascii")
+        # Ein Block über der Grenze wird weggelassen, nicht gekürzt oder durchgereicht
+        self.stufen.setze("anzeige", {"diff": {"x": "y" * 5000}})
+        r = self.sende("status")
+        self.assertTrue(r["ok"])
+        self.assertNotIn("pruefung", r["anfrage"])
+
+    def test_fehler_in_anzeige_bricht_status_nicht(self):
+        self.bringe_nach("wartet_freigabe")
+        for schlecht in (RuntimeError("Fehlertext mit GEHEIM"), KeyError("x"), ValueError("v"), "text", ["a"], {}, {"fremd": 1}, {"diff": 1, "befehl": 2}, 42):
+            self.stufen.setze("anzeige", schlecht)
+            r = self.sende("status")
+            self.assertTrue(r["ok"], schlecht)
+            self.assertNotIn("pruefung", r["anfrage"], schlecht)
+            self.assertNotIn("GEHEIM", json.dumps(r))
+            self.assertEqual(r["anfrage"]["v_commit"], "d" * 40)   # die übrigen Felder bleiben
+
+    def test_hook_bekommt_nur_eine_kopie(self):
+        def frech(daten):
+            daten["v_commit"] = "f" * 40
+            daten.setdefault("pruefstand", {}).clear()
+            return None
+        self.stufen.setze("anzeige", frech)
+        self.bringe_nach("wartet_freigabe")
+        vorher = copy.deepcopy(self.anfrage()["daten"])
+        self.sende("status")
+        self.assertEqual(self.anfrage()["daten"], vorher)
+
+    def test_empfehlung_ist_kein_tor_und_kein_neuer_schluessel(self):
+        self.assertNotIn("empfehlung", AU.DATEN_SCHLUESSEL)
+        self.assertNotIn("pruefung", AU.DATEN_SCHLUESSEL)
+        with self.assertRaises(ValueError):
+            AU.daten_pruefen({"empfehlung": {"stufe": "major"}})
+        with self.assertRaises(ValueError):
+            AU.daten_pruefen({"pruefung": {}})
+
+    # ------------------------------------------------------------ die echte Anzeige (EchteStufen) mit Attrappen für Git und Anker
+    def echte(self, spiegel, kern=("f" * 40, "v0.1.0")):
+        sys.path.insert(0, str(RELEASE / "pruefer"))
+        import stufen_echt as SE
+
+        class Anker:
+            def status(self_):   # noqa: N805
+                aktiv = {"version": kern[1], "commit": kern[0]} if kern else None
+                return RA.Antwort(True, None, {"ok": True, "komponenten": {"kern": {"aktiv": aktiv}}})
+
+        class Quelle:
+            pass
+        q = Quelle()
+        q.spiegel = spiegel
+        return SE.EchteStufen(q, Anker())
+
+    class Spiegel:
+        def __init__(self, fehler=None):
+            self.diff_aufrufe, self.titel_aufrufe, self.fehler = [], [], fehler
+
+        def diff_uebersicht(self, basis, neu, max_dateien=5000):
+            self.diff_aufrufe.append((basis, neu))
+            if self.fehler:
+                raise self.fehler
+            return [("M", "voice-core/a.py", 3, 1), ("A", "docs/x.md", 5, 0), ("A", "bild.png", None, None)], False
+
+        def titel_stufen(self, basis, neu):
+            self.titel_aufrufe.append((basis, neu))
+            return {"commits": 3, "feat": 1, "fix": 1, "sonst": 1, "bruch": 0, "unkonventionell": 0}
+
+    def test_status_rechnet_den_diff_nur_einmal(self):
+        spiegel = self.Spiegel()
+        echte = self.echte(spiegel)
+        self.bringe_nach("wartet_freigabe")
+        self.d.stufen = echte
+        antworten = [self.sende("status")["anfrage"] for _ in range(4)]
+        self.assertEqual((len(spiegel.diff_aufrufe), len(spiegel.titel_aufrufe)), (1, 1))
+        self.assertEqual(spiegel.diff_aufrufe[0], ("f" * 40, "d" * 40))   # Basis ist der laufende Kern, nicht die Basis der Anfrage
+        self.assertTrue(all(a["pruefung"] == antworten[0]["pruefung"] for a in antworten))
+        p = antworten[0]["pruefung"]
+        self.assertEqual((p["diff"]["anzahl"], p["diff"]["hinzu"], p["diff"]["weg"], p["diff"]["binaer"]), (3, 8, 1, 1))
+        self.assertEqual((p["empfehlung"]["stufe"], p["empfehlung"]["version"]), ("minor", "0.2.0"))   # aus dem laufenden Kern 0.1.0
+        self.assertNotIn("wirkung", p)   # keine gemerkten Funde: kein Wirkungsblock
+        self.assertEqual(self.anfrage()["daten"]["version_vorschlag"], "0.1.1")   # der Vorschlag des Automaten bleibt, wie er war
+        # Mit gemerkten Funden (V gleich C1) kommt der Wirkungsblock dazu
+        echte2 = self.echte(self.Spiegel())
+        echte2._funde_speichern("a" * 40, "d" * 40, {"treffer": [{"pfad": "host/a.py", "zeile": 3, "art": "netzziel", "detail": "example.org"}], "treffer_anzahl": 1,
+                                                    "sonder": False, "neue_pakete": 0, "geaenderte_dateien": 3, "windows_pruefung_noetig": True})
+        self.d.stufen = echte2
+        w = self.sende("status")["anfrage"]["pruefung"]["wirkung"]
+        self.assertEqual((w["anzahl"], w["windows"], w["treffer"][0]["p"]), (1, True, "host/a.py"))
+
+    def test_misserfolg_der_anzeige_wird_kurz_gemerkt(self):
+        import stufen_echt as SE
+        from quelle import QuelleFehler
+        spiegel = self.Spiegel(QuelleFehler("git_fehler", "diff exit 128 mit /geheimer/pfad"))
+        echte = self.echte(spiegel)
+        self.bringe_nach("wartet_freigabe")
+        self.d.stufen = echte
+        for _ in range(3):
+            r = self.sende("status")
+            self.assertTrue(r["ok"])
+            self.assertNotIn("pruefung", r["anfrage"])
+            self.assertNotIn("geheimer", json.dumps(r))
+        self.assertEqual(len(spiegel.diff_aufrufe), 1)   # nicht bei jeder Abfrage neu
+        with mock.patch.object(SE, "ANZEIGE_PAUSE_S", 0.0):
+            echte._anzeige_cache.clear()
+            self.sende("status")
+            self.sende("status")
+        self.assertEqual(len(spiegel.diff_aufrufe), 3)   # mit abgelaufener Pause wird erneut versucht
+        spiegel.fehler = None
+        echte._anzeige_cache.clear()
+        self.assertIn("pruefung", self.sende("status")["anfrage"])
+
+    def test_ohne_laufenden_kern_keine_anzeige(self):
+        spiegel = self.Spiegel()
+        self.bringe_nach("wartet_freigabe")
+        self.d.stufen = self.echte(spiegel, kern=None)
+        self.assertNotIn("pruefung", self.sende("status")["anfrage"])
+        self.assertEqual(spiegel.diff_aufrufe, [])
+
+
 # ==================================================================== Quelltext
 class QuelltextTests(unittest.TestCase):
     # Der Kern des Dienstes: startet keinen Prozess und hat kein Netz (die Regeln unten). Die Erweiterungen aus Schritt 1.3 (Git-Spiegel und GitHub
     # lesend) brauchen git und openssl; sie haben ihre eigenen, schärferen Tests in test_quelle.py und werden vom Kern nicht importiert.
     KERN = ("release_anker.py", "release_automat.py", "release_db.py", "release_kette.py", "release_stufen.py", "wamo_release.py")
-    ERWEITERUNGEN = ("quelle.py", "stufen_echt.py", "stufen_quelle.py", "wamo_release_dienst.py")
+    ERWEITERUNGEN = ("quelle.py", "release_anzeige.py", "stufen_echt.py", "stufen_quelle.py", "wamo_release_dienst.py")
     DATEIEN = [RELEASE / n for n in KERN]
 
     def test_es_gibt_die_erwarteten_dateien(self):

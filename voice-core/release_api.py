@@ -6,6 +6,9 @@ Der Kern liest den Stand über den Socket des Release-Dienstes (release_client.p
 nichts ändern: Anfragen vorschlagen kommt mit den Werkzeugen (Schritt 3.4), Freigaben nimmt allein der Freigabe-Dienst des Ankers an (die Oberfläche
 ruft ihn über Caddy direkt, am Kern vorbei, Schritt 1.4c).
 
+Die Sicht der Anfrage trägt zusätzlich v_commit, tree_id, von_mir, treffer_anzahl, pruefstand und pruefung (Form und Grenzen: Vertrag oben in release_client.py).
+Aus dem Profil der Anfrage wird nur von_mir (ist es das angemeldete Profil?), das Profil selbst verlässt den Kern nicht.
+
 Ist der Release-Dienst nicht erreichbar, antwortet die Route trotzdem mit 200 und {"verfuegbar": false, "grund": "<Schlüsselwort>"}: Die Karte zeigt dann
 "nicht erreichbar" statt eines Fehlers. Rate-Grenze: 60 Abfragen je Minute und Profil.
 """
@@ -49,6 +52,16 @@ async def status(request: Request, response: Response) -> dict:
     _drosseln(ich.user_id)
     response.headers["Cache-Control"] = "no-store"
     try:
-        return await asyncio.to_thread(release_client.status)
+        sicht = await asyncio.to_thread(release_client.status, mit_pruefung=True)   # nur diese Route bekommt den Block pruefung (Pfade, Funde), nie ein Sprachwerkzeug
     except release_client.ReleaseFehler as e:
         return {"verfuegbar": False, "grund": e.grund}
+    return _ohne_profil(sicht, ich.user_id)
+
+
+def _ohne_profil(sicht: dict, user_id: str) -> dict:
+    """Die Person hinter der Anfrage geht die Oberfläche nichts an: aus profil wird nur von_mir (ist es das angemeldete Profil?), profil selbst fällt weg."""
+    a = sicht.get("anfrage")
+    if isinstance(a, dict):
+        profil = a.pop("profil", None)
+        a["von_mir"] = isinstance(profil, str) and isinstance(user_id, str) and profil.lower() == user_id.lower()
+    return sicht
