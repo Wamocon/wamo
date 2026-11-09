@@ -1,8 +1,9 @@
 """Tests der Büro-Karte (buero_api.py): schmale Sicht auf die gemeinsamen Bürogeräte, ohne Gerätedienst und ohne Netz.
 
 Der Gerätedienst ist durch eine Attrappe ersetzt (geraete_client.aufruf und verfuegbar). Geprüft wird: wer darf (jede
-Rolle, nur mit gültiger Anmeldung), was an den Dienst geht (nur "status" für "alle", mit der Identität des Profils,
-nie die Geräteliste des Routers), welche Felder herauskommen (nur das schmale Modell, keine Adressen, keine Rohtexte),
+Rolle, nur mit gültiger Anmeldung), was an den Dienst geht (nur "status" für "alle" und "unbekannt_zaehlen", mit der
+Identität des Profils, nie die Geräteliste des Routers oder die Liste der unbekannten Geräte), welche Felder herauskommen
+(nur das schmale Modell, keine Adressen, keine Rohtexte, von den unbekannten Geräten nur die Zahl),
 wie Ampel und Klartext je Geräteklasse entstehen, wie Gerätetexte begrenzt und gesäubert werden, die Grenze je Profil
 (6 Abrufe je Minute) und die ruhigen Fehlerfälle.
 
@@ -12,6 +13,7 @@ Ausführen:  uv run python -m pytest -q test_buero_api.py   (im Ordner voice-cor
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import re
 import unicodedata
@@ -84,13 +86,26 @@ class Dienst:
         self.antwort: dict = {"status": "success", "geraete": alle()}
         self.fehler: BaseException | None = None
         self.verfuegbar = True
+        # Antwort des Dienstes auf unbekannt_zaehlen (der echte liefert genau diese drei Felder)
+        self.unbekannt: dict = {"status": "success", "anzahl": 0, "stand": "2026-11-09T08:00:00Z"}
+        self.unbekannt_fehler: BaseException | None = None
+        self.unbekannt_dauer = 0.0
 
     async def aufruf(self, werkzeug, kontext, *, geraet=None, argumente=None, timeout=20.0, **_):
         self.aufrufe.append({"werkzeug": werkzeug, "kontext": kontext, "geraet": geraet, "argumente": argumente,
                              "timeout": timeout})
+        if werkzeug == "unbekannt_zaehlen":
+            if self.unbekannt_dauer:
+                await asyncio.sleep(self.unbekannt_dauer)
+            if self.unbekannt_fehler:
+                raise self.unbekannt_fehler
+            return self.unbekannt, b""
         if self.fehler:
             raise self.fehler
         return self.antwort, b""
+
+    def status_aufrufe(self) -> list[dict]:
+        return [a for a in self.aufrufe if a["werkzeug"] == "status"]
 
 
 class Kontext:
@@ -141,7 +156,7 @@ def test_antwort_hat_nur_das_schmale_modell(client):
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     d = r.json()
     assert set(d) == {"geraete", "unbekannt", "stand"}
-    assert d["unbekannt"] is None
+    assert d["unbekannt"] == 0
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", d["stand"])
     assert len(d["geraete"]) == 14
     for g in d["geraete"]:
@@ -160,15 +175,17 @@ def test_keine_adressen_keine_rohtexte_keine_admin_daten(client):
         assert verboten not in text, verboten
 
 
-def test_ruft_nur_status_alle_mit_der_identitaet_des_profils(client, dienst, ctx):
+def test_ruft_nur_status_alle_und_unbekannt_zaehlen_mit_der_identitaet_des_profils(client, dienst, ctx):
     ctx.rolle = "admin"
     assert client.get(PFAD).status_code == 200
-    assert len(dienst.aufrufe) == 1
-    a = dienst.aufrufe[0]
-    assert a["werkzeug"] == "status" and a["geraet"] == "alle" and not a["argumente"]
-    k = a["kontext"]
-    assert isinstance(k, gc.Kontext) and k.user_id == USER and k.rolle == "admin" and k.name == "Anna"
-    assert a["timeout"] <= 15
+    assert sorted(a["werkzeug"] for a in dienst.aufrufe) == ["status", "unbekannt_zaehlen"]
+    for a in dienst.aufrufe:
+        assert not a["argumente"] and a["timeout"] <= 15
+        k = a["kontext"]
+        assert isinstance(k, gc.Kontext) and k.user_id == USER and k.rolle == "admin" and k.name == "Anna"
+    status = dienst.status_aufrufe()[0]
+    zaehlen = next(a for a in dienst.aufrufe if a["werkzeug"] == "unbekannt_zaehlen")
+    assert status["geraet"] == "alle" and zaehlen["geraet"] is None
 
 
 @pytest.mark.parametrize("rolle", ["admin", "mitglied"])
@@ -215,6 +232,63 @@ def test_hoechstens_64_geraete(client, dienst):
     assert len(client.get(PFAD).json()["geraete"]) == 64
 
 
+# ---------- Unbekannte Geräte im Netz (nur die Zahl) ----------
+@pytest.mark.parametrize("anzahl", [0, 1, 7, 10000])
+def test_unbekannt_ist_die_zahl_aus_dem_dienst(client, dienst, anzahl):
+    dienst.unbekannt = {"status": "success", "anzahl": anzahl, "stand": "2026-11-09T08:00:00Z"}
+    assert client.get(PFAD).json()["unbekannt"] == anzahl
+
+
+@pytest.mark.parametrize("rolle", ["admin", "mitglied"])
+def test_unbekannt_sehen_alle_rollen_gleich_und_nur_als_zahl(client, dienst, ctx, rolle):
+    ctx.rolle = rolle
+    dienst.unbekannt = {"status": "success", "anzahl": 3, "stand": "2026-11-09T08:00:00Z",
+                        "geraete": [{"ip": "192.168.178.77", "mac_vorsatz": "11:22:33", "name": "Laptop-Anna",
+                                     "schnittstelle": "802.11"}]}
+    r = client.get(PFAD)
+    assert r.json()["unbekannt"] == 3
+    text = json.dumps(r.json(), ensure_ascii=False)
+    for verboten in ("Laptop-Anna", "11:22:33", "192.168.178.77", "mac_vorsatz", "802.11"):
+        assert verboten not in text, verboten
+
+
+@pytest.mark.parametrize("antwort", [
+    {"status": "nicht_eingerichtet", "summary": "TR-064 ist nicht eingerichtet"},
+    {"status": "error", "summary": "Router nicht erreichbar 192.168.178.1"},
+    {"status": "grenze", "summary": "Zu viele Anfragen"},
+    {"status": "rejected", "summary": "x"},
+    {"status": "success"},
+    {"status": "success", "anzahl": -1}, {"status": "success", "anzahl": 1.5}, {"status": "success", "anzahl": "3"},
+    {"status": "success", "anzahl": True}, {"status": "success", "anzahl": None}, {"status": "success", "anzahl": 10 ** 9},
+    {"status": "success", "anzahl": float("nan")}, {"status": "success", "anzahl": [3]},
+])
+def test_unbekannt_ohne_brauchbare_zahl_ist_null_und_die_karte_bleibt(client, dienst, antwort):
+    dienst.unbekannt = antwort
+    r = client.get(PFAD)
+    assert r.status_code == 200 and r.json()["unbekannt"] is None and len(r.json()["geraete"]) == 14
+    assert not IP.search(r.text)
+
+
+@pytest.mark.parametrize("fehler", [gc.GeraeteNichtVerfuegbar("weg"), RuntimeError("kaputt"), ValueError("x")])
+def test_unbekannt_fehler_machen_die_karte_nicht_kaputt(client, dienst, fehler):
+    dienst.unbekannt_fehler = fehler
+    r = client.get(PFAD)
+    assert r.status_code == 200 and r.json()["unbekannt"] is None and len(r.json()["geraete"]) == 14
+
+
+def test_langsame_zaehlung_haelt_die_karte_nicht_auf(client, dienst, monkeypatch):
+    monkeypatch.setattr(api, "UNBEKANNT_ZEIT", 0.05)
+    dienst.unbekannt_dauer = 2.0
+    r = client.get(PFAD)
+    assert r.status_code == 200 and r.json()["unbekannt"] is None and len(r.json()["geraete"]) == 14
+
+
+def test_ohne_status_bleibt_es_beim_503(client, dienst):
+    dienst.fehler = gc.GeraeteNichtVerfuegbar("Der Gerätedienst ist gerade nicht erreichbar.")
+    dienst.unbekannt = {"status": "success", "anzahl": 5, "stand": "2026-11-09T08:00:00Z"}
+    assert client.get(PFAD).status_code == 503
+
+
 # ---------- Fehlerfälle ----------
 def test_ohne_geraetedienst_ist_es_ein_ruhiges_503(client, dienst):
     dienst.verfuegbar = False
@@ -256,7 +330,7 @@ def test_sechs_abrufe_je_minute_und_profil(client, dienst, ctx):
     for _ in range(6):
         assert client.get(PFAD).status_code == 200
     r = client.get(PFAD)
-    assert r.status_code == 429 and len(dienst.aufrufe) == 6      # der siebte erreicht den Dienst nicht
+    assert r.status_code == 429 and len(dienst.status_aufrufe()) == 6      # der siebte erreicht den Dienst nicht
     ctx.user_id = ANDERER                                           # ein anderes Profil hat seine eigene Grenze
     assert client.get(PFAD).status_code == 200
 
@@ -350,6 +424,16 @@ def test_abgelehnte_abrufe_zaehlen_mit(client, dienst):
     (roh("t", "steckdose", erreichbar=True, an=False, leistung_w=0.0), "ok", "aus"),
     (roh("t", "steckdose", status="error", summary="x"), "stoerung", "nicht erreichbar"),
     (roh("t", "steckdose", status="nicht_eingerichtet", summary="Passwort fehlt"), "unbekannt", "nicht eingerichtet"),
+    # Switch und Access Point (SNMPv3)
+    (roh("w", "switch", erreichbar=True, ports_gesamt=24, ports_oben=9, ports_unten=15), "ok", "läuft, 9 von 24 Ports aktiv"),
+    (roh("w", "switch", erreichbar=True, ports_gesamt=0, ports_oben=0, ports_unten=0), "ok", "läuft"),
+    (roh("w", "switch", erreichbar=True), "ok", "läuft"),
+    (roh("w", "switch", erreichbar=True, ports_gesamt=8, ports_oben=9, ports_unten=0), "ok", "läuft"),
+    (roh("w", "switch", erreichbar=False), "stoerung", "nicht erreichbar"),
+    (roh("w", "switch", status="error", summary="x"), "stoerung", "nicht erreichbar"),
+    (roh("w", "switch", status="nicht_eingerichtet"), "unbekannt", "nicht eingerichtet"),
+    (roh("a", "accesspoint", erreichbar=True, ports_gesamt=1, ports_oben=1, ports_unten=0), "ok", "läuft, 1 von 1 Ports aktiv"),
+    (roh("a", "accesspoint", status="error", summary="x"), "stoerung", "nicht erreichbar"),
     # iMac (nur Anwesenheit)
     (roh("m", "mac", erreichbar=True, sichtbar=True, adresse="192.168.178.50"), "ok", "im Netz sichtbar"),
     (roh("m", "mac", erreichbar=False, sichtbar=False, adresse=""), "unbekannt", "nicht sichtbar, vielleicht aus"),
@@ -372,7 +456,8 @@ def test_klassen_gehoeren_zu_den_sechs_gruppen():
     assert api.GRUPPEN == ("server", "drucker", "netz", "speicher", "medien", "steckdosen")
     assert {api.KLASSE_GRUPPE[k] for k in api.KLASSE_GRUPPE} == set(api.GRUPPEN)
     erwartet = {"server": "server", "drucker": "drucker", "scanner": "drucker", "router": "netz", "mac": "netz",
-                "nas": "speicher", "fernseher": "medien", "lautsprecher": "medien", "steckdose": "steckdosen"}
+                "switch": "netz", "accesspoint": "netz", "nas": "speicher", "fernseher": "medien",
+                "lautsprecher": "medien", "steckdose": "steckdosen"}
     assert api.KLASSE_GRUPPE == erwartet
 
 
@@ -463,5 +548,6 @@ def test_quelltext_kennt_keine_steuerung_und_keine_routerliste():
     texte = {n.value for n in ast.walk(baum) if isinstance(n, ast.Constant) and isinstance(n.value, str)
              and id(n) not in doku}
     assert "status" in texte
-    assert not texte & {"steuern", "drucken", "scannen", "router_geraete", "nas_abrufen", "nas_suchen", "ablage_holen",
-                        "ablage_liste", "ablage_loeschen"}
+    assert "unbekannt_zaehlen" in texte  # nur die Zahl der unbekannten Geräte, nie die Liste (die ist nur für Admins)
+    assert not texte & {"steuern", "drucken", "scannen", "router_geraete", "unbekannte_geraete", "nas_abrufen", "nas_suchen",
+                        "ablage_holen", "ablage_liste", "ablage_loeschen"}

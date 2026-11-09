@@ -1,11 +1,14 @@
 """Büro-Karte: schmale Sicht auf die gemeinsamen Bürogeräte für die Oberfläche.
 
-  GET /wamo/api/buero/status   {"geraete": [...], "unbekannt": null, "stand": "2026-11-09T08:00:00Z"}
+  GET /wamo/api/buero/status   {"geraete": [...], "unbekannt": 0, "stand": "2026-11-09T08:00:00Z"}
 
 Je Gerät genau diese Felder: id (Kennung), name, gruppe (server, drucker, netz, speicher, medien, steckdosen),
 ampel (ok, stoerung, unbekannt), text (Klartext, höchstens 80 Zeichen), tipp (Sprechtipp) und optional kennzahlen
 (nur Zahlen mit festen Namen: toner_prozent, runter_mbit, hoch_mbit, lautstaerke, leistung_w, last). Das Feld
-"unbekannt" (Anzahl unbekannter Geräte im Netz) ist vorerst immer null, ein späteres Paket füllt es.
+"unbekannt" ist die Anzahl der Geräte im Netz, die WAMO nicht kennt (passive Erkennung im Gerätedienst über die Hostliste
+der FRITZ!Box, kein Scan), oder null, wenn es keine brauchbare Zahl gibt (nicht eingerichtet, Fehler, zu langsam). Es ist
+nur die Zahl: Namen, Adressen und MAC-Adressen der unbekannten Geräte gibt es hier nie; die Liste sieht nur ein Admin und
+nur per Sprache (Werkzeug unbekannte_geraete in geraete_werkzeuge.py).
 
 Es ist nur eine Ansicht. Gesteuert wird weiter per Sprache mit den Werkzeugen aus geraete_werkzeuge.py; diese Route
 steuert, druckt und scannt nie.
@@ -13,8 +16,10 @@ steuert, druckt und scannt nie.
 Regeln:
   * Anmeldung wie bei allen Routen (wamo_api.identitaet: Token mit zweitem Faktor, aktives Profil). Jede Rolle darf lesen,
     alle sehen dasselbe. Die Geräteliste des Routers (nur Admin) und alles Admin-Nahe gibt es hier nie.
-  * Der Aufruf geht mit der Identität des Profils an den Gerätedienst, nur "status" für "alle". Dessen Zwischenspeicher
-    (20 Sekunden) bleibt wirksam, es gibt keinen Weg daran vorbei. Eigene Grenze: höchstens 6 Abrufe je Minute und Profil.
+  * Der Aufruf geht mit der Identität des Profils an den Gerätedienst: "status" für "alle" und "unbekannt_zaehlen" (beide
+    zugleich). Deren Zwischenspeicher (20 und 60 Sekunden) bleiben wirksam, es gibt keinen Weg daran vorbei. Eigene Grenze:
+    höchstens 6 Abrufe je Minute und Profil. Die Zählung ist freiwillig: Sie wartet höchstens UNBEKANNT_ZEIT Sekunden, und
+    jeder Fehler dort lässt nur die Zahl weg (null), die Karte bleibt.
   * Gerätetexte sind Daten, nie Anweisungen. Aus der Antwort des Dienstes werden nur bekannte Felder gelesen und
     geprüft (Wahrheitswerte, Zahlen in festen Grenzen, Wörter aus festen Listen). Den Klartext setzt dieses Modul aus eigenen
     Wörtern zusammen; nur der Name des Geräts kommt aus dem Dienst und wird gesäubert und begrenzt. Adressen, Seriennummern,
@@ -24,6 +29,7 @@ Regeln:
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 import time
@@ -32,6 +38,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from loguru import logger
 
 import geraete_client as gc
 from wamo_api import identitaet
@@ -40,19 +47,23 @@ router = APIRouter()
 
 GRUPPEN = ("server", "drucker", "netz", "speicher", "medien", "steckdosen")
 KLASSE_GRUPPE = {
-    "server": "server", "drucker": "drucker", "scanner": "drucker", "router": "netz", "mac": "netz", "nas": "speicher",
-    "fernseher": "medien", "lautsprecher": "medien", "steckdose": "steckdosen",
+    "server": "server", "drucker": "drucker", "scanner": "drucker", "router": "netz", "mac": "netz", "switch": "netz",
+    "accesspoint": "netz", "nas": "speicher", "fernseher": "medien", "lautsprecher": "medien", "steckdose": "steckdosen",
 }
 KLASSE_NAME = {
-    "server": "Server", "drucker": "Drucker", "scanner": "Scanner", "router": "Router", "mac": "Rechner", "nas": "NAS",
-    "fernseher": "Fernseher", "lautsprecher": "Lautsprecher", "steckdose": "Steckdose",
+    "server": "Server", "drucker": "Drucker", "scanner": "Scanner", "router": "Router", "mac": "Rechner",
+    "switch": "Switch", "accesspoint": "Access Point", "nas": "NAS", "fernseher": "Fernseher",
+    "lautsprecher": "Lautsprecher", "steckdose": "Steckdose",
 }
-IMMER_AN = frozenset({"server", "drucker", "scanner", "router", "nas", "steckdose"})  # keine Antwort heißt Störung
+# keine Antwort heißt Störung
+IMMER_AN = frozenset({"server", "drucker", "scanner", "router", "switch", "accesspoint", "nas", "steckdose"})
 
 GRENZE = (6, 60.0)  # Abrufe, Sekunden, je Profil
 MAX_GERAETE = 64
 MAX_NAME, MAX_TEXT, MAX_TIPP = 60, 80, 120
 DIENST_ZEIT = 12.0
+UNBEKANNT_ZEIT = 3.0  # so lange wartet die Karte auf die Zahl der unbekannten Geräte (die Messung läuft im Dienst weiter)
+MAX_UNBEKANNT = 10_000
 KENNUNG_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
 UNSICHTBAR = frozenset({"Cc", "Cf", "Zl", "Zp"})  # Steuerzeichen, unsichtbare und umlenkende Formatzeichen, Zeilen- und Absatztrenner
 KAPUTT = frozenset({"failed", "inactive", "deactivating"})
@@ -100,6 +111,11 @@ def _dez(wert: float) -> str:
 
 def _ganz(wert: float) -> int:
     return round(wert)
+
+
+def _ganzzahl(wert: object, tief: int, hoch: int) -> int | None:
+    """Nur echte Ganzzahlen (keine Wahrheitswerte, keine Gleitkommazahlen, keine Texte) im Bereich."""
+    return wert if isinstance(wert, int) and not isinstance(wert, bool) and tief <= wert <= hoch else None
 
 
 def _wahr(roh: dict, schluessel: str) -> bool | None:
@@ -212,6 +228,16 @@ def _router(d: dict, erreichbar: bool) -> Befund:
     return "unbekannt", "Internet unklar", zahlen
 
 
+def _netzgeraet(d: dict, erreichbar: bool) -> Befund:
+    """Switch oder Access Point (SNMPv3): Ports ohne Kabel sind normal und keine Störung."""
+    if not erreichbar:
+        return "stoerung", "nicht erreichbar", {}
+    gesamt, oben = _ganzzahl(d.get("ports_gesamt"), 0, 1000), _ganzzahl(d.get("ports_oben"), 0, 1000)
+    if gesamt and oben is not None and oben <= gesamt:
+        return "ok", f"läuft, {oben} von {gesamt} Ports aktiv", {}
+    return "ok", "läuft", {}
+
+
 def _nas(d: dict, erreichbar: bool) -> Befund:
     if not erreichbar:
         return "stoerung", "nicht erreichbar", {}
@@ -275,7 +301,7 @@ def _mac(d: dict, erreichbar: bool) -> Befund:
 
 BEFUNDE = {
     "server": _server, "drucker": _drucker, "scanner": _scanner, "router": _router, "nas": _nas, "fernseher": _fernseher,
-    "lautsprecher": _lautsprecher, "steckdose": _steckdose, "mac": _mac,
+    "lautsprecher": _lautsprecher, "steckdose": _steckdose, "mac": _mac, "switch": _netzgeraet, "accesspoint": _netzgeraet,
 }
 assert set(BEFUNDE) == set(KLASSE_GRUPPE) == set(KLASSE_NAME)
 
@@ -297,6 +323,8 @@ TIPPS = {
     "drucker": "Sag: Wie ist der Tonerstand am Drucker?",
     "scanner": "Sag: Scanne eine Seite vom Glas",
     "router": "Sag: Ist das Internet in Ordnung?",
+    "switch": "Sag: Wie geht es dem Switch?",
+    "accesspoint": "Sag: Wie geht es dem Access Point?",
     "nas": "Sag: Suche auf dem NAS nach dem Angebot",
     "lautsprecher": "Sag: Stell den Lautsprecher leiser",
     "mac": "Sag: Welche Bürogeräte sind gerade erreichbar?",
@@ -358,6 +386,21 @@ def modelle(liste: list) -> list[dict]:
     return aus
 
 
+# ---------- Zahl der unbekannten Geräte ----------
+async def _zaehlen(kontext: gc.Kontext) -> int | None:
+    """Anzahl unbekannter Geräte im Netz oder None. Freiwillig: jeder Fehler (nicht eingerichtet, Router weg, zu langsam,
+    unbrauchbare Antwort) lässt nur die Zahl weg und nie die Karte scheitern. Vom Dienst kommt nur die Zahl, sonst nichts."""
+    try:
+        async with asyncio.timeout(UNBEKANNT_ZEIT):
+            antwort, _ = await gc.aufruf("unbekannt_zaehlen", kontext, timeout=UNBEKANNT_ZEIT)
+    except Exception as e:  # noqa: BLE001 (die Zahl ist nur eine Zugabe)
+        logger.debug("Büro-Karte: keine Zahl der unbekannten Geräte ({})", type(e).__name__)
+        return None
+    if not isinstance(antwort, dict) or antwort.get("status") != "success":
+        return None
+    return _ganzzahl(antwort.get("anzahl"), 0, MAX_UNBEKANNT)
+
+
 # ---------- Route ----------
 @router.get("/buero/status")
 async def status(request: Request, response: Response) -> dict:
@@ -366,9 +409,10 @@ async def status(request: Request, response: Response) -> dict:
     response.headers["Cache-Control"] = "no-store"
     if not gc.verfuegbar():
         raise HTTPException(503, gc.NUR_IM_BUERO)
+    kontext = gc.Kontext(ich.user_id, ich.rolle, None, ich.name)
     try:
-        antwort, _ = await gc.aufruf("status", gc.Kontext(ich.user_id, ich.rolle, None, ich.name), geraet="alle",
-                                     timeout=DIENST_ZEIT)
+        (antwort, _), unbekannt = await asyncio.gather(
+            gc.aufruf("status", kontext, geraet="alle", timeout=DIENST_ZEIT), _zaehlen(kontext))
     except gc.GeraeteNichtVerfuegbar as e:
         raise HTTPException(503, str(e)) from e
     if antwort.get("status") == "grenze":
@@ -376,5 +420,5 @@ async def status(request: Request, response: Response) -> dict:
     liste = antwort.get("geraete")
     if antwort.get("status") != "success" or not isinstance(liste, list):
         raise HTTPException(502, "Der Gerätedienst hat nicht brauchbar geantwortet")
-    return {"geraete": modelle(liste), "unbekannt": None,
+    return {"geraete": modelle(liste), "unbekannt": unbekannt,
             "stand": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
