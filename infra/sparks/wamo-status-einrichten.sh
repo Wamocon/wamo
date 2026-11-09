@@ -18,7 +18,8 @@
 #   /usr/local/bin/wamo-status            root 0755, Nur-Lese-Bericht (status, gpu, dienste, alles)
 #   /etc/wamo/status-dienste.conf         Units, deren Zustand gemeldet wird (nur angelegt, wenn sie fehlt)
 #   /etc/ssh/authorized_keys.d/wamo-status   restrict,from="192.168.178.136",command="/usr/local/bin/wamo-status"
-#   /etc/ssh/sshd_config.d/wamo-status.conf  Match User wamo-status: nur Public Key, keine Weiterleitungen, kein TTY,
+#   /etc/ssh/sshd_config.d/wamo-status.conf  Match User wamo-status: nur von 192.168.178.136 (eigene AllowUsers-Zeile, ersetzt dort eine
+#                                         globale Liste), nur Public Key, keine Weiterleitungen, kein TTY,
 #                                         ForceCommand, MaxSessions 2; "Match all" beendet den Block
 set -euo pipefail
 
@@ -47,8 +48,11 @@ for datei in wamo_status.py wamo-status.pub; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei" >&2; exit 1; }
 done
 [ -x /usr/bin/python3 ] && [ -x /usr/sbin/sshd ] || { echo "python3 oder sshd fehlt" >&2; exit 1; }
-if grep -qiE '^\s*(AllowUsers|AllowGroups|DenyUsers|DenyGroups)\b' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null; then
-  echo "Hinweis: sshd hat AllowUsers/AllowGroups/Deny*-Regeln; $BENUTZER muss dort erlaubt sein." >&2
+# Eine globale AllowUsers-Liste (zum Beispiel nur Admin-Konten) würde $BENUTZER abweisen. Der Drop-in unten setzt darum im
+# Block "Match User $BENUTZER" eine eigene AllowUsers-Zeile (ersetzt dort die globale Liste, gilt nur für dieses Konto und
+# nur von $FROM); AllowGroups und Deny*-Regeln bleiben davon unberührt und müssen $BENUTZER zulassen.
+if grep -qiE '^\s*(AllowGroups|DenyUsers|DenyGroups)\b' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null; then
+  echo "Hinweis: sshd hat AllowGroups/Deny*-Regeln; $BENUTZER muss dort erlaubt sein." >&2
 fi
 
 echo "== 1. Programm $PROGRAMM"
@@ -91,6 +95,7 @@ cat > "$neu" <<SSHD
 # WAMO: Benutzer wamo-status nur für den Nur-Lese-Bericht an den Gerätedienst auf Sokrates-2.
 # Installiert durch infra/sparks/wamo-status-einrichten.sh. "Match all" am Ende beendet den Block.
 Match User wamo-status
+    AllowUsers wamo-status@$FROM
     PasswordAuthentication no
     KbdInteractiveAuthentication no
     AuthenticationMethods publickey

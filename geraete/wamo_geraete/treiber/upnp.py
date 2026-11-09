@@ -1,15 +1,17 @@
-"""UPnP-SOAP mit fester Aktionsliste: FRITZ!Box (IGD, Status ohne Anmeldung; TR-064 Geräteliste nur mit Zugang),
-JBL-Lautsprecher und Fernseher (RenderingControl, AVTransport).
+"""UPnP-SOAP mit fester Aktionsliste: FRITZ!Box (IGD, Status ohne Anmeldung; TR-064 für Status, Geräteliste und Hostliste
+nur mit Zugang), Lautsprecher und Fernseher (RenderingControl, AVTransport).
 
 Es gibt keinen Weg, eine beliebige SOAP-Aktion aufzurufen: Jede Aktion steht als Schlüssel in AKTIONEN mit festem
 Pfad, Diensttyp, Namen und festen Argumentnamen; Werte sind nur Ganzzahlen oder feste Wörter. Insbesondere
-AddPortMapping, DeletePortMapping, ForceTermination, SetConnectionType und alle X_AVM-DE-Schreibaktionen fehlen.
+AddPortMapping, DeletePortMapping, ForceTermination, SetConnectionType und alle X_AVM-DE-Schreibaktionen fehlen. Auch die
+TR-064-Aktionen unten sind nur lesend (Get...); der Router bleibt in diesem Dienst ausschließlich lesbar.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, unescape
 
 from ..http_klein import HttpFehler, anfrage, tls_ohne_ca
 from ..konfig import Geraet, Konfig
@@ -21,6 +23,8 @@ WAN_IP = ("/igdupnp/control/WANIPConn1", "urn:schemas-upnp-org:service:WANIPConn
 RC = "urn:schemas-upnp-org:service:RenderingControl:1"
 AVT = "urn:schemas-upnp-org:service:AVTransport:1"
 TR064_HOSTS = ("/upnp/control/hosts", "urn:dslforum-org:service:Hosts:1")
+TR064_WAN_IFC = ("/upnp/control/wancommonifconfig1", "urn:dslforum-org:service:WANCommonInterfaceConfig:1")
+TR064_WAN_IP = ("/upnp/control/wanipconnection1", "urn:dslforum-org:service:WANIPConnection:1")
 
 # Schlüssel -> (Pfad oder None für den Pfad aus der Gerätekonfiguration, Diensttyp, Aktion, feste Argumentnamen)
 AKTIONEN: dict[str, tuple[str | None, str, str, tuple[str, ...]]] = {
@@ -33,9 +37,21 @@ AKTIONEN: dict[str, tuple[str | None, str, str, tuple[str, ...]]] = {
     "rc_stumm_lesen": (None, RC, "GetMute", ("InstanceID", "Channel")),
     "rc_stumm_setzen": (None, RC, "SetMute", ("InstanceID", "Channel", "DesiredMute")),
     "avt_zustand": (None, AVT, "GetTransportInfo", ("InstanceID",)),
+    # Pfad der Hostliste (Datei devicehostlist.lua): die Geräteliste im Büro und die passive Erkennung unbekannter Geräte
+    # (treiber/hostliste.py) lesen beide diese eine Datei, in zwei Anfragen statt einer je Eintrag
     "tr064_hostliste": (TR064_HOSTS[0], TR064_HOSTS[1], "X_AVM-DE_GetHostListPath", ()),
+    # Status über TR-064 (HTTPS 49443, Anmeldung): dieselben Werte wie über UPnP-IGD, nur lesend
+    "tr064_link": (TR064_WAN_IFC[0], TR064_WAN_IFC[1], "GetCommonLinkProperties", ()),
+    "tr064_gesendet": (TR064_WAN_IFC[0], TR064_WAN_IFC[1], "GetTotalBytesSent", ()),
+    "tr064_empfangen": (TR064_WAN_IFC[0], TR064_WAN_IFC[1], "GetTotalBytesReceived", ()),
+    "tr064_verbindung": (TR064_WAN_IP[0], TR064_WAN_IP[1], "GetStatusInfo", ()),
 }
 _WERT_RE = re.compile(r"^(?:\d{1,6}|Master)$")
+_HOSTLISTE_PFAD = re.compile(r"/devicehostlist\.lua\?sid=[0-9a-f]{16}")
+HOSTLISTE_MAX = 300  # Einträge, die aus der Hostliste gelesen werden (die Erkennung nimmt weniger, siehe hostliste.MAX_HOSTS)
+HOST_FELDER = ("IPAddress", "MACAddress", "HostName", "InterfaceType", "Active")
+_HOST_FELD = {tag: re.compile(rf"<{tag}>([^<]{{0,100}})</{tag}>") for tag in HOST_FELDER}
+_XML_ZEICHEN = {"&apos;": "'", "&quot;": '"'}
 
 
 def soap_rumpf(aktion: str, werte: dict[str, int | str]) -> tuple[str, bytes]:
@@ -90,11 +106,20 @@ async def aufruf(geraet: Geraet, aktion: str, werte: dict[str, int | str] | None
 
 
 # ---------- Router ----------
-async def router_status(geraet: Geraet) -> dict:
-    link = await aufruf(geraet, "router_link")
-    verbindung = await aufruf(geraet, "router_verbindung")
-    gesendet = await aufruf(geraet, "router_gesendet")
-    empfangen = await aufruf(geraet, "router_empfangen")
+def tr064_zugang(geraet: Geraet, konfig: Konfig | None) -> tuple[int, str, tuple[str, str]]:
+    """(Port, Zertifikats-Fingerabdruck, (Benutzer, Passwort)) für TR-064 oder NichtEingerichtet."""
+    zugang = geraet.opt("zugang")
+    benutzer = konfig.geheimnis(zugang, "BENUTZER") if konfig else None
+    passwort = konfig.geheimnis(zugang, "PASSWORT") if konfig else None
+    pin, port = geraet.opt("tls_sha256"), geraet.opt("tr064_port")
+    if not (zugang and benutzer and passwort and pin and port):
+        raise NichtEingerichtet("TR-064 ist nicht eingerichtet (Benutzer, Passwort, Zertifikat und Port fehlen)")
+    return port, pin, (benutzer, passwort)
+
+
+def _router_felder(link: dict[str, str], verbindung: dict[str, str], gesendet: dict[str, str],
+                   empfangen: dict[str, str]) -> dict:
+    """Gemeinsame Auswertung für UPnP-IGD und TR-064: gleiche Felder, gleiche Wörter."""
     hoch = ganzzahl(link.get("NewLayer1UpstreamMaxBitRate"), 0, 10**11)
     runter = ganzzahl(link.get("NewLayer1DownstreamMaxBitRate"), 0, 10**11)
     return {
@@ -112,27 +137,57 @@ async def router_status(geraet: Geraet) -> dict:
     }
 
 
-def _items(text: str, maximum: int = 300) -> list[str]:
-    """Inhalte der <Item>-Blöcke einer Geräteliste, linear (split statt Regex mit Rücksprung auf ungeschlossenen Blöcken)."""
+async def router_status(geraet: Geraet, konfig: Konfig | None = None) -> dict:
+    """Status der FRITZ!Box. Quelle nach status_quelle: "upnp" (Standard, IGD ohne Anmeldung) oder "tr064" (HTTPS 49443 mit
+    Anmeldung und festgehaltenem Zertifikat; dafür braucht der Treiber die Konfiguration mit den Zugangsdaten)."""
+    if geraet.opt("status_quelle", "upnp") == "tr064":
+        port, pin, digest = tr064_zugang(geraet, konfig)
+        schluessel = ("tr064_link", "tr064_verbindung", "tr064_gesendet", "tr064_empfangen")
+        link, verbindung, gesendet, empfangen = await asyncio.gather(
+            *(aufruf(geraet, a, port=port, tls_sha256=pin, digest=digest) for a in schluessel))
+        return _router_felder(link, verbindung, gesendet, empfangen)
+    link = await aufruf(geraet, "router_link")
+    verbindung = await aufruf(geraet, "router_verbindung")
+    gesendet = await aufruf(geraet, "router_gesendet")
+    empfangen = await aufruf(geraet, "router_empfangen")
+    return _router_felder(link, verbindung, gesendet, empfangen)
+
+
+def _items_und_rest(text: str, maximum: int) -> tuple[list[str], bool]:
+    """Inhalte der <Item>-Blöcke einer Geräteliste, linear (split statt Regex mit Rücksprung auf ungeschlossenen Blöcken), und
+    ob mehr als maximum Blöcke da waren (dann fehlen die übrigen)."""
+    stuecke = text.split("<Item>")[1:]
     erg: list[str] = []
-    for stueck in text.split("<Item>")[1:maximum + 1]:
+    for stueck in stuecke[:maximum]:
         ende = stueck.find("</Item>")
         if ende >= 0:
             erg.append(stueck[:ende])
-    return erg
+    return erg, len(stuecke) > maximum
 
 
-async def router_geraete(geraet: Geraet, konfig: Konfig) -> list[dict]:
-    """Verbundene Geräte über TR-064 (HTTPS 49443, Digest, festgehaltenes Zertifikat). Nur für Admins; das Ergebnis
-    geht im Kern direkt an die Oberfläche (personenbezogen: zeigt, wer im Büro ist)."""
-    zugang = geraet.opt("zugang")
-    benutzer, passwort = konfig.geheimnis(zugang, "BENUTZER"), konfig.geheimnis(zugang, "PASSWORT")
-    pin, port = geraet.opt("tls_sha256"), geraet.opt("tr064_port")
-    if not (zugang and benutzer and passwort and pin and port):
-        raise NichtEingerichtet("TR-064 ist nicht eingerichtet (Benutzer, Passwort, Zertifikat und Port fehlen)")
-    werte = await aufruf(geraet, "tr064_hostliste", port=port, tls_sha256=pin, digest=(benutzer, passwort))
+def _items(text: str, maximum: int = 300) -> list[str]:
+    return _items_und_rest(text, maximum)[0]
+
+
+def _host_felder(item: str) -> dict[str, str]:
+    """Die Felder eines Eintrags der Hostliste (HOST_FELDER) als Text, XML-Zeichen aufgelöst, leer wenn ein Feld fehlt. Die Werte
+    sind Daten vom Gerät: wer sie nutzt, prüft und kürzt sie (text.name, MAC_RE, Adressprüfung)."""
+    felder = {}
+    for tag, muster in _HOST_FELD.items():
+        m = muster.search(item)
+        felder[tag] = unescape(m.group(1), _XML_ZEICHEN) if m else ""
+    return felder
+
+
+async def hostliste_holen(geraet: Geraet, konfig: Konfig, maximum: int = HOSTLISTE_MAX) -> tuple[list[dict[str, str]], bool]:
+    """Die Hostliste der FRITZ!Box in zwei Anfragen (der seit 21.10. bewährte Weg der Geräteliste): erst der Pfad der Datei
+    (SOAP X_AVM-DE_GetHostListPath), dann die Datei devicehostlist.lua mit allen Einträgen, nie je Eintrag eine Anfrage. Ergebnis:
+    je Eintrag die Felder HOST_FELDER (IPAddress, MACAddress, HostName, InterfaceType, Active) und ob wegen maximum Einträge
+    fehlen. Wirft NichtEingerichtet (Zugang fehlt oder abgelehnt) oder GeraetFehler (Box antwortet nicht brauchbar)."""
+    port, pin, digest = tr064_zugang(geraet, konfig)
+    werte = await aufruf(geraet, "tr064_hostliste", port=port, tls_sha256=pin, digest=digest)
     pfad = werte.get("NewX_AVM-DE_HostListPath", "")
-    if not re.fullmatch(r"/devicehostlist\.lua\?sid=[0-9a-f]{16}", pfad):
+    if not _HOSTLISTE_PFAD.fullmatch(pfad):
         raise GeraetFehler("Router liefert keinen gültigen Pfad zur Geräteliste")
     try:
         antwort = await anfrage(geraet.adresse, port, "GET", pfad, timeout=6, max_bytes=512 * 1024,
@@ -142,15 +197,22 @@ async def router_geraete(geraet: Geraet, konfig: Konfig) -> list[dict]:
     if antwort.status != 200:
         raise GeraetFehler(f"Geräteliste: HTTP {antwort.status}")
     text = antwort.rumpf.decode("utf-8", "replace")
+    items, abgeschnitten = _items_und_rest(text, maximum)
+    if not items and not text.lstrip().startswith("<?xml"):  # zum Beispiel eine Anmeldeseite: keine leere Liste vortäuschen
+        raise GeraetFehler("Router liefert keine Hostliste")
+    return [_host_felder(item) for item in items], abgeschnitten
+
+
+async def router_geraete(geraet: Geraet, konfig: Konfig) -> list[dict]:
+    """Verbundene Geräte über TR-064 (HTTPS 49443, Digest, festgehaltenes Zertifikat). Nur für Admins; das Ergebnis
+    geht im Kern direkt an die Oberfläche (personenbezogen: zeigt, wer im Büro ist)."""
+    eintraege, _abgeschnitten = await hostliste_holen(geraet, konfig)
     liste = []
-    for item in _items(text):
-        def feld(tag: str) -> str:
-            m = re.search(rf"<{tag}>([^<]{{0,100}})</{tag}>", item)
-            return m.group(1) if m else ""
-        ip = feld("IPAddress")
-        liste.append({"name": name(feld("HostName"), 32) or "?",
+    for e in eintraege:
+        ip = e["IPAddress"]
+        liste.append({"name": name(e["HostName"], 32) or "?",
                       "adresse": ip if re.fullmatch(r"192\.168\.178\.\d{1,3}", ip) else "",
-                      "aktiv": feld("Active") == "1", "verbindung": name(feld("InterfaceType"), 16)})
+                      "aktiv": e["Active"] == "1", "verbindung": name(e["InterfaceType"], 16)})
     return liste
 
 

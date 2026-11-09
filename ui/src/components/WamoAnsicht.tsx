@@ -9,10 +9,13 @@ import { EINSTELLUNGEN_KNOPF_ID } from "@/components/einstellungen/Einstellungen
 import { Auftraege, Freigaben } from "@/components/Freigaben";
 import { GemerktHinweis } from "@/components/GemerktHinweis";
 import { Bedienung } from "@/components/kommando/Bedienung";
+import { BueroKarte } from "@/components/kommando/BueroKarte";
+import { useBueroStandHalten } from "@/components/kommando/useBueroStand";
 import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
 import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
+import { VorgaengeTafel } from "@/components/kommando/Vorgaenge";
 import { GeraetEinrichtung, GeraetZeile } from "@/components/GeraetEinrichtung";
 import { Hinweise as AdminHinweise, HinweiseZaehler } from "@/components/Hinweise";
 import { Kopfzeile } from "@/components/Kopfzeile";
@@ -24,6 +27,7 @@ import type { Mikrofon } from "@/lib/mikrofon";
 import { useModellzugangStandHalten } from "@/lib/modellzugangApi";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
+import { useVerlaufHalten } from "@/lib/vorgaengeApi";
 import { istOnline, wamo, type Memo } from "@/lib/wamo";
 
 /** Fehler in Tinte mit rotem Symbol und sicherer nächster Aktion. */
@@ -132,7 +136,8 @@ const Ansage = memo(function Ansage() {
  * Hauptansicht "Kommandozentrale" (kommando/Rahmen.tsx). Abschnitte abonnieren eigene Store-Ausschnitte,
  * deshalb rendert hier nichts im Worttakt neu. Ab 1100 px drei Spalten: links Hinweise (Gedächtnis, geteilte
  * Arbeit, Stand der Einstellungen), in der Mitte der Kern mit Untertiteln, Eingabepille und Canvas, rechts Reiter für
- * Freigaben und Aufträge, Vorgänge (Zeitleiste der Werkzeuge) und Erledigtes. Darunter eine Spalte mit Reiterleiste.
+ * Freigaben und Aufträge, Vorgänge (Karten mit Livefortschritt, darunter die Zeitleiste der Werkzeuge) und Erledigtes. Darunter
+ * eine Spalte mit Reiterleiste.
  * Der Verlauf bleibt eine Schublade. Die Einstellungen (components/einstellungen/) sind eine zweite Ansicht derselben
  * Seite, gesteuert über den Hash #einstellungen: Sie verbergen die Kommandozentrale, ohne das Gespräch zu berühren.
  */
@@ -151,6 +156,10 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
   const { disconnect, connect, vergessen } = aktionen;
   // Der Stand des Modellzugangs wird einmal hier gehalten: die Seitenleiste zeigt eine Zeile daraus, die Einstellungen die Karte
   useModellzugangStandHalten(aktionen.modellzugang);
+  // Der Verlauf der Vorgänge (Datenbank) wird hier einmal geholt: die Tafel hängt nur bei sichtbarem Reiter ein
+  useVerlaufHalten();
+  // Der Stand der Büro-Karte gehört dem angemeldeten Profil: beim Abmelden (Aushängen dieser Ansicht) wird er vergessen
+  useBueroStandHalten();
   // Nach dem Schließen der Einstellungen (Knopf, Escape oder "Zurück" des Browsers) kehrt der Fokus zu dem zurück, was
   // sie geöffnet hat (Zahnrad oder Link), sonst zum Zahnrad. Hat die Person den Fokus schon selbst gesetzt (zum Beispiel
   // auf "Verlauf"), bleibt er dort.
@@ -221,11 +230,13 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
       }
       vorgaenge={
         <>
+          <VorgaengeTafel />
           <ActivityTimeline />
           <VorgaengeLeer />
         </>
       }
       erledigt={<ErledigtListe />}
+      buero={<BueroKarte />}
       anhang={
         <>
           <Verlauf offen={verlaufOffen} onSchliessen={schliesseVerlauf} />

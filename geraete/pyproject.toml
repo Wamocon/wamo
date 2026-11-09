@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "WAMO-Gerätedienst auf Sokrates-2: Bürogeräte (Server, Drucker, Scanner, Router, NAS, Fernseher, Lautsprecher, Steckdosen) über einen Unix-Socket für den Kern"
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=47",  # AES für SNMPv3: pysnmp braucht hazmat.decrepit.ciphers.modes (ab 47); smbprotocol bringt es ohnehin mit
     "pillow>=10.2",
+    "pysnmp>=7.1.30,<8",
     "smbprotocol>=1.15",
     "websockets>=15.0",
 ]

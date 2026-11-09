@@ -243,6 +243,14 @@ Entwicklungsaufträge
   gesperrt; das macht {name} selbst.
 """
 
+# WAMO_PERSONA_ABNAHME (Standard an): Aufträge bekommen ein prüfbares Ziel und laufen in Runden (abnahme.py, dev_agent.py).
+# Mit "aus" bleibt der Prompt byteidentisch zum früheren.
+DEV_ABNAHME_PROMPT = """- Gib einem Auftrag, der etwas baut oder behebt, ein prüfbares Ziel (abnahme). Nennt {name} keins, leite selbst ein bis
+  drei messbare Kriterien ab (was die Werkzeugbeschreibung erlaubt, zum Beispiel „befehl: pytest -q“, wenn das Projekt
+  Tests hat) und nenne sie in einem Satz, ohne zusätzliche Rückfrage. WAMO arbeitet dann in Runden, bis alles erfüllt ist.
+  Ist das Ziel nicht erreicht, sag das ehrlich und nie „fertig“.
+"""
+
 DEV_LOCKED_PROMPT = """
 Entwicklungsaufträge
 - Aufträge an Claude Code (Software bauen, prüfen, testen) sind derzeit gesperrt. Fragt {name}
@@ -307,6 +315,11 @@ def persona_gespraech_an(wert: str | None = None) -> bool:
     return schalter_an("WAMO_PERSONA_GESPRAECH", wert)
 
 
+def persona_abnahme_an(wert: str | None = None) -> bool:
+    """WAMO_PERSONA_ABNAHME: Aufträge mit prüfbarem Ziel (Abnahme in Runden), Standard an."""
+    return schalter_an("WAMO_PERSONA_ABNAHME", wert, standard=True)
+
+
 def persona_browser_an(wert: str | None = None) -> bool:
     """WAMO_PERSONA_BROWSER: Browserinhalte zuerst mit browser_lesen lesen, Foto nur wenn Text nicht reicht (Standard an: es
     behebt, dass WAMO bei Browserseiten nur Fenstertitel und ein Foto eines geratenen Monitors hatte)."""
@@ -344,17 +357,19 @@ def build_system_prompt(
     tab: bool | None = None,
     gespraech: bool | None = None,
     fernzugriff: bool = False,
+    abnahme: bool | None = None,
 ) -> str:
     """fernzugriff=True (nur Admin mit eingeschaltetem Fernzugriff): WAMO kennt den Fernzugriff auf die Sparks und das Werkzeug
     fernzugriff_oeffnen. pc_erreichbar=False (nur zusammen mit pc_werkzeuge): Hinweis, dass der PC gerade nicht erreichbar ist.
-    rueckfragen / pc_ordner / browser / tab / gespraech: None liest den Schalter (WAMO_PERSONA_RUECKFRAGEN,
-    WAMO_PERSONA_PC_ORDNER, WAMO_PERSONA_BROWSER, WAMO_PERSONA_TAB, WAMO_PERSONA_GESPRAECH)."""
+    rueckfragen / pc_ordner / browser / tab / gespraech / abnahme: None liest den Schalter (WAMO_PERSONA_RUECKFRAGEN,
+    WAMO_PERSONA_PC_ORDNER, WAMO_PERSONA_BROWSER, WAMO_PERSONA_TAB, WAMO_PERSONA_GESPRAECH, WAMO_PERSONA_ABNAHME)."""
     values = {"name": clean_inline(name, MAX_NAME_CHARS) or "Gast", "anrede": ANREDE.get(anrede, "du")}
     rueckfragen = persona_rueckfragen_an() if rueckfragen is None else rueckfragen
     pc_ordner = persona_pc_ordner_an() if pc_ordner is None else pc_ordner
     browser = persona_browser_an() if browser is None else browser
     tab = persona_tab_an() if tab is None else tab
     gespraech = persona_gespraech_an() if gespraech is None else gespraech
+    abnahme = persona_abnahme_an() if abnahme is None else abnahme
     parts = [_fill(BASE_VOR, values)]
     if gespraech:
         parts.append(_fill(GESPRAECH_PROMPT, values))
@@ -376,7 +391,7 @@ def build_system_prompt(
             parts.append(_fill(PC_UNREACHABLE_PROMPT, values))
     if fernzugriff:
         parts.append(_fill(FERNZUGRIFF_PROMPT, values))
-    parts.append(_fill(DEV_PROMPT if entwicklung else DEV_LOCKED_PROMPT, values))
+    parts.append(_fill((DEV_PROMPT + (DEV_ABNAHME_PROMPT if abnahme else "")) if entwicklung else DEV_LOCKED_PROMPT, values))
     parts.append(_fill(ZUGANG_PROMPT, values))
 
     personal = _entries(persoenlich or [])

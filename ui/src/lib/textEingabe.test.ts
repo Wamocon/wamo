@@ -276,7 +276,7 @@ test("wirft senden synchron, wird die Sperre gelöst und es kommt eine Meldung",
 // ---------- Anzeige und Freigaben ----------
 
 const freigabe = { job: "pc", projekt: "", id: "a1", grund: "Datei löschen", detail: "x" };
-const auftrag = { job: "j1", projekt: "atlas", art: "Umsetzung", auftrag: "Alles neu" };
+const auftrag = { job: "j1", projekt: "atlas", art: "Umsetzung", auftrag: "Alles neu", abnahme: [] };
 
 function mitKarten(): WamoState {
   return {

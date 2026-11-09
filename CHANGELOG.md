@@ -8,6 +8,70 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Lange Werkzeugausgaben kürzen (Paket 5): Der Kern verkleinert lange Ergebnisse von Werkzeugen (PowerShell-Listen, Testausgaben,
+  Git-Ausgaben, JSON von Geräten, Webseitentext) verlustarm, bevor sie in den Kontext des Sprachmodells gelangen, ohne Fremdsoftware
+  (`voice-core/ausgaben_kuerzen.py`). Zentrale Stelle ist ein Frame-Prozessor hinter der Aktivitätsanzeige: jedes Werkzeugergebnis
+  kommt dort genau einmal an, Zeitleiste und Freigabekarten sehen das Original. Ab 3000 Zeichen (`WAMO_AUSGABE_SCHWELLE`, 0 = aus)
+  fasst er gleiche Zeilen mit Zähler zusammen, behält Kopf, Schwanz und Zeilen mit Fehlern, ersetzt die Mitte durch eine Marke und
+  entfernt in JSON leere Werte und kürzt lange Listen und Texte; Zahlen, Status und Fehlerfelder bleiben unverändert, das Ergebnis
+  trägt `gekuerzt: true` und `ref`. Das Original liegt nur im Arbeitsspeicher der Sitzung (höchstens 20 Einträge und 1 MB), das neue
+  Werkzeug `ausgabe_nachladen(ref, ab_zeile, anzahl)` liefert Teile gezielt zurück (nur lesend, höchstens 8000 Zeichen je Aufruf).
+  Nie gekürzt werden Freigabe- und Schutzergebnisse (an jeder Stelle des Ergebnisses: `needs_approval`, `freigabe_id` oder ein
+  Schutzstatus, auch tief in Listen oder eingebettet in Text), Werkzeuge mit eigener Kappung, Binärdaten und Ergebnisse unter der
+  Schwelle. Zeilen mit Stichwort (error, blocked, gesperrt, critical und weitere) belegen höchstens die Hälfte des Budgets, die Felder
+  `gekuerzt` und `ref` aus fremdem JSON werden umbenannt, JSON `Infinity` wirft nichts mehr.
+  Eigene Marken lassen sich nicht fälschen (eingehende Texte werden gesäubert). 100 KB brauchen unter 5 ms; an den Beispielen der
+  Tests sparen Verzeichnisliste, `git log`, Gerätestatus und lange Texte 90 bis 99 Prozent der Zeichen, pytest mit drei Fehlern etwa
+  die Hälfte. Je Sitzung steht am Ende eine Zeile mit Zahlen im Log. Das ersetzt den zurückgestellten Befund „Git-Ausgabe streamend
+  kappen“ nur teilweise: Der Host liest die Ausgabe weiter vollständig. Wirkt nach neuem Kern-Release; ungeprüft gegen echte Sitzungen.
+- Geräte-Lücken schließen (Paket 3), alles nur lesend: Der Gerätedienst hat einen SNMPv3-Lesetreiber `snmp` für Switches und Access
+  Points (nur authPriv mit SHA-2 und AES, eigener Lese-Benutzer, nie v1 oder v2c, nie SET; Name, Laufzeit, Ports oben und unten,
+  optional Fehlerzähler; Ausgang UDP 161 in nft und `IPAddressAllow`; Bibliothek pysnmp 7.1.30 mit Prüfsumme im Lock, `cryptography`
+  ab 47). Dazu die passive Erkennung unbekannter Geräte über die Hostliste der FRITZ!Box (TR-064 Hosts:1, kein Scan): Werkzeuge
+  `unbekannt_zaehlen` (alle Rollen, nur eine Zahl) und `unbekannte_geraete` (nur Admin, gekürzt), optionale Datei
+  `/etc/wamo-geraete/bekannt.toml` für Laptops und Handys, Zwischenspeicher 60 Sekunden, Namen und MAC-Adressen nie in Audit oder
+  Protokoll. Die Büro-Karte zeigt bei Zahl größer 0 ruhig „n unbekannte Geräte im Netz“ (grau, mit Sprechtipp für Admins), der Kern
+  füllt dafür das Feld `unbekannt` von `GET /wamo/api/buero/status` (jede Störung dort lässt nur die Zahl weg) und kennt die Klassen
+  Switch und Access Point. Der Router-Status ist zusätzlich über TR-064 wählbar (`status_quelle = "tr064"`, Standard bleibt `upnp`).
+  Neuer Abschnitt „Router schreibend (Entwurf, nicht gebaut)“ in `geraete/README.md`. Wirkt nach neuem Release von Gerätedienst, Kern
+  und Oberfläche; ohne eingetragenen Switch und ohne gepflegte `bekannt.toml` ändert sich im Büro zunächst nur die Zahl der
+  unbekannten Geräte.
+- Büro-Karte (Paket 2): Neuer Reiter "Büro" in der Kommandozentrale mit einer Radialansicht aller gemeinsamen Bürogeräte. In der Mitte WAMO
+  (Sokrates-2), je Gerätegruppe ein Ring (Server, Drucker und Scanner, Netz, Speicher, Medien, Steckdosen), je Gerät ein Punkt: weiß
+  gefüllt in Ordnung, rot mit Strich und langsam pulsierend Störung, grau und hohl unbekannt. Ein Klick oder Enter öffnet eine
+  Detailkarte mit Zustand in Klartext und Sprechtipp; Steuern bleibt der Sprache vorbehalten. Barrierefrei (Buttons, Fokus, Form
+  neben Farbe, Liste unter der Grafik, reduzierte Bewegung). Der Kern liefert dafür `GET /wamo/api/buero/status`: ein schmales Modell
+  je Gerät aus dem Gerätedienst (ohne Adressen, Seriennummern und Rohtexte, ohne die Geräteliste des Routers), jede Rolle, höchstens 6 Abrufe
+  je Minute und Profil. Die Oberfläche ruft alle 30 Sekunden, nur bei sichtbarem Reiter. Wirkt nach neuem Kern-Release und neuer Oberfläche.
+- Prüfbares Ziel mit Runden für Entwicklungsaufträge (Paket 4): `entwicklung_vorbereiten` nimmt `abnahme` (höchstens 5 Kriterien),
+  `max_runden` (Standard 3, höchstens 5) und `zeitlimit_min` (Standard 30, höchstens 60) an. Der Auftrag läuft in Runden: arbeiten,
+  prüfen, bei Nichterfüllung die nächste Runde mit genau den offenen Kriterien, bis alles erfüllt ist oder Runden oder Zeit erschöpft
+  sind; dann endet der Vorgang als Fehler mit "Ziel nach n Runden nicht erreicht", nie als fertig. Aussagekriterien beurteilt ein kleines
+  Modell mit strengem JSON, Befehlskriterien (`befehl: pytest -q`) laufen ohne Shell nach einer echten Allowlist je Programm (nur
+  ausdrücklich aufgeführte Optionen, höchstens 12 Argumente zu je 200 Zeichen, keine `@datei`-, Netzwerk- und Laufwerkspfade), durch den
+  Wächter, mit Zeit-, Ausgabe- und Umgebungsgrenze, nur in der Betriebsart `lokal` (auf Sokrates-2 fehlt dafür noch ein
+  Dispatcher-Befehl) und nur mit `WAMO_ABNAHME_BEFEHLE=ja`. Standard aus, weil ein Befehl Projektcode (conftest, Makefile, Tests) ohne Hook
+  mit den Rechten des Kerns ausführt: Das ist neu gegenüber dem Ablauf vor Paket 4 und soll eine bewusste Entscheidung des Betreibers sein,
+  kein Nebeneffekt. Ohne den Schalter lehnt `entwicklung_vorbereiten` ein `befehl:` mit klarer Meldung ab, Aussagekriterien bleiben
+  möglich. Die Startkarte zeigt die Kriterien (Befehle in Festbreite, nur als Text), damit die Person bestätigt, was sie sieht. Die
+  Pfadprüfung läuft mit Frist im Arbeitsthread, nie in der Ereignisschleife. Bekannte Grenze, nicht umgebaut: Nach dem Ende des
+  Hauptprozesses überleben Enkelprozesse (kein `killpg`, unter Windows kein Job Object). Freigaben bleiben
+  unangetastet und zählen nicht gegen das Zeitlimit. Die Tafel "Vorgänge" zeigt "Runde n von m", "wird geprüft" und die Kriterien mit
+  Hinweis ohne Änderung. Neu: `voice-core/abnahme.py`, Persona-Schalter `WAMO_PERSONA_ABNAHME` (Standard an).
+- Aufgabenleiste mit Livefortschritt (Paket 1): Die Tafel "Vorgänge" zeigt je Boss-Aufgabe und je Entwicklungsauftrag eine Karte mit
+  Status als Wort, Gesamtbalken mit Prozent, Restzeit (nur mit fester Zahl der Schritte, sonst ehrlich "wird geschätzt") und "Fertig in mm:ss",
+  nummerierten Schritten mit eigenem Balken, Prüfkriterien und "Runde n von m". "Zur Freigabe" springt zur vorhandenen Freigabekarte,
+  "Ergebnis ansehen" wählt das Element im Canvas, beendete Vorgänge stehen im einklappbaren Abschnitt "Zuletzt beendet". Der Kern meldet
+  sie als Servernachricht `vorgang` (`voice-core/vorgaenge.py`, gedrosselt auf vier Nachrichten je Sekunde und Vorgang, Schritte
+  eines Entwicklungsauftrags aus den Aufgabenwerkzeugen von Claude Code in `vorgang_stream.py`). Der Verlauf kommt beim Start einmal über
+  `GET /wamo/api/vorgaenge` (die letzten 20 des eigenen Profils, neueste zuerst). Aufbewahrung: Der Stand (Schritte, Kriterien, Titel) bleibt
+  30 Tage, danach leert ihn der Kern (`aufraeumen`, höchstens einmal je Stunde und Prozess, Zeilen löscht er nicht); ein Vorgang, der nach
+  24 Stunden noch offen ist (der Kern ist beim Ende abgestürzt), gilt als abgebrochen. Ein Endstand wird nie von einem späteren Zwischenstand
+  überschrieben. Die Balken sind `role="progressbar"`, der Zustand steht nie nur als Farbe da,
+  `prefers-reduced-motion` schaltet die Bewegung ab. **Migration 0017 (Tabelle `vorgaenge`) ist noch nicht angewendet**: Bis dahin bleibt der
+  Verlauf leer, die Anzeige der laufenden Sitzung geht auch ohne. Die Zeitleiste "Werkzeuge" und ihre Karte `boss_aufgabe` sind unverändert.
+- Canvas: Nach dem Kopieren eines Codeblocks erscheint 1,5 Sekunden ein Chip "Kopiert" (Live-Region, `aria-live="polite"`); die Beschriftung des
+  Knopfes bleibt "Kopieren". Schlägt das Kopieren fehl, steht dort "Nicht kopiert".
 - Karte "Änderungen" (Schritt 4 und 1.5b des Gesamtplans): Der Release-Dienst nennt im `status` Commit, Baum, Prüfstand, Diff, Wirkungsflächen und eine
   Versionsempfehlung aus den Commit-Titeln (nur als Warnung). Die Karte zeigt sie und bietet den Dialog "Änderung freigeben" mit frischem Code
   (höchstens 45 Sekunden alt beim Senden) an; gesendet wird an den Freigabe-Dienst des Ankers mit genau Commit und Baum. Sonderfreigaben mit Pflicht-Haken,
@@ -29,6 +93,26 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Prüfungen vor dem Zusammenführen (Sicherheit, Datenbank, Python, React), Befunde eingearbeitet: Ein Entwicklungsauftrag mit Abnahme gilt
+  während der Prüfung als „prüfe Abnahme“ und erst nach dem Urteil als fertig, eine Ausnahme im Lauf beendet Auftrag und Vorgang als
+  fehlgeschlagen statt sie hängen zu lassen. Der Kürzer für Werkzeugausgaben hat eine harte Obergrenze (256 KB Analyse, darüber Kopf und
+  Schwanz) und lädt auch Texte ohne Zeilenumbruch zeichenweise nach (`ab_zeichen`). Die Erkennung unbekannter Geräte holt die Hostliste der
+  FRITZ!Box über den bewährten Weg mit zwei Anfragen statt einer Anfrage je Eintrag, der SNMP-Treiber hat widerspruchsfreie Zeitgrenzen.
+  Die Vorgangstabelle hat eine Konsistenzregel zwischen Status und Ende, den Fremdschlüssel auf `profiles` und ein stündliches Aufräumen
+  (offene Vorgänge nach 24 Stunden abgebrochen, Stände nach 30 Tagen geleert). In der Oberfläche führt „Zur Freigabe“ nie zur Karte eines
+  anderen Vorgangs, die Tafel „Vorgänge“ rendert nur bei sichtbarem Reiter und gedrosselt, und die Büro-Karte hört bei 401 und 403 auf zu
+  pollen.
+- Gerätedienst: Der Eintrag „WMC JBL ULTIMATE“ (192.168.178.90) steht nicht mehr in `geraete.toml.example`, in der Doku und in den
+  Beispieldaten. Das Gerät war am 21.10.2026 bei der Erkundung sichtbar, ist im Büronetz aber nicht vorhanden und meldete dort dauerhaft
+  eine Störung. Der Treiber `upnp-renderer` bleibt für künftige Lautsprecher erhalten. Auf Sokrates-2 ist der Eintrag am 09.11.2026
+  aus `/etc/wamo-geraete/geraete.toml` entfernt (Sicherung `geraete.toml.vor-jbl-0911`); die Ausgangsregel für die Adresse bleibt
+  bis zum nächsten Lauf von `wamo-geraete-einrichten.sh` bestehen und ist wirkungslos.
+- Status-Konto auf Spark-Servern mit globaler `AllowUsers`-Liste (Befund vom 09.11.2026 auf Caesar): Das Einrichtungsskript
+  `infra/sparks/wamo-status-einrichten.sh` richtete `wamo-status` ein, doch sshd wies das Konto mit „Permission denied (publickey)“
+  ab, weil eine globale Liste nur Admin-Konten erlaubt. Der Drop-in setzt jetzt im Block `Match User wamo-status` eine eigene
+  Zeile `AllowUsers wamo-status@192.168.178.136`. Sie ersetzt dort die globale Liste (mit `sshd -T -f` an einer Wegwerf-Konfiguration
+  gemessen), gilt nur für dieses Konto und nur von Sokrates-2, andere Konten bleiben unverändert. Wirkt nach erneutem Lauf des Skripts
+  auf dem Server und neuer Bestätigung.
 - Test vom 04.11.2026 am Laptop: Der Fernzugriff auf die Sparks zeigte ein schwarzes Fenster. Ursache: Die CSP des Gateways
   (`object-src 'none'`, `frame-ancestors 'none'`) blockierte das `<object>` auf die leere Seite `blank.html`, mit dem Guacamole die
   Größe der Anzeige misst. Die Anzeige blieb 0x0 und der Tunnel wurde nie geöffnet. Jetzt `object-src 'self'`, `frame-src 'self'`

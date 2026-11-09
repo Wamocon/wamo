@@ -11,9 +11,11 @@ import type {
   Modellzugang,
   Profil,
   ServerMessage,
+  Vorgang,
 } from "@/lib/nachrichten";
 import { liveBildLoeschen } from "./liveBild.ts"; // relativ aus demselben Grund
 import { createStore } from "./store.ts"; // relativ, damit node:test diese Datei laden kann (textEingabe.test.ts)
+import { vorgangAnsage, vorgangEinordnen } from "./vorgaenge.ts";
 
 /**
  * Zustand der Hauptansicht als Store (lib/store.ts). Die Pegel für Kern, Stimmlinie und
@@ -108,6 +110,8 @@ export type WamoState = {
   caption: Caption;
   log: LogEintrag[];
   activities: Activity[];
+  /** Vorgänge der Sitzung (Aufgaben und Aufträge mit Fortschritt, voice-core/vorgaenge.py), in der Reihenfolge des Eingangs */
+  vorgaenge: Vorgang[];
   turn: number;
   approvals: Approval[];
   /** Entwicklungsaufträge, die auf "Starten" oder "Verwerfen" warten */
@@ -150,6 +154,7 @@ export const initialState: WamoState = {
   caption: leereCaption,
   log: [],
   activities: [],
+  vorgaenge: [],
   turn: 0,
   approvals: [],
   auftraege: [],
@@ -444,6 +449,16 @@ export function applyServerMessage(msg: ServerMessage) {
       });
       return;
     }
+    case "vorgang": {
+      // gleiche Kennung = neuer Stand des Vorgangs (jede Nachricht trägt alles); Ansage nur bei bedeutsamem Statuswechsel
+      wamo.set((s) => {
+        const vorgaenge = vorgangEinordnen(s.vorgaenge, msg.vorgang);
+        if (vorgaenge === s.vorgaenge) return s;
+        const ansage = vorgangAnsage(s.vorgaenge.find((v) => v.id === msg.vorgang.id), msg.vorgang);
+        return { ...s, vorgaenge, ansage: ansage ?? s.ansage };
+      });
+      return;
+    }
     case "freigaben": {
       const { job, projekt } = msg;
       const jetzt = Date.now();
@@ -497,7 +512,7 @@ export function applyServerMessage(msg: ServerMessage) {
       zeigeMemo({ bereich: msg.bereich, status: msg.status, text: msg.text, id: msg.id });
       return;
     case "auftrag": {
-      const a: Auftrag = { job: msg.job, projekt: msg.projekt, art: msg.art, auftrag: msg.auftrag };
+      const a: Auftrag = { job: msg.job, projekt: msg.projekt, art: msg.art, auftrag: msg.auftrag, abnahme: msg.abnahme };
       wamo.set((s) => ({
         ...s,
         auftraege: [...s.auftraege.filter((x) => x.job !== a.job), a],

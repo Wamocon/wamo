@@ -1,6 +1,7 @@
 """Bürogeräte im Gespräch: Werkzeuge des Kerns für den Gerätedienst wamo-geraete (geraete_client.py).
 
-Für alle Profile gleich (Ausnahme: router_geraete nur admin). Persönliche Laptops gehören nicht hierher.
+Für alle Profile gleich (Ausnahmen: router_geraete und unbekannte_geraete nur admin). Persönliche Laptops gehören
+nicht hierher.
 
   buerogeraet_status    read      Zustand eines Geräts oder aller (Server, Drucker, Scanner, Router, NAS, ...)
   buerogeraet_steuern   change    Fernseher, Lautsprecher, Steckdosen: an, aus, Lautstärke, stumm, Eingang
@@ -9,6 +10,8 @@ Für alle Profile gleich (Ausnahme: router_geraete nur admin). Persönliche Lapt
   nas_suchen            read      Dateien auf dem NAS finden (Namen sind Daten)
   nas_abrufen           read      Datei vom NAS in die Ablage der Person holen (Inhalt nie ins Sprachmodell)
   router_geraete        read      nur admin: verbundene Geräte, direkt auf das Canvas (personenbezogen)
+  unbekannte_geraete    read      nur admin: Geräte im Netz, die WAMO nicht kennt (passiv aus der Hostliste der FRITZ!Box,
+                                  kein Scan), direkt auf das Canvas (personenbezogen)
 
 Regeln, die hier gelten:
   * Geräte sind ein Enum der Kennungen aus dem Register (devices, art gemeinsam, status aktiv) geschnitten mit der
@@ -169,7 +172,8 @@ class Buerogeraete:
         schemas = [FunctionSchema(
             name="buerogeraet_status",
             description=("Zustand der gemeinsamen Bürogeräte: Server (Auslastung, GPU, Dienste), Drucker (Toner, "
-                         "Papier), Scanner, Router (Internet), NAS, Fernseher, Lautsprecher, Steckdosen. geraet=alle "
+                         "Papier), Scanner, Router (Internet), Switches und Access Points (Ports), NAS, Fernseher, "
+                         "Lautsprecher, Steckdosen. geraet=alle "
                          f"für einen Überblick. Geräte: {liste}. Persönliche Laptops sind keine Bürogeräte."),
             properties={"geraet": {"type": "string", "enum": [*self._geraete, "alle"]}},
             required=["geraet"], handler=self._status)]
@@ -225,6 +229,13 @@ class Buerogeraete:
                 description=("Nur für Admins: zeigt die im Router angemeldeten Geräte auf dem Canvas (personenbezogen, "
                              "nicht vorlesen)."),
                 properties={}, required=[], handler=self._router_geraete))
+        if self.identity.rolle == "admin" and self._mit("unbekannte_geraete"):
+            schemas.append(FunctionSchema(
+                name="unbekannte_geraete",
+                description=("Nur für Admins: zeigt auf dem Canvas die Geräte im Netz, die WAMO nicht kennt (nicht in der "
+                             "Geräteliste und nicht in der Liste der bewusst unbekannten Geräte). Passiv aus der Hostliste "
+                             "des Routers, kein Scan. Personenbezogen: die Liste nicht vorlesen, nur die Anzahl nennen."),
+                properties={}, required=[], handler=self._unbekannte_geraete))
         return schemas
 
     # ---------- Handler ----------
@@ -445,6 +456,32 @@ class Buerogeraete:
         self._fremdinhalt()
         await params.result_callback({"status": "success", "anzahl": antwort.get("anzahl"),
                                       "aktiv": antwort.get("aktiv"),
+                                      "summary": "Die Liste steht auf dem Canvas. Nicht vorlesen (personenbezogen)."})
+
+    async def _unbekannte_geraete(self, params) -> None:
+        """Liste der unbekannten Geräte nur für Admins, nur als Tabelle auf das Canvas (personenbezogen). An das
+        Sprachmodell gehen nur Zahlen; Namen, Adressen und MAC-Vorsätze kommen nie in Antwort, Protokoll oder Audit."""
+        if self.identity.rolle != "admin":
+            await params.result_callback({"status": "rejected", "summary": "Nur für Admins."})
+            return
+        quelle = self._mit("unbekannte_geraete")
+        if not quelle:
+            await params.result_callback({"status": "rejected", "summary": "Keine Erkennung eingerichtet."})
+            return
+        antwort, _ = await self._rufen("unbekannte_geraete", None, timeout=30.0)
+        self._protokoll("unbekannte_geraete", quelle[0]["kennung"], "read",
+                        {"status": antwort.get("status"), "anzahl": antwort.get("anzahl")})
+        if antwort.get("status") != "success":
+            await params.result_callback(antwort)
+            return
+        zeilen = [[_kurz(x.get("ip"), 15), _kurz(x.get("mac_vorsatz"), 8), _kurz(x.get("name"), 24),
+                   _kurz(x.get("schnittstelle"), 16)] for x in antwort.get("geraete", [])[:100] if isinstance(x, dict)]
+        await self._ui({"type": "canvas", "item": {"kind": "tabelle", "title": "Unbekannte Geräte im Netz",
+                                                   "columns": ["Adresse", "MAC-Vorsatz", "Name", "Verbindung"],
+                                                   "rows": zeilen}})
+        self._fremdinhalt()
+        anzahl = antwort.get("anzahl")
+        await params.result_callback({"status": "success", "anzahl": anzahl if isinstance(anzahl, int) else len(zeilen),
                                       "summary": "Die Liste steht auf dem Canvas. Nicht vorlesen (personenbezogen)."})
 
     # ---------- Freigaben ----------

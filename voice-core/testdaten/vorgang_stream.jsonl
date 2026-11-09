@@ -1,0 +1,21 @@
+{"type": "wamo", "ereignis": "selbsttest_ok"}
+{"type": "system", "subtype": "init", "session_id": "754fb6bb-4880-4fc6-bc55-ed512941f3d3"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "Ich lege zuerst die Aufgaben an."}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_t1", "name": "TaskCreate", "input": {"subject": "Tests schreiben", "description": "Zuerst die Tests", "activeForm": "Schreibt Tests"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_t1", "content": "Task #1 created successfully: Tests schreiben"}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_t2", "name": "TaskCreate", "input": {"subject": "Funktion umsetzen", "description": "Dann der Code", "activeForm": "Setzt die Funktion um"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_t2", "content": "Task #2 created successfully: Funktion umsetzen"}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_t3", "name": "TaskCreate", "input": {"subject": "Ergebnis prüfen", "description": "Tests laufen lassen", "activeForm": "Prüft das Ergebnis"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_t3", "content": "Task #3 created successfully: Ergebnis prüfen"}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_u1", "name": "TaskUpdate", "input": {"taskId": "1", "status": "in_progress"}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_w1", "name": "Write", "input": {"file_path": "test_summe.py", "content": "def test_summe():\n    assert summe(1, 2) == 3\n"}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_u2", "name": "TaskUpdate", "input": {"taskId": "1", "status": "completed"}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_u3", "name": "TaskUpdate", "input": {"taskId": "2", "status": "in_progress"}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_w2", "name": "Write", "input": {"file_path": "summe.py", "content": "def summe(a, b):\n    return a + b\n"}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_u4", "name": "TaskUpdate", "input": {"taskId": "2", "status": "completed"}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_u5", "name": "TaskUpdate", "input": {"taskId": "3", "status": "in_progress"}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_b1", "name": "Bash", "input": {"command": "python -m pytest -q"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_b1", "content": "1 passed in 0.01s"}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_u6", "name": "TaskUpdate", "input": {"taskId": "3", "status": "completed"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "result": "Die Funktion summe ist umgesetzt, ein Test läuft grün.", "total_cost_usd": 0.04, "session_id": "754fb6bb-4880-4fc6-bc55-ed512941f3d3"}
+{"type": "wamo", "ereignis": "ende", "ergebnis": "fertig", "code": 0}

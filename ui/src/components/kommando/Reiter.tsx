@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
 
 export type ReiterDef<T extends string> = {
   id: T;
@@ -34,6 +34,11 @@ export function Reiterleiste<T extends string>({
   klasse: string;
 }) {
   const knoepfe = useRef<Partial<Record<T, HTMLButtonElement | null>>>({});
+
+  // Auf schmalen Bildschirmen scrollt die Leiste seitlich: der gewählte Reiter soll nie halb verdeckt bleiben
+  useEffect(() => {
+    knoepfe.current[aktiv]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [aktiv]);
 
   const taste = (e: KeyboardEvent<HTMLDivElement>) => {
     const i = reiter.findIndex((r) => r.id === aktiv);

@@ -1,11 +1,13 @@
 @import "tailwindcss";
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
+@import "../components/kommando/vorgaenge.css"; /* Tafel "Vorgänge" (Karten, Balken, Schritte): Regeln mit Präfix .vg- */
 @import "../components/einstellungen/einstellungen.css"; /* Einstellungsseite: Regeln unter .ez */
 @import "../components/einstellungen/geraeteVerwaltung.css"; /* Geräteverwaltung der Admins: Regeln mit Präfix .gv- */
 @import "../components/einstellungen/fernzugriff.css"; /* Fernzugriff der Admins: Regeln mit Präfix .fz- */
 @import "../components/einstellungen/aenderungen.css"; /* Änderungen (Selbstüberarbeitung) der Admins: Regeln mit Präfix .ae- */
 @import "../components/liveBild.css"; /* Live-Bild des Laptops: Regeln mit Präfix .lb- */
 @import "../components/modellzugang.css"; /* Karte Modellzugang: Regeln mit Präfix .mz- */
+@import "../components/kommando/bueroKarte.css"; /* Büro-Karte (Radialansicht der Bürogeräte): Regeln mit Präfix .bk- */
 
 /* =====================================================================
    WAMO im WMC-Corporate-Design (WAMOCON GmbH)
@@ -432,6 +434,17 @@ p, li { text-wrap: pretty; }
   font-size: 16px; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .auftrag .notice { margin-bottom: 12px; }
+/* Abnahmekriterien der Startkarte: Befehle in Festbreite, alles als Text */
+.auftrag-abnahme { margin: 0 0 12px; }
+.auftrag-abnahme h4 { margin: 0 0 2px; font: 700 15px/1.3 var(--font-wmc); }
+.auftrag-abnahme-hinweis { margin: 0 0 6px; font-size: 14px; color: var(--ink-soft); }
+.auftrag-abnahme ul { margin: 0; padding-left: 20px; font-size: 15px; overflow-wrap: anywhere; }
+.auftrag-abnahme li { margin: 2px 0; }
+.abnahme-art { font-weight: 700; }
+.auftrag-abnahme code {
+  padding: 1px 5px; background: var(--surface); border-radius: 4px;
+  font: 13px/1.5 var(--font-code); color: var(--ink); white-space: pre-wrap; word-break: break-word;
+}
 
 /* Schalter "PC-Steuerung" (nur admin) */
 .pc-switch-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -573,6 +586,14 @@ p, li { text-wrap: pretty; }
   color: var(--ink); font: 700 15px/1 var(--font-wmc);
   text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px;
 }
+.canvas-code-aktion { display: inline-flex; align-items: center; gap: 8px; }
+/* Bestätigung nach dem Kopieren: Live-Region, die auch leer im DOM bleibt (sonst fehlt die Ansage); Fehler Schwarz auf Rot */
+.canvas-chip {
+  padding: 3px 10px; border-radius: 999px; background: var(--ink); color: var(--bg);
+  font: 700 13px/1.2 var(--font-wmc); letter-spacing: 0.04em; white-space: nowrap;
+}
+.canvas-chip[data-art="fehler"] { background: var(--accent); color: var(--wmc-black); }
+.canvas-chip:empty { padding: 0; margin-right: -8px; } /* leer ohne Breite, der Abstand zum Knopf fällt mit weg */
 .canvas-code pre { margin: 0; padding: 16px; overflow-x: auto; font-size: 14px; line-height: 1.6; }
 .canvas-code code, .canvas-doc code { font-family: var(--font-code); }
 

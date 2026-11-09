@@ -1,0 +1,25 @@
+# WAMO-Gerätedienst: Geräte, die dem Dienst bewusst unbekannt bleiben (Vorlage). Auf Sokrates-2 als
+# /etc/wamo-geraete/bekannt.toml (root:wamo-geraete 0640), von wamo-geraete-einrichten.sh nur angelegt, wenn sie fehlt.
+# Pflege durch Niko als Admin. Nach jeder Änderung: sudo systemctl restart wamo-geraete (oder das Einrichtungsskript).
+#
+# Wozu: Der Dienst liest passiv die Hostliste der FRITZ!Box (kein Scan) und zählt alle aktiven Geräte, die weder in
+# geraete.toml stehen noch hier. Laptops, Handys und Gäste, die absichtlich nicht zum Dienst gehören, trägt man hier ein,
+# damit die Büro-Karte nicht ständig "unbekannte Geräte" meldet. Je Eintrag genügt eines von mac, adresse oder name.
+#   mac      aa:bb:cc:dd:ee:ff (Handys wechseln die MAC oft, dann besser über name oder eine feste Adresse)
+#   adresse  feste IPv4-Adresse im Büro-LAN 192.168.178.0/24
+#   name     Gerätename laut FRITZ!Box (Groß- und Kleinschreibung egal, ohne .fritz.box)
+#   notiz    freier Text für Menschen (höchstens 120 Zeichen), wird nie ausgewertet oder ausgegeben
+# Die Datei enthält personenbezogene Angaben: nie ins Repository, nie in Tickets. WAMO schreibt sie nie, der Dienst liest sie
+# nur. Namen und MAC-Adressen erscheinen weder im Audit noch im Protokoll.
+#
+# [[bekannt]]
+# name = "Laptop-Anna"
+# notiz = "Laptop von Anna"
+#
+# [[bekannt]]
+# mac = "aa:bb:cc:dd:ee:ff"
+# notiz = "Besprechungsraum, Konferenzgerät"
+#
+# [[bekannt]]
+# adresse = "192.168.178.200"
+# notiz = "Gäste-Laptop am festen Platz"

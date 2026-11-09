@@ -14,6 +14,8 @@ Werkzeuge (Risiko, Rollen):
   ablage_loeschen                  change   alle, nur eigene Einträge
   nas_suchen, nas_abrufen          read     alle
   router_geraete                   read     nur admin (personenbezogen, Ergebnis nur an die Oberfläche)
+  unbekannt_zaehlen                read     alle (nur eine Zahl und der Zeitstempel der Messung)
+  unbekannte_geraete               read     nur admin (IP, MAC-Vorsatz, gekürzter Name, Schnittstelle; personenbezogen)
 """
 
 from __future__ import annotations
@@ -26,14 +28,14 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from . import raster
+from . import raster, unbekannt
 from .ablage import Ablage, AblageFehler
 from .audit import Audit
 from .grenzen import GrenzeErreicht, Grenzen, Zwischenspeicher
 from .konfig import Geraet, Konfig
 from .text import name
 from .treiber import Abgelehnt, GeraetFehler, NichtEingerichtet
-from .treiber import anwesenheit, escl, fernseher, ipp, lautsprecher, lg_tv, nas, server_status, shelly, upnp
+from .treiber import anwesenheit, escl, fernseher, hostliste, ipp, lautsprecher, lg_tv, nas, server_status, shelly, snmp, upnp
 
 logger = logging.getLogger("wamo-geraete")
 
@@ -45,6 +47,8 @@ STEUER_AKTIONEN = {
 }
 MAX_KOPIEN = 5
 STATUS_ZEIT = 6.0
+MAX_UNBEKANNTE = 100  # so viele unbekannte Geräte höchstens in der Liste für Admins (die Zahl zählt alle)
+ADMIN_FAEHIGKEITEN = frozenset({"router_geraete", "unbekannte_geraete"})
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,9 @@ WERKZEUGE: dict[str, Werkzeug] = {
     "nas_suchen": Werkzeug("read", ROLLEN, "nas", ("nas",), 30),
     "nas_abrufen": Werkzeug("read", ROLLEN, "nas", ("nas",), 75),
     "router_geraete": Werkzeug("read", frozenset({"admin"}), "router", ("router",), 20),
+    # Passive Erkennung (Hostliste der FRITZ!Box, siehe unbekannt.py): ohne Gerät, gemeinsamer Zwischenspeicher
+    "unbekannt_zaehlen": Werkzeug("read", ROLLEN, "unbekannt", None, 30),
+    "unbekannte_geraete": Werkzeug("read", frozenset({"admin"}), "unbekannt", None, 30),
 }
 
 
@@ -85,7 +92,7 @@ def faehigkeiten(g: Geraet) -> list[str]:
     if g.klasse in STEUER_AKTIONEN:
         erg.append("steuern")
     erg += {"drucker": ["drucken"], "scanner": ["scannen"], "nas": ["nas_suchen", "nas_abrufen"],
-            "router": ["router_geraete"]}.get(g.klasse, [])
+            "router": ["router_geraete", "unbekannte_geraete"]}.get(g.klasse, [])
     return erg
 
 
@@ -119,6 +126,7 @@ class Dienst:
     def __init__(self, konfig: Konfig, *, ablage: Ablage, audit: Audit, grenzen: Grenzen | None = None,
                  cache: Zwischenspeicher | None = None, uhr: Callable[[], float] = time.monotonic):
         self.konfig = konfig
+        self.erkennung = unbekannt.Erkennung(self._hosts_lesen, konfig, uhr=uhr)
         self.ablage = ablage
         self.audit = audit
         self.grenzen = grenzen or Grenzen()
@@ -196,7 +204,7 @@ class Dienst:
         if werkzeug == "geraete":
             return {"geraete": [{"kennung": x.kennung, "name": x.name, "klasse": x.klasse,
                                  "eingerichtet": bool(x.adresse) or x.treiber in ("server-lokal", "anwesenheit"),
-                                 "faehigkeiten": [f for f in faehigkeiten(x) if k.rolle == "admin" or f != "router_geraete"],
+                                 "faehigkeiten": [f for f in faehigkeiten(x) if k.rolle == "admin" or f not in ADMIN_FAEHIGKEITEN],
                                  **({"aktionen": list(STEUER_AKTIONEN[x.klasse])} if x.klasse in STEUER_AKTIONEN else {}),
                                  **({"schutz": True} if x.opt("schutz") else {}),
                                  **({"eingaenge": list(x.opt("eingaenge", ("tv", "hdmi1", "hdmi2", "hdmi3", "hdmi4")))}
@@ -232,7 +240,22 @@ class Dienst:
         if werkzeug == "router_geraete":
             liste = await upnp.router_geraete(g, self.konfig)
             return {"geraete": liste, "anzahl": len(liste), "aktiv": sum(1 for x in liste if x["aktiv"])}, b""
+        if werkzeug in ("unbekannt_zaehlen", "unbekannte_geraete"):
+            erg = await self.erkennung.ergebnis()
+            antwort: dict = {"anzahl": len(erg.unbekannte), "stand": erg.stand}
+            if erg.abgeschnitten:  # mehr Geräte in der Box als gelesen: die Zahl ist ein Mindestwert
+                antwort["abgeschnitten"] = True
+            if werkzeug == "unbekannte_geraete":
+                antwort["geraete"] = [h.oeffentlich() for h in erg.unbekannte[:MAX_UNBEKANNTE]]
+            return antwort, b""
         raise Antwort("rejected", "Unbekanntes Werkzeug")
+
+    async def _hosts_lesen(self) -> hostliste.Hostliste:
+        """Hostliste der FRITZ!Box für die Erkennung (der erste Router mit Treiber upnp-igd)."""
+        router = next((x for x in self.konfig.geraete.values() if x.klasse == "router" and x.treiber == "upnp-igd"), None)
+        if router is None:
+            raise NichtEingerichtet("Kein Router für die Erkennung eingerichtet")
+        return await hostliste.lese(router, self.konfig)
 
     async def _status(self, g: Geraet) -> dict:
         if (gemerkt := self.cache.holen(g.kennung)) is not None:
@@ -243,13 +266,14 @@ class Dienst:
             "server-ssh": lambda: server_status.per_ssh(g),
             "ipp": lambda: ipp.status(g),
             "escl": lambda: escl.status(g),
-            "upnp-igd": lambda: upnp.router_status(g),
+            "upnp-igd": lambda: upnp.router_status(g, self.konfig),
             "upnp-renderer": lambda: lautsprecher.status(g),
             "shelly": lambda: shelly.status(g, self.konfig),
             "samsung-tv": lambda: fernseher.status(g),
             "lg-webos": lambda: lg_tv.status(g),
             "smb": lambda: nas.status(g, self.konfig),
             "anwesenheit": lambda: anwesenheit.status(g),
+            "snmp": lambda: snmp.status(g, self.konfig),
         }
         erg = await aufrufe[t]()
         self.cache.setzen(g.kennung, erg)

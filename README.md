@@ -283,6 +283,45 @@ Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo
 unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
 sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
 
+#### Vorgänge: Aufgabenleiste mit Livefortschritt
+
+Die Tafel „Vorgänge“ (rechte Seite, am Handy der Reiter „Vorgänge“) zeigt, was WAMO gerade abarbeitet. Ein Vorgang ist eine
+Boss-Aufgabe (`boss.py`) oder ein Entwicklungsauftrag (`dev_agent.py`, Schritte aus den Aufgabenwerkzeugen von Claude Code in
+`vorgang_stream.py`). Der Kern führt sie in einer Registry je Sitzung (`voice-core/vorgaenge.py`) und schickt bei jeder Änderung
+die Servernachricht
+
+```json
+{"type": "vorgang", "vorgang": {"id": "...", "titel": "...", "art": "aufgabe|entwicklung|geraet|sonstiges",
+ "status": "geplant|laeuft|wartet_freigabe|pruefen|fertig|fehler|abgebrochen", "gestartet_ms": 0, "beendet_ms": null,
+ "gesamt": 0.0, "restzeit_s": null, "schritte": [{"nr": 1, "titel": "...", "status": "...", "fortschritt": 0.0, "detail": null}],
+ "kriterien": [{"text": "...", "erfuellt": true, "hinweis": null}], "runde": null, "max_runden": null,
+ "freigabe_id": null, "ergebnis": {"canvas_id": "..."}}}
+```
+
+Jede Nachricht trägt den ganzen Stand; die Oberfläche ersetzt den Vorgang gleicher Kennung (`ui/src/lib/vorgaenge.ts`, Prüfung in
+`nachrichten.ts`). Fortschritt wird auf vier Nachrichten je Sekunde und Vorgang gedrosselt, ein Statuswechsel geht sofort. Der
+Gesamtfortschritt ist das Mittel der Schrittfortschritte; eine Restzeit gibt es erst ab 10 Prozent und nie ohne feste Zahl der Schritte,
+sie wird nicht erfunden.
+
+Je Vorgang zeigt eine Karte den Titel, den Status als Wort, den Gesamtbalken mit Prozent und Restzeit (bei fertig „Fertig in mm:ss“),
+die nummerierten Schritte mit eigenem Balken (der laufende ist hervorgehoben), die Prüfkriterien (erfüllt, nicht erfüllt, noch offen),
+„Runde n von m“ und zwei Knöpfe: „Zur Freigabe“ springt zur vorhandenen Freigabekarte (Tafel „Aufträge“, Attribut `data-approval`) und
+fokussiert sie, „Ergebnis ansehen“ wählt das Element im Canvas, solange es dort liegt. Beendete Vorgänge stehen im einklappbaren
+Abschnitt „Zuletzt beendet“. Alle Balken sind `role="progressbar"` mit `aria-valuenow` und `aria-valuetext`, der Zustand steht immer
+als Wort da, `prefers-reduced-motion` schaltet die Bewegung ab, die Ansage für Bildschirmleser kommt einmal aus dem Zustand
+(`ansage`). Die Zeitleiste „Werkzeuge“ darunter ist unverändert.
+
+Verlauf: Beim Start fragt die Tafel einmal `GET /wamo/api/vorgaenge` ab (`voice-core/vorgaenge_api.py`, die letzten 20 Vorgänge des
+eigenen Profils, Token mit zweitem Faktor wie bei allen Schnittstellen unter `/wamo/api`). Die Antwort läuft durch dieselbe Prüfung wie
+eine Nachricht. Ein Vorgang ohne Ende gilt im Verlauf als abgebrochen, ein Vorgang der laufenden Sitzung geht dem Verlauf immer vor, und
+ein Fehler bei der Abfrage zeigt einfach keinen Verlauf. Gespeichert wird nur bei einem Statuswechsel (Tabelle `vorgaenge`).
+
+**Migration 0017 ist noch nicht angewendet** (`supabase/migrations/0017_vorgaenge.sql`, Rückweg `.down.sql`, SQL-Test unter
+`supabase/tests/`). Bis dahin speichert der Kern nichts (still, mit einem Hinweis im Protokoll) und der Verlauf bleibt leer; die
+Anzeige der laufenden Sitzung funktioniert auch ohne. In der Entwicklung zeigt `/?vorschau=1&vorgaenge=1` fünf Beispielvorgänge (nur
+`next dev` mit `NEXT_PUBLIC_WAMO_VORSCHAU=1`). Nicht an einem echten Lauf geprüft: Die Schritte aus dem Stream von Claude Code
+sind nur mit aufgezeichneten Streams getestet (`voice-core/testdaten/vorgang_stream.jsonl`).
+
 ### Geräte, Tunnel je Gerät und Geräteverwaltung
 
 Jeder persönliche Laptop hat einen eigenen Rücktunnel zu Sokrates-2: ein Gerät, ein ed25519-Schlüssel, ein Tunnelplatz
@@ -320,6 +359,48 @@ Marke „Dieses Gerät“. Die Status zeigen Wort und Form (Raute wartet, Kreis 
   unverändert (Migrationen sind nach dem Anwenden unveränderlich); die Oberfläche zeigt stattdessen den Weg über die Karte
   und bietet an den Hinweisen für Admins den Knopf „Zur Geräteverwaltung“.
 - **Gemeinsame Geräte** (Drucker, Scanner und Ähnliches) und Notfälle ohne Oberfläche laufen weiter über `wamo_admin` (SQL).
+
+### Büro-Karte (Bürogeräte im Überblick)
+
+Der Reiter „Büro“ der Kommandozentrale zeigt alle gemeinsamen Bürogeräte aus dem Gerätedienst (`geraete/README.md`) als Radialansicht:
+in der Mitte WAMO (Sokrates-2), je Gerätegruppe ein Ring (von innen: Server, Drucker und Scanner, Netz, Speicher, Medien,
+Steckdosen), je Gerät ein Punkt. Weiß und gefüllt heißt in Ordnung, rot mit Strich und langsam pulsierend heißt Störung, grau und
+hohl heißt unbekannt oder nicht eingerichtet; der Zustand steht nie nur in der Farbe, sondern auch in Form und Wort. Ein Klick oder
+Enter auf einen Punkt öffnet eine Detailkarte mit Name, Zustand in Klartext (zum Beispiel „bereit, Toner 80 Prozent“, „Internet
+verbunden, 86 Mbit runter“) und einem Sprechtipp („Sag: Schalte den Fernseher aus“). Es ist nur eine Ansicht: Gesteuert wird
+weiter per Sprache. Unter der Zeichnung steht dieselbe Auskunft als Liste (für Screenreader und zum Lesen); jeder Punkt ist ein
+Button mit Tastaturbedienung, das Pulsieren entfällt bei reduzierter Bewegung. Die Karte läuft auf dem Handy (ab 360 px) wie am PC.
+
+- **Kern-API:** `GET /wamo/api/buero/status` (`voice-core/buero_api.py`, Token, aal2 und aktives Profil wie bei allen Routen, jede Rolle).
+  Der Kern ruft den Gerätedienst mit der Identität des Profils (`status`, `geraet = "alle"`, und `unbekannt_zaehlen`; deren
+  Zwischenspeicher von 20 und 60 Sekunden bleiben wirksam) und kürzt auf ein schmales Modell je Gerät: `id`, `name`, `gruppe`,
+  `ampel` (`ok`, `stoerung`, `unbekannt`), `text` (höchstens 80 Zeichen), `tipp` und optional `kennzahlen` (nur Zahlen mit festen
+  Namen). Dazu `unbekannt` (Anzahl der Geräte im Netz, die WAMO nicht kennt, nur die Zahl; `null`, wenn es keine brauchbare Zahl
+  gibt, die Karte bleibt dann ganz) und `stand`. Adressen, Seriennummern, Meldungstexte der Geräte und die Geräteliste des Routers (nur Admin)
+  gibt die Route nie aus; der Klartext entsteht aus eigenen Wörtern, nur der Name kommt vom Gerät und wird gesäubert und begrenzt.
+  Grenze: 6 Abrufe je Minute und Profil. Ohne Gerätedienst (zum Beispiel unterwegs) antwortet die Route mit 503, die Karte zeigt dann
+  ruhig „Gerätedienst nicht erreichbar“.
+- **Oberfläche:** `ui/src/components/kommando/BueroKarte.tsx` (SVG ohne neue Abhängigkeit), reine Logik in `bueroKarteModell.ts`,
+  Abruf in `useBueroStand.ts`: alle 30 Sekunden und nur, solange der Reiter sichtbar und die Seite nicht verborgen ist.
+- **Vorschau ohne Gerätedienst:** `npm run dev` mit `NEXT_PUBLIC_WAMO_VORSCHAU=1`, dann `/?vorschau=1&buero=beispiel` (weitere Werte:
+  `stoerung`, `alles`, `leer`, `offline`, `fehler`) und den Reiter „Büro“ öffnen.
+- **Tests:** `cd voice-core; uv run pytest -q test_buero_api.py` und `cd ui; npm test` (`bueroKarteModell.test.ts`).
+
+### Geräte-Lücken schließen (Paket 3)
+
+Der Gerätedienst (`geraete/README.md`) kann drei Dinge mehr, alle nur lesend:
+
+- **SNMPv3 für Switches und Access Points** (Treiber `snmp`): Name, Laufzeit, Ports oben und unten, auf Wunsch Fehlerzähler. Nur
+  authPriv mit SHA-2 und AES, eigener Lese-Benutzer, nie SNMPv1 oder v2c, nie Schreiben; Ausgang UDP 161 zu genau der eingetragenen
+  Adresse. Derzeit ist kein Switch eingetragen, der Dienst meldet dann „nicht eingerichtet“.
+- **Passive Erkennung unbekannter Geräte** ohne Scan: Der Dienst liest die Hostliste der FRITZ!Box (TR-064) und vergleicht sie mit
+  den bekannten Geräten und der optionalen Datei `/etc/wamo-geraete/bekannt.toml` (Laptops, Handys). Die Büro-Karte zeigt bei
+  Zahl größer 0 ruhig „n unbekannte Geräte im Netz“ (grau, kein Alarmrot); die Liste sieht nur ein Admin („Welche Geräte kenne ich
+  nicht?“), als Tabelle auf dem Canvas. Namen und MAC-Adressen stehen nie in Audit oder Protokoll.
+- **FRITZ!Box-Status über TR-064** als wählbare Quelle (`status_quelle = "tr064"`); Standard bleibt UPnP.
+
+Der Router bleibt ausschließlich lesbar. Mögliche Schreibaktionen stehen nur als Entwurf („Router schreibend, nicht gebaut“) in
+`geraete/README.md`. Gegen echte Geräte (Switch, FRITZ!Box) ist noch nichts getestet, das geschieht beim Ausrollen.
 
 ### Sitzungen, Anmeldung und Freigaben
 
@@ -676,6 +757,72 @@ Neue Kennzahl `folge_ton_ms` (Szenario `einwurf`): Zeit vom Ende des Einwurfs bi
 (Testprofil gesperrt, Messplan im Dokument, Abschnitt 5): Basis mit beiden Schaltern aus, je ein Lauf mit nur einem an, dazu
 ein Lauf mit `SONIOX_TTS_URL=wss://tts-rt.eu.soniox.com/tts-websocket` gegen den globalen Endpunkt.
 
+### Lange Werkzeugausgaben kürzen
+
+Lange Ausgaben von Werkzeugen (PowerShell-Listen, Testausgaben, Git-Ausgaben, JSON von Geräten, Webseitentext) gingen bisher
+ungekürzt in den Kontext des Sprachmodells. Das kostet bei jeder weiteren Anfrage des Zugs Tokens und verlängert die Zeit bis zur
+Antwort. Der Kern kürzt sie jetzt selbst, verlustarm und ohne Fremdsoftware (`voice-core/ausgaben_kuerzen.py`).
+
+**Wo.** Jedes Werkzeugergebnis erreicht die Pipeline genau einmal als `FunctionCallResultFrame`, egal ob es aus `tools.py`, dem
+Boss, dem Gerätedienst oder über den MCP- und Tunnel-Client vom PC kommt. Der Frame-Prozessor `AusgabenKuerzer` sitzt in
+`bot.py` direkt hinter der Aktivitätsanzeige (Zeitleiste, Freigabekarten und PC-Sperre sehen das Original) und vor dem
+Kontext-Aggregator (er schreibt das Ergebnis in den Verlauf). Neue Werkzeuge sind ohne Zutun dabei.
+
+**Wirkung.** Ab der Schwelle (`WAMO_AUSGABE_SCHWELLE`, Standard 3000 Zeichen, 0 schaltet das Kürzen und das Werkzeug ab) gilt:
+
+- Text: gleiche Zeilen in Folge werden mit Zähler zusammengefasst (`[400 mal]`), Leerzeilen gebündelt, Kopf und Schwanz bleiben,
+  die Mitte wird durch `[... n Zeilen ausgelassen, Nachladen: ausgabe_nachladen("ref", ab_zeile=12)]` ersetzt. Zeilen mit
+  error, fehler, exception, warn, traceback, fail, denied, abgelehnt, fatal, blocked, locked, gesperrt, verweigert, forbidden,
+  approval, critical, freigabe oder rejected bleiben bevorzugt stehen, zusammen aber höchstens die Hälfte des Zielumfangs (Kopf und
+  Schwanz bekommen den Rest). So kann Fremdtext das Budget nicht mit Zeilen füllen, die ein Stichwort enthalten.
+- JSON (auch als Text vom PC-Host): leere Werte und null fallen weg, lange Listen behalten die ersten Einträge plus Einträge mit
+  Problem und einen Zähler (`weitere 37 Einträge`), lange Texte darin werden zeilenweise wie oben gekürzt. Zahlen, Wahrheitswerte,
+  `status` und die Felder für Fehler, Hinweis und Vertrauen bleiben unverändert; Listen aus Zahlen werden nie gekürzt.
+- Das Ergebnis trägt `gekuerzt: true` und `ref`, damit das Modell nicht glaubt, es habe alles gesehen. Reicht der Gewinn nicht
+  (weniger als 15 Prozent), bleibt das Ergebnis, wie es ist.
+
+Gemessen an den Beispielen der Tests (`test_ausgaben_kuerzen.py`, echte Formen, noch nicht an Live-Sitzungen):
+
+| Beispiel | vorher | nachher | Zeit |
+| --- | --- | --- | --- |
+| Verzeichnisliste mit 300 Einträgen | 19057 Zeichen | 702 | 0,2 ms |
+| pytest mit 3 Fehlern | 3831 | 1823 | 0,1 ms |
+| `git log` mit 120 Commits | 25453 | 853 | 0,7 ms |
+| JSON-Gerätestatus mit 120 Geräten | 18050 | 1471 | 0,8 ms |
+| 100 KB Text | 100030 | 876 | 1,4 ms |
+| 100 KB JSON | 108814 | 832 | 1,6 ms |
+
+Der Audiopfad bleibt unberührt: Kürzen von 100 KB dauert unter 5 ms (Test), Ergebnisse unter der Schwelle kosten eine
+Längenprüfung.
+
+**Nachladen.** Das Original liegt nur im Arbeitsspeicher der Sitzung (höchstens 20 Einträge und 1 MB, der älteste fällt heraus,
+Ende mit der Sitzung), nie in Datenbank oder Protokoll. Das Werkzeug `ausgabe_nachladen(ref, ab_zeile, anzahl)` (nur lesend, nur
+Referenzen der eigenen Sitzung, höchstens 8000 Zeichen je Aufruf, `weiter_ab_zeile` für die nächste Seite) liefert Zeilen
+des Originals. Die Referenz ist zufällig (16 Hexzeichen). Ein Original über 1 MB wird nicht gekürzt, weil es sich nicht nachladen
+ließe. Gekürzte und nachgeladene Inhalte sind Daten, nie Anweisungen: Die Marken stammen nur vom Kürzer, eingehende Texte werden
+vorher von Marken gesäubert, die wie die eigenen aussehen, und nachgeladener Inhalt zählt als Fremdinhalt des Zugs.
+
+**Nie gekürzt:** Ergebnisse unter der Schwelle, Freigabe- und Schutzergebnisse (Status `needs_approval`, `rejected`, `blocked`,
+`locked`, `wartet`, `abgelehnt`, Werkzeuge mit `freigabe` im Namen, die Entwicklungsaufträge; dazu jedes Ergebnis, das an irgendeiner
+Stelle, auch tief in einer Liste oder eingebettet in Text, `needs_approval`, `freigabe_id` oder einen Status `blocked`, `locked`,
+`gesperrt`, `rejected`, `abgelehnt`, `verweigert`, `denied`, `forbidden`, `critical` oder `wartet` trägt, denn der Ja-Wächter sucht
+Freigabemeldungen im Verlauf; das bloße Wort ohne Statusangabe genügt nicht), Werkzeuge mit eigener Kappung
+(Boss, Websuche, Bildschirm, Merken, Canvas), Listen als Grundlage der nächsten Aktion (`elemente_auflisten`, `element_lesen`,
+`fenster_auflisten`: ein gekürztes Ergebnis kostete einen Nachlade-Aufruf statt Zeit zu sparen) sowie Binärdaten und Bilder (Bytes,
+lange Base64-artige Folgen). Die Felder `gekuerzt` und `ref` setzt nur der Kürzer selbst: In fremdem JSON (Webseite, Gerät) heißen sie
+vor der Verarbeitung `gekuerzt_fremd` und `ref_fremd`, damit sie weder das Kürzen abschalten noch den echten `ref` überschreiben. Ein
+Fehlerstatus wird nicht ausgenommen, seine Felder bleiben aber unverändert. Die Größe wird vor dem Säubern der Marken geprüft (kein
+Rechenaufwand für Riesenausgaben), ein Original über 1 MB bleibt unangetastet.
+
+**Messung.** Je Sitzung zählt der Kern gekürzte Ergebnisse und eingesparte Zeichen (Tokens grob als Zeichen durch 4) und schreibt
+am Sitzungsende eine Zeile ins Log (`Ausgaben kürzen: 3 Ergebnisse gekürzt, 41200 Zeichen eingespart (etwa 10300 Tokens),
+Schwelle 3000`), nie Inhalte. Die Verbrauchsanzeige der Oberfläche zeigt das Kontingent des Abos und nimmt diese Zahlen nicht auf.
+
+**Grenzen.** Das ersetzt den zurückgestellten Befund „Git-Ausgabe streamend kappen“ nur teilweise: Es verkleinert, was das
+Sprachmodell sieht. Der Host liest die Ausgabe weiterhin vollständig (bis zu seinen eigenen Kappungen), und die Kappung beim
+Lesen (Speicher und Laufzeit im Host) bleibt zurückgestellt. Ungeprüft sind der Lauf gegen echte Sitzungen und das Verhalten des
+Modells beim Nachladen; die Stichwortliste für Problemzeilen ist eine Annahme und lässt sich an echten Ausgaben schärfen.
+
 ## Nutzer und Gedächtnis
 
 | Befehl | Zweck |
@@ -730,6 +877,97 @@ App-Modus (`WAMO_GH_APP_ID`, `WAMO_GH_APP_INSTALLATION_ID`, `WAMO_GH_APP_SCHLUES
 Dispatcher erzeugt je Lauf außerhalb der Sandbox ein kurzlebiges Installations-Token nur mit den Rechten der Auftragsart
 (und, wenn der Auftrag ein Repo nennt, nur für dieses) und widerruft es am Laufende; ohne diese Variablen gelten
 `GH_TOKEN` und `GH_TOKEN_LESEN` wie bisher. Einzelheiten und Anleitung: `infra/sokrates2/README.md`, Abschnitte 2 und 9.
+
+### Abnahme: prüfbares Ziel mit Runden
+
+Ein Entwicklungsauftrag kann ein prüfbares Ziel haben. Er läuft dann in Runden: arbeiten, prüfen, bei Nichterfüllung die nächste
+Runde mit genau den offenen Punkten, bis alles erfüllt ist oder Runden oder Zeit erschöpft sind. Das Ziel muss messbar sein
+("die Tests laufen grün", "die README erklärt die Installation"), nicht "mach es gut". Die Schleife ist eigener Code des Kerns
+(`voice-core/abnahme.py`, Schleife in `dev_agent.py`): WAMO braucht je Kriterium ein Ergebnis, begrenzt Runden und Zeit selbst und
+bleibt unabhängig von der Version von Claude Code. Ohne `abnahme` bleibt alles wie bisher: eine Runde, kein Prüfen.
+
+Das Sprachmodell setzt die Argumente von `entwicklung_vorbereiten`; nennt die Person kein Ziel, leitet es selbst ein bis drei
+Kriterien ab und nennt sie in einem Satz, ohne zusätzliche Rückfrage (Persona-Schalter `WAMO_PERSONA_ABNAHME`, Standard an; `aus`
+bringt den früheren Prompt zurück).
+
+| Argument | Bedeutung |
+| --- | --- |
+| `abnahme` | Liste von höchstens 5 Texten, je höchstens 300 Zeichen (Steuerzeichen entfernt, Doppelte fallen weg) |
+| `max_runden` | Standard 3, hart höchstens 5 |
+| `zeitlimit_min` | Standard 30, hart höchstens 60. Gezählt wird die Arbeitszeit der Läufe und Prüfungen; das Warten auf einen Klick bei einer Freigabe zählt nicht |
+
+Zwei Arten von Kriterien:
+
+- **Aussage** (jeder normale Text): Ein kleines Modell (der günstigste Weg des Profils, im Kern der schlanke Aufruf `llm_anbieter.anfrage`,
+  bei nur Hausmodellen das Hausmodell) beurteilt sie anhand des Abschlussberichts und der Liste der geänderten Dateien (nur was mit
+  Write und Edit geändert wurde). Es antwortet mit strengem JSON `{"erfuellt": true|false, "hinweis": "..."}`. Alles andere
+  (kein JSON, andere Felder, falsche Typen, Fehler, Zeitüberschreitung nach 60 s) zählt als nicht erfüllt. Bericht, Dateinamen und
+  Kriterium stehen als Daten in Blöcken mit einem zufälligen Code, nie als Anweisung. Das ist ein weiches Urteil, kein Beweis.
+- **Befehl** (Eintrag beginnt mit `befehl:`, zum Beispiel `befehl: pytest -q`): Exit 0 heißt erfüllt. **Standard aus:** Befehlskriterien
+  sind eine bewusste Zuschaltung des Betreibers (`WAMO_ABNAHME_BEFEHLE=ja`, nur dieser Wert, dazu die Betriebsart `lokal`). Ohne den
+  Schalter lehnt `entwicklung_vorbereiten` ein `befehl:` schon beim Vorbereiten mit einem Satz ab (die Werkzeugbeschreibung nennt es dem
+  Modell gar nicht erst), es bleiben Aussagekriterien. Grund: Projektcode (conftest, Makefile, Tests) läuft durch einen Befehl
+  automatisch mit den Rechten des Kerns, ohne Hook und ohne eigene Freigabe. Das ist neu gegenüber dem Ablauf vor Paket 4 und soll eine
+  Entscheidung sein, kein Nebeneffekt. Der Text stammt vom Modell und ist nicht vertrauenswürdig, deshalb gilt:
+  - ein einzelner Befehl mit Argumenten, aufgerufen ohne Shell; keine Zeichen für Verkettung, Umleitung oder Ersetzung (Semikolon, &amp;,
+    senkrechter Strich, Backtick, Dollarzeichen, spitze Klammern, Backslash), keine Zeilenumbrüche und Steuerzeichen,
+    Anführungszeichen nur paarweise;
+  - eine echte Allowlist je Programm: erlaubt ist nur, was ausdrücklich aufgeführt ist, jede andere Option und jedes andere Argument wird
+    abgewiesen (das Kriterium gilt dann als nicht erfüllt, der Befehl läuft nie). Erlaubt sind: `pytest` (`-q`, `-x`, `-v`, `--tb=short|line|no`,
+    `-k` und `-m` mit einem einfachen Ausdruck aus Namen, `and`, `or`, `not` und Klammern, Testpfade relativ im Projekt, auch mit `::`),
+    `python -m pytest|unittest|mypy|compileall` mit denselben Regeln (`unittest`: `-v -q -f -b`, `discover`, `-s`, `-p`, Testnamen, die mit `tests` oder `test_` beginnen;
+    `compileall`: `-q`), `npm|pnpm|yarn test` und `run test|build|lint|typecheck|check|verify` (danach höchstens `--` mit `--run`, `--ci`,
+    `--watchAll=false`, `--passWithNoTests`), `node --test` mit relativen Testpfaden, `go test` (`-run`, `-count`, `-v`, `-short`,
+    `-failfast`, Paketmuster `./...` oder relative Pfade), `go vet` und `go build` (nur Paketmuster, bei `build` zusätzlich `-v`),
+    `cargo test|check|build|clippy` (`--workspace`, `--all-targets`, `--locked`, `--offline`, `--release`, `--lib`, `-q`, bei `test` ein
+    Testname), `dotnet test|build` (`--no-restore`, `--nologo`, `-c Debug|Release`, ein Projekt oder eine Lösung), `make test|check|lint|build`,
+    `ruff check` (`--no-cache`, `-q`, Pfade), `mypy` (`--strict`, `--ignore-missing-imports`, Pfade), `tsc` nur mit `--noEmit` (`-p` mit
+    relativer `.json`), `eslint` (`--quiet`, `--max-warnings N`, Pfade), `grep` (Kurzschalter `q c r n i E F w l s v`, Suchmuster, relative
+    Dateien). Abgewiesen werden zum Beispiel `pytest -p`, `-c`, `--rootdir`, `-o`, `--junitxml`, `go test -exec` und `-toolexec`,
+    `go vet -vettool`, `node --import` und `--require`, `dotnet -p:...`, `cargo --config`, `ruff check --fix` und `--add-noqa`, `eslint
+    --fix`, `grep -f` und `-R`, jede Option mit `=`-Zuweisung an eine unbekannte Option sowie `-X` und `-D`;
+  - höchstens 12 Argumente, jedes höchstens 200 Zeichen; keine `@datei`-Argumente; keine Netzwerkpfade (`//`, `\\`), keine Laufwerksangaben
+    (`C:`) und keine Adressen (`://`): Sie werden schon beim Parsen abgewiesen und nie auf Vorhandensein geprüft, denn unter Windows löst
+    schon `Path.exists()` auf `//host/share` eine SMB-Verbindung aus (NTLM-Hash an einen Fremdhost);
+  - kein Programm mit Pfad, kein `.cmd` und `.bat`, nichts aus dem Projektordner selbst;
+  - nur Pfade im Projektordner (kein `..`, kein `~`, kein vorhandener Pfad außerhalb, auch nicht über einen Link im Projekt). Die Prüfung der
+    Pfade läuft in einem Arbeitsthread mit Frist von 2 Sekunden, nie in der Ereignisschleife des Sprachpfads;
+  - jeder Befehl geht vorher durch den Wächter (`dev_guard.decide`, wie ein Bash-Aufruf des Auftrags): Sperre oder Freigabepflicht heißt
+    "nicht erfüllt" mit Hinweis und der Befehl läuft nie. Eine Freigabekarte umgeht die Abnahme nie, und die Abnahme umgeht keine;
+  - Zeitlimit 120 s, Ausgabe auf 2 KB gekürzt (das Ende bleibt, dort steht das Ergebnis), minimale Umgebung ohne Schlüssel und
+    Verbindungsdaten, kein stdin, eigene Prozessgruppe, die bei Zeitlimit und Abbruch ganz beendet wird.
+
+Die Startkarte des Auftrags in der Oberfläche zeigt die Abnahmekriterien als kurze Liste "Abnahme" (höchstens 5, je höchstens 300
+Zeichen, bereinigt, Befehle in Festbreite, alles nur als Text, nie als Markup). Wer auf "Starten" klickt, bestätigt damit auch die Befehle,
+die WAMO danach ausführt, also muss die Person sie vorher sehen.
+
+Ablauf und Meldung: Nach Runde 1 steht der Vorgang auf "wird geprüft", alle Kriterien werden ausgewertet (jedes Mal alle, damit ein Rückschritt
+auffällt) und in den Vorgang eingetragen (Hinweis je Kriterium, höchstens 200 Zeichen, Schlüssel geschwärzt, dazu "Ziel erreicht" und
+"Runde n von m"). Sind alle erfüllt, ist der Auftrag fertig. Sonst, solange Runden und mindestens eine Minute Zeit übrig sind, setzt ein
+neuer Lauf die Sitzung fort; sein Prompt nennt nur die offenen Kriterien samt Hinweisen. Sonst endet der Vorgang als Fehler mit
+"Ziel nach n Runden nicht erreicht" (bei Zeitmangel mit "(Zeitlimit)") und den offenen Kriterien auf dem Canvas; WAMO sagt das ehrlich und
+nie "fertig". Dem Sprachmodell gehen nur feste Zahlen ("0 von 1 Kriterien erfüllt, Runde 2 von 2"), nie die Hinweise. Ein Lauf, der selbst
+scheitert (Zeitlimit, Verbindung, Zugang), wird weder geprüft noch wiederholt. Eine offene Freigabe hält die Schleife an (Status
+"wartet auf Freigabe"); nach dem Klick läuft derselbe Auftrag weiter und wird danach geprüft. Lehnt die Person ab, endet der Auftrag. Das
+Auflegen beendet die Schleife sofort samt laufendem Prüfbefehl. Jede Runde ist ein eigener Lauf und zählt wie bisher in den Verbrauch
+(Kosten im Canvas); eine Kostengrenze gibt es noch nicht, nur Runden und Zeit.
+
+**Grenzen:**
+
+- **Betriebsart Sokrates-2 (der Standard):** Der Auftrag läuft dort in der Sandbox, die der Kern nicht betreten darf, und der Kern darf
+  Befehle eines Modells nicht mit seinen eigenen Rechten ausführen. Deshalb sind Befehlskriterien nur in der Betriebsart `lokal` möglich.
+  Auf Sokrates-2 weist `entwicklung_vorbereiten` ein `befehl:` mit einem Satz ab, es bleiben Aussagekriterien. Dafür fehlt ein
+  Dispatcher-Befehl `pruefen`, der den Befehl in derselben Sandbox ohne Token ausführt (`infra/sokrates2/wamo_job_dispatch.py`, noch nicht
+  gebaut, braucht Prüfung der Sicherheit und einen Rauchtest auf dem Server). Die Schleife ist darauf vorbereitet
+  (`DevAgent(befehl_ausfuehrer=...)`).
+- **Betriebsart `lokal`:** Der Code der Projekte (Tests, conftest, Makefile, Skripte) läuft ohne Sandbox mit den Rechten des Kerns, genau
+  wie der Auftrag selbst. Allowlist und Wächter sind eine Bremse, keine Sandbox. Build-Werkzeuge können Abhängigkeiten aus dem Netz laden,
+  das verhindert die Allowlist nicht. Deshalb ist die Zuschaltung (`WAMO_ABNAHME_BEFEHLE=ja`) eine bewusste Entscheidung des Betreibers.
+- **Prozessbaum:** Zeitlimit und Abbruch beenden den ganzen Baum nur, solange der Hauptprozess des Befehls läuft. Ist er schon beendet,
+  überleben Enkelprozesse, die er gestartet hat: Es gibt danach kein `killpg` auf die Gruppe, und unter Windows kein Job Object. Das ist
+  bekannt und nicht umgebaut.
+- **Nicht an einem echten Lauf geprüft:** Die Tests nutzen Attrappen für den Claude-Prozess und das beurteilende Modell; echte Programme
+  wurden nicht gegen echte Projekte ausgeführt.
 
 ## Modellzugang je Profil
 

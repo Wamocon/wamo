@@ -57,7 +57,7 @@ CANCELLED = "CANCELLED"  # so schreibt Pipecat ein abgebrochenes Ergebnis in den
 # Werkzeuge, die nichts verändern: nach einem Abbruch einfach erneut ausführen, wenn der Auftrag noch gilt
 LESE_WERKZEUGE = frozenset({
     "bildschirm_ansehen", "bildschirmfoto", "fenster_auflisten", "system_info", "powershell_lesen", "websuche",
-    "aktuelle_zeit", "elemente_auflisten", "element_lesen",
+    "aktuelle_zeit", "elemente_auflisten", "element_lesen", "ausgabe_nachladen",
 })
 HINWEIS_LESEN = (
     "ABGEBROCHEN ohne Ergebnis: Die Person hat gesprochen, bevor {name} fertig war. Der Auftrag ist nicht erledigt. "
