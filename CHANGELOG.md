@@ -67,6 +67,12 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Status-Konto auf Spark-Servern mit globaler `AllowUsers`-Liste (Befund vom 09.11.2026 auf Caesar): Das Einrichtungsskript
+  `infra/sparks/wamo-status-einrichten.sh` richtete `wamo-status` ein, doch sshd wies das Konto mit „Permission denied (publickey)“
+  ab, weil eine globale Liste nur Admin-Konten erlaubt. Der Drop-in setzt jetzt im Block `Match User wamo-status` eine eigene
+  Zeile `AllowUsers wamo-status@192.168.178.136`. Sie ersetzt dort die globale Liste (mit `sshd -T -f` an einer Wegwerf-Konfiguration
+  gemessen), gilt nur für dieses Konto und nur von Sokrates-2, andere Konten bleiben unverändert. Wirkt nach erneutem Lauf des Skripts
+  auf dem Server und neuer Bestätigung.
 - Test vom 04.11.2026 am Laptop: Der Fernzugriff auf die Sparks zeigte ein schwarzes Fenster. Ursache: Die CSP des Gateways
   (`object-src 'none'`, `frame-ancestors 'none'`) blockierte das `<object>` auf die leere Seite `blank.html`, mit dem Guacamole die
   Größe der Anzeige misst. Die Anzeige blieb 0x0 und der Tunnel wurde nie geöffnet. Jetzt `object-src 'self'`, `frame-src 'self'`
