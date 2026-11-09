@@ -8,6 +8,14 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Prüfbares Ziel mit Runden für Entwicklungsaufträge (Paket 4): `entwicklung_vorbereiten` nimmt `abnahme` (höchstens 5 Kriterien),
+  `max_runden` (Standard 3, höchstens 5) und `zeitlimit_min` (Standard 30, höchstens 60) an. Der Auftrag läuft in Runden: arbeiten,
+  prüfen, bei Nichterfüllung die nächste Runde mit genau den offenen Kriterien, bis alles erfüllt ist oder Runden oder Zeit erschöpft
+  sind; dann endet der Vorgang als Fehler mit "Ziel nach n Runden nicht erreicht", nie als fertig. Aussagekriterien beurteilt ein kleines
+  Modell mit strengem JSON, Befehlskriterien (`befehl: pytest -q`) laufen ohne Shell nach Allowlist, durch den Wächter, mit Zeit-, Ausgabe-
+  und Umgebungsgrenze, nur in der Betriebsart `lokal` (auf Sokrates-2 fehlt dafür noch ein Dispatcher-Befehl). Freigaben bleiben
+  unangetastet und zählen nicht gegen das Zeitlimit. Die Tafel "Vorgänge" zeigt "Runde n von m", "wird geprüft" und die Kriterien mit
+  Hinweis ohne Änderung. Neu: `voice-core/abnahme.py`, Persona-Schalter `WAMO_PERSONA_ABNAHME` (Standard an).
 - Aufgabenleiste mit Livefortschritt (Paket 1): Die Tafel "Vorgänge" zeigt je Boss-Aufgabe und je Entwicklungsauftrag eine Karte mit
   Status als Wort, Gesamtbalken mit Prozent, Restzeit (nur mit fester Zahl der Schritte, sonst ehrlich "wird geschätzt") und "Fertig in mm:ss",
   nummerierten Schritten mit eigenem Balken, Prüfkriterien und "Runde n von m". "Zur Freigabe" springt zur vorhandenen Freigabekarte,
