@@ -239,14 +239,57 @@ export const ABRUF_MS = 30_000;
 /** Der Kern lässt höchstens 6 Abrufe je Minute zu; ein Abstand unter 10 Sekunden gibt es nie. */
 export const ABRUF_MIN_MS = 10_000;
 
+/** So lange wartet der Abruf nach wiederholten Fehlern höchstens. */
+export const ABRUF_MAX_MS = 300_000;
+
 /**
  * Wann der nächste Abruf fällig ist: null, solange die Seite verborgen ist oder der Reiter nicht sichtbar ist (dann ruht
- * der Abruf); sonst die Restzeit bis 30 Sekunden nach dem letzten Abruf (sofort, wenn noch keiner lief oder er älter ist).
+ * der Abruf) oder der Abruf gestoppt ist (abstand null, siehe abrufAbstand); sonst die Restzeit bis zum Abstand nach dem
+ * letzten Versuch (sofort, wenn noch keiner lief oder er länger her ist). Ohne Angabe gilt der Takt von 30 Sekunden.
  */
-export function naechsterAbruf(letzter: number | null, jetzt: number, sichtbar: boolean): number | null {
-  if (!sichtbar) return null;
+export function naechsterAbruf(letzter: number | null, jetzt: number, sichtbar: boolean, abstand: number | null = ABRUF_MS): number | null {
+  if (!sichtbar || abstand === null) return null;
   if (letzter === null) return 0;
-  return Math.max(0, letzter + ABRUF_MS - jetzt);
+  return Math.max(0, letzter + abstand - jetzt);
+}
+
+/**
+ * Takt des Abrufs über die Fehler hinweg: Zeitpunkt des letzten Versuchs (gelungen oder nicht), Status des letzten Fehlers
+ * und wie viele Abrufe hintereinander fehlschlugen. Ein Zustand fürs ganze Modul (useBueroStand.ts), damit ein Wechsel des
+ * Reiters den Takt nicht von vorn beginnt.
+ */
+export type Takt = { letzter: number | null; fehler: number | null; reihe: number };
+
+export const TAKT_NEU: Takt = { letzter: null, fehler: null, reihe: 0 };
+
+export const taktErfolg = (jetzt: number): Takt => ({ letzter: jetzt, fehler: null, reihe: 0 });
+
+export const taktFehler = (alt: Takt, jetzt: number, status: number): Takt => ({ letzter: jetzt, fehler: status, reihe: alt.reihe + 1 });
+
+/**
+ * Beim Einhängen der Karte und beim Sichtbarwerden der Seite: Stopp und Wachstum entfallen, der Zeitpunkt des letzten Versuchs
+ * bleibt. So folgt auf einen Wechsel nie ein Abruf vor Ablauf von 30 Sekunden (der Kern lässt 6 je Minute zu).
+ */
+export const taktNeuBeginnen = (alt: Takt): Takt => ({ letzter: alt.letzter, fehler: null, reihe: 0 });
+
+/**
+ * Abstand bis zum nächsten Abruf nach dem letzten Ergebnis. 30 Sekunden im Normalfall und bei kleinen Fehlern (429, 5xx außer
+ * 503). 503 und "nicht erreichbar" (0) verdoppeln den Abstand je Fehler in Folge (30, 60, 120, 240 Sekunden), höchstens aber
+ * ABRUF_MAX_MS. null bei 401 und 403: Dort hilft ein Wiederholen nicht, der Abruf ruht, bis die Seite wieder sichtbar wird, die
+ * Karte neu eingehängt oder neu angemeldet wird.
+ */
+export function abrufAbstand(takt: Takt): number | null {
+  const { fehler, reihe } = takt;
+  if (fehler === null) return ABRUF_MS;
+  if (fehler === 401 || fehler === 403) return null;
+  if (fehler === 503 || fehler === 0) return Math.min(ABRUF_MAX_MS, ABRUF_MS * 2 ** (Math.min(Math.max(reihe, 1), 10) - 1));
+  return ABRUF_MS;
+}
+
+/** Zeile unter der Karte, wenn die Aktualisierung fehlschlägt; verspricht nur dort ein Weiterversuchen, wo es eines gibt. */
+export function aktualisierungHinweis(status: number | null, zeit: string): string {
+  const kopf = `Aktualisierung gerade nicht möglich${zeit ? `, Stand ${zeit} Uhr` : ""}.`;
+  return status === 401 || status === 403 ? `${kopf} Beim nächsten Öffnen des Reiters wird es erneut versucht.` : `${kopf} Es wird weiter versucht.`;
 }
 
 // ---------- Leerzustand und Fehler (ruhig, ohne Interna) ----------
@@ -257,6 +300,12 @@ export function leerFehler(status: number | null): Leer {
     return {
       titel: "Gerätedienst nicht erreichbar",
       text: "Die Büro-Karte erscheint wieder, sobald WAMO im Büro Verbindung zu den Geräten hat.",
+    };
+  }
+  if (status === 401 || status === 403) {
+    return {
+      titel: "Die Büro-Karte ist gerade nicht verfügbar",
+      text: "Dafür fehlt die Berechtigung, oder die Anmeldung ist abgelaufen. Beim nächsten Öffnen des Reiters wird es erneut versucht.",
     };
   }
   if (status === 429) {

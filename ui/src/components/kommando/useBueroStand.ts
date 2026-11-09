@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { bueroLaden } from "@/lib/bueroApi";
 import { KernFehler } from "@/lib/kernApi";
-import { naechsterAbruf, type BueroStand } from "./bueroKarteModell";
+import { abrufAbstand, naechsterAbruf, TAKT_NEU, taktErfolg, taktFehler, taktNeuBeginnen, type BueroStand, type Takt } from "./bueroKarteModell";
 
 export type BueroZustand = {
   stand: BueroStand | null;
@@ -13,64 +13,120 @@ export type BueroZustand = {
   geladen: boolean;
 };
 
-// Der Reiter hängt die Karte nur ein, solange er sichtbar ist. Damit ein Reiterwechsel keinen neuen Abruf auslöst
-// (der Kern lässt 6 je Minute zu), merkt sich das Modul den letzten Stand, höchstens 5 Minuten lang.
+type Ergebnis = { stand: BueroStand } | { fehler: number };
+
+// Der Reiter hängt die Karte nur ein, solange er sichtbar ist. Damit ein Reiterwechsel keinen neuen Abruf auslöst (der Kern
+// lässt 6 je Minute zu), hält das Modul den letzten Stand (höchstens 5 Minuten), den Takt (letzter Versuch, Fehler in Folge)
+// und den laufenden Abruf. Alles gehört dem angemeldeten Profil und wird beim Abmelden vergessen (bueroStandVergessen).
 const MERKEN_MS = 5 * 60_000;
 let gemerkt: { stand: BueroStand; geholt: number } | null = null;
+let takt: Takt = TAKT_NEU;
+let laufend: Promise<Ergebnis> | null = null;
+let epoche = 0; // zählt die Abmeldungen: ein Abruf aus früherer Zeit trägt nichts mehr ein
 
 function frisch(): { stand: BueroStand; geholt: number } | null {
   return gemerkt && Date.now() - gemerkt.geholt < MERKEN_MS ? gemerkt : null;
 }
 
+async function holeUndMerke(meine: number): Promise<Ergebnis> {
+  try {
+    const stand = await bueroLaden();
+    if (meine === epoche) {
+      const jetzt = Date.now();
+      gemerkt = { stand, geholt: jetzt };
+      takt = taktErfolg(jetzt);
+    }
+    return { stand };
+  } catch (e) {
+    const fehler = e instanceof KernFehler ? e.status : 0;
+    if (meine === epoche) takt = taktFehler(takt, Date.now(), fehler);
+    return { fehler };
+  }
+}
+
+/** Es läuft nie zwei Mal derselbe Abruf: Wer währenddessen fragt (zweite Instanz, Wechsel des Reiters), bekommt dasselbe Ergebnis. */
+function abrufen(): Promise<Ergebnis> {
+  if (laufend) return laufend;
+  const lauf: Promise<Ergebnis> = holeUndMerke(epoche).finally(() => {
+    if (laufend === lauf) laufend = null;
+  });
+  laufend = lauf;
+  return lauf;
+}
+
+/** Einhängen der Karte und Sichtbarwerden der Seite: ein früherer Stopp (401, 403) und das Wachstum nach Fehlern entfallen. */
+function taktErneuern(): void {
+  takt = taktNeuBeginnen(takt);
+}
+
+/** Beim Abmelden: Stand, Takt und laufenden Abruf des bisherigen Profils verwerfen. */
+export function bueroStandVergessen(): void {
+  epoche++;
+  gemerkt = null;
+  takt = TAKT_NEU;
+  laufend = null;
+}
+
+/**
+ * Lässt den Stand der Büro-Karte so lange gelten, wie die Hauptansicht lebt, und vergisst ihn beim Aushängen (Abmelden). Steht
+ * in WamoAnsicht, die immer eingehängt ist; die Karte selbst hängt nur bei sichtbarem Reiter ein und darf ihn nicht verwerfen.
+ */
+export function useBueroStandHalten(): void {
+  useEffect(() => bueroStandVergessen, []);
+}
+
 /**
  * Hält den Stand der Büro-Karte: Abruf beim Einhängen und danach alle 30 Sekunden, solange die Seite sichtbar ist
- * (document.visibilityState). Ist sie verborgen, ruht der Abruf; beim Zurückkehren gilt er sofort, wenn der Stand älter als
- * 30 Sekunden ist. Ein Fehler hält den Takt ein (auch dann 30 Sekunden Ruhe) und lässt den letzten Stand stehen.
+ * (document.visibilityState). Ist sie verborgen, ruht der Abruf; beim Zurückkehren gilt er sofort, wenn der letzte Versuch
+ * länger als 30 Sekunden her ist. Fehler lassen den letzten Stand stehen. 503 und "nicht erreichbar" warten mit wachsendem
+ * Abstand (30, 60, 120 Sekunden bis höchstens 300), 401 und 403 hören auf, bis die Seite wieder sichtbar wird (Abstände:
+ * bueroKarteModell.ts, abrufAbstand). Ein laufender Abruf wird mit jeder Instanz geteilt.
  */
 export function useBueroStand(): BueroZustand {
   const [zustand, setZustand] = useState<BueroZustand>(() => {
     const m = frisch();
-    return { stand: m?.stand ?? null, fehler: null, geladen: m !== null };
+    // Ein Fehler vom letzten Besuch bleibt sichtbar, bis der nächste Abruf antwortet (bei wachsendem Abstand kann das dauern)
+    return { stand: m?.stand ?? null, fehler: takt.fehler, geladen: m !== null || takt.fehler !== null };
   });
 
   useEffect(() => {
     let beendet = false;
-    let laeuft = false;
+    let wartet = false; // diese Instanz wartet auf einen Abruf
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let letzter: number | null = frisch()?.geholt ?? null;
+    const sichtbar = () => document.visibilityState === "visible";
 
     const planen = () => {
       if (timer !== null) clearTimeout(timer);
       timer = null;
-      if (beendet || laeuft) return;
-      const warte = naechsterAbruf(letzter, Date.now(), document.visibilityState === "visible");
+      if (beendet || wartet) return;
+      const warte = naechsterAbruf(takt.letzter, Date.now(), sichtbar(), abrufAbstand(takt));
       if (warte !== null) timer = setTimeout(holen, warte);
     };
 
     const holen = async () => {
       timer = null;
-      if (beendet || laeuft) return;
-      laeuft = true;
-      try {
-        const stand = await bueroLaden();
-        letzter = Date.now();
-        gemerkt = { stand, geholt: letzter };
-        if (!beendet) setZustand({ stand, fehler: null, geladen: true });
-      } catch (e) {
-        letzter = Date.now();
-        const status = e instanceof KernFehler ? e.status : 0;
-        if (!beendet) setZustand((alt) => ({ ...alt, fehler: status, geladen: true }));
-      } finally {
-        laeuft = false;
-        planen();
-      }
+      if (beendet || wartet) return;
+      wartet = true;
+      const ergebnis = await abrufen();
+      wartet = false;
+      if (beendet) return;
+      setZustand((alt) =>
+        "stand" in ergebnis ? { stand: ergebnis.stand, fehler: null, geladen: true } : { ...alt, fehler: ergebnis.fehler, geladen: true },
+      );
+      planen();
     };
 
-    document.addEventListener("visibilitychange", planen);
+    const beiSichtbarkeit = () => {
+      if (sichtbar()) taktErneuern();
+      planen();
+    };
+
+    taktErneuern();
+    document.addEventListener("visibilitychange", beiSichtbarkeit);
     planen();
     return () => {
       beendet = true;
-      document.removeEventListener("visibilitychange", planen);
+      document.removeEventListener("visibilitychange", beiSichtbarkeit);
       if (timer !== null) clearTimeout(timer);
     };
   }, []);

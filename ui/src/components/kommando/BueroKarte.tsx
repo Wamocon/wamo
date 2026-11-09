@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type Keyboard
 import { useSelect } from "@/lib/store";
 import { wamo } from "@/lib/wamo";
 import {
+  aktualisierungHinweis,
   anordnung,
   beschriftung,
   darstellung,
@@ -259,7 +260,7 @@ export function BueroKarte() {
 
           {stand && fehler !== null && (
             <p className="bk-stand bk-stand-alt" role="status">
-              Aktualisierung gerade nicht möglich{zeit ? `, Stand ${zeit} Uhr` : ""}. Es wird weiter versucht.
+              {aktualisierungHinweis(fehler, zeit)}
             </p>
           )}
           {stand && fehler === null && zeit && <p className="bk-stand">Stand {zeit} Uhr, aktualisiert sich alle 30 Sekunden</p>}

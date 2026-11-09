@@ -10,6 +10,7 @@ import { Auftraege, Freigaben } from "@/components/Freigaben";
 import { GemerktHinweis } from "@/components/GemerktHinweis";
 import { Bedienung } from "@/components/kommando/Bedienung";
 import { BueroKarte } from "@/components/kommando/BueroKarte";
+import { useBueroStandHalten } from "@/components/kommando/useBueroStand";
 import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
@@ -157,6 +158,8 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
   useModellzugangStandHalten(aktionen.modellzugang);
   // Der Verlauf der Vorgänge (Datenbank) wird hier einmal geholt: die Tafel hängt nur bei sichtbarem Reiter ein
   useVerlaufHalten();
+  // Der Stand der Büro-Karte gehört dem angemeldeten Profil: beim Abmelden (Aushängen dieser Ansicht) wird er vergessen
+  useBueroStandHalten();
   // Nach dem Schließen der Einstellungen (Knopf, Escape oder "Zurück" des Browsers) kehrt der Fokus zu dem zurück, was
   // sie geöffnet hat (Zahnrad oder Link), sonst zum Zahnrad. Hat die Person den Fokus schon selbst gesetzt (zum Beispiel
   // auf "Verlauf"), bleibt er dort.

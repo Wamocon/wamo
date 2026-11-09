@@ -5,8 +5,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
+  ABRUF_MAX_MS,
   ABRUF_MIN_MS,
   ABRUF_MS,
+  abrufAbstand,
+  aktualisierungHinweis,
   anordnung,
   beschriftung,
   darstellung,
@@ -21,6 +24,10 @@ import {
   pruefeBuero,
   ringe,
   sauber,
+  TAKT_NEU,
+  taktErfolg,
+  taktFehler,
+  taktNeuBeginnen,
   UNBEKANNT_TIPP,
   unbekanntHinweis,
   uhrzeitKurz,
@@ -29,6 +36,7 @@ import {
   type Ampel,
   type BueroGeraet,
   type GruppeId,
+  type Takt,
 } from "./bueroKarteModell.ts";
 
 function geraet(id: string, gruppe: GruppeId, ueber: Partial<BueroGeraet> = {}): BueroGeraet {
@@ -282,12 +290,91 @@ test("Abruf alle 30 Sekunden, nur bei sichtbarer Seite", () => {
   assert.equal(naechsterAbruf(1000, 11_000, false), null);
 });
 
+test("naechsterAbruf mit eigenem Abstand: länger wartet länger, null stoppt von selbst", () => {
+  assert.equal(naechsterAbruf(1000, 11_000, true, 60_000), 50_000);
+  assert.equal(naechsterAbruf(1000, 99_000, true, 60_000), 0);
+  assert.equal(naechsterAbruf(null, 1000, true, 60_000), 0); // noch kein Abruf: sofort
+  assert.equal(naechsterAbruf(1000, 11_000, true, null), null); // gestoppt
+  assert.equal(naechsterAbruf(null, 1000, true, null), null);
+  assert.equal(naechsterAbruf(1000, 11_000, false, 60_000), null); // verborgen ruht er in jedem Fall
+});
+
+/** Fehler in Folge ab dem Neubeginn: so oft schlug der Abruf mit diesem Status hintereinander fehl. */
+function nachFehlern(status: number, anzahl: number, start: Takt = TAKT_NEU): Takt {
+  let takt = start;
+  for (let i = 0; i < anzahl; i++) takt = taktFehler(takt, 1_000 * (i + 1), status);
+  return takt;
+}
+
+test("ohne Fehler bleibt es beim Takt von 30 Sekunden", () => {
+  assert.equal(abrufAbstand(TAKT_NEU), ABRUF_MS);
+  assert.equal(abrufAbstand(taktErfolg(5_000)), ABRUF_MS);
+});
+
+test("503 und nicht erreichbar (0) warten 30, 60, 120, 240 und dann höchstens 300 Sekunden", () => {
+  for (const status of [503, 0]) {
+    const abstaende = [1, 2, 3, 4, 5, 6, 40, 5000].map((n) => abrufAbstand(nachFehlern(status, n)));
+    assert.deepEqual(abstaende, [30_000, 60_000, 120_000, 240_000, 300_000, 300_000, 300_000, 300_000], String(status));
+  }
+  assert.equal(ABRUF_MAX_MS, 300_000);
+});
+
+test("ein Erfolg setzt das Wachstum zurück", () => {
+  const nachFehlerReihe = nachFehlern(503, 4);
+  assert.equal(abrufAbstand(nachFehlerReihe), 240_000);
+  assert.equal(abrufAbstand(taktErfolg(9_000)), ABRUF_MS);
+  assert.equal(taktErfolg(9_000).letzter, 9_000);
+  assert.equal(abrufAbstand(taktFehler(taktErfolg(9_000), 10_000, 503)), 30_000); // der nächste Fehler beginnt wieder bei 30
+});
+
+test("401 und 403 stoppen den Abruf von selbst, jeder andere Fehler hält den Takt von 30 Sekunden", () => {
+  assert.equal(abrufAbstand(nachFehlern(401, 1)), null);
+  assert.equal(abrufAbstand(nachFehlern(403, 1)), null);
+  assert.equal(abrufAbstand(nachFehlern(401, 7)), null);
+  for (const status of [429, 500, 502, 504, 404]) assert.equal(abrufAbstand(nachFehlern(status, 3)), ABRUF_MS, String(status));
+});
+
+test("jeder Versuch zählt für den Abstand, auch ein fehlgeschlagener (der Kern lässt 6 je Minute zu)", () => {
+  const takt = nachFehlern(503, 1);
+  assert.equal(takt.letzter, 1_000);
+  assert.equal(naechsterAbruf(takt.letzter, 1_000, true, abrufAbstand(takt)), 30_000);
+  assert.ok(ABRUF_MS >= ABRUF_MIN_MS);
+});
+
+test("Sichtbarwerden oder Einhängen hebt Stopp und Wachstum auf, behält aber den Zeitpunkt des letzten Versuchs", () => {
+  const gestoppt = nachFehlern(401, 1);
+  const neu = taktNeuBeginnen(gestoppt);
+  assert.equal(neu.fehler, null);
+  assert.equal(neu.reihe, 0);
+  assert.equal(neu.letzter, gestoppt.letzter);
+  assert.equal(naechsterAbruf(neu.letzter, 5_000, true, abrufAbstand(neu)), 26_000); // frühestens 30 Sekunden nach dem letzten Versuch
+  assert.equal(naechsterAbruf(neu.letzter, 99_000, true, abrufAbstand(neu)), 0);
+  assert.deepEqual(taktNeuBeginnen(TAKT_NEU), TAKT_NEU);
+  assert.equal(abrufAbstand(taktNeuBeginnen(nachFehlern(503, 6))), ABRUF_MS);
+});
+
+test("Hinweis bei fehlender Aktualisierung: nur bei 401 und 403 ohne Zusage, dass es weiter versucht wird", () => {
+  assert.equal(aktualisierungHinweis(503, "14:32"), "Aktualisierung gerade nicht möglich, Stand 14:32 Uhr. Es wird weiter versucht.");
+  assert.equal(aktualisierungHinweis(0, ""), "Aktualisierung gerade nicht möglich. Es wird weiter versucht.");
+  for (const status of [401, 403]) {
+    const text = aktualisierungHinweis(status, "14:32");
+    assert.ok(text.startsWith("Aktualisierung gerade nicht möglich, Stand 14:32 Uhr."), text);
+    assert.ok(!/weiter versucht/.test(text), text);
+    assert.match(text, /nächsten Öffnen/);
+  }
+});
+
 // ---------- Leerzustand ----------
 test("ruhige Leerzustände ohne Technik und ohne Gedankenstriche", () => {
-  const alle = [leerFehler(503), leerFehler(0), leerFehler(null), leerFehler(429), leerFehler(500), leerFehler(401), LEER_OHNE_GERAETE];
+  const alle = [leerFehler(503), leerFehler(0), leerFehler(null), leerFehler(429), leerFehler(500), leerFehler(401), leerFehler(403), LEER_OHNE_GERAETE];
   assert.equal(leerFehler(503).titel, "Gerätedienst nicht erreichbar");
   assert.equal(leerFehler(null).titel, "Gerätedienst nicht erreichbar");
   assert.notEqual(leerFehler(429).titel, leerFehler(503).titel);
+  // 401 und 403 werden nicht von selbst wiederholt: der Text verspricht kein "weiter versucht"
+  for (const status of [401, 403]) {
+    assert.notEqual(leerFehler(status).titel, leerFehler(500).titel);
+    assert.ok(!/weiter versucht|Moment Geduld/.test(leerFehler(status).text), leerFehler(status).text);
+  }
   for (const l of alle) {
     assert.ok(l.titel && l.text);
     assert.ok(!/\d{3}|HTTP|Fehler/.test(l.titel + l.text), l.titel);
