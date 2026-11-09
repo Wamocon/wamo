@@ -26,6 +26,7 @@ import type { Mikrofon } from "@/lib/mikrofon";
 import { useModellzugangStandHalten } from "@/lib/modellzugangApi";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
+import { useVerlaufHalten } from "@/lib/vorgaengeApi";
 import { istOnline, wamo, type Memo } from "@/lib/wamo";
 
 /** Fehler in Tinte mit rotem Symbol und sicherer nächster Aktion. */
@@ -154,6 +155,8 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
   const { disconnect, connect, vergessen } = aktionen;
   // Der Stand des Modellzugangs wird einmal hier gehalten: die Seitenleiste zeigt eine Zeile daraus, die Einstellungen die Karte
   useModellzugangStandHalten(aktionen.modellzugang);
+  // Der Verlauf der Vorgänge (Datenbank) wird hier einmal geholt: die Tafel hängt nur bei sichtbarem Reiter ein
+  useVerlaufHalten();
   // Nach dem Schließen der Einstellungen (Knopf, Escape oder "Zurück" des Browsers) kehrt der Fokus zu dem zurück, was
   // sie geöffnet hat (Zahnrad oder Link), sonst zum Zahnrad. Hat die Person den Fokus schon selbst gesetzt (zum Beispiel
   // auf "Verlauf"), bleibt er dort.

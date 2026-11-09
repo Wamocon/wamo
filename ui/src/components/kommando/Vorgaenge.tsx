@@ -1,10 +1,12 @@
 "use client";
 
-import { memo, useEffect, useId, useMemo } from "react";
+import { memo, useId, useMemo, useState } from "react";
 import { canvasIndex, canvasWaehlen } from "@/lib/canvasWahl";
-import type { Vorgang } from "@/lib/nachrichten";
+import type { Vorgang, VorgangSchritt } from "@/lib/nachrichten";
 import { useSelect } from "@/lib/store";
+import { useGedrosselt } from "@/lib/useGedrosselt";
 import {
+  SCHRITT_DROSSEL_MS,
   artText,
   balkenTon,
   endeText,
@@ -15,14 +17,16 @@ import {
   markeArt,
   prozent,
   rundenText,
+  schrittAenderung,
   schrittFortschrittText,
+  schrittGleich,
   schrittStatusText,
   statusText,
   tafelListen,
   zeitZeile,
   type MarkenArt,
 } from "@/lib/vorgaenge";
-import { verlaufLaden, verlaufLeeren, vorgangVerlauf } from "@/lib/vorgaengeApi";
+import { vorgangVerlauf } from "@/lib/vorgaengeApi";
 import { wamo, zeigeToast } from "@/lib/wamo";
 import { useRahmen } from "./rahmenKontext";
 
@@ -30,7 +34,8 @@ import { useRahmen } from "./rahmenKontext";
  * Tafel "Vorgänge" (rechte Seite, Reiter "Vorgänge"): was WAMO gerade abarbeitet. Je Vorgang eine Karte mit Titel, Status als Wort,
  * Gesamtbalken (Prozent, Restzeit oder "Fertig in mm:ss", Runde), nummerierten Schritten mit eigenem Balken, Prüfkriterien und, wo
  * es passt, den Knöpfen "Zur Freigabe" und "Ergebnis ansehen". Beendete Vorgänge stehen eingeklappt unter "Zuletzt beendet", dazu
- * der Verlauf aus der Datenbank (lib/vorgaengeApi.ts). Daten kommen als Servernachricht "vorgang" in den Store (lib/wamo.ts); die
+ * der Verlauf aus der Datenbank (lib/vorgaengeApi.ts, geholt von WamoAnsicht). Der Rahmen hängt die Tafel nur ein, solange ihr Reiter
+ * zu sehen ist (kommando/tafeln.ts), im Verborgenen rendert sie also nie. Daten kommen als Servernachricht "vorgang" in den Store (lib/wamo.ts); die
  * Bildschirmleser-Ansage kommt von dort (ansage), hier steht keine zweite.
  *
  * Barrierefreiheit: Jeder Balken ist ein role="progressbar" mit aria-valuenow und aria-valuetext. Der Zustand steht immer als Wort
@@ -107,21 +112,39 @@ function Balken({ anteil, ton, text, benanntNach, name, klein }: BalkenProps) {
   );
 }
 
-function Schritte({ v }: { v: Vorgang }) {
-  if (!v.schritte.length) return null;
+/**
+ * Eine Zeile der Schrittliste. Bis zu 60 je Karte: Sie rendert nur neu, wenn sich etwas ändert, das man sieht (schrittGleich),
+ * denn jede Nachricht des Kerns bringt neue Schrittobjekte mit gleichem Inhalt.
+ */
+const SchrittZeile = memo(
+  function SchrittZeile({ s }: { s: VorgangSchritt }) {
+    return (
+      <li data-status={s.status} aria-current={s.status === "laeuft" ? "step" : undefined}>
+        <span className="vg-nr num">{s.nr}</span>
+        <Marke art={markeArt(s.status)} />
+        <span className="vg-titel">{s.titel}</span>
+        <span className="vg-zustand" aria-hidden="true">
+          {schrittStatusText[s.status]}
+        </span>
+        <Balken anteil={s.fortschritt} ton={s.status === "laeuft" || s.status === "fertig" ? "aktiv" : "still"} klein text={schrittFortschrittText(s)} name={`Schritt ${s.nr}`} />
+        {s.detail && <span className="vg-detail">{s.detail}</span>}
+      </li>
+    );
+  },
+  (alt, neu) => schrittGleich(alt.s, neu.s),
+);
+
+/**
+ * Schrittliste. Ein reiner Zwischenstand der Prozent erscheint höchstens alle SCHRITT_DROSSEL_MS (der neueste, am Ende geht keiner
+ * verloren); der Endwert 100 Prozent, ein anderer Status und jeder neue Schritt erscheinen sofort (lib/vorgaenge.ts, schrittAenderung).
+ */
+function Schritte({ schritte }: { schritte: VorgangSchritt[] }) {
+  const gezeigt = useGedrosselt(schritte, schrittAenderung, SCHRITT_DROSSEL_MS);
+  if (!gezeigt.length) return null;
   return (
     <ol className="vg-schritte" aria-label="Schritte">
-      {v.schritte.map((s) => (
-        <li key={s.nr} data-status={s.status} aria-current={s.status === "laeuft" ? "step" : undefined}>
-          <span className="vg-nr num">{s.nr}</span>
-          <Marke art={markeArt(s.status)} />
-          <span className="vg-titel">{s.titel}</span>
-          <span className="vg-zustand" aria-hidden="true">
-            {schrittStatusText[s.status]}
-          </span>
-          <Balken anteil={s.fortschritt} ton={s.status === "laeuft" || s.status === "fertig" ? "aktiv" : "still"} klein text={schrittFortschrittText(s)} name={`Schritt ${s.nr}`} />
-          {s.detail && <span className="vg-detail">{s.detail}</span>}
-        </li>
+      {gezeigt.map((s) => (
+        <SchrittZeile key={s.nr} s={s} />
       ))}
     </ol>
   );
@@ -198,7 +221,7 @@ const VorgangInhalt = memo(function VorgangInhalt({ v, titelId }: { v: Vorgang; 
           {zeit && <span className="vg-zeit">{zeit}</span>}
         </p>
       </div>
-      <Schritte v={v} />
+      <Schritte schritte={v.schritte} />
       <Kriterien v={v} />
       {(wartet || ergebnisDa) && (
         <div className="vg-aktionen">
@@ -239,12 +262,17 @@ const VorgangKarte = memo(function VorgangKarte({ v }: { v: Vorgang }) {
   );
 });
 
-/** Beendeter Vorgang: eine Zeile mit Titel und "Fertig in mm:ss" (oder Status), aufklappbar bis zu Schritten und Kriterien. */
+/**
+ * Beendeter Vorgang: eine Zeile mit Titel und "Fertig in mm:ss" (oder Status), aufklappbar bis zu Schritten und Kriterien. Der
+ * Inhalt (Balken, bis zu 60 Schritte, Kriterien) entsteht erst nach dem Aufklappen: bis zu 25 geschlossene Zeilen kosten so nur
+ * ihre Kopfzeile. Der Abschnitt "Zuletzt beendet" selbst bleibt wie bisher aufgeklappt, seine Zeilen zu.
+ */
 const BeendeterVorgang = memo(function BeendeterVorgang({ v }: { v: Vorgang }) {
   const id = useId();
   const titelId = `${id}-titel`;
+  const [offen, setOffen] = useState(false);
   return (
-    <details className="vg-ende" data-status={v.status}>
+    <details className="vg-ende" data-status={v.status} onToggle={(e) => setOffen(e.currentTarget.open)}>
       <summary>
         <Marke art={markeArt(v.status)} />
         <span className="vg-ende-wer">
@@ -256,24 +284,22 @@ const BeendeterVorgang = memo(function BeendeterVorgang({ v }: { v: Vorgang }) {
           </span>
         </span>
       </summary>
-      <div className="vg-ende-inhalt">
-        <VorgangInhalt v={v} titelId={titelId} />
-      </div>
+      {offen && (
+        <div className="vg-ende-inhalt">
+          <VorgangInhalt v={v} titelId={titelId} />
+        </div>
+      )}
     </details>
   );
 });
 
 /**
- * Tafel mit aktiven Vorgängen und dem einklappbaren Abschnitt "Zuletzt beendet". Fragt den Verlauf einmal beim Einhängen ab und
- * gibt ihn beim Aushängen frei. Ohne Vorgang zeigt sie nichts (den Leerzustand zeigt VorgaengeLeer in Seitenleisten.tsx).
+ * Tafel mit aktiven Vorgängen und dem einklappbaren Abschnitt "Zuletzt beendet". Ohne Vorgang zeigt sie nichts (den Leerzustand
+ * zeigt VorgaengeLeer in Seitenleisten.tsx).
  */
 export const VorgaengeTafel = memo(function VorgaengeTafel() {
   const sitzung = useSelect(wamo, (s) => s.vorgaenge);
   const verlauf = useSelect(vorgangVerlauf, (v) => v);
-  useEffect(() => {
-    void verlaufLaden();
-    return verlaufLeeren;
-  }, []);
   const { aktiv, beendet } = useMemo(() => tafelListen(sitzung, verlauf), [sitzung, verlauf]);
   if (!aktiv.length && !beendet.length) return null;
   return (

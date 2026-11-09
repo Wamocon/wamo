@@ -192,6 +192,41 @@ export function schrittFortschrittText(s: VorgangSchritt): string {
   return `${prozent(s.fortschritt)} Prozent, ${schrittStatusText[s.status]}`;
 }
 
+// ------------------------------------------------------------------------------------------------ Schritte: sichtbar und gedrosselt
+
+/** So selten (in Millisekunden) zeichnet die Tafel einen reinen Zwischenstand der Schritte neu (components/kommando/Vorgaenge.tsx). */
+export const SCHRITT_DROSSEL_MS = 250;
+
+const sichtGleich = (a: VorgangSchritt, b: VorgangSchritt) => a.nr === b.nr && a.titel === b.titel && a.status === b.status && a.detail === b.detail;
+
+/** Zeigen zwei Stände eines Schritts dasselbe? Der Fortschritt zählt als ganze Prozent, so zeichnet ihn der Balken. */
+export function schrittGleich(a: VorgangSchritt, b: VorgangSchritt): boolean {
+  return sichtGleich(a, b) && prozent(a.fortschritt) === prozent(b.fortschritt);
+}
+
+/** Wie sich die Schritte gegenüber dem Gezeigten ändern: nichts Sichtbares, nur wachsende Prozent, oder mehr. */
+export type SchrittAenderung = "gleich" | "zwischenstand" | "sonst";
+
+/**
+ * Darf die Anzeige der Schritte warten? Nur ein Zwischenstand darf: gleiche Schritte, deren Prozent wachsen, aber nicht bis 100.
+ * Der Endwert 100 Prozent, ein Rücksprung, ein neuer oder anderer Schritt und jeder Wechsel von Status, Titel oder Detail
+ * zählen als "sonst" und erscheinen sofort. Ohne sichtbaren Unterschied ("gleich") bleibt die Anzeige, wie sie ist.
+ */
+export function schrittAenderung(alt: readonly VorgangSchritt[], neu: readonly VorgangSchritt[]): SchrittAenderung {
+  if (alt === neu) return "gleich";
+  if (alt.length !== neu.length) return "sonst";
+  let zwischenstand = false;
+  for (let i = 0; i < alt.length; i++) {
+    if (!sichtGleich(alt[i], neu[i])) return "sonst";
+    const vorher = prozent(alt[i].fortschritt);
+    const jetzt = prozent(neu[i].fortschritt);
+    if (vorher === jetzt) continue;
+    if (jetzt === 100 || jetzt < vorher) return "sonst";
+    zwischenstand = true;
+  }
+  return zwischenstand ? "zwischenstand" : "gleich";
+}
+
 /** Form der Statusmarke (Symbol zusätzlich zur Farbe): Ring mit Bogen, Haken, Pause, "!", leerer Ring, durchgestrichen. */
 export type MarkenArt = "laeuft" | "fertig" | "wartet" | "fehler" | "offen" | "aus";
 

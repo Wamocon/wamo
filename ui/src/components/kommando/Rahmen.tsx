@@ -7,9 +7,7 @@ import { offeneEntscheidungen, useBreit, useEffektiveDarstellung } from "./ansic
 import { DarstellungsWahl } from "./DarstellungsWahl";
 import { RahmenKontext } from "./rahmenKontext";
 import { Reiterleiste, type ReiterDef } from "./Reiter";
-
-type Rechts = "auftraege" | "vorgaenge" | "erledigt" | "buero";
-type Mobil = "kern" | "auftraege" | "vorgaenge" | "canvas" | "hinweise" | "buero";
+import { tafelSichtbar, type TafelMobil as Mobil, type TafelRechts as Rechts } from "./tafeln";
 
 /** Alle Bausteine kommen von WamoAnsicht; der Rahmen legt sie nur an und verwaltet die Reiter. */
 export type RahmenInhalt = {
@@ -23,6 +21,7 @@ export type RahmenInhalt = {
   canvas: ReactNode;
   hinweise: ReactNode;
   auftraege: ReactNode;
+  /** Tafel Vorgänge mit Zeitleiste; wird nur eingehängt, solange der Reiter "Vorgänge" sichtbar ist (kein Neurendern im Verborgenen) */
   vorgaenge: ReactNode;
   erledigt: ReactNode;
   /** Büro-Karte (kommando/BueroKarte.tsx); wird nur eingehängt, solange der Reiter "Büro" sichtbar ist, dann ruht der Abruf */
@@ -78,8 +77,11 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
     }
   }
   const mobilEff: Mobil = effektiv === "normal" || effektiv === "nacht" ? mobil : "kern";
-  // Die Büro-Karte läuft nur, solange ihr Reiter wirklich zu sehen ist (nicht in Fokus und Zentrale, nicht unter den Einstellungen)
-  const bueroAktiv = !inhalt.einstellungen && (breit ? effektiv !== "fokus" && effektiv !== "zentrale" && rechts === "buero" : mobilEff === "buero");
+  // Büro-Karte und Vorgänge arbeiten nur, solange ihr Reiter wirklich zu sehen ist (nicht in Fokus und Zentrale, nicht unter den
+  // Einstellungen): sonst bliebe die Büro-Karte beim Abruf und die Tafel Vorgänge bei jedem Fortschrittsereignis im Neurendern.
+  const lage = { einstellungen: Boolean(inhalt.einstellungen), breit, effektiv, rechts, mobilEff };
+  const bueroAktiv = tafelSichtbar(lage, "buero");
+  const vorgaengeAktiv = tafelSichtbar(lage, "vorgaenge");
 
   useLayoutEffect(() => {
     if (effektiv !== "nacht") return;
@@ -204,7 +206,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
               data-p="vorgaenge"
               {...tafel("Vorgänge", breit ? "kz-tab-d-vorgaenge" : "kz-tab-m-vorgaenge")}
             >
-              {inhalt.vorgaenge}
+              {vorgaengeAktiv ? inhalt.vorgaenge : null}
             </div>
             <div
               id="kz-p-erledigt"

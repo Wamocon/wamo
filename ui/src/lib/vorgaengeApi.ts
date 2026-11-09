@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { kernJson } from "@/lib/kernApi";
 import type { Vorgang } from "@/lib/nachrichten";
 import { createStore } from "@/lib/store";
@@ -7,8 +8,9 @@ import { vorgaengeAusAntwort } from "@/lib/vorgaenge";
 
 /**
  * Verlauf der Tafel "Vorgänge": die letzten Vorgänge des eigenen Profils aus der Datenbank (voice-core/vorgaenge_api.py,
- * GET /wamo/api/vorgaenge, Migration 0017). Die Tafel fragt einmal beim Start. Der Verlauf liegt in einem eigenen Store, damit
- * die Tafel und ihr Leerzustand (kommando/Seitenleisten.tsx) ihn lesen, ohne ihn zweimal zu laden. Was die laufende Sitzung
+ * GET /wamo/api/vorgaenge, Migration 0017). Die Hauptansicht fragt einmal beim Start (useVerlaufHalten), nicht erst die Tafel:
+ * Die Tafel hängt nur ein, solange ihr Reiter sichtbar ist. Der Verlauf liegt in einem eigenen Store, damit die Tafel und ihr
+ * Leerzustand (kommando/Seitenleisten.tsx) ihn lesen, ohne ihn zweimal zu laden. Was die laufende Sitzung
  * schon kennt, gilt aus der Sitzung (lib/vorgaenge.ts, tafelListen). Fehler (Kern ohne Schnittstelle, Datenbank nicht
  * eingerichtet, kein Netz) bleiben still: dann ist der Verlauf leer.
  */
@@ -26,8 +28,19 @@ export async function verlaufLaden(): Promise<void> {
   }
 }
 
-/** Beim Abmelden und Aushängen der Tafel: eine noch laufende Abfrage darf nichts mehr eintragen, der Verlauf gehörte dem Profil. */
+/** Beim Abmelden und Aushängen der Hauptansicht: eine noch laufende Abfrage darf nichts mehr eintragen, der Verlauf gehörte dem Profil. */
 export function verlaufLeeren(): void {
   runde++;
   vorgangVerlauf.set((alt) => (alt.length ? [] : alt));
+}
+
+/**
+ * Hält den Verlauf für die Dauer der Hauptansicht: einmal laden beim Einhängen, beim Aushängen (Abmelden) freigeben. Steht in
+ * WamoAnsicht, die immer eingehängt ist, auch wenn der Reiter "Vorgänge" gerade nicht zu sehen ist.
+ */
+export function useVerlaufHalten(): void {
+  useEffect(() => {
+    void verlaufLaden();
+    return verlaufLeeren;
+  }, []);
 }

@@ -2,11 +2,12 @@
 // beim Trennen. Ausführen im Ordner ui/:  npm test
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Vorgang } from "./nachrichten.ts";
+import type { Vorgang, VorgangSchritt } from "./nachrichten.ts";
 import {
   MAX_BEENDET,
   MAX_VERLAUF,
   MAX_VORGAENGE,
+  SCHRITT_DROSSEL_MS,
   alsVerlauf,
   artText,
   aufgeteilt,
@@ -24,7 +25,9 @@ import {
   prozent,
   restzeitText,
   rundenText,
+  schrittAenderung,
   schrittFortschrittText,
+  schrittGleich,
   schrittStatusText,
   statusText,
   tafelListen,
@@ -323,4 +326,58 @@ test("tafelListen begrenzt die Zahl der beendeten und gibt ohne Verlauf nur die 
   assert.equal(beendet[0].id, `v${MAX_BEENDET + 4}`); // der zuletzt beendete zuerst
   const leer = tafelListen([], []);
   assert.deepEqual(leer, { aktiv: [], beendet: [] });
+});
+
+// ---------- Schritte: was sichtbar ist, und wann eine Änderung warten darf ----------
+const schritt = (nr: number, extra: Partial<VorgangSchritt> = {}): VorgangSchritt => ({
+  nr,
+  titel: `Schritt ${nr}`,
+  status: "laeuft",
+  fortschritt: 0.4,
+  detail: null,
+  ...extra,
+});
+
+test("schrittGleich vergleicht, was man sieht: Fortschritt als ganze Prozent, dazu Titel, Status und Detail", () => {
+  assert.equal(SCHRITT_DROSSEL_MS, 250);
+  assert.equal(schrittGleich(schritt(1), schritt(1)), true);
+  assert.equal(schrittGleich(schritt(1, { fortschritt: 0.401 }), schritt(1, { fortschritt: 0.404 })), true);
+  assert.equal(schrittGleich(schritt(1), schritt(1, { fortschritt: 0.45 })), false);
+  assert.equal(schrittGleich(schritt(1), schritt(1, { status: "fertig" })), false);
+  assert.equal(schrittGleich(schritt(1), schritt(1, { titel: "anders" })), false);
+  assert.equal(schrittGleich(schritt(1), schritt(1, { detail: "neu" })), false);
+  assert.equal(schrittGleich(schritt(1), schritt(2)), false);
+});
+
+test("schrittAenderung: gleicher Inhalt in neuen Listen ist keine Änderung", () => {
+  const alt = [schritt(1, { status: "fertig", fortschritt: 1 }), schritt(2)];
+  assert.equal(schrittAenderung(alt, alt), "gleich");
+  assert.equal(schrittAenderung(alt, [schritt(1, { status: "fertig", fortschritt: 1 }), schritt(2)]), "gleich");
+  assert.equal(schrittAenderung(alt, [alt[0], schritt(2, { fortschritt: 0.404 })]), "gleich"); // unter einem Prozent
+  assert.equal(schrittAenderung([], []), "gleich");
+});
+
+test("schrittAenderung: ein Zwischenstand darf warten (nur wachsende Prozent unter 100)", () => {
+  const alt = [schritt(1, { status: "fertig", fortschritt: 1 }), schritt(2)];
+  assert.equal(schrittAenderung(alt, [alt[0], schritt(2, { fortschritt: 0.45 })]), "zwischenstand");
+  assert.equal(schrittAenderung(alt, [alt[0], schritt(2, { fortschritt: 0.99 })]), "zwischenstand"); // 99 Prozent noch nicht der Endwert
+  const zwei = [schritt(1, { fortschritt: 0.1 }), schritt(2, { fortschritt: 0.2 })];
+  assert.equal(schrittAenderung(zwei, [schritt(1, { fortschritt: 0.3 }), schritt(2, { fortschritt: 0.5 })]), "zwischenstand");
+});
+
+test("schrittAenderung: der Endwert 100 Prozent, ein Rücksprung und jede andere Änderung gelten sofort", () => {
+  const alt = [schritt(1, { fortschritt: 0.9 })];
+  assert.equal(schrittAenderung(alt, [schritt(1, { fortschritt: 1 })]), "sonst"); // Endwert
+  assert.equal(schrittAenderung(alt, [schritt(1, { fortschritt: 0.996 })]), "sonst"); // rundet auf 100
+  assert.equal(schrittAenderung(alt, [schritt(1, { fortschritt: 0.2 })]), "sonst"); // Rücksprung
+  assert.equal(schrittAenderung(alt, [schritt(1, { fortschritt: 0.95, status: "fertig" })]), "sonst");
+  assert.equal(schrittAenderung(alt, [schritt(1, { fortschritt: 0.95, titel: "anders" })]), "sonst");
+  assert.equal(schrittAenderung(alt, [schritt(1, { fortschritt: 0.95, detail: "Hinweis" })]), "sonst");
+  assert.equal(schrittAenderung(alt, [alt[0], schritt(2)]), "sonst"); // neuer Schritt
+  assert.equal(schrittAenderung(alt, []), "sonst");
+});
+
+test("schrittAenderung: ein Zwischenstand neben einer sofortigen Änderung gilt als sofort", () => {
+  const alt = [schritt(1, { fortschritt: 0.1 }), schritt(2, { fortschritt: 0.2 })];
+  assert.equal(schrittAenderung(alt, [schritt(1, { fortschritt: 0.3 }), schritt(2, { fortschritt: 1 })]), "sonst");
 });
