@@ -434,6 +434,17 @@ p, li { text-wrap: pretty; }
   font-size: 16px; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .auftrag .notice { margin-bottom: 12px; }
+/* Abnahmekriterien der Startkarte: Befehle in Festbreite, alles als Text */
+.auftrag-abnahme { margin: 0 0 12px; }
+.auftrag-abnahme h4 { margin: 0 0 2px; font: 700 15px/1.3 var(--font-wmc); }
+.auftrag-abnahme-hinweis { margin: 0 0 6px; font-size: 14px; color: var(--ink-soft); }
+.auftrag-abnahme ul { margin: 0; padding-left: 20px; font-size: 15px; overflow-wrap: anywhere; }
+.auftrag-abnahme li { margin: 2px 0; }
+.abnahme-art { font-weight: 700; }
+.auftrag-abnahme code {
+  padding: 1px 5px; background: var(--surface); border-radius: 4px;
+  font: 13px/1.5 var(--font-code); color: var(--ink); white-space: pre-wrap; word-break: break-word;
+}
 
 /* Schalter "PC-Steuerung" (nur admin) */
 .pc-switch-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

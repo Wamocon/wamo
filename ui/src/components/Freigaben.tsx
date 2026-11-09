@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useLayoutEffect, useRef } from "react";
 import { useSelect } from "@/lib/store";
+import { abnahmeEintraege } from "@/lib/auftragAbnahme";
 import type { Auftrag } from "@/lib/nachrichten";
 import { wamo, type Approval } from "@/lib/wamo";
 
@@ -108,8 +109,9 @@ export const Freigaben = memo(function Freigaben({ onDecide }: { onDecide: Entsc
 });
 
 /**
- * Auftragskarte für Entwicklungsaufträge (Servernachricht "auftrag"): Projekt, Auftragsart und der
- * vollständige, bereinigte Auftragstext. "Starten" und "Verwerfen" sind gleichgewichtig; die Karte
+ * Auftragskarte für Entwicklungsaufträge (Servernachricht "auftrag"): Projekt, Auftragsart, der
+ * vollständige, bereinigte Auftragstext und, falls vorhanden, die Abnahmekriterien (Befehle in Festbreite,
+ * alles als Text, nie als Markup: wer startet, bestätigt auch diese Befehle). "Starten" und "Verwerfen" sind gleichgewichtig; die Karte
  * verschwindet erst, wenn die Entscheidung gesendet wurde. Meldet der Kern betrieb.entwicklung "aus",
  * ist Starten gesperrt.
  */
@@ -124,6 +126,7 @@ function AuftragCard({
 }) {
   const head = useRef<HTMLHeadingElement>(null);
   const id = `auftrag-${a.job}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const abnahme = abnahmeEintraege(a.abnahme);
 
   useEffect(() => {
     if (document.activeElement === document.body) head.current?.focus();
@@ -151,6 +154,28 @@ function AuftragCard({
       <div className="auftrag-text" tabIndex={0} role="region" aria-label="Auftragstext">
         {a.auftrag}
       </div>
+      {abnahme.length > 0 && (
+        <section className="auftrag-abnahme" aria-labelledby={`${id}-abnahme`}>
+          <h4 id={`${id}-abnahme`}>Abnahme</h4>
+          <p className="auftrag-abnahme-hinweis">
+            WAMO prüft nach jeder Runde.
+            {abnahme.some((k) => k.art === "befehl") && " Mit Starten bestätigst du auch die Befehle."}
+          </p>
+          <ul>
+            {abnahme.map((k, i) => (
+              <li key={i} className={k.art === "befehl" ? "abnahme-befehl" : undefined}>
+                {k.art === "befehl" ? (
+                  <>
+                    <span className="abnahme-art">Befehl</span> <code>{k.text}</code>
+                  </>
+                ) : (
+                  k.text
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {gesperrt && <p className="notice">Entwicklungsaufträge sind gesperrt.</p>}
       <div className="approval-actions">
         <button type="button" className="btn-decide" disabled={gesperrt} onClick={() => onDecide(a, true)}>

@@ -428,6 +428,7 @@ function beispiel(): { state: WamoState; presence: Presence } {
               art: "Fehler beheben",
               auftrag:
                 "Behebe den Fehler im PDF-Export (TF-114): Umlaute in Dateinamen werden ersetzt.\nSchreibe einen Test und öffne einen Pull Request, nichts direkt auf main.",
+              abnahme: ["Der Test für Umlaute in Dateinamen läuft grün", "befehl: pytest -q tests/test_export.py"],
             },
           ]
         : [],

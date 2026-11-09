@@ -512,7 +512,7 @@ export function applyServerMessage(msg: ServerMessage) {
       zeigeMemo({ bereich: msg.bereich, status: msg.status, text: msg.text, id: msg.id });
       return;
     case "auftrag": {
-      const a: Auftrag = { job: msg.job, projekt: msg.projekt, art: msg.art, auftrag: msg.auftrag };
+      const a: Auftrag = { job: msg.job, projekt: msg.projekt, art: msg.art, auftrag: msg.auftrag, abnahme: msg.abnahme };
       wamo.set((s) => ({
         ...s,
         auftraege: [...s.auftraege.filter((x) => x.job !== a.job), a],

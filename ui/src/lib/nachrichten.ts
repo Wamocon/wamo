@@ -127,8 +127,15 @@ export type FreigabePunkt = {
   gueltigS?: number;
 };
 
-/** Entwicklungsauftrag, den das Profil vor dem Start bestätigen muss (Servernachricht "auftrag"). */
-export type Auftrag = { job: string; projekt: string; art: string; auftrag: string };
+/** Abnahmekriterien auf der Startkarte (voice-core/dev_agent.py): höchstens 5, je höchstens 300 Zeichen. */
+export const AUFTRAG_ABNAHME_MAX = 5;
+export const AUFTRAG_ABNAHME_ZEICHEN = 300;
+
+/**
+ * Entwicklungsauftrag, den das Profil vor dem Start bestätigen muss (Servernachricht "auftrag").
+ * abnahme: die Kriterien, die WAMO nach jeder Runde prüft (Texte, Befehle beginnen mit "befehl:"); leer ohne Ziel.
+ */
+export type Auftrag = { job: string; projekt: string; art: string; auftrag: string; abnahme: string[] };
 
 /**
  * Vorgang (voice-core/vorgaenge.py): was WAMO gerade abarbeitet, mit Gesamtfortschritt, Schritten und Prüfkriterien.
@@ -301,6 +308,17 @@ export function sauber(text: string, max: number, zeilen = true): string {
   let t = text.replace(STEUER, "");
   if (!zeilen) t = t.replace(/[\r\n\t]+/g, " ");
   return t.length > max ? `${t.slice(0, max)} … (gekürzt)` : t;
+}
+
+/** Abnahmekriterien der Auftragskarte: nur Texte, höchstens 5 (aus den ersten 50 Einträgen), je höchstens 300 Zeichen, bereinigt. */
+function abnahmeKriterien(roh: unknown): string[] {
+  if (!Array.isArray(roh)) return [];
+  return roh
+    .slice(0, 50)
+    .filter(isStr)
+    .map((t) => sauber(t, AUFTRAG_ABNAHME_ZEICHEN, false).trim())
+    .filter((t) => t !== "")
+    .slice(0, AUFTRAG_ABNAHME_MAX);
 }
 
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -569,6 +587,7 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         projekt: isStr(m.projekt) ? sauber(m.projekt, 80, false) : "",
         art: isStr(m.art) ? sauber(m.art, 60, false) : "",
         auftrag: sauber(m.auftrag, 20_000),
+        abnahme: abnahmeKriterien(m.abnahme),
       };
     case "sitzung_beendet":
       // Kern beendet die Sitzung selbst (Profil gesperrt, Rolle geändert, Höchstdauer erreicht)

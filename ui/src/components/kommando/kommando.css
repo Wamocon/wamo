@@ -351,6 +351,7 @@
 .kz .approval h3 { font-size: 18px; }
 .kz .approval-detail { background: color-mix(in srgb, var(--ink) 7%, transparent); border-radius: 8px; }
 .kz .auftrag-text { background: color-mix(in srgb, var(--ink) 7%, transparent); border-radius: 8px; }
+.kz .auftrag-abnahme code { background: color-mix(in srgb, var(--ink) 7%, transparent); }
 /* Freigeben und Ablehnen bleiben gleichgewichtig (Sicherheitsregel, siehe Freigaben.tsx) */
 .kz .btn-decide { border-radius: 999px; font-size: 17px; }
 
