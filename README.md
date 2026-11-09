@@ -718,6 +718,64 @@ Neue Kennzahl `folge_ton_ms` (Szenario `einwurf`): Zeit vom Ende des Einwurfs bi
 (Testprofil gesperrt, Messplan im Dokument, Abschnitt 5): Basis mit beiden Schaltern aus, je ein Lauf mit nur einem an, dazu
 ein Lauf mit `SONIOX_TTS_URL=wss://tts-rt.eu.soniox.com/tts-websocket` gegen den globalen Endpunkt.
 
+### Lange Werkzeugausgaben kürzen
+
+Lange Ausgaben von Werkzeugen (PowerShell-Listen, Testausgaben, Git-Ausgaben, JSON von Geräten, Webseitentext) gingen bisher
+ungekürzt in den Kontext des Sprachmodells. Das kostet bei jeder weiteren Anfrage des Zugs Tokens und verlängert die Zeit bis zur
+Antwort. Der Kern kürzt sie jetzt selbst, verlustarm und ohne Fremdsoftware (`voice-core/ausgaben_kuerzen.py`).
+
+**Wo.** Jedes Werkzeugergebnis erreicht die Pipeline genau einmal als `FunctionCallResultFrame`, egal ob es aus `tools.py`, dem
+Boss, dem Gerätedienst oder über den MCP- und Tunnel-Client vom PC kommt. Der Frame-Prozessor `AusgabenKuerzer` sitzt in
+`bot.py` direkt hinter der Aktivitätsanzeige (Zeitleiste, Freigabekarten und PC-Sperre sehen das Original) und vor dem
+Kontext-Aggregator (er schreibt das Ergebnis in den Verlauf). Neue Werkzeuge sind ohne Zutun dabei.
+
+**Wirkung.** Ab der Schwelle (`WAMO_AUSGABE_SCHWELLE`, Standard 3000 Zeichen, 0 schaltet das Kürzen und das Werkzeug ab) gilt:
+
+- Text: gleiche Zeilen in Folge werden mit Zähler zusammengefasst (`[400 mal]`), Leerzeilen gebündelt, Kopf und Schwanz bleiben,
+  die Mitte wird durch `[... n Zeilen ausgelassen, Nachladen: ausgabe_nachladen("ref", ab_zeile=12)]` ersetzt. Zeilen mit
+  error, fehler, exception, warn, traceback, fail, denied, abgelehnt oder fatal bleiben bevorzugt stehen.
+- JSON (auch als Text vom PC-Host): leere Werte und null fallen weg, lange Listen behalten die ersten Einträge plus Einträge mit
+  Problem und einen Zähler (`weitere 37 Einträge`), lange Texte darin werden zeilenweise wie oben gekürzt. Zahlen, Wahrheitswerte,
+  `status` und die Felder für Fehler, Hinweis und Vertrauen bleiben unverändert; Listen aus Zahlen werden nie gekürzt.
+- Das Ergebnis trägt `gekuerzt: true` und `ref`, damit das Modell nicht glaubt, es habe alles gesehen. Reicht der Gewinn nicht
+  (weniger als 15 Prozent), bleibt das Ergebnis, wie es ist.
+
+Gemessen an den Beispielen der Tests (`test_ausgaben_kuerzen.py`, echte Formen, noch nicht an Live-Sitzungen):
+
+| Beispiel | vorher | nachher | Zeit |
+| --- | --- | --- | --- |
+| Verzeichnisliste mit 300 Einträgen | 19057 Zeichen | 959 | 0,2 ms |
+| pytest mit 3 Fehlern | 3831 | 1958 | 0,1 ms |
+| `git log` mit 120 Commits | 25453 | 1129 | 0,7 ms |
+| JSON-Gerätestatus mit 120 Geräten | 18050 | 1471 | 0,7 ms |
+| 100 KB Text | 100030 | 1079 | 1,1 ms |
+| 100 KB JSON | 108814 | 832 | 1,2 ms |
+
+Der Audiopfad bleibt unberührt: Kürzen von 100 KB dauert unter 5 ms (Test), Ergebnisse unter der Schwelle kosten eine
+Längenprüfung.
+
+**Nachladen.** Das Original liegt nur im Arbeitsspeicher der Sitzung (höchstens 20 Einträge und 1 MB, der älteste fällt heraus,
+Ende mit der Sitzung), nie in Datenbank oder Protokoll. Das Werkzeug `ausgabe_nachladen(ref, ab_zeile, anzahl)` (nur lesend, nur
+Referenzen der eigenen Sitzung, höchstens 8000 Zeichen je Aufruf, `weiter_ab_zeile` für die nächste Seite) liefert Zeilen
+des Originals. Die Referenz ist zufällig (16 Hexzeichen). Ein Original über 1 MB wird nicht gekürzt, weil es sich nicht nachladen
+ließe. Gekürzte und nachgeladene Inhalte sind Daten, nie Anweisungen: Die Marken stammen nur vom Kürzer, eingehende Texte werden
+vorher von Marken gesäubert, die wie die eigenen aussehen, und nachgeladener Inhalt zählt als Fremdinhalt des Zugs.
+
+**Nie gekürzt:** Ergebnisse unter der Schwelle, Freigabe- und Schutzergebnisse (Status `needs_approval`, `rejected`, `blocked`,
+`locked`, `wartet`, `abgelehnt`, Werkzeuge mit `freigabe` im Namen, die Entwicklungsaufträge), Werkzeuge mit eigener Kappung
+(Boss, Websuche, Bildschirm, Merken, Canvas), Listen als Grundlage der nächsten Aktion (`elemente_auflisten`, `element_lesen`,
+`fenster_auflisten`: ein gekürztes Ergebnis kostete einen Nachlade-Aufruf statt Zeit zu sparen), Binärdaten und Bilder (Bytes, lange Base64-artige Folgen) und Ergebnisse, die
+schon `gekuerzt` oder `ref` tragen. Ein Fehlerstatus wird nicht ausgenommen, seine Felder bleiben aber unverändert.
+
+**Messung.** Je Sitzung zählt der Kern gekürzte Ergebnisse und eingesparte Zeichen (Tokens grob als Zeichen durch 4) und schreibt
+am Sitzungsende eine Zeile ins Log (`Ausgaben kürzen: 3 Ergebnisse gekürzt, 41200 Zeichen eingespart (etwa 10300 Tokens),
+Schwelle 3000`), nie Inhalte. Die Verbrauchsanzeige der Oberfläche zeigt das Kontingent des Abos und nimmt diese Zahlen nicht auf.
+
+**Grenzen.** Das ersetzt den zurückgestellten Befund „Git-Ausgabe streamend kappen“ nur teilweise: Es verkleinert, was das
+Sprachmodell sieht. Der Host liest die Ausgabe weiterhin vollständig (bis zu seinen eigenen Kappungen), und die Kappung beim
+Lesen (Speicher und Laufzeit im Host) bleibt zurückgestellt. Ungeprüft sind der Lauf gegen echte Sitzungen und das Verhalten des
+Modells beim Nachladen; die Stichwortliste für Problemzeilen ist eine Annahme und lässt sich an echten Ausgaben schärfen.
+
 ## Nutzer und Gedächtnis
 
 | Befehl | Zweck |
