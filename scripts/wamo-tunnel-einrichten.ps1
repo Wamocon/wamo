@@ -153,8 +153,10 @@ foreach ($ordner in @((Join-Path $Repo "scripts"), (Join-Path $Repo "host"))) {
 
 Write-Host "== 6. Geplante Aufgabe '$Aufgabe' (bei Anmeldung, nur $env:USERNAME)"
 $konto = "$env:USERDOMAIN\$env:USERNAME"
-$aktion = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Skript`"" `
+# Start über conhost.exe --headless: Ist Windows Terminal das Standardterminal (Windows 11), blitzt bei jedem Start von
+# powershell.exe ein Terminalfenster auf, auch mit -WindowStyle Hidden. Mit --headless gibt es gar kein Fenster.
+$aktion = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot "System32\conhost.exe") `
+  -Argument "--headless $(Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Skript`"" `
   -WorkingDirectory $Repo
 # Zwei Auslöser: bei der Anmeldung und danach alle 5 Minuten. Endet der Überwacher unbemerkt (0xC000013A beim Abmelden
 # oder Schließen der Konsole), startet ihn die Aufgabe spätestens nach 5 Minuten neu; läuft er noch, ignoriert die
