@@ -59,6 +59,10 @@
 .bk-punkt:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .bk-punkt[aria-expanded="true"] { background: color-mix(in srgb, var(--ink) 14%, transparent); box-shadow: 0 0 0 2px var(--ink); }
 .bk-punkt:hover, .bk-punkt:focus-visible, .bk-punkt[aria-expanded="true"] { z-index: 2; }
+/* Windows-Kontrastdesign: Schatten und Hintergründe fallen weg, die Auswahl zeigt sich dann als Kontur in der Systemfarbe Highlight */
+@media (forced-colors: active) {
+  .bk-punkt[aria-expanded="true"] { outline: 2px solid Highlight; outline-offset: 1px; }
+}
 
 /* Name am Punkt bei Zeiger, Fokus und Auswahl (für Screenreader trägt der Button schon die Beschriftung) */
 .bk-name {

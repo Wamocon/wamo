@@ -36,27 +36,29 @@
 }
 .vg-status[data-status="geplant"], .vg-status[data-status="wartet_freigabe"], .vg-status[data-status="abgebrochen"] { color: var(--ink-soft); }
 .vg-status[data-status="laeuft"], .vg-status[data-status="pruefen"] { border-color: var(--accent); }
-.vg-status[data-status="fertig"] { background: #ffffff; border-color: #000000; color: #000000; }
-.vg-status[data-status="fehler"] { background: var(--accent); border-color: var(--accent); color: #000000; }
+.vg-status[data-status="fertig"] { background: var(--wmc-white); border-color: var(--wmc-black); color: var(--wmc-black); }
+.vg-status[data-status="fehler"] { background: var(--accent); border-color: var(--accent); color: var(--wmc-black); }
 
 /* Marken: Form zusätzlich zur Farbe */
 .vg-marke { width: 16px; height: 16px; flex: none; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .vg-marke-laeuft circle { stroke: var(--rule-strong); }
 .vg-marke-laeuft .vg-bogen { stroke: var(--accent); stroke-width: 2.4; transform-origin: 8px 8px; animation: spin 900ms linear infinite; }
-.vg-marke-fertig circle { fill: #ffffff; stroke: #000000; stroke-width: 1.4; }
-.vg-marke-fertig path { stroke: #000000; stroke-width: 2.2; }
+.vg-marke-fertig circle { fill: var(--wmc-white); stroke: var(--wmc-black); stroke-width: 1.4; }
+.vg-marke-fertig path { stroke: var(--wmc-black); stroke-width: 2.2; }
 .vg-marke-wartet circle, .vg-marke-wartet path { stroke: var(--rule-strong); }
 .vg-marke-wartet path { stroke-width: 2; }
 .vg-marke-fehler rect { fill: var(--accent); stroke: none; }
-.vg-marke-fehler path { stroke: #000000; stroke-width: 2.2; }
+.vg-marke-fehler path { stroke: var(--wmc-black); stroke-width: 2.2; }
 .vg-marke-offen circle, .vg-marke-aus circle, .vg-marke-aus path { stroke: var(--rule-strong); }
 
-/* Balken: Bahn grau, Füllung rot (grau, solange der Vorgang wartet oder steht) */
+/* Balken: Bahn grau, Füllung rot (grau, solange der Vorgang wartet oder steht). Die Füllung ist immer so breit wie die Bahn und
+   rückt per translateX ein (Prozent, Vorgaenge.tsx): Das kostet kein Layout (bis zu 60 Balken je Karte), und das runde Ende
+   der Füllung bleibt unverzerrt, was ein scaleX nicht leistet. Die Bahn schneidet den Rest ab. */
 .vg-balken { height: 8px; border-radius: 4px; background: var(--rule); overflow: hidden; }
 .vg-balken[data-klein] { height: 5px; border-radius: 3px; }
 .vg-fuell {
-  display: block; height: 100%; border-radius: inherit; background: var(--accent);
-  transition: width 400ms var(--ease-out);
+  display: block; width: 100%; height: 100%; border-radius: inherit; background: var(--accent);
+  transition: transform 400ms var(--ease-out);
 }
 .vg-balken[data-ton="still"] .vg-fuell { background: var(--rule-strong); }
 
@@ -131,4 +133,14 @@
 @media (prefers-reduced-motion: reduce) {
   .vg-marke-laeuft .vg-bogen { animation: none; }
   .vg-fuell { transition: none; }
+}
+
+/* Windows-Kontrastdesign: Hintergrundfarben fallen weg, die Füllung bekäme sonst dieselbe Farbe wie die Bahn. Sie bleibt in der
+   Systemfarbe Highlight (grau, solange der Vorgang wartet), die Bahn bekommt einen Rand. Kanten, die sonst nur ein Schatten
+   zeichnet (laufender Schritt), werden zur Kontur. */
+@media (forced-colors: active) {
+  .vg-balken { border: 1px solid CanvasText; background: Canvas; }
+  .vg-fuell { forced-color-adjust: none; background: Highlight; }
+  .vg-balken[data-ton="still"] .vg-fuell { background: GrayText; }
+  .vg-schritte li[data-status="laeuft"] { outline: 2px solid Highlight; outline-offset: -2px; }
 }

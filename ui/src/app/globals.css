@@ -592,7 +592,7 @@ p, li { text-wrap: pretty; }
   padding: 3px 10px; border-radius: 999px; background: var(--ink); color: var(--bg);
   font: 700 13px/1.2 var(--font-wmc); letter-spacing: 0.04em; white-space: nowrap;
 }
-.canvas-chip[data-art="fehler"] { background: var(--accent); color: #000000; }
+.canvas-chip[data-art="fehler"] { background: var(--accent); color: var(--wmc-black); }
 .canvas-chip:empty { padding: 0; margin-right: -8px; } /* leer ohne Breite, der Abstand zum Knopf fällt mit weg */
 .canvas-code pre { margin: 0; padding: 16px; overflow-x: auto; font-size: 14px; line-height: 1.6; }
 .canvas-code code, .canvas-doc code { font-family: var(--font-code); }

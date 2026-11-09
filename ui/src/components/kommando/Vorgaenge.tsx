@@ -107,7 +107,7 @@ function Balken({ anteil, ton, text, benanntNach, name, klein }: BalkenProps) {
       aria-labelledby={benanntNach}
       aria-label={benanntNach ? undefined : name}
     >
-      <span className="vg-fuell" style={{ width: `${p}%` }} />
+      <span className="vg-fuell" style={{ transform: `translateX(${p - 100}%)` }} />
     </div>
   );
 }
