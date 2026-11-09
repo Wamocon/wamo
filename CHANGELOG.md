@@ -67,6 +67,11 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Gerätedienst: Der Eintrag „WMC JBL ULTIMATE“ (192.168.178.90) steht nicht mehr in `geraete.toml.example`, in der Doku und in den
+  Beispieldaten. Das Gerät war am 21.10.2026 bei der Erkundung sichtbar, ist im Büronetz aber nicht vorhanden und meldete dort dauerhaft
+  eine Störung. Der Treiber `upnp-renderer` bleibt für künftige Lautsprecher erhalten. Auf Sokrates-2 ist der Eintrag am 09.11.2026
+  aus `/etc/wamo-geraete/geraete.toml` entfernt (Sicherung `geraete.toml.vor-jbl-0911`); die Ausgangsregel für die Adresse bleibt
+  bis zum nächsten Lauf von `wamo-geraete-einrichten.sh` bestehen und ist wirkungslos.
 - Status-Konto auf Spark-Servern mit globaler `AllowUsers`-Liste (Befund vom 09.11.2026 auf Caesar): Das Einrichtungsskript
   `infra/sparks/wamo-status-einrichten.sh` richtete `wamo-status` ein, doch sshd wies das Konto mit „Permission denied (publickey)“
   ab, weil eine globale Liste nur Admin-Konten erlaubt. Der Drop-in setzt jetzt im Block `Match User wamo-status` eine eigene

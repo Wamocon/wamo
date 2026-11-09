@@ -1,5 +1,5 @@
 """UPnP-SOAP mit fester Aktionsliste: FRITZ!Box (IGD, Status ohne Anmeldung; TR-064 für Status, Geräteliste und Hostliste
-nur mit Zugang), JBL-Lautsprecher und Fernseher (RenderingControl, AVTransport).
+nur mit Zugang), Lautsprecher und Fernseher (RenderingControl, AVTransport).
 
 Es gibt keinen Weg, eine beliebige SOAP-Aktion aufzurufen: Jede Aktion steht als Schlüssel in AKTIONEN mit festem
 Pfad, Diensttyp, Namen und festen Argumentnamen; Werte sind nur Ganzzahlen oder feste Wörter. Insbesondere

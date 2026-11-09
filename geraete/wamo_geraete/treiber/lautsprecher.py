@@ -1,4 +1,4 @@
-"""Lautsprecher über UPnP-RenderingControl (JBL PartyBox Ultimate "WMC JBL ULTIMATE", 192.168.178.90:49152).
+"""Lautsprecher über UPnP-RenderingControl (derzeit ist kein Lautsprecher in der Konfiguration eingetragen).
 
 Status: Lautstärke, stumm, Wiedergabe. Steuern (change): Lautstärke setzen (höchstens max_lautstaerke, Standard 70,
 damit eine eingeschleuste Anweisung den Raum nicht beschallt), lauter, leiser, stumm, laut. Kein Abspielen fremder

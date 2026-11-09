@@ -109,17 +109,6 @@ eingaenge = ["tv", "hdmi1", "hdmi2", "hdmi3", "hdmi4"]
 # max_lautstaerke = 50
 
 [[geraet]]
-kennung = "lautsprecher"
-name = "WMC JBL ULTIMATE"
-klasse = "lautsprecher"
-treiber = "upnp-renderer"        # JBL PartyBox Ultimate, UPnP RenderingControl
-adresse = "192.168.178.90"
-port = 49152
-steuer_pfad = "/upnp/control/rendercontrol1"
-transport_pfad = "/upnp/control/rendertransport1"
-max_lautstaerke = 70
-
-[[geraet]]
 kennung = "steckdose-1"
 name = "Steckdose 1 (0470)"
 klasse = "steckdose"

@@ -2,7 +2,7 @@
 
 Gemeinsame Bürogeräte für alle Profile über den Kern auf Sokrates-2: Server-Status (Sokrates-1, Sokrates-2, Caesar),
 Drucker und Scanner (Brother MFC-L3750CDW), Router (FRITZ!Box 7590), NAS (WMC_NAS1, WMC-Testelite), Fernseher
-(LG OLED83B49LA), Lautsprecher (JBL PartyBox Ultimate), Steckdosen (drei Shelly Plug S Gen3), iMac (nur Anwesenheit).
+(LG OLED83B49LA), Steckdosen (drei Shelly Plug S Gen3), iMac (nur Anwesenheit).
 Dazu, sobald eingetragen, Switches und Access Points (SNMPv3, nur lesen). Der Dienst erkennt außerdem passiv, welche Geräte
 im Netz er nicht kennt. Persönliche Laptops gehören nicht hierher (die laufen über den Tunnel je Gerät).
 

@@ -68,7 +68,7 @@ def alle() -> list[dict]:
         roh("nas-1", "nas", "WMC_NAS1", erreichbar=True, eingerichtet=True, freigaben=["daten"], scanziel=False),
         roh("nas-testelite", "nas", "WMC-Testelite", erreichbar=True, eingerichtet=False, freigaben=[], scanziel=False),
         roh("fernseher", "fernseher", "Fernseher LG OLED 83 Zoll", erreichbar=True, an=True, gekoppelt=False),
-        roh("lautsprecher", "lautsprecher", "WMC JBL ULTIMATE", status="error", summary="Gerät antwortet nicht 192.168.178.90"),
+        roh("lautsprecher", "lautsprecher", "Lautsprecher Beispiel", status="error", summary="Gerät antwortet nicht 192.168.178.90"),
         roh("steckdose-1", "steckdose", "Steckdose 1 (0470)", erreichbar=True, an=True, leistung_w=12.3, spannung_v=230.0,
             temperatur_c=31.0, energie_kwh=4.2),
         roh("steckdose-2", "steckdose", "Steckdose 2 (2F90)", erreichbar=True, an=False, leistung_w=0.0),
