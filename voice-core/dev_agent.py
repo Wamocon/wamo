@@ -85,6 +85,8 @@ from memory import normalize_uuid, shared_database
 from persona import clean_inline
 from schluessel import schwaerzen
 from teilen import eigene_fassung
+from vorgaenge import Vorgaenge
+from vorgang_stream import EntwicklungsVorgang
 from werkzeugkarte import AUFTRAGSARTEN, KARTEN, MODELLE_ERLAUBT, anweisungsblock, art_beschreibung, modell_fuer
 
 try:  # liefert der Modellzugang (Karte "Modellzugang"): {"typ": "oauth" | "api", "wert": str[, "workspace"]} oder None
@@ -560,16 +562,19 @@ class Job:
     ereignisse: dict[str, dict] = field(default_factory=dict)  # wamo-Ereignisse des Dispatchers (sokrates2)
     repo: str | None = None  # Ziel-Repo owner/name: begrenzt das GitHub-Token auf Sokrates-2 auf dieses Repo
     gespeichert_id: str | None = None  # Ergebnis als Canvas-Dokument (teilbar, Migration 0003)
+    fuehrung: EntwicklungsVorgang | None = None  # die Anzeige unter Vorgänge (vorgang_stream.py); None ohne Registry
 
     def __post_init__(self):
         self.dir = JOBS_DIR / self.id
 
 
 class DevAgent:
-    """Ein Objekt pro Gespräch. Braucht den PipelineTask, um Karten, Canvas und Meldungen zu senden."""
+    """Ein Objekt pro Gespräch. Braucht den PipelineTask, um Karten, Canvas und Meldungen zu senden.
+    vorgaenge: Registry der Sitzung (vorgaenge.py); jeder Auftrag erscheint dort als Vorgang."""
 
-    def __init__(self, memory, auftraggeber: str, ort: str | None = None):
+    def __init__(self, memory, auftraggeber: str, ort: str | None = None, vorgaenge: Vorgaenge | None = None):
         self._memory = memory
+        self._vorgaenge = vorgaenge
         self._auftraggeber = clean_inline(auftraggeber, 60) or "Admin"
         self._ort = ort or entwicklung_ort() or "sokrates2"
         if self._ort == "lokal":
@@ -594,6 +599,23 @@ class DevAgent:
 
     def attach(self, pipeline_task) -> None:
         self._task = pipeline_task
+
+    # ---------- Vorgänge (vorgaenge.py): reine Anzeige, ein Fehler darin hält den Auftrag nie auf ----------
+    def _vorgang_anlegen(self, job: Job) -> None:
+        if self._vorgaenge is None:
+            return
+        try:
+            job.fuehrung = EntwicklungsVorgang(self._vorgaenge, f"{KARTEN[job.art].titel}: {job.projekt.name}", job.id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Entwicklungsauftrag {}: Vorgang nicht angelegt ({})", job.id, type(e).__name__)
+
+    def _fuehrung(self, job: Job, aktion: str, *args, **kwargs) -> None:
+        if job.fuehrung is None:
+            return
+        try:
+            getattr(job.fuehrung, aktion)(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Entwicklungsauftrag {}: Vorgang nicht gemeldet ({})", job.id, type(e).__name__)
 
     # ---------- Werkzeuge für das Sprachmodell ----------
     def schemas(self) -> list[FunctionSchema]:
@@ -661,6 +683,7 @@ class DevAgent:
             return
         job = Job(id=uuid.uuid4().hex[:16], auftrag=auftrag, projekt=projekt, art=art, repo=repo)
         self._jobs[job.id] = job
+        self._vorgang_anlegen(job)
         karte = {"type": "auftrag", "job": job.id, "projekt": projekt.name, "art": art,
                  "auftrag": clean_inline(auftrag, MAX_TASK_CHARS)}
         if repo:
@@ -707,6 +730,7 @@ class DevAgent:
             return
         if data.get("entscheidung") != "ja":
             self._jobs.pop(job.id, None)
+            self._fuehrung(job, "verwerfen")
             logger.info("Entwicklungsauftrag {} in der Oberfläche verworfen", job.id)
             return
         if self._running and not self._running.done():
@@ -747,6 +771,7 @@ class DevAgent:
                     current = []
                 write_json_atomic(path, [*current, req["id"]])
             job.steps.append(f"Freigegeben: {req['grund']}")
+            self._fuehrung(job, "freigabe_entschieden", req, True, job.pending)
             if req.get("tool") == ZUGANG_TOOL:  # Projekt mit diesen Zugängen freigegeben: Auftrag neu starten
                 self._running = asyncio.create_task(self._run(job, job.auftrag, resume=False))
                 return
@@ -759,6 +784,7 @@ class DevAgent:
             self._running = asyncio.create_task(self._run(job, follow_up, resume=True))
         else:
             job.steps.append(f"Abgelehnt: {req['grund']}")
+            self._fuehrung(job, "freigabe_entschieden", req, False, job.pending, lauf_folgt=False)
             await self._canvas(job)
 
     # ---------- Ausführung ----------
@@ -780,11 +806,13 @@ class DevAgent:
 
         if not await guard_selftest(job.projekt, job.dir):
             job.status = "nicht gestartet (Wächter-Selbsttest fehlgeschlagen)"
+            self._fuehrung(job, "lauf_endet", job.status, {})
             await self._canvas(job)
             await self._announce(job)
             return
 
         job.status = "läuft"
+        self._fuehrung(job, "starten", resume)
         job.steps.append("Weiter nach Freigabe" if resume else f"Start in {job.projekt} ({KARTEN[job.art].titel})")
         await self._canvas(job)
         logger.info("Entwicklungsauftrag {} startet ({}, {})", job.id, job.projekt.name, job.art)
@@ -827,7 +855,9 @@ class DevAgent:
             if proc is not None and proc.returncode not in (0, None) and stderr_tail:
                 logger.warning("Claude Code meldete: {}", " | ".join(stderr_tail)[-1500:])
 
+        self._fuehrung(job, "lauf_endet_vorlaeufig")
         await self._collect_pending(job, pending_file)
+        self._fuehrung(job, "lauf_endet", job.status, job.pending)
         await self._canvas(job)
         await self._announce(job)
 
@@ -868,6 +898,7 @@ class DevAgent:
                              "(claude setup-token) oder einen API-Schlüssel hinterlegen und den Auftrag danach neu stellen.")
             logger.warning("Entwicklungsauftrag {} nicht gestartet: kein Claude-Zugang für Profil {}", job.id,
                            str(getattr(self._memory, "user_id", None) or "?")[:8])
+            self._fuehrung(job, "lauf_endet", job.status, {})
             await self._canvas(job)
             await self._announce(job)
             return
@@ -875,6 +906,7 @@ class DevAgent:
         self._eigener_zugang = zugang_kopf.get("zugang") == "folgt"
         job.ereignisse = {}
         job.status = "läuft"
+        self._fuehrung(job, "starten", resume)
         job.steps.append("Weiter nach Freigabe" if resume else f"Start auf Sokrates-2 in {job.projekt} ({KARTEN[job.art].titel})")
         await self._canvas(job)
         logger.info("Entwicklungsauftrag {} startet auf Sokrates-2 ({}, {})", job.id, job.projekt.name, job.art)
@@ -929,7 +961,9 @@ class DevAgent:
                 logger.warning("Sokrates-2 meldete: {}", " | ".join(stderr_tail)[-1500:])
 
         await self._kontingent_abschliessen()
+        self._fuehrung(job, "lauf_endet_vorlaeufig")
         await self._collect_pending(job, None)
+        self._fuehrung(job, "lauf_endet", job.status, job.pending)
         await self._canvas(job)
         await self._announce(job)
 
@@ -1059,6 +1093,7 @@ class DevAgent:
                 if ev.get("is_error") and any(k in job.result.lower() for k in AUTH_FEHLER):
                     job.steps.append("Anthropic hat den Claude-Zugang abgelehnt (abgelaufen oder widerrufen?). "
                                      "In der Karte Modellzugang neu hinterlegen.")
+            self._fuehrung(job, "ereignis", ev, job.steps)  # Aufgabenliste, Selbsttest: der Vorgang unter Vorgänge
             if time.monotonic() - last_canvas > 1.5:
                 last_canvas = time.monotonic()
                 await self._canvas(job)
