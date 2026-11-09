@@ -130,6 +130,55 @@ export type FreigabePunkt = {
 /** Entwicklungsauftrag, den das Profil vor dem Start bestätigen muss (Servernachricht "auftrag"). */
 export type Auftrag = { job: string; projekt: string; art: string; auftrag: string };
 
+/**
+ * Vorgang (voice-core/vorgaenge.py): was WAMO gerade abarbeitet, mit Gesamtfortschritt, Schritten und Prüfkriterien.
+ * Jede Nachricht trägt den ganzen Stand; die Oberfläche ersetzt den Vorgang gleicher Kennung.
+ */
+export const VORGANG_ARTEN = ["aufgabe", "entwicklung", "geraet", "sonstiges"] as const;
+export const VORGANG_STATUS = ["geplant", "laeuft", "wartet_freigabe", "pruefen", "fertig", "fehler", "abgebrochen"] as const;
+export const VORGANG_SCHRITT_STATUS = ["offen", "laeuft", "fertig", "fehler", "uebersprungen", "wartet_freigabe"] as const;
+export const VORGANG_MAX_SCHRITTE = 60;
+export const VORGANG_MAX_KRITERIEN = 20;
+export type VorgangArt = (typeof VORGANG_ARTEN)[number];
+export type VorgangStatus = (typeof VORGANG_STATUS)[number];
+export type VorgangSchrittStatus = (typeof VORGANG_SCHRITT_STATUS)[number];
+export type VorgangSchritt = {
+  /** Stelle in der Liste, ab 1 */
+  nr: number;
+  titel: string;
+  status: VorgangSchrittStatus;
+  /** 0 bis 1 */
+  fortschritt: number;
+  detail: string | null;
+};
+export type VorgangKriterium = {
+  text: string;
+  /** true: Haken, false: nicht erfüllt, null: noch offen */
+  erfuellt: boolean | null;
+  hinweis: string | null;
+};
+export type Vorgang = {
+  id: string;
+  titel: string;
+  art: VorgangArt;
+  status: VorgangStatus;
+  /** Beginn der Arbeit (Millisekunden seit 1970, Uhr des Kerns) */
+  gestartetMs: number;
+  beendetMs: number | null;
+  /** Mittel der Schrittfortschritte, 0 bis 1 */
+  gesamt: number;
+  /** geschätzte Restzeit in Sekunden; null, solange keine Schätzung möglich ist */
+  restzeitS: number | null;
+  schritte: VorgangSchritt[];
+  kriterien: VorgangKriterium[];
+  runde: number | null;
+  maxRunden: number | null;
+  /** Kennung der Freigabekarte (Freigaben.tsx), wenn der Vorgang auf sie wartet */
+  freigabeId: string | null;
+  /** Kennung des Canvas-Elements mit dem (Zwischen-)Ergebnis */
+  canvasId: string | null;
+};
+
 /** Lichtrahmen am Laptop (host/wamo_host.py, voice-core/activity.py): nur ganze Zahlen in Bildschirmpixeln, nie Titel. */
 export type Rechteck = { x: number; y: number; b: number; h: number };
 export type Punkt = { x: number; y: number };
@@ -180,6 +229,7 @@ export type ServerMessage =
   | { type: "canvas"; item: CanvasItem }
   | ({ type: "markierung" } & Markierung)
   | ({ type: "aktivitaet" } & Pick<Activity, "id" | "name" | "detail" | "status">)
+  | { type: "vorgang"; vorgang: Vorgang }
   | { type: "sprecher"; index: number }
   | { type: "leiser_stopp"; sofort?: boolean }
   | { type: "stimme_leiser"; an: boolean }
@@ -350,6 +400,54 @@ function liveBildFrame(m: Roh): LiveBildFrame | null {
   return { seq: m.seq, monitor: m.monitor, monitore: m.monitore, breite: m.breite, hoehe: m.hoehe, jpeg, restS: m.rest_s };
 }
 
+const zahl = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const kurzerText = (v: unknown, max: number): string | null => (isStr(v) && v.trim() ? sauber(v.trim(), max, false) : null);
+const anteil = (v: unknown) => (zahl(v) ? Math.round(Math.max(0, Math.min(1, v)) * 1000) / 1000 : 0);
+
+/** Ein Vorgang des Kerns: feste Felder, Wertebereiche, Grenzen und bereinigte Texte; ohne Kennung, Titel oder Status null. */
+function vorgang(v: unknown): Vorgang | null {
+  if (!isObj(v) || !isStr(v.id) || !v.id || !isStr(v.titel) || !v.titel.trim() || !oneOf(v.status, VORGANG_STATUS)) return null;
+  const schritte: VorgangSchritt[] = [];
+  for (const s of Array.isArray(v.schritte) ? v.schritte : []) {
+    if (schritte.length >= VORGANG_MAX_SCHRITTE) break;
+    if (!isObj(s) || !isStr(s.titel) || !s.titel.trim()) continue;
+    schritte.push({
+      nr: schritte.length + 1,
+      titel: sauber(s.titel.trim(), 160, false),
+      status: oneOf(s.status, VORGANG_SCHRITT_STATUS) ? s.status : "offen",
+      fortschritt: anteil(s.fortschritt),
+      detail: kurzerText(s.detail, 200),
+    });
+  }
+  const kriterien: VorgangKriterium[] = [];
+  for (const k of Array.isArray(v.kriterien) ? v.kriterien : []) {
+    if (kriterien.length >= VORGANG_MAX_KRITERIEN) break;
+    if (!isObj(k) || !isStr(k.text) || !k.text.trim()) continue;
+    kriterien.push({
+      text: sauber(k.text.trim(), 160, false),
+      erfuellt: typeof k.erfuellt === "boolean" ? k.erfuellt : null,
+      hinweis: kurzerText(k.hinweis, 200),
+    });
+  }
+  const ergebnis = isObj(v.ergebnis) ? v.ergebnis : null;
+  return {
+    id: v.id.slice(0, 100),
+    titel: sauber(v.titel.trim(), 200, false),
+    art: oneOf(v.art, VORGANG_ARTEN) ? v.art : "sonstiges",
+    status: v.status,
+    gestartetMs: zahl(v.gestartet_ms) && v.gestartet_ms >= 0 ? Math.round(v.gestartet_ms) : 0,
+    beendetMs: zahl(v.beendet_ms) && v.beendet_ms >= 0 ? Math.round(v.beendet_ms) : null,
+    gesamt: anteil(v.gesamt),
+    restzeitS: ganzIn(v.restzeit_s, 0, 359_999) ? v.restzeit_s : null,
+    schritte,
+    kriterien,
+    runde: ganzIn(v.runde, 1, 99) ? v.runde : null,
+    maxRunden: ganzIn(v.max_runden, 1, 99) ? v.max_runden : null,
+    freigabeId: isStr(v.freigabe_id) && v.freigabe_id ? v.freigabe_id.slice(0, 100) : null,
+    canvasId: ergebnis && isStr(ergebnis.canvas_id) && ergebnis.canvas_id ? ergebnis.canvas_id.slice(0, 100) : null,
+  };
+}
+
 /** Prüft eine Servernachricht und gibt sie typisiert zurück; alles Unbekannte wird null. */
 export function parseServerMessage(data: unknown): ServerMessage | null {
   if (!isObj(data) || !isStr(data.type)) return null;
@@ -388,6 +486,10 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         detail: isStr(m.detail) ? sauber(m.detail, 200, false) : "",
         status: m.status,
       };
+    case "vorgang": {
+      const v = vorgang(m.vorgang);
+      return v ? { type: "vorgang", vorgang: v } : null;
+    }
     case "sprecher":
       return typeof m.index === "number" && Number.isFinite(m.index)
         ? { type: "sprecher", index: Math.max(0, Math.min(7, Math.trunc(m.index))) }
