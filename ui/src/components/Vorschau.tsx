@@ -11,6 +11,7 @@ import { WamoAnsicht } from "@/components/WamoAnsicht";
 import { bueroAttrappeSetzen } from "@/lib/bueroApi";
 import { bildAnzeigen, liveBildLoeschen } from "@/lib/liveBild";
 import { stilleText } from "@/lib/mikrofon";
+import type { Vorgang, VorgangSchritt } from "@/lib/nachrichten";
 import { bereiteText, schluesselHinweis } from "@/lib/textEingabe";
 import type { WamoAktionen } from "@/lib/useWamo";
 import {
@@ -56,6 +57,9 @@ import {
  *   /?vorschau=1&gemerkt=gemeinsam  zusätzlich ein gemeinsamer Gedächtniseintrag
  *   /?vorschau=1&sitzung=45         Gespräch läuft seit 45 Minuten (Sitzungsfortschritt)
  *   /?vorschau=1&text=aus           Texteingabe gesperrt (ohne Sendefunktion, so ist der heutige Stand)
+ *   /?vorschau=1&code=1             zusätzlich ein Code-Element im Canvas (Kopierknopf mit Bestätigung "Kopiert")
+ *   /?vorschau=1&vorgaenge=1        Tafel "Vorgänge" mit fünf Beispielen (läuft mit Schritten und Kriterien, wartet auf Freigabe,
+ *                                   fertig, fehlgeschlagen, abgebrochen); der Reiter "Vorgänge" ist am Handy der vierte
  *
  * Einstellungen (Adresse mit Hash, zum Beispiel /?vorschau=1&rolle=admin#einstellungen/verbrauch):
  *   &kontingent=beispiel            Kontingent mit drei Limits (sonst leer: noch keine Angaben)
@@ -113,6 +117,106 @@ const DOKUMENT: CanvasItem = {
   title: "Kurzbericht Testlauf",
   text: "## Ergebnis\nDrei von vier Testfällen sind **bestanden**.\n- Zugang stabil\n- Export braucht `pdf-engine` 2.1",
 };
+
+const CODE: CanvasItem = {
+  id: "vorschau-code",
+  kind: "code",
+  title: "Abfrage mit JOIN",
+  language: "sql",
+  text: "select t.id, t.titel, p.name\nfrom testfaelle t\njoin projekte p on p.id = t.projekt_id\nwhere t.status = 'offen';",
+};
+
+/** Beispielvorgänge für die Tafel "Vorgänge" (Vorschau mit &vorgaenge=1). Der laufende verweist auf das Dokument im Canvas. */
+function beispielVorgaenge(): Vorgang[] {
+  const jetzt = Date.now();
+  const basis = { restzeitS: null, runde: null, maxRunden: null, freigabeId: null, canvasId: null, beendetMs: null };
+  const schritt = (nr: number, titel: string, status: VorgangSchritt["status"], fortschritt: number, detail: string | null = null): VorgangSchritt => ({
+    nr,
+    titel,
+    status,
+    fortschritt,
+    detail,
+  });
+  return [
+    {
+      ...basis,
+      id: "vorschau-v1",
+      titel: "Umsetzung: PDF-Export im Projekt Atlas",
+      art: "entwicklung",
+      status: "laeuft",
+      gestartetMs: jetzt - 4 * 60_000,
+      gesamt: 0.52,
+      restzeitS: 142,
+      runde: 2,
+      maxRunden: 3,
+      canvasId: "vorschau-dokument",
+      schritte: [
+        schritt(1, "Tests schreiben", "fertig", 1),
+        schritt(2, "Umlaute in Dateinamen beheben", "laeuft", 0.55, "Setzt die Ersetzung in der Exportfunktion um"),
+        schritt(3, "Selbsttest und Lint", "offen", 0),
+        schritt(4, "Pull Request vorbereiten", "offen", 0),
+      ],
+      kriterien: [
+        { text: "Selbsttest bestanden", erfuellt: true, hinweis: null },
+        { text: "Keine neuen Lint-Fehler", erfuellt: false, hinweis: "2 Funde in export.py" },
+        { text: "Pull Request geöffnet", erfuellt: null, hinweis: null },
+      ],
+    },
+    {
+      ...basis,
+      id: "vorschau-v2",
+      titel: "Paket pdf-engine aktualisieren",
+      art: "aufgabe",
+      status: "wartet_freigabe",
+      gestartetMs: jetzt - 90_000,
+      gesamt: 0.6,
+      freigabeId: "1",
+      schritte: [
+        schritt(1, "Abhängigkeiten lesen", "fertig", 1),
+        schritt(2, "Freigabe: npm install", "wartet_freigabe", 0, "npm install pdf-engine@2.1"),
+        schritt(3, "Tests ausführen", "offen", 0),
+      ],
+      kriterien: [],
+    },
+    {
+      ...basis,
+      id: "vorschau-v3",
+      titel: "Statusbericht Projekt Atlas",
+      art: "aufgabe",
+      status: "fertig",
+      gestartetMs: jetzt - 20 * 60_000,
+      beendetMs: jetzt - 20 * 60_000 + 135_000,
+      gesamt: 1,
+      canvasId: "vorschau-tabelle",
+      schritte: [schritt(1, "Testfälle lesen", "fertig", 1), schritt(2, "Tabelle bauen", "fertig", 1)],
+      kriterien: [{ text: "Alle offenen Testfälle enthalten", erfuellt: true, hinweis: null }],
+    },
+    {
+      ...basis,
+      id: "vorschau-v4",
+      titel: "Mails mit dem Kalender abgleichen",
+      art: "aufgabe",
+      status: "fehler",
+      gestartetMs: jetzt - 45 * 60_000,
+      beendetMs: jetzt - 44 * 60_000,
+      gesamt: 0.33,
+      schritte: [schritt(1, "Kalender lesen", "fertig", 1), schritt(2, "Postfach öffnen", "fehler", 0.2, "Postfach nicht erreichbar"), schritt(3, "Abgleichen", "uebersprungen", 0)],
+      kriterien: [],
+    },
+    {
+      ...basis,
+      id: "vorschau-v5",
+      titel: "Dokument auf dem Drucker im Büro ausgeben",
+      art: "geraet",
+      status: "abgebrochen",
+      gestartetMs: jetzt - 3 * 60 * 60_000,
+      beendetMs: jetzt - 3 * 60 * 60_000 + 20_000,
+      gesamt: 0,
+      schritte: [],
+      kriterien: [],
+    },
+  ];
+}
 
 /** Attrappenbild für die Vorschau des Live-Bilds: gezeichnetes Fenster, nichts vom echten Bildschirm. */
 function attrappenBild(): string {
@@ -303,7 +407,7 @@ function beispiel(): { state: WamoState; presence: Presence } {
               ablauf: Date.now() + 5 * 60 * 1000,
             },
           ]
-        : param("freigabe") === "1"
+        : param("freigabe") === "1" || param("vorgaenge") === "1"
         ? [
             {
               job: "vorschau",
@@ -327,7 +431,8 @@ function beispiel(): { state: WamoState; presence: Presence } {
             },
           ]
         : [],
-    canvas: leer ? [] : [DOKUMENT, TABELLE],
+    vorgaenge: !leer && param("vorgaenge") === "1" ? beispielVorgaenge() : [],
+    canvas: leer ? [] : param("code") === "1" ? [DOKUMENT, TABELLE, CODE] : [DOKUMENT, TABELLE],
     profil: { name: "Niko", rolle: param("rolle") === "mitglied" ? "mitglied" : "admin" },
     betrieb: !online
       ? null

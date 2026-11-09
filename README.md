@@ -283,6 +283,45 @@ Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo
 unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
 sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
 
+#### Vorgänge: Aufgabenleiste mit Livefortschritt
+
+Die Tafel „Vorgänge“ (rechte Seite, am Handy der Reiter „Vorgänge“) zeigt, was WAMO gerade abarbeitet. Ein Vorgang ist eine
+Boss-Aufgabe (`boss.py`) oder ein Entwicklungsauftrag (`dev_agent.py`, Schritte aus den Aufgabenwerkzeugen von Claude Code in
+`vorgang_stream.py`). Der Kern führt sie in einer Registry je Sitzung (`voice-core/vorgaenge.py`) und schickt bei jeder Änderung
+die Servernachricht
+
+```json
+{"type": "vorgang", "vorgang": {"id": "...", "titel": "...", "art": "aufgabe|entwicklung|geraet|sonstiges",
+ "status": "geplant|laeuft|wartet_freigabe|pruefen|fertig|fehler|abgebrochen", "gestartet_ms": 0, "beendet_ms": null,
+ "gesamt": 0.0, "restzeit_s": null, "schritte": [{"nr": 1, "titel": "...", "status": "...", "fortschritt": 0.0, "detail": null}],
+ "kriterien": [{"text": "...", "erfuellt": true, "hinweis": null}], "runde": null, "max_runden": null,
+ "freigabe_id": null, "ergebnis": {"canvas_id": "..."}}}
+```
+
+Jede Nachricht trägt den ganzen Stand; die Oberfläche ersetzt den Vorgang gleicher Kennung (`ui/src/lib/vorgaenge.ts`, Prüfung in
+`nachrichten.ts`). Fortschritt wird auf vier Nachrichten je Sekunde und Vorgang gedrosselt, ein Statuswechsel geht sofort. Der
+Gesamtfortschritt ist das Mittel der Schrittfortschritte; eine Restzeit gibt es erst ab 10 Prozent und nie ohne feste Zahl der Schritte,
+sie wird nicht erfunden.
+
+Je Vorgang zeigt eine Karte den Titel, den Status als Wort, den Gesamtbalken mit Prozent und Restzeit (bei fertig „Fertig in mm:ss“),
+die nummerierten Schritte mit eigenem Balken (der laufende ist hervorgehoben), die Prüfkriterien (erfüllt, nicht erfüllt, noch offen),
+„Runde n von m“ und zwei Knöpfe: „Zur Freigabe“ springt zur vorhandenen Freigabekarte (Tafel „Aufträge“, Attribut `data-approval`) und
+fokussiert sie, „Ergebnis ansehen“ wählt das Element im Canvas, solange es dort liegt. Beendete Vorgänge stehen im einklappbaren
+Abschnitt „Zuletzt beendet“. Alle Balken sind `role="progressbar"` mit `aria-valuenow` und `aria-valuetext`, der Zustand steht immer
+als Wort da, `prefers-reduced-motion` schaltet die Bewegung ab, die Ansage für Bildschirmleser kommt einmal aus dem Zustand
+(`ansage`). Die Zeitleiste „Werkzeuge“ darunter ist unverändert.
+
+Verlauf: Beim Start fragt die Tafel einmal `GET /wamo/api/vorgaenge` ab (`voice-core/vorgaenge_api.py`, die letzten 20 Vorgänge des
+eigenen Profils, Token mit zweitem Faktor wie bei allen Schnittstellen unter `/wamo/api`). Die Antwort läuft durch dieselbe Prüfung wie
+eine Nachricht. Ein Vorgang ohne Ende gilt im Verlauf als abgebrochen, ein Vorgang der laufenden Sitzung geht dem Verlauf immer vor, und
+ein Fehler bei der Abfrage zeigt einfach keinen Verlauf. Gespeichert wird nur bei einem Statuswechsel (Tabelle `vorgaenge`).
+
+**Migration 0017 ist noch nicht angewendet** (`supabase/migrations/0017_vorgaenge.sql`, Rückweg `.down.sql`, SQL-Test unter
+`supabase/tests/`). Bis dahin speichert der Kern nichts (still, mit einem Hinweis im Protokoll) und der Verlauf bleibt leer; die
+Anzeige der laufenden Sitzung funktioniert auch ohne. In der Entwicklung zeigt `/?vorschau=1&vorgaenge=1` fünf Beispielvorgänge (nur
+`next dev` mit `NEXT_PUBLIC_WAMO_VORSCHAU=1`). Nicht an einem echten Lauf geprüft: Die Schritte aus dem Stream von Claude Code
+sind nur mit aufgezeichneten Streams getestet (`voice-core/testdaten/vorgang_stream.jsonl`).
+
 ### Geräte, Tunnel je Gerät und Geräteverwaltung
 
 Jeder persönliche Laptop hat einen eigenen Rücktunnel zu Sokrates-2: ein Gerät, ein ed25519-Schlüssel, ein Tunnelplatz
@@ -772,6 +811,66 @@ App-Modus (`WAMO_GH_APP_ID`, `WAMO_GH_APP_INSTALLATION_ID`, `WAMO_GH_APP_SCHLUES
 Dispatcher erzeugt je Lauf außerhalb der Sandbox ein kurzlebiges Installations-Token nur mit den Rechten der Auftragsart
 (und, wenn der Auftrag ein Repo nennt, nur für dieses) und widerruft es am Laufende; ohne diese Variablen gelten
 `GH_TOKEN` und `GH_TOKEN_LESEN` wie bisher. Einzelheiten und Anleitung: `infra/sokrates2/README.md`, Abschnitte 2 und 9.
+
+### Abnahme: prüfbares Ziel mit Runden
+
+Ein Entwicklungsauftrag kann ein prüfbares Ziel haben. Er läuft dann in Runden: arbeiten, prüfen, bei Nichterfüllung die nächste
+Runde mit genau den offenen Punkten, bis alles erfüllt ist oder Runden oder Zeit erschöpft sind. Das Ziel muss messbar sein
+("die Tests laufen grün", "die README erklärt die Installation"), nicht "mach es gut". Die Schleife ist eigener Code des Kerns
+(`voice-core/abnahme.py`, Schleife in `dev_agent.py`): WAMO braucht je Kriterium ein Ergebnis, begrenzt Runden und Zeit selbst und
+bleibt unabhängig von der Version von Claude Code. Ohne `abnahme` bleibt alles wie bisher: eine Runde, kein Prüfen.
+
+Das Sprachmodell setzt die Argumente von `entwicklung_vorbereiten`; nennt die Person kein Ziel, leitet es selbst ein bis drei
+Kriterien ab und nennt sie in einem Satz, ohne zusätzliche Rückfrage (Persona-Schalter `WAMO_PERSONA_ABNAHME`, Standard an; `aus`
+bringt den früheren Prompt zurück).
+
+| Argument | Bedeutung |
+| --- | --- |
+| `abnahme` | Liste von höchstens 5 Texten, je höchstens 300 Zeichen (Steuerzeichen entfernt, Doppelte fallen weg) |
+| `max_runden` | Standard 3, hart höchstens 5 |
+| `zeitlimit_min` | Standard 30, hart höchstens 60. Gezählt wird die Arbeitszeit der Läufe und Prüfungen; das Warten auf einen Klick bei einer Freigabe zählt nicht |
+
+Zwei Arten von Kriterien:
+
+- **Aussage** (jeder normale Text): Ein kleines Modell (der günstigste Weg des Profils, im Kern der schlanke Aufruf `llm_anbieter.anfrage`,
+  bei nur Hausmodellen das Hausmodell) beurteilt sie anhand des Abschlussberichts und der Liste der geänderten Dateien (nur was mit
+  Write und Edit geändert wurde). Es antwortet mit strengem JSON `{"erfuellt": true|false, "hinweis": "..."}`. Alles andere
+  (kein JSON, andere Felder, falsche Typen, Fehler, Zeitüberschreitung nach 60 s) zählt als nicht erfüllt. Bericht, Dateinamen und
+  Kriterium stehen als Daten in Blöcken mit einem zufälligen Code, nie als Anweisung. Das ist ein weiches Urteil, kein Beweis.
+- **Befehl** (Eintrag beginnt mit `befehl:`, zum Beispiel `befehl: pytest -q`): Exit 0 heißt erfüllt. Der Text stammt vom Modell und ist
+  nicht vertrauenswürdig, deshalb gilt:
+  - ein einzelner Befehl mit Argumenten, aufgerufen ohne Shell; keine Zeichen für Verkettung, Umleitung oder Ersetzung (Semikolon, &amp;,
+    senkrechter Strich, Backtick, Dollarzeichen, spitze Klammern, Backslash), keine Zeilenumbrüche und Steuerzeichen,
+    Anführungszeichen nur paarweise;
+  - nur Programme einer Allowlist mit festen Unterbefehlen: `pytest`, `python -m pytest|unittest|mypy|compileall`, `npm|pnpm|yarn test`
+    und `run test|build|lint|typecheck|check|verify`, `node --test`, `go test|vet|build`, `cargo test|check|build|clippy`,
+    `dotnet test|build`, `make test|check|lint|build`, `ruff check` (ohne `--fix`), `mypy`, `tsc`, `eslint` (ohne `--fix`), `grep`;
+    kein Programm mit Pfad, kein `.cmd` und `.bat`, nichts aus dem Projektordner selbst;
+  - nur Pfade im Projektordner (kein `..`, kein `~`, kein vorhandener Pfad außerhalb, auch nicht über einen Link im Projekt);
+  - jeder Befehl geht vorher durch den Wächter (`dev_guard.decide`, wie ein Bash-Aufruf des Auftrags): Sperre oder Freigabepflicht heißt
+    "nicht erfüllt" mit Hinweis und der Befehl läuft nie. Eine Freigabekarte umgeht die Abnahme nie, und die Abnahme umgeht keine;
+  - Zeitlimit 120 s, Ausgabe auf 2 KB gekürzt (das Ende bleibt, dort steht das Ergebnis), minimale Umgebung ohne Schlüssel und
+    Verbindungsdaten, kein stdin, eigene Prozessgruppe, die bei Zeitlimit und Abbruch ganz beendet wird.
+
+Ablauf und Meldung: Nach Runde 1 steht der Vorgang auf "wird geprüft", alle Kriterien werden ausgewertet (jedes Mal alle, damit ein Rückschritt
+auffällt) und in den Vorgang eingetragen (Hinweis je Kriterium, höchstens 200 Zeichen, Schlüssel geschwärzt, dazu "Ziel erreicht" und
+"Runde n von m"). Sind alle erfüllt, ist der Auftrag fertig. Sonst, solange Runden und mindestens eine Minute Zeit übrig sind, setzt ein
+neuer Lauf die Sitzung fort; sein Prompt nennt nur die offenen Kriterien samt Hinweisen. Sonst endet der Vorgang als Fehler mit
+"Ziel nach n Runden nicht erreicht" (bei Zeitmangel mit "(Zeitlimit)") und den offenen Kriterien auf dem Canvas; WAMO sagt das ehrlich und
+nie "fertig". Dem Sprachmodell gehen nur feste Zahlen ("0 von 1 Kriterien erfüllt, Runde 2 von 2"), nie die Hinweise. Ein Lauf, der selbst
+scheitert (Zeitlimit, Verbindung, Zugang), wird weder geprüft noch wiederholt. Eine offene Freigabe hält die Schleife an (Status
+"wartet auf Freigabe"); nach dem Klick läuft derselbe Auftrag weiter und wird danach geprüft. Lehnt die Person ab, endet der Auftrag. Das
+Auflegen beendet die Schleife sofort samt laufendem Prüfbefehl. Jede Runde ist ein eigener Lauf und zählt wie bisher in den Verbrauch
+(Kosten im Canvas); eine Kostengrenze gibt es noch nicht, nur Runden und Zeit.
+
+**Grenze (Betriebsart Sokrates-2, der Standard):** Der Auftrag läuft dort in der Sandbox, die der Kern nicht betreten darf, und der Kern darf
+Befehle eines Modells nicht mit seinen eigenen Rechten ausführen. Deshalb sind Befehlskriterien nur in der Betriebsart `lokal` möglich.
+Auch dort läuft Projektcode (Tests, Skripte des Projekts) mit den Rechten des Kerns, genau wie der Auftrag selbst: Allowlist und Wächter sind
+eine Bremse, keine Sandbox. Auf Sokrates-2 weist `entwicklung_vorbereiten` ein `befehl:` mit einem Satz ab (die Werkzeugbeschreibung nennt es dem Modell gar nicht
+erst), es bleiben Aussagekriterien. Dafür fehlt ein Dispatcher-Befehl `pruefen`, der den Befehl in derselben Sandbox ohne Token ausführt
+(`infra/sokrates2/wamo_job_dispatch.py`, noch nicht gebaut, braucht Prüfung der Sicherheit und einen Rauchtest auf dem Server). Die
+Schleife ist darauf vorbereitet (`DevAgent(befehl_ausfuehrer=...)`). Nicht an einem echten Lauf geprüft: Die Tests nutzen Attrappen für
+den Claude-Prozess und das beurteilende Modell.
 
 ## Modellzugang je Profil
 

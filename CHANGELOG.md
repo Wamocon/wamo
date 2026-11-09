@@ -27,6 +27,25 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   neben Farbe, Liste unter der Grafik, reduzierte Bewegung). Der Kern liefert dafür `GET /wamo/api/buero/status`: ein schmales Modell
   je Gerät aus dem Gerätedienst (ohne Adressen, Seriennummern und Rohtexte, ohne die Geräteliste des Routers), jede Rolle, höchstens 6 Abrufe
   je Minute und Profil. Die Oberfläche ruft alle 30 Sekunden, nur bei sichtbarem Reiter. Wirkt nach neuem Kern-Release und neuer Oberfläche.
+- Prüfbares Ziel mit Runden für Entwicklungsaufträge (Paket 4): `entwicklung_vorbereiten` nimmt `abnahme` (höchstens 5 Kriterien),
+  `max_runden` (Standard 3, höchstens 5) und `zeitlimit_min` (Standard 30, höchstens 60) an. Der Auftrag läuft in Runden: arbeiten,
+  prüfen, bei Nichterfüllung die nächste Runde mit genau den offenen Kriterien, bis alles erfüllt ist oder Runden oder Zeit erschöpft
+  sind; dann endet der Vorgang als Fehler mit "Ziel nach n Runden nicht erreicht", nie als fertig. Aussagekriterien beurteilt ein kleines
+  Modell mit strengem JSON, Befehlskriterien (`befehl: pytest -q`) laufen ohne Shell nach Allowlist, durch den Wächter, mit Zeit-, Ausgabe-
+  und Umgebungsgrenze, nur in der Betriebsart `lokal` (auf Sokrates-2 fehlt dafür noch ein Dispatcher-Befehl). Freigaben bleiben
+  unangetastet und zählen nicht gegen das Zeitlimit. Die Tafel "Vorgänge" zeigt "Runde n von m", "wird geprüft" und die Kriterien mit
+  Hinweis ohne Änderung. Neu: `voice-core/abnahme.py`, Persona-Schalter `WAMO_PERSONA_ABNAHME` (Standard an).
+- Aufgabenleiste mit Livefortschritt (Paket 1): Die Tafel "Vorgänge" zeigt je Boss-Aufgabe und je Entwicklungsauftrag eine Karte mit
+  Status als Wort, Gesamtbalken mit Prozent, Restzeit (nur mit fester Zahl der Schritte, sonst ehrlich "wird geschätzt") und "Fertig in mm:ss",
+  nummerierten Schritten mit eigenem Balken, Prüfkriterien und "Runde n von m". "Zur Freigabe" springt zur vorhandenen Freigabekarte,
+  "Ergebnis ansehen" wählt das Element im Canvas, beendete Vorgänge stehen im einklappbaren Abschnitt "Zuletzt beendet". Der Kern meldet
+  sie als Servernachricht `vorgang` (`voice-core/vorgaenge.py`, gedrosselt auf vier Nachrichten je Sekunde und Vorgang, Schritte
+  eines Entwicklungsauftrags aus den Aufgabenwerkzeugen von Claude Code in `vorgang_stream.py`). Der Verlauf kommt beim Start einmal über
+  `GET /wamo/api/vorgaenge` (die letzten 20 des eigenen Profils). Die Balken sind `role="progressbar"`, der Zustand steht nie nur als Farbe da,
+  `prefers-reduced-motion` schaltet die Bewegung ab. **Migration 0017 (Tabelle `vorgaenge`) ist noch nicht angewendet**: Bis dahin bleibt der
+  Verlauf leer, die Anzeige der laufenden Sitzung geht auch ohne. Die Zeitleiste "Werkzeuge" und ihre Karte `boss_aufgabe` sind unverändert.
+- Canvas: Nach dem Kopieren eines Codeblocks erscheint 1,5 Sekunden ein Chip "Kopiert" (Live-Region, `aria-live="polite"`); die Beschriftung des
+  Knopfes bleibt "Kopieren". Schlägt das Kopieren fehl, steht dort "Nicht kopiert".
 - Karte "Änderungen" (Schritt 4 und 1.5b des Gesamtplans): Der Release-Dienst nennt im `status` Commit, Baum, Prüfstand, Diff, Wirkungsflächen und eine
   Versionsempfehlung aus den Commit-Titeln (nur als Warnung). Die Karte zeigt sie und bietet den Dialog "Änderung freigeben" mit frischem Code
   (höchstens 45 Sekunden alt beim Senden) an; gesendet wird an den Freigabe-Dienst des Ankers mit genau Commit und Baum. Sonderfreigaben mit Pflicht-Haken,

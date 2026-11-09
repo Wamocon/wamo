@@ -13,6 +13,7 @@ import { parseServerMessage, type Auftrag, type Markierung, type ModellModus } f
 import type { SchluesselArt } from "@/lib/schluesselhilfe";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
 import { textAbschicken, unterstuetztText } from "@/lib/textEingabe";
+import { vorgaengeBeenden } from "@/lib/vorgaenge";
 import { erstelleFrist, fristMeldung, sollVerlaengern } from "@/lib/verbindungsfrist";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
 import {
@@ -435,6 +436,7 @@ export function useWamo(): WamoAktionen {
         betrieb: null, // Betriebsdaten gelten nur für eine laufende Verbindung
         liveBild: LIVE_BILD_AUS,
         modellzugang: null, // wird beim nächsten Verbinden neu abgefragt
+        vorgaenge: vorgaengeBeenden(s.vorgaenge, Date.now()), // der Kern bricht seine Vorgänge mit der Sitzung ab
         approvals: [],
         auftraege: [],
         micOn: true,

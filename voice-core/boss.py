@@ -67,6 +67,7 @@ from llm_anbieter import (
     modell_anfrage,
 )
 from persona import clean_inline, sichtbar
+from vorgaenge import Vorgaenge, Vorgang
 
 # --- Regelwerk -----------------------------------------------------------------------------------------
 
@@ -457,21 +458,30 @@ class Aufgabe:
     ausgabe: int = 0
     rueckfaelle: list[str] = field(default_factory=list)
     task: asyncio.Task | None = None
+    vorgang: Vorgang | None = None  # die Anzeige unter Vorgänge (vorgaenge.py); None ohne Registry
+    schritt_nr: dict[str, int] = field(default_factory=dict)  # Schlüssel des Schritts -> Nummer im Vorgang
 
 
 Senden = Callable[[dict], Awaitable[None]]
+
+# Schritte eines Vorgangs für eine verteilte Aufgabe (Schlüssel -> Titel); "einordnen" gibt es nur bei einem unklaren Auftrag
+SCHRITT_TITEL = {
+    "einordnen": "Auftrag einordnen", "zuteilen": "Spezialisten zuteilen", "antwort": "Antwort erstellen",
+    "ablegen": "Ergebnis auf das Canvas legen",
+}
 
 
 class Boss:
     """Verteiler einer Sitzung. senden: Nachricht an die Oberfläche (aktivitaet, canvas). melden: feste Meldung ans
     Gesprächsmodell (llm läuft danach weiter). fremdinhalt: turn.taint. gefaerbt: ist der laufende Zug schon durch
     Fremdinhalte gefärbt (turn.tainted)? bild_quelle: liefert ein Bildschirmfoto (nur mit PC-Steuerung und Rolle admin),
-    sonst gibt es die Art bild nicht. canvas: legt das Ergebnis aufs Canvas."""
+    sonst gibt es die Art bild nicht. canvas: legt das Ergebnis aufs Canvas (und setzt item["id"], wenn es gespeichert wurde).
+    vorgaenge: Registry der Sitzung (vorgaenge.py); jede Aufgabe erscheint dort als Vorgang mit Schritten und Kriterien."""
 
     def __init__(self, zugang: Zugang, *, senden: Senden, melden: Callable[[str], Awaitable[None]],
                  fremdinhalt: Callable[[], None], gefaerbt: Callable[[], bool] = lambda: False,
                  auftraggeber: str = "die Person", bild_quelle: Callable[[], Awaitable[Bild]] | None = None,
-                 canvas: Callable[[dict], Awaitable[None]] | None = None):
+                 canvas: Callable[[dict], Awaitable[None]] | None = None, vorgaenge: Vorgaenge | None = None):
         self._zugang = zugang
         self._senden = senden
         self._melden = melden
@@ -480,6 +490,7 @@ class Boss:
         self._name = clean_inline(auftraggeber, 60) or "die Person"
         self._bild_quelle = bild_quelle
         self._canvas = canvas
+        self._vorgaenge = vorgaenge
         self._aufgaben: dict[str, Aufgabe] = {}
         self._gesamt = 0
         self._ergebnis_im_zug = False  # ein Ergebnis wurde abgeholt, der Zug ist seither gefärbt
@@ -563,6 +574,7 @@ class Boss:
             return
         a = Aufgabe(uuid.uuid4().hex[:8], art, auftrag, vertraulich)
         self._aufgaben[a.id] = a
+        self._vorgang_anlegen(a)
         self._gesamt += 1
         while len(self._aufgaben) > MAX_MERKEN:  # älteste fertige vergessen
             alt = next((k for k, v in self._aufgaben.items() if v.status != "laeuft"), None)
@@ -606,6 +618,44 @@ class Boss:
             "vertrauen": VERTRAUEN, "hinweis": HINWEIS, "ende": ENDE,
         })
 
+    # ---------- Vorgänge (vorgaenge.py): reine Anzeige, ein Fehler darin hält die Aufgabe nie auf ----------
+    def _vorgang_anlegen(self, a: Aufgabe) -> None:
+        if self._vorgaenge is None:
+            return
+        schluessel = [*(["einordnen"] if a.art == "unklar" else []), "zuteilen", "antwort", "ablegen"]
+        a.schritt_nr = {k: i for i, k in enumerate(schluessel, start=1)}
+        anzeige = ARTEN[a.art].anzeige if a.art in ARTEN else "Aufgabe"
+        kriterien = ["Antwort liegt vor", "Antwort vollständig", *(["Codeblock enthalten"] if a.art == "code" else [])]
+        try:
+            a.vorgang = self._vorgaenge.neu(f"{anzeige}: {clean_inline(a.auftrag, 100)}", "aufgabe",
+                                            schritte=[SCHRITT_TITEL[k] for k in schluessel], kriterien=kriterien)
+            self._vorgaenge.starten(a.vorgang)
+        except Exception as e:  # noqa: BLE001 (die Anzeige darf die Aufgabe nie aufhalten)
+            logger.warning("Boss: Vorgang nicht angelegt ({})", type(e).__name__)
+
+    def _vg(self, aktion: str, a: Aufgabe, *args, **kwargs) -> None:
+        """Eine Änderung am Vorgang der Aufgabe (Methode der Registry); ohne Vorgang oder bei einem Fehler ohne Wirkung."""
+        if a.vorgang is None or self._vorgaenge is None:
+            return
+        try:
+            getattr(self._vorgaenge, aktion)(a.vorgang, *args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Boss: Vorgang nicht gemeldet ({})", type(e).__name__)
+
+    def _vschritt(self, a: Aufgabe, schluessel: str, **felder) -> None:
+        if nr := a.schritt_nr.get(schluessel):
+            self._vg("schritt", a, nr, **felder)
+
+    def _vorgang_pruefen(self, a: Aufgabe) -> None:
+        """Das Ergebnis liegt vor: Status pruefen und die Kriterien auswerten (nur Eigenschaften, nie Inhalte)."""
+        text = ergebnis_text(a.text)
+        self._vg("status_setzen", a, "pruefen")
+        self._vschritt(a, "antwort", status="fertig")
+        self._vg("kriterium", a, "Antwort liegt vor", True)
+        self._vg("kriterium", a, "Antwort vollständig", len(text) <= MAX_ERGEBNIS_ZEICHEN and a.ende != "zu_lang")
+        if a.art == "code":
+            self._vg("kriterium", a, "Codeblock enthalten", bool(code_aus_antwort(text)))
+
     # ---------- Ausführung ----------
     def _anzeige(self, a: Aufgabe) -> str:
         m = karte.modell(a.modell)
@@ -645,6 +695,7 @@ class Boss:
                 await self._ausfuehren(a, start)
         except asyncio.CancelledError:
             a.status, a.fehler = "fehler", "abgebrochen"
+            self._vg("beenden", a, "abgebrochen")
             raise
         except TimeoutError:
             a.fehler = a.fehler or "Zeitgrenze überschritten"
@@ -665,11 +716,16 @@ class Boss:
             return
         spec = ARTEN.get(a.art, ARTEN["analyse"])
         if a.status == "fertig":
+            self._vorgang_pruefen(a)
             await self._karte(a, "fertig", f"{spec.anzeige} · {self._anzeige(a)} · {a.dauer_s:.0f} s")
             await self._canvas_legen(a)
+            self._vg("beenden", a, "fertig")  # vor der Meldung ans Gespräch: die Anzeige hängt nie an der Sprache
             await self._melden_sicher(f"[Aufgabe {a.id} ({spec.anzeige}) ist fertig. Rufe aufgabe_ergebnis mit der Nummer "
                                       f"{a.id} auf und sag {self._name} das Wesentliche in ein bis zwei Sätzen.]")
         else:
+            # nur ein fester Hinweis: die Fehlermeldung des Modells (Anbieter, Modell, Zugang) gehört nicht in die Anzeige
+            self._vg("kriterium", a, "Antwort liegt vor", False, "Kein Ergebnis")
+            self._vg("beenden", a, "fehler")
             await self._karte(a, "fehler", f"{spec.anzeige} · nicht gelungen")
             await self._melden_sicher(f"[Aufgabe {a.id} ({spec.anzeige}) hat nicht geklappt. "
                                       f"Sag {self._name} das in einem kurzen Satz.]")
@@ -678,16 +734,19 @@ class Boss:
         art = a.art
         if art == "unklar":
             await self._karte(a, "laeuft", "ordnet ein")
+            self._vschritt(a, "einordnen", status="laeuft")
             art = await self._einordnen(a)
             a.art = art
+            self._vschritt(a, "einordnen", status="fertig", detail=ARTEN[art].anzeige)
         spec = ARTEN[art]
+        self._vschritt(a, "zuteilen", status="laeuft")
         await self._karte(a, "laeuft", f"{spec.anzeige} wird zugeteilt")
         inhalt: str | list[str | Bild] = a.auftrag
         if art == "bild":
             assert self._bild_quelle is not None
             inhalt = [await self._bild_quelle(), a.auftrag]
         ausschluss: set[str] = set()
-        for _versuch in range(MAX_VERSUCHE):
+        for versuch in range(MAX_VERSUCHE):
             rest = GESAMT_SECS - (time.monotonic() - start)
             if rest < 10:
                 break
@@ -698,6 +757,10 @@ class Boss:
                 a.fehler = str(e)
                 break
             a.modell, a.anbieter = wahl.modell, wahl.anbieter
+            self._vschritt(a, "zuteilen", status="fertig", detail=self._anzeige(a))
+            self._vschritt(a, "antwort", status="laeuft", detail=self._anzeige(a))
+            if versuch:  # ein Modell fiel aus: die Runde ist der Versuch mit dem nächsten
+                self._vg("runde", a, versuch + 1, MAX_VERSUCHE)
             await self._karte(a, "laeuft", f"{spec.anzeige} · {self._anzeige(a)}")
             try:
                 antwort = await modell_anfrage(wahl, zugang=self._zugang, system=spec.system, inhalt=inhalt,
@@ -728,10 +791,16 @@ class Boss:
             item = {"kind": "code", "title": titel, "text": code_aus_antwort(text) or text, "language": ""}
         else:
             item = {"kind": "dokument", "title": titel, "text": text}
+        self._vschritt(a, "ablegen", status="laeuft")
         try:
             await self._canvas(item)
         except Exception as e:  # noqa: BLE001 (das Canvas ist eine Zugabe)
             logger.warning("Boss: Canvas nicht gesetzt ({})", type(e).__name__)
+            self._vschritt(a, "ablegen", status="fehler")
+            return
+        self._vschritt(a, "ablegen", status="fertig")
+        if item.get("id"):  # nur wenn gespeichert: sonst weiß die Oberfläche nicht, welches Element gemeint ist
+            self._vg("ergebnis", a, str(item["id"]))
 
     async def schliessen(self) -> None:
         """Sitzungsende: laufende Aufgaben abbrechen (keine Meldung mehr an eine beendete Sitzung)."""

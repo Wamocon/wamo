@@ -79,12 +79,15 @@ from pipecat.frames.frames import LLMMessagesAppendFrame
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.services.llm_service import FunctionCallParams
 
+import abnahme
 import kontingent as kt
 from dev_guard import REPO_ROOT, SELF_REPO, _skript_befehl, decide, fingerprint, write_json_atomic
 from memory import normalize_uuid, shared_database
 from persona import clean_inline
 from schluessel import schwaerzen
 from teilen import eigene_fassung
+from vorgaenge import Vorgaenge
+from vorgang_stream import EntwicklungsVorgang, endstatus
 from werkzeugkarte import AUFTRAGSARTEN, KARTEN, MODELLE_ERLAUBT, anweisungsblock, art_beschreibung, modell_fuer
 
 try:  # liefert der Modellzugang (Karte "Modellzugang"): {"typ": "oauth" | "api", "wert": str[, "workspace"]} oder None
@@ -102,6 +105,10 @@ GUARD = Path(__file__).resolve().parent / "dev_guard.py"
 JOB_TIMEOUT_SECS = int(os.getenv("DEV_JOB_TIMEOUT_SECS") or 1800)
 PROJECT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$")
 MAX_TASK_CHARS = 4000
+# Abnahme: ein Auftrag mit prüfbarem Ziel läuft in Runden (arbeiten, prüfen, die offenen Punkte nachbessern)
+RUNDEN_STANDARD, RUNDEN_MAX = 3, 5
+ZEITLIMIT_STANDARD_MIN, ZEITLIMIT_MAX_MIN = 30, 60  # aktive Arbeitszeit in Minuten, Warten auf Freigaben zählt nicht
+MIN_REST_RUNDE_S = 60  # für eine weitere Runde muss mindestens so viel Zeit übrig sein
 ECC_PLUGIN = "ecc@ecc"
 SELFTEST_TIMEOUT_SECS = 20
 SELFTEST_EVENT = {"tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}}
@@ -560,20 +567,43 @@ class Job:
     ereignisse: dict[str, dict] = field(default_factory=dict)  # wamo-Ereignisse des Dispatchers (sokrates2)
     repo: str | None = None  # Ziel-Repo owner/name: begrenzt das GitHub-Token auf Sokrates-2 auf dieses Repo
     gespeichert_id: str | None = None  # Ergebnis als Canvas-Dokument (teilbar, Migration 0003)
+    fuehrung: EntwicklungsVorgang | None = None  # die Anzeige unter Vorgänge (vorgang_stream.py); None ohne Registry
+    # Abnahme (abnahme.py): ohne kriterien bleibt es bei einer Runde ohne Prüfung
+    kriterien: list[abnahme.Kriterium] = field(default_factory=list)
+    max_runden: int = 1
+    zeitlimit_s: int = JOB_TIMEOUT_SECS  # aktive Arbeitszeit aller Runden; Warten auf eine Freigabe zählt nicht
+    runde: int = 1
+    aktiv_s: float = 0.0  # verbrauchte Arbeitszeit der beendeten Läufe
+    lauf_beginn: float = 0.0
+    weiter: str | None = None  # Prompt der nächsten Runde, solange die Schleife weiterläuft
+    neue_runde: bool = False  # der nächste Lauf ist eine Nachbesserungsrunde (nur für den Schritt im Verlauf)
+    beendet: bool = False  # die Person hat abgelehnt: keine weiteren Runden
+    ergebnisse: list[abnahme.Ergebnis] = field(default_factory=list)  # Stand der letzten Abnahme
+    dateien: dict[str, None] = field(default_factory=dict)  # mit Write und Edit geänderte Dateien, relativ zum Projekt
 
     def __post_init__(self):
         self.dir = JOBS_DIR / self.id
 
 
 class DevAgent:
-    """Ein Objekt pro Gespräch. Braucht den PipelineTask, um Karten, Canvas und Meldungen zu senden."""
+    """Ein Objekt pro Gespräch. Braucht den PipelineTask, um Karten, Canvas und Meldungen zu senden.
+    vorgaenge: Registry der Sitzung (vorgaenge.py); jeder Auftrag erscheint dort als Vorgang.
+    beurteiler: beurteilt Aussagekriterien der Abnahme (abnahme.llm_beurteiler); ohne ihn gibt es nur Befehlskriterien.
+    befehl_ausfuehrer: führt Befehlskriterien aus. Standard nur in der Betriebsart lokal (abnahme.befehl_ausfuehren); auf
+    Sokrates-2 darf der Kern die Sandbox nicht betreten, dort gibt es keinen, und befehl: wird beim Vorbereiten abgewiesen."""
 
-    def __init__(self, memory, auftraggeber: str, ort: str | None = None):
+    def __init__(self, memory, auftraggeber: str, ort: str | None = None, vorgaenge: Vorgaenge | None = None,
+                 beurteiler: abnahme.Beurteiler | None = None, befehl_ausfuehrer: abnahme.Ausfuehrer | None = None):
         self._memory = memory
+        self._vorgaenge = vorgaenge
         self._auftraggeber = clean_inline(auftraggeber, 60) or "Admin"
         self._ort = ort or entwicklung_ort() or "sokrates2"
         if self._ort == "lokal":
             logger.warning(LOKAL_WARNUNG)
+        self._beurteiler = beurteiler
+        self._ausfuehrer = befehl_ausfuehrer or (abnahme.befehl_ausfuehren if self._ort == "lokal" else None)
+        self._zu = False  # Sitzungsende: keine weitere Runde
+        self._jetzt = time.monotonic  # die Uhr der Schleife (Tests ersetzen sie)
         self._running_job: Job | None = None
         self._task = None
         self._jobs: dict[str, Job] = {}
@@ -595,6 +625,24 @@ class DevAgent:
     def attach(self, pipeline_task) -> None:
         self._task = pipeline_task
 
+    # ---------- Vorgänge (vorgaenge.py): reine Anzeige, ein Fehler darin hält den Auftrag nie auf ----------
+    def _vorgang_anlegen(self, job: Job) -> None:
+        if self._vorgaenge is None:
+            return
+        try:
+            job.fuehrung = EntwicklungsVorgang(self._vorgaenge, f"{KARTEN[job.art].titel}: {job.projekt.name}", job.id,
+                                               abnahme=[k.text for k in job.kriterien], max_runden=job.max_runden)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Entwicklungsauftrag {}: Vorgang nicht angelegt ({})", job.id, type(e).__name__)
+
+    def _fuehrung(self, job: Job, aktion: str, *args, **kwargs) -> None:
+        if job.fuehrung is None:
+            return
+        try:
+            getattr(job.fuehrung, aktion)(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Entwicklungsauftrag {}: Vorgang nicht gemeldet ({})", job.id, type(e).__name__)
+
     # ---------- Werkzeuge für das Sprachmodell ----------
     def schemas(self) -> list[FunctionSchema]:
         name = self._auftraggeber
@@ -604,7 +652,8 @@ class DevAgent:
                 description=(
                     "Bereitet einen Software-Auftrag für Claude Code vor (planen, bauen, Fehler beheben, "
                     "prüfen, testen, analysieren ...) und legt ihn als Karte in die Oberfläche. "
-                    f"{name} startet ihn dort per Klick; du kannst Aufträge nicht selbst starten."
+                    f"{name} startet ihn dort per Klick; du kannst Aufträge nicht selbst starten. "
+                    "Mit abnahme bekommt der Auftrag ein prüfbares Ziel und läuft in Runden, bis es erreicht ist."
                 ),
                 properties={
                     "auftrag": {"type": "string", "description": f"Vollständiger Auftrag in den Worten von {name}, präzisiert"},
@@ -620,6 +669,19 @@ class DevAgent:
                         "enum": list(AUFTRAGSARTEN),
                         "description": "Auftragsart, bestimmt die Werkzeuge von Claude Code. " + art_beschreibung(),
                     },
+                    "abnahme": {"type": "array", "items": {"type": "string"},
+                                "description": self._abnahme_beschreibung()},
+                    "max_runden": {
+                        "type": "integer",
+                        "description": (f"Nur mit abnahme: höchstens so viele Runden (arbeiten, prüfen, nachbessern). Standard "
+                                        f"{RUNDEN_STANDARD}, höchstens {RUNDEN_MAX}. Meist weglassen."),
+                    },
+                    "zeitlimit_min": {
+                        "type": "integer",
+                        "description": (f"Nur mit abnahme: höchstens so viele Minuten Arbeitszeit über alle Runden (Warten auf "
+                                        f"Freigaben zählt nicht). Standard {ZEITLIMIT_STANDARD_MIN}, höchstens "
+                                        f"{ZEITLIMIT_MAX_MIN}. Meist weglassen."),
+                    },
                 },
                 required=["auftrag", "projekt", "art"],
             ),
@@ -630,6 +692,22 @@ class DevAgent:
                 required=[],
             ),
         ]
+
+    def _befehle_moeglich(self) -> bool:
+        return self._ausfuehrer is not None
+
+    def _abnahme_beschreibung(self) -> str:
+        """Beschreibung des Arguments abnahme. Sie sagt dem Modell, was in dieser Betriebsart geht: Befehle nur, wo der Kern sie
+        ausführen darf (sonst würde er Kriterien ableiten, die nie prüfbar sind)."""
+        text = ("Prüfbares Ziel: 1 bis 5 kurze, messbare Kriterien als Liste von Texten (je höchstens 300 Zeichen), die WAMO "
+                f"nach jeder Runde selbst prüft. Nennt {self._auftraggeber} kein Ziel, leite 1 bis 3 Kriterien selbst ab und "
+                "nenne sie in einem Satz, ohne zusätzliche Rückfrage. Nie vage wie „mach es gut“. Eine Aussage beurteilt ein "
+                "kleines Modell nach dem Abschlussbericht, zum Beispiel „Die README erklärt die Installation“.")
+        if self._befehle_moeglich():
+            return (text + " Mit dem Präfix „befehl:“ läuft ein einzelner Befehl im Projektordner, Exit 0 heißt erfüllt, "
+                    "zum Beispiel „befehl: pytest -q“ oder „befehl: npm test“. Nur Tests, Build, Lint und grep, keine "
+                    "Verkettung mit ; & | oder Backticks.")
+        return text + " Befehle als Kriterium gibt es in dieser Betriebsart noch nicht, formuliere Aussagen."
 
     def register(self, llm) -> None:
         llm.register_function("entwicklung_vorbereiten", self._vorbereiten)
@@ -659,8 +737,21 @@ class DevAgent:
         except ValueError as e:
             await params.result_callback({"ok": False, "fehler": str(e)})
             return
+        try:
+            kriterien = abnahme.parse_abnahme(params.arguments.get("abnahme"), befehle_erlaubt=self._befehle_moeglich())
+            if self._beurteiler is None and any(k.art == "aussage" for k in kriterien):
+                raise ValueError("Aussagen lassen sich in dieser Sitzung nicht beurteilen, formuliere nur Befehle oder lass "
+                                 "das Ziel weg")
+        except ValueError as e:
+            await params.result_callback({"ok": False, "fehler": str(e)})
+            return
         job = Job(id=uuid.uuid4().hex[:16], auftrag=auftrag, projekt=projekt, art=art, repo=repo)
+        if kriterien:  # ohne abnahme bleibt es bei einer Runde ohne Prüfung (max_runden und zeitlimit_min gelten dann nicht)
+            job.kriterien = kriterien
+            job.max_runden = _ganzzahl(params.arguments.get("max_runden"), RUNDEN_STANDARD, 1, RUNDEN_MAX)
+            job.zeitlimit_s = 60 * _ganzzahl(params.arguments.get("zeitlimit_min"), ZEITLIMIT_STANDARD_MIN, 1, ZEITLIMIT_MAX_MIN)
         self._jobs[job.id] = job
+        self._vorgang_anlegen(job)
         karte = {"type": "auftrag", "job": job.id, "projekt": projekt.name, "art": art,
                  "auftrag": clean_inline(auftrag, MAX_TASK_CHARS)}
         if repo:
@@ -673,6 +764,11 @@ class DevAgent:
         }
         if repo:
             ergebnis["repo"] = repo
+        if kriterien:
+            ergebnis["abnahme"] = [k.text for k in kriterien]
+            ergebnis["max_runden"] = job.max_runden
+            ergebnis["hinweis"] += (f" Nenne in einem Satz das Ziel ({len(kriterien)} Kriterien, höchstens "
+                                    f"{job.max_runden} Runden), ohne zusätzliche Rückfrage.")
         if self._ort == "lokal":
             ergebnis["neu"] = not Path(projekt).exists()
         await params.result_callback(ergebnis)
@@ -683,11 +779,14 @@ class DevAgent:
             await params.result_callback({"status": "kein Auftrag"})
             return
         # Nur eigene, feste Angaben; Schritte und Ergebnistext stehen auf dem Canvas.
-        await params.result_callback({
+        stand = {
             "status": job.status, "projekt": job.projekt.name, "art": KARTEN[job.art].titel,
             "schritte": len(job.steps), "offene_freigaben": len(job.pending),
             "hinweis": "Details stehen auf dem Canvas.",
-        })
+        }
+        if job.kriterien:
+            stand["runde"] = f"{job.runde} von {job.max_runden}"
+        await params.result_callback(stand)
 
     # ---------- Klicks aus der UI ----------
     async def on_client_message(self, msg_type: str, data: dict) -> None:
@@ -707,6 +806,7 @@ class DevAgent:
             return
         if data.get("entscheidung") != "ja":
             self._jobs.pop(job.id, None)
+            self._fuehrung(job, "verwerfen")
             logger.info("Entwicklungsauftrag {} in der Oberfläche verworfen", job.id)
             return
         if self._running and not self._running.done():
@@ -719,7 +819,7 @@ class DevAgent:
             logger.error("Entwicklungsauftrag {} nicht gestartet: {}", job.id, problem)
             return
         job.started = True
-        self._running = asyncio.create_task(self._run(job, job.auftrag, resume=False))
+        self._running = asyncio.create_task(self._run(job, self._start_prompt(job), resume=False))
 
     async def _freigabe(self, data: dict) -> None:
         job = self._jobs.get(str(data.get("job", "")))
@@ -747,8 +847,9 @@ class DevAgent:
                     current = []
                 write_json_atomic(path, [*current, req["id"]])
             job.steps.append(f"Freigegeben: {req['grund']}")
+            self._fuehrung(job, "freigabe_entschieden", req, True, job.pending)
             if req.get("tool") == ZUGANG_TOOL:  # Projekt mit diesen Zugängen freigegeben: Auftrag neu starten
-                self._running = asyncio.create_task(self._run(job, job.auftrag, resume=False))
+                self._running = asyncio.create_task(self._run(job, self._start_prompt(job), resume=False))
                 return
             follow_up = (
                 f"{self._auftraggeber} hat freigegeben: {req['grund']} "
@@ -759,12 +860,48 @@ class DevAgent:
             self._running = asyncio.create_task(self._run(job, follow_up, resume=True))
         else:
             job.steps.append(f"Abgelehnt: {req['grund']}")
+            job.beendet = True  # eine Absage beendet den Auftrag, die Abnahme läuft nicht weiter
+            self._fuehrung(job, "freigabe_entschieden", req, False, job.pending, lauf_folgt=False)
             await self._canvas(job)
 
     # ---------- Ausführung ----------
+    def _start_prompt(self, job: Job) -> str:
+        """Der erste Prompt eines Auftrags: der Auftrag, mit Abnahme zusätzlich das prüfbare Ziel."""
+        if not job.kriterien:
+            return job.auftrag
+        return f"{job.auftrag}\n\n{abnahme.ziel_text(job.kriterien, job.max_runden)}"
+
+    def _verbraucht(self, job: Job) -> float:
+        """Aktive Arbeitszeit des Auftrags in Sekunden: beendete Läufe plus der laufende. Warten auf Freigaben fehlt darin,
+        weil zwischen zwei Läufen kein Lauf besteht."""
+        return job.aktiv_s + max(0.0, self._jetzt() - job.lauf_beginn)
+
+    def _frist(self, job: Job, basis: float) -> float:
+        """Zeitgrenze eines Laufs: die bisherige (harte) Grenze, mit Abnahme zusätzlich die noch übrige Arbeitszeit des Ziels."""
+        if not job.kriterien:
+            return basis
+        return max(30.0, min(basis, job.zeitlimit_s - self._verbraucht(job)))
+
+    def _start_schritt(self, job: Job, resume: bool, start_text: str) -> str:
+        if job.neue_runde:
+            job.neue_runde = False
+            return f"Runde {job.runde} von {job.max_runden}: offene Kriterien nachbessern"
+        return "Weiter nach Freigabe" if resume else start_text
+
     async def _run(self, job: Job, prompt: str, resume: bool) -> None:
+        """Ein Lauf von Claude Code und, mit Abnahme, die Schleife darum: Lauf, prüfen, bei Nichterfüllung der nächste Lauf
+        (Wiederaufnahme der Sitzung) mit den offenen Kriterien. Ein Abbruch (close) bricht diese Aufgabe ab und damit die
+        Schleife sofort; _run_locked beendet dabei Claude Code und jeden Prüfbefehl."""
         async with self._run_lock:
-            await self._run_locked(job, prompt, resume)
+            while True:
+                job.weiter, job.lauf_beginn = None, self._jetzt()
+                try:
+                    await self._run_locked(job, prompt, resume)
+                finally:
+                    job.aktiv_s += max(0.0, self._jetzt() - job.lauf_beginn)
+                if job.weiter is None or self._zu:
+                    return
+                prompt, resume = job.weiter, True
 
     async def _run_locked(self, job: Job, prompt: str, resume: bool) -> None:
         if self._ort == "sokrates2":
@@ -780,12 +917,16 @@ class DevAgent:
 
         if not await guard_selftest(job.projekt, job.dir):
             job.status = "nicht gestartet (Wächter-Selbsttest fehlgeschlagen)"
+            self._fuehrung(job, "lauf_endet", job.status, {})
             await self._canvas(job)
             await self._announce(job)
             return
 
         job.status = "läuft"
-        job.steps.append("Weiter nach Freigabe" if resume else f"Start in {job.projekt} ({KARTEN[job.art].titel})")
+        self._fuehrung(job, "starten", resume)
+        if job.kriterien:
+            self._fuehrung(job, "runde_beginnt", job.runde, job.max_runden)
+        job.steps.append(self._start_schritt(job, resume, f"Start in {job.projekt} ({KARTEN[job.art].titel})"))
         await self._canvas(job)
         logger.info("Entwicklungsauftrag {} startet ({}, {})", job.id, job.projekt.name, job.art)
         stderr_tail: deque[str] = deque(maxlen=40)
@@ -807,7 +948,7 @@ class DevAgent:
             self._proc.stdin.write(prompt.encode("utf-8"))
             await self._proc.stdin.drain()
             self._proc.stdin.close()
-            await asyncio.wait_for(self._read_stream(job), JOB_TIMEOUT_SECS)
+            await asyncio.wait_for(self._read_stream(job), self._frist(job, JOB_TIMEOUT_SECS))
             await asyncio.wait_for(self._proc.wait(), 30)
             job.status = "fertig" if self._proc.returncode == 0 else f"beendet (Code {self._proc.returncode})"
         except asyncio.TimeoutError:
@@ -827,9 +968,58 @@ class DevAgent:
             if proc is not None and proc.returncode not in (0, None) and stderr_tail:
                 logger.warning("Claude Code meldete: {}", " | ".join(stderr_tail)[-1500:])
 
+        await self._lauf_ende(job, pending_file)
+
+    async def _lauf_ende(self, job: Job, pending_file: Path | None) -> None:
+        """Nach einem Lauf: Freigaben einsammeln, dann (nur mit Abnahme, ohne offene Freigabe, nach einem Lauf ohne Fehler)
+        das Ziel prüfen. Erreicht oder verfehlt: der Auftrag endet. Nicht erreicht, aber Runden und Zeit übrig: job.weiter
+        trägt den Prompt der nächsten Runde, _run startet sie. Eine offene Freigabe hält die Schleife an (Status
+        wartet_freigabe); nach dem Klick läuft derselbe Auftrag weiter und prüft danach. Ohne Abnahme ändert sich nichts."""
+        self._fuehrung(job, "lauf_endet_vorlaeufig")
         await self._collect_pending(job, pending_file)
+        urteil = None
+        if job.kriterien and not job.pending and not job.beendet and not self._zu and endstatus(job.status) == "fertig":
+            try:
+                urteil = await self._abnahme_pruefen(job)
+            except Exception:  # noqa: BLE001 (nie fertig melden, wenn die Prüfung selbst scheitert)
+                logger.exception("Entwicklungsauftrag {}: Abnahme nicht auswertbar", job.id)
+                job.status, urteil = "Ziel nicht geprüft (Abnahme nicht auswertbar)", "verfehlt"
+        if urteil == "weiter":
+            await self._canvas(job)
+            return
+        if urteil == "verfehlt":
+            self._fuehrung(job, "ziel_verfehlt", job.status)
+        else:
+            self._fuehrung(job, "lauf_endet", job.status, job.pending)
         await self._canvas(job)
         await self._announce(job)
+
+    async def _abnahme_pruefen(self, job: Job) -> str:
+        """Prüft alle Kriterien (Befehle, Aussagen) und entscheidet: "erreicht", "weiter" (nächste Runde vorbereitet) oder
+        "verfehlt" (Runden oder Zeit erschöpft). Alle Kriterien jedes Mal, damit ein Rückschritt auffällt."""
+        ergebnisse = await abnahme.auswerten(
+            job.kriterien, arbeitsordner=Path(job.projekt), bericht=job.result, dateien=list(job.dateien),
+            beurteiler=self._beurteiler, ausfuehrer=self._ausfuehrer)
+        job.ergebnisse = ergebnisse
+        self._fuehrung(job, "abnahme_ergebnis", [(e.text, e.erfuellt, e.hinweis) for e in ergebnisse])
+        offen = [e for e in ergebnisse if not e.erfuellt]
+        if not offen:
+            job.steps.append(f"Abnahme bestanden nach {_runden_text(job.runde)}")
+            job.status = "fertig"
+            return "erreicht"
+        job.steps.append(f"Abnahme nach Runde {job.runde}: {len(offen)} von {len(ergebnisse)} Kriterien offen")
+        zeit_uebrig = job.zeitlimit_s - self._verbraucht(job) >= MIN_REST_RUNDE_S
+        if job.runde < job.max_runden and zeit_uebrig and not self._zu:
+            job.runde += 1
+            prompt = abnahme.runden_prompt(offen, job.runde, job.max_runden)
+            if not job.session_id:  # ohne Sitzung zum Fortsetzen kennt Claude Code den Auftrag nicht
+                prompt = f"Ursprünglicher Auftrag: {job.auftrag}\n\n{prompt}"
+            job.weiter, job.neue_runde = prompt, True
+            job.result = ""  # der Bericht dieser Runde gilt nicht für die nächste, falls sie keinen liefert
+            self._fuehrung(job, "runde_beginnt", job.runde, job.max_runden)
+            return "weiter"
+        job.status = f"Ziel nach {_runden_text(job.runde)} nicht erreicht" + ("" if job.runde >= job.max_runden else " (Zeitlimit)")
+        return "verfehlt"
 
     # ---------- Betriebsart sokrates2 ----------
     async def _ssh_kurz(self, args: list[str], timeout: float = SSH_KURZ_TIMEOUT_SECS) -> tuple[int, str]:
@@ -868,6 +1058,7 @@ class DevAgent:
                              "(claude setup-token) oder einen API-Schlüssel hinterlegen und den Auftrag danach neu stellen.")
             logger.warning("Entwicklungsauftrag {} nicht gestartet: kein Claude-Zugang für Profil {}", job.id,
                            str(getattr(self._memory, "user_id", None) or "?")[:8])
+            self._fuehrung(job, "lauf_endet", job.status, {})
             await self._canvas(job)
             await self._announce(job)
             return
@@ -875,7 +1066,10 @@ class DevAgent:
         self._eigener_zugang = zugang_kopf.get("zugang") == "folgt"
         job.ereignisse = {}
         job.status = "läuft"
-        job.steps.append("Weiter nach Freigabe" if resume else f"Start auf Sokrates-2 in {job.projekt} ({KARTEN[job.art].titel})")
+        self._fuehrung(job, "starten", resume)
+        if job.kriterien:
+            self._fuehrung(job, "runde_beginnt", job.runde, job.max_runden)
+        job.steps.append(self._start_schritt(job, resume, f"Start auf Sokrates-2 in {job.projekt} ({KARTEN[job.art].titel})"))
         await self._canvas(job)
         logger.info("Entwicklungsauftrag {} startet auf Sokrates-2 ({}, {})", job.id, job.projekt.name, job.art)
         stderr_tail: deque[str] = deque(maxlen=40)
@@ -902,7 +1096,7 @@ class DevAgent:
             self._proc.stdin.write(daten)
             del daten
             await self._proc.stdin.drain()  # stdin NICHT schließen: Lebenslinie des entfernten Auftrags
-            await asyncio.wait_for(self._read_stream(job), JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS)
+            await asyncio.wait_for(self._read_stream(job), self._frist(job, JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS))
             await asyncio.wait_for(self._proc.wait(), 30)
             job.status = remote_status(self._proc.returncode, job.ereignisse)
             # sauber: Ende gemeldet, oder der Dispatcher hat gar nicht erst gestartet (Codes 2 bis 5, 7, 8)
@@ -929,9 +1123,7 @@ class DevAgent:
                 logger.warning("Sokrates-2 meldete: {}", " | ".join(stderr_tail)[-1500:])
 
         await self._kontingent_abschliessen()
-        await self._collect_pending(job, None)
-        await self._canvas(job)
-        await self._announce(job)
+        await self._lauf_ende(job, None)
 
     async def _remote_zugang(self) -> tuple[dict, bytes | None] | None:
         """Felder der Kopfzeile und, mit eigenem Zugang, die zweite Zeile für den Dispatcher; None ohne erlaubten Zugang.
@@ -1034,6 +1226,8 @@ class DevAgent:
                 for block in (ev.get("message") or {}).get("content", []):
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         job.steps.append(_describe(block.get("name", ""), block.get("input") or {}))
+                        if job.kriterien:
+                            _datei_merken(job, block)
             elif ev.get("type") == "wamo":  # Ereignisse des Dispatchers auf Sokrates-2
                 name = str(ev.get("ereignis") or "")
                 if name == "kontingent":  # Limits des Max-Abos: kein Schritt, nur Anzeige und Speicher
@@ -1059,6 +1253,7 @@ class DevAgent:
                 if ev.get("is_error") and any(k in job.result.lower() for k in AUTH_FEHLER):
                     job.steps.append("Anthropic hat den Claude-Zugang abgelehnt (abgelaufen oder widerrufen?). "
                                      "In der Karte Modellzugang neu hinterlegen.")
+            self._fuehrung(job, "ereignis", ev, job.steps)  # Aufgabenliste, Selbsttest: der Vorgang unter Vorgänge
             if time.monotonic() - last_canvas > 1.5:
                 last_canvas = time.monotonic()
                 await self._canvas(job)
@@ -1132,6 +1327,13 @@ class DevAgent:
             lines.append(f"**GitHub-Repo:** `{job.repo}` (Token nur für dieses Repo, wenn die App eingerichtet ist)")
         if job.cost_usd:
             lines.append(f"**Kosten bisher:** {job.cost_usd:.2f} USD")
+        if job.kriterien:
+            stand = {e.text: e for e in job.ergebnisse}
+            lines += ["", "## Abnahme", f"**Runde:** {job.runde} von {job.max_runden}"]
+            for k in job.kriterien:
+                e = stand.get(k.text)
+                wort = "offen" if e is None else ("erfüllt" if e.erfuellt else "nicht erfüllt")
+                lines.append(f"- {wort}: {k.text}" + (f" (Hinweis: {e.hinweis})" if e is not None and e.hinweis else ""))
         lines += ["", "## Schritte", *[f"- {s}" for s in job.steps[-25:]]]
         if job.result:
             lines += ["", "## Ergebnis", job.result]
@@ -1174,15 +1376,20 @@ class DevAgent:
         if job.gespeichert_id:
             await self._canvas(job)  # jetzt mit teilbar_id: die Oberfläche bietet "Teilen" an
         offen = len(job.pending)
+        # Nur feste Zahlen zur Abnahme, nie die Hinweise: sie stammen aus Prüfausgaben und stehen auf dem Canvas
+        abnahme_stand = (f" Abnahme: {sum(1 for e in job.ergebnisse if e.erfuellt)} von {len(job.ergebnisse)} Kriterien "
+                         f"erfüllt, Runde {job.runde} von {job.max_runden}.") if job.ergebnisse else ""
         await self._notify(
-            f"Entwicklungsauftrag {job.projekt.name}: {job.status}. Die Details stehen auf dem Canvas. "
+            f"Entwicklungsauftrag {job.projekt.name}: {job.status}.{abnahme_stand} Die Details stehen auf dem Canvas. "
             f"Offene Freigaben: {offen}. Sag {self._auftraggeber} das in einem kurzen Satz"
             + ("; die Freigaben gehen in der Oberfläche." if offen else ".")
         )
 
     async def close(self) -> None:
         """Auflegen: laufenden Auftrag beenden. Auf Sokrates-2 genügt das Ende des ssh-Prozesses (die
-        Lebenslinie reißt ab); cancel ist die zweite Absicherung."""
+        Lebenslinie reißt ab); cancel ist die zweite Absicherung. Die Abnahmeschleife endet sofort: keine weitere Runde, und
+        ein laufender Prüfbefehl oder Modellaufruf wird mit der Aufgabe abgebrochen."""
+        self._zu = True
         running_job = self._running_job
         if self._proc is not None:
             await _kill_tree(self._proc)
@@ -1192,6 +1399,37 @@ class DevAgent:
             await asyncio.wait_for(self._kontingent_abschliessen(), 5)
         if self._running and not self._running.done():
             self._running.cancel()
+
+
+def _ganzzahl(wert: object, standard: int, minimum: int, maximum: int) -> int:
+    """Ganze Zahl aus einem Werkzeugargument, auf minimum bis maximum begrenzt. Alles, was keine Zahl ist (Text, Wahrheitswert,
+    Bruch, nichts), gilt als nicht angegeben: der Standard."""
+    if isinstance(wert, str) and re.fullmatch(r"\s*-?\d{1,6}\s*", wert):
+        wert = int(wert)
+    if isinstance(wert, float) and wert.is_integer():
+        wert = int(wert)
+    if isinstance(wert, bool) or not isinstance(wert, int):
+        return standard
+    return max(minimum, min(maximum, wert))
+
+
+def _runden_text(n: int) -> str:
+    return f"{n} Runde" if n == 1 else f"{n} Runden"
+
+
+def _datei_merken(job: Job, block: dict) -> None:
+    """Merkt eine mit Write, Edit, MultiEdit oder NotebookEdit geänderte Datei (relativ zum Projekt) für die Abnahme. Nur
+    diese vier Werkzeuge: was ein Befehl ändert, sehen wir hier nicht."""
+    eingabe = block.get("input")
+    if block.get("name") not in ("Write", "Edit", "MultiEdit", "NotebookEdit") or not isinstance(eingabe, dict):
+        return
+    pfad = str(eingabe.get("file_path") or eingabe.get("notebook_path") or "").replace("\\", "/")
+    wurzel = str(job.projekt).replace("\\", "/").rstrip("/") + "/"
+    if pfad.startswith(wurzel):
+        pfad = pfad[len(wurzel):]
+    pfad = clean_inline(pfad, abnahme.DATEI_ZEICHEN)
+    if pfad and len(job.dateien) < 200:
+        job.dateien[pfad] = None
 
 
 async def _drain(stream: asyncio.StreamReader | None, tail: deque[str]) -> None:

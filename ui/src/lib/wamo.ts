@@ -11,9 +11,11 @@ import type {
   Modellzugang,
   Profil,
   ServerMessage,
+  Vorgang,
 } from "@/lib/nachrichten";
 import { liveBildLoeschen } from "./liveBild.ts"; // relativ aus demselben Grund
 import { createStore } from "./store.ts"; // relativ, damit node:test diese Datei laden kann (textEingabe.test.ts)
+import { vorgangAnsage, vorgangEinordnen } from "./vorgaenge.ts";
 
 /**
  * Zustand der Hauptansicht als Store (lib/store.ts). Die Pegel für Kern, Stimmlinie und
@@ -108,6 +110,8 @@ export type WamoState = {
   caption: Caption;
   log: LogEintrag[];
   activities: Activity[];
+  /** Vorgänge der Sitzung (Aufgaben und Aufträge mit Fortschritt, voice-core/vorgaenge.py), in der Reihenfolge des Eingangs */
+  vorgaenge: Vorgang[];
   turn: number;
   approvals: Approval[];
   /** Entwicklungsaufträge, die auf "Starten" oder "Verwerfen" warten */
@@ -150,6 +154,7 @@ export const initialState: WamoState = {
   caption: leereCaption,
   log: [],
   activities: [],
+  vorgaenge: [],
   turn: 0,
   approvals: [],
   auftraege: [],
@@ -441,6 +446,16 @@ export function applyServerMessage(msg: ServerMessage) {
         };
         // gleiche id = Statuswechsel; neueste oben, Platz für den aktuellen Zug und frühere Schritte
         return { ...s, activities: [a, ...s.activities.filter((x) => x.id !== a.id)].slice(0, 12) };
+      });
+      return;
+    }
+    case "vorgang": {
+      // gleiche Kennung = neuer Stand des Vorgangs (jede Nachricht trägt alles); Ansage nur bei bedeutsamem Statuswechsel
+      wamo.set((s) => {
+        const vorgaenge = vorgangEinordnen(s.vorgaenge, msg.vorgang);
+        if (vorgaenge === s.vorgaenge) return s;
+        const ansage = vorgangAnsage(s.vorgaenge.find((v) => v.id === msg.vorgang.id), msg.vorgang);
+        return { ...s, vorgaenge, ansage: ansage ?? s.ansage };
       });
       return;
     }

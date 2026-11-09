@@ -92,6 +92,7 @@ from pipecat.utils.context.llm_context_summarization import (
     LLMContextSummaryConfig,
 )
 
+from abnahme import llm_beurteiler
 from activity import ActivityReporter
 from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
@@ -111,6 +112,7 @@ from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from ja_waechter import JaWaechter, ja_waechter_an
 from turn_wache import TurnWache
+from vorgaenge import Vorgaenge, datenbank_ablage
 from werkzeug_wache import AbbruchHinweis, DoppelWache, abbruch_hinweis_an, umhuellen, werkzeug_doppelt_an
 from wartesatz import Wartesatz, wartesatz_an, wartesatz_modell_an, wartesatz_modell_secs, wartesatz_secs
 from pc_host import (
@@ -591,12 +593,16 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # sofort wirksames gemeinsames Wissen (M4) und kein Lernen aus diesen Abschnitten.
     turn = TurnState(transcript_len=lambda: len(transcript))
     standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, fernzugriff=fernzugriff).standard_tools)
+    # Vorgänge (vorgaenge.py): was WAMO gerade abarbeitet, live für die Tafel "Vorgänge". Alle Änderungen sind synchron, das
+    # Senden und Speichern machen Hintergrundtasks mit Frist: der Audiopfad wartet nie darauf. send entsteht weiter unten.
+    vorgaenge = Vorgaenge(lambda d: send(d), speichern=datenbank_ablage(memory))
     dev: DevAgent | None = None
     if entwicklung:
         # Entwicklungsaufträge an Claude Code; Start und Freigaben per Klick in der UI (dev_agent.py). Mit eigenem
         # Zugang läuft der Auftrag auf dem Token oder Schlüssel dieses Profils (je Lauf frisch entschlüsselt, siehe
         # dev_agent.persoenlicher_zugang), ohne ihn nur das Profil des Kernschlüssels.
-        dev = DevAgent(memory, auftraggeber=identity.name)
+        # beurteiler: das günstigste Modell des Profils beurteilt die Aussagekriterien der Abnahme (abnahme.py)
+        dev = DevAgent(memory, auftraggeber=identity.name, vorgaenge=vorgaenge, beurteiler=llm_beurteiler(zugang))
         dev.on_result = turn.taint
         dev.register(llm)
         standard_tools += dev.schemas()
@@ -624,7 +630,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     boss = Boss(zugang, senden=lambda d: send(d), melden=lambda t: melde_llm(t), fremdinhalt=turn.taint,
                 gefaerbt=lambda: turn.tainted, auftraggeber=identity.name, canvas=lambda item: canvas_legen(item),
-                bild_quelle=bildschirm_foto if (pc_client and is_admin) else None)
+                bild_quelle=bildschirm_foto if (pc_client and is_admin) else None, vorgaenge=vorgaenge)
     boss.register(llm)
     standard_tools += boss.schemas()
     context.set_tools(ToolsSchema(standard_tools=standard_tools))
@@ -960,6 +966,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         state["client_ready"] = True
         await send(profil_message(identity))
         await send_betrieb()
+        vorgaenge.erneut_senden()  # die Oberfläche (wieder) verbunden: alle bekannten Vorgänge noch einmal, ohne zu warten
 
     @task.rtvi.event_handler("on_client_message")
     async def on_client_message(_rtvi, msg):
@@ -1143,6 +1150,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             await boss.schliessen()  # laufende Aufgaben der Spezialisten abbrechen
         if dev:
             await dev.close()  # laufenden Entwicklungsauftrag beim Auflegen beenden
+        with contextlib.suppress(Exception, asyncio.TimeoutError):
+            await asyncio.wait_for(vorgaenge.schliessen(), CLEANUP_DB_TIMEOUT_SECS)  # offene Vorgänge gelten als abgebrochen
         if freigaben is not None:
             # offene PC-Freigaben ablehnen: keine Eingabesperre am PC und keine offene Zeile in actions zurücklassen
             with contextlib.suppress(Exception):

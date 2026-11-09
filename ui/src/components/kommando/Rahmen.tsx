@@ -102,7 +102,12 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
       canvas?.scrollIntoView({ behavior: kurz ? "auto" : "smooth", block: "start" });
     });
   }, []);
-  const angebot = useMemo(() => ({ zeigeCanvas }), [zeigeCanvas]);
+  // Tafel "Aufträge" nach vorn (Knopf "Zur Freigabe" in der Tafel Vorgänge); Fokus und Scrollen übernimmt die Tafel Vorgänge
+  const zeigeAuftraege = useCallback(() => {
+    setRechts("auftraege");
+    setMobil("auftraege");
+  }, []);
+  const angebot = useMemo(() => ({ zeigeCanvas, zeigeAuftraege }), [zeigeCanvas, zeigeAuftraege]);
 
   const rechtsReiter = useMemo(() => RECHTS.map((r) => (r.id === "auftraege" ? { ...r, zahl: offen } : r)), [offen]);
   const mobilReiter = useMemo<readonly ReiterDef<Mobil>[]>(
