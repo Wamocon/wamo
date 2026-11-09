@@ -319,6 +319,22 @@ export const LEER_OHNE_GERAETE: Leer = {
   text: "Sobald im Büro Geräte für WAMO eingerichtet sind, erscheinen sie hier.",
 };
 
+/**
+ * Text des einen Bereichs, den Screenreader für die Karte ansagen (role="status", immer eingehängt, nur der Text wechselt):
+ * Laden, Leerzustand, sonst die Zusammenfassung, bei fehlgeschlagener Aktualisierung mit dem Hinweis dazu. Ohne Uhrzeit, damit
+ * der Text zwischen zwei Abrufen gleich bleibt und nichts doppelt angesagt wird.
+ */
+export function bueroAnsage(z: { geladen: boolean; stand: BueroStand | null; fehler: number | null }): string {
+  if (!z.geladen) return "Geräte werden geladen";
+  if (!z.stand) {
+    const leer = leerFehler(z.fehler);
+    return `${leer.titel}. ${leer.text}`;
+  }
+  if (z.stand.geraete.length === 0) return `${LEER_OHNE_GERAETE.titel}. ${LEER_OHNE_GERAETE.text}`;
+  const kopf = zusammenfassung(z.stand.geraete);
+  return z.fehler === null ? kopf : `${kopf}. ${aktualisierungHinweis(z.fehler, "")}`;
+}
+
 /** Uhrzeit "14:32" aus einem ISO-Zeitpunkt in der Zeitzone des Geräts; leer bei ungültiger Eingabe. */
 export function uhrzeitKurz(iso: string): string {
   const t = Date.parse(iso);

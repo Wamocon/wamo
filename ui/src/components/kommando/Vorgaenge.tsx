@@ -86,13 +86,12 @@ type BalkenProps = {
   ton: "aktiv" | "still";
   /** aria-valuetext: was ein Screenreader statt der bloßen Zahl vorliest */
   text: string;
-  /** Name des Balkens: entweder eine Kennung (aria-labelledby) oder ein Text (aria-label) */
-  benanntNach?: string;
-  name?: string;
+  /** Kennung des Elements, das den Balken benennt (aria-labelledby): bei der Karte ihr Titel, beim Schritt sein Titel */
+  benanntNach: string;
   klein?: boolean;
 };
 
-function Balken({ anteil, ton, text, benanntNach, name, klein }: BalkenProps) {
+function Balken({ anteil, ton, text, benanntNach, klein }: BalkenProps) {
   const p = prozent(anteil);
   return (
     <div
@@ -105,7 +104,6 @@ function Balken({ anteil, ton, text, benanntNach, name, klein }: BalkenProps) {
       aria-valuenow={p}
       aria-valuetext={text}
       aria-labelledby={benanntNach}
-      aria-label={benanntNach ? undefined : name}
     >
       <span className="vg-fuell" style={{ transform: `translateX(${p - 100}%)` }} />
     </div>
@@ -118,15 +116,18 @@ function Balken({ anteil, ton, text, benanntNach, name, klein }: BalkenProps) {
  */
 const SchrittZeile = memo(
   function SchrittZeile({ s }: { s: VorgangSchritt }) {
+    const titelId = `${useId()}-titel`; // der Balken heißt wie sein Schritt, über Karten hinweg eindeutig
     return (
       <li data-status={s.status} aria-current={s.status === "laeuft" ? "step" : undefined}>
         <span className="vg-nr num">{s.nr}</span>
         <Marke art={markeArt(s.status)} />
-        <span className="vg-titel">{s.titel}</span>
+        <span id={titelId} className="vg-titel">
+          {s.titel}
+        </span>
         <span className="vg-zustand" aria-hidden="true">
           {schrittStatusText[s.status]}
         </span>
-        <Balken anteil={s.fortschritt} ton={s.status === "laeuft" || s.status === "fertig" ? "aktiv" : "still"} klein text={schrittFortschrittText(s)} name={`Schritt ${s.nr}`} />
+        <Balken anteil={s.fortschritt} ton={s.status === "laeuft" || s.status === "fertig" ? "aktiv" : "still"} klein text={schrittFortschrittText(s)} benanntNach={titelId} />
         {s.detail && <span className="vg-detail">{s.detail}</span>}
       </li>
     );

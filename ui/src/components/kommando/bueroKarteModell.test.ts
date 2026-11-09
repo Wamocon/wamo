@@ -12,6 +12,7 @@ import {
   aktualisierungHinweis,
   anordnung,
   beschriftung,
+  bueroAnsage,
   darstellung,
   GRUPPEN,
   kleinsterAbstand,
@@ -35,6 +36,7 @@ import {
   zusammenfassung,
   type Ampel,
   type BueroGeraet,
+  type BueroStand,
   type GruppeId,
   type Takt,
 } from "./bueroKarteModell.ts";
@@ -387,6 +389,52 @@ test("Uhrzeit aus dem Zeitpunkt der Antwort", () => {
   assert.match(uhrzeitKurz("2026-11-09T08:05:00Z"), /^\d{2}:\d{2}$/);
   assert.equal(uhrzeitKurz(""), "");
   assert.equal(uhrzeitKurz("gestern"), "");
+});
+
+// ---------- Ansage für Screenreader (ein Bereich, der immer da ist, nur der Text wechselt) ----------
+const stand = (geraete: BueroGeraet[]): BueroStand => ({ geraete, unbekannt: null, stand: "2026-11-09T08:05:00Z" });
+
+test("Ansage: vor der ersten Antwort wird geladen", () => {
+  assert.equal(bueroAnsage({ geladen: false, stand: null, fehler: null }), "Geräte werden geladen");
+});
+
+test("Ansage ohne Stand: der ruhige Leerzustand mit Titel und Text", () => {
+  const l = leerFehler(503);
+  assert.equal(bueroAnsage({ geladen: true, stand: null, fehler: 503 }), `${l.titel}. ${l.text}`);
+  const gesperrt = leerFehler(401);
+  assert.equal(bueroAnsage({ geladen: true, stand: null, fehler: 401 }), `${gesperrt.titel}. ${gesperrt.text}`);
+});
+
+test("Ansage ohne Geräte im Stand: der Hinweis auf die fehlende Einrichtung", () => {
+  assert.equal(bueroAnsage({ geladen: true, stand: stand([]), fehler: null }), `${LEER_OHNE_GERAETE.titel}. ${LEER_OHNE_GERAETE.text}`);
+});
+
+test("Ansage mit Stand: die Zusammenfassung, bei Fehlern der Hinweis dazu ohne Uhrzeit (die Zeile bleibt zwischen den Abrufen gleich)", () => {
+  const g = [geraet("a", "server"), geraet("b", "netz", { ampel: "stoerung" })];
+  assert.equal(bueroAnsage({ geladen: true, stand: stand(g), fehler: null }), "2 Geräte, 1 Störung");
+  assert.equal(
+    bueroAnsage({ geladen: true, stand: stand(g), fehler: 503 }),
+    "2 Geräte, 1 Störung. Aktualisierung gerade nicht möglich. Es wird weiter versucht.",
+  );
+  assert.equal(bueroAnsage({ geladen: true, stand: stand(g), fehler: 503 }), bueroAnsage({ geladen: true, stand: stand(g), fehler: 0 }));
+});
+
+test("Ansage wechselt nur, wenn sich etwas Hörbares ändert", () => {
+  const ok = [geraet("a", "server"), geraet("b", "netz")];
+  const andereZeit = { ...stand(ok), stand: "2026-11-09T08:06:00Z" };
+  assert.equal(bueroAnsage({ geladen: true, stand: stand(ok), fehler: null }), bueroAnsage({ geladen: true, stand: andereZeit, fehler: null }));
+  const gestoert = [geraet("a", "server"), geraet("b", "netz", { ampel: "stoerung" })];
+  assert.notEqual(bueroAnsage({ geladen: true, stand: stand(ok), fehler: null }), bueroAnsage({ geladen: true, stand: stand(gestoert), fehler: null }));
+});
+
+test("Ansagetexte ohne Gedankenstriche", () => {
+  const gedankenstriche = new RegExp("[" + String.fromCharCode(0x2013, 0x2014) + "]");
+  for (const z of [
+    { geladen: false, stand: null, fehler: null },
+    { geladen: true, stand: null, fehler: 0 },
+    { geladen: true, stand: stand([]), fehler: null },
+    { geladen: true, stand: stand([geraet("a", "server")]), fehler: 401 },
+  ]) assert.ok(!gedankenstriche.test(bueroAnsage(z)), bueroAnsage(z));
 });
 
 // ---------- Hinweis auf unbekannte Geräte im Netz ----------

@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useSelect } from "@/lib/store";
 import { wamo } from "@/lib/wamo";
 import {
   aktualisierungHinweis,
   anordnung,
   beschriftung,
+  bueroAnsage,
   darstellung,
   gruppenName,
   KARTE,
@@ -52,7 +53,7 @@ function Zeichen({ ampel, halo = false, klasse = "bk-zeichen" }: { ampel: Ampel;
 
 function Leerzustand({ leer }: { leer: Leer }) {
   return (
-    <div className="bk-leer" role="status">
+    <div className="bk-leer">
       <p className="bk-leer-titel">{leer.titel}</p>
       <p className="bk-leer-text">{leer.text}</p>
     </div>
@@ -142,7 +143,7 @@ function UnbekanntHinweis({ anzahl, istAdmin }: { anzahl: number | null; istAdmi
   const hinweis = unbekanntHinweis(anzahl, istAdmin);
   if (!hinweis) return null;
   return (
-    <div className="bk-unbekannt" role="status">
+    <div className="bk-unbekannt">
       <p className="bk-unbekannt-text">
         <Zeichen ampel="unbekannt" />
         <span>{hinweis.text}</span>
@@ -165,15 +166,19 @@ export function BueroKarte() {
   const titelId = useId();
 
   const geraete = useMemo(() => stand?.geraete ?? [], [stand]);
+  const nachId = useMemo(() => new Map(geraete.map((g) => [g.id, g])), [geraete]);
   const punkte = useMemo(() => anordnung(geraete), [geraete]);
   const kreise = useMemo(() => ringe(geraete), [geraete]);
-  const aktuell = geraete.find((g) => g.id === gewaehlt) ?? null;
+  // Verschwindet das gewählte Gerät aus den Daten, schließt die Detailkarte (Zustand beim Rendern anpassen). Sonst ginge sie bei
+  // seiner Rückkehr von selbst wieder auf, und die Auswahl zeigte auf ein Gerät, das es nicht mehr gibt.
+  if (gewaehlt !== null && !nachId.has(gewaehlt)) setGewaehlt(null);
+  const aktuell = gewaehlt !== null ? (nachId.get(gewaehlt) ?? null) : null;
 
-  const schliessen = useCallback(() => {
+  const schliessen = () => {
     const id = gewaehlt;
     setGewaehlt(null);
     if (id) knoepfe.current.get(id)?.focus();
-  }, [gewaehlt]);
+  };
 
   const taste = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === "Escape" && aktuell) {
@@ -186,22 +191,19 @@ export function BueroKarte() {
 
   return (
     <section className="bk" aria-labelledby={titelId} onKeyDown={taste}>
+      {/* Der eine Bereich für Bildschirmleser: immer eingehängt, nur der Text wechselt (ein neu eingefügter Bereich wird oft überhört).
+          Die sichtbaren Zeilen darunter sind keine eigenen Ansagen. */}
+      <p className="sr-only" role="status" aria-atomic="true">
+        {bueroAnsage({ geladen, stand, fehler })}
+      </p>
       <header className="bk-kopf">
         <h2 id={titelId} className="bk-titel">
           Büro
         </h2>
-        {stand && stand.geraete.length > 0 && (
-          <p className="bk-zusammen" role="status">
-            {zusammenfassung(geraete)}
-          </p>
-        )}
+        {stand && stand.geraete.length > 0 && <p className="bk-zusammen">{zusammenfassung(geraete)}</p>}
       </header>
 
-      {!geladen && (
-        <p className="bk-leer-titel bk-laedt" role="status">
-          Geräte werden geladen …
-        </p>
-      )}
+      {!geladen && <p className="bk-leer-titel bk-laedt">Geräte werden geladen …</p>}
       {geladen && !stand && <Leerzustand leer={leerFehler(fehler)} />}
       {stand && geraete.length === 0 && <Leerzustand leer={LEER_OHNE_GERAETE} />}
 
@@ -218,7 +220,7 @@ export function BueroKarte() {
               </text>
             </svg>
             {punkte.map((p) => {
-              const g = geraete.find((x) => x.id === p.id);
+              const g = nachId.get(p.id);
               if (!g) return null;
               const offen = gewaehlt === g.id;
               return (
@@ -248,7 +250,7 @@ export function BueroKarte() {
             })}
           </div>
 
-          <div className="bk-detail-wrap" aria-live="polite">
+          <div className="bk-detail-wrap" aria-live="polite" aria-atomic="true">
             {aktuell && <Detail geraet={aktuell} onSchliessen={schliessen} />}
           </div>
 
@@ -259,7 +261,7 @@ export function BueroKarte() {
           <UnbekanntHinweis anzahl={stand?.unbekannt ?? null} istAdmin={istAdmin} />
 
           {stand && fehler !== null && (
-            <p className="bk-stand bk-stand-alt" role="status">
+            <p className="bk-stand bk-stand-alt">
               {aktualisierungHinweis(fehler, zeit)}
             </p>
           )}

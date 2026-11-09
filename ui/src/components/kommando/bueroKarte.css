@@ -83,7 +83,8 @@
 .bk-legende li { display: inline-flex; align-items: center; gap: 6px; }
 
 /* ---------- Detailkarte ---------- */
-.bk-detail-wrap:empty { display: none; }
+/* Leer bleibt der Bereich im Baum (ein Bereich mit display:none sagt später Eingefügtes nicht verlässlich an), nimmt aber keinen Platz ein */
+.bk-detail-wrap:empty { position: absolute; }
 .bk-detail {
   display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 12px 18px;
   background: color-mix(in srgb, var(--kz-karte, var(--surface)) 92%, transparent);
