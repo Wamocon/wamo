@@ -6,6 +6,8 @@
   Scannen      20 je Stunde und Profil, ein Auftrag zugleich je Scanner
   NAS          30 Suchen oder Abrufe je Minute und Profil
   Ablage       30 Aufrufe je Minute und Profil (Liste, Holen, Löschen)
+  Erkennung    12 Aufrufe je Minute und Profil (Zahl und Liste der unbekannten Geräte); die Hostliste des Routers holt der
+               Dienst ohnehin höchstens einmal in 60 Sekunden (unbekannt.py)
 Die Zähler für Druckseiten überleben einen Neustart (zaehler.json im StateDirectory), die übrigen nicht.
 """
 
@@ -25,6 +27,7 @@ FENSTER = {
     "nas": (60.0, 30, 60),
     "router": (60.0, 6, 12),
     "ablage": (60.0, 30, 90),
+    "unbekannt": (60.0, 12, 36),
 }
 
 

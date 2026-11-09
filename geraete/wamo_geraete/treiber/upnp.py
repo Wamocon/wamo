@@ -1,13 +1,15 @@
-"""UPnP-SOAP mit fester Aktionsliste: FRITZ!Box (IGD, Status ohne Anmeldung; TR-064 Geräteliste nur mit Zugang),
-JBL-Lautsprecher und Fernseher (RenderingControl, AVTransport).
+"""UPnP-SOAP mit fester Aktionsliste: FRITZ!Box (IGD, Status ohne Anmeldung; TR-064 für Status, Geräteliste und Hostliste
+nur mit Zugang), JBL-Lautsprecher und Fernseher (RenderingControl, AVTransport).
 
 Es gibt keinen Weg, eine beliebige SOAP-Aktion aufzurufen: Jede Aktion steht als Schlüssel in AKTIONEN mit festem
 Pfad, Diensttyp, Namen und festen Argumentnamen; Werte sind nur Ganzzahlen oder feste Wörter. Insbesondere
-AddPortMapping, DeletePortMapping, ForceTermination, SetConnectionType und alle X_AVM-DE-Schreibaktionen fehlen.
+AddPortMapping, DeletePortMapping, ForceTermination, SetConnectionType und alle X_AVM-DE-Schreibaktionen fehlen. Auch die
+TR-064-Aktionen unten sind nur lesend (Get...); der Router bleibt in diesem Dienst ausschließlich lesbar.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 from xml.sax.saxutils import escape
 
@@ -21,6 +23,8 @@ WAN_IP = ("/igdupnp/control/WANIPConn1", "urn:schemas-upnp-org:service:WANIPConn
 RC = "urn:schemas-upnp-org:service:RenderingControl:1"
 AVT = "urn:schemas-upnp-org:service:AVTransport:1"
 TR064_HOSTS = ("/upnp/control/hosts", "urn:dslforum-org:service:Hosts:1")
+TR064_WAN_IFC = ("/upnp/control/wancommonifconfig1", "urn:dslforum-org:service:WANCommonInterfaceConfig:1")
+TR064_WAN_IP = ("/upnp/control/wanipconnection1", "urn:dslforum-org:service:WANIPConnection:1")
 
 # Schlüssel -> (Pfad oder None für den Pfad aus der Gerätekonfiguration, Diensttyp, Aktion, feste Argumentnamen)
 AKTIONEN: dict[str, tuple[str | None, str, str, tuple[str, ...]]] = {
@@ -34,6 +38,14 @@ AKTIONEN: dict[str, tuple[str | None, str, str, tuple[str, ...]]] = {
     "rc_stumm_setzen": (None, RC, "SetMute", ("InstanceID", "Channel", "DesiredMute")),
     "avt_zustand": (None, AVT, "GetTransportInfo", ("InstanceID",)),
     "tr064_hostliste": (TR064_HOSTS[0], TR064_HOSTS[1], "X_AVM-DE_GetHostListPath", ()),
+    # Status über TR-064 (HTTPS 49443, Anmeldung): dieselben Werte wie über UPnP-IGD, nur lesend
+    "tr064_link": (TR064_WAN_IFC[0], TR064_WAN_IFC[1], "GetCommonLinkProperties", ()),
+    "tr064_gesendet": (TR064_WAN_IFC[0], TR064_WAN_IFC[1], "GetTotalBytesSent", ()),
+    "tr064_empfangen": (TR064_WAN_IFC[0], TR064_WAN_IFC[1], "GetTotalBytesReceived", ()),
+    "tr064_verbindung": (TR064_WAN_IP[0], TR064_WAN_IP[1], "GetStatusInfo", ()),
+    # Hosts:1 für die passive Erkennung unbekannter Geräte (treiber/hostliste.py)
+    "tr064_host_anzahl": (TR064_HOSTS[0], TR064_HOSTS[1], "GetHostNumberOfEntries", ()),
+    "tr064_host_eintrag": (TR064_HOSTS[0], TR064_HOSTS[1], "GetGenericHostEntry", ("NewIndex",)),
 }
 _WERT_RE = re.compile(r"^(?:\d{1,6}|Master)$")
 
@@ -90,11 +102,20 @@ async def aufruf(geraet: Geraet, aktion: str, werte: dict[str, int | str] | None
 
 
 # ---------- Router ----------
-async def router_status(geraet: Geraet) -> dict:
-    link = await aufruf(geraet, "router_link")
-    verbindung = await aufruf(geraet, "router_verbindung")
-    gesendet = await aufruf(geraet, "router_gesendet")
-    empfangen = await aufruf(geraet, "router_empfangen")
+def tr064_zugang(geraet: Geraet, konfig: Konfig | None) -> tuple[int, str, tuple[str, str]]:
+    """(Port, Zertifikats-Fingerabdruck, (Benutzer, Passwort)) für TR-064 oder NichtEingerichtet."""
+    zugang = geraet.opt("zugang")
+    benutzer = konfig.geheimnis(zugang, "BENUTZER") if konfig else None
+    passwort = konfig.geheimnis(zugang, "PASSWORT") if konfig else None
+    pin, port = geraet.opt("tls_sha256"), geraet.opt("tr064_port")
+    if not (zugang and benutzer and passwort and pin and port):
+        raise NichtEingerichtet("TR-064 ist nicht eingerichtet (Benutzer, Passwort, Zertifikat und Port fehlen)")
+    return port, pin, (benutzer, passwort)
+
+
+def _router_felder(link: dict[str, str], verbindung: dict[str, str], gesendet: dict[str, str],
+                   empfangen: dict[str, str]) -> dict:
+    """Gemeinsame Auswertung für UPnP-IGD und TR-064: gleiche Felder, gleiche Wörter."""
     hoch = ganzzahl(link.get("NewLayer1UpstreamMaxBitRate"), 0, 10**11)
     runter = ganzzahl(link.get("NewLayer1DownstreamMaxBitRate"), 0, 10**11)
     return {
@@ -112,6 +133,22 @@ async def router_status(geraet: Geraet) -> dict:
     }
 
 
+async def router_status(geraet: Geraet, konfig: Konfig | None = None) -> dict:
+    """Status der FRITZ!Box. Quelle nach status_quelle: "upnp" (Standard, IGD ohne Anmeldung) oder "tr064" (HTTPS 49443 mit
+    Anmeldung und festgehaltenem Zertifikat; dafür braucht der Treiber die Konfiguration mit den Zugangsdaten)."""
+    if geraet.opt("status_quelle", "upnp") == "tr064":
+        port, pin, digest = tr064_zugang(geraet, konfig)
+        schluessel = ("tr064_link", "tr064_verbindung", "tr064_gesendet", "tr064_empfangen")
+        link, verbindung, gesendet, empfangen = await asyncio.gather(
+            *(aufruf(geraet, a, port=port, tls_sha256=pin, digest=digest) for a in schluessel))
+        return _router_felder(link, verbindung, gesendet, empfangen)
+    link = await aufruf(geraet, "router_link")
+    verbindung = await aufruf(geraet, "router_verbindung")
+    gesendet = await aufruf(geraet, "router_gesendet")
+    empfangen = await aufruf(geraet, "router_empfangen")
+    return _router_felder(link, verbindung, gesendet, empfangen)
+
+
 def _items(text: str, maximum: int = 300) -> list[str]:
     """Inhalte der <Item>-Blöcke einer Geräteliste, linear (split statt Regex mit Rücksprung auf ungeschlossenen Blöcken)."""
     erg: list[str] = []
@@ -125,12 +162,8 @@ def _items(text: str, maximum: int = 300) -> list[str]:
 async def router_geraete(geraet: Geraet, konfig: Konfig) -> list[dict]:
     """Verbundene Geräte über TR-064 (HTTPS 49443, Digest, festgehaltenes Zertifikat). Nur für Admins; das Ergebnis
     geht im Kern direkt an die Oberfläche (personenbezogen: zeigt, wer im Büro ist)."""
-    zugang = geraet.opt("zugang")
-    benutzer, passwort = konfig.geheimnis(zugang, "BENUTZER"), konfig.geheimnis(zugang, "PASSWORT")
-    pin, port = geraet.opt("tls_sha256"), geraet.opt("tr064_port")
-    if not (zugang and benutzer and passwort and pin and port):
-        raise NichtEingerichtet("TR-064 ist nicht eingerichtet (Benutzer, Passwort, Zertifikat und Port fehlen)")
-    werte = await aufruf(geraet, "tr064_hostliste", port=port, tls_sha256=pin, digest=(benutzer, passwort))
+    port, pin, digest = tr064_zugang(geraet, konfig)
+    werte = await aufruf(geraet, "tr064_hostliste", port=port, tls_sha256=pin, digest=digest)
     pfad = werte.get("NewX_AVM-DE_HostListPath", "")
     if not re.fullmatch(r"/devicehostlist\.lua\?sid=[0-9a-f]{16}", pfad):
         raise GeraetFehler("Router liefert keinen gültigen Pfad zur Geräteliste")

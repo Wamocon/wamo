@@ -64,6 +64,10 @@ adresse = "192.168.178.1"
 # tr064_port = 49443
 # tls_sha256 = "AA:BB:..."       # Fingerabdruck des Zertifikats der FRITZ!Box (wamo-geraete-einrichten.sh --fritzbox-zertifikat)
 # zugang = "FRITZBOX"            # WAMO_GERAETE_FRITZBOX_BENUTZER, WAMO_GERAETE_FRITZBOX_PASSWORT
+# Mit diesem Zugang (nur lesend) liest der Dienst auch die Hostliste für die passive Erkennung unbekannter Geräte
+# (kein Scan; bekannte Geräte, die bewusst fehlen dürfen, stehen in /etc/wamo-geraete/bekannt.toml, Vorlage bekannt.toml.example).
+# Quelle des Status: "upnp" (Standard, ohne Anmeldung) oder "tr064" (lesend über HTTPS 49443, braucht die drei Zeilen oben):
+# status_quelle = "upnp"
 
 [[geraet]]
 kennung = "nas-1"
@@ -144,3 +148,19 @@ klasse = "mac"
 treiber = "anwesenheit"          # nur sichtbar oder nicht (mDNS über Avahi, ARP), kein Scan
 # mdns_name = "iMac.local"       # sobald bekannt
 # mac = "aa:bb:cc:dd:ee:ff"
+
+# Switch oder Access Point über SNMPv3 (nur lesen: authPriv mit SHA-2 und AES, nie SNMPv1 oder v2c). Derzeit ist keiner eingetragen.
+# Am Gerät einen eigenen Lese-Benutzer anlegen (Sicherheitsstufe authPriv, nur lesen). Zugangsdaten nur in geraete.env
+# (sudo wamo-geraete-env setzen): WAMO_GERAETE_SWITCH1_BENUTZER, WAMO_GERAETE_SWITCH1_PASSWORT (Anmeldung, mindestens 8 Zeichen),
+# WAMO_GERAETE_SWITCH1_PRIVPASSWORT (Verschlüsselung, mindestens 8 Zeichen). Der Dienst fragt sysName, sysDescr, sysUpTime und
+# die Zahl der Ports oben und unten (ifOperStatus); der Ausgang ist UDP 161 zu genau dieser Adresse.
+# [[geraet]]
+# kennung = "switch-1"
+# name = "Switch Büro"
+# klasse = "switch"                # oder "accesspoint"
+# treiber = "snmp"                 # SNMPv3 über UDP 161
+# adresse = "192.168.178.x"        # feste Adresse im Büro-LAN eintragen
+# zugang = "SWITCH1"
+# auth = "sha256"                  # sha224, sha256, sha384 oder sha512 (Standard sha256)
+# verschluesselung = "aes128"      # aes128, aes192 oder aes256 (Standard aes128; nur aes128 ist gegen einen Agenten getestet)
+# fehlerzaehler = false            # true: zusätzlich die Summen der Fehlerzähler (ifInErrors, ifOutErrors)
