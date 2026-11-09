@@ -193,7 +193,9 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
               data-p="auftraege"
               {...tafel("Aufträge", breit ? "kz-tab-d-auftraege" : "kz-tab-m-auftraege")}
             >
-              <h2 className="sr-only">Aufträge und Freigaben</h2>
+              <h2 id="kz-h-auftraege" className="sr-only" tabIndex={-1}>
+                Aufträge und Freigaben
+              </h2>
               {inhalt.auftraege}
             </div>
             <div

@@ -23,7 +23,7 @@ import {
   type MarkenArt,
 } from "@/lib/vorgaenge";
 import { verlaufLaden, verlaufLeeren, vorgangVerlauf } from "@/lib/vorgaengeApi";
-import { wamo } from "@/lib/wamo";
+import { wamo, zeigeToast } from "@/lib/wamo";
 import { useRahmen } from "./rahmenKontext";
 
 /**
@@ -164,13 +164,19 @@ const VorgangInhalt = memo(function VorgangInhalt({ v, titelId }: { v: Vorgang; 
   const zeit = zeitZeile(v);
 
   // Die Karte steht in der Tafel "Aufträge" (Reiter, am Handy eigener Reiter): erst dorthin wechseln, dann nach dem Umschalten
-  // zur Karte scrollen und die Überschrift fokussieren. Ohne passende Karte (Frist abgelaufen) bleibt es beim Wechsel der Tafel.
+  // zur Karte scrollen und die Überschrift fokussieren. Ohne eigene Karte (Frist abgelaufen) springt der Fokus nie auf die Karte
+  // eines anderen Vorgangs, sondern auf die Überschrift der Tafel (Rahmen.tsx), dazu die Ansage "Freigabekarte nicht gefunden".
   const zurFreigabe = () => {
     zeigeAuftraege();
     requestAnimationFrame(() => {
       const selektor = freigabeKartenSelektor(v.freigabeId);
-      const karte = (selektor ? document.querySelector<HTMLElement>(selektor) : null) ?? document.querySelector<HTMLElement>(".approval");
-      inDenBlick(karte ?? document.getElementById("kz-p-auftraege"), karte?.querySelector<HTMLElement>("h3") ?? null);
+      const karte = selektor ? document.querySelector<HTMLElement>(selektor) : null;
+      if (karte) {
+        inDenBlick(karte, karte.querySelector<HTMLElement>("h3"));
+        return;
+      }
+      inDenBlick(document.getElementById("kz-p-auftraege"), document.getElementById("kz-h-auftraege"));
+      zeigeToast("Freigabekarte nicht gefunden");
     });
   };
   const ergebnisAnsehen = () => {
