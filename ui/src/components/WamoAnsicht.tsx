@@ -13,6 +13,7 @@ import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
 import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
+import { VorgaengeTafel } from "@/components/kommando/Vorgaenge";
 import { GeraetEinrichtung, GeraetZeile } from "@/components/GeraetEinrichtung";
 import { Hinweise as AdminHinweise, HinweiseZaehler } from "@/components/Hinweise";
 import { Kopfzeile } from "@/components/Kopfzeile";
@@ -132,7 +133,8 @@ const Ansage = memo(function Ansage() {
  * Hauptansicht "Kommandozentrale" (kommando/Rahmen.tsx). Abschnitte abonnieren eigene Store-Ausschnitte,
  * deshalb rendert hier nichts im Worttakt neu. Ab 1100 px drei Spalten: links Hinweise (Gedächtnis, geteilte
  * Arbeit, Stand der Einstellungen), in der Mitte der Kern mit Untertiteln, Eingabepille und Canvas, rechts Reiter für
- * Freigaben und Aufträge, Vorgänge (Zeitleiste der Werkzeuge) und Erledigtes. Darunter eine Spalte mit Reiterleiste.
+ * Freigaben und Aufträge, Vorgänge (Karten mit Livefortschritt, darunter die Zeitleiste der Werkzeuge) und Erledigtes. Darunter
+ * eine Spalte mit Reiterleiste.
  * Der Verlauf bleibt eine Schublade. Die Einstellungen (components/einstellungen/) sind eine zweite Ansicht derselben
  * Seite, gesteuert über den Hash #einstellungen: Sie verbergen die Kommandozentrale, ohne das Gespräch zu berühren.
  */
@@ -221,6 +223,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
       }
       vorgaenge={
         <>
+          <VorgaengeTafel />
           <ActivityTimeline />
           <VorgaengeLeer />
         </>

@@ -5,6 +5,7 @@ import { LABEL } from "@/components/ActivityFeed";
 import { EinstellungenLink } from "@/components/einstellungen/EinstellungenLink";
 import { modellzugangKurz } from "@/lib/einstellungenAbschnitte";
 import { useSelect } from "@/lib/store";
+import { vorgangVerlauf } from "@/lib/vorgaengeApi";
 import { wamo, type Memo } from "@/lib/wamo";
 import { offeneEntscheidungen } from "./ansicht";
 import { useGemerktSitzung } from "./gemerktSitzung";
@@ -21,9 +22,11 @@ export const AuftraegeLeer = memo(function AuftraegeLeer() {
 });
 
 export const VorgaengeLeer = memo(function VorgaengeLeer() {
-  const anzahl = useSelect(wamo, (s) => s.activities.length);
-  if (anzahl) return null;
-  return <Leer>Noch keine Vorgänge. Sobald WAMO ein Werkzeug nutzt, siehst du es hier.</Leer>;
+  // Werkzeuge der Sitzung, Vorgänge der Sitzung und der Verlauf aus der Datenbank (Tafel Vorgaenge.tsx): eins davon genügt
+  const anzahl = useSelect(wamo, (s) => s.activities.length + s.vorgaenge.length);
+  const verlauf = useSelect(vorgangVerlauf, (v) => v.length);
+  if (anzahl || verlauf) return null;
+  return <Leer>Noch keine Vorgänge. Sobald WAMO eine Aufgabe übernimmt oder ein Werkzeug nutzt, siehst du es hier.</Leer>;
 });
 
 const sekunden = (ms: number) => `${(ms / 1000).toFixed(1).replace(".", ",")} s`;

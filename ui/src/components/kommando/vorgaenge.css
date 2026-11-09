@@ -1,0 +1,131 @@
+/* =====================================================================
+   Tafel "Vorgänge" (components/kommando/Vorgaenge.tsx): Regeln mit Präfix .vg-
+   Farbvertrag (nur die Grundpalette aus globals.css, kein Blau, keine neuen Farben):
+   Rot (--accent) für laufende Arbeit und die Füllung der Balken, Weiß mit schwarzem Haken für fertig, Grau für offen,
+   geplant, wartend und abgebrochen, Fehler Schwarz auf Rot (4,92:1). Jeder Zustand steht zusätzlich als Wort und als Form da.
+   Bewegung (drehender Bogen, wachsende Balken) schaltet prefers-reduced-motion ab.
+   ===================================================================== */
+
+.vg-tafel { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.vg-liste { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; min-width: 0; }
+.vg-liste > li { min-width: 0; }
+
+/* Kante links je Zustand: Rot bei Arbeit und Fehler, Tinte bei fertig, Grau sonst (geplant, wartend, abgebrochen) */
+.vg-karte, .vg-ende { --vg-kante: var(--rule-strong); }
+.vg-karte[data-status="laeuft"], .vg-karte[data-status="pruefen"], .vg-karte[data-status="fehler"],
+.vg-ende[data-status="fehler"] { --vg-kante: var(--accent); }
+.vg-karte[data-status="fertig"], .vg-ende[data-status="fertig"] { --vg-kante: var(--ink); }
+
+.vg-karte {
+  display: flex; flex-direction: column; gap: 12px; min-width: 0;
+  padding: 14px 16px 16px 20px;
+  border: 1px solid var(--rule); border-radius: 12px;
+  background: color-mix(in srgb, var(--kz-karte) 85%, transparent);
+  box-shadow: inset 4px 0 0 var(--vg-kante);
+}
+.vg-kopf { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.vg-art { font: 700 12px/1.2 var(--font-wmc); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-soft); }
+.vg-name { margin: 0; font: 700 19px/1.25 var(--font-wmc); overflow-wrap: anywhere; }
+
+/* Status als Wort mit Marke */
+.vg-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 11px 3px 7px;
+  border: 1.5px solid var(--rule-strong); border-radius: 999px;
+  font: 700 13px/1.2 var(--font-wmc); letter-spacing: 0.06em; color: var(--ink);
+}
+.vg-status[data-status="geplant"], .vg-status[data-status="wartet_freigabe"], .vg-status[data-status="abgebrochen"] { color: var(--ink-soft); }
+.vg-status[data-status="laeuft"], .vg-status[data-status="pruefen"] { border-color: var(--accent); }
+.vg-status[data-status="fertig"] { background: #ffffff; border-color: #000000; color: #000000; }
+.vg-status[data-status="fehler"] { background: var(--accent); border-color: var(--accent); color: #000000; }
+
+/* Marken: Form zusätzlich zur Farbe */
+.vg-marke { width: 16px; height: 16px; flex: none; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.vg-marke-laeuft circle { stroke: var(--rule-strong); }
+.vg-marke-laeuft .vg-bogen { stroke: var(--accent); stroke-width: 2.4; transform-origin: 8px 8px; animation: spin 900ms linear infinite; }
+.vg-marke-fertig circle { fill: #ffffff; stroke: #000000; stroke-width: 1.4; }
+.vg-marke-fertig path { stroke: #000000; stroke-width: 2.2; }
+.vg-marke-wartet circle, .vg-marke-wartet path { stroke: var(--rule-strong); }
+.vg-marke-wartet path { stroke-width: 2; }
+.vg-marke-fehler rect { fill: var(--accent); stroke: none; }
+.vg-marke-fehler path { stroke: #000000; stroke-width: 2.2; }
+.vg-marke-offen circle, .vg-marke-aus circle, .vg-marke-aus path { stroke: var(--rule-strong); }
+
+/* Balken: Bahn grau, Füllung rot (grau, solange der Vorgang wartet oder steht) */
+.vg-balken { height: 8px; border-radius: 4px; background: var(--rule); overflow: hidden; }
+.vg-balken[data-klein] { height: 5px; border-radius: 3px; }
+.vg-fuell {
+  display: block; height: 100%; border-radius: inherit; background: var(--accent);
+  transition: width 400ms var(--ease-out);
+}
+.vg-balken[data-ton="still"] .vg-fuell { background: var(--rule-strong); }
+
+.vg-gesamt { display: grid; gap: 6px; }
+.vg-gesamt-zeile { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; font-size: 15px; }
+.vg-prozent { font: 700 17px/1.2 var(--font-code); }
+.vg-pz { font-family: var(--font-wmc); } /* Leerzeichen und Prozentzeichen in der Schmalschrift: in der Festbreite wirkt die Lücke zu groß */
+.vg-runde { font-weight: 700; }
+.vg-zeit { color: var(--ink-soft); }
+
+/* Schritte: nummeriert, der laufende ist hervorgehoben (Rand, Gewicht, Wort "läuft") */
+.vg-schritte, .vg-kriterien { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.vg-schritte li, .vg-kriterien li {
+  display: grid; gap: 3px 8px; align-items: center; padding: 6px 8px; border-radius: 8px; font-size: 15px; line-height: 1.3;
+}
+.vg-schritte li { grid-template-columns: 22px 16px minmax(0, 1fr) auto; }
+.vg-kriterien li { grid-template-columns: 16px minmax(0, 1fr) auto; }
+.vg-schritte li[data-status="laeuft"] {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent); font-weight: 700;
+}
+.vg-schritte li[data-status="offen"], .vg-schritte li[data-status="wartet_freigabe"], .vg-schritte li[data-status="uebersprungen"] { color: var(--ink-soft); }
+.vg-nr { font: 700 13px/1 var(--font-code); text-align: right; color: var(--ink-soft); }
+.vg-titel { min-width: 0; overflow-wrap: anywhere; }
+.vg-zustand { font-size: 13px; font-weight: 400; color: var(--ink-soft); white-space: nowrap; }
+.vg-schritte li[data-status="laeuft"] .vg-zustand { color: var(--ink); font-weight: 700; }
+.vg-schritte .vg-balken { grid-column: 3 / -1; }
+.vg-schritte .vg-detail { grid-column: 3 / -1; }
+.vg-kriterien .vg-detail { grid-column: 2 / -1; }
+.vg-detail { font-size: 14px; font-weight: 400; color: var(--ink-soft); overflow-wrap: anywhere; }
+
+.vg-aktionen { display: flex; flex-wrap: wrap; gap: 8px; }
+.vg-aktionen .btn-primary, .vg-aktionen .btn-secondary { border-radius: 999px; }
+
+/* Zuletzt beendet: einklappbar, jede Zeile für sich aufklappbar */
+.vg-alt { display: grid; gap: 8px; }
+.vg-alt > summary, .vg-ende > summary { cursor: pointer; }
+.vg-alt > summary {
+  min-height: 44px; display: flex; align-items: center; gap: 8px;
+  font: 700 12px/1.2 var(--font-wmc); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft);
+}
+.vg-alt[open] > summary { color: var(--ink); }
+.vg-ende {
+  min-width: 0; border: 1px solid var(--rule); border-radius: 12px;
+  background: color-mix(in srgb, var(--kz-karte) 70%, transparent);
+  box-shadow: inset 4px 0 0 var(--vg-kante);
+}
+.vg-ende > summary {
+  list-style: none; min-height: 48px; padding: 8px 12px 8px 16px;
+  display: grid; grid-template-columns: 16px minmax(0, 1fr) 10px; gap: 10px; align-items: center;
+}
+.vg-ende > summary::-webkit-details-marker { display: none; }
+.vg-ende > summary::after {
+  content: ""; width: 7px; height: 7px; margin-top: -3px;
+  border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft); transform: rotate(45deg);
+}
+.vg-ende[open] > summary::after { margin-top: 3px; transform: rotate(-135deg); }
+.vg-ende-wer { display: grid; min-width: 0; }
+.vg-ende-titel { font-weight: 700; font-size: 16px; line-height: 1.25; overflow-wrap: anywhere; }
+.vg-ende-text { font-size: 14px; color: var(--ink-soft); }
+.vg-ende-inhalt { display: flex; flex-direction: column; gap: 12px; padding: 4px 12px 14px 16px; }
+
+@media (max-width: 1099px) {
+  .vg-aktionen .btn-small { min-height: 44px; }
+  .vg-name { font-size: 18px; }
+}
+
+/* Reduzierte Bewegung: der Bogen steht still (das Wort "läuft" trägt die Bedeutung), Balken springen statt zu gleiten */
+@media (prefers-reduced-motion: reduce) {
+  .vg-marke-laeuft .vg-bogen { animation: none; }
+  .vg-fuell { transition: none; }
+}

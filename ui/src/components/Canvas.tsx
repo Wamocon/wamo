@@ -1,7 +1,9 @@
 "use client";
 
-import { Fragment, memo, useEffect, useId, useState, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { TeilenKnopf } from "@/components/Teilen";
+import { canvasIndex, canvasWunsch } from "@/lib/canvasWahl";
+import { KOPIERT_MS, kopierChipText, type KopierStatus } from "@/lib/kopieren";
 import { istUuid } from "@/lib/teilenHilfe";
 import { useSelect } from "@/lib/store";
 import { wamo } from "@/lib/wamo";
@@ -63,6 +65,15 @@ export const CanvasBereich = memo(function CanvasBereich() {
 
 function Canvas({ items }: { items: CanvasItem[] }) {
   const [picked, setPicked] = useState<number | null>(null);
+  // "Ergebnis ansehen" in der Tafel Vorgänge (lib/canvasWahl.ts): ein neuer Wunsch wählt das Element mit dieser Kennung, noch im
+  // selben Render (kein Zwischenbild mit dem alten Element). Ein Wunsch, der schon galt, bevor dieses Canvas entstand, zählt nicht.
+  const wunsch = useSelect(canvasWunsch, (w) => w);
+  const [gesehen, setGesehen] = useState(wunsch.n);
+  if (wunsch.n !== gesehen) {
+    setGesehen(wunsch.n);
+    const i = wunsch.id ? canvasIndex(items, wunsch.id) : -1;
+    if (i >= 0) setPicked(i === items.length - 1 ? null : i);
+  }
   // Ohne eigene Auswahl zeigt das Canvas immer das Neueste.
   const index = picked !== null && picked < items.length ? picked : items.length - 1;
   const item = items[index];
@@ -153,23 +164,38 @@ function CanvasBody({ item }: { item: CanvasItem }) {
 }
 
 function CodeView({ text, language, title }: { text: string; language?: string; title: string }) {
-  const [status, setStatus] = useState<"" | "kopiert" | "fehler">("");
+  // Die Knopfbeschriftung bleibt "Kopieren"; die Bestätigung ist ein Chip in einer Live-Region daneben (lib/kopieren.ts)
+  const [status, setStatus] = useState<KopierStatus>("");
+  const uhr = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (uhr.current) clearTimeout(uhr.current);
+    },
+    [],
+  );
   const kopieren = async () => {
+    let neu: KopierStatus = "kopiert";
     try {
       await navigator.clipboard.writeText(text);
-      setStatus("kopiert");
     } catch {
-      setStatus("fehler"); // z. B. Zwischenablage nicht erlaubt
+      neu = "fehler"; // z. B. Zwischenablage nicht erlaubt
     }
-    setTimeout(() => setStatus(""), 1500);
+    setStatus(neu);
+    if (uhr.current) clearTimeout(uhr.current);
+    uhr.current = setTimeout(() => setStatus(""), KOPIERT_MS);
   };
   return (
     <div className="canvas-code">
       <div className="canvas-code-bar">
         <span>{language || "text"}</span>
-        <button type="button" onClick={() => void kopieren()}>
-          {status === "kopiert" ? "Kopiert" : status === "fehler" ? "Nicht kopiert" : "Kopieren"}
-        </button>
+        <span className="canvas-code-aktion">
+          <span className="canvas-chip" aria-live="polite" data-art={status === "fehler" ? "fehler" : undefined}>
+            {kopierChipText(status)}
+          </span>
+          <button type="button" onClick={() => void kopieren()}>
+            Kopieren
+          </button>
+        </span>
       </div>
       <pre tabIndex={0} role="region" aria-label={`Code: ${title}`}>
         <code>{text}</code>
