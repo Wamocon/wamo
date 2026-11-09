@@ -91,9 +91,11 @@
 .vg-aktionen { display: flex; flex-wrap: wrap; gap: 8px; }
 .vg-aktionen .btn-primary, .vg-aktionen .btn-secondary { border-radius: 999px; }
 
-/* Zuletzt beendet: einklappbar, jede Zeile für sich aufklappbar */
+/* Zuletzt beendet: einklappbar, jede Zeile für sich aufklappbar. Der Pfeil (Winkel, dreht sich beim Öffnen) kommt in beiden Fällen
+   von ::after: Mit display:flex an summary entfällt der Listenpunkt, und mit ihm der Standardpfeil des Browsers. */
 .vg-alt { display: grid; gap: 8px; }
-.vg-alt > summary, .vg-ende > summary { cursor: pointer; }
+.vg-alt > summary, .vg-ende > summary { cursor: pointer; list-style: none; }
+.vg-alt > summary::-webkit-details-marker { display: none; }
 .vg-alt > summary {
   min-height: 44px; display: flex; align-items: center; gap: 8px;
   font: 700 12px/1.2 var(--font-wmc); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft);
@@ -109,11 +111,12 @@
   display: grid; grid-template-columns: 16px minmax(0, 1fr) 10px; gap: 10px; align-items: center;
 }
 .vg-ende > summary::-webkit-details-marker { display: none; }
-.vg-ende > summary::after {
-  content: ""; width: 7px; height: 7px; margin-top: -3px;
+.vg-alt > summary::after, .vg-ende > summary::after {
+  content: ""; width: 7px; height: 7px; margin-top: -3px; flex: none;
   border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft); transform: rotate(45deg);
 }
-.vg-ende[open] > summary::after { margin-top: 3px; transform: rotate(-135deg); }
+.vg-alt > summary::after { margin-left: auto; } /* ganz rechts, wie bei den Zeilen darunter */
+.vg-alt[open] > summary::after, .vg-ende[open] > summary::after { margin-top: 3px; transform: rotate(-135deg); }
 .vg-ende-wer { display: grid; min-width: 0; }
 .vg-ende-titel { font-weight: 700; font-size: 16px; line-height: 1.25; overflow-wrap: anywhere; }
 .vg-ende-text { font-size: 14px; color: var(--ink-soft); }
