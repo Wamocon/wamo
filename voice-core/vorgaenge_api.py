@@ -5,7 +5,9 @@
 Sicherheit: Token mit zweitem Faktor und aktives Profil prüft die Zugangskontrolle (wamo_api.identitaet). Das Profil kommt nur
 von dort, nie aus der Anfrage; gelesen werden ausschließlich Zeilen mit dieser user_id. Fehler nennen keine Datenbankmeldung.
 Die Texte stammen aus dem gespeicherten Stand und laufen durch vorgaenge.aus_zeile (Steuerzeichen, Längen, Werte). Ein
-Vorgang, der beim Absturz des Kerns noch "laeuft" war, bleibt so stehen: der Verlauf zeigt den letzten bekannten Stand.
+Vorgang, der beim Absturz des Kerns noch "laeuft" war, bleibt so stehen (der Verlauf zeigt den letzten bekannten Stand), bis
+vorgaenge.aufraeumen ihn nach 24 Stunden auf "abgebrochen" setzt; nach 30 Tagen ist sein Stand geleert. Die Reihenfolge ist
+stabil: neueste zuerst, bei gleichem Beginn nach der Kennung absteigend.
 """
 
 from __future__ import annotations
@@ -37,8 +39,8 @@ async def vorgaenge(request: Request, response: Response) -> dict:
     db = _db()
     try:
         zeilen = await db.fetch(
-            f"select id::text as id, art, titel, status, gesamt, daten, gestartet_at, beendet_at "
-            f"from {db.t('vorgaenge')} where user_id = $1::uuid order by gestartet_at desc limit $2",
+            f"select id, art, titel, status, gesamt, daten, gestartet_at, beendet_at "
+            f"from {db.t('vorgaenge')} where user_id = $1::uuid order by gestartet_at desc, id desc limit $2",
             ich.user_id, MAX_VORGAENGE)
     except DB_ERRORS as e:
         logger.warning("Vorgänge: Abfrage fehlgeschlagen ({})", type(e).__name__)

@@ -50,7 +50,12 @@ class FalscheDatenbank:
         if self.fehler:
             raise self.fehler
         eigene = [z for z in self.zeilen if z["user_id"] == args[0]]
-        return sorted(eigene, key=lambda z: z["gestartet_at"], reverse=True)[: args[1]]
+        # die Sortierung der Abfrage nachbilden: bei gleichem Beginn entscheidet nur eine genannte zweite Spalte (sonst gilt die
+        # Reihenfolge der Ablage, wie bei einer Datenbank ohne eindeutige Sortierung)
+        ordnung = sql.split(" order by ", 1)[1].split(" limit", 1)[0]
+        schluessel = {"gestartet_at desc, id desc": lambda z: (z["gestartet_at"], z["id"]),
+                      "gestartet_at desc": lambda z: z["gestartet_at"]}[ordnung]
+        return sorted(eigene, key=schluessel, reverse=True)[: args[1]]
 
 
 class Kontext:
@@ -115,6 +120,16 @@ def test_ohne_zugang_kommt_nichts_und_die_datenbank_wird_nicht_gefragt(client, d
     ctx.gesperrt = True
     r = client.get("/wamo/api/vorgaenge")
     assert r.status_code == 403 and db.abfragen == []
+
+
+def test_stabile_reihenfolge_bei_gleichem_beginn_neueste_zuerst_dann_kennung_absteigend(client, db):
+    gleich = datetime(2026, 11, 9, 13, 0, tzinfo=timezone.utc)
+    db.zeilen = [zeile(5, gestartet_at=gleich, titel="Fuenf"), zeile(6, gestartet_at=gleich, titel="Sechs"),
+                 zeile(7, gestartet_at=gleich, titel="Sieben"), zeile(1, titel="Alt")]
+    liste = client.get("/wamo/api/vorgaenge").json()["vorgaenge"]
+    assert [v["titel"] for v in liste] == ["Sieben", "Sechs", "Fuenf", "Alt"]
+    sql, _ = db.abfragen[0]
+    assert "order by gestartet_at desc, id desc limit $2" in sql
 
 
 def test_nur_get_ist_erlaubt(client):

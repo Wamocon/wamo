@@ -56,10 +56,18 @@ def test_tabelle_idempotent_mit_den_vereinbarten_spalten():
     for spalte in SPALTEN:
         assert re.search(rf"^\s+{spalte}\s", koerper.group(1), re.M), spalte
     assert "id           uuid primary key default gen_random_uuid()" in SQL
-    assert re.search(r"user_id\s+uuid not null references auth\.users\(id\) on delete cascade", SQL)
     assert re.search(r"session_id\s+uuid references __SCHEMA__\.sessions\(id\) on delete set null", SQL)
     assert re.search(r"daten\s+jsonb not null", SQL) and re.search(r"gestartet_at\s+timestamptz not null default now\(\)", SQL)
     assert re.search(r"beendet_at\s+timestamptz\b", SQL)
+
+
+def test_fremdschluessel_user_id_zeigt_auf_profiles_nicht_auf_auth_users():
+    """Wie 0003, 0010, 0013 und 0015: ein Fremdschlüssel auf auth.users würde die Tabelle der Anmeldung sperren und GoTrue stauen."""
+    code = _ohne_kommentare(SQL)
+    assert re.search(r"user_id\s+uuid not null references __SCHEMA__\.profiles\(user_id\) on delete cascade", code)
+    assert "auth.users" not in code
+    kopf = SQL.split("set local lock_timeout", 1)[0]
+    assert "profiles" in kopf and "0001" in kopf  # die Abhängigkeit steht im Kopfkommentar
 
 
 def test_erlaubte_werte_entsprechen_dem_kern():
@@ -68,6 +76,41 @@ def test_erlaubte_werte_entsprechen_dem_kern():
     code = _ohne_kommentare(SQL)
     assert "gesamt >= 0 and gesamt <= 1" in code and "jsonb_typeof(daten) = 'object'" in code
     assert "beendet_at is null or beendet_at >= gestartet_at" in code
+
+
+def test_ende_und_endstatus_gehoeren_zusammen_und_entsprechen_dem_kern():
+    code = _ohne_kommentare(SQL)
+    treffer = re.search(r"constraint vorgaenge_ende_chk check \(\(status in \((.*?)\)\) = \(beendet_at is not null\)\)", code)
+    assert treffer, "Prüfung vorgaenge_ende_chk fehlt"
+    assert set(re.findall(r"'([a-z_]+)'", treffer.group(1))) == set(vg.ENDSTATUS)
+    assert vg.ENDSTATUS < set(vg.STATUS)
+
+
+def test_obergrenze_des_standes_passt_zur_pruefung_der_datenbank():
+    grenze = int(re.search(r"pg_column_size\(daten\) <= (\d+)", _ohne_kommentare(SQL)).group(1))
+    assert grenze == 262144
+    assert vg.DATEN_MAX_ZEICHEN * 4 < grenze  # UTF-8 braucht bis zu 4 Byte je Zeichen
+
+
+def test_aufbewahrung_steht_im_kopfkommentar_und_stimmt_mit_dem_kern_ueberein():
+    kopf = "\n".join(z for z in SQL.splitlines() if z.startswith("--"))
+    assert f"{vg.AUFBEWAHRUNG_TAGE} Tage" in kopf and f"{vg.OFFEN_MAX_STUNDEN} Stunden" in kopf
+    assert "aufraeumen" in kopf and "Kern" in kopf
+    assert re.search(r"[Ll]öschen von Zeilen ist bewusst nicht erlaubt", kopf)
+
+
+def test_aufraeumen_setzt_nur_spalten_die_der_kern_aendern_darf_und_die_tabelle_erlaubt_es():
+    erlaubt = set(re.findall(r"\b[a-z_]+\b", re.search(r"grant update \(([^)]*)\)", _ohne_kommentare(SQL)).group(1)))
+    for sql in (vg._AUFRAEUMEN_OFFEN, vg._AUFRAEUMEN_STAND):
+        text = sql.format(t="__SCHEMA__.vorgaenge")
+        assert text.startswith("update __SCHEMA__.vorgaenge set ")
+        zuweisungen = re.search(r"\bset (.*?) where\b", text).group(1)
+        spalten = set(re.findall(r"(?:^|, )([a-z_]+) = ", zuweisungen))
+        assert spalten and spalten <= erlaubt, (spalten, erlaubt)
+        assert not re.search(r"\b(delete|truncate)\b", text)
+    # der Endstatus aus dem Aufräumen erfüllt die Prüfung vorgaenge_ende_chk (Status und Ende zusammen) und vorgaenge_zeit_chk
+    assert "status = 'abgebrochen', beendet_at = now()" in vg._AUFRAEUMEN_OFFEN
+    assert "gestartet_at < now()" in vg._AUFRAEUMEN_OFFEN
 
 
 def test_rls_policy_core_all_mit_drop_davor():
@@ -95,9 +138,11 @@ def test_rechte_nur_der_kern_nur_lesen_einfuegen_und_gezielte_updates_kein_delet
     assert spalten == {"session_id", "titel", "status", "gesamt", "daten", "beendet_at"}  # user_id, art, id, Beginn bleiben
     revoke = " ".join(_anweisungen(code, "revoke"))
     assert "revoke all on __SCHEMA__.vorgaenge from" in revoke
-    for rolle in FREMDE:
-        assert rolle in revoke
+    for rolle in (*FREMDE, "wamo_core"):  # auch wamo_core zuerst entziehen, dann neu vergeben: ein Nachlauf konvergiert
+        assert re.search(rf"\b{rolle}\b", revoke), rolle
+    assert len(_anweisungen(code, "revoke")) == 1
     assert code.index("revoke all on __SCHEMA__.vorgaenge") < code.index("grant select, insert on __SCHEMA__.vorgaenge")
+    assert code.index("revoke all on __SCHEMA__.vorgaenge") < code.index("grant update (")
 
 
 def test_indizes_fuer_die_fremdschluessel_session_partiell():
@@ -140,3 +185,34 @@ def test_sql_test_ist_eine_zurueckgerollte_transaktion_nie_in_prod_und_prueft_di
                   "update __SCHEMA__.vorgaenge set user_id", "update __SCHEMA__.vorgaenge set art",
                   "delete from __SCHEMA__.sessions", "delete from auth.users", "relrowsecurity"):
         assert punkt in code, punkt
+
+
+def test_sql_test_legt_profile_an_prueft_grenze_ende_fremdschluessel_und_aufraeumen():
+    code = _ohne_kommentare(TEST)
+    assert re.search(r"insert into __SCHEMA__\.profiles \(user_id, display_name\)", code)  # der neue Fremdschlüssel braucht sie
+    assert code.index("insert into auth.users") < code.index("insert into __SCHEMA__.profiles") \
+        < code.index("insert into __SCHEMA__.vorgaenge")
+    assert "repeat('a', 300000)" in code and "'23514'" in code  # Stand über 262144 Byte
+    assert "repeat(chr(128512), 60000)" in code  # 60000 Zeichen zu 4 Byte passen noch
+    assert "confrelid = '__SCHEMA__.profiles'::regclass" in code and "confrelid = 'auth.users'::regclass" in code
+    assert "delete from __SCHEMA__.profiles" in code  # ein gelöschtes Profil nimmt seine Vorgänge mit
+    assert "'fertig')$s$, '23514'" in code and "set beendet_at = null" in code  # Endstatus ohne Ende und Ende ohne Endstatus
+    assert "has_column_privilege('wamo_core'" in code and "6::bigint" in code  # genau sechs änderbare Spalten
+    assert "zweimal anwenden" in TEST.split("\\set ON_ERROR_STOP", 1)[0]  # der Nachlauf der Migration: Hinweis im Kopfkommentar
+
+
+def _eine_zeile(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_sql_test_enthaelt_den_upsert_und_die_aufraeumanweisungen_des_kerns_woertlich():
+    """Der Test prüft, was der Kern wirklich schickt: ändert sich vorgaenge.py, muss der SQL-Test mit."""
+    sql_test = _eine_zeile(_ohne_kommentare(TEST))
+    ziel = "__SCHEMA__.vorgaenge"
+    ende = _eine_zeile(vg._UPSERT.split("on conflict", 1)[1].format(t=ziel))
+    assert "on conflict" + " " + ende in sql_test
+    kopf = _eine_zeile(vg._UPSERT.split(" values ", 1)[0].format(t=ziel))
+    assert kopf in sql_test  # gleiche Spaltenliste
+    assert "to_timestamp(" in sql_test and "coalesce(" in sql_test
+    for anweisung in (vg._AUFRAEUMEN_OFFEN, vg._AUFRAEUMEN_STAND):
+        assert _eine_zeile(anweisung.format(t=ziel)) in sql_test

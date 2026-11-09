@@ -54,7 +54,10 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   "Ergebnis ansehen" wählt das Element im Canvas, beendete Vorgänge stehen im einklappbaren Abschnitt "Zuletzt beendet". Der Kern meldet
   sie als Servernachricht `vorgang` (`voice-core/vorgaenge.py`, gedrosselt auf vier Nachrichten je Sekunde und Vorgang, Schritte
   eines Entwicklungsauftrags aus den Aufgabenwerkzeugen von Claude Code in `vorgang_stream.py`). Der Verlauf kommt beim Start einmal über
-  `GET /wamo/api/vorgaenge` (die letzten 20 des eigenen Profils). Die Balken sind `role="progressbar"`, der Zustand steht nie nur als Farbe da,
+  `GET /wamo/api/vorgaenge` (die letzten 20 des eigenen Profils, neueste zuerst). Aufbewahrung: Der Stand (Schritte, Kriterien, Titel) bleibt
+  30 Tage, danach leert ihn der Kern (`aufraeumen`, höchstens einmal je Stunde und Prozess, Zeilen löscht er nicht); ein Vorgang, der nach
+  24 Stunden noch offen ist (der Kern ist beim Ende abgestürzt), gilt als abgebrochen. Ein Endstand wird nie von einem späteren Zwischenstand
+  überschrieben. Die Balken sind `role="progressbar"`, der Zustand steht nie nur als Farbe da,
   `prefers-reduced-motion` schaltet die Bewegung ab. **Migration 0017 (Tabelle `vorgaenge`) ist noch nicht angewendet**: Bis dahin bleibt der
   Verlauf leer, die Anzeige der laufenden Sitzung geht auch ohne. Die Zeitleiste "Werkzeuge" und ihre Karte `boss_aufgabe` sind unverändert.
 - Canvas: Nach dem Kopieren eines Codeblocks erscheint 1,5 Sekunden ein Chip "Kopiert" (Live-Region, `aria-live="polite"`); die Beschriftung des

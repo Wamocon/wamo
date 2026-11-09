@@ -20,7 +20,12 @@ Senden (nie den Audiopfad blockieren, siehe Skill latency-critical-systems)
   * Beim Verbinden der Oberfläche sendet erneut_senden() alle bekannten Vorgänge.
 
 Speichern: nur bei einem Statuswechsel, nie bei jedem Fortschritt, in die Tabelle vorgaenge (Migration 0017) mit
-Zusammenfassung wie beim Senden (der neueste Stand je Vorgang gewinnt). Fehler stören nichts.
+Zusammenfassung wie beim Senden (der neueste Stand je Vorgang gewinnt). Fehler stören nichts. Ein Endstand (fertig, fehler,
+abgebrochen) wird von einem späteren Zwischenstand nie überschrieben, und die Spalte beendet_at ist genau bei einem Endstatus gesetzt.
+
+Aufbewahrung (aufraeumen, aus datenbank_ablage höchstens einmal je Stunde und Prozess): Ein Vorgang, der nach 24 Stunden noch offen
+ist (der Kern ist beim Endstatus abgestürzt), gilt als abgebrochen. 30 Tage nach dem Ende wird der Stand geleert (daten und titel,
+der Titel enthält den Auftragstext). Die Rolle des Kerns hat kein delete; Zeilen bleiben, ihr Inhalt nicht.
 
 Texte (Titel, Schritte, Hinweise) laufen durch clean_inline und schluessel.schwaerzen: keine Steuerzeichen, keine Schlüssel.
 Sie sind Daten für die Anzeige, nie Anweisungen.
@@ -31,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import threading
 import time
 import uuid
 from collections import OrderedDict
@@ -56,7 +62,14 @@ TITEL_ZEICHEN = 200
 SCHRITT_ZEICHEN = 160
 DETAIL_ZEICHEN = 200
 KENNUNG_ZEICHEN = 100
-DATEN_MAX_ZEICHEN = 90_000  # Stand in der Datenbank (Prüfung in Migration 0017 bei 100000)
+# Obergrenze des gespeicherten Standes in ZEICHEN (die Migration 0017 prüft BYTE: pg_column_size(daten) <= 262144). UTF-8 braucht
+# bis zu 4 Byte je Zeichen: 60000 Zeichen sind höchstens 240000 Byte und bleiben mit dem Aufbau des jsonb unter der Grenze. Bei 90000
+# Zeichen läge die Grenze im ungünstigen Fall (lauter 4-Byte-Zeichen) darunter, und dass die Kompression hilft, ist nicht garantiert.
+# Ein regulärer Stand (40 Schritte, 12 Kriterien, gekürzte Texte) hat weit weniger als 30000 Zeichen.
+DATEN_MAX_ZEICHEN = 60_000
+AUFBEWAHRUNG_TAGE = 30  # danach wird der Stand (daten, titel) geleert; die Zeile bleibt (kein delete für den Kern)
+OFFEN_MAX_STUNDEN = 24  # ein länger offener Vorgang gilt als abgebrochen (der Kern ist beim Ende abgestürzt)
+AUFRAEUM_TAKT_S = 3600.0  # aufraeumen höchstens einmal je Stunde und Prozess
 
 TAKT_S = 0.25  # höchstens vier Nachrichten je Sekunde und Vorgang
 SENDE_FRIST_S = 2.0
@@ -495,29 +508,80 @@ _UPSERT = (
     "to_timestamp($9::double precision), to_timestamp($10::double precision)) "
     "on conflict (id) do update set session_id = coalesce({t}.session_id, excluded.session_id), titel = excluded.titel, "
     "status = excluded.status, gesamt = excluded.gesamt, daten = excluded.daten, beendet_at = excluded.beendet_at "
-    "where {t}.user_id = excluded.user_id"
+    "where {t}.user_id = excluded.user_id and {t}.status not in ('fertig', 'fehler', 'abgebrochen')"
+)  # ein verspäteter Zwischenstand überschreibt nie einen Endstand (und nie die Zeile eines anderen Profils)
+
+# Aufräumen: zwei Einzelanweisungen, beide mit den Spaltenrechten von wamo_core (status, beendet_at, daten, titel sind änderbar,
+# delete gibt es nicht). Nur Vorgänge mit Altersgrenze, nie alle offenen: die Kern-Slots a und b laufen parallel.
+# (Vorlagen für str.format: {t} ist die Tabelle, '{{}}' das leere jsonb-Objekt.)
+_AUFRAEUMEN_OFFEN = (
+    "update {t} set status = 'abgebrochen', beendet_at = now() "
+    "where beendet_at is null and gestartet_at < now() - interval '" + str(OFFEN_MAX_STUNDEN) + " hours'"
 )
+_AUFRAEUMEN_STAND = (
+    "update {t} set daten = '{{}}'::jsonb, titel = 'abgelaufen' "  # der Titel enthält den Auftragstext
+    "where beendet_at < now() - interval '" + str(AUFBEWAHRUNG_TAGE) + " days' and daten <> '{{}}'::jsonb"
+)
+
+_aufraeumen_sperre = threading.Lock()
+_aufraeumen_zuletzt: float | None = None  # wann dieser Prozess zuletzt aufgeräumt hat (monoton)
+_aufraeumen_uhr: Callable[[], float] = time.monotonic
+
+
+def _aufraeumen_faellig() -> bool:
+    """Höchstens ein Lauf je Stunde und Prozess. Der Zeitstempel wird beim Zuteilen gesetzt, nicht erst nach dem Lauf: ein
+    Fehler führt zum nächsten Versuch in einer Stunde, nicht bei jedem Schreiben."""
+    global _aufraeumen_zuletzt
+    jetzt = _aufraeumen_uhr()
+    with _aufraeumen_sperre:
+        if _aufraeumen_zuletzt is not None and jetzt - _aufraeumen_zuletzt < AUFRAEUM_TAKT_S:
+            return False
+        _aufraeumen_zuletzt = jetzt
+        return True
+
+
+async def aufraeumen(db: object) -> None:
+    """Bricht Vorgänge ab, die länger als OFFEN_MAX_STUNDEN offen sind, und leert den Stand (daten, titel) beendeter Vorgänge nach
+    AUFBEWAHRUNG_TAGE. Zwei Einzelanweisungen; scheitert eine, läuft die andere trotzdem. Wirft nie, protokolliert nur den Typ
+    des Fehlers (nie das Ergebnis der Anweisung oder Text aus der Tabelle)."""
+    for sql in (_AUFRAEUMEN_OFFEN, _AUFRAEUMEN_STAND):
+        try:
+            await db.execute(sql.format(t=db.t("vorgaenge")))  # type: ignore[attr-defined]
+        except Exception as e:  # noqa: BLE001 (das Aufräumen darf den Schreibweg nie stören)
+            logger.warning("Vorgänge: Aufräumen fehlgeschlagen ({})", type(e).__name__)
+
+
+def _ende_s(stand: dict) -> float | None:
+    """Spalte beendet_at (Sekunden): genau bei einem Endstatus gesetzt (Prüfung vorgaenge_ende_chk), nie vor dem Beginn
+    (vorgaenge_zeit_chk). Die Rechnung des Kerns liefert das schon; auch ein unstimmiger Stand wird hier nicht abgelehnt."""
+    if stand.get("status") not in ENDSTATUS:
+        return None
+    beendet = stand.get("beendet_ms")
+    ende = beendet / 1000 if isinstance(beendet, int) and not isinstance(beendet, bool) else time.time()
+    return max(ende, stand["gestartet_ms"] / 1000)
 
 
 def datenbank_ablage(memory: object) -> Callable[[dict], Awaitable[None]]:
     """Schreibfunktion für Vorgaenge(speichern=...): legt den Stand in vorgaenge ab (neu oder Statuswechsel, nie die Zeile
-    eines anderen Profils). Ohne Datenbank passiert nichts, ein Fehler wird nur als Typ protokolliert."""
+    eines anderen Profils, nie über einen Endstand). Danach räumt sie höchstens einmal je Stunde und Prozess auf (aufraeumen).
+    Ohne Datenbank passiert nichts, ein Fehler wird nur als Typ protokolliert."""
 
     async def speichern(stand: dict) -> None:
         if not getattr(memory, "enabled", False):
             return
         try:
             db = memory.db  # type: ignore[attr-defined]
-            beendet = stand.get("beendet_ms")
             await db.execute(
                 _UPSERT.format(t=db.t("vorgaenge")),
                 stand["id"], memory.user_id, memory.session_id,  # type: ignore[attr-defined]
                 stand["art"], stand["titel"], stand["status"], stand["gesamt"],
-                json.dumps(stand, ensure_ascii=False), stand["gestartet_ms"] / 1000,
-                beendet / 1000 if isinstance(beendet, int) else None,
+                json.dumps(stand, ensure_ascii=False), stand["gestartet_ms"] / 1000, _ende_s(stand),
             )
         except DB_ERRORS as e:
             logger.warning("Vorgänge: nicht gespeichert ({})", type(e).__name__)
+            return
+        if _aufraeumen_faellig():
+            await aufraeumen(db)
 
     return speichern
 
