@@ -16,7 +16,10 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   entfernt in JSON leere Werte und kürzt lange Listen und Texte; Zahlen, Status und Fehlerfelder bleiben unverändert, das Ergebnis
   trägt `gekuerzt: true` und `ref`. Das Original liegt nur im Arbeitsspeicher der Sitzung (höchstens 20 Einträge und 1 MB), das neue
   Werkzeug `ausgabe_nachladen(ref, ab_zeile, anzahl)` liefert Teile gezielt zurück (nur lesend, höchstens 8000 Zeichen je Aufruf).
-  Nie gekürzt werden Freigabe- und Schutzergebnisse, Werkzeuge mit eigener Kappung, Binärdaten und Ergebnisse unter der Schwelle.
+  Nie gekürzt werden Freigabe- und Schutzergebnisse (an jeder Stelle des Ergebnisses: `needs_approval`, `freigabe_id` oder ein
+  Schutzstatus, auch tief in Listen oder eingebettet in Text), Werkzeuge mit eigener Kappung, Binärdaten und Ergebnisse unter der
+  Schwelle. Zeilen mit Stichwort (error, blocked, gesperrt, critical und weitere) belegen höchstens die Hälfte des Budgets, die Felder
+  `gekuerzt` und `ref` aus fremdem JSON werden umbenannt, JSON `Infinity` wirft nichts mehr.
   Eigene Marken lassen sich nicht fälschen (eingehende Texte werden gesäubert). 100 KB brauchen unter 5 ms; an den Beispielen der
   Tests sparen Verzeichnisliste, `git log`, Gerätestatus und lange Texte 90 bis 99 Prozent der Zeichen, pytest mit drei Fehlern etwa
   die Hälfte. Je Sitzung steht am Ende eine Zeile mit Zahlen im Log. Das ersetzt den zurückgestellten Befund „Git-Ausgabe streamend
@@ -44,8 +47,15 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   `max_runden` (Standard 3, höchstens 5) und `zeitlimit_min` (Standard 30, höchstens 60) an. Der Auftrag läuft in Runden: arbeiten,
   prüfen, bei Nichterfüllung die nächste Runde mit genau den offenen Kriterien, bis alles erfüllt ist oder Runden oder Zeit erschöpft
   sind; dann endet der Vorgang als Fehler mit "Ziel nach n Runden nicht erreicht", nie als fertig. Aussagekriterien beurteilt ein kleines
-  Modell mit strengem JSON, Befehlskriterien (`befehl: pytest -q`) laufen ohne Shell nach Allowlist, durch den Wächter, mit Zeit-, Ausgabe-
-  und Umgebungsgrenze, nur in der Betriebsart `lokal` (auf Sokrates-2 fehlt dafür noch ein Dispatcher-Befehl). Freigaben bleiben
+  Modell mit strengem JSON, Befehlskriterien (`befehl: pytest -q`) laufen ohne Shell nach einer echten Allowlist je Programm (nur
+  ausdrücklich aufgeführte Optionen, höchstens 12 Argumente zu je 200 Zeichen, keine `@datei`-, Netzwerk- und Laufwerkspfade), durch den
+  Wächter, mit Zeit-, Ausgabe- und Umgebungsgrenze, nur in der Betriebsart `lokal` (auf Sokrates-2 fehlt dafür noch ein
+  Dispatcher-Befehl) und nur mit `WAMO_ABNAHME_BEFEHLE=ja`. Standard aus, weil ein Befehl Projektcode (conftest, Makefile, Tests) ohne Hook
+  mit den Rechten des Kerns ausführt: Das ist neu gegenüber dem Ablauf vor Paket 4 und soll eine bewusste Entscheidung des Betreibers sein,
+  kein Nebeneffekt. Ohne den Schalter lehnt `entwicklung_vorbereiten` ein `befehl:` mit klarer Meldung ab, Aussagekriterien bleiben
+  möglich. Die Startkarte zeigt die Kriterien (Befehle in Festbreite, nur als Text), damit die Person bestätigt, was sie sieht. Die
+  Pfadprüfung läuft mit Frist im Arbeitsthread, nie in der Ereignisschleife. Bekannte Grenze, nicht umgebaut: Nach dem Ende des
+  Hauptprozesses überleben Enkelprozesse (kein `killpg`, unter Windows kein Job Object). Freigaben bleiben
   unangetastet und zählen nicht gegen das Zeitlimit. Die Tafel "Vorgänge" zeigt "Runde n von m", "wird geprüft" und die Kriterien mit
   Hinweis ohne Änderung. Neu: `voice-core/abnahme.py`, Persona-Schalter `WAMO_PERSONA_ABNAHME` (Standard an).
 - Aufgabenleiste mit Livefortschritt (Paket 1): Die Tafel "Vorgänge" zeigt je Boss-Aufgabe und je Entwicklungsauftrag eine Karte mit

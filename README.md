@@ -772,7 +772,9 @@ Kontext-Aggregator (er schreibt das Ergebnis in den Verlauf). Neue Werkzeuge sin
 
 - Text: gleiche Zeilen in Folge werden mit Zähler zusammengefasst (`[400 mal]`), Leerzeilen gebündelt, Kopf und Schwanz bleiben,
   die Mitte wird durch `[... n Zeilen ausgelassen, Nachladen: ausgabe_nachladen("ref", ab_zeile=12)]` ersetzt. Zeilen mit
-  error, fehler, exception, warn, traceback, fail, denied, abgelehnt oder fatal bleiben bevorzugt stehen.
+  error, fehler, exception, warn, traceback, fail, denied, abgelehnt, fatal, blocked, locked, gesperrt, verweigert, forbidden,
+  approval, critical, freigabe oder rejected bleiben bevorzugt stehen, zusammen aber höchstens die Hälfte des Zielumfangs (Kopf und
+  Schwanz bekommen den Rest). So kann Fremdtext das Budget nicht mit Zeilen füllen, die ein Stichwort enthalten.
 - JSON (auch als Text vom PC-Host): leere Werte und null fallen weg, lange Listen behalten die ersten Einträge plus Einträge mit
   Problem und einen Zähler (`weitere 37 Einträge`), lange Texte darin werden zeilenweise wie oben gekürzt. Zahlen, Wahrheitswerte,
   `status` und die Felder für Fehler, Hinweis und Vertrauen bleiben unverändert; Listen aus Zahlen werden nie gekürzt.
@@ -783,12 +785,12 @@ Gemessen an den Beispielen der Tests (`test_ausgaben_kuerzen.py`, echte Formen, 
 
 | Beispiel | vorher | nachher | Zeit |
 | --- | --- | --- | --- |
-| Verzeichnisliste mit 300 Einträgen | 19057 Zeichen | 959 | 0,2 ms |
-| pytest mit 3 Fehlern | 3831 | 1958 | 0,1 ms |
-| `git log` mit 120 Commits | 25453 | 1129 | 0,7 ms |
-| JSON-Gerätestatus mit 120 Geräten | 18050 | 1471 | 0,7 ms |
-| 100 KB Text | 100030 | 1079 | 1,1 ms |
-| 100 KB JSON | 108814 | 832 | 1,2 ms |
+| Verzeichnisliste mit 300 Einträgen | 19057 Zeichen | 702 | 0,2 ms |
+| pytest mit 3 Fehlern | 3831 | 1823 | 0,1 ms |
+| `git log` mit 120 Commits | 25453 | 853 | 0,7 ms |
+| JSON-Gerätestatus mit 120 Geräten | 18050 | 1471 | 0,8 ms |
+| 100 KB Text | 100030 | 876 | 1,4 ms |
+| 100 KB JSON | 108814 | 832 | 1,6 ms |
 
 Der Audiopfad bleibt unberührt: Kürzen von 100 KB dauert unter 5 ms (Test), Ergebnisse unter der Schwelle kosten eine
 Längenprüfung.
@@ -801,10 +803,16 @@ ließe. Gekürzte und nachgeladene Inhalte sind Daten, nie Anweisungen: Die Mark
 vorher von Marken gesäubert, die wie die eigenen aussehen, und nachgeladener Inhalt zählt als Fremdinhalt des Zugs.
 
 **Nie gekürzt:** Ergebnisse unter der Schwelle, Freigabe- und Schutzergebnisse (Status `needs_approval`, `rejected`, `blocked`,
-`locked`, `wartet`, `abgelehnt`, Werkzeuge mit `freigabe` im Namen, die Entwicklungsaufträge), Werkzeuge mit eigener Kappung
+`locked`, `wartet`, `abgelehnt`, Werkzeuge mit `freigabe` im Namen, die Entwicklungsaufträge; dazu jedes Ergebnis, das an irgendeiner
+Stelle, auch tief in einer Liste oder eingebettet in Text, `needs_approval`, `freigabe_id` oder einen Status `blocked`, `locked`,
+`gesperrt`, `rejected`, `abgelehnt`, `verweigert`, `denied`, `forbidden`, `critical` oder `wartet` trägt, denn der Ja-Wächter sucht
+Freigabemeldungen im Verlauf; das bloße Wort ohne Statusangabe genügt nicht), Werkzeuge mit eigener Kappung
 (Boss, Websuche, Bildschirm, Merken, Canvas), Listen als Grundlage der nächsten Aktion (`elemente_auflisten`, `element_lesen`,
-`fenster_auflisten`: ein gekürztes Ergebnis kostete einen Nachlade-Aufruf statt Zeit zu sparen), Binärdaten und Bilder (Bytes, lange Base64-artige Folgen) und Ergebnisse, die
-schon `gekuerzt` oder `ref` tragen. Ein Fehlerstatus wird nicht ausgenommen, seine Felder bleiben aber unverändert.
+`fenster_auflisten`: ein gekürztes Ergebnis kostete einen Nachlade-Aufruf statt Zeit zu sparen) sowie Binärdaten und Bilder (Bytes,
+lange Base64-artige Folgen). Die Felder `gekuerzt` und `ref` setzt nur der Kürzer selbst: In fremdem JSON (Webseite, Gerät) heißen sie
+vor der Verarbeitung `gekuerzt_fremd` und `ref_fremd`, damit sie weder das Kürzen abschalten noch den echten `ref` überschreiben. Ein
+Fehlerstatus wird nicht ausgenommen, seine Felder bleiben aber unverändert. Die Größe wird vor dem Säubern der Marken geprüft (kein
+Rechenaufwand für Riesenausgaben), ein Original über 1 MB bleibt unangetastet.
 
 **Messung.** Je Sitzung zählt der Kern gekürzte Ergebnisse und eingesparte Zeichen (Tokens grob als Zeichen durch 4) und schreibt
 am Sitzungsende eine Zeile ins Log (`Ausgaben kürzen: 3 Ergebnisse gekürzt, 41200 Zeichen eingespart (etwa 10300 Tokens),
@@ -895,20 +903,43 @@ Zwei Arten von Kriterien:
   Write und Edit geändert wurde). Es antwortet mit strengem JSON `{"erfuellt": true|false, "hinweis": "..."}`. Alles andere
   (kein JSON, andere Felder, falsche Typen, Fehler, Zeitüberschreitung nach 60 s) zählt als nicht erfüllt. Bericht, Dateinamen und
   Kriterium stehen als Daten in Blöcken mit einem zufälligen Code, nie als Anweisung. Das ist ein weiches Urteil, kein Beweis.
-- **Befehl** (Eintrag beginnt mit `befehl:`, zum Beispiel `befehl: pytest -q`): Exit 0 heißt erfüllt. Der Text stammt vom Modell und ist
-  nicht vertrauenswürdig, deshalb gilt:
+- **Befehl** (Eintrag beginnt mit `befehl:`, zum Beispiel `befehl: pytest -q`): Exit 0 heißt erfüllt. **Standard aus:** Befehlskriterien
+  sind eine bewusste Zuschaltung des Betreibers (`WAMO_ABNAHME_BEFEHLE=ja`, nur dieser Wert, dazu die Betriebsart `lokal`). Ohne den
+  Schalter lehnt `entwicklung_vorbereiten` ein `befehl:` schon beim Vorbereiten mit einem Satz ab (die Werkzeugbeschreibung nennt es dem
+  Modell gar nicht erst), es bleiben Aussagekriterien. Grund: Projektcode (conftest, Makefile, Tests) läuft durch einen Befehl
+  automatisch mit den Rechten des Kerns, ohne Hook und ohne eigene Freigabe. Das ist neu gegenüber dem Ablauf vor Paket 4 und soll eine
+  Entscheidung sein, kein Nebeneffekt. Der Text stammt vom Modell und ist nicht vertrauenswürdig, deshalb gilt:
   - ein einzelner Befehl mit Argumenten, aufgerufen ohne Shell; keine Zeichen für Verkettung, Umleitung oder Ersetzung (Semikolon, &amp;,
     senkrechter Strich, Backtick, Dollarzeichen, spitze Klammern, Backslash), keine Zeilenumbrüche und Steuerzeichen,
     Anführungszeichen nur paarweise;
-  - nur Programme einer Allowlist mit festen Unterbefehlen: `pytest`, `python -m pytest|unittest|mypy|compileall`, `npm|pnpm|yarn test`
-    und `run test|build|lint|typecheck|check|verify`, `node --test`, `go test|vet|build`, `cargo test|check|build|clippy`,
-    `dotnet test|build`, `make test|check|lint|build`, `ruff check` (ohne `--fix`), `mypy`, `tsc`, `eslint` (ohne `--fix`), `grep`;
-    kein Programm mit Pfad, kein `.cmd` und `.bat`, nichts aus dem Projektordner selbst;
-  - nur Pfade im Projektordner (kein `..`, kein `~`, kein vorhandener Pfad außerhalb, auch nicht über einen Link im Projekt);
+  - eine echte Allowlist je Programm: erlaubt ist nur, was ausdrücklich aufgeführt ist, jede andere Option und jedes andere Argument wird
+    abgewiesen (das Kriterium gilt dann als nicht erfüllt, der Befehl läuft nie). Erlaubt sind: `pytest` (`-q`, `-x`, `-v`, `--tb=short|line|no`,
+    `-k` und `-m` mit einem einfachen Ausdruck aus Namen, `and`, `or`, `not` und Klammern, Testpfade relativ im Projekt, auch mit `::`),
+    `python -m pytest|unittest|mypy|compileall` mit denselben Regeln (`unittest`: `-v -q -f -b`, `discover`, `-s`, `-p`, Testnamen, die mit `tests` oder `test_` beginnen;
+    `compileall`: `-q`), `npm|pnpm|yarn test` und `run test|build|lint|typecheck|check|verify` (danach höchstens `--` mit `--run`, `--ci`,
+    `--watchAll=false`, `--passWithNoTests`), `node --test` mit relativen Testpfaden, `go test` (`-run`, `-count`, `-v`, `-short`,
+    `-failfast`, Paketmuster `./...` oder relative Pfade), `go vet` und `go build` (nur Paketmuster, bei `build` zusätzlich `-v`),
+    `cargo test|check|build|clippy` (`--workspace`, `--all-targets`, `--locked`, `--offline`, `--release`, `--lib`, `-q`, bei `test` ein
+    Testname), `dotnet test|build` (`--no-restore`, `--nologo`, `-c Debug|Release`, ein Projekt oder eine Lösung), `make test|check|lint|build`,
+    `ruff check` (`--no-cache`, `-q`, Pfade), `mypy` (`--strict`, `--ignore-missing-imports`, Pfade), `tsc` nur mit `--noEmit` (`-p` mit
+    relativer `.json`), `eslint` (`--quiet`, `--max-warnings N`, Pfade), `grep` (Kurzschalter `q c r n i E F w l s v`, Suchmuster, relative
+    Dateien). Abgewiesen werden zum Beispiel `pytest -p`, `-c`, `--rootdir`, `-o`, `--junitxml`, `go test -exec` und `-toolexec`,
+    `go vet -vettool`, `node --import` und `--require`, `dotnet -p:...`, `cargo --config`, `ruff check --fix` und `--add-noqa`, `eslint
+    --fix`, `grep -f` und `-R`, jede Option mit `=`-Zuweisung an eine unbekannte Option sowie `-X` und `-D`;
+  - höchstens 12 Argumente, jedes höchstens 200 Zeichen; keine `@datei`-Argumente; keine Netzwerkpfade (`//`, `\\`), keine Laufwerksangaben
+    (`C:`) und keine Adressen (`://`): Sie werden schon beim Parsen abgewiesen und nie auf Vorhandensein geprüft, denn unter Windows löst
+    schon `Path.exists()` auf `//host/share` eine SMB-Verbindung aus (NTLM-Hash an einen Fremdhost);
+  - kein Programm mit Pfad, kein `.cmd` und `.bat`, nichts aus dem Projektordner selbst;
+  - nur Pfade im Projektordner (kein `..`, kein `~`, kein vorhandener Pfad außerhalb, auch nicht über einen Link im Projekt). Die Prüfung der
+    Pfade läuft in einem Arbeitsthread mit Frist von 2 Sekunden, nie in der Ereignisschleife des Sprachpfads;
   - jeder Befehl geht vorher durch den Wächter (`dev_guard.decide`, wie ein Bash-Aufruf des Auftrags): Sperre oder Freigabepflicht heißt
     "nicht erfüllt" mit Hinweis und der Befehl läuft nie. Eine Freigabekarte umgeht die Abnahme nie, und die Abnahme umgeht keine;
   - Zeitlimit 120 s, Ausgabe auf 2 KB gekürzt (das Ende bleibt, dort steht das Ergebnis), minimale Umgebung ohne Schlüssel und
     Verbindungsdaten, kein stdin, eigene Prozessgruppe, die bei Zeitlimit und Abbruch ganz beendet wird.
+
+Die Startkarte des Auftrags in der Oberfläche zeigt die Abnahmekriterien als kurze Liste "Abnahme" (höchstens 5, je höchstens 300
+Zeichen, bereinigt, Befehle in Festbreite, alles nur als Text, nie als Markup). Wer auf "Starten" klickt, bestätigt damit auch die Befehle,
+die WAMO danach ausführt, also muss die Person sie vorher sehen.
 
 Ablauf und Meldung: Nach Runde 1 steht der Vorgang auf "wird geprüft", alle Kriterien werden ausgewertet (jedes Mal alle, damit ein Rückschritt
 auffällt) und in den Vorgang eingetragen (Hinweis je Kriterium, höchstens 200 Zeichen, Schlüssel geschwärzt, dazu "Ziel erreicht" und
@@ -921,14 +952,22 @@ scheitert (Zeitlimit, Verbindung, Zugang), wird weder geprüft noch wiederholt. 
 Auflegen beendet die Schleife sofort samt laufendem Prüfbefehl. Jede Runde ist ein eigener Lauf und zählt wie bisher in den Verbrauch
 (Kosten im Canvas); eine Kostengrenze gibt es noch nicht, nur Runden und Zeit.
 
-**Grenze (Betriebsart Sokrates-2, der Standard):** Der Auftrag läuft dort in der Sandbox, die der Kern nicht betreten darf, und der Kern darf
-Befehle eines Modells nicht mit seinen eigenen Rechten ausführen. Deshalb sind Befehlskriterien nur in der Betriebsart `lokal` möglich.
-Auch dort läuft Projektcode (Tests, Skripte des Projekts) mit den Rechten des Kerns, genau wie der Auftrag selbst: Allowlist und Wächter sind
-eine Bremse, keine Sandbox. Auf Sokrates-2 weist `entwicklung_vorbereiten` ein `befehl:` mit einem Satz ab (die Werkzeugbeschreibung nennt es dem Modell gar nicht
-erst), es bleiben Aussagekriterien. Dafür fehlt ein Dispatcher-Befehl `pruefen`, der den Befehl in derselben Sandbox ohne Token ausführt
-(`infra/sokrates2/wamo_job_dispatch.py`, noch nicht gebaut, braucht Prüfung der Sicherheit und einen Rauchtest auf dem Server). Die
-Schleife ist darauf vorbereitet (`DevAgent(befehl_ausfuehrer=...)`). Nicht an einem echten Lauf geprüft: Die Tests nutzen Attrappen für
-den Claude-Prozess und das beurteilende Modell.
+**Grenzen:**
+
+- **Betriebsart Sokrates-2 (der Standard):** Der Auftrag läuft dort in der Sandbox, die der Kern nicht betreten darf, und der Kern darf
+  Befehle eines Modells nicht mit seinen eigenen Rechten ausführen. Deshalb sind Befehlskriterien nur in der Betriebsart `lokal` möglich.
+  Auf Sokrates-2 weist `entwicklung_vorbereiten` ein `befehl:` mit einem Satz ab, es bleiben Aussagekriterien. Dafür fehlt ein
+  Dispatcher-Befehl `pruefen`, der den Befehl in derselben Sandbox ohne Token ausführt (`infra/sokrates2/wamo_job_dispatch.py`, noch nicht
+  gebaut, braucht Prüfung der Sicherheit und einen Rauchtest auf dem Server). Die Schleife ist darauf vorbereitet
+  (`DevAgent(befehl_ausfuehrer=...)`).
+- **Betriebsart `lokal`:** Der Code der Projekte (Tests, conftest, Makefile, Skripte) läuft ohne Sandbox mit den Rechten des Kerns, genau
+  wie der Auftrag selbst. Allowlist und Wächter sind eine Bremse, keine Sandbox. Build-Werkzeuge können Abhängigkeiten aus dem Netz laden,
+  das verhindert die Allowlist nicht. Deshalb ist die Zuschaltung (`WAMO_ABNAHME_BEFEHLE=ja`) eine bewusste Entscheidung des Betreibers.
+- **Prozessbaum:** Zeitlimit und Abbruch beenden den ganzen Baum nur, solange der Hauptprozess des Befehls läuft. Ist er schon beendet,
+  überleben Enkelprozesse, die er gestartet hat: Es gibt danach kein `killpg` auf die Gruppe, und unter Windows kein Job Object. Das ist
+  bekannt und nicht umgebaut.
+- **Nicht an einem echten Lauf geprüft:** Die Tests nutzen Attrappen für den Claude-Prozess und das beurteilende Modell; echte Programme
+  wurden nicht gegen echte Projekte ausgeführt.
 
 ## Modellzugang je Profil
 
