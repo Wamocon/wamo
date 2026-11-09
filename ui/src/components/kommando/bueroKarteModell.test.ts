@@ -1,7 +1,8 @@
 // Tests der Büro-Karte (bueroKarteModell.ts): Prüfung der Antwort des Kerns, Darstellung (Zustand nie nur über Farbe),
-// Beschriftungen, Anordnung der Ringe und Punkte, Takt des Abrufs und ruhige Leerzustände.
+// Beschriftungen, Anordnung der Ringe und Punkte, Takt des Abrufs, ruhige Leerzustände und der Hinweis auf unbekannte Geräte.
 // Ausführen im Ordner ui/:  npm test
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   ABRUF_MIN_MS,
@@ -20,6 +21,8 @@ import {
   pruefeBuero,
   ringe,
   sauber,
+  UNBEKANNT_TIPP,
+  unbekanntHinweis,
   uhrzeitKurz,
   zaehlen,
   zusammenfassung,
@@ -297,4 +300,37 @@ test("Uhrzeit aus dem Zeitpunkt der Antwort", () => {
   assert.match(uhrzeitKurz("2026-11-09T08:05:00Z"), /^\d{2}:\d{2}$/);
   assert.equal(uhrzeitKurz(""), "");
   assert.equal(uhrzeitKurz("gestern"), "");
+});
+
+// ---------- Hinweis auf unbekannte Geräte im Netz ----------
+test("Hinweis nur bei einer Zahl größer 0, mit Einzahl und Mehrzahl", () => {
+  for (const n of [null, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) assert.equal(unbekanntHinweis(n, true), null, String(n));
+  assert.equal(unbekanntHinweis(1, true)?.text, "1 unbekanntes Gerät im Netz");
+  assert.equal(unbekanntHinweis(2, true)?.text, "2 unbekannte Geräte im Netz");
+  assert.equal(unbekanntHinweis(37, false)?.text, "37 unbekannte Geräte im Netz");
+});
+
+test("Sprechtipp nur für Admins, denn nur sie dürfen die Liste abfragen", () => {
+  assert.equal(UNBEKANNT_TIPP, "Sag: Welche Geräte kenne ich nicht?");
+  assert.equal(unbekanntHinweis(3, true)?.tipp, UNBEKANNT_TIPP);
+  assert.equal(unbekanntHinweis(3, false)?.tipp, null);
+});
+
+test("Hinweistexte ruhig: ohne Alarmwörter, Technik und Gedankenstriche", () => {
+  const gedankenstriche = new RegExp("[" + String.fromCharCode(0x2013, 0x2014) + "]");
+  for (const n of [1, 2, 50]) {
+    const h = unbekanntHinweis(n, true);
+    assert.ok(h);
+    const text = h.text + " " + (h.tipp ?? "");
+    assert.ok(!/Alarm|Warnung|Gefahr|Achtung|!|Eindringling|Angriff|MAC|IP/.test(text), text);
+    assert.ok(!gedankenstriche.test(text), text);
+  }
+});
+
+test("Stil des Hinweises ist grau und nie im Alarmrot", () => {
+  const css = readFileSync(new URL("./bueroKarte.css", import.meta.url), "utf8");
+  const regeln = [...css.matchAll(/(\.bk-unbekannt[^{]*)\{([^}]*)\}/g)];
+  assert.ok(regeln.length > 0, "Regel .bk-unbekannt fehlt");
+  for (const [, , inhalt] of regeln) assert.ok(!/accent|red|#f40e0e|stoerung/i.test(inhalt), inhalt);
+  assert.ok(regeln.some(([, , inhalt]) => /ink-soft/.test(inhalt)), "Text soll grau (--ink-soft) sein");
 });

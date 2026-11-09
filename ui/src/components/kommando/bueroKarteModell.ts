@@ -217,6 +217,23 @@ export function prozent(wert: number): number {
   return rund((wert / KARTE.groesse) * 100);
 }
 
+// ---------- Hinweis: unbekannte Geräte im Netz (ruhig, grau, kein Alarm) ----------
+export const UNBEKANNT_TIPP = "Sag: Welche Geräte kenne ich nicht?";
+
+export type UnbekanntHinweis = {
+  /** zum Beispiel "3 unbekannte Geräte im Netz" */
+  text: string;
+  /** Sprechtipp; nur Admins dürfen die Liste abfragen, für alle anderen null */
+  tipp: string | null;
+};
+
+/** Hinweis bei einer Zahl größer 0 (sonst null: nichts anzeigen). Der Kern liefert nur die Zahl, die Liste gibt es per Sprache. */
+export function unbekanntHinweis(anzahl: number | null, istAdmin: boolean): UnbekanntHinweis | null {
+  if (anzahl === null || !Number.isInteger(anzahl) || anzahl <= 0) return null;
+  const text = anzahl === 1 ? "1 unbekanntes Gerät im Netz" : `${anzahl} unbekannte Geräte im Netz`;
+  return { text, tipp: istAdmin ? UNBEKANNT_TIPP : null };
+}
+
 // ---------- Abruf: alle 30 Sekunden, nur bei sichtbarer Seite ----------
 export const ABRUF_MS = 30_000;
 /** Der Kern lässt höchstens 6 Abrufe je Minute zu; ein Abstand unter 10 Sekunden gibt es nie. */

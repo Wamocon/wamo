@@ -103,6 +103,13 @@
 .bk-etikett { font: 700 11px/1 var(--font-wmc); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-soft); }
 .bk-detail-gruppe { margin: 0; font-size: 13px; color: var(--ink-soft); }
 
+/* ---------- Hinweis: unbekannte Geräte im Netz (ruhig und grau, nie Alarmrot; Zeichen wie "unbekannt") ---------- */
+.bk-unbekannt {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  border: 1px solid var(--rule); border-radius: 10px; background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.bk-unbekannt-text { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 15px; line-height: 1.35; color: var(--ink-soft); }
+
 /* ---------- Stand und Leerzustand ---------- */
 .bk-stand { margin: 0; font-size: 13px; color: var(--ink-soft); text-align: center; }
 .bk-stand-alt { color: var(--ink); }

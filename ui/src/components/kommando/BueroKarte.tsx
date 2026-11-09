@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useSelect } from "@/lib/store";
+import { wamo } from "@/lib/wamo";
 import {
   anordnung,
   beschriftung,
@@ -13,6 +15,7 @@ import {
   prozent,
   ringe,
   uhrzeitKurz,
+  unbekanntHinweis,
   zusammenfassung,
   type Ampel,
   type BueroGeraet,
@@ -28,6 +31,9 @@ import { useBueroStand } from "./useBueroStand";
  * Jeder Punkt ist ein Button (Tab, Enter, Leertaste); ein Klick öffnet eine Detailkarte mit Zustand in Klartext und
  * Sprechtipp. Es gibt nur diese Ansicht, keine Steuerung (das geschieht per Sprache). Unter der Zeichnung steht dieselbe
  * Auskunft als Liste (Textalternative). Daten und Prüfung: bueroKarteModell.ts, Abruf: useBueroStand.ts.
+ *
+ * Gibt es Geräte im Netz, die WAMO nicht kennt, steht ein ruhiger Hinweis mit der Zahl da (grau, kein Alarmrot, nur die Zahl,
+ * nie Namen oder Adressen). Die Liste fragt ein Admin per Sprache ab; nur ihm nennt der Hinweis den Sprechtipp.
  */
 
 /** Zustandszeichen: derselbe Kreis in Karte, Legende, Liste und Detailkarte. Mit `halo` pulsiert die Störung. */
@@ -130,8 +136,29 @@ function Liste({ geraete }: { geraete: readonly BueroGeraet[] }) {
   );
 }
 
+/** Ruhiger Hinweis auf unbekannte Geräte im Netz: grauer, hohler Kreis (wie "unbekannt"), Text, bei Admins der Sprechtipp. */
+function UnbekanntHinweis({ anzahl, istAdmin }: { anzahl: number | null; istAdmin: boolean }) {
+  const hinweis = unbekanntHinweis(anzahl, istAdmin);
+  if (!hinweis) return null;
+  return (
+    <div className="bk-unbekannt" role="status">
+      <p className="bk-unbekannt-text">
+        <Zeichen ampel="unbekannt" />
+        <span>{hinweis.text}</span>
+      </p>
+      {hinweis.tipp && (
+        <p className="bk-tipp">
+          <span className="bk-etikett">Sprechtipp</span>
+          {hinweis.tipp}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function BueroKarte() {
   const { stand, fehler, geladen } = useBueroStand();
+  const istAdmin = useSelect(wamo, (s) => s.profil?.rolle === "admin");
   const [gewaehlt, setGewaehlt] = useState<string | null>(null);
   const knoepfe = useRef<Map<string, HTMLButtonElement>>(new Map());
   const titelId = useId();
@@ -228,6 +255,7 @@ export function BueroKarte() {
           <p className="bk-hinweis">
             Mitte: WAMO auf Sokrates-2. Ringe von innen nach außen: {kreise.map((r) => r.label).join(", ")}.
           </p>
+          <UnbekanntHinweis anzahl={stand?.unbekannt ?? null} istAdmin={istAdmin} />
 
           {stand && fehler !== null && (
             <p className="bk-stand bk-stand-alt" role="status">
