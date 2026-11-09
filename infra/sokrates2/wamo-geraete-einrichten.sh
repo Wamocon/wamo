@@ -6,7 +6,7 @@
 # Vom PC aus (Repo-Wurzel); Ablage nur im Home von wamocon, nie in /tmp:
 #   scp infra/sokrates2/wamo-geraete-einrichten.sh infra/sokrates2/wamo-geraete-rueckweg.sh \
 #       infra/sokrates2/wamo-geraete.service infra/sokrates2/wamo-geraete-egress.service \
-#       infra/sokrates2/wamo_geraete_env.py infra/sokrates2/geraete.toml.example sokrates2:wamo-infra/
+#       infra/sokrates2/wamo_geraete_env.py infra/sokrates2/geraete.toml.example infra/sokrates2/bekannt.toml.example #       sokrates2:wamo-infra/
 #   ssh sokrates2 "rm -rf ~/wamo-infra/geraete && mkdir -p ~/wamo-infra/geraete"
 #   scp -r geraete/wamo_geraete geraete/pyproject.toml geraete/uv.lock sokrates2:wamo-infra/geraete/
 #   ssh sokrates2 "chmod -R go-w ~/wamo-infra && sudo bash ~/wamo-infra/wamo-geraete-einrichten.sh"
@@ -20,9 +20,12 @@
 #   /opt/wamo-geraete                     root:wamo-geraete 0750: app (Code), venv (uv aus uv.lock), schriften
 #   /etc/tmpfiles.d/wamo-geraete.conf     /run/wamo-geraete 2750 wamo-geraete:wamo-core (Socket für den Kern)
 #   /etc/wamo-geraete/geraete.toml        root:wamo-geraete 0640, aus der Vorlage nur, wenn sie fehlt
+#   /etc/wamo-geraete/bekannt.toml        root:wamo-geraete 0640, aus der Vorlage nur, wenn sie fehlt (Geräte, die dem Dienst
+#                                         bewusst unbekannt bleiben: Laptops, Handys; für die passive Erkennung)
 #   /etc/wamo-geraete/geraete.env                 root:wamo-geraete 0640, leer angelegt; /usr/local/sbin/wamo-geraete-env
 #   /var/lib/wamo-geraete/ssh             Schlüssel für wamo-status auf den Sparks, known_hosts
-#   /etc/wamo/geraete-egress.nft          nft-Tabelle inet wamo_geraete_egress (aus geraete.toml erzeugt)
+#   /etc/wamo/geraete-egress.nft          nft-Tabelle inet wamo_geraete_egress (aus geraete.toml erzeugt; TCP je Gerät, UDP nur
+#                                         für SNMPv3 auf Port 161 zu den Switches und Access Points und Wake-on-LAN)
 #   /etc/systemd/system/wamo-geraete*.service und wamo-geraete.service.d/ausgang.conf (IPAddressAllow, erzeugt)
 set -euo pipefail
 
@@ -36,6 +39,7 @@ PYTHON=/usr/bin/python3.12
 KONFIG_ORDNER=/etc/wamo-geraete
 KONFIG=$KONFIG_ORDNER/geraete.toml
 ENV_DATEI=/etc/wamo-geraete/geraete.env
+BEKANNT=$KONFIG_ORDNER/bekannt.toml
 ZUSTAND=/var/lib/wamo-geraete
 NFT=/etc/wamo/geraete-egress.nft
 
@@ -61,7 +65,7 @@ fi
 HOSTSCHLUESSEL_NEU=nein
 [ "${1:-}" = "--hostschluessel-neu" ] && HOSTSCHLUESSEL_NEU=ja
 
-for datei in wamo-geraete.service wamo-geraete-egress.service wamo_geraete_env.py geraete.toml.example \
+for datei in wamo-geraete.service wamo-geraete-egress.service wamo_geraete_env.py geraete.toml.example bekannt.toml.example \
   geraete/pyproject.toml geraete/uv.lock geraete/wamo_geraete/__main__.py geraete/wamo_geraete/assets/wmc-logo.png; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei (siehe Kopfkommentar)" >&2; exit 1; }
 done
@@ -142,6 +146,12 @@ if [ ! -f "$KONFIG" ]; then
   echo "  $KONFIG aus der Vorlage angelegt"
 fi
 chown root:"$BENUTZER" "$KONFIG" && chmod 0640 "$KONFIG"
+if [ ! -f "$BEKANNT" ]; then
+  install -o root -g "$BENUTZER" -m 0640 "$HERE/bekannt.toml.example" "$BEKANNT"
+  sed -i 's/\r$//' "$BEKANNT"
+  echo "  $BEKANNT aus der Vorlage angelegt (nur Kommentare, danach Laptops und Handys eintragen)"
+fi
+chown root:"$BENUTZER" "$BEKANNT" && chmod 0640 "$BEKANNT"
 if [ ! -f "$ENV_DATEI" ]; then
   install -o root -g "$BENUTZER" -m 0640 /dev/null "$ENV_DATEI"
 fi
@@ -198,6 +208,7 @@ printf '# Erzeugt von wamo-geraete-einrichten.sh aus geraete.toml, nicht von Han
   > /etc/systemd/system/wamo-geraete.service.d/ausgang.conf
 chmod 0644 /etc/systemd/system/wamo-geraete.service.d/ausgang.conf
 echo "  $erlauben"
+echo "  SNMP-Ziele (UDP 161): $(grep -c 'udp dport 161 accept' "$NFT" || true)"
 
 echo "== 9. Dienst wamo-geraete"
 install -o root -g root -m 0644 "$HERE/wamo-geraete.service" /etc/systemd/system/wamo-geraete.service

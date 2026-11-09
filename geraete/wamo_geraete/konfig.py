@@ -4,6 +4,9 @@
                                    (root:wamo-geraete 0640, Pflege durch den Admin; Vorlage im Repo:
                                    infra/sokrates2/geraete.toml.example)
   /etc/wamo-geraete/geraete.env            Zugangsdaten (root:wamo-geraete 0640, nur über sudo wamo-geraete-env setzen)
+  /etc/wamo-geraete/bekannt.toml           optional: Geräte, die dem Dienst bewusst unbekannt bleiben (Laptops, Handys),
+                                           damit die passive Erkennung sie nicht als "unbekannt" zählt (Vorlage:
+                                           infra/sokrates2/bekannt.toml.example)
 
 Regeln:
   * Adressen nur als IPv4 im Büro-LAN 192.168.178.0/24, nie Namen (fritz.box löst auf Sokrates-2 ins Internet auf).
@@ -23,6 +26,7 @@ from typing import Any
 
 KONFIG_DATEI = os.getenv("WAMO_GERAETE_KONFIG") or "/etc/wamo-geraete/geraete.toml"
 ENV_DATEI = os.getenv("WAMO_GERAETE_ENV") or "/etc/wamo-geraete/geraete.env"
+BEKANNT_DATEI = os.getenv("WAMO_GERAETE_BEKANNT") or "/etc/wamo-geraete/bekannt.toml"
 BUERO_NETZ = ipaddress.ip_network("192.168.178.0/24")
 SOKRATES2 = "192.168.178.136"
 KENNUNG_RE = re.compile(r"^[a-z][a-z0-9-]{1,21}[a-z0-9]$")
@@ -32,9 +36,11 @@ MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 MDNS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,62}\.local$")
 FREIGABE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._$-]{0,79}$")
 ORDNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}$")
+HOSTNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$")
 SHA256_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){31}$")
 
-KLASSEN = ("server", "drucker", "scanner", "router", "nas", "fernseher", "lautsprecher", "steckdose", "mac")
+KLASSEN = ("server", "drucker", "scanner", "router", "nas", "fernseher", "lautsprecher", "steckdose", "mac",
+           "switch", "accesspoint")
 
 # Treiber: erlaubte Klassen, Standardport, erlaubte Ports, erlaubte Zusatzschlüssel
 TREIBER: dict[str, dict[str, Any]] = {
@@ -43,7 +49,7 @@ TREIBER: dict[str, dict[str, Any]] = {
     "ipp": {"klassen": ("drucker",), "port": 631, "ports": (631,), "optionen": {"format", "farbe_erlaubt", "aufloesung"}},
     "escl": {"klassen": ("scanner",), "port": 80, "ports": (80,), "optionen": set()},
     "upnp-igd": {"klassen": ("router",), "port": 49000, "ports": (49000,),
-                 "optionen": {"tr064_port", "tls_sha256", "zugang"}},
+                 "optionen": {"tr064_port", "tls_sha256", "zugang", "status_quelle"}},
     "upnp-renderer": {"klassen": ("lautsprecher",), "port": 49152, "ports": (49152, 49153, 49154, 9197),
                       "optionen": {"steuer_pfad", "transport_pfad", "max_lautstaerke"}},
     "shelly": {"klassen": ("steckdose",), "port": 80, "ports": (80,), "optionen": {"zugang", "schutz", "max_laufzeit_s"}},
@@ -54,7 +60,14 @@ TREIBER: dict[str, dict[str, Any]] = {
     "smb": {"klassen": ("nas",), "port": 445, "ports": (445,), "optionen": {"zugang", "freigaben", "scanziel"}},
     "anwesenheit": {"klassen": ("mac", "fernseher", "server"), "port": None, "ports": (),
                     "optionen": {"mdns_name", "mac"}},
+    # SNMPv3 (authPriv, SHA-2 und AES), nur lesen; UDP statt TCP, siehe Konfig.ziele()
+    "snmp": {"klassen": ("switch", "accesspoint"), "port": 161, "ports": (161,),
+             "optionen": {"zugang", "auth", "verschluesselung", "fehlerzaehler"}},
 }
+UDP_TREIBER = frozenset({"snmp"})
+SNMP_AUTH = ("sha224", "sha256", "sha384", "sha512")
+SNMP_PRIV = ("aes128", "aes192", "aes256")
+STATUS_QUELLEN = ("upnp", "tr064")
 UPNP_PFAD_RE = re.compile(r"^/upnp/control/[A-Za-z0-9_]{1,40}$")
 EINGAENGE = ("tv", "hdmi1", "hdmi2", "hdmi3", "hdmi4")
 ALLGEMEIN = {"kennung", "name", "klasse", "treiber", "adresse", "port", "beschreibung"}
@@ -78,10 +91,20 @@ class Geraet:
         return self.optionen.get(name, standard)
 
 
+@dataclass(frozen=True)
+class Bekannt:
+    """Geräte, die dem Dienst bewusst unbekannt bleiben (bekannt.toml). Nur zum Abgleich der passiven Erkennung; Namen
+    und MAC-Adressen stehen nie in Audit, Protokoll oder Antworten."""
+    macs: frozenset[str] = frozenset()
+    adressen: frozenset[str] = frozenset()
+    namen: frozenset[str] = frozenset()
+
+
 @dataclass
 class Konfig:
     geraete: dict[str, Geraet]
     geheimnisse: dict[str, str] = field(default_factory=dict)
+    bekannt: Bekannt = field(default_factory=Bekannt)
     scan_tage: int = 30
     abruf_stunden: int = 24
     druck_seiten_tag: int = 50
@@ -105,7 +128,7 @@ class Konfig:
             if not g.adresse:
                 continue
             if g.port:
-                ziele.add(("tcp", g.adresse, g.port))
+                ziele.add(("udp" if g.treiber in UDP_TREIBER else "tcp", g.adresse, g.port))
             if g.treiber == "server-ssh" and g.opt("litellm_port"):
                 ziele.add(("tcp", g.adresse, int(g.opt("litellm_port"))))
             if g.treiber == "upnp-igd" and g.opt("tr064_port"):
@@ -206,6 +229,22 @@ def _optionen(treiber: str, kennung: str, roh: dict[str, Any]) -> dict[str, Any]
             if not isinstance(v, str) or not MDNS_RE.fullmatch(v):
                 raise KonfigFehler(f"{was}: name.local")
             o[k] = v
+        elif k == "status_quelle":
+            if v not in STATUS_QUELLEN:
+                raise KonfigFehler(f"{was}: upnp oder tr064")
+            o[k] = v
+        elif k == "auth":
+            if v not in SNMP_AUTH:
+                raise KonfigFehler(f"{was}: nur SHA-2, eines aus {SNMP_AUTH}")
+            o[k] = v
+        elif k == "verschluesselung":
+            if v not in SNMP_PRIV:
+                raise KonfigFehler(f"{was}: nur AES, eines aus {SNMP_PRIV}")
+            o[k] = v
+        elif k == "fehlerzaehler":
+            if not isinstance(v, bool):
+                raise KonfigFehler(f"{was}: true oder false")
+            o[k] = v
     return o
 
 
@@ -235,8 +274,11 @@ def geraet_aus(roh: dict[str, Any]) -> Geraet:
         if port not in TREIBER[treiber]["ports"]:
             raise KonfigFehler(f"{kennung}: Port {port} ist für {treiber} nicht vorgesehen")
     extra = {k: v for k, v in roh.items() if k not in ALLGEMEIN}
+    optionen = _optionen(treiber, kennung, extra)
+    if optionen.get("status_quelle") == "tr064" and not all(optionen.get(k) for k in ("tr064_port", "tls_sha256", "zugang")):
+        raise KonfigFehler(f"{kennung}: status_quelle tr064 braucht tr064_port, tls_sha256 und zugang")
     return Geraet(kennung=kennung, name=name, klasse=klasse, treiber=treiber, adresse=adresse, port=port,
-                  optionen=_optionen(treiber, kennung, extra))
+                  optionen=optionen)
 
 
 def lade_env(pfad: str = ENV_DATEI) -> dict[str, str]:
@@ -257,7 +299,56 @@ def lade_env(pfad: str = ENV_DATEI) -> dict[str, str]:
     return werte
 
 
-def lade(pfad: str = KONFIG_DATEI, env_pfad: str = ENV_DATEI) -> Konfig:
+def bekannt_aus(roh: dict[str, Any] | None) -> Bekannt:
+    """bekannt.toml prüfen: [[bekannt]] mit mac, adresse oder name (mindestens eines), optional notiz (nur für Menschen)."""
+    roh = roh or {}
+    fremd = set(roh) - {"bekannt"}
+    if fremd:
+        raise KonfigFehler(f"bekannt.toml: unbekannte Abschnitte {sorted(fremd)}")
+    eintraege = roh.get("bekannt", []) or []
+    if not isinstance(eintraege, list) or len(eintraege) > 512:
+        raise KonfigFehler("bekannt.toml: höchstens 512 Einträge [[bekannt]]")
+    macs: set[str] = set()
+    adressen: set[str] = set()
+    namen: set[str] = set()
+    for nr, e in enumerate(eintraege, 1):
+        was = f"bekannt.toml Eintrag {nr}"
+        if not isinstance(e, dict):
+            raise KonfigFehler(f"{was}: muss eine Tabelle sein")
+        fremd = set(e) - {"mac", "adresse", "name", "notiz"}
+        if fremd:
+            raise KonfigFehler(f"{was}: unbekannte Schlüssel {sorted(fremd)}")
+        if not any(e.get(k) for k in ("mac", "adresse", "name")):
+            raise KonfigFehler(f"{was}: mac, adresse oder name fehlt")
+        if "notiz" in e and (not isinstance(e["notiz"], str) or len(e["notiz"]) > 120):
+            raise KonfigFehler(f"{was}: notiz höchstens 120 Zeichen")
+        if "mac" in e:
+            if not isinstance(e["mac"], str) or not MAC_RE.fullmatch(e["mac"].lower()):
+                raise KonfigFehler(f"{was}: mac wie aa:bb:cc:dd:ee:ff")
+            macs.add(e["mac"].lower())
+        if "adresse" in e:
+            adressen.add(_adresse(e["adresse"], was) or "")
+        if "name" in e:
+            if not isinstance(e["name"], str) or not HOSTNAME_RE.fullmatch(e["name"]):
+                raise KonfigFehler(f"{was}: name 1 bis 63 Zeichen aus Buchstaben, Ziffern, Leerzeichen . _ -")
+            namen.add(e["name"].lower())
+    adressen.discard("")
+    return Bekannt(macs=frozenset(macs), adressen=frozenset(adressen), namen=frozenset(namen))
+
+
+def lade_bekannt(pfad: str = BEKANNT_DATEI) -> Bekannt:
+    """bekannt.toml ist optional; ohne Datei gilt: nur die Geräte aus geraete.toml sind bekannt."""
+    try:
+        with open(pfad, "rb") as f:
+            roh = tomllib.load(f)
+    except FileNotFoundError:
+        return Bekannt()
+    except tomllib.TOMLDecodeError as e:
+        raise KonfigFehler(f"{pfad} ist kein gültiges TOML ({e})") from e
+    return bekannt_aus(roh)
+
+
+def lade(pfad: str = KONFIG_DATEI, env_pfad: str = ENV_DATEI, bekannt_pfad: str | None = None) -> Konfig:
     try:
         with open(pfad, "rb") as f:
             roh = tomllib.load(f)
@@ -265,7 +356,9 @@ def lade(pfad: str = KONFIG_DATEI, env_pfad: str = ENV_DATEI) -> Konfig:
         raise KonfigFehler(f"{pfad} fehlt (Vorlage: infra/sokrates2/geraete.toml.example)") from e
     except tomllib.TOMLDecodeError as e:
         raise KonfigFehler(f"{pfad} ist kein gültiges TOML ({e})") from e
-    return aus_daten(roh, lade_env(env_pfad))
+    konfig = aus_daten(roh, lade_env(env_pfad))
+    konfig.bekannt = lade_bekannt(bekannt_pfad or BEKANNT_DATEI)
+    return konfig
 
 
 def aus_daten(roh: dict[str, Any], geheimnisse: dict[str, str] | None = None) -> Konfig:

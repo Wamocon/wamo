@@ -392,11 +392,14 @@
   .kz-reiter-mobil { display: none; }
   .kz[data-rechts="auftraege"] .kz-tafel[data-p="auftraege"],
   .kz[data-rechts="vorgaenge"] .kz-tafel[data-p="vorgaenge"],
-  .kz[data-rechts="erledigt"] .kz-tafel[data-p="erledigt"] { display: flex; }
+  .kz[data-rechts="erledigt"] .kz-tafel[data-p="erledigt"],
+  .kz[data-rechts="buero"] .kz-tafel[data-p="buero"] { display: flex; }
+  .kz-reiter-seite .kz-reiter { padding: 0 9px; letter-spacing: 0.03em; } /* vier Reiter in 320 px Breite */
 }
 @media (min-width: 1100px) and (max-width: 1279px) {
   .kz-main { grid-template-columns: 240px minmax(0, 1fr) 320px; }
   .kz-mitte { padding-inline: 16px; }
+  .kz-reiter-seite .kz-reiter { padding: 0 6px; font-size: 14px; letter-spacing: 0.02em; } /* vier Reiter samt Zahl in 320 px */
 }
 
 /* Niedrige Fenster (Laptop): Kern kleiner, damit Start und Eingabe ohne Scrollen erreichbar bleiben */
@@ -433,7 +436,8 @@
   .kz[data-mobil="hinweise"] .kz-links { display: flex; }
   .kz[data-mobil="auftraege"] .kz-tafel[data-p="auftraege"],
   .kz[data-mobil="vorgaenge"] .kz-tafel[data-p="vorgaenge"],
-  .kz[data-mobil="vorgaenge"] .kz-tafel[data-p="erledigt"] { display: flex; }
+  .kz[data-mobil="vorgaenge"] .kz-tafel[data-p="erledigt"],
+  .kz[data-mobil="buero"] .kz-tafel[data-p="buero"] { display: flex; }
   .kz[data-ansicht="fokus"] .kz-bedienung, .kz[data-ansicht="zentrale"] .kz-bedienung { display: none; }
   .kz-kernwrap { width: min(100%, 290px, 31dvh); }
   .kz[data-ansicht="zentrale"] .kz-kernwrap, .kz[data-ansicht="fokus"] .kz-kernwrap { width: min(100%, 320px, 34dvh); }

@@ -3,7 +3,8 @@
 
 Installiert als /usr/local/sbin/wamo-geraete-env durch wamo-geraete-einrichten.sh. Aufruf nur mit sudo.
 
-  wamo-geraete-env setzen        liest KEY=VALUE-Zeilen von stdin (nur WAMO_GERAETE_<ZUGANG>_BENUTZER und _PASSWORT)
+  wamo-geraete-env setzen        liest KEY=VALUE-Zeilen von stdin (nur WAMO_GERAETE_<ZUGANG>_BENUTZER, _PASSWORT und,
+                                 für SNMPv3, _PRIVPASSWORT)
   wamo-geraete-env loeschen K..  entfernt Schlüssel
   wamo-geraete-env liste         zeigt Schlüsselnamen und ob ein Wert gesetzt ist, nie Werte
 
@@ -26,7 +27,7 @@ DATEI = "/etc/wamo-geraete/geraete.env"
 GRUPPE = "wamo-geraete"
 MAX_WERT = 512
 MAX_ZEILEN = 50
-SCHLUESSEL_RE = re.compile(r"^WAMO_GERAETE_[A-Z][A-Z0-9]{1,15}_(BENUTZER|PASSWORT)$")
+SCHLUESSEL_RE = re.compile(r"^WAMO_GERAETE_[A-Z][A-Z0-9]{1,15}_(BENUTZER|PASSWORT|PRIVPASSWORT)$")
 UNGUELTIG = re.compile(r"['\\\x00-\x1f\x7f]")
 
 

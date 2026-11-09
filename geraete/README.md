@@ -3,7 +3,8 @@
 Gemeinsame Bürogeräte für alle Profile über den Kern auf Sokrates-2: Server-Status (Sokrates-1, Sokrates-2, Caesar),
 Drucker und Scanner (Brother MFC-L3750CDW), Router (FRITZ!Box 7590), NAS (WMC_NAS1, WMC-Testelite), Fernseher
 (LG OLED83B49LA), Lautsprecher (JBL PartyBox Ultimate), Steckdosen (drei Shelly Plug S Gen3), iMac (nur Anwesenheit).
-Persönliche Laptops gehören nicht hierher (die laufen über den Tunnel je Gerät).
+Dazu, sobald eingetragen, Switches und Access Points (SNMPv3, nur lesen). Der Dienst erkennt außerdem passiv, welche Geräte
+im Netz er nicht kennt. Persönliche Laptops gehören nicht hierher (die laufen über den Tunnel je Gerät).
 
 ```text
 Kern (wamo-core) ──/run/wamo-geraete/geraete.sock──> wamo-geraete (eigener Benutzer, SO_PEERCRED = wamo-core)
@@ -35,10 +36,12 @@ der Dienst bedient nur die uid von `wamo-core`.
 | `ablage_liste`, `ablage_holen`, `ablage_loeschen` | read, change | alle, nur eigene | |
 | `nas_suchen`, `nas_abrufen` | read | alle | NAS |
 | `router_geraete` | read | nur admin | Router (TR-064) |
+| `unbekannt_zaehlen` | read | alle | keines (liefert nur eine Zahl und den Zeitstempel) |
+| `unbekannte_geraete` | read | nur admin | keines (IP, MAC-Vorsatz, gekürzter Name, Schnittstelle) |
 
 Grenzen: Status 30 je Minute und Profil, Steuern 20 je Minute, Drucken 10 Aufträge je Stunde und 50 Seiten je Tag und
-Profil (gesamt 200), Scannen 20 je Stunde und ein Auftrag zugleich, NAS 30 je Minute. Statusantworten 20 s im
-Zwischenspeicher. Gemessen am 21.10.2026 (ohne Zwischenspeicher, p50): Sokrates-2 24 ms, Sokrates-1 0,66 s (SSH),
+Profil (gesamt 200), Scannen 20 je Stunde und ein Auftrag zugleich, NAS 30 je Minute, Erkennung unbekannter Geräte 12 je
+Minute und Profil. Statusantworten 20 s im Zwischenspeicher, die Hostliste des Routers 60 s. Gemessen am 21.10.2026 (ohne Zwischenspeicher, p50): Sokrates-2 24 ms, Sokrates-1 0,66 s (SSH),
 Drucker 0,14 s, Scanner 28 ms, Router 0,15 s, Lautsprecher 36 ms, Steckdose 34 ms.
 
 ## Einrichten, aktualisieren, Rückweg
@@ -66,9 +69,108 @@ ssh sokrates2 "sudo -u wamo-geraete env WAMO_GERAETE_KONFIG=/etc/wamo-geraete/ge
 Rückweg: `sudo bash ~/wamo-infra/wamo-geraete-rueckweg.sh [--entfernen | --alles]`, auf den Sparks
 `wamo-status-rueckweg.sh [--entfernen]`.
 
+## SNMPv3 für Switches und Access Points
+
+Treiber `snmp` (Klassen `switch` und `accesspoint`), nur lesen. Derzeit ist **kein Switch eingetragen**: Ohne Eintrag gibt es
+nichts zu fragen, und ein Eintrag ohne Zugangsdaten in `geraete.env` meldet `nicht_eingerichtet`.
+
+- **Was gelesen wird:** sysName, sysDescr, sysUpTime (je ein GET) und über einen Walk der Schnittstellentabelle ifType und
+  ifOperStatus (Zahl der Ethernet-Ports gesamt, oben und unten), auf Wunsch (`fehlerzaehler = true`) die Summen von ifInErrors und
+  ifOutErrors. Das Ergebnis heißt `name`, `beschreibung`, `laufzeit_stunden`, `ports_gesamt`, `ports_oben`, `ports_unten` und
+  optional `fehler_ein`, `fehler_aus`. Die Büro-Karte zeigt „läuft, 9 von 24 Ports aktiv“; Ports ohne Kabel sind keine Störung.
+- **Nur SNMPv3 authPriv:** Anmeldung mit SHA-2 (`auth` = sha224, sha256, sha384, sha512; Standard sha256) und Verschlüsselung mit AES
+  (`verschluesselung` = aes128, aes192, aes256; Standard aes128). Es gibt kein SNMPv1, kein v2c (keine Community), kein SHA-1,
+  kein MD5, kein DES, kein SET und keine Traps. Die OIDs stehen fest in `treiber/snmp.py` (`ERLAUBTE_OIDS`); eine andere OID weist
+  `_lesen()` ab, bevor ein Paket auf das Netz geht. Ein Test prüft, dass der Quelltext keinen Schreibweg und keine v1- oder
+  v2c-Namen enthält.
+- **Zugangsdaten** nur in `/etc/wamo-geraete/geraete.env` (über `sudo wamo-geraete-env setzen`, Werte über stdin), je Zugang drei
+  Werte: `WAMO_GERAETE_<ZUGANG>_BENUTZER`, `WAMO_GERAETE_<ZUGANG>_PASSWORT` (Anmeldung) und `WAMO_GERAETE_<ZUGANG>_PRIVPASSWORT`
+  (Verschlüsselung), jede Passphrase mindestens 8 Zeichen. Am Gerät legt der Admin dafür einen eigenen Lese-Benutzer an
+  (Sicherheitsstufe authPriv, nur lesen). Die Werte erscheinen nie in Meldungen, Audit oder `repr()`.
+- **Ausgang:** `konfig.ziele()` liefert für `snmp` das Ziel `udp <Adresse> 161`. Daraus entstehen die nft-Regel
+  `ip daddr <Adresse> udp dport 161 accept` und der Eintrag in `IPAddressAllow` (systemd). Die Unit erlaubt AF_INET schon, das
+  Einrichtungsskript meldet die Zahl der SNMP-Ziele. Port 161 ist der einzige erlaubte Port.
+- **Beispiel** (auskommentiert, ohne echte Adresse) in `infra/sokrates2/geraete.toml.example`.
+- **Bibliothek:** `pysnmp` 7.1.30 (von LeXtudio gepflegte Fortsetzung von pysnmp, Lizenz BSD-2-Clause, monatliche Ausgaben,
+  zuletzt 7.1.32 am 07.11.2026), im Lock auf 7.1.30 festgehalten (`uv.lock`, mit Prüfsumme; bewusst nicht die zwei Tage alte
+  Ausgabe). Sie hängt nur von `pyasn1` ab, läuft unter Python 3.11 und 3.12 (geprüft) und wird erst beim ersten Abruf geladen.
+  Für AES braucht pysnmp `cryptography` ab Version 47 (`hazmat.decrepit`); bei einer älteren Ausgabe meldet pysnmp nur
+  „EncryptionError“, der Treiber nennt deshalb die Ursache und `pyproject.toml` verlangt `cryptography>=47`.
+- **Getestet:** Auswertung und Fehler mit einer Attrappe (`tests/test_snmp.py`) und die echte Verschlüsselung gegen einen
+  Wegwerf-Container mit net-snmp (`tests/test_snmp_container.py`, nur mit `WAMO_SNMP_TESTZIEL`, Anleitung im Kopf der Datei):
+  SHA-256 mit AES-128 funktioniert, falsches Passwort, falscher Benutzer und falsches Verfahren werden abgewiesen. AES-192 und
+  AES-256 sind nicht gegen ein Gerät geprüft (die Schlüsselableitung unterscheidet sich je Hersteller), SHA-224, SHA-384 und
+  SHA-512 ebenso nicht. Gegen einen echten Switch ist nichts getestet.
+
+## Passive Erkennung unbekannter Geräte
+
+Der Dienst liest über TR-064 (Dienst Hosts:1, `GetHostNumberOfEntries` und `GetGenericHostEntry` je Index) die Hostliste der
+FRITZ!Box und vergleicht die **aktiven** Einträge mit den Geräten, die er kennt. Es gibt keinen nmap, keinen Portscan und keinen
+ARP-Sweep: Er fragt nur den Router, was dieser ohnehin weiß.
+
+- **Bekannt** ist ein Gerät, wenn seine Adresse zu einem Gerät aus `geraete.toml` gehört (oder Sokrates-2 ist), seine MAC als `mac`
+  bei einem Gerät steht, sein Name als `mdns_name` bei einem Gerät steht, oder wenn es in `/etc/wamo-geraete/bekannt.toml` steht.
+  Diese optionale Datei (Vorlage `infra/sokrates2/bekannt.toml.example`, vom Einrichtungsskript nur angelegt, wenn sie fehlt) nennt
+  Geräte, die dem Dienst bewusst unbekannt bleiben, etwa Laptops und Handys: je `[[bekannt]]` ein `mac`, eine `adresse` oder ein `name`
+  (Groß- und Kleinschreibung egal, ohne `.fritz.box`), dazu eine freie `notiz`. Unbekannte Schlüssel verhindern den Start.
+  Ohne die Datei zählen auch Laptops als unbekannt, der erste Wert wird also größer als null sein, bis die Datei gepflegt ist.
+- **`unbekannt_zaehlen`** (read, alle Rollen) liefert nur `anzahl` und `stand` (Zeitpunkt der Messung, UTC). **`unbekannte_geraete`**
+  (read, nur admin) liefert je Eintrag `ip`, `mac_vorsatz` (die ersten drei Byte), `name` (auf 24 Zeichen gekürzt) und
+  `schnittstelle`, höchstens 100 Einträge. Beide gehören zur Grenze „unbekannt“ (12 je Minute und Profil).
+- **Zwischenspeicher:** höchstens eine Messung in 60 Sekunden für alle Profile zusammen. Ist die letzte Messung älter (bis 10
+  Minuten), bekommt der Aufrufer sie sofort und die neue läuft im Hintergrund, damit die Zahl der Büro-Karte nicht flackert. Nach
+  einem Fehler wartet der Dienst 30 Sekunden. Ein Aufrufer, der abbricht, bricht die Messung nicht ab.
+- **Last auf der Box:** je Messung ein Aufruf je Eintrag der Hostliste (die Box merkt sich auch Geräte, die lange nicht da waren),
+  höchstens 256 Einträge, vier zugleich, mit Anmeldung (Digest) über HTTPS 49443. Falls das die Box spürbar belastet, ist
+  `X_AVM-DE_GetHostListPath` (eine Anfrage, wie bei `router_geraete`) der leichtere Weg, die Auswertung bliebe gleich.
+- **Datenschutz:** Namen und MAC-Adressen sind personenbezogen. Sie stehen nie im Audit, nie im Protokoll des Kerns und nicht im
+  `repr()`; die Büro-Karte und alle Rollen sehen nur die Zahl, die Liste sieht nur ein Admin und nur gekürzt, im Kern nur als
+  Tabelle auf dem Canvas, nie vorgelesen. Texte von Geräten sind Daten: begrenzt, ohne Steuer- und Klammerzeichen.
+- **Einrichtung:** dieselben TR-064-Angaben wie bei `router_geraete` (`tr064_port`, `tls_sha256`, `zugang` am Router, Benutzer
+  und Passwort in `geraete.env`). Ohne sie antwortet das Werkzeug `nicht_eingerichtet` und die Karte zeigt nichts. Gegen die echte
+  FRITZ!Box ist das nicht getestet (nur gegen eine Attrappe), die Erstprüfung geschieht beim Ausrollen.
+
+## Router-Status über TR-064
+
+Am Router-Eintrag wählt `status_quelle` die Quelle des Status: `"upnp"` (**Standard**, UPnP-IGD ohne Anmeldung, wie bisher) oder
+`"tr064"` (lesend über HTTPS 49443 mit Anmeldung und festgehaltenem Zertifikat: `WANCommonInterfaceConfig`
+`GetCommonLinkProperties`, `GetTotalBytesSent`, `GetTotalBytesReceived` und `WANIPConnection` `GetStatusInfo`). Die Felder sind
+dieselben (`internet`, `leitung`, `zugang`, `hoch_mbit`, `runter_mbit`, `laufzeit_stunden`, `gesendet_gb`, `empfangen_gb`). `tr064`
+verlangt `tr064_port`, `tls_sha256` und `zugang`, sonst startet der Dienst nicht. Ob UPnP an der Box abgeschaltet wird, entscheidet
+Niko später; bis dahin ändert sich nichts. Nicht abgedeckt ist ein PPPoE-Anschluss (`WANPPPConnection`). Gegen die echte Box ist die
+Quelle `tr064` nicht getestet.
+
+## Router schreibend (Entwurf, nicht gebaut)
+
+Der Router bleibt in diesem Dienst **ausschließlich lesbar** (Entscheidung von Niko). Die folgende Beschreibung ist nur ein Entwurf
+für später, ohne Code und ohne Zusage. Schreibaktionen kämen als eigenes Werkzeug mit fester Aktionsliste (nie eine freie
+SOAP-Durchreichung), Risikoklasse im Dienst geprüft (nicht im Prompt), Karte in der Oberfläche vor jeder Ausführung, Audit ohne
+Inhalte, Grenze je Profil und Rückmeldung nach der Wirkung (Zustand erneut lesen).
+
+| Aktion | Risikoklasse | Freigabe |
+| --- | --- | --- |
+| Gast-WLAN an und aus | change | Karte in der Oberfläche |
+| Wake-on-LAN (ein bekanntes Gerät im Netz einschalten) | change | Karte in der Oberfläche |
+| Portfreigabe anlegen oder entfernen | critical | Karte und frischer zweiter Faktor |
+| Router neu starten | critical | Karte und frischer zweiter Faktor |
+| Firmware-Update anstoßen | critical | Karte und frischer zweiter Faktor |
+| Passwörter, WLAN-Schlüssel, Sicherungen (Einstellungen exportieren), Telefonbuch, Anrufliste | nie | nicht vorgesehen, auch nicht lesend |
+
+- **Eigener Benutzer mit knappen Rechten:** ein zweiter FRITZ!Box-Benutzer nur für die Schreibaktionen (eigener Zugang in
+  `geraete.env`, getrennt vom lesenden Benutzer, damit sich beide einzeln entziehen lassen). Er bekommt nur die Rechte, die die
+  gewählten Aktionen brauchen. Die Beschreibung von AVM nennt je Aktion die nötigen Rechte mit den Kürzeln C, A, P, N und H; P
+  (Telefonie) und N (NAS) bleiben aus, damit Telefonbuch, Anrufliste und Dateien technisch unerreichbar sind. Welche Aktion welches
+  Kürzel verlangt, wird vor dem Bau gegen die AVM-Beschreibung der eingesetzten Firmware geprüft, ebenso die genauen Aktionsnamen.
+- **Bestätigung am Gerät:** Bei manchen Aktionen verlangt die FRITZ!Box zusätzlich eine Bestätigung an der Box selbst (Tastendruck).
+  WAMO umgeht das nie; die Antwort lautet dann „wartet auf Bestätigung an der Box“, und nach Ablauf der Frist passiert nichts.
+- **Reihenfolge, falls gebaut:** zuerst Gast-WLAN, dann Wake-on-LAN, die kritischen Aktionen zuletzt und nur mit frischem zweitem
+  Faktor wie beim Live-Bild. Nach Inhalten von außen im selben Zug gilt wie bei Drucken und Steuern immer die Karte.
+
 ## Tests
 
 ```powershell
 cd geraete; uv run pytest -q
-cd ..\voice-core; uv run pytest -q test_geraete_client.py test_geraete_werkzeuge.py
+cd ..\voice-core; uv run pytest -q test_geraete_client.py test_geraete_werkzeuge.py test_buero_api.py
 ```
+
+SNMP gegen einen echten Agenten (Docker, Wegwerf-Container): siehe den Kopf von `geraete/tests/test_snmp_container.py`.

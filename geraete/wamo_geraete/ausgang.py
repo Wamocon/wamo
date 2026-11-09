@@ -3,7 +3,8 @@
     python -m wamo_geraete.ausgang nft <uid>     nft-Regeln für die Tabelle inet wamo_geraete_egress
     python -m wamo_geraete.ausgang erlauben      Zeile IPAddressAllow=... für die Unit (Drop-in)
 
-Eine Quelle für beide Schichten: die Geräte mit Adresse und Port aus der Konfiguration. Alles andere (Internet, andere
+Eine Quelle für beide Schichten: die Geräte mit Adresse und Port aus der Konfiguration (TCP je Gerät, UDP nur für SNMPv3
+auf Port 161 zu genau der Adresse des Switches oder Access Points und für Wake-on-LAN an die Broadcast-Adresse). Alles andere (Internet, andere
 LAN-Adressen, Loopback, IPv6, andere Ports) weist die Tabelle ab, systemd sperrt es zusätzlich per IPAddressDeny=any.
 """
 
@@ -66,7 +67,9 @@ def main(argv: list[str]) -> int:
         print(erlauben(konfig))
         return 0
     if len(argv) == 2 and argv[1] == "pruefen":
-        print(f"{len(konfig.geraete)} Geräte, {len(konfig.ziele())} Ziele")
+        ziele = konfig.ziele()
+        print(f"{len(konfig.geraete)} Geräte, {len(ziele)} Ziele, davon {sum(1 for z in ziele if z[0] == 'udp')} UDP "
+              f"(SNMP 161, Wake-on-LAN 9)")
         return 0
     print("Aufruf: python -m wamo_geraete.ausgang nft <uid> | erlauben | pruefen", file=sys.stderr)
     return 2

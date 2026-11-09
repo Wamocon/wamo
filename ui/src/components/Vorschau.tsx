@@ -6,7 +6,9 @@ import type { CanvasItem } from "@/components/Canvas";
 import { gespraechsStartSetzen } from "@/components/kommando/ansicht";
 import { istDarstellung, darstellungSetzen } from "@/components/kommando/darstellung";
 import { LoginGate } from "@/components/LoginGate";
+import { bueroBeispiel } from "@/components/vorschauBuero";
 import { WamoAnsicht } from "@/components/WamoAnsicht";
+import { bueroAttrappeSetzen } from "@/lib/bueroApi";
 import { bildAnzeigen, liveBildLoeschen } from "@/lib/liveBild";
 import { stilleText } from "@/lib/mikrofon";
 import { bereiteText, schluesselHinweis } from "@/lib/textEingabe";
@@ -61,6 +63,9 @@ import {
  *   &livebild=laeuft                Live-Bild des Laptops (Attrappenbild, kein echter Bildschirm); auch wartet, pausiert, zu
  *                                   (geschlossen); &monitore=1 für einen einzigen Monitor; setzt PC-Steuerung an
  *   &zugang=beide                   Claude-Schlüssel und Claude-Code-Token hinterlegt (sonst nichts hinterlegt)
+ *
+ * Büro-Karte (Reiter "Büro", Beispieldaten statt Gerätedienst, siehe components/vorschauBuero.ts):
+ *   &buero=beispiel                 vierzehn Geräte; auch stoerung, alles, leer, offline (Gerätedienst nicht erreichbar), fehler
  */
 
 /** ISO-Zeitpunkt in UTC (YYYY-MM-DDTHH:MM:SSZ) relativ zu jetzt, wie ihn der Kern schickt. */
@@ -418,10 +423,13 @@ function Hauptvorschau() {
       if (h.samples.length > HISTORY) h.samples.shift();
       h.seq++;
     }, 50);
+    // Büro-Karte: Beispieldaten statt Kern (&buero=beispiel, stoerung, alles, leer, offline, fehler)
+    bueroAttrappeSetzen(bueroBeispiel(param("buero")));
     return () => {
       clearInterval(id);
       if (autoTimer) clearTimeout(autoTimer);
       if (lbTimer) clearTimeout(lbTimer);
+      bueroAttrappeSetzen(null);
       resetWamo();
     };
   }, [state, presence]);
