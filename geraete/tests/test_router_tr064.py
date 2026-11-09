@@ -121,13 +121,13 @@ def test_tr064_aktionen_sind_feste_lesende_aktionen():
                             "GetTotalBytesReceived"),
         "tr064_verbindung": ("/upnp/control/wanipconnection1", "urn:dslforum-org:service:WANIPConnection:1",
                              "GetStatusInfo"),
-        "tr064_host_anzahl": ("/upnp/control/hosts", "urn:dslforum-org:service:Hosts:1", "GetHostNumberOfEntries"),
-        "tr064_host_eintrag": ("/upnp/control/hosts", "urn:dslforum-org:service:Hosts:1", "GetGenericHostEntry"),
+        "tr064_hostliste": ("/upnp/control/hosts", "urn:dslforum-org:service:Hosts:1", "X_AVM-DE_GetHostListPath"),
     }
     for schluessel, (pfad, dienst, aktion) in erwartet.items():
         assert upnp.AKTIONEN[schluessel][:3] == (pfad, dienst, aktion), schluessel
-    assert upnp.AKTIONEN["tr064_host_eintrag"][3] == ("NewIndex",)
-    assert upnp.AKTIONEN["tr064_link"][3] == ()
+    assert upnp.AKTIONEN["tr064_hostliste"][3] == () and upnp.AKTIONEN["tr064_link"][3] == ()
+    # Die Hostliste gibt es nur als Datei in zwei Anfragen: Einzelabfragen je Eintrag (GetGenericHostEntry) fehlen
+    assert not [k for k, (_p, _d, a, _n) in upnp.AKTIONEN.items() if a in ("GetGenericHostEntry", "GetHostNumberOfEntries")]
 
 
 async def test_tr064_anfrage_geht_an_den_richtigen_pfad_mit_der_richtigen_aktion(monkeypatch):

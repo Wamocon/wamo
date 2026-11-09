@@ -104,8 +104,8 @@ nichts zu fragen, und ein Eintrag ohne Zugangsdaten in `geraete.env` meldet `nic
 
 ## Passive Erkennung unbekannter Geräte
 
-Der Dienst liest über TR-064 (Dienst Hosts:1, `GetHostNumberOfEntries` und `GetGenericHostEntry` je Index) die Hostliste der
-FRITZ!Box und vergleicht die **aktiven** Einträge mit den Geräten, die er kennt. Es gibt keinen nmap, keinen Portscan und keinen
+Der Dienst liest über TR-064 (Dienst Hosts:1, `X_AVM-DE_GetHostListPath` und die Datei `devicehostlist.lua`, derselbe Weg und
+Parser wie bei `router_geraete`) die Hostliste der FRITZ!Box und vergleicht die **aktiven** Einträge mit den Geräten, die er kennt. Es gibt keinen nmap, keinen Portscan und keinen
 ARP-Sweep: Er fragt nur den Router, was dieser ohnehin weiß.
 
 - **Bekannt** ist ein Gerät, wenn seine Adresse zu einem Gerät aus `geraete.toml` gehört (oder Sokrates-2 ist), seine MAC als `mac`
@@ -114,15 +114,18 @@ ARP-Sweep: Er fragt nur den Router, was dieser ohnehin weiß.
   Geräte, die dem Dienst bewusst unbekannt bleiben, etwa Laptops und Handys: je `[[bekannt]]` ein `mac`, eine `adresse` oder ein `name`
   (Groß- und Kleinschreibung egal, ohne `.fritz.box`), dazu eine freie `notiz`. Unbekannte Schlüssel verhindern den Start.
   Ohne die Datei zählen auch Laptops als unbekannt, der erste Wert wird also größer als null sein, bis die Datei gepflegt ist.
-- **`unbekannt_zaehlen`** (read, alle Rollen) liefert nur `anzahl` und `stand` (Zeitpunkt der Messung, UTC). **`unbekannte_geraete`**
+- **`unbekannt_zaehlen`** (read, alle Rollen) liefert nur `anzahl` und `stand` (Zeitpunkt der Messung, UTC), bei zu langer Liste
+  zusätzlich `abgeschnitten: true`. **`unbekannte_geraete`**
   (read, nur admin) liefert je Eintrag `ip`, `mac_vorsatz` (die ersten drei Byte), `name` (auf 24 Zeichen gekürzt) und
   `schnittstelle`, höchstens 100 Einträge. Beide gehören zur Grenze „unbekannt“ (12 je Minute und Profil).
 - **Zwischenspeicher:** höchstens eine Messung in 60 Sekunden für alle Profile zusammen. Ist die letzte Messung älter (bis 10
   Minuten), bekommt der Aufrufer sie sofort und die neue läuft im Hintergrund, damit die Zahl der Büro-Karte nicht flackert. Nach
   einem Fehler wartet der Dienst 30 Sekunden. Ein Aufrufer, der abbricht, bricht die Messung nicht ab.
-- **Last auf der Box:** je Messung ein Aufruf je Eintrag der Hostliste (die Box merkt sich auch Geräte, die lange nicht da waren),
-  höchstens 256 Einträge, vier zugleich, mit Anmeldung (Digest) über HTTPS 49443. Falls das die Box spürbar belastet, ist
-  `X_AVM-DE_GetHostListPath` (eine Anfrage, wie bei `router_geraete`) der leichtere Weg, die Auswertung bliebe gleich.
+- **Last auf der Box:** je Messung zwei Anfragen (Pfad der Hostliste, dann die Datei), unabhängig von der Zahl der Geräte, mit
+  Anmeldung (Digest) über HTTPS 49443. Früher war es ein Aufruf je Eintrag (bis 257). Gelesen werden höchstens 256 Einträge (die Box
+  merkt sich auch Geräte, die lange nicht da waren); darüber tragen beide Werkzeuge `abgeschnitten: true`, die Zahl ist dann ein
+  Mindestwert. Die Datei trägt je Eintrag IP, MAC, Name, Schnittstelle und Aktivität; fehlt oder kippt eine MAC, vergleicht die
+  Erkennung weiter nach Adresse und Name. Die Datei darf höchstens 512 KB groß sein (sonst Fehler statt stiller Kürzung).
 - **Datenschutz:** Namen und MAC-Adressen sind personenbezogen. Sie stehen nie im Audit, nie im Protokoll des Kerns und nicht im
   `repr()`; die Büro-Karte und alle Rollen sehen nur die Zahl, die Liste sieht nur ein Admin und nur gekürzt, im Kern nur als
   Tabelle auf dem Canvas, nie vorgelesen. Texte von Geräten sind Daten: begrenzt, ohne Steuer- und Klammerzeichen.

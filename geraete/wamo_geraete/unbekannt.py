@@ -6,6 +6,7 @@ Bekannt ist ein Gerät, wenn
   * sein Name (ohne .local und .fritz.box, Groß- und Kleinschreibung egal) als mdns_name aus geraete.toml oder als name in
     bekannt.toml steht.
 Alles andere ist unbekannt. Es wird nichts gescannt: Die einzige Quelle ist die Hostliste des Routers (treiber/hostliste.py).
+Hat die Box mehr Geräte, als gelesen werden, trägt das Ergebnis abgeschnitten: true (in beiden Werkzeugen).
 
 Zwischenspeicher: Die Liste wird höchstens einmal in 60 Sekunden neu geholt, auch wenn mehrere Profile fragen. Ist die letzte
 Messung älter, aber nicht älter als 10 Minuten, bekommt der Aufrufer sie sofort und die neue Messung läuft im Hintergrund
@@ -25,7 +26,7 @@ from datetime import datetime, timezone
 from .konfig import SOKRATES2, Konfig
 from .text import name
 from .treiber import GeraetFehler, NichtEingerichtet
-from .treiber.hostliste import Host
+from .treiber.hostliste import Host, Hostliste
 
 FRISCH_SECS = 60.0
 ALT_SECS = 600.0
@@ -61,6 +62,7 @@ def vergleichen(hosts: list[Host], konfig: Konfig) -> list[Host]:
 class Ergebnis:
     unbekannte: tuple[Host, ...]
     stand: str  # Zeitpunkt der Messung, ISO 8601 in UTC
+    abgeschnitten: bool = False  # die Box meldet mehr Geräte, als gelesen werden (hostliste.MAX_HOSTS)
 
 
 def _jetzt() -> datetime:
@@ -68,7 +70,7 @@ def _jetzt() -> datetime:
 
 
 class Erkennung:
-    def __init__(self, lesen: Callable[[], Awaitable[list[Host]]], konfig: Konfig, *,
+    def __init__(self, lesen: Callable[[], Awaitable[Hostliste]], konfig: Konfig, *,
                  uhr: Callable[[], float] = time.monotonic, jetzt: Callable[[], datetime] = _jetzt,
                  frisch: float = FRISCH_SECS, alt: float = ALT_SECS, fehler_pause: float = FEHLER_PAUSE_SECS):
         self._lesen, self._konfig, self._uhr, self._jetzt = lesen, konfig, uhr, jetzt
@@ -116,13 +118,14 @@ class Erkennung:
 
     async def _messen(self) -> Ergebnis:
         try:
-            hosts = await self._lesen()
+            gelesen = await self._lesen()
         except (GeraetFehler, NichtEingerichtet) as e:
             self._fehler, self._fehler_um = (type(e), str(e)), self._uhr()
             raise
         except Exception:
             self._fehler, self._fehler_um = (GeraetFehler, "Interner Fehler beim Lesen der Hostliste"), self._uhr()
             raise
-        self._ergebnis = Ergebnis(tuple(vergleichen(hosts, self._konfig)), self._jetzt().strftime("%Y-%m-%dT%H:%M:%SZ"))
+        self._ergebnis = Ergebnis(tuple(vergleichen(list(gelesen.hosts), self._konfig)),
+                                  self._jetzt().strftime("%Y-%m-%dT%H:%M:%SZ"), gelesen.abgeschnitten)
         self._geholt, self._fehler = self._uhr(), None
         return self._ergebnis

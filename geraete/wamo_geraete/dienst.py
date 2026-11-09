@@ -242,13 +242,15 @@ class Dienst:
             return {"geraete": liste, "anzahl": len(liste), "aktiv": sum(1 for x in liste if x["aktiv"])}, b""
         if werkzeug in ("unbekannt_zaehlen", "unbekannte_geraete"):
             erg = await self.erkennung.ergebnis()
-            if werkzeug == "unbekannt_zaehlen":
-                return {"anzahl": len(erg.unbekannte), "stand": erg.stand}, b""
-            return {"anzahl": len(erg.unbekannte), "stand": erg.stand,
-                    "geraete": [h.oeffentlich() for h in erg.unbekannte[:MAX_UNBEKANNTE]]}, b""
+            antwort: dict = {"anzahl": len(erg.unbekannte), "stand": erg.stand}
+            if erg.abgeschnitten:  # mehr Geräte in der Box als gelesen: die Zahl ist ein Mindestwert
+                antwort["abgeschnitten"] = True
+            if werkzeug == "unbekannte_geraete":
+                antwort["geraete"] = [h.oeffentlich() for h in erg.unbekannte[:MAX_UNBEKANNTE]]
+            return antwort, b""
         raise Antwort("rejected", "Unbekanntes Werkzeug")
 
-    async def _hosts_lesen(self) -> list[hostliste.Host]:
+    async def _hosts_lesen(self) -> hostliste.Hostliste:
         """Hostliste der FRITZ!Box für die Erkennung (der erste Router mit Treiber upnp-igd)."""
         router = next((x for x in self.konfig.geraete.values() if x.klasse == "router" and x.treiber == "upnp-igd"), None)
         if router is None:
