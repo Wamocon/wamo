@@ -333,10 +333,11 @@ weiter per Sprache. Unter der Zeichnung steht dieselbe Auskunft als Liste (für 
 Button mit Tastaturbedienung, das Pulsieren entfällt bei reduzierter Bewegung. Die Karte läuft auf dem Handy (ab 360 px) wie am PC.
 
 - **Kern-API:** `GET /wamo/api/buero/status` (`voice-core/buero_api.py`, Token, aal2 und aktives Profil wie bei allen Routen, jede Rolle).
-  Der Kern ruft den Gerätedienst mit der Identität des Profils (`status`, `geraet = "alle"`; dessen Zwischenspeicher von 20 Sekunden
-  bleibt wirksam) und kürzt auf ein schmales Modell je Gerät: `id`, `name`, `gruppe`, `ampel` (`ok`, `stoerung`, `unbekannt`), `text`
-  (höchstens 80 Zeichen), `tipp` und optional `kennzahlen` (nur Zahlen mit festen Namen). Dazu `unbekannt` (Anzahl unbekannter Geräte,
-  vorerst immer `null`) und `stand`. Adressen, Seriennummern, Meldungstexte der Geräte und die Geräteliste des Routers (nur Admin)
+  Der Kern ruft den Gerätedienst mit der Identität des Profils (`status`, `geraet = "alle"`, und `unbekannt_zaehlen`; deren
+  Zwischenspeicher von 20 und 60 Sekunden bleiben wirksam) und kürzt auf ein schmales Modell je Gerät: `id`, `name`, `gruppe`,
+  `ampel` (`ok`, `stoerung`, `unbekannt`), `text` (höchstens 80 Zeichen), `tipp` und optional `kennzahlen` (nur Zahlen mit festen
+  Namen). Dazu `unbekannt` (Anzahl der Geräte im Netz, die WAMO nicht kennt, nur die Zahl; `null`, wenn es keine brauchbare Zahl
+  gibt, die Karte bleibt dann ganz) und `stand`. Adressen, Seriennummern, Meldungstexte der Geräte und die Geräteliste des Routers (nur Admin)
   gibt die Route nie aus; der Klartext entsteht aus eigenen Wörtern, nur der Name kommt vom Gerät und wird gesäubert und begrenzt.
   Grenze: 6 Abrufe je Minute und Profil. Ohne Gerätedienst (zum Beispiel unterwegs) antwortet die Route mit 503, die Karte zeigt dann
   ruhig „Gerätedienst nicht erreichbar“.
@@ -345,6 +346,22 @@ Button mit Tastaturbedienung, das Pulsieren entfällt bei reduzierter Bewegung. 
 - **Vorschau ohne Gerätedienst:** `npm run dev` mit `NEXT_PUBLIC_WAMO_VORSCHAU=1`, dann `/?vorschau=1&buero=beispiel` (weitere Werte:
   `stoerung`, `alles`, `leer`, `offline`, `fehler`) und den Reiter „Büro“ öffnen.
 - **Tests:** `cd voice-core; uv run pytest -q test_buero_api.py` und `cd ui; npm test` (`bueroKarteModell.test.ts`).
+
+### Geräte-Lücken schließen (Paket 3)
+
+Der Gerätedienst (`geraete/README.md`) kann drei Dinge mehr, alle nur lesend:
+
+- **SNMPv3 für Switches und Access Points** (Treiber `snmp`): Name, Laufzeit, Ports oben und unten, auf Wunsch Fehlerzähler. Nur
+  authPriv mit SHA-2 und AES, eigener Lese-Benutzer, nie SNMPv1 oder v2c, nie Schreiben; Ausgang UDP 161 zu genau der eingetragenen
+  Adresse. Derzeit ist kein Switch eingetragen, der Dienst meldet dann „nicht eingerichtet“.
+- **Passive Erkennung unbekannter Geräte** ohne Scan: Der Dienst liest die Hostliste der FRITZ!Box (TR-064) und vergleicht sie mit
+  den bekannten Geräten und der optionalen Datei `/etc/wamo-geraete/bekannt.toml` (Laptops, Handys). Die Büro-Karte zeigt bei
+  Zahl größer 0 ruhig „n unbekannte Geräte im Netz“ (grau, kein Alarmrot); die Liste sieht nur ein Admin („Welche Geräte kenne ich
+  nicht?“), als Tabelle auf dem Canvas. Namen und MAC-Adressen stehen nie in Audit oder Protokoll.
+- **FRITZ!Box-Status über TR-064** als wählbare Quelle (`status_quelle = "tr064"`); Standard bleibt UPnP.
+
+Der Router bleibt ausschließlich lesbar. Mögliche Schreibaktionen stehen nur als Entwurf („Router schreibend, nicht gebaut“) in
+`geraete/README.md`. Gegen echte Geräte (Switch, FRITZ!Box) ist noch nichts getestet, das geschieht beim Ausrollen.
 
 ### Sitzungen, Anmeldung und Freigaben
 

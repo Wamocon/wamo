@@ -8,6 +8,18 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Geräte-Lücken schließen (Paket 3), alles nur lesend: Der Gerätedienst hat einen SNMPv3-Lesetreiber `snmp` für Switches und Access
+  Points (nur authPriv mit SHA-2 und AES, eigener Lese-Benutzer, nie v1 oder v2c, nie SET; Name, Laufzeit, Ports oben und unten,
+  optional Fehlerzähler; Ausgang UDP 161 in nft und `IPAddressAllow`; Bibliothek pysnmp 7.1.30 mit Prüfsumme im Lock, `cryptography`
+  ab 47). Dazu die passive Erkennung unbekannter Geräte über die Hostliste der FRITZ!Box (TR-064 Hosts:1, kein Scan): Werkzeuge
+  `unbekannt_zaehlen` (alle Rollen, nur eine Zahl) und `unbekannte_geraete` (nur Admin, gekürzt), optionale Datei
+  `/etc/wamo-geraete/bekannt.toml` für Laptops und Handys, Zwischenspeicher 60 Sekunden, Namen und MAC-Adressen nie in Audit oder
+  Protokoll. Die Büro-Karte zeigt bei Zahl größer 0 ruhig „n unbekannte Geräte im Netz“ (grau, mit Sprechtipp für Admins), der Kern
+  füllt dafür das Feld `unbekannt` von `GET /wamo/api/buero/status` (jede Störung dort lässt nur die Zahl weg) und kennt die Klassen
+  Switch und Access Point. Der Router-Status ist zusätzlich über TR-064 wählbar (`status_quelle = "tr064"`, Standard bleibt `upnp`).
+  Neuer Abschnitt „Router schreibend (Entwurf, nicht gebaut)“ in `geraete/README.md`. Wirkt nach neuem Release von Gerätedienst, Kern
+  und Oberfläche; ohne eingetragenen Switch und ohne gepflegte `bekannt.toml` ändert sich im Büro zunächst nur die Zahl der
+  unbekannten Geräte.
 - Büro-Karte (Paket 2): Neuer Reiter "Büro" in der Kommandozentrale mit einer Radialansicht aller gemeinsamen Bürogeräte. In der Mitte WAMO
   (Sokrates-2), je Gerätegruppe ein Ring (Server, Drucker und Scanner, Netz, Speicher, Medien, Steckdosen), je Gerät ein Punkt: weiß
   gefüllt in Ordnung, rot mit Strich und langsam pulsierend Störung, grau und hohl unbekannt. Ein Klick oder Enter öffnet eine
