@@ -8,7 +8,9 @@ Claude Code läuft mit `-p --output-format stream-json --verbose` (dev_agent.py)
 Gibt es keine Aufgabenliste, zeigt der Vorgang die Schritte des Auftrags (Job.steps, Werkzeugaufrufe) und täuscht keinen
 Fortschritt vor: Die Zahl der Schritte steht dann nicht fest (offenes_ende, gesamt höchstens 0,9, keine Restzeit).
 
-Ein Auftrag hat drei Prüfkriterien: Wächter-Selbsttest bestanden, Lauf ohne Fehler beendet, keine Freigabe offen. Offene
+Ein Auftrag hat drei Prüfkriterien: Wächter-Selbsttest bestanden, Lauf ohne Fehler beendet, keine Freigabe offen. Hat er ein
+prüfbares Ziel (Abnahme, Runden in dev_agent.py), kommt "Ziel erreicht" und je Abnahmekriterium eine Zeile dazu, und der Vorgang
+trägt "Runde n von m". Offene
 Freigaben des Auftrags setzen den Vorgang auf "wartet auf Freigabe" und tragen die Kennung der vorhandenen Karte
 (ui/src/components/Freigaben.tsx); die Karte wird nicht neu gebaut.
 
@@ -33,6 +35,7 @@ from vorgaenge import Schritt, Vorgaenge, Vorgang, bereinigt, MAX_SCHRITTE
 KRIT_SELBSTTEST = "Wächter-Selbsttest bestanden"
 KRIT_LAUF = "Lauf ohne Fehler beendet"
 KRIT_FREIGABEN = "Keine Freigabe offen"
+KRIT_ZIEL = "Ziel erreicht"  # nur bei Aufträgen mit Abnahme (abnahme.py): fasst die Kriterien des Ziels zusammen
 MAX_AUFGABEN = 100  # Aufgaben der Liste im Speicher
 MAX_SCHRITTE_RUECKFALL = 30  # ohne Aufgabenliste: die letzten Schritte des Auftrags
 TITEL_ZEICHEN = 160
@@ -219,12 +222,16 @@ class EntwicklungsVorgang:
     """Der Vorgang eines Entwicklungsauftrags. dev_agent.py ruft: starten (Lauf beginnt), ereignis (jedes Ereignis des
     Streams), lauf_endet_vorlaeufig und lauf_endet (Lauf zu Ende), freigabe_entschieden (Klick auf die Karte)."""
 
-    def __init__(self, vorgaenge: Vorgaenge, titel: str, job_id: str):
+    def __init__(self, vorgaenge: Vorgaenge, titel: str, job_id: str, abnahme: Iterable[str] = (),
+                 max_runden: int | None = None):
         self._reg = vorgaenge
+        ziel = list(abnahme)
+        self._ziel = bool(ziel)
         # Das Canvas des Auftrags (dev_agent._canvas_item, id dev-<job>) wächst während des Laufs: der Vorgang verweist darauf
         self.vorgang: Vorgang = vorgaenge.neu(
             titel, "entwicklung", canvas_id=f"dev-{job_id}", offenes_ende=True,
-            kriterien=[KRIT_SELBSTTEST, KRIT_LAUF, KRIT_FREIGABEN],
+            kriterien=[KRIT_SELBSTTEST, KRIT_LAUF, KRIT_FREIGABEN, *([KRIT_ZIEL, *ziel] if ziel else [])],
+            max_runden=max_runden if ziel else None,
         )
         self._tasks = TaskListe()
         self._entschieden: list[Schritt] = []
@@ -283,10 +290,33 @@ class EntwicklungsVorgang:
         lauf = (ende == "fertig") if not offen else (True if ende == "fertig" else None)
         self._reg.kriterium(self.vorgang, KRIT_LAUF, lauf, None if lauf else bereinigt(status_text, 120))
         self._reg.kriterium(self.vorgang, KRIT_FREIGABEN, not offen, f"{len(offen)} offen" if offen else None)
+        if self._ziel and not offen and ende != "fertig":  # der Lauf scheiterte: das Ziel wurde nie geprüft
+            self._reg.kriterium(self.vorgang, KRIT_ZIEL, False, "nicht geprüft")
         if offen:
             self._freigaben_zeigen(offen)
         else:
             self._reg.beenden(self.vorgang, ende)
+
+    # ---------- Abnahme (Runden) ----------
+    def runde_beginnt(self, n: int, maximal: int) -> None:
+        """Runde n von maximal läuft oder beginnt gleich (die Tafel zeigt "Runde n von m")."""
+        self._reg.runde(self.vorgang, n, maximal)
+
+    def abnahme_ergebnis(self, ergebnisse: Iterable[tuple[str, bool, str]]) -> None:
+        """Ergebnis der Abnahme je Kriterium (Text, erfüllt, Hinweis). Sind alle erfüllt, gilt das Ziel als erreicht."""
+        liste = list(ergebnisse)
+        for text, erfuellt, hinweis in liste:
+            self._reg.kriterium(self.vorgang, text, bool(erfuellt), hinweis or None)
+        if liste and all(erfuellt for _, erfuellt, _ in liste):
+            self._reg.kriterium(self.vorgang, KRIT_ZIEL, True, None)
+
+    def ziel_verfehlt(self, text: str) -> None:
+        """Runden oder Zeit sind erschöpft und das Ziel ist nicht erreicht: der Vorgang endet als Fehler, nie als fertig. Die
+        Läufe selbst waren in Ordnung, nur das Ziel nicht."""
+        self._reg.kriterium(self.vorgang, KRIT_ZIEL, False, bereinigt(text, 120))
+        self._reg.kriterium(self.vorgang, KRIT_LAUF, True, None)
+        self._reg.kriterium(self.vorgang, KRIT_FREIGABEN, True, None)
+        self._reg.beenden(self.vorgang, "fehler")
 
     # ---------- Freigaben ----------
     def _freigaben_zeigen(self, offen: dict[str, dict]) -> None:

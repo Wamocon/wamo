@@ -92,6 +92,7 @@ from pipecat.utils.context.llm_context_summarization import (
     LLMContextSummaryConfig,
 )
 
+from abnahme import llm_beurteiler
 from activity import ActivityReporter
 from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
@@ -600,7 +601,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         # Entwicklungsaufträge an Claude Code; Start und Freigaben per Klick in der UI (dev_agent.py). Mit eigenem
         # Zugang läuft der Auftrag auf dem Token oder Schlüssel dieses Profils (je Lauf frisch entschlüsselt, siehe
         # dev_agent.persoenlicher_zugang), ohne ihn nur das Profil des Kernschlüssels.
-        dev = DevAgent(memory, auftraggeber=identity.name, vorgaenge=vorgaenge)
+        # beurteiler: das günstigste Modell des Profils beurteilt die Aussagekriterien der Abnahme (abnahme.py)
+        dev = DevAgent(memory, auftraggeber=identity.name, vorgaenge=vorgaenge, beurteiler=llm_beurteiler(zugang))
         dev.on_result = turn.taint
         dev.register(llm)
         standard_tools += dev.schemas()
