@@ -109,6 +109,8 @@ MAX_TASK_CHARS = 4000
 RUNDEN_STANDARD, RUNDEN_MAX = 3, 5
 ZEITLIMIT_STANDARD_MIN, ZEITLIMIT_MAX_MIN = 30, 60  # aktive Arbeitszeit in Minuten, Warten auf Freigaben zählt nicht
 MIN_REST_RUNDE_S = 60  # für eine weitere Runde muss mindestens so viel Zeit übrig sein
+STATUS_PRUEFT = "prüfe Abnahme"  # Zwischenstatus: der Lauf ist zu Ende, das Urteil über das Ziel steht noch aus (nie "fertig")
+STATUS_ABGEBROCHEN_SITZUNG = "abgebrochen (Sitzung beendet)"
 ECC_PLUGIN = "ecc@ecc"
 SELFTEST_TIMEOUT_SECS = 20
 SELFTEST_EVENT = {"tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}}
@@ -575,6 +577,8 @@ class Job:
     runde: int = 1
     aktiv_s: float = 0.0  # verbrauchte Arbeitszeit der beendeten Läufe
     lauf_beginn: float = 0.0
+    lauf_ok: bool = False  # der Claude-Lauf dieser Runde endete ohne Fehler (unabhängig vom Statustext, der später das Urteil trägt)
+    lauf_gemeldet: bool = False  # der Vorgang hat das Ende dieses Laufs schon bekommen (sonst meldet _run einen Fehler)
     weiter: str | None = None  # Prompt der nächsten Runde, solange die Schleife weiterläuft
     neue_runde: bool = False  # der nächste Lauf ist eine Nachbesserungsrunde (nur für den Schritt im Verlauf)
     beendet: bool = False  # die Person hat abgelehnt: keine weiteren Runden
@@ -904,13 +908,47 @@ class DevAgent:
         async with self._run_lock:
             while True:
                 job.weiter, job.lauf_beginn = None, self._jetzt()
+                job.lauf_ok = job.lauf_gemeldet = False
                 try:
                     await self._run_locked(job, prompt, resume)
+                except asyncio.CancelledError:  # Abbruch (close): nie verschlucken, aber der Vorgang bleibt nicht offen
+                    self._lauf_scheitert(job, STATUS_ABGEBROCHEN_SITZUNG)
+                    raise
+                except Exception as e:  # noqa: BLE001 (Fehler außerhalb des try von _run_locked beendeten den Task still)
+                    logger.error("Entwicklungsauftrag {}: Lauf mit {} beendet", job.id, type(e).__name__)
+                    await self._lauf_fehlgeschlagen(job, e)
+                    return
                 finally:
                     job.aktiv_s += max(0.0, self._jetzt() - job.lauf_beginn)
                 if job.weiter is None or self._zu:
                     return
                 prompt, resume = job.weiter, True
+
+    def _lauf_scheitert(self, job: Job, status: str) -> None:
+        """Beendet Auftrag und Vorgang, wenn der Lauf keinen eigenen Abschluss mehr melden konnte (Abbruch, Ausnahme). Ein
+        schon gemeldetes Ende (zum Beispiel wartet der Vorgang auf eine Freigabe) bleibt unangetastet."""
+        if job.lauf_gemeldet:
+            return
+        job.status = status
+        self._ende_melden(job, "lauf_endet", status, {})
+
+    def _ende_melden(self, job: Job, aktion: str, *args) -> None:
+        """Gibt dem Vorgang das Ende des Laufs (lauf_endet, ziel_verfehlt) und merkt es, damit _run nichts doppelt meldet."""
+        self._fuehrung(job, aktion, *args)
+        job.lauf_gemeldet = True
+
+    async def _lauf_fehlgeschlagen(self, job: Job, e: Exception) -> None:
+        """Eine Ausnahme außerhalb des Laufs selbst (Ordner, Selbsttest, Freigaben, Canvas): Auftrag und Vorgang enden als
+        fehlgeschlagen, die Person erfährt es. Nur der Ausnahmetyp geht ins Log und ins Ergebnis, nie Inhalte."""
+        if job.lauf_gemeldet:  # der Lauf war schon abgeschlossen, nur die Zustellung scheiterte: das Ergebnis bleibt gültig
+            return
+        job.result = job.result or f"Fehler beim Ausführen von Claude Code: {type(e).__name__}"
+        self._lauf_scheitert(job, "fehlgeschlagen")
+        try:
+            await self._canvas(job)
+            await self._announce(job)
+        except Exception as e2:  # noqa: BLE001 (die Meldung ist eine Zugabe)
+            logger.warning("Entwicklungsauftrag {}: Fehler nicht gemeldet ({})", job.id, type(e2).__name__)
 
     async def _run_locked(self, job: Job, prompt: str, resume: bool) -> None:
         if self._ort == "sokrates2":
@@ -926,7 +964,7 @@ class DevAgent:
 
         if not await guard_selftest(job.projekt, job.dir):
             job.status = "nicht gestartet (Wächter-Selbsttest fehlgeschlagen)"
-            self._fuehrung(job, "lauf_endet", job.status, {})
+            self._ende_melden(job, "lauf_endet", job.status, {})
             await self._canvas(job)
             await self._announce(job)
             return
@@ -959,7 +997,8 @@ class DevAgent:
             self._proc.stdin.close()
             await asyncio.wait_for(self._read_stream(job), self._frist(job, JOB_TIMEOUT_SECS))
             await asyncio.wait_for(self._proc.wait(), 30)
-            job.status = "fertig" if self._proc.returncode == 0 else f"beendet (Code {self._proc.returncode})"
+            job.lauf_ok = self._proc.returncode == 0
+            job.status = "fertig" if job.lauf_ok else f"beendet (Code {self._proc.returncode})"
         except asyncio.TimeoutError:
             job.status = "abgebrochen (Zeitlimit)"
             job.result = job.result or "Der Auftrag hat das Zeitlimit überschritten und wurde abgebrochen."
@@ -987,7 +1026,11 @@ class DevAgent:
         self._fuehrung(job, "lauf_endet_vorlaeufig")
         await self._collect_pending(job, pending_file)
         urteil = None
-        if job.kriterien and not job.pending and not job.beendet and not self._zu and endstatus(job.status) == "fertig":
+        if job.kriterien and not job.pending and not job.beendet and not self._zu and job.lauf_ok:
+            # Die Prüfung dauert (Befehle, Modellaufrufe): bis zum Urteil gilt der Auftrag nicht als fertig, weder im
+            # Status-Werkzeug noch auf der Karte. Der Lauferfolg steht in job.lauf_ok, nicht mehr im Statustext.
+            job.status = STATUS_PRUEFT
+            await self._canvas(job)
             try:
                 urteil = await self._abnahme_pruefen(job)
             except Exception:  # noqa: BLE001 (nie fertig melden, wenn die Prüfung selbst scheitert)
@@ -997,9 +1040,9 @@ class DevAgent:
             await self._canvas(job)
             return
         if urteil == "verfehlt":
-            self._fuehrung(job, "ziel_verfehlt", job.status)
+            self._ende_melden(job, "ziel_verfehlt", job.status)
         else:
-            self._fuehrung(job, "lauf_endet", job.status, job.pending)
+            self._ende_melden(job, "lauf_endet", job.status, job.pending)
         await self._canvas(job)
         await self._announce(job)
 
@@ -1024,6 +1067,7 @@ class DevAgent:
             if not job.session_id:  # ohne Sitzung zum Fortsetzen kennt Claude Code den Auftrag nicht
                 prompt = f"Ursprünglicher Auftrag: {job.auftrag}\n\n{prompt}"
             job.weiter, job.neue_runde = prompt, True
+            job.status = f"Runde {job.runde} von {job.max_runden} beginnt"  # bis der Lauf "läuft" meldet: kein alter Status
             job.result = ""  # der Bericht dieser Runde gilt nicht für die nächste, falls sie keinen liefert
             self._fuehrung(job, "runde_beginnt", job.runde, job.max_runden)
             return "weiter"
@@ -1067,7 +1111,7 @@ class DevAgent:
                              "(claude setup-token) oder einen API-Schlüssel hinterlegen und den Auftrag danach neu stellen.")
             logger.warning("Entwicklungsauftrag {} nicht gestartet: kein Claude-Zugang für Profil {}", job.id,
                            str(getattr(self._memory, "user_id", None) or "?")[:8])
-            self._fuehrung(job, "lauf_endet", job.status, {})
+            self._ende_melden(job, "lauf_endet", job.status, {})
             await self._canvas(job)
             await self._announce(job)
             return
@@ -1108,6 +1152,7 @@ class DevAgent:
             await asyncio.wait_for(self._read_stream(job), self._frist(job, JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS))
             await asyncio.wait_for(self._proc.wait(), 30)
             job.status = remote_status(self._proc.returncode, job.ereignisse)
+            job.lauf_ok = endstatus(job.status) == "fertig"
             # sauber: Ende gemeldet, oder der Dispatcher hat gar nicht erst gestartet (Codes 2 bis 5, 7, 8)
             sauber = "ende" in job.ereignisse or self._proc.returncode in (2, 3, 4, 5, 7, 8)
         except asyncio.TimeoutError:

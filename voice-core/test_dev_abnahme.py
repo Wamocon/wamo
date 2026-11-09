@@ -463,6 +463,116 @@ class SchleifeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fuenf["ok"], fuenf)
         self.assertEqual(len(self.karte()["abnahme"]), 5)
 
+    # ---------------------------------------------------------------- Zwischenstatus während der Prüfung
+    async def test_waehrend_der_pruefung_steht_ein_eigener_status_nicht_fertig(self):
+        """Der Job gilt erst nach dem Urteil als fertig: Status-Werkzeug, Karte und Vorgang sagen es während der Prüfung."""
+        gesehen: dict = {}
+
+        async def waehrend_der_pruefung():
+            await self.reg.warten()
+            job = next(iter(self.agent._jobs.values()))
+            params = type("P", (), {})()
+            params.arguments, antwort = {}, {}
+
+            async def rueckruf(r):
+                antwort.update(r)
+
+            params.result_callback = rueckruf
+            await self.agent._status(params)
+            canvas = [m for m in self.basis.task.messages() if m.get("type") == "canvas"][-1]["item"]["text"]
+            gesehen.update(job=job.status, lauf_ok=job.lauf_ok, werkzeug=antwort["status"], canvas=canvas,
+                           vorgang=self.vorgang.status)
+
+        self.urteile.vor_antwort = waehrend_der_pruefung
+        self.urteile.antworten = [urteil(True, "ok")]
+        self.laeufe(FakeProc(lauf()))
+        job = await self.starten(abnahme=[README])
+        self.assertEqual(gesehen["job"], dev_agent.STATUS_PRUEFT)
+        self.assertNotEqual(gesehen["werkzeug"], "fertig")
+        self.assertEqual(gesehen["werkzeug"], dev_agent.STATUS_PRUEFT)
+        self.assertIn(f"**Status:** {dev_agent.STATUS_PRUEFT}", gesehen["canvas"])
+        self.assertIs(gesehen["lauf_ok"], True)  # der Lauferfolg steht in einem eigenen Feld
+        self.assertEqual(gesehen["vorgang"], "pruefen")
+        self.assertEqual(job.status, "fertig")  # erst das Urteil macht ihn fertig
+
+    async def test_verfehltes_ziel_war_nie_fertig_und_die_naechste_runde_zeigt_keinen_alten_status(self):
+        gesehen: list[str] = []
+
+        async def merken():
+            gesehen.append(next(iter(self.agent._jobs.values())).status)
+
+        self.urteile.vor_antwort = merken
+        self.urteile.antworten = [urteil(False, "fehlt"), urteil(False, "fehlt")]
+        self.laeufe(FakeProc(lauf()), FakeProc(lauf()))
+        job = await self.starten(abnahme=[README], max_runden=2)
+        self.assertEqual(gesehen, [dev_agent.STATUS_PRUEFT] * 2)
+        self.assertEqual(job.status, "Ziel nach 2 Runden nicht erreicht")
+        zwischen = [m["item"]["text"] for m in self.basis.task.messages() if m.get("type") == "canvas"]
+        self.assertTrue(any("**Status:** Runde 2 von 2 beginnt" in t for t in zwischen), zwischen[-3:])
+        self.assertFalse(any("**Status:** fertig" in t for t in zwischen))  # nie "fertig", auch nicht kurz
+
+    async def test_lauf_ok_ist_je_runde_neu_und_ein_fehler_bleibt_ein_fehler(self):
+        self.laeufe(FakeProc(lauf(ende="fehler"), returncode=1))
+        job = await self.starten(abnahme=[README])
+        self.assertIs(job.lauf_ok, False)
+        self.assertEqual(self.urteile.aufrufe, [])
+
+    # ---------------------------------------------------------------- Ausnahmen beenden den Vorgang nie still
+    async def test_ausnahme_ausserhalb_des_laufs_beendet_job_und_vorgang_als_fehlgeschlagen(self):
+        async def kaputt(*a, **k):
+            raise RuntimeError("Zugang-Geheimnis-12345")
+
+        self.laeufe(FakeProc(lauf()))
+        meldungen: list[str] = []
+        senke = dev_agent.logger.add(lambda m: meldungen.append(str(m)), level="DEBUG")
+        try:
+            with mock.patch.object(self.agent, "_remote_zugang", kaputt):
+                job = await self.starten(abnahme=[README])  # die Aufgabe selbst wirft nicht mehr
+        finally:
+            dev_agent.logger.remove(senke)
+        self.assertEqual(job.status, "fehlgeschlagen")
+        self.assertIn("RuntimeError", job.result)
+        self.assertNotIn("Geheimnis", job.result)
+        v = self.vorgang
+        self.assertEqual(v.status, "fehler")
+        self.assertIs(next(k for k in v.kriterien if k.text == KRIT_ZIEL).erfuellt, False)
+        self.assertTrue(any("RuntimeError" in m for m in meldungen))
+        self.assertFalse(any("Geheimnis" in m for m in meldungen))  # nur der Ausnahmetyp, nie Inhalte
+        self.assertIn("fehlgeschlagen", self.basis.task.llm_texts()[-1])  # die Person erfährt es
+        self.assertEqual(self.urteile.aufrufe, [])
+        self.assertFalse(self.agent._run_lock.locked())  # der nächste Auftrag kann laufen
+
+    async def test_ausnahme_nach_dem_ende_ueberschreibt_den_fertigen_auftrag_nicht(self):
+        self.urteile.antworten = [urteil(True, "ok")]
+        self.laeufe(FakeProc(lauf()))
+
+        async def kaputt(*a, **k):
+            raise RuntimeError("Meldung nicht zustellbar")
+
+        with mock.patch.object(self.agent, "_notify", kaputt):
+            job = await self.starten(abnahme=[README])
+        self.assertEqual(job.status, "fertig")
+        self.assertEqual(self.vorgang.status, "fertig")
+
+    async def test_abbruch_wird_nicht_verschluckt_und_beendet_den_vorgang_als_abgebrochen(self):
+        laeuft = asyncio.Event()
+
+        async def haengt(*a, **k):
+            laeuft.set()
+            await asyncio.sleep(60)
+
+        self.laeufe(FakeProc(lauf()))
+        antwort = await self.vorbereiten(abnahme=[README])
+        with mock.patch.object(self.agent, "_run_locked", haengt):
+            await self.agent.on_client_message("auftrag_start", {"job": antwort["auftrag_id"], "entscheidung": "ja"})
+            await asyncio.wait_for(laeuft.wait(), 10)
+            self.agent._running.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await self.agent._running
+        await self.reg.warten()
+        self.assertEqual(self.agent._jobs[antwort["auftrag_id"]].status, "abgebrochen (Sitzung beendet)")
+        self.assertEqual(self.vorgang.status, "abgebrochen")
+
     # ---------------------------------------------------------------- Abbruch
     async def test_sitzungsende_beendet_die_schleife_sofort(self):
         beurteilt = asyncio.Event()
