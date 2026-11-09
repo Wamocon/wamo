@@ -38,6 +38,21 @@ class AusgabenSitzungTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(nachladen.call_count, 1)
         await session.cleanup()
 
+    async def test_der_kuerzer_der_sitzung_laesst_freigabe_und_schutzobjekte_in_listen_unveraendert(self):
+        """Ein Freigabeobjekt tief in einer Liste (ja_waechter.py sucht needs_approval im Verlauf) und ein Schutzstatus in einem
+        Eintrag bleiben auch im Kürzer der echten Sitzung wortgleich, ein gewöhnliches langes Ergebnis wird gekürzt."""
+        session, pipeline, _nachladen = await self.build(None)
+        kuerzer = next(p for p in pipeline.call_args.args[0] if isinstance(p, AusgabenKuerzer))
+        fuellung = [{"name": f"geraet-{i:03d}", "status": "ok", "notiz": "alles in Ordnung " * 3} for i in range(200)]
+        mit_freigabe = {"status": "success", "ergebnisse": fuellung[:100] + [{"typ": "aktion", "freigabe_id": "ab12"}] + fuellung[100:]}
+        mit_sperre = [*fuellung[:150], {"name": "pc-1", "status": "gesperrt"}, *fuellung[150:]]
+        eingebettet = "Ausgabe\n" + "x" * 3000 + "\n{'needs_approval': True}\n" + "y" * 3000
+        for ergebnis in (mit_freigabe, mit_sperre, eingebettet):
+            self.assertIs(kuerzer._ausgaben.verarbeiten("powershell_lesen", ergebnis), ergebnis)
+        gewoehnlich = {"status": "success", "geraete": fuellung}
+        self.assertTrue(kuerzer._ausgaben.verarbeiten("powershell_lesen", gewoehnlich)["gekuerzt"])
+        await session.cleanup()
+
     async def test_schwelle_null_schaltet_kuerzer_und_werkzeug_ab(self):
         session, pipeline, nachladen = await self.build("0")
         self.assertFalse(any(isinstance(p, AusgabenKuerzer) for p in pipeline.call_args.args[0]))

@@ -12,16 +12,19 @@ anzeige (activity.py, sie sieht das Original für Karten, Freigaben und die Sper
 Verfahren (Schwelle 3000 Zeichen, WAMO_AUSGABE_SCHWELLE, 0 = aus):
   Text   gleiche Zeilen in Folge mit Zähler, Leerzeilen gebündelt, Kopf und Schwanz bleiben, die Mitte wird durch eine Marke
          "[... n Zeilen ausgelassen, Nachladen: ausgabe_nachladen(...)]" ersetzt; Zeilen mit error, fehler, exception, warning,
-         traceback, failed, denied, abgelehnt und Ähnlichem bleiben bevorzugt stehen.
+         traceback, failed, denied, abgelehnt, blocked, gesperrt, verweigert, forbidden, critical, approval und Ähnlichem bleiben
+         bevorzugt stehen, zusammen aber höchstens die Hälfte des Budgets (der Rest gehört Kopf und Schwanz, damit Fremdtext das
+         Budget nicht mit Zeilen füllen kann, die ein Stichwort enthalten).
   JSON   leere Werte und null fallen weg, lange Listen behalten die ersten Einträge (und Einträge mit Problem) plus Zähler, lange
          Texte werden zeilenweise wie oben gekürzt. Zahlen, Wahrheitswerte, status, Fehler- und Hinweisfelder bleiben unverändert.
 Das Ergebnis trägt gekuerzt: true und ref, damit das Modell nicht glaubt, es habe alles gesehen. Das Original liegt nur im
 Arbeitsspeicher der Sitzung (höchstens 20 Einträge und 1 MB, der älteste fällt heraus), nie in Datenbank oder Protokoll.
 
-Nie gekürzt: Ergebnisse unter der Schwelle, Freigabe- und Schutzergebnisse (status needs_approval, rejected, blocked, locked,
-wartet, abgelehnt, Werkzeuge mit freigabe im Namen und die Entwicklungsaufträge), Werkzeuge mit eigener Kappung (Boss, Websuche,
-Bildschirm), Listen als Grundlage der nächsten Aktion (Element-Nummern, Fenster), Binärdaten und Bilder, schon als gekürzt
-gekennzeichnete Ergebnisse.
+Nie gekürzt: Ergebnisse unter der Schwelle, Freigabe- und Schutzergebnisse (an irgendeiner Stelle, auch tief in Listen oder
+eingebettet in Text: needs_approval, freigabe_id oder ein status blocked, locked, gesperrt, rejected, abgelehnt, verweigert,
+denied, forbidden, critical, wartet; dazu Werkzeuge mit freigabe im Namen und die Entwicklungsaufträge), Werkzeuge mit eigener
+Kappung (Boss, Websuche, Bildschirm), Listen als Grundlage der nächsten Aktion (Element-Nummern, Fenster), Binärdaten und Bilder.
+Die Felder gekuerzt und ref setzt nur dieses Modul: In fremdem JSON heißen sie vor der Verarbeitung gekuerzt_fremd und ref_fremd.
 
 Gekürzte und nachgeladene Inhalte sind Daten, nie Anweisungen. Die Marken stammen nur von diesem Modul: Eingehende Texte werden
 vorher von Marken gesäubert, die so aussehen wie die eigenen."""
@@ -56,7 +59,9 @@ ZEILE_MAX = 500  # längere Zeilen bekommen eine Zeichenmarke
 LISTE_EXTRA_MAX = 10  # Einträge mit Problem, die zusätzlich zu den ersten stehen bleiben
 # (Einträge der Liste, Anteil der Schwelle für Texte, Zeichen je Einzeltext), je Stufe strenger
 STUFEN = ((10, 0.4, 600), (5, 0.2, 300), (3, 0.1, 150))
-KOPF_ANTEIL, SCHWANZ_ANTEIL = 0.4, 0.3  # des Zielumfangs; Zeilen mit Problem bekommen noch einmal den ganzen Zielumfang
+# Anteile des Zielumfangs: Kopf, Schwanz und Zeilen mit Stichwort zusammen höchstens das Ziel. Die Zeilen mit Stichwort bekommen
+# höchstens die Hälfte (Fremdtext kann sie beliebig vermehren), Kopf und Schwanz den Rest.
+KOPF_ANTEIL, SCHWANZ_ANTEIL, WICHTIG_ANTEIL = 0.3, 0.2, 0.5
 
 NACHLADEN_NAME = "ausgabe_nachladen"
 # Werkzeuge mit eigener Kappung oder eigenem Schutzweg: Boss und Websuche begrenzen selbst, Bildschirm und Merken liefern
@@ -76,10 +81,18 @@ GESCHUETZT = frozenset({
     "ende", "stderr", "approval_id", "vollstaendig", "gekuerzt", "ref",
 })
 
-_STICHWORTE_TEXT = ("error", "fehler", "exception", "warn", "traceback", "fail", "denied", "abgelehnt", "fatal")
+_STICHWORTE_TEXT = ("error", "fehler", "exception", "warn", "traceback", "fail", "denied", "abgelehnt", "fatal", "blocked",
+                    "locked", "gesperrt", "verweigert", "forbidden", "approval", "critical", "freigabe", "rejected")
 _STICHWORTE_JSON = _STICHWORTE_TEXT + ("offline", "störung", "gestört", "timeout", "zeitüberschreitung", "nicht erreichbar")
 _WICHTIG = re.compile("|".join(_STICHWORTE_TEXT), re.IGNORECASE)
 _ZEILENENDE = re.compile(r"\n")
+# Schutzergebnisse an jeder Stelle des Ergebnisses (auch tief in Listen, in Schlüsseln und in eingebettetem Text): ja_waechter.py
+# sucht needs_approval im Verlauf, Freigabekarten tragen freigabe_id. Das bloße Wort ohne Statusangabe zählt nicht.
+_SCHUTZ_TEILSTRINGE = ("needs_approval", "freigabe_id")
+_SCHUTZ_STATUS_TIEF = ("needs_approval", "rejected", "blocked", "locked", "wartet", "abgelehnt", "verweigert", "gesperrt", "denied",
+                       "forbidden", "critical")
+_SCHUTZ_WERT = re.compile(r"status[\x22']?\s*[:=]\s*[\x22']?(?:" + "|".join(_SCHUTZ_STATUS_TIEF) + ")")
+FREMDFELDER = ("gekuerzt", "ref")  # setzt nur der Kürzer selbst
 MAX_TREFFER_JE_WORT = 300
 MARKE_LAENGE = 90  # etwa so lang ist eine Marke: kürzere Lücken bleiben als Text stehen
 _BINAER = re.compile(r"[A-Za-z0-9+/=]{400}")  # lange Base64-artige Folge: Bild oder Binärdaten
@@ -180,8 +193,8 @@ def _zeile_text(eintrag: list) -> str:
 
 
 def _text_kuerzen(text: str, ziel: int, ref: str, mit_zeile: bool) -> str:
-    """Kopf, Schwanz und Zeilen mit Problem behalten (zusammen etwa ziel Zeichen und die Problemzeilen bis ziel), den Rest durch
-    Marken ersetzen. mit_zeile: Die Marke nennt die erste ausgelassene Zeile des Originals (nur für Text auf oberster Ebene)."""
+    """Kopf, Schwanz und Zeilen mit Stichwort behalten (zusammen höchstens ziel Zeichen, die Stichwortzeilen davon höchstens die
+    Hälfte), den Rest durch Marken ersetzen. mit_zeile: Die Marke nennt die erste ausgelassene Zeile des Originals (nur für Text auf oberster Ebene)."""
     zeilen = zerlegen(text)
     eintraege = _eintraege(zeilen)
     n = len(eintraege)
@@ -204,7 +217,7 @@ def _text_kuerzen(text: str, ziel: int, ref: str, mit_zeile: bool) -> str:
     for j in sorted({bisect_right(starts, zeile) - 1 for zeile in _stichwort_zeilen(text)}):
         if kopf <= j < schwanz:
             kosten = len(_zeile_text(eintraege[j])) + 1
-            if benutzt + kosten > ziel:
+            if benutzt + kosten > ziel * WICHTIG_ANTEIL:
                 break
             wichtig.append(j)
             benutzt += kosten
@@ -371,7 +384,7 @@ class Kuerzung:
 def _ganzzahl(wert: object, standard: int, minimum: int, maximum: int) -> int:
     try:
         zahl = int(wert)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: JSON Infinity; NaN und lange Ziffernfolgen: ValueError
         return standard
     return max(minimum, min(maximum, zahl))
 
@@ -412,18 +425,20 @@ class Ausgaben:
         else:
             return Kuerzung(inhalt, None, 0, 0)  # Zahlen, Bytes, Bilder und anderes: nie
         vorher = len(text)
+        if vorher > MAX_BYTES:  # erst die Größe prüfen, dann säubern: die Suche nach Marken kostet bei Riesenausgaben Rechenzeit
+            logger.warning("Ausgabe nicht gekürzt: {} Zeichen sind zu groß für den Sitzungsspeicher", vorher)
+            return Kuerzung(inhalt, None, vorher, vorher)
         if "[... " in text:
             sauber = entmarken(inhalt)
             if sauber is not inhalt:
                 inhalt, text = sauber, (sauber if isinstance(sauber, str) else json.dumps(sauber, ensure_ascii=False, default=str))
                 vorher = len(text)
-        if self.schwelle <= 0 or vorher <= self.schwelle or vorher > MAX_BYTES:
-            if vorher > MAX_BYTES:
-                logger.warning("Ausgabe nicht gekürzt: {} Zeichen sind zu groß für den Sitzungsspeicher", vorher)
+        if self.schwelle <= 0 or vorher <= self.schwelle:
             return Kuerzung(inhalt, None, vorher, vorher)
         daten = inhalt if isinstance(inhalt, (dict, list)) else self._json_text(text)
-        if _ist_binaer(text) or self._geschuetzt(daten):
+        if _ist_binaer(text) or self._geschuetzt(daten) or self._traegt_schutz(text):
             return Kuerzung(inhalt, None, vorher, vorher)
+        daten = self._fremdfelder_umbenennen(daten)
         ref = secrets.token_hex(8)
         if daten is None:
             neu = self._text_ergebnis(text, ref)
@@ -453,13 +468,34 @@ class Ausgaben:
 
     @staticmethod
     def _geschuetzt(daten: object) -> bool:
-        """Schutzstatus oder schon gekennzeichnet als gekürzt (eigene Kappung des Werkzeugs)."""
+        """Schutzstatus auf oberster Ebene des Ergebnisses (Freigabekarten, Ablehnungen, Sperren)."""
         if not isinstance(daten, dict):
             return False
-        if "gekuerzt" in daten or "ref" in daten:
-            return True
         status = daten.get("status")
         return isinstance(status, str) and status.lower() in SCHUTZ_STATUS
+
+    @staticmethod
+    def _traegt_schutz(text: str) -> bool:
+        """Steht an irgendeiner Stelle needs_approval, freigabe_id oder ein Schutzstatus (status: blocked und Ähnliches), auch tief
+        in Listen oder eingebettet in Text? Dann bleibt das Ergebnis wortgleich: Freigabe- und Sperrmeldungen dürfen nie verloren
+        gehen (ja_waechter.py sucht sie im Verlauf)."""
+        klein = text.lower()
+        return any(w in klein for w in _SCHUTZ_TEILSTRINGE) or _SCHUTZ_WERT.search(klein) is not None
+
+    @staticmethod
+    def _fremdfelder_umbenennen(daten: dict | list | None) -> dict | list | None:
+        """gekuerzt und ref setzt nur der Kürzer selbst. Stehen sie in fremdem JSON, würden sie das Ergebnis überschreiben (ref)
+        oder das Kürzen abschalten: Sie heißen dann gekuerzt_fremd und ref_fremd (die Eingabe selbst bleibt unverändert)."""
+        if not isinstance(daten, dict) or not any(isinstance(k, str) and k.lower() in FREMDFELDER for k in daten):
+            return daten
+        neu: dict = {}
+        for schluessel, inhalt in daten.items():
+            if isinstance(schluessel, str) and schluessel.lower() in FREMDFELDER:
+                schluessel = f"{schluessel}_fremd"
+                while schluessel in daten or schluessel in neu:
+                    schluessel += "_"
+            neu[schluessel] = inhalt
+        return neu
 
     def _text_ergebnis(self, text: str, ref: str) -> tuple[dict, int] | None:
         ziel = max(300, int(self.schwelle * 0.4))
