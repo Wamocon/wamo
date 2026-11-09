@@ -321,6 +321,31 @@ Marke „Dieses Gerät“. Die Status zeigen Wort und Form (Raute wartet, Kreis 
   und bietet an den Hinweisen für Admins den Knopf „Zur Geräteverwaltung“.
 - **Gemeinsame Geräte** (Drucker, Scanner und Ähnliches) und Notfälle ohne Oberfläche laufen weiter über `wamo_admin` (SQL).
 
+### Büro-Karte (Bürogeräte im Überblick)
+
+Der Reiter „Büro“ der Kommandozentrale zeigt alle gemeinsamen Bürogeräte aus dem Gerätedienst (`geraete/README.md`) als Radialansicht:
+in der Mitte WAMO (Sokrates-2), je Gerätegruppe ein Ring (von innen: Server, Drucker und Scanner, Netz, Speicher, Medien,
+Steckdosen), je Gerät ein Punkt. Weiß und gefüllt heißt in Ordnung, rot mit Strich und langsam pulsierend heißt Störung, grau und
+hohl heißt unbekannt oder nicht eingerichtet; der Zustand steht nie nur in der Farbe, sondern auch in Form und Wort. Ein Klick oder
+Enter auf einen Punkt öffnet eine Detailkarte mit Name, Zustand in Klartext (zum Beispiel „bereit, Toner 80 Prozent“, „Internet
+verbunden, 86 Mbit runter“) und einem Sprechtipp („Sag: Schalte den Fernseher aus“). Es ist nur eine Ansicht: Gesteuert wird
+weiter per Sprache. Unter der Zeichnung steht dieselbe Auskunft als Liste (für Screenreader und zum Lesen); jeder Punkt ist ein
+Button mit Tastaturbedienung, das Pulsieren entfällt bei reduzierter Bewegung. Die Karte läuft auf dem Handy (ab 360 px) wie am PC.
+
+- **Kern-API:** `GET /wamo/api/buero/status` (`voice-core/buero_api.py`, Token, aal2 und aktives Profil wie bei allen Routen, jede Rolle).
+  Der Kern ruft den Gerätedienst mit der Identität des Profils (`status`, `geraet = "alle"`; dessen Zwischenspeicher von 20 Sekunden
+  bleibt wirksam) und kürzt auf ein schmales Modell je Gerät: `id`, `name`, `gruppe`, `ampel` (`ok`, `stoerung`, `unbekannt`), `text`
+  (höchstens 80 Zeichen), `tipp` und optional `kennzahlen` (nur Zahlen mit festen Namen). Dazu `unbekannt` (Anzahl unbekannter Geräte,
+  vorerst immer `null`) und `stand`. Adressen, Seriennummern, Meldungstexte der Geräte und die Geräteliste des Routers (nur Admin)
+  gibt die Route nie aus; der Klartext entsteht aus eigenen Wörtern, nur der Name kommt vom Gerät und wird gesäubert und begrenzt.
+  Grenze: 6 Abrufe je Minute und Profil. Ohne Gerätedienst (zum Beispiel unterwegs) antwortet die Route mit 503, die Karte zeigt dann
+  ruhig „Gerätedienst nicht erreichbar“.
+- **Oberfläche:** `ui/src/components/kommando/BueroKarte.tsx` (SVG ohne neue Abhängigkeit), reine Logik in `bueroKarteModell.ts`,
+  Abruf in `useBueroStand.ts`: alle 30 Sekunden und nur, solange der Reiter sichtbar und die Seite nicht verborgen ist.
+- **Vorschau ohne Gerätedienst:** `npm run dev` mit `NEXT_PUBLIC_WAMO_VORSCHAU=1`, dann `/?vorschau=1&buero=beispiel` (weitere Werte:
+  `stoerung`, `alles`, `leer`, `offline`, `fehler`) und den Reiter „Büro“ öffnen.
+- **Tests:** `cd voice-core; uv run pytest -q test_buero_api.py` und `cd ui; npm test` (`bueroKarteModell.test.ts`).
+
 ### Sitzungen, Anmeldung und Freigaben
 
 - **Eine Sitzung je Profil** (`voice-core/sitzungen.py`, `WAMO_SITZUNG_EINZELN`, Standard an): Eine neue Sitzung

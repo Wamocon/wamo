@@ -8,8 +8,8 @@ import { DarstellungsWahl } from "./DarstellungsWahl";
 import { RahmenKontext } from "./rahmenKontext";
 import { Reiterleiste, type ReiterDef } from "./Reiter";
 
-type Rechts = "auftraege" | "vorgaenge" | "erledigt";
-type Mobil = "kern" | "auftraege" | "vorgaenge" | "canvas" | "hinweise";
+type Rechts = "auftraege" | "vorgaenge" | "erledigt" | "buero";
+type Mobil = "kern" | "auftraege" | "vorgaenge" | "canvas" | "hinweise" | "buero";
 
 /** Alle Bausteine kommen von WamoAnsicht; der Rahmen legt sie nur an und verwaltet die Reiter. */
 export type RahmenInhalt = {
@@ -25,6 +25,8 @@ export type RahmenInhalt = {
   auftraege: ReactNode;
   vorgaenge: ReactNode;
   erledigt: ReactNode;
+  /** Büro-Karte (kommando/BueroKarte.tsx); wird nur eingehängt, solange der Reiter "Büro" sichtbar ist, dann ruht der Abruf */
+  buero?: ReactNode;
   /** Verlauf und Ansage für Screenreader */
   anhang: ReactNode;
   /** Einstellungsseite; nur gesetzt, solange sie offen ist. Die Kommandozentrale bleibt dabei eingehängt und wird nur verborgen. */
@@ -35,6 +37,7 @@ const RECHTS: readonly ReiterDef<Rechts>[] = [
   { id: "auftraege", label: "Aufträge", zahlWort: "offen" },
   { id: "vorgaenge", label: "Vorgänge" },
   { id: "erledigt", label: "Erledigt" },
+  { id: "buero", label: "Büro" },
 ];
 
 /** Rolle der Tafeln: tabpanel nur mit sichtbarem Reiter (labelledby), sonst ein benannter Bereich. */
@@ -75,6 +78,8 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
     }
   }
   const mobilEff: Mobil = effektiv === "normal" || effektiv === "nacht" ? mobil : "kern";
+  // Die Büro-Karte läuft nur, solange ihr Reiter wirklich zu sehen ist (nicht in Fokus und Zentrale, nicht unter den Einstellungen)
+  const bueroAktiv = !inhalt.einstellungen && (breit ? effektiv !== "fokus" && effektiv !== "zentrale" && rechts === "buero" : mobilEff === "buero");
 
   useLayoutEffect(() => {
     if (effektiv !== "nacht") return;
@@ -107,6 +112,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
       { id: "vorgaenge", label: "Vorgänge" },
       { id: "canvas", label: "Canvas" },
       { id: "hinweise", label: "Hinweise" },
+      { id: "buero", label: "Büro" },
     ],
     [offen],
   );
@@ -169,7 +175,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
 
           <div className="kz-rechts">
             <Reiterleiste
-              name="Aufträge und Vorgänge"
+              name="Aufträge, Vorgänge, Erledigt und Büro"
               reiter={rechtsReiter}
               aktiv={rechts}
               onWahl={setRechts}
@@ -200,6 +206,9 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
               {...tafel("Erledigt", breit ? "kz-tab-d-erledigt" : null)}
             >
               {inhalt.erledigt}
+            </div>
+            <div id="kz-p-buero" className="kz-tafel" data-p="buero" {...tafel("Büro", breit ? "kz-tab-d-buero" : "kz-tab-m-buero")}>
+              {bueroAktiv ? inhalt.buero : null}
             </div>
           </div>
         </main>

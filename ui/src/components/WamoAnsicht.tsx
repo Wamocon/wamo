@@ -9,6 +9,7 @@ import { EINSTELLUNGEN_KNOPF_ID } from "@/components/einstellungen/Einstellungen
 import { Auftraege, Freigaben } from "@/components/Freigaben";
 import { GemerktHinweis } from "@/components/GemerktHinweis";
 import { Bedienung } from "@/components/kommando/Bedienung";
+import { BueroKarte } from "@/components/kommando/BueroKarte";
 import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
@@ -226,6 +227,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
         </>
       }
       erledigt={<ErledigtListe />}
+      buero={<BueroKarte />}
       anhang={
         <>
           <Verlauf offen={verlaufOffen} onSchliessen={schliesseVerlauf} />
