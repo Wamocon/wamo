@@ -285,10 +285,12 @@ def test_speicher_hoechstens_1_mb(ausgaben):
     assert ausgaben.gespeichert_bytes <= 1_000_000
 
 
-def test_zu_grosses_original_wird_nicht_gekuerzt(ausgaben):
-    riesig = ("x" * 99 + "\n") * 12_000  # 1,2 MB: nicht nachladbar, also bleibt es wie es ist
+def test_zu_grosses_original_wird_hart_gekappt_und_nur_der_passende_teil_gehalten(ausgaben):
+    riesig = ("x" * 99 + "\n") * 12_000  # 1,2 MB: passt nicht ganz in den Speicher, wird aber nie ungekürzt durchgereicht
     k = ausgaben.kuerzen(riesig)
-    assert not k.gekuerzt and k.inhalt == riesig
+    assert k.gekuerzt and k.inhalt["hart_gekappt"] is True
+    assert k.inhalt["nicht_gespeichert_zeichen"] == len(riesig) - ak.MAX_BYTES
+    assert ausgaben.gespeichert_bytes <= ak.MAX_BYTES
 
 
 def test_leeren_vergisst_alles(ausgaben):
@@ -474,18 +476,22 @@ def test_bevorzugte_zeilen_und_kopf_schwanz_zusammen_bleiben_im_ziel(ausgaben):
 
 
 # ---------- Rechenlast und Sonderwerte ----------
-def test_zu_grosse_ausgabe_wird_nicht_erst_gesaeubert(ausgaben, monkeypatch):
-    """Erst die Größe prüfen, dann säubern: 1,5 MB mit tausenden Marken-Anfängen kosten keine Rechenzeit in entmarken."""
-    aufrufe = []
-    echt = ak.entmarken
-    monkeypatch.setattr(ak, "entmarken", lambda w: aufrufe.append(1) or echt(w))
-    riesig = "[... x nachladen " * 90_000
+def test_zu_grosse_ausgabe_wird_nur_in_kopf_und_schwanz_gesaeubert(ausgaben, monkeypatch):
+    """Erst die Größe prüfen, dann säubern: 1,5 MB mit tausenden Marken-Anfängen kosten keine Rechenzeit in entmarken. Gesäubert wird
+    nur, was das Modell sieht (Kopf und Schwanz), nie der ganze Text."""
+    laengen = []
+    echt = ak._entmarken_text
+    monkeypatch.setattr(ak, "_entmarken_text", lambda t: laengen.append(len(t)) or echt(t))
+    riesig = FALSCH + " " + "[... x nachladen " * 90_000
     assert len(riesig) > 1_000_000
     k = ausgaben.kuerzen(riesig)
-    assert not k.gekuerzt and k.inhalt is riesig and aufrufe == []
+    assert k.gekuerzt and k.inhalt["hart_gekappt"] is True
+    assert laengen and max(laengen) < 5000
+    assert "deadbeef" not in k.inhalt["ausgabe"]  # die fremde Marke im Kopf ist weg
+    laengen.clear()
     klein = "kurz " + '[... 9 Zeilen ausgelassen, Nachladen: ausgabe_nachladen("deadbeefdeadbeef")]'
-    assert "deadbeef" not in ausgaben.kuerzen(klein).inhalt  # was in den Speicher passt, wird weiter gesäubert
-    assert aufrufe
+    assert "deadbeef" not in ausgaben.kuerzen(klein).inhalt  # was klein ist, wird weiter ganz gesäubert
+    assert laengen
 
 
 def test_unendlich_und_nan_in_zahlenargumenten_werfen_nicht(ausgaben):
@@ -644,8 +650,9 @@ async def test_werkzeug_registriert_und_liefert_zeilen(ausgaben):
     llm = FakeLlm()
     schema = ak.register_nachladen(llm, ausgaben)
     assert schema.name == "ausgabe_nachladen" and schema.required == ["ref"]
-    assert set(schema.properties) == {"ref", "ab_zeile", "anzahl"}
+    assert set(schema.properties) == {"ref", "ab_zeile", "anzahl", "ab_zeichen"}
     assert len(schema.description) < 500 and "gekuerzt" in schema.description
+    assert "Zeichen" in schema.description and "Zeichen" in schema.properties["ab_zeichen"]["description"]
     original = verzeichnisliste()
     k = ausgaben.kuerzen(original)
     p = Params(ref=k.ref, ab_zeile=6, anzahl=2)
@@ -655,3 +662,294 @@ async def test_werkzeug_registriert_und_liefert_zeilen(ausgaben):
     fremd = Params(ref="0" * 16)
     await llm.funktionen["ausgabe_nachladen"](fremd)
     assert fremd.ergebnis["status"] == "error"
+    p = Params(ref=k.ref, ab_zeichen=3, anzahl=10)  # Zeichenmodus über das Werkzeug
+    await llm.funktionen["ausgabe_nachladen"](p)
+    assert p.ergebnis["status"] == "success" and p.ergebnis["text"] == original[2:12]
+
+
+# ---------- Text ohne Zeilenumbruch und sehr lange Zeilen: Zeichenmodus ----------
+def _einzeiler(n: int = 60_000) -> str:
+    """Ein Text ohne Zeilenumbruch aus Wörtern mit Zahlen (kein Binärmuster, kein Stichwort)."""
+    zufall = random.Random(7)
+    worte = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
+    teile, laenge = [], 0
+    while laenge < n:
+        wort = f"{zufall.choice(worte)}{zufall.randrange(1000)}"
+        teile.append(wort)
+        laenge += len(wort) + 1
+    return " ".join(teile)
+
+
+def _alle_zeichen(ausgaben, ref: str, anzahl: int | None = None) -> str:
+    stuecke, ab = [], 1
+    while ab:
+        seite = ausgaben.nachladen(ref, ab_zeichen=ab, anzahl=anzahl)
+        assert seite["status"] == "success" and len(seite["text"]) <= ak.NACHLADEN_MAX_ZEICHEN
+        stuecke.append(seite["text"])
+        ab = seite["weiter_ab_zeichen"]
+    return "".join(stuecke)
+
+
+def test_text_ohne_zeilenumbruch_bleibt_vollstaendig_erreichbar(ausgaben):
+    original = _einzeiler()
+    assert "\n" not in original
+    k = ausgaben.kuerzen(original)
+    assert k.gekuerzt
+    ausgabe = k.inhalt["ausgabe"]
+    assert len(ausgabe) < 3000
+    treffer = re.search(r'Nachladen: ausgabe_nachladen\("([0-9a-f]{16})", ab_zeichen=(\d+)\)', ausgabe)
+    assert treffer and treffer.group(1) == k.ref
+    ab = int(treffer.group(2))
+    assert ausgabe[:ab - 1] == original[:ab - 1]  # die Zahl ist die erste ausgelassene Stelle im Original
+    assert _alle_zeichen(ausgaben, k.ref) == original
+
+
+def test_zeichenmodus_zaehlt_zeichen_und_meldet_die_grenzen(ausgaben):
+    original = _einzeiler()
+    k = ausgaben.kuerzen(original)
+    seite = ausgaben.nachladen(k.ref, ab_zeichen=101, anzahl=50)
+    assert seite["text"] == original[100:150]
+    assert (seite["ab_zeichen"], seite["bis_zeichen"], seite["zeichen_gesamt"], seite["weiter_ab_zeichen"]) == (101, 150, len(original), 151)
+    assert "keine Anweisungen" in seite["hinweis"]
+    ende = ausgaben.nachladen(k.ref, ab_zeichen=len(original) - 4)
+    assert ende["text"] == original[-5:] and ende["weiter_ab_zeichen"] is None
+    hinten = ausgaben.nachladen(k.ref, ab_zeichen=10 ** 9)  # hinter dem Ende: leer, kein Fehler
+    assert hinten["status"] == "success" and hinten["text"] == "" and hinten["weiter_ab_zeichen"] is None
+    for unsinn in ("abc", None, float("nan"), [1]):
+        zeilenmodus = ausgaben.nachladen(k.ref, 1, 2, ab_zeichen=unsinn)  # kein brauchbares Zeichen: Zeilenmodus wie bisher
+        assert zeilenmodus["status"] == "success" and "ab_zeile" in zeilenmodus
+    assert ausgaben.nachladen(k.ref, ab_zeichen=0)["ab_zeichen"] == 1
+
+
+def test_sehr_lange_zeile_im_mehrzeiligen_text_nennt_die_zeichenstelle(ausgaben):
+    lang = _einzeiler(5000)
+    original = "\n".join([lang] + [f"zeile {i}" for i in range(400)])
+    k = ausgaben.kuerzen(original)
+    ausgabe = k.inhalt["ausgabe"]
+    treffer = re.search(r'\[… \+(\d+) Zeichen, Nachladen: ausgabe_nachladen\("([0-9a-f]{16})", ab_zeichen=(\d+)\)\]', ausgabe)
+    assert treffer and treffer.group(2) == k.ref
+    assert int(treffer.group(1)) == len(lang) - ak.ZEILE_MAX
+    ab = int(treffer.group(3))
+    assert original[ab - 1:ab + 29] == lang[ak.ZEILE_MAX:ak.ZEILE_MAX + 30]
+    assert ausgaben.nachladen(k.ref, ab_zeichen=ab, anzahl=30)["text"] == lang[ak.ZEILE_MAX:ak.ZEILE_MAX + 30]
+
+
+def test_zeichenstelle_stimmt_auch_bei_windows_zeilenenden(ausgaben):
+    lang = _einzeiler(3000)
+    original = "\r\n".join([f"zeile {i}" for i in range(400)] + [lang])  # die lange Zeile steht hinten: 400 mal \r davor
+    k = ausgaben.kuerzen(original)
+    ab = int(re.search(r"ab_zeichen=(\d+)", k.inhalt["ausgabe"]).group(1))
+    assert original[ab - 1:ab + 19] == lang[ak.ZEILE_MAX:ak.ZEILE_MAX + 20]
+
+
+def test_zeilenmodus_mit_riesiger_zeile_fuehrt_im_zeichenmodus_weiter(ausgaben):
+    lang = _einzeiler(30_000)
+    original = lang + "\n" + "\n".join(f"z{i}" for i in range(600))
+    k = ausgaben.kuerzen(original)
+    seite = ausgaben.nachladen(k.ref, 1, 5)
+    assert seite["zeile_gekuerzt"] is True and seite["weiter_ab_zeichen"] == ak.NACHLADEN_MAX_ZEICHEN + 1
+    rest = ausgaben.nachladen(k.ref, ab_zeichen=seite["weiter_ab_zeichen"])
+    assert seite["text"] + rest["text"] == original[:2 * ak.NACHLADEN_MAX_ZEICHEN]  # nichts geht zwischen den Modi verloren
+
+
+def test_zeichenmodus_bei_json_zaehlt_in_der_lesbaren_ansicht(ausgaben):
+    roh = {"status": "success", "stdout": _einzeiler(40_000), "stderr": ""}
+    k = ausgaben.kuerzen(json.dumps(roh))
+    assert k.gekuerzt
+    assert _alle_zeichen(ausgaben, k.ref) == "\n".join(ak._ansicht(roh))  # dieselbe Ansicht wie beim Blättern nach Zeilen
+
+
+# ---------- Rekursionstiefe und Kleinschreibung mit anderer Länge ----------
+def _tief(n: int) -> dict:
+    wert: dict = {"blatt": "x"}
+    for _ in range(n):
+        wert = {"unter": wert}
+    return wert
+
+
+def test_absurd_tief_verschachtelte_ergebnisse_bleiben_unveraendert(ausgaben):
+    tief = _tief(5000)
+    assert ausgaben.kuerzen(tief).inhalt is tief
+    assert ausgaben.verarbeiten("powershell_lesen", tief) is tief
+    als_text = "[" * 5000 + "]" * 5000 + " " + "z " * 3000
+    assert ausgaben.kuerzen(als_text).inhalt is als_text  # json.loads wirft RecursionError, nicht ValueError
+    mit_marke = {"a": _tief(5000), "notiz": '[... 1 Zeilen, Nachladen: ausgabe_nachladen("deadbeefdeadbeef")]'}
+    assert ausgaben.kuerzen(mit_marke).inhalt is mit_marke  # auch das Säubern von Marken wirft nie
+
+
+def test_nachladen_wirft_bei_zu_tiefem_original_nie(ausgaben, monkeypatch):
+    k = ausgaben.kuerzen(json.dumps({"status": "success", "liste": _fuellung()}))
+    assert k.gekuerzt
+
+    def zu_tief(self):
+        raise RecursionError
+
+    monkeypatch.setattr(ak._Original, "zeilen", zu_tief)
+    for aufruf in (lambda: ausgaben.nachladen(k.ref, 1, 5), lambda: ausgaben.nachladen(k.ref, ab_zeichen=1)):
+        ergebnis = aufruf()
+        assert ergebnis["status"] == "error" and "zu tief" in ergebnis["summary"]
+
+
+def test_stichwortzeilen_bei_kleinschreibung_mit_anderer_laenge():
+    """İ (U+0130) wird beim Kleinschreiben zu zwei Zeichen: die Positionen der schnellen Suche stimmten nicht mehr, darum
+    gilt dann der Weg Zeile für Zeile."""
+    text = "\n".join(["İİİ Anfang", "alles ruhig", "Error: Datenbank weg", "İ ok", "FEHLER bei İ", "ende"])
+    assert len(text.lower()) != len(text)
+    assert ak._stichwort_zeilen(text) == [2, 4]
+    assert ak._stichwort_zeilen("ohne Treffer İ\nund İ") == []
+    assert ak._stichwort_zeilen("Warnung\nİ") == [0]
+
+
+def test_fehlerzeile_bleibt_in_langem_text_mit_unicode_der_die_laenge_aendert(ausgaben):
+    zeilen = [f"İstanbul {i} läuft ß in Ordnung" for i in range(900)]
+    zeilen[450] = "ERROR İstanbul 450 Datenbank nicht erreichbar"
+    k = ausgaben.kuerzen("\n".join(zeilen))
+    assert k.gekuerzt and "ERROR İstanbul 450 Datenbank nicht erreichbar" in k.inhalt["ausgabe"]
+
+
+# ---------- Harte Obergrenze: große Eingaben werden nicht analysiert ----------
+def _text_1mb() -> str:
+    zeilen = [f"2026-11-09 10:{i % 60:02d}:{i % 59:02d} INFO dienst-{i % 13} verarbeitet Auftrag {i} in {i % 97} ms" for i in range(15_000)]
+    return "\n".join(zeilen)
+
+
+def _json_1mb() -> dict:
+    return {"status": "success", "summary": "ein Gerät mit Fehler", "geraete": [
+        {"name": f"geraet-{i:05d}", "ip": f"10.{i // 62500}.{(i // 250) % 250}.{i % 250}", "zustand": "ok", "latenz_ms": i % 9, "notiz": ""}
+        for i in range(11_000)]}
+
+
+def _pruefe_hart(k, original: str) -> None:
+    assert k.gekuerzt and k.inhalt["hart_gekappt"] is True and k.inhalt["gekuerzt"] is True
+    assert k.zeichen_nachher < 5000
+    ausgabe = k.inhalt["ausgabe"]
+    assert ausgabe.startswith(original[:200]) and ausgabe.endswith(original[-200:])
+    assert re.search(r'Nachladen: ausgabe_nachladen\("[0-9a-f]{16}", ab_zeichen=\d+\)', ausgabe)
+    assert k.inhalt["zeichen_gesamt"] == len(original)
+
+
+def test_1mb_text_unter_50_ms_und_nie_ungekuerzt():
+    text = _text_1mb()
+    assert len(text) > 1_000_000
+    _pruefe_hart(ak.Ausgaben(schwelle=3000).kuerzen(text), text)
+    zeit = _beste_zeit(lambda: ak.Ausgaben(schwelle=3000).kuerzen(text))
+    print(f"\n1 MB Text: {zeit * 1000:.2f} ms")
+    assert zeit < 0.05
+
+
+def test_1mb_json_unter_50_ms_und_nie_ungekuerzt():
+    roh = _json_1mb()
+    text = json.dumps(roh, ensure_ascii=False, default=str)
+    assert len(text) > 1_000_000
+    for eingabe in (roh, text):  # als Wörterbuch und als JSON-Text
+        _pruefe_hart(ak.Ausgaben(schwelle=3000).kuerzen(eingabe), text)
+        zeit = _beste_zeit(lambda: ak.Ausgaben(schwelle=3000).kuerzen(eingabe))
+        print(f"\n1 MB JSON ({type(eingabe).__name__}): {zeit * 1000:.2f} ms")
+        assert zeit < 0.05
+
+
+def test_ueber_der_obergrenze_wird_nichts_analysiert(ausgaben, monkeypatch):
+    def verboten(*a, **k):
+        raise AssertionError("große Eingaben werden nicht analysiert")
+
+    for name in ("_text_kuerzen", "_json_kuerzen", "_hat_problem", "_wert_treffer", "_eintraege"):
+        monkeypatch.setattr(ak, name, verboten)
+    for eingabe in (_text_1mb(), _json_1mb()):
+        assert ausgaben.kuerzen(eingabe).inhalt["hart_gekappt"] is True
+    grenze = "\n".join(f"zeile {i} " + "w" * 60 for i in range(ak.ANALYSE_MAX_ZEICHEN // 70 + 10))
+    assert len(grenze) > ak.ANALYSE_MAX_ZEICHEN
+    assert ausgaben.kuerzen(grenze).inhalt["hart_gekappt"] is True
+
+
+def test_knapp_unter_der_obergrenze_wird_wie_bisher_analysiert(ausgaben):
+    text = "\n".join(f"zeile {i} " + "w" * 60 for i in range(ak.ANALYSE_MAX_ZEICHEN // 80))
+    assert len(text) <= ak.ANALYSE_MAX_ZEICHEN
+    k = ausgaben.kuerzen(text)
+    assert k.gekuerzt and "hart_gekappt" not in k.inhalt  # Zeilenmarken wie bisher
+
+
+def test_hart_gekappt_haelt_das_original_bis_zur_speichergrenze_und_nennt_den_rest(ausgaben):
+    text = _text_1mb() * 2
+    assert len(text) > 2_000_000 and text.isascii()
+    k = ausgaben.kuerzen(text)
+    verworfen = k.inhalt["nicht_gespeichert_zeichen"]
+    assert verworfen == len(text) - ak.MAX_BYTES
+    assert f"{verworfen} Zeichen" in k.inhalt["ausgabe"] and "nicht gespeichert" in k.inhalt["ausgabe"]  # ausdrücklich gesagt
+    assert ausgaben.gespeichert_bytes <= ak.MAX_BYTES
+    assert _alle_zeichen(ausgaben, k.ref) == text[:ak.MAX_BYTES]  # der gespeicherte Teil kommt verlustfrei zurück
+
+
+def test_hart_gekappt_passt_es_in_den_speicher_fehlt_nichts(ausgaben):
+    text = _text_1mb()[:600_000]
+    k = ausgaben.kuerzen(text)
+    assert k.gekuerzt and "nicht_gespeichert_zeichen" not in k.inhalt
+    assert _alle_zeichen(ausgaben, k.ref) == text
+
+
+def test_hart_gekappt_zaehlt_wie_jede_kuerzung(ausgaben):
+    text = _text_1mb()
+    k = ausgaben.kuerzen(text)
+    assert ausgaben.zaehler.anzahl == 1 and ausgaben.zaehler.zeichen_vorher == len(text)
+    assert ausgaben.zaehler.zeichen_nachher == k.zeichen_nachher < 5000
+
+
+def test_hart_gekappt_laesst_schutzergebnisse_und_binaerdaten_unveraendert(ausgaben):
+    gross = _text_1mb()
+    mit_schutz = gross + '\n{"status": "needs_approval", "freigabe_id": "ab12"}'
+    assert ausgaben.kuerzen(mit_schutz).inhalt is mit_schutz
+    als_dict = {"status": "needs_approval", "approval_id": "0123456789abcdef", "detail": gross}
+    assert ausgaben.kuerzen(als_dict).inhalt is als_dict
+    bild = base64.b64encode(random.Random(1).randbytes(900_000)).decode()
+    assert ausgaben.kuerzen(bild).inhalt is bild
+
+
+def test_binaer_suche_ist_linear_auch_bei_folgen_knapp_unter_der_grenze():
+    """Folgen aus 399 Zeichen mit nur einem Leerzeichen dazwischen (0,25 %): das Muster {400} traf nie, lief aber an jeder Stelle
+    jeder Folge fast ganz ab."""
+    boese = ("a" * 399 + " ") * 600
+    assert not ak._ist_binaer(boese)
+    assert _beste_zeit(lambda: ak._ist_binaer(boese), 3) < 0.02
+    assert ak._ist_binaer("x y " + "".join(chr(65 + i % 26) + chr(97 + i % 17) for i in range(300)) + " ende")  # echte Folge: weiter erkannt
+
+
+def test_problemsuche_in_langer_liste_ist_billig_und_findet_den_eintrag(ausgaben):
+    liste = [{"a": "ok"} for _ in range(19_000)]
+    liste[300] = {"a": "Fehler beim Lesen"}
+    roh = {"status": "success", "summary": "1 mit Fehler", "geraete": liste}
+    text = json.dumps(roh)
+    assert 200_000 < len(text) <= ak.ANALYSE_MAX_ZEICHEN
+    k = ausgaben.kuerzen(roh)
+    assert k.gekuerzt and "hart_gekappt" not in k.inhalt
+    assert any(isinstance(e, dict) and e.get("a") == "Fehler beim Lesen" for e in k.inhalt["geraete"])
+    zeit = _beste_zeit(lambda: ak.Ausgaben(schwelle=3000).kuerzen(roh), 3)
+    print(f"\nProblemsuche 19000 Einträge: {zeit * 1000:.2f} ms")
+    assert zeit < 0.06
+
+
+def test_problemsuche_je_liste_nur_einmal_fuer_alle_stufen(ausgaben, monkeypatch):
+    aufrufe = []
+    echt = ak._wert_treffer
+    monkeypatch.setattr(ak, "_wert_treffer", lambda klein, stichworte: aufrufe.append(len(klein)) or echt(klein, stichworte))
+    liste = [{"name": f"g{i}", "notiz": "alles in Ordnung " * 4} for i in range(300)]
+    liste[200] = {"name": "g200", "notiz": "Timeout nach 5 s"}
+    k = ausgaben.kuerzen({"status": "success", "summary": "1 Timeout", "geraete": liste})
+    assert any(isinstance(e, dict) and e.get("name") == "g200" for e in k.inhalt["geraete"])
+    assert len(aufrufe) < 60  # nicht je Eintrag und Stufe (früher: über 800 Aufrufe), sondern blockweise und einmal je Liste
+
+
+# ---------- Zeitbudget im Frame-Prozessor ----------
+@pytest.mark.asyncio
+async def test_kuerzer_meldet_langsame_kuerzung_nur_mit_zahlen(ausgaben, monkeypatch):
+    from loguru import logger
+
+    zeilen: list[str] = []
+    senke = logger.add(lambda m: zeilen.append(str(m)), level="WARNING", format="{message}")
+    monkeypatch.setattr(ak, "LANGSAM_S", 0.0)
+    try:
+        await run_test(Pipeline([ak.AusgabenKuerzer(ausgaben)]),
+                       frames_to_send=[_ergebnisframe("powershell_lesen", verzeichnisliste() + "KUNDE-4711-GEHEIM")])
+    finally:
+        logger.remove(senke)
+    meldung = [z for z in zeilen if "langsam" in z]
+    assert len(meldung) == 1 and "powershell_lesen" in meldung[0] and "ms" in meldung[0]
+    assert "KUNDE-4711" not in meldung[0] and "datei_" not in meldung[0]
