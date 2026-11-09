@@ -255,3 +255,74 @@ def test_auskommentiertes_beispiel_der_vorlage_ist_gueltig_und_ohne_echte_adress
     g = k.geraete["switch-1"]
     assert g.treiber == "snmp" and g.klasse == "switch" and g.opt("auth") == "sha256" and g.opt("fehlerzaehler") is False
     assert "community" not in text.lower() and "public" not in text.lower()
+
+
+# ---------- Zeitgrenzen und Engine (Befund: GESAMT_ZEIT griff nie, SnmpEngine() blockierte die Ereignisschleife) ----------
+def test_zeitgrenzen_des_treibers_sind_kleiner_als_die_des_dienstes():
+    """Die Gesamtzeit des Abrufs muss vor der Grenze des Dienstes greifen, sonst entscheidet immer der Dienst (6 s bei
+    Status aller Geräte) und die Meldung des Treibers kommt nie an."""
+    from wamo_geraete import dienst
+
+    assert snmp.GESAMT_ZEIT < dienst.STATUS_ZEIT
+    assert snmp.GESAMT_ZEIT < dienst.WERKZEUGE["status"].zeit
+    assert snmp.ANTWORT_ZEIT * 2 <= snmp.GESAMT_ZEIT  # ein Wiederholversuch einer Anfrage passt hinein
+
+
+def _netzlose_bibliothek(monkeypatch, get_cmd):
+    """Ersetzt nur das Senden (get_cmd); Engine, Benutzer und Ziel sind echt, aber ohne Netzzugriff. Gibt zurück, in welchem
+    Thread jede Engine gebaut wurde und welche geschlossen wurden."""
+    import threading
+
+    from pysnmp.hlapi.v3arch import asyncio as hl
+
+    gebaut: list[int] = []
+    geschlossen: list[object] = []
+    echt = hl.SnmpEngine
+
+    def engine():
+        e = echt()
+        gebaut.append(threading.get_ident())
+        schliessen = e.close_dispatcher
+        e.close_dispatcher = lambda: (geschlossen.append(e), schliessen())[1]
+        return e
+
+    monkeypatch.setattr(hl, "SnmpEngine", engine)
+    monkeypatch.setattr(hl, "get_cmd", get_cmd)
+    return gebaut, geschlossen
+
+
+async def test_engine_wird_im_arbeitsthread_gebaut_und_nach_dem_abruf_geschlossen(monkeypatch):
+    """SnmpEngine() braucht rund 50 ms reine Python-Arbeit (gemessen mit pysnmp 7.1, beim ersten Mal 235 ms): nicht in der
+    Ereignisschleife des Dienstes. Je Abruf eine eigene Engine (kein geteilter Zustand zwischen Zugängen), danach geschlossen."""
+    import threading
+
+    from pysnmp.error import PySnmpError
+
+    async def get_cmd(*_a, **_k):
+        raise PySnmpError("Attrappe")
+
+    gebaut, geschlossen = _netzlose_bibliothek(monkeypatch, get_cmd)
+    g = Geraet("switch-1", "Switch", "switch", "snmp", "127.0.0.1", 1)
+    z = snmp.Zugang("u", "authgeheim123", "privgeheim456", "sha256", "aes128")
+    for _ in range(2):
+        with pytest.raises(GeraetFehler):
+            await snmp._lesen(g, z, (snmp.IF_OPER,))
+    assert len(gebaut) == 2 and threading.get_ident() not in gebaut  # nie im Thread der Ereignisschleife
+    assert len(geschlossen) == 2 and geschlossen[0] is not geschlossen[1]  # je Abruf eine, jede geschlossen
+
+
+async def test_gesamtzeit_greift_vor_der_grenze_des_dienstes(monkeypatch):
+    import asyncio
+
+    async def haengt(*_a, **_k):
+        await asyncio.sleep(30)
+
+    _netzlose_bibliothek(monkeypatch, haengt)
+    monkeypatch.setattr(snmp, "GESAMT_ZEIT", 0.1)
+    g = Geraet("switch-1", "Switch", "switch", "snmp", "127.0.0.1", 1)
+    z = snmp.Zugang("u", "authgeheim123", "privgeheim456", "sha256", "aes128")
+    t0 = asyncio.get_running_loop().time()
+    with pytest.raises(GeraetFehler) as e:
+        await snmp._lesen(g, z, (snmp.IF_OPER,))
+    assert asyncio.get_running_loop().time() - t0 < 5
+    assert "TimeoutError" in str(e.value) and "authgeheim" not in str(e.value)

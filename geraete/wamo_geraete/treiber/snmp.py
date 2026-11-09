@@ -53,7 +53,9 @@ OPER_UNTEN = (2, 7)  # down, lowerLayerDown
 MAX_ZEILEN = 512    # höchstens so viele Schnittstellen je Tabelle
 MIN_PASSPHRASE = 8
 ANTWORT_ZEIT = 2.0  # Sekunden je Anfrage, ein Wiederholversuch
-GESAMT_ZEIT = 12.0  # Obergrenze für den ganzen Abruf
+# Obergrenze für das Netz eines Abrufs. Sie liegt unter der Grenze des Dienstes (dienst.STATUS_ZEIT, 6 s bei Status aller Geräte),
+# denn sonst entschiede immer der Dienst und diese Grenze griffe nie. Vor ihr liegen die Engine und das Ziel (rund 0,05 bis 0,3 s).
+GESAMT_ZEIT = 5.0
 
 
 @dataclass(frozen=True)
@@ -135,7 +137,11 @@ async def _lesen(geraet: Geraet, zugang: Zugang, tabellen: tuple[str, ...]) -> M
 
     if getattr(aes, "PysnmpCryptoError", False):  # pysnmp meldet sonst später nur "EncryptionError"
         raise GeraetFehler("SNMP: AES nicht verfügbar (Bibliothek cryptography fehlt oder ist älter als 47)")
-    engine = hl.SnmpEngine()
+    # SnmpEngine() ist rund 50 ms reine Python-Arbeit (beim ersten Mal 235 ms, pysnmp 7.1): im Arbeitsthread, nicht in der
+    # Ereignisschleife des Dienstes. Je Abruf eine eigene Engine und danach geschlossen: Eine Engine für den ganzen Prozess würde
+    # den Zustand (Benutzertabelle, Transport an die Schleife gebunden) zwischen Zugängen und Läufen teilen; das ist ohne Gerät
+    # nicht zu belegen und wurde darum nicht gebaut.
+    engine = await asyncio.to_thread(hl.SnmpEngine)
     try:
         benutzer = hl.UsmUserData(zugang.benutzer, authKey=zugang.auth_passwort, privKey=zugang.priv_passwort,
                                   authProtocol=getattr(hl, AUTH_VERFAHREN[zugang.auth]),
