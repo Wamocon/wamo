@@ -64,6 +64,7 @@ BERICHT_ZEICHEN = 6000  # vom Abschlussbericht geht das Ende an das Modell (dort
 MAX_DATEIEN = 100
 DATEI_ZEICHEN = 160
 MAX_EINTRAEGE = 50  # Schutz vor absurd langen Listen, bevor irgendetwas geprüft wird
+PFAD_FRIST_S = 2.0  # so lange darf jeder Dateizugriff vor dem Start (Programmsuche, Pfadprüfung) höchstens dauern (sonst: nicht ausgeführt)
 
 Ausfuehrer = Callable[[Sequence[str], Path], Awaitable[tuple["int | None", str]]]  # (argv, Ordner) -> (Exit, Ausgabe)
 Beurteiler = Callable[[str, str], Awaitable[str]]  # (System, Inhalt) -> Rohantwort des Modells
@@ -332,7 +333,7 @@ def _befehl_grund(argv: Sequence[str]) -> str | None:
     regel = _PROGRAMME.get(name.lower().removesuffix(".exe"))
     if regel is None:
         return f"Programm {clean_inline(name, 30)} ist als Kriterium nicht erlaubt (erlaubt: {', '.join(sorted(_PROGRAMME))})"
-    args = argv[1:]
+    args = tuple(argv[1:])  # die Regeln vergleichen Anfänge mit Tupeln (args[:1] == ("test",)): eine Liste ergäbe nie einen Treffer
     if len(args) > MAX_ARGUMENTE:
         return f"höchstens {MAX_ARGUMENTE} Argumente"
     if any(len(a) > ARGUMENT_ZEICHEN for a in args):
@@ -430,7 +431,8 @@ def pruef_env() -> dict[str, str]:
 
 
 def _exe_aufloesen(name: str, ordner: Path, env: dict[str, str]) -> tuple[str | None, str]:
-    """Absoluter Pfad des Programms oder (None, Grund). Kein Skript über cmd.exe, nichts aus dem Projektordner."""
+    """Absoluter Pfad des Programms oder (None, Grund). Kein Skript über cmd.exe, nichts aus dem Projektordner. Blockiert
+    (Dateizugriff): nur über befehl_ausfuehren aufrufen, das es in einem Arbeitsthread mit Frist laufen lässt."""
     gefunden = shutil.which(name, path=env.get("PATH"))
     if not gefunden:
         return None, "Programm nicht gefunden"
@@ -481,7 +483,10 @@ async def befehl_ausfuehren(argv: Sequence[str], arbeitsordner: Path, frist_s: f
     """Führt einen geprüften Befehl ohne Shell im Arbeitsordner aus. (Exit-Code, Ausgabe bis 2 KB) oder (None, Grund), wenn der
     Befehl nicht startet oder das Zeitlimit überschreitet. Prüft Form, Allowlist und Wächter nicht selbst: das tut pruefe_befehl."""
     env = pruef_env()
-    exe, grund = _exe_aufloesen(argv[0], arbeitsordner, env)
+    try:  # which und resolve sind Dateizugriffe (PATH kann auf ein Netzlaufwerk zeigen): Arbeitsthread mit Frist, nie die Schleife
+        exe, grund = await asyncio.wait_for(asyncio.to_thread(_exe_aufloesen, argv[0], arbeitsordner, env), PFAD_FRIST_S)
+    except asyncio.TimeoutError:
+        return None, "Die Programmsuche dauerte zu lange, nicht ausgeführt"
     if exe is None:
         return None, grund
     try:
@@ -504,7 +509,6 @@ async def befehl_ausfuehren(argv: Sequence[str], arbeitsordner: Path, frist_s: f
 
 
 _ABSOLUT = re.compile(r"/|[A-Za-z]:[/]")
-PFAD_FRIST_S = 2.0  # so lange darf die Prüfung der Pfade höchstens dauern (sonst: nicht ausgeführt)
 
 
 def _ausserhalb(argv: Sequence[str], ordner: Path) -> str | None:

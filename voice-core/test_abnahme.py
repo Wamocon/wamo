@@ -492,6 +492,50 @@ def test_pfadfrist_ist_zwei_sekunden():
     assert abnahme.PFAD_FRIST_S == 2.0
 
 
+async def test_programmsuche_laeuft_im_arbeitsthread_nicht_in_der_ereignisschleife(ordner):
+    """shutil.which und resolve greifen auf die Platte zu (PATH kann auf ein Netzlaufwerk zeigen): nie in der Ereignisschleife."""
+    import threading
+
+    haupt, threads = threading.get_ident(), []
+
+    def gefunden(name, path=None):
+        threads.append(threading.get_ident())
+        return sys.executable
+
+    with mock.patch.object(abnahme.shutil, "which", gefunden):
+        rc, aus = await abnahme.befehl_ausfuehren((PY, "-c", "print('hallo')"), ordner)
+    assert rc == 0 and "hallo" in aus
+    assert threads and haupt not in threads
+
+
+async def test_haengende_programmsuche_endet_nach_der_frist_und_startet_nichts(ordner):
+    import time
+
+    def haengt(name, path=None):
+        time.sleep(1.0)
+        return sys.executable
+
+    t0 = asyncio.get_running_loop().time()
+    with mock.patch.object(abnahme.shutil, "which", haengt), mock.patch.object(abnahme, "PFAD_FRIST_S", 0.1), \
+         mock.patch.object(abnahme.asyncio, "create_subprocess_exec", side_effect=AssertionError("nichts starten")):
+        rc, aus = await abnahme.befehl_ausfuehren((PY, "-c", "print('hallo')"), ordner)
+    assert asyncio.get_running_loop().time() - t0 < 0.8  # nicht auf den Thread gewartet
+    assert rc is None and "Programmsuche" in aus and "nicht ausgeführt" in aus
+
+
+async def test_listen_als_befehl_werden_wie_tupel_geprueft():
+    """Die Allowlist vergleicht Anfänge mit Tupeln: der Typ sagt Sequence, also muss eine Liste dasselbe Ergebnis geben."""
+    for argv in (["npm", "test"], ["pnpm", "run", "build"], ["go", "test", "./..."], ["cargo", "test"], ["cargo", "build"],
+                 ["dotnet", "test"], ["node", "--test"], ["ruff", "check", "."], ["make", "test"], ["pytest", "-q"],
+                 ["python", "-m", "pytest", "-q"], ["grep", "-q", "x", "a.txt"], ["tsc", "--noEmit"]):
+        assert abnahme._befehl_grund(argv) is None, argv
+        assert abnahme._befehl_grund(tuple(argv)) is None, argv
+    for argv in (["npm", "install"], ["go", "run", "main.go"], ["cargo", "run"], ["node", "app.js"], ["ruff", "format", "."],
+                 ["pytest", "-p", "plugin"], ["dotnet", "run"]):
+        assert abnahme._befehl_grund(argv) is not None, argv
+        assert abnahme._befehl_grund(argv) == abnahme._befehl_grund(tuple(argv)), argv  # Liste und Tupel: dieselbe Abweisung
+
+
 async def test_ohne_ausfuehrer_ist_ein_befehl_nicht_pruefbar(ordner):
     r = await abnahme.pruefe_befehl(befehl("pytest"), ordner, None)
     assert r.erfuellt is False and "nicht" in r.hinweis
