@@ -283,6 +283,45 @@ Die geplante Aufgabe „WAMO Tunnel“ startet bei jeder Anmeldung `scripts\wamo
 unabhängig von der Desktop-App (auch für den Browser). Die PC-Steuerung bleibt trotzdem je Sitzung aus, bis ein Admin
 sie einschaltet. Logs: `%LOCALAPPDATA%\WAMO\logs`.
 
+#### Vorgänge: Aufgabenleiste mit Livefortschritt
+
+Die Tafel „Vorgänge“ (rechte Seite, am Handy der Reiter „Vorgänge“) zeigt, was WAMO gerade abarbeitet. Ein Vorgang ist eine
+Boss-Aufgabe (`boss.py`) oder ein Entwicklungsauftrag (`dev_agent.py`, Schritte aus den Aufgabenwerkzeugen von Claude Code in
+`vorgang_stream.py`). Der Kern führt sie in einer Registry je Sitzung (`voice-core/vorgaenge.py`) und schickt bei jeder Änderung
+die Servernachricht
+
+```json
+{"type": "vorgang", "vorgang": {"id": "...", "titel": "...", "art": "aufgabe|entwicklung|geraet|sonstiges",
+ "status": "geplant|laeuft|wartet_freigabe|pruefen|fertig|fehler|abgebrochen", "gestartet_ms": 0, "beendet_ms": null,
+ "gesamt": 0.0, "restzeit_s": null, "schritte": [{"nr": 1, "titel": "...", "status": "...", "fortschritt": 0.0, "detail": null}],
+ "kriterien": [{"text": "...", "erfuellt": true, "hinweis": null}], "runde": null, "max_runden": null,
+ "freigabe_id": null, "ergebnis": {"canvas_id": "..."}}}
+```
+
+Jede Nachricht trägt den ganzen Stand; die Oberfläche ersetzt den Vorgang gleicher Kennung (`ui/src/lib/vorgaenge.ts`, Prüfung in
+`nachrichten.ts`). Fortschritt wird auf vier Nachrichten je Sekunde und Vorgang gedrosselt, ein Statuswechsel geht sofort. Der
+Gesamtfortschritt ist das Mittel der Schrittfortschritte; eine Restzeit gibt es erst ab 10 Prozent und nie ohne feste Zahl der Schritte,
+sie wird nicht erfunden.
+
+Je Vorgang zeigt eine Karte den Titel, den Status als Wort, den Gesamtbalken mit Prozent und Restzeit (bei fertig „Fertig in mm:ss“),
+die nummerierten Schritte mit eigenem Balken (der laufende ist hervorgehoben), die Prüfkriterien (erfüllt, nicht erfüllt, noch offen),
+„Runde n von m“ und zwei Knöpfe: „Zur Freigabe“ springt zur vorhandenen Freigabekarte (Tafel „Aufträge“, Attribut `data-approval`) und
+fokussiert sie, „Ergebnis ansehen“ wählt das Element im Canvas, solange es dort liegt. Beendete Vorgänge stehen im einklappbaren
+Abschnitt „Zuletzt beendet“. Alle Balken sind `role="progressbar"` mit `aria-valuenow` und `aria-valuetext`, der Zustand steht immer
+als Wort da, `prefers-reduced-motion` schaltet die Bewegung ab, die Ansage für Bildschirmleser kommt einmal aus dem Zustand
+(`ansage`). Die Zeitleiste „Werkzeuge“ darunter ist unverändert.
+
+Verlauf: Beim Start fragt die Tafel einmal `GET /wamo/api/vorgaenge` ab (`voice-core/vorgaenge_api.py`, die letzten 20 Vorgänge des
+eigenen Profils, Token mit zweitem Faktor wie bei allen Schnittstellen unter `/wamo/api`). Die Antwort läuft durch dieselbe Prüfung wie
+eine Nachricht. Ein Vorgang ohne Ende gilt im Verlauf als abgebrochen, ein Vorgang der laufenden Sitzung geht dem Verlauf immer vor, und
+ein Fehler bei der Abfrage zeigt einfach keinen Verlauf. Gespeichert wird nur bei einem Statuswechsel (Tabelle `vorgaenge`).
+
+**Migration 0017 ist noch nicht angewendet** (`supabase/migrations/0017_vorgaenge.sql`, Rückweg `.down.sql`, SQL-Test unter
+`supabase/tests/`). Bis dahin speichert der Kern nichts (still, mit einem Hinweis im Protokoll) und der Verlauf bleibt leer; die
+Anzeige der laufenden Sitzung funktioniert auch ohne. In der Entwicklung zeigt `/?vorschau=1&vorgaenge=1` fünf Beispielvorgänge (nur
+`next dev` mit `NEXT_PUBLIC_WAMO_VORSCHAU=1`). Nicht an einem echten Lauf geprüft: Die Schritte aus dem Stream von Claude Code
+sind nur mit aufgezeichneten Streams getestet (`voice-core/testdaten/vorgang_stream.jsonl`).
+
 ### Geräte, Tunnel je Gerät und Geräteverwaltung
 
 Jeder persönliche Laptop hat einen eigenen Rücktunnel zu Sokrates-2: ein Gerät, ein ed25519-Schlüssel, ein Tunnelplatz
