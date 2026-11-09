@@ -40,6 +40,10 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 - Persona: `WAMO_PERSONA_RUECKFRAGEN` ist jetzt Standard (höchstens eine Rückfrage, Aufträge am Stück, kein erneutes Abrufen nach
   einer Freigabe, keine erfundenen Ursachen). Der Fernzugriff-Baustein nennt die Auslöser (Spark, Sokrates, Caesar, Remote Desktop)
   und verbietet die Prüfung am Laptop.
+- Desktop-App: Die geplante Aufgabe "WAMO Tunnel" startete PowerShell alle 5 Minuten sichtbar. Ist Windows Terminal das
+  Standardterminal (Windows 11), blitzte trotz `-WindowStyle Hidden` bei jedem Start ein Terminalfenster auf. `scripts/wamo-tunnel-einrichten.ps1`
+  startet die Aufgabe jetzt über `conhost.exe --headless`, dabei entsteht kein Fenster. Auf bestehenden PCs wirkt das, sobald das
+  Einrichtungsskript die Aufgabe das nächste Mal anlegt (neuer Desktop-Installer, Anmeldung in der App).
 
 ### Hinzugefügt
 
