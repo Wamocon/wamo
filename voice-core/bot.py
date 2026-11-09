@@ -94,6 +94,7 @@ from pipecat.utils.context.llm_context_summarization import (
 
 from abnahme import llm_beurteiler
 from activity import ActivityReporter
+from ausgaben_kuerzen import Ausgaben, AusgabenKuerzer, register_nachladen
 from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
 from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
@@ -596,6 +597,12 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Vorgänge (vorgaenge.py): was WAMO gerade abarbeitet, live für die Tafel "Vorgänge". Alle Änderungen sind synchron, das
     # Senden und Speichern machen Hintergrundtasks mit Frist: der Audiopfad wartet nie darauf. send entsteht weiter unten.
     vorgaenge = Vorgaenge(lambda d: send(d), speichern=datenbank_ablage(memory))
+
+    # Lange Werkzeugausgaben verlustarm kürzen (ausgaben_kuerzen.py, WAMO_AUSGABE_SCHWELLE, 0 = aus): das Original bleibt im
+    # Speicher dieser Sitzung, ausgabe_nachladen holt Teile gezielt zurück
+    ausgaben = Ausgaben()
+    if ausgaben.schwelle > 0:
+        standard_tools.append(register_nachladen(llm, ausgaben, turn.taint))
     dev: DevAgent | None = None
     if entwicklung:
         # Entwicklungsaufträge an Claude Code; Start und Freigaben per Klick in der UI (dev_agent.py). Mit eigenem
@@ -740,6 +747,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                          modell_secs=wartesatz_modell_secs() if wartesatz_modell_an() else None)]
               if (wartesatz_an() or wartesatz_modell_an()) else []),  # langer Werkzeugaufruf oder langsames Modell: kurzer Satz
             aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
+            *([AusgabenKuerzer(ausgaben)] if ausgaben.schwelle > 0 else []),  # lange Ergebnisse kürzen, hinter der Zeitleiste (sie sieht das Original)
             tts,
             transport.output(),
             PlaybackTracker(soft_gate),
@@ -1130,6 +1138,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         if state["cleaned"]:
             return
         state["cleaned"] = True
+        if ausgaben.schwelle > 0:
+            logger.info(ausgaben.abschlusszeile())  # eine Zeile, nur Zahlen
+            ausgaben.leeren()
         state["live"] = False
         guard_task = state["guard"]
         if guard_task is not None and guard_task is not asyncio.current_task():
