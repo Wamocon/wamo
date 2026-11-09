@@ -4,11 +4,17 @@ Ein Auftrag kann Abnahmekriterien haben, höchstens 5, je höchstens 300 Zeichen
 
   befehl   Der Eintrag beginnt mit "befehl:". Er wird im Arbeitsordner des Auftrags ausgeführt, Exit 0 heißt erfüllt.
            Der Text stammt vom Modell und ist nicht vertrauenswürdig. Deshalb gilt:
+             * eine bewusste Zuschaltung: ohne WAMO_ABNAHME_BEFEHLE=ja (Standard aus) wird ein befehl: schon beim Vorbereiten
+               abgelehnt, denn Projektcode (conftest, Makefile, Tests) läuft dabei ohne Hook mit den Rechten des Kerns;
              * nur ein einzelner Befehl mit Argumenten, aufgerufen ohne Shell (argv, kein shell=True); keine Zeichen für
                Verkettung, Umleitung, Ersetzung oder Steuerung (; & | ` $ < > Backslash, Zeilenumbruch, Steuerzeichen);
-             * nur Programme einer Allowlist (Tests, Typ- und Stilprüfung, Build, grep) mit festen Unterbefehlen; keine
-               Interpreter für freien Code (python -c, node app.js), kein Netz-, Installations- oder Veröffentlichungsbefehl;
-             * keine Pfade außerhalb des Projektordners (kein .., kein ~, kein vorhandener absoluter Pfad außerhalb);
+             * eine echte Allowlist je Programm (Tests, Typ- und Stilprüfung, Build, grep): erlaubt ist nur, was ausdrücklich
+               aufgeführt ist, jede andere Option und jedes andere Argument wird abgewiesen (zum Beispiel pytest -p oder -c,
+               go test -exec, node --import, dotnet -p:..., cargo --config); höchstens 12 Argumente zu je höchstens 200 Zeichen;
+               keine Interpreter für freien Code (python -c, node app.js), kein Netz-, Installations- oder Veröffentlichungsbefehl;
+             * keine @datei-Argumente, keine Netzwerkpfade (// oder \\), keine Laufwerksangaben (C:) und keine Adressen (://);
+             * keine Pfade außerhalb des Projektordners (kein .., kein ~, kein vorhandener absoluter Pfad außerhalb; die
+               Prüfung läuft in einem Arbeitsthread mit Frist, nie in der Ereignisschleife);
              * jeder Befehl geht vorher durch den Wächter (dev_guard.decide wie ein Bash-Aufruf des Auftrags): Sperre oder
                Freigabepflicht heißt nicht erfüllt und nie ausgeführt, eine Freigabekarte umgeht die Abnahme nie;
              * Zeitlimit 120 s, Ausgabe auf 2 KB gekürzt (das Ende bleibt), minimale Umgebung ohne Geheimnisse, kein stdin,
@@ -89,57 +95,233 @@ _BEFEHL_PRAEFIX = re.compile(r"\s*befehl\s*:(.*)", re.IGNORECASE | re.DOTALL)
 _VERBOTEN = re.compile(r"[;&|`$<>\\]")
 _VERLAESST = re.compile(r"(?:^|[/=])\.\.(?:/|$)|(?:^|=)~")
 _SKRIPT = re.compile(r"(?:test|build|lint|typecheck|check|verify)(?::[a-z0-9_-]{1,30})?")
-_PYTHON_MODULE = ("pytest", "unittest", "mypy", "compileall")
+# Netzwerkpfad (// oder \\), Adresse (://) und Laufwerksangabe (C:, auch c:x): Path.exists() darauf löst unter Windows eine
+# SMB-Verbindung aus. "::" (pytest-Knoten) und Namen wie a:b mitten im Wort sind keine Laufwerke.
+_FREMDPFAD = re.compile(r"//|\\\\|://|(?<![A-Za-z0-9_])[A-Za-z]:(?!:)")
+_PFADZEICHEN = re.compile(r"[A-Za-z0-9_.+\-/]+")
+_KNOTEN = re.compile(r"[A-Za-z0-9_.\-\[\]]+")
+# unittest ruft jedes aufrufbare Ziel ohne Argumente auf (os.getcwd, sys.exit): erlaubt sind nur discover und Testnamen, die mit
+# tests oder test_ beginnen (nicht das test-Paket der Standardbibliothek)
+_TESTNAME = re.compile(r"(?:discover|(?:tests|test_[A-Za-z0-9_]+)(?:\.[A-Za-z_][A-Za-z0-9_]*)*)")
+_GO_PAKET = re.compile(r"\.(?:/[A-Za-z0-9_.+\-]+)*(?:/\.\.\.)?")
+MAX_ARGUMENTE = 12
+ARGUMENT_ZEICHEN = 200
+BEFEHLE_ENV = "WAMO_ABNAHME_BEFEHLE"
 
 
-def _frei(args: Sequence[str]) -> str | None:
+def befehle_eingeschaltet() -> bool:
+    """Befehlskriterien sind eine bewusste Zuschaltung des Betreibers: nur der Wert ja schaltet ein (Standard aus). Projektcode
+    (conftest, Makefile, Tests) läuft dabei ohne Hook mit den Rechten des Kerns."""
+    return os.environ.get(BEFEHLE_ENV, "").strip() == "ja"
+
+
+def _wert(muster: str) -> Callable[[str], bool]:
+    regel = re.compile(muster)
+    return lambda text: regel.fullmatch(text) is not None
+
+
+@dataclass(frozen=True)
+class _Wert:
+    """Eine Option mit Wert: gueltig prüft den Wert, gleich erlaubt auch die Form --option=wert (sonst nur getrennt)."""
+
+    gueltig: Callable[[str], bool]
+    gleich: bool = False
+
+
+def _pfad(arg: str) -> bool:
+    """Ein relativer Pfad im Projekt: schlichte Zeichen, nicht absolut, nicht mit - beginnend, kein .. als Teil."""
+    return _PFADZEICHEN.fullmatch(arg) is not None and not arg.startswith(("-", "/")) and ".." not in arg.split("/")
+
+
+def _pytest_ziel(arg: str) -> bool:
+    pfad, *knoten = arg.split("::")
+    return _pfad(pfad) and all(_KNOTEN.fullmatch(k) for k in knoten)
+
+
+def _go_paket(arg: str) -> bool:
+    return _GO_PAKET.fullmatch(arg) is not None and ".." not in arg.split("/")
+
+
+def _json_pfad(arg: str) -> bool:
+    return _pfad(arg) and arg.endswith(".json")
+
+
+def _zerlegen(args: Sequence[str], *, flags: Iterable[str] = (), werte: dict[str, _Wert] | None = None,
+              kurz: str = "") -> tuple[str | None, list[str]]:
+    """Zerlegt Argumente streng nach einer ausdrücklichen Liste: flags (ohne Wert), werte (Option mit geprüftem Wert), kurz
+    (Buchstaben, die als -abc zusammengesetzt sein dürfen). Jede andere Option ist ein Fehler. Gibt (Fehler, Positionsargumente)."""
+    flags, werte, positionen, i = frozenset(flags), werte or {}, [], 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if not arg.startswith("-"):
+            positionen.append(arg)
+            continue
+        if arg in flags or (kurz and len(arg) > 1 and arg[1] != "-" and all(c in kurz for c in arg[1:])):
+            continue
+        name, gleich, wert = arg.partition("=")
+        regel = werte.get(name)
+        if regel is None or (gleich and not regel.gleich):
+            return f"Option {clean_inline(arg, 40)} ist als Kriterium nicht erlaubt", []
+        if not gleich:
+            if i >= len(args):
+                return f"Option {name} braucht einen Wert", []
+            wert, i = args[i], i + 1
+        if not regel.gueltig(wert):
+            return f"Der Wert für {name} ist nicht erlaubt", []
+    return None, positionen
+
+
+def _nur(positionen: Iterable[str], gueltig: Callable[[str], bool], erlaubt: str) -> str | None:
+    for p in positionen:
+        if not gueltig(p):
+            return f"Argument {clean_inline(p, 40)} ist nicht erlaubt (erlaubt: {erlaubt})"
     return None
+
+
+def _mit_positionen(args: Sequence[str], gueltig: Callable[[str], bool], erlaubt: str, *, flags: Iterable[str] = (),
+                    werte: dict[str, _Wert] | None = None, kurz: str = "") -> str | None:
+    fehler, positionen = _zerlegen(args, flags=flags, werte=werte, kurz=kurz)
+    return fehler or _nur(positionen, gueltig, erlaubt)
+
+
+_RELATIV = "relative Pfade im Projektordner"
+_AUSDRUCK = _Wert(_wert(r"[A-Za-z0-9_(][A-Za-z0-9_ .()-]{0,99}"))  # -k und -m: Namen mit and, or, not, sonst nichts
+
+
+def _pytest(args: Sequence[str]) -> str | None:
+    return _mit_positionen(args, _pytest_ziel, "Testpfade relativ im Projektordner", flags=("-q", "-x", "-v"),
+                           werte={"-k": _AUSDRUCK, "-m": _AUSDRUCK, "--tb": _Wert(_wert("short|line|no"), True)})
+
+
+def _unittest(args: Sequence[str]) -> str | None:
+    return _mit_positionen(args, _wert(_TESTNAME.pattern), "discover oder Testnamen tests... und test_...", flags=("-v", "-q", "-f", "-b"),
+                           werte={"-s": _Wert(_pfad), "-p": _Wert(_wert(r"[A-Za-z0-9_*?.][A-Za-z0-9_*?.\-]{0,59}"))})
+
+
+def _mypy(args: Sequence[str]) -> str | None:
+    return _mit_positionen(args, _pfad, _RELATIV, flags=("--strict", "--ignore-missing-imports"))
+
+
+def _compileall(args: Sequence[str]) -> str | None:
+    return _mit_positionen(args, _pfad, _RELATIV, flags=("-q",))
+
+
+_PYTHON_MODULE: dict[str, Callable[[Sequence[str]], str | None]] = {
+    "pytest": _pytest, "unittest": _unittest, "mypy": _mypy, "compileall": _compileall,
+}
 
 
 def _python(args: Sequence[str]) -> str | None:
     if len(args) >= 2 and args[0] == "-m" and args[1] in _PYTHON_MODULE:
-        return None
+        return _PYTHON_MODULE[args[1]](args[2:])
     return f"Python nur als python -m {', '.join(_PYTHON_MODULE)}"
 
 
+_NACHLAUF = frozenset({"--run", "--ci", "--watchAll=false", "--passWithNoTests"})
+
+
 def _paketmanager(args: Sequence[str]) -> str | None:
-    if args[:1] == ("test",) or (args[:1] == ("run",) and len(args) > 1 and _SKRIPT.fullmatch(args[1])):
-        return None
-    return "npm, pnpm und yarn nur mit test oder run test, build, lint, typecheck, check, verify"
-
-
-def _unterbefehle(*erlaubt: str) -> Callable[[Sequence[str]], str | None]:
-    def regel(args: Sequence[str]) -> str | None:
-        return None if args and args[0] in erlaubt else f"nur mit {', '.join(erlaubt)}"
-
-    return regel
-
-
-def _ohne_aenderung(args: Sequence[str]) -> str | None:
-    """ruff check und eslint ohne --fix: die Prüfung ändert keine Dateien."""
-    if any(a.startswith("--fix") or a == "--unsafe-fixes" for a in args):
-        return "ohne --fix, eine Prüfung ändert keine Dateien"
+    if args[:1] == ("test",):
+        rest = args[1:]
+    elif args[:1] == ("run",) and len(args) > 1 and _SKRIPT.fullmatch(args[1]):
+        rest = args[2:]
+    else:
+        return "npm, pnpm und yarn nur mit test oder run test, build, lint, typecheck, check, verify"
+    if rest and not (rest[0] == "--" and len(rest) > 1 and all(a in _NACHLAUF for a in rest[1:])):
+        return f"Nach dem Skript nur -- mit {', '.join(sorted(_NACHLAUF))}"
     return None
 
 
-def _ruff(args: Sequence[str]) -> str | None:
-    return _ohne_aenderung(args) if args[:1] == ("check",) else "ruff nur mit check"
-
-
 def _node(args: Sequence[str]) -> str | None:
-    return None if args[:1] == ("--test",) else "node nur mit --test"
+    if args[:1] != ("--test",):
+        return "node nur mit --test"
+    return _nur(args[1:], _pfad, "Testpfade relativ im Projektordner")
+
+
+def _go(args: Sequence[str]) -> str | None:
+    unterbefehl, rest = args[:1], args[1:]
+    if unterbefehl == ("test",):
+        flags: tuple[str, ...] = ("-v", "-short", "-failfast")
+        werte = {"-run": _Wert(_wert(r"[A-Za-z0-9_^(.][A-Za-z0-9_./^*+?()\-]{0,99}"), True), "-count": _Wert(_wert("[0-9]{1,3}"), True)}
+    elif unterbefehl == ("build",):
+        flags, werte = ("-v",), {}
+    elif unterbefehl == ("vet",):
+        flags, werte = (), {}
+    else:
+        return "go nur mit test, vet, build"
+    return _mit_positionen(rest, _go_paket, "./... oder ein relativer Paketpfad", flags=flags, werte=werte)
+
+
+def _cargo(args: Sequence[str]) -> str | None:
+    if args[:1] not in (("test",), ("check",), ("build",), ("clippy",)):
+        return "cargo nur mit test, check, build, clippy"
+    fehler, positionen = _zerlegen(args[1:], flags=("--workspace", "--all-targets", "--locked", "--offline", "--release",
+                                                     "--lib", "-q", "--quiet"))
+    if fehler:
+        return fehler
+    if positionen and not (args[0] == "test" and len(positionen) == 1 and _wert(r"[A-Za-z0-9_:]{1,100}")(positionen[0])):
+        return "Argumente nur bei cargo test, und dort ein einzelner Testname"
+    return None
+
+
+def _dotnet(args: Sequence[str]) -> str | None:
+    if args[:1] not in (("test",), ("build",)):
+        return "dotnet nur mit test oder build"
+    fehler, positionen = _zerlegen(args[1:], flags=("--no-restore", "--nologo"), werte={
+        "-c": _Wert(_wert("Debug|Release")), "--configuration": _Wert(_wert("Debug|Release"), True)})
+    if fehler or len(positionen) > 1:
+        return fehler or "dotnet nur mit einem Projekt oder einer Lösung"
+    return _nur(positionen, _pfad, "ein relativer Pfad im Projektordner")
 
 
 def _make(args: Sequence[str]) -> str | None:
     return None if len(args) == 1 and args[0] in ("test", "check", "lint", "build") else "make nur mit test, check, lint oder build"
 
 
+def _ruff(args: Sequence[str]) -> str | None:
+    if args[:1] != ("check",):
+        return "ruff nur mit check"
+    return _mit_positionen(args[1:], _pfad, _RELATIV, flags=("--no-cache", "-q", "--quiet"))  # kein --fix, kein --add-noqa
+
+
+def _eslint(args: Sequence[str]) -> str | None:
+    return _mit_positionen(args, _pfad, _RELATIV, flags=("--quiet",),
+                           werte={"--max-warnings": _Wert(_wert("[0-9]{1,4}"), True)})  # kein --fix, keine Plugins
+
+
+def _tsc(args: Sequence[str]) -> str | None:
+    if "--noEmit" not in args:
+        return "tsc nur mit --noEmit (prüfen, nichts schreiben)"
+    fehler, positionen = _zerlegen(args, flags=("--noEmit",), werte={"-p": _Wert(_json_pfad), "--project": _Wert(_json_pfad, True)})
+    return fehler or ("tsc ohne Dateiargumente, nur --noEmit und -p mit relativer tsconfig" if positionen else None)
+
+
+def _grep(args: Sequence[str]) -> str | None:
+    fehler, positionen = _zerlegen(args, kurz="qcrniEFwlsv")  # nur Kurzschalter ohne Dateizugriff; kein -R (folgt Links)
+    if fehler:
+        return fehler
+    if not positionen:
+        return "grep braucht ein Suchmuster"
+    return _nur(positionen[1:], _pfad, "Dateien relativ im Projektordner")
+
+
 _PROGRAMME: dict[str, Callable[[Sequence[str]], str | None]] = {
-    "pytest": _frei, "python": _python, "python3": _python, "npm": _paketmanager, "pnpm": _paketmanager,
-    "yarn": _paketmanager, "node": _node, "go": _unterbefehle("test", "vet", "build"),
-    "cargo": _unterbefehle("test", "check", "build", "clippy"), "dotnet": _unterbefehle("test", "build"),
-    "make": _make, "ruff": _ruff, "mypy": _frei, "tsc": _frei, "eslint": _ohne_aenderung, "grep": _frei,
+    "pytest": _pytest, "python": _python, "python3": _python, "npm": _paketmanager, "pnpm": _paketmanager,
+    "yarn": _paketmanager, "node": _node, "go": _go, "cargo": _cargo, "dotnet": _dotnet, "make": _make, "ruff": _ruff,
+    "mypy": _mypy, "tsc": _tsc, "eslint": _eslint, "grep": _grep,
 }
+
+
+def _pfadteile(arg: str) -> set[str]:
+    """Die Stellen eines Arguments, an denen ein Pfad stehen kann: das ganze Argument, der Wert nach = und der Wert direkt
+    hinter einer Kurzoption (-fPFAD)."""
+    kurz = arg[2:] if arg.startswith("-") and not arg.startswith("--") else ""
+    return {teil for teil in (arg, arg.partition("=")[2], kurz) if teil}
+
+
+def _fremdpfad(arg: str) -> bool:
+    return any(_FREMDPFAD.search(teil) for teil in _pfadteile(arg))
 
 
 def _befehl_grund(argv: Sequence[str]) -> str | None:
@@ -150,16 +332,23 @@ def _befehl_grund(argv: Sequence[str]) -> str | None:
     regel = _PROGRAMME.get(name.lower().removesuffix(".exe"))
     if regel is None:
         return f"Programm {clean_inline(name, 30)} ist als Kriterium nicht erlaubt (erlaubt: {', '.join(sorted(_PROGRAMME))})"
-    if grund := regel(argv[1:]):
-        return grund
-    if any(_VERLAESST.search(a) for a in argv[1:]):
+    args = argv[1:]
+    if len(args) > MAX_ARGUMENTE:
+        return f"höchstens {MAX_ARGUMENTE} Argumente"
+    if any(len(a) > ARGUMENT_ZEICHEN for a in args):
+        return f"jedes Argument höchstens {ARGUMENT_ZEICHEN} Zeichen"
+    if any(a.startswith("@") for a in args):
+        return "keine Argumentdateien (@datei)"
+    if any(_fremdpfad(a) for a in args):
+        return "keine Netzwerkpfade (//), Laufwerksangaben (C:) oder Adressen (://)"
+    if any(_VERLAESST.search(a) for a in args):
         return "Pfade nur im Projektordner (kein .. und kein ~)"
-    return None
+    return regel(args)
 
 
-def _befehl(nr: int, rest: str, befehle_erlaubt: bool) -> Kriterium | None:
+def _befehl(nr: int, rest: str, befehle_erlaubt: bool, befehle_hinweis: str = "") -> Kriterium | None:
     if not befehle_erlaubt:
-        raise ValueError(f"Kriterium {nr}: Befehlskriterien (befehl:) gibt es in dieser Betriebsart nicht, "
+        raise ValueError(f"Kriterium {nr}: {befehle_hinweis or 'Befehlskriterien (befehl:) gibt es in dieser Betriebsart nicht'}, "
                          "formuliere eine prüfbare Aussage")
     rest = rest.strip()
     if any(unicodedata.category(c).startswith("C") for c in rest):
@@ -181,20 +370,21 @@ def _befehl(nr: int, rest: str, befehle_erlaubt: bool) -> Kriterium | None:
     return Kriterium(text, "befehl", argv)
 
 
-def _kriterium(nr: int, eintrag: str, befehle_erlaubt: bool) -> Kriterium | None:
+def _kriterium(nr: int, eintrag: str, befehle_erlaubt: bool, befehle_hinweis: str = "") -> Kriterium | None:
     if len(eintrag) > 2000:
         raise ValueError(f"Kriterium {nr}: länger als {KRITERIUM_ZEICHEN} Zeichen")
     if treffer := _BEFEHL_PRAEFIX.fullmatch(eintrag):
-        return _befehl(nr, treffer.group(1), befehle_erlaubt)
+        return _befehl(nr, treffer.group(1), befehle_erlaubt, befehle_hinweis)
     text = clean_inline(eintrag, 10_000)
     if len(text) > KRITERIUM_ZEICHEN:
         raise ValueError(f"Kriterium {nr}: länger als {KRITERIUM_ZEICHEN} Zeichen")
     return Kriterium(text, "aussage", ()) if text else None
 
 
-def parse_abnahme(roh: object, *, befehle_erlaubt: bool = True) -> list[Kriterium]:
+def parse_abnahme(roh: object, *, befehle_erlaubt: bool = True, befehle_hinweis: str = "") -> list[Kriterium]:
     """Das Werkzeugargument abnahme: Liste von Texten (ein einzelner Text gilt als Liste mit einem Eintrag). ValueError mit
-    einem Satz für das Modell, wenn etwas nicht passt. Leere Einträge und Doppelte fallen weg."""
+    einem Satz für das Modell, wenn etwas nicht passt. Leere Einträge und Doppelte fallen weg. befehle_erlaubt=False lehnt jedes
+    befehl: ab, befehle_hinweis nennt dem Modell den Grund (sonst: die Betriebsart)."""
     if roh is None:
         return []
     eintraege = [roh] if isinstance(roh, str) else roh
@@ -205,7 +395,7 @@ def parse_abnahme(roh: object, *, befehle_erlaubt: bool = True) -> list[Kriteriu
     for nr, eintrag in enumerate(eintraege, start=1):
         if not isinstance(eintrag, str):
             raise ValueError(f"Kriterium {nr}: Text erwartet")
-        k = _kriterium(nr, eintrag, befehle_erlaubt)
+        k = _kriterium(nr, eintrag, befehle_erlaubt, befehle_hinweis)
         if k is not None and k.text.casefold() not in gesehen:
             gesehen.add(k.text.casefold())
             kriterien.append(k)
@@ -314,16 +504,17 @@ async def befehl_ausfuehren(argv: Sequence[str], arbeitsordner: Path, frist_s: f
 
 
 _ABSOLUT = re.compile(r"/|[A-Za-z]:[/]")
+PFAD_FRIST_S = 2.0  # so lange darf die Prüfung der Pfade höchstens dauern (sonst: nicht ausgeführt)
 
 
 def _ausserhalb(argv: Sequence[str], ordner: Path) -> str | None:
     """Ein Argument, das auf einen vorhandenen Pfad außerhalb des Projektordners zeigt (auch als --option=pfad und über einen
-    Link im Projekt), sonst None. Ein Argument, das kein vorhandener Pfad ist (Suchmuster, Option), bleibt unberührt."""
+    Link im Projekt), sonst None. Ein Argument, das kein vorhandener Pfad ist (Suchmuster, Option), bleibt unberührt.
+    Blockiert (Dateizugriff): nur über _pfad_problem aufrufen, das sie in einem Arbeitsthread mit Frist laufen lässt."""
     wurzel = ordner.resolve()
     for arg in argv[1:]:
-        kurz = arg[2:] if arg.startswith("-") and not arg.startswith("--") else ""  # -fPFAD: Wert direkt an der Option
-        for teil in {arg, arg.partition("=")[2], kurz}:
-            if not teil or teil.startswith("-"):
+        for teil in _pfadteile(arg):
+            if teil.startswith("-"):
                 continue
             try:
                 kandidat = Path(teil) if _ABSOLUT.match(teil) else ordner / teil
@@ -334,12 +525,35 @@ def _ausserhalb(argv: Sequence[str], ordner: Path) -> str | None:
     return None
 
 
+def _fremdpfad_problem(argv: Sequence[str]) -> str | None:
+    """Ein Argument in Form eines Netzwerkpfads (// oder zwei Backslashes), einer Laufwerksangabe (C:) oder einer Adresse (://), sonst None.
+    Davor darf kein Dateizugriff laufen: unter Windows verbindet sich schon Path.exists() mit //host/share (SMB, NTLM-Hash)."""
+    for arg in argv[1:]:
+        if _fremdpfad(arg):
+            return f"Netzwerk-, Laufwerks- oder Adresspfad, nicht ausgeführt: {clean_inline(arg, 80)}"
+    return None
+
+
+async def _pfad_problem(argv: Sequence[str], ordner: Path) -> str | None:
+    """Der Grund (ein Satz), warum die Pfade im Befehl keine Ausführung erlauben, sonst None. Der Dateizugriff läuft nicht in
+    der Ereignisschleife (Audiopfad), sondern in einem Arbeitsthread mit Frist; ein Thread, der hängt, wird nicht abgewartet."""
+    if grund := _fremdpfad_problem(argv):
+        return grund
+    try:
+        draussen = await asyncio.wait_for(asyncio.to_thread(_ausserhalb, argv, ordner), PFAD_FRIST_S)
+    except asyncio.TimeoutError:
+        return "Die Pfadprüfung dauerte zu lange, nicht ausgeführt"
+    return f"Pfad außerhalb des Projektordners, nicht ausgeführt: {draussen}" if draussen else None
+
+
 async def pruefe_befehl(k: Kriterium, arbeitsordner: Path, ausfuehrer: Ausfuehrer | None) -> Ergebnis:
     """Ein Befehlskriterium: Wächter, Pfade, dann Ausführung. Alles außer Exit 0 ist nicht erfüllt, mit Hinweis."""
     if ausfuehrer is None:
         return Ergebnis(k.text, False, hinweis("Befehle lassen sich in dieser Betriebsart nicht prüfen"))
     if not k.befehl:
         return Ergebnis(k.text, False, "kein Befehl angegeben")
+    if grund := _fremdpfad_problem(k.befehl):  # vor dem Wächter: auch er löst Pfade auf (Path.resolve)
+        return Ergebnis(k.text, False, hinweis(grund))
     try:
         entscheidung, grund = decide("Bash", {"command": shlex.join(k.befehl)}, arbeitsordner)
     except Exception as e:  # noqa: BLE001 (ein Fehler des Wächters heißt: nicht ausführen)
@@ -349,8 +563,8 @@ async def pruefe_befehl(k: Kriterium, arbeitsordner: Path, ausfuehrer: Ausfuehre
         return Ergebnis(k.text, False, hinweis(f"Vom Wächter gesperrt, nicht ausgeführt: {grund}"))
     if entscheidung != "allow":
         return Ergebnis(k.text, False, hinweis(f"Braucht eine Freigabe und wird nie automatisch ausgeführt: {grund}"))
-    if draussen := _ausserhalb(k.befehl, arbeitsordner):
-        return Ergebnis(k.text, False, hinweis(f"Pfad außerhalb des Projektordners, nicht ausgeführt: {draussen}"))
+    if grund := await _pfad_problem(k.befehl, arbeitsordner):
+        return Ergebnis(k.text, False, hinweis(grund))
     exit_code, ausgabe = await ausfuehrer(k.befehl, arbeitsordner)
     if exit_code == 0:
         return Ergebnis(k.text, True, "")

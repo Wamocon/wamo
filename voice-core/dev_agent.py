@@ -694,7 +694,13 @@ class DevAgent:
         ]
 
     def _befehle_moeglich(self) -> bool:
-        return self._ausfuehrer is not None
+        """Befehlskriterien gibt es nur mit Ausführer (Betriebsart lokal) UND bewusster Zuschaltung (WAMO_ABNAHME_BEFEHLE=ja,
+        Standard aus): Projektcode läuft dabei ohne Hook mit den Rechten des Kerns."""
+        return self._ausfuehrer is not None and abnahme.befehle_eingeschaltet()
+
+    def _befehle_hinweis(self) -> str:
+        """Warum befehl: abgelehnt wird, wenn es einen Ausführer gäbe: nicht zugeschaltet (sonst gilt der Satz zur Betriebsart)."""
+        return "Befehlskriterien (befehl:) sind nicht zugeschaltet" if self._ausfuehrer is not None else ""
 
     def _abnahme_beschreibung(self) -> str:
         """Beschreibung des Arguments abnahme. Sie sagt dem Modell, was in dieser Betriebsart geht: Befehle nur, wo der Kern sie
@@ -707,7 +713,7 @@ class DevAgent:
             return (text + " Mit dem Präfix „befehl:“ läuft ein einzelner Befehl im Projektordner, Exit 0 heißt erfüllt, "
                     "zum Beispiel „befehl: pytest -q“ oder „befehl: npm test“. Nur Tests, Build, Lint und grep, keine "
                     "Verkettung mit ; & | oder Backticks.")
-        return text + " Befehle als Kriterium gibt es in dieser Betriebsart noch nicht, formuliere Aussagen."
+        return text + " Befehle als Kriterium sind hier nicht zugeschaltet, formuliere Aussagen."
 
     def register(self, llm) -> None:
         llm.register_function("entwicklung_vorbereiten", self._vorbereiten)
@@ -738,7 +744,8 @@ class DevAgent:
             await params.result_callback({"ok": False, "fehler": str(e)})
             return
         try:
-            kriterien = abnahme.parse_abnahme(params.arguments.get("abnahme"), befehle_erlaubt=self._befehle_moeglich())
+            kriterien = abnahme.parse_abnahme(params.arguments.get("abnahme"), befehle_erlaubt=self._befehle_moeglich(),
+                                              befehle_hinweis=self._befehle_hinweis())
             if self._beurteiler is None and any(k.art == "aussage" for k in kriterien):
                 raise ValueError("Aussagen lassen sich in dieser Sitzung nicht beurteilen, formuliere nur Befehle oder lass "
                                  "das Ziel weg")
@@ -756,6 +763,8 @@ class DevAgent:
                  "auftrag": clean_inline(auftrag, MAX_TASK_CHARS)}
         if repo:
             karte["repo"] = repo
+        if kriterien:  # die Person bestätigt mit dem Klick auch die Kriterien (und damit Befehle), also muss sie sie sehen
+            karte["abnahme"] = [clean_inline(schwaerzen(k.text), abnahme.KRITERIUM_ZEICHEN) for k in kriterien[:abnahme.MAX_KRITERIEN]]
         await self._send(karte)
         ergebnis = {
             "ok": True, "auftrag_id": job.id, "art": KARTEN[art].titel,

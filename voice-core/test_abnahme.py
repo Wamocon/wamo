@@ -92,11 +92,162 @@ def test_befehl_ausserhalb_der_allowlist_wird_abgewiesen(befehl):
     "pytest -q", "pytest -q tests/test_x.py::test_a", "python -m pytest -q", "python3 -m unittest", "npm test",
     "npm test -- --run", "npm run build", "npm run test:unit", "pnpm test", "yarn run lint", "node --test", "go test ./...",
     "cargo test", "make test", "ruff check .", 'grep -q "hello world" README.md', "tsc --noEmit", "mypy .",
+    # pytest: nur -q -x -v, --tb, -k und -m mit einfachem Ausdruck, Testpfade relativ im Projekt
+    "pytest -q -x -v --tb=short", "pytest --tb=line tests", "pytest --tb no", 'pytest -k "foo and not bar"',
+    'pytest -m "not slow" -q', 'pytest -k "(a or b)"', "pytest tests/test_x.py::TestA::test_b[1-2]", "pytest tests tests2",
+    "pytest .", "python -m pytest -q tests", "python3 -m pytest -x tests/unit",
+    # unittest, mypy, compileall
+    'python -m unittest discover -s tests -p "test_*.py"', "python -m unittest tests.test_x -v", "python -m mypy src",
+    "python -m unittest test_x.TestA.test_b", "python -m unittest discover tests", "python -m unittest tests",
+    "python -m compileall -q .", "python -m unittest -v",
+    # Go
+    "go test -run TestFoo/sub -count=1 -v ./...", "go test -count 1 ./pkg/...", "go vet ./...", "go build ./...",
+    "go test ./internal/x", "go test", "go test -short -failfast ./...", "go build -v ./cmd/app",
+    # Cargo, dotnet
+    "cargo test --workspace --locked", "cargo test my_test", "cargo build --release", "cargo clippy --all-targets",
+    "cargo check", "cargo test --offline -q", "dotnet test --no-restore -c Release", "dotnet build --nologo App.sln",
+    "dotnet build src/App/App.csproj", "dotnet test --configuration Debug",
+    # Paketmanager, node, tsc, eslint, ruff, mypy, grep
+    "npm test -- --ci --watchAll=false", "pnpm run build", "yarn test", "yarn run build -- --run", "node --test test/a.test.js test/",
+    "tsc --noEmit -p tsconfig.app.json", "tsc --noEmit --project=tsconfig.json", "eslint .", "eslint --quiet src",
+    "eslint --max-warnings 0 src", "eslint --max-warnings=0 .", "ruff check -q src tests", "ruff check --no-cache .",
+    "mypy --strict src", "mypy --ignore-missing-imports src tests", 'grep -rn "TODO" src', "grep -rqi foo src README.md",
+    'grep -E "a.b" x.txt', "grep -q -F x README.md", "grep -c x a.txt b.txt",
 ])
 def test_erlaubte_befehle_werden_zerlegt_wie_ohne_shell(befehl):
     (k,) = abnahme.parse_abnahme([f"befehl: {befehl}"])
     assert k.art == "befehl" and k.befehl[0] in ("pytest", "python", "python3", "npm", "pnpm", "yarn", "node", "go",
-                                                  "cargo", "make", "ruff", "grep", "tsc", "mypy")
+                                                  "cargo", "make", "ruff", "grep", "tsc", "mypy", "dotnet", "eslint")
+
+
+@pytest.mark.parametrize("befehl", [
+    # pytest: Plugins, Konfiguration, Wurzel, Ini-Überschreibung, Berichtsdateien, Importmodus
+    "pytest -p myplugin", "pytest -p no:cacheprovider", "pytest -c evil.ini", "pytest --rootdir=sub", "pytest --rootdir sub",
+    "pytest -o addopts=-x", "pytest --override-ini=addopts=x", "pytest --junitxml=out.xml", "pytest --junit-xml out.xml",
+    "pytest --basetemp=x", "pytest --import-mode=importlib", "pytest --pyargs pkg", "pytest --tb=long", "pytest -vv",
+    "pytest --co", "pytest --confcutdir=x", "pytest --log-file=x", "pytest --lf", "pytest -k=a", "pytest -ka",
+    'pytest -k "-p x"', 'pytest -k "a=b"', 'pytest -k "a:b"', 'pytest -k "a/b"', "pytest -k", "pytest -m", "pytest -x -k",
+    "pytest /etc/passwd", "pytest ~/x", "pytest tests/..", "pytest ../x", "pytest -- tests", "pytest tests/x.py::",
+    "pytest tests/x.py::a=b", "pytest tests x=1",
+    # Go: Programme und Code über Optionen
+    "go test -exec ./x ./...", "go test -exec=./x ./...", "go test -toolexec=./x ./...", "go test -toolexec ./x ./...",
+    "go vet -vettool=./x ./...", "go vet -vettool ./x ./...", "go test -o out ./...", "go test -c", "go test -coverprofile=c.out ./...",
+    "go build -o x ./...", "go build -ldflags=-X=main.v=1 ./...", "go test ./... -tags x", "go test -args x", "go test -race ./...",
+    "go test -run -count", "go test -count=abc ./...", "go test -count 99999 ./...", "go test -run=-exec ./...",
+    "go test github.com/x/y", "go test /abs/pkg", "go test ../x", "go build -n ./...", "go vet -n ./...", "go build -gcflags=x ./...",
+    "go test -fuzz Fuzz ./...", "go test -overlay=x.json ./...", "go test -modfile=x.mod ./...", "go test -pkgdir x ./...",
+    # Node
+    "node --test --import data:text/javascript,x", "node --test --import ./x.js", "node --test --require ./x.js", "node --test -r x",
+    "node --test --eval x", "node --test -e x", "node --test --experimental-loader x", "node --test --test-reporter x",
+    "node --import x --test", "node --test x.js --inspect", "node --test --inspect", "node --test --watch",
+    "node --test --env-file=.env", "node --test /abs/x.js", "node --test ../x.js", "node --test @x",
+    # dotnet: MSBuild-Eigenschaften, Protokolle, Einstellungen
+    "dotnet build -p:PostBuildEvent=x", "dotnet build /p:X=1", "dotnet build -property:X=1", "dotnet build --property X=1",
+    "dotnet test --logger x", "dotnet test --settings x.runsettings", "dotnet build -o out", "dotnet build --runtime x",
+    "dotnet test -c Evil", "dotnet test -c", "dotnet build -r x", "dotnet test --filter Name", "dotnet test --blame",
+    "dotnet build -v diag", "dotnet build --output x", "dotnet build /bl", "dotnet test --collect x", "dotnet test -s x",
+    # Cargo
+    "cargo test --config build.runner=x", "cargo build --config x", "cargo +nightly test", "cargo test -- --nocapture",
+    "cargo build --manifest-path=../x/Cargo.toml", "cargo test -Z unstable-options", "cargo build --target-dir=x",
+    "cargo clippy -- -D warnings", "cargo build --features x", "cargo test --test x", "cargo build -p x", "cargo test --exec x",
+    "cargo build --target x", "cargo check x", "cargo build --message-format=json", "cargo test --no-fail-fast=x",
+    "cargo test a b", "cargo test a=b", "cargo test -C ..", "cargo test --profile x", "cargo build --out-dir x",
+    # Paketmanager: nur Test- und Build-Skripte, Weitergabe nur wenige feste Schalter
+    "npm test -- --config x", "npm test --prefix x", "npm run build -- --outDir=x", "npm run test --workspace x",
+    "npm test -- --require x", "npm test --scripts-prepend-node-path", "npm test -- --run --reporter=x", "npm test -- --run x",
+    "npm test x", "npm run build x", "npm run build --if-present", "npm test --ignore-scripts=false", "npm run", "npm run -- test",
+    "npm --prefix x test", "npm -C x test", "npm test --", "npm test -- ", "npm test -- --",
+    "yarn run lint --fix", "pnpm test --filter x", "pnpm -C x test", "yarn --cwd x test", "yarn test --config x",
+    "npm run build -- --run=1", "npm test -- -c x", "npm test -- --watchAll=true", "npm test -- --run @x", "npm test -- --Run",
+    # tsc
+    "tsc --outDir x --noEmit", "tsc --noEmit --generateTrace x", "tsc -b", "tsc", "tsc --noEmit -p ../x.json",
+    "tsc --noEmit -p x.txt", "tsc --noEmit --outFile x", "tsc --noEmit --declarationDir x", "tsc --noEmit -p",
+    "tsc --noEmit --listEmittedFiles", "tsc --noEmit --build", "tsc --noEmit --init", "tsc --noEmit --watch",
+    "tsc --noEmit --project=/abs/x.json", "tsc --noEmit -p tsconfig.json x.ts",
+    # mypy
+    "mypy -c x", "mypy --config-file=x .", "mypy --config-file x .", "mypy --python-executable x .", "mypy --plugins x .",
+    "mypy -p pkg", "mypy -m mod", "mypy --junit-xml x.xml .", "mypy --cache-dir=x .", "mypy --custom-typeshed-dir x .",
+    "mypy --strict=x .", "python -m mypy -m x", "mypy --html-report x .", "mypy --linecount-report x .",
+    # ruff
+    "ruff check --add-noqa .", "ruff check --config x .", "ruff check --config=x.toml .", "ruff check --output-file=x .",
+    "ruff check --fix .", "ruff check --watch", "ruff check --exit-zero .", "ruff format .", "ruff check --unsafe-fixes .",
+    "ruff check --fix-only .", "ruff check --cache-dir x .", "ruff check --isolated --config x .", "ruff check -e .",
+    "ruff check --stdin-filename x .", "ruff check --select E .", "ruff check --extend-exclude x .", "ruff check --target-version x .",
+    # eslint
+    "eslint --fix .", "eslint --fix-dry-run .", "eslint --fix-type problem .", "eslint --rulesdir x .", "eslint --plugin x .",
+    "eslint -c x.js .", "eslint --config x.js .", "eslint --output-file x .", "eslint -o x .", "eslint --parser x .",
+    "eslint --resolve-plugins-relative-to x .", "eslint --init", "eslint --stdin .", "eslint --env x .", "eslint --ext .js .",
+    "eslint --max-warnings abc .", "eslint --max-warnings .", "eslint --cache-location x .", "eslint --no-eslintrc .",
+    "eslint --parser-options x .", "eslint -f x .", "eslint --format x .", "eslint --global x .", "eslint --exec x .",
+    # python: nur -m mit festen Modulen und deren erlaubten Optionen
+    "python -m pytest -p x", "python -m pytest -c x.ini", "python -m compileall -x re .", "python -m compileall -d /x .",
+    "python -m compileall -f .", "python -m unittest -t x", "python -I -m pytest", "python -m mypy -c x", "python -X dev -m pytest",
+    "python -m compileall -j 4 .", "python -m compileall -o 2 .", "python -m compileall -i list.txt", "python -m compileall -b .",
+    "python -m compileall --invalidation-mode unchecked-hash .", "python -m unittest discover -t ..", "python -m unittest -k x",
+    "python -m unittest discover -s ../x", "python -m unittest discover -p /x", "python -m unittest a b-c",
+    "python -m", "python", "python -m pip install x", "python -m venv x", "python -m ensurepip",
+    "python -m unittest os.getcwd", "python -m unittest sys.exit", "python -m unittest test.support", "python -m unittest tmp.x",
+    "python -m unittest discover src/tests", "python -m pytest -k x -k", "python3 -W error -m pytest", "python -E -m pytest",
+    # make: genau ein Ziel, keine Optionen, keine Zuweisungen
+    "make test -f x", "make -C x test", "make test CC=x", "make test build", "make -f x test", "make", "make -n test",
+    "make test=1", "make --eval=x test",
+    # grep: keine Musterdateien, kein Verfolgen von Links, keine Optionen mit Dateizugriff
+    "grep -f patterns.txt x", "grep --file=patterns.txt x", "grep -R x .", "grep --include=* x .", "grep -P x a.txt",
+    "grep --exclude-from=x x .", "grep -d recurse x .", "grep -q", "grep", "grep -e x a.txt", "grep --regexp=x a.txt",
+    "grep -rq -f x .", "grep -rR x .", "grep -q x -- a.txt", "grep -z x a.txt", "grep --null-data x a.txt",
+    "grep --directories=recurse x .", "grep -D read x .", "grep --devices=read x .", "grep -a x a.txt", "grep -r -I x .",
+    "grep --binary-files=text x .", "grep -m1 x a.txt", "grep --max-count=1 x a.txt", "grep -A 1 x a.txt", "grep -h x a.txt",
+    "grep -H x a.txt", "grep -o x a.txt", "grep -x x a.txt", "grep -q x a.txt ../b.txt", "grep -q x /abs.txt",
+    "grep -q x ~x", "grep -q x a b c d e f g h i j k l m",
+    # unbekannte und freie Programme
+    "xargs ls", "env x", "find . -exec x", "git status", "docker run x", "powershell -c x", "pwsh -c x", "cmd /c dir",
+    "wsl ls", "gh pr list", "uv run pytest", "uvx x", "pipx run x", "poetry run pytest", "tox", "nox", "pre-commit run",
+    "npx tsc", "bunx x", "bun test", "deno test", "java -jar x.jar", "mvn test", "gradle test", "./gradlew test", "dotnet run",
+    "dotnet publish", "dotnet restore", "dotnet tool install x", "dotnet new console", "dotnet nuget push x", "cargo run",
+    "cargo install x", "cargo publish", "cargo fetch", "cargo add x", "cargo update", "cargo fmt", "cargo doc", "cargo bench",
+    "go install x", "go get x", "go generate ./...", "go mod download", "go work sync", "go env -w X=1", "go clean", "go fmt ./...",
+    "npm ci", "npm exec x", "npm x x", "npm pack", "npm run-script test", "npm t", "npm tst", "yarn install", "yarn add x",
+    "yarn dlx x", "pnpm dlx x", "pnpm exec x", "pnpm install", "pnpm add x", "pnpm run", "make -j test", "make all", "make clean",
+])
+def test_befehl_mit_beliebiger_option_oder_fremdem_argument_wird_abgewiesen(befehl):
+    """Echte Allowlist: Je Programm ist nur erlaubt, was ausdrücklich aufgeführt ist. Alles andere wird abgewiesen, nie ausgeführt."""
+    with pytest.raises(ValueError):
+        abnahme.parse_abnahme([f"befehl: {befehl}"])
+
+
+@pytest.mark.parametrize("befehl", [
+    "pytest @args.txt", "pytest -q @args.txt", "grep -q x @list.txt", "node --test @x", "pytest //host/share/t.py",
+    "pytest //host", "grep -q x //host/share/x.txt", "grep -q x C:/x.txt", "grep -q x C:x.txt", "grep -q x c:",
+    "pytest C:/x/tests", "grep -q http://example.org a.txt", "grep -q ftp://x a.txt", "grep -q x a.txt file://x",
+    "go test //host/x", "eslint //host/share", "grep -q x /a//b",
+])
+def test_unc_laufwerk_protokoll_und_argumentdateien_werden_schon_beim_parsen_abgewiesen(befehl):
+    with pytest.raises(ValueError):
+        abnahme.parse_abnahme([f"befehl: {befehl}"])
+
+
+def test_hoechstens_zwoelf_argumente_je_hoechstens_zweihundert_zeichen():
+    (k,) = abnahme.parse_abnahme(["befehl: pytest " + " ".join(["-q"] * 12)])
+    assert len(k.befehl) == 13
+    with pytest.raises(ValueError, match="12 Argumente"):
+        abnahme.parse_abnahme(["befehl: pytest " + " ".join(["-q"] * 13)])
+    (k,) = abnahme.parse_abnahme(["befehl: grep -q " + "x" * 200 + " README.md"])
+    assert len(k.befehl[2]) == 200
+    with pytest.raises(ValueError, match="200 Zeichen"):
+        abnahme.parse_abnahme(["befehl: grep -q " + "x" * 201 + " README.md"])
+
+
+def test_der_hinweis_nennt_die_abgewiesene_option_und_fuehrt_nichts_aus():
+    with pytest.raises(ValueError, match="-p"):
+        abnahme.parse_abnahme(["befehl: pytest -p myplugin"])
+    with pytest.raises(ValueError, match="nicht erlaubt"):
+        abnahme.parse_abnahme(["befehl: go test -exec ./x ./..."])
+
+
+def test_auch_die_neuen_pfadargumente_bleiben_im_projektordner():
+    for befehl in ("pytest ../x", "grep -q x ../geheim", "tsc --noEmit -p ../tsconfig.json", "go test ../x"):
+        with pytest.raises(ValueError, match="Projektordner"):
+            abnahme.parse_abnahme([f"befehl: {befehl}"])
 
 
 def test_anfuehrungszeichen_gruppieren_ein_argument_ohne_shell():
@@ -256,16 +407,27 @@ async def test_pfad_ausserhalb_des_projektordners_wird_nicht_ausgefuehrt(ordner,
     draussen = tmp_path / "geheim.txt"
     draussen.write_text("x", encoding="utf-8")
     ausfuehrer = Ausfuehrer((0, ""))
-    r = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", draussen.as_posix()), ordner, ausfuehrer)
-    assert r.erfuellt is False and "außerhalb" in r.hinweis and ausfuehrer.aufrufe == []
-    for form in (f"-f{draussen.as_posix()}", f"--file={draussen.as_posix()}"):  # Wert direkt an der Option
+    formen = (draussen.as_posix(), f"-f{draussen.as_posix()}", f"--file={draussen.as_posix()}")  # Wert direkt an der Option
+    for form in formen:
+        # Die Prüfung selbst (Dateizugriff, läuft im Betrieb nur im Arbeitsthread)
+        assert abnahme._ausserhalb(("grep", "-q", form, "x.txt"), ordner), form
+        # Der ganze Weg: unter Windows lehnt schon die Laufwerksangabe (C:) ab, sonst der Pfad außerhalb. Nie ausgeführt.
         r = await abnahme.pruefe_befehl(befehl("grep", "-q", form, "x.txt"), ordner, ausfuehrer)
-        assert r.erfuellt is False and "außerhalb" in r.hinweis, form
+        assert r.erfuellt is False and "nicht ausgeführt" in r.hinweis, form
     assert ausfuehrer.aufrufe == []
-    drinnen = ordner / "a.txt"
-    drinnen.write_text("x", encoding="utf-8")
-    r = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", drinnen.as_posix()), ordner, Ausfuehrer((0, "")))
+    (ordner / "a.txt").write_text("x", encoding="utf-8")
+    assert abnahme._ausserhalb(("grep", "-q", "x", "a.txt"), ordner) is None
+    assert abnahme._ausserhalb(("grep", "-q", "x", str(ordner / "a.txt")), ordner) is None
+    r = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", "a.txt"), ordner, Ausfuehrer((0, "")))
     assert r.erfuellt is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="unter Windows trägt jeder absolute Pfad eine Laufwerksangabe (C:)")
+async def test_vorhandener_absoluter_pfad_draussen_hat_den_hinweis_ausserhalb(ordner, tmp_path):
+    draussen = tmp_path / "geheim.txt"
+    draussen.write_text("x", encoding="utf-8")
+    r = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", draussen.as_posix()), ordner, Ausfuehrer((0, "")))
+    assert r.erfuellt is False and "außerhalb" in r.hinweis
 
 
 async def test_ein_link_im_projekt_auf_einen_pfad_draussen_wird_nicht_gefolgt(ordner, tmp_path):
@@ -279,6 +441,55 @@ async def test_ein_link_im_projekt_auf_einen_pfad_draussen_wird_nicht_gefolgt(or
     ausfuehrer = Ausfuehrer((0, ""))
     r = await abnahme.pruefe_befehl(befehl("grep", "-rq", "x", "link"), ordner, ausfuehrer)
     assert r.erfuellt is False and "außerhalb" in r.hinweis and ausfuehrer.aufrufe == []
+
+
+@pytest.mark.parametrize("arg", ["//host/share/x.txt", "//host", "C:/x.txt", "c:x", "http://example.org/x", "--file=//host/s", "-f//host/s"])
+async def test_unc_laufwerk_und_protokoll_werden_nie_geprueft_und_nie_ausgefuehrt(ordner, arg):
+    """Ein Pfad wie //host/share löst unter Windows eine SMB-Verbindung aus (NTLM-Hash an einen Fremdhost): Path.exists() darf nie
+    laufen, wenn ein Argument so aussieht, auch nicht, wenn jemand ein Kriterium am Parser vorbei baut."""
+    ausfuehrer = Ausfuehrer((0, ""))
+    with mock.patch.object(Path, "exists", side_effect=AssertionError("Path.exists darf nicht laufen")), \
+            mock.patch.object(Path, "resolve", side_effect=AssertionError("Path.resolve darf nicht laufen")):
+        r = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", arg), ordner, ausfuehrer)
+    assert r.erfuellt is False and ausfuehrer.aufrufe == []
+    assert "nicht ausgeführt" in r.hinweis
+
+
+async def test_pfadpruefung_laeuft_nicht_in_der_ereignisschleife(ordner):
+    import threading
+
+    haupt = threading.get_ident()
+    threads: list[int] = []
+    echt = Path.exists
+
+    def beobachtet(self):
+        threads.append(threading.get_ident())
+        return echt(self)
+
+    with mock.patch.object(abnahme, "decide", return_value=("allow", "")), mock.patch.object(Path, "exists", beobachtet):
+        r = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", "a.txt"), ordner, Ausfuehrer((0, "")))
+    assert r.erfuellt is True
+    assert threads and haupt not in threads  # die Prüfung lief in einem Arbeitsthread
+
+
+async def test_haengende_pfadpruefung_endet_nach_der_frist_und_fuehrt_nichts_aus(ordner):
+    import time
+
+    ausfuehrer = Ausfuehrer((0, ""))
+
+    def haengt(self):
+        time.sleep(1.0)
+        return False
+
+    t0 = asyncio.get_running_loop().time()
+    with mock.patch.object(abnahme, "decide", return_value=("allow", "")), mock.patch.object(abnahme, "PFAD_FRIST_S", 0.1),             mock.patch.object(Path, "exists", haengt):
+        r = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", "a.txt"), ordner, ausfuehrer)
+    assert asyncio.get_running_loop().time() - t0 < 0.8  # nicht auf den Thread gewartet
+    assert r.erfuellt is False and ausfuehrer.aufrufe == [] and "Pfad" in r.hinweis
+
+
+def test_pfadfrist_ist_zwei_sekunden():
+    assert abnahme.PFAD_FRIST_S == 2.0
 
 
 async def test_ohne_ausfuehrer_ist_ein_befehl_nicht_pruefbar(ordner):

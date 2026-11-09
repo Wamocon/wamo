@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import unittest
+from unittest import mock
 
+import abnahme
 import dev_agent
 import dev_guard
 import test_dev_agent_sokrates2 as sokrates2  # das Modul, nicht dessen Testklasse: sie würde hier noch einmal laufen
@@ -89,6 +92,12 @@ class SchleifeTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.basis.asyncTearDown()
+
+    def befehle_an(self, wert: str = "ja") -> None:
+        """Schaltet Befehlskriterien zu (Standard aus, nur der Wert ja)."""
+        patcher = mock.patch.dict(os.environ, {abnahme.BEFEHLE_ENV: wert})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def neu_agent(self, **kw):
         self.agent = dev_agent.DevAgent(memory=self.basis.memory, auftraggeber="Erika", vorgaenge=self.reg,
@@ -314,6 +323,7 @@ class SchleifeTests(unittest.IsolatedAsyncioTestCase):
 
     # ---------------------------------------------------------------- Befehlskriterien
     async def test_befehlskriterien_laufen_ueber_den_ausfuehrer(self):
+        self.befehle_an()
         ausfuehrer = Ausfuehrer((1, "...\n2 failed in 0.3s"), (0, "3 passed"))
         self.neu_agent(befehl_ausfuehrer=ausfuehrer)
         self.laeufe(FakeProc(lauf()), FakeProc(lauf()))
@@ -327,6 +337,7 @@ class SchleifeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.urteile.aufrufe, [])  # Befehle brauchen kein Modell
 
     async def test_ein_befehl_der_den_waechter_nicht_passiert_wird_nie_ausgefuehrt(self):
+        self.befehle_an()
         ausfuehrer = Ausfuehrer((0, ""))
         self.neu_agent(befehl_ausfuehrer=ausfuehrer)
         self.laeufe(FakeProc(lauf()))
@@ -365,12 +376,50 @@ class SchleifeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("beurteil", antwort["fehler"])
 
     async def test_befehl_ist_nur_mit_ausfuehrer_oder_betriebsart_lokal_erlaubt(self):
+        self.befehle_an()
         self.neu_agent(befehl_ausfuehrer=Ausfuehrer())
         self.assertTrue((await self.vorbereiten(abnahme=["befehl: pytest -q"]))["ok"])
         self.neu_agent(ort="lokal")
         self.assertIs(self.agent._ausfuehrer.__name__, "befehl_ausfuehren")
         beschreibung = self.agent.schemas()[0].properties["abnahme"]["description"]
         self.assertIn("befehl:", beschreibung)
+
+    async def test_befehlskriterien_sind_ohne_zuschaltung_aus_auch_mit_ausfuehrer_und_lokal(self):
+        """WAMO_ABNAHME_BEFEHLE (Standard aus): ohne den Wert ja lehnt schon das Vorbereiten ein befehl: ab, mit klarer Meldung."""
+        for kw in ({"befehl_ausfuehrer": Ausfuehrer()}, {"ort": "lokal"}):
+            self.neu_agent(**kw)
+            with self.subTest(kw=list(kw)):
+                antwort = await self.vorbereiten(abnahme=["befehl: pytest -q"])
+                self.assertFalse(antwort["ok"])
+                self.assertIn("zugeschaltet", antwort["fehler"])
+                self.assertIn("Aussage", antwort["fehler"])
+                self.assertEqual(self.agent._jobs, {})  # keine Karte, nichts angelegt
+                beschreibung = self.agent.schemas()[0].properties["abnahme"]["description"]
+                self.assertNotIn("befehl:", beschreibung)  # das Modell bietet sie gar nicht erst an
+                self.assertTrue((await self.vorbereiten(abnahme=[README]))["ok"])  # Aussagen bleiben möglich
+
+    async def test_nur_der_wert_ja_schaltet_befehlskriterien_zu(self):
+        for wert in ("an", "1", "true", "JA", "Ja", "on", "nein", "", "jaa", "j"):
+            with self.subTest(wert=wert), mock.patch.dict(os.environ, {abnahme.BEFEHLE_ENV: wert}):
+                self.neu_agent(befehl_ausfuehrer=Ausfuehrer())
+                self.assertFalse((await self.vorbereiten(abnahme=["befehl: pytest -q"]))["ok"])
+        with mock.patch.dict(os.environ, {abnahme.BEFEHLE_ENV: "ja"}):
+            self.neu_agent(befehl_ausfuehrer=Ausfuehrer())
+            self.assertTrue((await self.vorbereiten(abnahme=["befehl: pytest -q"]))["ok"])
+        env = {k: v for k, v in os.environ.items() if k != abnahme.BEFEHLE_ENV}
+        with mock.patch.dict(os.environ, env, clear=True):  # ganz ohne Variable
+            self.neu_agent(befehl_ausfuehrer=Ausfuehrer())
+            self.assertFalse((await self.vorbereiten(abnahme=["befehl: pytest -q"]))["ok"])
+
+    async def test_zugeschaltete_befehle_prueft_weiter_die_allowlist(self):
+        self.befehle_an()
+        self.neu_agent(befehl_ausfuehrer=Ausfuehrer())
+        for roh in ("befehl: pytest -p myplugin", "befehl: go test -exec ./x ./...", "befehl: node --test --import ./x.js"):
+            with self.subTest(roh=roh):
+                antwort = await self.vorbereiten(abnahme=[roh])
+                self.assertFalse(antwort["ok"])
+                self.assertIn("nicht erlaubt", antwort["fehler"])
+        self.assertEqual(self.agent._jobs, {})
 
     async def test_schema_kennt_abnahme_runden_und_zeitlimit_ohne_neue_pflichtfelder(self):
         schema = self.agent.schemas()[0]
@@ -384,6 +433,35 @@ class SchleifeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("1 bis 3", text)
         self.assertNotIn("befehl:", text)  # auf Sokrates-2 laufen Befehle nicht: das Modell soll sie nicht anbieten
         self.assertIn("Aussage", text)
+
+    # ---------------------------------------------------------------- Startkarte zeigt die Kriterien
+    def karte(self) -> dict:
+        return [m for m in self.basis.task.messages() if m.get("type") == "auftrag"][-1]
+
+    async def test_die_startkarte_zeigt_die_abnahmekriterien(self):
+        self.befehle_an()
+        self.neu_agent(befehl_ausfuehrer=Ausfuehrer())
+        antwort = await self.vorbereiten(abnahme=[README, "befehl: pytest -q", BEISPIEL])
+        self.assertTrue(antwort["ok"], antwort)
+        self.assertEqual(self.karte()["abnahme"], [README, "befehl: pytest -q", BEISPIEL])
+        self.assertEqual(self.karte()["job"], antwort["auftrag_id"])
+
+    async def test_die_startkarte_hat_ohne_abnahme_kein_feld_abnahme(self):
+        await self.vorbereiten()
+        self.assertNotIn("abnahme", self.karte())
+
+    async def test_die_karte_zeigt_nur_gesaeuberte_kriterien_hoechstens_fuenf_je_dreihundert_zeichen(self):
+        geheim = "sk-ant-api03-" + "Z" * 40
+        antwort = await self.vorbereiten(abnahme=[f"Token {geheim} ist nicht im Bericht\x07", "x" * 300, "Drittes\nmit Umbruch"])
+        self.assertTrue(antwort["ok"], antwort)
+        eintraege = self.karte()["abnahme"]
+        self.assertEqual(len(eintraege), 3)
+        self.assertTrue(all(len(e) <= 300 for e in eintraege))
+        self.assertNotIn(geheim, json.dumps(eintraege))
+        self.assertTrue(all("\x07" not in e and "\n" not in e for e in eintraege))
+        fuenf = await self.vorbereiten(abnahme=[f"Kriterium {i}" for i in range(5)])
+        self.assertTrue(fuenf["ok"], fuenf)
+        self.assertEqual(len(self.karte()["abnahme"]), 5)
 
     # ---------------------------------------------------------------- Abbruch
     async def test_sitzungsende_beendet_die_schleife_sofort(self):
@@ -405,6 +483,7 @@ class SchleifeTests(unittest.IsolatedAsyncioTestCase):
 
     # ---------------------------------------------------------------- Anzeige
     async def test_nachrichten_enthalten_keine_pruefausgabe_mit_schluessel(self):
+        self.befehle_an()
         geheim = "sk-ant-api03-" + "Z" * 40
         ausfuehrer = Ausfuehrer((1, f"Token {geheim} ungültig"))
         self.neu_agent(befehl_ausfuehrer=ausfuehrer)
