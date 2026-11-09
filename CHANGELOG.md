@@ -93,6 +93,15 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Prüfungen vor dem Zusammenführen (Sicherheit, Datenbank, Python, React), Befunde eingearbeitet: Ein Entwicklungsauftrag mit Abnahme gilt
+  während der Prüfung als „prüfe Abnahme“ und erst nach dem Urteil als fertig, eine Ausnahme im Lauf beendet Auftrag und Vorgang als
+  fehlgeschlagen statt sie hängen zu lassen. Der Kürzer für Werkzeugausgaben hat eine harte Obergrenze (256 KB Analyse, darüber Kopf und
+  Schwanz) und lädt auch Texte ohne Zeilenumbruch zeichenweise nach (`ab_zeichen`). Die Erkennung unbekannter Geräte holt die Hostliste der
+  FRITZ!Box über den bewährten Weg mit zwei Anfragen statt einer Anfrage je Eintrag, der SNMP-Treiber hat widerspruchsfreie Zeitgrenzen.
+  Die Vorgangstabelle hat eine Konsistenzregel zwischen Status und Ende, den Fremdschlüssel auf `profiles` und ein stündliches Aufräumen
+  (offene Vorgänge nach 24 Stunden abgebrochen, Stände nach 30 Tagen geleert). In der Oberfläche führt „Zur Freigabe“ nie zur Karte eines
+  anderen Vorgangs, die Tafel „Vorgänge“ rendert nur bei sichtbarem Reiter und gedrosselt, und die Büro-Karte hört bei 401 und 403 auf zu
+  pollen.
 - Gerätedienst: Der Eintrag „WMC JBL ULTIMATE“ (192.168.178.90) steht nicht mehr in `geraete.toml.example`, in der Doku und in den
   Beispieldaten. Das Gerät war am 21.10.2026 bei der Erkundung sichtbar, ist im Büronetz aber nicht vorhanden und meldete dort dauerhaft
   eine Störung. Der Treiber `upnp-renderer` bleibt für künftige Lautsprecher erhalten. Auf Sokrates-2 ist der Eintrag am 09.11.2026
