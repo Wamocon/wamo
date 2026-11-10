@@ -295,7 +295,9 @@ def echte_programme() -> None:
     pruefe("Projekt beschreibbar, Wurzel nicht", "PROJEKT:schreibbar WURZEL:schreibgeschuetzt" in ausgabe)
     log = audit(job)
     pruefe("Audit (auftraege.log): Job, argv, Exit und Dauer, nie die Ausgabe",
-           "pruefen_ende" in log and "exit=0" in log and "dauer=" in log and "make test" in log and "hallo-make" not in log
+           # der Marker hallo-make darf nur im argv des grep stehen, den dieser Test selbst abschickt, nie als Ausgabe im Audit
+           "pruefen_ende" in log and "exit=0" in log and "dauer=" in log and "make test" in log
+           and "hallo-make" not in log.replace("argv=grep -q hallo-make Makefile", "")
            and "UMGEBUNG" not in log, log[-300:])
     dauern = re.findall(r"selbsttest \w+ pruefen ok dauer=([0-9.]+)s", log)
     print(f"        Selbsttest im Modus pruefen: {', '.join(dauern)} s (je Aufruf, nie gemerkt)", flush=True)
@@ -310,9 +312,14 @@ def zeitlimit() -> None:
         rc, a, _, dauer = aufruf(job, argv, zeitlimit=KURZ_S)
         time.sleep(2)
         reste = subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "schleife.js|sh -c b\\(\\)"], capture_output=True, text=True).stdout.split()
-        pruefe(f"{name}: endet am Zeitlimit (Exit 124, grund zeitlimit, nicht ok), in unter 60 s",
-               rc == D.EXIT_ZEITLIMIT and form_ok(a) and a["ok"] is False and a["grund"] == "zeitlimit" and a["abgebrochen"] is True and dauer < 60,
-               f"Exit {rc}, {dauer:.1f} s, {a and a['grund']}")
+        am_zeitlimit = (rc == D.EXIT_ZEITLIMIT and form_ok(a) and a["ok"] is False and a["grund"] == "zeitlimit"
+                        and a["abgebrochen"] is True and dauer < 60)
+        # Die Fork-Bombe des Testprojekts läuft im Hintergrund (b | b &): make kehrt sofort mit Exit 0 zurück. Auch das ist in Ordnung,
+        # solange danach keine Einheit und kein Prozess übrig ist (nächste Prüfung); die Endlosschleife dagegen muss am Zeitlimit sterben.
+        sofort_zurueck = (name.startswith("Fork-Bombe") and rc == 0 and form_ok(a) and a["abgebrochen"] is False and dauer < 60)
+        pruefe(f"{name}: endet am Zeitlimit (Exit 124, grund zeitlimit, nicht ok), in unter 60 s"
+               + (" oder kehrt sofort zurück (Hintergrundprozesse)" if name.startswith("Fork-Bombe") else ""),
+               am_zeitlimit or sofort_zurueck, f"Exit {rc}, {dauer:.1f} s, {a and a['grund']}")
         pruefe(f"{name}: danach läuft keine Einheit und kein Prozess mehr", not einheiten(job) and not reste, f"{einheiten(job)!r} {reste}")
         entfernen(D.JOBS / job)
     job, _ = neuer_auftrag()
