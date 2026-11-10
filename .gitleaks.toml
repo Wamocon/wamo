@@ -12,3 +12,23 @@ targetRules = ["generic-api-key"]
 paths = [
   '''geraete/tests/test_snmp\.py$''',
 ]
+
+[[allowlists]]
+description = "Testdateien mit erfundenen Zugangswerten als Attrappen (Schwärzung, Anmeldung, Prüfung von Texten, zum Beispiel AB12cd… oder sk-ant… mit GEHEIM…). Alle Funde des Historien-Scans vom 10.11.2026 einzeln angesehen, keine echten Werte."
+targetRules = ["generic-api-key"]
+paths = [
+  '''ui/src/lib/fernzugriff\.test\.ts$''',
+  '''voice-core/test_rd_api\.py$''',
+  '''voice-core/test_anker\.py$''',
+  '''voice-core/test_sokrates2_dispatch\.py$''',
+  '''geraete/tests/test_fernseher\.py$''',
+  '''desktop/dist\.test\.js$''',
+]
+
+[[allowlists]]
+description = "desktop/geraet.js baut aus zur Laufzeit erzeugten Bytes das OpenSSH-Schlüsselformat (kein fester Schlüssel), desktop/dist.test.js prüft mit Formatköpfen die Textprüfung des Installers."
+targetRules = ["private-key"]
+paths = [
+  '''desktop/geraet\.js$''',
+  '''desktop/dist\.test\.js$''',
+]
