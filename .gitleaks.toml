@@ -1,0 +1,14 @@
+# Konfiguration für gitleaks. Der Workflow .github/workflows/secret-scan.yml liest diese Datei automatisch.
+# Die Standardregeln bleiben vollständig aktiv. Jede Ausnahme gilt nur für die genannte Regel und den genannten Pfad
+# und braucht einen Pull Request mit Review (siehe den Kopf des Workflows).
+title = "WAMO gitleaks"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "geraete/tests/test_snmp.py zählt verbotene SNMP-Bezeichner (zum Beispiel usmHMACSHAAuthProtocol) als Zeichenketten auf. Die Regel generic-api-key hält das wegen des Wortes Auth im Namen für einen Schlüssel. Es ist kein Geheimnis."
+targetRules = ["generic-api-key"]
+paths = [
+  '''geraete/tests/test_snmp\.py$''',
+]
