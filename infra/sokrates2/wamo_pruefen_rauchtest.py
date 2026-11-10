@@ -24,7 +24,9 @@ Gemessen und geprüft wird:
   * Endlosschleife und Fork-Bombe sterben am Zeitlimit, danach läuft keine Einheit und kein Prozess des Befehls mehr.
   * cancel beendet den Lauf, das Ende der Lebenslinie (stdin zu, grund verlassen) ebenso, jeweils samt Einheit.
   * Das Audit (auftraege.log) hat Job, argv, Exit und Dauer (dauer=), nie die Ausgabe; die Dauer des Selbsttests wird ausgegeben.
-Das Projekt rauchtest-pruefen und die Auftragsordner werden danach entfernt.
+Das Projekt rauchtest-pruefen und die Auftragsordner werden danach entfernt. Das Projekt wird nur gelöscht, wenn eine Markerdatei
+dieses Tests darin liegt (sie legt der Test beim Anlegen selbst an): Ein Ordner gleichen Namens ohne Marker bleibt unberührt, der
+Test bricht dann vor dem Anlegen ab.
 """
 
 from __future__ import annotations
@@ -47,6 +49,10 @@ D = importlib.machinery.SourceFileLoader("wamo_job_dispatch", "/opt/wamo/bin/wam
 DISPATCH = str(D.BIN / "wamo-job-dispatch")
 PROJEKT = "rauchtest-pruefen"
 PROJ = D.PROJEKTE / PROJEKT
+# Das Wegwerfprojekt wird nur gelöscht, wenn diese Datei mit diesem Inhalt darin liegt (sie legt der Test selbst an): ein fremder
+# Ordner gleichen Namens bleibt unberührt, der Test bricht dann vor dem Anlegen ab.
+MARKER_NAME = ".wamo-pruefen-rauchtest"
+MARKER_INHALT = "Wegwerfprojekt des Skripts wamo-pruefen-rauchtest, darf mit dem Test verschwinden\n"
 ERGEBNISSE: list[tuple[str, bool]] = []
 SCHLUESSEL = ["v", "ok", "exit", "abgebrochen", "grund", "dauer_s", "ausgabe", "gekuerzt"]
 KURZ_S = 10  # Zeitlimit des Befehls in den Fällen Endlosschleife und Fork-Bombe (sonst 120 s)
@@ -106,6 +112,27 @@ def entfernen(pfad: Path) -> None:
                 except OSError:
                     pass
         shutil.rmtree(pfad, onerror=frei)
+
+
+def marker_vorhanden(pfad: Path) -> bool:
+    """Liegt in pfad die Markerdatei dieses Tests (ein echter Ordner, darin eine reguläre Datei ohne Link mit genau dem Inhalt)?"""
+    marker = pfad / MARKER_NAME
+    try:
+        return (pfad.is_dir() and not pfad.is_symlink() and marker.is_file() and not marker.is_symlink()
+                and marker.read_text(encoding="utf-8") == MARKER_INHALT)
+    except (OSError, ValueError):
+        return False
+
+
+def projekt_freigeben(pfad: Path) -> bool:
+    """Das Wegwerfprojekt entfernen, aber nur, wenn es nicht existiert oder die Markerdatei dieses Tests darin liegt. Ein Ordner
+    gleichen Namens ohne Marker (auch ein leerer, auch ein Link) gehört jemand anderem und bleibt unberührt: False."""
+    if not (pfad.exists() or pfad.is_symlink()):
+        return True
+    if not marker_vorhanden(pfad):
+        return False
+    entfernen(pfad)
+    return True
 
 
 def einheiten(job: str) -> str:
@@ -323,8 +350,12 @@ def ausfuehren() -> int:
     if os.getuid() == 0 or Path.home() != D.HEIM:
         print("Bitte als wamo ausführen: sudo -u wamo -H /opt/wamo/bin/wamo-pruefen-rauchtest", file=sys.stderr)
         return 1
-    entfernen(PROJ)
+    if not projekt_freigeben(PROJ):
+        print(f"{PROJ} gibt es schon und die Markerdatei dieses Tests ({MARKER_NAME}) fehlt: Der Ordner gehört nicht dem Rauchtest, "
+              "er wird nicht gelöscht und der Test bricht ab. Anderen Projektnamen nehmen oder den Ordner selbst prüfen.", file=sys.stderr)
+        return 1
     PROJ.mkdir(mode=0o750)
+    (PROJ / MARKER_NAME).write_text(MARKER_INHALT, encoding="utf-8")
     (PROJ / "Makefile").write_text(MAKEFILE, encoding="utf-8")
     (PROJ / "package.json").write_text(PACKAGE, encoding="utf-8")
     (PROJ / "probe.js").write_text(PROBE, encoding="utf-8")
@@ -337,8 +368,10 @@ def ausfuehren() -> int:
         zeitlimit()
         abbruch_und_sperren()
     finally:
-        entfernen(PROJ)
-        (D.JOBS / ".projekte" / f"{PROJEKT}.json").unlink(missing_ok=True)
+        if projekt_freigeben(PROJ):
+            (D.JOBS / ".projekte" / f"{PROJEKT}.json").unlink(missing_ok=True)
+        else:  # ein Prüfbefehl hat die Markerdatei entfernt: lieber liegen lassen als einen womöglich fremden Ordner löschen
+            print(f"Hinweis: {PROJ} bleibt liegen (die Markerdatei fehlt oder wurde verändert), bitte von Hand prüfen.", file=sys.stderr)
     fehler = [n for n, ok in ERGEBNISSE if not ok]
     print(f"\n{len(ERGEBNISSE) - len(fehler)} von {len(ERGEBNISSE)} Prüfungen bestanden.")
     return 1 if fehler else 0

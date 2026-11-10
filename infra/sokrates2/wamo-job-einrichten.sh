@@ -14,7 +14,9 @@
 # Rauchtest:  ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp --attrappe"
 #             Befehl pruefen (nur wenn er eingeschaltet werden soll, Schalter WAMO_PRUEFEN=an in /etc/wamo/geheim.env, Standard AUS):
 #             ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-pruefen-rauchtest"
-# Rückweg:    ssh sokrates2 "sudo bash ~/wamo-infra/wamo-job-rueckweg.sh"  (stellt die Dateien aus $APP/vorher/ wieder her)
+# Rückweg:    ssh sokrates2 "sudo bash ~/wamo-infra/wamo-job-rueckweg.sh"  (stellt die Dateien aus $APP/vorher/ wieder her:
+#             die neueste Sicherung, die noch nicht zurückgespielt wurde; sie bekommt die Markierung ZURUECK.txt und bleibt liegen.
+#             Jeder weitere Aufruf geht eine Sicherung weiter zurück, bis alle zurückgespielt sind)
 #             (nach dem Einrichten der GitHub-App zusätzlich --app-echt, nur lesend, README Abschnitt 2)
 #
 # Was das Skript am System ändert (nur WAMO):
