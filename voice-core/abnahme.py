@@ -8,10 +8,12 @@ Ein Auftrag kann Abnahmekriterien haben, höchstens 5, je höchstens 300 Zeichen
                abgelehnt, denn Projektcode (conftest, Makefile, Tests) läuft dabei ohne Hook mit den Rechten des Kerns;
              * nur ein einzelner Befehl mit Argumenten, aufgerufen ohne Shell (argv, kein shell=True); keine Zeichen für
                Verkettung, Umleitung, Ersetzung oder Steuerung (; & | ` $ < > Backslash, Zeilenumbruch, Steuerzeichen);
-             * eine echte Allowlist je Programm (Tests, Typ- und Stilprüfung, Build, grep): erlaubt ist nur, was ausdrücklich
+             * eine echte Allowlist je Programm (Tests, Typ- und Stilprüfung, Build, grep), geführt in abnahme_befehl.py (nur
+               Standardbibliothek, auch der Dispatcher auf Sokrates-2 lädt sie): erlaubt ist nur, was ausdrücklich
                aufgeführt ist, jede andere Option und jedes andere Argument wird abgewiesen (zum Beispiel pytest -p oder -c,
                go test -exec, node --import, dotnet -p:..., cargo --config); höchstens 12 Argumente zu je höchstens 200 Zeichen;
                keine Interpreter für freien Code (python -c, node app.js), kein Netz-, Installations- oder Veröffentlichungsbefehl;
+               uv nur als uv run --no-sync --offline pytest <Optionen>, und diese Form läuft nie lokal (siehe unten);
              * keine @datei-Argumente, keine Netzwerkpfade (// oder \\), keine Laufwerksangaben (C:) und keine Adressen (://);
              * keine Pfade außerhalb des Projektordners (kein .., kein ~, kein vorhandener absoluter Pfad außerhalb; die
                Prüfung läuft in einem Arbeitsthread mit Frist, nie in der Ereignisschleife);
@@ -21,8 +23,10 @@ Ein Auftrag kann Abnahmekriterien haben, höchstens 5, je höchstens 300 Zeichen
                eigene Prozessgruppe, die bei Zeitlimit und Abbruch ganz beendet wird.
            Ausgeführt wird nur, wo der Projektordner für den Kern erreichbar und die Ausführung vertretbar ist
            (Betriebsart lokal). Auf Sokrates-2 läuft der Auftrag in einer Sandbox, die der Kern nicht betreten darf; dort
-           gibt es keinen Ausführer (ein Dispatcher-Befehl dafür fehlt noch), und befehl: wird schon beim Vorbereiten
-           abgewiesen, damit das Modell stattdessen eine Aussage formuliert.
+           gibt es im Kern noch keinen Ausführer (der Dispatcher kennt den Befehl pruefen seit Version 6, standardmäßig aus; die
+           Anbindung im Kern folgt), und befehl: wird schon beim Vorbereiten abgewiesen, damit das Modell stattdessen eine
+           Aussage formuliert. Die uv-Form führt lokal nichts aus: uv fände pytest in der .venv des Projektordners, und der
+           lokale Ausführer startet nichts aus dem Projektordner.
   aussage  Jeder andere Eintrag. Ein kleines Modell beurteilt ihn anhand des Abschlussberichts und der Liste der geänderten
            Dateien und antwortet mit strengem JSON {"erfuellt": bool, "hinweis": str}. Alles andere (kein JSON, andere Felder,
            falsche Typen, Fehler, Zeitüberschreitung) zählt als nicht erfüllt. Bericht, Dateinamen und Kriterium stehen als
@@ -50,6 +54,15 @@ from pathlib import Path
 
 from loguru import logger
 
+from abnahme_befehl import (  # noqa: F401 (ARGUMENT_ZEICHEN und MAX_ARGUMENTE: unverändert über dieses Modul erreichbar)
+    ARGUMENT_ZEICHEN,
+    MAX_ARGUMENTE,
+    PROGRAMME,
+    VERBOTEN,
+    befehl_grund,
+    fremdpfad,
+    pfadteile,
+)
 from dev_guard import decide
 from persona import clean_inline
 from schluessel import schwaerzen
@@ -92,259 +105,21 @@ class Ergebnis:
 
 
 # ---------------------------------------------------------------- Parser
+# Die Allowlist (Regeln je Programm, Pfad- und Zeichenprüfung) steht in abnahme_befehl.py: nur Standardbibliothek, damit der
+# Dispatcher auf Sokrates-2 dieselben Regeln aus einer Kopie in /opt/wamo/waechter laden und erneut erzwingen kann.
 _BEFEHL_PRAEFIX = re.compile(r"\s*befehl\s*:(.*)", re.IGNORECASE | re.DOTALL)
-_VERBOTEN = re.compile(r"[;&|`$<>\\]")
-_VERLAESST = re.compile(r"(?:^|[/=])\.\.(?:/|$)|(?:^|=)~")
-_SKRIPT = re.compile(r"(?:test|build|lint|typecheck|check|verify)(?::[a-z0-9_-]{1,30})?")
-# Netzwerkpfad (// oder \\), Adresse (://) und Laufwerksangabe (C:, auch c:x): Path.exists() darauf löst unter Windows eine
-# SMB-Verbindung aus. "::" (pytest-Knoten) und Namen wie a:b mitten im Wort sind keine Laufwerke.
-_FREMDPFAD = re.compile(r"//|\\\\|://|(?<![A-Za-z0-9_])[A-Za-z]:(?!:)")
-_PFADZEICHEN = re.compile(r"[A-Za-z0-9_.+\-/]+")
-_KNOTEN = re.compile(r"[A-Za-z0-9_.\-\[\]]+")
-# unittest ruft jedes aufrufbare Ziel ohne Argumente auf (os.getcwd, sys.exit): erlaubt sind nur discover und Testnamen, die mit
-# tests oder test_ beginnen (nicht das test-Paket der Standardbibliothek)
-_TESTNAME = re.compile(r"(?:discover|(?:tests|test_[A-Za-z0-9_]+)(?:\.[A-Za-z_][A-Za-z0-9_]*)*)")
-_GO_PAKET = re.compile(r"\.(?:/[A-Za-z0-9_.+\-]+)*(?:/\.\.\.)?")
-MAX_ARGUMENTE = 12
-ARGUMENT_ZEICHEN = 200
 BEFEHLE_ENV = "WAMO_ABNAHME_BEFEHLE"
+_PROGRAMME = PROGRAMME
+_VERBOTEN = VERBOTEN
+_befehl_grund = befehl_grund
+_pfadteile = pfadteile
+_fremdpfad = fremdpfad
 
 
 def befehle_eingeschaltet() -> bool:
     """Befehlskriterien sind eine bewusste Zuschaltung des Betreibers: nur der Wert ja schaltet ein (Standard aus). Projektcode
     (conftest, Makefile, Tests) läuft dabei ohne Hook mit den Rechten des Kerns."""
     return os.environ.get(BEFEHLE_ENV, "").strip() == "ja"
-
-
-def _wert(muster: str) -> Callable[[str], bool]:
-    regel = re.compile(muster)
-    return lambda text: regel.fullmatch(text) is not None
-
-
-@dataclass(frozen=True)
-class _Wert:
-    """Eine Option mit Wert: gueltig prüft den Wert, gleich erlaubt auch die Form --option=wert (sonst nur getrennt)."""
-
-    gueltig: Callable[[str], bool]
-    gleich: bool = False
-
-
-def _pfad(arg: str) -> bool:
-    """Ein relativer Pfad im Projekt: schlichte Zeichen, nicht absolut, nicht mit - beginnend, kein .. als Teil."""
-    return _PFADZEICHEN.fullmatch(arg) is not None and not arg.startswith(("-", "/")) and ".." not in arg.split("/")
-
-
-def _pytest_ziel(arg: str) -> bool:
-    pfad, *knoten = arg.split("::")
-    return _pfad(pfad) and all(_KNOTEN.fullmatch(k) for k in knoten)
-
-
-def _go_paket(arg: str) -> bool:
-    return _GO_PAKET.fullmatch(arg) is not None and ".." not in arg.split("/")
-
-
-def _json_pfad(arg: str) -> bool:
-    return _pfad(arg) and arg.endswith(".json")
-
-
-def _zerlegen(args: Sequence[str], *, flags: Iterable[str] = (), werte: dict[str, _Wert] | None = None,
-              kurz: str = "") -> tuple[str | None, list[str]]:
-    """Zerlegt Argumente streng nach einer ausdrücklichen Liste: flags (ohne Wert), werte (Option mit geprüftem Wert), kurz
-    (Buchstaben, die als -abc zusammengesetzt sein dürfen). Jede andere Option ist ein Fehler. Gibt (Fehler, Positionsargumente)."""
-    flags, werte, positionen, i = frozenset(flags), werte or {}, [], 0
-    while i < len(args):
-        arg = args[i]
-        i += 1
-        if not arg.startswith("-"):
-            positionen.append(arg)
-            continue
-        if arg in flags or (kurz and len(arg) > 1 and arg[1] != "-" and all(c in kurz for c in arg[1:])):
-            continue
-        name, gleich, wert = arg.partition("=")
-        regel = werte.get(name)
-        if regel is None or (gleich and not regel.gleich):
-            return f"Option {clean_inline(arg, 40)} ist als Kriterium nicht erlaubt", []
-        if not gleich:
-            if i >= len(args):
-                return f"Option {name} braucht einen Wert", []
-            wert, i = args[i], i + 1
-        if not regel.gueltig(wert):
-            return f"Der Wert für {name} ist nicht erlaubt", []
-    return None, positionen
-
-
-def _nur(positionen: Iterable[str], gueltig: Callable[[str], bool], erlaubt: str) -> str | None:
-    for p in positionen:
-        if not gueltig(p):
-            return f"Argument {clean_inline(p, 40)} ist nicht erlaubt (erlaubt: {erlaubt})"
-    return None
-
-
-def _mit_positionen(args: Sequence[str], gueltig: Callable[[str], bool], erlaubt: str, *, flags: Iterable[str] = (),
-                    werte: dict[str, _Wert] | None = None, kurz: str = "") -> str | None:
-    fehler, positionen = _zerlegen(args, flags=flags, werte=werte, kurz=kurz)
-    return fehler or _nur(positionen, gueltig, erlaubt)
-
-
-_RELATIV = "relative Pfade im Projektordner"
-_AUSDRUCK = _Wert(_wert(r"[A-Za-z0-9_(][A-Za-z0-9_ .()-]{0,99}"))  # -k und -m: Namen mit and, or, not, sonst nichts
-
-
-def _pytest(args: Sequence[str]) -> str | None:
-    return _mit_positionen(args, _pytest_ziel, "Testpfade relativ im Projektordner", flags=("-q", "-x", "-v"),
-                           werte={"-k": _AUSDRUCK, "-m": _AUSDRUCK, "--tb": _Wert(_wert("short|line|no"), True)})
-
-
-def _unittest(args: Sequence[str]) -> str | None:
-    return _mit_positionen(args, _wert(_TESTNAME.pattern), "discover oder Testnamen tests... und test_...", flags=("-v", "-q", "-f", "-b"),
-                           werte={"-s": _Wert(_pfad), "-p": _Wert(_wert(r"[A-Za-z0-9_*?.][A-Za-z0-9_*?.\-]{0,59}"))})
-
-
-def _mypy(args: Sequence[str]) -> str | None:
-    return _mit_positionen(args, _pfad, _RELATIV, flags=("--strict", "--ignore-missing-imports"))
-
-
-def _compileall(args: Sequence[str]) -> str | None:
-    return _mit_positionen(args, _pfad, _RELATIV, flags=("-q",))
-
-
-_PYTHON_MODULE: dict[str, Callable[[Sequence[str]], str | None]] = {
-    "pytest": _pytest, "unittest": _unittest, "mypy": _mypy, "compileall": _compileall,
-}
-
-
-def _python(args: Sequence[str]) -> str | None:
-    if len(args) >= 2 and args[0] == "-m" and args[1] in _PYTHON_MODULE:
-        return _PYTHON_MODULE[args[1]](args[2:])
-    return f"Python nur als python -m {', '.join(_PYTHON_MODULE)}"
-
-
-_NACHLAUF = frozenset({"--run", "--ci", "--watchAll=false", "--passWithNoTests"})
-
-
-def _paketmanager(args: Sequence[str]) -> str | None:
-    if args[:1] == ("test",):
-        rest = args[1:]
-    elif args[:1] == ("run",) and len(args) > 1 and _SKRIPT.fullmatch(args[1]):
-        rest = args[2:]
-    else:
-        return "npm, pnpm und yarn nur mit test oder run test, build, lint, typecheck, check, verify"
-    if rest and not (rest[0] == "--" and len(rest) > 1 and all(a in _NACHLAUF for a in rest[1:])):
-        return f"Nach dem Skript nur -- mit {', '.join(sorted(_NACHLAUF))}"
-    return None
-
-
-def _node(args: Sequence[str]) -> str | None:
-    if args[:1] != ("--test",):
-        return "node nur mit --test"
-    return _nur(args[1:], _pfad, "Testpfade relativ im Projektordner")
-
-
-def _go(args: Sequence[str]) -> str | None:
-    unterbefehl, rest = args[:1], args[1:]
-    if unterbefehl == ("test",):
-        flags: tuple[str, ...] = ("-v", "-short", "-failfast")
-        werte = {"-run": _Wert(_wert(r"[A-Za-z0-9_^(.][A-Za-z0-9_./^*+?()\-]{0,99}"), True), "-count": _Wert(_wert("[0-9]{1,3}"), True)}
-    elif unterbefehl == ("build",):
-        flags, werte = ("-v",), {}
-    elif unterbefehl == ("vet",):
-        flags, werte = (), {}
-    else:
-        return "go nur mit test, vet, build"
-    return _mit_positionen(rest, _go_paket, "./... oder ein relativer Paketpfad", flags=flags, werte=werte)
-
-
-def _cargo(args: Sequence[str]) -> str | None:
-    if args[:1] not in (("test",), ("check",), ("build",), ("clippy",)):
-        return "cargo nur mit test, check, build, clippy"
-    fehler, positionen = _zerlegen(args[1:], flags=("--workspace", "--all-targets", "--locked", "--offline", "--release",
-                                                     "--lib", "-q", "--quiet"))
-    if fehler:
-        return fehler
-    if positionen and not (args[0] == "test" and len(positionen) == 1 and _wert(r"[A-Za-z0-9_:]{1,100}")(positionen[0])):
-        return "Argumente nur bei cargo test, und dort ein einzelner Testname"
-    return None
-
-
-def _dotnet(args: Sequence[str]) -> str | None:
-    if args[:1] not in (("test",), ("build",)):
-        return "dotnet nur mit test oder build"
-    fehler, positionen = _zerlegen(args[1:], flags=("--no-restore", "--nologo"), werte={
-        "-c": _Wert(_wert("Debug|Release")), "--configuration": _Wert(_wert("Debug|Release"), True)})
-    if fehler or len(positionen) > 1:
-        return fehler or "dotnet nur mit einem Projekt oder einer Lösung"
-    return _nur(positionen, _pfad, "ein relativer Pfad im Projektordner")
-
-
-def _make(args: Sequence[str]) -> str | None:
-    return None if len(args) == 1 and args[0] in ("test", "check", "lint", "build") else "make nur mit test, check, lint oder build"
-
-
-def _ruff(args: Sequence[str]) -> str | None:
-    if args[:1] != ("check",):
-        return "ruff nur mit check"
-    return _mit_positionen(args[1:], _pfad, _RELATIV, flags=("--no-cache", "-q", "--quiet"))  # kein --fix, kein --add-noqa
-
-
-def _eslint(args: Sequence[str]) -> str | None:
-    return _mit_positionen(args, _pfad, _RELATIV, flags=("--quiet",),
-                           werte={"--max-warnings": _Wert(_wert("[0-9]{1,4}"), True)})  # kein --fix, keine Plugins
-
-
-def _tsc(args: Sequence[str]) -> str | None:
-    if "--noEmit" not in args:
-        return "tsc nur mit --noEmit (prüfen, nichts schreiben)"
-    fehler, positionen = _zerlegen(args, flags=("--noEmit",), werte={"-p": _Wert(_json_pfad), "--project": _Wert(_json_pfad, True)})
-    return fehler or ("tsc ohne Dateiargumente, nur --noEmit und -p mit relativer tsconfig" if positionen else None)
-
-
-def _grep(args: Sequence[str]) -> str | None:
-    fehler, positionen = _zerlegen(args, kurz="qcrniEFwlsv")  # nur Kurzschalter ohne Dateizugriff; kein -R (folgt Links)
-    if fehler:
-        return fehler
-    if not positionen:
-        return "grep braucht ein Suchmuster"
-    return _nur(positionen[1:], _pfad, "Dateien relativ im Projektordner")
-
-
-_PROGRAMME: dict[str, Callable[[Sequence[str]], str | None]] = {
-    "pytest": _pytest, "python": _python, "python3": _python, "npm": _paketmanager, "pnpm": _paketmanager,
-    "yarn": _paketmanager, "node": _node, "go": _go, "cargo": _cargo, "dotnet": _dotnet, "make": _make, "ruff": _ruff,
-    "mypy": _mypy, "tsc": _tsc, "eslint": _eslint, "grep": _grep,
-}
-
-
-def _pfadteile(arg: str) -> set[str]:
-    """Die Stellen eines Arguments, an denen ein Pfad stehen kann: das ganze Argument, der Wert nach = und der Wert direkt
-    hinter einer Kurzoption (-fPFAD)."""
-    kurz = arg[2:] if arg.startswith("-") and not arg.startswith("--") else ""
-    return {teil for teil in (arg, arg.partition("=")[2], kurz) if teil}
-
-
-def _fremdpfad(arg: str) -> bool:
-    return any(_FREMDPFAD.search(teil) for teil in _pfadteile(arg))
-
-
-def _befehl_grund(argv: Sequence[str]) -> str | None:
-    """Warum ein Befehl nicht als Kriterium taugt, oder None. Prüft nur Form und Allowlist (der Wächter folgt später)."""
-    name = argv[0]
-    if "/" in name:
-        return "Programm nur mit Namen, ohne Pfad"
-    regel = _PROGRAMME.get(name.lower().removesuffix(".exe"))
-    if regel is None:
-        return f"Programm {clean_inline(name, 30)} ist als Kriterium nicht erlaubt (erlaubt: {', '.join(sorted(_PROGRAMME))})"
-    args = tuple(argv[1:])  # die Regeln vergleichen Anfänge mit Tupeln (args[:1] == ("test",)): eine Liste ergäbe nie einen Treffer
-    if len(args) > MAX_ARGUMENTE:
-        return f"höchstens {MAX_ARGUMENTE} Argumente"
-    if any(len(a) > ARGUMENT_ZEICHEN for a in args):
-        return f"jedes Argument höchstens {ARGUMENT_ZEICHEN} Zeichen"
-    if any(a.startswith("@") for a in args):
-        return "keine Argumentdateien (@datei)"
-    if any(_fremdpfad(a) for a in args):
-        return "keine Netzwerkpfade (//), Laufwerksangaben (C:) oder Adressen (://)"
-    if any(_VERLAESST.search(a) for a in args):
-        return "Pfade nur im Projektordner (kein .. und kein ~)"
-    return regel(args)
 
 
 def _befehl(nr: int, rest: str, befehle_erlaubt: bool, befehle_hinweis: str = "") -> Kriterium | None:
@@ -482,6 +257,8 @@ def _text(ende: bytearray) -> str:
 async def befehl_ausfuehren(argv: Sequence[str], arbeitsordner: Path, frist_s: float = BEFEHL_FRIST_S) -> tuple[int | None, str]:
     """Führt einen geprüften Befehl ohne Shell im Arbeitsordner aus. (Exit-Code, Ausgabe bis 2 KB) oder (None, Grund), wenn der
     Befehl nicht startet oder das Zeitlimit überschreitet. Prüft Form, Allowlist und Wächter nicht selbst: das tut pruefe_befehl."""
+    if argv[0].lower().removesuffix(".exe") == "uv":  # die Form uv run --no-sync --offline pytest gilt nur in der Sandbox des Dispatchers
+        return None, "uv läuft nur im Dispatcher auf Sokrates-2 (Sandbox), nicht lokal, nicht ausgeführt"
     env = pruef_env()
     try:  # which und resolve sind Dateizugriffe (PATH kann auf ein Netzlaufwerk zeigen): Arbeitsthread mit Frist, nie die Schleife
         exe, grund = await asyncio.wait_for(asyncio.to_thread(_exe_aufloesen, argv[0], arbeitsordner, env), PFAD_FRIST_S)
