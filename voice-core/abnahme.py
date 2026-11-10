@@ -21,12 +21,16 @@ Ein Auftrag kann Abnahmekriterien haben, höchstens 5, je höchstens 300 Zeichen
                Freigabepflicht heißt nicht erfüllt und nie ausgeführt, eine Freigabekarte umgeht die Abnahme nie;
              * Zeitlimit 120 s, Ausgabe auf 2 KB gekürzt (das Ende bleibt), minimale Umgebung ohne Geheimnisse, kein stdin,
                eigene Prozessgruppe, die bei Zeitlimit und Abbruch ganz beendet wird.
-           Ausgeführt wird nur, wo der Projektordner für den Kern erreichbar und die Ausführung vertretbar ist
-           (Betriebsart lokal). Auf Sokrates-2 läuft der Auftrag in einer Sandbox, die der Kern nicht betreten darf; dort
-           gibt es im Kern noch keinen Ausführer (der Dispatcher kennt den Befehl pruefen seit Version 6, standardmäßig aus; die
-           Anbindung im Kern folgt), und befehl: wird schon beim Vorbereiten abgewiesen, damit das Modell stattdessen eine
-           Aussage formuliert. Die uv-Form führt lokal nichts aus: uv fände pytest in der .venv des Projektordners, und der
-           lokale Ausführer startet nichts aus dem Projektordner.
+           Ausgeführt wird nur, wo die Ausführung vertretbar ist. Betriebsart lokal: im Projektordner, mit dem lokalen Ausführer
+           (befehl_ausfuehren). Betriebsart Sokrates-2: Der Auftrag läuft dort in einer Sandbox, die der Kern nicht betreten
+           darf. Der Befehl läuft über den Dispatcher-Befehl pruefen (Version 6, standardmäßig aus), in einer engeren Sandbox
+           (kein Netz, kein Token, kein Claude); der Kern nutzt dafür abnahme_remote.RemoteAusfuehrer, und nur, wenn ein
+           gecachter ping zeigt, dass der Dispatcher pruefen kann und dieselbe Allowlist hat (abnahme_remote.DispatcherPing, dev_agent).
+           Der Kern prüft dort Allowlist und Wächter weiter vorab, aber keinen lokalen Pfad (pruefe_befehl, Markierung entfernt):
+           der Dispatcher erzwingt alles maßgeblich neu. Ohne den Weg wird befehl: schon beim Vorbereiten abgewiesen, mit dem
+           Grund in einem Satz, damit das Modell stattdessen eine Aussage formuliert. Die uv-Form führt lokal nichts aus: uv fände
+           pytest in der .venv des Projektordners, und der lokale Ausführer startet nichts aus dem Projektordner; auf Sokrates-2
+           läuft sie nur, wenn im Projekt eine .venv liegt.
   aussage  Jeder andere Eintrag. Ein kleines Modell beurteilt ihn anhand des Abschlussberichts und der Liste der geänderten
            Dateien und antwortet mit strengem JSON {"erfuellt": bool, "hinweis": str}. Alles andere (kein JSON, andere Felder,
            falsche Typen, Fehler, Zeitüberschreitung) zählt als nicht erfüllt. Bericht, Dateinamen und Kriterium stehen als
@@ -79,7 +83,9 @@ DATEI_ZEICHEN = 160
 MAX_EINTRAEGE = 50  # Schutz vor absurd langen Listen, bevor irgendetwas geprüft wird
 PFAD_FRIST_S = 2.0  # so lange darf jeder Dateizugriff vor dem Start (Programmsuche, Pfadprüfung) höchstens dauern (sonst: nicht ausgeführt)
 
-Ausfuehrer = Callable[[Sequence[str], Path], Awaitable[tuple["int | None", str]]]  # (argv, Ordner) -> (Exit, Ausgabe)
+# (argv, Ordner) -> (Exit, Ausgabe); Exit None heißt: nicht ausgeführt, die Ausgabe nennt den Grund. Ein Ausführer mit der
+# Markierung entfernt = True (abnahme_remote.RemoteAusfuehrer) führt auf Sokrates-2 aus: pruefe_befehl prüft dann keine lokalen Pfade.
+Ausfuehrer = Callable[[Sequence[str], Path], Awaitable[tuple["int | None", str]]]
 Beurteiler = Callable[[str, str], Awaitable[str]]  # (System, Inhalt) -> Rohantwort des Modells
 
 SCHEMA = {
@@ -178,6 +184,15 @@ def parse_abnahme(roh: object, *, befehle_erlaubt: bool = True, befehle_hinweis:
     if len(kriterien) > MAX_KRITERIEN:
         raise ValueError(f"abnahme: höchstens {MAX_KRITERIEN} Kriterien")
     return kriterien
+
+
+def enthaelt_befehl(roh: object) -> bool:
+    """Steht im rohen Werkzeugargument abnahme mindestens ein Eintrag mit dem Präfix befehl:? Nur eine Vorabfrage (zum Beispiel, ob der
+    Dispatcher auf Sokrates-2 gefragt werden muss); ob der Eintrag taugt, entscheidet parse_abnahme."""
+    eintraege = [roh] if isinstance(roh, str) else roh
+    if not isinstance(eintraege, (list, tuple)):
+        return False
+    return any(isinstance(e, str) and len(e) <= 2000 and _BEFEHL_PRAEFIX.fullmatch(e) for e in eintraege[:MAX_EINTRAEGE])
 
 
 # ---------------------------------------------------------------- Hinweise
@@ -327,13 +342,29 @@ async def _pfad_problem(argv: Sequence[str], ordner: Path) -> str | None:
     return f"Pfad außerhalb des Projektordners, nicht ausgeführt: {draussen}" if draussen else None
 
 
+def ist_entfernt(ausfuehrer: object) -> bool:
+    """Läuft der Befehl nicht im Kern, sondern auf Sokrates-2 (abnahme_remote.RemoteAusfuehrer, Markierung entfernt = True)? Nur ein
+    echtes True zählt. Dann liegt der Projektordner nicht lokal vor: Der Dispatcher erzwingt Allowlist, Wächter und Pfade
+    maßgeblich neu, der Kern prüft nur noch vorab (Form, Allowlist, Wächter, Netzwerkpfade) und greift auf keinen lokalen Pfad zu."""
+    return getattr(ausfuehrer, "entfernt", False) is True
+
+
 async def pruefe_befehl(k: Kriterium, arbeitsordner: Path, ausfuehrer: Ausfuehrer | None) -> Ergebnis:
-    """Ein Befehlskriterium: Wächter, Pfade, dann Ausführung. Alles außer Exit 0 ist nicht erfüllt, mit Hinweis."""
+    """Ein Befehlskriterium: Wächter, Pfade, dann Ausführung. Alles außer Exit 0 ist nicht erfüllt, mit Hinweis.
+
+    Mit einem entfernten Ausführer (Sokrates-2) gilt: Die Allowlist wird hier weiter geprüft (Vorab-Abweisung, schnelles Feedback),
+    ebenso der Wächter und die Prüfung auf Netzwerkpfade (reine Zeichenfolge, ohne Dateizugriff). Die Pfadprüfung gegen den
+    Projektordner entfällt: Er liegt auf dem Server, und dort prüft der Dispatcher sie maßgeblich. Der Wächter bekommt den (lokal nicht
+    vorhandenen) Projektpfad als Basis und nicht None: ohne Basis löste er relative Pfade gegen das Arbeitsverzeichnis des Kerns auf,
+    und das liegt im Betrieb im WAMO-Repo, wo schon pytest tests/x.py als Zugriff auf das Repo gesperrt wäre."""
     if ausfuehrer is None:
         return Ergebnis(k.text, False, hinweis("Befehle lassen sich in dieser Betriebsart nicht prüfen"))
     if not k.befehl:
         return Ergebnis(k.text, False, "kein Befehl angegeben")
+    entfernt = ist_entfernt(ausfuehrer)
     if grund := _fremdpfad_problem(k.befehl):  # vor dem Wächter: auch er löst Pfade auf (Path.resolve)
+        return Ergebnis(k.text, False, hinweis(grund))
+    if entfernt and (grund := _befehl_grund(k.befehl)):  # ein am Parser vorbei gebautes Kriterium: der Dispatcher würde es abweisen
         return Ergebnis(k.text, False, hinweis(grund))
     try:
         entscheidung, grund = decide("Bash", {"command": shlex.join(k.befehl)}, arbeitsordner)
@@ -344,7 +375,7 @@ async def pruefe_befehl(k: Kriterium, arbeitsordner: Path, ausfuehrer: Ausfuehre
         return Ergebnis(k.text, False, hinweis(f"Vom Wächter gesperrt, nicht ausgeführt: {grund}"))
     if entscheidung != "allow":
         return Ergebnis(k.text, False, hinweis(f"Braucht eine Freigabe und wird nie automatisch ausgeführt: {grund}"))
-    if grund := await _pfad_problem(k.befehl, arbeitsordner):
+    if not entfernt and (grund := await _pfad_problem(k.befehl, arbeitsordner)):
         return Ergebnis(k.text, False, hinweis(grund))
     exit_code, ausgabe = await ausfuehrer(k.befehl, arbeitsordner)
     if exit_code == 0:

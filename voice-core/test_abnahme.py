@@ -42,6 +42,15 @@ def test_befehl_praefix_ohne_ruecksicht_auf_gross_und_klein_und_leerraum():
     assert (k.art, k.befehl, k.text) == ("befehl", ("pytest", "-q"), "befehl: pytest -q")
 
 
+@pytest.mark.parametrize("roh, erwartet", [
+    ("befehl: pytest -q", True), (["Die README erklärt es", "  BEFEHL :  npm test"], True), (("befehl: make test",), True),
+    (["Die README erklärt es", "befehl ist kein Präfix"], False), ("", False), ([], False), (None, False), (5, False),
+    ([None, 7, ["befehl: x"]], False), (["befehl: " + "x" * 2100], False), ({"a": "befehl: x"}, False),
+])
+def test_enthaelt_befehl_ist_nur_eine_vorabfrage_ohne_ausnahme(roh, erwartet):
+    assert abnahme.enthaelt_befehl(roh) is erwartet
+
+
 def test_ein_einzelner_text_statt_liste_gilt_als_ein_kriterium():
     assert [k.text for k in abnahme.parse_abnahme("Datei x.txt existiert")] == ["Datei x.txt existiert"]
 
@@ -539,6 +548,64 @@ async def test_listen_als_befehl_werden_wie_tupel_geprueft():
 async def test_ohne_ausfuehrer_ist_ein_befehl_nicht_pruefbar(ordner):
     r = await abnahme.pruefe_befehl(befehl("pytest"), ordner, None)
     assert r.erfuellt is False and "nicht" in r.hinweis
+
+
+class EntfernterAusfuehrer(Ausfuehrer):
+    """Wie RemoteAusfuehrer (abnahme_remote.py): der Befehl läuft auf Sokrates-2, der Projektordner ist lokal nicht vorhanden."""
+
+    entfernt = True
+
+
+async def test_entfernter_ausfuehrer_prueft_keine_lokalen_pfade_der_dispatcher_tut_es_massgeblich(ordner):
+    ausfuehrer = EntfernterAusfuehrer((0, ""))
+    with mock.patch.object(abnahme, "_ausserhalb", side_effect=AssertionError("keine lokale Pfadprüfung")), \
+            mock.patch.object(Path, "exists", side_effect=AssertionError("kein Dateizugriff")):
+        r = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", "a.txt"), ordner, ausfuehrer)
+    assert r == Ergebnis("befehl: grep -q x a.txt", True, "")
+    assert ausfuehrer.aufrufe == [(("grep", "-q", "x", "a.txt"), ordner)]
+
+
+async def test_entfernter_ausfuehrer_blockt_relative_pfade_nicht_wegen_des_arbeitsverzeichnisses_des_kerns():
+    """Mit project_dir=None löste der Wächter relative Pfade gegen das Arbeitsverzeichnis des Kerns auf: liegt es im WAMO-Repo, wäre
+    schon pytest tests/x.py als Zugriff auf das Repo gesperrt. Deshalb bekommt er den (lokal nicht vorhandenen) Projektpfad."""
+    ausfuehrer = EntfernterAusfuehrer((0, ""), (0, ""))
+    ziel = Path("/srv/wamo/projekte/rezepte-app")
+    for argv in (("pytest", "-q", "tests/test_x.py"), ("eslint", "src/app.js")):
+        r = await abnahme.pruefe_befehl(befehl(*argv), ziel, ausfuehrer)
+        assert r.erfuellt is True, (argv, r)
+    assert len(ausfuehrer.aufrufe) == 2
+
+
+async def test_entfernter_ausfuehrer_prueft_weiter_netzwerkpfade_allowlist_und_waechter(ordner):
+    ausfuehrer = EntfernterAusfuehrer((0, ""), (0, ""), (0, ""))
+    with mock.patch.object(Path, "exists", side_effect=AssertionError("Path.exists darf nicht laufen")), \
+            mock.patch.object(Path, "resolve", side_effect=AssertionError("Path.resolve darf nicht laufen")):
+        netz = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", "//host/share/x.txt"), ordner, ausfuehrer)
+    assert netz.erfuellt is False and "nicht ausgeführt" in netz.hinweis
+    nicht_erlaubt = await abnahme.pruefe_befehl(befehl("pytest", "-p", "plugin"), ordner, ausfuehrer)  # am Parser vorbei gebaut
+    assert nicht_erlaubt.erfuellt is False and "nicht erlaubt" in nicht_erlaubt.hinweis
+    gesperrt = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", ".env"), ordner, ausfuehrer)
+    assert gesperrt.erfuellt is False
+    assert ausfuehrer.aufrufe == []
+
+
+async def test_entfernter_ausfuehrer_bekommt_die_uv_form_die_der_lokale_nie_ausfuehrt(ordner):
+    k = befehl("uv", "run", "--no-sync", "--offline", "pytest", "-q")
+    remote = EntfernterAusfuehrer((0, ""))
+    assert (await abnahme.pruefe_befehl(k, ordner, remote)).erfuellt is True and len(remote.aufrufe) == 1
+    rc, grund = await abnahme.befehl_ausfuehren(k.befehl, ordner)
+    assert rc is None and "Dispatcher" in grund  # lokal bleibt es dabei
+
+
+async def test_ein_ausfuehrer_ohne_markierung_bleibt_lokal_mit_pfadpruefung(ordner):
+    with mock.patch.object(abnahme, "_ausserhalb", return_value="x.txt") as pruefung:
+        r = await abnahme.pruefe_befehl(befehl("grep", "-q", "x", "a.txt"), ordner, Ausfuehrer((0, "")))
+    assert pruefung.called and r.erfuellt is False and "außerhalb" in r.hinweis
+    attrappe = Ausfuehrer((0, ""))
+    attrappe.entfernt = "ja"  # nur ein echtes True gilt
+    with mock.patch.object(abnahme, "_ausserhalb", return_value="x.txt") as pruefung:
+        await abnahme.pruefe_befehl(befehl("grep", "-q", "x", "a.txt"), ordner, attrappe)
+    assert pruefung.called
 
 
 async def test_vom_parser_ueber_den_waechter_bis_zum_echten_prozess(ordner):
