@@ -2144,7 +2144,7 @@ def selbsttest(job: str, projekt: str, modus: str = "lauf") -> tuple[bool, str]:
             *(["--modus", "pruefen"] if pruefen else []), "--", "/bin/sh", "-c", "; ".join(teile)]
     try:
         p = subprocess.run(argv, input=json.dumps(SELFTEST_EVENT).encode(), capture_output=True,
-                           env=basis_env(), timeout=120, cwd="/")
+                           env=pruefen_env() if pruefen else basis_env(), timeout=120, cwd="/")  # wie der echte Aufruf: Git-Hooks aus
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"Sandbox nicht startbar ({type(e).__name__})"
     finally:
