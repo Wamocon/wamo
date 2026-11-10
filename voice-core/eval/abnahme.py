@@ -195,20 +195,33 @@ async def _zug(task, context, sammler, messungen, fall) -> tuple[float, list[Mes
     return dauer, list(messungen)
 
 
-async def lauf_ausfuehren(wahl: Wahl, faelle_liste: list[faelle.Fall], pause: float, max_kosten: float) -> Lauf:
+async def lauf_ausfuehren(
+    wahl: Wahl, faelle_liste: list[faelle.Fall], pause: float, max_kosten: float, *,
+    system: str | None = None, schemas: list[FunctionSchema] | None = None, werkzeug=None, nach_zug=None,
+    aufwaermen: bool = True,
+) -> Lauf:
+    """Die Schlüsselwörter sind Haken für eval/abnahme_persona.py (andere Persona und Werkzeuge, eigene Attrappen und
+    Auswertung); ohne sie läuft der Testsatz der Abnahme unverändert.
+      system / schemas  statt system_prompt() und werkzeug_schemas()
+      werkzeug          async (fall, params): beantwortet einen Werkzeugaufruf statt faelle.ergebnis_fuer
+      nach_zug          (fall, antworten, fehler, messungen, dauer) nach jedem Zug; gibt es True zurück, endet der Lauf
+      aufwaermen        False: kein ungewerteter Aufwärmzug (jede Anfrage soll in der Messung stehen)"""
     # Werkzeug des Betreibers: Claude läuft mit ANTHROPIC_API_KEY, nie mit dem Schlüssel eines Profils
-    llm = gespraech_dienst(wahl, system_prompt(), Zugang.betreiber())
+    llm = gespraech_dienst(wahl, system_prompt() if system is None else system, Zugang.betreiber())
     messungen: list[Messung] = []
     messen(llm, wahl.anbieter, messungen)
     sammler = Sammler(llm)
 
     async def simuliert(params: FunctionCallParams):
         fall = sammler.fall
+        if werkzeug is not None and fall:
+            await werkzeug(fall, params)
+            return
         ergebnis = faelle.ergebnis_fuer(fall, params.function_name, dict(params.arguments or {})) if fall else {}
         await params.result_callback(ergebnis)
 
     llm.register_function(None, simuliert)
-    context = LLMContext(tools=ToolsSchema(standard_tools=werkzeug_schemas()))
+    context = LLMContext(tools=ToolsSchema(standard_tools=werkzeug_schemas() if schemas is None else schemas))
     task = PipelineWorker(Pipeline([llm, LLMAssistantAggregator(context)]), observers=[sammler],
                           idle_timeout_secs=None)
     laeuft = asyncio.create_task(WorkerRunner(handle_sigint=False).run(task))
@@ -225,25 +238,30 @@ async def lauf_ausfuehren(wahl: Wahl, faelle_liste: list[faelle.Fall], pause: fl
     lauf = Lauf(wahl.anbieter, wahl.modell, konfiguration=konfiguration(llm, wahl))
     fehler_in_folge, kosten = 0, 0.0
     try:
-        await _zug(task, context, sammler, messungen, AUFWAERMEN)  # Verbindung und Cache, nicht gewertet
-        if sammler.fehler:
-            lauf.abbruch = f"Aufwärmzug fehlgeschlagen: {sammler.fehler[0]}"
-            print(f"  Abbruch: {lauf.abbruch}")
-            return lauf
-        await asyncio.sleep(pause)
+        if aufwaermen:
+            await _zug(task, context, sammler, messungen, AUFWAERMEN)  # Verbindung und Cache, nicht gewertet
+            if sammler.fehler:
+                lauf.abbruch = f"Aufwärmzug fehlgeschlagen: {sammler.fehler[0]}"
+                print(f"  Abbruch: {lauf.abbruch}")
+                return lauf
+            await asyncio.sleep(pause)
         for fall in faelle_liste:
             dauer, gemessen = await _zug(task, context, sammler, messungen, fall)
             zug = zug_auswerten(fall, wahl.modell, sammler.antworten, sammler.fehler, gemessen, dauer)
             lauf.zuege.append(zug)
             kosten += zug.kosten_usd or 0.0
-            zeichen = "ok" if zug.werkzeug_ok and zug.marker_ok else "FEHLER"
-            ttft = f"{zug.ttft_s:.2f}s" if zug.ttft_s is not None else "-"
-            gruende = "; ".join(chain.from_iterable(zug.gruende.values()))
-            denken = " Denkphase" if zug.denkphase else ""
-            print(f"  {fall.id:4} {zeichen:6} erstes Token {ttft:>6}  Eingabe {zug.eingabe_tokens:>6} Tokens{denken}  "
-                  f"{gruende[:100]}")
-            if zeichen != "ok" and zug.antworten:
-                print(f"       letzte Antwort: {ausblenden_text(zug.antworten[-1][:100])!r}")
+            if nach_zug is None:
+                zeichen = "ok" if zug.werkzeug_ok and zug.marker_ok else "FEHLER"
+                ttft = f"{zug.ttft_s:.2f}s" if zug.ttft_s is not None else "-"
+                gruende = "; ".join(chain.from_iterable(zug.gruende.values()))
+                denken = " Denkphase" if zug.denkphase else ""
+                print(f"  {fall.id:4} {zeichen:6} erstes Token {ttft:>6}  Eingabe {zug.eingabe_tokens:>6} Tokens{denken}  "
+                      f"{gruende[:100]}")
+                if zeichen != "ok" and zug.antworten:
+                    print(f"       letzte Antwort: {ausblenden_text(zug.antworten[-1][:100])!r}")
+            elif nach_zug(fall, list(sammler.antworten), list(sammler.fehler), gemessen, dauer):
+                lauf.abbruch = "Aufrufgrenze der Messung erreicht"
+                break
             fehler_in_folge = fehler_in_folge + 1 if zug.infrastruktur else 0
             if fehler_in_folge >= MAX_FEHLER_IN_FOLGE:
                 lauf.abbruch = f"{MAX_FEHLER_IN_FOLGE} Fehler in Folge ({zug.infrastruktur[0]})"
