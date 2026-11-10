@@ -505,6 +505,35 @@ def test_der_selbsttest_misst_seine_dauer_im_audit(welt):
     assert any(re.search(r"selbsttest \w+ pruefen ok dauer=\d+\.\d+s", t) for t, _ in welt.logzeilen), welt.audit()
 
 
+def test_der_echte_selbsttest_gibt_dem_laeufer_im_modus_pruefen_die_git_umgebung_des_echten_aufrufs(monkeypatch, tmp_path):
+    """Gefunden vom ersten Rauchtest auf Sokrates-2 (10.11.2026): Der Läufer lässt im Modus pruefen nur die Git-Namen
+    GIT_CONFIG_* durch, der Selbsttest rief ihn aber mit basis_env() auf. core.hooksPath war dort nie /dev/null, der Selbsttest
+    meldete "Git-Hooks nicht abgeschaltet" und es lief nie ein Befehl. Die anderen Tests ersetzen selbsttest durch eine Attrappe,
+    dieser ruft die echte Funktion mit einem gemockten subprocess.run auf."""
+    managed = tmp_path / "managed-settings.json"
+    managed.write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [{"command": "true"}]}]}}), encoding="utf-8")
+    monkeypatch.setattr(D, "MANAGED", managed)
+    monkeypatch.setattr(D, "docker_bruecke", lambda: "172.17.0.1")
+    aufrufe: list[tuple[list[str], dict[str, str]]] = []
+
+    class Fertig:
+        stderr = b""
+
+    def fake_run(argv, **kw):
+        aufrufe.append((list(argv), kw["env"]))
+        return Fertig()
+
+    monkeypatch.setattr(D.subprocess, "run", fake_run)
+    D.selbsttest(JOB, PROJEKT, "pruefen")
+    D.selbsttest(JOB, PROJEKT, "lauf")
+    (argv_p, env_p), (argv_l, env_l) = aufrufe
+    assert "--modus" in argv_p and "--modus" not in argv_l
+    assert env_p["GIT_CONFIG_COUNT"] == str(len(D.GIT_OHNE_HOOKS))
+    assert (env_p["GIT_CONFIG_KEY_0"], env_p["GIT_CONFIG_VALUE_0"]) == ("core.hooksPath", "/dev/null")
+    assert env_p == D.pruefen_env()  # genau die Umgebung, die auch der echte Aufruf bekommt
+    assert env_l == D.basis_env() and "GIT_CONFIG_COUNT" not in env_l  # der Auftragslauf bleibt unverändert
+
+
 def test_ein_fehler_beim_entschaerfen_startet_nichts(welt, monkeypatch):
     def kaputt(_):
         raise OSError("Projektordner nicht lesbar")
