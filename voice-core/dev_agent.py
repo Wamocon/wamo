@@ -80,6 +80,7 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.services.llm_service import FunctionCallParams
 
 import abnahme
+import abnahme_remote
 import kontingent as kt
 from dev_guard import REPO_ROOT, SELF_REPO, _skript_befehl, decide, fingerprint, write_json_atomic
 from memory import normalize_uuid, shared_database
@@ -552,6 +553,19 @@ async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
         await asyncio.wait_for(proc.wait(), 10)
 
 
+_DISPATCHER_PING: abnahme_remote.DispatcherPing | None = None
+BEFEHLE_AUS_HINWEIS = "Befehlskriterien (befehl:) sind in dieser Betriebsart nicht zugeschaltet (Schalter aus)"
+
+
+def _dispatcher_ping() -> abnahme_remote.DispatcherPing:
+    """Der Ping an den Dispatcher auf Sokrates-2 (pruefen möglich?), einer je Prozess: Der Cache gilt über Gespräche hinweg. ssh_argv und
+    _kill_tree werden erst beim Aufruf aufgelöst (Tests ersetzen sie)."""
+    global _DISPATCHER_PING
+    if _DISPATCHER_PING is None:
+        _DISPATCHER_PING = abnahme_remote.DispatcherPing(lambda args: ssh_argv(args), beenden=lambda proc: _kill_tree(proc))
+    return _DISPATCHER_PING
+
+
 @dataclass
 class Job:
     id: str
@@ -593,11 +607,16 @@ class DevAgent:
     """Ein Objekt pro Gespräch. Braucht den PipelineTask, um Karten, Canvas und Meldungen zu senden.
     vorgaenge: Registry der Sitzung (vorgaenge.py); jeder Auftrag erscheint dort als Vorgang.
     beurteiler: beurteilt Aussagekriterien der Abnahme (abnahme.llm_beurteiler); ohne ihn gibt es nur Befehlskriterien.
-    befehl_ausfuehrer: führt Befehlskriterien aus. Standard nur in der Betriebsart lokal (abnahme.befehl_ausfuehren); auf
-    Sokrates-2 darf der Kern die Sandbox nicht betreten, dort gibt es keinen, und befehl: wird beim Vorbereiten abgewiesen."""
+    befehl_ausfuehrer: führt Befehlskriterien aus und ersetzt dann jeden Standard (Tests). Standard in der Betriebsart lokal:
+    abnahme.befehl_ausfuehren. Auf Sokrates-2 darf der Kern die Sandbox nie betreten: Dort läuft ein Befehl über den Dispatcher-
+    Befehl pruefen (abnahme_remote.RemoteAusfuehrer, je Auftrag). Beides gilt nur mit WAMO_ABNAHME_BEFEHLE=ja (Standard aus) und auf
+    Sokrates-2 nur, wenn ein gecachter ping zeigt, dass der Dispatcher pruefen bietet und dieselbe Allowlist hat; sonst wird
+    befehl: schon beim Vorbereiten abgewiesen, mit dem Grund in einem Satz.
+    dispatcher_ping: der Ping samt Cache (abnahme_remote.DispatcherPing); Standard ist einer je Prozess."""
 
     def __init__(self, memory, auftraggeber: str, ort: str | None = None, vorgaenge: Vorgaenge | None = None,
-                 beurteiler: abnahme.Beurteiler | None = None, befehl_ausfuehrer: abnahme.Ausfuehrer | None = None):
+                 beurteiler: abnahme.Beurteiler | None = None, befehl_ausfuehrer: abnahme.Ausfuehrer | None = None,
+                 dispatcher_ping: abnahme_remote.DispatcherPing | None = None):
         self._memory = memory
         self._vorgaenge = vorgaenge
         self._auftraggeber = clean_inline(auftraggeber, 60) or "Admin"
@@ -606,6 +625,8 @@ class DevAgent:
             logger.warning(LOKAL_WARNUNG)
         self._beurteiler = beurteiler
         self._ausfuehrer = befehl_ausfuehrer or (abnahme.befehl_ausfuehren if self._ort == "lokal" else None)
+        self._ping = dispatcher_ping or _dispatcher_ping()  # nur auf Sokrates-2 ohne eingesetzten Ausführer gefragt
+        self._ping_task: asyncio.Task | None = None  # das Aufwärmen des Pings beim attach (Hintergrund, nie im Audiopfad)
         self._zu = False  # Sitzungsende: keine weitere Runde
         self._jetzt = time.monotonic  # die Uhr der Schleife (Tests ersetzen sie)
         self._running_job: Job | None = None
@@ -628,6 +649,35 @@ class DevAgent:
 
     def attach(self, pipeline_task) -> None:
         self._task = pipeline_task
+        self._ping_aufwaermen()
+
+    # ---------- Befehlskriterien auf Sokrates-2: ping und Ausführer ----------
+    def _remote_befehle(self) -> bool:
+        """Läuft ein befehl: hier über den Dispatcher (Sokrates-2, kein eingesetzter Ausführer) und ist der Schalter an? Nur dann
+        wird der Dispatcher gefragt."""
+        return self._ort == "sokrates2" and self._ausfuehrer is None and abnahme.befehle_eingeschaltet()
+
+    def _ping_aufwaermen(self) -> None:
+        """Holt den Ping im Hintergrund, damit die Beschreibung des Werkzeugs im nächsten Gespräch weiß, ob der Dispatcher pruefen
+        kann (sie wird beim Anlegen des Gesprächs gebaut, nicht erst beim Aufruf). Wartet nie darauf; ohne laufende Ereignisschleife
+        passiert nichts."""
+        if self._ping_task is not None or not self._remote_befehle():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._ping_task = loop.create_task(self._ping.auffrischen())
+
+    async def _ping_vor_vorbereiten(self, abnahme_roh: object) -> None:
+        """Vor dem Parsen: Steht ein befehl: im Ziel und läuft er über den Dispatcher, wird der Ping aufgefrischt (aus dem Cache, wenn
+        er jünger als 5 Minuten ist, sonst mit Frist von 5 Sekunden). Wirft nie: Ein Fehler heißt, dass befehl: nicht möglich ist."""
+        if not self._remote_befehle() or not abnahme.enthaelt_befehl(abnahme_roh):
+            return
+        try:
+            await self._ping.auffrischen()
+        except Exception as e:  # noqa: BLE001 (auffrischen wirft selbst nie; ein Abbruch ist keine Exception)
+            logger.warning("Abnahme: ping an den Dispatcher nicht möglich ({})", type(e).__name__)
 
     # ---------- Vorgänge (vorgaenge.py): reine Anzeige, ein Fehler darin hält den Auftrag nie auf ----------
     def _vorgang_anlegen(self, job: Job) -> None:
@@ -698,22 +748,57 @@ class DevAgent:
         ]
 
     def _befehle_moeglich(self) -> bool:
-        """Befehlskriterien gibt es nur mit Ausführer (Betriebsart lokal) UND bewusster Zuschaltung (WAMO_ABNAHME_BEFEHLE=ja,
-        Standard aus): Projektcode läuft dabei ohne Hook mit den Rechten des Kerns."""
-        return self._ausfuehrer is not None and abnahme.befehle_eingeschaltet()
+        """Befehlskriterien gibt es nur mit bewusster Zuschaltung (WAMO_ABNAHME_BEFEHLE=ja, Standard aus) UND einem Weg, sie
+        auszuführen: einem Ausführer (Betriebsart lokal, oder eingesetzt) oder, auf Sokrates-2, einem frischen ping (höchstens
+        5 Minuten alt), der pruefen mit derselben Allowlist meldet. Liest nur den Cache und blockiert nie; ohne frischen ping
+        (nie gefragt, abgelaufen, Fehler) ist es nicht möglich. Projektcode läuft dabei ohne Hook: lokal mit den Rechten des
+        Kerns, auf Sokrates-2 in der engeren Sandbox des Dispatchers."""
+        if not abnahme.befehle_eingeschaltet():
+            return False
+        if self._ausfuehrer is not None:
+            return True
+        return self._ort == "sokrates2" and self._ping.grund() is None
 
     def _befehle_hinweis(self) -> str:
-        """Warum befehl: abgelehnt wird, wenn es einen Ausführer gäbe: nicht zugeschaltet (sonst gilt der Satz zur Betriebsart)."""
-        return "Befehlskriterien (befehl:) sind nicht zugeschaltet" if self._ausfuehrer is not None else ""
+        """Warum befehl: abgelehnt wird, in einem Satz: Schalter aus, oder (Sokrates-2) der Grund aus dem ping: Dispatcher ohne
+        pruefen, Prüfsumme der Allowlist weicht ab, Dispatcher nicht erreichbar."""
+        if not abnahme.befehle_eingeschaltet():
+            return BEFEHLE_AUS_HINWEIS
+        if self._ausfuehrer is None and self._ort == "sokrates2" and (grund := self._ping.grund()):
+            return f"Befehlskriterien (befehl:) gehen hier nicht: {grund}"
+        return ""
+
+    def _befehle_angeboten(self) -> bool:
+        """Soll die Beschreibung des Werkzeugs befehl: nennen? Wie _befehle_moeglich, auf Sokrates-2 aber auch mit einem abgelaufenen
+        ping, wenn der letzte eindeutige Stand "möglich" war: Die Beschreibung entsteht beim Anlegen des Gesprächs, wo der Cache
+        nach einer Pause leer ist. Das ist nur ein Hinweis an das Modell; beim Vorbereiten entscheidet _befehle_moeglich."""
+        if self._befehle_moeglich():
+            return True
+        return abnahme.befehle_eingeschaltet() and self._ausfuehrer is None and self._ort == "sokrates2" and self._ping.angeboten()
+
+    def _ausfuehrer_fuer(self, job: Job) -> abnahme.Ausfuehrer | None:
+        """Der Ausführer für die Befehlskriterien dieses Auftrags: ein eingesetzter oder der lokale; auf Sokrates-2 ein
+        RemoteAusfuehrer mit der Kennung des Auftrags (der Dispatcher nimmt das Projekt aus auftrag.json, nie vom Kern). Ohne den
+        Schalter keiner. Der ping entscheidet hier nicht mehr: Er hat beim Vorbereiten entschieden, und ein Dispatcher, der
+        inzwischen zurückgebaut ist, lehnt den Aufruf mit Exit 2 ab (nicht erfüllt)."""
+        if self._ausfuehrer is not None:
+            return self._ausfuehrer
+        if self._ort == "sokrates2" and abnahme.befehle_eingeschaltet():
+            return abnahme_remote.RemoteAusfuehrer(
+                job.id, lambda args: ssh_argv(args), beenden=lambda proc: _kill_tree(proc),
+                abbrechen=lambda: self._ssh_kurz(["cancel", job.id], timeout=10))
+        return None
 
     def _abnahme_beschreibung(self) -> str:
-        """Beschreibung des Arguments abnahme. Sie sagt dem Modell, was in dieser Betriebsart geht: Befehle nur, wo der Kern sie
-        ausführen darf (sonst würde er Kriterien ableiten, die nie prüfbar sind)."""
+        """Beschreibung des Arguments abnahme. Sie sagt dem Modell, was in dieser Betriebsart geht: Befehle nur, wo sie laufen
+        können (sonst würde es Kriterien ableiten, die nie prüfbar sind), auf Sokrates-2 mit dem, was die Sandbox dort hat."""
         text = ("Prüfbares Ziel: 1 bis 5 kurze, messbare Kriterien als Liste von Texten (je höchstens 300 Zeichen), die WAMO "
                 f"nach jeder Runde selbst prüft. Nennt {self._auftraggeber} kein Ziel, leite 1 bis 3 Kriterien selbst ab und "
                 "nenne sie in einem Satz, ohne zusätzliche Rückfrage. Nie vage wie „mach es gut“. Eine Aussage beurteilt ein "
                 "kleines Modell nach dem Abschlussbericht, zum Beispiel „Die README erklärt die Installation“.")
-        if self._befehle_moeglich():
+        if self._befehle_angeboten():
+            if self._ausfuehrer is None and self._ort == "sokrates2":
+                return f"{text} {abnahme_remote.SANDBOX_HINWEIS}"
             return (text + " Mit dem Präfix „befehl:“ läuft ein einzelner Befehl im Projektordner, Exit 0 heißt erfüllt, "
                     "zum Beispiel „befehl: pytest -q“ oder „befehl: npm test“. Nur Tests, Build, Lint und grep, keine "
                     "Verkettung mit ; & | oder Backticks.")
@@ -747,6 +832,7 @@ class DevAgent:
         except ValueError as e:
             await params.result_callback({"ok": False, "fehler": str(e)})
             return
+        await self._ping_vor_vorbereiten(params.arguments.get("abnahme"))  # nur mit befehl: auf Sokrates-2, mit Frist
         try:
             kriterien = abnahme.parse_abnahme(params.arguments.get("abnahme"), befehle_erlaubt=self._befehle_moeglich(),
                                               befehle_hinweis=self._befehle_hinweis())
@@ -1051,7 +1137,7 @@ class DevAgent:
         "verfehlt" (Runden oder Zeit erschöpft). Alle Kriterien jedes Mal, damit ein Rückschritt auffällt."""
         ergebnisse = await abnahme.auswerten(
             job.kriterien, arbeitsordner=Path(job.projekt), bericht=job.result, dateien=list(job.dateien),
-            beurteiler=self._beurteiler, ausfuehrer=self._ausfuehrer)
+            beurteiler=self._beurteiler, ausfuehrer=self._ausfuehrer_fuer(job))
         job.ergebnisse = ergebnisse
         self._fuehrung(job, "abnahme_ergebnis", [(e.text, e.erfuellt, e.hinweis) for e in ergebnisse])
         offen = [e for e in ergebnisse if not e.erfuellt]
@@ -1444,6 +1530,8 @@ class DevAgent:
         Lebenslinie reißt ab); cancel ist die zweite Absicherung. Die Abnahmeschleife endet sofort: keine weitere Runde, und
         ein laufender Prüfbefehl oder Modellaufruf wird mit der Aufgabe abgebrochen."""
         self._zu = True
+        if self._ping_task is not None and not self._ping_task.done():
+            self._ping_task.cancel()  # das Aufwärmen des Pings: der Prozess dahinter wird dabei beendet
         running_job = self._running_job
         if self._proc is not None:
             await _kill_tree(self._proc)

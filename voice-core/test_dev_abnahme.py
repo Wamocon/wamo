@@ -16,9 +16,12 @@ import unittest
 from unittest import mock
 
 import abnahme
+import abnahme_remote
 import dev_agent
 import dev_guard
 import test_dev_agent_sokrates2 as sokrates2  # das Modul, nicht dessen Testklasse: sie würde hier noch einmal laufen
+from test_abnahme_remote import antwort as pruef_antwort
+from test_abnahme_remote import ping_antwort
 from test_dev_agent_sokrates2 import PUSH, SID, FakeProc
 from vorgang_stream import KRIT_FREIGABEN, KRIT_LAUF, KRIT_SELBSTTEST, KRIT_ZIEL
 from vorgaenge import Vorgaenge
@@ -601,6 +604,331 @@ class SchleifeTests(unittest.IsolatedAsyncioTestCase):
         await self.starten(abnahme=["befehl: pytest -q"], max_runden=1)
         alles = json.dumps(self.aufnahme.gesendet) + json.dumps(self.basis.task.messages())
         self.assertNotIn(geheim, alles)
+
+
+class RemoteBefehlTests(unittest.IsolatedAsyncioTestCase):
+    """Befehlskriterien in der Betriebsart sokrates2: Der Kern betritt die Sandbox nie, er ruft den Dispatcher-Befehl pruefen und
+    fragt vorher per ping (gecacht), ob der Dispatcher ihn kann. Alles hinter WAMO_ABNAHME_BEFEHLE=ja (Standard aus)."""
+
+    BEFEHL = "befehl: make test"
+    MARKE = "GEHEIME-PRUEFAUSGABE-4711"
+
+    async def asyncSetUp(self):
+        self.basis = sokrates2.RemoteFlowTests("test_job_runs_over_ssh_with_lifeline")
+        await self.basis.asyncSetUp()
+        self.basis.pending_line = ""
+        self.aufnahme = Aufnahme()
+        self.reg = Vorgaenge(self.aufnahme.senden, takt_s=0.0)
+        self.urteile = Urteile()
+        self.uhr = [0.0]
+        self.ping_uhr = [1000.0]
+        self.pings: list[FakeProc] = []
+        self.pruefungen: list[FakeProc] = []
+        original = dev_agent.asyncio.create_subprocess_exec.side_effect
+
+        async def exec_(*argv, **kwargs):
+            wort = argv[-1].split(" ")[0]
+            if wort in ("ping", "pruefen"):
+                self.basis.calls.append(list(argv))
+                warteschlange = self.pings if wort == "ping" else self.pruefungen
+                return warteschlange.pop(0)
+            return await original(*argv, **kwargs)
+
+        dev_agent.asyncio.create_subprocess_exec.side_effect = exec_
+        self.ping = abnahme_remote.DispatcherPing(lambda args: dev_agent.ssh_argv(args), beenden=lambda p: dev_agent._kill_tree(p),
+                                                  uhr=lambda: self.ping_uhr[0])
+        self.neu_agent()
+
+    async def asyncTearDown(self):
+        await self.agent.close()
+        await self.basis.asyncTearDown()
+
+    def befehle_an(self, wert: str = "ja") -> None:
+        patcher = mock.patch.dict(os.environ, {abnahme.BEFEHLE_ENV: wert})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def neu_agent(self, **kw):
+        kw.setdefault("dispatcher_ping", self.ping)
+        self.agent = dev_agent.DevAgent(memory=self.basis.memory, auftraggeber="Erika", vorgaenge=self.reg,
+                                        beurteiler=self.urteile, **kw)
+        self.agent._jetzt = lambda: self.uhr[0]
+        self.agent.attach(self.basis.task)
+        self.basis.agent = self.agent
+
+    def laeufe(self, *proc: FakeProc):
+        self.basis.start_procs.extend(proc)
+        self.procs = list(proc)
+
+    def kopf(self, nr: int) -> dict:
+        return json.loads(self.procs[nr].stdin.data.decode("utf-8").splitlines()[0])
+
+    async def vorbereiten(self, **argumente):
+        params = type("P", (), {})()
+        params.arguments = {"auftrag": "Dokumentiere die Rezepte-App", "projekt": "rezepte-app", "art": "umsetzung",
+                            **argumente}
+        antwort: dict = {}
+
+        async def rueckruf(r):
+            antwort.update(r)
+
+        params.result_callback = rueckruf
+        await self.agent._vorbereiten(params)
+        return antwort
+
+    async def starten(self, **argumente):
+        antwort = await self.vorbereiten(**argumente)
+        self.assertTrue(antwort["ok"], antwort)
+        await self.agent.on_client_message("auftrag_start", {"job": antwort["auftrag_id"], "entscheidung": "ja"})
+        await self.agent._running
+        await self.reg.warten()
+        return self.agent._jobs[antwort["auftrag_id"]]
+
+    def beschreibung(self) -> str:
+        return self.agent.schemas()[0].properties["abnahme"]["description"]
+
+    async def status_ans_modell(self) -> dict:
+        params = type("P", (), {})()
+        params.arguments = {}
+        stand: dict = {}
+
+        async def rueckruf(r):
+            stand.update(r)
+
+        params.result_callback = rueckruf
+        await self.agent._status(params)
+        return stand
+
+    # ---------------------------------------------------------------- der Weg über pruefen
+    async def test_befehlskriterium_laeuft_ueber_den_dispatcher_befehl_pruefen(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([ping_antwort()]))
+        self.pruefungen.append(FakeProc([pruef_antwort(ausgabe="3 passed")]))
+        self.laeufe(FakeProc(lauf()))
+        job = await self.starten(abnahme=[self.BEFEHL])
+        self.assertEqual((job.status, job.runde), ("fertig", 1))
+        self.assertEqual(self.basis.remote("ping"), ["ping"])
+        self.assertEqual(self.basis.remote("pruefen"), [f"pruefen {job.id}"])  # das Projekt steht nie im Aufruf
+        self.assertEqual(self.urteile.aufrufe, [])  # Befehle brauchen kein Modell
+
+    async def test_die_pruefen_zeile_enthaelt_genau_argv_und_stdin_bleibt_offen(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([ping_antwort()]))
+        pruef = FakeProc([pruef_antwort()])
+        self.pruefungen.append(pruef)
+        self.laeufe(FakeProc(lauf()))
+        await self.starten(abnahme=[self.BEFEHL])
+        self.assertEqual(json.loads(pruef.stdin.data), {"argv": ["make", "test"]})
+        self.assertTrue(pruef.stdin_offen_beim_warten)
+
+    async def test_nicht_erfuellt_geht_mit_exit_und_ausgabe_an_claude_code_nie_an_das_sprachmodell(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([ping_antwort()]))
+        self.pruefungen.append(FakeProc([pruef_antwort(ok=False, exit=1, ausgabe=f"...\n{self.MARKE} 2 failed in 0.3s")]))
+        self.laeufe(FakeProc(lauf()))
+        vorbereitet = await self.vorbereiten(abnahme=[self.BEFEHL], max_runden=1)
+        await self.agent.on_client_message("auftrag_start", {"job": vorbereitet["auftrag_id"], "entscheidung": "ja"})
+        await self.agent._running
+        await self.reg.warten()
+        job = self.agent._jobs[vorbereitet["auftrag_id"]]
+        self.assertEqual(job.status, "Ziel nach 1 Runde nicht erreicht")
+        # Die Ausgabe ist ein Datenfeld: sie steht im Hinweis (Canvas, Vorgang), und der Prompt der nächsten Runde nennt sie
+        self.assertIn(self.MARKE, json.dumps(self.basis.task.messages()))
+        self.assertIn(self.MARKE, job.ergebnisse[0].hinweis)
+        # ... aber an das Sprachmodell gehen nur feste Zahlen: keine Meldung, kein Ergebnis eines Werkzeugs
+        zum_modell = json.dumps([self.basis.task.llm_texts(), await self.status_ans_modell(), vorbereitet])
+        self.assertNotIn(self.MARKE, zum_modell)
+        self.assertNotIn("failed", zum_modell)
+        self.assertTrue(any("0 von 1 Kriterien erfüllt" in t for t in self.basis.task.llm_texts()))
+
+    async def test_die_naechste_runde_bekommt_exit_und_ausgabe_als_daten(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([ping_antwort()]))
+        self.pruefungen += [FakeProc([pruef_antwort(ok=False, exit=1, ausgabe="x\n2 failed in 0.3s")]),
+                            FakeProc([pruef_antwort()])]
+        self.laeufe(FakeProc(lauf()), FakeProc(lauf()))
+        job = await self.starten(abnahme=[self.BEFEHL])
+        self.assertEqual((job.status, job.runde), ("fertig", 2))
+        zweit = self.kopf(1)["auftrag"]
+        self.assertIn(self.BEFEHL, zweit)
+        self.assertIn("Exit 1", zweit)
+        self.assertIn("2 failed", zweit)
+        self.assertEqual(len(self.basis.remote("pruefen")), 2)
+        self.assertEqual(len(self.basis.remote("ping")), 1)  # der zweite Aufruf kommt aus dem Cache
+
+    async def test_rueckbau_mitten_in_der_sitzung_exit_2_ist_nicht_erfuellt_mit_festem_grund(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([ping_antwort()]))
+        self.pruefungen.append(FakeProc([pruef_antwort(ok=False, exit=None, grund="Unbekannter Befehl SCHLIMM", ausgabe="")],
+                                        returncode=2))
+        self.laeufe(FakeProc(lauf()))
+        job = await self.starten(abnahme=[self.BEFEHL], max_runden=1)
+        self.assertEqual(job.status, "Ziel nach 1 Runde nicht erreicht")
+        self.assertFalse(job.ergebnisse[0].erfuellt)
+        self.assertIn(abnahme_remote.GRUENDE["abgewiesen"], job.ergebnisse[0].hinweis)
+        self.assertNotIn("SCHLIMM", job.ergebnisse[0].hinweis)
+
+    # ---------------------------------------------------------------- Auflegen
+    async def test_auflegen_waehrend_der_pruefung_beendet_ssh_und_ruft_cancel(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([ping_antwort()]))
+        haengt = FakeProc([], haengt=True)
+        self.pruefungen.append(haengt)
+        self.laeufe(FakeProc(lauf()))
+        vorbereitet = await self.vorbereiten(abnahme=[self.BEFEHL])
+        job_id = vorbereitet["auftrag_id"]
+        await self.agent.on_client_message("auftrag_start", {"job": job_id, "entscheidung": "ja"})
+        for _ in range(300):
+            if haengt.stdin.data:
+                break
+            await asyncio.sleep(0.01)
+        self.assertTrue(haengt.stdin.data)  # die Prüfung läuft, die Antwort steht aus
+        self.assertEqual(self.basis.remote("cancel"), [])
+        await self.agent.close()
+        for _ in range(300):  # close beendet nur den Task, das Aufräumen (ssh beenden, cancel) läuft darin zu Ende
+            if self.basis.remote("cancel") and self.agent._running.done():
+                break
+            await asyncio.sleep(0.01)
+        self.assertTrue(self.agent._running.done())
+        self.assertTrue(haengt.killed and haengt.stdin.closed)
+        self.assertEqual(self.basis.remote("cancel"), [f"cancel {job_id}"])
+        self.assertEqual(len(self.basis.remote("start")), 1)  # keine zweite Runde
+
+    # ---------------------------------------------------------------- ping: wer lehnt ab
+    async def abgelehnt(self, wort: str, **kw):
+        antwort = await self.vorbereiten(abnahme=[self.BEFEHL], **kw)
+        self.assertFalse(antwort["ok"], antwort)
+        self.assertIn(wort, antwort["fehler"])
+        self.assertIn("Aussage", antwort["fehler"])  # das Modell soll stattdessen eine Aussage formulieren
+        self.assertEqual(self.agent._jobs, {})  # keine Karte, nichts angelegt
+        self.assertEqual(self.basis.remote("pruefen"), [])
+        return antwort
+
+    async def test_alter_dispatcher_ohne_pruefen_lehnt_befehl_ab(self):
+        self.befehle_an()
+        alt = ping_antwort(version="5")
+        del alt["pruefen"], alt["abnahme_befehl_sha256"]
+        self.pings.append(FakeProc([alt]))
+        await self.abgelehnt("Dispatcher ohne pruefen")
+
+    async def test_alter_dispatcher_der_den_befehl_nicht_kennt_lehnt_ab(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([{"ok": False}], returncode=2))
+        await self.abgelehnt("Dispatcher ohne pruefen")
+
+    async def test_pruefen_ausgeschaltet_im_dispatcher_lehnt_ab(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([ping_antwort(pruefen=False)]))
+        await self.abgelehnt("Dispatcher ohne pruefen")
+
+    async def test_abweichende_pruefsumme_der_allowlist_lehnt_ab(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([ping_antwort(abnahme_befehl_sha256="f" * 64)]))
+        await self.abgelehnt("Prüfsumme der Allowlist weicht ab")
+
+    async def test_dispatcher_nicht_erreichbar_lehnt_ab_ohne_ausnahme(self):
+        self.befehle_an()
+        self.pings.append(FakeProc([], returncode=255))
+        await self.abgelehnt("nicht erreichbar")
+
+    async def test_schalter_aus_lehnt_ab_und_fragt_den_dispatcher_nie(self):
+        self.pings.append(FakeProc([ping_antwort()]))
+        await self.abgelehnt("Schalter aus")
+        self.assertEqual(self.basis.remote("ping"), [])
+        self.assertNotIn("befehl:", self.beschreibung())
+        self.assertTrue((await self.vorbereiten(abnahme=[README]))["ok"])  # Aussagen bleiben möglich
+        self.assertEqual(self.basis.remote("ping"), [])
+
+    async def test_nur_aussagekriterien_fragen_den_dispatcher_nie(self):
+        self.befehle_an()
+        self.assertTrue((await self.vorbereiten(abnahme=[README]))["ok"])
+        self.assertEqual(self.basis.remote("ping"), [])
+
+    async def test_ein_eingesetzter_ausfuehrer_braucht_keinen_ping(self):
+        self.befehle_an()
+        ausfuehrer = Ausfuehrer()
+        self.neu_agent(befehl_ausfuehrer=ausfuehrer)
+        self.assertTrue((await self.vorbereiten(abnahme=[self.BEFEHL]))["ok"])
+        self.assertEqual(self.basis.remote("ping"), [])
+
+    async def test_betriebsart_lokal_braucht_keinen_ping(self):
+        self.befehle_an()
+        self.neu_agent(ort="lokal")
+        self.assertTrue((await self.vorbereiten(abnahme=[self.BEFEHL]))["ok"])
+        self.assertEqual(self.basis.remote("ping"), [])
+
+    # ---------------------------------------------------------------- ping: Cache
+    async def test_der_ping_wird_fuenf_minuten_gemerkt(self):
+        self.befehle_an()
+        self.pings += [FakeProc([ping_antwort()]), FakeProc([ping_antwort(pruefen=False)])]
+        self.assertTrue((await self.vorbereiten(abnahme=[self.BEFEHL]))["ok"])
+        self.ping_uhr[0] += 299
+        self.assertTrue((await self.vorbereiten(abnahme=[self.BEFEHL]))["ok"])
+        self.assertEqual(len(self.basis.remote("ping")), 1)
+        self.ping_uhr[0] += 2  # nach Ablauf gilt der neue Stand
+        antwort = await self.vorbereiten(abnahme=[self.BEFEHL])
+        self.assertFalse(antwort["ok"])
+        self.assertIn("Dispatcher ohne pruefen", antwort["fehler"])
+        self.assertEqual(len(self.basis.remote("ping")), 2)
+
+    async def test_haengender_ping_blockiert_das_vorbereiten_nur_bis_zur_frist(self):
+        self.befehle_an()
+        self.ping = abnahme_remote.DispatcherPing(lambda args: dev_agent.ssh_argv(args), beenden=lambda p: dev_agent._kill_tree(p),
+                                                  uhr=lambda: self.ping_uhr[0], frist_s=0.1)
+        haengt = FakeProc([], haengt=True)
+        self.pings.append(haengt)  # das Aufwärmen beim attach holt ihn, das Vorbereiten wartet nur bis zur Frist darauf
+        self.neu_agent()
+        zeit = asyncio.get_running_loop().time()
+        await self.abgelehnt("nicht erreichbar")
+        self.assertLess(asyncio.get_running_loop().time() - zeit, 2.0)
+        self.assertTrue(haengt.killed)
+
+    # ---------------------------------------------------------------- Beschreibung für das Modell und Aufwärmen
+    async def test_die_beschreibung_bietet_befehle_erst_an_wenn_der_dispatcher_sie_kann(self):
+        self.befehle_an()
+        self.assertNotIn("befehl:", self.beschreibung())  # kalt: nichts versprechen
+        self.pings.append(FakeProc([ping_antwort()]))
+        await self.ping.auffrischen()
+        text = self.beschreibung()
+        self.assertIn("befehl:", text)
+        self.assertIn("Sandbox", text)
+        self.assertIn("pytest, ruff, mypy", text)  # was es dort nicht gibt, damit das Modell keine toten Kriterien ableitet
+        self.assertIn("uv run --no-sync --offline pytest", text)
+        self.ping_uhr[0] += 10_000  # Cache abgelaufen: die Beschreibung bleibt (nur ein Hinweis), die Prüfung beim Vorbereiten nicht
+        self.assertIn("befehl:", self.beschreibung())
+        self.pings.append(FakeProc([ping_antwort(pruefen=False)]))
+        await self.ping.auffrischen()
+        self.assertNotIn("befehl:", self.beschreibung())
+
+    async def test_die_beispiele_der_beschreibung_bestehen_die_allowlist(self):
+        for beispiel in abnahme_remote.SANDBOX_BEISPIELE:
+            with self.subTest(beispiel=beispiel):
+                (k,) = abnahme.parse_abnahme([f"befehl: {beispiel}"])
+                self.assertEqual(k.art, "befehl")
+        text = abnahme_remote.SANDBOX_HINWEIS
+        for beispiel in abnahme_remote.SANDBOX_BEISPIELE:
+            self.assertIn(beispiel, text)
+
+    async def test_attach_waermt_den_ping_im_hintergrund_ohne_zu_warten(self):
+        self.befehle_an()
+        haengt = FakeProc([ping_antwort()], haengt=True)  # die Antwort ist da, das Prozessende lässt auf sich warten
+        self.pings.append(haengt)
+        self.neu_agent()  # attach darf nie auf ssh warten
+        self.assertIsNotNone(self.agent._ping_task)
+        self.assertFalse(self.agent._ping_task.done())
+        haengt._ende.set()
+        await asyncio.wait_for(self.agent._ping_task, 5)
+        self.assertEqual(self.ping.grund(), None)
+        self.assertEqual(len(self.basis.remote("ping")), 1)
+
+    async def test_ohne_schalter_oder_mit_ausfuehrer_oder_lokal_gibt_es_kein_aufwaermen(self):
+        self.neu_agent()  # Schalter aus
+        self.assertIsNone(self.agent._ping_task)
+        self.befehle_an()
+        for kw in ({"befehl_ausfuehrer": Ausfuehrer()}, {"ort": "lokal"}):
+            self.neu_agent(**kw)
+            self.assertIsNone(self.agent._ping_task, kw)
+        self.assertEqual(self.basis.remote("ping"), [])
 
 
 if __name__ == "__main__":
