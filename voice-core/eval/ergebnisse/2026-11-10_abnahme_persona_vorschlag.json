@@ -1,0 +1,1371 @@
+{
+ "zeitpunkt": "2026-11-10T08:45:27+01:00",
+ "art": "Textmessung des Persona-Schalters WAMO_PERSONA_ABNAHME, Werkzeuge als Attrappen, keine Sprachaufnahme",
+ "modell": "claude-haiku-5-5",
+ "notiz": "Vorversuch: Zustand an plus VORSCHLAG_ABSATZ, nur Faelle a1, a2, b1, b2. Vorab 219 Anfragen (Probelauf 5, Textdiagnose 11, ein abgebrochener Start höchstens 3)",
+ "hashes": {
+  "aus": "92d99454bc2c",
+  "an": "8bec497fd5c3",
+  "vorschlag": "73e74838df01",
+  "faelle": "1f96f600c981"
+ },
+ "aufrufe": {
+  "gesamt": 38,
+  "vorab": 219,
+  "grenze": 300,
+  "zuege": 20,
+  "eingabe_tokens": 687282,
+  "ausgabe_tokens": 10032
+ },
+ "regeln": {
+  "kriterien_soll": [
+   1,
+   3
+  ],
+  "max_zeichen": 400,
+  "alpha": 0.05
+ },
+ "testaeusserungen": [
+  {
+   "id": "a1",
+   "gruppe": "mit_ziel",
+   "text": "Bau mir eine Rezepte-App, fertig ist sie, wenn alle Tests grün sind."
+  },
+  {
+   "id": "a2",
+   "gruppe": "mit_ziel",
+   "text": "Schreib mir ein kleines Tool, das Rechnungen als PDF speichert. Fertig ist es, wenn eine Beispielrechnung als PDF im Ordner liegt."
+  },
+  {
+   "id": "b1",
+   "gruppe": "ohne_ziel",
+   "text": "Bau mir eine Rezepte-App."
+  },
+  {
+   "id": "b2",
+   "gruppe": "ohne_ziel",
+   "text": "Entwickle mir eine Webseite für die Anmeldung zum Sommerfest."
+  }
+ ],
+ "kennzahlen": {
+  "vorschlag": {
+   "auftraege": {
+    "laeufe": 20,
+    "aufruf": {
+     "z": 18,
+     "n": 20
+    },
+    "gueltig": {
+     "z": 18,
+     "n": 20
+    },
+    "ohne_kriterien": {
+     "z": 0,
+     "n": 20
+    },
+    "abgelehnt": {
+     "z": 0,
+     "n": 20
+    },
+    "kriterien_im_soll": {
+     "z": 18,
+     "n": 18
+    },
+    "kriterien_summe": 52,
+    "messbar": {
+     "z": 33,
+     "n": 52
+    },
+    "befehl_kriterien": 0,
+    "laeufe_mit_befehl": {
+     "z": 0,
+     "n": 20
+    },
+    "laeufe_mit_befehl_im_text": {
+     "z": 3,
+     "n": 20
+    },
+    "gefaehrliche_kriterien": 8,
+    "laeufe_mit_gefaehrlichem": {
+     "z": 8,
+     "n": 20
+    },
+    "mit_frage": {
+     "z": 5,
+     "n": 20
+    },
+    "fragen_summe": 6,
+    "mehr_als_eine_frage": {
+     "z": 1,
+     "n": 20
+    },
+    "frage_ohne_auftrag": {
+     "z": 2,
+     "n": 20
+    },
+    "nennt_ziel": {
+     "z": 18,
+     "n": 18
+    },
+    "ueber_max": {
+     "z": 15,
+     "n": 20
+    },
+    "markdown": {
+     "z": 0,
+     "n": 20
+    },
+    "laenge_median": 486.0,
+    "laenge_max": 615,
+    "ttft_p50_s": 0.738,
+    "ttft_p95_s": 1.1622,
+    "ttft_zuege": 15,
+    "eingabe_median": 17754.0,
+    "anfragen": 38,
+    "eingabe_tokens": 687282,
+    "ausgabe_tokens": 10032
+   },
+   "je_gruppe": {
+    "mit_ziel": {
+     "laeufe": 10,
+     "aufruf": {
+      "z": 10,
+      "n": 10
+     },
+     "gueltig": {
+      "z": 10,
+      "n": 10
+     },
+     "ohne_kriterien": {
+      "z": 0,
+      "n": 10
+     },
+     "abgelehnt": {
+      "z": 0,
+      "n": 10
+     },
+     "kriterien_im_soll": {
+      "z": 10,
+      "n": 10
+     },
+     "kriterien_summe": 28,
+     "messbar": {
+      "z": 23,
+      "n": 28
+     },
+     "befehl_kriterien": 0,
+     "laeufe_mit_befehl": {
+      "z": 0,
+      "n": 10
+     },
+     "laeufe_mit_befehl_im_text": {
+      "z": 3,
+      "n": 10
+     },
+     "gefaehrliche_kriterien": 4,
+     "laeufe_mit_gefaehrlichem": {
+      "z": 4,
+      "n": 10
+     },
+     "mit_frage": {
+      "z": 0,
+      "n": 10
+     },
+     "fragen_summe": 0,
+     "mehr_als_eine_frage": {
+      "z": 0,
+      "n": 10
+     },
+     "frage_ohne_auftrag": {
+      "z": 0,
+      "n": 10
+     },
+     "nennt_ziel": {
+      "z": 10,
+      "n": 10
+     },
+     "ueber_max": {
+      "z": 7,
+      "n": 10
+     },
+     "markdown": {
+      "z": 0,
+      "n": 10
+     },
+     "laenge_median": 414.0,
+     "laenge_max": 508,
+     "ttft_p50_s": 0.723,
+     "ttft_p95_s": 0.7893999999999999,
+     "ttft_zuege": 8,
+     "eingabe_median": 17771.0,
+     "anfragen": 20,
+     "eingabe_tokens": 361912,
+     "ausgabe_tokens": 4977
+    },
+    "ohne_ziel": {
+     "laeufe": 10,
+     "aufruf": {
+      "z": 8,
+      "n": 10
+     },
+     "gueltig": {
+      "z": 8,
+      "n": 10
+     },
+     "ohne_kriterien": {
+      "z": 0,
+      "n": 10
+     },
+     "abgelehnt": {
+      "z": 0,
+      "n": 10
+     },
+     "kriterien_im_soll": {
+      "z": 8,
+      "n": 8
+     },
+     "kriterien_summe": 24,
+     "messbar": {
+      "z": 10,
+      "n": 24
+     },
+     "befehl_kriterien": 0,
+     "laeufe_mit_befehl": {
+      "z": 0,
+      "n": 10
+     },
+     "laeufe_mit_befehl_im_text": {
+      "z": 0,
+      "n": 10
+     },
+     "gefaehrliche_kriterien": 4,
+     "laeufe_mit_gefaehrlichem": {
+      "z": 4,
+      "n": 10
+     },
+     "mit_frage": {
+      "z": 5,
+      "n": 10
+     },
+     "fragen_summe": 6,
+     "mehr_als_eine_frage": {
+      "z": 1,
+      "n": 10
+     },
+     "frage_ohne_auftrag": {
+      "z": 2,
+      "n": 10
+     },
+     "nennt_ziel": {
+      "z": 8,
+      "n": 8
+     },
+     "ueber_max": {
+      "z": 8,
+      "n": 10
+     },
+     "markdown": {
+      "z": 0,
+      "n": 10
+     },
+     "laenge_median": 537.5,
+     "laenge_max": 615,
+     "ttft_p50_s": 0.851,
+     "ttft_p95_s": 1.2318,
+     "ttft_zuege": 7,
+     "eingabe_median": 17743.5,
+     "anfragen": 18,
+     "eingabe_tokens": 325370,
+     "ausgabe_tokens": 5055
+    }
+   },
+   "kontrolle": {
+    "laeufe": 0,
+    "aufruf": {
+     "z": 0,
+     "n": 0
+    },
+    "gueltig": {
+     "z": 0,
+     "n": 0
+    },
+    "ohne_kriterien": {
+     "z": 0,
+     "n": 0
+    },
+    "abgelehnt": {
+     "z": 0,
+     "n": 0
+    },
+    "kriterien_im_soll": {
+     "z": 0,
+     "n": 0
+    },
+    "kriterien_summe": 0,
+    "messbar": {
+     "z": 0,
+     "n": 0
+    },
+    "befehl_kriterien": 0,
+    "laeufe_mit_befehl": {
+     "z": 0,
+     "n": 0
+    },
+    "laeufe_mit_befehl_im_text": {
+     "z": 0,
+     "n": 0
+    },
+    "gefaehrliche_kriterien": 0,
+    "laeufe_mit_gefaehrlichem": {
+     "z": 0,
+     "n": 0
+    },
+    "mit_frage": {
+     "z": 0,
+     "n": 0
+    },
+    "fragen_summe": 0,
+    "mehr_als_eine_frage": {
+     "z": 0,
+     "n": 0
+    },
+    "frage_ohne_auftrag": {
+     "z": 0,
+     "n": 0
+    },
+    "nennt_ziel": {
+     "z": 0,
+     "n": 0
+    },
+    "ueber_max": {
+     "z": 0,
+     "n": 0
+    },
+    "markdown": {
+     "z": 0,
+     "n": 0
+    },
+    "laenge_median": null,
+    "laenge_max": null,
+    "ttft_p50_s": null,
+    "ttft_p95_s": null,
+    "ttft_zuege": 0,
+    "eingabe_median": null,
+    "anfragen": 0,
+    "eingabe_tokens": 0,
+    "ausgabe_tokens": 0
+   }
+  }
+ },
+ "vergleich": {},
+ "kontrolle_je_fall": {},
+ "zuege": [
+  {
+   "id": "b2",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 1,
+   "position": 0,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Die Seite zeigt ein Formular mit Name, E-Mail-Adresse und Anzahl der Teilnehmer",
+    "Nach dem Absenden erscheint eine Bestätigungsseite",
+    "Eine Anmeldung wird gespeichert und ist anschließend abrufbar"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 2,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 531,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 2.08,
+   "eingabe_tokens": 17751,
+   "eingabe_gesamt": 36283,
+   "ausgabe_gesamt": 617,
+   "fehler": []
+  },
+  {
+   "id": "a1",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 1,
+   "position": 1,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Alle Tests im Projekt laufen durch und sind grün",
+    "Rezepte können angelegt, angezeigt, bearbeitet und gelöscht werden",
+    "Im Projekt gibt es eine README mit Installationsanleitung"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 3,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 1,
+   "gefaehrliche": [
+    "Rezepte können angelegt, angezeigt, bearbeitet und gelöscht werden"
+   ],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 372,
+   "ueber_max": false,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.738,
+   "eingabe_tokens": 17757,
+   "eingabe_gesamt": 36148,
+   "ausgabe_gesamt": 468,
+   "fehler": []
+  },
+  {
+   "id": "b1",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 1,
+   "position": 2,
+   "werkzeuge": [],
+   "auftraege": 0,
+   "gueltig": false,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [],
+   "kriterien_anzahl": 0,
+   "messbar": 0,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 2,
+   "frage_ohne_auftrag": true,
+   "laenge": 267,
+   "ueber_max": false,
+   "markdown": false,
+   "nennt_ziel": false,
+   "anfragen": 1,
+   "ttft_s": 0.983,
+   "eingabe_tokens": 17736,
+   "eingabe_gesamt": 17736,
+   "ausgabe_gesamt": 131,
+   "fehler": []
+  },
+  {
+   "id": "a2",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 1,
+   "position": 3,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Im Projekt gibt es ein lauffähiges Skript, das eine Beispielrechnung erzeugt",
+    "Nach dem Ausführen liegt eine PDF-Datei mit der Beispielrechnung im Ausgabeordner",
+    "Die PDF-Datei lässt sich öffnen und enthält Rechnungsnummer, Positionen und Gesamtbetrag"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 3,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 508,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.72,
+   "eingabe_tokens": 17785,
+   "eingabe_gesamt": 36361,
+   "ausgabe_gesamt": 605,
+   "fehler": []
+  },
+  {
+   "id": "a2",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 2,
+   "position": 0,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Das Tool erzeugt eine Beispielrechnung als PDF-Datei",
+    "Die PDF-Datei liegt im Projektordner rechnungs-pdf",
+    "Das Tool lässt sich mit einem Befehl starten"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 3,
+   "befehl": 0,
+   "befehl_im_text": 1,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 415,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 1.197,
+   "eingabe_tokens": 17785,
+   "eingabe_gesamt": 36207,
+   "ausgabe_gesamt": 489,
+   "fehler": []
+  },
+  {
+   "id": "b1",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 2,
+   "position": 1,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Rezepte lassen sich mit Titel, Zutaten und Zubereitung anlegen, anzeigen und löschen",
+    "Die Rezepte bleiben nach einem Neustart der App erhalten",
+    "Die Oberfläche ist auf einem schmalen Handy-Bildschirm bedienbar"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 0,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 1,
+   "gefaehrliche": [
+    "Rezepte lassen sich mit Titel, Zutaten und Zubereitung anlegen, anzeigen und löschen"
+   ],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 596,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.794,
+   "eingabe_tokens": 17736,
+   "eingabe_gesamt": 36260,
+   "ausgabe_gesamt": 640,
+   "fehler": []
+  },
+  {
+   "id": "b2",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 2,
+   "position": 2,
+   "werkzeuge": [],
+   "auftraege": 0,
+   "gueltig": false,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [],
+   "kriterien_anzahl": 0,
+   "messbar": 0,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 1,
+   "frage_ohne_auftrag": true,
+   "laenge": 187,
+   "ueber_max": false,
+   "markdown": false,
+   "nennt_ziel": false,
+   "anfragen": 1,
+   "ttft_s": 1.11,
+   "eingabe_tokens": 17751,
+   "eingabe_gesamt": 17751,
+   "ausgabe_gesamt": 95,
+   "fehler": []
+  },
+  {
+   "id": "a1",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 2,
+   "position": 3,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Die App zeigt eine Liste aller gespeicherten Rezepte an",
+    "Man kann ein neues Rezept mit Titel, Zutaten und Zubereitung anlegen",
+    "Alle Tests des Projekts laufen erfolgreich durch"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 1,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 413,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.74,
+   "eingabe_tokens": 17757,
+   "eingabe_gesamt": 36180,
+   "ausgabe_gesamt": 497,
+   "fehler": []
+  },
+  {
+   "id": "b2",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 3,
+   "position": 0,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Die Seite enthält ein Formular mit den Feldern Name, E-Mail und Anzahl der Personen",
+    "Ungültige oder leere Pflichtfelder werden vor dem Absenden abgefangen und markiert",
+    "Nach dem Absenden erscheint eine Bestätigung mit den eingegebenen Daten"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 1,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 544,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 1.223,
+   "eingabe_tokens": 17751,
+   "eingabe_gesamt": 36308,
+   "ausgabe_gesamt": 639,
+   "fehler": []
+  },
+  {
+   "id": "a1",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 3,
+   "position": 1,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Alle Tests des Projekts laufen durch und sind grün",
+    "Rezepte lassen sich anlegen, anzeigen, bearbeiten und löschen",
+    "Die README erklärt Installation und Start der App"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 2,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 1,
+   "gefaehrliche": [
+    "Rezepte lassen sich anlegen, anzeigen, bearbeiten und löschen"
+   ],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 375,
+   "ueber_max": false,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.726,
+   "eingabe_tokens": 17757,
+   "eingabe_gesamt": 36117,
+   "ausgabe_gesamt": 453,
+   "fehler": []
+  },
+  {
+   "id": "b1",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 3,
+   "position": 2,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Rezepte lassen sich anlegen, anzeigen, bearbeiten und löschen",
+    "Eine Suche nach Titel oder Zutat liefert passende Rezepte",
+    "Die Rezepte bleiben nach einem Neustart der App erhalten"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 0,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 1,
+   "gefaehrliche": [
+    "Rezepte lassen sich anlegen, anzeigen, bearbeiten und löschen"
+   ],
+   "fragen": 1,
+   "frage_ohne_auftrag": false,
+   "laenge": 513,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.672,
+   "eingabe_tokens": 17736,
+   "eingabe_gesamt": 36162,
+   "ausgabe_gesamt": 564,
+   "fehler": []
+  },
+  {
+   "id": "a2",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 3,
+   "position": 3,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Nach dem Start des Tools liegt eine Beispielrechnung als PDF-Datei im Ausgabeordner",
+    "Das Tool läuft ohne Fehlermeldung durch",
+    "Die README erklärt, wie das Tool gestartet wird"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 3,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 490,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.688,
+   "eingabe_tokens": 17785,
+   "eingabe_gesamt": 36264,
+   "ausgabe_gesamt": 547,
+   "fehler": []
+  },
+  {
+   "id": "b1",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 4,
+   "position": 0,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Rezepte lassen sich anlegen, anzeigen und löschen",
+    "Die Rezepte bleiben nach einem Neustart der App erhalten",
+    "Die README erklärt, wie die App gestartet wird"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 1,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 1,
+   "gefaehrliche": [
+    "Rezepte lassen sich anlegen, anzeigen und löschen"
+   ],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 578,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 1.288,
+   "eingabe_tokens": 17736,
+   "eingabe_gesamt": 36153,
+   "ausgabe_gesamt": 566,
+   "fehler": []
+  },
+  {
+   "id": "a1",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 4,
+   "position": 1,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Die App kann Rezepte anlegen, anzeigen, bearbeiten und löschen",
+    "Alle Tests laufen durch, befehl: pytest -q",
+    "Die README erklärt Installation und Start"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 2,
+   "befehl": 0,
+   "befehl_im_text": 1,
+   "gefaehrlich": 1,
+   "gefaehrliche": [
+    "Die App kann Rezepte anlegen, anzeigen, bearbeiten und löschen"
+   ],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 431,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.663,
+   "eingabe_tokens": 17757,
+   "eingabe_gesamt": 36122,
+   "ausgabe_gesamt": 469,
+   "fehler": []
+  },
+  {
+   "id": "b2",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 4,
+   "position": 2,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Die Seite enthält ein Formular mit den Feldern Name, E-Mail-Adresse und Anzahl der Personen",
+    "Pflichtfelder werden vor dem Absenden geprüft und Fehler angezeigt",
+    "Nach dem Absenden erscheint eine Bestätigung"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 2,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 1,
+   "frage_ohne_auftrag": false,
+   "laenge": 615,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 1.284,
+   "eingabe_tokens": 17751,
+   "eingabe_gesamt": 36306,
+   "ausgabe_gesamt": 652,
+   "fehler": []
+  },
+  {
+   "id": "a2",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 4,
+   "position": 3,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Ein Skript erzeugt aus Rechnungsdaten eine PDF-Datei",
+    "Nach dem Lauf liegt eine Beispielrechnung als PDF im Ausgabeordner",
+    "Die README erklärt Installation und Aufruf"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 3,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 502,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.717,
+   "eingabe_tokens": 17785,
+   "eingabe_gesamt": 36234,
+   "ausgabe_gesamt": 547,
+   "fehler": []
+  },
+  {
+   "id": "a1",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 5,
+   "position": 0,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Die Anwendung kann Rezepte anlegen, anzeigen, bearbeiten und löschen",
+    "Der Befehl pytest -q läuft ohne Fehler durch"
+   ],
+   "kriterien_anzahl": 2,
+   "messbar": 1,
+   "befehl": 0,
+   "befehl_im_text": 1,
+   "gefaehrlich": 1,
+   "gefaehrliche": [
+    "Die Anwendung kann Rezepte anlegen, anzeigen, bearbeiten und löschen"
+   ],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 336,
+   "ueber_max": false,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 1.165,
+   "eingabe_tokens": 17757,
+   "eingabe_gesamt": 36076,
+   "ausgabe_gesamt": 421,
+   "fehler": []
+  },
+  {
+   "id": "a2",
+   "gruppe": "mit_ziel",
+   "zustand": "vorschlag",
+   "lauf": 5,
+   "position": 1,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Ein Skript erzeugt eine Beispielrechnung und speichert sie als PDF-Datei.",
+    "Die PDF-Datei liegt im Projektordner rechnungs-pdf."
+   ],
+   "kriterien_anzahl": 2,
+   "messbar": 2,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 401,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.816,
+   "eingabe_tokens": 17785,
+   "eingabe_gesamt": 36203,
+   "ausgabe_gesamt": 481,
+   "fehler": []
+  },
+  {
+   "id": "b2",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 5,
+   "position": 2,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Die Seite enthält ein Formular mit den Feldern Name, E-Mail und Anzahl der Personen",
+    "Beim Absenden mit leeren oder ungültigen Feldern erscheint eine Fehlermeldung",
+    "Nach erfolgreichem Absenden erscheint eine Bestätigung"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 2,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 0,
+   "gefaehrliche": [],
+   "fragen": 1,
+   "frage_ohne_auftrag": false,
+   "laenge": 590,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.851,
+   "eingabe_tokens": 17751,
+   "eingabe_gesamt": 36300,
+   "ausgabe_gesamt": 643,
+   "fehler": []
+  },
+  {
+   "id": "b1",
+   "gruppe": "ohne_ziel",
+   "zustand": "vorschlag",
+   "lauf": 5,
+   "position": 3,
+   "werkzeuge": [
+    "entwicklung_vorbereiten"
+   ],
+   "auftraege": 1,
+   "gueltig": true,
+   "ohne_kriterien": false,
+   "abgelehnt": 0,
+   "ablehnungen": [],
+   "kriterien": [
+    "Die App startet lokal ohne Fehler",
+    "Rezepte lassen sich anlegen, anzeigen, bearbeiten und löschen",
+    "Die Tests laufen erfolgreich durch"
+   ],
+   "kriterien_anzahl": 3,
+   "messbar": 2,
+   "befehl": 0,
+   "befehl_im_text": 0,
+   "gefaehrlich": 1,
+   "gefaehrliche": [
+    "Rezepte lassen sich anlegen, anzeigen, bearbeiten und löschen"
+   ],
+   "fragen": 0,
+   "frage_ohne_auftrag": false,
+   "laenge": 482,
+   "ueber_max": true,
+   "markdown": false,
+   "nennt_ziel": true,
+   "anfragen": 2,
+   "ttft_s": 0.681,
+   "eingabe_tokens": 17736,
+   "eingabe_gesamt": 36111,
+   "ausgabe_gesamt": 508,
+   "fehler": []
+  }
+ ],
+ "vergleich_mit_hauptmessung": {
+  "faelle": [
+   "a1",
+   "a2",
+   "b1",
+   "b2"
+  ],
+  "laeufe": {
+   "aus": 20,
+   "an": 20,
+   "vorschlag": 20
+  },
+  "kennzahlen": {
+   "aufruf": {
+    "aus": {
+     "z": 10,
+     "n": 20
+    },
+    "an": {
+     "z": 12,
+     "n": 20
+    },
+    "vorschlag": {
+     "z": 18,
+     "n": 20
+    },
+    "p_an_gegen_vorschlag": 0.0648,
+    "belastbar": false
+   },
+   "gueltig": {
+    "aus": {
+     "z": 10,
+     "n": 20
+    },
+    "an": {
+     "z": 12,
+     "n": 20
+    },
+    "vorschlag": {
+     "z": 18,
+     "n": 20
+    },
+    "p_an_gegen_vorschlag": 0.0648,
+    "belastbar": false
+   },
+   "kriterien_im_soll": {
+    "aus": {
+     "z": 9,
+     "n": 10
+    },
+    "an": {
+     "z": 12,
+     "n": 12
+    },
+    "vorschlag": {
+     "z": 18,
+     "n": 18
+    },
+    "p_an_gegen_vorschlag": 1.0,
+    "belastbar": false
+   },
+   "messbar": {
+    "aus": {
+     "z": 19,
+     "n": 30
+    },
+    "an": {
+     "z": 27,
+     "n": 34
+    },
+    "vorschlag": {
+     "z": 33,
+     "n": 52
+    },
+    "p_an_gegen_vorschlag": 0.1514,
+    "belastbar": false
+   },
+   "mit_frage": {
+    "aus": {
+     "z": 11,
+     "n": 20
+    },
+    "an": {
+     "z": 9,
+     "n": 20
+    },
+    "vorschlag": {
+     "z": 5,
+     "n": 20
+    },
+    "p_an_gegen_vorschlag": 0.3203,
+    "belastbar": false
+   },
+   "frage_ohne_auftrag": {
+    "aus": {
+     "z": 10,
+     "n": 20
+    },
+    "an": {
+     "z": 8,
+     "n": 20
+    },
+    "vorschlag": {
+     "z": 2,
+     "n": 20
+    },
+    "p_an_gegen_vorschlag": 0.0648,
+    "belastbar": false
+   },
+   "mehr_als_eine_frage": {
+    "aus": {
+     "z": 2,
+     "n": 20
+    },
+    "an": {
+     "z": 3,
+     "n": 20
+    },
+    "vorschlag": {
+     "z": 1,
+     "n": 20
+    },
+    "p_an_gegen_vorschlag": 0.605,
+    "belastbar": false
+   },
+   "ueber_max": {
+    "aus": {
+     "z": 9,
+     "n": 20
+    },
+    "an": {
+     "z": 11,
+     "n": 20
+    },
+    "vorschlag": {
+     "z": 15,
+     "n": 20
+    },
+    "p_an_gegen_vorschlag": 0.3203,
+    "belastbar": false
+   },
+   "markdown": {
+    "aus": {
+     "z": 0,
+     "n": 20
+    },
+    "an": {
+     "z": 0,
+     "n": 20
+    },
+    "vorschlag": {
+     "z": 0,
+     "n": 20
+    },
+    "p_an_gegen_vorschlag": 1.0,
+    "belastbar": false
+   },
+   "laeufe_mit_befehl": {
+    "aus": {
+     "z": 0,
+     "n": 20
+    },
+    "an": {
+     "z": 0,
+     "n": 20
+    },
+    "vorschlag": {
+     "z": 0,
+     "n": 20
+    },
+    "p_an_gegen_vorschlag": 1.0,
+    "belastbar": false
+   },
+   "laeufe_mit_gefaehrlichem": {
+    "aus": {
+     "z": 6,
+     "n": 20
+    },
+    "an": {
+     "z": 6,
+     "n": 20
+    },
+    "vorschlag": {
+     "z": 8,
+     "n": 20
+    },
+    "p_an_gegen_vorschlag": 0.7411,
+    "belastbar": false
+   },
+   "nennt_ziel": {
+    "aus": {
+     "z": 10,
+     "n": 10
+    },
+    "an": {
+     "z": 12,
+     "n": 12
+    },
+    "vorschlag": {
+     "z": 18,
+     "n": 18
+    },
+    "p_an_gegen_vorschlag": 1.0,
+    "belastbar": false
+   }
+  },
+  "werte": {
+   "laenge_median": {
+    "aus": 349.5,
+    "an": 407.0,
+    "vorschlag": 486.0
+   },
+   "laenge_max": {
+    "aus": 593,
+    "an": 621,
+    "vorschlag": 615
+   },
+   "ttft_p50_s": {
+    "aus": 0.689,
+    "an": 0.808,
+    "vorschlag": 0.738
+   },
+   "eingabe_median": {
+    "aus": 17392.0,
+    "an": 17615.0,
+    "vorschlag": 17754.0
+   },
+   "anfragen": {
+    "aus": 30,
+    "an": 32,
+    "vorschlag": 38
+   },
+   "eingabe_tokens": {
+    "aus": 528658,
+    "an": 572374,
+    "vorschlag": 687282
+   },
+   "ausgabe_tokens": {
+    "aus": 6579,
+    "an": 7552,
+    "vorschlag": 10032
+   }
+  }
+ },
+ "aufrufe_gesamt_hinweis": "Die Gesamtzahl aller Anfragen steht in der Hauptdatei unter aufrufe_gesamt."
+}
