@@ -44,8 +44,29 @@ _KNOTEN = re.compile(r"[A-Za-z0-9_.\-\[\]]+")
 # Danach folgen nur Pakete und Module (klein geschrieben, nur mitten im Namen), Klassen (groß geschrieben) und Namen, die mit
 # test beginnen. Der letzte Teil ist so nie ein beliebiges aufrufbares Ziel wie exit oder getcwd. Grenze: test_x.sys.test_y
 # passt formal und scheitert beim Laden (kein Attribut), es läuft nie mit Exit 0.
-_TESTNAME = re.compile(r"(?:discover|(?:tests|test_[A-Za-z0-9_]+)"
-                       r"(?:\.(?:[A-Z][A-Za-z0-9_]*|test[A-Za-z0-9_]*|[a-z][a-z0-9_]*(?=\.)))*)")
+_TESTWURZEL = re.compile(r"tests|test_[A-Za-z0-9_]+")
+_TESTKLASSE = re.compile(r"[A-Z][A-Za-z0-9_]*")
+_TESTFALL = re.compile(r"test[A-Za-z0-9_]*")
+_TESTPAKET = re.compile(r"[a-z][a-z0-9_]*")
+_TESTSEGMENTE_MAX = 12
+
+
+def _testname(text: str) -> bool:
+    """Ist text ein erlaubter unittest-Name? Segmentweise geprüft (linear): eine einzige verschachtelte Regex mit
+    überlappenden Alternativen hätte bei langen Namen exponentielle Laufzeit (ReDoS)."""
+    if text == "discover":
+        return True
+    teile = text.split(".")
+    if len(teile) > _TESTSEGMENTE_MAX or _TESTWURZEL.fullmatch(teile[0]) is None:
+        return False
+    for i, teil in enumerate(teile[1:], start=1):
+        letzter = i == len(teile) - 1
+        if _TESTKLASSE.fullmatch(teil) or _TESTFALL.fullmatch(teil):
+            continue
+        if not letzter and _TESTPAKET.fullmatch(teil):  # Pakete und Module nur mitten im Namen
+            continue
+        return False
+    return True
 _GO_PAKET = re.compile(r"\.(?:/[A-Za-z0-9_.+\-]+)*(?:/\.\.\.)?")
 # Was Unicode "unsichtbar" nennt: Steuer-, Format-, Ersatz-, private und nicht vergebene Zeichen, Zeilen- und Absatztrenner
 _UNSICHTBAR = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
@@ -158,7 +179,7 @@ def braucht_venv(argv: Sequence[str]) -> bool:
 
 
 def _unittest(args: Sequence[str]) -> str | None:
-    return _mit_positionen(args, _wert(_TESTNAME.pattern), "discover oder Testnamen tests... und test_...", flags=("-v", "-q", "-f", "-b"),
+    return _mit_positionen(args, _testname, "discover oder Testnamen tests... und test_...", flags=("-v", "-q", "-f", "-b"),
                            werte={"-s": _Wert(_pfad), "-p": _Wert(_wert(r"[A-Za-z0-9_*?.][A-Za-z0-9_*?.\-]{0,59}"))})
 
 

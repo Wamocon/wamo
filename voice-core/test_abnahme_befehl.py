@@ -207,6 +207,24 @@ def test_unittest_ruft_kein_aufrufbares_ziel_ohne_test_auf(name):
     assert ab.argv_grund(["python", "-m", "unittest", name]) is not None, name
 
 
+def test_unittest_namen_pruefung_hat_keine_exponentielle_laufzeit():
+    """Regressionstest (ReDoS): Eine einzige verschachtelte Regex mit überlappenden Alternativen brauchte bei
+    "tests" + ".test" * n pro Segment doppelt so lange (n = 22 gut 0,4 s, n = 38 Stunden). Die Prüfung läuft jetzt je Segment
+    und linear; die Obergrenze für die Zahl der Segmente weist solche Namen sofort ab."""
+    import time
+
+    boese = "tests" + ".test" * 38 + "-"
+    assert len(boese) < 200
+    start = time.perf_counter()
+    assert ab.befehl_grund(("python", "-m", "unittest", boese)) is not None
+    assert ab.argv_grund(["python", "-m", "unittest", boese]) is not None
+    assert time.perf_counter() - start < 0.5
+    for n in (5, 11, 12, 13, 40):  # an der Segmentgrenze
+        name = "tests" + ".test" * n
+        erlaubt = (n + 1) <= 12
+        assert (ab.befehl_grund(("python", "-m", "unittest", name)) is None) is erlaubt, n
+
+
 def test_unittest_mit_einem_punktierten_namen_wie_sys_exit_laeuft_mit_exit_0_ohne_test(tmp_path):
     """Der Anlass der Verschärfung, gemessen: Der Name test_x.sys.exit läuft mit Exit 0, ohne dass ein Test lief. Die Allowlist
     lässt ihn deshalb nicht zu (siehe oben)."""
