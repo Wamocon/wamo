@@ -97,7 +97,7 @@ from activity import ActivityReporter
 from ausgaben_kuerzen import Ausgaben, AusgabenKuerzer, register_nachladen
 from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
-from dev_agent import DevAgent, entwicklung_enabled, entwicklung_problem
+from dev_agent import DevAgent, abnahme_befehle_im_betrieb, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
 import kontingent
 from llm_anbieter import LLMNichtVerfuegbar, ausblenden_text, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
@@ -556,6 +556,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         return build_system_prompt(
             identity.name, identity.anrede, recall.persoenlich, recall.gemeinsam,
             pc_werkzeuge=pc_enabled, entwicklung=entwicklung, pc_erreichbar=not state["pc_weg"], fernzugriff=fernzugriff,
+            abnahme_befehle=abnahme_befehle_im_betrieb(),
         )
 
     # Gedächtnis je Sitzung laden (kein prozessweiter Cache: jedes Profil sieht nur seins).
