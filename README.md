@@ -14,9 +14,30 @@ gemeinsamem Gedächtnis.
 | `infra/sokrates2/` | Einrichtung von Supabase-Stack, TLS (eigene CA, Caddy), Firewall und Benutzer `wamo` (Claude Code, ECC, REA, gh, Vercel, Supabase-CLI) | Sokrates-2 |
 | `scripts/` | Start der Desktop-App, Datenbankzugang, Nutzerverwaltung, Migrationen, Versionsskript `wamo_version.py` | PC |
 
-## Stand (20.10.2026)
+## Stand
 
-### Fertig und geprüft
+### Stand 10.11.2026
+
+Ausgerollt ist Version 0.1.0 (Tag `v0.1.0`), `main` steht bei Commit `3185349` (PR 69 und 70). Am 09.11.2026 kamen fünf Pakete dazu:
+
+1. Aufgabenleiste „Vorgänge“ mit Livefortschritt (Abschnitt „Vorgänge: Aufgabenleiste mit Livefortschritt“).
+2. Reiter „Büro“ mit der Radialkarte der Bürogeräte (Abschnitt „Büro-Karte (Bürogeräte im Überblick)“).
+3. Gerätedienst: SNMPv3-Lesetreiber, passive Erkennung unbekannter Geräte, Router-Status wahlweise über TR-064 (Abschnitt „Geräte-Lücken schließen (Paket 3)“).
+4. Prüfbares Ziel mit Runden für Entwicklungsaufträge, `WAMO_ABNAHME_BEFEHLE` Standard aus, `WAMO_PERSONA_ABNAHME` Standard an (Abschnitt „Abnahme: prüfbares Ziel mit Runden“).
+5. Lange Werkzeugausgaben kürzen ab `WAMO_AUSGABE_SCHWELLE` (Standard 3000 Zeichen), Nachladen mit `ausgabe_nachladen` (Abschnitt „Lange Werkzeugausgaben kürzen“).
+
+Betrieb: Kern über die Slots a und b (`infra/sokrates2/wamo-core-slots.sh`), Oberfläche als `wamo-ui-blau` und `wamo-ui-gruen`, Gerätedienst
+`wamo-geraete`, Migration 0017 (Tabelle `vorgaenge`) auf `wamo_dev` und `wamo_test` angewendet.
+
+Offen:
+
+- TR-064-Zugang der FRITZ!Box für die Erkennung unbekannter Geräte (ohne ihn zeigt die Büro-Karte keine Zahl) und Pflege von `/etc/wamo-geraete/bekannt.toml`.
+- Sprachmessung der Persona-Schalter (`WAMO_PERSONA_ABNAHME` ungemessen, `WAMO_PERSONA_GESPRAECH` und `WAMO_WARTESATZ_MODELL` bis zur Messung aus).
+- Dispatcher-Befehl `pruefen` (`infra/sokrates2/wamo_job_dispatch.py`), damit Befehlskriterien auch auf Sokrates-2 laufen; Router schreibend nur als Entwurf (`geraete/README.md`).
+- Die Härtung der Desktop-App läuft in einem eigenen Pull Request und ist in diesem Stand nicht enthalten.
+- Die Einträge unter „Offen (Stand 20.10.2026)“ gelten weiter, soweit dort nicht als überholt markiert; 0010, 0011 und 0013 auf `wamo_prod` sind im Repo nicht als angewendet belegt.
+
+### Fertig und geprüft (Stand 20.10.2026)
 
 - Eigener Supabase-Stack `supabase-wamo` auf Sokrates-2 (API über HTTPS 55443, Postgres über Pooler 55322 mit TLS),
   getrennt von den übrigen Diensten auf Sokrates-2, Registrierung geschlossen. Schemas `wamo_dev` und `wamo_test` angewendet.
@@ -70,17 +91,20 @@ gemeinsamem Gedächtnis.
   Einzelheiten und die Umstellung auf Variante B (eigene Domain, öffentliches Zertifikat):
   `infra/sokrates2/README.md`, Abschnitt 12.
 
-### Offen
+### Offen (Stand 20.10.2026, teilweise überholt, siehe Stand 10.11.2026)
 
 - Selbstüberarbeitung, Stufe 0 (Konzept `docs/selbstueberarbeitung.md`): Migration 0013 (Freigaben und Rollen: Tabellen
   `release_anfragen`, `release_freigaben`, `release_ereignisse`, `release_stand`, Rollen `wamo_release` und `wamo_anker`,
-  Prüfsumme `sha256` in `schema_migrations`) liegt mit Rückweg und SQL-Test bereit, ist aber noch auf keinem Schema
-  angewendet. Anwenden auf `wamo_dev` und `wamo_test` (je zweimal, der zweite Lauf ändert nichts), danach
-  `supabase/tests/0013_release_test.sql` (letzte Zeile „0013 OK“); `wamo_prod` erst nach `database-reviewer` und Freigabe:
+  Prüfsumme `sha256` in `schema_migrations`) liegt mit Rückweg und SQL-Test bereit. ~~Sie ist aber noch auf keinem Schema
+  angewendet.~~ **Überholt für `wamo_dev` und `wamo_test`:** Dort ist 0013 angewendet (Beleg: Migration 0016 bricht ohne 0013 ab und ist
+  laut `CHANGELOG.md` auf beiden Schemas angewendet). Offen bleibt `wamo_prod`, erst nach `database-reviewer` und Freigabe (zweimal
+  anwenden, der zweite Lauf ändert nichts, danach `supabase/tests/0013_release_test.sql`, letzte Zeile „0013 OK“):
   `bash scripts/render-migration.sh <schema> supabase/migrations/0013_release_freigaben.sql | ssh sokrates2 "docker exec -i wamo-supabase-db psql -U postgres -v ON_ERROR_STOP=1 --single-transaction"`.
-  Die Rollen sind NOLOGIN; Login und DSN richtet erst Schritt 0.5 ein. Version und Changelog: `python scripts/wamo_version.py`
+  Die Rollen sind NOLOGIN; ~~Login und DSN richtet erst Schritt 0.5 ein.~~ **Überholt:** Die Login-Rollen `wamo_release_s2` und
+  `wamo_anker_s2` richtet `scripts/wamo_dienst_db.py` ein. Version und Changelog: `python scripts/wamo_version.py`
   (`vorschlag`, `changelog`, `anwenden X.Y.Z --trocken`, `pruefen`) leitet die Version aus Conventional Commits ab und hält alle
-  Versionsdateien samt `CHANGELOG.md` gleich; das erste Tag `v0.1.0` setzt Niko von Hand (kein Tag, kein Push durch das Skript).
+  Versionsdateien samt `CHANGELOG.md` gleich; ~~das erste Tag `v0.1.0` setzt Niko von Hand~~ **überholt:** Das Tag `v0.1.0` besteht
+  (Release 0.1.0 vom 22.10.2026 im `CHANGELOG.md`); das Skript setzt weiterhin kein Tag und macht keinen Push.
 
 - Modellzugang ausrollen: `WAMO_SCHLUESSEL_KEK` erzeugen und in `core.env` setzen, Schlüssel der Person zuordnen
   oder hinterlegen, Migration 0010 in `wamo_prod`, Hausmodelle (`WAMO_LLM_MODELL`, `WAMO_LLM_VISION_MODELL`) im Kern
@@ -94,7 +118,10 @@ gemeinsamem Gedächtnis.
 
 - Ausrollen der Übernahmen und Freigaben im Büro (Kern, PC-Tunnel, GoTrue-Sitzungsgrenzen): Die Skripte sind
   vorbereitet, aber noch nicht angewendet. Bis dahin gibt es im Büro keinen Freigabeweg (fehlender Freigabe-Schlüssel:
-  nichts wird freigegeben), unterwegs wirkt alles nach dem nächsten Start der Desktop-App.
+  nichts wird freigegeben), unterwegs wirkt alles nach dem nächsten Start der Desktop-App. *Hinweis, siehe Stand 10.11.2026:* Die
+  Kern-Umschaltung über Slots wurde am 02.11.2026 live geübt (`docs/selbstueberarbeitung.md`, Schritt 2.4), und der Fernzugriff wurde
+  am 04.11.2026 am Laptop getestet (`CHANGELOG.md`, Abschnitt „Behoben“);
+  wie weit die GoTrue-Sitzungsgrenzen und der Freigabe-Schlüssel im Büro angewendet sind, ist im Repo nicht belegt, der Absatz bleibt deshalb stehen.
 
 - Soniox: Der Schlüssel gehört seit 02.11.2026 zu einem EU-Projekt. Erkennung und Sprachausgabe laufen über `stt-rt.eu.soniox.com` und
   `tts-rt.eu.soniox.com` (Standard in `voice-core/bot.py`). Die US-Adressen lehnen EU-Schlüssel mit 401 ab, die Region gilt je Projekt.
@@ -316,9 +343,10 @@ eigenen Profils, Token mit zweitem Faktor wie bei allen Schnittstellen unter `/w
 eine Nachricht. Ein Vorgang ohne Ende gilt im Verlauf als abgebrochen, ein Vorgang der laufenden Sitzung geht dem Verlauf immer vor, und
 ein Fehler bei der Abfrage zeigt einfach keinen Verlauf. Gespeichert wird nur bei einem Statuswechsel (Tabelle `vorgaenge`).
 
-**Migration 0017 ist noch nicht angewendet** (`supabase/migrations/0017_vorgaenge.sql`, Rückweg `.down.sql`, SQL-Test unter
-`supabase/tests/`). Bis dahin speichert der Kern nichts (still, mit einem Hinweis im Protokoll) und der Verlauf bleibt leer; die
-Anzeige der laufenden Sitzung funktioniert auch ohne. In der Entwicklung zeigt `/?vorschau=1&vorgaenge=1` fünf Beispielvorgänge (nur
+**Migration 0017** (`supabase/migrations/0017_vorgaenge.sql`, Rückweg `.down.sql`, SQL-Test unter `supabase/tests/`) ist seit dem
+09.11.2026 auf `wamo_dev` und `wamo_test` angewendet (zweiter Lauf ohne Änderung, SQL-Test „0017 OK“); ein `wamo_prod` gibt es nicht.
+Ohne die Tabelle (zum Beispiel in einem neuen Schema) speichert der Kern nichts (still, mit einem Hinweis im Protokoll) und der Verlauf
+bleibt leer; die Anzeige der laufenden Sitzung funktioniert auch ohne. In der Entwicklung zeigt `/?vorschau=1&vorgaenge=1` fünf Beispielvorgänge (nur
 `next dev` mit `NEXT_PUBLIC_WAMO_VORSCHAU=1`). Nicht an einem echten Lauf geprüft: Die Schritte aus dem Stream von Claude Code
 sind nur mit aufgezeichneten Streams getestet (`voice-core/testdaten/vorgang_stream.jsonl`).
 

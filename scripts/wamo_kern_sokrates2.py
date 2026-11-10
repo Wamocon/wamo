@@ -68,6 +68,10 @@ AUS_ENV = (
     "WAMO_PAUSEN_PROMPT", "WAMO_LERNEN_OHNE_MOMENT", "WAMO_RUECKMELDUNG_WERKZEUG", "WAMO_JA_WAECHTER", "WAMO_ECHO_MODUS",
     # Fehlerbehebungen aus der Sitzung vom 31.10.2026 (voice-core/werkzeug_wache.py), Standard an
     "WAMO_ABBRUCH_HINWEIS", "WAMO_WERKZEUG_DOPPELT", "WAMO_LERNEN_HAUS_SECS", "WAMO_MARKER_FALLBACK",
+    # Entwicklungsaufträge und lange Werkzeugausgaben (09.11.2026): prüfbares Ziel in Runden (persona.py, Standard an),
+    # Befehlskriterien der Abnahme (abnahme.py, Standard aus, brauchen die Betriebsart lokal und bleiben auf Sokrates-2 ohne
+    # Wirkung), Schwelle zum Kürzen langer Werkzeugausgaben (ausgaben_kuerzen.py, Standard 3000, 0 = aus)
+    "WAMO_PERSONA_ABNAHME", "WAMO_ABNAHME_BEFEHLE", "WAMO_AUSGABE_SCHWELLE",
 )
 AUS_ENV_PRAEFIX = ("WAMO_LLM_",)
 

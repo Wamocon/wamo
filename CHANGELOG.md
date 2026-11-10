@@ -68,7 +68,7 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   30 Tage, danach leert ihn der Kern (`aufraeumen`, höchstens einmal je Stunde und Prozess, Zeilen löscht er nicht); ein Vorgang, der nach
   24 Stunden noch offen ist (der Kern ist beim Ende abgestürzt), gilt als abgebrochen. Ein Endstand wird nie von einem späteren Zwischenstand
   überschrieben. Die Balken sind `role="progressbar"`, der Zustand steht nie nur als Farbe da,
-  `prefers-reduced-motion` schaltet die Bewegung ab. **Migration 0017 (Tabelle `vorgaenge`) ist noch nicht angewendet**: Bis dahin bleibt der
+  `prefers-reduced-motion` schaltet die Bewegung ab. **Migration 0017 (Tabelle `vorgaenge`)** liegt seit dem 09.11.2026 auf `wamo_dev` und `wamo_test`: Ohne die Tabelle bleibt der
   Verlauf leer, die Anzeige der laufenden Sitzung geht auch ohne. Die Zeitleiste "Werkzeuge" und ihre Karte `boss_aufgabe` sind unverändert.
 - Canvas: Nach dem Kopieren eines Codeblocks erscheint 1,5 Sekunden ein Chip "Kopiert" (Live-Region, `aria-live="polite"`); die Beschriftung des
   Knopfes bleibt "Kopieren". Schlägt das Kopieren fehl, steht dort "Nicht kopiert".
@@ -183,6 +183,14 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   Persona und Werkzeugbeschreibung angepasst, abschaltbar mit `WAMO_PERSONA_TAB=aus`.
 - Desktop-App: Electron von 44.5.1 auf 44.10.1 angehoben (schließt den Hinweis zu den Zwischenzertifikaten der Web-PKI aus
   `npm audit`); Tests, Installer-Bau und Fuses unverändert grün.
+- Dokumentation und Kern-Einrichtung nachgeführt: Die README führt oben im Abschnitt „Stand“ den Stand vom 10.11.2026 (fünf Pakete,
+  Betrieb, offene Punkte) und markiert überholte Einträge der Liste „Offen“, `docs/remote-desktop.md` beschreibt das eingerichtete
+  Gateway statt „nichts gebaut“ und folgt in Dateinamen und Routen dem Code. Die Schalter `WAMO_PERSONA_ABNAHME`,
+  `WAMO_ABNAHME_BEFEHLE` und `WAMO_AUSGABE_SCHWELLE` stehen jetzt in den Listen erlaubter Kern-Variablen
+  (`scripts/wamo_kern_sokrates2.py`, `infra/sokrates2/wamo_core_env.py`) und in beiden `.env.example` (leer heißt Standard, Befehlskriterien
+  bleiben aus), ein Test in `voice-core/test_env_schalter.py` prüft das. Auf Sokrates-2 wirken die neuen Namen erst, wenn
+  `wamo-core-einrichten.sh` den Hilfsdienst `wamo-core-env` erneuert hat; bis dahin lehnt der alte Hilfsdienst eine Übertragung mit
+  diesen Namen als Ganzes ab.
 
 ## [0.1.0] - 2026-10-22
 

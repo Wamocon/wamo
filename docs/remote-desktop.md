@@ -1,6 +1,12 @@
 # Remote Desktop der Sparks über ein WAMO-Gateway
 
-Konzept, Stand 31.10.2026, Basis Commit 86c4d37. Nichts davon ist gebaut: kein Container, keine Regel, kein Konto, kein Code.
+Konzept vom 31.10.2026 (Basis Commit 86c4d37), umgesetzt. **Stand 10.11.2026:** Das Gateway ist gebaut und auf Sokrates-2 eingerichtet
+(Bau ab 31.10.2026, Ende-zu-Ende-Probe am 01.11.2026, Test am Laptop am 04.11.2026). Ziele sind Sokrates-1, Sokrates-2 und Caesar
+(RDP über xrdp mit dem Konto `wamo-rd`), der Zugang läuft im Browser über die Oberfläche (Einstellungen, Fernzugriff, nur Admin).
+Quellen im Repo: Nutzung und Grenzen `README.md` (Abschnitt „Fernzugriff (Remote Desktop der Sparks)“), Einrichtung und Betrieb
+`infra/sokrates2/README.md` (Abschnitt 16), Kern `voice-core/rd_api.py`, Zugangsdienst `infra/sokrates2/wamo-rd/zugang/`, Oberfläche
+`ui/src/components/einstellungen/Fernzugriff.tsx`, Rauchtest `infra/sokrates2/wamo_rd_rauchtest.py`, Änderungen `CHANGELOG.md`.
+Dieses Dokument bleibt das Konzept mit den Begründungen; wo der gebaute Stand vom Konzept abweicht, steht es im Text.
 Alle Aussagen über die Sparks stammen aus lesenden Abfragen vom 31.10.2026 (Beleg jeweils genannt); nichts wurde geändert.
 Ziel: Ein Admin sieht und bedient unterwegs vom iPhone (WAMO-App über WireGuard ins Büronetz) den Desktop von Sokrates-1,
 Sokrates-2 und Caesar. Gewählt ist Weg A: ein eigenes Gateway auf Sokrates-2, gehärtet wie `wamo-ui`, hinter `wamo-caddy`.
@@ -57,6 +63,8 @@ Anmeldung und Oberfläche (3, 4), zuletzt die anderen Sparks (5, 6). Jede Stufe 
 zuerst Kandidat G auf Sokrates-2 (halber Tag Begrenzung). Läuft G ohne zweite Anmeldung, ist G vorzuziehen: der Dienst läuft
 als unprivilegierter Benutzer, xrdp dagegen mit `xrdp-sesman` als root. Läuft G nicht, gilt X. Die Entscheidung ist reversibel,
 das Gateway ändert sich dadurch nicht (nur `security`-Wert und Zertifikatsprüfung in der Verbindung).
+**Umgesetzt (Stand 10.11.2026):** xrdp (Kandidat X). Gebaut ist nur xrdp, GRD im Systemmodus wurde nicht erprobt (Beleg:
+`infra/sparks/wamo-rd-ziel-einrichten.sh`, Kopfkommentar; `infra/sokrates2/README.md`, Abschnitt 16, Stufe 2).
 
 ### 2.2 Mehrere Konten, Sitzungen anderer
 
@@ -151,7 +159,7 @@ Handy (WAMO-App, Safari)                                                        
         Kern (wamo-core): Token, aal2, Profil, Rolle admin, Zweitfaktor jünger als 120 s, Rate-Grenze, Ziel erlaubt?
         Kern ──Unix-Socket /run/wamo-rd/ctl.sock (SO_PEERCRED wamo-core)──> Zugangsdienst (wamo-rd-zugang)
         Zugangsdienst: ein Zuschauer je Ziel? Sperre setzen, JSON bauen, bei Guacamole einreichen, Token halten, Audit "gestartet"
-  3  Antwort: { url: "https://192.168.178.136:55446/#/?token=...", endet_um, ziel }
+  3  Antwort: { url: "https://192.168.178.136:55446/#/?token=...", endet, ziel, sitzung }
   4  window.open(url, noopener)  ──> Gateway-Seite (eigene Herkunft, Guacamole-Oberfläche im WAMO-Design)
   5  Browser ──HTTPS 55446──> wamo-caddy ──HTTP, Netz wamo-rd-netz──> wamo-rd-web ──guacd-Protokoll──> wamo-rd-guacd
   6  wamo-rd-guacd ──RDP (TLS), Netz wamo-rd-ziel, Quelladresse nur Gateway──> Spark:3389 (nur Konto wamo-rd, eigene Sitzung)
@@ -211,7 +219,7 @@ Der Fernzugriff war zunächst nur ein Knopf in den Einstellungen. Auf die Bitte,
 | Baustein | Festlegung |
 | --- | --- |
 | Konto | `wamo-rd` je Spark (nicht `wamocon`). Normales Konto mit Home `/home/wamo-rd` (0700), Shell `bash` (die Desktopsitzung braucht eine), **keine** Gruppen außer der Hauptgruppe, `wamo-rd-ts` (nur für xrdp) und, falls nötig, `render`/`video`. Nicht in `sudo`, `docker`, `adm`, `ollama`, `lpadmin`. SSH: nicht in `AllowUsers`, also gesperrt. |
-| Passwort | 32 Zeichen zufällig, je Spark ein eigenes. Erzeugt von `rd-passwort-rotieren.sh` auf dem Ziel (über `chpasswd`, ohne Ausgabe), dem Zugangsdienst übergeben über stdin in die Datei `/etc/wamo-rd/ziele.env` (Besitzer `root:wamo-rd`, 0640, nur im Container `wamo-rd-zugang` eingehängt). Wie `wamo-geraete-env setzen`. Nie im Repo, nie im Log, nie in `docker inspect` (kein Env-Eintrag, sondern Datei). |
+| Passwort | 32 Zeichen zufällig, je Spark ein eigenes. Erzeugt von `wamo-rd-konto-einrichten.sh` (Option `--rotieren`) auf dem Ziel (über `chpasswd`, ohne Ausgabe), dem Zugangsdienst übergeben über stdin in die Datei `/etc/wamo-rd/ziele.env` (Besitzer `root:wamo-rd`, 0640, nur im Container `wamo-rd-zugang` eingehängt). Wie `wamo-geraete-env setzen`. Nie im Repo, nie im Log, nie in `docker inspect` (kein Env-Eintrag, sondern Datei). |
 | Rotation | Auf Anforderung und planmäßig alle 90 Tage, außerdem sofort nach jedem Verdacht. Das Skript schreibt nur Namen und Zeit ins Audit, nie den Wert. |
 | Einmalpasswort (Stufe 8, optional) | Je Sitzung ein neues Passwort, das am Ziel nur 120 Sekunden lang gilt. Braucht einen privilegierten Helfer am Ziel (`sudoers` auf genau einen Befehl) und einen Weg dorthin (SSH-Schlüssel mit `command=`). Zusätzliche Angriffsfläche für kleinen Gewinn, solange das Konto ohnehin nur aus der Gateway-Adresse erreichbar ist. Darum nicht Teil des ersten Wurfs. |
 | Anzeige | Das Passwort erscheint nie in Antworten, Fehlertexten oder im Audit. Guacamole bekommt es nur im JSON, das der Zugangsdienst selbst einreicht. |
@@ -235,14 +243,14 @@ Der Fernzugriff war zunächst nur ein Knopf in den Einstellungen. Auf die Bitte,
 | Compose-Projekt, Ordner | `wamo-rd`, auf dem Server `/home/wamocon/wamo-rd` |
 | Container | `wamo-rd-web` (Guacamole), `wamo-rd-guacd`, `wamo-rd-zugang` (Python) |
 | Härtung, alle drei | wie `wamo-ui`: Benutzer ohne Root, `read_only`, `cap_drop: ALL`, `no-new-privileges`, `mem_limit` (web 768 MB, guacd 256 MB, zugang 128 MB), `cpus`, `pids_limit`, `tmpfs` mit `noexec`, Healthcheck, `json-file` mit Größengrenze, `pull_policy: never`, Images über Digest |
-| Netze | `wamo-rd-netz` (172.26.0.0/24, `internal`, ohne Bridge-Adresse): Caddy, web, zugang, guacd. `wamo-rd-ziel` (172.27.0.0/24, **nicht** `internal`, Ausgang nur zu den drei Sparks, nur TCP 3389): nur guacd |
+| Netze | `wamo-rd-netz` (172.26.0.0/24, `internal`, ohne Bridge-Adresse): Caddy, web, zugang. `wamo-rd-guacd-netz` (172.26.1.0/29, `internal`): nur web und guacd, guacd ist so für Caddy unerreichbar. `wamo-rd-ziel` (172.27.0.0/24, **nicht** `internal`, Ausgang nur zu den Zielen aus `ziele.toml`, nur TCP 3389): guacd und für dessen Probe der Zugangsdienst (Beleg: `infra/sokrates2/wamo-rd/docker-compose.yml`) |
 | Port und Site | 55446 (HTTPS) an `wamo-caddy`, eigene Datei `kern/wamo-rd.caddy`, Aufruf Methoden GET, HEAD, POST nur wo Guacamole es braucht, WebSocket durchgereicht |
 | Firewall | `wamo-firewall.sh`: 55446 in `WAMO-FW-LAN` (Loopback und Büro-LAN, damit auch WireGuard-Clients), neue Kette `WAMO-FW-RD` für das Netz 172.27.0.0/24 (erlaubt nur Ziel-Adressen:3389, alles andere verworfen und gezählt) |
 | Zugangsdienst | Unix-Socket `/run/wamo-rd/ctl.sock` (Gruppe `wamo-core`), `SO_PEERCRED`, kein Netzport |
 | Dateien | `/etc/wamo-rd/ziele.toml`, `/etc/wamo-rd/ziele.env`, `/etc/wamo-rd/json.key` (alle 0600/0640), `/var/lib/wamo-rd/audit.jsonl` |
-| Kern | `voice-core/rd_api.py` (Route `/wamo/api/rd/start`, `/ende`, `/status`), Eintrag in `ROUTEN_MODULE`, Env `WAMO_RD_SOCKET`, `WAMO_RD_AKTIV` (Standard `nein`) |
+| Kern | `voice-core/rd_api.py` (Routen `/wamo/api/rd/ziele`, `/start`, `/ende`), Eintrag in `ROUTEN_MODULE`, Env `WAMO_RD_SOCKET`, `WAMO_RD_AKTIV` (Standard `nein`) |
 | Oberfläche | Abschnitt `fernzugriff` in `ui/src/lib/einstellungenAbschnitte.ts`, `ui/src/components/einstellungen/Fernzugriff.tsx` (nur Rolle admin sichtbar), `ui/src/lib/fernzugriff.ts` |
-| Ziele am Spark | Konto `wamo-rd`, Gruppe `wamo-rd-ts`, `/etc/xrdp/` (Konfiguration), Skript `infra/sparks/wamo-rd-einrichten.sh` und `wamo-rd-rueckweg.sh` |
+| Ziele am Spark | Konto `wamo-rd`, Gruppe `wamo-rd-ts`, `/etc/xrdp/` (Konfiguration), Skripte `infra/sparks/wamo-rd-konto-einrichten.sh` (Konto, Passwort, Rotation, Rückweg), `wamo-rd-ziel-einrichten.sh` (xrdp als Ziel, `--zurueck`), `wamo-rd-ausgang-einrichten.sh` (Ausgangsregel), `xrdp-einhegen.sh` und `wamo-sudo-einrichten.sh` |
 
 Der Compose-Aufruf für Port 55446 legt `wamo-caddy` einmal neu an (wie beim ersten `wamo-ui`): 55443 bis 55445 sind dann wenige
 Sekunden weg. Nur ohne laufende Sitzung (gleiche Prüfung wie `wamo_ui_sokrates2.py`).
@@ -270,8 +278,9 @@ nur Rolle admin, hartes Zeitlimit, ein Zuschauer je Ziel. Aufbewahrung des Proto
 `wamo-rd` machten das Protokoll unscharf. Der zweite Admin sieht "belegt von <Name> seit <Zeit>" und kann
 warten. Beenden durch Dritte gibt es nicht. Ausnahme später möglich: Mitschauen (nur ansehen), nicht jetzt.
 
-**Limits:** Sitzung höchstens 60 Minuten (Verlängerung um 30 Minuten per Knopf, höchstens 4 Stunden insgesamt), Warnung 2 Minuten vor
-Ende. Leerlauf 10 Minuten (am Ziel durch `IdleTimeLimit`). Höchstens 6 Starts je Stunde und Profil, drei Sitzungen gleichzeitig im Gateway.
+**Limits:** Sitzung höchstens 60 Minuten (Konzept: Verlängerung um 30 Minuten per Knopf, höchstens 4 Stunden insgesamt, Warnung
+2 Minuten vor Ende; **so nicht gebaut**: Kern und Oberfläche kennen nur die feste Höchstdauer `DAUER_SECS` von 60 Minuten und die
+Restzeit, kein Verlängern und keine Warnung, der Zugangsdienst begrenzt eine Anweisung auf höchstens 4 Stunden). Leerlauf 10 Minuten (am Ziel durch `IdleTimeLimit`). Höchstens 6 Starts je Stunde und Profil, drei Sitzungen gleichzeitig im Gateway.
 
 ## 8. Frage F: Stufenplan
 
@@ -283,11 +292,11 @@ Rechte, keine laufende Sitzung).
 | --- | --- | --- | --- | --- | --- | --- |
 | 0 (optional, unabhängig) | Caesar: Offener RDP-Port sofort schließen | keine im Repo; Handarbeit am Ziel (ufw oder `systemctl stop xrdp`) | Von einem LAN-Gerät: Verbindung auf 3389 scheitert; xrdp ohne Sitzung gestoppt | `systemctl start xrdp` | 1 | Zustimmung des Nutzers |
 | 1 | Gateway-Container und Firewall **ohne Ziel**: Images (arm64), Netze, Caddy-Site 55446, Härtung, Kette `WAMO-FW-RD`, leere Zielliste | `infra/sokrates2/wamo-rd/` (Dockerfile oder Image-Pin, `docker-compose.yml`, `wamo-rd.caddy.vorlage`), `wamo-rd-einrichten.sh`, `wamo-rd-rueckweg.sh`, `wamo_rd_rauchtest.py`, Änderung `wamo-firewall.sh`, `wamo-caddy/docker-compose.yml`, `CLAUDE.md` (Namensvertrag) | Rauch: Container gesund, 55446 antwortet aus dem LAN mit Gateway-Seite ohne Konten; Header geprüft. Verbot: von Container `wamo-rd-web` kein Ausgang ins Internet, nicht zum Host, nicht ins LAN; `wamo-rd-guacd` erreicht nur Sparks:3389; Anfrage ohne gültiges JSON gibt keinen Zugang; Port 55446 aus 10.100.x und aus fremden Netzen verworfen; `JSON_TRUSTED_NETWORKS` weist fremde Absender ab | `wamo-rd-rueckweg.sh` (Container, Site, Regeln weg; Port bleibt im Compose, ohne Site lauscht Caddy dort nicht) | 8 | keine |
-| 2 | **Ein Ziel: Sokrates-2.** Konto `wamo-rd`, Kandidat G oder X entscheiden, Quelladresse, Passwort, Klärung der Prüfpunkte (2.1 GRD Remote Login oder xrdp; 2.2 Zertifikat pinnen; 2.3 Token löschen beendet den Tunnel; 2.4 `expires` und Leerlauf) | `infra/sparks/wamo-rd-einrichten.sh`, `wamo-rd-rueckweg.sh`, `rd-passwort-rotieren.sh`, `wamo-rd-ziele.toml.beispiel`; Prüfskript im Gateway-Container (nur lesend, Testverbindung ohne Oberfläche) | Rauch: Testverbindung des Gateways öffnet Desktop von `wamo-rd` auf Sokrates-2, Bild kommt, Maus und Tastatur wirken. Verbot: anderes Konto (`wamocon`, Personenkonto) wird abgewiesen; `wamo-rd` hat kein sudo, kein SSH, keine Gruppe `docker`; 3389 von einem anderen LAN-Gerät verworfen; kein Zugriff auf `/home/wamocon`; Konsole von `wamocon` nie sichtbar | Konto sperren, Dienst aus (GRD `--system ... disable` oder `systemctl disable --now xrdp`), ufw-Regeln zurück | 8 | 1 |
+| 2 | **Ein Ziel: Sokrates-2.** Konto `wamo-rd`, Kandidat G oder X entscheiden, Quelladresse, Passwort, Klärung der Prüfpunkte (2.1 GRD Remote Login oder xrdp; 2.2 Zertifikat pinnen; 2.3 Token löschen beendet den Tunnel; 2.4 `expires` und Leerlauf) | `infra/sparks/wamo-rd-konto-einrichten.sh` (Konto, Rotation und Rückweg), `wamo-rd-ziel-einrichten.sh` (xrdp, Rückweg `--zurueck`), `wamo-rd-ausgang-einrichten.sh`, `infra/sokrates2/wamo-rd/ziele.toml.beispiel`; Prüfskript im Gateway-Container (nur lesend, Testverbindung ohne Oberfläche: `infra/sokrates2/wamo-rd/zugang/pruefe_gegen_guacamole.py`) | Rauch: Testverbindung des Gateways öffnet Desktop von `wamo-rd` auf Sokrates-2, Bild kommt, Maus und Tastatur wirken. Verbot: anderes Konto (`wamocon`, Personenkonto) wird abgewiesen; `wamo-rd` hat kein sudo, kein SSH, keine Gruppe `docker`; 3389 von einem anderen LAN-Gerät verworfen; kein Zugriff auf `/home/wamocon`; Konsole von `wamocon` nie sichtbar | Konto sperren, Dienst aus (GRD `--system ... disable` oder `systemctl disable --now xrdp`), ufw-Regeln zurück | 8 | 1 |
 | 3 | Anmeldung über WAMO: Kernmodul, Zugangsdienst, Sperre je Ziel, Limits, Audit, frischer Zweitfaktor | `voice-core/rd_api.py`, `voice-core/test_rd_api.py`, `voice-core/wamo_api.py` (`ROUTEN_MODULE`), `infra/sokrates2/wamo-rd/zugang/` (Python, Tests), `/etc/wamo-rd/*` Anlage im Einrichtungsskript | Rauch: Admin mit frischem Code erhält URL, Sitzung zeigt Spark-Desktop. Verbot: `mitglied` 403; ohne aal2 403; Zweitfaktor älter als 120 s abgewiesen; zweiter Start auf dasselbe Ziel 409; Ende nach Zeitlimit und nach Leerlauf; Profil deaktiviert beendet Sitzung; Audit enthält keine Bildschirmdaten und kein Passwort (Grep); Fehlversuche sperren; JSON zweimal einreichen scheitert | `WAMO_RD_AKTIV=nein` in der Unit, `systemctl restart wamo-core`; Gateway bleibt ohne Zugang | 14 | 1, 2 |
-| 4 | Oberfläche: Abschnitt "Fernzugriff", Hinweisfenster, Start und Ende, Branding, Test am iPhone (Touch, Scrollen, Tastatur, Standalone) | `ui/src/components/einstellungen/Fernzugriff.tsx`, `ui/src/lib/fernzugriff.ts`, `ui/src/lib/einstellungenAbschnitte.ts`, Branding-Dateien unter `infra/sokrates2/wamo-rd/branding/`, Tests der Oberfläche | Rauch: iPhone, Mobilfunk, WireGuard an, Spark-Desktop sichtbar, Eingabe möglich, Beenden wirkt. Verbot: `mitglied` sieht den Abschnitt nicht und der Aufruf scheitert im Kern; ohne WireGuard nichts erreichbar; keine Zwischenablage; Gateway-Seite ohne Token leer | Abschnitt per Merkmal ausblenden, `wamo-ui` zurückschalten (`zurueck`, 1 Sekunde) | 12 | 3 |
-| 5 | Sokrates-1 als Ziel (gleiche Technik wie Stufe 2) | `wamo-rd-ziele.toml` ergänzen, ufw-Sperre vor den breiten Erlaubnissen (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) | Wie Stufe 2 für Sokrates-1; Verbot: 3389 aus den ConnectX-Netzen verworfen | `wamo-rd-rueckweg.sh` am Ziel | 4 | 2 (parallel zu 3) |
-| 6 | Caesar: xrdp einhegen (Patch, Gruppenprüfung, kein Root, keine Kanäle, Limits, nur Gateway) und als Ziel aufnehmen | `wamo-rd-einrichten.sh` (Zweig xrdp), `xrdp-haerten.conf`-Beispiel | Wie Stufe 2. Verbot: `wamocon` und `root` per RDP abgewiesen; `security_layer` ohne Rückfall auf Standard-RDP; Version geprüft | Alte Konfiguration aus der Sicherung, oder xrdp aus | 4 | 2 |
+| 4 | Oberfläche: Abschnitt "Fernzugriff", Hinweisfenster, Start und Ende, Branding, Test am iPhone (Touch, Scrollen, Tastatur, Standalone) | `ui/src/components/einstellungen/Fernzugriff.tsx`, `ui/src/lib/fernzugriff.ts`, `ui/src/lib/einstellungenAbschnitte.ts`, Erweiterung `WAMO Eingabe` (Tastaturleiste, Stile im WAMO-Design) unter `infra/sokrates2/wamo-rd/erweiterung/` statt eines Ordners `branding/`, Tests der Oberfläche | Rauch: iPhone, Mobilfunk, WireGuard an, Spark-Desktop sichtbar, Eingabe möglich, Beenden wirkt. Verbot: `mitglied` sieht den Abschnitt nicht und der Aufruf scheitert im Kern; ohne WireGuard nichts erreichbar; keine Zwischenablage; Gateway-Seite ohne Token leer | Abschnitt per Merkmal ausblenden, `wamo-ui` zurückschalten (`zurueck`, 1 Sekunde) | 12 | 3 |
+| 5 | Sokrates-1 als Ziel (gleiche Technik wie Stufe 2) | `/etc/wamo-rd/ziele.toml` ergänzen, ufw-Sperre vor den breiten Erlaubnissen (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) | Wie Stufe 2 für Sokrates-1; Verbot: 3389 aus den ConnectX-Netzen verworfen | `wamo-rd-ziel-einrichten.sh --zurueck` am Ziel | 4 | 2 (parallel zu 3) |
+| 6 | Caesar: xrdp einhegen (Patch, Gruppenprüfung, kein Root, keine Kanäle, Limits, nur Gateway) und als Ziel aufnehmen | `infra/sparks/xrdp-einhegen.sh` (statt eines Zweigs in `wamo-rd-einrichten.sh` und eines `xrdp-haerten.conf`-Beispiels) | Wie Stufe 2. Verbot: `wamocon` und `root` per RDP abgewiesen; `security_layer` ohne Rückfall auf Standard-RDP; Version geprüft | Alte Konfiguration aus der Sicherung, oder xrdp aus | 4 | 2 |
 | 7 | Abnahme am iPhone unterwegs und Übergabe (Anleitung WireGuard, README, Betriebs- und Rückwegkapitel) | `infra/sokrates2/README.md` (neuer Abschnitt), `README.md`, `CHANGELOG.md` | Vollständiger Lauf draußen: VPN, Anmeldung, Code, Spark wählen, arbeiten, beenden, Protokoll prüfen | wie Stufen 1 bis 4 | 3 | 4, 5, 6 |
 | 8 (optional) | Härtung: Einmalpasswort je Sitzung, Ausgangsfilter für `wamo-rd` am Ziel, Verlauf in der Oberfläche, Hinweis am Gerät | je nach Entscheidung | nach Umsetzung | je Baustein | 6 | 7 |
 

@@ -109,6 +109,11 @@ NEUE_NAMEN = (
 )
 
 
+# Prüfbares Ziel für Entwicklungsaufträge (Standard an), Befehlskriterien (Standard aus) und Schwelle zum Kürzen langer
+# Werkzeugausgaben (Standard 3000, 0 = aus), alle seit 09.11.2026
+ABNAHME_UND_AUSGABEN = ("WAMO_PERSONA_ABNAHME", "WAMO_ABNAHME_BEFEHLE", "WAMO_AUSGABE_SCHWELLE")
+
+
 class ErlaubnislisteTest(unittest.TestCase):
     """Ein Schalter, der nicht in der Liste erlaubter Werte steht, bleibt auf Sokrates-2 wirkungslos."""
 
@@ -123,6 +128,32 @@ class ErlaubnislisteTest(unittest.TestCase):
         for name in NEUE_NAMEN:
             if name != "WAMO_ECHO_MODUS":
                 self.assertIn(name, env_schalter.__doc__)
+
+    def test_abnahme_und_ausgaben_stehen_in_beiden_listen(self):
+        """Der Hilfsdienst auf Sokrates-2 lehnt unbekannte Schlüssel ab (nichts wird übernommen): beide Listen müssen gleich sein."""
+        wurzel = Path(__file__).resolve().parent.parent
+        for datei in ("infra/sokrates2/wamo_core_env.py", "scripts/wamo_kern_sokrates2.py"):
+            text = (wurzel / datei).read_text(encoding="utf-8")
+            for name in ABNAHME_UND_AUSGABEN:
+                self.assertIn(f'"{name}"', text, f"{name} fehlt in {datei}")
+
+    def test_abnahme_und_ausgaben_stehen_leer_in_den_vorlagen(self):
+        """Leer heißt Standard: Befehlskriterien aus, prüfbares Ziel an, Schwelle 3000 (die Vorlage schaltet nie etwas ein)."""
+        wurzel = Path(__file__).resolve().parent.parent
+        for datei in (".env.example", "voice-core/.env.example"):
+            text = (wurzel / datei).read_text(encoding="utf-8")
+            for name in ABNAHME_UND_AUSGABEN:
+                self.assertRegex(text, rf"(?m)^{name}=$", f"{name} fehlt oder hat einen Wert in {datei}")
+
+    def test_leerer_wert_gibt_den_sicheren_standard(self):
+        import abnahme
+        import ausgaben_kuerzen
+        import persona
+
+        with mock.patch.dict(os.environ, {name: "" for name in ABNAHME_UND_AUSGABEN}):
+            self.assertFalse(abnahme.befehle_eingeschaltet(), "Befehlskriterien bleiben ohne ausdrückliches ja aus")
+            self.assertTrue(persona.persona_abnahme_an())
+            self.assertEqual(ausgaben_kuerzen.schwelle_aus_umgebung(), ausgaben_kuerzen.SCHWELLE_STANDARD)
 
 
 if __name__ == "__main__":
