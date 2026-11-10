@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1138,6 +1139,139 @@ def test_der_laeufer_laesst_im_modus_pruefen_nie_ein_laengeres_zeitlimit_oder_we
     assert re.search(r'PRUEFEN_PROZESSE_MAX=(\d+)', runner) and int(re.search(r'PRUEFEN_PROZESSE_MAX=(\d+)', runner).group(1)) <= 256
 
 
+def _if_zweige(skript: str, nadel: str) -> list[list[tuple[str, str]]]:
+    """Für jede Nicht-Kommentarzeile mit nadel die Bedingungen der umgebenden if-Blöcke: [(Bedingung, "dann" oder "sonst"), ...]."""
+    stapel: list[list[str]] = []
+    gefunden: list[list[tuple[str, str]]] = []
+    for zeile in skript.splitlines():
+        t = zeile.strip()
+        if t.startswith("if ") and t.endswith("; then"):
+            stapel.append([t[3:-len("; then")].strip(), "dann"])
+        elif t.startswith("elif ") and t.endswith("; then"):
+            stapel[-1] = [t[5:-len("; then")].strip(), "dann"]
+        elif t == "else":
+            stapel[-1][1] = "sonst"
+        elif t == "fi":
+            stapel.pop()
+        elif nadel in zeile and not t.startswith("#"):
+            gefunden.append([(b, z) for b, z in stapel])
+    return gefunden
+
+
+LAUF = '[ "$MODUS" = lauf ]'
+
+
+def test_der_laeufer_bindet_im_modus_pruefen_nie_die_dauerhaften_ordner_der_auftragslaeufe(runner):
+    """Die Ordner npm, cache und plugin-daten im Auftragsordner sind dauerhaft: Ein Lauf mit Token und spätere Läufe teilen sie. Der
+    Modus pruefen fasst sie weder an (mkdir) noch bindet er sie ein."""
+    for nadel in ('"$JOBDIR/npm"', '"$JOBDIR/cache"', '"$JOBDIR/plugin-daten"', '"$JOBDIR/$teil"'):
+        stellen = _if_zweige(runner, nadel)
+        assert stellen, nadel
+        for kontext in stellen:
+            assert (LAUF, "dann") in kontext, (nadel, kontext)
+
+
+def test_der_laeufer_gibt_dem_modus_pruefen_eigene_leere_tmpfs_ordner_mit_groessengrenze_je_lauf(runner):
+    assert re.search(r"^PRUEFEN_CACHE_MB=256$", runner, re.M)  # zum Beispiel 256 MiB je Ordner
+    for ziel in ('"$HEIM/.npm"', '"$HEIM/.cache"'):
+        zeilen = [z for z in runner.splitlines() if "--tmpfs" in z and ziel in z]
+        assert len(zeilen) == 1, ziel
+        assert "--size $((PRUEFEN_CACHE_MB * 1024 * 1024))" in zeilen[0] and "--perms 0700" in zeilen[0], zeilen[0]
+        assert _if_zweige(runner, zeilen[0].strip())[0] == [(LAUF, "sonst")], ziel  # nur im Modus pruefen
+        assert "--bind" not in zeilen[0]
+    # Im Auftragslauf bleiben die Ordner auf der Platte (je Auftrag), unverändert
+    assert '--bind "$JOBDIR/npm" "$HEIM/.npm"' in runner and '--bind "$JOBDIR/cache" "$HEIM/.cache"' in runner
+
+
+def test_der_laeufer_dokumentiert_dass_eine_echte_plattenquote_fehlt(runner):
+    kopf = runner[:runner.index("set -euo pipefail")]
+    assert "Plattenquote fehlt" in kopf and "--fsize" in kopf and "Eintrittsprüfung" in kopf and "tmpfs" in kopf
+    assert "je Lauf eigenes, leeres tmpfs" in kopf
+
+
+def _bash_funktion(skript: str, name: str) -> str:
+    m = re.search(rf"^{name}\(\) \{{\n.*?^\}}$", skript, re.M | re.S)
+    assert m, f"Funktion {name} fehlt im Läufer"
+    return m.group(0)
+
+
+def _pruefen_grenzen(runner: str, **konf: str) -> subprocess.CompletedProcess:
+    """Die echte Funktion pruefen_grenzen des Läufers in bash, mit den Standardwerten aus dem Skript und den Werten aus konf (wie sie
+    wamo-job.conf setzen könnte). Liefert den Prozess; stdout trägt NAME=Wert je Zeile."""
+    namen = ("SPEICHER_MAX", "CPU_QUOTA", "PROZESSE_MAX", "TMP_MB", "HEIM_TMP_MB", "DATEI_MAX_MB", "ZEITLIMIT_MAX_S", "PRUEFEN_SPEICHER_MAX",
+             "PRUEFEN_PROZESSE_MAX", "PRUEFEN_CPU_QUOTA", "PRUEFEN_TMP_MB", "PRUEFEN_DATEI_MAX_MB", "PRUEFEN_CACHE_MB", "ZEITLIMIT_PRUEFEN_S")
+    standard = dict(re.findall(r"^([A-Z_]+)=(\S+)$", runner, re.M))
+    werte = {n: standard[n] for n in namen} | konf
+    kopf = "set -euo pipefail\nfehler() { echo \"wamo-job.sh: $*\" >&2; exit 70; }\n"
+    zuweisungen = "".join(f"{n}={shlex.quote(w)}\n" for n, w in werte.items())
+    funktionen = "\n".join(_bash_funktion(runner, n) for n in ("in_bytes", "kleinere_groesse", "kleinere_quote", "kleiner_zahl", "pruefen_grenzen"))
+    ausgabe = "".join(f'echo "{n}=${n}"\n' for n in namen)
+    return subprocess.run([BASH, "-c", kopf + zuweisungen + funktionen + "\npruefen_grenzen\n" + ausgabe], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=60)
+
+
+def _werte(p: subprocess.CompletedProcess) -> dict[str, str]:
+    assert p.returncode == 0, p.stderr
+    return dict(z.split("=", 1) for z in p.stdout.splitlines() if "=" in z)
+
+
+@pytest.mark.skipif(BASH is None, reason="bash fehlt")
+def test_die_grenzen_im_modus_pruefen_sind_mit_den_standardwerten_die_festen_pruefen_werte(runner):
+    w = _werte(_pruefen_grenzen(runner))
+    assert (w["SPEICHER_MAX"], w["CPU_QUOTA"], w["PROZESSE_MAX"], w["TMP_MB"], w["DATEI_MAX_MB"]) == ("4G", "200%", "256", "1024", "1024")
+    assert w["PRUEFEN_CACHE_MB"] == "256" and w["ZEITLIMIT_PRUEFEN_S"] == "120"
+
+
+@pytest.mark.skipif(BASH is None, reason="bash fehlt")
+@pytest.mark.parametrize("konf, name, erwartet", [
+    ({"SPEICHER_MAX": "2G"}, "SPEICHER_MAX", "2G"), ({"SPEICHER_MAX": "3500M"}, "SPEICHER_MAX", "3500M"),
+    ({"SPEICHER_MAX": "1500M"}, "SPEICHER_MAX", "1500M"), ({"SPEICHER_MAX": "4096M"}, "SPEICHER_MAX", "4096M"),  # gleich groß wie 4G: der erste
+    ({"SPEICHER_MAX": "999999"}, "SPEICHER_MAX", "999999"),
+    ({"CPU_QUOTA": "100%"}, "CPU_QUOTA", "100%"), ({"CPU_QUOTA": "0150%"}, "CPU_QUOTA", "0150%"),
+    ({"PROZESSE_MAX": "100"}, "PROZESSE_MAX", "100"), ({"PROZESSE_MAX": "0100"}, "PROZESSE_MAX", "0100"),
+    ({"TMP_MB": "512"}, "TMP_MB", "512"), ({"DATEI_MAX_MB": "100"}, "DATEI_MAX_MB", "100"),
+    ({"HEIM_TMP_MB": "128"}, "PRUEFEN_CACHE_MB", "128"), ({"ZEITLIMIT_MAX_S": "60"}, "ZEITLIMIT_PRUEFEN_S", "60"),
+])
+def test_ist_ein_wert_des_auftragslaufs_enger_gilt_er_auch_im_modus_pruefen(runner, konf, name, erwartet):
+    assert _werte(_pruefen_grenzen(runner, **konf))[name] == erwartet
+
+
+@pytest.mark.skipif(BASH is None, reason="bash fehlt")
+@pytest.mark.parametrize("konf, name, erwartet", [
+    ({"SPEICHER_MAX": "64G"}, "SPEICHER_MAX", "4G"), ({"CPU_QUOTA": "800%"}, "CPU_QUOTA", "200%"), ({"PROZESSE_MAX": "5000"}, "PROZESSE_MAX", "256"),
+    ({"TMP_MB": "9999"}, "TMP_MB", "1024"), ({"DATEI_MAX_MB": "9999"}, "DATEI_MAX_MB", "1024"),
+    # wamo-job.conf darf die Werte des Modus anpassen, aber nie über den Auftragslauf hinaus
+    ({"PRUEFEN_SPEICHER_MAX": "16G"}, "SPEICHER_MAX", "8G"), ({"PRUEFEN_CPU_QUOTA": "900%"}, "CPU_QUOTA", "400%"),
+    ({"PRUEFEN_PROZESSE_MAX": "9999"}, "PROZESSE_MAX", "1024"), ({"PRUEFEN_TMP_MB": "99999"}, "TMP_MB", "4096"),
+    ({"PRUEFEN_CACHE_MB": "9999"}, "PRUEFEN_CACHE_MB", "1024"),  # nie größer als das tmpfs des Heimordners
+])
+def test_ein_weiterer_wert_macht_den_modus_pruefen_nie_weiter_als_den_auftragslauf(runner, konf, name, erwartet):
+    assert _werte(_pruefen_grenzen(runner, **konf))[name] == erwartet
+
+
+@pytest.mark.skipif(BASH is None, reason="bash fehlt")
+@pytest.mark.parametrize("konf", [
+    {"SPEICHER_MAX": "viel"}, {"SPEICHER_MAX": "4X"}, {"SPEICHER_MAX": ""}, {"SPEICHER_MAX": "1234567G"}, {"CPU_QUOTA": "400"},
+    {"CPU_QUOTA": "abc%"}, {"PRUEFEN_CPU_QUOTA": "-5%"}, {"PROZESSE_MAX": "x"}, {"TMP_MB": "1.5"}, {"PRUEFEN_SPEICHER_MAX": "$(id)"},
+    {"ZEITLIMIT_MAX_S": "lang"}, {"DATEI_MAX_MB": "-1"},
+])
+def test_ein_ungueltiger_wert_in_der_konfiguration_bricht_den_laeufer_mit_70_ab(runner, konf):
+    p = _pruefen_grenzen(runner, **konf)
+    assert p.returncode == 70 and "ungültig" in p.stderr, (p.returncode, p.stderr)
+
+
+def test_die_grenzen_werden_vor_dem_zeitlimit_und_vor_jeder_nutzung_gesetzt(runner):
+    assert "pruefen_grenzen\n" in runner
+    aufruf = runner.index("\n  pruefen_grenzen\n")
+    assert runner.index("fehler() {") < aufruf < runner.index("ZEIT=${ZEIT:-$ZEITLIMIT_PRUEFEN_S}") < runner.index("ARGS=(")
+    # die Zahlenprüfung der Konfiguration steht vor dem Vergleich (auch ZEITLIMIT_MAX_S, den der Vergleich braucht); die Werte des
+    # Modus prüfen die Vergleichsfunktionen selbst (siehe die Tests mit ungültigen Werten)
+    zahlen = runner[runner.index("for zahl in"):runner.index("done", runner.index("for zahl in"))]
+    for name in ("ZEITLIMIT_MAX_S", "ZEITLIMIT_S", "TMP_MB", "HEIM_TMP_MB", "PROZESSE_MAX"):
+        assert f'"${name}"' in zahlen, name
+    assert runner.index("for zahl in") < aufruf
+
+
 def test_der_laeufer_im_modus_lauf_ist_unveraendert_wichtig_bleiben_seccomp_userns_und_abschottung(runner):
     for bleibt in ("--disable-userns", "--cap-drop ALL", "--seccomp 9", "--tmpfs /usr/local/lib/wamo", "--remount-ro /",
                    '--remount-ro "$PROJEKTE"', '--bind "$PROJDIR" "$PROJEKTE/$PROJEKT"', 'INNEN=(/usr/bin/python3 -I "$WAECHTER_INNEN/abschottung.py"',
@@ -1216,9 +1350,21 @@ def test_der_rauchtest_hat_keine_geheimnisse_und_keine_namen_anderer_produkte(ra
 def test_die_neuen_dateien_haben_keine_gedankenstriche_im_fliesstext():
     """Gedankenstriche (langer und kurzer Strich) stehen in keiner der neuen Dateien."""
     for pfad in (INFRA / "wamo_job_pruefen.py", INFRA / "wamo_pruefen_rauchtest.py", INFRA / "wamo-job-rueckweg.sh",
-                 VOICE_CORE / "abnahme_befehl.py"):
+                 INFRA / "wamo-job.sh", INFRA / "wamo-job-einrichten.sh", VOICE_CORE / "abnahme_befehl.py"):
         text = pfad.read_text(encoding="utf-8")
         assert "\u2014" not in text and "\u2013" not in text, pfad.name
+    readme = (INFRA / "README.md").read_text(encoding="utf-8")
+    abschnitt = readme[readme.index("## 17. Befehl `pruefen`"):]
+    assert "\u2014" not in abschnitt and "\u2013" not in abschnitt
+
+
+def test_die_readme_haelt_die_grenzen_und_zusagen_der_haertung_fest():
+    readme = (INFRA / "README.md").read_text(encoding="utf-8")
+    abschnitt = readme[readme.index("## 17. Befehl `pruefen`"):]
+    for satz in ("keine echte Quote", "Eintrittspr\u00fcfung", "mindestens 2 GiB frei", "5 s", "`cancel` wirkt **jobweit**", "nie danach",
+                 "keine Buchf\u00fchrung der Zug\u00e4nge", "Versionsabgleich", "Ma\u00dfgeblich ist die", "Exit 6", "ZURUECK.txt", "Markerdatei",
+                 "eine Sicherung weiter zur\u00fcck", "test_x.sys.exit", "tmpfs", "von jedem Wert aus `wamo-job.conf` und dem des Modus gilt der kleinere"):
+        assert satz in abschnitt, satz
 
 
 def test_das_helfermodul_wird_im_dispatcher_nur_bei_bedarf_geladen():
@@ -1252,3 +1398,176 @@ def test_der_rueckweg_stellt_die_sicherung_wieder_her_und_ist_wiederholbar(tmp_p
         assert (app / "bin" / "wamo-job-dispatch").read_text() == "alt\n"
         assert not (app / "waechter" / "abnahme_befehl.py").exists() and not (app / "waechter" / "wamo_job_pruefen.py").exists()
         assert (app / "waechter" / "dev_guard.py").read_text() == "bleibt\n"
+
+
+def _rueckweg_wurzel(tmp_path: Path):
+    """Zwei Sicherungen (v1 vor der ersten, v2 vor der zweiten Änderung) und der heutige Stand v3."""
+    wurzel = tmp_path / "wurzel"
+    app = wurzel / "opt" / "wamo"
+    for rel in ("bin", "waechter"):
+        (app / rel).mkdir(parents=True)
+    erste = app / "vorher" / "20261110T100000Z"
+    zweite = app / "vorher" / "20261110T110000Z"
+    for ordner in (erste, zweite):
+        (ordner / "bin").mkdir(parents=True)
+    (erste / "bin" / "wamo-job-dispatch").write_text("v1\n", encoding="utf-8")
+    (erste / "NEU.txt").write_text("waechter/abnahme_befehl.py\n", encoding="utf-8")
+    (zweite / "bin" / "wamo-job-dispatch").write_text("v2\n", encoding="utf-8")
+    (zweite / "NEU.txt").write_text("waechter/wamo_job_pruefen.py\n", encoding="utf-8")
+    (app / "bin" / "wamo-job-dispatch").write_text("v3\n", encoding="utf-8")
+    (app / "waechter" / "abnahme_befehl.py").write_text("neu\n", encoding="utf-8")
+    (app / "waechter" / "wamo_job_pruefen.py").write_text("neu\n", encoding="utf-8")
+    return wurzel, app, erste, zweite
+
+
+def _rueckweg(wurzel: Path, *optionen: str) -> subprocess.CompletedProcess:
+    return subprocess.run([BASH, str(INFRA / "wamo-job-rueckweg.sh"), *optionen], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", env={**os.environ, "WAMO_JOB_WURZEL": str(wurzel)})
+
+
+@pytest.mark.skipif(BASH is None or not LINUX, reason="Probelauf der Skripte nur unter Linux (POSIX-Rechte, Wegwerf-Ordner)")
+def test_der_rueckweg_geht_mit_jedem_aufruf_eine_sicherung_weiter_zurueck_und_markiert_sie(tmp_path):
+    wurzel, app, erste, zweite = _rueckweg_wurzel(tmp_path)
+    p = _rueckweg(wurzel)  # 1: die neueste (v2)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert (app / "bin" / "wamo-job-dispatch").read_text() == "v2\n"
+    assert not (app / "waechter" / "wamo_job_pruefen.py").exists() and (app / "waechter" / "abnahme_befehl.py").exists()
+    assert (zweite / "ZURUECK.txt").is_file() and not (erste / "ZURUECK.txt").exists()
+    assert "1 ältere" in p.stdout
+    p = _rueckweg(wurzel)  # 2: die nächste noch nicht zurückgespielte (v1), nicht noch einmal die neueste
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert (app / "bin" / "wamo-job-dispatch").read_text() == "v1\n"
+    assert not (app / "waechter" / "abnahme_befehl.py").exists()
+    assert (erste / "ZURUECK.txt").is_file() and (zweite / "ZURUECK.txt").is_file()
+    p = _rueckweg(wurzel)  # 3: nichts mehr zurückzunehmen, nichts ändert sich, kein Fehler
+    assert p.returncode == 0 and "schon zurückgespielt" in p.stdout, p.stdout + p.stderr
+    assert (app / "bin" / "wamo-job-dispatch").read_text() == "v1\n"
+
+
+@pytest.mark.skipif(BASH is None or not LINUX, reason="Probelauf der Skripte nur unter Linux (POSIX-Rechte, Wegwerf-Ordner)")
+def test_der_rueckweg_im_trockenlauf_aendert_und_markiert_nichts(tmp_path):
+    wurzel, app, erste, zweite = _rueckweg_wurzel(tmp_path)
+    for _ in range(2):
+        p = _rueckweg(wurzel, "--trocken")
+        assert p.returncode == 0 and "trocken" in p.stdout, p.stdout + p.stderr
+    assert (app / "bin" / "wamo-job-dispatch").read_text() == "v3\n"
+    assert not (zweite / "ZURUECK.txt").exists() and not (erste / "ZURUECK.txt").exists()
+    assert (app / "waechter" / "wamo_job_pruefen.py").exists()
+
+
+@pytest.mark.skipif(BASH is None or not LINUX, reason="Probelauf der Skripte nur unter Linux (POSIX-Rechte, Wegwerf-Ordner)")
+def test_eine_neue_sicherung_nach_dem_rueckweg_kommt_vor_den_aelteren_dran(tmp_path):
+    """Nach einem Rückweg und einer neuen Einrichtung (neue Sicherung) geht der Rückweg erst auf die neue, dann auf die noch offene erste."""
+    wurzel, app, erste, zweite = _rueckweg_wurzel(tmp_path)
+    assert _rueckweg(wurzel).returncode == 0  # zweite (v2) zurückgespielt und markiert
+    dritte = app / "vorher" / "20261110T120000Z"
+    (dritte / "bin").mkdir(parents=True)
+    (dritte / "bin" / "wamo-job-dispatch").write_text("v2neu\n", encoding="utf-8")
+    (dritte / "NEU.txt").write_text("", encoding="utf-8")
+    (app / "bin" / "wamo-job-dispatch").write_text("v4\n", encoding="utf-8")
+    assert _rueckweg(wurzel).returncode == 0
+    assert (app / "bin" / "wamo-job-dispatch").read_text() == "v2neu\n" and (dritte / "ZURUECK.txt").is_file()
+    assert _rueckweg(wurzel).returncode == 0  # die zweite ist markiert: weiter zur ersten
+    assert (app / "bin" / "wamo-job-dispatch").read_text() == "v1\n" and (erste / "ZURUECK.txt").is_file()
+
+
+@pytest.mark.skipif(BASH is None or not LINUX, reason="Probelauf der Skripte nur unter Linux (POSIX-Rechte, Wegwerf-Ordner)")
+def test_der_rueckweg_ohne_jede_sicherung_meldet_einen_fehler(tmp_path):
+    (tmp_path / "wurzel" / "opt" / "wamo").mkdir(parents=True)
+    p = _rueckweg(tmp_path / "wurzel")
+    assert p.returncode == 1 and "Keine Sicherung" in p.stderr
+
+
+def test_der_rueckweg_waehlt_die_neueste_noch_nicht_zurueckgespielte_und_markiert_sie():
+    text = (INFRA / "wamo-job-rueckweg.sh").read_text(encoding="utf-8")
+    assert 'MARKE="ZURUECK.txt"' in text
+    kopf = text[:text.index("set -euo pipefail")]
+    assert "noch nicht zurückgespielt" in kopf and "ZURUECK.txt" in kopf and "jeder Aufruf" in kopf
+    assert text.index("== 4. Sicherung markieren") > text.index("== 3. Dateien entfernen")
+    assert '[ "$rel" != "$MARKE" ]' in text  # die Markierung ist nie eine Datei zum Zurückspielen
+
+
+def test_die_einrichtung_erklaert_den_rueckweg_schritt_fuer_schritt():
+    text = (INFRA / "wamo-job-einrichten.sh").read_text(encoding="utf-8")
+    kopf = text[:text.index("set -euo pipefail")]
+    assert "eine Sicherung weiter zurück" in kopf and "ZURUECK.txt" in kopf
+
+
+# ---------------------------------------------------------------- Rauchtest: das Projekt wird nur mit der Markerdatei gelöscht
+def _rauchtest_helfer(rauchtest: str) -> dict:
+    """Die Hilfsfunktionen des Rauchtests für das Wegwerfprojekt, einzeln ausgeführt (der Rest lädt /opt/wamo/bin und läuft nur dort)."""
+    baum = ast.parse(rauchtest)
+    namen_funktionen = {"entfernen", "marker_vorhanden", "projekt_freigeben"}
+    namen_werte = {"MARKER_NAME", "MARKER_INHALT"}
+    knoten = [n for n in baum.body
+              if (isinstance(n, ast.FunctionDef) and n.name in namen_funktionen)
+              or (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in namen_werte for t in n.targets))]
+    assert {n.name for n in knoten if isinstance(n, ast.FunctionDef)} == namen_funktionen
+    ns: dict = {"os": os, "shutil": shutil, "stat": __import__("stat"), "Path": Path}
+    exec(compile(ast.Module(body=knoten, type_ignores=[]), "rauchtest", "exec"), ns)  # noqa: S102 (der Quelltext des Repos)
+    return ns
+
+
+@pytest.fixture
+def helfer(rauchtest):
+    return _rauchtest_helfer(rauchtest)
+
+
+def test_ein_fremder_ordner_gleichen_namens_wird_nie_geloescht(helfer, tmp_path):
+    fremd = tmp_path / "rauchtest-pruefen"
+    fremd.mkdir()
+    (fremd / "wichtig.txt").write_text("nicht löschen", encoding="utf-8")
+    assert helfer["projekt_freigeben"](fremd) is False
+    assert (fremd / "wichtig.txt").read_text(encoding="utf-8") == "nicht löschen"
+    leer = tmp_path / "leer"
+    leer.mkdir()
+    assert helfer["projekt_freigeben"](leer) is False and leer.is_dir()  # auch ein leerer Ordner ohne Marker gehört nicht dem Test
+    datei = tmp_path / "datei"
+    datei.write_text("x", encoding="utf-8")
+    assert helfer["projekt_freigeben"](datei) is False and datei.is_file()
+
+
+@pytest.mark.parametrize("inhalt", ["", "irgendwas\n", "wamo-pruefen-rauchtest\n", "x" * 5000])
+def test_eine_markerdatei_mit_falschem_inhalt_zaehlt_nicht(helfer, tmp_path, inhalt):
+    ordner = tmp_path / "projekt"
+    ordner.mkdir()
+    (ordner / helfer["MARKER_NAME"]).write_text(inhalt, encoding="utf-8")
+    (ordner / "x.txt").write_text("x", encoding="utf-8")
+    assert helfer["marker_vorhanden"](ordner) is False and helfer["projekt_freigeben"](ordner) is False
+    assert (ordner / "x.txt").exists()
+
+
+def test_ein_ordner_mit_der_markerdatei_dieses_tests_wird_entfernt_ein_fehlender_gilt_als_frei(helfer, tmp_path):
+    eigen = tmp_path / "rauchtest-pruefen"
+    (eigen / "unter").mkdir(parents=True)
+    (eigen / "unter" / "x.txt").write_text("x", encoding="utf-8")
+    (eigen / helfer["MARKER_NAME"]).write_text(helfer["MARKER_INHALT"], encoding="utf-8")
+    assert helfer["marker_vorhanden"](eigen) is True
+    assert helfer["projekt_freigeben"](eigen) is True and not eigen.exists()
+    assert helfer["projekt_freigeben"](tmp_path / "gibt-es-nicht") is True  # nichts zu löschen, nichts zu verweigern
+
+
+@pytest.mark.skipif(not LINUX, reason="symbolische Links brauchen Rechte, die unter Windows fehlen")
+def test_ein_link_auf_einen_ordner_mit_marker_wird_nicht_verfolgt(helfer, tmp_path):
+    echt = tmp_path / "echt"
+    echt.mkdir()
+    (echt / helfer["MARKER_NAME"]).write_text(helfer["MARKER_INHALT"], encoding="utf-8")
+    (echt / "x.txt").write_text("x", encoding="utf-8")
+    link = tmp_path / "rauchtest-pruefen"
+    link.symlink_to(echt)
+    assert helfer["projekt_freigeben"](link) is False and (echt / "x.txt").exists()
+    ordner = tmp_path / "ordner"
+    ordner.mkdir()
+    (ordner / "ziel.txt").write_text(helfer["MARKER_INHALT"], encoding="utf-8")
+    (ordner / helfer["MARKER_NAME"]).symlink_to(ordner / "ziel.txt")  # ein Marker als Link zählt nicht
+    assert helfer["marker_vorhanden"](ordner) is False
+
+
+def test_der_rauchtest_loescht_sein_projekt_nur_ueber_die_markerpruefung(rauchtest):
+    assert "entfernen(PROJ)" not in rauchtest  # jedes Löschen des Projekts geht über projekt_freigeben
+    assert rauchtest.count("projekt_freigeben(PROJ)") >= 2  # vor dem Anlegen und im finally
+    ausfuehren = rauchtest[rauchtest.index("def ausfuehren()"):rauchtest.index("def main()")]
+    assert ausfuehren.index("projekt_freigeben(PROJ)") < ausfuehren.index("PROJ.mkdir(") < ausfuehren.index("PROJ / MARKER_NAME")
+    vorher = ausfuehren[:ausfuehren.index("PROJ.mkdir(")]
+    assert "return 1" in vorher  # ein fremder Ordner bricht den Test ab, bevor irgendetwas angelegt wird
+    assert ".projekte" not in vorher  # die Buchführung eines fremden Projekts bleibt unberührt
