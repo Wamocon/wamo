@@ -15,7 +15,16 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   `abnahme.py` und vom Dispatcher geteilt) und den Wächter, nimmt das Projekt nur aus `auftrag.json`, prüft Sperren, Selbsttest im Modus
   `pruefen` und Audit. Neue Form `uv run --no-sync --offline pytest ...` in der Allowlist (nur mit `.venv`, lokal nie ausgeführt).
   Die Einrichtung sichert die ersetzten Dateien (`/opt/wamo/vorher`), neuer Rückweg `wamo-job-rueckweg.sh`, Rauchtest
-  `wamo_pruefen_rauchtest.py` (geschrieben, nicht ausgeführt). Der Kern nutzt den Befehl noch nicht.
+  `wamo_pruefen_rauchtest.py` (geschrieben, nicht ausgeführt).
+- Befehlskriterien auf Sokrates-2, Kern-Seite von `pruefen` (vorbereitet, standardmäßig aus, nicht ausgerollt): Neues Modul
+  `voice-core/abnahme_remote.py` mit `RemoteAusfuehrer` (ruft `ssh ... pruefen <job>`, eine stdin-Zeile `{"argv": [...]}`, stdin als
+  Lebenslinie, eine JSON-Zeile Antwort mit Zeit- und Größengrenze) und `DispatcherPing` (Cache: 5 Sekunden je Aufruf, 5 Minuten gültig,
+  Fehler heißt nicht möglich). Streng ausgewertet: erfüllt nur bei Prozess-Exit 0, `ok` true, einem echten `exit` 0, `abgebrochen` false
+  und `v` gleich 1; alles andere ist nicht erfüllt mit einem Grund aus einer festen Liste. Die Ausgabe ist ein Datenfeld (höchstens 2 KiB)
+  und geht nie an das Sprachmodell. Auflegen beendet ssh und ruft `cancel <job>`. `befehl:` geht auf Sokrates-2 nur mit
+  `WAMO_ABNAHME_BEFEHLE=ja` und einem `ping`, der `pruefen` und dieselbe Prüfsumme der Allowlist meldet; sonst nennt die Ablehnung den
+  Grund in einem Satz. `abnahme.pruefe_befehl` prüft mit einem entfernten Ausführer keine lokalen Pfade. Keine neue Umgebungsvariable.
+  Nicht an einem echten Server geprüft (Messbefund und Reihenfolge des Ausrollens in der README, Abschnitt „Abnahme“).
 - Komponententests für die Oberfläche: Neues, getrenntes Testsystem für React-Komponenten und Hooks (`npm run test:komponenten`,
   vitest mit jsdom und Testing Library, Dateien `*.comp.test.tsx`, Konfiguration `ui/vitest.config.ts`). `npm test` (`node --test`,
   Logiktests) bleibt unverändert. 90 Tests in vier Dateien: Tafel „Vorgänge“ (Karten je Zustand, Fortschrittsbalken mit
