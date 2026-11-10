@@ -952,8 +952,8 @@ Runde mit genau den offenen Punkten, bis alles erfüllt ist oder Runden oder Zei
 bleibt unabhängig von der Version von Claude Code. Ohne `abnahme` bleibt alles wie bisher: eine Runde, kein Prüfen.
 
 Das Sprachmodell setzt die Argumente von `entwicklung_vorbereiten`; nennt die Person kein Ziel, leitet es selbst ein bis drei
-Kriterien ab und nennt sie in einem Satz, ohne zusätzliche Rückfrage (Persona-Schalter `WAMO_PERSONA_ABNAHME`, Standard an; `aus`
-bringt den früheren Prompt zurück).
+Kriterien ab und nennt sie in einem Satz, ohne zusätzliche Rückfrage; den Projektnamen leitet es aus dem Auftrag ab und fragt nicht danach
+(Persona-Schalter `WAMO_PERSONA_ABNAHME`, Standard an; `aus` bringt den früheren Prompt zurück).
 
 | Argument | Bedeutung |
 | --- | --- |

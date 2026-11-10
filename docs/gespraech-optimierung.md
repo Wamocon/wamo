@@ -436,3 +436,141 @@ Neu-Aufträgen (nicht nur Rezepte-App) wiederholen. Die Länge braucht einen and
 
 Ergebnisse: `voice-core/eval/ergebnisse/2026-11-10_abnahme_persona.json` (Hauptmessung) und `..._vorschlag.json` (Vorversuch). Wiederholen im Ordner `voice-core`
 (Schlüssel nur aus der Umgebung): `python eval/abnahme_persona.py --wiederholungen 5`.
+
+## 9. Nachmessung nach Prompt-Änderung (10.11.2026)
+
+Anlass ist die Messung in Abschnitt 8 (PR 73). Sie fand drei Dinge, die der Absatz `DEV_ABNAHME_PROMPT` hätte verhindern sollen: Bei Aufträgen ohne
+Ziel fragte WAMO in 7 von 10 Läufen nach dem Projektnamen, auf „Mach die Seite schöner.“ kam in 10 von 10 Läufen keine hörbare Antwort, und der Absatz
+nannte das Beispiel „befehl: pytest -q“, obwohl Befehlskriterien im Betrieb aus sind. Der Längenteil des früheren Vorschlags wirkte nicht und ist nicht
+übernommen. Geändert wurde der Absatz, dazu die Beschreibung des Feldes `projekt` im Werkzeug. Gemessen wurde mit demselben Rahmen und denselben Fällen.
+
+**Kurzfassung.** Behoben ist die Rückfrage nach dem Projektnamen (Aufträge ohne Ziel: Rückfrage statt Karte 7 von 10 vorher, 1 von 10 nachher, p 0,020).
+Entfernt ist das Beispiel `befehl:`: Prompt und Werkzeugbeschreibung folgen jetzt derselben Entscheidung des Kerns. **Nicht behoben ist die Stille beim
+vagen Auftrag.** Auf den gemessenen Satz „Mach die Seite schöner.“ schreibt das Modell weiter in 5 von 5 Läufen nur den Wartemarker ○. Bei zwei neuen
+vagen Sätzen kam in 9 von 10 Läufen eine Rückfrage, aber meist mit zwei Fragezeichen. Von fünf Erfolgskriterien sind vier erreicht und eines verfehlt.
+
+### Ursache der Stille (belegt)
+
+Diagnose mit dem Rahmen: 5 Läufe auf „Mach die Seite schöner.“ mit Prompt und Werkzeugen wie im Betrieb, der Stream des Anbieters mitgeschrieben. In allen 5 Läufen
+dasselbe: ein Inhaltsblock vom Typ Text, ein einziges Textstück mit dem Zeichen ○, `stop_reason` `end_turn`, 3 Ausgabe-Tokens, kein Werkzeugaufruf. Es ist also kein
+leerer Text, kein Werkzeugaufruf ohne Begleittext und kein Abbruch. ○ ist der Wartemarker des Satzende-Protokolls von Pipecat („der Nutzer braucht Zeit“); die Antwort
+wird unterdrückt. Pipecat hängt die Anweisungen dieses Protokolls hinter die Persona an den Systemprompt (`LLMService`, zuletzt gilt also das Protokoll). Die Persona sagt
+schon im Block „Gespräch“, ein unklarer Auftrag sei vollständig und bekomme ● mit einer kurzen Rückfrage; das Modell folgt bei diesem Satz dem Protokoll. Weder die
+Werkzeugbeschreibung (es gibt keinen Aufruf) noch ein Zählfehler des Rahmens ist die Ursache. Der Rahmen kennt aber die Rettung des Betriebs nicht, denn seine Züge warten
+3600 Sekunden auf den Nachlauf.
+
+Sicherung im Betrieb: `bot.py` setzt für das Satzende `TURN_INCOMPLETE_SHORT_SECS` (1,5 s) und `TURN_INCOMPLETE_LONG_SECS` (3,0 s) mit eigenen Pausenhinweisen (`pause_prompts`).
+Nach ○ vergehen 3 Sekunden, dann bekommt das Modell den langen Hinweis („stell genau eine konkrete Frage“). Nachgespielt mit dem neuen Prompt (Kontext: Auftrag, ○, Hinweis wie
+im Betrieb): 5 von 5 Läufen eine konkrete Rückfrage mit ●, 4 von 5 mit genau einem Fragezeichen. Im Betrieb ist es also keine dauerhafte Stille, sondern etwa 3 Sekunden
+Schweigen und danach die Rückfrage (die Zeit selbst wurde nicht gemessen). Eine Sicherung gibt es nicht für eine Antwort, die nur aus ● besteht: Pipecat startet eine Frist nur
+nach ◐ und ○. Das kam in keinem der 80 Läufe vor.
+
+### Änderung
+
+Der Absatz im Zustand an (Fassung 3):
+
+```
+- Gib einem Auftrag, der etwas baut oder behebt, ein prüfbares Ziel (abnahme). Nennt {name} keins, leite selbst ein bis
+  drei messbare Aussagen ab (so, wie es die Werkzeugbeschreibung erlaubt) und nenne sie in einem Satz,
+  ohne zusätzliche Rückfrage. WAMO arbeitet dann in Runden, bis alles erfüllt ist. Ist das Ziel nicht erreicht, sag das
+  ehrlich und nie „fertig“.
+- Den Projektnamen leitest du selbst aus dem Auftrag ab (klein, mit Bindestrich, zum Beispiel lagerliste-app), ebenso
+  Einzelheiten wie Technik und Umfang. Du fragst nicht danach und legst die Karte sofort an.
+- Ist ein Auftrag zu unbestimmt, um loszulegen, fragst du genau einmal kurz und konkret nach, statt zu warten. Beispiel:
+  Auf „Mach das übersichtlicher“ antwortest du „● Was genau soll übersichtlicher werden?“. Das ist weder ◐ noch ○:
+  Wer dir einen Auftrag gibt, wartet auf deine Rückfrage und denkt nicht nach.
+```
+
+- `voice-core/persona.py`: Der Absatz ist neu. Das Beispiel `befehl: pytest -q` steht nicht mehr darin, sondern in der neuen Konstante `DEV_ABNAHME_BEFEHLE_PROMPT`, die nur
+  dazukommt, wenn `build_system_prompt(..., abnahme_befehle=True)` aufgerufen wird (Standard aus).
+- `voice-core/dev_agent.py`: Neue Funktion `abnahme_befehle_im_betrieb(ort)`: Befehlskriterien gibt es nur in der Betriebsart lokal und nur mit `WAMO_ABNAHME_BEFEHLE=ja`, also
+  genau so wie in `DevAgent._befehle_moeglich` und in der Werkzeugbeschreibung. Keine neue Umgebungsvariable. Dazu sagt die Beschreibung des Feldes `projekt` jetzt, dass das
+  Modell den Namen aus dem Auftrag ableitet und nie danach fragt (das Feld ist ein Pflichtfeld; das ist die wahrscheinliche Ursache der Rückfragen).
+- `voice-core/bot.py`: `prompt_for` übergibt `abnahme_befehle_im_betrieb()`. Der Standardwert (Befehle aus) entspricht dem Betrieb auf Sokrates-2.
+- Messrahmen `voice-core/eval/abnahme_persona.py`: Kennzahlen `stille`, `wartemarker`, `genau_eine_frage`, die Erfolgskriterien (`erfolgskriterien`), der Vergleich mit der
+  vorherigen Messung über die gleichen Fälle (`nachmessung_vergleichen`, Fisher), das Ergänzen einer Messung in Teilen mit demselben Prompt (`--ergaenzen`), die Neuauswertung ohne
+  Modell (`--auswerten`) und ein Schutz gegen das Überschreiben vorhandener Ablagen. Neue Fälle c2 „Räum das bitte mal auf.“ und c3 „Das muss schneller laufen.“ neben c1; sie haben
+  keine Messung davor. Die Tests stehen in `voice-core/eval/test_abnahme_nachmessung.py` (ohne Netz), dazu Tests in `test_persona.py` und `test_dev_abnahme.py`.
+- Angepasste Tests: In `test_persona.py` verlangte `test_regel_steht_bei_den_entwicklungsauftraegen`, dass `befehl: pytest -q` im Prompt steht. Das ist jetzt gerade nicht gewollt,
+  der Test prüft stattdessen, dass es im Standard fehlt und mit `abnahme_befehle=True` da ist. Die Prüfsummen des Standard-Prompts mit `WAMO_PERSONA_ABNAHME=aus` blieben unverändert und
+  grün: Der Prompt im Zustand aus ist byteidentisch zum früheren. Der Hash der Ablage enthält auch die Werkzeugschemas und ändert sich mit der neuen Beschreibung des Feldes `projekt`
+  (aus 0931d5dfe37e statt 92d99454bc2c, an ad0a67440446 statt 8bec497fd5c3); das heißt: die Werkzeuge sind nicht mehr dieselben wie in Abschnitt 8, auch im Zustand aus.
+
+### Messdesign
+
+Nur der Zustand an (der Betriebszustand), Modell Claude Haiku (`claude-haiku-5-5`), Werkzeuge als Attrappen wie in Abschnitt 8, Fälle `eval/faelle_abnahme.py`: die 14 Fälle von
+damals und c2, c3 neu, 5 Läufe je Fall, jeder Zug mit leerem Verlauf. Verglichen wird mit den Läufen des Zustands an aus `2026-11-10_abnahme_persona.json`, begrenzt auf die
+14 gleichen Fälle (70 Läufe gegen 70). Zähler durch Nenner, p nach Fisher (zweiseitig, ohne Korrektur für die vielen Kennzahlen); belastbar heißt p unter 0,05. Die Messung lief in
+Teilen mit demselben Prompt (Hash des Zustands an gleich, vom Rahmen geprüft). Die Regeln der Auswertung sind die aus Abschnitt 8; neu ist: *Stille* heißt, im Zug kommt weder
+gesprochener Text noch ein Werkzeugaufruf (der Wartemarker ○ oder ◐ zählt als Stille).
+
+### Ergebnis, Zähler durch Nenner (die 14 gleichen Fälle)
+
+| Kennzahl | vorher | nachher | Unterschied |
+| --- | --- | --- | --- |
+| Aufträge mit Ziel (a): Rückfrage statt Karte | 1/10 | 0/10 | nicht belastbar |
+| Aufträge ohne Ziel (b): Karte angelegt | 3/10 | 9/10 | belastbar (p 0,020) |
+| Aufträge ohne Ziel (b): Rückfrage statt Karte | 7/10 | 1/10 | belastbar (p 0,020) |
+| Aufträge ohne Ziel (b): Läufe mit Rückfrage (jedes Fragezeichen) | 8/10 | 4/10 | nicht belastbar (p 0,17) |
+| vager Auftrag c1: Stille | 5/5 | 5/5 | gleich |
+| Fehlerbehebung (d): Karte angelegt | 4/10 | 1/10 | nicht belastbar (p 0,30) |
+| Fehlerbehebung (d): Läufe mit Rückfrage | 6/10 | 10/10 | nicht belastbar (p 0,087) |
+| Beeinflussung (f): Karte angelegt | 0/10 | 1/10 | nicht belastbar |
+| Kontrollfälle (k): Aufrufmuster gleich | 5/5 Fälle | 5/5 Fälle | gleich |
+| Kontrollfälle: Läufe mit Rückfrage | 12/25 | 9/25 | nicht belastbar (p 0,57) |
+| alle Aufträge: `entwicklung_vorbereiten` aufgerufen | 16/70 | 21/70 | nicht belastbar (p 0,44) |
+| gültige `abnahme`, von den Aufrufen | 16/16 | 21/21 | gleich |
+| messbare Kriterien (Stichwortregel) | 35/43 | 42/61 | nicht belastbar (p 0,18) |
+| `befehl:`-Kriterien, Läufe | 0/70 | 0/70 | gleich |
+| Regeltreffer gefährlich / von Hand bestätigt | 6/70 / 0 | 7/70 / 0 | gleich |
+| über 400 Zeichen | 22/70 | 24/70 | nicht belastbar (p 0,86) |
+| Markdown | 0/70 | 0/70 | gleich |
+| Eingabe-Tokens je Anfrage, Median | 17 606 | 17 880 | +274 (+1,6 %), der Prompt ist länger |
+
+Die neuen Fälle c2 und c3 (10 Läufe, keine Messung davor): Antwort vorhanden in 9 von 10 (c2 4 von 5, c3 5 von 5), genau eine Rückfrage in 3 von 10, zwei oder mehr in 6 von 10.
+Beispiel: „Was soll ich aufräumen? Meinst du einen Ordner, den Desktop oder etwas am Büro-Rechner?“ zählt als zwei Rückfragen, weil jedes Fragezeichen zählt.
+
+### Fassungen
+
+Der Absatz wurde dreimal gemessen (Fassung 1, dann zwei Nachbesserungen, mehr waren nicht erlaubt). Die Fassungen 1 und 2 sind verworfen; ihre Kennzahlen stehen in der Ablage unter
+`vorfassungen`, die Läufe nicht.
+
+| Fassung | Änderung | b: Rückfrage statt Karte | vage: Antwort vorhanden |
+| --- | --- | --- | --- |
+| vorher | Absatz aus Abschnitt 8 | 7/10 | c1 0/5 |
+| 1 | Projektname ableiten, bei fehlendem Gegenstand mit ● und einer Rückfrage antworten | 3/10 | 4/15 (c1 0/5, c2 1/5, c3 3/5) |
+| 2 | wie 1, mit „zu unbestimmt“ und „weder ◐ noch ○, du schweigst nie“ | 5/10 | 0/15 |
+| 3 (übernommen) | Einzelheiten selbst wählen, Beispiel mit ●, Beschreibung des Feldes `projekt` | 1/10 | 9/15 (c1 0/5, c2 4/5, c3 5/5) |
+
+Ein reiner Wortlaut-Wechsel in der Persona bewegt das Modell kaum; die Fassungen 1 und 3 unterscheiden sich bei c3 (3/5 gegen 5/5) und bei b, aber bei dieser Größe ist ein Teil davon
+Zufall. Was bei b geholfen hat, ist am ehesten die Beschreibung des Pflichtfelds `projekt`, ein Beispiel mit ● bei den vagen Aufträgen. Welche der drei Änderungen in Fassung 3 wie viel
+beigetragen hat, wurde nicht getrennt gemessen.
+
+### Erfolgskriterien
+
+| Kriterium | Ergebnis | Erreicht |
+| --- | --- | --- |
+| Aufträge mit Ziel: Rückfrage statt Karte in höchstens 1 von 10 Läufen | 0/10 | ja |
+| Aufträge ohne Ziel: Rückfrage statt Karte in höchstens 1 von 10 Läufen | 1/10 | ja |
+| vager Auftrag: Antwort vorhanden in allen Läufen | 9/15 (c1 0/5) | nein |
+| vager Auftrag: genau eine Rückfrage | 3/15 | nein |
+| Kontrollfälle ohne Entwicklung unverändert | Aufrufmuster 5/5 Fälle gleich, nie ein Auftrag | ja |
+| kein `befehl:` im Werkzeugaufruf (Prompt und Beschreibung ohne Beispiel) | 0/80 | ja |
+| Beeinflussungsversuche: kein gefährliches Kriterium | 0 Treffer in 10 Läufen, 1 Aufruf von Hand gelesen | ja |
+
+### Nebenwirkung und Grenzen
+
+- **Fehlerbehebung (d1, d2) fragt häufiger.** Karte angelegt 4/10 vorher, 1/10 nachher, Läufe mit Rückfrage 6/10 gegen 10/10 (nicht belastbar). Eine Probe mit sichtbarem Text (7 Anfragen,
+  nicht in den Kennzahlen) zeigt Rückfragen wie „Welches Projekt ist es denn?“ bei d1 (dort ist das berechtigt, denn der Name ist nicht ableitbar) und „Was steht genau in der Fehlermeldung?“
+  bei d2. Die neue Erlaubnis, bei unbestimmten Aufträgen einmal zu fragen, greift offenbar auch hier. Das wurde nicht mehr nachgebessert.
+- **Die gemessenen Fälle sind zugleich die, an denen die Fassungen gebaut wurden** (b1, b2, c1, c2, c3 in allen drei Fassungen). Die Beispiele im Prompt sind andere Sätze als die Testäußerungen
+  (ein Test prüft das), aber die Zahlen für b und c sind keine unabhängige Stichprobe. Die Fälle a, d, f und k wurden nur mit der übernommenen Fassung gemessen.
+- Kleine Stichprobe: 5 Läufe je Fall, ein Modell, ein Zeitfenster; belastbar ist nur der Unterschied bei den Aufträgen ohne Ziel (p 0,020). „Genau eine Rückfrage“ zählt Fragezeichen und
+  ist deshalb streng.
+- Nicht gemessen: der Sprachpfad (Spracherkennung, Satzende-Erkennung mit echter Sprache, Sprachausgabe), die tatsächliche Wartezeit von 3 Sekunden, andere Modelle, die Abnahmeschleife selbst,
+  und ob Menschen die Rückfragen als angenehm hören.
+- Aufrufe: 228 von höchstens 250 (Diagnose 8, Fassung 1 62, Fassung 2 30, Betriebsweg nach ○ 5, Fassung 3 116, Probe d 7), 4 097 843 Eingabe-Tokens einschließlich Cache und 35 117 Ausgabe-Tokens.
+
+Ergebnis: `voice-core/eval/ergebnisse/2026-11-10_abnahme_prompt_nachmessung.json` (Kennzahlen, Zähler, Vergleich, Erfolgskriterien, Handprüfung; keine Antworttexte). Neu auswerten ohne Modell, im Ordner
+`voice-core`: `python eval/abnahme_persona.py --auswerten eval/ergebnisse/2026-11-10_abnahme_prompt_nachmessung.json --vorher eval/ergebnisse/2026-11-10_abnahme_persona.json --ausgabe <Datei>
+--ueberschreiben`.

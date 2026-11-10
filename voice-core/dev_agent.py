@@ -222,6 +222,13 @@ def entwicklung_ort() -> str | None:
     return ort if ort in ORTE else None
 
 
+def abnahme_befehle_im_betrieb(ort: str | None = None) -> bool:
+    """Lässt der Kern in dieser Betriebsart Befehlskriterien zu? Dieselbe Entscheidung wie DevAgent._befehle_moeglich für den
+    Standard-Ausführer (nur Betriebsart lokal) plus Zuschaltung (WAMO_ABNAHME_BEFEHLE=ja). Der Prompt (persona.py) und die
+    Werkzeugbeschreibung folgen ihr, damit das Modell nie ein Kriterium angeboten bekommt, das der Kern abweist."""
+    return (ort or entwicklung_ort() or "sokrates2") == "lokal" and abnahme.befehle_eingeschaltet()
+
+
 def ssh_ziel() -> str:
     return (os.getenv("WAMO_ENTWICKLUNG_SSH_ZIEL") or SSH_ZIEL_STANDARD).strip()
 
@@ -661,7 +668,9 @@ class DevAgent:
                 ),
                 properties={
                     "auftrag": {"type": "string", "description": f"Vollständiger Auftrag in den Worten von {name}, präzisiert"},
-                    "projekt": {"type": "string", "description": "Ordner-/Repo-Name, z. B. rezepte-app (a-z, 0-9, -)"},
+                    "projekt": {"type": "string",
+                                "description": ("Ordner-/Repo-Name, z. B. rezepte-app (a-z, 0-9, -). Nennt der Auftrag keinen "
+                                                "Namen, leite ihn aus dem Auftrag ab und frag nie danach.")},
                     "repo": {
                         "type": "string",
                         "description": ("Nur wenn der Auftrag ein bestehendes GitHub-Repo nennt: owner/name, z. B. "
