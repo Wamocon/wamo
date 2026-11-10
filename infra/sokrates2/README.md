@@ -1241,6 +1241,50 @@ xrdp stellt ein selbstsigniertes aus; das Gateway nutzt vorerst `ignore-cert`, P
 einen laufenden Tunnel sofort beendet (Stufe 3). (5) `wamo-rd` darf nur lesen, was für alle lesbar ist: Homes der anderen auf 0750 oder
 enger prüfen (`ls -ld /home/*`).
 
+## 17. Befehl `pruefen`: Abnahmebefehle in der Sandbox des Auftrags (Dispatcher Version 6, vorbereitet am 10.11.2026, AUS, nicht ausgerollt)
+
+Der Dispatcher kennt den Befehl `pruefen <job>`. Er führt einen Befehl der Abnahme (`befehl:`-Kriterium, `voice-core/abnahme.py`) im
+Projekt des Auftrags aus, in einer Sandbox, die **enger** ist als der Auftragslauf. Standardmäßig AUS: ohne `WAMO_PRUEFEN=an` in
+`/etc/wamo/geheim.env` (jeder andere Wert und jeder Tippfehler im Namen sperrt) lehnt der Dispatcher jeden Aufruf ab, `ping` meldet
+`"pruefen": false`. Die Einrichtung schaltet nichts ein.
+
+| Bereich | Auftragslauf (`start`) | Befehl `pruefen` |
+| --- | --- | --- |
+| Netz | Ausgangsfilter (TCP 80 und 443, DNS) | keines: eigener Netz-Namensraum (`--unshare-net`), nur `lo` |
+| Token, Claude-Zugang | die der Auftragsart | keine; Umgebung nur Basisumgebung plus Git-Hooks aus (`ERLAUBT_PRUEFEN_RE` im Läufer) |
+| Claude, Plugins, Zustand des Auftrags | gemountet | nicht gemountet |
+| Zeitlimit, Prozesse, Speicher | 30 min, 1024, 8 GB | 120 s fest, 256, 4 GB (`wamo-job.conf`: `PRUEFEN_*`) |
+| beschreibbar | Projekt, `/tmp`, `.npm`, `.cache`, Claude-Konfiguration | Projekt, `/tmp`, `.npm`, `.cache` |
+
+**Aufruf (nur der Kern, über den SSH-Schlüssel der Aufträge):** SSH-Befehl `pruefen <job>`, dazu **eine** stdin-Zeile
+`{"argv": ["npm", "test"]}` (genau dieses Feld, höchstens 8 KiB). Danach bleibt stdin als Lebenslinie offen, EOF beendet den Lauf. Das
+Projekt steht nie im Aufruf, es kommt aus `auftrag.json`. Antwort, eine JSON-Zeile auf stdout:
+`{"v":1,"ok":bool,"exit":int|null,"abgebrochen":bool,"grund":str|null,"dauer_s":float,"ausgabe":str,"gekuerzt":bool}`. Die Ausgabe ist das
+Ende (höchstens 2048 Byte), geschwärzt, ohne Steuerzeichen und nur ein JSON-String. **Erfüllt gilt nur bei Prozess-Exit 0, `ok` true und
+einem echten `exit` 0.** Prozess-Exit: 0 der Befehl lief (auch wenn er scheiterte), 2 abgewiesen oder "nicht möglich", 3 Selbsttest
+fehlgeschlagen, 4 belegt, 6 intern, 124 Zeitlimit, 130 abgebrochen; alles außer 0 heißt nicht erfüllt.
+
+**Was der Dispatcher selbst erzwingt** (der Kern ist nicht vertrauenswürdig): die Allowlist aus `abnahme_befehl.py` erneut (eine Kopie
+von `voice-core/abnahme_befehl.py` in `/opt/wamo/waechter`, `ping` meldet ihre `abnahme_befehl_sha256`), je Argument keine Steuerzeichen
+und keine Shell-Metazeichen, den Wächter (`decide` wie ein Bash-Aufruf, nur `allow` läuft), die Sperren wie bei `start` (ein Lauf je
+Auftrag, ein Auftrag je Projekt, `PARALLEL_MAX`), `pruefen` nur nach einem beendeten Lauf des Auftrags, höchstens 40 Aufrufe je
+Auftrag, vorher `projekt_entschaerfen` und den Selbsttest im Modus `pruefen` (Netz zu, `/proc/net/dev` nur `lo`, Token weg, Wächter lehnt
+den Sperrfall ab). Audit mit Pflichtzeile: Job, argv, Exit, Dauer, nie die Ausgabe. Die uv-Form `uv run --no-sync --offline pytest ...`
+läuft nur, wenn im Projekt eine `.venv` liegt, sonst kommt "nicht möglich" mit Hinweis.
+
+**Messbefund auf Sokrates-2 (10.11.2026):** In der Sandbox gibt es python3 3.12 (ohne pytest und ruff), node 22, npm, make, grep, eslint, git
+und uv; es fehlen pytest, ruff, mypy, tsc, pnpm, yarn, go, cargo und dotnet. Diese scheitern mit "nicht gefunden", das Kriterium gilt als
+nicht erfüllt; das ist kein Fehler des Dispatchers.
+
+**Ausrollen (nur auf ausdrückliches Ja, in dieser Reihenfolge):** (1) die Dateien ablegen und `wamo-job-einrichten.sh` ausführen
+(sichert die ersetzten Dateien nach `/opt/wamo/vorher/<Zeitstempel>`, kopiert `abnahme_befehl.py` und `wamo_job_pruefen.py` nach
+`/opt/wamo/waechter`; der Schalter bleibt aus), (2) `sudo -u wamo -H /opt/wamo/bin/wamo-pruefen-rauchtest` (der Test braucht den Schalter
+nicht; offene Messpunkte: Dauer des Selbsttests, löst bwrap bloße Programmnamen über den gesetzten PATH auf, Verhalten der Fork-Bombe),
+(3) `WAMO_PRUEFEN=an` in `geheim.env`, (4) erst danach der Kern (`WAMO_ABNAHME_BEFEHLE=ja`, die Anbindung ist noch zu bauen).
+**Rückweg:** `sudo bash ~/wamo-infra/wamo-job-rueckweg.sh` stellt die Dateien aus der neuesten Sicherung wieder her und entfernt die neuen
+(wiederholbar, mit `--trocken` nur Anzeige); danach meldet `ping` wieder Version 5. Ein alter Kern gegen den neuen Dispatcher bleibt
+unverändert; ein neuer Kern gegen den alten lehnt `befehl:` ab (`ping` ohne `pruefen`).
+
 ---
 
 WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn

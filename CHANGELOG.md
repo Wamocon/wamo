@@ -8,6 +8,14 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Dispatcher-Befehl `pruefen` (Version 6, standardmäßig AUS, nicht ausgerollt): Ein Befehl der Abnahme läuft im Projekt des Auftrags in
+  einer Sandbox, die enger ist als der Auftragslauf (eigener Netz-Namensraum, kein Token, kein Claude-Zugang, kein Zustand, Zeitlimit
+  120 s; `wamo-job.sh --modus pruefen`). Eingang ist eine stdin-Zeile `{"argv": [...]}`, Antwort eine JSON-Zeile mit `ok` nur bei einem
+  echten Exit 0. Der Dispatcher erzwingt die Allowlist erneut (neues Modul `voice-core/abnahme_befehl.py`, nur Standardbibliothek, von
+  `abnahme.py` und vom Dispatcher geteilt) und den Wächter, nimmt das Projekt nur aus `auftrag.json`, prüft Sperren, Selbsttest im Modus
+  `pruefen` und Audit. Neue Form `uv run --no-sync --offline pytest ...` in der Allowlist (nur mit `.venv`, lokal nie ausgeführt).
+  Die Einrichtung sichert die ersetzten Dateien (`/opt/wamo/vorher`), neuer Rückweg `wamo-job-rueckweg.sh`, Rauchtest
+  `wamo_pruefen_rauchtest.py` (geschrieben, nicht ausgeführt). Der Kern nutzt den Befehl noch nicht.
 - Komponententests für die Oberfläche: Neues, getrenntes Testsystem für React-Komponenten und Hooks (`npm run test:komponenten`,
   vitest mit jsdom und Testing Library, Dateien `*.comp.test.tsx`, Konfiguration `ui/vitest.config.ts`). `npm test` (`node --test`,
   Logiktests) bleibt unverändert. 90 Tests in vier Dateien: Tafel „Vorgänge“ (Karten je Zustand, Fortschrittsbalken mit

@@ -1021,10 +1021,11 @@ Auflegen beendet die Schleife sofort samt laufendem Prüfbefehl. Jede Runde ist 
 
 - **Betriebsart Sokrates-2 (der Standard):** Der Auftrag läuft dort in der Sandbox, die der Kern nicht betreten darf, und der Kern darf
   Befehle eines Modells nicht mit seinen eigenen Rechten ausführen. Deshalb sind Befehlskriterien nur in der Betriebsart `lokal` möglich.
-  Auf Sokrates-2 weist `entwicklung_vorbereiten` ein `befehl:` mit einem Satz ab, es bleiben Aussagekriterien. Dafür fehlt ein
-  Dispatcher-Befehl `pruefen`, der den Befehl in derselben Sandbox ohne Token ausführt (`infra/sokrates2/wamo_job_dispatch.py`, noch nicht
-  gebaut, braucht Prüfung der Sicherheit und einen Rauchtest auf dem Server). Die Schleife ist darauf vorbereitet
-  (`DevAgent(befehl_ausfuehrer=...)`).
+  Auf Sokrates-2 weist `entwicklung_vorbereiten` ein `befehl:` mit einem Satz ab, es bleiben Aussagekriterien. Die Dispatcher-Seite
+  des Befehls `pruefen` ist gebaut (`infra/sokrates2/wamo_job_dispatch.py` ab Version 6, standardmäßig aus, nicht ausgerollt, noch ohne
+  Rauchtest auf dem Server; Abschnitt 17 in `infra/sokrates2/README.md`): Er führt den Befehl in einer engeren Sandbox als der
+  Auftragslauf aus (kein Netz, kein Token, kein Claude). Es fehlen die Anbindung im Kern (`DevAgent(befehl_ausfuehrer=...)`), die
+  Prüfung der Sicherheit und der Rauchtest auf dem Server.
 - **Betriebsart `lokal`:** Der Code der Projekte (Tests, conftest, Makefile, Skripte) läuft ohne Sandbox mit den Rechten des Kerns, genau
   wie der Auftrag selbst. Allowlist und Wächter sind eine Bremse, keine Sandbox. Build-Werkzeuge können Abhängigkeiten aus dem Netz laden,
   das verhindert die Allowlist nicht. Deshalb ist die Zuschaltung (`WAMO_ABNAHME_BEFEHLE=ja`) eine bewusste Entscheidung des Betreibers.
