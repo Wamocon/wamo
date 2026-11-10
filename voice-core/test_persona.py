@@ -8,7 +8,7 @@ import unittest
 
 from learning import system_prompt as learning_prompt
 from learning import transcript_text
-from persona import build_system_prompt
+from persona import DEV_ABNAHME_BEFEHLE_PROMPT, DEV_ABNAHME_PROMPT, build_system_prompt
 
 # Altnamen der Vorlage, zur Laufzeit zusammengesetzt: so bleibt die Grep-Prüfung auf Altnamen
 # über Quelltext und Bytecode leer.
@@ -248,7 +248,6 @@ class PersonaAbnahmeTests(unittest.TestCase):
         p = self.bauen(abnahme=True)
         self.assertIn("prüfbares Ziel (abnahme)", p)
         self.assertIn("ohne zusätzliche Rückfrage", p)
-        self.assertIn("befehl: pytest -q", p)
         self.assertIn("nie „fertig“", p)
         self.assertLess(p.index("Entwicklungsaufträge\n"), p.index("prüfbares Ziel (abnahme)"))
         self.assertLess(p.index("prüfbares Ziel (abnahme)"), p.index("Schlüssel und Modellzugang"))
@@ -256,6 +255,47 @@ class PersonaAbnahmeTests(unittest.TestCase):
     def test_ohne_schalter_oder_ohne_entwicklung_fehlt_sie(self):
         self.assertNotIn("abnahme", self.bauen(abnahme=False))
         self.assertNotIn("abnahme", self.bauen(abnahme=True, entwicklung=False))
+
+    def test_kein_befehlsbeispiel_solange_befehlskriterien_aus_sind(self):
+        """Messung 10.11.2026, Befund 3: Das Beispiel „befehl: pytest -q“ widersprach der Werkzeugbeschreibung (Befehle aus)."""
+        for p in (self.bauen(abnahme=True), self.bauen(abnahme=True, abnahme_befehle=False)):
+            self.assertNotIn("befehl:", p)
+            self.assertNotIn("pytest", p)
+        self.assertIn("messbare Aussagen", self.bauen(abnahme=True))
+
+    def test_befehlsbeispiel_nur_mit_abnahme_absatz_und_erlaubten_befehlen(self):
+        self.assertIn("befehl: pytest -q", self.bauen(abnahme=True, abnahme_befehle=True))
+        self.assertNotIn("befehl:", self.bauen(abnahme=False, abnahme_befehle=True))
+        self.assertNotIn("befehl:", self.bauen(abnahme=True, abnahme_befehle=True, entwicklung=False))
+
+    def test_projektname_wird_selbst_abgeleitet_und_nicht_erfragt(self):
+        """Messung 10.11.2026, Befund 1: Bei Aufträgen ohne Ziel fragte WAMO in 7 von 10 Läufen nach dem Projektnamen."""
+        p = self.bauen(abnahme=True)
+        self.assertIn("Den Projektnamen leitest du selbst aus dem Auftrag ab", p)
+        self.assertIn("klein, mit Bindestrich", p)
+        self.assertIn("Du fragst nicht danach und legst die Karte sofort an", p)
+        self.assertNotIn("Projektnamen", self.bauen(abnahme=False))
+
+    def test_fehlender_gegenstand_gibt_genau_eine_rueckfrage_und_nie_stille(self):
+        """Messung 10.11.2026, Befund 2: Auf einen Auftrag ohne Gegenstand schrieb das Modell nur den Wartemarker ○."""
+        p = self.bauen(abnahme=True)
+        flach = " ".join(p.split())  # Zeilenumbrüche des Prompts spielen keine Rolle
+        self.assertIn("Ist ein Auftrag zu unbestimmt, um loszulegen", flach)
+        self.assertIn("fragst du genau einmal kurz und konkret nach, statt zu warten", flach)
+        self.assertIn("„● Was genau soll übersichtlicher werden?“", flach)  # Beispiel mit Marker ●, wie die Antwort aussieht
+        self.assertIn("weder ◐ noch ○", flach)
+
+    def test_die_laenge_der_antwort_wird_nicht_vorgegeben(self):
+        """Der Längenteil des früheren Vorschlags wirkte nicht und ist nicht übernommen."""
+        self.assertNotIn("zwei Sätze", DEV_ABNAHME_PROMPT)
+        self.assertNotIn("höchstens zwei", DEV_ABNAHME_PROMPT)
+
+    def test_der_absatz_hat_weder_gedankenstrich_noch_ersatzumlaute(self):
+        for text in (DEV_ABNAHME_PROMPT, DEV_ABNAHME_BEFEHLE_PROMPT):
+            self.assertNotIn("–", text)
+            self.assertNotIn("—", text)
+            for ersatz in ("pruef", "fuer ", "koenn", "aender", "ueber", "Rueck", "schoen", "gruen"):
+                self.assertNotIn(ersatz, text)
 
     def test_die_rueckfrageregel_bleibt_bei_hoechstens_einer(self):
         self.assertIn("Frag höchstens einmal je Auftrag", self.bauen(abnahme=True, rueckfragen=True))

@@ -203,6 +203,18 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Geändert
 
+- Prompt für Entwicklungsaufträge nach der Messung vom 10.11.2026 (PR 73, `docs/gespraech-optimierung.md`, Abschnitte 8 und 9):
+  Der Absatz `DEV_ABNAHME_PROMPT` lässt WAMO den Projektnamen und Einzelheiten selbst ableiten und die Karte sofort anlegen, statt danach zu
+  fragen (Aufträge ohne Ziel: Rückfrage statt Karte 7 von 10 vorher, 1 von 10 nachher, p 0,020), und beschreibt bei einem unbestimmten Auftrag
+  die eine Rückfrage mit dem Marker ●. Das Beispiel „befehl: pytest -q“ steht nur noch im neuen Absatz `DEV_ABNAHME_BEFEHLE_PROMPT` und nur, wenn der
+  Kern Befehlskriterien zulässt (`dev_agent.abnahme_befehle_im_betrieb`, dieselbe Entscheidung wie für die Werkzeugbeschreibung, keine neue
+  Umgebungsvariable); im Betrieb mit `WAMO_ABNAHME_BEFEHLE` leer kommt es nicht mehr vor. Die Beschreibung des Pflichtfelds `projekt` sagt, dass der
+  Name aus dem Auftrag abzuleiten ist. Ursache der Stille bei „Mach die Seite schöner.“: Das Modell schreibt nur den Wartemarker ○ des
+  Satzende-Protokolls; im Betrieb folgt nach 3 Sekunden der Pausenhinweis mit einer Rückfrage, im Messrahmen nicht. Das ist mit der Änderung
+  **nicht behoben** (der gemessene Satz bleibt in 5 von 5 Läufen bei ○, zwei neue vage Sätze bekamen in 9 von 10 Läufen eine Rückfrage); bei
+  Fehleraufträgen fragt WAMO etwas häufiger (nicht belastbar). Der Messrahmen kennt jetzt Stille, Erfolgskriterien und den Vergleich mit einer
+  früheren Messung (`voice-core/eval/abnahme_persona.py`, Ablage `2026-11-10_abnahme_prompt_nachmessung.json`). Wirkt nach neuem Kern-Release,
+  ungeprüft gegen echte Sprache.
 - `webseite_oeffnen` lädt Seiten und Suchen im aktiven Tab des offenen Browsers (Chrome oder Edge) statt jedes Mal einen
   neuen Tab zu öffnen. Neuer Parameter `neuer_tab` (nur auf ausdrücklichen Wunsch); ohne nutzbares Fenster oder bei einem
   Fehler öffnet sich wie bisher ein neuer Tab, das Ergebnis nennt den Grund. Audit und Duplikatwache kennen `tab` und `weg`.

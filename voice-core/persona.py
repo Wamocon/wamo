@@ -245,10 +245,22 @@ Entwicklungsaufträge
 
 # WAMO_PERSONA_ABNAHME (Standard an): Aufträge bekommen ein prüfbares Ziel und laufen in Runden (abnahme.py, dev_agent.py).
 # Mit "aus" bleibt der Prompt byteidentisch zum früheren.
+# Messung vom 10.11.2026 (docs/gespraech-optimierung.md, Abschnitt 8 und 9): Der Projektname wurde erfragt statt abgeleitet,
+# und auf einen Auftrag ohne Gegenstand schrieb das Modell nur den Wartemarker ○ (Pipecats Satzende-Protokoll), also nichts
+# Hörbares. Darum der zweite Punkt: Marker ● und genau eine Rückfrage. Das Beispiel „befehl: pytest -q“ steht nur in
+# DEV_ABNAHME_BEFEHLE_PROMPT und nur, wenn der Kern Befehlskriterien zulässt (dev_agent.abnahme_befehle_im_betrieb).
 DEV_ABNAHME_PROMPT = """- Gib einem Auftrag, der etwas baut oder behebt, ein prüfbares Ziel (abnahme). Nennt {name} keins, leite selbst ein bis
-  drei messbare Kriterien ab (was die Werkzeugbeschreibung erlaubt, zum Beispiel „befehl: pytest -q“, wenn das Projekt
-  Tests hat) und nenne sie in einem Satz, ohne zusätzliche Rückfrage. WAMO arbeitet dann in Runden, bis alles erfüllt ist.
-  Ist das Ziel nicht erreicht, sag das ehrlich und nie „fertig“.
+  drei messbare Aussagen ab (so, wie es die Werkzeugbeschreibung erlaubt) und nenne sie in einem Satz,
+  ohne zusätzliche Rückfrage. WAMO arbeitet dann in Runden, bis alles erfüllt ist. Ist das Ziel nicht erreicht, sag das
+  ehrlich und nie „fertig“.
+- Den Projektnamen leitest du selbst aus dem Auftrag ab (klein, mit Bindestrich, zum Beispiel lagerliste-app), ebenso
+  Einzelheiten wie Technik und Umfang. Du fragst nicht danach und legst die Karte sofort an.
+- Ist ein Auftrag zu unbestimmt, um loszulegen, fragst du genau einmal kurz und konkret nach, statt zu warten. Beispiel:
+  Auf „Mach das übersichtlicher“ antwortest du „● Was genau soll übersichtlicher werden?“. Das ist weder ◐ noch ○:
+  Wer dir einen Auftrag gibt, wartet auf deine Rückfrage und denkt nicht nach.
+"""
+
+DEV_ABNAHME_BEFEHLE_PROMPT = """- Befehlskriterien sind zugeschaltet: Hat das Projekt Tests, darf ein Kriterium „befehl: pytest -q“ sein.
 """
 
 DEV_LOCKED_PROMPT = """
@@ -358,11 +370,15 @@ def build_system_prompt(
     gespraech: bool | None = None,
     fernzugriff: bool = False,
     abnahme: bool | None = None,
+    abnahme_befehle: bool = False,
 ) -> str:
     """fernzugriff=True (nur Admin mit eingeschaltetem Fernzugriff): WAMO kennt den Fernzugriff auf die Sparks und das Werkzeug
     fernzugriff_oeffnen. pc_erreichbar=False (nur zusammen mit pc_werkzeuge): Hinweis, dass der PC gerade nicht erreichbar ist.
     rueckfragen / pc_ordner / browser / tab / gespraech / abnahme: None liest den Schalter (WAMO_PERSONA_RUECKFRAGEN,
-    WAMO_PERSONA_PC_ORDNER, WAMO_PERSONA_BROWSER, WAMO_PERSONA_TAB, WAMO_PERSONA_GESPRAECH, WAMO_PERSONA_ABNAHME)."""
+    WAMO_PERSONA_PC_ORDNER, WAMO_PERSONA_BROWSER, WAMO_PERSONA_TAB, WAMO_PERSONA_GESPRAECH, WAMO_PERSONA_ABNAHME).
+    abnahme_befehle=True (nur zusammen mit abnahme): Befehlskriterien sind erlaubt, der Absatz nennt dann das Beispiel
+    „befehl: pytest -q“. Die Entscheidung trifft dev_agent.abnahme_befehle_im_betrieb, dieselbe wie für die Werkzeugbeschreibung;
+    Standard aus, damit der Prompt dem Modell nie etwas anbietet, das der Kern abweist."""
     values = {"name": clean_inline(name, MAX_NAME_CHARS) or "Gast", "anrede": ANREDE.get(anrede, "du")}
     rueckfragen = persona_rueckfragen_an() if rueckfragen is None else rueckfragen
     pc_ordner = persona_pc_ordner_an() if pc_ordner is None else pc_ordner
@@ -391,7 +407,11 @@ def build_system_prompt(
             parts.append(_fill(PC_UNREACHABLE_PROMPT, values))
     if fernzugriff:
         parts.append(_fill(FERNZUGRIFF_PROMPT, values))
-    parts.append(_fill((DEV_PROMPT + (DEV_ABNAHME_PROMPT if abnahme else "")) if entwicklung else DEV_LOCKED_PROMPT, values))
+    if entwicklung:
+        dev = DEV_PROMPT + (DEV_ABNAHME_PROMPT + (DEV_ABNAHME_BEFEHLE_PROMPT if abnahme_befehle else "") if abnahme else "")
+    else:
+        dev = DEV_LOCKED_PROMPT
+    parts.append(_fill(dev, values))
     parts.append(_fill(ZUGANG_PROMPT, values))
 
     personal = _entries(persoenlich or [])

@@ -930,6 +930,58 @@ class RemoteBefehlTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(self.agent._ping_task, kw)
         self.assertEqual(self.basis.remote("ping"), [])
 
+class BefehleImPromptTests(unittest.TestCase):
+    """Der Prompt (persona.py) nennt das Beispiel „befehl: pytest -q“ nur, wenn der Kern Befehlskriterien überhaupt zulässt.
+    Die Entscheidung liegt an einer Stelle: dev_agent.abnahme_befehle_im_betrieb, gleich mit DevAgent._befehle_moeglich im
+    Betrieb (der Standard-Ausführer gehört zur Betriebsart lokal) und gleich mit der Werkzeugbeschreibung."""
+
+    def test_befehle_gibt_es_nur_lokal_und_nur_mit_zuschaltung(self):
+        for ort, wert, soll in (("sokrates2", "", False), ("sokrates2", "ja", False), ("lokal", "", False),
+                                ("lokal", "nein", False), ("lokal", "ja", True)):
+            with self.subTest(ort=ort, wert=wert), mock.patch.dict(os.environ, {abnahme.BEFEHLE_ENV: wert}):
+                self.assertIs(dev_agent.abnahme_befehle_im_betrieb(ort), soll)
+
+    def test_standard_ort_kommt_aus_der_umgebung(self):
+        with mock.patch.dict(os.environ, {abnahme.BEFEHLE_ENV: "ja", "WAMO_ENTWICKLUNG_ORT": "lokal"}):
+            self.assertTrue(dev_agent.abnahme_befehle_im_betrieb())
+        with mock.patch.dict(os.environ, {abnahme.BEFEHLE_ENV: "ja", "WAMO_ENTWICKLUNG_ORT": "sokrates2"}):
+            self.assertFalse(dev_agent.abnahme_befehle_im_betrieb())
+
+    def test_entscheidung_ist_gleich_der_des_agenten_der_werkzeugbeschreibung_und_des_prompts(self):
+        from persona import build_system_prompt
+
+        for ort in ("sokrates2", "lokal"):
+            for wert in ("", "nein", "ja"):
+                with self.subTest(ort=ort, wert=wert), mock.patch.dict(os.environ, {abnahme.BEFEHLE_ENV: wert}):
+                    agent = dev_agent.DevAgent(memory=None, auftraggeber="Erika", ort=ort)
+                    moeglich = dev_agent.abnahme_befehle_im_betrieb(ort)
+                    self.assertIs(moeglich, agent._befehle_moeglich())
+                    beschreibung = agent.schemas()[0].properties["abnahme"]["description"]
+                    prompt = build_system_prompt("Erika", "du", entwicklung=True, abnahme=True, abnahme_befehle=moeglich)
+                    self.assertEqual("befehl:" in beschreibung, moeglich)
+                    self.assertEqual("befehl: pytest -q" in prompt, moeglich)
+
+
+class ProjektnameInDerWerkzeugbeschreibungTests(unittest.TestCase):
+    """Messung 10.11.2026, Befund 1: projekt ist ein Pflichtfeld, und das Modell fragte in 7 von 10 Läufen nach dem Namen.
+    Die Beschreibung des Feldes sagt ihm, dass es den Namen aus dem Auftrag ableitet."""
+
+    def schema(self):
+        return dev_agent.DevAgent(memory=None, auftraggeber="Erika", ort="sokrates2").schemas()[0]
+
+    def test_projekt_wird_abgeleitet_und_nicht_erfragt(self):
+        beschreibung = self.schema().properties["projekt"]["description"]
+        self.assertIn("Nennt der Auftrag keinen Namen", beschreibung)
+        self.assertIn("leite ihn aus dem Auftrag ab", beschreibung)
+        self.assertIn("frag nie danach", beschreibung)
+        self.assertIn("rezepte-app", beschreibung)  # das Beispiel für die Form bleibt
+
+    def test_projekt_bleibt_pflichtfeld_und_die_beschreibung_ist_ohne_gedankenstrich(self):
+        schema = self.schema()
+        self.assertIn("projekt", schema.required)
+        self.assertNotIn("–", schema.properties["projekt"]["description"])
+        self.assertNotIn("—", schema.properties["projekt"]["description"])
+
 
 if __name__ == "__main__":
     unittest.main()
