@@ -4,14 +4,17 @@
 # wamo-einrichten.sh lief (Benutzer wamo, Claude Code, Node, ECC, REA). Wiederholbar, richtet keine Geheimnisse ein.
 #
 # Vom PC aus (Repo-Wurzel, Git Bash). Der Ordner liegt im Home von wamocon, nie in /tmp:
-#   cd infra/sokrates2 && scp -r wamo-job.sh wamo-job-einrichten.sh wamo-job-ecc.py wamo_job_dispatch.py #     wamo_job_rauchtest.py abschottung.py wamo-egress.nft wamo-egress.service wamo-egress-rueckweg.sh claude-code #     sokrates2:wamo-infra/ && cd ../..
-#   scp voice-core/dev_guard.py voice-core/werkzeugkarte.py voice-core/kontingent.py ~/.ssh/id_ed25519_wamo_jobs.pub sokrates2:wamo-infra/
+#   cd infra/sokrates2 && scp -r wamo-job.sh wamo-job-einrichten.sh wamo-job-ecc.py wamo_job_dispatch.py wamo_job_pruefen.py #     wamo_job_rauchtest.py wamo_pruefen_rauchtest.py wamo-job-rueckweg.sh abschottung.py wamo-egress.nft wamo-egress.service wamo-egress-rueckweg.sh claude-code #     sokrates2:wamo-infra/ && cd ../..
+#   scp voice-core/dev_guard.py voice-core/werkzeugkarte.py voice-core/kontingent.py voice-core/abnahme_befehl.py ~/.ssh/id_ed25519_wamo_jobs.pub sokrates2:wamo-infra/
 #   (~/wamo-infra teilen sich mehrere Einrichtungsskripte: nur die eigenen Dateien ersetzen, den Ordner nicht leeren)
 #   ssh sokrates2 "chmod -R go-w ~/wamo-infra && sudo bash ~/wamo-infra/wamo-job-einrichten.sh"
 # Danach innerhalb von 5 Minuten mit einer NEUEN Verbindung bestätigen, dass die Anmeldung als wamocon weiter geht
 # (sonst nimmt ein Zeitschalter den sshd-Drop-in automatisch zurück):
 #   ssh sokrates2 "sudo touch /run/wamo-sshd-bestaetigt"
 # Rauchtest:  ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp --attrappe"
+#             Befehl pruefen (nur wenn er eingeschaltet werden soll, Schalter WAMO_PRUEFEN=an in /etc/wamo/geheim.env, Standard AUS):
+#             ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-pruefen-rauchtest"
+# Rückweg:    ssh sokrates2 "sudo bash ~/wamo-infra/wamo-job-rueckweg.sh"  (stellt die Dateien aus $APP/vorher/ wieder her)
 #             (nach dem Einrichten der GitHub-App zusätzlich --app-echt, nur lesend, README Abschnitt 2)
 #
 # Was das Skript am System ändert (nur WAMO):
@@ -21,8 +24,9 @@
 #   /usr/local/sbin/wamo-bwrap-sync, /etc/apt/apt.conf.d/80wamo-bwrap   hält die Kopie nach Paket-Updates aktuell
 #   loginctl enable-linger wamo          systemd-Benutzerdienst (Grenzen und Abbruch über systemd-run --user)
 #   /opt/wamo                            root:wamo 0750, für wamo nur lesbar und ausführbar (nicht umbenennbar):
-#     bin/{wamo-job-dispatch,wamo-job.sh,wamo-job-rauchtest}, wamo-job.conf (Grenzen, CLAUDE_VERSION),
-#     waechter/{dev_guard,werkzeugkarte,kontingent,abschottung}.py, waechter/seccomp.bpf,
+#     bin/{wamo-job-dispatch,wamo-job.sh,wamo-job-rauchtest,wamo-pruefen-rauchtest}, wamo-job.conf (Grenzen, CLAUDE_VERSION),
+#     waechter/{dev_guard,werkzeugkarte,kontingent,abschottung,abnahme_befehl,wamo_job_pruefen}.py, waechter/seccomp.bpf,
+#     vorher/<Zeitstempel>/  Sicherung der ersetzten Dateien (nur was sich ändert), Grundlage von wamo-job-rueckweg.sh
 #     claude-code/{managed-settings.json,managed-mcp.json},
 #     claude-plugins/ (Kopie des ECC-Plugins von wamo ohne Hooks, lokaler Marketplace "ecc", wamo-job-ecc.py)
 #   /etc/wamo/egress.nft, /etc/systemd/system/wamo-egress.service   Ausgangsfilter (nft inet wamo_egress)
@@ -63,7 +67,8 @@ pruefe_herkunft() {
 pruefe_herkunft
 for datei in wamo-job.sh wamo_job_dispatch.py wamo_job_rauchtest.py abschottung.py claude-code/managed-settings.json \
   claude-code/managed-mcp.json wamo-job-ecc.py \
-  dev_guard.py werkzeugkarte.py kontingent.py wamo-egress.nft wamo-egress.service; do
+  dev_guard.py werkzeugkarte.py kontingent.py abnahme_befehl.py wamo_job_pruefen.py wamo_pruefen_rauchtest.py \
+  wamo-egress.nft wamo-egress.service; do
   [ -f "$HERE/$datei" ] || { echo "Fehlt: $HERE/$datei" >&2; exit 1; }
 done
 [[ $REA_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "REA_VERSION ungültig" >&2; exit 1; }
@@ -123,15 +128,62 @@ systemctl is-active --quiet "user@$UID_WAMO.service" || { echo "user@$UID_WAMO.s
 sudo -u "$WAMO_USER" -H env XDG_RUNTIME_DIR="/run/user/$UID_WAMO" systemctl --user mask --now \
   pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket wireplumber.service >/dev/null 2>&1 || true
 
+echo "== 2c. Sicherung der Dateien, die dieses Skript ersetzt ($APP/vorher/<Zeitstempel>, Grundlage von wamo-job-rueckweg.sh)"
+# Ziel (relativ zu $APP) und Quelle (in $HERE) jeder Datei, die dieses Skript installiert. Gesichert wird nur, was sich ändert;
+# eine Datei, die es noch nicht gab, steht in NEU.txt (der Rückweg entfernt sie wieder). Ohne Änderung entsteht keine Sicherung:
+# ein zweiter Lauf überschreibt nie den Stand vor der ersten Änderung. Für den Vergleich werden Zeilenenden angeglichen.
+DATEIEN=(
+  "bin/wamo-job-dispatch:wamo_job_dispatch.py"
+  "bin/wamo-job.sh:wamo-job.sh"
+  "bin/wamo-job-rauchtest:wamo_job_rauchtest.py"
+  "bin/wamo-pruefen-rauchtest:wamo_pruefen_rauchtest.py"
+  "waechter/dev_guard.py:dev_guard.py"
+  "waechter/werkzeugkarte.py:werkzeugkarte.py"
+  "waechter/kontingent.py:kontingent.py"
+  "waechter/abschottung.py:abschottung.py"
+  "waechter/abnahme_befehl.py:abnahme_befehl.py"
+  "waechter/wamo_job_pruefen.py:wamo_job_pruefen.py"
+  "claude-code/managed-settings.json:claude-code/managed-settings.json"
+  "claude-code/managed-mcp.json:claude-code/managed-mcp.json"
+)
+SICHERUNG="$APP/vorher/$(date -u +%Y%m%dT%H%M%SZ)"
+neu_dateien=()
+geaendert=0
+for eintrag in "${DATEIEN[@]}"; do
+  ziel=${eintrag%%:*}
+  quelle=${eintrag#*:}
+  if [ ! -e "$APP/$ziel" ]; then
+    neu_dateien+=("$ziel")
+  elif ! cmp -s <(tr -d '\r' < "$HERE/$quelle") <(tr -d '\r' < "$APP/$ziel"); then
+    install -d -o root -g root -m 0700 "$APP/vorher" "$SICHERUNG" "$SICHERUNG/$(dirname "$ziel")"
+    cp -p "$APP/$ziel" "$SICHERUNG/$ziel"
+    geaendert=1
+  fi
+done
+if [ "$geaendert" = 1 ] || [ "${#neu_dateien[@]}" -gt 0 ]; then
+  install -d -o root -g root -m 0700 "$APP/vorher" "$SICHERUNG"
+  : > "$SICHERUNG/NEU.txt"
+  for neu_datei in "${neu_dateien[@]}"; do echo "$neu_datei" >> "$SICHERUNG/NEU.txt"; done
+  chmod 0600 "$SICHERUNG/NEU.txt"
+  echo "  gesichert: $SICHERUNG (${#neu_dateien[@]} neue Dateien, Rückweg: sudo bash ~/wamo-infra/wamo-job-rueckweg.sh)"
+else
+  echo "  nichts geändert, keine neue Sicherung"
+fi
+
 echo "== 3. Programme nach $APP (root-eigen, für wamo nur lesbar bzw. ausführbar)"
 install -d -o root -g "$WAMO_USER" -m 0750 "$APP" "$APP/bin" "$APP/waechter" "$APP/claude-code"
 install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo_job_dispatch.py" "$APP/bin/wamo-job-dispatch"
 install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo-job.sh" "$APP/bin/wamo-job.sh"
 install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo_job_rauchtest.py" "$APP/bin/wamo-job-rauchtest"
+install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo_pruefen_rauchtest.py" "$APP/bin/wamo-pruefen-rauchtest"
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/dev_guard.py" "$HERE/werkzeugkarte.py" "$HERE/kontingent.py" "$HERE/abschottung.py" "$APP/waechter/"
+# Befehl pruefen: die Allowlist (Kopie aus voice-core) und die Prüflogik. Der Dispatcher lädt sie erst, wenn WAMO_PRUEFEN=an in
+# /etc/wamo/geheim.env steht (Standard AUS, dieses Skript schaltet nichts ein). Die Summe von abnahme_befehl.py meldet ping.
+install -o root -g "$WAMO_USER" -m 0640 "$HERE/abnahme_befehl.py" "$HERE/wamo_job_pruefen.py" "$APP/waechter/"
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/claude-code/managed-settings.json" "$APP/claude-code/managed-settings.json"
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/claude-code/managed-mcp.json" "$APP/claude-code/managed-mcp.json"
-sed -i 's/\r$//' "$APP/bin/wamo-job.sh" "$APP/bin/wamo-job-dispatch" "$APP/bin/wamo-job-rauchtest"
+sed -i 's/\r$//' "$APP/bin/wamo-job.sh" "$APP/bin/wamo-job-dispatch" "$APP/bin/wamo-job-rauchtest" "$APP/bin/wamo-pruefen-rauchtest"
+sed -i 's/\r$//' "$APP/waechter/abnahme_befehl.py" "$APP/waechter/wamo_job_pruefen.py"  # ping meldet die Summe der Datei, sie soll zu voice-core passen
 bpf=$(mktemp)
 /usr/bin/python3 -I "$APP/waechter/abschottung.py" --seccomp-bpf > "$bpf"
 [ -s "$bpf" ] || { echo "seccomp-Filter leer" >&2; exit 1; }
@@ -284,6 +336,10 @@ echo "== 8. Prüfung"
 sudo -u "$WAMO_USER" -H "$APP/bin/wamo-job-dispatch" ping
 sudo -u "$WAMO_USER" -H "$BWRAP_KOPIE" --unshare-user --unshare-pid --ro-bind /usr /usr --symlink usr/lib /lib \
   --proc /proc /usr/bin/true && echo "Sandbox: Benutzer-Namensraum ok"
+# Der Modus pruefen braucht einen eigenen Netz-Namensraum: ohne ihn bleibt pruefen unbenutzbar (der Selbsttest scheitert)
+sudo -u "$WAMO_USER" -H "$BWRAP_KOPIE" --unshare-user --unshare-pid --unshare-net --ro-bind /usr /usr --symlink usr/lib /lib \
+  --proc /proc /usr/bin/true && echo "Sandbox: eigener Netz-Namensraum ok (Modus pruefen)" \
+  || echo "Hinweis: ein Netz-Namensraum ist nicht anlegbar, der Befehl pruefen bliebe unbenutzbar." >&2
 if sudo -u "$WAMO_USER" -H /usr/bin/bwrap --unshare-user --ro-bind /usr /usr --symlink usr/lib /lib /usr/bin/true 2>/dev/null; then
   echo "Hinweis: das System-bwrap darf ebenfalls Namensräume anlegen (AppArmor-Sperre aus?)."
 else
@@ -293,3 +349,6 @@ sshd -T -C user=wamo,host=pc,addr=192.168.178.2 | grep -E '^(authorizedkeysfile|
 /usr/sbin/nft list chain inet wamo_egress ausgang | grep -E 'skuid|counter' || true
 echo "Fertig. Rauchtest: sudo -u $WAMO_USER -H $APP/bin/wamo-job-rauchtest --mcp --attrappe" \
   "(mit eingerichteter GitHub-App zusätzlich --app-echt; \"github\" im ping oben: app, token oder fehler)"
+echo "Befehl pruefen: installiert, aber AUS (\"pruefen\": false im ping). Einschalten erst nach dem Rauchtest" \
+  "sudo -u $WAMO_USER -H $APP/bin/wamo-pruefen-rauchtest und mit WAMO_PRUEFEN=an in /etc/wamo/geheim.env." \
+  "Rückweg: sudo bash ~/wamo-infra/wamo-job-rueckweg.sh"
