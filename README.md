@@ -27,7 +27,7 @@ Ausgerollt ist Version 0.1.0 (Tag `v0.1.0`), `main` steht bei Commit `3185349` (
 5. Lange Werkzeugausgaben kürzen ab `WAMO_AUSGABE_SCHWELLE` (Standard 3000 Zeichen), Nachladen mit `ausgabe_nachladen` (Abschnitt „Lange Werkzeugausgaben kürzen“).
 
 Betrieb: Kern über die Slots a und b (`infra/sokrates2/wamo-core-slots.sh`), Oberfläche als `wamo-ui-blau` und `wamo-ui-gruen`, Gerätedienst
-`wamo-geraete`, Migration 0017 (Tabelle `vorgaenge`) auf `wamo_dev` angewendet (die Sätze „noch nicht angewendet“ dazu im Abschnitt „Vorgänge“ und im `CHANGELOG.md` gelten dafür nicht mehr).
+`wamo-geraete`, Migration 0017 (Tabelle `vorgaenge`) auf `wamo_dev` und `wamo_test` angewendet.
 
 Offen:
 
@@ -343,9 +343,10 @@ eigenen Profils, Token mit zweitem Faktor wie bei allen Schnittstellen unter `/w
 eine Nachricht. Ein Vorgang ohne Ende gilt im Verlauf als abgebrochen, ein Vorgang der laufenden Sitzung geht dem Verlauf immer vor, und
 ein Fehler bei der Abfrage zeigt einfach keinen Verlauf. Gespeichert wird nur bei einem Statuswechsel (Tabelle `vorgaenge`).
 
-**Migration 0017 ist noch nicht angewendet** (`supabase/migrations/0017_vorgaenge.sql`, Rückweg `.down.sql`, SQL-Test unter
-`supabase/tests/`). Bis dahin speichert der Kern nichts (still, mit einem Hinweis im Protokoll) und der Verlauf bleibt leer; die
-Anzeige der laufenden Sitzung funktioniert auch ohne. In der Entwicklung zeigt `/?vorschau=1&vorgaenge=1` fünf Beispielvorgänge (nur
+**Migration 0017** (`supabase/migrations/0017_vorgaenge.sql`, Rückweg `.down.sql`, SQL-Test unter `supabase/tests/`) ist seit dem
+09.11.2026 auf `wamo_dev` und `wamo_test` angewendet (zweiter Lauf ohne Änderung, SQL-Test „0017 OK“); ein `wamo_prod` gibt es nicht.
+Ohne die Tabelle (zum Beispiel in einem neuen Schema) speichert der Kern nichts (still, mit einem Hinweis im Protokoll) und der Verlauf
+bleibt leer; die Anzeige der laufenden Sitzung funktioniert auch ohne. In der Entwicklung zeigt `/?vorschau=1&vorgaenge=1` fünf Beispielvorgänge (nur
 `next dev` mit `NEXT_PUBLIC_WAMO_VORSCHAU=1`). Nicht an einem echten Lauf geprüft: Die Schritte aus dem Stream von Claude Code
 sind nur mit aufgezeichneten Streams getestet (`voice-core/testdaten/vorgang_stream.jsonl`).
 

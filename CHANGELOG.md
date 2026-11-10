@@ -68,7 +68,7 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   30 Tage, danach leert ihn der Kern (`aufraeumen`, höchstens einmal je Stunde und Prozess, Zeilen löscht er nicht); ein Vorgang, der nach
   24 Stunden noch offen ist (der Kern ist beim Ende abgestürzt), gilt als abgebrochen. Ein Endstand wird nie von einem späteren Zwischenstand
   überschrieben. Die Balken sind `role="progressbar"`, der Zustand steht nie nur als Farbe da,
-  `prefers-reduced-motion` schaltet die Bewegung ab. **Migration 0017 (Tabelle `vorgaenge`) ist noch nicht angewendet**: Bis dahin bleibt der
+  `prefers-reduced-motion` schaltet die Bewegung ab. **Migration 0017 (Tabelle `vorgaenge`)** liegt seit dem 09.11.2026 auf `wamo_dev` und `wamo_test`: Ohne die Tabelle bleibt der
   Verlauf leer, die Anzeige der laufenden Sitzung geht auch ohne. Die Zeitleiste "Werkzeuge" und ihre Karte `boss_aufgabe` sind unverändert.
 - Canvas: Nach dem Kopieren eines Codeblocks erscheint 1,5 Sekunden ein Chip "Kopiert" (Live-Region, `aria-live="polite"`); die Beschriftung des
   Knopfes bleibt "Kopieren". Schlägt das Kopieren fehl, steht dort "Nicht kopiert".
