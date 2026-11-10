@@ -427,3 +427,159 @@ def test_das_zeitlimit_beendet_auch_die_enkel_des_prozesses():
     import os
     with pytest.raises(ProcessLookupError):
         os.kill(enkel, 0)
+
+
+# ---------------------------------------------------------------- Protokollzeile aus freiem Inhalt
+def test_die_protokollzeile_hat_nie_steuer_format_oder_trennzeichen():
+    boese = "ok\r\nGEFAELSCHT pruefen_ende exit=0\x1b[31m‮​ zeile x\x00\x7f\x85﻿ende\U000e0041"
+    text = PM.log_text(boese)
+    assert text.startswith("ok GEFAELSCHT pruefen_ende exit=0") and text.endswith("ende")
+    import unicodedata
+    assert not [c for c in text if unicodedata.category(c) in ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp")], repr(text)
+    assert "\n" not in text and "\r" not in text and "\t" not in text
+
+
+def test_die_protokollzeile_wird_gekuerzt_und_normale_zeichen_bleiben():
+    assert PM.log_text("Größe ä ö ü ß 2 GiB") == "Größe ä ö ü ß 2 GiB"
+    lang = PM.log_text("x" * 5000)
+    assert len(lang) == PM.LOG_ZEICHEN and lang.endswith("…")
+    assert len(PM.log_text("y" * 50, 20)) == 20
+
+
+def test_die_protokollzeile_schwaerzt_auch_ein_durch_unsichtbare_zeichen_zerlegtes_geheimnis():
+    import re
+    schluessel = "sk-ant-api03-" + "A" * 30
+    getrennt = schluessel[:8] + "​" + schluessel[8:] + " ende"
+    schwaerzen = lambda daten: re.sub(rb"sk-ant-[A-Za-z0-9_-]{20,}", b"[GESCHWAERZT]", daten)  # noqa: E731
+    text = PM.log_text(f"Fehler: {getrennt}", schwaerzen=schwaerzen)
+    assert "AAAA" not in text and "[GESCHWAERZT] ende" in text
+
+
+# ---------------------------------------------------------------- Platte: Größe des Projekts begrenzt und mit Zeitbudget
+def test_die_festen_grenzen_der_plattenpruefung():
+    assert PM.PLATZ_MIN_BYTES == 2 * 1024**3 and PM.PROJEKT_MAX_BYTES == 2 * 1024**3 and PM.PLATTEN_ZEIT_S == 5.0
+    for grund in (PM.PLATZ_ZU_WENIG, PM.PROJEKT_ZU_GROSS, PM.PLATTE_NICHT_MESSBAR):
+        assert grund.startswith("nicht möglich") and "{" not in grund and "\n" not in grund  # feste Texte
+
+
+def test_die_groesse_zaehlt_dateien_in_unterordnern(tmp_path):
+    (tmp_path / "a.txt").write_bytes(b"x" * 1000)
+    (tmp_path / "unter" / "tief").mkdir(parents=True)
+    (tmp_path / "unter" / "tief" / "b.bin").write_bytes(b"y" * 2000)
+    groesse = PM.ordner_bytes(tmp_path, 10**9, 5.0)
+    assert groesse is not None and 3000 <= groesse < 3000 + 256 * 1024
+
+
+def test_die_groesse_bricht_bei_ueberschreitung_ab(tmp_path):
+    for i in range(20):
+        (tmp_path / f"d{i}").write_bytes(b"x" * 1000)
+    assert PM.ordner_bytes(tmp_path, 2500, 5.0) is None
+    assert PM.ordner_bytes(tmp_path, 10**9, 5.0) is not None
+
+
+def test_die_groesse_bricht_beim_zeitbudget_ab(tmp_path):
+    for i in range(30):
+        (tmp_path / f"d{i}").write_bytes(b"x")
+    takt = iter(range(10**6))
+    assert PM.ordner_bytes(tmp_path, 10**9, 3.0, uhr=lambda: float(next(takt))) is None  # jeder Aufruf der Uhr: eine Sekunde
+    assert PM.ordner_bytes(tmp_path, 10**9, 5.0, uhr=lambda: 0.0) is not None  # Uhr steht: nie überschritten
+
+
+def test_ein_nicht_lesbarer_ordner_heisst_nicht_messbar(tmp_path, monkeypatch):
+    (tmp_path / "geheim").mkdir()
+    echt = PM.os.scandir
+
+    def verweigert(pfad):
+        if str(pfad).endswith("geheim"):
+            raise PermissionError(13, "verweigert")
+        return echt(pfad)
+    monkeypatch.setattr(PM.os, "scandir", verweigert)
+    assert PM.ordner_bytes(tmp_path, 10**9, 5.0) is None  # fail-closed: was nicht messbar ist, gilt als zu groß
+
+
+@pytest.mark.skipif(not LINUX, reason="symbolische Links brauchen Rechte, die unter Windows fehlen")
+def test_die_groesse_folgt_keinem_link(tmp_path):
+    gross = tmp_path / "gross"
+    gross.mkdir()
+    (gross / "riesig.bin").write_bytes(b"x" * 500_000)
+    projekt = tmp_path / "projekt"
+    projekt.mkdir()
+    (projekt / "verweis").symlink_to(gross)
+    groesse = PM.ordner_bytes(projekt, 10**9, 5.0)
+    assert groesse is not None and groesse < 100_000  # der Link zählt als Link, nicht sein Ziel
+
+
+def test_der_plattenbefund_lautet_ok_zu_wenig_platz_zu_gross_oder_nicht_messbar(tmp_path, monkeypatch):
+    (tmp_path / "f").write_bytes(b"x" * 100)
+    monkeypatch.setattr(PM, "freier_platz", lambda pfad: 10 * 1024**3)
+    assert PM.platten_grund(tmp_path, tmp_path) is None
+    monkeypatch.setattr(PM, "freier_platz", lambda pfad: 2 * 1024**3 - 1)
+    assert PM.platten_grund(tmp_path, tmp_path) == PM.PLATZ_ZU_WENIG
+    monkeypatch.setattr(PM, "freier_platz", lambda pfad: 2 * 1024**3)
+    assert PM.platten_grund(tmp_path, tmp_path) is None  # genau die Mindestmenge reicht
+    monkeypatch.setattr(PM, "ordner_bytes", lambda *a, **k: None)
+    assert PM.platten_grund(tmp_path, tmp_path) == PM.PROJEKT_ZU_GROSS
+    monkeypatch.setattr(PM, "freier_platz", lambda pfad: (_ for _ in ()).throw(OSError("weg")))
+    assert PM.platten_grund(tmp_path, tmp_path) == PM.PLATTE_NICHT_MESSBAR
+
+
+def test_der_plattenbefund_misst_mit_den_festen_grenzen(tmp_path, monkeypatch):
+    gesehen: list = []
+    monkeypatch.setattr(PM, "freier_platz", lambda pfad: gesehen.append(("platz", pfad)) or 10 * 1024**3)
+    monkeypatch.setattr(PM, "ordner_bytes", lambda pfad, grenze, frist, **kw: gesehen.append(("ordner", pfad, grenze, frist)) or 1)
+    projekt, heim = tmp_path / "p", tmp_path / "h"
+    assert PM.platten_grund(projekt, heim) is None
+    assert gesehen == [("platz", heim), ("ordner", projekt, PM.PROJEKT_MAX_BYTES, PM.PLATTEN_ZEIT_S)]
+
+
+# ---------------------------------------------------------------- Pfade im Aufruf bleiben im Projektordner (auch über Links)
+@pytest.mark.parametrize("argv", [
+    ["make", "test"], ["pytest", "-q"], ["pytest", "tests/test_x.py::TestA::test_b"], ["grep", "-rn", "muster", "src", "README.md"],
+    ["grep", "-q", "/etc/passwd", "a.txt"],  # ein Suchmuster, kein Pfad
+    ["eslint", "src", "--max-warnings=0"], ["tsc", "--noEmit", "-p", "tsconfig.json"], ["go", "test", "./..."], ["npm", "test"],
+])
+def test_pfade_im_projekt_sind_in_ordnung(tmp_path, argv):
+    assert PM.pfad_grund(argv, tmp_path) is None
+
+
+@pytest.mark.parametrize("argv", [
+    ["grep", "-r", "muster", "verweis"], ["pytest", "verweis/test_x.py::t"], ["eslint", "verweis"],
+    ["tsc", "--noEmit", "--project=verweis/tsconfig.json"], ["pytest", "-q", "src/verweis"], ["grep", "-rn", "x", "ok.txt", "verweis"],
+])
+def test_ein_pfad_der_ueber_einen_link_hinausfuehrt_wird_abgewiesen(tmp_path, argv):
+    """Mit ersetztem realpath, damit der Test überall läuft; der Test mit echtem Link steht darunter (nur Linux)."""
+    def realpath(pfad):
+        pfad = str(pfad)
+        return "/etc/wamo-fremd" if "verweis" in pfad else pfad
+    grund = PM.pfad_grund(argv, tmp_path, realpath=realpath)
+    assert grund is not None and "Projektordner" in grund and "\n" not in grund
+    assert PM.pfad_grund(argv, tmp_path, realpath=lambda p: str(p)) is None  # ohne Link derselbe Aufruf in Ordnung
+
+
+@pytest.mark.skipif(not LINUX, reason="symbolische Links brauchen Rechte, die unter Windows fehlen")
+def test_ein_echter_link_aus_dem_projekt_heraus_wird_abgewiesen_einer_nach_innen_nicht(tmp_path):
+    aussen = tmp_path / "aussen"
+    aussen.mkdir()
+    (aussen / "x.txt").write_text("x", encoding="utf-8")
+    projekt = tmp_path / "projekt"
+    (projekt / "src").mkdir(parents=True)
+    (projekt / "nach_aussen").symlink_to(aussen)
+    (projekt / "relativ_aussen").symlink_to("../aussen")
+    (projekt / "nach_etc").symlink_to("/etc")
+    (projekt / "nach_innen").symlink_to("src")
+    (projekt / "kette").symlink_to("nach_aussen")
+    for ziel in ("nach_aussen", "relativ_aussen", "nach_etc", "kette"):
+        assert PM.pfad_grund(["grep", "-r", "x", ziel], projekt), ziel
+        assert PM.pfad_grund(["pytest", f"{ziel}/x.txt"], projekt), ziel
+    assert PM.pfad_grund(["grep", "-r", "x", "nach_innen"], projekt) is None
+    assert PM.pfad_grund(["grep", "-r", "x", "src", "gibt_es_nicht"], projekt) is None
+
+
+def test_die_pfadpruefung_nimmt_das_programm_und_optionen_nicht_als_pfad(tmp_path):
+    gesehen: list[str] = []
+
+    def realpath(pfad):
+        gesehen.append(str(pfad))
+        return str(pfad)
+    PM.pfad_grund(["make", "-q"], tmp_path, realpath=realpath)
+    assert not any(s.endswith("make") or s.endswith("-q") for s in gesehen)

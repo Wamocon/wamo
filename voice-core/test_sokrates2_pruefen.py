@@ -115,6 +115,7 @@ class Welt:
         self.selbsttests: list[tuple] = []
         self.selbsttest_ergebnis = (True, "Hook lehnt ab, Grenzen und Netz geprüft")
         self.geheim: dict[str, str] = {"WAMO_PRUEFEN": "an"}
+        self.freier_platz = 10 * 1024**3  # die Platte der Entwicklungsmaschine zählt in diesen Tests nie
         self.zeile = zeile()
         FakeSperre.belegt, FakeSperre.versucht = set(), []
         FakeLauf.instanzen, FakeLauf.wirft = [], None
@@ -128,7 +129,8 @@ class Welt:
         monkeypatch.setattr(D, "lese_geheimnisse", lambda path=None: dict(self.geheim))
         monkeypatch.setattr(D, "projekt_entschaerfen", lambda p: self.ablauf.append("entschaerfen") or [])
         monkeypatch.setattr(D, "selbsttest", self._selbsttest)
-        monkeypatch.setattr(D, "stop_units", lambda job: self.stopps.append(job))
+        monkeypatch.setattr(D, "stop_units", lambda job: (self.stopps.append(job), self.ablauf.append("stop")))
+        monkeypatch.setattr(PM, "freier_platz", lambda pfad: self.freier_platz)
         monkeypatch.setattr(D, "_pruefen_zeile_lesen", lambda: self.zeile)
         monkeypatch.setattr(D, "lebenslinie_beobachten", lambda bei_ende: self.lebenslinien.append(bei_ende))
         monkeypatch.setattr(PM, "Lauf", FakeLauf)
@@ -409,6 +411,7 @@ def test_belegt_heisst_nichts_laeuft_und_exit_4(welt, belegt, text):
     a = welt.antwort()
     assert code == D.EXIT_BELEGT == 4 and a["ok"] is False and a["grund"].startswith("belegt") and text in a["grund"]
     assert welt.selbsttests == [] and not any(l.ausgefuehrt for l in FakeLauf.instanzen) and "entschaerfen" not in welt.ablauf
+    assert "stop" not in welt.ablauf  # die Einheiten eines belegten Auftrags gehören dem, der die Sperre hält
 
 
 def test_pruefen_nur_nach_einem_beendeten_lauf_des_auftrags(welt):
@@ -481,7 +484,8 @@ def test_entschaerfen_dann_selbsttest_dann_lauf_vor_jedem_aufruf(welt):
         welt.pruefen(["npm", "test"])
     finally:
         FakeLauf.ausfuehren = orig
-    assert welt.ablauf == ["entschaerfen", "selbsttest", "lauf", "entschaerfen", "selbsttest", "lauf"]
+    # vor dem Start: Reste der Einheit beenden, dann entschärfen; nach dem Lauf: Einheit beenden, dann erneut entschärfen
+    assert welt.ablauf == ["stop", "entschaerfen", "selbsttest", "lauf", "stop", "entschaerfen"] * 2
     assert welt.selbsttests == [(JOB, PROJEKT, "pruefen")] * 2  # jeder Aufruf, nie gemerkt
 
 
@@ -683,7 +687,7 @@ def test_der_zaehler_zaehlt_auch_aufrufe_mit_fehlgeschlagenem_selbsttest(welt):
 # ---------------------------------------------------------------- Zeitlimit, EOF und die Einheit
 def test_die_einheit_wird_nach_jedem_lauf_beendet_auch_bei_einem_fehler(welt):
     welt.pruefen()
-    assert welt.stopps == [JOB]
+    assert welt.stopps == [JOB, JOB]  # einmal vor dem Start (Reste), einmal danach (das finally)
     welt.stopps.clear()
     FakeLauf.wirft = RuntimeError("Dispatcher kaputt")
     with pytest.raises(RuntimeError):
@@ -748,6 +752,254 @@ def test_lebenslinie_beobachten_faengt_lesefehler_als_ende_ab(monkeypatch):
 
 def test_die_zeitgrenze_kommt_vom_modul_und_der_laeufer_beendet_den_rest():
     assert PM.ZEITLIMIT_S == 120 and PM.NACHFRIST_S >= 15  # timeout --kill-after=15 im Läufer
+
+
+# ---------------------------------------------------------------- fehlende oder defekte Prüflogik: trotzdem genau eine Zeile
+NICHT_VERFUEGBAR = {"v": 1, "ok": False, "exit": None, "abgebrochen": False, "grund": "pruefen ist nicht verfügbar (die Prüflogik fehlt "
+                    "oder ist defekt)", "dauer_s": 0.0, "ausgabe": "", "gekuerzt": False}
+
+
+@pytest.mark.parametrize("fehler", [ImportError("wamo_job_pruefen fehlt"), SyntaxError("kaputt"), FileNotFoundError("weg"),
+                                    AttributeError("x"), OSError("Platte"), ModuleNotFoundError("abnahme_befehl")])
+def test_fehlt_die_pruefmodul_oder_ist_es_defekt_kommt_genau_eine_zeile_und_exit_6(welt, monkeypatch, capsys, fehler):
+    def kaputt():
+        raise fehler
+    monkeypatch.setattr(D, "pruefen_modul", kaputt)
+    gelesen: list = []
+    monkeypatch.setattr(D, "_pruefen_zeile_lesen", lambda: gelesen.append(1) or zeile())
+    assert D.main(["pruefen", JOB]) == D.EXIT_INTERN
+    assert welt.antwort() == NICHT_VERFUEGBAR  # genau eine Zeile, die Felder des Moduls, nur ein fester Grund
+    assert gelesen == [] and FakeSperre.versucht == [] and welt.selbsttests == [] and not FakeLauf.instanzen
+    assert "interner Fehler" in capsys.readouterr().err
+    assert type(fehler).__name__ not in welt.antwort()["grund"] and str(fehler) not in welt.antwort()["grund"]
+
+
+def test_cmd_pruefen_fragt_pruefen_aktiv_als_erstes_und_liest_vorher_nichts(welt, monkeypatch):
+    reihenfolge: list = []
+    echt = D.pruefen_aktiv
+    monkeypatch.setattr(D, "pruefen_aktiv", lambda geheim: reihenfolge.append("aktiv") or echt(geheim))
+    monkeypatch.setattr(D, "_pruefen_zeile_lesen", lambda: reihenfolge.append("zeile") or zeile())
+    welt.pruefen()
+    assert reihenfolge[:2] == ["aktiv", "zeile"]
+
+
+def test_ohne_schalter_und_ohne_modul_kommt_der_grund_abgeschaltet_nicht_der_des_moduls(welt, monkeypatch):
+    welt.geheim = {}
+    monkeypatch.setattr(D, "pruefen_modul", lambda: (_ for _ in ()).throw(ImportError("weg")))
+    with pytest.raises(D.Abgewiesen, match="abgeschaltet"):
+        D.cmd_pruefen(JOB)
+    a = welt.antwort()
+    assert a["ok"] is False and a["grund"] == "pruefen ist abgeschaltet" and list(a) == SCHLUESSEL
+
+
+def test_die_ersatzantwort_hat_dieselben_felder_und_denselben_inhalt_wie_die_des_moduls(monkeypatch):
+    mit_modul = D.antwort_leer_sicher("belegt: Dieser Auftrag läuft gerade")
+    monkeypatch.setattr(D, "pruefen_modul", lambda: (_ for _ in ()).throw(ImportError("weg")))
+    ohne_modul = D.antwort_leer_sicher("belegt: Dieser Auftrag läuft gerade")
+    assert mit_modul == ohne_modul and list(ohne_modul) == SCHLUESSEL
+    lang = D.antwort_leer_sicher("x\n‮\x1b" * 500)
+    assert list(lang) == SCHLUESSEL and "\n" not in lang["grund"] and "‮" not in lang["grund"] and len(lang["grund"]) <= 300
+    assert D.antwort_leer_sicher(5)["grund"] == "5"
+
+
+def test_ein_fehler_im_ablauf_liefert_ohne_modul_ebenfalls_genau_eine_zeile(welt, monkeypatch):
+    """Das Modul ist beim Start da, fällt aber später aus (nur die Antwort darf nie am Modul hängen)."""
+    echt = D.pruefen_modul
+    zaehler = {"n": 0}
+
+    def faellt_aus():
+        zaehler["n"] += 1
+        if zaehler["n"] > 2:  # pruefen_aktiv und _pruefen laden es noch, die Ersatzantwort danach nicht mehr
+            raise ImportError("weg")
+        return echt()
+    monkeypatch.setattr(D, "pruefen_modul", faellt_aus)
+    monkeypatch.setattr(D, "projekt_entschaerfen", lambda p: (_ for _ in ()).throw(OSError("Projektordner nicht lesbar")))
+    with pytest.raises(OSError):
+        welt.pruefen()
+    a = welt.antwort()
+    assert a["ok"] is False and a["grund"] == "interner Fehler (OSError)" and list(a) == SCHLUESSEL
+
+
+# ---------------------------------------------------------------- Platte: vor jedem Aufruf messen
+@pytest.mark.parametrize("frei, zu_gross, erwartet", [(1 * 1024**3, False, "PLATZ_ZU_WENIG"), (10 * 1024**3, True, "PROJEKT_ZU_GROSS")])
+def test_zu_wenig_platz_oder_ein_zu_grosses_projekt_heisst_nicht_moeglich_und_nichts_laeuft(welt, monkeypatch, frei, zu_gross, erwartet):
+    welt.freier_platz = frei
+    if zu_gross:
+        monkeypatch.setattr(PM, "ordner_bytes", lambda *a, **k: None)
+    code = welt.pruefen()
+    a = welt.antwort()
+    assert code == D.EXIT_ABGEWIESEN and a["ok"] is False and a["exit"] is None and a["grund"] == getattr(PM, erwartet)
+    assert a["grund"].startswith("nicht möglich")
+    assert welt.selbsttests == [] and "entschaerfen" not in welt.ablauf and not any(l.ausgefuehrt for l in FakeLauf.instanzen)
+
+
+def test_die_platte_wird_vor_jedem_aufruf_und_im_projekt_des_auftrags_gemessen(welt, monkeypatch):
+    gemessen: list = []
+    monkeypatch.setattr(PM, "freier_platz", lambda pfad: gemessen.append(("platz", pfad)) or 10 * 1024**3)
+    monkeypatch.setattr(PM, "ordner_bytes", lambda pfad, grenze, frist, **kw: gemessen.append(("projekt", pfad, grenze, frist)) or 1)
+    welt.pruefen()
+    welt.pruefen(["npm", "test"])
+    messung = [("platz", welt.heim), ("projekt", welt.projekte / PROJEKT, 2 * 1024**3, 5.0)]
+    assert gemessen == messung * 2
+    assert welt.selbsttests == [(JOB, PROJEKT, "pruefen")] * 2
+
+
+def test_die_plattenpruefung_laeuft_nach_den_sperren_und_vor_dem_entschaerfen(welt, monkeypatch):
+    monkeypatch.setattr(PM, "platten_grund", lambda projektdir, platzpfad: welt.ablauf.append("platte") or None)
+    welt.pruefen()
+    assert FakeSperre.versucht == [".lauf", f"projekt-{PROJEKT}", "platz-0"]
+    assert welt.ablauf[:3] == ["stop", "platte", "entschaerfen"]
+
+
+# ---------------------------------------------------------------- nach dem Lauf erneut entschärfen, Buchführung unberührt
+def test_nach_dem_lauf_wird_erneut_entschaerft_auch_bei_fehler_selbsttest_und_abbruch(welt):
+    welt.pruefen()
+    assert welt.ablauf[-2:] == ["stop", "entschaerfen"]  # erst die Sandbox beenden, dann entschärfen
+    welt.ablauf.clear()
+    FakeLauf.wirft = RuntimeError("Dispatcher kaputt")
+    with pytest.raises(RuntimeError):
+        welt.pruefen()
+    assert welt.ablauf[-2:] == ["stop", "entschaerfen"]
+    welt.ablauf.clear()
+    FakeLauf.wirft = D._Beendet(15)
+    with pytest.raises(D._Beendet):
+        welt.pruefen()
+    assert welt.ablauf[-2:] == ["stop", "entschaerfen"]
+    welt.ablauf.clear()
+    FakeLauf.wirft = None
+    welt.selbsttest_ergebnis = (False, "Netzgrenzen nicht wie erwartet: internet=offen")
+    welt.pruefen()
+    assert welt.ablauf == ["stop", "entschaerfen", "selbsttest", "stop", "entschaerfen"]  # auch wenn nichts lief: der Selbsttest lief
+
+
+def test_gepflanzte_flaechen_nach_dem_lauf_stehen_im_audit(welt, monkeypatch):
+    monkeypatch.setattr(D, "projekt_entschaerfen", lambda p: ["gepflanzter Hook .git/hooks/pre-commit"])
+    welt.pruefen()
+    nachher = [t for t, _ in welt.logzeilen if "nach dem Lauf" in t and "gepflanzter Hook" in t]
+    assert len(nachher) == 1 and JOB in nachher[0] and PROJEKT in nachher[0]
+
+
+def test_ein_fehler_beim_entschaerfen_nach_dem_lauf_verdeckt_weder_das_ergebnis_noch_eine_ausnahme(welt, monkeypatch):
+    aufrufe: list = []
+
+    def zweiter_kaputt(projektdir):
+        aufrufe.append(1)
+        if len(aufrufe) % 2 == 0:
+            raise OSError("Projektordner nicht lesbar")
+        return []
+    monkeypatch.setattr(D, "projekt_entschaerfen", zweiter_kaputt)
+    assert welt.pruefen() == D.EXIT_OK  # das Ergebnis des Laufs gilt, der Fehler steht im Audit
+    assert welt.antwort()["ok"] is True
+    assert any("entschaerfen_nach_dem_lauf_fehlgeschlagen" in t and "OSError" in t and JOB in t for t, _ in welt.logzeilen)
+    aufrufe.clear()
+    FakeLauf.wirft = RuntimeError("Dispatcher kaputt")
+    with pytest.raises(RuntimeError, match="Dispatcher kaputt"):
+        welt.pruefen()
+
+
+def test_pruefen_fliesst_nicht_in_die_buchfuehrung_der_zugaenge_ein(welt, monkeypatch):
+    """Bewusst nein: Der Lauf hat keine Zugänge (kein Token, kein Claude). Die Buchführung (zugang_pruefen) misst, ob ein Lauf mehr
+    Zugänge bekäme als frühere Läufe im Projekt; ein Lauf ohne Zugänge schriebe die Schnittmenge auf leer und löste bei jedem späteren
+    start eine Freigabekarte aus."""
+    monkeypatch.setattr(D, "zugang_pruefen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pruefen führt keine Buchführung")))
+    (welt.jobs / ".projekte").mkdir()
+    eintrag = welt.jobs / ".projekte" / f"{PROJEKT}.json"
+    eintrag.write_text(json.dumps({"schnitt": ["GH_TOKEN"], "flaechen": {"package.json": "scripts: test=x"}}), encoding="utf-8")
+    vorher = eintrag.read_bytes()
+    welt.pruefen()
+    welt.pruefen(["npm", "test"])
+    assert eintrag.read_bytes() == vorher
+    # auch im Quelltext: keine der Funktionen von pruefen nennt die Buchführung (Docstrings zählen nicht)
+    baum = ast.parse((INFRA / "wamo_job_dispatch.py").read_text(encoding="utf-8"))
+    pruefen_funktionen = [n for n in baum.body if isinstance(n, ast.FunctionDef) and (n.name.startswith("_pruefen") or n.name == "cmd_pruefen")]
+    assert len(pruefen_funktionen) >= 6
+    for funktion in pruefen_funktionen:
+        namen = {n.id for n in ast.walk(funktion) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(funktion) if isinstance(n, ast.Attribute)}
+        assert "zugang_pruefen" not in namen, funktion.name
+
+
+# ---------------------------------------------------------------- Protokoll: freier Inhalt nie roh
+def test_die_protokollzeilen_von_pruefen_haben_nie_steuer_oder_formatzeichen_und_keine_geheimnisse(welt):
+    import unicodedata
+    welt.geheim = {**GEHEIM, "WAMO_PRUEFEN": "an"}
+    schluessel = "sk-ant-api03-" + "Z" * 40
+    boese = ("Sandbox oder Hook lief nicht: x FALSCH pruefen_ende exit=0 \x1b[31m‮​ " + GEHEIM["GH_TOKEN"] + " "
+             + schluessel[:12] + "​" + schluessel[12:] + " " + "y" * 1000)
+    welt.selbsttest_ergebnis = (False, boese)
+    welt.pruefen(["grep", "-q", "x", "README.md"])
+    zeilen = [t for t, _ in welt.logzeilen if t.startswith(("selbsttest", "pruefen"))]
+    assert any(t.startswith("selbsttest") and "FEHLER" in t for t in zeilen)
+    for t in zeilen:
+        assert not [c for c in t if unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp")], repr(t)
+        assert len(t) <= PM.LOG_ZEICHEN, len(t)
+    audit = welt.audit()
+    assert GEHEIM["GH_TOKEN"] not in audit and "ZZZZ" not in audit and "[GH_TOKEN]" in audit
+    a = welt.antwort()  # auch die Antwort an den Kern trägt den Fehlertext der Sandbox nie ungeschwärzt
+    assert GEHEIM["GH_TOKEN"] not in a["grund"] and "ZZZZ" not in a["grund"] and "‮" not in a["grund"]
+
+
+def test_eine_gesperrte_zeile_im_audit_traegt_argv_nur_bereinigt_und_in_einer_zeile(welt):
+    with pytest.raises(D.Abgewiesen):
+        welt.pruefen(["grep", "-rq", "x", ".env"])
+    zeilen = [t for t, _ in welt.logzeilen if t.startswith("pruefen_abgewiesen")]
+    assert len(zeilen) == 1 and "grep -rq x .env" in zeilen[0] and "\n" not in zeilen[0]
+
+
+def test_die_abweisung_im_audit_und_auf_stderr_ist_bereinigt(welt, capsys):
+    """Ein Wächtergrund aus freiem Text darf weder die Protokollzeile von main noch stderr verfälschen."""
+    welt.mp.setattr(D, "waechter", lambda: SimpleNamespace(
+        decide=lambda *a, **k: ("block", "Gesperrt FALSCH 2026 pruefen_ende exit=0\x1b[31m‮" + "x" * 400)))
+    assert D.main(["pruefen", JOB]) == D.EXIT_ABGEWIESEN
+    fehler = capsys.readouterr().err
+    assert " " not in fehler and "\x1b" not in fehler and "‮" not in fehler and len(fehler.splitlines()) == 1
+    a = welt.antwort()
+    assert " " not in a["grund"] and "‮" not in a["grund"] and a["ok"] is False
+
+
+# ---------------------------------------------------------------- Einheit beenden, cancel, Pfade
+def test_vor_dem_start_werden_reste_der_einheit_beendet_erst_wenn_alle_sperren_gehalten_werden(welt, monkeypatch):
+    stand: list = []
+    monkeypatch.setattr(D, "stop_units", lambda job: stand.append((job, list(FakeSperre.versucht), list(welt.ablauf))))
+    welt.pruefen()
+    job, versucht, ablauf = stand[0]
+    assert job == JOB and versucht == [".lauf", f"projekt-{PROJEKT}", "platz-0"] and ablauf == []  # vor entschärfen und Selbsttest
+
+
+def test_ein_cancel_unmittelbar_vor_dem_start_verpufft_nicht(welt, monkeypatch):
+    """Die letzte Prüfung der abbruch-Datei steht hinter der Pflichtzeile vor dem Start (das Schreiben des Audits dauert)."""
+    def log(text, pflicht=False):
+        welt.logzeilen.append((text, pflicht))
+        if text.startswith(f"pruefen {JOB} "):
+            (welt.jobs / JOB / "abbruch").write_text("1", encoding="utf-8")  # cancel kommt, während das Audit geschrieben wird
+    monkeypatch.setattr(D, "log", log)
+    code = welt.pruefen()
+    a = welt.antwort()
+    assert code == D.EXIT_ABGEBROCHEN and a["abgebrochen"] is True and a["ok"] is False and a["grund"] == "abgebrochen"
+    assert welt.lauf().ausgefuehrt == 0
+
+
+def test_ein_pfad_der_aus_dem_projekt_hinausfuehrt_wird_abgewiesen_bevor_etwas_laeuft(welt, monkeypatch):
+    gesehen: list = []
+    monkeypatch.setattr(PM, "pfad_grund", lambda argv, projektdir, **kw: gesehen.append((list(argv), projektdir)) or PM.PFAD_AUSSEN)
+    with pytest.raises(D.Abgewiesen, match="Projektordner"):
+        welt.pruefen(["grep", "-r", "x", "verweis"])
+    assert gesehen == [(["grep", "-r", "x", "verweis"], welt.projekte / PROJEKT)]
+    assert welt.selbsttests == [] and "entschaerfen" not in welt.ablauf and not any(l.ausgefuehrt for l in FakeLauf.instanzen)
+    assert welt.antwort()["ok"] is False and not (welt.jobs / JOB / "pruefen.json").exists()  # zählt nicht als Aufruf
+    assert any(t.startswith(f"pruefen_abgewiesen {JOB}") and "grep -r x verweis" in t and p for t, p in welt.logzeilen)
+
+
+@pytest.mark.skipif(not LINUX, reason="symbolische Links brauchen Rechte, die unter Windows fehlen")
+def test_ein_echter_link_im_projekt_nach_aussen_wird_abgewiesen_einer_nach_innen_nicht(welt):
+    aussen = welt.tmp / "aussen"
+    aussen.mkdir()
+    (welt.projekte / PROJEKT / "innen").mkdir()
+    (welt.projekte / PROJEKT / "verweis").symlink_to(aussen)
+    (welt.projekte / PROJEKT / "nach_innen").symlink_to("innen")
+    with pytest.raises(D.Abgewiesen, match="Projektordner"):
+        welt.pruefen(["grep", "-r", "x", "verweis"])
+    welt.emitted.clear()
+    assert welt.pruefen(["grep", "-r", "x", "nach_innen"]) == D.EXIT_OK
 
 
 # ---------------------------------------------------------------- Selbsttest im Modus pruefen

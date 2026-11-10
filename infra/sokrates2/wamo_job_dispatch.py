@@ -94,6 +94,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 from collections import namedtuple
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -2703,41 +2704,105 @@ def _pruefen_zaehlen(jobdir: Path, aufrufe_max: int) -> None:
     write_json_atomic(jobdir / PRUEFEN_ZAEHLER, {"aufrufe": n + 1})
 
 
-def _pruefen(job: str) -> tuple[int, dict]:
-    """Der ganze Ablauf von pruefen. Liefert (Prozess-Exit, Antwort); Abgewiesen für alles, was nicht lief."""
-    pm = pruefen_modul()
+class PruefenNichtVerfuegbar(RuntimeError):
+    """Der Schalter ist an, aber die Prüflogik (wamo_job_pruefen.py, abnahme_befehl.py) fehlt oder ist defekt: ein Fehler der
+    Einrichtung, kein Verstoß des Aufrufers (Prozess-Exit 6 statt 2)."""
+
+
+PRUEFEN_NICHT_VERFUEGBAR = "pruefen ist nicht verfügbar (die Prüflogik fehlt oder ist defekt)"
+_LOG_UNSICHTBAR = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def antwort_leer_sicher(grund: object) -> dict:
+    """Die Antwort für einen Aufruf, der nichts ausgeführt hat, auch wenn die Prüflogik fehlt oder defekt ist: dann genau dieselben
+    Felder aus festen Werten (v, ok false, exit null, abgebrochen false, grund, dauer_s 0.0, ausgabe leer, gekuerzt false). Es kommt
+    immer genau eine Zeile; der Kern wertet jede Antwort ohne ok true als nicht erfüllt."""
+    try:
+        return pruefen_modul().antwort_leer(str(grund))
+    except Exception:  # noqa: BLE001 (das Modul fehlt oder ist defekt: die feste Antwort ohne das Modul)
+        pass
+    text = " ".join("".join(" " if c.isspace() else ("" if unicodedata.category(c) in _LOG_UNSICHTBAR else c)
+                            for c in str(grund)).split())
+    return {"v": 1, "ok": False, "exit": None, "abgebrochen": False, "grund": text if len(text) <= 300 else text[:299].rstrip() + "…",
+            "dauer_s": 0.0, "ausgabe": "", "gekuerzt": False}
+
+
+def _pruefen_logger(pm, ersetzungen: list[tuple[bytes, bytes]]):
+    """Liefert (sauber, plog). sauber(text, grenze) macht freien Inhalt (argv, Fehlertext der Sandbox) zu einer Zeile ohne Steuer-
+    und Format-Zeichen, geschwärzt und gekürzt; plog schreibt sie mit Pflicht (ein Schreibfehler bricht den Befehl ab) oder ohne."""
+    def sauber(text: object, grenze: int | None = None) -> str:
+        return pm.log_text(text, pm.LOG_ZEICHEN if grenze is None else grenze, schwaerzen=lambda daten: schwaerzen(daten, ersetzungen))
+
+    def plog(text: str, pflicht: bool = True) -> None:
+        log(sauber(text), pflicht=pflicht)
+    return sauber, plog
+
+
+def _pruefen_aufruf(pm, plog, job: str) -> tuple[list[str], str, Path, Path]:
+    """Die stdin-Zeile, der Auftrag, das Projekt und der Wächter. Liefert (argv, Projektname, Auftragsordner, Projektordner);
+    Abgewiesen für alles, was nicht laufen darf. Das Projekt kommt nie vom Aufrufer."""
     roh = _pruefen_zeile_lesen()
     try:
         argv = pm.argv_aus_zeile(roh)
     except pm.Abgelehnt as e:
-        log(f"pruefen_abgewiesen {job}: {e} zeile={json.dumps(roh.decode('utf-8', 'replace')[:200])}", pflicht=True)
+        plog(f"pruefen_abgewiesen {job}: {e} zeile={json.dumps(roh.decode('utf-8', 'replace')[:200])}")
         raise Abgewiesen(str(e)) from None
     jobdir = _no_symlink(JOBS / job)
     meta = read_json(jobdir / "auftrag.json", None)
     if not isinstance(meta, dict):
         raise Abgewiesen("Auftrag unbekannt")
-    projekt = check_project(str(meta.get("projekt", "")))  # das Projekt kommt nie vom Aufrufer
+    projekt = check_project(str(meta.get("projekt", "")))
     projektdir = _no_symlink(PROJEKTE / projekt)
     if not projektdir.is_dir():
         raise Abgewiesen("Projektordner fehlt")
     try:
         _pruefen_waechter(argv, projektdir)
     except Abgewiesen as e:
-        log(f"pruefen_abgewiesen {job}: {e} argv={shlex.join(argv)}", pflicht=True)  # argv ist hier geprüft (Allowlist, keine Steuerzeichen)
+        plog(f"pruefen_abgewiesen {job}: {e} argv={shlex.join(argv)}")
         raise
-    if abnahme_modul().braucht_venv(argv) and not pm.venv_vorhanden(projektdir):
-        return EXIT_ABGEWIESEN, pm.antwort_leer(pm.KEIN_VENV)
-    gehalten, belegt = _pruefen_sperren(jobdir, projekt)
-    if belegt:
-        return EXIT_BELEGT, pm.antwort_leer(belegt)
+    return argv, projekt, jobdir, projektdir
+
+
+def _pruefen_vorweg(pm, plog, job: str, projekt: str, jobdir: Path, projektdir: Path, argv: list[str]) -> tuple[int, dict] | None:
+    """Unter den Sperren und vor dem ersten Eingriff: Reste einer früheren Sandbox des Auftrags beenden, nur nach einem Lauf, kein
+    cancel, kein Pfad aus dem Projekt hinaus, der Zähler, die Platte, zuletzt das Entschärfen. Liefert None (weiter) oder
+    (Exit, Antwort) für einen Aufruf, der nichts ausführt."""
+    # Die Sperre hängt am Prozess: Wurde ein früherer Dispatcher dieses Auftrags mit SIGKILL beendet, lief seine Sandbox bis
+    # RuntimeMaxSec weiter. Wer .lauf hält, darf alles Alte des Auftrags beenden, bevor er prüft oder entschärft.
+    stop_units(job)
     status = read_json(jobdir / "status.json", None)  # unter der Auftragssperre: ein Lauf ist nicht mehr dabei zu schreiben
     if not isinstance(status, dict) or status.get("start") is None:
         raise Abgewiesen("Der Auftrag hatte noch keinen Lauf, pruefen gilt nur nach einem beendeten Lauf")
     if (jobdir / "abbruch").exists():
         return EXIT_ABGEBROCHEN, pm.antwort_leer("abgebrochen", abgebrochen=True)
+    if grund := pm.pfad_grund(argv, projektdir):  # ein Link im Projekt darf nie aus dem Projektordner hinausführen
+        plog(f"pruefen_abgewiesen {job}: {grund} argv={shlex.join(argv)}")
+        raise Abgewiesen(grund)
     _pruefen_zaehlen(jobdir, pm.AUFRUFE_MAX)
+    if grund := pm.platten_grund(projektdir, HEIM):  # freier Platz und Projektgröße, vor jedem Aufruf (keine echte Quote)
+        plog(f"pruefen_nicht_moeglich {job}: {grund}")
+        return EXIT_ABGEWIESEN, pm.antwort_leer(grund)
     for entfernt in projekt_entschaerfen(projektdir):
-        log(f"entschärft {job} {projekt}: {entfernt}")
+        plog(f"entschärft {job} {projekt}: {entfernt}", pflicht=False)
+    return None
+
+
+def _pruefen_nachher_entschaerfen(plog, job: str, projekt: str, projektdir: Path) -> None:
+    """Nach dem Lauf erneut entschärfen: gepflanzte Hooks und .git/config bleiben so nicht bis zum nächsten start oder pruefen
+    liegen. Die Sandbox ist hier beendet. Ein Fehler steht im Audit und verdeckt weder das Ergebnis noch eine laufende Ausnahme
+    (jeder nächste Lauf entschärft vor dem Start und scheitert dort fail-closed)."""
+    try:
+        for entfernt in projekt_entschaerfen(projektdir):
+            plog(f"entschärft {job} {projekt} (nach dem Lauf): {entfernt}", pflicht=False)
+    except Exception as e:  # noqa: BLE001
+        plog(f"entschaerfen_nach_dem_lauf_fehlgeschlagen {job} {projekt}: {type(e).__name__}", pflicht=False)
+
+
+def _pruefen_ausfuehren(pm, sauber, plog, ersetzungen, job: str, projekt: str, jobdir: Path, projektdir: Path,
+                        argv: list[str]) -> tuple[int, dict]:
+    """Selbsttest, Lauf und Antwort. cancel kann den Lauf nur beenden, solange eine Einheit läuft: Eine abbruch-Datei, die zwischen
+    der letzten Prüfung und dem Start der Einheit entsteht, macht das Ergebnis nach dem Lauf nicht erfüllt (Rest: höchstens die
+    120 Sekunden dieses Laufs). cancel wirkt jobweit (abbruch-Datei, alle Einheiten des Auftrags)."""
     lauf = pm.Lauf([str(RUNNER), "--auftrag", job, "--projekt", projekt, "--modus", "pruefen", "--zeitlimit", str(pm.ZEITLIMIT_S),
                     "--einheit-zusatz", "pruefen", "--", *argv], pruefen_env(), lambda: stop_units(job),
                    zeitlimit_s=pm.ZEITLIMIT_S, cwd="/")
@@ -2746,50 +2811,74 @@ def _pruefen(job: str) -> tuple[int, dict]:
         with _signale(_als_ausnahme):
             vorher = time.monotonic()
             ok, grund = selbsttest(job, projekt, "pruefen")
-            log(f"selbsttest {job} pruefen {'ok' if ok else 'FEHLER'} dauer={time.monotonic() - vorher:.1f}s: {grund[:300]}", pflicht=True)
+            plog(f"selbsttest {job} pruefen {'ok' if ok else 'FEHLER'} dauer={time.monotonic() - vorher:.1f}s: {grund}")
             if lauf.gestoppt:  # Auflegen während des Selbsttests (die Einheit des Selbsttests wurde dabei beendet)
                 return EXIT_ABGEBROCHEN, pm.antwort_leer(lauf.grund or "verlassen", abgebrochen=True)
             if (jobdir / "abbruch").exists():  # cancel kam, während der Selbsttest lief (auch dann ist er womöglich gescheitert)
                 return EXIT_ABGEBROCHEN, pm.antwort_leer("abgebrochen", abgebrochen=True)
             if not ok:
-                return EXIT_SELBSTTEST, pm.antwort_leer(f"selbsttest_fehlgeschlagen: {grund}")
-            log(f"pruefen {job} {projekt} argv={shlex.join(argv)}", pflicht=True)
+                return EXIT_SELBSTTEST, pm.antwort_leer(f"selbsttest_fehlgeschlagen: {sauber(grund, pm.GRUND_ZEICHEN)}")
+            plog(f"pruefen {job} {projekt} argv={shlex.join(argv)}")
+            if (jobdir / "abbruch").exists():  # die letzte Prüfung unmittelbar vor dem Start (cancel, während das Audit geschrieben wurde)
+                return EXIT_ABGEBROCHEN, pm.antwort_leer("abgebrochen", abgebrochen=True)
             ergebnis = lauf.ausfuehren()
     except BaseException:
         lauf.stoppen("intern")  # auch ein Signal: die Sandbox nie unbeobachtet weiterlaufen lassen
         raise
     finally:
         stop_units(job)
+        _pruefen_nachher_entschaerfen(plog, job, projekt, projektdir)
     if (jobdir / "abbruch").exists() and not ergebnis.abgebrochen:  # cancel beendet die Einheit, der Läufer endet dann "normal"
         ergebnis = replace(ergebnis, rc=None, abgebrochen=True, grund="abgebrochen")
-    ersetzungen = schwaerzungen(lese_geheimnisse())  # die Sandbox hat keine Geheimnisse; was der Dispatcher kennt, wird trotzdem geschwärzt
-    antwort = pm.antwort(ergebnis, lambda daten: schwaerzen(daten, ersetzungen))
-    log(f"pruefen_ende {job} exit={antwort['exit']} ok={antwort['ok']} abgebrochen={antwort['abgebrochen']} "
-        f"grund={antwort['grund'] or '-'} dauer={antwort['dauer_s']}s", pflicht=True)
-    del gehalten  # erst jetzt frei (Prozessende gibt sie ohnehin frei)
+    antwort = pm.antwort(ergebnis, lambda daten: schwaerzen(daten, ersetzungen))  # die Sandbox hat keine Geheimnisse; trotzdem schwärzen
+    plog(f"pruefen_ende {job} exit={antwort['exit']} ok={antwort['ok']} abgebrochen={antwort['abgebrochen']} "
+         f"grund={antwort['grund'] or '-'} dauer={antwort['dauer_s']}s")
     if antwort["grund"] == "zeitlimit":
         return EXIT_ZEITLIMIT, antwort
     return (EXIT_ABGEBROCHEN if antwort["abgebrochen"] else EXIT_OK), antwort
 
 
+def _pruefen(job: str) -> tuple[int, dict]:
+    """Der ganze Ablauf von pruefen. Liefert (Prozess-Exit, Antwort); Abgewiesen für alles, was nicht lief.
+
+    pruefen führt keine Buchführung der Zugänge (zugang_pruefen): Der Lauf hat keine Zugänge, die Schnittmenge der Token früherer
+    Läufe bleibt unberührt. Ein Lauf ohne Zugänge schriebe sie auf leer und löste vor jedem späteren start eine Freigabekarte aus.
+    Gepflanzte Autostart-Flächen entfernt das Entschärfen vor und nach jedem Lauf (Hooks, .git/config, .claude, .mcp.json)."""
+    pm = pruefen_modul()
+    ersetzungen = schwaerzungen(lese_geheimnisse())  # was der Dispatcher kennt, steht nie in Antwort oder Protokoll
+    sauber, plog = _pruefen_logger(pm, ersetzungen)
+    argv, projekt, jobdir, projektdir = _pruefen_aufruf(pm, plog, job)
+    if abnahme_modul().braucht_venv(argv) and not pm.venv_vorhanden(projektdir):
+        return EXIT_ABGEWIESEN, pm.antwort_leer(pm.KEIN_VENV)
+    gehalten, belegt = _pruefen_sperren(jobdir, projekt)  # die Sperren gelten, bis diese Funktion endet
+    if belegt:
+        return EXIT_BELEGT, pm.antwort_leer(belegt)
+    vorweg = _pruefen_vorweg(pm, plog, job, projekt, jobdir, projektdir, argv)
+    if vorweg is not None:
+        return vorweg
+    ergebnis = _pruefen_ausfuehren(pm, sauber, plog, ersetzungen, job, projekt, jobdir, projektdir, argv)
+    del gehalten  # erst jetzt frei (Prozessende gibt sie ohnehin frei)
+    return ergebnis
+
+
 def cmd_pruefen(job: str) -> int:
-    """pruefen <job>: siehe Kopf dieser Datei. Genau eine JSON-Zeile auf stdout, auch bei einer Abweisung."""
-    if not pruefen_schalter(lese_geheimnisse()):
-        antwort_aus = None
-        try:
-            antwort_aus = pruefen_modul().antwort_leer("pruefen ist abgeschaltet")
-        except Exception:  # noqa: BLE001 (ohne Modul bleibt es bei der Abweisung)
-            pass
-        if antwort_aus is not None:
-            emit(antwort_aus)
-        raise Abgewiesen("pruefen ist abgeschaltet (WAMO_PRUEFEN nicht an)")
+    """pruefen <job>: siehe Kopf dieser Datei. Genau eine JSON-Zeile auf stdout, auch bei einer Abweisung und auch dann, wenn die
+    Prüflogik fehlt oder defekt ist (antwort_leer_sicher)."""
+    geheim = lese_geheimnisse()
+    if not pruefen_aktiv(geheim):  # als Erstes, vor jedem Lesen und Laden: Schalter UND beide Module
+        if not pruefen_schalter(geheim):
+            emit(antwort_leer_sicher("pruefen ist abgeschaltet"))
+            raise Abgewiesen("pruefen ist abgeschaltet (WAMO_PRUEFEN nicht an)")
+        emit(antwort_leer_sicher(PRUEFEN_NICHT_VERFUEGBAR))  # an, aber ohne Modul: ein Fehler der Einrichtung (Exit 6), immer noch fail-closed
+        raise PruefenNichtVerfuegbar(PRUEFEN_NICHT_VERFUEGBAR)
     try:
         code, antwort = _pruefen(job)
     except Abgewiesen as e:
-        emit(pruefen_modul().antwort_leer(str(e)))
-        raise
+        zeile = antwort_leer_sicher(str(e))
+        emit(zeile)
+        raise Abgewiesen(zeile["grund"]) from None  # bereinigt und gekürzt: auch das Protokoll von main und stderr bekommen nie freien Text
     except Exception as e:  # noqa: BLE001 (ein Fehler im Dispatcher: auch dann genau eine Zeile, main meldet ihn mit Exit 6)
-        emit(pruefen_modul().antwort_leer(f"interner Fehler ({type(e).__name__})"))
+        emit(antwort_leer_sicher(f"interner Fehler ({type(e).__name__})"))
         raise
     emit(antwort)
     return code
