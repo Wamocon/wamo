@@ -69,6 +69,11 @@ als JSON-String); ok nur bei einem echten int 0. Prozess-Exit 0: der Befehl lief
 nicht möglich, 3 Selbsttest, 4 belegt, 6 intern, 124 Zeitlimit, 130 abgebrochen: alles außer 0 heißt nicht erfüllt. Die Programme
 python3, node 22, npm, make, grep, eslint, git und uv sind in der Sandbox da; pytest, ruff, mypy, tsc, pnpm, yarn, go, cargo und
 dotnet fehlen: sie scheitern mit "nicht gefunden", das Kriterium gilt als nicht erfüllt. Die uv-Form läuft nur mit einer .venv.
+Fehlt die Prüflogik bei eingeschaltetem Schalter oder ist sie defekt, kommt trotzdem genau eine Zeile (Exit 6). Vor jedem Aufruf: Reste
+der Einheiten des Auftrags beenden, Pfade im Aufruf über Links auflösen (müssen im Projekt bleiben), freier Platz (2 GiB) und Projektgröße
+(2 GiB, 5 s) messen: eine Eintrittsprüfung, keine Quote (eine echte Plattenquote fehlt). Nach dem Lauf wird das Projekt erneut entschärft.
+pruefen führt keine Buchführung der Zugänge (zugang_pruefen): der Lauf hat keine Zugänge. cancel wirkt jobweit (Datei abbruch, alle
+Einheiten des Auftrags); der Kern ruft es nach dem Ende von pruefen nicht mehr. Protokollzeilen aus freiem Inhalt sind bereinigt.
 
 Nur Standardbibliothek, im App-Modus zusätzlich das Systempaket python3-cryptography. Wächter, Werkzeugkarte, Kontingent-Parser
 und die Prüflogik von pruefen (abnahme_befehl.py, wamo_job_pruefen.py) kommen aus /opt/wamo/waechter (Kopien aus voice-core
@@ -1939,6 +1944,8 @@ def egress_offen() -> bool:
 
 # ---------------------------------------------------------------- Befehle
 def cmd_ping() -> int:
+    # abnahme_befehl_sha256 ist nur ein Versionsabgleich für den Kern (stimmt seine Kopie mit dieser überein?). Maßgeblich ist die
+    # Kopie in /opt/wamo/waechter, die dieser Dispatcher selbst lädt: gegen sie prüft er jeden Aufruf von pruefen erneut.
     geheim = lese_geheimnisse()
     emit({"ok": True, "version": VERSION, "runner": RUNNER.is_file(), "waechter": (WAECHTER / "dev_guard.py").is_file(),
           "github": github_status(), "serverzugang": serverzugang_erlaubt(geheim),

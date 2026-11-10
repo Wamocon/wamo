@@ -1253,8 +1253,8 @@ Projekt des Auftrags aus, in einer Sandbox, die **enger** ist als der Auftragsla
 | Netz | Ausgangsfilter (TCP 80 und 443, DNS) | keines: eigener Netz-Namensraum (`--unshare-net`), nur `lo` |
 | Token, Claude-Zugang | die der Auftragsart | keine; Umgebung nur Basisumgebung plus Git-Hooks aus (`ERLAUBT_PRUEFEN_RE` im Läufer) |
 | Claude, Plugins, Zustand des Auftrags | gemountet | nicht gemountet |
-| Zeitlimit, Prozesse, Speicher | 30 min, 1024, 8 GB | 120 s fest, 256, 4 GB (`wamo-job.conf`: `PRUEFEN_*`) |
-| beschreibbar | Projekt, `/tmp`, `.npm`, `.cache`, Claude-Konfiguration | Projekt, `/tmp`, `.npm`, `.cache` |
+| Zeitlimit, Prozesse, Speicher | 30 min, 1024, 8 GB | 120 s fest, 256, 4 GB (`wamo-job.conf`: `PRUEFEN_*`); von jedem Wert aus `wamo-job.conf` und dem des Modus gilt der kleinere, der Modus ist nie weiter als der Auftragslauf |
+| beschreibbar | Projekt, `/tmp`, `.npm`, `.cache` (je Auftrag auf der Platte, dauerhaft), Claude-Konfiguration | Projekt, `/tmp`, `.npm` und `.cache` als je Lauf eigenes, leeres tmpfs (256 MiB je Ordner, `PRUEFEN_CACHE_MB`), nie die dauerhaften Ordner der Auftragsläufe |
 
 **Aufruf (nur der Kern, über den SSH-Schlüssel der Aufträge):** SSH-Befehl `pruefen <job>`, dazu **eine** stdin-Zeile
 `{"argv": ["npm", "test"]}` (genau dieses Feld, höchstens 8 KiB). Danach bleibt stdin als Lebenslinie offen, EOF beendet den Lauf. Das
@@ -1272,6 +1272,35 @@ Auftrag, vorher `projekt_entschaerfen` und den Selbsttest im Modus `pruefen` (Ne
 den Sperrfall ab). Audit mit Pflichtzeile: Job, argv, Exit, Dauer, nie die Ausgabe. Die uv-Form `uv run --no-sync --offline pytest ...`
 läuft nur, wenn im Projekt eine `.venv` liegt, sonst kommt "nicht möglich" mit Hinweis.
 
+**Härtung nach der Sicherheitsprüfung (10.11.2026):**
+
+- *Immer genau eine Zeile.* Ist der Schalter an, aber fehlt `wamo_job_pruefen.py` oder ist die Datei defekt, kommt trotzdem genau eine
+  JSON-Zeile (`ok` false, fester `grund` "pruefen ist nicht verfügbar", sonst die Felder wie immer) und Prozess-Exit 6 (Fehler der
+  Einrichtung, fail-closed). `cmd_pruefen` fragt `pruefen_aktiv` vor allem anderen; `ping` meldet dann `"pruefen": false`.
+- *Platte.* Es gibt weiter **keine echte Quote** (`prlimit --fsize` begrenzt nur einzelne Dateien; das Projekt hat keine Quote). Als
+  Eintrittsprüfung misst der Dispatcher vor jedem Aufruf: mindestens 2 GiB frei auf dem Dateisystem von `/srv/wamo`, das Projekt höchstens
+  2 GiB (begrenzter Durchlauf ohne Links, Abbruch bei Überschreitung, Zeitbudget 5 s). Sonst kommt "nicht möglich" mit festem Grund
+  (Prozess-Exit 2). Ein einzelner Lauf kann in seinen 120 Sekunden trotzdem weiter Platz füllen. `.npm` und `.cache` sind je Lauf ein
+  tmpfs mit Größengrenze und belegen nie die Platte.
+- *Pfade.* Jeder Pfad im Aufruf wird vor dem Start über Links aufgelöst (`realpath`) und muss im Projektordner bleiben, sonst wird abgewiesen
+  (`grep -r` folgt einem Link auf der Kommandozeile). Ein Link im Projekt, der nach außen zeigt, macht den Aufruf also unmöglich.
+- *Nach dem Lauf entschärft.* Der Dispatcher entschärft das Projekt (Hooks, `.git/config`, `.claude`, `.mcp.json`) vor und nach jedem Lauf; ein
+  Fehler danach steht im Audit und verdeckt das Ergebnis nicht. `pruefen` führt **keine Buchführung der Zugänge** (`zugang_pruefen`): Der Lauf
+  hat keine Zugänge, und ein Lauf ohne Zugänge schriebe die Schnittmenge auf leer und löste vor jedem späteren `start` eine Freigabekarte aus.
+- *Audit.* Jede Zeile von `pruefen` im Audit (argv, Fehlertext des Selbsttests) geht durch Bereinigung (Steuer-, Format-, Richtungs-
+  und Trennzeichen weg), Schwärzung und Kürzung auf 500 Zeichen; dieselbe Bereinigung trägt der Fehlertext an den Kern.
+- *Sperre und cancel.* Die Sperre hängt am Prozess des Dispatchers; stirbt er (SIGKILL), läuft seine Sandbox bis `RuntimeMaxSec`. Wer die
+  Sperre des Auftrags hält, beendet deshalb zuerst alle Reste der Einheiten des Auftrags. `cancel` wirkt **jobweit** (Datei `abbruch` und
+  alle Einheiten des Auftrags): Der Kern ruft es nur, solange `pruefen` läuft, nie danach, denn die Datei `abbruch` sperrt jedes weitere
+  `pruefen` dieses Auftrags (bis ein `start` sie löscht). Ein `cancel` zwischen der letzten Prüfung und dem Start der Einheit wird nach dem
+  Lauf erkannt (Ergebnis nicht erfüllt); die letzte Prüfung steht unmittelbar vor dem Start.
+- *Allowlist.* `python -m unittest` nimmt nach `tests` oder `test_...` nur noch Pakete und Module (klein geschrieben, mitten im Namen),
+  Klassen (groß geschrieben) und Namen, die mit `test` beginnen; `test_x.sys.exit` lief gemessen mit Exit 0 ohne Test. Rest: Die Allowlist
+  ist eine Vorauswahl, kein Schutz: Gepflanzter Projektcode läuft in jedem erlaubten Programm mit, und ein Test kann grün lügen; die Grenze ist
+  die Sandbox.
+- *Prüfsumme im `ping`.* `abnahme_befehl_sha256` ist nur ein **Versionsabgleich** (der Kern vergleicht damit seine Kopie). Maßgeblich ist die
+  Kopie in `/opt/wamo/waechter`, die der Dispatcher selbst lädt und gegen die er jeden Aufruf erneut prüft.
+
 **Messbefund auf Sokrates-2 (10.11.2026):** In der Sandbox gibt es python3 3.12 (ohne pytest und ruff), node 22, npm, make, grep, eslint, git
 und uv; es fehlen pytest, ruff, mypy, tsc, pnpm, yarn, go, cargo und dotnet. Diese scheitern mit "nicht gefunden", das Kriterium gilt als
 nicht erfüllt; das ist kein Fehler des Dispatchers.
@@ -1281,9 +1310,12 @@ nicht erfüllt; das ist kein Fehler des Dispatchers.
 `/opt/wamo/waechter`; der Schalter bleibt aus), (2) `sudo -u wamo -H /opt/wamo/bin/wamo-pruefen-rauchtest` (der Test braucht den Schalter
 nicht; offene Messpunkte: Dauer des Selbsttests, löst bwrap bloße Programmnamen über den gesetzten PATH auf, Verhalten der Fork-Bombe),
 (3) `WAMO_PRUEFEN=an` in `geheim.env`, (4) erst danach der Kern (`WAMO_ABNAHME_BEFEHLE=ja`, die Anbindung ist noch zu bauen).
-**Rückweg:** `sudo bash ~/wamo-infra/wamo-job-rueckweg.sh` stellt die Dateien aus der neuesten Sicherung wieder her und entfernt die neuen
-(wiederholbar, mit `--trocken` nur Anzeige); danach meldet `ping` wieder Version 5. Ein alter Kern gegen den neuen Dispatcher bleibt
-unverändert; ein neuer Kern gegen den alten lehnt `befehl:` ab (`ping` ohne `pruefen`).
+**Rückweg:** `sudo bash ~/wamo-infra/wamo-job-rueckweg.sh` stellt die Dateien aus der neuesten Sicherung wieder her, die noch nicht
+zurückgespielt wurde, und entfernt die neuen (mit `--trocken` nur Anzeige). Die Sicherung bekommt danach die Markierung `ZURUECK.txt` und
+bleibt liegen: Jeder weitere Aufruf geht eine Sicherung weiter zurück, bis alle zurückgespielt sind (dann ändert er nichts und meldet das mit
+Exit 0). Eine neue Einrichtung legt eine neue, unmarkierte Sicherung an, die zuerst dran ist. Nach dem ersten Aufruf meldet `ping` wieder
+Version 5. Der Rauchtest löscht sein Wegwerfprojekt nur, wenn eine Markerdatei dieses Tests darin liegt. Ein alter Kern gegen den neuen
+Dispatcher bleibt unverändert; ein neuer Kern gegen den alten lehnt `befehl:` ab (`ping` ohne `pruefen`).
 
 ---
 
