@@ -11,7 +11,10 @@
 # Konfiguration des Auftrags noch Claude Code noch Plugins), kein Zustand des Auftrags (keine Freigaben, kein Socket), nur
 # die Umgebungsnamen ERLAUBT_PRUEFEN_RE (Git-Hooks aus, nie ein Token), Zeitlimit höchstens 120 s, engere Grenzen für
 # Speicher, Prozesse, CPU und Platz. Beschreibbar bleiben das Projekt, /tmp, .npm und .cache. Seccomp, Landlock, keine
-# Capabilities und die Ausgangsregeln gelten unverändert.
+# Capabilities und die Ausgangsregeln gelten unverändert. .npm und .cache sind dort nie die Ordner der Auftragsläufe (Auftragsordner,
+# dauerhaft, je Auftrag geteilt mit Läufen mit Token), sondern je Lauf eigenes, leeres tmpfs mit Größengrenze (PRUEFEN_CACHE_MB):
+# nichts bleibt zurück, nichts kommt aus einem früheren Lauf. Jede Grenze des Modus gilt nur, wenn sie enger ist als die des
+# Auftragslaufs aus wamo-job.conf (von beiden der kleinere Wert, nie weiter).
 #
 # Der Auftragsordner /srv/wamo/jobs/<job> muss vom Dispatcher vorbereitet sein (claude/, zustand/,
 # zustand/approvals.json, etc/passwd, etc/group). Die Umgebung kommt vom Aufrufer; nur die Namen in
@@ -23,7 +26,8 @@
 #     .local/bin .local/share/claude         nur lesbar (Claude Code, uv, Werkzeuge aus uv tool)
 #     .local/share/uv/tools .fnm .npm-global nur lesbar (mcp-atlassian, Node, MCP-Server aus npm -g)
 #     .gitconfig                             nur lesbar
-#     .npm .cache                            je Auftrag eigener Ordner auf der Platte
+#     .npm .cache                            je Auftrag eigener Ordner auf der Platte (Modus pruefen: je Lauf eigenes,
+#                                            leeres tmpfs, das mit dem Lauf verschwindet)
 #     .claude                                je Auftrag (Sitzungen für --resume); Plugins aus
 #                                            /opt/wamo/claude-plugins (ECC ohne Hooks, root-eigen, nur lesbar),
 #                                            Plugin-Daten je Auftrag
@@ -58,6 +62,10 @@
 #
 # Was die Sandbox nicht leistet: Die Token der Auftragsart liegen darin in der Umgebung. Ein feindlicher
 # Agent kann sie lesen und mit curl oder einem eigenen Programm nutzen; der Wächter bremst das nur.
+# Eine Plattenquote fehlt weiterhin: prlimit --fsize begrenzt nur die Größe einzelner Dateien, nicht den Platz, den ein Projekt,
+# .npm oder .cache zusammen belegen. Im Modus pruefen sind .npm und .cache ein tmpfs mit Grenze; das Projekt bleibt ohne Quote. Als
+# Eintrittsprüfung (keine Quote) misst der Dispatcher vor jedem Aufruf von pruefen den freien Platz (mindestens 2 GiB) und die
+# Größe des Projekts (höchstens 2 GiB); ein einzelner Lauf kann in seinen 120 Sekunden trotzdem weiter Platz füllen.
 set -euo pipefail
 umask 077
 
@@ -91,6 +99,7 @@ PRUEFEN_PROZESSE_MAX=256
 PRUEFEN_CPU_QUOTA=200%
 PRUEFEN_TMP_MB=1024
 PRUEFEN_DATEI_MAX_MB=1024
+PRUEFEN_CACHE_MB=256
 if [ -r "$KONF" ]; then
   # shellcheck source=/dev/null
   . "$KONF"
@@ -99,6 +108,50 @@ fi
 ZEITLIMIT_PRUEFEN_S=120
 
 fehler() { echo "wamo-job.sh: $*" >&2; exit 70; }  # nie 2: das hieße "Hook sperrt"
+
+# Größen und Quoten aus wamo-job.conf vergleichbar machen, damit der Modus pruefen nie weiter ist als der Auftragslauf
+# (die Funktionen werden im Test einzeln in bash ausgeführt: jede steht mit ihrer ersten Zeile am Zeilenanfang und endet mit } allein)
+in_bytes() {
+  local n e
+  [[ $1 =~ ^([0-9]{1,6})([KMGT]?)$ ]] || fehler "wamo-job.conf: Größe ungültig: $1"
+  n=$((10#${BASH_REMATCH[1]})) e=${BASH_REMATCH[2]}
+  case $e in
+    K) n=$((n * 1024)) ;;
+    M) n=$((n * 1024 * 1024)) ;;
+    G) n=$((n * 1024 * 1024 * 1024)) ;;
+    T) n=$((n * 1024 * 1024 * 1024 * 1024)) ;;
+  esac
+  echo "$n"
+}
+kleinere_groesse() {
+  local a b
+  a=$(in_bytes "$1") || exit 70
+  b=$(in_bytes "$2") || exit 70
+  if (( a <= b )); then echo "$1"; else echo "$2"; fi
+}
+kleinere_quote() {
+  local a b
+  [[ $1 =~ ^([0-9]{1,5})%$ ]] || fehler "wamo-job.conf: CPU-Quote ungültig: $1"
+  a=$((10#${BASH_REMATCH[1]}))
+  [[ $2 =~ ^([0-9]{1,5})%$ ]] || fehler "wamo-job.conf: CPU-Quote ungültig: $2"
+  b=$((10#${BASH_REMATCH[1]}))
+  if (( a <= b )); then echo "$1"; else echo "$2"; fi
+}
+kleiner_zahl() {
+  [[ $1 =~ ^[0-9]{1,9}$ && $2 =~ ^[0-9]{1,9}$ ]] || fehler "wamo-job.conf: Zahl ungültig: $1 $2"
+  if (( 10#$1 <= 10#$2 )); then echo "$1"; else echo "$2"; fi
+}
+# Modus pruefen: von jedem Wert aus wamo-job.conf (Auftragslauf) und dem festen Wert des Modus (PRUEFEN_*) gilt der kleinere. Die
+# Standardwerte des Modus sind enger als die des Auftragslaufs; stellt die Konfiguration den Auftragslauf noch enger, gilt das auch hier.
+pruefen_grenzen() {
+  SPEICHER_MAX=$(kleinere_groesse "$SPEICHER_MAX" "$PRUEFEN_SPEICHER_MAX") || exit 70
+  CPU_QUOTA=$(kleinere_quote "$CPU_QUOTA" "$PRUEFEN_CPU_QUOTA") || exit 70
+  PROZESSE_MAX=$(kleiner_zahl "$PROZESSE_MAX" "$PRUEFEN_PROZESSE_MAX") || exit 70
+  TMP_MB=$(kleiner_zahl "$TMP_MB" "$PRUEFEN_TMP_MB") || exit 70
+  DATEI_MAX_MB=$(kleiner_zahl "$DATEI_MAX_MB" "$PRUEFEN_DATEI_MAX_MB") || exit 70
+  PRUEFEN_CACHE_MB=$(kleiner_zahl "$PRUEFEN_CACHE_MB" "$HEIM_TMP_MB") || exit 70
+  ZEITLIMIT_PRUEFEN_S=$(kleiner_zahl "$ZEITLIMIT_PRUEFEN_S" "$ZEITLIMIT_MAX_S") || exit 70
+}
 
 JOB="" PROJEKT="" ZEIT="" ZUSATZ="" MODUS="lauf"
 while [ $# -gt 0 ]; do
@@ -118,10 +171,13 @@ done
 [[ $MODUS =~ ^(lauf|pruefen)$ ]] || fehler "Modus ungültig (lauf oder pruefen)"
 ZUSATZ=${ZUSATZ:-$MODUS}
 [[ $ZUSATZ =~ ^[a-z]{1,12}$ ]] || fehler "Einheit ungültig"
+for zahl in "$TMP_MB" "$HEIM_TMP_MB" "$DATEI_MAX_MB" "$OFFENE_DATEIEN" "$PROZESSE_MAX" "$ZEITLIMIT_S" "$ZEITLIMIT_MAX_S"; do
+  [[ $zahl =~ ^[0-9]{1,9}$ ]] || fehler "wamo-job.conf: Zahl ungültig"
+done
 if [ "$MODUS" = pruefen ]; then
-  # Enger als der Auftragslauf, nie weiter: Speicher, Prozesse, CPU, Platz und das Zeitlimit
-  SPEICHER_MAX=$PRUEFEN_SPEICHER_MAX CPU_QUOTA=$PRUEFEN_CPU_QUOTA PROZESSE_MAX=$PRUEFEN_PROZESSE_MAX
-  TMP_MB=$PRUEFEN_TMP_MB DATEI_MAX_MB=$PRUEFEN_DATEI_MAX_MB
+  # Enger als der Auftragslauf, nie weiter: Speicher, Prozesse, CPU, Platz und das Zeitlimit (von jedem Paar der kleinere Wert; die
+  # Werte PRUEFEN_* prüfen die Funktionen dabei selbst, ein Fehler dort betrifft nur diesen Modus)
+  pruefen_grenzen
   ZEIT=${ZEIT:-$ZEITLIMIT_PRUEFEN_S}
 else
   ZEIT=${ZEIT:-$ZEITLIMIT_S}
@@ -130,9 +186,6 @@ fi
 if [ "$MODUS" = pruefen ]; then
   (( ZEIT <= ZEITLIMIT_PRUEFEN_S )) || fehler "Zeitlimit im Modus pruefen höchstens $ZEITLIMIT_PRUEFEN_S Sekunden"
 fi
-for zahl in "$TMP_MB" "$HEIM_TMP_MB" "$DATEI_MAX_MB" "$OFFENE_DATEIEN" "$PROZESSE_MAX"; do
-  [[ $zahl =~ ^[0-9]{1,9}$ ]] || fehler "wamo-job.conf: Zahl ungültig"
-done
 
 JOBDIR=$JOBS/$JOB
 PROJDIR=$PROJEKTE/$PROJEKT
@@ -234,19 +287,25 @@ if [ "$MODUS" = lauf ]; then
 fi
 # Caches und Plugin-Daten je Auftrag auf der Platte (kein gemeinsamer, vergiftbarer Cache zwischen
 # Aufträgen). Plugins: nicht die von wamo, sondern die root-eigene Kopie des ECC-Plugins ohne Hooks
-# (wamo-job-ecc.py); Skills, Agenten und Befehle heißen gleich, Hooks laufen keine. Im Modus pruefen keine Plugins.
-for teil in npm cache plugin-daten; do
-  [ ! -L "$JOBDIR/$teil" ] || fehler "$teil ist ein Link"
-  mkdir -p "$JOBDIR/$teil"
-done
-ARGS+=(
-  --bind "$JOBDIR/npm" "$HEIM/.npm"
-  --bind "$JOBDIR/cache" "$HEIM/.cache"
-)
+# (wamo-job-ecc.py); Skills, Agenten und Befehle heißen gleich, Hooks laufen keine.
+# Modus pruefen: weder Plugins noch die Ordner des Auftrags. Diese Ordner (npm, cache) sind dauerhaft und dieselben, die ein Lauf mit
+# Token und spätere Läufe lesen und schreiben; ein Prüflauf ohne Token darf dort nichts hinterlassen und nichts daraus lesen. Er
+# bekommt je Lauf eigene, leere tmpfs-Ordner mit Größengrenze, die mit der Sandbox verschwinden.
 if [ "$MODUS" = lauf ]; then
+  for teil in npm cache plugin-daten; do
+    [ ! -L "$JOBDIR/$teil" ] || fehler "$teil ist ein Link"
+    mkdir -p "$JOBDIR/$teil"
+  done
   ARGS+=(
+    --bind "$JOBDIR/npm" "$HEIM/.npm"
+    --bind "$JOBDIR/cache" "$HEIM/.cache"
     --ro-bind "$PLUGINS" "$HEIM/.claude/plugins"
     --bind "$JOBDIR/plugin-daten" "$HEIM/.claude/plugins/data"
+  )
+else
+  ARGS+=(
+    --perms 0700 --size $((PRUEFEN_CACHE_MB * 1024 * 1024)) --tmpfs "$HEIM/.npm"
+    --perms 0700 --size $((PRUEFEN_CACHE_MB * 1024 * 1024)) --tmpfs "$HEIM/.cache"
   )
 fi
 
