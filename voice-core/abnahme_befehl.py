@@ -39,9 +39,13 @@ _SKRIPT = re.compile(r"(?:test|build|lint|typecheck|check|verify)(?::[a-z0-9_-]{
 _FREMDPFAD = re.compile(r"//|\\\\|://|(?<![A-Za-z0-9_])[A-Za-z]:(?!:)")
 _PFADZEICHEN = re.compile(r"[A-Za-z0-9_.+\-/]+")
 _KNOTEN = re.compile(r"[A-Za-z0-9_.\-\[\]]+")
-# unittest ruft jedes aufrufbare Ziel ohne Argumente auf (os.getcwd, sys.exit): erlaubt sind nur discover und Testnamen, die mit
-# tests oder test_ beginnen (nicht das test-Paket der Standardbibliothek)
-_TESTNAME = re.compile(r"(?:discover|(?:tests|test_[A-Za-z0-9_]+)(?:\.[A-Za-z_][A-Za-z0-9_]*)*)")
+# unittest ruft jedes aufrufbare Ziel ohne Argumente auf (os.getcwd, sys.exit; test_x.sys.exit lief gemessen mit Exit 0 und ohne
+# Test): erlaubt sind nur discover und Testnamen, die mit tests oder test_ beginnen (nicht das test-Paket der Standardbibliothek).
+# Danach folgen nur Pakete und Module (klein geschrieben, nur mitten im Namen), Klassen (groß geschrieben) und Namen, die mit
+# test beginnen. Der letzte Teil ist so nie ein beliebiges aufrufbares Ziel wie exit oder getcwd. Grenze: test_x.sys.test_y
+# passt formal und scheitert beim Laden (kein Attribut), es läuft nie mit Exit 0.
+_TESTNAME = re.compile(r"(?:discover|(?:tests|test_[A-Za-z0-9_]+)"
+                       r"(?:\.(?:[A-Z][A-Za-z0-9_]*|test[A-Za-z0-9_]*|[a-z][a-z0-9_]*(?=\.)))*)")
 _GO_PAKET = re.compile(r"\.(?:/[A-Za-z0-9_.+\-]+)*(?:/\.\.\.)?")
 # Was Unicode "unsichtbar" nennt: Steuer-, Format-, Ersatz-, private und nicht vergebene Zeichen, Zeilen- und Absatztrenner
 _UNSICHTBAR = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})

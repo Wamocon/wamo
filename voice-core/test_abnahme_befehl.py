@@ -185,6 +185,39 @@ def test_meldungen_sind_kurz_einzeilig_und_ohne_steuerzeichen():
         assert grund and "\n" not in grund and "\x1b" not in grund and "\x00" not in grund and len(grund) < 300, argv
 
 
+# ---------------------------------------------------------------- unittest: nur Modulpfade, Klassen und Testmethoden
+@pytest.mark.parametrize("name", [
+    "discover", "tests", "test_x", "tests.test_x", "tests.unit.test_x", "test_x.TestA", "test_x.TestA.test_b", "tests.test_x.TestA.testB",
+    "tests.unit.api.test_x.TestA.test_b", "tests.test_x.TestA",
+])
+def test_unittest_erlaubt_modulpfade_klassen_und_testmethoden(name):
+    assert ab.befehl_grund(("python", "-m", "unittest", name)) is None, name
+    assert ab.argv_grund(["python", "-m", "unittest", "-v", name]) is None, name
+
+
+@pytest.mark.parametrize("name", [
+    # ein aufrufbares Ziel am Ende: unittest ruft es ohne Argumente auf, sys.exit beendet den Lauf mit 0 und ohne Test
+    "test_x.sys.exit", "tests.sys.exit", "test_x.exit", "test_x.quit", "test_x.os._exit", "test_x.os.getcwd", "test_x.TestA.exit",
+    "test_x.TestA.setUp", "tests.unit.sys.exit", "test_x.sys", "tests.unit", "test_x.os.abort",
+    # nicht Test-Module der Allowlist
+    "os.getcwd", "sys.exit", "test.support", "tmp.x", "unittest.main",
+])
+def test_unittest_ruft_kein_aufrufbares_ziel_ohne_test_auf(name):
+    assert ab.befehl_grund(("python", "-m", "unittest", name)) is not None, name
+    assert ab.argv_grund(["python", "-m", "unittest", name]) is not None, name
+
+
+def test_unittest_mit_einem_punktierten_namen_wie_sys_exit_laeuft_mit_exit_0_ohne_test(tmp_path):
+    """Der Anlass der Verschärfung, gemessen: Der Name test_x.sys.exit läuft mit Exit 0, ohne dass ein Test lief. Die Allowlist
+    lässt ihn deshalb nicht zu (siehe oben)."""
+    import subprocess
+
+    (tmp_path / "test_x.py").write_text("import sys\n", encoding="utf-8")
+    p = subprocess.run([sys.executable, "-m", "unittest", "test_x.sys.exit"], cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0 and "Ran" not in p.stderr
+    assert ab.befehl_grund(("python", "-m", "unittest", "test_x.sys.exit")) is not None
+
+
 # ---------------------------------------------------------------- lokal läuft die uv-Form nie
 @pytest.mark.parametrize("name", ["uv", "UV", "uv.exe", "Uv.EXE"])
 async def test_der_lokale_ausfuehrer_startet_uv_nie(tmp_path, name):
