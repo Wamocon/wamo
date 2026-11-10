@@ -16,6 +16,7 @@ aus SSH_ORIGINAL_COMMAND und wird streng geprüft (feste Muster, keine Shell):
     pending <job>                               offene Freigabe-Anfragen, geprüft (JSON-Zeilen)
     approve <job> <fingerabdruck>               Freigabe für den nächsten Lauf des Auftrags
     cancel  <job>                               laufenden Auftrag beenden
+    pruefen <job>                               ein Befehl der Abnahme in der Sandbox des Auftrags (JSON-Zeile, standardmäßig AUS)
 
 start: Die erste stdin-Zeile ist ein JSON-Objekt {"auftrag": "...", "system": "...", "modell": "..." (optional),
 "repo": "owner/name" (optional, Ziel-Repo für das GitHub-Token), "zugang": "folgt" | "server" (optional),
@@ -54,18 +55,36 @@ Ablauf je Lauf:
        (Ereignis start_abgelehnt, Code 8); ein Rückfall auf GH_TOKEN aus geheim.env gibt es dann nicht.
        Ohne diese drei Variablen gilt weiter GH_TOKEN bzw. GH_TOKEN_LESEN.
 
-Nur Standardbibliothek, im App-Modus zusätzlich das Systempaket python3-cryptography. Wächter, Werkzeugkarte und
-Kontingent-Parser kommen aus /opt/wamo/waechter (Kopien aus voice-core).
+pruefen: Führt einen Befehl der Abnahme (befehl:-Kriterium) im Projekt des Auftrags aus, nach einem beendeten Lauf, in einer
+engeren Sandbox als der Auftragslauf: kein Netz (--unshare-net), kein Token, kein Claude-Zugang, kein Zustand des Auftrags,
+Umgebung nur die Basisumgebung plus Git-Hooks aus (wamo-job.sh --modus pruefen), Zeitlimit 120 s. Standardmäßig AUS: ohne
+WAMO_PRUEFEN=an in geheim.env (jeder andere Wert, auch ein Tippfehler im Namen, sperrt) wird jeder Aufruf abgewiesen. Die erste
+stdin-Zeile ist {"argv": [...]}: genau dieses Feld, höchstens 8 KiB. Der Dispatcher prüft argv erneut gegen die Allowlist
+(abnahme_befehl.py, der Kern ist nicht vertrauenswürdig), dann mit dem Wächter (decide wie ein Bash-Aufruf), und nimmt das Projekt
+nur aus auftrag.json. Sperren wie bei start (ein Lauf je Auftrag, ein Auftrag je Projekt, höchstens PARALLEL_MAX gleichzeitig),
+höchstens 40 Aufrufe je Auftrag, vorher Projekt entschärfen und den Selbsttest im Modus pruefen (Netz zu). stdin bleibt als
+Lebenslinie offen (EOF beendet den Lauf), cancel und das Zeitlimit beenden die Einheit. Antwort: eine JSON-Zeile
+{"v":1,"ok","exit","abgebrochen","grund","dauer_s","ausgabe","gekuerzt"} (Ausgabe: das Ende, höchstens 2048 Byte, geschwärzt, nur
+als JSON-String); ok nur bei einem echten int 0. Prozess-Exit 0: der Befehl lief (auch wenn er scheiterte), 2 abgewiesen oder
+nicht möglich, 3 Selbsttest, 4 belegt, 6 intern, 124 Zeitlimit, 130 abgebrochen: alles außer 0 heißt nicht erfüllt. Die Programme
+python3, node 22, npm, make, grep, eslint, git und uv sind in der Sandbox da; pytest, ruff, mypy, tsc, pnpm, yarn, go, cargo und
+dotnet fehlen: sie scheitern mit "nicht gefunden", das Kriterium gilt als nicht erfüllt. Die uv-Form läuft nur mit einer .venv.
+
+Nur Standardbibliothek, im App-Modus zusätzlich das Systempaket python3-cryptography. Wächter, Werkzeugkarte, Kontingent-Parser
+und die Prüflogik von pruefen (abnahme_befehl.py, wamo_job_pruefen.py) kommen aus /opt/wamo/waechter (Kopien aus voice-core
+und infra/sokrates2).
 """
 
 from __future__ import annotations
 
 import base64
 import errno
+import hashlib
 import http.client
 import json
 import os
 import re
+import shlex
 import signal
 import socket
 import ssl
@@ -77,10 +96,10 @@ import threading
 import time
 from collections import namedtuple
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-VERSION = "5"
+VERSION = "6"
 
 HEIM = Path("/srv/wamo")
 APP = Path("/opt/wamo")  # root-eigen; Programme in bin/, Wächter in waechter/ (in der Sandbox derselbe Pfad)
@@ -214,6 +233,36 @@ def _modul(name: str):
     return __import__(name)
 
 
+def abnahme_modul():
+    """Die Allowlist der Befehlskriterien (abnahme_befehl.py, Kopie aus voice-core in /opt/wamo/waechter)."""
+    return _modul("abnahme_befehl")
+
+
+def pruefen_modul():
+    """Die Prüflogik von pruefen (wamo_job_pruefen.py): in /opt/wamo/waechter installiert, im Repo neben dieser Datei. Wird erst
+    gebraucht, wenn der Schalter an ist; fehlt es oder ist es defekt, wirft das Laden (pruefen ist dann nicht verfügbar)."""
+    abnahme_modul()  # das Modul importiert die Allowlist; der Pfad zu /opt/wamo/waechter steht danach in sys.path
+    geladen = sys.modules.get("wamo_job_pruefen")
+    if geladen is not None:
+        return geladen
+    if (WAECHTER / "wamo_job_pruefen.py").is_file():
+        return _modul("wamo_job_pruefen")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("wamo_job_pruefen", Path(__file__).resolve().with_name("wamo_job_pruefen.py"))
+    modul = importlib.util.module_from_spec(spec)
+    sys.modules["wamo_job_pruefen"] = modul
+    spec.loader.exec_module(modul)
+    return modul
+
+
+def modul_sha256(name: str) -> str | None:
+    """Prüfsumme der Kopie eines Moduls in /opt/wamo/waechter (None, wenn es sie nicht gibt)."""
+    try:
+        return hashlib.sha256((WAECHTER / f"{name}.py").read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def check_job(value: str) -> str:
     if not JOB_RE.fullmatch(value):
         raise Abgewiesen("Auftrags-ID ungültig")
@@ -254,6 +303,7 @@ BEFEHLE: dict[str, tuple[int, tuple]] = {
     "pending": (1, (check_job,)),
     "approve": (2, (check_job, check_fp)),
     "cancel": (1, (check_job,)),
+    "pruefen": (1, (check_job,)),  # das Projekt steht nie im Aufruf: es kommt aus auftrag.json
 }
 
 
@@ -371,6 +421,28 @@ def serverzugang_erlaubt(geheim: dict[str, str]) -> bool:
     return (geheim.get("WAMO_SERVERZUGANG") or "an").strip().lower() in ("an", "ja", "1", "true", "on")
 
 
+PRUEFEN_SCHALTER = "WAMO_PRUEFEN"
+
+
+def pruefen_schalter(geheim: dict[str, str]) -> bool:
+    """Ist pruefen eingeschaltet? Nur WAMO_PRUEFEN=an in geheim.env schaltet ein (Standard aus); jeder andere Wert und jeder
+    Tippfehler im Namen (WAMO_PRUEF...) sperrt. Fail-closed wie serverzugang_erlaubt."""
+    if any(n.startswith("WAMO_PRUEF") and n != PRUEFEN_SCHALTER for n in geheim):
+        return False
+    return geheim.get(PRUEFEN_SCHALTER, "") == "an"
+
+
+def pruefen_aktiv(geheim: dict[str, str]) -> bool:
+    """Schalter an UND beide Module ladbar: nur dann meldet ping pruefen als aktiv."""
+    if not pruefen_schalter(geheim):
+        return False
+    try:
+        pruefen_modul()
+    except Exception:  # noqa: BLE001 (fehlt oder defekt: nicht aktiv)
+        return False
+    return True
+
+
 def _clean(text: str) -> str:
     return "".join(c for c in text if c in "\n\t" or (ord(c) >= 32 and ord(c) != 127))
 
@@ -396,6 +468,9 @@ def lese_geheimnisse(path: Path | None = None) -> dict[str, str]:
         if ENV_NAME_RE.fullmatch(name) and value:
             out[name] = value
     return out
+
+
+GIT_OHNE_HOOKS = (("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false"))
 
 
 def basis_env() -> dict[str, str]:
@@ -465,7 +540,7 @@ def sandbox_env(art: str, geheim: dict[str, str], app_modus: bool = False,
         env["GH_TOKEN"] = gh_token
     # Git in jedem Repo der Sandbox: keine Hooks und kein fsmonitor (Vorrang vor Repo-Konfigurationen, auch in
     # Submodulen und eingebetteten Repos, die die Entschärfung vor dem Lauf nicht erreicht)
-    git = [("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false")]
+    git = list(GIT_OHNE_HOOKS)
     if "GH_TOKEN" in env:
         # git über HTTPS meldet sich mit dem Token an (gh liest GH_TOKEN selbst); keine Datei nötig
         git += [("credential.https://github.com.helper", ""),
@@ -1863,9 +1938,11 @@ def egress_offen() -> bool:
 
 # ---------------------------------------------------------------- Befehle
 def cmd_ping() -> int:
+    geheim = lese_geheimnisse()
     emit({"ok": True, "version": VERSION, "runner": RUNNER.is_file(), "waechter": (WAECHTER / "dev_guard.py").is_file(),
-          "github": github_status(), "serverzugang": serverzugang_erlaubt(lese_geheimnisse()),
-          "kontingent": kontingent_modul() is not None})
+          "github": github_status(), "serverzugang": serverzugang_erlaubt(geheim),
+          "kontingent": kontingent_modul() is not None, "pruefen": pruefen_aktiv(geheim),
+          "abnahme_befehl_sha256": modul_sha256("abnahme_befehl")})
     return EXIT_OK
 
 
@@ -1958,6 +2035,23 @@ print("wamo-netz " + " ".join("%s=%s" % w for w in werte), file=sys.stderr)
 """
 NETZ_ERWARTET = {"landlock": "zu", "lo9": "zu", "lo9mptcp": "zu", "netz10": "zu", "netz10mptcp": "zu",
                  "bruecke": "zu", "lan": "zu", "github": "offen"}
+# Modus pruefen: kein Netz (eigener Netz-Namensraum), also ist alles zu. Das Internet wird per IP geprüft (ein Name ergäbe
+# einen DNS-Fehler statt "zu"), auch GitHub, das im Lauf-Modus offen sein muss. Im leeren Netz-Namensraum ist Loopback an: Port 9
+# dort ist "zu" oder "fehler-ECONNREFUSED" (es lauscht nichts); ein Rest-Zugang zum Host zeigte sich an internet und an
+# /proc/net/dev (PRUEFEN_PRUEFUNGEN).
+NETZPROBE_PRUEFEN = NETZPROBE.replace('("github", ziel("github.com", 443, timeout=10))', '("internet", ziel("1.1.1.1", 443, timeout=10))')
+NETZ_ERWARTET_PRUEFEN = {**{k: ("zu",) for k in NETZ_ERWARTET if k != "github"}, "internet": ("zu",),
+                         "lo9": ("zu", "fehler-ECONNREFUSED")}
+# Zusätzliche Grenzen, die nur im Modus pruefen gelten: nichts von Claude, kein Zustand des Auftrags, keine Token in der Umgebung,
+# keine Netzschnittstelle außer lo, Git-Hooks aus
+PRUEFEN_PRUEFUNGEN = [
+    ("[ -e /srv/wamo/.claude ]", "Claude-Konfiguration sichtbar"),
+    ("[ -e /srv/wamo/.local/share/claude ]", "Claude Code sichtbar"),
+    ("[ -e /run/wamo/zustand ]", "Zustand des Auftrags sichtbar"),
+    ("[ -n \"$(env | grep -E '^(ANTHROPIC_|CLAUDE_|GH_TOKEN|GITHUB_|VERCEL_|SUPABASE_|JIRA_|WAMO_)')\" ]", "Token oder Zugang in der Umgebung"),
+    ("[ -n \"$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | grep -vx lo)\" ]", "Netzschnittstelle außer lo sichtbar"),
+    ("[ \"$(git config --get core.hooksPath)\" != /dev/null ]", "Git-Hooks nicht abgeschaltet"),
+]
 
 
 def probe_lauscher() -> socket.socket:
@@ -1990,10 +2084,13 @@ def docker_bruecke() -> str | None:
     return None
 
 
-def selbsttest(job: str, projekt: str) -> tuple[bool, str]:
+def selbsttest(job: str, projekt: str, modus: str = "lauf") -> tuple[bool, str]:
     """Führt den Hook-Befehl aus managed-settings.json in der Sandbox mit einem Sperrfall aus und prüft
     nebenbei die Grenzen. Bestanden nur, wenn der Wächter wirklich lief und genau mit der erwarteten
-    Begründung ablehnt (ein Absturz mit Exit 2 sperrt im Betrieb auch, zählt hier aber nicht)."""
+    Begründung ablehnt (ein Absturz mit Exit 2 sperrt im Betrieb auch, zählt hier aber nicht).
+    modus "pruefen" läuft in der Sandbox des Befehls pruefen (wamo-job.sh --modus pruefen): kein Netz, nichts von Claude, kein
+    Zustand, keine Token; erwartet wird dort überall "zu" und es gelten die zusätzlichen Prüfungen in PRUEFEN_PRUEFUNGEN."""
+    pruefen = modus == "pruefen"
     try:
         hook = json.loads(MANAGED.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     except (OSError, ValueError, KeyError, IndexError, TypeError):
@@ -2020,6 +2117,8 @@ def selbsttest(job: str, projekt: str) -> tuple[bool, str]:
         ("ln -sfn / /run/wamo/projekt 2>/dev/null", "Projektverweis ersetzbar"),
         (f"[ \"$(readlink -f /run/wamo/projekt)\" != {pp} ]", "Projektverweis zeigt woanders hin"),
     ]
+    if pruefen:
+        pruefungen += PRUEFEN_PRUEFUNGEN
     # Nur rename(2), nie mv: mv kopiert bei EXDEV und löscht danach die Quelle, im Projektordner also dessen Inhalt
     umbenennen = "umbenennen() { /usr/bin/python3 -I -c 'import os,sys; os.rename(sys.argv[1], sys.argv[2])' \"$1\" \"$2\" 2>/dev/null; }"
     teile = ["f=0", umbenennen] + [f"if {bed}; then echo 'wamo-pruefung: {text}' >&2; f=1; fi" for bed, text in pruefungen]
@@ -2030,10 +2129,11 @@ def selbsttest(job: str, projekt: str) -> tuple[bool, str]:
     if bruecke is None:
         probe.close()
         return False, "Docker-Bridge nicht ermittelbar (ip fehlt oder keine Bridge); Netzprobe nicht möglich"
-    teile += [f"/usr/bin/python3 -I -c '{NETZPROBE}' {port} {bruecke} {LAN_PROBE}",
+    netzprobe = NETZPROBE_PRUEFEN if pruefen else NETZPROBE
+    teile += [f"/usr/bin/python3 -I -c '{netzprobe}' {port} {bruecke} {LAN_PROBE}",
               f"( {hook} ); c=$?; echo \"wamo-selbsttest code=$c fehler=$f\" >&2"]
-    argv = [str(RUNNER), "--auftrag", job, "--projekt", projekt, "--zeitlimit", "60",
-            "--einheit-zusatz", "pruefung", "--", "/bin/sh", "-c", "; ".join(teile)]
+    argv = [str(RUNNER), "--auftrag", job, "--projekt", projekt, "--zeitlimit", "60", "--einheit-zusatz", "pruefung",
+            *(["--modus", "pruefen"] if pruefen else []), "--", "/bin/sh", "-c", "; ".join(teile)]
     try:
         p = subprocess.run(argv, input=json.dumps(SELFTEST_EVENT).encode(), capture_output=True,
                            env=basis_env(), timeout=120, cwd="/")
@@ -2052,8 +2152,8 @@ def selbsttest(job: str, projekt: str) -> tuple[bool, str]:
     if not netz:
         return False, "Netzprobe lief nicht"
     werte = dict(w.split("=", 1) for w in netz.group(1).split() if "=" in w)
-    erwartet = NETZ_ERWARTET
-    abweichend = {k: werte.get(k, "?") for k, v in erwartet.items() if werte.get(k) != v}
+    erwartet = NETZ_ERWARTET_PRUEFEN if pruefen else NETZ_ERWARTET
+    abweichend = {k: werte.get(k, "?") for k, v in erwartet.items() if werte.get(k) not in ((v,) if isinstance(v, str) else v)}
     if abweichend:
         return False, "Netzgrenzen nicht wie erwartet: " + ", ".join(f"{k}={v}" for k, v in abweichend.items())
     try:
@@ -2520,8 +2620,183 @@ def _ausfuehren(argv: list[str], env: dict, auftrag: str, jobdir: Path, job: str
     return code
 
 
+# ---------------------------------------------------------------- pruefen: ein Befehl der Abnahme in der Sandbox
+PRUEFEN_ZAEHLER = "pruefen.json"  # im Auftragsordner (die Sandbox sieht ihn nicht): {"aufrufe": n}
+
+
+def pruefen_env() -> dict[str, str]:
+    """Umgebung des Läufers im Modus pruefen: die Basisumgebung plus Git-Hooks aus, sonst nichts. Kein sandbox_env: keine
+    Token, kein Claude-Zugang, keine Einstellung der Auftragsart. Der Läufer lässt im Modus pruefen ohnehin nur diese Namen durch."""
+    env = basis_env()
+    env["GIT_CONFIG_COUNT"] = str(len(GIT_OHNE_HOOKS))
+    for i, (schluessel, wert) in enumerate(GIT_OHNE_HOOKS):
+        env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = schluessel, wert
+    return env
+
+
+def _pruefen_zeile_lesen() -> bytes:
+    return _zeile_lesen(pruefen_modul().ZEILE_MAX_BYTES + 1, "argv-Zeile")
+
+
+def lebenslinie_beobachten(bei_ende) -> threading.Thread:
+    """stdin der SSH-Verbindung ist die Lebenslinie: EOF oder ein Lesefehler heißt, der Voice-Core ist weg (Auflegen, Abbruch,
+    Netz). Dann ruft der Thread bei_ende genau einmal auf. Daten auf stdin werden gelesen und verworfen."""
+    def lesen() -> None:
+        try:
+            while sys.stdin.buffer.read1(65536):
+                pass
+        except (OSError, ValueError):
+            pass
+        bei_ende()
+    faden = threading.Thread(target=lesen, daemon=True)
+    faden.start()
+    return faden
+
+
+def _pruefen_waechter(argv: list[str], projektdir: Path) -> None:
+    """Der Wächter entscheidet wie bei einem Bash-Aufruf des Auftrags. Nur allow läuft: block, Freigabepflicht und jeder Fehler
+    heißen nicht ausführen (eine Freigabekarte umgeht die Abnahme nie)."""
+    try:
+        entscheidung, grund = mit_zeitlimit(lambda: waechter().decide("Bash", {"command": shlex.join(argv)}, projektdir),
+                                            DECIDE_TIMEOUT_S)
+    except (Exception, _Zeitueberschreitung):
+        raise Abgewiesen("Der Wächter konnte den Befehl nicht prüfen, er wurde nicht ausgeführt") from None
+    if entscheidung == "block":
+        raise Abgewiesen(f"Vom Wächter gesperrt: {str(grund)[:200]}")
+    if entscheidung != "allow":
+        raise Abgewiesen(f"Der Wächter verlangt eine Freigabe, das läuft nie automatisch: {str(grund)[:200]}")
+
+
+def _pruefen_sperren(jobdir: Path, projekt: str) -> tuple[list, str | None]:
+    """Sperren wie bei start: ein Lauf je Auftrag, ein Auftrag je Projekt, höchstens PARALLEL_MAX gleichzeitig. Liefert
+    (gehaltene Sperren, Grund für belegt oder None). Die Sperren gelten, solange die Liste lebt."""
+    sperren = sperren_ordner()
+    gehalten = [Sperre(jobdir / ".lauf")]
+    if not gehalten[0].versuchen():
+        return gehalten, "belegt: Dieser Auftrag läuft gerade"
+    gehalten.append(Sperre(sperren / f"projekt-{projekt}"))
+    if not gehalten[-1].versuchen():
+        return gehalten, "belegt: Im Projekt läuft schon ein anderer Auftrag"
+    platz = next((s for s in (Sperre(sperren / f"platz-{i}") for i in range(PARALLEL_MAX)) if s.versuchen()), None)
+    if platz is None:
+        return gehalten, "belegt: Es läuft schon ein Auftrag" if PARALLEL_MAX == 1 else f"belegt: Es laufen schon {PARALLEL_MAX} Aufträge"
+    gehalten.append(platz)
+    return gehalten, None
+
+
+def _pruefen_zaehlen(jobdir: Path, aufrufe_max: int) -> None:
+    """Höchstens aufrufe_max Prüfungen je Auftrag (die Sandbox ist ein einziger Platz). Ein unlesbarer Zähler sperrt
+    (fail-closed); nur der Dispatcher schreibt ihn, die Sandbox sieht den Auftragsordner nicht."""
+    pfad = jobdir / PRUEFEN_ZAEHLER
+    n: object = 0  # ohne Datei: noch keine Prüfung
+    if os.path.lexists(pfad):
+        text = read_no_follow(pfad, 4096)
+        try:
+            daten = json.loads(text) if text is not None else None
+        except (ValueError, RecursionError):
+            daten = None
+        n = daten.get("aufrufe") if isinstance(daten, dict) else None
+    if type(n) is not int or n < 0:
+        raise Abgewiesen("Der Prüfzähler des Auftrags ist unlesbar")
+    if n >= aufrufe_max:
+        raise Abgewiesen(f"Höchstens {aufrufe_max} Prüfungen je Auftrag, dieser Auftrag hat sie verbraucht")
+    write_json_atomic(jobdir / PRUEFEN_ZAEHLER, {"aufrufe": n + 1})
+
+
+def _pruefen(job: str) -> tuple[int, dict]:
+    """Der ganze Ablauf von pruefen. Liefert (Prozess-Exit, Antwort); Abgewiesen für alles, was nicht lief."""
+    pm = pruefen_modul()
+    roh = _pruefen_zeile_lesen()
+    try:
+        argv = pm.argv_aus_zeile(roh)
+    except pm.Abgelehnt as e:
+        log(f"pruefen_abgewiesen {job}: {e} zeile={json.dumps(roh.decode('utf-8', 'replace')[:200])}", pflicht=True)
+        raise Abgewiesen(str(e)) from None
+    jobdir = _no_symlink(JOBS / job)
+    meta = read_json(jobdir / "auftrag.json", None)
+    if not isinstance(meta, dict):
+        raise Abgewiesen("Auftrag unbekannt")
+    projekt = check_project(str(meta.get("projekt", "")))  # das Projekt kommt nie vom Aufrufer
+    projektdir = _no_symlink(PROJEKTE / projekt)
+    if not projektdir.is_dir():
+        raise Abgewiesen("Projektordner fehlt")
+    try:
+        _pruefen_waechter(argv, projektdir)
+    except Abgewiesen as e:
+        log(f"pruefen_abgewiesen {job}: {e} argv={shlex.join(argv)}", pflicht=True)  # argv ist hier geprüft (Allowlist, keine Steuerzeichen)
+        raise
+    if abnahme_modul().braucht_venv(argv) and not pm.venv_vorhanden(projektdir):
+        return EXIT_ABGEWIESEN, pm.antwort_leer(pm.KEIN_VENV)
+    gehalten, belegt = _pruefen_sperren(jobdir, projekt)
+    if belegt:
+        return EXIT_BELEGT, pm.antwort_leer(belegt)
+    status = read_json(jobdir / "status.json", None)  # unter der Auftragssperre: ein Lauf ist nicht mehr dabei zu schreiben
+    if not isinstance(status, dict) or status.get("start") is None:
+        raise Abgewiesen("Der Auftrag hatte noch keinen Lauf, pruefen gilt nur nach einem beendeten Lauf")
+    if (jobdir / "abbruch").exists():
+        return EXIT_ABGEBROCHEN, pm.antwort_leer("abgebrochen", abgebrochen=True)
+    _pruefen_zaehlen(jobdir, pm.AUFRUFE_MAX)
+    for entfernt in projekt_entschaerfen(projektdir):
+        log(f"entschärft {job} {projekt}: {entfernt}")
+    lauf = pm.Lauf([str(RUNNER), "--auftrag", job, "--projekt", projekt, "--modus", "pruefen", "--zeitlimit", str(pm.ZEITLIMIT_S),
+                    "--einheit-zusatz", "pruefen", "--", *argv], pruefen_env(), lambda: stop_units(job),
+                   zeitlimit_s=pm.ZEITLIMIT_S, cwd="/")
+    lebenslinie_beobachten(lambda: lauf.stoppen("verlassen"))  # schon während des Selbsttests: Auflegen verhindert den Start
+    try:
+        with _signale(_als_ausnahme):
+            vorher = time.monotonic()
+            ok, grund = selbsttest(job, projekt, "pruefen")
+            log(f"selbsttest {job} pruefen {'ok' if ok else 'FEHLER'} dauer={time.monotonic() - vorher:.1f}s: {grund[:300]}", pflicht=True)
+            if lauf.gestoppt:  # Auflegen während des Selbsttests (die Einheit des Selbsttests wurde dabei beendet)
+                return EXIT_ABGEBROCHEN, pm.antwort_leer(lauf.grund or "verlassen", abgebrochen=True)
+            if (jobdir / "abbruch").exists():  # cancel kam, während der Selbsttest lief (auch dann ist er womöglich gescheitert)
+                return EXIT_ABGEBROCHEN, pm.antwort_leer("abgebrochen", abgebrochen=True)
+            if not ok:
+                return EXIT_SELBSTTEST, pm.antwort_leer(f"selbsttest_fehlgeschlagen: {grund}")
+            log(f"pruefen {job} {projekt} argv={shlex.join(argv)}", pflicht=True)
+            ergebnis = lauf.ausfuehren()
+    except BaseException:
+        lauf.stoppen("intern")  # auch ein Signal: die Sandbox nie unbeobachtet weiterlaufen lassen
+        raise
+    finally:
+        stop_units(job)
+    if (jobdir / "abbruch").exists() and not ergebnis.abgebrochen:  # cancel beendet die Einheit, der Läufer endet dann "normal"
+        ergebnis = replace(ergebnis, rc=None, abgebrochen=True, grund="abgebrochen")
+    ersetzungen = schwaerzungen(lese_geheimnisse())  # die Sandbox hat keine Geheimnisse; was der Dispatcher kennt, wird trotzdem geschwärzt
+    antwort = pm.antwort(ergebnis, lambda daten: schwaerzen(daten, ersetzungen))
+    log(f"pruefen_ende {job} exit={antwort['exit']} ok={antwort['ok']} abgebrochen={antwort['abgebrochen']} "
+        f"grund={antwort['grund'] or '-'} dauer={antwort['dauer_s']}s", pflicht=True)
+    del gehalten  # erst jetzt frei (Prozessende gibt sie ohnehin frei)
+    if antwort["grund"] == "zeitlimit":
+        return EXIT_ZEITLIMIT, antwort
+    return (EXIT_ABGEBROCHEN if antwort["abgebrochen"] else EXIT_OK), antwort
+
+
+def cmd_pruefen(job: str) -> int:
+    """pruefen <job>: siehe Kopf dieser Datei. Genau eine JSON-Zeile auf stdout, auch bei einer Abweisung."""
+    if not pruefen_schalter(lese_geheimnisse()):
+        antwort_aus = None
+        try:
+            antwort_aus = pruefen_modul().antwort_leer("pruefen ist abgeschaltet")
+        except Exception:  # noqa: BLE001 (ohne Modul bleibt es bei der Abweisung)
+            pass
+        if antwort_aus is not None:
+            emit(antwort_aus)
+        raise Abgewiesen("pruefen ist abgeschaltet (WAMO_PRUEFEN nicht an)")
+    try:
+        code, antwort = _pruefen(job)
+    except Abgewiesen as e:
+        emit(pruefen_modul().antwort_leer(str(e)))
+        raise
+    except Exception as e:  # noqa: BLE001 (ein Fehler im Dispatcher: auch dann genau eine Zeile, main meldet ihn mit Exit 6)
+        emit(pruefen_modul().antwort_leer(f"interner Fehler ({type(e).__name__})"))
+        raise
+    emit(antwort)
+    return code
+
+
 HANDLER = {"ping": cmd_ping, "start": cmd_start, "status": cmd_status, "pending": cmd_pending,
-           "approve": cmd_approve, "cancel": cmd_cancel}
+           "approve": cmd_approve, "cancel": cmd_cancel, "pruefen": cmd_pruefen}
 
 
 def speicher_begrenzen() -> None:

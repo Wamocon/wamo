@@ -2073,7 +2073,8 @@ class PersoenlicherZugangStartTests(unittest.TestCase):
         ping = self.ereignisse[-1]
         self.assertIs(ping["serverzugang"], False)
         self.assertIs(ping["kontingent"], True)
-        self.assertEqual(ping["version"], "5")
+        self.assertEqual(ping["version"], "6")  # 6: Befehl pruefen (standardmäßig aus)
+        self.assertIs(ping["pruefen"], False)  # ohne WAMO_PRUEFEN=an
 
     @unittest.skipUnless(LINUX, "Prozess mit /bin/sh nur unter Linux")
     def test_ausgabe_log_und_dateien_ohne_zugangswert_und_kontingent_nur_aus_der_allowlist(self):
