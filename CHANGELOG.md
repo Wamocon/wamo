@@ -8,6 +8,15 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Komponententests für die Oberfläche: Neues, getrenntes Testsystem für React-Komponenten und Hooks (`npm run test:komponenten`,
+  vitest mit jsdom und Testing Library, Dateien `*.comp.test.tsx`, Konfiguration `ui/vitest.config.ts`). `npm test` (`node --test`,
+  Logiktests) bleibt unverändert. 90 Tests in vier Dateien: Tafel „Vorgänge“ (Karten je Zustand, Fortschrittsbalken mit
+  `aria-valuenow` und `aria-valuetext`, „Zur Freigabe“ fokussiert die eigene Freigabekarte oder die Überschrift der Tafel,
+  „Zuletzt beendet“ rendert erst nach dem Öffnen), Büro-Karte (Buttons, Enter, Leertaste, Escape mit Fokusrückgabe, Zustand als Wort
+  und Form, Leerzustand, Hinweis auf unbekannte Geräte), Hook `useBueroStand` (Sichtbarkeit, Takt, Stopp bei 401 und 403, wachsender
+  Abstand bei 503, Aufräumen) und Kopierknopf des Canvas. Neue devDependencies mit exakten Versionen (alle MIT): vitest, vite, jsdom,
+  `@testing-library/react`, `/dom`, `/user-event`; die Produktionsabhängigkeiten ändern sich nicht. Am Produktivcode ändert sich nichts.
+  Grenzen stehen in der README („Komponententests (Oberfläche)“).
 - Lange Werkzeugausgaben kürzen (Paket 5): Der Kern verkleinert lange Ergebnisse von Werkzeugen (PowerShell-Listen, Testausgaben,
   Git-Ausgaben, JSON von Geräten, Webseitentext) verlustarm, bevor sie in den Kontext des Sprachmodells gelangen, ohne Fremdsoftware
   (`voice-core/ausgaben_kuerzen.py`). Zentrale Stelle ist ein Frame-Prozessor hinter der Aktivitätsanzeige: jedes Werkzeugergebnis

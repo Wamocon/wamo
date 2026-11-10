@@ -154,6 +154,43 @@ scripts\wamo-desktop.cmd                  # startet Voice-Core, Oberfläche und 
 
 Beim ersten Anmelden richtet die Oberfläche die Authenticator-App ein (QR-Code). Ohne zweiten Faktor kein Zugang.
 
+### Komponententests (Oberfläche)
+
+Neben den Logiktests der Oberfläche (`npm test`, `node --test`, nur reine Logik ohne DOM und ohne JSX) gibt es ein getrenntes System
+für React-Komponenten und Hooks. Beide laufen im Ordner `ui/` und stören sich nicht.
+
+| | Logiktests | Komponententests |
+| --- | --- | --- |
+| Befehl | `npm test` | `npm run test:komponenten` |
+| Dateien | `src/**/*.test.ts` | `src/**/*.comp.test.tsx`, neben dem getesteten Code |
+| Werkzeug | `node --test` | vitest mit jsdom, Testing Library (react, dom, user-event) |
+| Konfiguration | keine | `ui/vitest.config.ts` (mit Begründung der Wahl), `ui/vitest.setup.ts` |
+
+Die Pakete (vitest 4.1.12, vite 7.3.7, jsdom 30.1.3, `@testing-library/react`, `/dom` und `/user-event`, alle MIT-Lizenz) stehen nur
+in den devDependencies, mit exakten Versionen. Sie gehören nicht zum Build: `next build` bündelt nur, was von `src/app` aus
+erreichbar ist, der Typprüfer prüft die Testdateien aber mit. Voraussetzung für die Komponententests ist Node 22.22.2 oder neuer
+(wegen jsdom 30); der Bau des Images braucht die Werkzeuge nicht und läuft auch mit älterem Node 22 durch, `npm ci` meldet dann nur eine
+Warnung zur Engine-Angabe.
+
+Abgedeckt sind die Tafel „Vorgänge“ (Karten je Zustand, `role="progressbar"` mit Wert und Text, „Zur Freigabe“ mit Fokusführung,
+„Zuletzt beendet“ erst nach dem Öffnen), die Büro-Karte (Punkte als Buttons, Enter, Leertaste, Escape, Zustand als Wort und Form,
+Leerzustand, Hinweis auf unbekannte Geräte), der Hook `useBueroStand` (Abruf nur bei sichtbarer Seite, Takt von 30 Sekunden,
+Stopp bei 401 und 403, wachsender Abstand bei 503, Aufräumen) und der Kopierknopf des Canvas (Chip „Kopiert“ mit `aria-live`).
+
+Grenzen, damit niemand mehr in die Tests liest, als darin steht:
+
+- jsdom ist kein Browser: Es gibt kein Layout und keine Farben. „Zustand nie nur über Farbe“ wird an Wort, Form (SVG) und
+  Attributen im DOM geprüft, nicht an Pixeln. Scrollen und `prefers-reduced-motion` prüfen die Tests nur als Aufruf
+  (`scrollIntoView` ist eine Attrappe), ebenso Animationen.
+- Bildschirmleser selbst laufen nicht mit. Geprüft werden Rollen, zugängliche Namen und aria-Attribute.
+- Netz, Anmeldung und Sprachverbindung sind Attrappen oder bleiben ungetestet (`kernApi`, Supabase, WebRTC).
+- Dass ein Hook nach dem Aushängen keinen Zustand mehr setzt, zeigt React 19 nicht mehr als Warnung an. Der Test prüft es nur
+  mittelbar (keine Zeitgeber, keine weiteren Abrufe, keine Fehlerausgabe).
+- Ein Test mit echtem Browser (Tastatur, Fokus, Zoom, Bildschirmleser) bleibt ein eigener Schritt.
+
+Neue Komponententests: Datei `NAME.comp.test.tsx` neben die Komponente legen, Zustand über den Store (`wamo.set`) oder eine
+Attrappe (`vi.mock`) vorgeben, Zeitabläufe mit `vi.useFakeTimers`, Eingaben mit `user-event`.
+
 ### Betriebsart Büro und Unterwegs
 
 | Betriebsart | Kern | PC-Werkzeuge |
