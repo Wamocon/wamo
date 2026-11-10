@@ -33,7 +33,7 @@ Offen:
 
 - TR-064-Zugang der FRITZ!Box für die Erkennung unbekannter Geräte (ohne ihn zeigt die Büro-Karte keine Zahl) und Pflege von `/etc/wamo-geraete/bekannt.toml`.
 - Sprachmessung der Persona-Schalter (`WAMO_PERSONA_ABNAHME` ungemessen, `WAMO_PERSONA_GESPRAECH` und `WAMO_WARTESATZ_MODELL` bis zur Messung aus).
-- Dispatcher-Befehl `pruefen` (`infra/sokrates2/wamo_job_dispatch.py`), damit Befehlskriterien auch auf Sokrates-2 laufen; Router schreibend nur als Entwurf (`geraete/README.md`).
+- Befehlskriterien auf Sokrates-2 über den Dispatcher-Befehl `pruefen`: Dispatcher-Seite und Kern-Seite sind gebaut (`infra/sokrates2/wamo_job_dispatch.py`, `voice-core/abnahme_remote.py`), standardmäßig aus und nicht ausgerollt, noch ohne Rauchtest auf dem Server (Abschnitt „Abnahme: prüfbares Ziel mit Runden“); Router schreibend nur als Entwurf (`geraete/README.md`).
 - Die Härtung der Desktop-App läuft in einem eigenen Pull Request und ist in diesem Stand nicht enthalten.
 - Die Einträge unter „Offen (Stand 20.10.2026)“ gelten weiter, soweit dort nicht als überholt markiert; 0010, 0011 und 0013 auf `wamo_prod` sind im Repo nicht als angewendet belegt.
 
@@ -969,8 +969,8 @@ Zwei Arten von Kriterien:
   (kein JSON, andere Felder, falsche Typen, Fehler, Zeitüberschreitung nach 60 s) zählt als nicht erfüllt. Bericht, Dateinamen und
   Kriterium stehen als Daten in Blöcken mit einem zufälligen Code, nie als Anweisung. Das ist ein weiches Urteil, kein Beweis.
 - **Befehl** (Eintrag beginnt mit `befehl:`, zum Beispiel `befehl: pytest -q`): Exit 0 heißt erfüllt. **Standard aus:** Befehlskriterien
-  sind eine bewusste Zuschaltung des Betreibers (`WAMO_ABNAHME_BEFEHLE=ja`, nur dieser Wert, dazu die Betriebsart `lokal`). Ohne den
-  Schalter lehnt `entwicklung_vorbereiten` ein `befehl:` schon beim Vorbereiten mit einem Satz ab (die Werkzeugbeschreibung nennt es dem
+  sind eine bewusste Zuschaltung des Betreibers (`WAMO_ABNAHME_BEFEHLE=ja`, nur dieser Wert, dazu die Betriebsart `lokal` oder auf
+  Sokrates-2 der Weg über den Dispatcher, siehe unten). Ohne den Schalter lehnt `entwicklung_vorbereiten` ein `befehl:` schon beim Vorbereiten mit einem Satz ab (die Werkzeugbeschreibung nennt es dem
   Modell gar nicht erst), es bleiben Aussagekriterien. Grund: Projektcode (conftest, Makefile, Tests) läuft durch einen Befehl
   automatisch mit den Rechten des Kerns, ohne Hook und ohne eigene Freigabe. Das ist neu gegenüber dem Ablauf vor Paket 4 und soll eine
   Entscheidung sein, kein Nebeneffekt. Der Text stammt vom Modell und ist nicht vertrauenswürdig, deshalb gilt:
@@ -1017,14 +1017,53 @@ scheitert (Zeitlimit, Verbindung, Zugang), wird weder geprüft noch wiederholt. 
 Auflegen beendet die Schleife sofort samt laufendem Prüfbefehl. Jede Runde ist ein eigener Lauf und zählt wie bisher in den Verbrauch
 (Kosten im Canvas); eine Kostengrenze gibt es noch nicht, nur Runden und Zeit.
 
+**Befehlskriterien auf Sokrates-2 (vorbereitet am 10.11.2026, standardmäßig aus, nicht ausgerollt):** Der Auftrag läuft dort in der
+Sandbox, die der Kern nicht betreten darf, und der Kern darf Befehle eines Modells nicht mit seinen eigenen Rechten ausführen. Ein
+`befehl:` läuft deshalb über den Dispatcher-Befehl `pruefen` (`infra/sokrates2/wamo_job_dispatch.py` ab Version 6, Abschnitt 17 in
+`infra/sokrates2/README.md`) in einer engeren Sandbox als der Auftragslauf: kein Netz, kein Token, kein Claude, 120 Sekunden. Die
+Kern-Seite ist `voice-core/abnahme_remote.py`:
+
+- **Voraussetzungen:** Der Dispatcher ist ab Version 6 eingerichtet (`abnahme_befehl.py` und `wamo_job_pruefen.py` liegen in
+  `/opt/wamo/waechter`, der Rauchtest ist gelaufen) und hat `WAMO_PRUEFEN=an` in `/etc/wamo/geheim.env`. Der Kern hat
+  `WAMO_ABNAHME_BEFEHLE=ja` und den vorhandenen SSH-Schlüssel der Aufträge; eine neue Umgebungsvariable gibt es nicht.
+- **Reihenfolge beim Ausrollen:** erst der Dispatcher (Schalter aus), dann der Rauchtest, dann `WAMO_PRUEFEN=an`, dann der Kern, zuletzt
+  `WAMO_ABNAHME_BEFEHLE=ja`. Zurück in umgekehrter Reihenfolge. Ein alter Kern gegen den neuen Dispatcher bleibt unverändert. Ein neuer
+  Kern gegen den alten lehnt `befehl:` ab; wird der Dispatcher mitten in der Sitzung zurückgebaut, endet `pruefen` mit Exit 2 und
+  das Kriterium gilt als nicht erfüllt.
+- **Der ping entscheidet vorab:** `entwicklung_vorbereiten` fragt den Dispatcher per `ping`, aber nur, wenn ein `befehl:` im Ziel steht,
+  und merkt sich die Antwort 5 Minuten (höchstens 5 Sekunden je Aufruf, ein Fehler gilt nur 30 Sekunden und heißt "nicht möglich", nie
+  eine Ausnahme; der Aufruf läuft im Werkzeugaufruf mit Frist, nie im Audiopfad). `befehl:` geht nur, wenn `pruefen` gemeldet wird und die
+  `abnahme_befehl_sha256` des Dispatchers der Prüfsumme der lokalen Datei `abnahme_befehl.py` gleicht (gleiche Allowlist). Sonst nennt die
+  Ablehnung den Grund in einem Satz: "Schalter aus", "Dispatcher ohne pruefen", "Prüfsumme der Allowlist weicht ab" oder "Dispatcher
+  nicht erreichbar". Das ist Komfort; maßgeblich ist der Dispatcher, der jeden Aufruf neu prüft. Die Beschreibung des Werkzeugs entsteht
+  beim Anlegen des Gesprächs und nennt `befehl:` auch mit einem abgelaufenen Cache, wenn der letzte eindeutige Stand "möglich" war.
+  Der Ping wird beim `attach` im Hintergrund aufgewärmt; im ersten Gespräch nach dem Start des Kerns kennt die Beschreibung ihn noch nicht
+  und nennt `befehl:` nicht, erst ab dem nächsten Gespräch. Beim Vorbereiten selbst gilt immer der frische Stand.
+- **Aufruf:** `ssh ... pruefen <job>` mit dem Zwangsbefehl-Schlüssel, **eine** stdin-Zeile `{"argv": [...]}` (höchstens 8 KiB), stdin bleibt
+  als Lebenslinie offen, eine JSON-Zeile als Antwort (höchstens 64 KiB, 240 Sekunden). Die Allowlist prüft der Kern weiter vorab (schnelles
+  Feedback, dazu Wächter und Netzwerkpfade), aber keinen lokalen Pfad; der Wächter bekommt den Projektpfad auf dem Server als Basis (mit
+  `None` würde ein relativer Pfad wie `tests/x.py` gegen das Arbeitsverzeichnis des Kerns aufgelöst und als WAMO-Repo gesperrt).
+- **Streng ausgewertet:** erfüllt nur bei Prozess-Exit 0 und `ok` true und einem echten `exit` 0 (kein bool, kein float) und `abgebrochen`
+  false und `v` gleich 1 und genau den acht Feldern. Alles andere (kein oder ungültiges JSON, fehlende oder zusätzliche Felder, falsche
+  Typen, eine zweite Zeile, Prozess-Exit 2, 3, 4, 6, 124, 130 oder 255, SSH-Fehler, Zeitüberschreitung) ist nicht erfüllt, mit einem Grund aus
+  einer festen Liste (`abnahme_remote.GRUENDE`), nie mit Text aus der Antwort.
+- **Ausgabe:** Ein Befehl, der lief und scheiterte, liefert Exit und Ausgabe als Datenfeld (höchstens 2 KiB, ohne Steuerzeichen, geschwärzt) in
+  den Hinweis des Kriteriums, wie lokal. Sie geht nie an das Sprachmodell; dem gehen nur feste Zahlen.
+- **Auflegen:** Der Kern beendet ssh (damit endet die Lebenslinie und der Dispatcher die Sandbox) und ruft zusätzlich `cancel <job>`. Ein
+  einzelnes Zeitlimit ruft es nicht: `cancel` legt eine Abbruchmarke ab, die jede weitere Prüfung desselben Auftrags abweist.
+- **Messbefund (10.11.2026, Sandbox des Benutzers `wamo` auf Sokrates-2):** Es gibt `python3` 3.12 (ohne pytest und ohne ruff), `node` 22,
+  `npm`, `make`, `grep`, `eslint` und `git`. Es fehlen `pytest`, `ruff`, `mypy`, `tsc`, `pnpm`, `yarn`, `go`, `cargo` und `dotnet`; ein Befehl
+  damit scheitert mit "nicht gefunden" und das Kriterium gilt als nicht erfüllt (kein Fehler des Dispatchers). Python-Projekte gehen als
+  `uv run --no-sync --offline pytest ...`, nur wenn im Projekt eine `.venv` liegt (uv installiert und lädt dort nichts), sonst kommt
+  "nicht möglich" mit Hinweis. Die Beschreibung des Werkzeugs sagt dem Modell das, damit es keine Kriterien ableitet, die nie erfüllbar sind.
+
 **Grenzen:**
 
-- **Betriebsart Sokrates-2 (der Standard):** Der Auftrag läuft dort in der Sandbox, die der Kern nicht betreten darf, und der Kern darf
-  Befehle eines Modells nicht mit seinen eigenen Rechten ausführen. Deshalb sind Befehlskriterien nur in der Betriebsart `lokal` möglich.
-  Auf Sokrates-2 weist `entwicklung_vorbereiten` ein `befehl:` mit einem Satz ab, es bleiben Aussagekriterien. Dafür fehlt ein
-  Dispatcher-Befehl `pruefen`, der den Befehl in derselben Sandbox ohne Token ausführt (`infra/sokrates2/wamo_job_dispatch.py`, noch nicht
-  gebaut, braucht Prüfung der Sicherheit und einen Rauchtest auf dem Server). Die Schleife ist darauf vorbereitet
-  (`DevAgent(befehl_ausfuehrer=...)`).
+- **Betriebsart Sokrates-2 (der Standard):** Ohne `WAMO_ABNAHME_BEFEHLE=ja` im Kern, `WAMO_PRUEFEN=an` im Dispatcher oder einen passenden ping
+  weist `entwicklung_vorbereiten` ein `befehl:` mit einem Satz ab, es bleiben Aussagekriterien. Der Weg ist **nicht an einem echten
+  Server geprüft** (die Tests nutzen Attrappen für ssh); offen sind der Rauchtest des Dispatchers, die Prüfung der Sicherheit und die
+  Messung, ob Selbsttest und Befehl zusammen in die 240 Sekunden des Kerns passen. Belegt der Auftrag die Sandbox noch (Exit 4), gilt das
+  Kriterium als nicht erfüllt und kostet eine Runde.
 - **Betriebsart `lokal`:** Der Code der Projekte (Tests, conftest, Makefile, Skripte) läuft ohne Sandbox mit den Rechten des Kerns, genau
   wie der Auftrag selbst. Allowlist und Wächter sind eine Bremse, keine Sandbox. Build-Werkzeuge können Abhängigkeiten aus dem Netz laden,
   das verhindert die Allowlist nicht. Deshalb ist die Zuschaltung (`WAMO_ABNAHME_BEFEHLE=ja`) eine bewusste Entscheidung des Betreibers.
