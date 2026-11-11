@@ -27,9 +27,10 @@ class LaborSitzung:
     stand: Durchlauf | None
     memory: LaborSpeicher
     wache: LaborWache | None
-    # Hier hängt die Labor-Freigabe (LaborFreigaben, Strang K2) ihren Entscheider ein: bekommt die Daten der Client-Nachricht freigabe
-    # mit job labor, nachdem labor.client_nachricht_erlaubt sie zugelassen hat. Ohne Eintrag bleibt der Klick wirkungslos.
-    freigabe: Callable[[dict], Awaitable[None]] | None = None
+    # Hier hängt bot.build_session den Entscheider der Labor-Freigabe ein (labor_werkzeuge.LaborSitzung.entscheiden, Strang K2): bekommt die Daten
+    # der Client-Nachricht freigabe mit job labor, nachdem labor.client_nachricht_erlaubt sie zugelassen hat. Ohne Eintrag (das Schaufenster hat
+    # keinen Platz und keine Freigabe) bleibt der Klick wirkungslos.
+    freigabe: Callable[[dict], Awaitable[Any]] | None = None
     daten: LaborDaten = field(default_factory=LaborDaten)  # Regeln, Kontakte, Vorlagen, Wissen: bei jedem Sitzungsstart frisch gelesen
 
     @classmethod

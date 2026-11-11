@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import types
 import uuid
 from dataclasses import dataclass
 
@@ -154,8 +155,12 @@ def test_laborart_und_platz_aus_der_identitaet():
     ohne = Identity(PROFIL, "Niko", "admin", "du")
     assert w.laborart(ohne) is None and w.platz_von(ohne) is None
     assert w.laborart(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_art="schaufenster")) == "schaufenster"
-    assert w.laborart(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_art="")) is None
     assert w.laborart(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_art=None)) is None
+    # dieselbe Regel wie im Kern (labor.art_normalisieren): ein leerer oder unbekannter Wert heißt platz, nie "kein Labor"
+    for roh in ("", "irgendwas", 5):
+        assert w.laborart(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_art=roh)) == "platz", roh
+        assert w.laborart(types.SimpleNamespace(labor_art=roh)) == "platz", roh  # auch eine Identität, die nicht von Identity erbt
+    assert w.laborart(types.SimpleNamespace()) is None
     assert w.platz_von(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_platz=16)) == 16
     for kaputt in (0, 17, -1, "3", True, 3.5, None):
         assert w.platz_von(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_platz=kaputt)) is None

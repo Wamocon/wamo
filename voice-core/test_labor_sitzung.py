@@ -8,6 +8,7 @@ Ausführen:  python -m pytest -p no:cacheprovider -q test_labor_sitzung.py   (im
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import os
 import re
@@ -17,8 +18,10 @@ from unittest import mock
 
 import labor
 import labor_durchlauf
+import labor_testhilfe
 import test_smoke_bot as smoke
 from auth_gate import Identity
+from labor_attrappe import Attrappe
 from labor_durchlauf import Durchlauf
 from memory import Profile
 
@@ -52,6 +55,7 @@ class Beobachtet:
         self.labor = None
         self.beruehrt: dict[str, mock.Mock] = {}
         self.transport = None
+        self.app = None  # der Dienst der Kollegen (Attrappe), den Annahme und Werkzeuge gemeinsam nutzen
 
     @property
     def kontext_namen(self) -> list[str]:
@@ -66,8 +70,14 @@ class Beobachtet:
 
 
 async def bauen(identity, env=None, quelle=None, *, pc_waere_da=True, freigabe=None):
-    """Baut eine Sitzung. pc_waere_da: PC-Host, Gerätezugang und Fernzugriff wären verfügbar, wenn der Weg nicht gesperrt wäre."""
+    """Baut eine Sitzung. pc_waere_da: PC-Host, Gerätezugang und Fernzugriff wären verfügbar, wenn der Weg nicht gesperrt wäre.
+
+    Der Dienst der Kollegen ist die Attrappe (labor_testhilfe.dienst) mit Durchlauf und Einwilligung Version 2, für die Annahme und für die Werkzeuge.
+    quelle: nur für die Annahme, ersetzt die Durchlauf-Quelle (Tests der Ablehnung, ohne Attrappe). freigabe: ersetzt nach dem Bau den Entscheider,
+    den bot.py für die Freigabeklicks der Laborsitzung einhängt."""
     b = Beobachtet()
+    b.app = Attrappe()
+    b.app.neuer_durchlauf(3, einwilligung_version=2)
     echt_llm = bot.gespraech_llm
 
     async def llm_merken(system_instruction, zugang):
@@ -85,7 +95,6 @@ async def bauen(identity, env=None, quelle=None, *, pc_waere_da=True, freigabe=N
 
     async def starten(ident, **kw):
         b.labor = await echt_starten(ident, **kw)
-        b.labor.freigabe = freigabe
         return b.labor
 
     beruehrt = {n: mock.Mock(side_effect=AssertionError(f"{n} darf in der Laborsitzung nie berührt werden"))
@@ -93,15 +102,21 @@ async def bauen(identity, env=None, quelle=None, *, pc_waere_da=True, freigabe=N
     pc_zugang = mock.AsyncMock(return_value=object())
     pc_host_fuer = mock.Mock(return_value=True)
     b.beruehrt = {**beruehrt, "pc_zugang": pc_zugang, "pc_host_fuer": pc_host_fuer}
-    with mock.patch.dict(os.environ, {**ENV, **(env or {})}), mock.patch.object(labor_durchlauf, "_quelle", quelle or Quelle()), \
-         mock.patch("llm_anbieter.claude_problem", mock.AsyncMock(return_value=None)), \
-         mock.patch.object(bot, "LaborSitzung", mock.Mock(starten=starten)), \
-         mock.patch.object(bot, "gespraech_llm", llm_merken), mock.patch.object(bot, "LLMContextAggregatorPair", paar), \
-         mock.patch.object(bot, "pc_zugang", pc_zugang), mock.patch.object(bot, "pc_host_fuer", pc_host_fuer), \
-         mock.patch.object(bot, "host_client", beruehrt["host_client"]), mock.patch.object(bot, "DevAgent", beruehrt["DevAgent"]), \
-         mock.patch.object(bot, "Boss", beruehrt["Boss"]), mock.patch.object(bot, "PcFreigaben", beruehrt["PcFreigaben"]):
-        b.transport = smoke.FakeTransport()
-        b.session = await bot.build_session(b.transport, identity)
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(labor_testhilfe.dienst(b.app, einwilligung_min=None))
+        stack.enter_context(mock.patch.dict(os.environ, {**ENV, **(env or {})}))
+        if quelle is not None:
+            stack.enter_context(mock.patch.object(labor_durchlauf, "_quelle", quelle))
+        with mock.patch("llm_anbieter.claude_problem", mock.AsyncMock(return_value=None)), \
+             mock.patch.object(bot, "LaborSitzung", mock.Mock(starten=starten)), \
+             mock.patch.object(bot, "gespraech_llm", llm_merken), mock.patch.object(bot, "LLMContextAggregatorPair", paar), \
+             mock.patch.object(bot, "pc_zugang", pc_zugang), mock.patch.object(bot, "pc_host_fuer", pc_host_fuer), \
+             mock.patch.object(bot, "host_client", beruehrt["host_client"]), mock.patch.object(bot, "DevAgent", beruehrt["DevAgent"]), \
+             mock.patch.object(bot, "Boss", beruehrt["Boss"]), mock.patch.object(bot, "PcFreigaben", beruehrt["PcFreigaben"]):
+            b.transport = smoke.FakeTransport()
+            b.session = await bot.build_session(b.transport, identity)
+    if freigabe is not None:
+        b.labor.freigabe = freigabe
     return b
 
 
@@ -118,14 +133,11 @@ UMGEBUNGEN = [
 
 class WerkzeugMatrixTests(unittest.IsolatedAsyncioTestCase):
     async def test_t1_namen_im_kontext_und_am_llm_sind_gleich_der_erlaubnisliste(self):
-        erwartet = set(labor.WERKZEUGE_BASIS)
-        try:
-            import labor_werkzeuge  # noqa: F401  (Strang K2 hängt die Ticket- und Mail-Werkzeuge ein)
-            erwartet |= set(labor.WERKZEUGE_TICKET)
-        except ModuleNotFoundError:
-            pass
         for art, env in itertools.product(("platz", "schaufenster"), UMGEBUNGEN):
             with self.subTest(art=art, env=env):
+                # Ticket und Mail (labor_werkzeuge, Strang K2) gibt es nur mit einem Platz: das Schaufenster hat laut Migration keinen Platz,
+                # also kein Test-Jira, und bleibt bei den Basiswerkzeugen
+                erwartet = set(labor.WERKZEUGE_BASIS) | (set(labor.WERKZEUGE_TICKET) if art == "platz" else set())
                 b = await bauen(platz_identitaet(art), env)
                 self.assertEqual(set(b.kontext_namen), erwartet)
                 self.assertEqual(len(b.kontext_namen), len(set(b.kontext_namen)))
@@ -270,9 +282,17 @@ class NachrichtenSchichtATests(unittest.IsolatedAsyncioTestCase):
             freigabe.assert_awaited_once_with({"job": "labor", "id": "a", "entscheidung": "ja"})
         await b.session.cleanup()
 
-    async def test_labor_freigabe_ohne_handler_ist_wirkungslos_und_wirft_nicht(self):
-        b = await bauen(platz_identitaet(), freigabe=None)
+    async def test_labor_freigabe_ohne_entscheider_ist_wirkungslos_und_wirft_nicht(self):
+        # Das Schaufenster hat keinen Platz, also keine Labor-Freigabe (labor_werkzeuge liefert None): der Klick findet keinen Entscheider
+        b = await bauen(platz_identitaet("schaufenster"))
+        self.assertIsNone(b.labor.freigabe)
         await b.handler("on_client_message")(None, SimpleNamespace(type="freigabe", data={"job": "labor", "id": "a"}))
+        await b.session.cleanup()
+
+    async def test_beim_platzprofil_haengt_bot_die_labor_freigabe_als_entscheider_ein(self):
+        b = await bauen(platz_identitaet())
+        self.assertIsNotNone(b.labor.freigabe)
+        self.assertEqual(b.labor.freigabe.__self__.platz, 3)  # die Freigabe der Werkzeuge dieses Platzes
         await b.session.cleanup()
 
 

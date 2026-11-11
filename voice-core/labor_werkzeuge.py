@@ -27,6 +27,7 @@ from functools import wraps
 
 from loguru import logger
 
+import labor
 import labor_mail
 import labor_ticket
 from labor_client import Durchlauf, LaborClient, LaborFehler, client_aus_umgebung
@@ -49,9 +50,9 @@ class LaborNichtBereit(RuntimeError):
 
 
 def laborart(identity: object) -> str | None:
-    """Die Art des Laborprofils aus der Identität (getattr(identity, "labor_art", None)) oder None, wenn es kein Laborprofil ist."""
-    art = getattr(identity, "labor_art", None)
-    return art if isinstance(art, str) and art else None
+    """Die Art des Laborprofils aus der Identität (getattr(identity, "labor_art", None)) oder None, wenn es kein Laborprofil ist. Es gilt dieselbe
+    Regel wie im Kern (labor.art_normalisieren): ein leerer oder unbekannter Wert heißt platz, nie "kein Labor"."""
+    return labor.art_normalisieren(getattr(identity, "labor_art", None))
 
 
 def platz_von(identity: object) -> int | None:
