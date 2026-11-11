@@ -461,3 +461,53 @@ class ZugangParameterTests(unittest.TestCase):
             self.assertEqual(labor.zugang_parameter(ident), {})
         with mock.patch.object(modellzugang, "zugang_laden", neu):
             self.assertEqual(labor.zugang_parameter(ident), {"labor_art": "schaufenster"})
+
+
+class DatenInDerSitzungTests(unittest.IsolatedAsyncioTestCase):
+    async def test_regeln_und_daten_kommen_in_den_prompt_der_sitzung_und_die_pruefsumme_in_den_log(self):
+        from labor_daten import LaborDaten
+        from labor_sitzung import LaborSitzung
+        from loguru import logger
+
+        zeilen = []
+        kennung = logger.add(lambda m: zeilen.append(str(m)), level="INFO", format="{message}")
+        try:
+            daten = LaborDaten("Nichts erfinden.", (("kontakte.md", "Anna GEHEIMTEXT"),), {"kontakte.md": "abcd1234abcd1234"}, {"ausgang.md": "fehlt"})
+            s = await LaborSitzung.starten(platz_identitaet(), quelle=Quelle(), min_version=2, daten=daten)
+        finally:
+            logger.remove(kennung)
+        prompt = s.prompt()
+        self.assertIn("Nichts erfinden.", prompt)
+        self.assertIn("Anna GEHEIMTEXT", prompt)
+        start = [z for z in zeilen if "Labor: Sitzung" in z]
+        self.assertEqual(len(start), 1)
+        self.assertIn("kontakte.md=abcd1234abcd1234", start[0])
+        self.assertIn("ausgang.md(fehlt)", start[0])
+        self.assertNotIn("GEHEIMTEXT", start[0])
+
+    async def test_ohne_lesbare_daten_ist_der_prompt_der_reine_laborprompt(self):
+        from labor_prompt import build_labor_prompt
+        from labor_sitzung import LaborSitzung
+
+        with mock.patch.dict(os.environ, {"WAMO_LABOR_DATEN": "/etc/wamo"}):  # verbotenes Verzeichnis: nichts wird gelesen
+            s = await LaborSitzung.starten(platz_identitaet(), quelle=Quelle(), min_version=2)
+        self.assertEqual(s.prompt(), build_labor_prompt("Gast", "du", "platz"))
+        self.assertIn("Testlabor", s.prompt())
+        self.assertNotIn("Gedächtnis", s.prompt())
+
+
+class StartPruefungTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unstimmige_oder_nicht_freigeschaltete_identitaet_startet_nicht(self):
+        from labor_sitzung import LaborSitzung
+
+        faelle = {
+            "nicht freigeschaltet": Identity(USER, "G", "mitglied", "du", labor_art="platz", labor_platz=3, labor_aktiv=False),
+            "admin": Identity(USER, "G", "admin", "du", labor_art="platz", labor_platz=3, labor_aktiv=True),
+            "platz fehlt": Identity(USER, "G", "mitglied", "du", labor_art="platz", labor_platz=None, labor_aktiv=True),
+            "platz 17": Identity(USER, "G", "mitglied", "du", labor_art="platz", labor_platz=17, labor_aktiv=True),
+            "schaufenster mit platz": Identity(USER, "G", "mitglied", "du", labor_art="schaufenster", labor_platz=3, labor_aktiv=True),
+        }
+        for name, identity in faelle.items():
+            with self.subTest(name), self.assertRaises(labor.LaborAbgelehnt) as ctx:
+                await LaborSitzung.starten(identity, quelle=Quelle(), min_version=2)
+            self.assertEqual(ctx.exception.code, labor.CODE_PROFIL)

@@ -74,7 +74,7 @@ class LadenTests(Werkstatt):
 
     def test_nur_namen_der_festen_liste_werden_gelesen(self):
         self.schreiben(**{"geheim.env": "SCHLUESSEL=sk-ant-GEHEIM", "extra.md": "Fremd", "kontakte.md.bak": "Fremd",
-                          "Kontakte.md": "Fremd", "kontakte.MD": "Fremd"})
+                          "kontakte.mdx": "Fremd", "kontakte.md.old": "Fremd"})
         (self.dir / "unter").mkdir()
         (self.dir / "unter" / "kontakte.md").write_text("Fremd", encoding="utf-8")
         d = self.laden()
