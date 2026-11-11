@@ -371,7 +371,17 @@ function VerbindenDialog({
           <button ref={abbrechenRef} type="button" className="btn-secondary" disabled={beschaeftigt} onClick={onAbbrechen}>
             Abbrechen
           </button>
-          <button type="submit" className="btn-primary" disabled={beschaeftigt} aria-busy={beschaeftigt || undefined}>
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={beschaeftigt}
+            aria-busy={beschaeftigt || undefined}
+            // Ein Doppelklick oder Doppeltipp auf die Karte darf mit dem zweiten Klick nicht gleich "Verbinden" im eben geöffneten
+            // Dialog treffen: Ein Klick, der Teil einer Klickfolge ist (detail > 1), startet nichts. Tastatur (detail 0) und Einzelklick gehen durch.
+            onClick={(e) => {
+              if (e.detail > 1) e.preventDefault();
+            }}
+          >
             {beschaeftigt ? "Einen Moment …" : "Verbinden"}
           </button>
         </div>

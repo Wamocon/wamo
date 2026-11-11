@@ -23,6 +23,7 @@ type Basis = {
   _callbacks: { onDeviceError?: (e: unknown) => void };
   _wavRecorder: {
     begin: (id?: string) => Promise<unknown>;
+    end: () => Promise<unknown>;
     listenForDeviceChange: (f: ((d: unknown[]) => void) | null) => void;
     listenForDeviceErrors: (f: ((e: unknown) => void) | null) => void;
   };
@@ -39,6 +40,11 @@ export class StillMedienManager extends WavMediaManager {
 
   /** Das Mikrofon ist geöffnet (nach "Sprechen"). */
   #offen = false;
+  /**
+   * Die Sitzung ist beendet (disconnect). Wartet enableMic gerade auf die Berechtigung (begin), kommt die Antwort erst danach: Ohne
+   * diese Marke nähme die Seite ohne Sitzung auf (Aufnahmepunkt im Tab bis zum Neuladen). Initialize setzt sie für eine neue Sitzung zurück.
+   */
+  #abgebaut = false;
   /** Gerätewahl der Person, gilt erst beim Öffnen. */
   #wunschId: string | undefined;
 
@@ -48,6 +54,7 @@ export class StillMedienManager extends WavMediaManager {
 
   /** Kein WavRecorder.begin: nichts wird geöffnet, nichts abgefragt. */
   async initialize(): Promise<void> {
+    this.#abgebaut = false;
     this.#b._initialized = true;
   }
 
@@ -56,6 +63,7 @@ export class StillMedienManager extends WavMediaManager {
   }
 
   async disconnect(): Promise<void> {
+    this.#abgebaut = true;
     if (!this.#offen) {
       this.#b._initialized = false;
       return;
@@ -92,16 +100,27 @@ export class StillMedienManager extends WavMediaManager {
       return;
     }
     this.#b._micEnabled = false; // ohne Öffnen bleibt es bei "aus"
-    if (!enable) return;
+    if (!enable || this.#abgebaut) return; // nach dem Ende der Sitzung öffnet nichts mehr
     try {
       const rec = this.#b._wavRecorder;
       rec.listenForDeviceErrors(null);
       rec.listenForDeviceErrors(this.#b._handleDeviceError.bind(this)); // vor begin: eine Ablehnung soll onDeviceError melden
       await rec.begin(this.#wunschId); // erst hier getUserMedia
+      if (this.#abgebaut) {
+        // Die Sitzung endete, während die Person die Berechtigung erteilte: das eben geöffnete Mikrofon sofort wieder schließen
+        await rec.end().catch(() => undefined);
+        return;
+      }
       this.#offen = true;
       rec.listenForDeviceChange(null);
       rec.listenForDeviceChange(this.#b._handleAvailableDevicesUpdated.bind(this)); // wie im Standardmanager erst nach begin
       await super.enableMic(true); // Spur einschalten und aufnehmen, meldet onTrackStarted
+      if (this.#abgebaut) {
+        // Die Sitzung endete während des Einschaltens: nichts offen lassen
+        this.#offen = false;
+        this.#b._micEnabled = false;
+        await super.disconnect().catch(() => undefined);
+      }
     } catch {
       // Die Bibliothek hat den Fehler schon über onDeviceError gemeldet (begin). Die Sitzung bleibt still.
       const warOffen = this.#offen;

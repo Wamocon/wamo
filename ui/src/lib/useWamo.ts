@@ -706,6 +706,9 @@ export function useWamo(): WamoAktionen {
   const connect = useCallback(async (opt?: { still?: boolean }) => {
     // Start beim Tippen: ohne Mikrofon, Antworten als Text, Wiedergabe stumm (bleibt auch beim zweiten Versuch so)
     const still = opt?.still === true;
+    // Die Ruhezeit der Leerlaufregel beginnt mit jedem stillen Start, auch bei "Hier übernehmen" (ohne Tippen): Sonst trennte sie die
+    // bewusst übernommene Sitzung nach höchstens 30 Sekunden, wenn die letzte Eingabe länger als 20 Minuten zurückliegt.
+    if (still) letzteEingabe.current = Date.now();
     // erneut = zweiter Versuch nach erneuerter Sitzung (nur einmal, nach 401 oder 409)
     const starte = async (erneut: boolean): Promise<void> => {
       teardown("unmount"); // Reste eines früheren Versuchs abbauen, ohne Meldung

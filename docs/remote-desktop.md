@@ -233,7 +233,7 @@ Grenzen dieser Erkennung, ehrlich: Es ist eine Erkennung, kein Schutz. Die Oberf
 Admin, bekommt nur dieses Profil den Hinweis, und ein Angreifer mit dem Token der Person kann ihn selbst als gelesen markieren. Dann bleibt das
 Protokoll in `rd_sitzungen` (wer, Ziel, Start, Ende, Grund, Zeit des Codes). Bei Verdacht: sofort ein anderer Admin sperrt das Profil (das beendet
 die Sitzungen) und setzt `WAMO_RD_AKTIV=nein`. Das Abmelden in der Oberfläche gilt nur für das eigene Gerät und macht ein gestohlenes Token nicht ungültig.
-
+Der Hinweis entsteht beim Start in der Datenbank. Scheitert danach die Anmeldung am Gateway, bleibt er als Fehlalarm stehen (höchstens 6 je Stunde und Profil).
 **Reihenfolge und Rückweg.** Kern vor Migration, Oberfläche zuletzt. Ein neuer Kern mit der alten Funktion bekommt für den Code der Anmeldung die
 Antwort 23514, der Dialog fragt den Code ab: sicher, nur unbequem. Ein alter Kern mit der neuen Funktion ist nicht sicher genug: Er kennt weder die
 Startsperre je Profil noch die Nachprüfung der Datenbankzeile und verließ sich auf „ein Code, ein Start“. Darum wird die Migration nie vor dem Kern

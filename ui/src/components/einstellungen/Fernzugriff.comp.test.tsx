@@ -2,7 +2,7 @@
 // der Authenticator-App nur noch, wenn der Kern ihn verlangt (403 mit zweiter_faktor_zu_alt). Dazu Befund M7: Der Knopf "Verbinden" wird
 // nie vorfokussiert, und weder das Zeigen der Karte (so öffnet WAMO sie mit fernzugriff_oeffnen) noch das Öffnen des Dialogs startet
 // eine Sitzung; es braucht immer den Klick der Person. Ausführen im Ordner ui/:  npm run test:komponenten
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Fernzugriff } from "@/components/einstellungen/Fernzugriff";
@@ -127,6 +127,19 @@ describe("Fernzugriff: Verbinden ohne Code", () => {
     expect(api.codeBestaetigen).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByText(/Fernzugriff auf Sokrates-2 gestartet/)).toBeTruthy();
+  });
+
+  it("ein Klick, der Teil einer Klickfolge ist (Doppelklick auf die Karte), startet nichts; ein Einzelklick danach startet", async () => {
+    api.starten.mockResolvedValue(START);
+    const user = userEvent.setup();
+    const dialog = await dialogOeffnen(user);
+    const verbinden = within(dialog).getByRole("button", { name: "Verbinden" });
+    fireEvent.click(verbinden, { detail: 2 }); // der zweite Klick des Doppelklicks trifft den eben geöffneten Dialog
+    await new Promise((r) => setTimeout(r, 50));
+    expect(api.starten).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeTruthy();
+    await user.click(verbinden); // ein bewusster Einzelklick startet wie bisher
+    await waitFor(() => expect(api.starten).toHaveBeenCalledTimes(1));
   });
 
   it("verlangt der Kern den Code, erscheint das Codefeld mit dem Satz des Kerns und der Fokus geht ins Feld", async () => {

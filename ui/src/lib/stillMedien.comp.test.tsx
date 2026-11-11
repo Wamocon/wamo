@@ -104,6 +104,30 @@ describe("stiller Medienmanager (kein Mikrofon ohne Klick)", () => {
     expect(m.tracks()).toEqual({ local: {} });
   });
 
+  it("Trennen, während die Berechtigung noch aussteht: das Mikrofon wird sofort geschlossen und nie eingeschaltet", async () => {
+    const m = new StillMedienManager();
+    m.setClientOptions(optionen());
+    await m.initialize();
+    await m.connect();
+    const rec = (m as unknown as { _wavRecorder: { begin: unknown; end: unknown } })._wavRecorder;
+    let erlauben: () => void = () => undefined;
+    rec.begin = vi.fn(() => new Promise<void>((fertig) => (erlauben = fertig))); // die Person hat noch nicht auf die Frage geantwortet
+    rec.end = vi.fn().mockResolvedValue(undefined);
+    const basisEnable = vi.spyOn(WavMediaManager.prototype, "enableMic");
+    const sprechen = m.enableMic(true);
+    await m.disconnect(); // die Sitzung endet, bevor die Antwort kommt
+    erlauben(); // jetzt erteilt die Person die Berechtigung
+    await sprechen;
+    expect(rec.end).toHaveBeenCalledTimes(1); // sofort wieder geschlossen (kein Aufnahmepunkt ohne Sitzung)
+    expect(basisEnable).not.toHaveBeenCalled(); // nie eingeschaltet
+    expect(m.isMicEnabled).toBe(false);
+    expect(m.tracks()).toEqual({ local: {} });
+    getUserMedia.mockClear();
+    await m.enableMic(true); // eine beendete Sitzung öffnet nichts mehr
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(rec.begin).toHaveBeenCalledTimes(1);
+  });
+
   it("nach gescheitertem Öffnen lässt sich Sprechen noch einmal versuchen", async () => {
     const m = new StillMedienManager();
     m.setClientOptions(optionen());

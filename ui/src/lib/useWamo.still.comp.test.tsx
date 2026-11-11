@@ -273,6 +273,19 @@ describe("useWamo, stiller Start beim Tippen", () => {
       expect(aktuell().presence).toBe("idle");
     });
 
+    it("'Hier übernehmen' (stiller Start ohne Tippen) wird nicht gleich vom Leerlauf getrennt, auch wenn die letzte Eingabe lange her ist", async () => {
+      einschalten();
+      const { result } = renderHook(() => useWamo());
+      await act(async () => {
+        void result.current.connect({ still: true }); // so startet WamoAnsicht "Hier übernehmen", ohne stillStarten und ohne Eingabe
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      await bereit(letzter());
+      await fluss(120_000);
+      expect(aktuell().presence).toBe("idle");
+      expect(letzter().disconnect).not.toHaveBeenCalled();
+    });
+
     it("eine mit 'Gespräch starten' begonnene Sitzung bleibt unverändert", async () => {
       const { result } = renderHook(() => useWamo());
       await act(async () => {
