@@ -779,7 +779,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         try:
             if freigaben is not None and freigaben._offen:
                 return True
-            if labor is not None and labor.freigaben.offen:  # Labor-Karte (labor_freigaben.py)
+            if labor_werkz is not None and labor_werkz.freigaben.offen:  # Labor-Karte (labor_freigaben.py)
                 return True
             return dev is not None and any(j.pending for j in dev._jobs.values())
         except AttributeError:
@@ -925,11 +925,11 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     # Testlabor (labor_werkzeuge.py): nur Laborprofile (Identität mit labor_art). Werkzeuge (ticket_*, mail_senden) und Freigabekarte; ist der
     # Dienst nicht erreichbar, der Durchlauf nicht offen oder keine Einwilligung erfasst, wirft das den Start (fail-closed), es gibt keine Sitzung.
-    labor = None
+    labor_werkz = None  # nie "labor": so heißt das Modul (labor.py), das build_session weiter oben benutzt
     if labor_werkzeuge.laborart(identity):
-        labor = await labor_werkzeuge.labor_sitzung(identity, memory, llm, turn_taint=turn.taint, senden=send, melden=melde_llm)
-        if labor is not None:  # None: das Schau-Profil ohne Platz hat kein Test-Jira
-            standard_tools += labor.schemas
+        labor_werkz = await labor_werkzeuge.labor_sitzung(identity, memory, llm, turn_taint=turn.taint, senden=send, melden=melde_llm)
+        if labor_werkz is not None:  # None: das Schau-Profil ohne Platz hat kein Test-Jira
+            standard_tools += labor_werkz.schemas
             context.set_tools(ToolsSchema(standard_tools=standard_tools))
 
     async def refresh_prompt() -> None:
@@ -1088,10 +1088,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             await freigaben.entscheiden(data)
         elif msg.type == "freigabe" and data.get("job") == "labor":
             # Labor-Freigabe (labor_freigaben.py): nur in einer Laborsitzung, sonst ohne Wirkung (auch nicht für einen Admin)
-            if labor is None:
+            if labor_werkz is None:
                 logger.warning("Labor-Freigabe ohne Laborsitzung abgewiesen")
                 return
-            await labor.entscheiden(data)
+            await labor_werkz.entscheiden(data)
         elif msg.type == "modellzugang":
             # Eigener Claude-Schlüssel: hinterlegen, ersetzen, löschen, Stand (gilt ab der nächsten Sitzung).
             # Der Inhalt dieser Nachricht wird nie geloggt und nie zurückgeschickt.
@@ -1259,10 +1259,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             # offene PC-Freigaben ablehnen: keine Eingabesperre am PC und keine offene Zeile in actions zurücklassen
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(freigaben.schliessen(), CLEANUP_DB_TIMEOUT_SECS)
-        if labor is not None:
+        if labor_werkz is not None:
             # offene Labor-Karten ablehnen (actions) und den Client des Dienstes schließen
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(labor.schliessen(), CLEANUP_DB_TIMEOUT_SECS)
+                await asyncio.wait_for(labor_werkz.schliessen(), CLEANUP_DB_TIMEOUT_SECS)
         if pc_client:
             with contextlib.suppress(Exception):
                 await pc_client.close()
