@@ -101,6 +101,7 @@ class Probe:
     ("abgewiesen", Text)           Exit 2 und auf stderr "WAMO-Auftrag abgewiesen: <Text>" (der Dispatcher lehnt den Befehl ab, kein Kanal-Ereignis)
     ("kanal", Grund, ...)          Exit 2 und das Ereignis kanal_gesperrt mit einem dieser Gründe (Liste KANAL_GRUENDE des Moduls)
     ("zustand",)                   wie kanal, der Grund ist der des geschlossenen Kanals aus ping (kanal_zu, abgelaufen, notaus, ...)
+    ("stumm",)                     Exit 2 und nichts auf stdout (nur für ein Subsystem: sshd leitet dessen stderr nicht an ssh weiter)
     ("sshd", Exit oder None, Meldung, ...)  sshd oder ssh lehnt selbst ab: Exit wie angegeben und eine dieser Meldungen auf stderr
     Bei geschlossenem Kanal oder gesetzter Notaus-Datei greift vor der Regel der Probe schon der Zustand: siehe erlaubte_gruende."""
 
@@ -129,11 +130,17 @@ def proben() -> list[Probe]:
         Probe("-R (Rückweiterleitung)", "ping", extra=("-o", "ClearAllForwardings=no", "-o", "ExitOnForwardFailure=yes",
                                                        "-R", "127.0.0.1:19998:127.0.0.1:22"),
               erwartet=(("sshd", 255, "remote port forwarding failed"),)),
-        # der erzwungene Befehl ersetzt das Subsystem (der Dispatcher lehnt den Namen des Programms ab) oder sshd kennt kein Subsystem sftp
-        Probe("sftp", "sftp", extra=("-s",), erwartet=(unzulaessig, ("abgewiesen", "unbekannter Befehl"),
+        # der erzwungene Befehl ersetzt das Subsystem (der Dispatcher lehnt den Namen des Programms ab) oder sshd kennt kein Subsystem sftp.
+        # Beobachtet am Server (11.11.2026): sshd leitet stderr eines Subsystems nicht an ssh weiter, die Abweisung kommt als Exit 2 ohne
+        # jeden Text an ("stumm"); den Grund nennt das Audit-Log des Dispatchers (ABGEWIESEN ... sftp-server ... kanal=kern)
+        Probe("sftp", "sftp", extra=("-s",), erwartet=(unzulaessig, ("abgewiesen", "unbekannter Befehl"), ("stumm",),
                                                        ("sshd", 255, "subsystem request failed"))),
         Probe("pruefen", f"pruefen {JOB_FREMD}", erwartet=(("kanal", "befehl"),)),
-        Probe("Start mit Projekt wamo", f"{start} wamo {{art}}", kopf=KOPF_START, erwartet=(("kanal", "projekt"),)),
+        # Beobachtet am Server (11.11.2026): der Selbstschutz (check_project) lehnt das Projekt wamo schon vor der Regel des Kern-Kanals ab,
+        # ohne Kanal-Ereignis, nur mit der Meldung auf stderr (ASCII-Anfang wie bei unzulaessig). Die Regel projekt des Kanals prüft
+        # die nächste Probe mit einem Namen ohne Präfix kern-
+        Probe("Start mit Projekt wamo", f"{start} wamo {{art}}", kopf=KOPF_START,
+              erwartet=(("kanal", "projekt"), ("abgewiesen", "Das WAMO-Repo selbst ist f"))),
         Probe("Start ohne Präfix kern-", f"{start} rauchtest {{art}}", kopf=KOPF_START, erwartet=(("kanal", "projekt"),)),
         Probe("Start ohne Feld zugang", f"{start} kern-rauchtest {{art}}", kopf={k: v for k, v in KOPF_START.items() if k not in ("zugang", "profil")},
               erwartet=(("kanal", "zugang"),)),
@@ -206,6 +213,8 @@ def _alternative(probe: Probe, alternative: tuple, returncode: int, stdout: str,
         return False, "Exit 2 ohne ok-Antwort"
     if art == "abgewiesen":
         return ABWEISUNG + alternative[1] in (stderr or ""), f"Abweisung ({alternative[1]})"
+    if art == "stumm":  # Exit 2 und weder eine Antwort noch ein Ereignis auf stdout: sshd gibt stderr eines Subsystems nicht weiter
+        return not (stdout or "").strip(), "stumme Abweisung (Subsystem, kein Text)"
     erlaubt = erlaubte_gruende(probe, alternative, zustand)
     gefunden = ereignis_gruende(stdout)
     return bool(gefunden) and bool(erlaubt) and all(g in erlaubt for g in gefunden), "Grund " + "/".join(sorted(erlaubt) or ["?"])

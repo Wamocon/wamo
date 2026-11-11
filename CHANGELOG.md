@@ -144,6 +144,10 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Rauchtest des Kern-Kanals (`wamo_job_kern_rauchtest.py`): Zwei Nein-Proben erwarteten einen Grund, den der Dispatcher am Server nicht
+  meldet, obwohl er die Anfrage richtig abweist (Exit 2, Audit-Log `ABGEWIESEN ... kanal=kern`). Die Probe „Start mit Projekt wamo“ gilt auch
+  mit der Abweisung des Selbstschutzes (der greift vor der Regel des Kanals), die Probe „sftp“ auch als stumme Abweisung (sshd leitet stderr
+  eines Subsystems nicht an ssh weiter). Beides ist nur für diese zwei Proben zugelassen und mit Tests belegt; der Dispatcher ist unverändert.
 - Prüfungen vor dem Zusammenführen (Sicherheit, Datenbank, Python, React), Befunde eingearbeitet: Ein Entwicklungsauftrag mit Abnahme gilt
   während der Prüfung als „prüfe Abnahme“ und erst nach dem Urteil als fertig, eine Ausnahme im Lauf beendet Auftrag und Vorgang als
   fehlgeschlagen statt sie hängen zu lassen. Der Kürzer für Werkzeugausgaben hat eine harte Obergrenze (256 KB Analyse, darüber Kopf und

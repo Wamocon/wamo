@@ -431,7 +431,9 @@ def test_jede_nein_probe_hat_einen_erwarteten_grund_aus_einer_festen_liste():
         assert p.erwartet, p.name
         for alternative in p.erwartet:
             art = alternative[0]
-            assert art in ("abgewiesen", "kanal", "zustand", "sshd"), (p.name, alternative)
+            assert art in ("abgewiesen", "kanal", "zustand", "sshd", "stumm"), (p.name, alternative)
+            if art == "stumm":  # nur das Subsystem sftp: dort kommt stderr nie beim Client an, sonst wäre "kein Text" kein Beleg
+                assert alternative == ("stumm",) and p.name == "sftp", (p.name, alternative)
             if art == "kanal":
                 assert alternative[1:] and all(g in kern.KANAL_GRUENDE for g in alternative[1:]), (p.name, alternative)
             if art == "abgewiesen":
@@ -529,6 +531,30 @@ def test_sftp_gilt_bei_einer_abweisung_des_dispatchers_oder_einer_verweigerung_d
     assert R.bewerte(sftp, 255, "", "subsystem request failed on channel 0", ZUSTAND_OFFEN)
     assert not R.bewerte(sftp, 255, "", "Connection closed by 192.168.178.136 port 22", ZUSTAND_OFFEN)
     assert not R.bewerte(sftp, 0, "", "", ZUSTAND_OFFEN)
+
+
+def test_sftp_gilt_auch_als_stumme_abweisung_denn_sshd_leitet_stderr_eines_subsystems_nicht_weiter():
+    """Am Server beobachtet (11.11.2026): ssh -s liefert Exit 2 ohne jeden Text, das Audit-Log des Dispatchers zeigt die Abweisung."""
+    sftp = _probe("sftp")
+    assert R.bewerte(sftp, 2, "", "", ZUSTAND_OFFEN)
+    assert R.bewerte(sftp, 2, "", "", ZUSTAND_ZU)  # der Befehl wird vor dem Kanal geprüft
+    assert not R.bewerte(sftp, 2, '{"ok": true, "version": "7", "kanal": "kern"}', "", ZUSTAND_OFFEN)  # eine ok-Antwort ist nie eine Abweisung
+    assert not R.bewerte(sftp, 2, _ereignis("befehl"), "", ZUSTAND_OFFEN)  # Ausgabe auf stdout: nicht der stumme Fall
+    for code in (0, 1, 255, None):  # nur der Exit-Code 2 des Dispatchers gilt
+        assert not R.bewerte(sftp, code, "", "", ZUSTAND_OFFEN), code
+    assert not R.bewerte(_probe("id"), 2, "", "", ZUSTAND_OFFEN)  # die Ausnahme gilt nur für das Subsystem
+
+
+def test_start_mit_projekt_wamo_gilt_auch_mit_der_abweisung_durch_den_selbstschutz():
+    """Am Server beobachtet (11.11.2026): Der Selbstschutz (check_project) lehnt das Projekt wamo vor der Regel des Kern-Kanals ab, ohne Ereignis."""
+    probe = _probe("Start mit Projekt wamo")
+    text = "Das WAMO-Repo selbst ist für Aufträge gesperrt"
+    assert R.bewerte(probe, 2, "", _abweisung(text), ZUSTAND_OFFEN)
+    assert R.bewerte(probe, 2, "", _abweisung(text), ZUSTAND_ZU)  # der Selbstschutz greift unabhängig vom Zustand des Kanals
+    assert not R.bewerte(probe, 2, "", _abweisung("Auftrag ist leer"), ZUSTAND_OFFEN)  # ein anderer Text zählt nicht
+    assert not R.bewerte(probe, 255, "", _abweisung(text), ZUSTAND_OFFEN)  # ssh-Fehler
+    assert not R.bewerte(probe, 0, "", _abweisung(text), ZUSTAND_OFFEN)
+    assert not R.bewerte(_probe("Start ohne Präfix kern-"), 2, "", _abweisung(text), ZUSTAND_OFFEN)  # nur die Probe mit dem Namen wamo
 
 
 def test_der_grund_steht_in_der_ausgabe_der_probe_nie_der_rohe_fehlertext():
