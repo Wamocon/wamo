@@ -345,3 +345,15 @@ test("der Hinweis unter der Eingabe nennt zuerst die Freigabe, dann die laufende
   assert.match(eingabeHinweis({ entscheidungen: 1, werkzeugLaeuft: true }) ?? "", /Freigaben gibst du nur mit Klick/);
   assert.match(eingabeHinweis({ entscheidungen: 0, werkzeugLaeuft: true }) ?? "", /unterbricht die Arbeit/);
 });
+
+test("Start beim Tippen: 'Verbinde' und 'Bereit, Mikrofon aus' stehen in Worten, Freigaben und Kernhinweis haben Vorrang", () => {
+  const ruhig = { entscheidungen: 0, werkzeugLaeuft: false };
+  assert.equal(eingabeHinweis({ ...ruhig, stillWartet: true }), "Verbinde, deine Nachricht wird gleich gesendet.");
+  assert.match(eingabeHinweis({ ...ruhig, stillBereit: true }) ?? "", /Bereit, Mikrofon aus/);
+  assert.match(eingabeHinweis({ ...ruhig, stillBereit: true }) ?? "", /Text/);
+  // Freigabe vor allem anderen, dann der Kernhinweis, dann Verbinden, dann laufende Arbeit, zuletzt der Zustand der stillen Sitzung
+  assert.match(eingabeHinweis({ entscheidungen: 1, werkzeugLaeuft: false, stillWartet: true, stillBereit: true }) ?? "", /Freigaben gibst du nur/);
+  assert.match(eingabeHinweis({ ...ruhig, kernOhneText: true, stillBereit: true }) ?? "", /keinen getippten Text/);
+  assert.match(eingabeHinweis({ entscheidungen: 0, werkzeugLaeuft: true, stillBereit: true }) ?? "", /unterbricht die Arbeit/);
+  assert.match(eingabeHinweis({ ...ruhig, stillWartet: true, stillBereit: true }) ?? "", /^Verbinde/);
+});

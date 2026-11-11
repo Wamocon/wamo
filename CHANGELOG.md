@@ -8,6 +8,13 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Start beim Tippen (Komfort-Paket KP-1A, nur Oberfläche, Schalter „Still starten beim Tippen“ je Gerät und Person, Standard aus): Der erste
+  Tastendruck im Eingabefeld startet eine Sitzung ohne Mikrofon (neuer `StillMedienManager`, denn der Standardmanager der
+  Transportbibliothek öffnet das Mikrofon beim Verbinden immer), Antworten kommen als Text, die erste Zeile wird gehalten und genau einmal
+  gesendet. Nie auf Laborkonten, nie im verdeckten Tab, höchstens 6 Starts je 10 Minuten, nach einer Übernahme durch ein anderes Fenster
+  erst nach „Hier übernehmen“. Leerlauf nach 20 Minuten nur für so gestartete Sitzungen und nie bei PC-Steuerung, Karte, Auftrag, Vorgang,
+  Live-Bild oder Antwort. Betreiber: Eine stille Sitzung zählt für die Ruheprüfung und `ausleiten` als laufende Sitzung (README, Abschnitt
+  „Start beim Tippen“).
 - Entwicklungsaufträge im Betrieb, Büro (vorbereitet, standardmäßig aus, nicht ausgerollt; Zweig `feat/entwicklung-im-betrieb`, Konzept
   `docs/entwicklung-im-betrieb.md`, Schnittstellen und Pakete `docs/entwicklung-im-betrieb-arbeitsliste.md`). Kern: Im Büro zählt nur der
   neue Schalter `WAMO_ENTWICKLUNG_BUERO` (Standard aus), der alte `WAMO_ENTWICKLUNG` bleibt in den Units `aus` und wird dort ignoriert.

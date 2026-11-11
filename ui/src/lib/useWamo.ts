@@ -414,7 +414,7 @@ export function useWamo(): WamoAktionen {
   // Verbindungs-Watchdog (lib/verbindungsfrist.ts): ohne Betriebsmeldung nach 20 s Abbruch mit Meldung
   const fristRef = useRef<ReturnType<typeof erstelleFrist> | null>(null);
   // Start beim Tippen (lib/stillStart.ts): Zeitpunkt der letzten Eingabe (Date.now) für die Leerlaufregel, Zeiten der letzten stillen Starts
-  const letzteEingabe = useRef(Date.now());
+  const letzteEingabe = useRef(0); // gesetzt beim Start und bei jeder Eingabe
   const startZeiten = useRef<number[]>([]);
   // Der Nutzer (Kennung für den Schalter, E-Mail für die Laborsperre) bleibt aus der Supabase-Sitzung aktuell
   useNutzerHalten();
