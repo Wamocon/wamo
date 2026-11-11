@@ -98,15 +98,16 @@ mac = "00:a1:59:72:7a:92"        # Wake-on-LAN (am Fernseher "Einschalten über 
 max_lautstaerke = 50
 eingaenge = ["tv", "hdmi1", "hdmi2", "hdmi3", "hdmi4"]
 
-# Zweiter Fernseher "85 Zoll QLED" (AirPlay, im Oktober 2026 einmal gesehen, Adresse unbekannt, vermutlich Samsung):
-# [[geraet]]
-# kennung = "fernseher-2"
-# name = "Fernseher 85 Zoll QLED"
-# klasse = "fernseher"
-# treiber = "samsung-tv"
-# adresse = "192.168.178.x"
-# mac = "aa:bb:cc:dd:ee:ff"
-# max_lautstaerke = 50
+# Zweiter Fernseher: Samsung 85 Zoll QLED (GQ85Q70DATXZG, Tizen, im WLAN), am 11.11.2026 gefunden und gekoppelt. Kopplung am Fernseher
+# bestätigen, Wake-on-LAN braucht am Fernseher "Einschalten über Mobilgerät" und die WLAN-MAC.
+[[geraet]]
+kennung = "fernseher-2"
+name = "Fernseher Samsung 85 Zoll QLED"
+klasse = "fernseher"
+treiber = "samsung-tv"
+adresse = "192.168.178.45"
+mac = "f4:dd:06:13:6c:44"
+max_lautstaerke = 50
 
 [[geraet]]
 kennung = "steckdose-1"

@@ -144,6 +144,11 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Gerätedienst, Fernseher: Der zweite Fernseher (Samsung 85 Zoll QLED GQ85Q70DATXZG, im WLAN, Adresse in `geraete.toml`) war nur als
+  auskommentierte Vorlage vorhanden, WAMO fand deshalb nur den LG. Am 11.11.2026 am Server als `fernseher-2` eingetragen, Netzfreigabe des
+  Dienstes neu erzeugt (`wamo-geraete-einrichten.sh`) und beide Fernseher gekoppelt (`wamo_geraete.koppeln`). Die Vorlage `geraete.toml.example`
+  führt den Eintrag jetzt. Außerdem entschlüsselt der Treiber den Namen, den Tizen als HTML liefert (`85&quot; QLED`), vor der engen Zeichenliste:
+  WAMO sagte "85quot QLED", jetzt "85 QLED" (Test `test_samsung_name_mit_html_zeichen_wird_lesbar`).
 - Testlabor, Integration der Stränge K1, K2 und S (Zweig `labor/int`, nicht ausgerollt; Sicherheitsreview des Gesamtstands). Der Klick auf eine
   Labor-Freigabekarte (`freigabe` mit job `labor`) erreicht jetzt `LaborFreigaben`: `build_session` hängt den Entscheider in die Annahme
   (`LaborSitzung.freigabe`), vorher blieb jeder Klick wirkungslos. Die Erlaubnisliste der Werkzeuge wird für das Endergebnis geprüft, nach den

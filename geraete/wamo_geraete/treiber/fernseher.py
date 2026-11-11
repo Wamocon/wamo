@@ -15,6 +15,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -82,13 +83,19 @@ async def _geraeteinfo(geraet: Geraet) -> dict | None:
     return d.get("device") if isinstance(d, dict) and isinstance(d.get("device"), dict) else None
 
 
+def _tv_name(wert: object) -> str:
+    """Name vom Fernseher: Tizen liefert HTML-Zeichen ("85&quot; QLED"). Erst entschlüsseln, dann gilt wie überall nur die enge
+    Zeichenliste von text.name (kein Zeichen, das eine Kennzeichnung schließen könnte, kommt durch)."""
+    return name(html.unescape(wert) if isinstance(wert, str) else wert, 32)
+
+
 async def status(geraet: Geraet) -> dict:
     info = await _geraeteinfo(geraet)
     if info is None:
         return {"erreichbar": False, "an": False, "hinweis": "aus oder im Tiefschlaf",
                 "gekoppelt": kopplung_laden(geraet) is not None}
     an = str(info.get("PowerState", "on")).lower() == "on"
-    erg = {"erreichbar": True, "an": an, "modell": name(info.get("modelName"), 32), "name": name(info.get("name"), 32),
+    erg = {"erreichbar": True, "an": an, "modell": name(info.get("modelName"), 32), "name": _tv_name(info.get("name")),
            "gekoppelt": kopplung_laden(geraet) is not None}
     if an:
         try:

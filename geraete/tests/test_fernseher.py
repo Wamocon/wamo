@@ -107,3 +107,26 @@ async def test_samsung_ohne_kopplung(monkeypatch):
         await fernseher.taste(samsung, "hdmi1")
     with pytest.raises(Abgelehnt):
         await fernseher.taste(samsung, "KEY_FACTORY")
+
+
+async def test_samsung_name_mit_html_zeichen_wird_lesbar(monkeypatch):
+    """Am Fernseher beobachtet (11.11.2026): Tizen liefert den Namen als "85&quot; QLED", WAMO sagte "85quot QLED"."""
+    samsung = geraet_aus({"kennung": "fernseher-2", "klasse": "fernseher", "treiber": "samsung-tv", "adresse": "192.168.178.45",
+                          "mac": "f4:dd:06:13:6c:44", "max_lautstaerke": 50})
+
+    async def info(_g):
+        return {"PowerState": "on", "modelName": "GQ85Q70DATXZG", "name": "85&quot; QLED"}
+
+    async def lautstaerke(*_a, **_k):
+        return 18
+
+    monkeypatch.setattr(fernseher, "_geraeteinfo", info)
+    monkeypatch.setattr(fernseher.upnp, "lautstaerke_lesen", lautstaerke)
+    erg = await fernseher.status(samsung)
+    assert erg["name"] == "85 QLED" and erg["modell"] == "GQ85Q70DATXZG" and erg["lautstaerke"] == 18
+    for roh, erwartet in (("Wohnzimmer &amp; Küche", "Wohnzimmer Kche"), ("&lt;script&gt;", "script"), ("A&#34;B", "AB")):
+        async def anders(_g, roh=roh):
+            return {"PowerState": "on", "name": roh}
+
+        monkeypatch.setattr(fernseher, "_geraeteinfo", anders)
+        assert (await fernseher.status(samsung))["name"] == erwartet  # nach dem Entschlüsseln gilt weiter nur die enge Zeichenliste
