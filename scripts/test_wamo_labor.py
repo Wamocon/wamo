@@ -7,9 +7,11 @@ Server läuft (REMOTE), wird in-process mit einer Attrappe für psql und GoTrue 
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import sys
+import types
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -21,6 +23,15 @@ import wamo_labor as wl  # noqa: E402
 WURZEL = Path(__file__).resolve().parent.parent
 UID = "00000000-0000-4000-8000-00000000b001"
 PASSWORT_MARKER = "PASSWORT_NOETIG"
+DB_PASSWORT = "DBPASSWORT-nie-ausgeben-0123456789"
+ADMIN_DSN = f"postgresql://wamo_admin.wamo:{DB_PASSWORT}@db.invalid:55322/postgres?sslmode=verify-full"
+
+
+@pytest.fixture(autouse=True)
+def verwaltungszugang(monkeypatch, tmp_path):
+    """Die Anmeldung der Rolle wamo_admin kommt aus WAMO_ADMIN_DATABASE_URL; die echten .env-Dateien werden nie gelesen."""
+    monkeypatch.setenv(wl.ADMIN_DSN_ENV, ADMIN_DSN)
+    monkeypatch.setattr(wl, "ENV_DATEIEN", (tmp_path / "keine-voice-core.env", tmp_path / "keine-wurzel.env"))
 
 
 # ---------- Hilfen ----------
@@ -78,14 +89,116 @@ def test_passwort_ist_lang_zufaellig_und_urlsicher():
     assert re.fullmatch(r"[A-Za-z0-9_-]{24}", a)
 
 
-# ---------- Das SQL: nur die Verwaltungsrolle schreibt ----------
+# ---------- Das SQL: nur die Verwaltungsrolle schreibt, als Login-Rolle und nie per SET ROLE (F1) ----------
 
-def test_jedes_sql_ausser_der_kontosuche_laeuft_als_verwaltungsrolle():
+def test_kein_sql_nimmt_per_set_role_eine_rolle_an():
+    """postgres darf im Supabase-Image keine Rolle per SET ROLE annehmen (kein Superuser, kein SET auf wamo_admin)."""
     for name, sql in wl.SQL.items():
-        if name == "konto_suchen":
-            assert sql.lstrip().lower().startswith("select id from auth.users"), "nur lesen, nur die Kennung des Kontos"
+        assert not re.search(r"\b(set\s+(local\s+|session\s+)?role|reset\s+role|set\s+session\s+authorization)\b", sql, re.I), name
+
+
+def test_nur_die_kontosuche_laeuft_als_betriebsrolle_und_sie_liest_nur():
+    assert wl.ALS_POSTGRES == ("konto_suchen",)
+    assert wl.SQL["konto_suchen"].lstrip().lower().startswith("select id from auth.users"), "nur lesen, nur die Kennung des Kontos"
+
+
+class Lauf:
+    """Attrappe für subprocess.run (im Programm auf dem Server und im Aufruf von ssh): merkt sich Befehl, Umgebung und Eingabe."""
+
+    def __init__(self, stdout: str = "ok\n", stderr: str = "", returncode: int = 0):
+        self.aufrufe: list[tuple[list[str], dict | None, str | None]] = []
+        self._antwort = types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def __call__(self, cmd, **kw):
+        self.aufrufe.append((list(cmd), kw.get("env"), kw.get("input")))
+        return self._antwort
+
+
+def sql_lauf(monkeypatch, anweisung: str, **vars):
+    """Führt eine Anweisung des Serverprogramms mit der Attrappe aus und gibt (Befehl, Umgebung, Eingabe) zurück."""
+    ns = remote_namensraum()
+    lauf_ = Lauf()
+    monkeypatch.setattr(ns["subprocess"], "run", lauf_)
+    ns["sql_ausfuehren"](wl.SQL[anweisung], DB_PASSWORT, **vars)
+    assert len(lauf_.aufrufe) == 1
+    return lauf_.aufrufe[0]
+
+
+def test_jede_anweisung_ausser_der_kontosuche_laeuft_als_login_rolle_wamo_admin(monkeypatch):
+    for name in wl.SQL:
+        if name in wl.ALS_POSTGRES:
             continue
-        assert sql.lstrip().startswith("set local role wamo_admin;"), name
+        cmd, env, eingabe = sql_lauf(monkeypatch, name, schema="wamo_dev", uid=UID, art="platz", platz="3", name="Gast", ab="", bis="")
+        assert cmd[cmd.index("-U") + 1] == "wamo_admin", name
+        assert cmd[cmd.index("-h") + 1] == "127.0.0.1", name  # Anmeldung über TCP, nicht über die Betriebsanmeldung des Sockets
+        assert eingabe == wl.SQL[name], name
+
+
+def test_die_kontosuche_laeuft_als_postgres_ohne_das_passwort_der_verwaltungsrolle(monkeypatch):
+    cmd, env, _ = sql_lauf(monkeypatch, "konto_suchen", email="labor-03@wamo.test")
+    assert cmd[cmd.index("-U") + 1] == "postgres" and "PGPASSWORD" not in cmd
+    assert env is None or "PGPASSWORD" not in env
+
+
+def test_das_passwort_geht_nur_ueber_die_umgebung_von_docker_und_nie_in_die_argumente(monkeypatch):
+    cmd, env, eingabe = sql_lauf(monkeypatch, "status", schema="wamo_dev")
+    assert cmd[cmd.index("-e") + 1] == "PGPASSWORD"  # ohne Wert: docker nimmt ihn aus der Umgebung des Aufrufers
+    assert env["PGPASSWORD"] == DB_PASSWORT
+    assert DB_PASSWORT not in " ".join(cmd) and DB_PASSWORT not in eingabe
+
+
+def test_ohne_passwort_der_verwaltungsrolle_wird_nichts_ausgefuehrt(monkeypatch):
+    ns = remote_namensraum()
+    lauf_ = Lauf()
+    monkeypatch.setattr(ns["subprocess"], "run", lauf_)
+    with pytest.raises(ns["Fehler"]):
+        ns["sql_ausfuehren"](wl.SQL["status"], None, schema="wamo_dev")
+    assert lauf_.aufrufe == []
+
+
+def test_die_anmeldung_kommt_aus_der_dsn_der_verwaltungsrolle():
+    assert wl.admin_passwort() == DB_PASSWORT
+
+
+def test_ohne_dsn_oder_mit_der_dsn_einer_anderen_rolle_bricht_das_skript_ab_ohne_den_wert_zu_nennen(monkeypatch):
+    monkeypatch.delenv(wl.ADMIN_DSN_ENV)
+    with pytest.raises(wl.Fehler, match="WAMO_ADMIN_DATABASE_URL"):
+        wl.admin_passwort()
+    kern = "GEHEIMKERN123"
+    for dsn in (f"postgresql://wamo_core.wamo:{kern}@db.invalid:55322/postgres", f"postgresql://postgres:{kern}@db.invalid/postgres",
+                "postgresql://wamo_admin.wamo@db.invalid/postgres", "kein-dsn"):
+        monkeypatch.setenv(wl.ADMIN_DSN_ENV, dsn)
+        with pytest.raises(wl.Fehler) as e:
+            wl.admin_passwort()
+        assert kern not in str(e.value) and "db.invalid" not in str(e.value), dsn
+
+
+def test_die_dsn_darf_auch_in_der_env_datei_stehen_die_umgebung_hat_vorrang(monkeypatch, tmp_path):
+    voice_core, wurzel = tmp_path / "vc.env", tmp_path / "root.env"
+    voice_core.write_text("# Kommentar\nWAMO_DATABASE_URL=postgresql://wamo_core.wamo:x@h/p\n", encoding="utf-8")
+    wurzel.write_text(f"export {wl.ADMIN_DSN_ENV}='postgresql://wamo_admin.wamo:AUSDATEI@h/p'\n", encoding="utf-8")
+    monkeypatch.setattr(wl, "ENV_DATEIEN", (voice_core, wurzel))
+    assert wl.admin_passwort() == DB_PASSWORT  # die Umgebung (Fixture) gewinnt
+    monkeypatch.delenv(wl.ADMIN_DSN_ENV)
+    assert wl.admin_passwort() == "AUSDATEI"
+
+
+def test_run_remote_sendet_das_passwort_nur_ueber_stdin_und_gibt_es_nie_aus(monkeypatch):
+    lauf_ = Lauf(stdout=f"Treffer {DB_PASSWORT}\n", stderr=f"Fehler {DB_PASSWORT}", returncode=1)
+    monkeypatch.setattr(wl.subprocess, "run", lauf_)
+    ergebnis = wl.run_remote("wamo-sokrates2", {"aktion": "status", "schema": "wamo_dev", "ausfuehren": False})
+    cmd, _, eingabe = lauf_.aufrufe[0]
+    assert DB_PASSWORT not in " ".join(cmd)
+    assert json.loads(eingabe)["db_passwort"] == DB_PASSWORT
+    assert DB_PASSWORT not in ergebnis.stdout and DB_PASSWORT not in ergebnis.stderr and ergebnis.code == 1
+
+
+def test_ohne_dsn_kein_aufruf_des_servers_und_eine_klare_meldung(monkeypatch):
+    monkeypatch.delenv(wl.ADMIN_DSN_ENV)
+    lauf_ = Lauf()
+    monkeypatch.setattr(wl.subprocess, "run", lauf_)
+    code, aus, fehler = lauf(["sperren", "--kennung", "labor-03", "--ausfuehren"], wl.run_remote)
+    assert code == 1 and lauf_.aufrufe == [] and "WAMO_ADMIN_DATABASE_URL" in fehler
 
 
 def test_das_sql_schreibt_nie_etwas_ausser_dem_vorgesehenen():
@@ -246,15 +359,21 @@ def test_fehler_des_servers_geben_einen_fehlercode_und_keinen_geheimtext(tmp_pat
 # ---------- Das Programm auf dem Server (REMOTE), in-process mit Attrappen ----------
 
 class Psql:
-    def __init__(self, antworten: dict[str, list[str] | str]):
+    """Attrappe für psql auf dem Server. Eine Antwort der Form ("fehler", text) löst den Fehler des Serverprogramms aus."""
+
+    def __init__(self, antworten: dict[str, list | str]):
         self.antworten = {k: (list(v) if isinstance(v, list) else [v]) for k, v in antworten.items()}
         self.aufrufe: list[tuple[str, dict]] = []
+        self.fehlerklasse = RuntimeError  # wird von verarbeite() auf die Klasse des Serverprogramms gesetzt
 
     def __call__(self, sql: str, **vars):
         name = next(n for n, s in wl.SQL.items() if s == sql)
         self.aufrufe.append((name, vars))
         antwort = self.antworten.get(name, [""])
-        return antwort.pop(0) if len(antwort) > 1 else antwort[0]
+        wert = antwort.pop(0) if len(antwort) > 1 else antwort[0]
+        if isinstance(wert, tuple) and wert[0] == "fehler":
+            raise self.fehlerklasse(wert[1])
+        return wert
 
 
 def remote_namensraum():
@@ -263,11 +382,12 @@ def remote_namensraum():
     return ns
 
 
-def verarbeite(d: dict, psql: Psql, konto=None):
+def verarbeite(d: dict, psql: Psql, konto=None, warte=None):
     ns = remote_namensraum()
+    psql.fehlerklasse = ns["Fehler"]
     ausgabe = io.StringIO()
     with redirect_stdout(ausgabe), redirect_stderr(ausgabe):
-        code = ns["verarbeite"](d, psql, konto or (lambda email, passwort: UID))
+        code = ns["verarbeite"](d, psql, konto or (lambda email, passwort: UID), warte or (lambda sekunden: None))
     return code, ausgabe.getvalue()
 
 
@@ -359,6 +479,48 @@ def test_remote_loeschen_alle_geht_jedes_laborprofil_durch():
     code, aus = verarbeite({"aktion": "loeschen", "schema": "wamo_dev", "alle": True, "ausfuehren": True}, psql)
     assert code == 0 and "labor-01" in aus and "labor-schau" in aus
     assert [n for n, _ in psql.aufrufe] == ["ids_alle", "loeschen", "zaehlen", "loeschen", "zaehlen"]
+
+
+SPERRFRIST = ("fehler", "Datenbankfehler: ERROR:  labor_loeschen: Sperrfrist, noch etwa 95 Sekunden: das Profil wurde vor weniger als "
+                        "3 Minuten geändert")
+LOESCHEN = {"aktion": "loeschen", "schema": "wamo_dev", "art": "platz", "platz": "3", "ausfuehren": True}
+
+
+def test_remote_loeschen_wartet_in_der_sperrfrist_und_versucht_es_erneut():
+    """F2: Die Datenbank lehnt in den ersten 3 Minuten nach einer Änderung des Profils ab (der Kern kennt das Profil bis zu
+    2 Minuten aus dem Zwischenspeicher). Das Skript wartet die genannte Zeit plus 5 Sekunden und ruft die Funktion noch einmal auf."""
+    psql = Psql({"ids": f"labor-03|{UID}", "loeschen": [SPERRFRIST, '{"turns": 4}'], "zaehlen": '{"turns": 0}'})
+    gewartet: list[int] = []
+    code, aus = verarbeite(LOESCHEN, psql, warte=gewartet.append)
+    assert code == 0 and gewartet == [100]
+    assert [n for n, _ in psql.aufrufe] == ["ids", "loeschen", "loeschen", "zaehlen"]
+    assert "Sperrfrist" in aus and "100 Sekunden" in aus and "turns 4" in aus
+
+
+def test_remote_loeschen_gibt_nach_drei_versuchen_mit_klarer_meldung_auf():
+    psql = Psql({"ids": f"labor-03|{UID}", "loeschen": [SPERRFRIST]})  # die letzte Antwort bleibt für jeden weiteren Aufruf
+    gewartet: list[int] = []
+    code, aus = verarbeite(LOESCHEN, psql, warte=gewartet.append)
+    assert code == 1 and len(gewartet) == 2 and [n for n, _ in psql.aufrufe].count("loeschen") == 3
+    assert "Sperrfrist" in aus and "spaeter" in aus.lower()
+
+
+def test_remote_loeschen_wartet_hoechstens_200_sekunden_und_nur_bei_der_sperrfrist():
+    psql = Psql({"ids": f"labor-03|{UID}", "loeschen": [("fehler", "ERROR:  labor_loeschen: Sperrfrist, noch etwa 9999 Sekunden"),
+                                                         '{"turns": 1}'], "zaehlen": '{"turns": 0}'})
+    gewartet: list[int] = []
+    assert verarbeite(LOESCHEN, psql, warte=gewartet.append)[0] == 0 and gewartet == [200]
+    # jeder andere Fehler (zum Beispiel noch freigeschaltet) wird sofort gemeldet, ohne Warten und ohne zweiten Aufruf
+    psql = Psql({"ids": f"labor-03|{UID}", "loeschen": [("fehler", "ERROR:  labor_loeschen: das Laborprofil ist noch freigeschaltet")]})
+    gewartet = []
+    code, aus = verarbeite(LOESCHEN, psql, warte=gewartet.append)
+    assert code == 1 and gewartet == [] and [n for n, _ in psql.aufrufe].count("loeschen") == 1 and "freigeschaltet" in aus
+
+
+def test_remote_gibt_das_passwort_der_verwaltungsrolle_nie_aus_auch_nicht_im_fehlerfall():
+    psql = Psql({"ids": f"labor-03|{UID}", "loeschen": [("fehler", f"Datenbankfehler: Anmeldung mit {DB_PASSWORT} abgelehnt")]})
+    code, aus = verarbeite({**LOESCHEN, "db_passwort": DB_PASSWORT}, psql)
+    assert code == 1 and DB_PASSWORT not in aus
 
 
 def test_remote_loeschen_trockenlauf_ruft_nur_zaehlen_auf():
