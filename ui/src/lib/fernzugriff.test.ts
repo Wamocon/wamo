@@ -6,9 +6,12 @@ import {
   alsStart,
   alsUebersicht,
   ANSAGE_SCHWELLEN,
+  CODE_HILFE,
   eingabePruefen,
+  EINLEITUNG,
   endeMeldung,
   hinweisZeilen,
+  modusNachFehler,
   restSekunden,
   restzeitAnsage,
   restzeitKnapp,
@@ -17,6 +20,7 @@ import {
   seitenUrlPruefen,
   sortiereZiele,
   startFehler,
+  startFokus,
   startMeldung,
   STATUS_INFO,
   uhrzeit,
@@ -311,4 +315,39 @@ test("Meldungen ohne Gedankenstrich", () => {
   for (const t of texte) assert.ok(!/[–—]|\s-\s/.test(t), t);
   assert.match(startMeldung("Sokrates-2", false), /blockiert/);
   assert.match(endeMeldung("Sokrates-2", false), /nicht bestätigt/);
+});
+
+// ---------- KP-2: der Code nur auf Verlangen des Kerns ----------
+test("Dialog beginnt ohne Codefeld und bekommt es nur, wenn der Kern den Code verlangt", () => {
+  const verlangt = startFehler({ status: 403, code: "zweiter_faktor_zu_alt", text: "Deine Anmeldung ist älter als 24 Stunden." });
+  assert.equal(modusNachFehler("klick", verlangt), "code");
+  const andere = [
+    startFehler({ status: 409, text: "Sokrates-2 ist belegt." }),
+    startFehler({ status: 404, text: "Dieses Ziel gibt es nicht." }),
+    startFehler({ status: 429, text: "Zu viele Anfragen" }),
+    startFehler({ status: 503, text: "Gateway" }),
+    startFehler({ status: 0, text: "Kern nicht erreichbar" }),
+    startFehler({ status: 403, code: "andere_sache", text: "Nur für Admins" }),
+    startFehler({ status: 403, text: "Nur für Admins" }),
+  ];
+  for (const f of andere) assert.equal(modusNachFehler("klick", f), "klick", f.text);
+  // ein einmal gezeigtes Codefeld bleibt bis zum Schließen des Dialogs, auch nach einem anderen Fehler
+  assert.equal(modusNachFehler("code", andere[0]), "code");
+});
+
+test("Fokus beim Öffnen: nie auf Verbinden, das braucht einen echten Klick (Befund M7)", () => {
+  assert.equal(startFokus("klick"), "abbrechen");
+  assert.equal(startFokus("code"), "code");
+  for (const m of ["klick", "code"] as const) assert.notEqual(startFokus(m) as string, "verbinden");
+});
+
+test("Texte: Einleitung nennt Verbinden, den Code nur bei zu alter Anmeldung und die Meldung an alle Admins", () => {
+  assert.match(EINLEITUNG, /„Verbinden“/);
+  assert.match(EINLEITUNG, /Ist deine Anmeldung zu alt, fragt der Dialog den Code/);
+  assert.match(EINLEITUNG, /allen Admins gemeldet/);
+  assert.match(EINLEITUNG, /eine Stunde/);
+  assert.doesNotMatch(EINLEITUNG, /aktuellen Code|Jede Sitzung braucht|bei jedem Start/);
+  assert.match(CODE_HILFE, /höchstens zwei Minuten/);
+  assert.doesNotMatch(CODE_HILFE, /jeder Start|jedem Start|auch wenn du dich gerade angemeldet/i);
+  for (const t of [EINLEITUNG, CODE_HILFE]) assert.ok(!/[–—]|\s-\s/.test(t), t);
 });

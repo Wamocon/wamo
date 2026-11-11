@@ -155,8 +155,8 @@ FERNZUGRIFF_SCHEMA = FunctionSchema(
     name="fernzugriff_oeffnen",
     description=(
         "Öffnet in der Oberfläche den Fernzugriff auf die Sparks (Sokrates 1, Sokrates 2, Caesar), damit der Nutzer sich den "
-        "Bildschirm eines Sparks ansieht. Startet nie selbst eine Sitzung: Der Nutzer wählt dort das Ziel und bestätigt mit dem "
-        "Code der Authenticator-App. Nur aufrufen, wenn der Nutzer einen Spark sehen oder bedienen will."
+        "Bildschirm eines Sparks ansieht. Startet nie selbst eine Sitzung: Der Nutzer wählt dort das Ziel und klickt selbst auf "
+        "Verbinden. Nur aufrufen, wenn der Nutzer einen Spark sehen oder bedienen will."
     ),
     properties={},
     required=[],
@@ -397,10 +397,11 @@ def register_tools(
         await params.result_callback({"angezeigt": True})
 
     async def fernzugriff_oeffnen(params: FunctionCallParams):
-        # Nur die Aufforderung an die Oberfläche, den Dialog zu zeigen. Die Sitzung startet der Nutzer dort selbst, mit frischem Code.
+        # Nur die Aufforderung an die Oberfläche, den Abschnitt zu zeigen. Die Sitzung startet der Nutzer dort selbst, mit einem echten
+        # Klick auf Verbinden. Seit KP-2 gibt es meist kein Codefeld mehr: Der Klick der Person ist die Schranke (Befund M7).
         await params.llm.push_frame(RTVIServerMessageFrame(data={"type": "fernzugriff_oeffnen"}))
         logger.info("fernzugriff: Dialog in der Oberfläche angefordert")
-        await params.result_callback({"geoeffnet": True, "hinweis": "Der Nutzer wählt den Spark und gibt den Code der Authenticator-App ein."})
+        await params.result_callback({"geoeffnet": True, "hinweis": "Der Nutzer wählt den Spark und klickt selbst auf Verbinden."})
 
     standard = []
     if frei("aktuelle_zeit"):

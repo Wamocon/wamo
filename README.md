@@ -728,6 +728,30 @@ Der Router bleibt ausschließlich lesbar. Mögliche Schreibaktionen stehen nur a
   noch einmal an, auch wenn der neue Zug der Person schon beantwortet wird. Die Turn-Wache vor und hinter dem Modell
   verwirft solche Anfragen (gleicher Verlauf wie zuletzt, oder der Verlauf endet mit WAMOs Antwort).
 
+### Start beim Tippen (stiller Start, nur Oberfläche)
+
+Wer in den Einstellungen unter „Sprache und Ton“ den Schalter „Still starten beim Tippen“ einschaltet (je Gerät und je Person, Standard
+aus, kein Server-Zustand, `localStorage`-Schlüssel `wamo.stillStart.<user_id>`), muss „Gespräch starten“ nicht mehr klicken: Der erste
+Tastendruck im Eingabefeld startet eine Sitzung ohne Mikrofon (der Medienmanager `ui/src/lib/stillMedien.ts` öffnet es erst bei „Sprechen“,
+kein `getUserMedia`, keine Audiospur am Sender), die Wiedergabe bleibt stumm, Antworten kommen als Text (`audio_response: false`). Die erste
+Zeile wird gehalten und genau einmal gesendet, sobald die Sitzung steht. Der Mikrofonknopf und „Gespräch starten“ machen aus der stillen
+Sitzung in derselben Sitzung ein Gespräch mit Stimme. Die Logik steht in `ui/src/lib/stillStart.ts`.
+
+- **Nie auf Laborplätzen:** Konten `labor-NN@wamo.test` und `labor-schau@wamo.test` starten nie von selbst (die Oberfläche kennt das
+  Laborprofil vor dem Verbinden sonst nicht). Die Ablehnung im Kern selbst gibt es noch nicht, sie kommt mit KP-1C.
+- **Leerlauf:** Eine per Tippen gestartete Sitzung endet nach 20 Minuten ohne Eingabe (Konstante `LEERLAUF_MS`), aber nie, solange die
+  PC-Steuerung an ist, eine Karte offen ist oder ein Entwicklungsauftrag, ein Vorgang, das Live-Bild oder eine Antwort läuft. Eine mit
+  „Gespräch starten“ begonnene Sitzung bleibt unverändert.
+- **Verdrängung (Grenze):** Der Kern führt je Profil eine Sitzung, eine neue löst die laufende ab (`WAMO_SITZUNG_EINZELN`). Die
+  Oberfläche erfährt vor dem Start nichts von einer Sitzung auf einem anderen Gerät, das Tippen kann sie deshalb dort verdrängen. Der
+  Schalter gehört nur auf ein Gerät je Person (Hinweis in der Einstellung). Erkennbar ist nur der umgekehrte Fall: Hat eine neuere Sitzung
+  die hier abgelöst, startet das Tippen nicht von selbst neu, sondern zeigt „WAMO läuft in einem anderen Fenster“ mit „Hier übernehmen“.
+  Eine Abfrage im Kern, die das vorher zeigt, gehört in KP-1C.
+- **Hinweis für Betreiber:** Eine still gestartete Sitzung ist für den Server eine ganz normale Sitzung. Bis zu ihrem Ende (spätestens 20
+  Minuten nach der letzten Eingabe, bei PC-Steuerung oder offener Karte länger) zählt sie für die Ruheprüfung und für `ausleiten` in
+  `infra/sokrates2/wamo-core-slots.sh` als laufende Sitzung. `umstellen` und `ausleiten` warten oder scheitern an der Ruhe, solange
+  jemand getippt hat. Das gilt schon ab diesem Paket.
+
 ### Stimme messen (Szenariotest)
 
 Der Test spielt über ein virtuelles Mikrofon Sprechproben und Geräusche gegen einen lokalen Kern (Unterwegs) und nimmt
@@ -1249,8 +1273,9 @@ Der Admin kann von unterwegs den Bildschirm von Sokrates-1, Sokrates-2 und Caesa
 Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGuard ins Büronetz, der Zugang läuft über WAMO:
 
 - **Einstieg:** Einstellungen, Abschnitt Fernzugriff (nur Admin). Karte mit den Zielen und ihrem Zustand (frei, belegt, nicht
-  erreichbar). „Verbinden“ fragt den Code der Authenticator-App ab (höchstens 120 Sekunden alt, bei jedem Start neu) und öffnet
-  die Sitzung in einem eigenen Tab. Die Karte zeigt die Restzeit und trennt auf Knopfdruck.
+  erreichbar). „Verbinden“ startet ohne Code, der Code der Anmeldung genügt (Entscheidung vom 11.11.2026), und öffnet die Sitzung
+  in einem eigenen Tab. Nur wenn die Anmeldung zu alt ist (Stufenschalter `WAMO_RD_ANMELDUNG_MAX_MIN`), verlangt der Kern einen
+  frischen Code und der Dialog zeigt das Codefeld. Die Karte zeigt die Restzeit und trennt auf Knopfdruck.
 - **Grenzen:** 60 Minuten Höchstdauer, 10 Minuten Leerlauf, ein Zuschauer je Ziel, höchstens 3 Sitzungen gleichzeitig, 6 Starts
   je Stunde und Profil. Keine Zwischenablage, kein Laufwerk, kein Drucker, kein Ton, keine Aufzeichnung. Protokolliert werden nur
   wer, welches Ziel, Start, Ende und Grund (Tabelle `rd_sitzungen`, Migration 0015).
@@ -1273,9 +1298,15 @@ Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGua
   `/usr/local/lib/wamo-rd` (Rückweg `--zurueck`).
 - **Einschalten:** `WAMO_RD_AKTIV=ja` im Kern, erst nach dem Einrichten des Gateways (`wamo-rd-einrichten.sh`) und mit den Proben
   aus `wamo_rd_rauchtest.py`. Ohne den Schalter melden die Routen, dass der Fernzugriff nicht eingerichtet ist.
-- **Ein Code, ein Start:** Der Code der Authenticator-App gilt für genau einen Start (die Datenbank lehnt einen schon verwendeten
-  oder älteren Code ab, ein am Gateway gescheiterter Start zählt nicht). Ein zweiter Tunnel mit demselben Sitzungstoken (zweiter
-  Tab oder zweites Gerät) schließt die Sitzung nach 15 Sekunden Schonfrist.
+- **Der Code beim Anmelden genügt (KP-2, Migration 0019):** Der Kern verlangt aal2 mit einem totp-Eintrag im Token, aber keinen frischen
+  Code je Start mehr, und die Datenbank kennt weder die Frist von 120 Sekunden noch „ein Code, ein Start“. `WAMO_RD_ANMELDUNG_MAX_MIN`
+  (Minuten, 1 bis 43200) begrenzt das Alter des Codes der Anmeldung nur für den Fernzugriff; leer oder 0 heißt aus (Standard), jeder
+  ungültige Wert gilt als strengste Stufe (frischer Code wie früher) und schreibt eine Fehlerzeile. Zwei gleichzeitige Starts eines Profils
+  laufen nacheinander, und nach dem Anmelden am Gateway prüft der Kern die Datenbankzeile noch einmal: Es bleibt höchstens ein Zuschauer je
+  Ziel. **Restrisiko:** Ein gestohlenes Token startet jetzt allein Sitzungen, bis die Anmeldung abläuft (Kern 168 Stunden, Browser 24
+  Stunden, App 7 Tage). Dagegen meldet jeder Start sich als Hinweis bei allen Admins (Titel „Fernzugriff gestartet: Ziel“); das ist eine
+  Erkennung, kein Schutz (`docs/remote-desktop.md`, Abschnitt 3.6). Ein zweiter Tunnel mit demselben Sitzungstoken (zweiter Tab oder
+  zweites Gerät) schließt die Sitzung nach 15 Sekunden Schonfrist.
 - **Neustart immer gemeinsam:** `docker restart wamo-rd-web wamo-rd-zugang`. Der Zugangsdienst hält seinen Zustand nur im
   Speicher, Tokens und offene Tunnel liegen im Gateway. Nur den Zugangsdienst neu zu starten ließe Tunnel ohne Zeitlimit weiterlaufen.
 - **Offen (bekannt, bewusst nicht behoben):** Die Zertifikatsprüfung gegen xrdp ist noch nicht angeheftet (`ignore-cert`, im LAN

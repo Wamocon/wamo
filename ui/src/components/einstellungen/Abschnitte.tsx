@@ -18,6 +18,7 @@ import { zurGeraeteverwaltung } from "@/lib/einstellungenHash";
 import { useSelect } from "@/lib/store";
 import { istOnline, wamo, zeigeToast } from "@/lib/wamo";
 import { Block, Daten } from "./Block";
+import { StillStartEinstellung } from "./StillStart";
 
 /** Version aus package.json, zur Build-Zeit eingesetzt (next.config.ts), wie in der Fußzeile der Anmeldeseite. */
 const VERSION = process.env.WAMO_VERSION ?? "0.1.0";
@@ -130,6 +131,9 @@ export const SpracheAbschnitt = memo(function SpracheAbschnitt({
     <>
       <Block titel="Eingabe">
         <MikrofonEinstellung laden={mikrofone} waehlen={mikrofonWaehlen} />
+      </Block>
+      <Block titel="Start beim Tippen">
+        <StillStartEinstellung />
       </Block>
       <Block titel="Hören und Sprechen">
         {modelle && (modelle.stt || modelle.tts) ? (

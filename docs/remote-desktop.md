@@ -20,12 +20,12 @@ Gegliedert nach den Kernfragen A bis F. Bezeichner, Pfade und Env-Namen stehen i
 | B Gateway | **Apache Guacamole** (Apache-2.0) mit dem Modul "Encrypted JSON authentication": keine eigene Benutzerverwaltung, keine Datenbank, Verbindungen entstehen nur aus einer signierten, kurzlebigen Anweisung. Davor ein kleiner **Zugangsdienst** (Python, im selben Compose) und im Kern ein Modul `rd_api.py`, das die vorhandene Zugangskontrolle nutzt (Admin, aal2, Profil). Eigener Port 55446 hinter `wamo-caddy`, eigene Herkunft (kein iframe). |
 | C Unterwegs | Auf Sokrates-2 gibt es **kein WireGuard** (keine Schnittstelle, keine Werkzeuge). WireGuard läuft in der Fritzbox (`infra/sokrates2/README.md`, Abschnitt 6). Das iPhone braucht nur die Fritzbox-Verbindung mit `AllowedIPs = 192.168.178.0/24`. Ob sie schon eingerichtet ist, wurde nicht geprüft. |
 | D Zugangsdaten | Ein Konto `wamo-rd` je Spark, ohne sudo, ohne docker, ohne SSH. Passwort zufällig, nur in `/etc/wamo-rd/ziele.env` (0600) im Zugangsdienst, nie im Browser, Repo oder Log, rotierbar mit einem Skript. Kurzlebige Einmalpasswörter sind möglich, kosten aber einen privilegierten Helfer je Spark und stehen erst in Stufe 8. |
-| E Sicherheit | Größtes Restrisiko: ein Browser mit gültiger Sitzung und frischem Code bedient einen Server-Desktop. Gegenmaßnahmen: Admin, frischer zweiter Faktor, ein Zuschauer je Ziel, Zeitlimit, Inaktivitätsende, kein Zwischenspeicher, keine Aufzeichnung, Quelladresse am Ziel. |
+| E Sicherheit | Größtes Restrisiko: ein Browser mit gültiger Anmeldung bedient einen Server-Desktop (seit 11.11.2026 ohne frischen Code je Start, Abschnitt 3.6). Gegenmaßnahmen: Admin, aal2 beim Anmelden, optional ein Höchstalter der Anmeldung, Hinweis an alle Admins bei jedem Start, ein Zuschauer je Ziel, Zeitlimit, Inaktivitätsende, kein Zwischenspeicher, keine Aufzeichnung, Quelladresse am Ziel. |
 | F Aufwand | Acht Stufen, rund 53 Stunden für Stufe 1 bis 7 (Tabelle in Abschnitt 8). Drei größte Risiken in Abschnitt 9. |
 
 **IQ:** Der Zugang entsteht aus drei getrennten Prüfungen: Kern (wer darf), Zugangsdienst (was genau, wie lange, wohin), Ziel
 (nur von der Gateway-Adresse, nur das Konto `wamo-rd`). Kein Teil vertraut dem anderen mehr als nötig.
-**EQ:** Der Admin am Handy braucht wenige, eindeutige Schritte (Ziel wählen, Code eingeben, Hinweis lesen, los). Andere Personen
+**EQ:** Der Admin am Handy braucht wenige, eindeutige Schritte (Ziel wählen, Hinweis lesen, Verbinden; ein Code nur, wenn die Anmeldung zu alt ist). Andere Personen
 auf den Sparks sehen und merken nichts, weil ihre Sitzungen nie berührt werden. **VQ:** Ein Ablaufbild, Tabellen für Ziele,
 Rechte und Stufen, eine Seite "Fernzugriff" im WAMO-Design.
 **Synthese:** Erst das leere Gateway bauen und abschotten (Stufe 1), dann ein einziges Ziel (Sokrates-2, Stufe 2), erst danach
@@ -154,9 +154,9 @@ Prüfpunkt Stufe 2) oder `ignore-cert=true` auf einem Pfad, den nur das Gateway 
 
 ```text
 Handy (WAMO-App, Safari)                                                          WireGuard (Fritzbox)
-  1  Einstellungen > Fernzugriff: Ziel wählen, Hinweis lesen, Code der Authenticator-App eingeben
+  1  Einstellungen > Fernzugriff: Ziel wählen, Hinweis lesen, Verbinden (Code der Authenticator-App nur, wenn der Kern ihn verlangt)
   2  POST https://192.168.178.136:55444/wamo/api/rd/start   (Bearer wie bei allen Kern-Routen, kein neues CORS, keine CSP-Änderung)
-        Kern (wamo-core): Token, aal2, Profil, Rolle admin, Zweitfaktor jünger als 120 s, Rate-Grenze, Ziel erlaubt?
+        Kern (wamo-core): Token, aal2 mit totp (Code der Anmeldung, Stufe), Profil, Rolle admin, Rate-Grenze, Ziel erlaubt?
         Kern ──Unix-Socket /run/wamo-rd/ctl.sock (SO_PEERCRED wamo-core)──> Zugangsdienst (wamo-rd-zugang)
         Zugangsdienst: ein Zuschauer je Ziel? Sperre setzen, JSON bauen, bei Guacamole einreichen, Token halten, Audit "gestartet"
   3  Antwort: { url: "https://192.168.178.136:55446/#/?token=...", endet, ziel, sitzung }
@@ -190,7 +190,55 @@ in `wamo_*` ist denkbar, aber erst nötig, wenn die Oberfläche die Historie anz
 
 ### 3.5 Sprachweg: WAMO kennt den Fernzugriff (Nachtrag 02.11.2026)
 
-Der Fernzugriff war zunächst nur ein Knopf in den Einstellungen. Auf die Bitte, die Monitore der Sparks zu zeigen, konnte WAMO deshalb nur antworten, dass er das nicht kenne: Weder die Persona noch ein Werkzeug erwähnten ihn. Jetzt gilt (nur für Admins und nur bei `WAMO_RD_AKTIV=ja`): Die Persona kennt den Fernzugriff (`persona.FERNZUGRIFF_PROMPT`), und das Werkzeug `fernzugriff_oeffnen` schickt die Servernachricht `fernzugriff_oeffnen` an die Oberfläche, die den Abschnitt Fernzugriff öffnet. Die Stimme startet **nie** eine Sitzung: Das Ziel wählt der Nutzer im Dialog, und jeder Start verlangt weiter den frischen Code der Authenticator-App. Die Nachricht trägt keine Nutzdaten (kein Ziel, keine Adresse, kein Token), und der Handler berührt `rd_api` nie.
+Der Fernzugriff war zunächst nur ein Knopf in den Einstellungen. Auf die Bitte, die Monitore der Sparks zu zeigen, konnte WAMO deshalb nur antworten, dass er das nicht kenne: Weder die Persona noch ein Werkzeug erwähnten ihn. Jetzt gilt (nur für Admins und nur bei `WAMO_RD_AKTIV=ja`): Die Persona kennt den Fernzugriff (`persona.FERNZUGRIFF_PROMPT`), und das Werkzeug `fernzugriff_oeffnen` schickt die Servernachricht `fernzugriff_oeffnen` an die Oberfläche, die den Abschnitt Fernzugriff öffnet. Die Stimme startet **nie** eine Sitzung: Das Ziel wählt der Nutzer im Dialog, und jeder Start braucht einen echten Klick der Person auf Verbinden (seit KP-2 meist ohne Code, Abschnitt 3.6). Die Nachricht trägt keine Nutzdaten (kein Ziel, keine Adresse, kein Token), und der Handler berührt `rd_api` nie.
+
+### 3.6 Der Code beim Anmelden genügt (KP-2, Nachtrag 11.11.2026)
+
+Entscheidung von Niko am 11.11.2026: Der Code der Anmeldung genügt, ein frischer Code je Start entfällt (frühere Frage 4 in Abschnitt 10).
+Bis dahin verlangte jeder Start einen Code der Authenticator-App, der höchstens 120 Sekunden alt war und nur für einen Start galt. Umgesetzt
+in `voice-core/rd_api.py` (Funktion `anmeldung_genuegt`), Migration `0019_rd_anmeldung_genuegt.sql` und dem Dialog der Oberfläche.
+
+**Was jetzt gilt.**
+
+| Stelle | Regel |
+| --- | --- |
+| Kern | Token mit aal2 und einem totp-Eintrag im Claim `amr` (Prüfung der Zugangskontrolle samt Höchstalter `WAMO_ANMELDUNG_MAX_STUNDEN`, Standard 168 Stunden, höchstens 720), Rolle admin, aktives Profil. Ohne totp, mit aal1 oder mit einer Zeit aus der Zukunft bleibt es bei 403 und dem Code `zweiter_faktor_zu_alt` |
+| Stufenschalter | `WAMO_RD_ANMELDUNG_MAX_MIN` (ganze Zahl 1 bis 43200): Ist der Code der Anmeldung älter, lehnt der Kern mit 403 und `zweiter_faktor_zu_alt` ab, und der Dialog zeigt das Codefeld (Satz „Deine Anmeldung ist älter als N Stunden“). Leer oder 0 heißt aus (Standard). **Jeder andere Wert, auch ein Tippfehler, gilt als strengste Stufe** (frischer Code bei jedem Start wie vor KP-2) und schreibt eine Fehlerzeile ins Journal: Ein Fehler lockert den Fernzugriff nie. Der Kern entscheidet, nicht die Oberfläche |
+| Datenbank | Migration 0019 ersetzt nur `rd_sitzung_beginnen`: Die Sperren „Code höchstens 120 Sekunden alt“ und „ein Code, ein Start“ entfallen (ohne die zweite scheiterte der zweite Start nach derselben Anmeldung), neu ist die Obergrenze von 31 Tagen für die Zeit des Codes. Signatur, Rechte und Prüfungen (Admin, Zukunft, Raten, ein Zuschauer je Ziel) bleiben |
+| Oberfläche | „Verbinden“ startet ohne Code. Das Codefeld erscheint nur, wenn der Kern den Code verlangt |
+| Wettlauf | Ohne „ein Code, ein Start“ kann ein zweiter Start die Datenbankzeile des ersten ablösen, bevor dieser am Gateway angemeldet hat. Das Beenden am Gateway liefe dann ins Leere, und der erste Start legte danach eine Gateway-Sitzung ohne offene Zeile an (zwei Zuschauer auf einem Ziel, für den Aufseher unsichtbar). Gegenmaßnahme: ein Lock je Profil um Datenbank und Gateway, und nach dem Anmelden prüft der Kern die Datenbankzeile noch einmal und beendet die Gateway-Sitzung sofort, wenn sie abgelöst wurde. Die zweite Prüfung läuft über die Datenbank und gilt damit auch für zwei Kerne (Slot a und b) |
+| Sprachweg | Das Werkzeug `fernzugriff_oeffnen` zeigt nur den Abschnitt. Das Codefeld war früher auch die Schranke gegen ein Öffnen durch das Modell; jetzt ist es der echte Klick der Person: Der Fokus liegt beim Öffnen des Dialogs nie auf „Verbinden“ |
+
+Unverändert bleiben Rolle admin, aktives Profil, ein Zuschauer je Ziel, 3 Sitzungen gleichzeitig, 6 Starts je Stunde, 60 Minuten, 10 Minuten
+Leerlauf, die Verbindung (RDP, keine Zwischenablage, kein Laufwerk, kein Ton, keine Aufzeichnung) und die Raten der Routen. Mitglieder und
+Laborprofile kommen weiterhin nicht heran. Eigenen frischen Code behalten die Release-Freigabe (Migration 0013, 60 Sekunden), die
+Geräteverwaltung (Migration 0014, 120 Sekunden, `voice-core/geraete_admin_api.py`) und die Fernanfrage des Live-Bilds.
+
+**Neue Fähigkeit und Restrisiko (Befund M1).** Ein gestohlenes Sitzungstoken ist dadurch mächtiger als vorher. Bisher half ein Token allein
+nicht: Jeder Start brauchte zusätzlich einen frischen Code aus der Authenticator-App. Jetzt startet das Token allein eine Sitzung auf einem
+Spark-Desktop, bis die Anmeldung abläuft: im Kern nach `WAMO_ANMELDUNG_MAX_STUNDEN` (Standard 168 Stunden), in der Oberfläche im Browser nach
+24 Stunden (Komfortgrenze der Oberfläche, kein Schutz des Kerns), in der Desktop-App nach 7 Tagen. Dieses Restrisiko bleibt, es ist
+ausdrücklich akzeptiert und wird nicht beseitigt, sondern begrenzt und sichtbar gemacht:
+
+1. Die harten Grenzen bleiben (Admin, ein Zuschauer, 60 Minuten, 10 Minuten Leerlauf, nichts aufgezeichnet, Raten, `WAMO_RD_AKTIV` als Notaus).
+2. Der Stufenschalter begrenzt das Alter der Anmeldung nur für den Fernzugriff, zum Beispiel auf 1440 Minuten (24 Stunden), mit dem Codefeld als
+   Rückfall. Er ist im Standard aus; wer ein Netz will, schaltet ihn zu (`wamo-core-env`, ohne Release).
+3. **Hinweis an alle Admins bei jedem Start (KP-2b).** Die Datenbankfunktion schreibt in derselben Transaktion wie die Sitzungszeile einen Hinweis
+   (Tabelle `hinweise`, art `system`, Titel „Fernzugriff gestartet: <Ziel>“) an alle aktiven Admins, auch an die startende Person. Der Text nennt die
+   Person, den Kurznamen des Ziels, das Alter des Codes und die Höchstdauer, nie eine Adresse, ein Konto oder Zugangsdaten. Die Oberfläche zeigt ihn
+   wie die Hinweise der Geräteverwaltung (Karte in der Präsenzspalte, Ansage als Toast, Liste unter Einstellungen, Info). Ohne den Hinweis kommt kein
+   Start zustande, denn beides geschieht in einer Transaktion.
+
+Grenzen dieser Erkennung, ehrlich: Es ist eine Erkennung, kein Schutz. Die Oberfläche fragt die Hinweise jede Minute ab. Hat WAMO nur einen
+Admin, bekommt nur dieses Profil den Hinweis, und ein Angreifer mit dem Token der Person kann ihn selbst als gelesen markieren. Dann bleibt das
+Protokoll in `rd_sitzungen` (wer, Ziel, Start, Ende, Grund, Zeit des Codes). Bei Verdacht: sofort ein anderer Admin sperrt das Profil (das beendet
+die Sitzungen) und setzt `WAMO_RD_AKTIV=nein`. Das Abmelden in der Oberfläche gilt nur für das eigene Gerät und macht ein gestohlenes Token nicht ungültig.
+Der Hinweis entsteht beim Start in der Datenbank. Scheitert danach die Anmeldung am Gateway, bleibt er als Fehlalarm stehen (höchstens 6 je Stunde und Profil).
+**Reihenfolge und Rückweg.** Kern vor Migration, Oberfläche zuletzt. Ein neuer Kern mit der alten Funktion bekommt für den Code der Anmeldung die
+Antwort 23514, der Dialog fragt den Code ab: sicher, nur unbequem. Ein alter Kern mit der neuen Funktion ist nicht sicher genug: Er kennt weder die
+Startsperre je Profil noch die Nachprüfung der Datenbankzeile und verließ sich auf „ein Code, ein Start“. Darum wird die Migration nie vor dem Kern
+angewendet. Rückweg: Oberfläche zurück, Kern über `rueckweg-kern`, dann `0019_rd_anmeldung_genuegt.down.sql` (stellt die Funktion aus 0015
+wortgleich wieder her, keine Daten gehen verloren). Der Dialog behält das Codefeld als Rückfall.
 
 ## 4. Frage C: Zugang unterwegs (WireGuard)
 
@@ -198,7 +246,7 @@ Der Fernzugriff war zunächst nur ein Knopf in den Einstellungen. Auf die Bitte,
 | --- | --- | --- |
 | Sokrates-2 | Keine WireGuard-Schnittstelle, keine `wg`-Werkzeuge, `ip_forward=1` (Docker), Standardroute über die Fritzbox 192.168.178.1 | Nichts auf Sokrates-2 ändern, WireGuard dort nicht aufsetzen |
 | Fritzbox | README und Firewall-Doku nennen "WireGuard-Clients der Fritzbox" im Büro-LAN (192.168.178.0/24). Zustand der Fritzbox wurde **nicht** gelesen | Nutzer prüft im Fritzbox-Menü, ob "WireGuard" für das Handy eingerichtet ist |
-| Firewall | `WAMO-FW-LAN` lässt 192.168.178.0/24 zu, damit auch jeden WireGuard-Client | Der VPN-Zugang ist so vertrauenswürdig wie das Büro-LAN. Darum zählen Admin und frischer zweiter Faktor im Gateway |
+| Firewall | `WAMO-FW-LAN` lässt 192.168.178.0/24 zu, damit auch jeden WireGuard-Client | Der VPN-Zugang ist so vertrauenswürdig wie das Büro-LAN. Darum zählen Admin und der zweite Faktor der Anmeldung im Gateway |
 | Erreichbarkeit der Fritzbox von außen | Offen: öffentliche IPv4 oder IPv6, MyFRITZ-Name, keine Doppel-NAT (DS-Lite) | Entscheidung beim Nutzer, prüfbar nur an der Fritzbox |
 
 **Anleitung iPhone (ohne dass hier Schlüssel entstehen):**
@@ -264,8 +312,8 @@ Sekunden weg. Nur ohne laufende Sitzung (gleiche Prüfung wie `wamo_ui_sokrates2
 | Tastatur und Zwischenablage | Abfluss von Passwörtern ins Handy oder Einschleusen | Zwischenablage in beide Richtungen aus (`disable-copy`, `disable-paste`), keine Laufwerke, kein Druck, keine Aufzeichnung | Auf dem Bildschirm Sichtbares ist per Screenshot am Handy kopierbar |
 | Bildschirminhalte anderer Personen | Spiegeln der Konsole oder fremder Sitzungen | Eigene Sitzung für `wamo-rd`, Benutzermodus von GRD bleibt aus, Anmeldung nur für `wamo-rd-ts` | Eigene Sitzung kann Dateien der Gemeinschaft lesen, die für alle lesbar sind |
 | Brute Force | Passwort von `wamo-rd` raten | Ziel nur vom Gateway erreichbar, Passwort 32 Zeichen, Gateway-Eingang nur nach Kern (Token und Code), Rate-Grenzen (3 Fehler in 10 Minuten, dann 15 Minuten Sperre je Profil und global) | Wer im Büro-LAN die Quelladresse fälscht, könnte Pakete senden (ARP). Eigene Quelladresse und Variante 2 aus 2.4 senken das |
-| Replay | Altes Token oder altes JSON | JSON mit `expires` unter 60 Sekunden und nur einmal eingereicht, Token wird bei Ende gelöscht, Kern nimmt jeden Start nur mit Zweitfaktor jünger als 120 Sekunden an | Kein Rest bekannt |
-| Unbefugter Admin | Gestohlenes Handy, eingeloggt, VPN an | Frischer Code bei jedem Start, Profil nur `admin`, SessionGuard prüft Profil weiter, Sitzung endet bei Rollenwechsel | Wer Handy und Authenticator-App hat, kommt hinein |
+| Replay | Altes Token oder altes JSON | JSON mit `expires` unter 60 Sekunden und nur einmal eingereicht, Token wird bei Ende gelöscht, Kern nimmt einen Start nur mit dem Code der Anmeldung an (aal2 mit totp, optional Höchstalter) | Kein Rest bekannt |
+| Unbefugter Admin | Gestohlenes Handy, eingeloggt, VPN an | Code der Anmeldung (aal2), optional Höchstalter (Stufenschalter), Hinweis an alle Admins bei jedem Start, Profil nur `admin`, SessionGuard prüft Profil weiter, Sitzung endet bei Rollenwechsel | Seit 11.11.2026 genügt ein gestohlenes Token allein, bis die Anmeldung abläuft (Abschnitt 3.6). Wer das Handy mit angemeldeter App hat, kommt hinein |
 | Zertifikat am Ziel | MITM zwischen Gateway und Spark im LAN | Pinning wenn möglich, Quelladresse, getrennte Brücken | `ignore-cert` ist ein Rest, solange nicht gepinnt wird |
 | Protokolle | Datenschutz | Nur wer, wann, welcher Spark, Dauer, Grund, Quell-IP des Handys im Büro-LAN. **Keine** Bildschirminhalte, keine Eingaben, keine Aufzeichnung | |
 
@@ -293,7 +341,7 @@ Rechte, keine laufende Sitzung).
 | 0 (optional, unabhängig) | Caesar: Offener RDP-Port sofort schließen | keine im Repo; Handarbeit am Ziel (ufw oder `systemctl stop xrdp`) | Von einem LAN-Gerät: Verbindung auf 3389 scheitert; xrdp ohne Sitzung gestoppt | `systemctl start xrdp` | 1 | Zustimmung des Nutzers |
 | 1 | Gateway-Container und Firewall **ohne Ziel**: Images (arm64), Netze, Caddy-Site 55446, Härtung, Kette `WAMO-FW-RD`, leere Zielliste | `infra/sokrates2/wamo-rd/` (Dockerfile oder Image-Pin, `docker-compose.yml`, `wamo-rd.caddy.vorlage`), `wamo-rd-einrichten.sh`, `wamo-rd-rueckweg.sh`, `wamo_rd_rauchtest.py`, Änderung `wamo-firewall.sh`, `wamo-caddy/docker-compose.yml`, `CLAUDE.md` (Namensvertrag) | Rauch: Container gesund, 55446 antwortet aus dem LAN mit Gateway-Seite ohne Konten; Header geprüft. Verbot: von Container `wamo-rd-web` kein Ausgang ins Internet, nicht zum Host, nicht ins LAN; `wamo-rd-guacd` erreicht nur Sparks:3389; Anfrage ohne gültiges JSON gibt keinen Zugang; Port 55446 aus 10.100.x und aus fremden Netzen verworfen; `JSON_TRUSTED_NETWORKS` weist fremde Absender ab | `wamo-rd-rueckweg.sh` (Container, Site, Regeln weg; Port bleibt im Compose, ohne Site lauscht Caddy dort nicht) | 8 | keine |
 | 2 | **Ein Ziel: Sokrates-2.** Konto `wamo-rd`, Kandidat G oder X entscheiden, Quelladresse, Passwort, Klärung der Prüfpunkte (2.1 GRD Remote Login oder xrdp; 2.2 Zertifikat pinnen; 2.3 Token löschen beendet den Tunnel; 2.4 `expires` und Leerlauf) | `infra/sparks/wamo-rd-konto-einrichten.sh` (Konto, Rotation und Rückweg), `wamo-rd-ziel-einrichten.sh` (xrdp, Rückweg `--zurueck`), `wamo-rd-ausgang-einrichten.sh`, `infra/sokrates2/wamo-rd/ziele.toml.beispiel`; Prüfskript im Gateway-Container (nur lesend, Testverbindung ohne Oberfläche: `infra/sokrates2/wamo-rd/zugang/pruefe_gegen_guacamole.py`) | Rauch: Testverbindung des Gateways öffnet Desktop von `wamo-rd` auf Sokrates-2, Bild kommt, Maus und Tastatur wirken. Verbot: anderes Konto (`wamocon`, Personenkonto) wird abgewiesen; `wamo-rd` hat kein sudo, kein SSH, keine Gruppe `docker`; 3389 von einem anderen LAN-Gerät verworfen; kein Zugriff auf `/home/wamocon`; Konsole von `wamocon` nie sichtbar | Konto sperren, Dienst aus (GRD `--system ... disable` oder `systemctl disable --now xrdp`), ufw-Regeln zurück | 8 | 1 |
-| 3 | Anmeldung über WAMO: Kernmodul, Zugangsdienst, Sperre je Ziel, Limits, Audit, frischer Zweitfaktor | `voice-core/rd_api.py`, `voice-core/test_rd_api.py`, `voice-core/wamo_api.py` (`ROUTEN_MODULE`), `infra/sokrates2/wamo-rd/zugang/` (Python, Tests), `/etc/wamo-rd/*` Anlage im Einrichtungsskript | Rauch: Admin mit frischem Code erhält URL, Sitzung zeigt Spark-Desktop. Verbot: `mitglied` 403; ohne aal2 403; Zweitfaktor älter als 120 s abgewiesen; zweiter Start auf dasselbe Ziel 409; Ende nach Zeitlimit und nach Leerlauf; Profil deaktiviert beendet Sitzung; Audit enthält keine Bildschirmdaten und kein Passwort (Grep); Fehlversuche sperren; JSON zweimal einreichen scheitert | `WAMO_RD_AKTIV=nein` in der Unit, `systemctl restart wamo-core`; Gateway bleibt ohne Zugang | 14 | 1, 2 |
+| 3 | Anmeldung über WAMO: Kernmodul, Zugangsdienst, Sperre je Ziel, Limits, Audit, frischer Zweitfaktor | `voice-core/rd_api.py`, `voice-core/test_rd_api.py`, `voice-core/wamo_api.py` (`ROUTEN_MODULE`), `infra/sokrates2/wamo-rd/zugang/` (Python, Tests), `/etc/wamo-rd/*` Anlage im Einrichtungsskript | Rauch: Admin mit frischem Code erhält URL, Sitzung zeigt Spark-Desktop. Verbot: `mitglied` 403; ohne aal2 403; Zweitfaktor älter als 120 s abgewiesen (bis KP-2, danach Abschnitt 3.6); zweiter Start auf dasselbe Ziel 409; Ende nach Zeitlimit und nach Leerlauf; Profil deaktiviert beendet Sitzung; Audit enthält keine Bildschirmdaten und kein Passwort (Grep); Fehlversuche sperren; JSON zweimal einreichen scheitert | `WAMO_RD_AKTIV=nein` in der Unit, `systemctl restart wamo-core`; Gateway bleibt ohne Zugang | 14 | 1, 2 |
 | 4 | Oberfläche: Abschnitt "Fernzugriff", Hinweisfenster, Start und Ende, Branding, Test am iPhone (Touch, Scrollen, Tastatur, Standalone) | `ui/src/components/einstellungen/Fernzugriff.tsx`, `ui/src/lib/fernzugriff.ts`, `ui/src/lib/einstellungenAbschnitte.ts`, Erweiterung `WAMO Eingabe` (Tastaturleiste, Stile im WAMO-Design) unter `infra/sokrates2/wamo-rd/erweiterung/` statt eines Ordners `branding/`, Tests der Oberfläche | Rauch: iPhone, Mobilfunk, WireGuard an, Spark-Desktop sichtbar, Eingabe möglich, Beenden wirkt. Verbot: `mitglied` sieht den Abschnitt nicht und der Aufruf scheitert im Kern; ohne WireGuard nichts erreichbar; keine Zwischenablage; Gateway-Seite ohne Token leer | Abschnitt per Merkmal ausblenden, `wamo-ui` zurückschalten (`zurueck`, 1 Sekunde) | 12 | 3 |
 | 5 | Sokrates-1 als Ziel (gleiche Technik wie Stufe 2) | `/etc/wamo-rd/ziele.toml` ergänzen, ufw-Sperre vor den breiten Erlaubnissen (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) | Wie Stufe 2 für Sokrates-1; Verbot: 3389 aus den ConnectX-Netzen verworfen | `wamo-rd-ziel-einrichten.sh --zurueck` am Ziel | 4 | 2 (parallel zu 3) |
 | 6 | Caesar: xrdp einhegen (Patch, Gruppenprüfung, kein Root, keine Kanäle, Limits, nur Gateway) und als Ziel aufnehmen | `infra/sparks/xrdp-einhegen.sh` (statt eines Zweigs in `wamo-rd-einrichten.sh` und eines `xrdp-haerten.conf`-Beispiels) | Wie Stufe 2. Verbot: `wamocon` und `root` per RDP abgewiesen; `security_layer` ohne Rückfall auf Standard-RDP; Version geprüft | Alte Konfiguration aus der Sicherung, oder xrdp aus | 4 | 2 |
@@ -315,8 +363,8 @@ dem Einspielen. Vor Stufe 3 zusätzlich `python-reviewer`, vor Stufe 4 `react-re
 2. **Das Gateway als Einstieg ins Büronetz.** Ein Fehler in guacd oder Tomcat gibt Zugriff auf einen Container, der RDP-Ziele
    erreicht. Härtung, getrennte Netze, ein Ausgang nur zu drei Adressen und regelmäßige Aktualisierung senken es, ein Rest bleibt.
    Ein Plan für Aktualisierungen (Digest-Wechsel, Rauchtest, Rückweg) gehört in Stufe 1, nicht später.
-3. **Handy und Bedienbarkeit.** Ein entsperrtes Handy mit WireGuard und angemeldeter App öffnet Server-Desktops; der frische Code
-   mindert das, hebt es nicht auf. Dazu ist die Touchbedienung eines Desktops auf einem iPhone mühsam (kleine Ziele, Tastatur
+3. **Handy und Bedienbarkeit.** Ein entsperrtes Handy mit WireGuard und angemeldeter App öffnet Server-Desktops; der Code der Anmeldung
+   und der Hinweis an alle Admins mindern das, heben es nicht auf (Abschnitt 3.6). Dazu ist die Touchbedienung eines Desktops auf einem iPhone mühsam (kleine Ziele, Tastatur
    verdeckt den Bildschirm). Wenn Stufe 4 am echten Gerät enttäuscht, bleibt der Nutzen klein, bevor Stufe 5 und 6 gelaufen sind.
    Darum Stufe 4 vor 5 und 6 und ein Test am iPhone schon nach Stufe 2 mit einem Behelfsaufruf.
 
@@ -328,7 +376,8 @@ dem Einspielen. Vor Stufe 3 zusätzlich `python-reviewer`, vor Stufe 4 `react-re
    kein DS-Lite). Das ist nur dort prüfbar.
 3. **Ausgang des Kontos `wamo-rd` ins LAN erlauben?** Empfehlung: nein (nur Internet), mit der Folge, dass LAN-Dienste aus der
    Fernsitzung nicht aufrufbar sind.
-4. **Frischer Zweitfaktor bei jedem Start (höchstens 120 Sekunden alt)?** Empfehlung: ja, kostet einen Code je Sitzung am Handy.
+4. **Frischer Zweitfaktor bei jedem Start (höchstens 120 Sekunden alt)?** Empfehlung war: ja. **Entschieden am 11.11.2026: nein, der Code beim
+   Anmelden genügt** (Abschnitt 3.6, Stufenschalter `WAMO_RD_ANMELDUNG_MAX_MIN`).
 5. **Caesar: Soll xrdp sofort (Stufe 0) beschränkt oder gestoppt werden?** Wird er derzeit von jemandem genutzt? (keine laufende
    Sitzung am 31.10.2026 gesehen).
 6. **Dauer:** 60 Minuten Höchstdauer, 10 Minuten Leerlauf, ein Zuschauer je Ziel. Passen die Werte?

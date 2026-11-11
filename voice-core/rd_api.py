@@ -7,8 +7,14 @@
 Wer eine Sitzung starten darf (alles muss stimmen, geprüft in dieser Reihenfolge):
   * Anmeldung wie bei allen Routen: Token mit zweitem Faktor, Höchstalter, aktives Profil (wamo_api.identitaet).
   * Rolle admin. Die Datenbank prüft sie in rd_sitzung_beginnen noch einmal (aktives Profil, Rolle admin).
-  * Frischer zweiter Faktor bei JEDEM Start: Der Code der Authenticator-App ist höchstens 120 Sekunden alt (Claim amr, wie in
-    geraete_admin_api.py; die Oberfläche fragt den Code im Dialog ab und bestätigt ihn bei Supabase). Auch die Datenbank prüft die Zeit.
+  * Der Code beim Anmelden genügt (Entscheidung vom 11.11.2026, KP-2): Das Token trägt aal2 und einen totp-Eintrag im Claim amr
+    (zweiter Faktor der Anmeldung, geprüft von der Zugangskontrolle samt Höchstalter WAMO_ANMELDUNG_MAX_STUNDEN). Ein frischer Code
+    je Start ist nicht mehr nötig. Der Stufenschalter WAMO_RD_ANMELDUNG_MAX_MIN begrenzt das Alter dieses Codes nur für den
+    Fernzugriff: ist er älter, lehnt der Kern mit 403 und dem Code zweiter_faktor_zu_alt ab, und die Oberfläche fragt den Code
+    wieder ab (frisch heißt höchstens 120 Sekunden, wie in geraete_admin_api.py, das unverändert bleibt). Die Datenbank prüft die
+    Zeit des Codes nur noch gegen die Zukunft und 31 Tage (Migration 0019).
+    Das Restrisiko ist ein gestohlenes Token: Es startet Sitzungen, bis die Anmeldung abläuft (docs/remote-desktop.md). Dagegen
+    meldet die Datenbank jeden Start allen Admins (Hinweis, Migration 0019), und die Stufe lässt sich zuschalten.
   * Das Ziel steht in der festen Zielliste /etc/wamo-rd/ziele.toml (root-Datei, nie aus der Anfrage). Ein frei gewählter Host,
     Port, Benutzer oder ein Protokoll existiert nicht: Aus der Anfrage kommt nur der Name, der in der Liste vorkommen muss.
   * Ein Zuschauer je Ziel, höchstens 3 Sitzungen gleichzeitig und 6 Starts je Stunde und Profil: die Datenbank hält das fest
@@ -32,6 +38,9 @@ Grund. Ende der Sitzung: Zeitlimit (60 Minuten) und Trennung erzwingen der Zugan
 Leerlauf (10 Minuten ohne Eingabe) erzwingt das Ziel (xrdp IdleTimeLimit), danach beendet der Aufseher die Sitzung hier.
 
 Schalter: WAMO_RD_AKTIV (Standard nein). Ohne "ja" melden die Routen, dass der Fernzugriff nicht eingerichtet ist.
+Stufenschalter: WAMO_RD_ANMELDUNG_MAX_MIN, Höchstalter des Codes der Anmeldung in Minuten (1 bis 43200). Leer oder 0 heißt aus
+(Standard). Jeder andere Wert, auch ein Tippfehler, gilt als strengste Stufe: frischer Code bei jedem Start, dazu eine Fehlerzeile
+im Journal (fail-closed, Befund M2).
 Weitere Einstellungen (Standard in Klammern): WAMO_RD_SOCKET (/run/wamo-rd/ctl.sock), WAMO_RD_ZIELE (/etc/wamo-rd/ziele.toml),
 WAMO_RD_ENV (/etc/wamo-rd/ziele.env), WAMO_RD_KEY (/etc/wamo-rd/json.key), WAMO_RD_URL (https://192.168.178.136:55446).
 """
@@ -44,10 +53,12 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import tomllib
 import uuid
+import weakref
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -60,7 +71,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from geraete_admin_api import CODE_AAL2, aal2_frisch, aal2_zeit
+from geraete_admin_api import CODE_AAL2, ZUKUNFT_SECS, aal2_frisch, aal2_zeit
 from memory import DB_ERRORS, DatabaseUnavailable, shared_database
 from wamo_api import bearer, identitaet, lies_json
 
@@ -82,11 +93,26 @@ OHNE_GATEWAY_NACHFRIST_SECS = 120.0
 PROBEN_GUELTIG_SECS = 15.0
 RELAY_TIMEOUT_SECS = 20.0
 RELAY_MAX_ANTWORT = 64 * 1024
+STUFE_VARIABLE = "WAMO_RD_ANMELDUNG_MAX_MIN"
+STUFE_MAX_MIN = 43200             # 30 Tage; die Zugangskontrolle lässt ohnehin höchstens 720 Stunden zu (auth_gate.py)
+_STUFE_RE = re.compile(r"[1-9][0-9]{0,4}")
 
 LISTE_GRENZE = (60, 60.0)       # Aufrufe, Sekunden
 START_GRENZE = (10, 600.0)
 ENDE_GRENZE = (20, 600.0)
 _versuche: dict[tuple[str, str], deque[float]] = {}
+
+
+# Ein Lock je Profil für "Sitzung in der Datenbank beginnen und am Gateway anmelden". Schwach gehalten: Ohne Wartende und Halter
+# räumt der Speicher ihn selbst auf. Er schützt nur innerhalb dieses Kerns; für Slot a und b prüft _noch_offen die Datenbank.
+_start_sperren: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+def _start_sperre(profil: str) -> asyncio.Lock:
+    sperre = _start_sperren.get(profil)
+    if sperre is None:
+        sperre = _start_sperren[profil] = asyncio.Lock()
+    return sperre
 
 # Verbindungsparameter von Guacamole (RDP). Alles hier ist fest; nichts davon stammt aus einer Anfrage.
 VERBINDUNGS_PARAMETER = {
@@ -136,6 +162,50 @@ def basis_url() -> str:
     if re.fullmatch(r"https://[A-Za-z0-9.\-]{1,100}(:\d{1,5})?", roh) or re.fullmatch(r"http://(127\.0\.0\.1|localhost)(:\d{1,5})?", roh):
         return roh
     raise HTTPException(503, "Die Adresse des Gateways ist nicht richtig eingerichtet")
+
+
+# ======================================================================== Anmeldung genügt (Stufenschalter)
+def anmeldung_max_secs(melden: bool = True) -> float | None:
+    """Höchstalter des Codes der Anmeldung für den Fernzugriff in Sekunden (WAMO_RD_ANMELDUNG_MAX_MIN), bei jedem Aufruf neu gelesen.
+
+    None: keine Grenze. Das gilt NUR für leer oder 0 (Standard). Jeder andere Wert muss eine ganze Zahl von 1 bis 43200 sein.
+    Alles Ungültige (Text, negativ, Dezimalzahl, nan, zu groß, Ziffern anderer Schriften) gilt als strengste Stufe, 0.0 Sekunden:
+    Dann genügt nur ein frischer Code wie vor KP-2, und das Journal bekommt eine Fehlerzeile (melden). Ein Tippfehler macht den
+    Fernzugriff nie lockerer (fail-closed). Der Wert wird im Log nur gekürzt genannt."""
+    roh = (os.getenv(STUFE_VARIABLE) or "").strip()
+    if roh in ("", "0"):
+        return None
+    if _STUFE_RE.fullmatch(roh) and int(roh) <= STUFE_MAX_MIN:
+        return int(roh) * 60.0
+    if melden:
+        logger.error("{} {!r} ungültig (leer oder 0 für aus, sonst 1 bis {} Minuten), es gilt die strengste Stufe: "
+                     "frischer Code bei jedem Start", STUFE_VARIABLE, roh[:20], STUFE_MAX_MIN)
+    return 0.0
+
+
+def anmeldung_genuegt(zeit: float | None, jetzt: float | None = None) -> bool:
+    """Darf ein Start auf Grund dieses Codes (Zeitpunkt aus dem Claim amr, None ohne aal2 oder totp) erfolgen?
+
+    Ein frischer Code (höchstens 120 Sekunden, aal2_frisch) genügt immer. Ein älterer Code, der Code der Anmeldung, genügt in der
+    Stufe aus und sonst bis zum Höchstalter. Ein Code aus der Zukunft (mehr als 5 Sekunden) genügt nie."""
+    if zeit is None or not math.isfinite(zeit):
+        return False
+    jetzt = time() if jetzt is None else jetzt
+    grenze = anmeldung_max_secs()  # zuerst lesen: ein ungültiger Wert steht bei jedem Start im Journal, auch bei frischem Code
+    if aal2_frisch(zeit, jetzt):
+        return True
+    alter = jetzt - zeit
+    if alter < -ZUKUNFT_SECS:
+        return False
+    return grenze is None or alter <= grenze
+
+
+def _dauer_text(secs: float) -> str:
+    minuten = int(secs // 60)
+    if minuten >= 60 and minuten % 60 == 0:
+        stunden = minuten // 60
+        return f"{stunden} Stunde" if stunden == 1 else f"{stunden} Stunden"
+    return f"{minuten} Minute" if minuten == 1 else f"{minuten} Minuten"
 
 
 # ======================================================================== Ziele und Zugangsdaten
@@ -339,9 +409,13 @@ def _kurz(wert: str) -> str:
     return wert[:8]
 
 
-def _aal2_abgelehnt() -> JSONResponse:
-    return JSONResponse({"detail": "Bitte gib den Code deiner Authenticator-App noch einmal ein. "
-                                   "Er darf höchstens zwei Minuten alt sein.", "code": CODE_AAL2},
+def _aal2_abgelehnt(zeit: float | None = None) -> JSONResponse:
+    """403 mit dem Code, nach dem die Oberfläche den Codefeld-Dialog zeigt. Ist die Stufe die Ursache (die Anmeldung ist älter als
+    das Höchstalter), nennt der Satz das Alter, damit die Person den Grund sieht."""
+    grenze = anmeldung_max_secs(melden=False)
+    satz = f"Deine Anmeldung ist älter als {_dauer_text(grenze)}. " if zeit is not None and grenze else ""
+    return JSONResponse({"detail": satz + "Bitte gib den Code deiner Authenticator-App noch einmal ein. "
+                                           "Er darf höchstens zwei Minuten alt sein.", "code": CODE_AAL2},
                         status_code=403, headers={"Cache-Control": "no-store"})
 
 
@@ -415,9 +489,9 @@ async def start(request: Request, response: Response) -> dict | JSONResponse:
     ziel = ziele[name]
 
     zeit = aal2_zeit(bearer(request))
-    if not aal2_frisch(zeit):
-        logger.info("Fernzugriff: Start {} abgelehnt, zweiter Faktor zu alt (Profil {})", name, _kurz(ich.user_id))
-        return _aal2_abgelehnt()
+    if not anmeldung_genuegt(zeit):
+        logger.info("Fernzugriff: Start {} abgelehnt, Code der Anmeldung fehlt oder ist zu alt (Profil {})", name, _kurz(ich.user_id))
+        return _aal2_abgelehnt(zeit)
 
     passwort = passwort_fuer(name)
     schluessel = schluessel_lesen()
@@ -429,14 +503,36 @@ async def start(request: Request, response: Response) -> dict | JSONResponse:
         raise HTTPException(409, f"{ziel.anzeige} ist gerade nicht erreichbar")
 
     db = _db()
+    # Befund M3: Datenbank und Gateway je Profil nacheinander. Ohne "ein Code, ein Start" löst ein zweiter Start die Zeile des
+    # ersten ab; geschähe das vor dessen Anmeldung am Gateway, liefe das Beenden dort ins Leere (Zuschauer ohne offene Zeile).
+    async with _start_sperre(ich.user_id):
+        zeile = await _sitzung_beginnen(db, ich.user_id, ziel, zeit)
+        if isinstance(zeile, JSONResponse):
+            return zeile
+        sitzung = zeile["sitzung_id"]
+        if zeile["abgeloest_id"]:
+            # dieselbe Person startet neu: die alte Sitzung am Gateway schließen (Fehler sind folgenlos, sie läuft dort aus)
+            try:
+                await gateway({"cmd": "beenden", "sitzung": zeile["abgeloest_id"], "grund": "abgeloest"})
+            except GatewayFehler:
+                logger.warning("Fernzugriff: alte Sitzung {} am Gateway nicht bestätigt", _kurz(zeile["abgeloest_id"]))
+        url = await _am_gateway_anmelden(db, sitzung, ziel, passwort, schluessel, ich.user_id)
+    logger.info("Fernzugriff: gestartet ziel={} sitzung={} profil={}", name, _kurz(sitzung), _kurz(ich.user_id))
+    return {"ok": True, "sitzung": sitzung, "ziel": name, "anzeige": ziel.anzeige, "url": url,
+            "endet": _zeit(zeile["bis_at"]), "max_minuten": DAUER_SECS // 60, "leerlauf_minuten": LEERLAUF_MINUTEN}
+
+
+async def _sitzung_beginnen(db, profil: str, ziel: Ziel, zeit: float):
+    """Datenbank: Sitzung anlegen (rd_sitzung_beginnen). Gibt die Zeile bei "ok" zurück, sonst wird mit dem passenden Status
+    abgelehnt (HTTPException) oder bei zu altem oder fehlendem Code die Codeabfrage geliefert (JSONResponse)."""
     try:
         zeile = await db.fetchrow(
             f"select ergebnis, sitzung_id::text as sitzung_id, abgeloest_id::text as abgeloest_id, belegt_von, belegt_seit, bis_at "
             f"from {db.t('rd_sitzung_beginnen')}($1::uuid, $2, $3, $4::timestamptz, $5, $6)",
-            ich.user_id, name, DAUER_SECS, datetime.fromtimestamp(zeit, tz=timezone.utc), MAX_GLEICHZEITIG, MAX_JE_STUNDE)
+            profil, ziel.name, DAUER_SECS, datetime.fromtimestamp(zeit, tz=timezone.utc), MAX_GLEICHZEITIG, MAX_JE_STUNDE)
     except (*DB_ERRORS, DatabaseUnavailable) as e:
         code = getattr(e, "sqlstate", None)
-        logger.warning("Fernzugriff: Start {} fehlgeschlagen ({}, {})", name, type(e).__name__, code)
+        logger.warning("Fernzugriff: Start {} fehlgeschlagen ({}, {})", ziel.name, type(e).__name__, code)
         if code == "42501":
             raise HTTPException(403, "Dir fehlt die Berechtigung: Nur aktive Admins nutzen den Fernzugriff") from e
         if code == "23514":
@@ -457,14 +553,13 @@ async def start(request: Request, response: Response) -> dict | JSONResponse:
     if ergebnis != "ok" or zeile["sitzung_id"] is None:
         logger.error("Fernzugriff: unerwartete Antwort der Datenbank")
         raise HTTPException(503, "Unerwartete Antwort der Datenbank")
-    sitzung = zeile["sitzung_id"]
-    if zeile["abgeloest_id"]:
-        # dieselbe Person startet neu: die alte Sitzung am Gateway schließen (Fehler sind folgenlos, sie läuft dort aus)
-        try:
-            await gateway({"cmd": "beenden", "sitzung": zeile["abgeloest_id"], "grund": "abgeloest"})
-        except GatewayFehler:
-            logger.warning("Fernzugriff: alte Sitzung {} am Gateway nicht bestätigt", _kurz(zeile["abgeloest_id"]))
+    return zeile
 
+
+async def _am_gateway_anmelden(db, sitzung: str, ziel: Ziel, passwort: str, schluessel: bytes, profil: str) -> str:
+    """Anweisung bauen, am Gateway anmelden und die Adresse der Gateway-Seite liefern. Danach prüft die Datenbankzeile noch einmal:
+    Hat ein Start über einen anderen Kern (Slot a oder b, kein gemeinsamer Speicher und Lock) sie inzwischen abgelöst, wird die
+    Gateway-Sitzung sofort beendet und die Adresse nie ausgeliefert. So bleibt höchstens ein Zuschauer je Ziel (Befund M3)."""
     try:
         data = anweisung_bauen(schluessel, sitzung, ziel, passwort)
         antwort = await gateway({"cmd": "anmelden", "sitzung": sitzung, "data": data, "max_secs": DAUER_SECS})
@@ -474,13 +569,35 @@ async def start(request: Request, response: Response) -> dict | JSONResponse:
         url = seiten_url(basis_url(), token)
     except (GatewayFehler, HTTPException, ValueError) as e:
         grund = e.code if isinstance(e, GatewayFehler) else type(e).__name__
-        logger.warning("Fernzugriff: Anmeldung am Gateway für {} fehlgeschlagen ({})", name, grund)
+        logger.warning("Fernzugriff: Anmeldung am Gateway für {} fehlgeschlagen ({})", ziel.name, grund)
         await _beenden_still(db, sitzung, "fehler")
         raise HTTPException(502 if isinstance(e, GatewayFehler) and e.code != "nicht_erreichbar" else 503,
                             "Das Gateway hat die Verbindung nicht angenommen. Bitte gleich noch einmal versuchen.") from e
-    logger.info("Fernzugriff: gestartet ziel={} sitzung={} profil={}", name, _kurz(sitzung), _kurz(ich.user_id))
-    return {"ok": True, "sitzung": sitzung, "ziel": name, "anzeige": ziel.anzeige, "url": url,
-            "endet": _zeit(zeile["bis_at"]), "max_minuten": DAUER_SECS // 60, "leerlauf_minuten": LEERLAUF_MINUTEN}
+    offen = await _noch_offen(db, sitzung, profil)
+    if offen is True:
+        return url
+    grund = "abgeloest" if offen is False else "fehler"
+    logger.warning("Fernzugriff: Sitzung {} nach dem Anmelden {}, Gateway-Sitzung wird beendet", _kurz(sitzung),
+                   "abgelöst" if offen is False else "nicht prüfbar")
+    try:
+        await gateway({"cmd": "beenden", "sitzung": sitzung, "grund": grund})
+    except GatewayFehler:
+        logger.warning("Fernzugriff: Ende von {} am Gateway nicht bestätigt", _kurz(sitzung))
+    if offen is None:
+        await _beenden_still(db, sitzung, "fehler")
+        raise HTTPException(503, "Die Datenbank hat nicht geantwortet. Bitte gleich noch einmal versuchen.")
+    raise HTTPException(409, "Dieser Start wurde durch einen neueren Start abgelöst. Bitte starte die Verbindung nur einmal.")
+
+
+async def _noch_offen(db, sitzung: str, profil: str) -> bool | None:
+    """Ist die Zeile dieser Sitzung beim selben Profil noch offen? None, wenn die Datenbank nicht antwortet (dann gilt: nicht offen)."""
+    try:
+        return await db.fetchval(
+            f"select 1 from {db.t('rd_sitzungen')} where id = $1::uuid and profil_id = $2::uuid and ende_at is null",
+            sitzung, profil) is not None
+    except (*DB_ERRORS, DatabaseUnavailable) as e:
+        logger.warning("Fernzugriff: Zeile von {} nicht prüfbar ({})", _kurz(sitzung), type(e).__name__)
+        return None
 
 
 async def _beenden_still(db, sitzung: str, grund: str, profil: str | None = None) -> str | None:

@@ -2,18 +2,23 @@
 
 import { memo, useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type SyntheticEvent } from "react";
 import {
+  CODE_HILFE,
   eingabePruefen,
+  EINLEITUNG,
   hinweisZeilen,
+  modusNachFehler,
   restSekunden,
   restzeitAnsage,
   restzeitKnapp,
   restzeitSprache,
   restzeitText,
   sortiereZiele,
+  startFokus,
   startMeldung,
   STATUS_INFO,
   verbindenKnopf,
   zielZeile,
+  type DialogModus,
   type Start,
   type Uebersicht,
   type Ziel,
@@ -213,7 +218,10 @@ function Sitzungsleiste({
 
 /**
  * Dialog zum Verbinden (natives dialog-Element: Fokusfalle, Escape und Hintergrund sperren übernimmt der Browser). Er zeigt den
- * Hinweis zum Datenschutz und verlangt den frischen Code der Authenticator-App. Erst danach öffnet sich das Fenster.
+ * Hinweis zum Datenschutz. "Verbinden" startet ohne Code: Der Code der Anmeldung genügt (KP-2). Nur wenn der Kern den Start mit
+ * zweiter_faktor_zu_alt ablehnt (die Anmeldung ist älter als sein Höchstalter), erscheint das Codefeld, und der Code geht erst an
+ * Supabase und dann in einen zweiten Start. Den Fokus bekommt nie "Verbinden" (lib/fernzugriff.ts startFokus): Auch wenn WAMO die
+ * Karte mit fernzugriff_oeffnen zeigt, startet nur ein echter Klick der Person.
  */
 function VerbindenDialog({
   ziel,
@@ -232,9 +240,11 @@ function VerbindenDialog({
 }) {
   const id = useId();
   const dialog = useRef<HTMLDialogElement>(null);
+  const abbrechenRef = useRef<HTMLButtonElement>(null);
   const codeRef = useRef<HTMLInputElement>(null);
   const fehlerRef = useRef<HTMLParagraphElement>(null);
   const laeuft = useRef(false);
+  const [modus, setModus] = useState<DialogModus>("klick");
   const [code, setCode] = useState("");
   const [fehler, setFehler] = useState("");
   const [beschaeftigt, setBeschaeftigt] = useState(false);
@@ -242,18 +252,26 @@ function VerbindenDialog({
   useEffect(() => {
     const d = dialog.current;
     if (d && !d.open) d.showModal();
-    codeRef.current?.focus();
+    // Der Fokus geht auf "Abbrechen", nie auf "Verbinden" (startFokus): Der Start braucht einen echten Klick der Person.
+    if (startFokus("klick") === "abbrechen") abbrechenRef.current?.focus();
     // einmal beim Öffnen: der Dialog wird je Ziel neu aufgebaut (key)
   }, []);
+  useEffect(() => {
+    if (modus === "code" && startFokus(modus) === "code") codeRef.current?.focus(); // das Codefeld ist jetzt da
+  }, [modus]);
 
   const absenden = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (laeuft.current) return;
-    const pruefung = eingabePruefen(code);
-    if (!pruefung.ok) {
-      setFehler(pruefung.text);
-      codeRef.current?.focus();
-      return;
+    let eingabe: string | null = null; // nur mit Codefeld, sonst startet "Verbinden" ohne Code
+    if (modus === "code") {
+      const pruefung = eingabePruefen(code);
+      if (!pruefung.ok) {
+        setFehler(pruefung.text);
+        codeRef.current?.focus();
+        return;
+      }
+      eingabe = pruefung.code;
     }
     laeuft.current = true;
     setBeschaeftigt(true);
@@ -261,12 +279,14 @@ function VerbindenDialog({
     const fenster = leeresFenster(); // sofort, solange der Tastendruck oder Tipp zählt
     let verwendet = false;
     try {
-      const bestaetigt = await codeBestaetigen(pruefung.code);
-      if (!bestaetigt.ok) {
-        setFehler(bestaetigt.text);
-        setCode("");
-        codeRef.current?.focus();
-        return;
+      if (eingabe !== null) {
+        const bestaetigt = await codeBestaetigen(eingabe);
+        if (!bestaetigt.ok) {
+          setFehler(bestaetigt.text);
+          setCode("");
+          codeRef.current?.focus();
+          return;
+        }
       }
       const antwort = await starten(ziel.name, window.location.origin);
       if (antwort.ok) {
@@ -275,6 +295,8 @@ function VerbindenDialog({
         return;
       }
       if (antwort.dialogOffen) {
+        // der Kern verlangt den Code (die Anmeldung ist zu alt): jetzt, und nur jetzt, erscheint das Codefeld
+        setModus(modusNachFehler(modus, antwort));
         setFehler(antwort.text);
         setCode("");
         codeRef.current?.focus();
@@ -320,34 +342,46 @@ function VerbindenDialog({
             <p key={z}>{z}</p>
           ))}
         </div>
-        <div className="fz-feld">
-          <label htmlFor={`${id}-code`}>Code aus der Authenticator-App</label>
-          <input
-            id={`${id}-code`}
-            ref={codeRef}
-            className="fz-code"
-            type="text"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            maxLength={7}
-            value={code}
-            readOnly={beschaeftigt}
-            aria-invalid={fehler ? true : undefined}
-            aria-describedby={`${id}-codehilfe${fehler ? ` ${id}-fehler` : ""}`}
-            onChange={(e) => setCode(e.target.value)}
-          />
-          <span id={`${id}-codehilfe`} className="fz-klein">
-            Jeder Start braucht einen aktuellen Code, höchstens zwei Minuten alt, auch wenn du dich gerade angemeldet hast.
-          </span>
-        </div>
+        {modus === "code" && (
+          <div className="fz-feld">
+            <label htmlFor={`${id}-code`}>Code aus der Authenticator-App</label>
+            <input
+              id={`${id}-code`}
+              ref={codeRef}
+              className="fz-code"
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={7}
+              value={code}
+              readOnly={beschaeftigt}
+              aria-invalid={fehler ? true : undefined}
+              aria-describedby={`${id}-codehilfe${fehler ? ` ${id}-fehler` : ""}`}
+              onChange={(e) => setCode(e.target.value)}
+            />
+            <span id={`${id}-codehilfe`} className="fz-klein">
+              {CODE_HILFE}
+            </span>
+          </div>
+        )}
         <p id={`${id}-fehler`} ref={fehlerRef} className="fz-fehler" role="alert">
           {fehler}
         </p>
         <div className="fz-dialog-knoepfe">
-          <button type="button" className="btn-secondary" disabled={beschaeftigt} onClick={onAbbrechen}>
+          <button ref={abbrechenRef} type="button" className="btn-secondary" disabled={beschaeftigt} onClick={onAbbrechen}>
             Abbrechen
           </button>
-          <button type="submit" className="btn-primary" disabled={beschaeftigt} aria-busy={beschaeftigt || undefined}>
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={beschaeftigt}
+            aria-busy={beschaeftigt || undefined}
+            // Ein Doppelklick oder Doppeltipp auf die Karte darf mit dem zweiten Klick nicht gleich "Verbinden" im eben geöffneten
+            // Dialog treffen: Ein Klick, der Teil einer Klickfolge ist (detail > 1), startet nichts. Tastatur (detail 0) und Einzelklick gehen durch.
+            onClick={(e) => {
+              if (e.detail > 1) e.preventDefault();
+            }}
+          >
             {beschaeftigt ? "Einen Moment …" : "Verbinden"}
           </button>
         </div>
@@ -357,9 +391,10 @@ function VerbindenDialog({
 }
 
 /**
- * Karte "Fernzugriff" (Einstellungen, nur Admin): die Ziele mit Zustand (frei, belegt, nicht erreichbar), Verbinden mit Hinweis und
- * frischem Code, die laufende Sitzung mit Restzeit und Trennen. Der Desktop erscheint in einem eigenen Fenster der Gateway-Adresse
- * (eigene Herkunft, kein iframe). Maßgeblich bleibt der Kern: Rolle admin, zweiter Faktor, ein Zuschauer je Ziel.
+ * Karte "Fernzugriff" (Einstellungen, nur Admin): die Ziele mit Zustand (frei, belegt, nicht erreichbar), Verbinden mit Hinweis (Code nur,
+ * wenn der Kern ihn verlangt), die laufende Sitzung mit Restzeit und Trennen. Der Desktop erscheint in einem eigenen Fenster der
+ * Gateway-Adresse (eigene Herkunft, kein iframe). Maßgeblich bleibt der Kern: Rolle admin, Code der Anmeldung, ein Zuschauer je Ziel.
+ * Das Zeigen der Karte (auch auf Bitte von WAMO) startet nie eine Sitzung und öffnet keinen Dialog.
  */
 export const Fernzugriff = memo(function Fernzugriff() {
   const u = useSelect(stand, (s) => s.u);
@@ -439,10 +474,7 @@ export const Fernzugriff = memo(function Fernzugriff() {
   const ziele = u ? sortiereZiele(u.ziele) : [];
   return (
     <div className="fz" role="region" aria-label="Fernzugriff">
-      <p className="ez-text">
-        Hier bedienst du unterwegs den Desktop von Sokrates-1, Sokrates-2 oder Caesar. Jede Sitzung braucht den aktuellen Code deiner
-        Authenticator-App, ist auf eine Stunde begrenzt und hat einen Zuschauer je Ziel. Es wird nichts aufgezeichnet.
-      </p>
+      <p className="ez-text">{EINLEITUNG}</p>
       <div className="fz-kopf">
         <p ref={meldungRef} className="fz-meldung" data-art={meldung?.art} role="status" tabIndex={-1}>
           {meldung?.text ?? ""}

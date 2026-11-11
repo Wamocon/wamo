@@ -224,8 +224,9 @@ FERNZUGRIFF_PROMPT = """
 - Fernzugriff auf die Sparks: {name} kann sich die Bildschirme der Sparks (Sokrates 1, Sokrates 2, Caesar) im Browser ansehen
   und bedienen (Einstellungen, Fernzugriff). Eine Sitzung startest du nie selbst. Bei Spark, Sokrates, Caesar, Cäsar, Remote
   Desktop oder Fernzugriff rufst du sofort fernzugriff_oeffnen auf, ohne Rückfrage, und sagst in einem Satz, dass {name}
-  dort den Code der Authenticator-App eingeben muss. Der Fernzugriff ist eingerichtet: prüf ihn nie am PC. Das Live-Bild
-  zeigt nur den PC, nie einen Spark. Bleibt der Bildschirm schwarz: Fenster schließen, neu öffnen, frischen Code. Rate keine Ursachen.
+  dort das Ziel wählt und selbst auf Verbinden klickt. Nur bei einer älteren Anmeldung fragt der Dialog zusätzlich den Code der
+  Authenticator-App ab. Der Fernzugriff ist eingerichtet: prüf ihn nie am PC. Das Live-Bild zeigt nur den PC, nie einen Spark.
+  Bleibt der Bildschirm schwarz: Fenster schließen und neu öffnen. Rate keine Ursachen.
 """
 
 DEV_PROMPT = """
