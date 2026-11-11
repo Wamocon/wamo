@@ -58,7 +58,8 @@ Alle Dienste müssen gleich antworten, wenn mehrere Fehler zusammentreffen. Die 
 10. Version (409 `ticket_veraendert`)
 11. Mengenquoten (429 `quote_erreicht`)
 
-Gespeichert für Wiederholungen werden alle Antworten außer 5xx und 429.
+Gespeichert für Wiederholungen werden die Erfolgsantworten und die Fehler 404 und 409 der Schritte 8 bis 10. Fehler der Schritte 1 bis 5 (Form), 429 und 5xx werden nicht gespeichert:
+Ein Wiederholen führt den Aufruf dann erneut aus.
 
 ### 2.3 Wertebereiche (Kern und Dienst prüfen beide)
 
@@ -111,7 +112,8 @@ Der Kern ruft V1 beim Start einer Sitzung, bei jedem Verbindungsaufbau und danac
 | `limit` | 1 bis 10, Standard 10 |
 
 - 200 `{"tickets": [Ticket, ...], "gesamt": 7}`. Die Liste ist nach Nummer absteigend sortiert (neueste zuerst) und hat höchstens `limit` Einträge. `gesamt` ist die Zahl aller Treffer ohne Begrenzung. Mehrere Filter gelten zusammen (UND)
-- 422 `eingabe_ungueltig` bei unbekanntem Parameter, falschem Wert oder zu langem `q`. 401, 404 `platz_unbekannt`
+- 422 `eingabe_ungueltig` bei unbekanntem oder doppeltem Parameter, falschem Wert oder zu langem `q`. 401, 404 `platz_unbekannt`
+- Der Dienst schreibt UTF-8 ohne Maskierung als `\uXXXX`. Würde die Antwort für 10 Tickets über 60 KB wachsen, liefert er weniger Tickets (den Anfang der Liste), `gesamt` bleibt die echte Zahl
 
 ### V3 Ticket lesen
 
