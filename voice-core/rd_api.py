@@ -191,12 +191,12 @@ def anmeldung_genuegt(zeit: float | None, jetzt: float | None = None) -> bool:
     if zeit is None or not math.isfinite(zeit):
         return False
     jetzt = time() if jetzt is None else jetzt
+    grenze = anmeldung_max_secs()  # zuerst lesen: ein ungültiger Wert steht bei jedem Start im Journal, auch bei frischem Code
     if aal2_frisch(zeit, jetzt):
         return True
     alter = jetzt - zeit
     if alter < -ZUKUNFT_SECS:
         return False
-    grenze = anmeldung_max_secs()
     return grenze is None or alter <= grenze
 
 

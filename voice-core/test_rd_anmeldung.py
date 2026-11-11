@@ -177,6 +177,15 @@ def test_ungueltiger_wert_gilt_als_strengste_stufe(rd, monkeypatch, log, wert):
     assert "strengste Stufe" in zeilen[0]
 
 
+def test_ungueltiger_wert_wird_auch_bei_frischem_code_gemeldet(rd, monkeypatch, log):
+    """Auch wenn der Start durchgeht (frischer Code), steht der Fehler der Einstellung im Journal: Wer nur mit frischen Codes startet,
+    soll den Tippfehler trotzdem finden."""
+    monkeypatch.setenv(STUFE, "sechzig")
+    rd.ctx.tok = token(totp_vor=10.0)
+    assert _start(rd).status_code == 200
+    assert [z for z in log if STUFE in z and "ERROR" in z]
+
+
 def test_stufe_obergrenze_43200_minuten_ist_gueltig(rd, monkeypatch, log):
     monkeypatch.setenv(STUFE, "43200")
     rd.ctx.tok = token(totp_vor=43199 * 60.0)
