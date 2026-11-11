@@ -187,6 +187,23 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   startet die Aufgabe jetzt über `conhost.exe --headless`, dabei entsteht kein Fenster. Auf bestehenden PCs wirkt das, sobald das
   Einrichtungsskript die Aufgabe das nächste Mal anlegt (neuer Desktop-Installer, Anmeldung in der App).
 
+- Testlabor, Migration 0018 und Verwaltung (Befunde F1 bis F10 des Datenbank-Reviews, Zweig `labor/mig`; nichts davon ist ausgerollt, die
+  Migration wurde noch nie angewendet und deshalb direkt geändert). `scripts/wamo_labor.py` meldet sich als Login-Rolle `wamo_admin` an
+  (Passwort aus `WAMO_ADMIN_DATABASE_URL`, nur über die SSH-Eingabe zum Server und dort als `PGPASSWORD` von `docker exec`) statt per
+  `set local role` als `postgres`: Das scheiterte, weil `postgres` im Supabase-Image kein Superuser ist und keine Rolle annehmen darf. Nur
+  die Kontosuche in `auth.users` läuft als `postgres`. `labor_loeschen` lehnt in den ersten 3 Minuten nach der letzten Änderung des Profils
+  ab (Sperrfrist: der Kern kennt ein Profil bis zu 2 Minuten aus dem Zwischenspeicher), prüft die Sitzungen vor dem Ergebnis noch einmal
+  und sperrt die Zeile nur noch mit `for no key update`; das Skript wartet die Sperrfrist ab und ruft die Funktion erneut auf.
+  `labor_zaehlen` und `labor_loeschen` behandeln `device_events` gleich, `feedback` geht im Zeitfenster über die Turns der gelöschten
+  Sitzungen mit. Die Sitzungsgrenze der Löschfunktion steigt auf 135 Minuten (Standard des Kerns 120 plus mehr als 10, Test gegen
+  `bot.py`). Der Selbsttest der Migration prüft alle Rollen aus `pg_roles` statt einer festen Liste, der Rückweg ist eine einzige
+  Anweisung und bricht auch ohne `--single-transaction` ab. Die Köpfe von Migration und Rückweg nennen die Reihenfolge mit dem Kern
+  (Migration vor dem Release, Rückweg erst nach der Rückstellung, sonst antwortet der neue Kern für alle Nutzer mit 503). GoTrue-Spuren
+  (`auth.audit_log_entries`, `auth.sessions`) und `model_access` stehen mit Grund in der Löschliste, sie verschwinden mit den Konten am
+  30.11.2026. Der SQL-Test braucht keinen Superuser mehr (`disable trigger user`), nimmt freie Werte (Laborplätze 14 bis 16, Tunnelplätze
+  60 bis 63) und prüft Sperrfrist, späte Rückmeldungen und Ereignisse fremder Profile. Neu im Test: Wahrheitstabelle der CHECK-Bedingungen
+  aus dem SQL, lexikalische Prüfung der gerenderten SQL-Dateien, Fremdschlüssel-Parser der Löschliste für alle Schreibweisen.
+
 ### Geändert
 
 - Slot-Betrieb: Solange eine Instanz von `wamo-core@.service` läuft oder die Slot-Verweise stehen, startet keines der Einrichtungsskripte
