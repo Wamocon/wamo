@@ -5,8 +5,10 @@ Vertrag Version 1, Aufruf V1: GET /api/kern/durchlauf mit Bearer WAMO_LABOR_TOKE
 Der Kern nimmt eine Sitzung nur an, wenn der Durchlauf offen ist und einwilligung_version mindestens WAMO_LABOR_EINWILLIGUNG_MIN ist.
 Er prüft das bei /start, bei jedem Offer (AccessMiddleware) und beim Sitzungsstart; danach fragt LaborWache alle 5 Sekunden und beendet
 die Sitzung, wenn der Durchlauf endet oder wechselt. Ist der Dienst nicht erreichbar, gibt es keine neue Sitzung (503, fail-closed).
-Eine laufende Sitzung läuft bei kurzem Ausfall weiter (ein Betreuer kann ohne Dienst auch keinen Durchlauf beenden), nach 12 Fehlversuchen
-hintereinander (60 Sekunden) endet sie, samt Textspeicherung: ohne den Dienst sind Einwilligung und Durchlauf nicht mehr prüfbar.
+Eine laufende Sitzung läuft bei kurzem Ausfall weiter (ein Betreuer kann ohne Dienst auch keinen Durchlauf beenden), nach 60 Sekunden ohne
+gelungene Prüfung endet sie, samt Textspeicherung: ohne den Dienst sind Einwilligung und Durchlauf nicht mehr prüfbar. Die Frist misst die Uhr
+(time.monotonic seit der letzten gelungenen Prüfung), nicht die Zahl der Versuche: hängt der Dienst, dauert jeder Versuch bis zur Lesefrist, und
+zwölf Versuche wären erst nach etwa 132 Sekunden um.
 
 Die Quelle wird gesetzt (quelle_setzen) oder ist der Dienstclient des Kerns (ClientQuelle, quelle_aus_env). Es gibt nur diesen einen Weg zum Dienst:
 labor_client.client_aus_umgebung prüft Adresse (HTTPS, nie die Attrappe), Token, Zertifikat und die Antwort streng, für den Start, die Wache und
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -32,7 +35,7 @@ CODE_BEENDET = "labor_durchlauf_beendet"
 CODE_EINWILLIGUNG = "labor_keine_einwilligung"
 CODE_DIENST = "labor_dienst_nicht_erreichbar"
 POLL_SECS = 5.0
-MAX_AUSFALL_VERSUCHE = 12  # so viele Fehlversuche hintereinander (60 Sekunden) beenden die Sitzung: ohne den Dienst ist nichts mehr prüfbar
+MAX_AUSFALL_SECS = 60.0  # so lange ohne gelungene Prüfung (an der Uhr gemessen, auch bei hängendem Dienst) beendet die Sitzung: ohne den Dienst ist nichts mehr prüfbar
 LESE_TIMEOUT_SECS = 5.0
 GRUND_BEENDET = "Der Durchlauf ist beendet. Bitte den Betreuer am Platz fragen."
 GRUND_EINWILLIGUNG = "Für diesen Platz liegt keine gültige Einwilligung vor. Bitte den Betreuer am Platz fragen."
@@ -158,16 +161,21 @@ async def pruefen(identity: object, *, quelle: DurchlaufQuelle | None = None, mi
 
 class LaborWache:
     """Fragt den Durchlauf einer laufenden Laborsitzung alle 5 Sekunden und liefert den Grund für das Ende. Wechselt die durchlauf_id,
-    wird der Durchlauf beendet oder fällt die Einwilligung weg, endet die Sitzung. Ein kurzer Ausfall des Dienstes beendet sie nicht."""
+    wird der Durchlauf beendet oder fällt die Einwilligung weg, endet die Sitzung. Ein kurzer Ausfall des Dienstes beendet sie nicht, ein Ausfall
+    von MAX_AUSFALL_SECS ohne gelungene Prüfung schon. uhr: Zeit in Sekunden (monoton), nur für Tests ersetzt."""
 
     def __init__(self, platz: int, stand: Durchlauf, *, quelle: DurchlaufQuelle | None = None, min_version: int | None = None,
-                 interval: float = POLL_SECS, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep):
+                 interval: float = POLL_SECS, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 uhr: Callable[[], float] = time.monotonic):
         self.platz = platz
         self.stand = stand
         self._quelle = quelle
         self._min = min_version if min_version is not None else labor.einwilligung_min()
         self.interval = interval
         self._sleep = sleep
+        self._uhr = uhr
+        self._letzte_pruefung = uhr()  # die Annahme beim Start war die letzte gelungene Prüfung; run() beginnt die Frist neu
+        self._ausfall_gemeldet = False
         self.fehler = 0
 
     @property
@@ -180,12 +188,17 @@ class LaborWache:
             neu = await _lesen(quelle, self.platz)
         except Exception as e:
             self.fehler += 1
-            if self.fehler in (1, MAX_AUSFALL_VERSUCHE):
-                logger.warning("Labor: Durchlauf nicht lesbar ({}), Versuch {}", _ursache(e), self.fehler)
             # Ein kurzer Ausfall beendet die Sitzung nicht (ein Betreuer kann ohne Dienst auch keinen Durchlauf beenden). Dauert er länger,
-            # sind Einwilligung und Durchlauf nicht mehr prüfbar: die Sitzung endet, mit ihr die Textspeicherung (fail-closed).
-            return GRUND_AUSFALL if self.fehler >= MAX_AUSFALL_VERSUCHE else None
+            # sind Einwilligung und Durchlauf nicht mehr prüfbar: die Sitzung endet, mit ihr die Textspeicherung (fail-closed). Gemessen wird die
+            # Zeit seit der letzten gelungenen Prüfung, nicht die Zahl der Versuche: ein hängender Dienst macht jeden Versuch langsam.
+            ausgefallen = self._uhr() - self._letzte_pruefung >= MAX_AUSFALL_SECS
+            if self.fehler == 1 or (ausgefallen and not self._ausfall_gemeldet):  # der erste Fehlversuch und das Ende, sonst nichts
+                logger.warning("Labor: Durchlauf nicht lesbar ({}), Versuch {}{}", _ursache(e), self.fehler, ", Sitzung endet" if ausgefallen else "")
+            self._ausfall_gemeldet = self._ausfall_gemeldet or ausgefallen
+            return GRUND_AUSFALL if ausgefallen else None
         self.fehler = 0
+        self._ausfall_gemeldet = False
+        self._letzte_pruefung = self._uhr()
         if neu.durchlauf_id != self.stand.durchlauf_id or not neu.offen:
             return GRUND_ENDE
         if self._min is None or not _einwilligung_gueltig(neu, self._min):
@@ -193,6 +206,7 @@ class LaborWache:
         return None
 
     async def run(self, on_end: Callable[[str], Awaitable[None]]) -> None:
+        self._letzte_pruefung = self._uhr()  # zwischen dem Bau und dem Verbindungsaufbau kann Zeit vergehen: die Frist gilt ab hier
         while True:
             await self._sleep(self.interval)
             grund = await self.check()
