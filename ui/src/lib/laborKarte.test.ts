@@ -74,7 +74,7 @@ test("Emojis zählen zwei Einheiten: die Kürzung der Oberfläche ist der Grund 
 });
 
 test("Steuer- und Bidi-Zeichen werden entfernt, Umbrüche bleiben", () => {
-  const m = parseServerMessage({ ...KARTE, items: [{ ...KARTE.items[0], detail: "Titel: a‮b​c\x07d\n> zweite" }] });
+  const m = parseServerMessage({ ...KARTE, items: [{ ...KARTE.items[0], detail: "Titel: a\u202eb\u200bc\x07d\n> zweite" }] });
   assert.ok(m && m.type === "freigaben");
   assert.equal(m.items[0].detail, "Titel: abcd\n> zweite");
 });

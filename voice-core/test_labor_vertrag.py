@@ -26,31 +26,31 @@ def test_gueltige_nummern(nummer):
 
 @pytest.mark.parametrize("nummer", [
     "LAB-0", "LAB-012", "LAB-10000", "lab-12", "LAB12", "LAB-", "LAB-1 ", " LAB-1", "LAB-1\n", "XYZ-12", "LAB-１２",
-    "LAB-12​", "LAB-1.5", "LAB--1", "LAB-+1", "", None, 12, "LAB-zwanzig",
+    "LAB-12\u200b", "LAB-1.5", "LAB--1", "LAB-+1", "", None, 12, "LAB-zwanzig",
 ])
 def test_ungueltige_nummern(nummer):
     assert not v.nummer_gueltig(nummer)
 
 
 def test_text_wird_nfc_und_ohne_steuerzeichen():
-    assert v.normiere("Café", zeilen=False) == "Café"  # NFC
+    assert v.normiere("Cafe\u0301", zeilen=False) == "Café"  # NFC
     assert v.normiere("a\x00b\x07c\x1b[31md", zeilen=False) == "a b c [31md"
     # Bidi-, Nullbreiten-, Format- und Trennzeichen werden zu Leerzeichen
-    for zeichen in ("‮", "​", "⁦", "﻿", " ", " ", "­", "⁠"):
+    for zeichen in ("\u202e", "\u200b", "\u2066", "\ufeff", "\u2028", "\u2029", "\u00ad", "\u2060"):
         assert zeichen not in v.normiere(f"x{zeichen}y", zeilen=False)
-    assert v.normiere("a‮b", zeilen=False) == "a b"
+    assert v.normiere("a\u202eb", zeilen=False) == "a b"
     assert v.normiere("a\U000e0041b", zeilen=False) == "a b"  # Tag-Zeichen (Format)
-    assert v.normiere("ab", zeilen=False) == "a b"  # private Nutzung
+    assert v.normiere("a\ue000b", zeilen=False) == "a b"  # private Nutzung
 
 
 def test_einzeilig_ohne_umbruch_und_leerraum_zusammengefasst():
-    assert v.normiere("  Zeile1\r\nZeile2\tText x  ", zeilen=False) == "Zeile1 Zeile2 Text x"
+    assert v.normiere("  Zeile1\r\nZeile2\tText\u00a0x  ", zeilen=False) == "Zeile1 Zeile2 Text x"
     assert v.normiere("a\n\n\nb", zeilen=False) == "a b"
 
 
 def test_mehrzeilig_behaelt_umbrueche_und_normiert_sie():
     assert v.normiere("a\r\nb\rc\nd", zeilen=True) == "a\nb\nc\nd"
-    assert v.normiere("a  \n  b  \n", zeilen=True) == "a\n  b"  # Einrückung bleibt, rechts wird gekürzt
+    assert v.normiere("a  \n  b\u00a0 \n", zeilen=True) == "a\n  b"  # Einrückung bleibt, rechts wird gekürzt
     assert v.normiere("\n\nText\n\n", zeilen=True) == "Text"
     assert "\r" not in v.normiere("a\rb", zeilen=True)
 

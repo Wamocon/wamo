@@ -147,9 +147,9 @@ async def test_seed(http, app):
 @pytest.mark.parametrize("aenderung,feld", [
     ({"typ": "fehler"}, "typ"), ({"prioritaet": "dringend"}, "prioritaet"), ({"titel": "ab"}, "titel"),
     ({"titel": "x" * 121}, "titel"), ({"beschreibung": "x" * 1501}, "beschreibung"), ({"titel": "a\nb c"}, "titel"),
-    ({"titel": "Test‮Titel"}, "titel"), ({"beschreibung": "a\rb"}, "beschreibung"), ({"titel": "Café Test"}, "titel"),
+    ({"titel": "Test\u202eTitel"}, "titel"), ({"beschreibung": "a\rb"}, "beschreibung"), ({"titel": "Cafe\u0301 Test"}, "titel"),
     ({"beschreibung": "a\x00b"}, "beschreibung"), ({"titel": 5}, "titel"), ({"beschreibung": None}, "beschreibung"),
-    ({"titel": "​Abc"}, "titel"), ({"beschreibung": "a b"}, "beschreibung"),
+    ({"titel": "\u200bAbc"}, "titel"), ({"beschreibung": "a\u2028b"}, "beschreibung"),
 ])
 async def test_v4_ungueltige_werte_sind_422(http, app, aenderung, feld):
     r = await anlegen(http, app, **aenderung)
@@ -314,7 +314,7 @@ async def test_v6_status_und_v7_kommentar(http, app):
     assert r.status_code == 201
     d = r.json()
     assert set(d) == {"kommentar_id", "ticket"} and d["ticket"]["version"] == 4 and isinstance(d["kommentar_id"], int)
-    for text in ("", "x" * 501, "a\x00b", "a‮b"):
+    for text in ("", "x" * 501, "a\x00b", "a\u202eb"):
         r = await http.post("/api/kern/tickets/LAB-20/kommentare", json={"erwartete_version": 4, "text": text}, headers=kopf(app, schreiben=True))
         assert r.status_code == 422, text
 
