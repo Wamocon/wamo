@@ -51,6 +51,7 @@ class Beobachtet:
         self.zugang = None
         self.labor = None
         self.beruehrt: dict[str, mock.Mock] = {}
+        self.transport = None
 
     @property
     def kontext_namen(self) -> list[str]:
@@ -99,7 +100,8 @@ async def bauen(identity, env=None, quelle=None, *, pc_waere_da=True, freigabe=N
          mock.patch.object(bot, "pc_zugang", pc_zugang), mock.patch.object(bot, "pc_host_fuer", pc_host_fuer), \
          mock.patch.object(bot, "host_client", beruehrt["host_client"]), mock.patch.object(bot, "DevAgent", beruehrt["DevAgent"]), \
          mock.patch.object(bot, "Boss", beruehrt["Boss"]), mock.patch.object(bot, "PcFreigaben", beruehrt["PcFreigaben"]):
-        b.session = await bot.build_session(smoke.FakeTransport(), identity)
+        b.transport = smoke.FakeTransport()
+        b.session = await bot.build_session(b.transport, identity)
     return b
 
 
@@ -389,3 +391,73 @@ class LaborSitzungTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+async def normal_bauen():
+    """Kontrolle: eine gewöhnliche Sitzung ohne Labor."""
+    with mock.patch.dict(os.environ, ENV), mock.patch("llm_anbieter.claude_problem", mock.AsyncMock(return_value=None)):
+        return await bot.build_session(smoke.FakeTransport(), Identity(USER, "Erika", "mitglied", "du"))
+
+
+class RtviUndWacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_der_rtvi_verarbeiter_der_laborsitzung_ist_der_filter(self):
+        from labor_rtvi import LaborRTVIProcessor
+
+        b = await bauen(platz_identitaet())
+        self.assertIsInstance(b.session.task.rtvi, LaborRTVIProcessor)
+        await b.session.cleanup()
+        normal = await normal_bauen()
+        self.assertNotIsInstance(normal.task.rtvi, LaborRTVIProcessor)
+        await normal.cleanup()
+
+    async def test_t14_das_ende_des_durchlaufs_beendet_die_sitzung_und_meldet_es(self):
+        class Beendet:
+            async def durchlauf(self, platz):
+                return {"durchlauf_id": DURCHLAUF, "offen": False, "einwilligung_version": 2}
+
+        b = await bauen(platz_identitaet())
+        b.labor.wache = labor_durchlauf.LaborWache(3, b.labor.stand, quelle=Beendet(), min_version=2, interval=0.01)
+        frames = []
+
+        async def merken(liste, *a, **k):
+            frames.extend(liste)
+
+        b.session.task.queue_frames = merken
+        with mock.patch.object(bot, "vorwaermen", mock.AsyncMock()), mock.patch.object(bot, "ENDE_MELDUNG_SECS", 0.01):
+            await b.transport._event_handlers["on_client_connected"].handlers[0](b.transport, None)
+            for _ in range(200):
+                await __import__("asyncio").sleep(0.02)
+                if any(getattr(f, "data", {}).get("type") == "sitzung_beendet" for f in frames):
+                    break
+        daten = [getattr(f, "data", None) for f in frames if getattr(f, "data", None)]
+        typen = [d["type"] for d in daten]
+        self.assertIn("labor_durchlauf_ende", typen)
+        self.assertIn("sitzung_beendet", typen)
+        self.assertLess(typen.index("labor_durchlauf_ende"), typen.index("sitzung_beendet"))
+        await b.session.cleanup()
+
+    async def test_gewoehnliche_sitzung_hat_keine_wache(self):
+        # Kontrolle: das Labor hängt nichts an eine normale Sitzung
+        normal = await normal_bauen()
+        await normal.cleanup()
+
+
+class ZugangParameterTests(unittest.TestCase):
+    def test_kein_labor_kein_zusatzargument(self):
+        self.assertEqual(labor.zugang_parameter(Identity(USER, "Erika", "admin", "du")), {})
+
+    def test_labor_art_nur_aus_der_identitaet_und_nur_wenn_zugang_laden_es_kennt(self):
+        import modellzugang
+
+        ident = platz_identitaet("schaufenster")
+
+        async def alt(user_id):  # Stand ohne Quelle labor
+            return None
+
+        async def neu(user_id, labor_art=None):
+            return None
+
+        with mock.patch.object(modellzugang, "zugang_laden", alt):
+            self.assertEqual(labor.zugang_parameter(ident), {})
+        with mock.patch.object(modellzugang, "zugang_laden", neu):
+            self.assertEqual(labor.zugang_parameter(ident), {"labor_art": "schaufenster"})

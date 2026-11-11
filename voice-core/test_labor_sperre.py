@@ -395,6 +395,21 @@ class MiddlewareLaborTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("profile", antwort["detail"].lower())  # keine Auskunft über interne Pfade
                 self.assertEqual(pruefungen, [])
 
+    async def test_t2_jede_route_der_apps_ist_durch_die_middleware_fuer_laborprofile_zu(self):
+        """Ende zu Ende durch die echte Middleware: kein einziger Weg ausser der Liste erreicht die App. Die Routen sind aus
+        den Modulen und aus Pipecat gelesen, nicht aufgeschrieben."""
+        routen = sorted(set(pipecat_routen()) | set(kern_routen()) | set(ZUSATZ))
+        erreicht = []
+        for methode, pfad in routen:
+            gerufen, gesendet, _, _ = await self.lauf(methode, pfad, laborprofil())
+            if gerufen:
+                erreicht.append((methode, pfad))
+            else:
+                self.assertEqual(gesendet[0]["status"], 403, (methode, pfad))
+        self.assertGreater(len(routen), 100)
+        for methode, pfad in erreicht:
+            self.assertTrue((methode, pfad) in set(ERLAUBT) or pfad.startswith("/wamo/api/labor/"), (methode, pfad))
+
     async def test_gesperrter_roher_pfad(self):
         gerufen, gesendet, _, _ = await self.lauf("POST", "/start", laborprofil(), raw_path=b"/st%61rt")
         self.assertEqual((gerufen, gesendet[0]["status"]), ([], 403))
