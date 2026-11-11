@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 import dev_agent
+import dev_agent_weg
 import entwicklung_betrieb as eb
 from test_dev_agent_sokrates2 import stream as sk_stream
 
@@ -153,12 +154,12 @@ class SchalterTests(unittest.TestCase):
                    "WAMO_ENTWICKLUNG_SSH_ZIEL": "wamo@192.168.178.136"}
             with buero(**env), mock.patch.object(dev_agent.shutil, "which", return_value="ssh"):
                 self.assertIsNone(dev_agent.entwicklung_problem())
-                with mock.patch.object(dev_agent, "_lesbar", side_effect=lambda p: p != key):
+                with mock.patch.object(dev_agent_weg, "_lesbar", side_effect=lambda p: p != key):  # ssh_problem steht in dev_agent_weg
                     problem = dev_agent.entwicklung_problem()
                     self.assertIn("Schlüssel", problem)
                     self.assertIn("lesbar", problem)
                     self.assertNotIn(tmp, problem)
-                with mock.patch.object(dev_agent, "_lesbar", side_effect=lambda p: p != hosts):
+                with mock.patch.object(dev_agent_weg, "_lesbar", side_effect=lambda p: p != hosts):
                     self.assertIn("Hostschlüssel", dev_agent.entwicklung_problem())
 
     def test_echt_unlesbar_ist_eine_datei_die_sich_nicht_oeffnen_laesst(self):

@@ -322,6 +322,12 @@ Mit Auslöser im Planpapier, Abschnitt 9. Jedes bekommt bei Bedarf ein eigenes P
 - **F3 und F4 Auftragsdienst mit Unix-Socket** (`SO_PEERCRED`), Aufträge überleben die Sitzung.
 - **F5 Aufräumen der Kern-Ordner**, Plattenquote. **F6 Frische aal2-Prüfung** je Auftragsstart. **F7 `expiry-time`** als zweite Schicht. **F8 Befehlskriterien im Betrieb** entscheiden.
 
+**Stand der Folgearbeiten (11.11.2026).**
+
+- **Auslagerung großer Dateien, `dev_agent.py`: erledigt** (Zweig `refactor/dev-agent-module`). 21 Definitionen sind unverändert nach `dev_agent_weg.py` (SSH-Weg, Statustexte) und `dev_agent_regeln.py` (Umgebungs-Allowlist, Sperrmuster, Regeltexte) gezogen, per AST-Vergleich belegt. Die Selbstschutz-Prüfungen (`project_slug`, `repo_pruefen`, `repo_aus_auftrag`, `SELF_REPO`) bleiben bewusst in `dev_agent.py`. Die Klasse `DevAgent` (etwa 1100 Zeilen, ein gemeinsamer Zustand) bleibt ungeteilt, ein Schnitt in Mischklassen brächte mehr Umwege als Lesbarkeit.
+- **Auslagerung im Dispatcher: bewusst nicht jetzt.** Jedes neue Modul braucht Änderungen am Auslieferungsweg (Einrichtungsskript an sechs Stellen, Rückweg, Prüfsumme in `ping`), ein Fehler dort träfe auch den PC-Kanal. Die Funktionen des Blocks „Projekt entschärfen“ arbeiten mit Dateideskriptoren und laufen laut Kommentar nur auf dem Server, ihre Tests werden auf der Entwicklungsmaschine übersprungen. Der Block „GitHub-App“ hängt an Patchpunkten der Tests (`_https`, `SCHLUESSEL_ORDNER`, `HEIM`, `emit`, `log`). Der richtige Zeitpunkt ist F1, denn F1 baut genau auf dem Git-Block auf.
+- **F1 bis F8: nicht umgesetzt, weil ihr Auslöser fehlt** (Planpapier, Abschnitt 9). F1 wartet auf Nikos Entscheidung N5 (Branch-Schutz oder Auftrag für F1), F2 auf Hinweise aus Stufe 4, F3 und F4 auf Störungen durch Sitzungsbindung, F5 auf mehr als 20 Kern-Ordner, F6 auf die Neubewertung vor Stufe 5, F7 auf die Antwort zu `expiry-time` (OpenSSH 9.6p1 laut Befund S0), F8 auf Stufe 4.
+
 ## 8. Reihenfolge und Aufwand
 
 **Reihenfolge**

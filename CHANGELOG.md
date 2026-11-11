@@ -187,6 +187,12 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   Hinweis auf `wamo-core-slots.sh umschalten-kern` und enden mit Exit 0. `scripts/wamo_kern_sokrates2.py` verweigert `neustart`,
   `--neustart` und `alles` im Slot-Betrieb mit Exit 3, `status` zeigt Slots und Schalter (nur Namen). `wamo-core-slots.sh`,
   `wamo-core-vorpruefung.sh` und `wamo-core@.service` sind unverändert (der Anker prüft die Prüfsumme des Slot-Skripts).
+- Auslagerung aus `voice-core/dev_agent.py` (reine Verschiebung von 21 Definitionen, ohne Änderung der Logik, Zweig
+  `refactor/dev-agent-module`): `dev_agent_weg.py` (SSH-Ziel, Schlüssel, Hostschlüssel, `ssh_argv`, `ssh_problem`, `remote_status` und die
+  Statustexte des Dispatchers) und `dev_agent_regeln.py` (Umgebungs-Allowlist, `permissions.deny`, Regeltexte für Claude Code). `dev_agent`
+  importiert alle Namen, sie bleiben dort erreichbar. Wer die Lesbarkeit einer Datei in einem Test vortäuscht, ersetzt `_lesbar` in
+  `dev_agent_weg`. Die Selbstschutz-Prüfungen (`project_slug`, `repo_pruefen`, `repo_aus_auftrag`, `SELF_REPO`) bleiben bewusst in `dev_agent.py`,
+  ebenso der Dispatcher als eine Datei (Begründung in `docs/entwicklung-im-betrieb-arbeitsliste.md`, Abschnitt 7).
 
 ### Hinzugefügt
 
