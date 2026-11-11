@@ -349,3 +349,17 @@ async def test_ein_fremdes_werkzeug_der_labor_werkzeuge_bricht_die_sitzung_ab():
         with pytest.raises(labor.LaborPolitikFehler):
             await m.aufbauen(LABOR)
     assert m.zugang._zu and m.werkz.client._http.is_closed  # nichts bleibt offen
+
+
+async def test_die_laborsitzung_hat_nur_eine_begrenzte_zahl_websuchen():
+    """Die Grenze je Sitzung (labor_limit, WAMO_LABOR_SUCHEN_MAX) gilt in der echten Sitzung: danach wird der Server-Schlüssel nicht mehr berührt."""
+    import tools
+
+    with labor_testhilfe.dienst(), mock.patch.dict(os.environ, {"WAMO_LABOR_SUCHEN_MAX": "2"}), \
+         mock.patch.object(tools, "websuche_ergebnis", mock.AsyncMock(return_value={"ergebnis": "sonnig"})) as suche:
+        m = await Mitschnitt().aufbauen(LABOR)
+        antworten = [await m.rufen("websuche", anfrage="Wetter in Eschborn") for _ in range(4)]
+        await m.session.cleanup()
+    assert [a["ergebnis"] for a in antworten[:2]] == ["sonnig", "sonnig"]
+    assert "Suchen" in antworten[2]["ergebnis"] and antworten[3] == antworten[2]
+    assert suche.await_count == 2

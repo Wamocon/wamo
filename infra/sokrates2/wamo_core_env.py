@@ -74,6 +74,9 @@ ERLAUBT = set(PFLICHT) | {
     # MAIL_DOMAIN, FREIGABE_SECS, MAX_OFFEN, MAX_SCHREIBEN: Grenzen der Mail-Bestätigung und der Freigabekarten.
     "WAMO_LABOR_URL", "WAMO_LABOR_TOKEN", "WAMO_LABOR_MAIL_DOMAIN", "WAMO_LABOR_EINWILLIGUNG_MIN", "WAMO_LABOR_FREIGABE_SECS",
     "WAMO_LABOR_MAX_OFFEN", "WAMO_LABOR_MAX_SCHREIBEN", "WAMO_LABOR_TEXT_SPEICHERN", "WAMO_LABOR_DATEN",
+    # Ratenbegrenzung je Laborsitzung und Profil (voice-core/labor_limit.py), jeweils mit festen Grenzen, Unbrauchbares heißt Standard:
+    # Abstand und Gesamtmenge getippter Eingaben, Websuchen je Sitzung, /start und Offer je Profil und Minute
+    "WAMO_LABOR_TEXT_ABSTAND_SECS", "WAMO_LABOR_TEXT_MAX_ZEICHEN", "WAMO_LABOR_SUCHEN_MAX", "WAMO_LABOR_ANFRAGEN_MAX",
 }
 ERLAUBT_PRAEFIX = ("WAMO_LLM_",)  # Anbieter-Fabrik (Phase P4)
 SCHLUESSEL_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")

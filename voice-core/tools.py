@@ -25,6 +25,7 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.services.llm_service import FunctionCallParams
 
 from auth_gate import Identity
+from labor_limit import GRUND_SUCHEN, SuchZaehler
 from llm_anbieter import Zugang, verbrauch_loggen
 from memory import BEREICHE, ZEITZONE, MemoryStore, initial_status
 from suche import (
@@ -321,15 +322,18 @@ def jetzt_text(now: datetime | None = None) -> dict:
 
 def register_tools(
     llm, memory: MemoryStore, identity: Identity, turn: TurnState | None = None, *, zugang: Zugang, fernzugriff: bool = False,
-    erlaubt: Collection[str] | None = None,
+    erlaubt: Collection[str] | None = None, suchen_max: int | None = None,
 ) -> ToolsSchema:
     """Registriert die Handler am LLM und liefert das Schema für den Kontext. zugang: Modellzugang des
     Profils (Websuche über Anthropic nur mit eigenem Schlüssel, sonst SearXNG). fernzugriff: nur für Admins bei
     eingeschaltetem Fernzugriff; das Werkzeug öffnet nur den Dialog in der Oberfläche und startet nie eine Sitzung.
     erlaubt: Erlaubnisliste der Namen (Laborprofile, labor.WERKZEUGE_BASIS): nur diese werden registriert und ins Schema gelegt,
-    alle anderen (merken, fernzugriff_oeffnen) gibt es in der Sitzung nicht. None: alle wie bisher."""
+    alle anderen (merken, fernzugriff_oeffnen) gibt es in der Sitzung nicht. None: alle wie bisher.
+    suchen_max: höchstens so viele Aufrufe von websuche in dieser Sitzung (Laborprofile, labor_limit.suchen_max), danach gibt es keine Suche mehr
+    und der Schlüssel wird nicht berührt. None: unbegrenzt wie bisher."""
     turn = turn or TurnState()
     frei = (lambda name: True) if erlaubt is None else (lambda name: name in erlaubt)
+    suchen = None if suchen_max is None else SuchZaehler(suchen_max)
 
     async def aktuelle_zeit(params: FunctionCallParams):
         await params.result_callback(jetzt_text())
@@ -369,6 +373,10 @@ def register_tools(
         anfrage = str(params.arguments.get("anfrage", "")).strip()
         if not anfrage:
             await params.result_callback({"ergebnis": "leere Anfrage"})
+            return
+        if suchen is not None and not suchen.verbrauchen():
+            logger.warning("websuche: Grenze je Sitzung erreicht ({})", suchen.maximum)
+            await params.result_callback({"ergebnis": GRUND_SUCHEN})
             return
         ergebnis = await websuche_ergebnis(anfrage, zugang)
         turn.taint()  # Webinhalte im Zug: kein sofort wirksames gemeinsames Wissen, kein Lernen

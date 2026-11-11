@@ -18,20 +18,27 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.processors.frameworks.rtvi import RTVIProcessor
 
 import labor
+from labor_limit import TextBegrenzer
 
 
 class LaborRTVIProcessor(RTVIProcessor):
-    """RTVIProcessor, der Nachrichten des Browsers gegen die Laborliste prüft. art kommt aus der geprüften Identität."""
+    """RTVIProcessor, der Nachrichten des Browsers gegen die Laborliste prüft und getippten Text begrenzt. art kommt aus der geprüften Identität.
+    begrenzer: Abstand und Gesamtmenge der getippten Eingaben dieser Sitzung (Standard: eigene Zähler nach labor_limit)."""
 
-    def __init__(self, *, art: str, **kwargs):
+    def __init__(self, *, art: str, begrenzer: TextBegrenzer | None = None, **kwargs):
         super().__init__(**kwargs)
         self._labor_art = labor.art_normalisieren(art) or labor.STRENGSTE_ART
+        self.begrenzer = begrenzer or TextBegrenzer()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if isinstance(frame, InputTransportMessageFrame) and not labor.rtvi_nachricht_erlaubt(self._labor_art, frame.message):
+        if isinstance(frame, InputTransportMessageFrame):
             message = frame.message if isinstance(frame.message, dict) else {}
             typ = message.get("type")
-            # Nur der Typ ins Log (kurz, ohne Inhalt): der Inhalt kann Gesprächstext oder ein Schlüssel sein
-            logger.warning("Labor: Client-Nachricht {!r} verworfen", typ[:40] if isinstance(typ, str) else type(typ).__name__)
-            return
+            if not labor.rtvi_nachricht_erlaubt(self._labor_art, frame.message):
+                # Nur der Typ ins Log (kurz, ohne Inhalt): der Inhalt kann Gesprächstext oder ein Schlüssel sein
+                logger.warning("Labor: Client-Nachricht {!r} verworfen", typ[:40] if isinstance(typ, str) else type(typ).__name__)
+                return
+            if typ == "send-text" and not self.begrenzer.zulassen(len(message["data"]["content"])):  # rtvi_nachricht_erlaubt hat die Form geprüft
+                logger.warning("Labor: getippte Eingabe verworfen (zu schnell oder Menge der Sitzung verbraucht)")
+                return
         await super().process_frame(frame, direction)

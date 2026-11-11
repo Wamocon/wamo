@@ -118,6 +118,7 @@ from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from ja_waechter import JaWaechter, ja_waechter_an
 import labor
 import labor_durchlauf
+import labor_limit
 from labor_client import LaborFehler, LaborKonfigFehler
 from labor_rtvi import LaborRTVIProcessor
 from labor_sitzung import LaborSitzung
@@ -634,7 +635,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # sofort wirksames gemeinsames Wissen (M4) und kein Lernen aus diesen Abschnitten.
     turn = TurnState(transcript_len=lambda: len(transcript))
     if labor_sitzung:  # Laborprofil: nur die Erlaubnisliste, nie merken oder Fernzugriff (labor.WERKZEUGE_BASIS)
-        standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, erlaubt=labor.WERKZEUGE_BASIS).standard_tools)
+        standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, erlaubt=labor.WERKZEUGE_BASIS,
+                                             suchen_max=labor_limit.suchen_max()).standard_tools)
     else:
         standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, fernzugriff=fernzugriff).standard_tools)
     # Vorgänge (vorgaenge.py): was WAMO gerade abarbeitet, live für die Tafel "Vorgänge". Alle Änderungen sind synchron, das
