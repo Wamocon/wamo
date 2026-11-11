@@ -142,9 +142,13 @@ def test_rechte_laborspalten_nur_wamo_admin_beim_anlegen_und_nur_labor_aktiv_dan
 
 def test_selbsttest_prueft_update_und_insert_fuer_alle_rollen():
     code = _ohne_kommentare(SQL)
-    test = _eine_zeile(code.split("-- Selbsttest")[0] if "-- Selbsttest" in code else code[code.rindex("do $$\ndeclare\n  r text"):])
-    for rolle in ("wamo_core", "anon", "authenticated", "service_role"):
-        assert f"'{rolle}'" in test, rolle
+    test = _eine_zeile(code[code.rindex("do $$\ndeclare\n  r name"):])
+    # F9: keine feste Rollenliste, sondern alle Rollen aus pg_roles außer Superusern, wamo_admin, dem Tabellenbesitzer und pg_-Rollen
+    assert "array['wamo_core', 'wamo_release', 'wamo_anker', 'anon', 'authenticated', 'service_role']" not in test
+    assert test.count("from pg_roles o where not o.rolsuper and o.rolname <> 'wamo_admin' and o.rolname !~ '^pg_'") == 2
+    assert test.count("o.oid <> (select t.relowner from pg_class t where t.oid = '__SCHEMA__.profiles'::regclass)") == 2
+    # einmal für die Spaltenrechte (INSERT, UPDATE), einmal für EXECUTE der Funktionen; wamo_core darf dabei nicht durchrutschen
+    assert "v_geprueft := v_geprueft || r::text" in test and "not ('wamo_core' = any(v_geprueft))" in test
     assert "has_column_privilege(r, '__SCHEMA__.profiles', c, 'INSERT')" in test
     assert "has_column_privilege(r, '__SCHEMA__.profiles', c, 'UPDATE')" in test
     assert "array['labor_art', 'labor_platz', 'labor_aktiv']" in test
@@ -160,7 +164,7 @@ def test_selbsttest_prueft_update_und_insert_fuer_alle_rollen():
         assert stueck in test, stueck
     assert "p.proacl is null" in test and "aclexplode(p.proacl)" in test  # null wäre der Standard PUBLIC
     assert "p.prosecdef" in test and "search_path=\"\"" in test
-    assert "to_regrole(r) is null" in test  # wamo_release und wamo_anker gibt es erst mit 0013
+    assert "to_regrole" not in test  # eine Rolle, die es nicht gibt, kommt in pg_roles gar nicht vor
 
 
 # ---------- Löschfunktion ----------
@@ -319,6 +323,31 @@ def test_rueckweg_bricht_bei_jedem_laborprofil_ab_gesperrt_in_prod_und_wiederhol
         assert ziel in code, ziel
     assert "cascade" not in code.lower()
     assert code.index("if v_n > 0 then") < code.index("drop column")  # erst die Prüfung, dann der Abbau
+
+
+def test_rueckweg_ist_eine_einzige_anweisung_damit_der_abbruch_auch_ohne_psql_optionen_greift():
+    """F9: Ohne -v ON_ERROR_STOP=1 und --single-transaction liefe psql nach einem Fehler weiter. Darum stehen Prüfung und Abbau in EINEM
+    do-Block: ein raise exception in der Prüfung nimmt den ganzen Block zurück, es kann kein Abbau danach laufen."""
+    code = _ohne_kommentare(DOWN).strip()
+    assert code.startswith("do $$") and code.endswith("end $$;")
+    assert code.count("do $$") == 1 and code.count("end $$;") == 1
+    assert code.index("raise exception") < code.index("drop trigger") < code.index("drop column")
+    # jede der drei Prüfungen bricht mit raise exception ab, bevor etwas verändert wird
+    vor_abbau = code[: code.index("drop trigger")]
+    assert vor_abbau.count("raise exception") == 3 and vor_abbau.count("errcode = '55000'") == 3
+    # die Sperrzeit für den Abbau gilt für die Transaktion des Blocks (set local ohne Transaktionsblock wäre wirkungslos)
+    assert "perform set_config('lock_timeout', '5s', true)" in code and "set local" not in code
+
+
+def test_rueckweg_kopf_nennt_die_aufrufform_fuer_jedes_schema_und_die_reihenfolge_mit_dem_kern():
+    kopf = " ".join(z.lstrip("- ").strip() for z in DOWN.splitlines() if z.lstrip().startswith("--"))
+    assert "psql -U postgres -v ON_ERROR_STOP=1 --single-transaction" in kopf
+    assert "jedes Schema" in kopf and "wamo_prod" in kopf and "wamo.allow_drop" in kopf
+    assert "erst nach der Rückstellung des Kerns" in kopf  # F4
+    assert "503" in kopf and "ALLE" in kopf
+    # und die Migration selbst: vor dem Release des Kerns
+    anfang = " ".join(z.lstrip("- ").strip() for z in SQL.splitlines()[:20] if z.lstrip().startswith("--"))
+    assert "VOR dem Release des Kerns" in anfang and "503" in anfang and "ALLE" in anfang
 
 
 def test_rueckweg_pruefblock_steht_woertlich_im_sql_test():

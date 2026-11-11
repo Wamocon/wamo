@@ -309,11 +309,14 @@ revoke insert (labor_art, labor_platz, labor_aktiv), update (labor_art, labor_pl
 revoke update (labor_art, labor_platz) on __SCHEMA__.profiles from wamo_admin;
 grant update (labor_aktiv) on __SCHEMA__.profiles to wamo_admin;
 
--- Selbsttest: bricht die Transaktion bei Rechtedrift ab, für UPDATE und für INSERT (Befund 12).
+-- Selbsttest: bricht die Transaktion bei Rechtedrift ab, für UPDATE und für INSERT (Befund 12). Geprüft werden ALLE Rollen aus
+-- pg_roles außer Superusern, wamo_admin, dem Tabellenbesitzer und den vordefinierten pg_-Rollen (keine feste Liste: eine später
+-- angelegte Rolle fällt ebenso auf). Meldet der Test eine Rolle, die dort nichts verloren hat, nennt die Meldung ihren Namen.
 do $$
 declare
-  r text;
+  r name;
   c text;
+  v_geprueft text[] := '{}';
 begin
   -- 1. PUBLIC: weder Tabellenrecht noch Spaltenrecht für INSERT oder UPDATE auf den Laborspalten
   if exists (select 1 from pg_class t, aclexplode(t.relacl) x
@@ -325,14 +328,20 @@ begin
     raise exception 'profiles (0018): PUBLIC darf Laborspalten schreiben' using errcode = '42501';
   end if;
   -- 2. Alle anderen Rollen: kein INSERT und kein UPDATE auf labor_art, labor_platz, labor_aktiv
-  foreach r in array array['wamo_core', 'wamo_release', 'wamo_anker', 'anon', 'authenticated', 'service_role'] loop
-    if to_regrole(r) is null then continue; end if;
+  for r in select o.rolname from pg_roles o where not o.rolsuper and o.rolname <> 'wamo_admin' and o.rolname !~ '^pg_'
+              and o.oid <> (select t.relowner from pg_class t where t.oid = '__SCHEMA__.profiles'::regclass)
+            order by o.rolname loop
+    v_geprueft := v_geprueft || r::text;
     foreach c in array array['labor_art', 'labor_platz', 'labor_aktiv'] loop
       if has_column_privilege(r, '__SCHEMA__.profiles', c, 'INSERT') or has_column_privilege(r, '__SCHEMA__.profiles', c, 'UPDATE') then
         raise exception 'profiles (0018): % darf % schreiben', r, c using errcode = '42501';
       end if;
     end loop;
   end loop;
+  -- wamo_core darf nicht durchrutschen (zum Beispiel als Tabellenbesitzer ausgenommen)
+  if not ('wamo_core' = any(v_geprueft)) then
+    raise exception 'profiles (0018): der Selbsttest hat wamo_core nicht geprüft' using errcode = '42501';
+  end if;
   -- 3. wamo_admin: INSERT auf alle drei (Anlegen), UPDATE nur auf labor_aktiv
   foreach c in array array['labor_art', 'labor_platz', 'labor_aktiv'] loop
     if not has_column_privilege('wamo_admin', '__SCHEMA__.profiles', c, 'INSERT') then
@@ -366,8 +375,9 @@ begin
                 and (p.proacl is null or exists (select 1 from aclexplode(p.proacl) x where x.grantee = 0))) then
     raise exception 'profiles (0018): eine Laborfunktion ist für PUBLIC ausführbar' using errcode = '42501';
   end if;
-  foreach r in array array['wamo_core', 'wamo_release', 'wamo_anker', 'anon', 'authenticated', 'service_role'] loop
-    if to_regrole(r) is null then continue; end if;
+  for r in select o.rolname from pg_roles o where not o.rolsuper and o.rolname <> 'wamo_admin' and o.rolname !~ '^pg_'
+              and o.oid <> (select t.relowner from pg_class t where t.oid = '__SCHEMA__.profiles'::regclass)
+            order by o.rolname loop
     if has_function_privilege(r, '__SCHEMA__.labor_loeschen(uuid, timestamptz, timestamptz)', 'EXECUTE')
        or has_function_privilege(r, '__SCHEMA__.labor_zaehlen(uuid)', 'EXECUTE') then
       raise exception 'profiles (0018): % darf labor_loeschen oder labor_zaehlen ausführen', r using errcode = '42501';

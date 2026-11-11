@@ -22,14 +22,17 @@ end $$;
 grant wamo_core, wamo_admin to postgres;
 create schema wamo_testhilfe;
 grant usage on schema wamo_testhilfe to wamo_core, wamo_admin, anon, authenticated, service_role;
--- erwartet einen Fehler mit genau diesem SQLSTATE
-create function wamo_testhilfe.fehler(p_sql text, p_code text) returns void language plpgsql as $f$
+-- erwartet einen Fehler mit genau diesem SQLSTATE und, wenn angegeben, einem Meldungstext, der p_text enthält
+create function wamo_testhilfe.fehler(p_sql text, p_code text, p_text text default null) returns void language plpgsql as $f$
 begin
   begin
     execute p_sql;
   exception when others then
     if sqlstate <> p_code then
       raise exception 'erwartet %, bekam % (%) bei: %', p_code, sqlstate, sqlerrm, p_sql;
+    end if;
+    if p_text is not null and position(p_text in sqlerrm) = 0 then
+      raise exception 'erwartet eine Meldung mit "%", bekam "%" bei: %', p_text, sqlerrm, p_sql;
     end if;
     return;
   end;
@@ -219,11 +222,22 @@ do $$ begin
     'kein Laborprofil ist aktiv oder Admin');
 end $$;
 
--- 5. Rückweg: der Prüfblock aus 0018_labor_profile.down.sql (wörtlich) bricht bei einem Laborprofil ab
+-- 5. Rückweg: der gesamte do-Block aus 0018_labor_profile.down.sql (wörtlich, Prüfung und Abbau in einer Anweisung) bricht bei einem
+-- Laborprofil in der Prüfung ab, bevor etwas verändert wird. Danach sind Spalten und Funktionen noch da.
+-- Spätere Migrationen im Schema (ab 0019) würden die Prüfung davor abbrechen: für diesen Test wird sie übersprungen, damit die Meldung
+-- der Laborprofile geprüft wird (die Einstellung gilt nur in dieser Transaktion).
+select set_config('wamo.down_trotz_folgemigration', 'ja', true);
 select wamo_testhilfe.fehler($d$do $$
 declare
   v_n bigint := 0;
 begin
+  if '__SCHEMA__' = 'wamo_prod' and coalesce(current_setting('wamo.allow_drop', true), '') <> 'ja' then
+    raise exception 'Down in wamo_prod gesperrt. Nach Backup: PGOPTIONS="-c wamo.allow_drop=ja"' using errcode = '55000';
+  end if;
+  if exists (select 1 from __SCHEMA__.schema_migrations where version > '0018_labor_profile')
+     and coalesce(current_setting('wamo.down_trotz_folgemigration', true), '') <> 'ja' then
+    raise exception '0018 down: erst die späteren Migrationen zurücknehmen' using errcode = '55000';
+  end if;
   -- dynamisch, damit ein zweiter Lauf nach dem Entfernen der Spalte nicht an der fehlenden Spalte scheitert
   if exists (select 1 from information_schema.columns where table_schema = '__SCHEMA__'
               and table_name = 'profiles' and column_name = 'labor_art') then
@@ -233,7 +247,31 @@ begin
     raise exception '0018 down: es gibt noch % Laborprofile (auch gesperrte zählen). Erst labor_loeschen, dann die Profile löschen', v_n
       using errcode = '55000';
   end if;
-end $$;$d$, '55000');
+
+  -- Ab hier wird verändert: nur nach bestandener Prüfung, mit begrenzter Wartezeit auf Sperren
+  perform set_config('lock_timeout', '5s', true);
+  drop trigger if exists profiles_labor_guard on __SCHEMA__.profiles;
+  drop function if exists __SCHEMA__.profiles_labor_guard();
+  drop function if exists __SCHEMA__.labor_loeschen(uuid, timestamptz, timestamptz);
+  drop function if exists __SCHEMA__.labor_zaehlen(uuid);
+  drop index if exists __SCHEMA__.profiles_labor_platz_uni;
+  alter table __SCHEMA__.profiles drop constraint if exists profiles_labor_streng_chk;
+  alter table __SCHEMA__.profiles drop constraint if exists profiles_labor_form_chk;
+  alter table __SCHEMA__.profiles drop constraint if exists profiles_labor_platz_chk;
+  alter table __SCHEMA__.profiles drop constraint if exists profiles_labor_art_chk;
+  alter table __SCHEMA__.profiles drop column if exists labor_aktiv;
+  alter table __SCHEMA__.profiles drop column if exists labor_platz;
+  alter table __SCHEMA__.profiles drop column if exists labor_art;
+  delete from __SCHEMA__.schema_migrations where version = '0018_labor_profile';
+end $$;$d$, '55000', 'Laborprofile');
+do $$ begin
+  perform wamo_testhilfe.gleich((select count(*) from information_schema.columns where table_schema = '__SCHEMA__' and table_name = 'profiles'
+                                   and column_name in ('labor_art', 'labor_platz', 'labor_aktiv')), 3::bigint, 'der Rückweg hat nichts verändert (Spalten)');
+  perform wamo_testhilfe.gleich((select count(*) from pg_proc where pronamespace = '__SCHEMA__'::regnamespace
+                                   and proname in ('labor_loeschen', 'labor_zaehlen', 'profiles_labor_guard')), 3::bigint, 'der Rückweg hat nichts verändert (Funktionen)');
+  perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.schema_migrations where version = '0018_labor_profile'), 1::bigint,
+                                'der Rückweg hat die Migration nicht ausgetragen');
+end $$;
 
 -- 6. Löschfunktion: vollständig aus dem Katalog. Jede Tabelle mit einer Spalte, die auf profiles(user_id) oder auf auth.users(id)
 -- verweist, wird von labor_loeschen gelöscht (steht im Funktionstext) oder steht in der begründeten Ausnahmeliste
