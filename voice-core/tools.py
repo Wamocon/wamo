@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -320,12 +320,16 @@ def jetzt_text(now: datetime | None = None) -> dict:
 
 
 def register_tools(
-    llm, memory: MemoryStore, identity: Identity, turn: TurnState | None = None, *, zugang: Zugang, fernzugriff: bool = False
+    llm, memory: MemoryStore, identity: Identity, turn: TurnState | None = None, *, zugang: Zugang, fernzugriff: bool = False,
+    erlaubt: Collection[str] | None = None,
 ) -> ToolsSchema:
     """Registriert die Handler am LLM und liefert das Schema für den Kontext. zugang: Modellzugang des
     Profils (Websuche über Anthropic nur mit eigenem Schlüssel, sonst SearXNG). fernzugriff: nur für Admins bei
-    eingeschaltetem Fernzugriff; das Werkzeug öffnet nur den Dialog in der Oberfläche und startet nie eine Sitzung."""
+    eingeschaltetem Fernzugriff; das Werkzeug öffnet nur den Dialog in der Oberfläche und startet nie eine Sitzung.
+    erlaubt: Erlaubnisliste der Namen (Laborprofile, labor.WERKZEUGE_BASIS): nur diese werden registriert und ins Schema gelegt,
+    alle anderen (merken, fernzugriff_oeffnen) gibt es in der Sitzung nicht. None: alle wie bisher."""
     turn = turn or TurnState()
+    frei = (lambda name: True) if erlaubt is None else (lambda name: name in erlaubt)
 
     async def aktuelle_zeit(params: FunctionCallParams):
         await params.result_callback(jetzt_text())
@@ -389,12 +393,20 @@ def register_tools(
         logger.info("fernzugriff: Dialog in der Oberfläche angefordert")
         await params.result_callback({"geoeffnet": True, "hinweis": "Der Nutzer wählt den Spark und gibt den Code der Authenticator-App ein."})
 
-    llm.register_function("aktuelle_zeit", aktuelle_zeit)
-    llm.register_function("merken", merken)
-    llm.register_function("websuche", websuche, timeout_secs=40)
-    llm.register_function("canvas_zeigen", canvas_zeigen)
-    standard = [ZEIT_SCHEMA, merken_schema(identity.name), WEBSUCHE_SCHEMA, CANVAS_SCHEMA]
-    if fernzugriff and identity.is_admin:  # zusätzlich zum Schalter des Aufrufers: nie für Mitglieder
+    standard = []
+    if frei("aktuelle_zeit"):
+        llm.register_function("aktuelle_zeit", aktuelle_zeit)
+        standard.append(ZEIT_SCHEMA)
+    if frei("merken"):
+        llm.register_function("merken", merken)
+        standard.append(merken_schema(identity.name))
+    if frei("websuche"):
+        llm.register_function("websuche", websuche, timeout_secs=40)
+        standard.append(WEBSUCHE_SCHEMA)
+    if frei("canvas_zeigen"):
+        llm.register_function("canvas_zeigen", canvas_zeigen)
+        standard.append(CANVAS_SCHEMA)
+    if fernzugriff and identity.is_admin and frei("fernzugriff_oeffnen"):  # zusätzlich zum Schalter des Aufrufers: nie für Mitglieder
         llm.register_function("fernzugriff_oeffnen", fernzugriff_oeffnen)
         standard.append(FERNZUGRIFF_SCHEMA)
     return ToolsSchema(standard_tools=standard)
