@@ -12,11 +12,23 @@
 --   4. Der Prüfblock des Rückwegs bricht bei einem Laborprofil ab (er steht wörtlich aus 0018_labor_profile.down.sql hier)
 --   5. Löschfunktion: Zugangsprüfungen, Zeitfenster, Vollständigkeit aus dem Katalog, "danach ist nichts mehr da" (T10)
 -- Die Fixture füllt jede Tabelle der Löschliste (voice-core/labor_loeschliste.py). Tabellen ohne einfachen Einfügeweg (Geräte, Dateien,
--- Teilungen, Hinweise) werden als Superuser mit session_replication_role = replica gefüllt; die Löschung selbst läuft im Normalbetrieb.
+-- Teilungen, Hinweise) werden mit abgeschalteten Triggern gefüllt (alter table ... disable trigger user, kein Superuser nötig, die
+-- Fremdschlüssel bleiben aktiv); die Löschung selbst läuft im Normalbetrieb. Der Test legt die Laborplätze 14 bis 16, die Tunnelplätze
+-- 60 bis 63 und die Kennungen pc-t0018-<n> an und prüft vorher, dass sie frei sind. Er läuft als postgres (Tabellenbesitzer).
 \set ON_ERROR_STOP 1
 begin;
 do $$ begin
   if '__SCHEMA__' = 'wamo_prod' then raise exception 'Test nie in wamo_prod'; end if;
+end $$;
+-- Vorbedingung: Plätze, Tunnelplätze und Kennungen, die dieser Test festlegt, sind frei. Sonst kollidierte er (23505) mit
+-- Probe-Laborprofilen oder echten Geräten. Die Skripte vergeben Laborplätze ab 1 und Tunnelplätze ab 1, Kennungen pc-<Name>.
+do $$ begin
+  if exists (select 1 from __SCHEMA__.profiles where labor_platz in (14, 15, 16)) then
+    raise exception 'Test: die Laborplätze 14 bis 16 sind in __SCHEMA__ belegt (Probeprofile?), der Test braucht sie frei';
+  end if;
+  if exists (select 1 from __SCHEMA__.devices where (tunnel_slot between 60 and 63 and status <> 'widerrufen') or kennung like 'pc-t0018-%') then
+    raise exception 'Test: Tunnelplätze 60 bis 63 oder Kennungen pc-t0018-* sind in __SCHEMA__ belegt, der Test braucht sie frei';
+  end if;
 end $$;
 
 grant wamo_core, wamo_admin to postgres;
@@ -84,8 +96,8 @@ begin
   insert into __SCHEMA__.speakers (user_id, name, enrolled_at) values (p_user, 'Gast', v_zeit);
   insert into __SCHEMA__.vorgaenge (user_id, session_id, art, titel, status, gestartet_at)
     values (p_user, v_sess, 'aufgabe', 'Aufgabe', 'geplant', v_zeit);
-  -- ohne Trigger und ohne Fremdschlüsselprüfung (nur Superuser): Hinweise, Dateien, Teilungen, Geräte
-  perform set_config('session_replication_role', 'replica', true);
+  -- Hinweise, Dateien, Teilungen, Geräte: die Trigger sind für die Fixture abgeschaltet (siehe unten, disable trigger user), die
+  -- Fremdschlüssel sind aktiv und erfüllt
   insert into __SCHEMA__.hinweise (empfaenger, art, titel, erstellt_at) values (p_user, 'system', 'Hinweis', v_zeit);
   insert into __SCHEMA__.dateien (user_id, name, mime, groesse, sha256, herkunft, inhalt, erstellt_at)
     values (p_user, 'a' || p_nr || '.txt', 'text/plain', 3, repeat('a', 64), 'upload', decode('616263', 'hex'), v_zeit);
@@ -94,11 +106,10 @@ begin
   insert into __SCHEMA__.teilung_events (teilung_id, besitzer, empfaenger, durch, art, ereignis, at)
     values (v_teil, p_user, p_zeuge, p_user, 'canvas', 'geteilt', v_zeit);
   insert into __SCHEMA__.devices (user_id, name, art, klasse, zugang, status, kennung, tunnel_slot, ssh_pubkey, ssh_fingerprint, created_at)
-    values (p_user, 'Gast-Laptop ' || p_nr, 'persoenlich', 'laptop', 'tunnel', 'beantragt', 'pc-lab' || p_nr, 50 + p_nr,
+    values (p_user, 'Gast-Laptop ' || p_nr, 'persoenlich', 'laptop', 'tunnel', 'beantragt', 'pc-t0018-' || p_nr, 59 + p_nr,
             'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA' || repeat('A', 42), 'SHA256:' || repeat(chr(96 + p_nr), 43), v_zeit)
     returning id into v_dev;
   insert into __SCHEMA__.device_events (device_id, nach, durch, at) values (v_dev, 'beantragt', p_user, v_zeit);
-  perform set_config('session_replication_role', 'origin', true);
 end $f$;
 grant execute on all functions in schema wamo_testhilfe to wamo_core, wamo_admin, anon, authenticated, service_role;
 -- anon, authenticated und service_role haben auf dem Schema kein usage (0001): hier vorübergehend, damit die Sperre wirklich an den
@@ -128,8 +139,8 @@ insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv) values
   ('00000000-0000-4000-8000-0000000018d0', 'Labor Zeuge', 'mitglied', true);
 -- Laborprofile: Platz 1, Platz 2 und das Schau-Profil (Rolle mitglied, aktiv = false, Befund 1 und 2)
 insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values
-  ('00000000-0000-4000-8000-0000000018a1', 'Gast', 'mitglied', false, 'platz', 1),
-  ('00000000-0000-4000-8000-0000000018b1', 'Gast', 'mitglied', false, 'platz', 2),
+  ('00000000-0000-4000-8000-0000000018a1', 'Gast', 'mitglied', false, 'platz', 15),
+  ('00000000-0000-4000-8000-0000000018b1', 'Gast', 'mitglied', false, 'platz', 16),
   ('00000000-0000-4000-8000-0000000018e1', 'Gast', 'mitglied', false, 'schaufenster', null);
 
 -- 1. Migration eingetragen, Spalten, Prüfungen, Index, Trigger
@@ -149,18 +160,18 @@ do $$ begin
 end $$;
 
 -- 2. Prüfungen: jede verkehrte Form wird abgelehnt (23514), ein doppelter Platz ebenfalls (23505)
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'admin', false, 'platz', 5)$s$, '23514');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'admin', false, 'platz', 14)$s$, '23514');
 select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'admin', false, 'schaufenster', null)$s$, '23514');
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f2', 'x', 'mitglied', true, 'platz', 5)$s$, '23514');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f2', 'x', 'mitglied', true, 'platz', 14)$s$, '23514');
 select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f3', 'x', 'mitglied', false, 'platz', null)$s$, '23514');
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f4', 'x', 'mitglied', false, 'schaufenster', 5)$s$, '23514');
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f5', 'x', 'mitglied', true, null, 5)$s$, '23514');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f4', 'x', 'mitglied', false, 'schaufenster', 14)$s$, '23514');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f5', 'x', 'mitglied', true, null, 14)$s$, '23514');
 select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f6', 'x', 'mitglied', false, 'platz', 17)$s$, '23514');
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f7', 'x', 'mitglied', false, 'beobachter', 5)$s$, '23514');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f7', 'x', 'mitglied', false, 'beobachter', 14)$s$, '23514');
 select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_aktiv) values ('00000000-0000-4000-8000-0000000018f8', 'x', 'mitglied', true, true)$s$, '23514');
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f9', 'x', 'mitglied', false, 'platz', 1)$s$, '23505');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values ('00000000-0000-4000-8000-0000000018f9', 'x', 'mitglied', false, 'platz', 15)$s$, '23505');
 -- Ein Laborprofil entsteht nie freigeschaltet (Trigger beim Anlegen)
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz, labor_aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'mitglied', false, 'platz', 5, true)$s$, '42501');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz, labor_aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'mitglied', false, 'platz', 14, true)$s$, '42501');
 -- Befund 1 und 2: ein Laborprofil wird nie Admin und nie aktiv
 select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set rolle = 'admin' where user_id = '00000000-0000-4000-8000-0000000018a1'$s$, '23514');
 select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set rolle = 'admin' where user_id = '00000000-0000-4000-8000-0000000018e1'$s$, '23514');
@@ -174,29 +185,29 @@ select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set labor_art = 'plat
 
 -- 3. Rechte für INSERT und UPDATE je Rolle (Befund 12): wamo_core, anon, authenticated, service_role schreiben die Laborspalten nie
 set role wamo_core;
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, labor_art, labor_platz, rolle, aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'platz', 5, 'mitglied', false)$s$, '42501');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, labor_art, labor_platz, rolle, aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'platz', 14, 'mitglied', false)$s$, '42501');
 select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set labor_aktiv = true where user_id = '00000000-0000-4000-8000-0000000018a1'$s$, '42501');
 select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set labor_art = null where user_id = '00000000-0000-4000-8000-0000000018a1'$s$, '42501');
 select wamo_testhilfe.gleich((select labor_art from __SCHEMA__.profiles where user_id = '00000000-0000-4000-8000-0000000018a1'), 'platz', 'wamo_core liest labor_art');
 select wamo_testhilfe.gleich((select labor_aktiv from __SCHEMA__.profiles where user_id = '00000000-0000-4000-8000-0000000018a1'), false, 'wamo_core liest labor_aktiv');
 reset role;
 set role anon;
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, labor_art, labor_platz, rolle, aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'platz', 5, 'mitglied', false)$s$, '42501');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, labor_art, labor_platz, rolle, aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'platz', 14, 'mitglied', false)$s$, '42501');
 select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set labor_aktiv = true where user_id = '00000000-0000-4000-8000-0000000018a1'$s$, '42501');
 reset role;
 set role authenticated;
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, labor_art, labor_platz, rolle, aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'platz', 5, 'mitglied', false)$s$, '42501');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, labor_art, labor_platz, rolle, aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'platz', 14, 'mitglied', false)$s$, '42501');
 select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set labor_aktiv = true where user_id = '00000000-0000-4000-8000-0000000018a1'$s$, '42501');
 reset role;
 set role service_role;
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, labor_art, labor_platz, rolle, aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'platz', 5, 'mitglied', false)$s$, '42501');
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, labor_art, labor_platz, rolle, aktiv) values ('00000000-0000-4000-8000-0000000018f1', 'x', 'platz', 14, 'mitglied', false)$s$, '42501');
 select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set labor_aktiv = true where user_id = '00000000-0000-4000-8000-0000000018a1'$s$, '42501');
 reset role;
 -- wamo_admin: legt Laborprofile an und ändert danach nur labor_aktiv
 set role wamo_admin;
 insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz) values
-  ('00000000-0000-4000-8000-0000000018f1', 'Gast', 'mitglied', false, 'platz', 5);
-select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz, labor_aktiv) values ('00000000-0000-4000-8000-0000000018f2', 'x', 'mitglied', false, 'platz', 6, true)$s$, '42501');
+  ('00000000-0000-4000-8000-0000000018f1', 'Gast', 'mitglied', false, 'platz', 14);
+select wamo_testhilfe.fehler($s$insert into __SCHEMA__.profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz, labor_aktiv) values ('00000000-0000-4000-8000-0000000018f2', 'x', 'mitglied', false, 'platz', 14, true)$s$, '42501');
 select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set labor_art = null where user_id = '00000000-0000-4000-8000-0000000018f1'$s$, '42501');
 select wamo_testhilfe.fehler($s$update __SCHEMA__.profiles set labor_platz = 9 where user_id = '00000000-0000-4000-8000-0000000018f1'$s$, '42501');
 update __SCHEMA__.profiles set labor_aktiv = true where user_id = '00000000-0000-4000-8000-0000000018f1';
@@ -302,12 +313,31 @@ begin
   end if;
 end $$;
 
--- 7. Fixture: Platz 1 (A), Platz 2 (B, zwei Durchläufe), ein gewöhnliches Mitglied (C), alle mit Zeilen in jeder Tabelle der Löschliste
+-- 7. Fixture: Platz 15 (A), Platz 16 (B, zwei Durchläufe), ein gewöhnliches Mitglied (C), alle mit Zeilen in jeder Tabelle der Löschliste.
+-- Die Tabellen ohne einfachen Einfügeweg (Geräte, Dateien, Teilungen, Hinweise und ihre Protokolle) haben Trigger, die die Zeilen prüfen
+-- oder selbst Zeilen anlegen. Sie sind für die Fixture abgeschaltet (alter table ... disable trigger user, kein Superuser nötig, wie in
+-- den Tests der anderen Migrationen); die Fremdschlüssel bleiben aktiv und die Fixture erfüllt sie.
+alter table __SCHEMA__.hinweise disable trigger user;
+alter table __SCHEMA__.dateien disable trigger user;
+alter table __SCHEMA__.teilungen disable trigger user;
+alter table __SCHEMA__.teilung_events disable trigger user;
+alter table __SCHEMA__.devices disable trigger user;
+alter table __SCHEMA__.device_events disable trigger user;
 select wamo_testhilfe.fuellen('00000000-0000-4000-8000-0000000018a1', '00000000-0000-4000-8000-0000000018d0', now() - interval '3 hours', 1);
 select wamo_testhilfe.fuellen('00000000-0000-4000-8000-0000000018b1', '00000000-0000-4000-8000-0000000018d0', now() - interval '5 hours', 3);
 select wamo_testhilfe.fuellen('00000000-0000-4000-8000-0000000018b1', '00000000-0000-4000-8000-0000000018d0', now() - interval '1 hour', 4);
 select wamo_testhilfe.fuellen('00000000-0000-4000-8000-0000000018c0', '00000000-0000-4000-8000-0000000018d0', now() - interval '2 hours', 2);
--- A hat zusätzlich eine abgestürzte Sitzung (ohne Ende, älter als 130 Minuten): sie blockiert die Löschung nicht
+alter table __SCHEMA__.hinweise enable trigger user;
+alter table __SCHEMA__.dateien enable trigger user;
+alter table __SCHEMA__.teilungen enable trigger user;
+alter table __SCHEMA__.teilung_events enable trigger user;
+alter table __SCHEMA__.devices enable trigger user;
+alter table __SCHEMA__.device_events enable trigger user;
+-- F7: ein Ereignis eines fremden Profils (Zeuge) zu einem Gerät von A: labor_zaehlen zählt es, labor_loeschen entfernt es
+insert into __SCHEMA__.device_events (device_id, nach, durch, at)
+  select d.id, 'beantragt', '00000000-0000-4000-8000-0000000018d0', now() - interval '2 hours'
+    from __SCHEMA__.devices d where d.user_id = '00000000-0000-4000-8000-0000000018a1';
+-- A hat zusätzlich eine abgestürzte Sitzung (ohne Ende, älter als 135 Minuten): sie blockiert die Löschung nicht
 insert into __SCHEMA__.sessions (user_id, started_at) values ('00000000-0000-4000-8000-0000000018a1', now() - interval '4 hours');
 
 -- 8. Zugang: wer die Funktionen ausführen darf, wann sie wirft
@@ -334,29 +364,43 @@ select wamo_testhilfe.fehler($s$select __SCHEMA__.labor_loeschen(null)$s$, '2200
 select wamo_testhilfe.fehler($s$select __SCHEMA__.labor_loeschen('00000000-0000-4000-8000-0000000018a1', now(), now() - interval '1 day')$s$, '22023');
 -- freigeschaltet (labor_aktiv): erst sperren
 update __SCHEMA__.profiles set labor_aktiv = true where user_id = '00000000-0000-4000-8000-0000000018a1';
-select wamo_testhilfe.fehler($s$select __SCHEMA__.labor_loeschen('00000000-0000-4000-8000-0000000018a1')$s$, '55000');
+select wamo_testhilfe.fehler($s$select __SCHEMA__.labor_loeschen('00000000-0000-4000-8000-0000000018a1')$s$, '55000', 'noch freigeschaltet');
 update __SCHEMA__.profiles set labor_aktiv = false where user_id = '00000000-0000-4000-8000-0000000018a1';
+-- Sperrfrist: das Profil wurde eben geändert (profiles_touch setzt updated_at), der Kern kennt es noch bis zu 2 Minuten
+select wamo_testhilfe.fehler($s$select __SCHEMA__.labor_loeschen('00000000-0000-4000-8000-0000000018a1')$s$, '55000', 'Sperrfrist, noch etwa');
 reset role;
--- laufende Sitzung (ohne Ende, jünger als 130 Minuten)
+-- Alle Laborprofile (A, B, Schau-Profil) wurden in dieser Transaktion angelegt oder geändert und liegen damit in der Sperrfrist. Für die
+-- folgenden Löschungen wird updated_at zurückdatiert: profiles_touch abgeschalten (der Tabellenbesitzer darf es), danach wieder an.
+alter table __SCHEMA__.profiles disable trigger profiles_touch;
+update __SCHEMA__.profiles set updated_at = now() - interval '1 hour' where labor_art is not null;
+alter table __SCHEMA__.profiles enable trigger profiles_touch;
+-- laufende Sitzung (ohne Ende, jünger als 135 Minuten)
 insert into __SCHEMA__.sessions (id, user_id) values ('00000000-0000-4000-8000-0000000018aa', '00000000-0000-4000-8000-0000000018a1');
 set role wamo_admin;
-select wamo_testhilfe.fehler($s$select __SCHEMA__.labor_loeschen('00000000-0000-4000-8000-0000000018a1')$s$, '55000');
+select wamo_testhilfe.fehler($s$select __SCHEMA__.labor_loeschen('00000000-0000-4000-8000-0000000018a1')$s$, '55000', 'läuft noch eine Sitzung');
 reset role;
 update __SCHEMA__.sessions set ended_at = now() where id = '00000000-0000-4000-8000-0000000018aa';
 
 -- 9. Vorher: jede Tabelle der Löschliste hat Zeilen für A (sonst wäre der Test leer)
+-- Die Tabellen der Löschliste stehen hier einmal als Liste (voice-core/labor_loeschliste.py, tabellen()); test_migration_0018.py hält
+-- sie gleich der Löschliste. Die Anzahl wird daraus abgeleitet, nicht fest geschrieben.
 do $$
 declare
   z jsonb;
   k text;
+  erwartet text[] := array['feedback', 'memories', 'speakers', 'teilung_events', 'teilungen', 'hinweise', 'canvas_items', 'actions',
+                           'turns', 'vorgaenge', 'dateien', 'device_events', 'devices', 'sessions'];
 begin
   set local role wamo_admin;
   z := __SCHEMA__.labor_zaehlen('00000000-0000-4000-8000-0000000018a1');
   reset role;
-  perform wamo_testhilfe.gleich((select count(*) from jsonb_object_keys(z)), 14::bigint, 'labor_zaehlen liefert 14 Tabellen');
+  perform wamo_testhilfe.gleich((select array_agg(x order by x) from jsonb_object_keys(z) as x),
+                                (select array_agg(x order by x) from unnest(erwartet) as x), 'labor_zaehlen liefert genau die Tabellen der Löschliste');
   for k in select jsonb_object_keys(z) loop
     if (z ->> k)::bigint < 1 then raise exception 'Fixture leer: % hat keine Zeile für A', k; end if;
   end loop;
+  -- F7: labor_zaehlen zählt device_events wie labor_loeschen, auch über das Gerät: ein Ereignis des Profils und eines des Zeugen
+  perform wamo_testhilfe.gleich((z ->> 'device_events')::bigint, 2::bigint, 'device_events zählt auch Ereignisse fremder Profile zu den Geräten des Profils');
 end $$;
 
 -- 10. Zeitfenster (Durchlauf): B hat zwei Durchläufe, das Fenster trifft nur den ersten (vor 5 Stunden)
@@ -368,10 +412,22 @@ grant select on wamo_testhilfe.merker to wamo_admin;
 set role wamo_admin;
 select wamo_testhilfe.gleich((select count(*) from jsonb_each_text(__SCHEMA__.labor_zaehlen('00000000-0000-4000-8000-0000000018b1')) e where e.value::bigint <> 2),
                              0::bigint, 'B hat zwei Durchläufe in jeder Tabelle');
+reset role;
+-- F7: eine Rückmeldung zu einem Turn des ersten Durchlaufs, die erst nach dem Fenster entstand (feedback hat keinen Sitzungsbezug)
+insert into __SCHEMA__.feedback (user_id, turn_id, kind, created_at)
+  select t.user_id, t.id, 'praise', now()
+    from __SCHEMA__.turns t join __SCHEMA__.sessions s on s.id = t.session_id
+   where t.user_id = '00000000-0000-4000-8000-0000000018b1' and s.started_at < now() - interval '4 hours';
+set role wamo_admin;
 select __SCHEMA__.labor_loeschen('00000000-0000-4000-8000-0000000018b1', now() - interval '6 hours', now() - interval '4 hours');
 select wamo_testhilfe.gleich((select count(*) from jsonb_each_text(__SCHEMA__.labor_zaehlen('00000000-0000-4000-8000-0000000018b1')) e where e.value::bigint <> 1),
                              0::bigint, 'nach dem Fenster bleibt in jeder Tabelle genau der zweite Durchlauf');
 reset role;
+do $$ begin
+  perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.feedback where user_id = '00000000-0000-4000-8000-0000000018b1'
+                                   and created_at >= now() - interval '1 minute'), 0::bigint,
+                                'die späte Rückmeldung zu einem Turn der Sitzung ist weg');
+end $$;
 do $$ begin
   perform wamo_testhilfe.gleich(wamo_testhilfe.zeilen('00000000-0000-4000-8000-0000000018c0'),
                                 (select wert from wamo_testhilfe.merker where name = 'c_vorher'), 'C unberührt nach dem Fenster');

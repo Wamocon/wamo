@@ -377,7 +377,7 @@ def test_sql_test_deckt_prufungen_trigger_rechte_und_loeschen_ab():
         "set rolle = 'admin'", "set aktiv = true",  # Befund 1 und 2
         "release_anzahl_admins()", "release_ist_admin(",  # T12
         "labor_loeschen(", "labor_zaehlen(",
-        "pg_get_functiondef", "session_replication_role",
+        "pg_get_functiondef", "disable trigger user",
         "has_column_privilege(",
         "'55000'", "'42501'", "'22023'",
     ):
@@ -386,6 +386,70 @@ def test_sql_test_deckt_prufungen_trigger_rechte_und_loeschen_ab():
     assert code.count("insert into __SCHEMA__.profiles") >= 4 and code.count("update __SCHEMA__.profiles set labor_aktiv") >= 4
     # Rolle mitglied auch für das Schau-Profil
     assert re.search(r"labor_art.*'schaufenster'", code) and "'mitglied'" in code
+
+
+def test_sql_test_braucht_keinen_superuser_fuer_die_fixture():
+    """F3: session_replication_role verlangt Superuser, postgres ist im Supabase-Image keiner. Die Schwestertests schalten die Trigger mit
+    alter table ... disable trigger user ab (der Tabellenbesitzer darf das); die Fremdschlüssel bleiben aktiv und sind erfüllt."""
+    code = _ohne_kommentare(TEST)
+    assert "session_replication_role" not in code and "set_config('session_replication" not in code
+    for tabelle in ("hinweise", "dateien", "teilungen", "teilung_events", "devices", "device_events"):
+        assert f"alter table __SCHEMA__.{tabelle} disable trigger user;" in code, tabelle
+        assert f"alter table __SCHEMA__.{tabelle} enable trigger user;" in code, tabelle
+    assert code.count("disable trigger user") == code.count("enable trigger user") == 6
+    # erst abschalten, dann füllen, dann wieder anschalten
+    assert code.index("disable trigger user") < code.index("select wamo_testhilfe.fuellen(") < code.index("enable trigger user")
+    assert code.rindex("select wamo_testhilfe.fuellen(") < code.rindex("enable trigger user")
+
+
+def test_sql_test_datiert_updated_at_ohne_superuser_zurueck_und_prueft_die_sperrfrist():
+    """Die Sperrfrist (F2) lehnt jedes jüngst geänderte Profil ab, auch die frisch angelegten Testprofile: der Test prüft sie und datiert
+    updated_at dann mit abgeschaltetem profiles_touch zurück (der Tabellenbesitzer darf es)."""
+    code = _ohne_kommentare(TEST)
+    assert "'Sperrfrist, noch etwa'" in code and "'noch freigeschaltet'" in code and "'läuft noch eine Sitzung'" in code
+    aus, an = code.index("alter table __SCHEMA__.profiles disable trigger profiles_touch;"), code.index(
+        "alter table __SCHEMA__.profiles enable trigger profiles_touch;")
+    assert aus < code.index("set updated_at = now() - interval", aus) < an
+    # die Sperrfrist wird geprüft, bevor zurückdatiert wird; die erste erfolgreiche Löschung kommt danach
+    assert code.index("'Sperrfrist, noch etwa'") < aus < code.index("labor_loeschen('00000000-0000-4000-8000-0000000018b1', now() - interval '6 hours'")
+
+
+def test_sql_test_nimmt_nur_werte_die_kein_skript_vergibt_und_prueft_die_vorbedingung():
+    """F5: Feste Plätze 1, 2, 5, Tunnelplätze 51 bis 54 und Kennungen pc-lab* kollidierten (23505) mit Probe-Laborprofilen oder echten
+    Geräten in wamo_test. Jetzt Plätze 14 bis 16, Tunnelplätze 60 bis 63 und die Kennung pc-t0018-<n>; eine Vorbedingung bricht klar ab."""
+    code = _ohne_kommentare(TEST)
+    plaetze = {int(p) for p in re.findall(r"'platz',\s*(\d+)", code)} | {int(p) for p in re.findall(r"'schaufenster',\s*(\d+)", code)}
+    assert plaetze == {14, 15, 16, 17}, plaetze  # 17 ist der bewusst ungültige Platz
+    assert "59 + p_nr" in code and "50 + p_nr" not in code
+    assert "'pc-t0018-' || p_nr" in code and "pc-lab" not in code
+    vorbedingung = code[: code.index("grant wamo_core, wamo_admin to postgres")]
+    assert "labor_platz in (14, 15, 16)" in vorbedingung and "tunnel_slot between 60 and 63" in vorbedingung
+    assert "like 'pc-t0018-%'" in vorbedingung and vorbedingung.count("raise exception 'Test: ") == 2
+
+
+def _array(text: str, name: str) -> list[str]:
+    treffer = re.findall(rf"\b{name} text\[\] := array\[(.*?)\];", text, re.S)
+    assert treffer, name
+    gelesen = [sorted(re.findall(r"'([^']+)'", t)) for t in treffer]
+    assert all(g == gelesen[0] for g in gelesen), f"{name} steht an mehreren Stellen mit verschiedenem Inhalt"
+    return gelesen[0]
+
+
+def test_sql_test_leitet_tabellenzahl_und_listen_aus_der_loeschliste_ab():
+    """Die 14 stand fest im SQL-Test. Jetzt steht dort die Liste der Tabellen, und dieser Test hält sie gleich der Löschliste."""
+    code = _ohne_kommentare(TEST)
+    assert "14::bigint" not in code and "liefert 14 Tabellen" not in code
+    assert _array(code, "erwartet") == sorted(ll.tabellen())
+    assert _array(code, "ausnahmen") == sorted(ll.AUSNAHMEN)
+    assert _array(code, "fremde") == sorted(f"{t}.{s}" for t, s in ll.FREMDE_VERWEISE)
+
+
+def test_sql_test_prueft_device_events_fremder_profile_und_spaete_rueckmeldungen():
+    """F7 in der Datenbank: ein Ereignis eines fremden Profils zu einem Gerät des Profils wird gezählt und gelöscht, und eine Rückmeldung
+    zu einem Turn der Sitzung im Fenster verschwindet auch, wenn sie erst nach dem Fenster entstand."""
+    code = _eine_zeile(_ohne_kommentare(TEST))
+    assert "device_events zählt auch Ereignisse fremder Profile" in code
+    assert "späte Rückmeldung zu einem Turn der Sitzung ist weg" in code
 
 
 def test_sql_test_prueft_vollstaendigkeit_dynamisch_aus_dem_katalog():
