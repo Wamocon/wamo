@@ -441,6 +441,34 @@ async def test_zaehler_gelten_je_profil_und_durchlauf_nicht_je_verbindung(monkey
             await m.session.cleanup()
 
 
+async def test_nach_dem_ende_des_durchlaufs_schreibt_der_speicher_nichts_mehr_auch_wenn_cancel_scheitert(monkeypatch):
+    """Befund 4: labor_ende sperrt die Textspeicherung sofort. Schlägt task.cancel() still fehl (die Pipeline läuft weiter), kommt trotzdem keine Zeile mehr."""
+    import labor_speicher
+    from test_labor_speicher import StrengeDb
+
+    monkeypatch.setenv("WAMO_LABOR_TEXT_SPEICHERN", "an")
+    db = StrengeDb()
+    with labor_testhilfe.dienst() as app, mock.patch.object(bot, "vorwaermen", mock.AsyncMock()), mock.patch.object(bot, "ENDE_MELDUNG_SECS", 0.01),          mock.patch.object(labor_speicher, "shared_database", lambda: db):
+        m = await Mitschnitt().aufbauen(LABOR)
+        memory = m.annahme.memory
+        assert memory.enabled and not memory.gestoppt
+        m.session.task.cancel = mock.AsyncMock(side_effect=RuntimeError("scheitert"))
+        m.annahme.wache.interval = 0.01  # statt 5 Sekunden
+        await m.transport._event_handlers["on_client_connected"].handlers[0](m.transport, None)
+        await memory.log_turn("user", "vor dem Ende gesagt")
+        assert "turns" in db.tabellen()
+        app.durchlauf_beenden(3)
+        await warten(lambda: m.nachrichten("sitzung_beendet"), "sitzung_beendet")
+        await warten(lambda: memory._session_state == "beendet", "Sitzungsende im Speicher")  # die Aufräumarbeit ist durch
+        assert memory.gestoppt
+        vorher = len(db.anweisungen)
+        await memory.log_turn("user", "nach dem Ende gesagt")
+        await memory.log_turn("assistant", "nach dem Ende geantwortet")
+        assert await memory.log_action("ticket_anlegen", {"nummer": "LAB-9"}, "Freigabe", "change") is None
+        assert await memory.save_canvas("document", "Bericht", {"kind": "document", "text": "x"}) is None
+        assert len(db.anweisungen) == vorher
+
+
 # ---------- Reihenfolge der Starts: nichts bleibt halb offen ----------
 class NachErstemAufruf(httpx.AsyncBaseTransport):
     """Der Dienst antwortet einmal (die Prüfung der Annahme) und ist dann weg (die Werkzeuge): der Start darf nicht halb gelingen."""

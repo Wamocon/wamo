@@ -187,6 +187,55 @@ class SchreibenMitEinwilligung(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("sk-ant-api03-" + "a" * 40, text)
 
 
+class StoppTests(unittest.IsolatedAsyncioTestCase):
+    """Befund 4: Mit dem Ende des Durchlaufs (Einwilligung nicht mehr gültig) ist die Textspeicherung sofort aus, nicht erst, wenn die Pipeline gestoppt ist."""
+
+    async def test_nach_stoppen_schreibt_nichts_mehr_text_aktion_oder_canvas(self):
+        db = StrengeDb()
+        s = speicher(db)
+        await s.start_session("web")
+        await s.log_turn("user", "vorher gesagt")
+        self.assertTrue(await s.log_action("ticket_anlegen", {"nummer": "LAB-1"}, "Freigabe", "change"))
+        vorher = len(db.anweisungen)
+        s.stoppen()
+        self.assertTrue(s.gestoppt)
+        await s.log_turn("user", "danach gesagt")
+        await s.log_turn("assistant", "danach geantwortet")
+        self.assertIsNone(await s.log_action("ticket_anlegen", {"nummer": "LAB-2"}, "Freigabe", "change"))
+        self.assertIsNone(await s.save_canvas("document", "Bericht", {"kind": "document", "text": "x"}))
+        self.assertEqual(len(db.anweisungen), vorher)
+
+    async def test_wartende_zeilen_vor_dem_vermerk_werden_verworfen(self):
+        db = StrengeDb()
+        s = speicher(db)
+        await s.log_turn("user", "früh gesagt")  # noch ohne Sitzung: im Arbeitsspeicher
+        s.stoppen()
+        await s.start_session("web")
+        self.assertNotIn("turns", db.tabellen())  # nicht nachträglich geschrieben
+        await s.log_turn("user", "danach")
+        self.assertNotIn("turns", db.tabellen())
+
+    async def test_der_stopp_laesst_die_abschlusszeilen_und_das_sitzungsende_zu(self):
+        """Das Protokoll offener Anträge und das Ende der Sitzung sind kein Gesprächstext: sie müssen auch nach dem Stopp noch gelingen."""
+        db = StrengeDb()
+        s = speicher(db)
+        await s.start_session("web")
+        aktion = await s.log_action("ticket_anlegen", {"nummer": "LAB-1"}, "Freigabe", "change")
+        s.stoppen()
+        self.assertTrue(await s.update_action(aktion, "rejected"))
+        await s.end_session()
+        self.assertEqual(db.tabellen()[-2:], ["actions", "sessions"])
+
+    async def test_stoppen_ist_wiederholbar_und_ohne_einwilligung_harmlos(self):
+        s = speicher(StrengeDb())
+        s.stoppen()
+        s.stoppen()
+        self.assertTrue(s.gestoppt)
+        kein_text = speicher(StrengeDb(), text=False)
+        kein_text.stoppen()
+        await kein_text.log_turn("user", "x")
+
+
 class GedaechtnisGibtEsNie(unittest.IsolatedAsyncioTestCase):
     async def test_recall_ist_leer_auch_bei_gefuellter_datenbank(self):
         class Gefuellt(StrengeDb):

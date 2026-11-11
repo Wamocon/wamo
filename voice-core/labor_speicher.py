@@ -109,6 +109,7 @@ class LaborSpeicher(MemoryStore):
         self._vermerkt = False
         self._text_frei = False  # wird wahr, sobald der Einwilligungsvermerk geschrieben ist
         self._wartend: list[_PendingTurn] = []
+        self._gestoppt = False  # der Durchlauf ist zu Ende: kein Text, keine Aktion und kein Canvas mehr (stoppen)
 
     @classmethod
     def from_env(cls, user_id: str | None) -> MemoryStore:
@@ -137,6 +138,17 @@ class LaborSpeicher(MemoryStore):
     def enabled(self) -> bool:
         return self._schreiben and super().enabled
 
+    @property
+    def gestoppt(self) -> bool:
+        return self._gestoppt
+
+    def stoppen(self) -> None:
+        """Der Durchlauf ist zu Ende, die Einwilligung gilt nicht mehr: ab jetzt schreibt der Speicher weder Gesprächstext noch neue Aktionen noch Canvas,
+        sofort und ohne auf das Ende der Pipeline zu warten (schlägt deren Abbruch still fehl, liefe sie sonst weiter). Wartende Zeilen verfallen.
+        Nicht gesperrt sind update_action, aktion_abschliessen und end_session: sie schließen Protokollzeilen ab und enthalten keinen Gesprächstext."""
+        self._gestoppt = True
+        self._wartend.clear()
+
     # ---------- Gedächtnis: gibt es nie ----------
     async def recall(self, limit_personal: int = 40, limit_shared: int = 20, *, include_proposed: bool = False) -> Recall:
         return Recall()
@@ -159,7 +171,7 @@ class LaborSpeicher(MemoryStore):
         """Legt die Sitzung an und schreibt als Nächstes den Einwilligungsvermerk. Erst danach darf Text in die Datenbank: Zeilen, die vorher
         eintreffen, warten im Arbeitsspeicher. Gelingt der Vermerk nicht, wird nie Text geschrieben (fail-closed)."""
         await super().start_session(channel)
-        if not self.session_id:
+        if not self.session_id or self._gestoppt:
             self._wartend.clear()
             return
         if not self._vermerkt:
@@ -187,7 +199,7 @@ class LaborSpeicher(MemoryStore):
         return True
 
     async def log_turn(self, role: str, content: str, interrupted: bool = False, speaker_label: str | None = None) -> None:
-        if not self.enabled or not content or role not in TURN_ROLES or self._session_state in ("fehlgeschlagen", "beendet"):
+        if self._gestoppt or not self.enabled or not content or role not in TURN_ROLES or self._session_state in ("fehlgeschlagen", "beendet"):
             return
         if self._text_frei:
             await super().log_turn(role, content, interrupted, speaker_label)
@@ -196,7 +208,7 @@ class LaborSpeicher(MemoryStore):
                                               datetime.now(timezone.utc)))
 
     async def log_action(self, tool: str, params: dict, reason: str, risk: str) -> str | None:
-        return await super().log_action(tool, params, reason, risk) if self._text_frei else None
+        return await super().log_action(tool, params, reason, risk) if self._text_frei and not self._gestoppt else None
 
     async def save_canvas(self, type_: str, title: str, data: dict) -> str | None:
-        return await super().save_canvas(type_, title, data) if self._text_frei else None
+        return await super().save_canvas(type_, title, data) if self._text_frei and not self._gestoppt else None

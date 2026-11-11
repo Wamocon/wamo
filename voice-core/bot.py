@@ -1203,6 +1203,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     async def labor_ende(grund: str) -> None:
         """Der Durchlauf ist beendet oder gewechselt: die Oberfläche lädt sich neu (Untertitel und Canvas liegen im Speicher der Seite)."""
+        # Zuerst die Textspeicherung sperren: die Einwilligung gilt nicht mehr, und der Abbruch der Pipeline (task.cancel in cleanup) kann
+        # still scheitern. Ohne diese Sperre schriebe der Speicher bis zum Ende der Pipeline weiter.
+        labor_sitzung.memory.stoppen()
         if labor_werkz is not None:
             labor_werkz.durchlauf_beendet()  # offene Karten sind erledigt, keine neuen, kein Klick wirkt mehr (schon vor der Meldung und dem Aufräumen)
         with contextlib.suppress(Exception):
