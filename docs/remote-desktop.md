@@ -231,12 +231,13 @@ ausdrücklich akzeptiert und wird nicht beseitigt, sondern begrenzt und sichtbar
 
 Grenzen dieser Erkennung, ehrlich: Es ist eine Erkennung, kein Schutz. Die Oberfläche fragt die Hinweise jede Minute ab. Hat WAMO nur einen
 Admin, bekommt nur dieses Profil den Hinweis, und ein Angreifer mit dem Token der Person kann ihn selbst als gelesen markieren. Dann bleibt das
-Protokoll in `rd_sitzungen` (wer, Ziel, Start, Ende, Grund, Zeit des Codes). Bei Verdacht: an allen Geräten abmelden, `WAMO_RD_AKTIV=nein` setzen,
-das Profil sperren.
+Protokoll in `rd_sitzungen` (wer, Ziel, Start, Ende, Grund, Zeit des Codes). Bei Verdacht: sofort ein anderer Admin sperrt das Profil (das beendet
+die Sitzungen) und setzt `WAMO_RD_AKTIV=nein`. Das Abmelden in der Oberfläche gilt nur für das eigene Gerät und macht ein gestohlenes Token nicht ungültig.
 
-**Reihenfolge und Rückweg.** Migration vor Kern vor Oberfläche. Ein alter Kern mit der neuen Funktion verlangt weiter einen frischen Code und geht
-ohne Fehler durch. Ein neuer Kern mit der alten Funktion bekommt für den Code der Anmeldung die Antwort 23514, der Dialog fragt den Code ab: sicher,
-nur unbequem. Rückweg: Oberfläche zurück, Kern über `rueckweg-kern`, dann `0019_rd_anmeldung_genuegt.down.sql` (stellt die Funktion aus 0015
+**Reihenfolge und Rückweg.** Kern vor Migration, Oberfläche zuletzt. Ein neuer Kern mit der alten Funktion bekommt für den Code der Anmeldung die
+Antwort 23514, der Dialog fragt den Code ab: sicher, nur unbequem. Ein alter Kern mit der neuen Funktion ist nicht sicher genug: Er kennt weder die
+Startsperre je Profil noch die Nachprüfung der Datenbankzeile und verließ sich auf „ein Code, ein Start“. Darum wird die Migration nie vor dem Kern
+angewendet. Rückweg: Oberfläche zurück, Kern über `rueckweg-kern`, dann `0019_rd_anmeldung_genuegt.down.sql` (stellt die Funktion aus 0015
 wortgleich wieder her, keine Daten gehen verloren). Der Dialog behält das Codefeld als Rückfall.
 
 ## 4. Frage C: Zugang unterwegs (WireGuard)

@@ -123,7 +123,8 @@ do $$ declare r record; a uuid; b uuid; c uuid; d uuid; t0 timestamptz := clock_
   -- Inhalt: Person, Kurzname des Ziels, Alter des Codes, Höchstdauer; Titel mit dem Ziel
   perform wamo_testhilfe.gleich((select titel from __SCHEMA__.hinweise where bezug = a and empfaenger = '00000000-0000-4000-8000-0000000000a2'), 'Fernzugriff gestartet: sokrates1', 'Titel');
   perform wamo_testhilfe.gleich((select h.text like 'Admin Eins hat eine Fernsitzung auf sokrates1 gestartet.%' from __SCHEMA__.hinweise h where h.bezug = a and h.empfaenger = '00000000-0000-4000-8000-0000000000a2'), true, 'Text nennt Person und Ziel');
-  perform wamo_testhilfe.gleich((select h.text like '%wurde vor 72 Stunden eingegeben.%' from __SCHEMA__.hinweise h where h.bezug = a and h.empfaenger = '00000000-0000-4000-8000-0000000000a1'), true, 'Alter des Codes in Stunden');
+  perform wamo_testhilfe.gleich((select h.text like '%wurde vor 3 Tagen eingegeben.%' from __SCHEMA__.hinweise h where h.bezug = a and h.empfaenger = '00000000-0000-4000-8000-0000000000a1'), true, 'Alter des Codes in Tagen (drei)');
+  perform wamo_testhilfe.gleich((select h.text like '%wurde vor 30 Tagen eingegeben.%' from __SCHEMA__.hinweise h where h.bezug = d and h.empfaenger = '00000000-0000-4000-8000-0000000000a1'), true, 'Alter des Codes in Tagen (dreissig)');
   perform wamo_testhilfe.gleich((select h.text like '%wurde vor 10 Minuten eingegeben.%' from __SCHEMA__.hinweise h where h.bezug = c and h.empfaenger = '00000000-0000-4000-8000-0000000000a1'), true, 'Alter des Codes in Minuten');
   perform wamo_testhilfe.gleich((select h.text like '%nach höchstens 60 Minuten.%' from __SCHEMA__.hinweise h where h.bezug = a and h.empfaenger = '00000000-0000-4000-8000-0000000000a1'), true, 'Hoechstdauer');
   -- nichts Vertrauliches im Hinweis: keine Adresse, kein Konto, kein Passwort, keine Zugangsdaten
@@ -145,6 +146,13 @@ do $$ declare r record; begin
   select * into r from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a1', 'ziel4', 3600, clock_timestamp(), 10, 60);
   perform wamo_testhilfe.gleich(r.ergebnis, 'ok', 'frischer Code startet');
   perform wamo_testhilfe.gleich((select h.text like '%wurde gerade eben eingegeben.%' from __SCHEMA__.hinweise h where h.bezug = r.sitzung_id and h.empfaenger = '00000000-0000-4000-8000-0000000000a2'), true, 'frischer Code: gerade eben');
+  -- fünf Stunden alter Code: Stunden bis 48 Stunden, danach Tage
+  select * into r from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a1', 'ziel7', 3600, clock_timestamp() - interval '5 hours', 10, 60);
+  perform wamo_testhilfe.gleich(r.ergebnis, 'ok', 'fünf Stunden alter Code startet');
+  perform wamo_testhilfe.gleich((select h.text like '%wurde vor 5 Stunden eingegeben.%' from __SCHEMA__.hinweise h where h.bezug = r.sitzung_id and h.empfaenger = '00000000-0000-4000-8000-0000000000a2'), true, 'Alter des Codes in Stunden');
+  -- eine Minute Höchstdauer heißt "1 Minute", nicht "1 Minuten"
+  select * into r from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a1', 'ziel8', 60, clock_timestamp(), 10, 60);
+  perform wamo_testhilfe.gleich((select h.text like '%nach höchstens 1 Minute.%' from __SCHEMA__.hinweise h where h.bezug = r.sitzung_id and h.empfaenger = '00000000-0000-4000-8000-0000000000a2'), true, 'eine Minute im Singular');
 end $$;
 reset role;
 
@@ -162,6 +170,18 @@ do $$ declare r record; vorher bigint; begin
   perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.hinweise where daten->>'quelle' = 'fernzugriff'), vorher, 'belegt, rate und voll melden nichts');
 end $$;
 reset role;
+
+-- 4b. Ohne Hinweis kein Start: darf wamo_core nicht in hinweise schreiben, scheitert der Start ganz (42501) und legt keine Sitzung an
+revoke insert on __SCHEMA__.hinweise from wamo_core;
+do $$ declare vorher bigint; begin
+  select count(*) into vorher from __SCHEMA__.rd_sitzungen;
+  set local role wamo_core;
+  perform wamo_testhilfe.fehler($f$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a2', 'ziel10', 3600, clock_timestamp(), 10, 60)$f$, '42501');
+  reset role;
+  perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.rd_sitzungen), vorher, 'ohne Recht auf hinweise entsteht keine Sitzung');
+end $$;
+reset role;
+grant insert on __SCHEMA__.hinweise to wamo_core;
 
 -- 5. Sitzung beenden bleibt wie in 0015 (Kurzprobe), Abgelaufene Sitzungen schließt der nächste Start
 set role wamo_core;

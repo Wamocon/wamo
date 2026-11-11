@@ -188,7 +188,8 @@ def test_hinweis_text_ohne_zugangsdaten_und_ohne_ziel_interna():
 def test_hinweis_wortlaut_deutsch_ohne_gedankenstrich():
     block = _hinweis_block()
     for satz in ("hat eine Fernsitzung auf", "gestartet. Der Code der Anmeldung wurde", "eingegeben. Die Sitzung endet nach höchstens",
-                 "Warst du das nicht, melde dich an allen Geräten ab und sag es den anderen Admins.", "Fernzugriff gestartet: "):
+                 "Warst du das nicht, sag es sofort den anderen Admins. Sie können dein Profil sperren und beenden damit die Sitzungen.",
+                 "Fernzugriff gestartet: "):
         assert satz in block, satz
     texte = " ".join(re.findall(r"'([^']*)'", block))
     assert chr(0x2013) not in texte and chr(0x2014) not in texte and " - " not in texte
@@ -197,7 +198,6 @@ def test_hinweis_wortlaut_deutsch_ohne_gedankenstrich():
 # ---------- Selbsttest ----------
 
 def test_selbsttest_prueft_den_neuen_stand_und_die_rechte():
-    selbsttest = _eine_zeile(_ohne_kommentare(SQL).split("-- Selbsttest")[-1])
     teile = _ohne_kommentare(SQL).rsplit("do $$", 1)[1]
     t = _eine_zeile(teile)
     assert "raise exception" in t and "errcode = '42501'" in t
@@ -209,7 +209,6 @@ def test_selbsttest_prueft_den_neuen_stand_und_die_rechte():
     for rolle in ("wamo_admin", "anon", "authenticated", "service_role"):
         assert f"has_function_privilege('{rolle}', '__SCHEMA__.rd_sitzung_beginnen({SIGNATUR})', 'EXECUTE')" in t, rolle
     assert "has_function_privilege('wamo_core'" in t
-    assert selbsttest  # der Block steht nach dem Kommentar "Selbsttest"
 
 
 # ---------- Rückweg ----------
@@ -273,8 +272,9 @@ def test_sql_test_deckt_alle_beschlossenen_faelle_ab():
         "interval '10 minutes'", "interval '30 days 23 hours'", "interval '31 days' - interval '1 second'", "interval '90 days'",
         "interval '30 seconds'", "'23514'", "'42501'", "'22004'", "'22023'",
         "'belegt'", "'rate'", "'voll'", "'Hinweis je aktivem Admin (erster Start)'", "'Mitglied und inaktiver Admin bekommen keinen'",
-        "'belegt, rate und voll melden nichts'", "'abgelehnte Starts melden nichts'", "wurde vor 72 Stunden eingegeben",
-        "wurde vor 10 Minuten eingegeben", "wurde gerade eben eingegeben", "'keine Zugangsdaten und keine Adressen im Text'",
+        "'belegt, rate und voll melden nichts'", "'abgelehnte Starts melden nichts'", "wurde vor 3 Tagen eingegeben",
+        "wurde vor 30 Tagen eingegeben", "wurde vor 5 Stunden eingegeben", "nach höchstens 1 Minute.",
+        "'ohne Recht auf hinweise entsteht keine Sitzung'", "wurde vor 10 Minuten eingegeben", "wurde gerade eben eingegeben", "'keine Zugangsdaten und keine Adressen im Text'",
         "'genau eine offene Sitzung je Ziel'", "'zeitlimit'", "hinweis_an_admins", "'wamo_admin nicht'", "'anon nicht'",
         "'authenticated nicht'", "'service_role nicht'", "prosecdef", "search_path=%", "select '0019 OK';",
     ):

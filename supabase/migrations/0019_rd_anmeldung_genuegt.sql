@@ -7,11 +7,14 @@
 -- Rückweg: 0019_rd_anmeldung_genuegt.down.sql (stellt die Funktion aus 0015 wieder her, keine Daten gehen verloren).
 -- Hängt ab von 0001, 0002 (hinweise) und 0015 (rd_sitzungen, rd_sitzung_beginnen).
 -- Reihenfolge der Anwendung: wamo_dev, wamo_test, dann das Schema des Büro-Kerns, erst nach database-reviewer und nach Nikos Ja.
--- Reihenfolge mit dem Kern: Diese Migration kommt VOR dem Kern, der keinen frischen Code mehr verlangt (rd_api.py, Paket KP-2).
---   * Alter Kern, neue Funktion: Der alte Kern verlangt weiter einen frischen Code und gibt dessen Zeit an die Funktion. Das geht
---     ohne Fehler durch, nur Hinweis und die Sperren sind anders.
---   * Neuer Kern, alte Funktion (Kern vor der Migration): Die alte Funktion lehnt die Zeit des Codes der Anmeldung mit 23514 ab, der
---     Kern antwortet mit zweiter_faktor_zu_alt, und die Oberfläche fragt den Code ab. Es geht nichts auf, es fehlt nur der Komfort.
+-- Reihenfolge mit dem Kern: ERST der neue Kern (rd_api.py, Paket KP-2), DANN diese Migration.
+--   * Neuer Kern, alte Funktion (Kern vor der Migration, der sichere Weg): Die alte Funktion lehnt die Zeit des Codes der Anmeldung
+--     mit 23514 ab, der Kern antwortet mit zweiter_faktor_zu_alt, und die Oberfläche fragt den Code ab. Es geht nichts auf, es fehlt
+--     nur der Komfort. Der neue Kern bringt die Startsperre je Profil und die Nachprüfung der Datenbankzeile schon mit.
+--   * Alter Kern, neue Funktion (Migration vor dem Kern, nur mit Vorbehalt): Der alte Kern kennt weder die Startsperre je Profil noch
+--     die Nachprüfung und verließ sich auf "ein Code, ein Start". Zwei schnelle Starts desselben Profils lösen sich jetzt ab, das
+--     Beenden am Gateway kann ins Leere laufen, und ein Zuschauer bleibt bis zum Zeitlimit ohne offene Zeile. Darum nicht so anwenden.
+--   * Rückweg: erst Oberfläche und Kern zurück, dann diese Migration zurück (siehe die .down.sql).
 --
 -- Was sich ändert (nur die Funktion, keine Tabelle, keine Rolle, keine Rechte):
 --   * Entfällt: "der zweite Faktor ist älter als 120 Sekunden". Der Code der Anmeldung genügt. Die Frische des Codes und das
@@ -115,13 +118,15 @@ begin
   v_alter := clock_timestamp() - p_aal2_zeit;
   v_wann := case when v_alter < interval '3 minutes' then 'gerade eben'
                  when v_alter < interval '1 hour' then 'vor ' || floor(extract(epoch from v_alter) / 60)::integer::text || ' Minuten'
-                 else 'vor ' || floor(extract(epoch from v_alter) / 3600)::integer::text || ' Stunden' end;
+                 when v_alter < interval '48 hours' then 'vor ' || floor(extract(epoch from v_alter) / 3600)::integer::text || ' Stunden'
+                 else 'vor ' || floor(extract(epoch from v_alter) / 86400)::integer::text || ' Tagen' end;
   insert into __SCHEMA__.hinweise (empfaenger, art, titel, text, bezug, daten)
   select a.user_id, 'system', 'Fernzugriff gestartet: ' || p_ziel,
          left(coalesce((select left(p.display_name, 60) from __SCHEMA__.profiles p where p.user_id = p_profil), 'Ein Admin')
               || ' hat eine Fernsitzung auf ' || p_ziel || ' gestartet. Der Code der Anmeldung wurde ' || v_wann
-              || ' eingegeben. Die Sitzung endet nach höchstens ' || (p_dauer_secs / 60)::text || ' Minuten. '
-              || 'Warst du das nicht, melde dich an allen Geräten ab und sag es den anderen Admins.', 1000),
+              || ' eingegeben. Die Sitzung endet nach höchstens ' || (p_dauer_secs / 60)::text
+              || case when p_dauer_secs / 60 = 1 then ' Minute. ' else ' Minuten. ' end
+              || 'Warst du das nicht, sag es sofort den anderen Admins. Sie können dein Profil sperren und beenden damit die Sitzungen.', 1000),
          v_neu, jsonb_build_object('quelle', 'fernzugriff', 'sitzung', v_neu, 'ziel', p_ziel, 'profil', p_profil)
     from __SCHEMA__.profiles a
    where a.aktiv and a.rolle = 'admin';
