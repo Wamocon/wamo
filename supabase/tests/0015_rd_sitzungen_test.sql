@@ -50,6 +50,12 @@ do $$ begin
   end if;
 end $$;
 
+-- Stand der Funktion: Ab Migration 0019 gelten zwei Sperren dieses Tests nicht mehr (Code hoechstens 120 Sekunden alt, ein Code
+-- fuer genau einen Start). Der Test kennt beide Staende und prueft die Sperren, solange 0019 nicht angewendet ist; das neue Verhalten
+-- prueft 0019_rd_anmeldung_genuegt_test.sql. Der Merker gilt nur in dieser Transaktion.
+select set_config('wamo_test.neu19', case when exists (select 1 from __SCHEMA__.schema_migrations
+                                                        where version = '0019_rd_anmeldung_genuegt') then 'ja' else 'nein' end, true);
+
 -- 1. Rechte von wamo_core: nur lesen, vier Spalten anlegen, ende_at und grund setzen
 set role wamo_core;
 select wamo_testhilfe.fehler($$delete from __SCHEMA__.rd_sitzungen$$, '42501');
@@ -78,8 +84,12 @@ select wamo_testhilfe.fehler($$select * from __SCHEMA__.rd_sitzung_beginnen('000
 select wamo_testhilfe.fehler($$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000b1', 'sokrates1', 3600, clock_timestamp())$$, '42501');
 select wamo_testhilfe.fehler($$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000b4', 'sokrates1', 3600, clock_timestamp())$$, '42501');
 select wamo_testhilfe.fehler($$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000ff', 'sokrates1', 3600, clock_timestamp())$$, '42501');
--- zweiter Faktor: zu alt (121 s), Zukunft
-select wamo_testhilfe.fehler($$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a1', 'sokrates1', 3600, clock_timestamp() - interval '121 seconds')$$, '23514');
+-- zweiter Faktor: zu alt (121 s, nur bis 0019), Zukunft (immer)
+do $$ begin
+  if current_setting('wamo_test.neu19') = 'nein' then
+    perform wamo_testhilfe.fehler($f$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a1', 'sokrates1', 3600, clock_timestamp() - interval '121 seconds')$f$, '23514');
+  end if;
+end $$;
 select wamo_testhilfe.fehler($$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a1', 'sokrates1', 3600, clock_timestamp() + interval '30 seconds')$$, '23514');
 reset role;
 do $$ begin
@@ -111,9 +121,11 @@ do $$ declare r record; a uuid; b uuid; begin
   perform wamo_testhilfe.gleich(r.abgeloest_id, a, 'alte Sitzung abgeloest');
   perform wamo_testhilfe.gleich((select grund from __SCHEMA__.rd_sitzungen where id = a), 'abgeloest', 'Grund abgeloest');
   perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.rd_sitzungen where ende_at is null and ziel = 'sokrates1'), 1::bigint, 'genau eine offene Sitzung je Ziel');
-  -- ein Code gilt für genau einen Start: ein älterer Code als der des letzten Starts ist verbraucht
-  perform wamo_testhilfe.fehler($f$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a1', 'sokrates1', 3600, clock_timestamp() - interval '100 seconds')$f$, '23514');
-  perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.rd_sitzungen where ende_at is null and ziel = 'sokrates1'), 1::bigint, 'verbrauchter Code lässt die laufende Sitzung unberührt');
+  -- ein Code gilt für genau einen Start (nur bis 0019): ein älterer Code als der des letzten Starts ist verbraucht
+  if current_setting('wamo_test.neu19') = 'nein' then
+    perform wamo_testhilfe.fehler($f$select * from __SCHEMA__.rd_sitzung_beginnen('00000000-0000-4000-8000-0000000000a1', 'sokrates1', 3600, clock_timestamp() - interval '100 seconds')$f$, '23514');
+    perform wamo_testhilfe.gleich((select count(*) from __SCHEMA__.rd_sitzungen where ende_at is null and ziel = 'sokrates1'), 1::bigint, 'verbrauchter Code lässt die laufende Sitzung unberührt');
+  end if;
 end $$;
 reset role;
 
