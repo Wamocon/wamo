@@ -236,6 +236,22 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Geändert
 
+- Fernzugriff auf die Sparks ohne frischen Code je Start (KP-2, Entscheidung vom 11.11.2026: Der Code beim Anmelden genügt; nicht
+  ausgerollt, Reihenfolge Migration, Kern, Oberfläche). Der Kern verlangt aal2 mit einem totp-Eintrag im Token, aber keinen Code, der
+  höchstens 120 Sekunden alt ist. Rolle admin, aktives Profil, ein Zuschauer je Ziel, Raten, 60 Minuten Höchstdauer und die Verbindung
+  (RDP, keine Zwischenablage, kein Laufwerk, kein Ton, keine Aufzeichnung) bleiben; Mitglieder und Laborprofile kommen weiter nicht heran,
+  `geraete_admin_api.py`, die Release-Freigabe und die Geräteverwaltung behalten ihren eigenen frischen Code. Neuer Stufenschalter
+  `WAMO_RD_ANMELDUNG_MAX_MIN` (Minuten, 1 bis 43200, in `ERLAUBT` von `wamo_core_env.py`): Ist die Anmeldung älter, lehnt der Kern mit 403 und
+  `zweiter_faktor_zu_alt` ab und der Dialog zeigt das Codefeld. Leer oder 0 heißt aus (Standard); jeder ungültige Wert gilt als strengste
+  Stufe (frischer Code wie vorher) und schreibt eine Fehlerzeile. Migration `0019_rd_anmeldung_genuegt` (mit `.down.sql`, statische Tests
+  `test_migration_0019.py`, SQL-Test) ersetzt nur `rd_sitzung_beginnen`: Die Frist von 120 Sekunden und „ein Code, ein Start“ entfallen, neu sind
+  eine Obergrenze von 31 Tagen und ein Hinweis (art `system`, ohne Adresse und Zugangsdaten) an alle aktiven Admins bei jedem Start (KP-2b).
+  Wettlauf zweier Starts eines Profils: ein Lock je Profil um Datenbank und Gateway, nach dem Anmelden prüft der Kern die Datenbankzeile noch
+  einmal und beendet die Gateway-Sitzung sofort, wenn ein anderer Kern sie abgelöst hat (Slot a und b), damit nie zwei Zuschauer auf einem Ziel
+  bleiben. Der Dialog fragt den Code nur noch auf Verlangen des Kerns; der Fokus liegt beim Öffnen nie auf „Verbinden“, und das Werkzeug
+  `fernzugriff_oeffnen` zeigt weiter nur den Abschnitt (Befund M7, Persona und Werkzeugtext angepasst, Tests im Kern und in der Oberfläche).
+  **Restrisiko, ausdrücklich akzeptiert:** Ein gestohlenes Token startet jetzt allein Sitzungen, bis die Anmeldung abläuft (Kern 168
+  Stunden, Browser 24 Stunden, App 7 Tage); der Hinweis an alle Admins ist eine Erkennung, kein Schutz (`docs/remote-desktop.md`, Abschnitt 3.6).
 - Slot-Betrieb: Solange eine Instanz von `wamo-core@.service` läuft oder die Slot-Verweise stehen, startet keines der Einrichtungsskripte
   (`wamo-core-einrichten.sh`, `wamo-ui-einrichten.sh`, `wamo-rd-einrichten.sh`) die alte Unit `wamo-core.service` mehr neu. Sie nennen den
   Hinweis auf `wamo-core-slots.sh umschalten-kern` und enden mit Exit 0. `scripts/wamo_kern_sokrates2.py` verweigert `neustart`,

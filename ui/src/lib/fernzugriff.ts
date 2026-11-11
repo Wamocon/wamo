@@ -4,9 +4,9 @@ import { codePruefen, CODE_ZU_ALT, sauber } from "./geraeteVerwaltung.ts";
  * Reine Logik des Fernzugriffs (components/einstellungen/Fernzugriff.tsx), ohne React und ohne Browser, damit sie sich mit
  * node:test prüfen lässt (fernzugriff.test.ts). Die Daten kommen vom Kern (voice-core/rd_api.py) und werden hier streng geprüft.
  *
- * Grundregeln: Die Oberfläche entscheidet nichts. Sie zeigt die Ziele, fragt den Code der Authenticator-App ab und öffnet die
- * Adresse, die der Kern liefert. Zugangsdaten, Zielhost und Konto kennt sie nie; die Adresse der Gateway-Seite trägt nur das
- * Sitzungstoken des Gateways. Maßgeblich bleibt der Kern (Rolle admin, frischer zweiter Faktor, ein Zuschauer je Ziel).
+ * Grundregeln: Die Oberfläche entscheidet nichts. Sie zeigt die Ziele, fragt den Code der Authenticator-App nur ab, wenn der Kern ihn
+ * verlangt (403 mit zweiter_faktor_zu_alt), und öffnet die Adresse, die der Kern liefert. Zugangsdaten, Zielhost und Konto kennt sie nie; die Adresse der Gateway-Seite trägt nur das
+ * Sitzungstoken des Gateways. Maßgeblich bleibt der Kern (Rolle admin, Code der Anmeldung, ein Zuschauer je Ziel).
  */
 
 export type ZielStatus = "frei" | "belegt" | "nicht_erreichbar";
@@ -157,7 +157,7 @@ export type Knopf = { text: string; aktiv: boolean; grund: string | null };
 
 /**
  * Beschriftung und Zustand des Knopfes am Ziel. "Verbinden" nur bei einem freien Ziel. Die eigene laufende Sitzung lässt sich
- * mit einem frischen Code neu starten ("Neu verbinden"), das löst die alte ab. Belegt von anderen und nicht erreichbar: aus.
+ * neu starten ("Neu verbinden"), das löst die alte ab. Belegt von anderen und nicht erreichbar: aus.
  */
 export function verbindenKnopf(z: Ziel): Knopf {
   if (z.status === "frei") return { text: "Verbinden", aktiv: true, grund: null };
@@ -182,9 +182,40 @@ export function hinweisZeilen(anzeige: string, maxMinuten: number, leerlaufMinut
   ];
 }
 
+/**
+ * Einleitung der Karte (Einstellungen, Fernzugriff). Seit KP-2 startet "Verbinden" ohne Code: Der Code der Anmeldung genügt. Fragt der
+ * Kern nach einem frischen Code (die Anmeldung ist älter als sein Höchstalter, WAMO_RD_ANMELDUNG_MAX_MIN), zeigt der Dialog das Codefeld.
+ * Jeder Start geht als Hinweis an alle Admins (Datenbank, Migration 0019), damit ein fremder Start auffällt.
+ */
+export const EINLEITUNG =
+  "Hier bedienst du unterwegs den Desktop von Sokrates-1, Sokrates-2 oder Caesar. Du startest eine Sitzung mit „Verbinden“, der Code von " +
+  "deiner Anmeldung genügt. Ist deine Anmeldung zu alt, fragt der Dialog den Code deiner Authenticator-App ab. Jede Sitzung ist auf " +
+  "eine Stunde begrenzt und hat einen Zuschauer je Ziel. Es wird nichts aufgezeichnet. Jeder Start wird allen Admins gemeldet.";
+
+/** Hilfetext am Codefeld, das nur erscheint, wenn der Kern den Code verlangt. */
+export const CODE_HILFE = "Der Code darf höchstens zwei Minuten alt sein.";
+
+/**
+ * Zustand des Dialogs: klick zeigt nur "Verbinden", code zusätzlich das Codefeld. Die Oberfläche entscheidet das nie selbst: Das
+ * Codefeld kommt allein, wenn der Kern den Start mit 403 und zweiter_faktor_zu_alt ablehnt (startFehler, feld "code").
+ */
+export type DialogModus = "klick" | "code";
+
+/** Modus nach einem Fehler beim Start. Ein einmal gezeigtes Codefeld bleibt bis zum Schließen des Dialogs. */
+export function modusNachFehler(modus: DialogModus, f: FehlerBehandlung): DialogModus {
+  return modus === "code" || f.feld === "code" ? "code" : "klick";
+}
+
+/**
+ * Wohin der Fokus beim Öffnen des Dialogs geht: auf das Codefeld, sonst auf "Abbrechen". NIE auf "Verbinden": Ohne Codefeld war
+ * früher das Feld die Schranke dagegen, dass ein Öffnen des Dialogs (auch durch WAMO, Werkzeug fernzugriff_oeffnen) schon eine Sitzung
+ * startet. Jetzt braucht der Start einen echten Klick der Person (Befund M7).
+ */
+export const startFokus = (modus: DialogModus): "code" | "abbrechen" => (modus === "code" ? "code" : "abbrechen");
+
 export type Pruefung = { ok: true; code: string } | { ok: false; text: string };
 
-/** Darf der Dialog absenden? Verlangt wird allein der sechsstellige Code der Authenticator-App. */
+/** Darf der Dialog mit Codefeld absenden? Verlangt wird allein der sechsstellige Code der Authenticator-App. */
 export function eingabePruefen(code: string): Pruefung {
   const c = codePruefen(code);
   return c ? { ok: true, code: c } : { ok: false, text: "Bitte den sechsstelligen Code aus der Authenticator-App eingeben." };

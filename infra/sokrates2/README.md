@@ -1136,7 +1136,7 @@ WAMO (`rd_api.py`, Zugangsdienst), die Oberfläche und die weiteren Ziele folgen
 niemand am Gateway anmelden.
 
 **Grenzen (Entscheidung vom 31.10.2026).** Höchstens 60 Minuten je Sitzung, 10 Minuten Leerlauf (am Ziel durch `IdleTimeLimit`),
-ein Zuschauer je Ziel, frischer zweiter Faktor (höchstens 120 Sekunden alt) bei jedem Start, nur Rolle `admin`; keine Zwischenablage,
+ein Zuschauer je Ziel, bei jedem Start der Code der Anmeldung (seit 11.11.2026 kein frischer Code mehr, Stufenschalter `WAMO_RD_ANMELDUNG_MAX_MIN`, `docs/remote-desktop.md` Abschnitt 3.6), nur Rolle `admin`; keine Zwischenablage,
 keine Laufwerke, kein Ton, keine Aufzeichnung. Das Konto `wamo-rd` hat kein sudo, keine Gruppe `docker`, kein SSH; sein Ausgang soll
 nur ins Internet gehen, nicht ins LAN (Stufe 8 des Konzepts, nft-Regel `meta skuid wamo-rd` am Ziel; Empfehlung des Konzepts übernommen).
 

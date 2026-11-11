@@ -253,7 +253,7 @@ export type ServerMessage =
   | { type: "sprecher"; index: number }
   | { type: "leiser_stopp"; sofort?: boolean }
   | { type: "stimme_leiser"; an: boolean }
-  | { type: "fernzugriff_oeffnen" } // WAMO bittet darum, den Fernzugriff zu zeigen; die Sitzung startet nur der Nutzer, mit frischem Code
+  | { type: "fernzugriff_oeffnen" } // WAMO bittet darum, den Fernzugriff zu zeigen; die Sitzung startet nur der Nutzer, mit einem echten Klick auf Verbinden
   | { type: "freigaben"; job: string; projekt: string; items: FreigabePunkt[] }
   | ({ type: "profil" } & Profil)
   | ({ type: "betrieb" } & Betrieb)
@@ -559,7 +559,7 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
     case "stimme_leiser":
       return typeof m.an === "boolean" ? { type: "stimme_leiser", an: m.an } : null;
     case "fernzugriff_oeffnen":
-      return { type: "fernzugriff_oeffnen" }; // ohne Nutzdaten: alles Weitere wählt der Nutzer im Dialog
+      return { type: "fernzugriff_oeffnen" }; // ohne Nutzdaten (kein Ziel, nie ein Start): Ziel und Klick gehören dem Nutzer
     case "freigaben": {
       if (!isStr(m.job) || !Array.isArray(m.items)) return null;
       const items = m.items

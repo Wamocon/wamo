@@ -1,6 +1,6 @@
 """Tests des Fernzugriffs (rd_api.py), ohne Datenbank, ohne Netz und ohne Gateway.
 
-Geprüft wird: wer darf (Rolle, frischer zweiter Faktor, Profil), welche Ziele es gibt (feste Liste, nie frei wählbar), Belegung
+Geprüft wird: wer darf (Rolle, Code der Anmeldung, Profil; die Stufen und den Wettlauf prüft test_rd_anmeldung.py), welche Ziele es gibt (feste Liste, nie frei wählbar), Belegung
 und Rate-Grenzen, dass das Passwort nie in Antwort oder Log steht, dass die Anweisung für Guacamole korrekt signiert,
 verschlüsselt und kurzlebig ist (unabhängig nachgerechnet), und wie der Aufseher Sitzungen beendet. Das Zusammenspiel mit dem echten
 Guacamole prüft infra/sokrates2/wamo-rd/zugang/pruefe_gegen_guacamole.py (Docker).
@@ -211,6 +211,11 @@ def _start(client, **body):
     return client.post("/wamo/api/rd/start", json={"ziel": "sokrates2", **body})
 
 
+def beginnen_aufruf(db: FakeDb) -> tuple[str, tuple]:
+    """Der letzte Aufruf von rd_sitzung_beginnen (danach folgt noch die Prüfung der Zeile nach dem Anmelden)."""
+    return [(sql, args) for sql, args in db.sql if "rd_sitzung_beginnen" in sql][-1]
+
+
 # ======================================================================== Anweisung
 def test_anweisung_ist_korrekt_signiert_verschluesselt_und_endet_mit_der_sitzung():
     ziel = api.Ziel("sokrates2", "Sokrates-2", "192.168.178.136", 3389)
@@ -368,8 +373,9 @@ def test_nicht_eingeschaltet(client, monkeypatch, db, gw):
     assert db.sql == [] and gw.anfragen == []
 
 
-@pytest.mark.parametrize("totp_vor", [None, 121.0, 600.0, -60.0])
-def test_zweiter_faktor_zu_alt_oder_fehlend(client, ctx, db, gw, totp_vor):
+@pytest.mark.parametrize("totp_vor", [None, -60.0])
+def test_zweiter_faktor_fehlend_oder_aus_der_zukunft(client, ctx, db, gw, totp_vor):
+    """Seit KP-2 genügt der Code der Anmeldung (auch ein alter, test_rd_anmeldung.py); ohne totp-Eintrag oder aus der Zukunft nie."""
     ctx.tok = token(totp_vor=totp_vor)
     r = _start(client)
     assert r.status_code == 403 and r.json()["code"] == "zweiter_faktor_zu_alt"
@@ -420,8 +426,7 @@ def test_start_ok_gibt_nur_die_seite_mit_dem_sitzungstoken(client, db, gw, log):
         assert geheim not in text
     assert TOKEN not in "".join(log)
     # an die Datenbank gingen Profil, Ziel, Dauer, die Zeit des Codes und die Grenzen; der Akteur kommt aus der Identität
-    sql, args = db.sql[-1]
-    assert "rd_sitzung_beginnen" in sql
+    sql, args = beginnen_aufruf(db)
     assert args[0] == ADMIN and args[1] == "sokrates2" and args[2] == 3600 and args[4] == 3 and args[5] == 6
     assert abs(args[3].timestamp() - (time.time() - 10)) < 5
     # an das Gateway ging die Anweisung mit der Höchstdauer
@@ -432,7 +437,7 @@ def test_start_ok_gibt_nur_die_seite_mit_dem_sitzungstoken(client, db, gw, log):
 
 def test_akteur_nie_aus_der_anfrage(client, db):
     _start(client, profil=ANDERER, user_id=ANDERER, akteur=ANDERER, admin=ANDERER)
-    assert db.sql[-1][1][0] == ADMIN
+    assert beginnen_aufruf(db)[1][0] == ADMIN
     assert ANDERER not in str(db.sql)
 
 
@@ -482,7 +487,7 @@ def test_rate_grenze_der_anfragen(client, db, gw):
 
 
 def test_rate_grenze_zaehlt_auch_abgelehnte(client, ctx, db):
-    ctx.tok = token(totp_vor=500)
+    ctx.tok = token(totp_vor=None)
     codes = [_start(client).status_code for _ in range(11)]
     assert codes[:10] == [403] * 10 and codes[10] == 429
 

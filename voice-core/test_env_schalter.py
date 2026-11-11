@@ -292,3 +292,39 @@ class LaborEinstellungenTest(unittest.TestCase):
             code, ausgabe, geschrieben = self._ausfuehren(env, env.setzen, f"WAMO_LABOR_TOKEN={wert}\n")
             self.assertEqual((code, geschrieben), (2, []), repr(wert))
             self.assertNotIn(wert, ausgabe)
+
+
+class RdAnmeldungStufeTest(unittest.TestCase):
+    """WAMO_RD_ANMELDUNG_MAX_MIN (Stufenschalter des Fernzugriffs, KP-2) lässt sich vom PC aus auf Sokrates-2 setzen (ERLAUBT), und der
+    Kern liest genau diesen Namen. Der Wert ist eine Sicherheitsstufe, kein Geheimnis: Er steht auch im Journal (gekürzt), wenn er ungültig ist."""
+
+    NAME = "WAMO_RD_ANMELDUNG_MAX_MIN"
+
+    @staticmethod
+    def _env():
+        return EntwicklungsSchalterNieUebertragenTest._laden(
+            "wamo_core_env_rd_stufe", Path(__file__).resolve().parent.parent / "infra" / "sokrates2" / "wamo_core_env.py")
+
+    def test_der_name_steht_in_erlaubt(self):
+        env = self._env()
+        self.assertIn(self.NAME, env.ERLAUBT)
+        self.assertTrue(env.erlaubt(self.NAME))
+        self.assertNotIn(self.NAME, env.PFLICHT)
+
+    def test_der_kern_liest_genau_diesen_namen(self):
+        import rd_api
+
+        self.assertEqual(rd_api.STUFE_VARIABLE, self.NAME)
+        quelle = Path(rd_api.__file__).read_text(encoding="utf-8")
+        self.assertEqual(sorted(set(__import__("re").findall(r"WAMO_RD_ANMELDUNG[A-Z_]*", quelle))), [self.NAME])
+
+    def test_der_name_gehoert_zum_fernzugriff_und_steht_neben_dem_schalter(self):
+        env = self._env()
+        self.assertIn("WAMO_RD_AKTIV", env.ERLAUBT)
+        self.assertTrue(env.erlaubt("WAMO_RD_AKTIV"))
+
+    def test_ein_aehnlicher_name_bleibt_gesperrt(self):
+        env = self._env()
+        for name in ("WAMO_RD_ANMELDUNG", "WAMO_RD_ANMELDUNG_MAX", "WAMO_RD_ANMELDUNG_MAX_STUNDEN", "WAMO_RD_SOCKET", "WAMO_RD_ZIELE",
+                     "WAMO_RD_ENV", "WAMO_RD_KEY", "WAMO_RD_URL", "WAMO_RD_PASSWORT_SOKRATES2"):
+            self.assertFalse(env.erlaubt(name), name)  # nur der Schalter und die Stufe, nie Zugangsdaten oder Pfade

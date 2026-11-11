@@ -962,7 +962,7 @@ export function useWamo(): WamoAktionen {
                 });
               }
             } else if (msg.type === "fernzugriff_oeffnen") {
-              // Nur den Dialog zeigen (Einstellungen, Abschnitt Fernzugriff). Das Starten erfordert dort Admin-Rolle und einen frischen Code.
+              // Nur den Abschnitt zeigen (Einstellungen, Fernzugriff). Gestartet wird dort nur mit einem echten Klick der Person auf Verbinden.
               einstellungenOeffnen("fernzugriff");
             } else if (msg.type === "markierung") {
               // Gesperrter Bildschirm oder offene Freigabe: kein Rahmen. Der Rest (Gerätekennung, Vollbild, Rand aus) prüft die App.
