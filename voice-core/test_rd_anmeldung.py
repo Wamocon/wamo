@@ -122,9 +122,9 @@ def test_die_antwort_bei_zu_alt_nennt_den_code_der_oberflaeche(rd):
 @pytest.mark.parametrize("wert", ["60", " 60 "])
 def test_stufe_60_minuten_grenze(rd, monkeypatch, wert):
     monkeypatch.setenv(STUFE, wert)
-    rd.ctx.tok = token(totp_vor=59 * 60 + 59)
+    rd.ctx.tok = token(totp_vor=59 * 60 + 50)   # zehn Sekunden Luft: token() schneidet die Zeit auf ganze Sekunden, der Lauf braucht etwas
     assert _start(rd).status_code == 200
-    rd.ctx.tok = token(totp_vor=60 * 60 + 1)
+    rd.ctx.tok = token(totp_vor=60 * 60 + 1)    # nie früher als eine Sekunde zu alt: das Token ist nie jünger als angegeben
     r = _start(rd)
     assert r.status_code == 403 and r.json()["code"] == "zweiter_faktor_zu_alt"
     assert "älter als 1 Stunde" in r.json()["detail"]
