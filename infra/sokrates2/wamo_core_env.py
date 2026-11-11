@@ -67,6 +67,13 @@ ERLAUBT = set(PFLICHT) | {
     "LITELLM_BASE_URL", "WAMO_SUCHE", "WAMO_SEARXNG_URL", "WAMO_LITELLM_EXTRA",
     # Eine Sitzung je Profil und Höchstalter der Anmeldung (bot.py, auth_gate.py)
     "WAMO_SITZUNG_EINZELN", "WAMO_ANMELDUNG_MAX_STUNDEN",
+    # Testlabor (voice-core/labor*.py): kommen nur vom Server, nie aus der .env des PCs (nicht in AUS_ENV von scripts/wamo_kern_sokrates2.py).
+    # WAMO_LABOR_TOKEN ist ein Geheimnis (256 Bit Bearer für den Dienst der Kollegen, 32 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-): wie alle
+    # Werte nie angezeigt, "liste" nennt nur den Namen. URL: Adresse des Dienstes (HTTPS). EINWILLIGUNG_MIN: kleinste gültige Version des Hinweises
+    # (ohne sie keine Laborsitzung). TEXT_SPEICHERN: nur "an" speichert den Gesprächstext. DATEN: Ordner mit Regeln, Kontakten, Vorlagen und Wissen.
+    # MAIL_DOMAIN, FREIGABE_SECS, MAX_OFFEN, MAX_SCHREIBEN: Grenzen der Mail-Bestätigung und der Freigabekarten.
+    "WAMO_LABOR_URL", "WAMO_LABOR_TOKEN", "WAMO_LABOR_MAIL_DOMAIN", "WAMO_LABOR_EINWILLIGUNG_MIN", "WAMO_LABOR_FREIGABE_SECS",
+    "WAMO_LABOR_MAX_OFFEN", "WAMO_LABOR_MAX_SCHREIBEN", "WAMO_LABOR_TEXT_SPEICHERN", "WAMO_LABOR_DATEN",
 }
 ERLAUBT_PRAEFIX = ("WAMO_LLM_",)  # Anbieter-Fabrik (Phase P4)
 SCHLUESSEL_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")

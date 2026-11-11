@@ -196,3 +196,96 @@ class EntwicklungsSchalterNieUebertragenTest(unittest.TestCase):
         for name in entwicklung_betrieb.ALLE_VARIABLEN:
             self.assertTrue(name.startswith("WAMO_ENTWICKLUNG"), name)
             self.assertNotIn(name, env.ERLAUBT)
+
+
+# Einstellungen des Testlabors (labor_*.py): kommen vom Server (core.env), nie aus der .env des PCs. WAMO_LABOR_TOKEN ist ein Geheimnis
+# (256 Bit Bearer für den Dienst der Kollegen), die Adresse und alle übrigen Namen sind keine.
+LABOR_GEHEIMNISSE = ("WAMO_LABOR_TOKEN",)
+LABOR_NAMEN = (
+    "WAMO_LABOR_URL", "WAMO_LABOR_TOKEN", "WAMO_LABOR_MAIL_DOMAIN", "WAMO_LABOR_EINWILLIGUNG_MIN", "WAMO_LABOR_FREIGABE_SECS",
+    "WAMO_LABOR_MAX_OFFEN", "WAMO_LABOR_MAX_SCHREIBEN", "WAMO_LABOR_TEXT_SPEICHERN", "WAMO_LABOR_DATEN",
+)
+
+
+class LaborEinstellungenTest(unittest.TestCase):
+    """Alle WAMO_LABOR_*, die der Kern liest, lassen sich vom PC aus auf Sokrates-2 setzen (ERLAUBT) und stehen nicht in AUS_ENV."""
+
+    @staticmethod
+    def _env():
+        return EntwicklungsSchalterNieUebertragenTest._laden(
+            "wamo_core_env_labor", Path(__file__).resolve().parent.parent / "infra" / "sokrates2" / "wamo_core_env.py")
+
+    @staticmethod
+    def _gelesen() -> set[str]:
+        """Alle Namen WAMO_LABOR_<...> im Quelltext des Kerns (ohne Tests): die der Kern wirklich liest."""
+        import re
+
+        namen = set()
+        for datei in Path(__file__).resolve().parent.glob("*.py"):
+            if not datei.name.startswith("test_"):
+                namen |= set(re.findall(r"WAMO_LABOR_[A-Z0-9_]*[A-Z0-9]", datei.read_text(encoding="utf-8")))
+        return namen
+
+    def test_der_kern_liest_genau_diese_namen(self):
+        self.assertEqual(self._gelesen(), set(LABOR_NAMEN))
+
+    def test_alle_stehen_in_erlaubt(self):
+        env = self._env()
+        for name in self._gelesen() | set(LABOR_NAMEN):
+            self.assertIn(name, env.ERLAUBT, name)
+            self.assertTrue(env.erlaubt(name), name)
+
+    def test_keiner_steht_in_aus_env_des_pc_skripts(self):
+        skript = EntwicklungsSchalterNieUebertragenTest._laden(
+            "wamo_kern_sokrates2_labor", Path(__file__).resolve().parent.parent / "scripts" / "wamo_kern_sokrates2.py")
+        for name in LABOR_NAMEN:
+            self.assertNotIn(name, skript.AUS_ENV, name)
+        self.assertFalse([p for p in skript.AUS_ENV_PRAEFIX if p.startswith("WAMO_LABOR")])
+
+    def test_kein_name_des_entwicklungsschalters_ist_betroffen(self):
+        import entwicklung_betrieb
+
+        env = self._env()
+        self.assertFalse([n for n in env.ERLAUBT if n.startswith("WAMO_ENTWICKLUNG")])
+        self.assertFalse([p for p in env.ERLAUBT_PRAEFIX if p.startswith("WAMO_ENTWICKLUNG") or p.startswith("WAMO_LABOR")])
+        for name in entwicklung_betrieb.ALLE_VARIABLEN:
+            self.assertFalse(env.erlaubt(name), name)
+            self.assertNotIn(name, LABOR_NAMEN)
+        for name in LABOR_NAMEN:
+            self.assertFalse(name.startswith("WAMO_ENTWICKLUNG"), name)
+
+    def test_ein_unbekannter_labor_name_bleibt_gesperrt(self):
+        env = self._env()
+        for name in ("WAMO_LABOR", "WAMO_LABOR_", "WAMO_LABOR_ADMIN", "WAMO_LABOR_TOKEN2", "wamo_labor_token", "WAMO_LABOR_URL "):
+            self.assertFalse(env.erlaubt(name), name)
+
+    def _ausfuehren(self, env, funktion, eingabe: str = "", bestand: dict | None = None):
+        import contextlib
+        import io
+
+        geschrieben: list[dict] = []
+        aus, fehler = io.StringIO(), io.StringIO()
+        with mock.patch.object(env, "lesen", return_value=dict(bestand or {})), mock.patch.object(env, "schreiben", geschrieben.append), \
+             mock.patch("sys.stdin", io.StringIO(eingabe)), contextlib.redirect_stdout(aus), contextlib.redirect_stderr(fehler):
+            code = funktion()
+        return code, aus.getvalue() + fehler.getvalue(), geschrieben
+
+    def test_das_geheimnis_wird_uebernommen_und_nie_angezeigt(self):
+        env = self._env()
+        token = "Ab1-" * 16  # 64 Zeichen, nur Zeichen des Tokens
+        eingabe = "".join(f"{n}={token if n in LABOR_GEHEIMNISSE else 'x'}\n" for n in ("WAMO_LABOR_TOKEN", "WAMO_LABOR_URL"))
+        code, ausgabe, geschrieben = self._ausfuehren(env, env.setzen, eingabe)
+        self.assertEqual(code, 0)
+        self.assertEqual(geschrieben[0]["WAMO_LABOR_TOKEN"], token)
+        self.assertIn("WAMO_LABOR_TOKEN", ausgabe)  # der Name wird genannt, der Wert nie
+        self.assertNotIn(token, ausgabe)
+        code, ausgabe, _ = self._ausfuehren(env, env.liste, bestand=geschrieben[0])
+        self.assertIn("WAMO_LABOR_TOKEN: gesetzt", ausgabe)
+        self.assertNotIn(token, ausgabe)
+
+    def test_ein_unbrauchbarer_wert_wird_abgelehnt_ohne_ihn_zu_nennen(self):
+        env = self._env()
+        for wert in ("a'b" * 20, "a\b" * 20, "a\x00b" * 20):
+            code, ausgabe, geschrieben = self._ausfuehren(env, env.setzen, f"WAMO_LABOR_TOKEN={wert}\n")
+            self.assertEqual((code, geschrieben), (2, []), repr(wert))
+            self.assertNotIn(wert, ausgabe)
