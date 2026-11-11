@@ -181,18 +181,81 @@ def test_funktionen_security_definer_leerer_search_path_nur_wamo_admin():
     assert code.index("revoke all on function __SCHEMA__.labor_loeschen") < code.index("grant execute on function __SCHEMA__.labor_loeschen")
 
 
-def test_loeschfunktion_wirft_in_allen_vier_faellen_mit_dem_vereinbarten_code():
+def test_loeschfunktion_wirft_in_allen_faellen_mit_dem_vereinbarten_code():
     f = _eine_zeile(_funktion("labor_loeschen"))
     assert "p_profil is null" in f and "errcode = '22004'" in f
     assert "p_ab > p_bis" in f and "errcode = '22023'" in f  # verkehrtes Fenster
-    assert "for update" in f  # Zeile sperren: labor_aktiv ändert sich während der Löschung nicht
+    # F6: for no key update sperrt die Zeile gegen labor_aktiv, blockiert aber keine Fremdschlüsselprüfung des Kerns auf das Profil
+    assert "for no key update" in f and not re.search(r"for update\b", f)
     assert "if v_art is null then raise exception 'labor_loeschen: kein Laborprofil' using errcode = '42501'" in f
     assert "if v_aktiv then raise exception" in f and "errcode = '55000'" in f
-    assert "s.ended_at is null and s.started_at > now() - interval '130 minutes'" in f
-    assert f"interval '{ll.SITZUNG_MAX_MINUTEN} minutes'" in f
-    # die Prüfungen stehen vor jedem delete
-    assert f.index("kein Laborprofil") < f.index("delete from") and f.index("noch freigeschaltet") < f.index("delete from")
-    assert f.index("läuft noch eine Sitzung") < f.index("delete from")
+    # F2: Sperrfrist nach jeder Änderung des Profils (profiles_touch setzt updated_at bei jedem Update)
+    assert "p.updated_at" in f
+    assert f"v_geaendert > clock_timestamp() - interval '{ll.SPERRFRIST_MINUTEN} minutes'" in f
+    assert "Sperrfrist, noch etwa %" in f and f.count("errcode = '55000'") == 4  # freigeschaltet, Sperrfrist, Sitzung vorher und nachher
+    # Sitzungsprüfung vor dem ersten delete und noch einmal nach dem letzten, vor dem return
+    pruefung = f"s.ended_at is null and s.started_at > clock_timestamp() - interval '{ll.SITZUNG_MAX_MINUTEN} minutes'"
+    assert f.count(pruefung) == 2
+    erstes, letztes = f.index("delete from"), f.rindex("delete from")
+    assert f.index(pruefung) < erstes and letztes < f.rindex(pruefung) < f.index("return v_ergebnis")
+    # alle Prüfungen stehen vor jedem delete
+    for text in ("kein Laborprofil", "noch freigeschaltet", "Sperrfrist", "läuft noch eine Sitzung"):
+        assert f.index(text) < erstes, text
+
+
+def test_die_meldung_der_sperrfrist_passt_zum_muster_im_skript():
+    """scripts/wamo_labor.py wartet, wenn die Meldung 'Sperrfrist, noch etwa N Sekunden' enthält: beide Texte müssen zusammenpassen."""
+    meldung = re.search(r"'(labor_loeschen: Sperrfrist, noch etwa % Sekunden[^']*)'", SQL)
+    assert meldung, "Meldung der Sperrfrist in der Löschfunktion"
+    skript = (SUPABASE.parent / "scripts" / "wamo_labor.py").read_text(encoding="utf-8")
+    muster = re.search(r'SPERRFRIST = re\.compile\(r"([^"]+)"\)', skript)
+    assert muster, "Muster der Sperrfrist im Skript"
+    assert re.search(muster.group(1), meldung.group(1).replace("%", "95", 1))
+
+
+def test_feedback_geht_ueber_die_turns_der_sitzungen_im_fenster_mit():
+    """feedback hat keinen Sitzungsbezug, nur turn_id: eine später entstandene Rückmeldung zu einem Turn der Sitzung bliebe stehen."""
+    f = _eine_zeile(_funktion("labor_loeschen"))
+    feedback = next(o for o in ll.LOESCHLISTE if o.tabelle == "feedback")
+    assert feedback.turn == "turn_id"
+    assert "x.turn_id in (select t.id from __SCHEMA__.turns t where t.session_id = any(v_sitzungen))" in f
+
+
+def test_zaehlen_und_loeschen_behandeln_device_events_gleich():
+    """F7: labor_zaehlen zählte device_events nur über durch, labor_loeschen löscht auch über das Gerät des Profils."""
+    z = _eine_zeile(_funktion("labor_zaehlen"))
+    assert ("'device_events', (select count(*) from __SCHEMA__.device_events x where x.durch = p_profil "
+            "or x.device_id in (select d.id from __SCHEMA__.devices d where d.user_id = p_profil))") in z
+    assert "x.durch = p_profil or x.device_id = any(v_geraete)" in _eine_zeile(_funktion("labor_loeschen"))
+
+
+# ---------- Kopplung an den Kern (F8) ----------
+
+VOICE_CORE = Path(__file__).resolve().parent
+BOT = (VOICE_CORE / "bot.py").read_text(encoding="utf-8")
+AUTH_GATE = (VOICE_CORE / "auth_gate.py").read_text(encoding="utf-8")
+ENV_BEISPIEL = (VOICE_CORE.parent / ".env.example").read_text(encoding="utf-8")
+LOESCHLISTE_TEXT = (VOICE_CORE / "labor_loeschliste.py").read_text(encoding="utf-8")
+
+
+def test_sitzungsgrenze_der_loeschfunktion_liegt_ueber_dem_standard_des_kerns():
+    """Der Kern begrenzt eine Sitzung auf WAMO_MAX_SITZUNG_MIN (bot.py, Standard 120, per Umgebung änderbar). Die Löschfunktion hält
+    eine offene Sitzung bis zu SITZUNG_MAX_MINUTEN für laufend: der Wert muss mehr als 10 Minuten über dem Standard liegen."""
+    standard = float(re.search(r'MAX_SITZUNG_MIN = float\(os\.getenv\("WAMO_MAX_SITZUNG_MIN"\) or (\d+(?:\.\d+)?)\)', BOT).group(1))
+    beispiel = float(re.search(r"^WAMO_MAX_SITZUNG_MIN=(\d+(?:\.\d+)?)", ENV_BEISPIEL, re.M).group(1))
+    assert ll.SITZUNG_MAX_MINUTEN > max(standard, beispiel) + 10
+    assert f"interval '{ll.SITZUNG_MAX_MINUTEN} minutes'" in SQL
+    # die Kopplung steht an beiden Stellen, damit niemand die Umgebungsvariable erhöht, ohne die Grenze anzufassen
+    assert "WAMO_MAX_SITZUNG_MIN" in SQL and "WAMO_MAX_SITZUNG_MIN" in LOESCHLISTE_TEXT
+
+
+def test_sperrfrist_ist_laenger_als_zwischenspeicher_plus_pruefintervall_des_kerns():
+    """Nach labor_aktiv = false kennt der Kern das Profil noch PROFILE_HIT_SECS und prüft laufende Sitzungen alle PROFILE_RECHECK_SECS."""
+    zwischenspeicher = float(re.search(r"^PROFILE_HIT_SECS = ([\d.]+)", AUTH_GATE, re.M).group(1))
+    pruefintervall = float(re.search(r"^PROFILE_RECHECK_SECS = ([\d.]+)", BOT, re.M).group(1))
+    assert ll.SPERRFRIST_MINUTEN * 60 > zwischenspeicher + pruefintervall
+    assert f"interval '{ll.SPERRFRIST_MINUTEN} minutes'" in SQL
+    assert "PROFILE_HIT_SECS" in SQL and "PROFILE_HIT_SECS" in LOESCHLISTE_TEXT
 
 
 def test_loeschfunktion_loescht_genau_die_loeschliste_in_dieser_reihenfolge_und_nie_profiles():

@@ -168,6 +168,22 @@ def test_die_zeit_und_sitzungsspalten_gibt_es_in_den_migrationen():
         assert re.search(rf"^\s*{o.zeit}\s+(timestamptz|\S+)\s.*not null|^\s*{o.zeit}\s+timestamptz\b", koerper, re.M), (o.tabelle, o.zeit)
         if o.sitzung:
             assert re.search(rf"^\s*{o.sitzung}\s+uuid\b.*references __SCHEMA__\.sessions\(id\)", koerper, re.M), (o.tabelle, o.sitzung)
+        if o.turn:
+            assert re.search(rf"^\s*{o.turn}\s+uuid\b.*references __SCHEMA__\.turns\(id\)", koerper, re.M), (o.tabelle, o.turn)
+
+
+def test_spuren_ausserhalb_des_schemas_sind_begruendet_und_stehen_im_kopf_der_migration():
+    """F10: GoTrue (auth.audit_log_entries mit IP und E-Mail, auth.sessions) und model_access liegen außerhalb der Löschfunktion.
+    Sie stehen mit Grund in der Liste und im Kommentar der Migration; die Konten und mit ihnen diese Spuren löscht die Verwaltung
+    nach dem Labortag (Plan Q11, 30.11.2026)."""
+    assert {"auth.audit_log_entries", "auth.sessions"} <= set(ll.AUSSERHALB)
+    migration = (MIGRATIONEN / "0018_labor_profile.sql").read_text(encoding="utf-8")
+    for name, grund in ll.AUSSERHALB.items():
+        assert not name.startswith("__SCHEMA__") and "." in name, name  # nie ein Ort der eigenen Löschliste
+        assert "30.11." in grund and "Q11" in grund, name
+        assert name in migration, name
+    assert "30.11." in ll.AUSNAHMEN["model_access"] and "Q11" in ll.AUSNAHMEN["model_access"]
+    assert "model_access" in migration
 
 
 def test_neue_besitzernamen_ohne_fremdschluessel_fallen_auf():
@@ -201,8 +217,10 @@ class LaborDb:
     def t(self, name: str) -> str:
         return f"{self.schema}.{name}"
 
-    def profil(self, uid: str, labor_art: str | None = "platz", labor_aktiv: bool = False) -> None:
-        self.profile[uid] = {"labor_art": labor_art, "labor_aktiv": labor_aktiv}
+    def profil(self, uid: str, labor_art: str | None = "platz", labor_aktiv: bool = False, geaendert: datetime | None = None) -> None:
+        # geaendert: updated_at des Profils (die Sperrfrist rechnet ab der letzten Änderung), Standard: lange her
+        self.profile[uid] = {"labor_art": labor_art, "labor_aktiv": labor_aktiv,
+                             "geaendert": geaendert or JETZT - timedelta(hours=1)}
 
     def fuellen(self, uid: str, start: datetime, *, zeuge: str = "zeuge") -> None:
         """Eine Zeile je Tabelle der Liste, alle zur Sitzung dieses Durchlaufs gehörend."""
@@ -218,6 +236,8 @@ class LaborDb:
                 zeile["empfaenger"] = zeuge
             if o.sitzung:
                 zeile[o.sitzung] = sitzung
+            if o.turn:
+                zeile[o.turn] = f"turns-{self._n}"  # der Turn dieses Durchlaufs (id turns-<n>, session_id sitzung-<n>)
             if o.tabelle == "sessions":
                 zeile.update(id=sitzung, started_at=start, ended_at=start + timedelta(minutes=10))
             self.zeilen[o.tabelle].append(zeile)
@@ -260,6 +280,8 @@ class LaborDb:
         p = self._laborprofil(uid)
         if p["labor_aktiv"]:
             raise asyncpg.ObjectNotInPrerequisiteStateError("noch freigeschaltet")
+        if p["geaendert"] > JETZT - timedelta(minutes=ll.SPERRFRIST_MINUTEN):
+            raise asyncpg.ObjectNotInPrerequisiteStateError("labor_loeschen: Sperrfrist, noch etwa 95 Sekunden: Profil kürzlich geändert")
         grenze = JETZT - timedelta(minutes=ll.SITZUNG_MAX_MINUTEN)
         for s in self.zeilen["sessions"]:
             if s["user_id"] == uid and s.get("ended_at") is None and s["started_at"] > grenze:
@@ -270,6 +292,7 @@ class LaborDb:
             return voll or ((ab is None or wert >= ab) and (bis is None or wert <= bis))
 
         sitzungen = {s["id"] for s in self.zeilen["sessions"] if s["user_id"] == uid and im_fenster(s["started_at"])}
+        turn_sitzung = {t["id"]: t.get("session_id") for t in self.zeilen["turns"]}  # vor dem Löschen der turns (feedback ist zuerst dran)
         ergebnis: dict[str, int] = {}
         for o in ll.LOESCHLISTE:
             behalten, weg = [], 0
@@ -278,7 +301,8 @@ class LaborDb:
                 if o.tabelle == "sessions":
                     treffer = gehoert and (voll or z["id"] in sitzungen)
                 else:
-                    treffer = gehoert and (im_fenster(z[o.zeit]) or (o.sitzung is not None and z.get(o.sitzung) in sitzungen))
+                    treffer = gehoert and (im_fenster(z[o.zeit]) or (o.sitzung is not None and z.get(o.sitzung) in sitzungen)
+                                           or (o.turn is not None and turn_sitzung.get(z.get(o.turn)) in sitzungen))
                 if treffer:
                     weg += 1
                 else:
@@ -344,6 +368,29 @@ async def test_zeilen_der_sitzung_gehen_mit_auch_wenn_sie_ausserhalb_des_fenster
     db.zeilen["canvas_items"].append({"id": "spaet", "user_id": B, "created_at": JETZT, "session_id": "sitzung-2"})
     await lv.loeschen(db, B, ab=JETZT - timedelta(hours=6), bis=JETZT - timedelta(hours=4))
     assert not [z for z in db.zeilen["canvas_items"] if z["id"] == "spaet"]
+
+
+async def test_spaete_rueckmeldung_zu_einem_turn_der_sitzung_geht_mit(db):
+    """F7: feedback hat keinen Sitzungsbezug. Eine Rückmeldung, die nach dem Fenster entstand, aber zu einem Turn einer gelöschten
+    Sitzung gehört, darf nicht stehen bleiben (der Fremdschlüssel würde nur turn_id auf null setzen)."""
+    db.zeilen["feedback"].append({"id": "spaet", "user_id": B, "created_at": JETZT, "turn_id": "turns-2"})  # Turn des ersten Durchlaufs
+    db.zeilen["feedback"].append({"id": "zweiter", "user_id": B, "created_at": JETZT, "turn_id": "turns-3"})  # Turn des zweiten Durchlaufs
+    await lv.loeschen(db, B, ab=JETZT - timedelta(hours=6), bis=JETZT - timedelta(hours=4))
+    ids = {z["id"] for z in db.zeilen["feedback"]}
+    assert "spaet" not in ids and "zweiter" in ids
+
+
+async def test_sperrfrist_nach_der_letzten_aenderung_des_profils_blockiert_das_loeschen(db):
+    """F2: Der Kern kennt ein Profil bis zu 2 Minuten aus dem Zwischenspeicher. In den 3 Minuten nach der letzten Änderung lehnt die
+    Funktion ab und nennt die Wartezeit; danach geht es."""
+    db.profil(A, "platz", geaendert=JETZT - timedelta(minutes=ll.SPERRFRIST_MINUTEN) + timedelta(seconds=1))
+    vor = db.anzahl(A)
+    with pytest.raises(lv.LaborFehler, match="Sperrfrist, noch etwa 95 Sekunden"):
+        await lv.loeschen(db, A)
+    assert db.anzahl(A) == vor
+    db.profil(A, "platz", geaendert=JETZT - timedelta(minutes=ll.SPERRFRIST_MINUTEN, seconds=1))
+    ergebnis = await lv.loeschen(db, A)
+    assert all(n == 0 for n in db.anzahl(A).values()) and ergebnis.rest is not None
 
 
 @pytest.mark.parametrize("uid", [C, "00000000-0000-4000-8000-0000000018ff"])

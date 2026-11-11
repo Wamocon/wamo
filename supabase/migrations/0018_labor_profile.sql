@@ -5,6 +5,10 @@
 --     | docker exec -i wamo-supabase-db psql -U postgres -v ON_ERROR_STOP=1 --single-transaction
 -- Rückweg: 0018_labor_profile.down.sql. Bricht bei JEDEM Profil mit labor_art ab, auch bei gesperrten.
 -- Reihenfolge der Anwendung: wamo_dev, wamo_test, dann das Schema des Büro-Kerns, erst nach database-reviewer und nach Nikos Ja.
+-- Reihenfolge mit dem Kern: Diese Migration VOR dem Release des Kerns mit Laborlogik anwenden. Der neue Kern liest labor_art,
+--   labor_platz und labor_aktiv bei jedem Profil; fehlt die Spalte (Kern vor der Migration oder Rückweg bei laufendem neuem Kern),
+--   antwortet er für ALLE Nutzer mit 503. Das ist gewollt: lieber nichts als ein Laborprofil ohne Sperre. Der Rückweg gilt erst nach
+--   der Rückstellung des Kerns auf einen Stand ohne Laborlogik.
 -- Hängt ab von 0001 (profiles, sessions, turns, ...), 0002 (devices, hinweise), 0003 (dateien, teilungen), 0010 und 0017.
 --
 -- Was hier entsteht (Plan docs/testlabor-wamo.md, Abschnitt 3.1):
@@ -25,16 +29,34 @@
 -- und danach nur labor_aktiv ändern. labor_art und labor_platz sind nach dem Anlegen für jede Rolle unveränderlich (Trigger
 -- profiles_labor_guard), damit kein Laborprofil durch Zurücksetzen von labor_art zum gewöhnlichen Profil wird.
 -- Entscheidung für den database-reviewer: Spaltenrecht plus Trigger statt eines Superuser-Wegs, damit scripts/wamo_labor.py
--- ausschließlich als Verwaltungsrolle schreibt (set role wamo_admin) und nie mit Superuser-Rechten.
+-- ausschließlich als Verwaltungsrolle schreibt: Anmeldung als wamo_admin mit WAMO_ADMIN_DATABASE_URL, kein SET ROLE (postgres ist im
+-- Supabase-Image kein Superuser und darf keine Rolle annehmen) und nie mit Superuser-Rechten.
 --
 -- Löschfunktion: security definer mit leerem search_path, Besitzer ist die Rolle, die die Migration ausführt. Sie wirft bei einem
--- Profil ohne labor_art (42501), bei labor_aktiv = true und bei einer laufenden Sitzung (55000), bei verkehrtem Fenster (22023).
--- Eine Sitzung ohne ended_at, die älter als 130 Minuten ist, gilt als abgestürzt (der Kern begrenzt eine Sitzung auf 120 Minuten).
--- Die Zeile des Profils wird für die Dauer der Löschung gesperrt, labor_aktiv kann sich währenddessen nicht ändern.
+-- Profil ohne labor_art (42501), bei labor_aktiv = true, in der Sperrfrist und bei einer laufenden Sitzung (jeweils 55000) und bei
+-- verkehrtem Fenster (22023).
+-- Sitzung: Eine Sitzung ohne ended_at, die älter als 135 Minuten ist, gilt als abgestürzt. Kopplung an den Kern: bot.py begrenzt eine
+-- Sitzung auf WAMO_MAX_SITZUNG_MIN (Standard 120, per Umgebung änderbar). Wer das über den Standard hinaus erhöht, muss dieses
+-- Intervall UND SITZUNG_MAX_MINUTEN in voice-core/labor_loeschliste.py anpassen (ein Test sichert Standard plus 10 Minuten ab).
+-- Sperrfrist: Der Kern merkt sich ein aktives Profil bis zu 60 s (auth_gate.py, PROFILE_HIT_SECS) und prüft laufende Sitzungen
+-- minütlich (bot.py, PROFILE_RECHECK_SECS). Nach labor_aktiv = false kann deshalb noch rund 2 Minuten eine Sitzung beginnen und nach
+-- der Löschung neuen Text schreiben. Die Funktion lehnt darum ab, solange profiles.updated_at (profiles_touch setzt es bei jedem
+-- Update, 0001) weniger als 3 Minuten zurückliegt, und prüft die Sitzungen vor dem Ergebnis noch einmal: Begann eine Sitzung
+-- während der Löschung, macht der Fehler die ganze Löschung rückgängig. scripts/wamo_labor.py wartet die Sperrfrist ab (Meldung
+-- "Sperrfrist, noch etwa N Sekunden") und ruft die Funktion erneut auf.
+-- Die Zeile des Profils wird für die Dauer der Löschung mit for no key update gesperrt: labor_aktiv kann sich währenddessen nicht
+-- ändern, Fremdschlüsselprüfungen des Kerns auf dieses Profil werden aber nicht blockiert (for update würde sie blockieren).
 -- Mit p_ab oder p_bis löscht sie nur Zeilen im Zeitfenster (Zeitspalte je Tabelle) sowie alle Zeilen der Sitzungen, die im Fenster
--- begannen. Ohne Angabe löscht sie alles des Profils. Das Profil selbst bleibt (Konten löscht die Verwaltung nach dem Labortag).
+-- begannen (bei feedback über die Turns dieser Sitzungen). Ohne Angabe löscht sie alles des Profils. Das Profil selbst bleibt
+-- (Konten löscht die Verwaltung nach dem Labortag).
 -- Nicht gelöscht werden Verweise auf ein Profil, die keinen Besitz bedeuten (zum Beispiel Prüfer oder Bearbeiter), und die
 -- Protokolltabellen der Selbständerung; die Begründung steht je Eintrag in voice-core/labor_loeschliste.py (AUSNAHMEN).
+-- Ebenfalls nicht Teil der Löschung (Spuren außerhalb der Löschfunktion, Begründung in labor_loeschliste.py: AUSSERHALB, AUSNAHMEN):
+--   * auth.audit_log_entries (Anmeldeprotokoll mit IP-Adresse und E-Mail) und auth.sessions (Anmeldesitzungen mit IP-Adresse und
+--     User-Agent) liegen im Schema auth von GoTrue. Sie verschwinden mit dem Löschen der Laborkonten am 30.11.2026 (Plan Q11).
+--   * model_access kann einen verschlüsselten Claude-Schlüssel tragen. Für Laborprofile ist das Hinterlegen gesperrt (labor.py hat
+--     weder die Client-Nachricht modellzugang noch den Pfad /wamo/api/modellzugang in der Erlaubnisliste); eine vorhandene Zeile fällt
+--     mit dem Konto weg (on delete cascade, ebenfalls am 30.11.2026).
 set local lock_timeout = '5s';
 
 do $$ begin
@@ -123,7 +145,9 @@ begin
     'turns',          (select count(*) from __SCHEMA__.turns x where x.user_id = p_profil),
     'vorgaenge',      (select count(*) from __SCHEMA__.vorgaenge x where x.user_id = p_profil),
     'dateien',        (select count(*) from __SCHEMA__.dateien x where x.user_id = p_profil),
-    'device_events',  (select count(*) from __SCHEMA__.device_events x where x.durch = p_profil),
+    'device_events',  (select count(*) from __SCHEMA__.device_events x
+                        where x.durch = p_profil
+                           or x.device_id in (select d.id from __SCHEMA__.devices d where d.user_id = p_profil)),
     'devices',        (select count(*) from __SCHEMA__.devices x where x.user_id = p_profil),
     'sessions',       (select count(*) from __SCHEMA__.sessions x where x.user_id = p_profil)
   );
@@ -137,6 +161,7 @@ language plpgsql security definer set search_path = '' as $$
 declare
   v_art       text;
   v_aktiv     boolean;
+  v_geaendert timestamptz;
   v_voll      boolean := (p_ab is null and p_bis is null);
   v_ab        timestamptz := coalesce(p_ab, '-infinity'::timestamptz);
   v_bis       timestamptz := coalesce(p_bis, 'infinity'::timestamptz);
@@ -151,16 +176,23 @@ begin
   if p_ab is not null and p_bis is not null and p_ab > p_bis then
     raise exception 'labor_loeschen: p_ab liegt nach p_bis' using errcode = '22023';
   end if;
-  -- Zeile sperren: labor_aktiv kann sich bis zum Ende dieser Transaktion nicht ändern
-  select p.labor_art, p.labor_aktiv into v_art, v_aktiv from __SCHEMA__.profiles p where p.user_id = p_profil for update;
+  -- Zeile sperren: labor_aktiv kann sich bis zum Ende dieser Transaktion nicht ändern. for no key update reicht dafür und blockiert
+  -- keine Fremdschlüsselprüfung des Kerns auf dieses Profil.
+  select p.labor_art, p.labor_aktiv, p.updated_at into v_art, v_aktiv, v_geaendert
+    from __SCHEMA__.profiles p where p.user_id = p_profil for no key update;
   if v_art is null then
     raise exception 'labor_loeschen: kein Laborprofil' using errcode = '42501';
   end if;
   if v_aktiv then
     raise exception 'labor_loeschen: das Laborprofil ist noch freigeschaltet (labor_aktiv), erst sperren' using errcode = '55000';
   end if;
+  -- Sperrfrist: bis zu 2 Minuten nach der Änderung kann der Kern noch eine Sitzung beginnen (Zwischenspeicher, minütliche Prüfung)
+  if v_geaendert > clock_timestamp() - interval '3 minutes' then
+    raise exception 'labor_loeschen: Sperrfrist, noch etwa % Sekunden: das Profil wurde vor weniger als 3 Minuten geändert, der Kern kann noch eine Sitzung beginnen',
+      ceil(extract(epoch from (v_geaendert + interval '3 minutes' - clock_timestamp()))) using errcode = '55000';
+  end if;
   if exists (select 1 from __SCHEMA__.sessions s
-              where s.user_id = p_profil and s.ended_at is null and s.started_at > now() - interval '130 minutes') then
+              where s.user_id = p_profil and s.ended_at is null and s.started_at > clock_timestamp() - interval '135 minutes') then
     raise exception 'labor_loeschen: es läuft noch eine Sitzung dieses Profils' using errcode = '55000';
   end if;
 
@@ -169,8 +201,11 @@ begin
   select coalesce(array_agg(d.id), '{}'::uuid[]) into v_geraete from __SCHEMA__.devices d
    where d.user_id = p_profil and (v_voll or (d.created_at >= v_ab and d.created_at <= v_bis));
 
+  -- feedback hat keinen Sitzungsbezug, nur turn_id: Rückmeldungen zu den Turns der Sitzungen im Fenster gehen auch dann mit,
+  -- wenn sie erst nach dem Fenster entstanden
   delete from __SCHEMA__.feedback x
-   where x.user_id = p_profil and (v_voll or (x.created_at >= v_ab and x.created_at <= v_bis));
+   where x.user_id = p_profil and (v_voll or (x.created_at >= v_ab and x.created_at <= v_bis)
+                                   or x.turn_id in (select t.id from __SCHEMA__.turns t where t.session_id = any(v_sitzungen)));
   get diagnostics v_n = row_count;
   v_ergebnis := v_ergebnis || jsonb_build_object('feedback', v_n);
 
@@ -246,6 +281,13 @@ begin
    where x.user_id = p_profil and (v_voll or x.id = any(v_sitzungen));
   get diagnostics v_n = row_count;
   v_ergebnis := v_ergebnis || jsonb_build_object('sessions', v_n);
+
+  -- Sitzungsprüfung wiederholen: Begann während der Löschung noch eine Sitzung (Kern mit zwischengespeichertem Profil), bricht der
+  -- Fehler ab und die gesamte Löschung wird mit der Transaktion zurückgenommen
+  if exists (select 1 from __SCHEMA__.sessions s
+              where s.user_id = p_profil and s.ended_at is null and s.started_at > clock_timestamp() - interval '135 minutes') then
+    raise exception 'labor_loeschen: es läuft noch eine Sitzung dieses Profils' using errcode = '55000';
+  end if;
 
   return v_ergebnis;
 end $$;
