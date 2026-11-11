@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 import labor_loeschliste as ll
 
 SUPABASE = Path(__file__).resolve().parent.parent / "supabase"
@@ -142,9 +144,13 @@ def test_rechte_laborspalten_nur_wamo_admin_beim_anlegen_und_nur_labor_aktiv_dan
 
 def test_selbsttest_prueft_update_und_insert_fuer_alle_rollen():
     code = _ohne_kommentare(SQL)
-    test = _eine_zeile(code.split("-- Selbsttest")[0] if "-- Selbsttest" in code else code[code.rindex("do $$\ndeclare\n  r text"):])
-    for rolle in ("wamo_core", "anon", "authenticated", "service_role"):
-        assert f"'{rolle}'" in test, rolle
+    test = _eine_zeile(code[code.rindex("do $$\ndeclare\n  r name"):])
+    # F9: keine feste Rollenliste, sondern alle Rollen aus pg_roles außer Superusern, wamo_admin, dem Tabellenbesitzer und pg_-Rollen
+    assert "array['wamo_core', 'wamo_release', 'wamo_anker', 'anon', 'authenticated', 'service_role']" not in test
+    assert test.count("from pg_roles o where not o.rolsuper and o.rolname <> 'wamo_admin' and o.rolname !~ '^pg_'") == 2
+    assert test.count("o.oid <> (select t.relowner from pg_class t where t.oid = '__SCHEMA__.profiles'::regclass)") == 2
+    # einmal für die Spaltenrechte (INSERT, UPDATE), einmal für EXECUTE der Funktionen; wamo_core darf dabei nicht durchrutschen
+    assert "v_geprueft := v_geprueft || r::text" in test and "not ('wamo_core' = any(v_geprueft))" in test
     assert "has_column_privilege(r, '__SCHEMA__.profiles', c, 'INSERT')" in test
     assert "has_column_privilege(r, '__SCHEMA__.profiles', c, 'UPDATE')" in test
     assert "array['labor_art', 'labor_platz', 'labor_aktiv']" in test
@@ -160,7 +166,7 @@ def test_selbsttest_prueft_update_und_insert_fuer_alle_rollen():
         assert stueck in test, stueck
     assert "p.proacl is null" in test and "aclexplode(p.proacl)" in test  # null wäre der Standard PUBLIC
     assert "p.prosecdef" in test and "search_path=\"\"" in test
-    assert "to_regrole(r) is null" in test  # wamo_release und wamo_anker gibt es erst mit 0013
+    assert "to_regrole" not in test  # eine Rolle, die es nicht gibt, kommt in pg_roles gar nicht vor
 
 
 # ---------- Löschfunktion ----------
@@ -181,18 +187,81 @@ def test_funktionen_security_definer_leerer_search_path_nur_wamo_admin():
     assert code.index("revoke all on function __SCHEMA__.labor_loeschen") < code.index("grant execute on function __SCHEMA__.labor_loeschen")
 
 
-def test_loeschfunktion_wirft_in_allen_vier_faellen_mit_dem_vereinbarten_code():
+def test_loeschfunktion_wirft_in_allen_faellen_mit_dem_vereinbarten_code():
     f = _eine_zeile(_funktion("labor_loeschen"))
     assert "p_profil is null" in f and "errcode = '22004'" in f
     assert "p_ab > p_bis" in f and "errcode = '22023'" in f  # verkehrtes Fenster
-    assert "for update" in f  # Zeile sperren: labor_aktiv ändert sich während der Löschung nicht
+    # F6: for no key update sperrt die Zeile gegen labor_aktiv, blockiert aber keine Fremdschlüsselprüfung des Kerns auf das Profil
+    assert "for no key update" in f and not re.search(r"for update\b", f)
     assert "if v_art is null then raise exception 'labor_loeschen: kein Laborprofil' using errcode = '42501'" in f
     assert "if v_aktiv then raise exception" in f and "errcode = '55000'" in f
-    assert "s.ended_at is null and s.started_at > now() - interval '130 minutes'" in f
-    assert f"interval '{ll.SITZUNG_MAX_MINUTEN} minutes'" in f
-    # die Prüfungen stehen vor jedem delete
-    assert f.index("kein Laborprofil") < f.index("delete from") and f.index("noch freigeschaltet") < f.index("delete from")
-    assert f.index("läuft noch eine Sitzung") < f.index("delete from")
+    # F2: Sperrfrist nach jeder Änderung des Profils (profiles_touch setzt updated_at bei jedem Update)
+    assert "p.updated_at" in f
+    assert f"v_geaendert > clock_timestamp() - interval '{ll.SPERRFRIST_MINUTEN} minutes'" in f
+    assert "Sperrfrist, noch etwa %" in f and f.count("errcode = '55000'") == 4  # freigeschaltet, Sperrfrist, Sitzung vorher und nachher
+    # Sitzungsprüfung vor dem ersten delete und noch einmal nach dem letzten, vor dem return
+    pruefung = f"s.ended_at is null and s.started_at > clock_timestamp() - interval '{ll.SITZUNG_MAX_MINUTEN} minutes'"
+    assert f.count(pruefung) == 2
+    erstes, letztes = f.index("delete from"), f.rindex("delete from")
+    assert f.index(pruefung) < erstes and letztes < f.rindex(pruefung) < f.index("return v_ergebnis")
+    # alle Prüfungen stehen vor jedem delete
+    for text in ("kein Laborprofil", "noch freigeschaltet", "Sperrfrist", "läuft noch eine Sitzung"):
+        assert f.index(text) < erstes, text
+
+
+def test_die_meldung_der_sperrfrist_passt_zum_muster_im_skript():
+    """scripts/wamo_labor.py wartet, wenn die Meldung 'Sperrfrist, noch etwa N Sekunden' enthält: beide Texte müssen zusammenpassen."""
+    meldung = re.search(r"'(labor_loeschen: Sperrfrist, noch etwa % Sekunden[^']*)'", SQL)
+    assert meldung, "Meldung der Sperrfrist in der Löschfunktion"
+    skript = (SUPABASE.parent / "scripts" / "wamo_labor.py").read_text(encoding="utf-8")
+    muster = re.search(r'SPERRFRIST = re\.compile\(r"([^"]+)"\)', skript)
+    assert muster, "Muster der Sperrfrist im Skript"
+    assert re.search(muster.group(1), meldung.group(1).replace("%", "95", 1))
+
+
+def test_feedback_geht_ueber_die_turns_der_sitzungen_im_fenster_mit():
+    """feedback hat keinen Sitzungsbezug, nur turn_id: eine später entstandene Rückmeldung zu einem Turn der Sitzung bliebe stehen."""
+    f = _eine_zeile(_funktion("labor_loeschen"))
+    feedback = next(o for o in ll.LOESCHLISTE if o.tabelle == "feedback")
+    assert feedback.turn == "turn_id"
+    assert "x.turn_id in (select t.id from __SCHEMA__.turns t where t.session_id = any(v_sitzungen))" in f
+
+
+def test_zaehlen_und_loeschen_behandeln_device_events_gleich():
+    """F7: labor_zaehlen zählte device_events nur über durch, labor_loeschen löscht auch über das Gerät des Profils."""
+    z = _eine_zeile(_funktion("labor_zaehlen"))
+    assert ("'device_events', (select count(*) from __SCHEMA__.device_events x where x.durch = p_profil "
+            "or x.device_id in (select d.id from __SCHEMA__.devices d where d.user_id = p_profil))") in z
+    assert "x.durch = p_profil or x.device_id = any(v_geraete)" in _eine_zeile(_funktion("labor_loeschen"))
+
+
+# ---------- Kopplung an den Kern (F8) ----------
+
+VOICE_CORE = Path(__file__).resolve().parent
+BOT = (VOICE_CORE / "bot.py").read_text(encoding="utf-8")
+AUTH_GATE = (VOICE_CORE / "auth_gate.py").read_text(encoding="utf-8")
+ENV_BEISPIEL = (VOICE_CORE.parent / ".env.example").read_text(encoding="utf-8")
+LOESCHLISTE_TEXT = (VOICE_CORE / "labor_loeschliste.py").read_text(encoding="utf-8")
+
+
+def test_sitzungsgrenze_der_loeschfunktion_liegt_ueber_dem_standard_des_kerns():
+    """Der Kern begrenzt eine Sitzung auf WAMO_MAX_SITZUNG_MIN (bot.py, Standard 120, per Umgebung änderbar). Die Löschfunktion hält
+    eine offene Sitzung bis zu SITZUNG_MAX_MINUTEN für laufend: der Wert muss mehr als 10 Minuten über dem Standard liegen."""
+    standard = float(re.search(r'MAX_SITZUNG_MIN = float\(os\.getenv\("WAMO_MAX_SITZUNG_MIN"\) or (\d+(?:\.\d+)?)\)', BOT).group(1))
+    beispiel = float(re.search(r"^WAMO_MAX_SITZUNG_MIN=(\d+(?:\.\d+)?)", ENV_BEISPIEL, re.M).group(1))
+    assert ll.SITZUNG_MAX_MINUTEN > max(standard, beispiel) + 10
+    assert f"interval '{ll.SITZUNG_MAX_MINUTEN} minutes'" in SQL
+    # die Kopplung steht an beiden Stellen, damit niemand die Umgebungsvariable erhöht, ohne die Grenze anzufassen
+    assert "WAMO_MAX_SITZUNG_MIN" in SQL and "WAMO_MAX_SITZUNG_MIN" in LOESCHLISTE_TEXT
+
+
+def test_sperrfrist_ist_laenger_als_zwischenspeicher_plus_pruefintervall_des_kerns():
+    """Nach labor_aktiv = false kennt der Kern das Profil noch PROFILE_HIT_SECS und prüft laufende Sitzungen alle PROFILE_RECHECK_SECS."""
+    zwischenspeicher = float(re.search(r"^PROFILE_HIT_SECS = ([\d.]+)", AUTH_GATE, re.M).group(1))
+    pruefintervall = float(re.search(r"^PROFILE_RECHECK_SECS = ([\d.]+)", BOT, re.M).group(1))
+    assert ll.SPERRFRIST_MINUTEN * 60 > zwischenspeicher + pruefintervall
+    assert f"interval '{ll.SPERRFRIST_MINUTEN} minutes'" in SQL
+    assert "PROFILE_HIT_SECS" in SQL and "PROFILE_HIT_SECS" in LOESCHLISTE_TEXT
 
 
 def test_loeschfunktion_loescht_genau_die_loeschliste_in_dieser_reihenfolge_und_nie_profiles():
@@ -258,6 +327,31 @@ def test_rueckweg_bricht_bei_jedem_laborprofil_ab_gesperrt_in_prod_und_wiederhol
     assert code.index("if v_n > 0 then") < code.index("drop column")  # erst die Prüfung, dann der Abbau
 
 
+def test_rueckweg_ist_eine_einzige_anweisung_damit_der_abbruch_auch_ohne_psql_optionen_greift():
+    """F9: Ohne -v ON_ERROR_STOP=1 und --single-transaction liefe psql nach einem Fehler weiter. Darum stehen Prüfung und Abbau in EINEM
+    do-Block: ein raise exception in der Prüfung nimmt den ganzen Block zurück, es kann kein Abbau danach laufen."""
+    code = _ohne_kommentare(DOWN).strip()
+    assert code.startswith("do $$") and code.endswith("end $$;")
+    assert code.count("do $$") == 1 and code.count("end $$;") == 1
+    assert code.index("raise exception") < code.index("drop trigger") < code.index("drop column")
+    # jede der drei Prüfungen bricht mit raise exception ab, bevor etwas verändert wird
+    vor_abbau = code[: code.index("drop trigger")]
+    assert vor_abbau.count("raise exception") == 3 and vor_abbau.count("errcode = '55000'") == 3
+    # die Sperrzeit für den Abbau gilt für die Transaktion des Blocks (set local ohne Transaktionsblock wäre wirkungslos)
+    assert "perform set_config('lock_timeout', '5s', true)" in code and "set local" not in code
+
+
+def test_rueckweg_kopf_nennt_die_aufrufform_fuer_jedes_schema_und_die_reihenfolge_mit_dem_kern():
+    kopf = " ".join(z.lstrip("- ").strip() for z in DOWN.splitlines() if z.lstrip().startswith("--"))
+    assert "psql -U postgres -v ON_ERROR_STOP=1 --single-transaction" in kopf
+    assert "jedes Schema" in kopf and "wamo_prod" in kopf and "wamo.allow_drop" in kopf
+    assert "erst nach der Rückstellung des Kerns" in kopf  # F4
+    assert "503" in kopf and "ALLE" in kopf
+    # und die Migration selbst: vor dem Release des Kerns
+    anfang = " ".join(z.lstrip("- ").strip() for z in SQL.splitlines()[:20] if z.lstrip().startswith("--"))
+    assert "VOR dem Release des Kerns" in anfang and "503" in anfang and "ALLE" in anfang
+
+
 def test_rueckweg_pruefblock_steht_woertlich_im_sql_test():
     """Der Test beweist den Abbruch des echten Blocks: er steht dort unverändert und wird gegen ein Laborprofil ausgeführt."""
     blocks = re.findall(r"do \$\$\ndeclare\n  v_n bigint := 0;.*?end \$\$;", DOWN, re.S)
@@ -285,7 +379,7 @@ def test_sql_test_deckt_prufungen_trigger_rechte_und_loeschen_ab():
         "set rolle = 'admin'", "set aktiv = true",  # Befund 1 und 2
         "release_anzahl_admins()", "release_ist_admin(",  # T12
         "labor_loeschen(", "labor_zaehlen(",
-        "pg_get_functiondef", "session_replication_role",
+        "pg_get_functiondef", "disable trigger user",
         "has_column_privilege(",
         "'55000'", "'42501'", "'22023'",
     ):
@@ -294,6 +388,70 @@ def test_sql_test_deckt_prufungen_trigger_rechte_und_loeschen_ab():
     assert code.count("insert into __SCHEMA__.profiles") >= 4 and code.count("update __SCHEMA__.profiles set labor_aktiv") >= 4
     # Rolle mitglied auch für das Schau-Profil
     assert re.search(r"labor_art.*'schaufenster'", code) and "'mitglied'" in code
+
+
+def test_sql_test_braucht_keinen_superuser_fuer_die_fixture():
+    """F3: session_replication_role verlangt Superuser, postgres ist im Supabase-Image keiner. Die Schwestertests schalten die Trigger mit
+    alter table ... disable trigger user ab (der Tabellenbesitzer darf das); die Fremdschlüssel bleiben aktiv und sind erfüllt."""
+    code = _ohne_kommentare(TEST)
+    assert "session_replication_role" not in code and "set_config('session_replication" not in code
+    for tabelle in ("hinweise", "dateien", "teilungen", "teilung_events", "devices", "device_events"):
+        assert f"alter table __SCHEMA__.{tabelle} disable trigger user;" in code, tabelle
+        assert f"alter table __SCHEMA__.{tabelle} enable trigger user;" in code, tabelle
+    assert code.count("disable trigger user") == code.count("enable trigger user") == 6
+    # erst abschalten, dann füllen, dann wieder anschalten
+    assert code.index("disable trigger user") < code.index("select wamo_testhilfe.fuellen(") < code.index("enable trigger user")
+    assert code.rindex("select wamo_testhilfe.fuellen(") < code.rindex("enable trigger user")
+
+
+def test_sql_test_datiert_updated_at_ohne_superuser_zurueck_und_prueft_die_sperrfrist():
+    """Die Sperrfrist (F2) lehnt jedes jüngst geänderte Profil ab, auch die frisch angelegten Testprofile: der Test prüft sie und datiert
+    updated_at dann mit abgeschaltetem profiles_touch zurück (der Tabellenbesitzer darf es)."""
+    code = _ohne_kommentare(TEST)
+    assert "'Sperrfrist, noch etwa'" in code and "'noch freigeschaltet'" in code and "'läuft noch eine Sitzung'" in code
+    aus, an = code.index("alter table __SCHEMA__.profiles disable trigger profiles_touch;"), code.index(
+        "alter table __SCHEMA__.profiles enable trigger profiles_touch;")
+    assert aus < code.index("set updated_at = now() - interval", aus) < an
+    # die Sperrfrist wird geprüft, bevor zurückdatiert wird; die erste erfolgreiche Löschung kommt danach
+    assert code.index("'Sperrfrist, noch etwa'") < aus < code.index("labor_loeschen('00000000-0000-4000-8000-0000000018b1', now() - interval '6 hours'")
+
+
+def test_sql_test_nimmt_nur_werte_die_kein_skript_vergibt_und_prueft_die_vorbedingung():
+    """F5: Feste Plätze 1, 2, 5, Tunnelplätze 51 bis 54 und Kennungen pc-lab* kollidierten (23505) mit Probe-Laborprofilen oder echten
+    Geräten in wamo_test. Jetzt Plätze 14 bis 16, Tunnelplätze 60 bis 63 und die Kennung pc-t0018-<n>; eine Vorbedingung bricht klar ab."""
+    code = _ohne_kommentare(TEST)
+    plaetze = {int(p) for p in re.findall(r"'platz',\s*(\d+)", code)} | {int(p) for p in re.findall(r"'schaufenster',\s*(\d+)", code)}
+    assert plaetze == {14, 15, 16, 17}, plaetze  # 17 ist der bewusst ungültige Platz
+    assert "59 + p_nr" in code and "50 + p_nr" not in code
+    assert "'pc-t0018-' || p_nr" in code and "pc-lab" not in code
+    vorbedingung = code[: code.index("grant wamo_core, wamo_admin to postgres")]
+    assert "labor_platz in (14, 15, 16)" in vorbedingung and "tunnel_slot between 60 and 63" in vorbedingung
+    assert "like 'pc-t0018-%'" in vorbedingung and vorbedingung.count("raise exception 'Test: ") == 2
+
+
+def _array(text: str, name: str) -> list[str]:
+    treffer = re.findall(rf"\b{name} text\[\] := array\[(.*?)\];", text, re.S)
+    assert treffer, name
+    gelesen = [sorted(re.findall(r"'([^']+)'", t)) for t in treffer]
+    assert all(g == gelesen[0] for g in gelesen), f"{name} steht an mehreren Stellen mit verschiedenem Inhalt"
+    return gelesen[0]
+
+
+def test_sql_test_leitet_tabellenzahl_und_listen_aus_der_loeschliste_ab():
+    """Die 14 stand fest im SQL-Test. Jetzt steht dort die Liste der Tabellen, und dieser Test hält sie gleich der Löschliste."""
+    code = _ohne_kommentare(TEST)
+    assert "14::bigint" not in code and "liefert 14 Tabellen" not in code
+    assert _array(code, "erwartet") == sorted(ll.tabellen())
+    assert _array(code, "ausnahmen") == sorted(ll.AUSNAHMEN)
+    assert _array(code, "fremde") == sorted(f"{t}.{s}" for t, s in ll.FREMDE_VERWEISE)
+
+
+def test_sql_test_prueft_device_events_fremder_profile_und_spaete_rueckmeldungen():
+    """F7 in der Datenbank: ein Ereignis eines fremden Profils zu einem Gerät des Profils wird gezählt und gelöscht, und eine Rückmeldung
+    zu einem Turn der Sitzung im Fenster verschwindet auch, wenn sie erst nach dem Fenster entstand."""
+    code = _eine_zeile(_ohne_kommentare(TEST))
+    assert "device_events zählt auch Ereignisse fremder Profile" in code
+    assert "späte Rückmeldung zu einem Turn der Sitzung ist weg" in code
 
 
 def test_sql_test_prueft_vollstaendigkeit_dynamisch_aus_dem_katalog():
@@ -305,3 +463,306 @@ def test_sql_test_prueft_vollstaendigkeit_dynamisch_aus_dem_katalog():
         assert f"'{tabelle}'" in code, tabelle
     for tabelle in ll.tabellen():
         assert tabelle in code, tabelle
+
+
+# ---------- Wahrheitstabelle der CHECK-Bedingungen, aus dem SQL gelesen ----------
+# Ein kleiner Auswerter für genau die SQL-Teilmenge, die die vier Prüfungen nutzen (and, or, not, is [not] null, =, in, between, case),
+# mit der dreiwertigen Logik von SQL (None ist unbekannt). Er liest die Bedingung aus dem Text der Migration, nichts ist nachgebaut:
+# Ändert jemand die Bedingung, ändert sich das Ergebnis dieses Tests.
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"'(?:[^']|'')*'|\d+|<>|=|\(|\)|,|[A-Za-z_][A-Za-z_0-9]*", text)
+
+
+def _und(a, b):
+    return False if a is False or b is False else (None if a is None or b is None else True)
+
+
+def _oder(a, b):
+    return True if a is True or b is True else (None if a is None or b is None else False)
+
+
+class _Pruefung:
+    """Wertet eine CHECK-Bedingung für eine Zeile aus (Spaltenname klein -> Wert). Gibt True, False oder None zurück."""
+
+    def __init__(self, text: str, zeile: dict):
+        self.t, self.i, self.z = _tokens(text), 0, zeile
+
+    def _peek(self) -> str | None:
+        return self.t[self.i].lower() if self.i < len(self.t) else None
+
+    def _nimm(self, erwartet: str | None = None) -> str:
+        tok = self.t[self.i]
+        assert erwartet is None or tok.lower() == erwartet, (erwartet, tok, self.t)
+        self.i += 1
+        return tok
+
+    def auswerten(self):
+        wert = self._oder()
+        assert self.i == len(self.t), f"unverstandener Rest: {self.t[self.i:]}"
+        return wert
+
+    def _oder(self):
+        wert = self._und_()
+        while self._peek() == "or":
+            self._nimm()
+            wert = _oder(wert, self._und_())
+        return wert
+
+    def _und_(self):
+        wert = self._nicht()
+        while self._peek() == "and":
+            self._nimm()
+            wert = _und(wert, self._nicht())
+        return wert
+
+    def _nicht(self):
+        if self._peek() == "not":
+            self._nimm()
+            wert = self._nicht()
+            return None if wert is None else not wert
+        return self._vergleich()
+
+    def _vergleich(self):
+        links = self._wert()
+        wort = self._peek()
+        if wort == "is":
+            self._nimm()
+            negiert = self._peek() == "not"
+            if negiert:
+                self._nimm()
+            self._nimm("null")
+            return (links is not None) if negiert else (links is None)
+        if wort in ("=", "<>"):
+            self._nimm()
+            rechts = self._wert()
+            return None if links is None or rechts is None else (links == rechts) == (wort == "=")
+        if wort == "in":
+            self._nimm()
+            self._nimm("(")
+            kandidaten = [self._wert()]
+            while self._peek() == ",":
+                self._nimm()
+                kandidaten.append(self._wert())
+            self._nimm(")")
+            if links is None:
+                return None
+            return True if links in kandidaten else (None if None in kandidaten else False)
+        if wort == "between":
+            self._nimm()
+            unten = self._wert()
+            self._nimm("and")
+            oben = self._wert()
+            return None if None in (links, unten, oben) else unten <= links <= oben
+        return links
+
+    def _wert(self):
+        tok = self._nimm()
+        wort = tok.lower()
+        if tok == "(":
+            wert = self._oder()
+            self._nimm(")")
+            return wert
+        if wort == "case":
+            ergebnis, gewaehlt = None, False
+            while self._peek() == "when":
+                self._nimm()
+                bedingung = self._oder()
+                self._nimm("then")
+                folge = self._oder()
+                if bedingung is True and not gewaehlt:
+                    ergebnis, gewaehlt = folge, True
+            if self._peek() == "else":
+                self._nimm()
+                sonst = self._oder()
+                ergebnis = ergebnis if gewaehlt else sonst
+            self._nimm("end")
+            return ergebnis
+        if tok.startswith("'"):
+            return tok[1:-1].replace("''", "'")
+        if tok.isdigit():
+            return int(tok)
+        if wort in ("true", "false"):
+            return wort == "true"
+        if wort == "null":
+            return None
+        return self.z[wort]
+
+
+def _bedingung(name: str) -> str:
+    treffer = re.search(rf"add constraint {name}\s+check \((.*?)\);", _ohne_kommentare(SQL), re.S)
+    assert treffer, name
+    return treffer.group(1)
+
+
+ARTEN = (None, "platz", "schaufenster", "beobachter")
+PLAETZE = (None, 0, 1, 16, 17)
+WAHR_FALSCH = (False, True)
+ROLLEN = ("mitglied", "admin")
+ZEILEN = [dict(labor_art=a, labor_platz=p, labor_aktiv=la, rolle=r, aktiv=ak)
+          for a in ARTEN for p in PLAETZE for la in WAHR_FALSCH for r in ROLLEN for ak in WAHR_FALSCH]
+
+
+def _besteht(name: str, zeile: dict) -> bool:
+    """Eine CHECK-Bedingung lässt die Zeile durch, wenn sie nicht falsch ist (unbekannt besteht in SQL)."""
+    return _Pruefung(_bedingung(name), zeile).auswerten() is not False
+
+
+def _erwartet_form(z: dict) -> bool:
+    if z["labor_art"] is None:
+        return z["labor_platz"] is None and not z["labor_aktiv"]  # ohne Laborart weder Platz noch Freischaltung
+    if z["labor_art"] == "platz":
+        return z["labor_platz"] is not None  # platz verlangt einen Platz
+    return z["labor_platz"] is None  # schaufenster hat keinen
+
+
+def test_wahrheitstabelle_art_und_platz():
+    for z in ZEILEN:
+        assert _besteht("profiles_labor_art_chk", z) == (z["labor_art"] in (None, "platz", "schaufenster")), z
+        assert _besteht("profiles_labor_platz_chk", z) == (z["labor_platz"] is None or 1 <= z["labor_platz"] <= 16), z
+
+
+def test_wahrheitstabelle_form_und_streng_nie_unbekannt():
+    """form_chk als case geschrieben: Das Ergebnis ist für jede Zeile ein Wahrheitswert, nie null (ein null bestünde die Prüfung)."""
+    for z in ZEILEN:
+        form = _Pruefung(_bedingung("profiles_labor_form_chk"), z).auswerten()
+        streng = _Pruefung(_bedingung("profiles_labor_streng_chk"), z).auswerten()
+        assert form is not None and streng is not None, z
+        assert form == _erwartet_form(z), z
+        # Befund 1 und 2: ein Laborprofil heißt immer Mitglied und ist dauerhaft aktiv = false; ein gewöhnliches Profil bleibt frei
+        assert streng == (z["labor_art"] is None or (z["rolle"] == "mitglied" and not z["aktiv"])), z
+
+
+def test_wahrheitstabelle_gesamt_welche_zeilen_zulaessig_sind():
+    """Alle vier Prüfungen zusammen: Genau die vorgesehenen Zustände sind zulässig, und die Gegenprobe (hier leer wäre der Test wertlos)."""
+    namen = ("profiles_labor_art_chk", "profiles_labor_platz_chk", "profiles_labor_form_chk", "profiles_labor_streng_chk")
+    zulaessig = [z for z in ZEILEN if all(_besteht(n, z) for n in namen)]
+    erwartet = [z for z in ZEILEN
+                if z["labor_art"] in (None, "platz", "schaufenster")
+                and (z["labor_platz"] is None or 1 <= z["labor_platz"] <= 16)
+                and _erwartet_form(z)
+                and (z["labor_art"] is None or (z["rolle"] == "mitglied" and not z["aktiv"]))]
+    assert zulaessig == erwartet and zulaessig and len(zulaessig) < len(ZEILEN)
+    for z in zulaessig:
+        if z["labor_art"] is not None:
+            assert z["rolle"] == "mitglied" and not z["aktiv"], z  # nie Admin, nie aktiv
+        else:
+            assert z["labor_platz"] is None and not z["labor_aktiv"], z  # ein gewöhnliches Profil trägt nichts von alledem
+    # ein paar Zeilen, die der Entwurf ausdrücklich ablehnt
+    abgelehnt = [dict(labor_art="platz", labor_platz=5, labor_aktiv=False, rolle="admin", aktiv=False),
+                 dict(labor_art="schaufenster", labor_platz=None, labor_aktiv=False, rolle="mitglied", aktiv=True),
+                 dict(labor_art=None, labor_platz=5, labor_aktiv=False, rolle="mitglied", aktiv=True),
+                 dict(labor_art=None, labor_platz=None, labor_aktiv=True, rolle="mitglied", aktiv=True),
+                 dict(labor_art="platz", labor_platz=None, labor_aktiv=False, rolle="mitglied", aktiv=False),
+                 dict(labor_art="schaufenster", labor_platz=3, labor_aktiv=False, rolle="mitglied", aktiv=False)]
+    for z in abgelehnt:
+        assert not all(_besteht(n, z) for n in namen), z
+
+
+def test_der_auswerter_selbst_dreiwertige_logik_und_case():
+    """Selbstprüfung des Auswerters: Ohne das taugt die Wahrheitstabelle nichts."""
+    z = dict(a=None, b=True, c=False)
+    assert _Pruefung("a is null and not c", z).auswerten() is True
+    assert _Pruefung("a = 1", z).auswerten() is None  # unbekannt
+    assert _Pruefung("a = 1 or b", z).auswerten() is True and _Pruefung("a = 1 and c", z).auswerten() is False
+    assert _Pruefung("a = 1 and b", z).auswerten() is None
+    assert _Pruefung("a in (1, 2)", z).auswerten() is None and _Pruefung("3 in (1, 2)", z).auswerten() is False
+    assert _Pruefung("5 between 1 and 16", z).auswerten() is True and _Pruefung("17 between 1 and 16", z).auswerten() is False
+    assert _Pruefung("case when a = 1 then b else c end", z).auswerten() is False  # unbekannte Bedingung gilt als nicht erfüllt
+    assert _Pruefung("case when a is null then (b and not c) else c end", z).auswerten() is True
+    assert _Pruefung("case when c then b end", z).auswerten() is None  # kein else, keine Bedingung wahr
+    with pytest.raises(KeyError):
+        _Pruefung("unbekannte_spalte is null", z).auswerten()
+
+
+# ---------- Lexikalische Prüfung der gerenderten SQL-Dateien (pglast steht im Python des Hauptrepos nicht zur Verfügung) ----------
+# Kein Parser: Der Test zerlegt die gerenderten Dateien (__SCHEMA__ ersetzt) wie psql in Anweisungen und prüft Anführungszeichen,
+# Dollar-Quotes, Kommentare, Klammern und das Semikolon am Ende jeder Anweisung, auch im Rumpf von do-Blöcken, Funktionen und den
+# SQL-Texten, die der SQL-Test per execute ausführt. Mit pglast wäre ein echter Syntaxtest möglich (nicht installiert, nicht nachgeladen).
+
+VERBEN = {"set", "reset", "do", "alter", "create", "comment", "drop", "revoke", "grant", "insert", "update", "delete", "select",
+          "begin", "rollback", "commit", "with"}
+
+
+def _zerlegen(text: str, *, streng: bool) -> list[str]:
+    """Anweisungen am Semikolon außerhalb von Kommentaren, Zeichenketten und Dollar-Quotes. Meldet jeden Formfehler per assert."""
+    anweisungen: list[str] = []
+    aktuell: list[str] = []
+    tiefe, i, n = 0, 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and (i == 0 or text[i - 1] == "\n"):  # psql-Metabefehl (\set, \echo): bis zum Zeilenende
+            ende = text.find("\n", i)
+            i = n if ende < 0 else ende + 1
+            continue
+        if text.startswith("--", i):
+            ende = text.find("\n", i)
+            i = n if ende < 0 else ende
+            continue
+        if text.startswith("/*", i):
+            ende = text.find("*/", i + 2)
+            assert ende >= 0, "Blockkommentar nicht geschlossen"
+            i = ende + 2
+            continue
+        if c in "'\"":
+            j = i + 1
+            while True:
+                j = text.find(c, j)
+                assert j >= 0, f"{c} nicht geschlossen bei: {text[i:i + 60]!r}"
+                if text[j:j + 2] == c * 2:
+                    j += 2
+                    continue
+                break
+            aktuell.append(text[i:j + 1])
+            i = j + 1
+            continue
+        if c == "$":
+            marke = re.match(r"\$(?:[A-Za-z_]\w*)?\$", text[i:])
+            if marke:
+                ende = text.find(marke.group(0), i + len(marke.group(0)))
+                assert ende >= 0, f"Dollar-Quote {marke.group(0)} nicht geschlossen"
+                rumpf = text[i + len(marke.group(0)):ende]
+                _zerlegen(rumpf, streng=False)  # SQL-Text oder plpgsql-Rumpf: dieselben Regeln, nur ohne Pflicht zum letzten Semikolon
+                aktuell.append(marke.group(0) + "..." + marke.group(0))
+                i = ende + len(marke.group(0))
+                continue
+        if c == "(":
+            tiefe += 1
+        elif c == ")":
+            tiefe -= 1
+            assert tiefe >= 0, f"Klammer zu ohne auf: {''.join(aktuell)[-80:]!r}"
+        if c == ";" and tiefe == 0:
+            anweisung = "".join(aktuell).strip()
+            assert anweisung, "leere Anweisung (doppeltes Semikolon)"
+            anweisungen.append(anweisung)
+            aktuell = []
+        else:
+            aktuell.append(c)
+        i += 1
+    assert tiefe == 0, "Klammer nicht geschlossen"
+    rest = "".join(aktuell).strip()
+    assert not streng or not rest, f"letzte Anweisung ohne Semikolon: {rest[:80]!r}"
+    return anweisungen
+
+
+DATEIEN = {"0018_labor_profile.sql": SQL, "0018_labor_profile.down.sql": DOWN, "0018_labor_profile_test.sql": TEST}
+
+
+@pytest.mark.parametrize("name", sorted(DATEIEN))
+def test_gerenderte_sql_dateien_sind_lexikalisch_in_ordnung(name):
+    gerendert = DATEIEN[name].replace("__SCHEMA__", "wamo_test")
+    assert "__SCHEMA__" not in gerendert, name
+    anweisungen = _zerlegen(gerendert, streng=True)
+    assert anweisungen, name
+    for a in anweisungen:
+        assert a.split(None, 1)[0].lower() in VERBEN, (name, a[:60])
+
+
+def test_der_lexikalische_test_erkennt_typische_fehler():
+    """Rot-Beispiele: Ohne diese Gegenprobe wüsste man nicht, ob die Prüfung überhaupt etwas findet."""
+    for kaputt in ("select 'offen;", "select (1;", "select 1);", "do $$ begin null; end;", "do $x$ begin null; end $y$;",
+                   "select 1;;", "select 1", "/* offen select 1;"):
+        with pytest.raises(AssertionError):
+            _zerlegen(kaputt, streng=True)
+    assert _zerlegen("select 'a;b'; -- ; Kommentar\nselect $q$x;y$q$;\ndo $$ begin null; end $$;", streng=True) == [
+        "select 'a;b'", "select $q$...$q$", "do $$...$$"]

@@ -5,9 +5,15 @@ und labor-schau (Art schaufenster). Es hat immer die Rolle mitglied und bleibt d
 allein über labor_aktiv; nur der Kern mit Laborlogik liest es, ältere Kerne lehnen jedes Laborprofil mit 403 ab.
 
 Wie die anderen Verwaltungsskripte (wamo_nutzer.py) läuft das Skript über ssh auf Sokrates-2 und spricht dort per
-docker exec ... psql mit der Datenbank. Neu: Jede Schreibanweisung beginnt mit "set local role wamo_admin", läuft also mit den
-Rechten der Verwaltungsrolle und nie mit Superuser-Rechten. Der Superuser liest nur auth.users, um ein vorhandenes Konto zu finden.
-Das Löschen geht ausschließlich über die Funktion labor_loeschen (nur wamo_admin darf sie aufrufen, wamo_core nie).
+docker exec ... psql mit der Datenbank. Jede Anweisung außer der Kontosuche läuft als Login-Rolle wamo_admin, mit der
+Anmeldung aus WAMO_ADMIN_DATABASE_URL (Umgebung oder .env, wie voice-core/wamo_admin.py), und nie mit Superuser-Rechten. Es gibt kein
+SET ROLE: postgres ist im Supabase-Image kein Superuser und darf keine Rolle annehmen. Nur das Passwort aus dieser Anmeldung geht
+zum Server, und zwar ausschließlich über die SSH-Eingabe (stdin), dort in die Umgebung von docker exec (PGPASSWORD) und nie in
+Argumente oder Ausgaben. Die Betriebsrolle postgres (kein Superuser) liest nur auth.users, um ein vorhandenes Konto zu finden,
+weil wamo_admin diese Tabelle nicht lesen darf.
+Das Löschen geht ausschließlich über die Funktion labor_loeschen (nur wamo_admin darf sie aufrufen, wamo_core nie). Sie lehnt in
+den ersten 3 Minuten nach der letzten Änderung des Profils ab (Sperrfrist, der Kern kennt ein Profil bis zu 2 Minuten aus dem
+Zwischenspeicher); das Skript wartet dann die genannte Zeit und ruft sie noch einmal auf (höchstens dreimal).
 
 Standard ist der Trockenlauf: Ohne --ausfuehren zeigt das Skript nur, was es täte, und ändert nichts. status liest nur. loeschen zählt im
 Trockenlauf nur (labor_zaehlen, lesend) und zeigt, was verschwinden würde.
@@ -24,7 +30,10 @@ Aufrufe (im Repo-Hauptordner):
   python scripts/wamo_labor.py loeschen --alle --ausfuehren               # alle Texte (Frist 05.12.2026), prüft danach auf null
   python scripts/wamo_labor.py loeschen --kennung labor-03 --ab 2026-11-28T09:00:00+01:00 --bis 2026-11-28T09:30:00+01:00 --ausfuehren
 Optionen: --schema wamo_dev|wamo_test|wamo_prod (Standard wamo_dev), --host wamo-sokrates2
-Reihenfolge vor dem Löschen: erst sperren (labor_aktiv = false), dann die Sitzung beenden lassen, dann löschen.
+Reihenfolge vor dem Löschen: erst sperren (labor_aktiv = false), dann die Sitzung beenden lassen, dann löschen (die Sperrfrist
+von 3 Minuten wartet das Skript selbst ab).
+Voraussetzung: WAMO_ADMIN_DATABASE_URL gesetzt (scripts/wamo_db_rolle.py --rolle wamo_admin richtet sie ein). Fehlt sie oder gehört
+sie zu einer anderen Rolle, bricht das Skript vor dem ersten Aufruf des Servers ab.
 """
 from __future__ import annotations
 
@@ -39,6 +48,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, NamedTuple
+from urllib.parse import unquote, urlsplit
 
 SCHEMA_RE = re.compile(r"^wamo_(dev|test|prod)$")
 KENNUNG_RE = re.compile(r"^labor-(0[1-9]|1[0-6]|schau)$")
@@ -47,55 +57,74 @@ MAIL_DOMAIN = "wamo.test"
 PASSWORT_LAENGE = 24
 EXIT_PASSWORT_NOETIG = 10
 WURZEL = Path(__file__).resolve().parent.parent
+ADMIN_DSN_ENV = "WAMO_ADMIN_DATABASE_URL"
+ADMIN_ROLLE = "wamo_admin"
+# Reihenfolge wie in voice-core/wamo_admin.py (_load_env): die Umgebung gewinnt, dann voice-core/.env, dann die .env im Hauptordner
+ENV_DATEIEN = (WURZEL / "voice-core" / ".env", WURZEL / ".env")
 
 # Alle Anweisungen stehen hier an einer Stelle (und im Programm, das auf dem Server läuft). Werte gehen nur als psql-Variable
-# hinein (:'wert' als Literal, :"schema" als Bezeichner), nie per Zeichenkette. Jede Anweisung außer der Kontosuche läuft als wamo_admin.
-ROLLE = "set local role wamo_admin;\n"
+# hinein (:'wert' als Literal, :"schema" als Bezeichner), nie per Zeichenkette. Jede Anweisung außer der Kontosuche läuft als
+# Login-Rolle wamo_admin (kein SET ROLE, siehe Kopf); die Kontosuche liest als Betriebsrolle postgres allein auth.users.
 _KENNUNG = ("case when p.labor_art = 'platz' then 'labor-' || lpad(p.labor_platz::text, 2, '0') else 'labor-schau' end")
 _PLATZ = "p.labor_art = :'art' and p.labor_platz is not distinct from nullif(:'platz', '')::smallint"
 _PLATZ_UPDATE = "labor_art = :'art' and labor_platz is not distinct from nullif(:'platz', '')::smallint"
+ALS_POSTGRES = ("konto_suchen",)
 SQL: dict[str, str] = {
-    # lesend, als Superuser: nur die Kennung eines vorhandenen Kontos (wamo_admin darf auth.users nicht lesen)
+    # lesend, als Betriebsrolle postgres: nur die Kennung eines vorhandenen Kontos (wamo_admin darf auth.users nicht lesen)
     "konto_suchen": "select id from auth.users where lower(email) = lower(:'email') limit 1;",
-    "anlegen": ROLLE + (
+    "anlegen": (
         "insert into :\"schema\".profiles (user_id, display_name, rolle, aktiv, labor_art, labor_platz, labor_aktiv)\n"
         "values (:'uid'::uuid, :'name', 'mitglied', false, :'art', nullif(:'platz', '')::smallint, false)\n"
         "on conflict (user_id) do nothing;"),
-    "pruefen": ROLLE + (
+    "pruefen": (
         "select coalesce(p.labor_art, '') || '|' || coalesce(p.labor_platz::text, '') || '|' || p.aktiv::text || '|' "
         "|| p.labor_aktiv::text\n"
         "from :\"schema\".profiles p where p.user_id = :'uid'::uuid;"),
-    "aktivieren": ROLLE + f"update :\"schema\".profiles set labor_aktiv = true where {_PLATZ_UPDATE} returning 1;",
-    "sperren": ROLLE + f"update :\"schema\".profiles set labor_aktiv = false where {_PLATZ_UPDATE} returning 1;",
-    "sperren_alle": ROLLE + "update :\"schema\".profiles set labor_aktiv = false where labor_art is not null returning 1;",
-    "ids": ROLLE + f"select {_KENNUNG} || '|' || p.user_id from :\"schema\".profiles p where {_PLATZ};",
-    "ids_alle": ROLLE + (f"select {_KENNUNG} || '|' || p.user_id from :\"schema\".profiles p where p.labor_art is not null\n"
-                         "order by p.labor_platz nulls last;"),
-    "status": ROLLE + (
+    "aktivieren": f"update :\"schema\".profiles set labor_aktiv = true where {_PLATZ_UPDATE} returning 1;",
+    "sperren": f"update :\"schema\".profiles set labor_aktiv = false where {_PLATZ_UPDATE} returning 1;",
+    "sperren_alle": "update :\"schema\".profiles set labor_aktiv = false where labor_art is not null returning 1;",
+    "ids": f"select {_KENNUNG} || '|' || p.user_id from :\"schema\".profiles p where {_PLATZ};",
+    "ids_alle": (f"select {_KENNUNG} || '|' || p.user_id from :\"schema\".profiles p where p.labor_art is not null\n"
+                 "order by p.labor_platz nulls last;"),
+    "status": (
         f"select {_KENNUNG} || ' | ' || p.labor_art || ' | ' || case when p.labor_aktiv then 'freigeschaltet' else 'gesperrt' end\n"
         "  || ' | ' || (select coalesce(sum(e.value::bigint), 0) from jsonb_each_text(:\"schema\".labor_zaehlen(p.user_id)) e)"
         " || ' Zeilen'\nfrom :\"schema\".profiles p where p.labor_art is not null order by p.labor_platz nulls last;"),
-    "zaehlen": ROLLE + "select :\"schema\".labor_zaehlen(:'uid'::uuid);",
-    "loeschen": ROLLE + ("select :\"schema\".labor_loeschen(:'uid'::uuid, nullif(:'ab', '')::timestamptz, "
-                         "nullif(:'bis', '')::timestamptz);"),
+    "zaehlen": "select :\"schema\".labor_zaehlen(:'uid'::uuid);",
+    "loeschen": ("select :\"schema\".labor_loeschen(:'uid'::uuid, nullif(:'ab', '')::timestamptz, "
+                 "nullif(:'bis', '')::timestamptz);"),
 }
 
 # Das Programm, das auf Sokrates-2 läuft (python3, Eingabe als JSON über stdin). verarbeite() ist von der Außenwelt getrennt
 # (psql und GoTrue werden hineingereicht), damit der Test es ohne Server ausführen kann.
 REMOTE_KOERPER = r'''
-import json, re, subprocess, sys, urllib.error, urllib.request
+import json, os, re, subprocess, sys, time, urllib.error, urllib.request
+
+SPERRFRIST = re.compile(r"Sperrfrist, noch etwa (\d+) Sekunden")
+LOESCH_VERSUCHE = 3
+WARTE_MAX_SEKUNDEN = 200
 
 
 class Fehler(Exception):
     pass
 
 
-def sql_ausfuehren(sql, **vars):
-    cmd = ["docker", "exec", "-i", "wamo-supabase-db", "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1",
-           "--single-transaction", "-tA", "-q"]
+def sql_ausfuehren(sql, db_passwort, **vars):
+    # Nur die Kontosuche laeuft als Betriebsrolle postgres (Socket im Container). Alles andere meldet sich als Login-Rolle
+    # wamo_admin an (kein SET ROLE); das Passwort steht nur in der Umgebung von docker exec, nie in den Argumenten.
+    env = None
+    if sql in ALS_POSTGRES_SQL:
+        cmd = ["docker", "exec", "-i", "wamo-supabase-db", "psql", "-U", "postgres"]
+    else:
+        if not db_passwort:
+            raise Fehler("Die Anmeldung der Rolle wamo_admin fehlt")
+        env = dict(os.environ, PGPASSWORD=db_passwort)
+        cmd = ["docker", "exec", "-i", "-e", "PGPASSWORD", "wamo-supabase-db", "psql", "-h", "127.0.0.1", "-U", "wamo_admin",
+               "-d", "postgres"]
+    cmd += ["-v", "ON_ERROR_STOP=1", "--single-transaction", "-tA", "-q"]
     for k, v in vars.items():
         cmd += ["-v", f"{k}={v}"]
-    r = subprocess.run(cmd, input=sql, capture_output=True, text=True)
+    r = subprocess.run(cmd, input=sql, capture_output=True, text=True, env=env)
     if r.returncode != 0:
         raise Fehler("Datenbankfehler: " + r.stderr.strip()[:300])
     return r.stdout.strip()
@@ -130,15 +159,34 @@ def zusammenfassung(zahlen):
     return ", ".join(teile) if teile else "nichts"
 
 
-def verarbeite(d, sql, konto):
+def verarbeite(d, sql, konto, warte=time.sleep):
     try:
-        return _verarbeite(d, sql, konto)
+        return _verarbeite(d, sql, konto, warte)
     except Fehler as e:
         text = str(e)
-        if d.get("password"):
-            text = text.replace(d["password"], "***")
+        for geheim in (d.get("password"), d.get("db_passwort")):
+            if geheim:
+                text = text.replace(geheim, "***")
         print("Fehler: " + text, file=sys.stderr)
         return 1
+
+
+def _loeschen(sql, warte, kennung, schema, uid, ab, bis):
+    # Die Funktion lehnt in der Sperrfrist (3 Minuten nach der letzten Aenderung des Profils) mit "Sperrfrist, noch etwa N
+    # Sekunden" ab: dann N plus 5 Sekunden warten und noch einmal aufrufen. Jeder andere Fehler gilt sofort.
+    for versuch in range(1, LOESCH_VERSUCHE + 1):
+        try:
+            return json.loads(sql(SQL["loeschen"], schema=schema, uid=uid, ab=ab, bis=bis))
+        except Fehler as e:
+            treffer = SPERRFRIST.search(str(e))
+            if not treffer:
+                raise
+            if versuch == LOESCH_VERSUCHE:
+                raise Fehler(f"{kennung}: Sperrfrist laeuft noch, spaeter erneut aufrufen ({LOESCH_VERSUCHE} Versuche)")
+            sekunden = min(int(treffer.group(1)) + 5, WARTE_MAX_SEKUNDEN)
+            print(f"{kennung}: Sperrfrist (das Profil wurde vor kurzem geaendert), warte {sekunden} Sekunden, "
+                  f"Versuch {versuch + 1} von {LOESCH_VERSUCHE}.", flush=True)
+            warte(sekunden)
 
 
 def _ziel(d):
@@ -148,7 +196,7 @@ def _ziel(d):
     return art, platz
 
 
-def _verarbeite(d, sql, konto):
+def _verarbeite(d, sql, konto, warte):
     schema = d.get("schema", "")
     if not re.fullmatch(r"wamo_(dev|test|prod)", schema):
         raise Fehler("Ungueltiges Schema")
@@ -207,7 +255,7 @@ def _verarbeite(d, sql, konto):
         if aktion == "zaehlen":
             print(f"{kennung}: wuerde loeschen: " + zusammenfassung(json.loads(sql(SQL["zaehlen"], schema=schema, uid=uid))))
             continue
-        geloescht = json.loads(sql(SQL["loeschen"], schema=schema, uid=uid, ab=ab, bis=bis))
+        geloescht = _loeschen(sql, warte, kennung, schema, uid, ab, bis)
         rest = json.loads(sql(SQL["zaehlen"], schema=schema, uid=uid))
         print(f"{kennung}: geloescht: " + zusammenfassung(geloescht))
         if not ab and not bis and any(int(v) for v in rest.values()):
@@ -216,13 +264,15 @@ def _verarbeite(d, sql, konto):
 
 
 if __name__ == "__main__":
-    sys.exit(verarbeite(json.load(sys.stdin), sql_ausfuehren, konto_anlegen))
+    eingabe = json.load(sys.stdin)
+    sys.exit(verarbeite(eingabe, lambda sql, **vars: sql_ausfuehren(sql, eingabe.get("db_passwort"), **vars), konto_anlegen))
 '''
 
 
 def remote_programm() -> str:
     """Das vollständige Programm für den Server: die Anweisungen vorweg, dann der Körper."""
-    return "SQL = " + repr(SQL) + "\n" + REMOTE_KOERPER
+    als_postgres = tuple(SQL[name] for name in ALS_POSTGRES)
+    return "SQL = " + repr(SQL) + "\nALS_POSTGRES_SQL = " + repr(als_postgres) + "\n" + REMOTE_KOERPER
 
 
 class Fehler(Exception):
@@ -235,12 +285,59 @@ class Ergebnis(NamedTuple):
     stderr: str
 
 
+def _env_wert(name: str) -> str:
+    """Wert aus der Umgebung, sonst aus den .env-Dateien (KEY=VALUE, wie dotenv: die Umgebung gewinnt, die erste Datei vor der zweiten)."""
+    wert = os.environ.get(name, "")
+    if wert.strip():
+        return wert.strip()
+    for datei in ENV_DATEIEN:
+        if not datei.is_file():
+            continue
+        for zeile in datei.read_text(encoding="utf-8", errors="replace").splitlines():
+            zeile = zeile.strip()
+            if zeile.startswith("export "):
+                zeile = zeile[len("export "):].lstrip()
+            schluessel, trenner, rest = zeile.partition("=")
+            if trenner and schluessel.strip() == name and rest.strip().strip("'\"").strip():
+                return rest.strip().strip("'\"").strip()
+    return ""
+
+
+def admin_passwort() -> str:
+    """Das Passwort der Rolle wamo_admin aus WAMO_ADMIN_DATABASE_URL. Die Meldungen nennen nie die Anmeldung selbst."""
+    dsn = _env_wert(ADMIN_DSN_ENV)
+    if not dsn:
+        raise Fehler(f"{ADMIN_DSN_ENV} ist nicht gesetzt (Umgebung oder .env). Das Skript braucht die Anmeldung der Rolle "
+                     f"{ADMIN_ROLLE}; sie richtet scripts/wamo_db_rolle.py --rolle {ADMIN_ROLLE} ein.")
+    try:
+        teile = urlsplit(dsn)
+        benutzer, passwort = unquote(teile.username or ""), unquote(teile.password or "")
+    except ValueError:
+        raise Fehler(f"{ADMIN_DSN_ENV} ist keine gültige Verbindungsangabe") from None
+    if benutzer.split(".")[0] != ADMIN_ROLLE:
+        raise Fehler(f"{ADMIN_DSN_ENV} gehört nicht zur Rolle {ADMIN_ROLLE} (der Voice-Core-Zugang darf nichts verwalten)")
+    if not passwort:
+        raise Fehler(f"{ADMIN_DSN_ENV} enthält kein Passwort")
+    return passwort
+
+
+def _unkenntlich(text: str, *geheimnisse: str | None) -> str:
+    for geheim in geheimnisse:
+        if geheim:
+            text = text.replace(geheim, "***")
+    return text
+
+
 def run_remote(host: str, nutzlast: dict) -> Ergebnis:
+    db_passwort = admin_passwort()  # vor dem ersten Aufruf: ohne Anmeldung der Verwaltungsrolle wird der Server nie angefasst
     programm = base64.b64encode(remote_programm().encode("utf-8")).decode("ascii")
     befehl = f"python3 -c \"import base64;exec(base64.b64decode('{programm}').decode('utf-8'))\""
+    # Das Passwort geht nur über die SSH-Eingabe (stdin), nie als Argument
+    eingabe = json.dumps({**nutzlast, "db_passwort": db_passwort}, ensure_ascii=False)
     r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, befehl],
-                       input=json.dumps(nutzlast, ensure_ascii=False), capture_output=True, text=True, encoding="utf-8")
-    return Ergebnis(r.returncode, r.stdout, r.stderr)
+                       input=eingabe, capture_output=True, text=True, encoding="utf-8")
+    geheimnisse = (db_passwort, nutzlast.get("password"))
+    return Ergebnis(r.returncode, _unkenntlich(r.stdout, *geheimnisse), _unkenntlich(r.stderr, *geheimnisse))
 
 
 def kennung_pruefen(kennung: str) -> tuple[str, int | None]:

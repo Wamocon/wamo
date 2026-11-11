@@ -24,7 +24,8 @@ import labor_loeschliste as ll
 import labor_verwaltung as lv
 
 MIGRATIONEN = Path(__file__).resolve().parent.parent / "supabase" / "migrations"
-ALS_PROFIL = r"(?:__SCHEMA__\.profiles\(user_id\)|auth\.users\(id\))"
+# Verweisziel profiles(user_id) oder auth.users(id), in jeder Schreibweise: Leerzeichen vor und in der Klammer, weitere Spalten dahinter
+ALS_PROFIL = r"(?:__SCHEMA__\.profiles\s*\(\s*user_id\b[^)]*\)|auth\.users\s*\(\s*id\b[^)]*\))"
 
 
 # ---------- 1. Vollständigkeit gegen alle Migrationen ----------
@@ -33,27 +34,36 @@ def _sql_ohne_kommentare(text: str) -> str:
     return "\n".join(z.split("--", 1)[0] for z in text.splitlines())
 
 
+def _verweise_in_text(text: str) -> dict[str, set[str]]:
+    """Tabelle -> Spalten, die in diesem SQL-Text auf profiles(user_id) oder auf auth.users(id) verweisen (Kommentare schon entfernt)."""
+    ergebnis: dict[str, set[str]] = {}
+    for anweisung in text.split(";"):
+        kopf = re.match(r"\s*(create table(?: if not exists)?|alter table)\s+__SCHEMA__\.(\w+)", anweisung, re.I)
+        if not kopf:
+            continue
+        tabelle = kopf.group(2)
+        if kopf.group(1).lower().startswith("create"):
+            for zeile in anweisung.splitlines():
+                spalte = re.match(rf"\s*(\w+)\s+uuid\b[^,]*\breferences\s+{ALS_PROFIL}", zeile, re.I)
+                if spalte:
+                    ergebnis.setdefault(tabelle, set()).add(spalte.group(1))
+        # add column mit und ohne "if not exists", auch mit "not null" vor references
+        for spalte in re.findall(rf"add\s+column(?:\s+if\s+not\s+exists)?\s+(\w+)\s+uuid\b[^,;]*?\breferences\s+{ALS_PROFIL}", anweisung, re.I):
+            ergebnis.setdefault(tabelle, set()).add(spalte)
+        # Fremdschlüssel über eine oder mehrere Spalten
+        for spalten in re.findall(rf"foreign\s+key\s*\(([^)]*)\)\s*references\s+{ALS_PROFIL}", anweisung, re.I):
+            ergebnis.setdefault(tabelle, set()).update(s.strip() for s in spalten.split(",") if s.strip())
+    return ergebnis
+
+
 def _verweise_auf_profile() -> dict[str, set[str]]:
     """Tabelle -> Spalten, die auf profiles(user_id) oder auf auth.users(id) verweisen, aus allen Migrationen (ohne .down.sql)."""
     ergebnis: dict[str, set[str]] = {}
     for datei in sorted(MIGRATIONEN.glob("*.sql")):
         if datei.name.endswith(".down.sql"):
             continue
-        text = _sql_ohne_kommentare(datei.read_text(encoding="utf-8"))
-        for anweisung in text.split(";"):
-            kopf = re.match(r"\s*(create table(?: if not exists)?|alter table)\s+__SCHEMA__\.(\w+)", anweisung, re.I)
-            if not kopf:
-                continue
-            tabelle = kopf.group(2)
-            if kopf.group(1).lower().startswith("create"):
-                for zeile in anweisung.splitlines():
-                    spalte = re.match(rf"\s*(\w+)\s+uuid\b[^,]*\breferences\s+{ALS_PROFIL}", zeile, re.I)
-                    if spalte:
-                        ergebnis.setdefault(tabelle, set()).add(spalte.group(1))
-            for spalte in re.findall(rf"add column if not exists (\w+) uuid references {ALS_PROFIL}", anweisung, re.I):
-                ergebnis.setdefault(tabelle, set()).add(spalte)
-            for spalte in re.findall(rf"foreign key \((\w+)\) references {ALS_PROFIL}", anweisung, re.I):
-                ergebnis.setdefault(tabelle, set()).add(spalte)
+        for tabelle, spalten in _verweise_in_text(_sql_ohne_kommentare(datei.read_text(encoding="utf-8"))).items():
+            ergebnis.setdefault(tabelle, set()).update(spalten)
     return ergebnis
 
 
@@ -84,6 +94,32 @@ def test_der_parser_findet_die_bekannten_besitzerspalten():
     assert {"user_id"} <= v["model_access"] and {"profil_id"} <= v["rd_sitzungen"] and {"akteur"} <= v["release_ereignisse"]
     assert "reviewed_by" in v["memories"] and "user_id" in v["profiles"]
     assert len(v) >= 18
+
+
+@pytest.mark.parametrize("sql,erwartet", [
+    # add column ohne "if not exists"
+    ("alter table __SCHEMA__.t add column x uuid references __SCHEMA__.profiles(user_id) on delete cascade;", {"t": {"x"}}),
+    ("alter table __SCHEMA__.t add column x uuid not null references auth.users(id);", {"t": {"x"}}),
+    # mit Leerzeichen vor der Klammer und in der Klammer, in jeder Schreibweise von if not exists
+    ("alter table __SCHEMA__.t add column if not exists x uuid references __SCHEMA__.profiles (user_id);", {"t": {"x"}}),
+    ("alter table __SCHEMA__.t add column if not exists x uuid references auth.users ( id ) on delete set null;", {"t": {"x"}}),
+    ("alter table __SCHEMA__.t add column  x  uuid  references  __SCHEMA__.profiles  ( user_id );", {"t": {"x"}}),
+    # create table: Spalte mit Leerzeichen in der Verweisklammer
+    ("create table if not exists __SCHEMA__.t (\n  id uuid primary key,\n  besitzer uuid not null references __SCHEMA__.profiles (user_id)\n);",
+     {"t": {"besitzer"}}),
+    # Fremdschlüssel über mehrere Spalten, mit Leerzeichen und Zeilenumbruch
+    ("alter table __SCHEMA__.t add constraint t_fk foreign key (a, b) references __SCHEMA__.profiles (user_id, b);", {"t": {"a", "b"}}),
+    ("alter table __SCHEMA__.t add constraint t_fk\n  foreign key ( a ,\n b ) references auth.users (id, b);", {"t": {"a", "b"}}),
+    ("create table __SCHEMA__.t (\n  a uuid, b uuid,\n  constraint t_fk foreign key (a, b) references __SCHEMA__.profiles(user_id, b)\n);",
+     {"t": {"a", "b"}}),
+    # Gegenprobe: ein Verweis auf eine andere Tabelle zählt nicht
+    ("alter table __SCHEMA__.t add column x uuid references __SCHEMA__.sessions(id);", {}),
+    ("alter table __SCHEMA__.t add constraint t_fk foreign key (a, b) references __SCHEMA__.sessions (id, b);", {}),
+])
+def test_der_parser_erkennt_alle_schreibweisen_von_verweisen_auf_profile(sql, erwartet):
+    """Rot-Test des Parsers: Verweise ohne if not exists, mit Leerzeichen vor und in der Klammer und über mehrere Spalten dürfen
+    dem Vollständigkeitstest nicht entgehen (sonst bliebe eine neue Besitzertabelle unbemerkt)."""
+    assert _verweise_in_text(sql) == erwartet
 
 
 def test_jede_tabelle_mit_besitzerspalte_steht_in_der_liste_oder_der_ausnahmeliste():
@@ -132,6 +168,22 @@ def test_die_zeit_und_sitzungsspalten_gibt_es_in_den_migrationen():
         assert re.search(rf"^\s*{o.zeit}\s+(timestamptz|\S+)\s.*not null|^\s*{o.zeit}\s+timestamptz\b", koerper, re.M), (o.tabelle, o.zeit)
         if o.sitzung:
             assert re.search(rf"^\s*{o.sitzung}\s+uuid\b.*references __SCHEMA__\.sessions\(id\)", koerper, re.M), (o.tabelle, o.sitzung)
+        if o.turn:
+            assert re.search(rf"^\s*{o.turn}\s+uuid\b.*references __SCHEMA__\.turns\(id\)", koerper, re.M), (o.tabelle, o.turn)
+
+
+def test_spuren_ausserhalb_des_schemas_sind_begruendet_und_stehen_im_kopf_der_migration():
+    """F10: GoTrue (auth.audit_log_entries mit IP und E-Mail, auth.sessions) und model_access liegen außerhalb der Löschfunktion.
+    Sie stehen mit Grund in der Liste und im Kommentar der Migration; die Konten und mit ihnen diese Spuren löscht die Verwaltung
+    nach dem Labortag (Plan Q11, 30.11.2026)."""
+    assert {"auth.audit_log_entries", "auth.sessions"} <= set(ll.AUSSERHALB)
+    migration = (MIGRATIONEN / "0018_labor_profile.sql").read_text(encoding="utf-8")
+    for name, grund in ll.AUSSERHALB.items():
+        assert not name.startswith("__SCHEMA__") and "." in name, name  # nie ein Ort der eigenen Löschliste
+        assert "30.11." in grund and "Q11" in grund, name
+        assert name in migration, name
+    assert "30.11." in ll.AUSNAHMEN["model_access"] and "Q11" in ll.AUSNAHMEN["model_access"]
+    assert "model_access" in migration
 
 
 def test_neue_besitzernamen_ohne_fremdschluessel_fallen_auf():
@@ -165,8 +217,10 @@ class LaborDb:
     def t(self, name: str) -> str:
         return f"{self.schema}.{name}"
 
-    def profil(self, uid: str, labor_art: str | None = "platz", labor_aktiv: bool = False) -> None:
-        self.profile[uid] = {"labor_art": labor_art, "labor_aktiv": labor_aktiv}
+    def profil(self, uid: str, labor_art: str | None = "platz", labor_aktiv: bool = False, geaendert: datetime | None = None) -> None:
+        # geaendert: updated_at des Profils (die Sperrfrist rechnet ab der letzten Änderung), Standard: lange her
+        self.profile[uid] = {"labor_art": labor_art, "labor_aktiv": labor_aktiv,
+                             "geaendert": geaendert or JETZT - timedelta(hours=1)}
 
     def fuellen(self, uid: str, start: datetime, *, zeuge: str = "zeuge") -> None:
         """Eine Zeile je Tabelle der Liste, alle zur Sitzung dieses Durchlaufs gehörend."""
@@ -182,6 +236,8 @@ class LaborDb:
                 zeile["empfaenger"] = zeuge
             if o.sitzung:
                 zeile[o.sitzung] = sitzung
+            if o.turn:
+                zeile[o.turn] = f"turns-{self._n}"  # der Turn dieses Durchlaufs (id turns-<n>, session_id sitzung-<n>)
             if o.tabelle == "sessions":
                 zeile.update(id=sitzung, started_at=start, ended_at=start + timedelta(minutes=10))
             self.zeilen[o.tabelle].append(zeile)
@@ -224,6 +280,8 @@ class LaborDb:
         p = self._laborprofil(uid)
         if p["labor_aktiv"]:
             raise asyncpg.ObjectNotInPrerequisiteStateError("noch freigeschaltet")
+        if p["geaendert"] > JETZT - timedelta(minutes=ll.SPERRFRIST_MINUTEN):
+            raise asyncpg.ObjectNotInPrerequisiteStateError("labor_loeschen: Sperrfrist, noch etwa 95 Sekunden: Profil kürzlich geändert")
         grenze = JETZT - timedelta(minutes=ll.SITZUNG_MAX_MINUTEN)
         for s in self.zeilen["sessions"]:
             if s["user_id"] == uid and s.get("ended_at") is None and s["started_at"] > grenze:
@@ -234,6 +292,7 @@ class LaborDb:
             return voll or ((ab is None or wert >= ab) and (bis is None or wert <= bis))
 
         sitzungen = {s["id"] for s in self.zeilen["sessions"] if s["user_id"] == uid and im_fenster(s["started_at"])}
+        turn_sitzung = {t["id"]: t.get("session_id") for t in self.zeilen["turns"]}  # vor dem Löschen der turns (feedback ist zuerst dran)
         ergebnis: dict[str, int] = {}
         for o in ll.LOESCHLISTE:
             behalten, weg = [], 0
@@ -242,7 +301,8 @@ class LaborDb:
                 if o.tabelle == "sessions":
                     treffer = gehoert and (voll or z["id"] in sitzungen)
                 else:
-                    treffer = gehoert and (im_fenster(z[o.zeit]) or (o.sitzung is not None and z.get(o.sitzung) in sitzungen))
+                    treffer = gehoert and (im_fenster(z[o.zeit]) or (o.sitzung is not None and z.get(o.sitzung) in sitzungen)
+                                           or (o.turn is not None and turn_sitzung.get(z.get(o.turn)) in sitzungen))
                 if treffer:
                     weg += 1
                 else:
@@ -308,6 +368,29 @@ async def test_zeilen_der_sitzung_gehen_mit_auch_wenn_sie_ausserhalb_des_fenster
     db.zeilen["canvas_items"].append({"id": "spaet", "user_id": B, "created_at": JETZT, "session_id": "sitzung-2"})
     await lv.loeschen(db, B, ab=JETZT - timedelta(hours=6), bis=JETZT - timedelta(hours=4))
     assert not [z for z in db.zeilen["canvas_items"] if z["id"] == "spaet"]
+
+
+async def test_spaete_rueckmeldung_zu_einem_turn_der_sitzung_geht_mit(db):
+    """F7: feedback hat keinen Sitzungsbezug. Eine Rückmeldung, die nach dem Fenster entstand, aber zu einem Turn einer gelöschten
+    Sitzung gehört, darf nicht stehen bleiben (der Fremdschlüssel würde nur turn_id auf null setzen)."""
+    db.zeilen["feedback"].append({"id": "spaet", "user_id": B, "created_at": JETZT, "turn_id": "turns-2"})  # Turn des ersten Durchlaufs
+    db.zeilen["feedback"].append({"id": "zweiter", "user_id": B, "created_at": JETZT, "turn_id": "turns-3"})  # Turn des zweiten Durchlaufs
+    await lv.loeschen(db, B, ab=JETZT - timedelta(hours=6), bis=JETZT - timedelta(hours=4))
+    ids = {z["id"] for z in db.zeilen["feedback"]}
+    assert "spaet" not in ids and "zweiter" in ids
+
+
+async def test_sperrfrist_nach_der_letzten_aenderung_des_profils_blockiert_das_loeschen(db):
+    """F2: Der Kern kennt ein Profil bis zu 2 Minuten aus dem Zwischenspeicher. In den 3 Minuten nach der letzten Änderung lehnt die
+    Funktion ab und nennt die Wartezeit; danach geht es."""
+    db.profil(A, "platz", geaendert=JETZT - timedelta(minutes=ll.SPERRFRIST_MINUTEN) + timedelta(seconds=1))
+    vor = db.anzahl(A)
+    with pytest.raises(lv.LaborFehler, match="Sperrfrist, noch etwa 95 Sekunden"):
+        await lv.loeschen(db, A)
+    assert db.anzahl(A) == vor
+    db.profil(A, "platz", geaendert=JETZT - timedelta(minutes=ll.SPERRFRIST_MINUTEN, seconds=1))
+    ergebnis = await lv.loeschen(db, A)
+    assert all(n == 0 for n in db.anzahl(A).values()) and ergebnis.rest is not None
 
 
 @pytest.mark.parametrize("uid", [C, "00000000-0000-4000-8000-0000000018ff"])

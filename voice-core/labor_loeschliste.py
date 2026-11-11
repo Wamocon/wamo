@@ -10,7 +10,9 @@ Die Liste ist die einzige Quelle für drei Dinge, die zusammenpassen müssen:
     eine neue Tabelle mit Besitzerspalte dazu, wird dieser Test rot, bis jemand sie hier einträgt und die Funktion erweitert.
 
 Orte außerhalb der Datenbank (Journal des Kerns, auftraege.log, Sicherungen, Dienst der Kollegen, Browser) stehen in
-docs/testlabor-wamo.md, Abschnitt 3.1, und sind keine Sache dieser Datei.
+docs/testlabor-wamo.md, Abschnitt 3.1, und sind keine Sache dieser Datei. Die Spuren in GoTrue (Schema auth: Anmeldeprotokoll und
+Anmeldesitzungen mit IP-Adresse) liegen in der Datenbank, aber nicht im Schema von WAMO: Sie stehen unten in AUSSERHALB und
+verschwinden mit den Konten am 30.11.2026.
 
 Nur Daten, kein Zugriff auf die Datenbank. Bezeichner stehen in ASCII.
 """
@@ -20,8 +22,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 #: Eine Sitzung eines Laborprofils gilt als beendet, wenn ended_at gesetzt ist oder sie älter ist als die Obergrenze der
-#: Sitzungsdauer (bot.py: höchstens 120 Minuten) plus Puffer. Die Funktion labor_loeschen lehnt eine jüngere offene Sitzung ab.
-SITZUNG_MAX_MINUTEN = 130
+#: Sitzungsdauer plus Puffer. Die Funktion labor_loeschen lehnt eine jüngere offene Sitzung ab (vor dem Löschen und noch einmal
+#: danach). Kopplung an den Kern: bot.py begrenzt eine Sitzung auf WAMO_MAX_SITZUNG_MIN (Standard 120, per Umgebung änderbar, auch
+#: in .env.example). Wer die Umgebungsvariable über den Standard hinaus erhöht, muss diese Konstante UND das Intervall in
+#: supabase/migrations/0018_labor_profile.sql mitziehen (beide Stellen müssen übereinstimmen). Der Test
+#: test_migration_0018.py::test_sitzungsgrenze_der_loeschfunktion_liegt_ueber_dem_standard_des_kerns stellt sicher, dass der Wert mehr
+#: als 10 Minuten über dem Standard liegt.
+SITZUNG_MAX_MINUTEN = 135
+
+#: Sperrfrist nach jeder Änderung des Profils (profiles.updated_at, die Funktion lehnt in dieser Zeit mit SQLSTATE 55000 ab). Nach
+#: labor_aktiv = false kennt der Kern das Profil noch bis zu PROFILE_HIT_SECS (auth_gate.py, 60 s) aus dem Zwischenspeicher und
+#: prüft laufende Sitzungen alle PROFILE_RECHECK_SECS (bot.py, 60 s): rund 2 Minuten, in denen noch eine Sitzung beginnen kann.
+#: Das Intervall in 0018_labor_profile.sql muss mit dieser Konstante übereinstimmen; der Test
+#: test_sperrfrist_ist_laenger_als_zwischenspeicher_plus_pruefintervall_des_kerns prüft es gegen den Kern.
+SPERRFRIST_MINUTEN = 3
 
 
 @dataclass(frozen=True)
@@ -33,11 +47,12 @@ class Ort:
     zeit: str  # Spalte für das Zeitfenster eines Durchlaufs (p_ab, p_bis), immer not null
     inhalt: str  # was dort landet, für Menschen
     sitzung: str | None = None  # Spalte mit Verweis auf sessions: Zeilen gelöschter Sitzungen gehen im Fenster mit
+    turn: str | None = None  # Spalte mit Verweis auf turns (ohne eigenen Sitzungsbezug): Zeilen zu Turns gelöschter Sitzungen gehen mit
 
 
 #: Reihenfolge der Löschung: abhängige Zeilen zuerst, sessions zuletzt.
 LOESCHLISTE: tuple[Ort, ...] = (
-    Ort("feedback", ("user_id",), "created_at", "Rückmeldungen zu Antworten und Aktionen"),
+    Ort("feedback", ("user_id",), "created_at", "Rückmeldungen zu Antworten und Aktionen", turn="turn_id"),
     Ort("memories", ("user_id",), "created_at", "Gedächtnis (für Laborprofile gesperrt, wird nie geschrieben)",
         "source_session_id"),
     Ort("speakers", ("user_id",), "enrolled_at", "Stimmabdrücke (für Laborprofile gesperrt)"),
@@ -59,13 +74,25 @@ LOESCHLISTE: tuple[Ort, ...] = (
 #: Tabellen mit einer Spalte, die auf ein Profil oder ein Konto verweist, die labor_loeschen NICHT leert, mit Grund.
 AUSNAHMEN: dict[str, str] = {
     "profiles": "Das Profil selbst: es bleibt bis zur Kontolöschung nach dem Labortag (Konten löschen, Sitzungen widerrufen).",
-    "model_access": "Konfiguration, kein Gesprächstext. Der eigene Zugang des Schau-Profils fällt mit dem Profil weg "
-                    "(on delete cascade), wenn die Konten nach dem Labortag gelöscht werden.",
+    "model_access": "Konfiguration, kein Gesprächstext, kann aber einen verschlüsselten Claude-Schlüssel tragen. Für Laborprofile gesperrt: "
+                    "labor.py nennt weder die Client-Nachricht modellzugang noch den Pfad /wamo/api/modellzugang in der Erlaubnisliste, "
+                    "es entsteht dort keine Zeile. Eine vorhandene Zeile fällt mit dem Profil weg (on delete cascade), wenn die "
+                    "Verwaltung die Konten am 30.11.2026 löscht (Plan Q11).",
     "release_anfragen": "Protokoll der Selbständerung, nur für Admins. Ein Laborprofil kommt dort nie vor; on delete restrict "
                         "würde das Löschen des Profils laut stoppen.",
     "release_freigaben": "Protokoll der Selbständerung, nur für Admins, nur anfügbar (Trigger). Gleiche Begründung.",
     "release_ereignisse": "Hash-Kette des Release-Protokolls, nur anfügbar. Gleiche Begründung.",
     "rd_sitzungen": "Protokoll des Remote Desktop, für Laborprofile gesperrt; on delete restrict stoppt laut.",
+}
+
+#: Spuren außerhalb des Schemas von WAMO (GoTrue, Schema auth): Die Funktion labor_loeschen kann und soll sie nicht anfassen. Sie
+#: gehören zum Konto und verschwinden mit dem Löschen der Laborkonten am 30.11.2026 (Plan Q11). Bis dahin stehen sie hier mit Grund.
+AUSSERHALB: dict[str, str] = {
+    "auth.audit_log_entries": "Anmeldeprotokoll von GoTrue mit IP-Adresse und E-Mail der Laborkonten (payload). Gehört nicht zum Schema von "
+                              "WAMO und hat keinen Fremdschlüssel auf das Konto: Die Verwaltung löscht die Einträge der Laborkonten "
+                              "gezielt zusammen mit den Konten am 30.11.2026 (Plan Q11).",
+    "auth.sessions": "Anmeldesitzungen von GoTrue mit IP-Adresse und User-Agent. Sie fallen mit dem Konto weg (on delete cascade), wenn "
+                     "die Verwaltung die Laborkonten am 30.11.2026 löscht (Plan Q11).",
 }
 
 #: Verweise auf ein Profil in Tabellen der Löschliste, die kein Besitz sind. Die Funktion löscht dort nichts, weil sie sonst

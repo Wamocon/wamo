@@ -91,7 +91,11 @@ async def zaehlen(db, profil: object) -> dict[str, int]:
 async def loeschen(db, profil: object, ab: datetime | None = None, bis: datetime | None = None) -> LoeschErgebnis:
     """Löscht den gesamten Text eines Laborprofils oder nur das Zeitfenster eines Durchlaufs.
 
-    Ohne ab und bis prüft die Verwaltung danach, dass keine Zeile mehr da ist, und schlägt sonst an (T10)."""
+    Ohne ab und bis prüft die Verwaltung danach, dass keine Zeile mehr da ist, und schlägt sonst an (T10).
+
+    Die Funktion lehnt in den ersten 3 Minuten nach der letzten Änderung des Profils ab (Sperrfrist, SQLSTATE 55000, die Meldung
+    nennt die Wartezeit) und bei einer Sitzung, die während der Löschung begann. Dieses Modul wartet nicht und wiederholt nichts:
+    das Warten und Wiederholen macht scripts/wamo_labor.py, hier genügt die Meldung."""
     uid = _uuid(profil)
     if ab is not None and bis is not None and ab > bis:
         raise LaborFehler("Das Zeitfenster ist verkehrt: ab liegt nach bis")

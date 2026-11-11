@@ -19,7 +19,8 @@ Beispiele (im Ordner voice-core/):
   uv run python wamo_admin.py labor-loeschen --user-id <uuid> [--ab <ISO mit Zeitzone> --bis <ISO mit Zeitzone>]
 
 Laborprofile (Testlabor): labor-zaehlen und labor-loeschen rufen die Funktionen labor_zaehlen und labor_loeschen aus Migration 0018 auf
-(nur als Rolle wamo_admin möglich). Löschen geht nur bei einem gesperrten Laborprofil ohne laufende Sitzung und prüft danach auf null Zeilen.
+(nur als Rolle wamo_admin möglich). Löschen geht nur bei einem gesperrten Laborprofil ohne laufende Sitzung, frühestens 3 Minuten nach der
+letzten Änderung des Profils (Sperrfrist, die Meldung nennt die Wartezeit), und prüft danach auf null Zeilen.
 
 Modellzugang: Den eigenen Claude-Schlüssel hinterlegt die Person selbst (Oberfläche) oder der Betrieb mit
 voice-core/modellzugang.py; die Verwaltung sieht nur die letzten vier Zeichen und kann den Schlüssel nie lesen.
@@ -74,7 +75,8 @@ def _parser() -> argparse.ArgumentParser:
     m.add_argument("--tts", choices=("soniox", "haus"))
     lz = sub.add_parser("labor-zaehlen", help="Zeilen eines Laborprofils je Tabelle zählen (nur lesen)")
     lz.add_argument("--user-id", required=True)
-    ll_ = sub.add_parser("labor-loeschen", help="gesamten Text eines gesperrten Laborprofils löschen (oder nur ein Zeitfenster)")
+    ll_ = sub.add_parser("labor-loeschen", help="gesamten Text eines gesperrten Laborprofils löschen (oder nur ein Zeitfenster), "
+                                                "frühestens 3 Minuten nach dem Sperren")
     ll_.add_argument("--user-id", required=True)
     ll_.add_argument("--ab", help="nur ab diesem Zeitpunkt (ISO 8601 mit Zeitzone)")
     ll_.add_argument("--bis", help="nur bis zu diesem Zeitpunkt (ISO 8601 mit Zeitzone)")
