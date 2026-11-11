@@ -24,7 +24,8 @@ import labor_loeschliste as ll
 import labor_verwaltung as lv
 
 MIGRATIONEN = Path(__file__).resolve().parent.parent / "supabase" / "migrations"
-ALS_PROFIL = r"(?:__SCHEMA__\.profiles\(user_id\)|auth\.users\(id\))"
+# Verweisziel profiles(user_id) oder auth.users(id), in jeder Schreibweise: Leerzeichen vor und in der Klammer, weitere Spalten dahinter
+ALS_PROFIL = r"(?:__SCHEMA__\.profiles\s*\(\s*user_id\b[^)]*\)|auth\.users\s*\(\s*id\b[^)]*\))"
 
 
 # ---------- 1. Vollständigkeit gegen alle Migrationen ----------
@@ -33,27 +34,36 @@ def _sql_ohne_kommentare(text: str) -> str:
     return "\n".join(z.split("--", 1)[0] for z in text.splitlines())
 
 
+def _verweise_in_text(text: str) -> dict[str, set[str]]:
+    """Tabelle -> Spalten, die in diesem SQL-Text auf profiles(user_id) oder auf auth.users(id) verweisen (Kommentare schon entfernt)."""
+    ergebnis: dict[str, set[str]] = {}
+    for anweisung in text.split(";"):
+        kopf = re.match(r"\s*(create table(?: if not exists)?|alter table)\s+__SCHEMA__\.(\w+)", anweisung, re.I)
+        if not kopf:
+            continue
+        tabelle = kopf.group(2)
+        if kopf.group(1).lower().startswith("create"):
+            for zeile in anweisung.splitlines():
+                spalte = re.match(rf"\s*(\w+)\s+uuid\b[^,]*\breferences\s+{ALS_PROFIL}", zeile, re.I)
+                if spalte:
+                    ergebnis.setdefault(tabelle, set()).add(spalte.group(1))
+        # add column mit und ohne "if not exists", auch mit "not null" vor references
+        for spalte in re.findall(rf"add\s+column(?:\s+if\s+not\s+exists)?\s+(\w+)\s+uuid\b[^,;]*?\breferences\s+{ALS_PROFIL}", anweisung, re.I):
+            ergebnis.setdefault(tabelle, set()).add(spalte)
+        # Fremdschlüssel über eine oder mehrere Spalten
+        for spalten in re.findall(rf"foreign\s+key\s*\(([^)]*)\)\s*references\s+{ALS_PROFIL}", anweisung, re.I):
+            ergebnis.setdefault(tabelle, set()).update(s.strip() for s in spalten.split(",") if s.strip())
+    return ergebnis
+
+
 def _verweise_auf_profile() -> dict[str, set[str]]:
     """Tabelle -> Spalten, die auf profiles(user_id) oder auf auth.users(id) verweisen, aus allen Migrationen (ohne .down.sql)."""
     ergebnis: dict[str, set[str]] = {}
     for datei in sorted(MIGRATIONEN.glob("*.sql")):
         if datei.name.endswith(".down.sql"):
             continue
-        text = _sql_ohne_kommentare(datei.read_text(encoding="utf-8"))
-        for anweisung in text.split(";"):
-            kopf = re.match(r"\s*(create table(?: if not exists)?|alter table)\s+__SCHEMA__\.(\w+)", anweisung, re.I)
-            if not kopf:
-                continue
-            tabelle = kopf.group(2)
-            if kopf.group(1).lower().startswith("create"):
-                for zeile in anweisung.splitlines():
-                    spalte = re.match(rf"\s*(\w+)\s+uuid\b[^,]*\breferences\s+{ALS_PROFIL}", zeile, re.I)
-                    if spalte:
-                        ergebnis.setdefault(tabelle, set()).add(spalte.group(1))
-            for spalte in re.findall(rf"add column if not exists (\w+) uuid references {ALS_PROFIL}", anweisung, re.I):
-                ergebnis.setdefault(tabelle, set()).add(spalte)
-            for spalte in re.findall(rf"foreign key \((\w+)\) references {ALS_PROFIL}", anweisung, re.I):
-                ergebnis.setdefault(tabelle, set()).add(spalte)
+        for tabelle, spalten in _verweise_in_text(_sql_ohne_kommentare(datei.read_text(encoding="utf-8"))).items():
+            ergebnis.setdefault(tabelle, set()).update(spalten)
     return ergebnis
 
 
@@ -84,6 +94,32 @@ def test_der_parser_findet_die_bekannten_besitzerspalten():
     assert {"user_id"} <= v["model_access"] and {"profil_id"} <= v["rd_sitzungen"] and {"akteur"} <= v["release_ereignisse"]
     assert "reviewed_by" in v["memories"] and "user_id" in v["profiles"]
     assert len(v) >= 18
+
+
+@pytest.mark.parametrize("sql,erwartet", [
+    # add column ohne "if not exists"
+    ("alter table __SCHEMA__.t add column x uuid references __SCHEMA__.profiles(user_id) on delete cascade;", {"t": {"x"}}),
+    ("alter table __SCHEMA__.t add column x uuid not null references auth.users(id);", {"t": {"x"}}),
+    # mit Leerzeichen vor der Klammer und in der Klammer, in jeder Schreibweise von if not exists
+    ("alter table __SCHEMA__.t add column if not exists x uuid references __SCHEMA__.profiles (user_id);", {"t": {"x"}}),
+    ("alter table __SCHEMA__.t add column if not exists x uuid references auth.users ( id ) on delete set null;", {"t": {"x"}}),
+    ("alter table __SCHEMA__.t add column  x  uuid  references  __SCHEMA__.profiles  ( user_id );", {"t": {"x"}}),
+    # create table: Spalte mit Leerzeichen in der Verweisklammer
+    ("create table if not exists __SCHEMA__.t (\n  id uuid primary key,\n  besitzer uuid not null references __SCHEMA__.profiles (user_id)\n);",
+     {"t": {"besitzer"}}),
+    # Fremdschlüssel über mehrere Spalten, mit Leerzeichen und Zeilenumbruch
+    ("alter table __SCHEMA__.t add constraint t_fk foreign key (a, b) references __SCHEMA__.profiles (user_id, b);", {"t": {"a", "b"}}),
+    ("alter table __SCHEMA__.t add constraint t_fk\n  foreign key ( a ,\n b ) references auth.users (id, b);", {"t": {"a", "b"}}),
+    ("create table __SCHEMA__.t (\n  a uuid, b uuid,\n  constraint t_fk foreign key (a, b) references __SCHEMA__.profiles(user_id, b)\n);",
+     {"t": {"a", "b"}}),
+    # Gegenprobe: ein Verweis auf eine andere Tabelle zählt nicht
+    ("alter table __SCHEMA__.t add column x uuid references __SCHEMA__.sessions(id);", {}),
+    ("alter table __SCHEMA__.t add constraint t_fk foreign key (a, b) references __SCHEMA__.sessions (id, b);", {}),
+])
+def test_der_parser_erkennt_alle_schreibweisen_von_verweisen_auf_profile(sql, erwartet):
+    """Rot-Test des Parsers: Verweise ohne if not exists, mit Leerzeichen vor und in der Klammer und über mehrere Spalten dürfen
+    dem Vollständigkeitstest nicht entgehen (sonst bliebe eine neue Besitzertabelle unbemerkt)."""
+    assert _verweise_in_text(sql) == erwartet
 
 
 def test_jede_tabelle_mit_besitzerspalte_steht_in_der_liste_oder_der_ausnahmeliste():
