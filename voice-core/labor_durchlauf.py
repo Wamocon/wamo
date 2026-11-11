@@ -5,7 +5,8 @@ Vertrag Version 1, Aufruf V1: GET /api/kern/durchlauf mit Bearer WAMO_LABOR_TOKE
 Der Kern nimmt eine Sitzung nur an, wenn der Durchlauf offen ist und einwilligung_version mindestens WAMO_LABOR_EINWILLIGUNG_MIN ist.
 Er prüft das bei /start, bei jedem Offer (AccessMiddleware) und beim Sitzungsstart; danach fragt LaborWache alle 5 Sekunden und beendet
 die Sitzung, wenn der Durchlauf endet oder wechselt. Ist der Dienst nicht erreichbar, gibt es keine neue Sitzung (503, fail-closed).
-Eine laufende Sitzung läuft bei kurzem Ausfall weiter: ein Betreuer kann ohne Dienst auch keinen Durchlauf beenden.
+Eine laufende Sitzung läuft bei kurzem Ausfall weiter (ein Betreuer kann ohne Dienst auch keinen Durchlauf beenden), nach 12 Fehlversuchen
+hintereinander (60 Sekunden) endet sie, samt Textspeicherung: ohne den Dienst sind Einwilligung und Durchlauf nicht mehr prüfbar.
 
 Die Quelle wird gesetzt (quelle_setzen) oder ist der Dienstclient des Kerns (ClientQuelle, quelle_aus_env). Es gibt nur diesen einen Weg zum Dienst:
 labor_client.client_aus_umgebung prüft Adresse (HTTPS, nie die Attrappe), Token, Zertifikat und die Antwort streng, für den Start, die Wache und
@@ -31,11 +32,13 @@ CODE_BEENDET = "labor_durchlauf_beendet"
 CODE_EINWILLIGUNG = "labor_keine_einwilligung"
 CODE_DIENST = "labor_dienst_nicht_erreichbar"
 POLL_SECS = 5.0
+MAX_AUSFALL_VERSUCHE = 12  # so viele Fehlversuche hintereinander (60 Sekunden) beenden die Sitzung: ohne den Dienst ist nichts mehr prüfbar
 LESE_TIMEOUT_SECS = 5.0
 GRUND_BEENDET = "Der Durchlauf ist beendet. Bitte den Betreuer am Platz fragen."
 GRUND_EINWILLIGUNG = "Für diesen Platz liegt keine gültige Einwilligung vor. Bitte den Betreuer am Platz fragen."
 GRUND_DIENST = "Der Labor-Dienst ist gerade nicht erreichbar. Bitte den Betreuer am Platz fragen."
 GRUND_ENDE = "Der Durchlauf ist beendet."
+GRUND_AUSFALL = "Der Labor-Dienst ist nicht mehr erreichbar. Die Sitzung wurde beendet. Bitte den Betreuer am Platz fragen."
 
 
 class DurchlaufFehler(Exception):
@@ -177,9 +180,11 @@ class LaborWache:
             neu = await _lesen(quelle, self.platz)
         except Exception as e:
             self.fehler += 1
-            if self.fehler in (1, 12) or self.fehler % 60 == 0:
+            if self.fehler in (1, MAX_AUSFALL_VERSUCHE):
                 logger.warning("Labor: Durchlauf nicht lesbar ({}), Versuch {}", _ursache(e), self.fehler)
-            return None
+            # Ein kurzer Ausfall beendet die Sitzung nicht (ein Betreuer kann ohne Dienst auch keinen Durchlauf beenden). Dauert er länger,
+            # sind Einwilligung und Durchlauf nicht mehr prüfbar: die Sitzung endet, mit ihr die Textspeicherung (fail-closed).
+            return GRUND_AUSFALL if self.fehler >= MAX_AUSFALL_VERSUCHE else None
         self.fehler = 0
         if neu.durchlauf_id != self.stand.durchlauf_id or not neu.offen:
             return GRUND_ENDE

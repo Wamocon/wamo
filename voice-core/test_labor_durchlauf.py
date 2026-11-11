@@ -229,6 +229,36 @@ class WacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await w.check())
         self.assertEqual(w.fehler, 0)
 
+    async def test_ein_langer_ausfall_beendet_die_sitzung_fail_closed(self):
+        """Einwilligung und Durchlauf sind nicht mehr prüfbar: nach 12 Fehlversuchen (60 Sekunden bei 5 Sekunden Abstand) endet die Sitzung samt
+        Textspeicherung, sie läuft nicht bis zur Höchstdauer weiter."""
+        self.assertEqual(ld.MAX_AUSFALL_VERSUCHE * ld.POLL_SECS, 60)
+        w = self.wache(httpx.ConnectError("weg"))
+        for _ in range(ld.MAX_AUSFALL_VERSUCHE - 1):
+            self.assertIsNone(await w.check())
+        self.assertEqual(await w.check(), ld.GRUND_AUSFALL)
+        self.assertEqual(await w.check(), ld.GRUND_AUSFALL)  # und bleibt dabei
+        w._quelle = FesteQuelle(stand())  # kommt der Dienst vorher zurück, zählt von vorn
+        self.assertEqual(await self.nach_ausfall(11, stand()), None)
+
+    async def nach_ausfall(self, anzahl: int, antwort):
+        w = self.wache(*([httpx.ConnectError("weg")] * anzahl + [antwort]))
+        for _ in range(anzahl):
+            self.assertIsNone(await w.check())
+        return await w.check()
+
+    async def test_run_beendet_die_sitzung_nach_dem_langen_ausfall(self):
+        enden = []
+
+        async def schlafen(s):
+            pass
+
+        async def ende(grund):
+            enden.append(grund)
+
+        await self.wache(httpx.ConnectError("weg"), sleep=schlafen).run(ende)
+        self.assertEqual(enden, [ld.GRUND_AUSFALL])
+
     async def test_unlesbare_antwort_beendet_nicht(self):
         self.assertIsNone(await self.wache({"offen": True}).check())
 
