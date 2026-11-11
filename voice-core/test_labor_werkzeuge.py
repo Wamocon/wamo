@@ -34,6 +34,12 @@ class LaborIdentity(Identity):
     labor_platz: int | None = 3
 
 
+@pytest.fixture(autouse=True)
+def _mindestversion(monkeypatch):
+    """Ohne WAMO_LABOR_EINWILLIGUNG_MIN nimmt der Kern keine Laborsitzung an: die Attrappe erfasst Version 1."""
+    monkeypatch.setenv("WAMO_LABOR_EINWILLIGUNG_MIN", "1")
+
+
 async def ruhe():
     for _ in range(60):
         await asyncio.sleep(0)
@@ -207,6 +213,17 @@ async def test_start_liest_den_durchlauf_und_ist_fail_closed():
                               client=client, mail_domain="labor.test")
     assert e.value.code == "nicht_erreichbar"
     await client.aclose()
+
+
+@pytest.mark.parametrize("fehlt", [None, "", " ", "0", "00"])
+async def test_ohne_gueltige_mindestversion_gibt_es_keine_sitzung(monkeypatch, fehlt):
+    """Dieselbe Regel wie bei der Annahme (labor.einwilligung_min): fehlt die Einstellung oder ist sie 0, gilt keine Einwilligung (fail-closed)."""
+    if fehlt is None:
+        monkeypatch.delenv("WAMO_LABOR_EINWILLIGUNG_MIN", raising=False)
+    else:
+        monkeypatch.setenv("WAMO_LABOR_EINWILLIGUNG_MIN", fehlt)
+    with pytest.raises(w.LaborNichtBereit):
+        await bauen()
 
 
 async def test_einwilligung_mindestversion_aus_der_umgebung(monkeypatch):

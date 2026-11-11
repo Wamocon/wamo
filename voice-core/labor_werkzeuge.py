@@ -20,7 +20,6 @@ oder LaborFehler), die Sitzung kommt nicht zustande.
 
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Awaitable, Callable
 from functools import wraps
@@ -65,13 +64,10 @@ def platz_von(identity: object) -> int | None:
 
 
 def _einwilligung_ok(durchlauf: Durchlauf) -> bool:
-    """Eine Einwilligung ist erfasst und, wenn WAMO_LABOR_EINWILLIGUNG_MIN gesetzt ist, mindestens so neu wie diese Version (unbrauchbar: nein)."""
-    if durchlauf.einwilligung_version is None:
-        return False
-    roh = os.getenv("WAMO_LABOR_EINWILLIGUNG_MIN") or ""
-    if not roh:
-        return True
-    return roh.isascii() and roh.isdigit() and durchlauf.einwilligung_version >= int(roh)  # eine unbrauchbare Einstellung ist nie eine offene
+    """Eine Einwilligung ist erfasst und mindestens so neu wie WAMO_LABOR_EINWILLIGUNG_MIN. Dieselbe Regel wie bei der Annahme (labor.einwilligung_min):
+    fehlt die Einstellung oder ist sie unbrauchbar oder 0, gilt keine Einwilligung (fail-closed)."""
+    minimum = labor.einwilligung_min()
+    return durchlauf.einwilligung_version is not None and minimum is not None and durchlauf.einwilligung_version >= minimum
 
 
 def _sicher(handler):
