@@ -454,6 +454,22 @@ async def test_durchlauf_endet_zwischen_klick_und_ausfuehrung(u):
     assert len(u.meldungen) == 1
 
 
+async def test_durchlauf_endet_waehrend_der_statuswechsel_vor_dem_dienstaufruf(u):
+    """Zwischen der Prüfung und dem Aufruf liegen Datenbankzugriffe: Endet der Durchlauf dort, wird nichts mehr ausgeführt."""
+    await u.beantragen()
+    original = u.speicher.update_action
+
+    async def beendet_bei_running(aid, status):
+        await original(aid, status)
+        if status == "running":
+            u.fr.durchlauf_beendet()
+
+    u.speicher.update_action = beendet_bei_running
+    await u.fr.entscheiden({"job": "labor", "id": u.karte_id(), "entscheidung": "ja"})
+    assert u.ausgefuehrt == [] and u.speicher.stati() == ["pending", "approved", "running", "failed"]
+    assert "Durchlauf" in u.meldungen[0] and "nichts" in u.meldungen[0].lower()
+
+
 # ---------- Ausführung schlägt fehl, Ende der Sitzung ----------
 async def test_fehler_der_ausfuehrung_wird_mit_festem_satz_gemeldet(u):
     u.ergebnis = Ausgang(False, "Das Test-Jira ist gerade nicht erreichbar.", code="nicht_erreichbar")

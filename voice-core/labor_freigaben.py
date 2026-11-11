@@ -412,6 +412,10 @@ class LaborFreigaben:
             return None
         await self._status(action_id, "approved")
         await self._status(action_id, "running")
+        if self._beendet:  # zwischen der Prüfung und dem Aufruf liegen Datenbankzugriffe: der Durchlauf kann dort enden
+            await self._status(action_id, "failed")
+            await self._melden_kurz("Der Durchlauf ist beendet. Es wurde nichts ausgeführt.")
+            return None
         ausgang = await self._ausfuehren_sicher(antrag)
         await self._status(action_id, "done" if ausgang.ok else "failed")
         logger.info("Labor-Freigabe {} ausgeführt: {}", aid[:8], "ok" if ausgang.ok else (ausgang.code or "fehler"))

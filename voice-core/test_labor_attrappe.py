@@ -11,7 +11,7 @@ import uuid
 import httpx
 import pytest
 
-from labor_attrappe import ATTRAPPE_URL, Attrappe
+from labor_attrappe import ATTRAPPE_URL, Attrappe, mit_client
 
 DAUER_MIN = 60.0
 
@@ -477,3 +477,13 @@ async def test_attrappe_hat_kein_ausgehendes_netz_und_keinen_festen_token():
     a, b = Attrappe(), Attrappe()
     assert a.token != b.token and len(a.token) >= 32
     assert ATTRAPPE_URL.startswith("https://") and ATTRAPPE_URL.endswith(".invalid")
+
+
+async def test_testhilfe_mit_client_verbindet_im_prozess():
+    app, client = mit_client(5)
+    assert (await client.durchlauf()).id == app.durchlauf_id(5)
+    assert (await client.tickets())["gesamt"] == 6
+    await client.aclose()
+    app, client = mit_client(5, verwundbar=True)
+    assert (await client.tickets(q="%"))["gesamt"] == 6  # die verwundbare Variante lässt % als Platzhalter wirken
+    await client.aclose()

@@ -895,8 +895,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     labor = None
     if labor_werkzeuge.laborart(identity):
         labor = await labor_werkzeuge.labor_sitzung(identity, memory, llm, turn_taint=turn.taint, senden=send, melden=melde_llm)
-        standard_tools += labor.schemas
-        context.set_tools(ToolsSchema(standard_tools=standard_tools))
+        if labor is not None:  # None: das Schau-Profil ohne Platz hat kein Test-Jira
+            standard_tools += labor.schemas
+            context.set_tools(ToolsSchema(standard_tools=standard_tools))
 
     async def refresh_prompt() -> None:
         await task.queue_frame(

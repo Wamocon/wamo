@@ -58,12 +58,15 @@ class Beobachter:
         self.client = client or LaborClient(ATTRAPPE_URL, self.app.token, 3, transport=httpx.ASGITransport(app=self.app))
         self.sitzungen: list = []
         self.llms: list = []
+        self.aufrufe = 0
         self.original = labor_werkzeuge.labor_sitzung
 
     async def __call__(self, identity, memory, llm, **kw):
+        self.aufrufe += 1
         sitzung = await self.original(identity, memory, llm, client=self.client, **kw)
-        self.sitzungen.append(sitzung)
-        self.llms.append(llm)
+        if sitzung is not None:
+            self.sitzungen.append(sitzung)
+            self.llms.append(llm)
         return sitzung
 
 
@@ -95,11 +98,20 @@ async def test_laborprofil_bekommt_die_sechs_werkzeuge_und_die_freigabe():
 async def test_normale_profile_haben_keine_laborlogik(rolle):
     b = Beobachter()
     session = await bauen(Identity(USER, "Erika", rolle, "sie"), b)
-    assert b.sitzungen == []  # labor_sitzung wurde nie aufgerufen
+    assert b.aufrufe == 0 and b.sitzungen == []  # labor_sitzung wurde nie aufgerufen
     session_llm_funktionen = set(getattr(session.task, "_llm_functions", set()))
     assert not SECHS & session_llm_funktionen
     await session.cleanup()
     assert not b.client._http.is_closed  # es gab nichts zu schließen: der Client blieb unberührt
+    await b.client.aclose()
+
+
+async def test_schau_profil_ohne_platz_startet_ohne_ticketwerkzeuge():
+    b = Beobachter()
+    session = await bauen(LaborIdentity(USER, "Schau", "mitglied", "du", labor_art="schaufenster", labor_platz=None), b)
+    assert b.aufrufe == 1 and b.sitzungen == []  # labor_sitzung lieferte None
+    assert not SECHS & set(getattr(session.task, "_llm_functions", set()))
+    await session.cleanup()
     await b.client.aclose()
 
 
@@ -131,7 +143,7 @@ async def test_klick_job_labor_wirkt_nur_in_einer_laborsitzung():
         admin = await bauen(Identity(USER, "Niko", "admin", "du"), b)
         await klick(admin, job="labor", id="0" * 32, entscheidung="ja")
         entscheiden.assert_not_called()
-        assert b.sitzungen == []
+        assert b.aufrufe == 0 and b.sitzungen == []
         await admin.cleanup()
     # eine Laborsitzung: der Klick mit job "labor" kommt bei LaborFreigaben an, mit job "pc" nicht
     b = Beobachter()

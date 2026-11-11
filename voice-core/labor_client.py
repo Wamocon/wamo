@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -307,8 +308,6 @@ def adresse_pruefen(url: object) -> str:
 
 def client_aus_umgebung(platz: int, *, transport: httpx.AsyncBaseTransport | None = None) -> LaborClient:
     """Client für diesen Platz aus WAMO_LABOR_URL und WAMO_LABOR_TOKEN (Geheimnis nur in core.env). Jeder Fehler ist LaborKonfigFehler."""
-    import os
-
     basis = adresse_pruefen(os.getenv("WAMO_LABOR_URL"))
     token = os.getenv("WAMO_LABOR_TOKEN")
     if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):

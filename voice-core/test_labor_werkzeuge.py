@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import httpx
 import pytest
 
+import activity
 import labor_werkzeuge as w
 from auth_gate import Identity
 from labor_attrappe import ATTRAPPE_URL, Attrappe
@@ -167,6 +168,22 @@ async def test_ohne_laboridentitaet_gibt_es_nichts():
         await bauen(identity=LaborIdentity(PROFIL, "Gast", "mitglied", "du", labor_platz=None))
 
 
+async def test_schau_profil_ohne_platz_bekommt_keine_ticketwerkzeuge_und_keinen_fehler():
+    """Das Schau-Profil hat laut Migration keinen Platz (labor_platz leer): kein Test-Jira, aber die Sitzung startet. Die übrigen Werkzeuge regelt der Kern."""
+    llm = FakeLLM()
+    ident = LaborIdentity(PROFIL, "Schau", "mitglied", "du", labor_art="schaufenster", labor_platz=None)
+    assert await w.labor_sitzung(ident, Speicher(), llm, turn_taint=lambda: None, senden=None, melden=None) is None
+    assert llm.handler == {}  # nichts registriert, kein Dienstaufruf (es gab keinen Client)
+    # ein Platzprofil ohne Platz dagegen ist ein Fehler: die Zuordnung fehlt
+    with pytest.raises(w.LaborNichtBereit):
+        await w.labor_sitzung(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_art="platz", labor_platz=None), Speicher(), FakeLLM(),
+                              turn_taint=lambda: None, senden=None, melden=None)
+    # mit einem Platz bekommt auch das Schau-Profil die Werkzeuge
+    umgebung = await bauen(identity=LaborIdentity(PROFIL, "Schau", "mitglied", "du", labor_art="schaufenster", labor_platz=3))
+    assert set(umgebung.llm.handler) == SECHS
+    await umgebung.s.schliessen()
+
+
 async def test_start_liest_den_durchlauf_und_ist_fail_closed():
     app = Attrappe()
     app.durchlauf_beenden(3)
@@ -187,7 +204,20 @@ async def test_start_liest_den_durchlauf_und_ist_fail_closed():
     await client.aclose()
 
 
+async def test_einwilligung_mindestversion_aus_der_umgebung(monkeypatch):
+    monkeypatch.setenv("WAMO_LABOR_EINWILLIGUNG_MIN", "1")
+    await (await bauen()).s.schliessen()  # die Attrappe hat Version 1 erfasst: genügt
+    monkeypatch.setenv("WAMO_LABOR_EINWILLIGUNG_MIN", "2")
+    with pytest.raises(w.LaborNichtBereit):
+        await bauen()
+    for kaputt in ("abc", "-1", "1.5", "zwei"):  # eine unbrauchbare Einstellung ist nie eine offene
+        monkeypatch.setenv("WAMO_LABOR_EINWILLIGUNG_MIN", kaputt)
+        with pytest.raises(w.LaborNichtBereit):
+            await bauen()
+
+
 async def test_die_sechs_werkzeuge_und_sonst_nichts(u):
+    assert w.WERKZEUG_NAMEN == SECHS
     assert set(u.llm.handler) == SECHS
     assert {s.name for s in u.s.schemas} == SECHS and len(u.s.schemas) == 6
     for name in u.llm.handler:
@@ -209,6 +239,16 @@ async def test_anlegen_zeigt_nur_die_karte_und_schreibt_nichts(u):
     await ruhe()
     assert u.speicher.stati() == ["pending"]
     assert not re.search(r"[0-9a-f]{32}", json.dumps(r))  # das Modell bekommt nie die Kennung
+
+
+async def test_zeitleiste_zeigt_wartet_bis_zum_klick(u):
+    """Die Zeitleiste der Oberfläche liest den Status aus dem Ergebnis: bis zum Klick "wartet", eine Absage "abgelehnt", nie "fertig"."""
+    wartet = await u.ruf("ticket_anlegen", typ="bug", prioritaet="hoch", titel="Anmeldung schlägt fehl")
+    assert activity._status(wartet) == "wartet" and activity._status(json.dumps(wartet)) == "wartet"
+    absage = await u.ruf("ticket_anlegen", typ="bug", prioritaet="superdringend", titel="Anmeldung schlägt fehl")
+    assert activity._status(absage) == "abgelehnt"
+    gefunden = await u.ruf("ticket_suchen", anfrage="Login")
+    assert activity._status(gefunden) == "fertig"
 
 
 async def test_kein_ergebnis_enthaelt_je_die_kennung_einer_karte(u):

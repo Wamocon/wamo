@@ -3,6 +3,7 @@
 // Ausführen im Ordner ui/:  npm run test:komponenten
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ActivityTimeline } from "@/components/ActivityFeed";
 import { Freigaben } from "@/components/Freigaben";
 import { resetWamo, wamo, type Approval } from "@/lib/wamo";
 
@@ -79,5 +80,26 @@ describe("Freigabekarte für Labor-Aktionen", () => {
     expect(screen.getAllByRole("button", { name: "Freigeben" })).toHaveLength(2);
     fireEvent.click(screen.getAllByRole("button", { name: "Freigeben" })[1]);
     expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ job: "pc" }), true);
+  });
+});
+
+describe("Zeitleiste der Labor-Werkzeuge", () => {
+  beforeEach(() => resetWamo());
+
+  const AKTIVITAET = { id: "c1", name: "ticket_anlegen", detail: "", status: "wartet" as const, turn: 0 };
+
+  it("bis zum Klick steht dort, dass die Freigabe wartet, und der Werkzeugname sagt vorbereiten statt anlegen", () => {
+    wamo.set((s) => ({ ...s, activities: [AKTIVITAET], approvals: [LABOR] }));
+    render(<ActivityTimeline />);
+    expect(screen.getByText("bereitet ein Ticket vor")).toBeTruthy();
+    expect(screen.getByText("wartet auf Freigabe")).toBeTruthy();
+    expect(document.querySelector("li")?.getAttribute("data-status")).toBe("wartet");
+  });
+
+  it("ist die Karte weg ohne Klick, gilt die Aktion als nicht ausgeführt", () => {
+    wamo.set((s) => ({ ...s, activities: [AKTIVITAET], approvals: [] }));
+    render(<ActivityTimeline />);
+    expect(document.querySelector("li")?.getAttribute("data-status")).toBe("abgelehnt");
+    expect(screen.getByText(/Freigabe nicht mehr offen/)).toBeTruthy();
   });
 });

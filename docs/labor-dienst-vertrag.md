@@ -22,10 +22,11 @@ einmal selbst (Abschnitt 5). Der Schaden eines gekaperten Kerns muss auf die Tes
 
 | Regel | Festlegung |
 | --- | --- |
-| Transport | HTTPS. Die Adresse (`WAMO_LABOR_URL`) nennt ihr bis Mo 16.11. Zertifikat von der WAMO-CA (Datei `infra/sokrates2/wamo-ca.crt`) oder von einer Stelle, der der Kern vertraut. Klartext-HTTP nimmt der Kern nur für Loopback an |
+| Transport | HTTPS. Die Adresse (`WAMO_LABOR_URL`) nennt ihr bis Mo 16.11. Zertifikat von der WAMO-CA (Datei `infra/sokrates2/wamo-ca.crt`) oder von einer Stelle, der der Kern vertraut. Klartext-HTTP nimmt der Kern nur für Loopback an. Die Adresse besteht nur aus Schema, Host und Port (keine Zugangsdaten, keine Abfrage, kein Pfad). Der Kern folgt keinen Umleitungen (3xx gilt als Fehler), damit der Bearer nirgends anders hingeht |
 | Format | JSON in UTF-8, `Content-Type: application/json`. Anfragen mit anderem Inhaltstyp ergeben 422 `eingabe_ungueltig` |
 | Größe | Anfrage höchstens 16 KB, Antwort höchstens 64 KB. Eine größere Anfrage ergibt 413 `zu_gross`, bevor sie gelesen wird |
-| Wartezeit des Kerns | lesend 5 s, schreibend 8 s. Der Dienst soll in 1 s antworten (p95). Der Kern wiederholt einen Schreibaufruf nur mit demselben `Idempotency-Key` |
+| Wartezeit des Kerns | lesend 5 s, schreibend 8 s. Der Dienst soll in 1 s antworten (p95). Der Kern wiederholt einen Schreibaufruf höchstens einmal, nach Zeitüberschreitung, Verbindungsfehler oder 5xx, und nur mit demselben `Idempotency-Key`. Lesende Aufrufe wiederholt er nicht |
+| Last | Bis zu 8 Plätze gleichzeitig. Je Sitzung ruft der Kern V1 alle 5 Sekunden, dazu lesend V2 und V3 im Takt des Gesprächs und vor jeder Änderung einmal V3. Schreibaufrufe gibt es nur nach einem Klick des Besuchers, höchstens 25 je Durchlauf. In der Spitze bleibt es unter 5 Aufrufen je Sekunde insgesamt |
 | Kennungen | Alle Kennungen, Fehlercodes und Wertebezeichner sind ASCII |
 | Antwortköpfe | Jede Antwort trägt `Cache-Control: no-store` und `X-Content-Type-Options: nosniff` |
 | Pfade | Alles liegt unter `/api/kern/`. Genau die Pfade aus Abschnitt 3 gibt es. Ein bekannter Pfad mit anderer Methode ergibt 405 `nicht_erlaubt` (Kopf `Allow`), ein unbekannter Pfad 404 `nicht_erlaubt`. `X-HTTP-Method-Override` und Ähnliches wird ignoriert |

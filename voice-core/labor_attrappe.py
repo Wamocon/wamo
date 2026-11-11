@@ -57,6 +57,16 @@ _SEED = (
 )
 
 
+def mit_client(platz: int = 3, **kwargs):
+    """Testhilfe: eine Attrappe und ein Dienstclient für diesen Platz, im Prozess verbunden (ohne Netz). kwargs gehen an Attrappe()."""
+    import httpx
+
+    from labor_client import LaborClient
+
+    app = Attrappe(**kwargs)
+    return app, LaborClient(ATTRAPPE_URL, app.token, platz, transport=httpx.ASGITransport(app=app))
+
+
 class _Fehler(Exception):
     def __init__(self, status: int, code: str, text: str, *, allow: str | None = None):
         super().__init__(code)
