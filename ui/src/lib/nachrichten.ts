@@ -263,6 +263,8 @@ export type ServerMessage =
   /** Antwort des Kerns auf den Klick "Starten": ok, oder nicht ok mit einem Satz als Grund (voice-core/dev_agent.py) */
   | { type: "auftrag_quittung"; job: string; ok: boolean; grund?: string }
   | { type: "sitzung_beendet"; grund: string; anmelden?: boolean }
+  /** Testlabor: der Betreuer hat den Durchlauf beendet; die Seite lädt sich neu (lib/laborNeuladen.ts). Trägt nie Inhalte. */
+  | { type: "labor_durchlauf_ende" }
   | ({ type: "modellzugang" } & Modellzugang)
   | ({ type: "kontingent" } & Kontingent)
   /** Kern: still = seit `sekunden` nur digitale Stille vom Mikrofon, ok = wieder Ton (voice-core/audio_monitor.py) */
@@ -636,6 +638,8 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
       const grund = m.ok || !isStr(m.grund) ? "" : sauber(m.grund, 300, false).trim();
       return { type: "auftrag_quittung", job: m.job.slice(0, 100), ok: m.ok, grund: grund || undefined };
     }
+    case "labor_durchlauf_ende":
+      return { type: "labor_durchlauf_ende" }; // keine Felder übernehmen, nur das Ereignis
     case "sitzung_beendet":
       // Kern beendet die Sitzung selbst (Profil gesperrt, Rolle geändert, Höchstdauer erreicht)
       // anmelden: der Kern verlangt eine neue Anmeldung (Anmeldung zu alt); die Oberfläche meldet dann ab

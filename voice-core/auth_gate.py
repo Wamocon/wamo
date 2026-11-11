@@ -62,6 +62,9 @@ import httpx
 import jwt
 from loguru import logger
 
+import labor
+import labor_durchlauf
+import labor_limit
 from memory import ANREDEN, ROLLEN, DatabaseUnavailable, Profile, ProfileDirectory, normalize_uuid, shared_database
 from wamo_tls import https_context
 
@@ -119,23 +122,33 @@ def _zu_alt(anmeldung: float, jetzt: float, max_secs: float) -> str | None:
 @dataclass(frozen=True)
 class Identity:
     """Geprüfte Identität, wie sie der Bot in runner_args.body["wamo"] sieht. anmeldung: Beginn der Anmeldung
-    (Unix-Zeit aus amr), für das Höchstalter in bot.SessionGuard; zählt nicht beim Vergleich."""
+    (Unix-Zeit aus amr), für das Höchstalter in bot.SessionGuard; zählt nicht beim Vergleich.
+    Laborprofil (Testlabor, labor.py): labor_art (platz oder schaufenster, None = kein Laborprofil; ein unbekannter Wert ergibt platz),
+    labor_platz (1 bis 16, nur platz) und labor_aktiv (die Freischaltung, die das Gate gelesen hat). Ein Laborprofil ist nie Admin."""
 
     user_id: str
     name: str
     rolle: str
     anrede: str
     anmeldung: float | None = field(default=None, compare=False)
+    labor_art: str | None = None
+    labor_platz: int | None = None
+    labor_aktiv: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "labor_art", labor.art_normalisieren(self.labor_art))
 
     @property
     def is_admin(self) -> bool:
-        return self.rolle == "admin"
+        return self.rolle == "admin" and self.labor_art is None
 
-    def to_body(self) -> dict[str, str | float]:
-        body: dict[str, str | float] = {"user_id": self.user_id, "name": self.name, "rolle": self.rolle,
-                                        "anrede": self.anrede}
+    def to_body(self) -> dict[str, str | float | int | bool | None]:
+        body: dict[str, str | float | int | bool | None] = {"user_id": self.user_id, "name": self.name, "rolle": self.rolle,
+                                                            "anrede": self.anrede}
         if self.anmeldung is not None:
             body["anmeldung"] = self.anmeldung
+        if self.labor_art is not None:  # nur bei Laborprofilen: andere Identitäten behalten ihren Body wie bisher
+            body.update({"labor_art": self.labor_art, "labor_platz": self.labor_platz, "labor_aktiv": self.labor_aktiv})
         return body
 
 
@@ -155,7 +168,15 @@ def identity_from_body(body: object) -> Identity | None:
     if isinstance(anmeldung, bool) or not isinstance(anmeldung, (int, float)) or not math.isfinite(anmeldung) \
             or anmeldung <= 0:
         return None
-    return Identity(user_id=user_id, name=name, rolle=rolle, anrede=anrede, anmeldung=float(anmeldung))
+    art = labor.art_normalisieren(raw.get("labor_art"))
+    if art is None:
+        return Identity(user_id=user_id, name=name, rolle=rolle, anrede=anrede, anmeldung=float(anmeldung))
+    # Laborprofil: die Zugangskontrolle schreibt Art, Platz und Freischaltung immer; eine Identität ohne stimmige Laborfelder ist nicht geprüft
+    platz, aktiv = raw.get("labor_platz"), raw.get("labor_aktiv")
+    if aktiv is not True or not labor.laborfelder_stimmig(art, rolle, platz, False):
+        return None
+    return Identity(user_id=user_id, name=name, rolle=rolle, anrede=anrede, anmeldung=float(anmeldung), labor_art=art,
+                    labor_platz=platz, labor_aktiv=True)
 
 
 @dataclass(frozen=True)
@@ -361,14 +382,22 @@ class AccessGate:
             return Decision(None, 503, "Profilprüfung nicht möglich")
         if profile is None:
             return Decision(None, 403, "Für dieses Konto gibt es kein WAMO-Profil.")
-        if not profile.aktiv:
-            return Decision(None, 403, "Das WAMO-Profil ist deaktiviert.")
+        # Laborprofil: wirksam aktiv nur über labor_aktiv und mit stimmigen Feldern (Rolle mitglied, Platz); alle anderen über aktiv
+        if labor.art_von(profile) is not None and (problem := labor.profil_problem(profile)) is not None:
+            logger.warning("Zugangskontrolle: Laborprofil unstimmig ({})", problem)
+            return Decision(None, 403, labor.GRUND_PROFIL, code=labor.CODE_PROFIL)
+        if not labor.profil_aktiv(profile):
+            return Decision(None, 403, labor.GRUND_DEAKTIVIERT)
+        art = labor.art_von(profile)
         identity = Identity(
             user_id=profile.user_id,
             name=" ".join(profile.name.split())[:MAX_NAME_CHARS] or "Gast",
             rolle=profile.rolle if profile.rolle in ROLLEN else "mitglied",
             anrede=profile.anrede if profile.anrede in ANREDEN else "du",
             anmeldung=result.anmeldung,
+            labor_art=art,
+            labor_platz=profile.labor_platz if art is not None else None,
+            labor_aktiv=art is not None,
         )
         return Decision(identity)
 
@@ -378,7 +407,7 @@ class AccessGate:
         if cached and cached[0] > now:
             return cached[1]
         profile = await self.profiles.get(user_id)  # Fehler werden nicht gecacht
-        ttl = PROFILE_HIT_SECS if profile is not None and profile.aktiv else PROFILE_MISS_SECS
+        ttl = PROFILE_HIT_SECS if profile is not None and labor.profil_aktiv(profile) else PROFILE_MISS_SECS
         self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
         self._cache[user_id] = (now + ttl, profile)
         return profile
@@ -463,9 +492,33 @@ def _replay(body: bytes, receive: Receive) -> Receive:
 class AccessMiddleware:
     """ASGI-Middleware vor dem Pipecat-Runner (eingehängt über install_access_gate)."""
 
-    def __init__(self, app, gate: AccessGate):
+    def __init__(self, app, gate: AccessGate, labor_pruefer: Callable[[Identity], Awaitable[Any]] | None = None,
+                 labor_fenster: labor_limit.AnfragenFenster | None = None):
         self.app = app
         self.gate = gate
+        # Laborprofile: Durchlauf und Einwilligung bei /start und jedem Offer (labor_durchlauf.pruefen); nur Tests setzen etwas anderes
+        self._labor_pruefer = labor_pruefer or labor_durchlauf.pruefen
+        # Laborprofile: höchstens so viele /start und Offer je Profil und Fenster (Ratenbegrenzung, noch vor dem Aufruf des Dienstes)
+        self._labor_fenster = labor_fenster or labor_limit.AnfragenFenster()
+
+    async def _labor_urteil(self, identity: Identity, scope) -> tuple[int, str, str | None] | None:
+        """None, wenn die Anfrage eines Laborprofils durchgelassen wird, sonst (Status, Grund, Code). Zuerst die Pfadliste (exakt, Default deny),
+        dann bei /start und Offer der Durchlauf. Jeder Fehler in der Prüfung heißt 503, nie Durchlass."""
+        art = labor.pfad_pruefen(identity.labor_art, scope["method"], scope["path"], scope.get("raw_path"))
+        if art is None:
+            return 403, "Dieser Weg ist für dieses Profil gesperrt.", labor.CODE_PFAD_GESPERRT
+        if art not in ("start", "offer"):
+            return None
+        if not self._labor_fenster.zulassen(identity.user_id):
+            return 429, labor.GRUND_ZU_OFT, labor.CODE_ZU_OFT
+        try:
+            urteil = await self._labor_pruefer(identity)
+        except Exception as e:  # fail-closed
+            logger.warning("Zugangskontrolle: Laborprüfung fehlgeschlagen ({})", type(e).__name__)
+            return 503, labor_durchlauf.GRUND_DIENST, labor_durchlauf.CODE_DIENST
+        if urteil.status != 200:
+            return urteil.status, urteil.grund, urteil.code
+        return None
 
     async def __call__(self, scope, receive, send):
         kind = scope["type"]
@@ -482,6 +535,11 @@ class AccessMiddleware:
         if decision.identity is None:
             logger.warning("Zugang abgelehnt: {} {} ({})", scope["method"], scope["path"], decision.reason)
             await _reject(send, decision.status, decision.reason, decision.code)
+            return
+
+        if labor.ist_labor(decision.identity) and (urteil := await self._labor_urteil(decision.identity, scope)) is not None:
+            logger.warning("Zugang für Laborprofil abgelehnt: {} ({})", scope["method"], urteil[2])
+            await _reject(send, urteil[0], urteil[1], urteil[2])
             return
 
         target = _starts_bot(scope["path"]) if scope["method"] == "POST" else None

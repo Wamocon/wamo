@@ -21,6 +21,11 @@ Nutzergrenzen setzt dieser Code selbst (wamo_core sieht alle Zeilen):
 
 Ohne WAMO_DATABASE_URL sind alle Gedächtnisfunktionen No-Op. Die Anmeldung ist dann gesperrt
 (auth_gate.py), weil ohne Datenbank kein Profil geprüft werden kann.
+
+Reihenfolge beim Ausrollen: Die Anmeldung des Kerns liest seit dem Testlabor die Spalten labor_art, labor_platz und labor_aktiv
+(Migration 0018_labor_profile.sql, ProfileDirectory.get). Fehlt eine Spalte, scheitert die Abfrage, und JEDES Profil bekommt 503, auch der
+Admin. Das ist gewollt (Ausfall statt Öffnung, ein Laborprofil darf nie am Gate vorbeikommen), hängt aber an der Reihenfolge: erst die Migration
+auf dem Schema anwenden, dann den Kern ausrollen. Der Rückweg ist umgekehrt: erst den alten Kern, dann die Migration zurücknehmen.
 """
 
 from __future__ import annotations
@@ -646,6 +651,10 @@ class Profile:
     aktiv: bool
     anrede: str
     voice_id: str | None = None
+    # Laborprofil (Migration 0018, labor.py): labor_art platz oder schaufenster, sonst None; wirksam freigeschaltet nur über labor_aktiv
+    labor_art: str | None = None
+    labor_platz: int | None = None
+    labor_aktiv: bool = False
 
 
 @dataclass(frozen=True)
@@ -660,12 +669,16 @@ class SharedProposal:
 
 
 _PROFILE_COLUMNS = "user_id::text as user_id, display_name, rolle::text as rolle, aktiv, anrede, voice_id"
+# Nur die Anmeldung des Kerns liest die Laborspalten (Migration 0018). Fehlt eine Spalte, scheitert der Select, und die Anmeldung
+# lehnt mit 503 ab: Ausfall statt Öffnung. Die Verwaltung (AdminDirectory) behält ihre Spalten.
+_PROFILE_COLUMNS_KERN = _PROFILE_COLUMNS + ", labor_art::text as labor_art, labor_platz, labor_aktiv"
 
 
 def _profile(row: asyncpg.Record) -> Profile:
     return Profile(
         user_id=row["user_id"], name=row["display_name"], rolle=row["rolle"], aktiv=row["aktiv"],
         anrede=row["anrede"], voice_id=row["voice_id"],
+        labor_art=row.get("labor_art"), labor_platz=row.get("labor_platz"), labor_aktiv=bool(row.get("labor_aktiv")),
     )
 
 
@@ -696,7 +709,7 @@ class ProfileDirectory:
             return None
         db = self._db
         try:
-            row = await db.fetchrow(f"select {_PROFILE_COLUMNS} from {db.t('profiles')} where user_id = $1::uuid", uid)
+            row = await db.fetchrow(f"select {_PROFILE_COLUMNS_KERN} from {db.t('profiles')} where user_id = $1::uuid", uid)
         except DatabaseUnavailable:
             raise
         except DB_ERRORS as e:

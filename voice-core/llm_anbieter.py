@@ -123,7 +123,7 @@ class Zugang:
 
     user_id: str
     art: Art
-    quelle: str = "keiner"  # profil | zuordnung | betreiber | festgelegt (Admin) | wahl (Person) | keiner | fehler
+    quelle: str = "keiner"  # profil | zuordnung | labor | betreiber | festgelegt (Admin) | wahl (Person) | keiner | fehler
     claude_modell: str | None = None
     claude_schluessel: str | None = field(default=None, repr=False)
     claude_workspace: str | None = None

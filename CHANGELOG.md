@@ -144,6 +144,24 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Testlabor, Integration der Stränge K1, K2 und S (Zweig `labor/int`, nicht ausgerollt; Sicherheitsreview des Gesamtstands). Der Klick auf eine
+  Labor-Freigabekarte (`freigabe` mit job `labor`) erreicht jetzt `LaborFreigaben`: `build_session` hängt den Entscheider in die Annahme
+  (`LaborSitzung.freigabe`), vorher blieb jeder Klick wirkungslos. Die Erlaubnisliste der Werkzeuge wird für das Endergebnis geprüft, nach den
+  Ticket- und Mail-Werkzeugen. Fällt der Dienst zwischen Annahme und Werkzeugen aus, bekommt die Person eine klare Ablehnung (503) statt einer
+  Ausnahme, der Modellzugang wird geschlossen; das Ende des Durchlaufs erledigt offene Karten vor dem Schließen. Es gibt nur noch einen Weg zum
+  Dienst der Kollegen: `labor_durchlauf.ClientQuelle` nutzt `labor_client.client_aus_umgebung` (Adresse, Token, Zertifikat, Antwort streng, keine
+  Proxys aus der Umgebung, nie die Attrappe), die Mindestversion der Einwilligung gilt in den Werkzeugen wie bei der Annahme. Jeder Aufruf des
+  Dienstes hat eine Gesamtfrist, die Durchlaufabfrage beim Klick höchstens 10 Sekunden. Fällt der Dienst länger als 60 Sekunden aus (12
+  Fehlversuche der Wache), endet die Sitzung samt Textspeicherung. Ratenbegrenzung im Kern (`labor_limit.py`, Werte über Einstellungen
+  änderbar): getippter Text mit 2 Sekunden Abstand und 40000 Zeichen je Sitzung (`WAMO_LABOR_TEXT_ABSTAND_SECS`, `WAMO_LABOR_TEXT_MAX_ZEICHEN`),
+  höchstens 10 Websuchen je Sitzung (`WAMO_LABOR_SUCHEN_MAX`), höchstens 20 `/start` und Offer je Profil und Minute mit 429 und Code
+  `labor_zu_viele_anfragen` (`WAMO_LABOR_ANFRAGEN_MAX`). Der Laborprompt sagt bei `WAMO_LABOR_TEXT_SPEICHERN=an` nicht mehr, es werde nichts
+  gespeichert. Alle 13 Einstellungen `WAMO_LABOR_*` stehen in `ERLAUBT` von `infra/sokrates2/wamo_core_env.py` (nicht in `AUS_ENV` des
+  PC-Skripts), `WAMO_LABOR_TOKEN` ist ein Geheimnis und wird nie angezeigt. Reihenfolge beim Ausrollen: erst die Migration 0018, dann der Kern.
+  Ohne die Spalten `labor_art`, `labor_platz` und `labor_aktiv` bekommt jedes Profil 503, auch der Admin (gewollt, Ausfall statt Öffnung).
+  Tests: Der Dienst der Kollegen ist in den Tests an einer Stelle die Attrappe (`labor_testhilfe.py`), ein Test führt eine ganze Laborsitzung von der
+  Annahme über Werkzeuge und Freigabeklick bis zum Ende des Durchlaufs durch `build_session`. Das Schau-Profil ohne Platz hat laut Migration kein
+  Test-Jira und damit nur die Basiswerkzeuge (Plan 3.1 nennt Ticket und Mail auch für das Schaufenster, offen für Niko).
 - Ruhe-Prüfung von `wamo-job-einrichten.sh`: Die Benutzerdienste `xdg-document-portal` und `xdg-permission-store` von `wamo` (D-Bus-aktiviert,
   laufen seit Wochen) zählten als laufender Auftrag und brachten die Einrichtung mit Exit 3 zum Abbruch (nichts geändert). Beide Namen
   stehen jetzt in der Ausnahmeliste, jeder andere Prozess und jeder Auftrag neben den Portalen bricht weiter ab (Test).
@@ -186,6 +204,23 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   Standardterminal (Windows 11), blitzte trotz `-WindowStyle Hidden` bei jedem Start ein Terminalfenster auf. `scripts/wamo-tunnel-einrichten.ps1`
   startet die Aufgabe jetzt über `conhost.exe --headless`, dabei entsteht kein Fenster. Auf bestehenden PCs wirkt das, sobald das
   Einrichtungsskript die Aufgabe das nächste Mal anlegt (neuer Desktop-Installer, Anmeldung in der App).
+
+- Testlabor, Migration 0018 und Verwaltung (Befunde F1 bis F10 des Datenbank-Reviews, Zweig `labor/mig`; nichts davon ist ausgerollt, die
+  Migration wurde noch nie angewendet und deshalb direkt geändert). `scripts/wamo_labor.py` meldet sich als Login-Rolle `wamo_admin` an
+  (Passwort aus `WAMO_ADMIN_DATABASE_URL`, nur über die SSH-Eingabe zum Server und dort als `PGPASSWORD` von `docker exec`) statt per
+  `set local role` als `postgres`: Das scheiterte, weil `postgres` im Supabase-Image kein Superuser ist und keine Rolle annehmen darf. Nur
+  die Kontosuche in `auth.users` läuft als `postgres`. `labor_loeschen` lehnt in den ersten 3 Minuten nach der letzten Änderung des Profils
+  ab (Sperrfrist: der Kern kennt ein Profil bis zu 2 Minuten aus dem Zwischenspeicher), prüft die Sitzungen vor dem Ergebnis noch einmal
+  und sperrt die Zeile nur noch mit `for no key update`; das Skript wartet die Sperrfrist ab und ruft die Funktion erneut auf.
+  `labor_zaehlen` und `labor_loeschen` behandeln `device_events` gleich, `feedback` geht im Zeitfenster über die Turns der gelöschten
+  Sitzungen mit. Die Sitzungsgrenze der Löschfunktion steigt auf 135 Minuten (Standard des Kerns 120 plus mehr als 10, Test gegen
+  `bot.py`). Der Selbsttest der Migration prüft alle Rollen aus `pg_roles` statt einer festen Liste, der Rückweg ist eine einzige
+  Anweisung und bricht auch ohne `--single-transaction` ab. Die Köpfe von Migration und Rückweg nennen die Reihenfolge mit dem Kern
+  (Migration vor dem Release, Rückweg erst nach der Rückstellung, sonst antwortet der neue Kern für alle Nutzer mit 503). GoTrue-Spuren
+  (`auth.audit_log_entries`, `auth.sessions`) und `model_access` stehen mit Grund in der Löschliste, sie verschwinden mit den Konten am
+  30.11.2026. Der SQL-Test braucht keinen Superuser mehr (`disable trigger user`), nimmt freie Werte (Laborplätze 14 bis 16, Tunnelplätze
+  60 bis 63) und prüft Sperrfrist, späte Rückmeldungen und Ereignisse fremder Profile. Neu im Test: Wahrheitstabelle der CHECK-Bedingungen
+  aus dem SQL, lexikalische Prüfung der gerenderten SQL-Dateien, Fremdschlüssel-Parser der Löschliste für alle Schreibweisen.
 
 ### Geändert
 
@@ -275,6 +310,69 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   bleiben aus), ein Test in `voice-core/test_env_schalter.py` prüft das. Auf Sokrates-2 wirken die neuen Namen erst, wenn
   `wamo-core-einrichten.sh` den Hilfsdienst `wamo-core-env` erneuert hat; bis dahin lehnt der alte Hilfsdienst eine Übertragung mit
   diesen Namen als Ganzes ab.
+- Testlabor, Strang K1 (Kern Sicherheit, Zweig `labor/k1`, Plan `docs/testlabor-wamo.md` 3.1 und 3.6; nicht ausgerollt, nichts davon wirkt ohne die
+  Migration 0018 und ohne Laborprofile). Ein Laborprofil (`labor_art` platz oder schaufenster, Rolle mitglied, `aktiv = false` dauerhaft) ist
+  nur über `labor_aktiv` freigeschaltet; ältere Kerne lehnen es mit 403 ab. Der Kern setzt die Einschränkung als Erlaubnisliste durch
+  (`voice-core/labor.py`): Das Gate prüft stimmige Felder, ein unbekannter Wert in `labor_art` ergibt platz, die `AccessMiddleware` lässt nur
+  `/start`, die Offer-Pfade und `/wamo/api/labor/<Name>` durch (exakter Regex je Methode, keine Normalisierung, Rest 403 `labor_pfad_gesperrt`) und
+  prüft bei `/start` und jedem Offer Durchlauf und Einwilligung (`labor_durchlauf.py`, Aufruf V1 des Vertrags, ohne Dienst keine Sitzung). Ein
+  eigener RTVI-Verarbeiter (`labor_rtvi.py`) verwirft vor Pipecat jede Client-Nachricht außer `client-ready`, `send-text` (höchstens 4000
+  Zeichen) und der Freigabe mit job `labor`. `build_session` nimmt für Laborprofile einen eigenen Zweig: Werkzeuge nur `aktuelle_zeit`,
+  `websuche` und `canvas_zeigen` (Prüfung im Kontext und am LLM, sonst keine Sitzung), kein PC-Weg, kein Gerätezugang, kein Entwicklungsagent, kein
+  Boss, kein Lernen, kein Nachladen, Laborprompt (`labor_prompt.py`) statt Normalprompt, alle 5 Sekunden eine Prüfung des Durchlaufs mit dem
+  Ereignis `labor_durchlauf_ende`. `LaborSpeicher` (`labor_speicher.py`) speichert den Gesprächstext nur bei `WAMO_LABOR_TEXT_SPEICHERN=an`, mit
+  gültiger Einwilligung (`WAMO_LABOR_EINWILLIGUNG_MIN`) und nur in `sessions`, `turns`, `actions` und `canvas_items`, der Vermerk
+  `labor_einwilligung` steht vor jedem Text; Gedächtnis gibt es nie. Der Lader (`labor_daten.py`) liest Regeln, Kontakte, Vorlagen und Wissen aus
+  `WAMO_LABOR_DATEN` mit `O_NOFOLLOW`, Besitzer root, ohne Schreibrecht für Dritte, fester Namensliste und Grenzen (6000 Zeichen insgesamt, 2000 für
+  den Regelteil), Regeln und Daten getrennt. Beweistests T1 bis T5, T8, T9 und T12 (Kernanteil) in `test_labor_*.py`; offen bleiben Migration,
+  Löschfunktion, Zugangsquelle `labor`, Labor-Freigabe und Ticket-Werkzeuge (Stränge S und K2) sowie die Servertests T11 und T13.
+
+### Hinzugefügt
+
+- Testlabor 28.11.2026, Strang S (Datenbank, Zugang, Verwaltung, Oberfläche, Messen; Plan `docs/testlabor-wamo.md`, Zweig `labor/s`,
+  nicht angewendet und nicht ausgerollt). Migration `0018_labor_profile.sql` mit `.down.sql`: Spalten `profiles.labor_art`, `labor_platz`
+  und `labor_aktiv`. Ein Laborprofil bleibt dauerhaft `aktiv = false` und hat die Rolle `mitglied`, auch das Schau-Profil; freigeschaltet wird
+  allein über `labor_aktiv`, das nur ein Kern mit Laborlogik liest. `labor_art` und `labor_platz` sind nach dem Anlegen für jede Rolle
+  unveränderlich (Trigger), `wamo_core`, `anon`, `authenticated`, `service_role` und PUBLIC schreiben die Spalten nie (Selbsttest für INSERT
+  und UPDATE). Die Funktionen `labor_loeschen` (gesamter Text eines gesperrten Laborprofils oder nur ein Zeitfenster) und `labor_zaehlen`
+  sind nur für `wamo_admin` ausführbar; die Löschliste steht als Daten in `voice-core/labor_loeschliste.py`, ein Test prüft sie gegen alle
+  Migrationen auf Vollständigkeit (T10), der Rückweg bricht bei jedem Laborprofil ab. Neue Zugangsquelle `labor` in `zugang_laden`
+  (Parameter `labor_art`, Server-Schlüssel, Haiku, nie für Entwicklungsaufträge). `scripts/wamo_labor.py` (anlegen, aktivieren, sperren,
+  status, loeschen; Trockenlauf als Standard, Schreiben nur als `wamo_admin`, Passwörter nur in eine Umschlag-Datei) und
+  `wamo_admin.py labor-zaehlen` und `labor-loeschen`. Die Oberfläche lädt bei `labor_durchlauf_ende` neu und blendet die Quelle `labor` aus.
+  Eval-Fälle für die 17 Karten in `voice-core/eval/faelle_labor.py`.
+
+### Hinzugefügt
+
+- Testlabor, Strang K2 (Kern Werkzeuge und Karte; Plan `docs/testlabor-wamo.md`, Zweig `labor/k2`, nicht ausgerollt, wirkt nur für Profile mit
+  `labor_art`, die es erst mit Migration 0018 gibt). `docs/labor-dienst-vertrag.md` ist die Übergabedatei für die Kollegen, die den Test-Jira-Dienst
+  bauen: Vertrag Version 1 (Aufrufe V1 bis V7 unter `/api/kern/`, Köpfe, Reihenfolge der Prüfungen, Wertebereiche, Fehlercodes), Sicherheitsanforderungen
+  D1 bis D13, Abnahmekriterien A1 bis A11 und Termine. Neue Module in `voice-core/`: `labor_vertrag.py` (Festlegungen, Textnormierung, Längenmaß in
+  UTF-16-Einheiten), `labor_attrappe.py` (Nachbildung des Dienstes im Prozess, nur für Tests, mit Variante `verwundbar`), `labor_client.py`
+  (Dienstclient mit `durchlauf_id` und Idempotenzschlüssel in jedem Schreibaufruf, einmaliger Wiederholung mit demselben Schlüssel und festen Sätzen
+  je Fehlercode; lehnt die Adresse der Attrappe ab), `labor_freigaben.py` (`LaborFreigaben`: Job `labor`, Antrag gebunden an Sitzung, Profil, Durchlauf,
+  Aktion, Werte und Ticketversion, Frist 120 s, genau einmal, höchstens 3 offene und 25 Anträge je Durchlauf, Karte höchstens 1900 UTF-16-Einheiten
+  sonst keine Karte), `labor_ticket.py` und `labor_mail.py` (Prüfungen im Code, Domänenfilter mit `re.fullmatch`), `labor_werkzeuge.py` (die sechs
+  Werkzeuge `ticket_suchen`, `ticket_anlegen`, `ticket_aendern`, `ticket_verschieben`, `ticket_kommentieren`, `mail_senden` als `LaborSitzung`).
+  `mail_senden` ist eine reine Bestätigung, es gibt keinen Versandweg. In `bot.py` hängen nur vier schmale Stellen (Laborsitzung bauen, Klick
+  `freigabe` mit `job: "labor"`, Aufräumen, Ja-Wächter). `PcFreigaben`, `pc_host.py` und `darf_pc_freigeben` bleiben unverändert (Hash- und
+  Verhaltenstest `test_labor_pc_unveraendert.py`). Oberfläche: `ui/src/lib/laborKarte.ts` gibt der Freigabekarte für Labor-Aktionen ihre Texte
+  („Aktion freigeben“, „Du entscheidest, nicht WAMO.“), die PC-Karte bleibt wie sie war.
+
+### Behoben
+
+- Testlabor, Befunde der Zweitprüfung am Kerncode (Zweig `labor/fix2`, nicht ausgerollt, wirkt nur für Laborprofile). Klickweg: Eine Nachricht
+  `freigabe` mit `job: "labor"` und einer erfundenen, aber formal gültigen Kennung endete in einer Meldung an das Sprachmodell (Modellzug, Sprachausgabe,
+  Logzeile, Kontextzuwachs) ohne Abstand und Obergrenze. Jetzt wird jede Kennung, die nicht zu einer offenen Karte gehört, nur ohne Inhalt geloggt und nie
+  gemeldet, und der `LaborRTVIProcessor` begrenzt die Klicks auf Freigabekarten (Abstand 0,5 Sekunden, höchstens 100; neue Einstellungen
+  `WAMO_LABOR_KLICK_ABSTAND_SECS` und `WAMO_LABOR_KLICK_MAX`, ungültige Werte ergeben den Standard, in `ERLAUBT` von `wamo_core_env.py`). Text, Klicks und
+  Websuchen zählen je Profil und Durchlauf statt je Verbindung (`labor_limit.LimitRegister`, begrenzter Speicher): eine Neuverbindung setzt sie nicht mehr
+  zurück. Die Wache misst einen Ausfall des Dienstes an der Uhr (60 Sekunden ohne gelungene Prüfung) statt an zwölf Fehlversuchen, die bei hängendem Dienst
+  bis zu 132 Sekunden dauerten. Beim Ende des Durchlaufs sperrt `LaborSpeicher.stoppen()` die Textspeicherung sofort, auch wenn der Abbruch der Pipeline
+  still scheitert. Der SSL-Kontext des Dienstclients wird einmal je CA-Pfad gebaut und geteilt (bisher je Wache-Takt, `/start` und Offer neu, etwa 7
+  Millisekunden auf der Ereignisschleife; eine geänderte CA-Datei gilt erst nach einem Neustart). `bot()` beendet bei jeder Ausnahme beim Aufbau, auch bei
+  einer Verletzung der Erlaubnisliste, die Verbindung mit einem festen Satz, und der Laborabschnitt schließt dann Dienstclient und Modellzugang. Neu getestet:
+  der Klickweg über `LaborRTVIProcessor` und die RTVI-Strecke.
 
 ## [0.1.0] - 2026-10-22
 

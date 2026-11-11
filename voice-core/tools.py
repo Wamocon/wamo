@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -25,6 +25,7 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.services.llm_service import FunctionCallParams
 
 from auth_gate import Identity
+from labor_limit import GRUND_SUCHEN, SuchZaehler
 from llm_anbieter import Zugang, verbrauch_loggen
 from memory import BEREICHE, ZEITZONE, MemoryStore, initial_status
 from suche import (
@@ -320,12 +321,20 @@ def jetzt_text(now: datetime | None = None) -> dict:
 
 
 def register_tools(
-    llm, memory: MemoryStore, identity: Identity, turn: TurnState | None = None, *, zugang: Zugang, fernzugriff: bool = False
+    llm, memory: MemoryStore, identity: Identity, turn: TurnState | None = None, *, zugang: Zugang, fernzugriff: bool = False,
+    erlaubt: Collection[str] | None = None, suchen_max: int | None = None, suchen_zaehler: SuchZaehler | None = None,
 ) -> ToolsSchema:
     """Registriert die Handler am LLM und liefert das Schema für den Kontext. zugang: Modellzugang des
     Profils (Websuche über Anthropic nur mit eigenem Schlüssel, sonst SearXNG). fernzugriff: nur für Admins bei
-    eingeschaltetem Fernzugriff; das Werkzeug öffnet nur den Dialog in der Oberfläche und startet nie eine Sitzung."""
+    eingeschaltetem Fernzugriff; das Werkzeug öffnet nur den Dialog in der Oberfläche und startet nie eine Sitzung.
+    erlaubt: Erlaubnisliste der Namen (Laborprofile, labor.WERKZEUGE_BASIS): nur diese werden registriert und ins Schema gelegt,
+    alle anderen (merken, fernzugriff_oeffnen) gibt es in der Sitzung nicht. None: alle wie bisher.
+    suchen_max: höchstens so viele Aufrufe von websuche in dieser Sitzung (Laborprofile, labor_limit.suchen_max), danach gibt es keine Suche mehr
+    und der Schlüssel wird nicht berührt. suchen_zaehler: stattdessen ein fertiger, gemeinsamer Zähler (bot.py reicht den je Profil und Durchlauf,
+    labor_limit.LIMITS, damit eine Neuverbindung die Suchen nicht zurücksetzt); er geht vor suchen_max. Beides None: unbegrenzt wie bisher."""
     turn = turn or TurnState()
+    frei = (lambda name: True) if erlaubt is None else (lambda name: name in erlaubt)
+    suchen = suchen_zaehler if suchen_zaehler is not None else (None if suchen_max is None else SuchZaehler(suchen_max))
 
     async def aktuelle_zeit(params: FunctionCallParams):
         await params.result_callback(jetzt_text())
@@ -366,6 +375,10 @@ def register_tools(
         if not anfrage:
             await params.result_callback({"ergebnis": "leere Anfrage"})
             return
+        if suchen is not None and not suchen.verbrauchen():
+            logger.warning("websuche: Grenze je Sitzung erreicht ({})", suchen.maximum)
+            await params.result_callback({"ergebnis": GRUND_SUCHEN})
+            return
         ergebnis = await websuche_ergebnis(anfrage, zugang)
         turn.taint()  # Webinhalte im Zug: kein sofort wirksames gemeinsames Wissen, kein Lernen
         treffer = len(ergebnis.get("treffer", []))
@@ -389,12 +402,20 @@ def register_tools(
         logger.info("fernzugriff: Dialog in der Oberfläche angefordert")
         await params.result_callback({"geoeffnet": True, "hinweis": "Der Nutzer wählt den Spark und gibt den Code der Authenticator-App ein."})
 
-    llm.register_function("aktuelle_zeit", aktuelle_zeit)
-    llm.register_function("merken", merken)
-    llm.register_function("websuche", websuche, timeout_secs=40)
-    llm.register_function("canvas_zeigen", canvas_zeigen)
-    standard = [ZEIT_SCHEMA, merken_schema(identity.name), WEBSUCHE_SCHEMA, CANVAS_SCHEMA]
-    if fernzugriff and identity.is_admin:  # zusätzlich zum Schalter des Aufrufers: nie für Mitglieder
+    standard = []
+    if frei("aktuelle_zeit"):
+        llm.register_function("aktuelle_zeit", aktuelle_zeit)
+        standard.append(ZEIT_SCHEMA)
+    if frei("merken"):
+        llm.register_function("merken", merken)
+        standard.append(merken_schema(identity.name))
+    if frei("websuche"):
+        llm.register_function("websuche", websuche, timeout_secs=40)
+        standard.append(WEBSUCHE_SCHEMA)
+    if frei("canvas_zeigen"):
+        llm.register_function("canvas_zeigen", canvas_zeigen)
+        standard.append(CANVAS_SCHEMA)
+    if fernzugriff and identity.is_admin and frei("fernzugriff_oeffnen"):  # zusätzlich zum Schalter des Aufrufers: nie für Mitglieder
         llm.register_function("fernzugriff_oeffnen", fernzugriff_oeffnen)
         standard.append(FERNZUGRIFF_SCHEMA)
     return ToolsSchema(standard_tools=standard)

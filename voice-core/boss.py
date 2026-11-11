@@ -204,12 +204,13 @@ def entwicklung_quelle(zugang: Zugang) -> str:
       api        Mit dem eigenen API-Schlüssel (Guthaben, Standardmodell Haiku), wenn kein Token hinterlegt ist.
       uebergang  Das Profil, dem der Schlüssel des Kerns gehört (quelle zuordnung), nutzt wie bisher den Zugang der
                  Sandbox, bis es seinen eigenen hinterlegt hat.
-      keine      Alle anderen. Eine Hausmodell-Variante mit wamo-coder gibt es noch nicht (nicht gebaut, nicht
+      keine      Alle anderen, auch die Quelle labor (Laborprofile führen das Gespräch über den Server-Schlüssel, nie einen
+                 Entwicklungsauftrag). Eine Hausmodell-Variante mit wamo-coder gibt es noch nicht (nicht gebaut, nicht
                  gemessen), und ohne eigenen Zugang dürfte ein Auftrag nur auf dem Zugang einer anderen Person laufen.
     Wählt die Person nur Hausmodelle oder legt der Admin es fest, gibt es keinen Claude-Code-Lauf (nichts geht in die
     Cloud). Ein Profil ohne API-Schlüssel, aber mit Token bleibt ein Hausprofil für das Gespräch: Der Token gilt allein
     für Entwicklungsaufträge, die die Person ausdrücklich per Klick startet."""
-    if zugang.quelle in ("wahl", "festgelegt"):
+    if zugang.quelle in ("wahl", "festgelegt", "labor"):
         return "keine"
     if zugang.claude_code:
         return "token"

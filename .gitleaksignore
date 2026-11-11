@@ -1,0 +1,5 @@
+# Ausnahmen für gitleaks, je Zeile ein Fingerabdruck (Commit:Datei:Regel:Zeile). Jede Ausnahme braucht einen Kommentar und einen Pull Request mit Review.
+#
+# docs/labor-dienst-vertrag.md Zeile 250: Beispielkopf "Idempotency-Key: 8f14e45f-..." im Vertrag für den Test-Jira-Dienst, eine erfundene UUID
+# als Muster für die Kollegen, kein Geheimnis (11.11.2026). Die Regel generic-api-key hält den Kopfnamen für einen Schlüssel.
+72f522a0277bbd4125a8a553e43b3194905a90b7:docs/labor-dienst-vertrag.md:generic-api-key:250

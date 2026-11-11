@@ -14,7 +14,8 @@ Zwei Schlüsseltypen, getrennt gespeichert und verwendet:
                      Entwicklungs-Agenten dieser Sitzung für genau einen Lauf übergeben.
 
 Der Schlüssel des Kerns (ANTHROPIC_API_KEY) gehört einer Person. Er gilt nur für das Profil in
-WAMO_CLAUDE_SCHLUESSEL_PROFIL (Übergang, bis sie ihn selbst hinterlegt hat), nie für andere.
+WAMO_CLAUDE_SCHLUESSEL_PROFIL (Übergang, bis sie ihn selbst hinterlegt hat) und für Laborprofile (Testlabor, Quelle
+"labor": nur das Gespräch, Standardmodell Haiku, nie für Entwicklungsaufträge), nie für andere.
 
 Schlüssel und Token liegen nur verschlüsselt in der Datenbank (schluessel.py, Hauptschlüssel WAMO_SCHLUESSEL_KEK nur
 beim Kern). Sie werden nie geloggt, nie an die Oberfläche zurückgegeben (nur "hinterlegt, endet auf …abcd") und nie
@@ -51,6 +52,7 @@ from memory import DB_ERRORS, Database, DatabaseUnavailable, admin_database, nor
 from schluessel import CODE_TOKEN, SCHLUESSEL, SchluesselFehler, Tresor, ende, format_pruefen, token_format_pruefen
 
 ZUORDNUNG_ENV = "WAMO_CLAUDE_SCHLUESSEL_PROFIL"
+LABOR_ARTEN = ("platz", "schaufenster")  # profiles.labor_art (Migration 0018); nur diese Werte geben den Server-Schlüssel frei
 TEST_TIMEOUT_SECS = 10.0
 VERSUCHE_JE_FENSTER = 5  # Testanfragen je Profil und Zeitfenster (Schutz vor Durchprobieren)
 VERSUCHE_FENSTER_SECS = 600.0
@@ -129,10 +131,14 @@ def _hat_code_token(zeile) -> bool:
     return bool(zeile and zeile.get("claude_code_token_ende"))
 
 
-async def zugang_laden(user_id: str, *, db: Database | None = None, tresor: Tresor | None = None) -> Zugang:
+async def zugang_laden(user_id: str, *, db: Database | None = None, tresor: Tresor | None = None,
+                       labor_art: str | None = None) -> Zugang:
     """Zugang der Sitzung aus dem Profil. Jede Unsicherheit führt zu nur Hausmodellen (nie zu Kosten auf einem
     fremden Schlüssel): fehlende Tabelle, Datenbankfehler, fehlender Hauptschlüssel, unlesbares Chiffrat.
-    Reihenfolge: Zwang des Admins (nur_haus), dann die Wahl der Person (modell_modus), dann der Schlüssel."""
+    Reihenfolge: Zwang des Admins (nur_haus), dann die Wahl der Person (modell_modus), dann der eigene Schlüssel, dann
+    der Server-Schlüssel für Laborprofile (labor_art), dann der Schlüssel des Kerns für das zugeordnete Profil.
+    labor_art kommt allein aus der Identität des Kerns (profiles.labor_art, Middleware), nie aus dem Gespräch, und ist
+    deshalb nur als Schlüsselwort möglich. Nur platz und schaufenster zählen; jeder andere Wert ist kein Laborprofil."""
     uid = normalize_uuid(user_id)
     if uid is None:
         return Zugang.haus(str(user_id), "fehler", "Profil-ID ungültig")
@@ -165,6 +171,13 @@ async def zugang_laden(user_id: str, *, db: Database | None = None, tresor: Tres
             return Zugang.haus(uid, "fehler", "Schlüssel nicht lesbar", stt=stt, tts=tts)
         return Zugang(uid, "claude", "profil", claude_modell=modell, claude_schluessel=schluessel,
                       claude_workspace=zeile["claude_workspace"], stt=stt, tts=tts, claude_code=code)
+    server_schluessel = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    if labor_art in LABOR_ARTEN and server_schluessel:
+        # Testlabor: Laborprofile führen das Gespräch über den Server-Schlüssel (ANTHROPIC_API_KEY), Standardmodell Haiku
+        # (oder das vom Admin gesetzte Modell des Profils). Nur das Gespräch: kein Claude-Code-Token (claude_code bleibt
+        # falsch) und boss.entwicklung_quelle liefert für labor immer "keine". Ohne Schlüssel bleibt es bei Hausmodellen.
+        return Zugang(uid, "claude", "labor", claude_modell=modell, claude_schluessel=server_schluessel,
+                      claude_workspace=(os.getenv("ANTHROPIC_WORKSPACE_ID") or "").strip() or None, stt=stt, tts=tts)
     if kern_zuordnung(uid):
         return Zugang(uid, "claude", "zuordnung", claude_modell=modell,
                       claude_schluessel=(os.getenv("ANTHROPIC_API_KEY") or "").strip(),

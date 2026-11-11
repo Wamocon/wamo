@@ -6,7 +6,9 @@ import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
 import { alleFristenLoeschen, fristStarten } from "@/lib/auftragFrist";
 import { auftraegeNachFrist, auftraegeNachStart, auftragStartbar, auftragVerwerfbar } from "@/lib/auftragStart";
+import { abgelaufenHinweis } from "@/lib/laborKarte";
 import { useNeuladenWarnung } from "@/lib/useNeuladenWarnung";
+import { neuladenPlanen } from "@/lib/laborNeuladen";
 import { aktiverSlot, startUrl } from "@/lib/kernSlot";
 import { pcAutoLesen } from "@/lib/einstellungen";
 import { einstellungenOeffnen } from "@/lib/einstellungenHash";
@@ -904,6 +906,8 @@ export function useWamo(): WamoAktionen {
             } else {
               if (msg.type === "sitzung_beendet") kernEnde.current = msg.grund;
               applyServerMessage(msg);
+              // Testlabor: Durchlauf vom Betreuer beendet, die Seite lädt sich neu (Untertitel und Canvas dürfen nicht bleiben)
+              if (msg.type === "labor_durchlauf_ende") neuladenPlanen({ neuladen: () => window.location.reload() });
               if (msg.type === "sitzung_beendet" && msg.anmelden) neuAnmelden(msg.grund || "Bitte neu anmelden.");
             }
           },
@@ -1003,7 +1007,7 @@ export function useWamo(): WamoAktionen {
         approvals: s.approvals.filter((x) => !(x.job === a.job && x.id === a.id)),
         ansage: `Freigabe abgelaufen: ${a.grund}`,
       }));
-      setFehler({ art: "hinweis", text: "Die Freigabe ist abgelaufen; am PC ist nichts passiert." });
+      setFehler({ art: "hinweis", text: abgelaufenHinweis(a.job) });
       return false;
     }
     if (!client || !istOnline(wamo.get())) {
