@@ -2,7 +2,9 @@
 
 Der Fernzugriff war vorher nur ein Knopf in den Einstellungen: WAMO kannte ihn nicht und konnte auf die Frage nach den Monitoren der Sparks
 nur "kenne ich nicht" sagen. Jetzt kennt ihn die Persona (nur Admin bei eingeschaltetem Fernzugriff), und das Werkzeug öffnet nur den Dialog
-in der Oberfläche: Die Sitzung startet der Nutzer dort selbst, mit frischem Code der Authenticator-App.
+in der Oberfläche: Die Sitzung startet der Nutzer dort selbst, mit einem echten Klick auf Verbinden. Seit KP-2 verlangt der Dialog den Code der
+Authenticator-App nur noch bei einer älteren Anmeldung; das Codefeld war früher die Schranke gegen ein Öffnen durch das Modell (Befund M7),
+jetzt ist es der Klick der Person.
 
 Ausführen:  uv run python -m pytest -q test_fernzugriff_sprache.py   (in voice-core/)
 """
@@ -51,6 +53,15 @@ class PersonaTests(unittest.TestCase):
             self.assertIn(muss, text)
         self.assertNotIn("{name}", text)
 
+    def test_kein_code_bei_jedem_start_und_der_klick_gehoert_der_person(self):
+        """Seit KP-2 verlangt der Dialog den Code nur bei einer älteren Anmeldung. WAMO sagt nicht mehr, dass jedes Mal ein Code
+        nötig ist, und nennt den Klick auf Verbinden als den Schritt der Person (Befund M7)."""
+        text = P.build_system_prompt("Niko", "du", fernzugriff=True)
+        self.assertNotIn("frischen Code", text)
+        self.assertNotIn("Code der Authenticator-App eingeben muss", text)
+        self.assertIn("selbst auf Verbinden klickt", text)
+        self.assertRegex(text, r"Nur bei einer älteren Anmeldung fragt der Dialog zusätzlich den Code der\s+Authenticator-App ab")
+
     def test_nur_der_baustein_kommt_dazu(self):
         ohne, mit = P.build_system_prompt("Niko", "du"), P.build_system_prompt("Niko", "du", fernzugriff=True)
         self.assertEqual(mit.replace(P._fill(P.FERNZUGRIFF_PROMPT, {"name": "Niko", "anrede": "du"}), ""), ohne)
@@ -87,7 +98,55 @@ class WerkzeugTests(unittest.TestCase):
         asyncio.run(llm.funktionen["fernzugriff_oeffnen"](params))
         self.assertEqual([f.data for f in llm.frames], [{"type": "fernzugriff_oeffnen"}])  # ohne Ziel und ohne Nutzdaten
         self.assertEqual(ergebnisse[0]["geoeffnet"], True)
-        self.assertIn("Code", ergebnisse[0]["hinweis"])
+        self.assertIn("Verbinden", ergebnisse[0]["hinweis"])  # der Klick gehört der Person
+        self.assertNotIn("Code", ergebnisse[0]["hinweis"])    # kein Hinweis auf ein Codefeld, das es meist nicht mehr gibt
+
+    def test_aufruf_startet_nie_eine_sitzung_auch_wenn_alles_bereitsteht(self):
+        """Befund M7 (Kern): Das Codefeld war die Schranke gegen ein Öffnen durch das Modell. Ohne Codefeld darf der Aufruf an
+        keiner Stelle Datenbank, Gateway oder Zugangsdienst berühren: Alles, was eine Sitzung beginnen kann, wird zur Falle."""
+        import rd_api
+
+        beruehrt: list[str] = []
+
+        def falle(name):
+            async def f(*_a, **_k):
+                beruehrt.append(name)
+                raise AssertionError(f"{name} berührt")
+            return f
+
+        alt = {n: getattr(rd_api, n) for n in ("start", "gateway", "_sitzung_beginnen", "_am_gateway_anmelden", "shared_database")}
+        rd_api.start = falle("start")
+        rd_api.gateway = falle("gateway")
+        rd_api._sitzung_beginnen = falle("_sitzung_beginnen")
+        rd_api._am_gateway_anmelden = falle("_am_gateway_anmelden")
+        rd_api.shared_database = lambda: beruehrt.append("shared_database")
+        try:
+            llm, _ = schemas(ADMIN, fernzugriff=True)
+
+            async def rueck(_r):
+                pass
+
+            asyncio.run(llm.funktionen["fernzugriff_oeffnen"](SimpleNamespace(llm=llm, arguments={}, result_callback=rueck)))
+        finally:
+            for n, f in alt.items():
+                setattr(rd_api, n, f)
+        self.assertEqual(beruehrt, [])
+        self.assertEqual([f.data for f in llm.frames], [{"type": "fernzugriff_oeffnen"}])
+
+    def test_beschreibung_nennt_den_klick_und_keinen_code_bei_jedem_start(self):
+        beschreibung = T.FERNZUGRIFF_SCHEMA.description
+        self.assertIn("Startet nie selbst eine Sitzung", beschreibung)
+        self.assertIn("klickt selbst auf Verbinden", beschreibung)
+        self.assertNotIn("bestätigt mit dem", beschreibung)
+
+    def test_tools_importiert_rd_api_nie(self):
+        import ast
+
+        baum = ast.parse((HIER / "tools.py").read_text(encoding="utf-8"))
+        namen = {a.name.split(".")[0] for n in ast.walk(baum) if isinstance(n, ast.Import) for a in n.names}
+        namen |= {n.module.split(".")[0] for n in ast.walk(baum) if isinstance(n, ast.ImportFrom) and n.module}
+        self.assertNotIn("rd_api", namen)
+        self.assertNotIn("geraete_admin_api", namen)
 
     def test_schema_hat_keine_parameter(self):
         self.assertEqual(T.FERNZUGRIFF_SCHEMA.name, "fernzugriff_oeffnen")

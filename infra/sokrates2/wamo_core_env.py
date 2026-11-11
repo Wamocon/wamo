@@ -67,6 +67,10 @@ ERLAUBT = set(PFLICHT) | {
     "LITELLM_BASE_URL", "WAMO_SUCHE", "WAMO_SEARXNG_URL", "WAMO_LITELLM_EXTRA",
     # Eine Sitzung je Profil und Höchstalter der Anmeldung (bot.py, auth_gate.py)
     "WAMO_SITZUNG_EINZELN", "WAMO_ANMELDUNG_MAX_STUNDEN",
+    # Fernzugriff ohne frischen Code je Start (voice-core/rd_api.py, KP-2): Höchstalter des Codes der Anmeldung nur für den Fernzugriff
+    # in Minuten (1 bis 43200). Leer oder 0 heißt aus (Standard); jeder andere Wert, auch ein Tippfehler, gilt als strengste Stufe
+    # (frischer Code bei jedem Start) und schreibt eine Fehlerzeile ins Journal.
+    "WAMO_RD_ANMELDUNG_MAX_MIN",
     # Testlabor (voice-core/labor*.py): kommen nur vom Server, nie aus der .env des PCs (nicht in AUS_ENV von scripts/wamo_kern_sokrates2.py).
     # WAMO_LABOR_TOKEN ist ein Geheimnis (256 Bit Bearer für den Dienst der Kollegen, 32 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-): wie alle
     # Werte nie angezeigt, "liste" nennt nur den Namen. URL: Adresse des Dienstes (HTTPS). EINWILLIGUNG_MIN: kleinste gültige Version des Hinweises
