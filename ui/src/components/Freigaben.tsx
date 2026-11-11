@@ -4,6 +4,7 @@ import { memo, useEffect, useLayoutEffect, useRef } from "react";
 import { useSelect } from "@/lib/store";
 import { abnahmeEintraege } from "@/lib/auftragAbnahme";
 import { kartenAnsicht, repoAnzeige } from "@/lib/auftragStart";
+import { karteTexte } from "@/lib/laborKarte";
 import type { Auftrag } from "@/lib/nachrichten";
 import { wamo, type Approval } from "@/lib/wamo";
 
@@ -22,7 +23,8 @@ function fokusWeitergeben() {
 
 /**
  * Freigabe-Karte: immer ganz oben in der Präsenzspalte. Für Entwicklungsaufträge und für kritische PC-Aktionen
- * (job "pc": PowerShell, Senden in Mail und Messenger, lange Suchanfragen), dann mit Zielanwendung und Frist. Sicherheit: kein Tastenkürzel, Esc lehnt
+ * (job "pc": PowerShell, Senden in Mail und Messenger, lange Suchanfragen), dann mit Zielanwendung und Frist, und für schreibende Aktionen im
+ * Testlabor (job "labor": Ticket anlegen, ändern, verschieben, kommentieren, Mail senden; Texte in lib/laborKarte.ts). Sicherheit: kein Tastenkürzel, Esc lehnt
  * nicht ab, keine Freigabe per Sprache. "Freigeben" und "Ablehnen" sind gleichgewichtig gestaltet,
  * damit nichts zum schnellen Bestätigen verleitet. Texte kommen bereinigt und gekürzt aus
  * lib/nachrichten.ts (keine Steuer- oder Bidi-Zeichen). Der Fokus springt auf die Überschrift (nicht
@@ -32,6 +34,7 @@ function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (a: Approval, ja
   const head = useRef<HTMLHeadingElement>(null);
   const karte = useRef<HTMLElement>(null);
   const id = `ap-${a.job}-${a.id}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const texte = karteTexte(a.job); // Job "pc", "labor" (Testlabor) oder ein Entwicklungsauftrag: lib/laborKarte.ts
 
   useEffect(() => {
     if (document.activeElement === document.body) head.current?.focus();
@@ -48,20 +51,21 @@ function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (a: Approval, ja
   return (
     <article className="approval" aria-labelledby={id} data-approval={id} ref={karte}>
       <p className="sr-only" role="alert">
-        {a.job === "pc" ? "PC-Aktion freigeben" : "Freigabe nötig"}: {a.grund}
+        {texte.ueberschrift}: {a.grund}
         {a.ziel && `, Ziel: ${a.ziel}`}
       </p>
       <p className="eyebrow">
-        {a.job === "pc" ? "PC-Aktion freigeben" : "Freigabe nötig"}
+        {texte.ueberschrift}
         {a.projekt && <> · {a.projekt}</>}
       </p>
       <h3 id={id} ref={head} tabIndex={-1}>
         {a.grund}
       </h3>
+      {texte.hinweis && <p className="approval-hinweis">{texte.hinweis}</p>}
       {a.von && <p className="approval-von">angefordert von {a.von}</p>}
       {a.ziel && (
         <p className="approval-ziel">
-          <span className="approval-ziel-label">Ziel (Fenster und Programm):</span> {a.ziel}
+          <span className="approval-ziel-label">{texte.zielLabel}</span> {a.ziel}
         </p>
       )}
       <pre className="approval-detail" tabIndex={0} role="region" aria-label="Was genau ausgeführt wird">

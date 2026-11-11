@@ -6,6 +6,7 @@ import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
 import { alleFristenLoeschen, fristStarten } from "@/lib/auftragFrist";
 import { auftraegeNachFrist, auftraegeNachStart, auftragStartbar, auftragVerwerfbar } from "@/lib/auftragStart";
+import { abgelaufenHinweis } from "@/lib/laborKarte";
 import { useNeuladenWarnung } from "@/lib/useNeuladenWarnung";
 import { aktiverSlot, startUrl } from "@/lib/kernSlot";
 import { pcAutoLesen } from "@/lib/einstellungen";
@@ -1003,7 +1004,7 @@ export function useWamo(): WamoAktionen {
         approvals: s.approvals.filter((x) => !(x.job === a.job && x.id === a.id)),
         ansage: `Freigabe abgelaufen: ${a.grund}`,
       }));
-      setFehler({ art: "hinweis", text: "Die Freigabe ist abgelaufen; am PC ist nichts passiert." });
+      setFehler({ art: "hinweis", text: abgelaufenHinweis(a.job) });
       return false;
     }
     if (!client || !istOnline(wamo.get())) {
