@@ -238,4 +238,47 @@ an einer Schwelle ab. Das Skript besteht zuerst gegen eine saubere Nachbildung d
 
 Die Vorversion vom 18.11. prüft WAMO am Do 19.11. mit einem Integrationstest, damit Abweichungen vor dem Freeze auffallen. Abweichungen korrigiert ihr im Dienst.
 
+## 9. Beispiele (Platz 3, Durchlauf `5b0f0c1e-7a1d-4c61-9b52-0f6d2a8e41aa`)
+
+Ticket anlegen (V4):
+
+```text
+POST /api/kern/tickets
+Authorization: Bearer <WAMO_LABOR_TOKEN>
+X-WAMO-Platz: 3
+X-WAMO-Durchlauf: 5b0f0c1e-7a1d-4c61-9b52-0f6d2a8e41aa
+Idempotency-Key: 8f14e45f-ceea-467a-9575-8c1a1f0c9e11
+Content-Type: application/json
+
+{"typ": "bug", "prioritaet": "hoch", "titel": "Anmeldung schlägt fehl", "beschreibung": "Nach dem Klick passiert nichts."}
+
+201 {"nummer": "LAB-30", "titel": "Anmeldung schlägt fehl", "typ": "bug", "prioritaet": "hoch", "status": "zu_erledigen",
+     "beschreibung": "Nach dem Klick passiert nichts.", "version": 1, "im_durchlauf": true}
+```
+
+Dieselbe Anfrage mit demselben `Idempotency-Key` noch einmal: 201 mit derselben Antwort und dem Kopf `Idempotent-Replayed: true`, es entsteht kein zweites Ticket.
+
+Status setzen mit veralteter Version (V6), das Ticket wurde zwischendurch geändert (gespeichert ist Version 2):
+
+```text
+POST /api/kern/tickets/LAB-12/status
+{"erwartete_version": 1, "status": "erledigt"}
+
+409 {"fehler": "ticket_veraendert", "text": "Das Ticket hat sich geändert."}
+```
+
+Schreibaufruf nach dem Ende des Durchlaufs (V4 bis V7):
+
+```text
+409 {"fehler": "durchlauf_beendet", "text": "Der Durchlauf ist beendet."}
+```
+
+Suche nach dem Zeichen Prozent (V2), das nur wörtlich gesucht wird:
+
+```text
+GET /api/kern/tickets?q=%25&limit=5
+
+200 {"tickets": [{"nummer": "LAB-31", "titel": "100% fertig", ...}], "gesamt": 1}
+```
+
 WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn
