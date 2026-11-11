@@ -21,6 +21,7 @@ import { Hinweise as AdminHinweise, HinweiseZaehler } from "@/components/Hinweis
 import { Kopfzeile } from "@/components/Kopfzeile";
 import type { Sitzung } from "@/components/LoginGate";
 import { MikrofonWahl } from "@/components/MikrofonWahl";
+import { StillAktionen, UebernehmenHinweis } from "@/components/StillStart";
 import { Verlauf } from "@/components/Verlauf";
 import { einstellungenSchliessen, oeffnerFuerFokus, useEinstellungenZiel } from "@/lib/einstellungenHash";
 import type { Mikrofon } from "@/lib/mikrofon";
@@ -82,9 +83,13 @@ const FehlerAnzeige = memo(function FehlerAnzeige({
 const Aktionen = memo(function Aktionen({ aktionen }: { aktionen: WamoAktionen }) {
   const presence = useSelect(wamo, (s) => s.presence);
   const online = useSelect(wamo, istOnline);
+  const still = useSelect(wamo, (s) => s.stillStart.still);
   return (
     <div className="actions">
-      {presence === "connecting" ? (
+      {online && still && aktionen.sprechen ? (
+        // Start beim Tippen: "Gespräch starten" macht die stille Sitzung zum Gespräch (keine neue Sitzung, keine Verdrängung)
+        <StillAktionen onSprechen={aktionen.sprechen} onBeenden={() => void aktionen.disconnect()} />
+      ) : presence === "connecting" ? (
         <>
           <button type="button" className="btn-primary wake" disabled>
             Verbinde …
@@ -185,6 +190,8 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
     signOut();
   }, [disconnect, signOut]);
   const retry = useCallback(() => void connect(), [connect]);
+  // "Hier übernehmen" nach einer Übernahme durch ein anderes Fenster: erst dieser Klick verdrängt dort die Sitzung (still, wie beim Tippen)
+  const uebernehmen = useCallback(() => void connect({ still: true }), [connect]);
 
   return (
     <KommandoRahmen
@@ -199,6 +206,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
             onMikrofonWaehlen={aktionen.mikrofonWaehlen}
           />
           <HinweisToast />
+          <UebernehmenHinweis onUebernehmen={uebernehmen} />
           <GemerktHinweis onVergessen={vergesseEintrag} />
           <AdminHinweise />
           <GeraetEinrichtung />
@@ -210,6 +218,8 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
         <Bedienung
           onMikro={aktionen.toggleMic}
           senden={aktionen.textSenden}
+          stillStarten={aktionen.stillStarten}
+          eingabeMelden={aktionen.eingabeMelden}
           verlaufOffen={verlaufOffen}
           onVerlauf={toggleVerlauf}
         />

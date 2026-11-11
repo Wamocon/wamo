@@ -5,15 +5,28 @@ import { PipecatClient, RTVIError } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
 import { alleFristenLoeschen, fristStarten } from "@/lib/auftragFrist";
-import { auftraegeNachFrist, auftraegeNachStart, auftragStartbar, auftragVerwerfbar } from "@/lib/auftragStart";
+import { auftragLaeuft, auftraegeNachFrist, auftraegeNachStart, auftragStartbar, auftragVerwerfbar } from "@/lib/auftragStart";
 import { abgelaufenHinweis } from "@/lib/laborKarte";
 import { useNeuladenWarnung } from "@/lib/useNeuladenWarnung";
 import { neuladenPlanen } from "@/lib/laborNeuladen";
 import { aktiverSlot, startUrl } from "@/lib/kernSlot";
-import { pcAutoLesen } from "@/lib/einstellungen";
+import { pcAutoLesen, stillStartLesen } from "@/lib/einstellungen";
 import { einstellungenOeffnen } from "@/lib/einstellungenHash";
 import type { GeraetBruecke } from "@/lib/geraet";
 import { bildAnzeigen, liveBildLoeschen } from "@/lib/liveBild";
+import { nutzerLesen, useNutzerHalten } from "@/lib/nutzer";
+import { StillMedienManager } from "@/lib/stillMedien";
+import {
+  HINWEIS_RUHE,
+  istLaborKonto,
+  istUebernommen,
+  LEERLAUF_TAKT_MS,
+  leerlaufPruefen,
+  startEntscheidung,
+  startNotieren,
+  STILL_AUS,
+  type LeerlaufLage,
+} from "@/lib/stillStart";
 import { parseServerMessage, type Auftrag, type Markierung, type ModellModus } from "@/lib/nachrichten";
 import type { SchluesselArt } from "@/lib/schluesselhilfe";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
@@ -67,6 +80,7 @@ import {
   gesprochen,
   historyRef,
   istOnline,
+  laeuftWerkzeug,
   leereCaption,
   levelsRef,
   logEintrag,
@@ -114,7 +128,8 @@ declare global {
 
 /** Was die Oberfläche auslösen kann; der Zustand selbst liegt im Store (lib/wamo.ts). */
 export type WamoAktionen = {
-  connect: () => Promise<void>;
+  /** Gespräch starten. still: Start beim Tippen (ohne Mikrofon, Antworten als Text, lib/stillStart.ts); sonst wie immer mit Mikrofon und Stimme. */
+  connect: (opt?: { still?: boolean }) => Promise<void>;
   disconnect: () => Promise<void>;
   /** true, wenn die Entscheidung gesendet wurde (sonst bleibt die Karte stehen) */
   decide: (a: Approval, ja: boolean) => boolean;
@@ -131,6 +146,13 @@ export type WamoAktionen = {
    *  werden vorher entfernt); true, wenn die Eingabe angenommen wurde (das Feld wird geleert). Optional, damit die
    *  Vorschau ohne Kern auskommt. Ersetzt nie eine Freigabe: die gibt nur der Klick auf die Karte (decide). */
   textSenden?: (text: string) => boolean;
+  /** Start beim Tippen: startet still eine Sitzung, wenn der Geräteschalter an ist und nichts dagegen spricht (Laborkonto, verdeckter Tab,
+   *  Übernahme durch ein anderes Fenster, Ratenbegrenzung); true, wenn gestartet wurde. Optional, damit die Vorschau ohne Kern auskommt. */
+  stillStarten?: () => boolean;
+  /** Eine still gestartete Sitzung auf Sprechen umstellen: Mikrofon öffnen, Wiedergabe und Sprachantwort an. */
+  sprechen?: () => void;
+  /** Die Person hat getippt: die Ruhezeit der Leerlaufregel beginnt neu. */
+  eingabeMelden?: () => void;
   /** Fehlermeldung schließen */
   schliesseFehler: () => void;
   /** angeschlossene Mikrofone (ohne die Windows-Aliase), leer ohne Verbindung */
@@ -331,6 +353,21 @@ async function gewuenschtesMikrofon(client: PipecatClient, spur: MediaStreamTrac
 
 const TOKEN_REST_MS = 60_000; // so lange vor Ablauf gilt ein Token als "läuft ab"
 
+/** Was die Leerlaufregel (lib/stillStart.ts, Befund L1) vom Zustand wissen muss. */
+function leerlaufLage(s: ReturnType<typeof wamo.get>): LeerlaufLage {
+  return {
+    perTippen: s.stillStart.perTippen,
+    online: istOnline(s),
+    presence: s.presence,
+    pcSteuerung: s.betrieb?.pcSteuerung === "an",
+    karten: s.approvals.length + s.auftraege.length,
+    auftragLaeuft: auftragLaeuft(s.vorgaenge, s.auftraege),
+    vorgangLaeuft: s.vorgaenge.some((v) => v.status === "laeuft" || v.status === "wartet_freigabe" || v.status === "pruefen"),
+    liveBild: s.liveBild.geoeffnet,
+    werkzeugLaeuft: laeuftWerkzeug(s),
+  };
+}
+
 export function useWamo(): WamoAktionen {
   const clientRef = useRef<PipecatClient | null>(null);
   // Generation der Verbindung: jeder Start und jedes Trennen zählt hoch. Rückrufe und ein spät
@@ -376,13 +413,18 @@ export function useWamo(): WamoAktionen {
   const textLaeuft = useRef(false);
   // Verbindungs-Watchdog (lib/verbindungsfrist.ts): ohne Betriebsmeldung nach 20 s Abbruch mit Meldung
   const fristRef = useRef<ReturnType<typeof erstelleFrist> | null>(null);
+  // Start beim Tippen (lib/stillStart.ts): Zeitpunkt der letzten Eingabe (Date.now) für die Leerlaufregel, Zeiten der letzten stillen Starts
+  const letzteEingabe = useRef(0); // gesetzt beim Start und bei jeder Eingabe
+  const startZeiten = useRef<number[]>([]);
+  // Der Nutzer (Kennung für den Schalter, E-Mail für die Laborsperre) bleibt aus der Supabase-Sitzung aktuell
+  useNutzerHalten();
 
   /**
    * Gemeinsamer Abbau für "Gespräch beenden", Verbindungsabbruch und Verlassen der Seite:
    * Generation weiterzählen, Client trennen, Pegel nullen, AudioContext schließen, Wiedergabe
    * stoppen. Offene Freigaben verfallen (sie gehen nur über die laufende Verbindung).
    */
-  const teardown = useCallback((grund: "nutzer" | "getrennt" | "unmount" | "frist", meldung?: Fehler) => {
+  const teardown = useCallback((grund: "nutzer" | "getrennt" | "unmount" | "frist" | "ruhe", meldung?: Fehler) => {
     genRef.current += 1;
     fristRef.current?.stoppe();
     textLaeuft.current = false;
@@ -435,6 +477,8 @@ export function useWamo(): WamoAktionen {
         error = meldung;
       } else if (grund === "nutzer" && verfallen) {
         error = { art: "hinweis", text: "Gespräch beendet. Offene Freigaben und Aufträge sind verfallen." };
+      } else if (grund === "ruhe") {
+        error = { art: "hinweis", text: HINWEIS_RUHE };
       }
       return {
         ...s,
@@ -448,8 +492,19 @@ export function useWamo(): WamoAktionen {
         micOn: true,
         textMoeglich: false,
         mikrofon: null,
+        // Eine Übernahme durch ein anderes Fenster merkt sich die Oberfläche: Das Tippen startet hier dann nicht von selbst neu
+        stillStart: { ...STILL_AUS, uebernommen: grund === "getrennt" && istUebernommen(vomKern) },
         error,
-        ansage: grund === "frist" ? "Keine Antwort vom Kern" : !war ? s.ansage : grund === "getrennt" ? "Verbindung getrennt" : "Gespräch beendet",
+        ansage:
+          grund === "frist"
+            ? "Keine Antwort vom Kern"
+            : !war
+              ? s.ansage
+              : grund === "getrennt"
+                ? "Verbindung getrennt"
+                : grund === "ruhe"
+                  ? "Sitzung wegen Ruhe beendet"
+                  : "Gespräch beendet",
       };
     });
   }, []);
@@ -648,7 +703,9 @@ export function useWamo(): WamoAktionen {
     teardown("nutzer");
   }, [teardown]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (opt?: { still?: boolean }) => {
+    // Start beim Tippen: ohne Mikrofon, Antworten als Text, Wiedergabe stumm (bleibt auch beim zweiten Versuch so)
+    const still = opt?.still === true;
     // erneut = zweiter Versuch nach erneuerter Sitzung (nur einmal, nach 401 oder 409)
     const starte = async (erneut: boolean): Promise<void> => {
       teardown("unmount"); // Reste eines früheren Versuchs abbauen, ohne Meldung
@@ -657,7 +714,15 @@ export function useWamo(): WamoAktionen {
       const gen = genRef.current;
       const aktuell = () => genRef.current === gen;
       seen.current = { botOutput: false, userInput: false };
-      wamo.set((s) => ({ ...s, error: null, presence: "connecting", caption: leereCaption, micOn: true }));
+      wamo.set((s) => ({
+        ...s,
+        error: null,
+        presence: "connecting",
+        caption: leereCaption,
+        micOn: !still,
+        stillStart: { still, perTippen: still, uebernommen: false },
+        ansage: still ? "Verbinde, WAMO startet still" : s.ansage,
+      }));
       // Welcher Kern: Betriebsart dieses Geräts direkt vor dem Verbinden (Desktop: aus dem Hauptprogramm)
       const art = await betriebsartFuerStart();
       if (!aktuell()) return;
@@ -675,6 +740,8 @@ export function useWamo(): WamoAktionen {
         wamo.set((s) => ({
           ...s,
           presence: "offline",
+          stillStart: STILL_AUS,
+          micOn: true,
           error: { art: "dienst", text: `Betriebsart ${KERN[art].name} ist auf diesem Gerät nicht eingerichtet.` },
         }));
         return;
@@ -721,8 +788,9 @@ export function useWamo(): WamoAktionen {
         // WavMediaManager statt des Standards DailyMediaManager: Mikrofon rein lokal per getUserMedia.
         // Der Daily-Manager lädt zur Laufzeit Code vom Daily-CDN; das blockt die CSP, und fremden Code
         // aus dem Netz wollen wir in WAMO nicht ausführen.
-        transport: new SmallWebRTCTransport({ mediaManager: new WavMediaManager() }),
-        enableMic: true,
+        // Still (Start beim Tippen): StillMedienManager öffnet das Mikrofon erst bei "Sprechen" (lib/stillMedien.ts)
+        transport: new SmallWebRTCTransport({ mediaManager: still ? new StillMedienManager() : new WavMediaManager() }),
+        enableMic: !still,
         enableCam: false,
         callbacks: {
           onBotReady: (bereit) => {
@@ -731,7 +799,7 @@ export function useWamo(): WamoAktionen {
               ...s,
               presence: "idle",
               error: null,
-              ansage: "Verbunden",
+              ansage: s.stillStart.still ? "Bereit, Mikrofon aus" : "Verbunden",
               textMoeglich: unterstuetztText(bereit?.version),
             }));
             // Kam bis dahin keine eigene Mikrofonspur (Öffnen schlug lautlos fehl), hört WAMO nichts: nicht schweigen
@@ -828,6 +896,7 @@ export function useWamo(): WamoAktionen {
               return;
             }
             if (!audioRef.current) audioRef.current = new Audio();
+            audioRef.current.muted = wamo.get().stillStart.still; // still: die Begrüßung des Kerns bleibt unhörbar, bis "Sprechen" es freigibt
             const stream = new MediaStream([track]);
             audioRef.current.srcObject = stream;
             audioRef.current.play().catch(() => {
@@ -937,7 +1006,7 @@ export function useWamo(): WamoAktionen {
         if (session && anmeldungAbgelaufen(session.access_token, Date.now(), maxStundenHier())) {
           // zu alt: gar nicht erst verbinden, sondern abmelden (die Anmeldemaske nennt den Grund)
           clientRef.current = null;
-          wamo.set((s) => ({ ...s, presence: "offline" }));
+          wamo.set((s) => ({ ...s, presence: "offline", stillStart: STILL_AUS, micOn: true }));
           neuAnmelden("Deine Anmeldung ist abgelaufen. Bitte neu anmelden.");
           return;
         }
@@ -951,7 +1020,7 @@ export function useWamo(): WamoAktionen {
         await client.startBotAndConnect({ endpoint: startUrl(kern, slot), headers });
         // inzwischen abgebrochen: die gerade entstandene Sitzung sofort wieder schließen
         if (!aktuell()) void client.disconnect().catch(() => undefined);
-        else void gewuenschtesMikrofon(client, micMeter.current?.track, aktuell);
+        else if (!still) void gewuenschtesMikrofon(client, micMeter.current?.track, aktuell);
       } catch (e) {
         if (!aktuell()) {
           void client.disconnect().catch(() => undefined);
@@ -966,7 +1035,7 @@ export function useWamo(): WamoAktionen {
           authHeaders.current = null;
           tokenAblauf.current = null;
           void client.disconnect().catch(() => undefined);
-          wamo.set((s) => ({ ...s, presence: "offline" }));
+          wamo.set((s) => ({ ...s, presence: "offline", stillStart: STILL_AUS, micOn: true }));
           neuAnmelden("Deine Anmeldung ist zu alt. Bitte neu anmelden.");
           return;
         }
@@ -989,7 +1058,7 @@ export function useWamo(): WamoAktionen {
         // Ließ sich das Mikrofon nicht öffnen, ist das der Grund (der Start bricht dann im Transport ab)
         const mic = geraetFehler.current;
         const error = mic ? { art: "mikrofon" as const, text: mikrofonFehlerText(mic) } : fehlerText(status, detail, name, art);
-        wamo.set((s) => ({ ...s, presence: "offline", error }));
+        wamo.set((s) => ({ ...s, presence: "offline", error, stillStart: STILL_AUS, micOn: true }));
       }
     };
     await starte(false);
@@ -1140,6 +1209,61 @@ export function useWamo(): WamoAktionen {
     return true;
   }, []);
 
+  // Die Person hat getippt: die Ruhezeit der Leerlaufregel (lib/stillStart.ts) beginnt neu
+  const eingabeMelden = useCallback(() => {
+    letzteEingabe.current = Date.now();
+  }, []);
+
+  // Start beim Tippen: nur mit Schalter (je Gerät und Person, Standard aus), nie für Laborkonten, nie im verdeckten Tab, nie nach einer
+  // Übernahme durch ein anderes Fenster, höchstens 6 Starts je 10 Minuten. Alles Weitere entscheidet lib/stillStart.ts.
+  const stillStarten = useCallback((): boolean => {
+    const s = wamo.get();
+    const nutzer = nutzerLesen();
+    const jetzt = Date.now();
+    const e = startEntscheidung({
+      schalter: stillStartLesen(nutzer.id),
+      laborKonto: istLaborKonto(nutzer.email),
+      sichtbar: typeof document === "undefined" || document.visibilityState === "visible",
+      presence: s.presence,
+      uebernommen: s.stillStart.uebernommen,
+      startZeiten: startZeiten.current,
+      jetzt,
+    });
+    if (e.art !== "starten") {
+      if (e.hinweis) setFehler({ art: "hinweis", text: e.hinweis });
+      return false;
+    }
+    startZeiten.current = startNotieren(startZeiten.current, jetzt);
+    letzteEingabe.current = jetzt;
+    void connect({ still: true });
+    return true;
+  }, [connect]);
+
+  // Eine still gestartete Sitzung auf Sprechen umstellen: Mikrofon holt der StillMedienManager erst jetzt (Berechtigungsfrage nur hier),
+  // die Spur legt onTrackStarted auf den Sender. Ab jetzt ist es ein Gespräch: Stimme an, keine Leerlaufregel mehr.
+  const sprechen = useCallback(() => {
+    const client = clientRef.current;
+    const s = wamo.get();
+    if (!client || !istOnline(s) || !s.stillStart.still) return;
+    const gen = genRef.current;
+    try {
+      client.enableMic(true);
+    } catch {
+      setFehler({ art: "mikrofon", text: "Das Mikrofon ließ sich nicht öffnen. Bitte „Gespräch starten“ benutzen." });
+      return;
+    }
+    if (audioRef.current) audioRef.current.muted = false;
+    wamo.set((x) => ({ ...x, micOn: true, stillStart: { ...x.stillStart, still: false, perTippen: false }, ansage: "Mikrofon an, WAMO spricht jetzt" }));
+    // Kommt keine eigene Spur an (Berechtigung verweigert, kein Gerät), sagt es die Oberfläche wie nach dem Verbinden
+    setTimeout(() => {
+      const st = wamo.get();
+      if (genRef.current === gen && istOnline(st) && st.micOn && !micMeter.current && st.error?.art !== "mikrofon") {
+        console.warn("[WAMO] Mikrofon: keine Spur nach Sprechen");
+        setFehler({ art: "mikrofon", text: keineSpurText() });
+      }
+    }, SPUR_MS);
+  }, []);
+
   // Texteingabe: eine getippte Nachricht geht wie eine gesprochene Bitte an WAMO (RTVI send-text, der Kern antwortet mit
   // Stimme). Der Text wird nie geloggt und nie auf Vorrat gehalten; ein Schlüssel wird vor dem Senden entfernt
   // (lib/textEingabe.ts). Mit "run_immediately" unterbricht die Nachricht eine laufende Antwort, wie ein Einwurf.
@@ -1160,13 +1284,15 @@ export function useWamo(): WamoAktionen {
       senden: (text) =>
         clientRef.current
           ? Promise.race([
-              clientRef.current.sendText(text, { run_immediately: true, audio_response: true }),
+              // still (Start beim Tippen): Antwort als Text; erst nach "Sprechen" oder "Gespräch starten" mit Stimme
+              clientRef.current.sendText(text, { run_immediately: true, audio_response: !wamo.get().stillStart.still }),
               new Promise<never>((_, nein) => setTimeout(() => nein(new Error("Zeitüberschreitung")), 10_000)),
             ])
           : Promise.reject(new Error("keine Verbindung")),
       hinweis: (text) => setFehler({ art: "hinweis", text }),
       fehler: (art, text) => setFehler({ art, text }),
       angenommen: (text) => {
+        letzteEingabe.current = Date.now();
         if (wamo.get().presence === "speaking") {
           // Unterbrechung durch Tippen: Stimmlinie und Rand zeigen sie wie bei einem gesprochenen Einwurf
           levelsRef.current.cut = true;
@@ -1238,6 +1364,10 @@ export function useWamo(): WamoAktionen {
   const toggleMic = useCallback(() => {
     const client = clientRef.current;
     if (!client || !istOnline(wamo.get())) return;
+    if (wamo.get().stillStart.still) {
+      sprechen(); // still gestartet: erst jetzt öffnet sich das Mikrofon
+      return;
+    }
     const on = !wamo.get().micOn;
     try {
       client.enableMic(on);
@@ -1245,7 +1375,18 @@ export function useWamo(): WamoAktionen {
       return;
     }
     wamo.set((s) => ({ ...s, micOn: on, ansage: on ? "Mikrofon an" : "Mikrofon aus" }));
-  }, []);
+  }, [sprechen]);
+
+  // Leerlaufregel (lib/stillStart.ts): Eine per Tippen gestartete Sitzung endet nach 20 Minuten ohne Eingabe, nie bei PC-Steuerung,
+  // offener Karte, laufendem Auftrag, Vorgang, Live-Bild oder Antwort (Befund L1). Eine mit "Gespräch starten" begonnene bleibt unverändert.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const r = leerlaufPruefen({ jetzt: Date.now(), letzte: letzteEingabe.current, lage: leerlaufLage(wamo.get()) });
+      letzteEingabe.current = r.letzte;
+      if (r.trennen) teardown("ruhe");
+    }, LEERLAUF_TAKT_MS);
+    return () => clearInterval(id);
+  }, [teardown]);
 
   // "Rückgängig" beim Hinweis "Gemerkt": nur mit Kennung vom Kern, Hinweis erst nach dem Senden weg
   const vergessen = useCallback((memo: Memo) => {
@@ -1328,6 +1469,9 @@ export function useWamo(): WamoAktionen {
       modellzugang,
       liveBild,
       textSenden,
+      stillStarten,
+      sprechen,
+      eingabeMelden,
     }),
     [
       connect,
@@ -1343,6 +1487,9 @@ export function useWamo(): WamoAktionen {
       modellzugang,
       liveBild,
       textSenden,
+      stillStarten,
+      sprechen,
+      eingabeMelden,
     ],
   );
 }

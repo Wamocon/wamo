@@ -728,6 +728,30 @@ Der Router bleibt ausschließlich lesbar. Mögliche Schreibaktionen stehen nur a
   noch einmal an, auch wenn der neue Zug der Person schon beantwortet wird. Die Turn-Wache vor und hinter dem Modell
   verwirft solche Anfragen (gleicher Verlauf wie zuletzt, oder der Verlauf endet mit WAMOs Antwort).
 
+### Start beim Tippen (stiller Start, nur Oberfläche)
+
+Wer in den Einstellungen unter „Sprache und Ton“ den Schalter „Still starten beim Tippen“ einschaltet (je Gerät und je Person, Standard
+aus, kein Server-Zustand, `localStorage`-Schlüssel `wamo.stillStart.<user_id>`), muss „Gespräch starten“ nicht mehr klicken: Der erste
+Tastendruck im Eingabefeld startet eine Sitzung ohne Mikrofon (der Medienmanager `ui/src/lib/stillMedien.ts` öffnet es erst bei „Sprechen“,
+kein `getUserMedia`, keine Audiospur am Sender), die Wiedergabe bleibt stumm, Antworten kommen als Text (`audio_response: false`). Die erste
+Zeile wird gehalten und genau einmal gesendet, sobald die Sitzung steht. Der Mikrofonknopf und „Gespräch starten“ machen aus der stillen
+Sitzung in derselben Sitzung ein Gespräch mit Stimme. Die Logik steht in `ui/src/lib/stillStart.ts`.
+
+- **Nie auf Laborplätzen:** Konten `labor-NN@wamo.test` und `labor-schau@wamo.test` starten nie von selbst (die Oberfläche kennt das
+  Laborprofil vor dem Verbinden sonst nicht). Die Ablehnung im Kern selbst gibt es noch nicht, sie kommt mit KP-1C.
+- **Leerlauf:** Eine per Tippen gestartete Sitzung endet nach 20 Minuten ohne Eingabe (Konstante `LEERLAUF_MS`), aber nie, solange die
+  PC-Steuerung an ist, eine Karte offen ist oder ein Entwicklungsauftrag, ein Vorgang, das Live-Bild oder eine Antwort läuft. Eine mit
+  „Gespräch starten“ begonnene Sitzung bleibt unverändert.
+- **Verdrängung (Grenze):** Der Kern führt je Profil eine Sitzung, eine neue löst die laufende ab (`WAMO_SITZUNG_EINZELN`). Die
+  Oberfläche erfährt vor dem Start nichts von einer Sitzung auf einem anderen Gerät, das Tippen kann sie deshalb dort verdrängen. Der
+  Schalter gehört nur auf ein Gerät je Person (Hinweis in der Einstellung). Erkennbar ist nur der umgekehrte Fall: Hat eine neuere Sitzung
+  die hier abgelöst, startet das Tippen nicht von selbst neu, sondern zeigt „WAMO läuft in einem anderen Fenster“ mit „Hier übernehmen“.
+  Eine Abfrage im Kern, die das vorher zeigt, gehört in KP-1C.
+- **Hinweis für Betreiber:** Eine still gestartete Sitzung ist für den Server eine ganz normale Sitzung. Bis zu ihrem Ende (spätestens 20
+  Minuten nach der letzten Eingabe, bei PC-Steuerung oder offener Karte länger) zählt sie für die Ruheprüfung und für `ausleiten` in
+  `infra/sokrates2/wamo-core-slots.sh` als laufende Sitzung. `umstellen` und `ausleiten` warten oder scheitern an der Ruhe, solange
+  jemand getippt hat. Das gilt schon ab diesem Paket.
+
 ### Stimme messen (Szenariotest)
 
 Der Test spielt über ein virtuelles Mikrofon Sprechproben und Geräusche gegen einen lokalen Kern (Unterwegs) und nimmt

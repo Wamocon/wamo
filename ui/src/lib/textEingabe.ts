@@ -1,3 +1,5 @@
+import { TEXT_STILL_BEREIT, TEXT_VERBINDET } from "./stillStart.ts"; // relativ, damit node:test diese Datei laden kann
+
 /**
  * Texteingabe im Gespräch (Eingabepille in components/kommando/Bedienung.tsx): reine Logik ohne Browser, damit sie sich
  * testen lässt (textEingabe.test.ts).
@@ -147,6 +149,10 @@ export type EingabeLage = {
   werkzeugLaeuft: boolean;
   /** Gespräch läuft, aber der Kern nimmt keinen Text an (Feld gesperrt) */
   kernOhneText?: boolean;
+  /** Start beim Tippen: die erste Zeile wartet auf die Verbindung (lib/stillStart.ts) */
+  stillWartet?: boolean;
+  /** Start beim Tippen: stille Sitzung läuft (Mikrofon aus, Antworten als Text) */
+  stillBereit?: boolean;
 };
 
 /** Kurzer Hinweis unter der Eingabepille oder null. Freigaben haben Vorrang, denn sie sind sicherheitsrelevant. */
@@ -155,6 +161,8 @@ export function eingabeHinweis(l: EingabeLage): string | null {
     return "Freigaben gibst du nur mit Klick auf die Karte. Ein getipptes Ja ersetzt sie nicht.";
   }
   if (l.kernOhneText) return "Dieser Kern nimmt keinen getippten Text an. Bitte sprich mit WAMO.";
+  if (l.stillWartet) return TEXT_VERBINDET;
   if (l.werkzeugLaeuft) return "WAMO arbeitet gerade. Eine neue Nachricht unterbricht die Arbeit.";
+  if (l.stillBereit) return TEXT_STILL_BEREIT;
   return null;
 }
