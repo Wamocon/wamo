@@ -340,7 +340,8 @@ def test_falscher_token_wird_abgelehnt_ohne_ihn_zu_nennen(monkeypatch, token):
 
 
 def test_nur_die_attrappe_und_der_test_importieren_die_attrappe():
-    produktiv = ("labor_client", "labor_vertrag", "labor_freigaben", "labor_ticket", "labor_mail", "labor_werkzeuge", "bot")
+    produktiv = ("labor_client", "labor_vertrag", "labor_freigaben", "labor_ticket", "labor_mail", "labor_werkzeuge", "labor_durchlauf", "labor_sitzung",
+                 "labor", "auth_gate", "bot")
     for name in produktiv:
         quelle = (HIER / f"{name}.py").read_text(encoding="utf-8")
         importe = {n.module for n in ast.walk(ast.parse(quelle)) if isinstance(n, ast.ImportFrom)} | {

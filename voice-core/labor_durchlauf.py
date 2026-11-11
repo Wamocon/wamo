@@ -7,36 +7,31 @@ Er prüft das bei /start, bei jedem Offer (AccessMiddleware) und beim Sitzungsst
 die Sitzung, wenn der Durchlauf endet oder wechselt. Ist der Dienst nicht erreichbar, gibt es keine neue Sitzung (503, fail-closed).
 Eine laufende Sitzung läuft bei kurzem Ausfall weiter: ein Betreuer kann ohne Dienst auch keinen Durchlauf beenden.
 
-Die Quelle (Dienstclient) wird gesetzt (quelle_setzen) oder aus WAMO_LABOR_URL und WAMO_LABOR_TOKEN gebaut (quelle_aus_env). Das Schaufenster
-hat keinen Platz und keinen Besucher: es braucht keinen Durchlauf.
+Die Quelle wird gesetzt (quelle_setzen) oder ist der Dienstclient des Kerns (ClientQuelle, quelle_aus_env). Es gibt nur diesen einen Weg zum Dienst:
+labor_client.client_aus_umgebung prüft Adresse (HTTPS, nie die Attrappe), Token, Zertifikat und die Antwort streng, für den Start, die Wache und
+die Werkzeuge (labor_werkzeuge.py) gleich. Das Schaufenster hat keinen Platz und keinen Besucher: es braucht keinen Durchlauf.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import ipaddress
-import os
-import ssl
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
-from urllib.parse import urlsplit
 
 import httpx
 from loguru import logger
 
 import labor
-from wamo_tls import https_context
+import labor_client
 
-DURCHLAUF_PFAD = "/api/kern/durchlauf"
 CODE_BEENDET = "labor_durchlauf_beendet"
 CODE_EINWILLIGUNG = "labor_keine_einwilligung"
 CODE_DIENST = "labor_dienst_nicht_erreichbar"
 POLL_SECS = 5.0
 LESE_TIMEOUT_SECS = 5.0
-MAX_ANTWORT_BYTES = 64 * 1024
 GRUND_BEENDET = "Der Durchlauf ist beendet. Bitte den Betreuer am Platz fragen."
 GRUND_EINWILLIGUNG = "Für diesen Platz liegt keine gültige Einwilligung vor. Bitte den Betreuer am Platz fragen."
 GRUND_DIENST = "Der Labor-Dienst ist gerade nicht erreichbar. Bitte den Betreuer am Platz fragen."
@@ -89,53 +84,25 @@ def _einwilligung_gueltig(stand: Durchlauf, min_version: int) -> bool:
 
 
 # ---------- Quelle ----------
-def _loopback(host: str) -> bool:
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+class ClientQuelle:
+    """Aufruf V1 über den Dienstclient des Kerns (labor_client.py): derselbe Weg wie bei den Werkzeugen, nur dass hier der Durchlauf gefragt wird.
+    Der Client wird bei jeder Frage aus WAMO_LABOR_URL und WAMO_LABOR_TOKEN gebaut und danach geschlossen (die Wache fragt nur alle 5 Sekunden).
+    Ist die Einstellung unbrauchbar, wirft die Frage LaborKonfigFehler: die Prüfung macht daraus 503 (fail-closed). transport: nur für Tests."""
 
-
-class HttpQuelle:
-    """Aufruf V1 über HTTPS (mit der WAMO-CA aus WAMO_CA_FILE) gegen den Dienst der Kollegen. Der Token geht nur im Kopf Authorization."""
-
-    def __init__(self, url: str, token: str, *, transport: httpx.AsyncBaseTransport | None = None,
-                 ssl_context: ssl.SSLContext | None = None):
-        teile = urlsplit(url.strip())
-        if not ((teile.scheme == "https" and teile.hostname) or (teile.scheme == "http" and _loopback(teile.hostname or ""))):
-            raise ValueError("WAMO_LABOR_URL braucht https (http nur über Loopback)")
-        if not token:
-            raise ValueError("WAMO_LABOR_TOKEN fehlt")
-        self._basis = url.strip().rstrip("/")
-        self._token = token
+    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None):
         self._transport = transport
-        self._verify: ssl.SSLContext | bool = ssl_context if ssl_context is not None else (https_context() or True)
 
     async def durchlauf(self, platz: int) -> Mapping[str, Any]:
-        async with httpx.AsyncClient(timeout=LESE_TIMEOUT_SECS, transport=self._transport, verify=self._verify) as client:
-            antwort = await client.get(f"{self._basis}{DURCHLAUF_PFAD}",
-                                       headers={"Authorization": f"Bearer {self._token}", "X-WAMO-Platz": str(int(platz))})
-        if antwort.status_code != 200:
-            raise DurchlaufFehler(f"Dienst antwortet {antwort.status_code}")
-        if len(antwort.content) > MAX_ANTWORT_BYTES:
-            raise DurchlaufFehler("Antwort zu groß")
+        client = labor_client.client_aus_umgebung(platz, transport=self._transport)
         try:
-            return antwort.json()
-        except ValueError as e:
-            raise DurchlaufFehler("Antwort ist kein JSON") from e
+            stand = await client.durchlauf()
+        finally:
+            await client.aclose()
+        return {"durchlauf_id": stand.id, "offen": stand.offen, "einwilligung_version": stand.einwilligung_version}
 
 
-def quelle_aus_env() -> DurchlaufQuelle | None:
-    url, token = os.getenv("WAMO_LABOR_URL") or "", os.getenv("WAMO_LABOR_TOKEN") or ""
-    if not url or not token:
-        return None
-    try:
-        return HttpQuelle(url, token)
-    except ValueError as e:
-        logger.error("Labor-Dienst nicht nutzbar: {}", e)
-        return None
+def quelle_aus_env() -> DurchlaufQuelle:
+    return ClientQuelle()
 
 
 _quelle: DurchlaufQuelle | None = None
@@ -147,11 +114,16 @@ def quelle_setzen(quelle: DurchlaufQuelle | None) -> None:
     _quelle = quelle
 
 
-def quelle_holen() -> DurchlaufQuelle | None:
+def quelle_holen() -> DurchlaufQuelle:
     global _quelle
     if _quelle is None:
         _quelle = quelle_aus_env()
     return _quelle
+
+
+def _ursache(e: Exception) -> str:
+    """Für das Log: der Typ des Fehlers, bei einer unbrauchbaren Einstellung auch ihr Satz (er nennt nie einen Wert)."""
+    return f"{type(e).__name__}: {e}" if isinstance(e, labor_client.LaborKonfigFehler) else type(e).__name__
 
 
 # ---------- Prüfung ----------
@@ -166,13 +138,13 @@ async def pruefen(identity: object, *, quelle: DurchlaufQuelle | None = None, mi
     quelle = quelle if quelle is not None else quelle_holen()
     min_version = min_version if min_version is not None else labor.einwilligung_min()
     platz = getattr(identity, "labor_platz", None)
-    if quelle is None or min_version is None or not labor.laborfelder_stimmig("platz", "mitglied", platz, False):
-        logger.error("Labor: Dienst oder Einwilligungsversion nicht eingerichtet, keine Sitzung")
+    if min_version is None or not labor.laborfelder_stimmig("platz", "mitglied", platz, False):
+        logger.error("Labor: Einwilligungsversion oder Platz nicht eingerichtet, keine Sitzung")
         return Urteil(503, CODE_DIENST, GRUND_DIENST)
     try:
         stand = await _lesen(quelle, platz)
-    except Exception as e:  # fail-closed: jeder Fehler des Dienstes heißt keine Sitzung (nur der Typ ins Log)
-        logger.warning("Labor: Durchlauf nicht lesbar ({})", type(e).__name__)
+    except Exception as e:  # fail-closed: jeder Fehler des Dienstes heißt keine Sitzung (ins Log nur der Typ, bei der Einstellung ihr Satz)
+        logger.warning("Labor: Durchlauf nicht lesbar ({})", _ursache(e))
         return Urteil(503, CODE_DIENST, GRUND_DIENST)
     if not stand.offen:
         return Urteil(403, CODE_BEENDET, GRUND_BEENDET, stand)
@@ -202,13 +174,11 @@ class LaborWache:
     async def check(self) -> str | None:
         quelle = self._quelle if self._quelle is not None else quelle_holen()
         try:
-            if quelle is None:
-                raise DurchlaufFehler("keine Quelle")
             neu = await _lesen(quelle, self.platz)
         except Exception as e:
             self.fehler += 1
             if self.fehler in (1, 12) or self.fehler % 60 == 0:
-                logger.warning("Labor: Durchlauf nicht lesbar ({}), Versuch {}", type(e).__name__, self.fehler)
+                logger.warning("Labor: Durchlauf nicht lesbar ({}), Versuch {}", _ursache(e), self.fehler)
             return None
         self.fehler = 0
         if neu.durchlauf_id != self.stand.durchlauf_id or not neu.offen:
