@@ -393,7 +393,7 @@ Rauchtest danach immer: `ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-r
 | ECC ohne Hooks | `/opt/wamo/claude-plugins` (root:wamo), in der Sandbox `/srv/wamo/.claude/plugins` | Kopie des ECC-Plugins von wamo ohne `hooks/`, `scripts/hooks/` und `.mcp.json`, als lokaler Marktplatz `ecc`; Skills, Agenten und Befehle heißen gleich (`ecc:verification-loop`). Erzeugt von `wamo-job-ecc.py`, nach jedem ECC-Update `wamo-job-einrichten.sh` erneut ausführen |
 | Managed-MCP | `/opt/wamo/claude-code/managed-mcp.json` | die MCP-Server (rea, github, supabase, jira) kommen allein von hier (ersetzt Benutzer-Einträge); Token über `${…:-}` aus der Umgebung |
 | Ausgangsfilter | `/etc/wamo/egress.nft`, `wamo-egress.service` | nft-Tabelle `inet wamo_egress`, nur für uid `wamo` |
-| SSH | `/etc/ssh/authorized_keys.d/wamo`, `/etc/ssh/sshd_config.d/wamo.conf` | Schlüssel mit `restrict,from="192.168.178.0/24",command=...`; `Match User wamo` mit `ForceCommand`, nur Public Key, keine Weiterleitungen, kein TTY, `PermitUserRC no`, `MaxSessions 2` |
+| SSH | `/etc/ssh/authorized_keys.d/wamo`, `/etc/ssh/sshd_config.d/wamo.conf` | Schlüssel mit `restrict,from="192.168.178.0/24",command=...`; `Match User wamo` mit `ForceCommand`, nur Public Key, keine Weiterleitungen, kein TTY, `PermitUserRC no`, `MaxSessions 2`. Ab Dispatcher 7 zusätzlich `ExposeAuthInfo yes` und eine zweite `AuthorizedKeysFile` (`authorized_keys.d/wamo-kern`, der Schlüssel des Kerns, nur mit Abschnitt 18); die vorige `wamo.conf` liegt dauerhaft unter `/var/backups/wamo-job-kern/<Zeit>/`, die Einrichtung verlangt Ruhe (kein Auftrag, kein offener Totmannschalter) |
 | Version | `CLAUDE_VERSION` in `/opt/wamo/wamo-job.conf` | nach einem Update von Claude Code startet nichts, bis das Einrichtungsskript und der Rauchtest liefen |
 | Modell | `modell` je Karte in `voice-core/werkzeugkarte.py`, Wahl nach Zugangsart in `modell_waehlen` (Dispatcher) | Mit API-Schlüssel (Guthaben) Standard für alle Arten `claude-haiku-5-5` (Sonnet kostet etwa das Dreifache), mit Abo-Zugang (Max-Token) `claude-sonnet-5-5`; `claude-opus-5-5` oder ein anderes Modell nur über `WAMO_ENTWICKLUNG_MODELL` in der `.env` des PCs (nur Namen aus `MODELLE_ERLAUBT`, über die Kopfzeile an den Dispatcher) |
 | Claude-Zugang | zweite stdin-Zeile von `start`, `WAMO_SERVERZUGANG` in `geheim.env` | persönlicher Zugang des Profils für genau einen Lauf, Rückfall auf `geheim.env` nur wenn erlaubt (unten) |
@@ -578,8 +578,8 @@ wamo-core ──Unix-Socket /run/wamo-tunnel/pc.sock──> sshd (wamo-tunnel) �
 | --- | --- | --- |
 | Dienst | `/etc/systemd/system/wamo-core.service` | Benutzer `wamo-core` (System, nologin, keine weiteren Gruppen), `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, leeres `CapabilityBoundingSet`, `SystemCallFilter=@system-service ~@privileged`, `MemoryMax=4G`, `Restart=on-failure`; lauscht nur auf dem Unix-Socket (`WAMO_CORE_UDS`), kein TCP-Port |
 | Code und venv | `/opt/wamo-core` (root:wamo-core 0750) | `app/voice-core` (nur Laufzeitdateien), `venv` aus `uv.lock` (uv 0.13.1, Prüfsumme fest, System-Python 3.12), `wamo-ca.crt`, `bin/wamo-core-vorpruefung` |
-| Vorprüfung | `ExecStartPre` | keine `.env` im Code-Baum (bot.py lädt sie mit Vorrang), Pflichtwerte gesetzt, DSN mit `verify-full`, Entwicklung aus, Socket-Verzeichnis 0750 wamo-core:wamocon |
-| Geheimnisse | `/etc/wamo/core.env` (root:wamo-core 0640) | nur über `sudo /usr/local/sbin/wamo-core-env setzen` (stdin, Schlüssel-Allowlist, atomar); `liste` zeigt nur Namen. Was die Unit festlegt (Betriebsart, Socket-Pfade, `SUPABASE_URL`, CA, erlaubte Herkunft, Entwicklung aus) lässt sich dort nicht überschreiben |
+| Vorprüfung | `ExecStartPre` | keine `.env` im Code-Baum (bot.py lädt sie mit Vorrang), Pflichtwerte gesetzt, DSN mit `verify-full`, `WAMO_ENTWICKLUNG` muss `aus` sein (die Vorprüfung kennt keinen anderen Entwicklungsschalter und bleibt unverändert, damit kein Schalter den Start des Kerns verhindern kann), Socket-Verzeichnis 0750 wamo-core:wamocon |
+| Geheimnisse | `/etc/wamo/core.env` (root:wamo-core 0640) | nur über `sudo /usr/local/sbin/wamo-core-env setzen` (stdin, Schlüssel-Allowlist, atomar); `liste` zeigt nur Namen. Was die Unit festlegt (Betriebsart, Socket-Pfade, `SUPABASE_URL`, CA, erlaubte Herkunft, `WAMO_ENTWICKLUNG=aus`) lässt sich dort nicht überschreiben. Auch der Büro-Schalter der Entwicklungsaufträge (`WAMO_ENTWICKLUNG_BUERO` und seine Begleiter) steht nie in `core.env`, sondern im Drop-in `wamo-core@.service.d/wamo-entwicklung-buero.conf` (Abschnitt 18) |
 | Datenbank | Rolle `wamo_core_s2` | LOGIN, Mitglied von `wamo_core` (`WITH INHERIT TRUE, SET FALSE`), dieselben Rollen-Einstellungen; RLS-Policies `to wamo_core` greifen für Mitglieder. Verbindung über Supavisor `192.168.178.136:55322`, `sslmode=verify-full` |
 | HTTPS | `wamo-caddy`, Site `etc/kern/wamo-core.caddy` | `https://192.168.178.136:55444` (Zertifikat der WAMO-CA), `reverse_proxy unix//run/wamo-core/core.sock`, Body höchstens 512 KB; Socket-Verzeichnis per Bind-Mount nur lesend |
 | Socket-Verzeichnisse | `/etc/tmpfiles.d/wamo-core.conf`, `wamo-tunnel.conf` | `/run/wamo-core` 0750 wamo-core:wamocon (Caddy läuft als 1000:1000); `/run/wamo-tunnel` 2750 wamo-tunnel:wamo-core (setgid: der Socket gehört der Gruppe wamo-core) |
@@ -1316,6 +1316,76 @@ bleibt liegen: Jeder weitere Aufruf geht eine Sicherung weiter zurück, bis alle
 Exit 0). Eine neue Einrichtung legt eine neue, unmarkierte Sicherung an, die zuerst dran ist. Nach dem ersten Aufruf meldet `ping` wieder
 Version 5. Der Rauchtest löscht sein Wegwerfprojekt nur, wenn eine Markerdatei dieses Tests darin liegt. Ein alter Kern gegen den neuen
 Dispatcher bleibt unverändert; ein neuer Kern gegen den alten lehnt `befehl:` ab (`ping` ohne `pruefen`).
+
+## 18. Kern-Kanal der Entwicklungsaufträge (Dispatcher Version 7, vorbereitet am 11.11.2026, Kanal ZU, nicht ausgerollt)
+
+Plan und Begründungen: `docs/entwicklung-im-betrieb.md`, Pakete: `docs/entwicklung-im-betrieb-arbeitsliste.md`. Der Kern im Büro (`wamo-core@a` und `wamo-core@b`)
+ruft den Dispatcher wie der PC über `ssh` auf die eigene LAN-Adresse auf, mit einem **eigenen Schlüssel in einer eigenen Datei**. Der Dispatcher erkennt den
+Kanal am benutzten Schlüssel (`SSH_USER_AUTH`, `ExposeAuthInfo yes`), nie an der Quelladresse. Solange weder `authorized_keys.d/wamo-kern` noch
+`/etc/wamo/kernkanal.conf` existieren (Stufe 0), ändert sich nichts: jeder `ssh`-Aufruf gilt als `pc`, der Dispatcher verhält sich wie Version 6.
+
+| Kanal | Erkennung | Folge |
+| --- | --- | --- |
+| `lokal` | weder `SSH_CONNECTION` noch `SSH_ORIGINAL_COMMAND` (Betreiber, Rauchtests, Notaus) | wie Version 6, auch bei Notaus |
+| `pc` | Schlüssel aus `authorized_keys.d/wamo` | wie Version 6, nur der Namensraum `kern-` ist ihm verschlossen |
+| `kern` | Schlüssel aus `authorized_keys.d/wamo-kern` (gewinnt vor `pc`) | die Regeln unten |
+| unklar | im strikten Modus (Kern-Schlüssel oder `kernkanal.conf` vorhanden) jede Verbindung, die sich nicht eindeutig zuordnen lässt | Ereignis `kanal_gesperrt` mit Grund `herkunft_unklar`, Exit 2, vor jedem Lesen von `geheim.env` |
+
+**Regeln des Kern-Kanals** (Modul `wamo_job_kernkanal.py`, in dieser Reihenfolge; jeder Verstoß ist `{"type": "wamo", "ereignis": "kanal_gesperrt", "grund": <Code>}` und Exit 2,
+ohne Token): (1) Notaus-Datei: nur `ping` und `status` gehen noch (`notaus`). (2) `kernkanal.conf` fehlerhaft, Kanal zu oder Ablauf überschritten
+(`konfig_ungueltig`, `kanal_zu`, `abgelaufen`). (3) Befehlsliste `ping`, `start`, `status`, `pending`, `approve`, `cancel`, alles andere auch `pruefen` (`befehl`); bei geschlossenem Kanal nur
+`ping`, `status`, `pending`, `cancel`. (4) nur eigene Aufträge: `auftrag.json` trägt `kanal` gleich `kern` (`fremd`). (5) Art, Repo und Dienste aus der Konfiguration, GitHub-Arten nur im
+App-Modus und mit Repo (`art`, `repo`, `repo_fehlt`, `dienst`). (6) Projektname `kern-<Name>`, bei Repo genau daraus abgeleitet (`projekt`). (7) Zugang nur `folgt` mit Profil, vor
+`lese_geheimnisse()` (`zugang`). (8) Fork-Prüfung beim ersten Token je Lauf (`fork`). (9) Grenzen (`grenze_start`, `grenze_laufzeit`, `grenze_folgen`, `abstand`, `platz`); jeder Start, der die erste Prüfung besteht, zählt als Versuch (höchstens 20 je Stunde, `MAX_VERSUCH_STUNDE` nur nach unten), der Abstand gilt nicht für Folgen desselben Auftrags, und ein Projektordner, den kein Kern-Auftrag angelegt hat (oder ein anderes Repo belegt hat), ist gesperrt (`projekt`). Der Dispatcher
+prüft zweimal: vor den Geheimnissen und unmittelbar vor der Token-Erzeugung, damit eine Notaus-Datei dazwischen noch greift. `--max-turns` und `--max-budget-usd` gehen nur im Kern-Kanal
+und nur aus `kernkanal.conf` in den Aufruf von Claude Code. `ping` meldet `kanal` und das Objekt `kernkanal` (`strikt`, `offen`, `grund`, `arten`, `repos`, `ablauf`, `tage_rest`), nie einen Wert
+aus `geheim.env`.
+
+| Datei | Besitzer, Modus | Inhalt |
+| --- | --- | --- |
+| `/var/lib/wamo-core/.ssh/id_ed25519_wamo_jobs` | `wamo-core` 0600 | Schlüssel des Kerns, entsteht nur auf dem Server (`ssh-keygen` per `runuser`) und verlässt ihn nie. Der öffentliche Teil liegt nie in `~/wamo-infra` |
+| `/var/lib/wamo-core/.ssh/known_hosts_wamo_jobs` | `wamo-core` 0644 | eine Zeile aus dem lokalen Hostschlüssel, abgeglichen gegen `--hostfingerabdruck` |
+| `/etc/ssh/authorized_keys.d/wamo-kern` | root 0644 | genau eine Zeile `restrict,from="192.168.178.136",command="/opt/wamo/bin/wamo-job-dispatch" ssh-ed25519 ... wamo-kern-jobs`, ohne `expiry-time` |
+| `/etc/wamo/kernkanal.conf` | root:wamo 0640 | Regeln `SCHLUESSEL=wert`: `KANAL`, `ABLAUF`, `ARTEN`, `REPOS`, `DIENSTE`, `MAX_TURNS`, `MAX_BUDGET_USD`, `MAX_START_STUNDE`, `MAX_START_TAG`, `MAX_LAUFZEIT_TAG_S`, `MAX_FOLGEN`, `MIN_ABSTAND_S`, `MIN_PLATZ_MB`. Der Dispatcher lehnt unbekannte oder doppelte Schlüssel und Werte außerhalb der Bereiche ab |
+| `/etc/wamo/kernkanal.notaus` | root:wamo 0640 | Sperrdatei, schon die Existenz schließt den Kanal |
+| `/etc/systemd/system/wamo-core@.service.d/wamo-entwicklung-buero.conf` | root 0644, ohne Spiegel-Marke | der Schalter `WAMO_ENTWICKLUNG_BUERO=an` mit `WAMO_ENTWICKLUNG_ORT`, `WAMO_ENTWICKLUNG_PROFILE`, `WAMO_ENTWICKLUNG_KOSTEN_AUFTRAG_USD`, `WAMO_ENTWICKLUNG_KOSTEN_TAG_USD`; die Units behalten `WAMO_ENTWICKLUNG=aus`, die Vorprüfung bleibt unverändert |
+| `/opt/wamo/waechter/wamo_job_kernkanal.py` | root:wamo 0640 | das Modul des Dispatchers (durch `wamo-job-einrichten.sh`) |
+| `/opt/wamo-core/bin/wamo-job-kern-rauchtest` | root 0755 | Rauchtest (aus `wamo_job_kern_rauchtest.py`, installiert durch `schluessel`) |
+| `/srv/wamo/logs/kernkanal.jsonl` | wamo | Zähler: je Start und Ende eine Zeile (`t`, `job`, `ereignis`, `dauer_s`) |
+| `/var/backups/wamo-job-kern/<JJJJMMTT-HHMMSS>/`, `/var/log/wamo-job-kern/aktionen.jsonl` | root 0700, 0640 | Sicherungen (nie ein privater Schlüssel) und die Bedienspur: jede Handlung als Zeile ohne Werte, dazu `logger -t wamo-job-kern` |
+
+**Einrichten und Bedienen** (alle als `sudo bash ~/wamo-infra/<Skript>` über `ssh wamo-sokrates2`, nur bei Ruhe, nie ein Neustart eines Dienstes; Exit-Codes: 0 ok, 1 Fehler, 2 falsche Aufrufform,
+3 Vorbedingung nicht erfüllt, 4 teilweise umgesetzt):
+
+1. `wamo-job-einrichten.sh` (Dispatcher 7, sshd-Block, Modul). Es bricht ohne Ruhe mit Exit 3 ab, sichert die vorige `wamo.conf` dauerhaft und der Totmannschalter stellt sie wieder her.
+2. `wamo-job-kern-einrichten.sh schluessel --trocken`, dann `schluessel --ablauf <JJJJMMTT> --hostfingerabdruck <SHA256:...>`: Vorbedingungen (OpenSSH ab 7.6, `fail2ban` mit Ausnahme für
+   192.168.178.136 und 127.0.0.1, Dispatcher 7, sshd-Block, Ruhe), Schlüssel, known_hosts, Zeile, `kernkanal.conf` mit `KANAL=zu`, Rauchtest, Ja-Probe `ping`; scheitert sie, wird die Zeile zurückgenommen.
+3. `/opt/wamo-core/bin/wamo-job-kern-rauchtest --produktiv` (als root): alle Ja- und Nein-Proben, Isolation, Dateirechte, PC-Datei unverändert. **Alle Proben sind nur am Server prüfbar**; die Übergangsproben
+   (Absturz-Neustart, Rückweg, PC und Kern gleichzeitig, WireGuard, Notaus mit laufendem Auftrag) sind Handarbeit.
+4. `wamo-job-kern-einrichten.sh schalter an <release> --profil <user_id> --kosten-auftrag 3 --kosten-tag 10` (Vorabprüfungen: Schlüssel, known_hosts, Rauchtest, `SCHRANKEN_VERSION` im Zielrelease, kein
+   `WAMO_ENTWICKLUNG*` in `core.env`, keine gleichnamige Datei in `wamo-core.service.d`, Ruhe), dann `wamo-core-slots.sh umschalten-kern`, `bewaehren 30`, `ausleiten`. Scheitert das vor dem Umschalten,
+   kommt das vorige Drop-in zurück; nach dem Umschalten bleibt es und das Skript endet mit Exit 4. Gleicher Stand ist ein No-op.
+5. `kanal --arten recherche` (später `--repos <owner>/<name>` und weitere Arten) öffnet, `kanal zu` schließt (geht immer). GitHub-Arten öffnen nur, wenn `claude --help` als `wamo` beide Flags kennt und die Repos
+   (höchstens 10, nie das WAMO-Repo) benannt sind. `status` zeigt Resttage, Kanalzustand, den Schalter je Slot aus `/proc/<MainPID>/environ` (nur Namen und der Schalterwert, nie die Profil-Kennung),
+   laufende Kern-Aufträge, die Zahl der Kern-Ordner und jede Abweichung.
+
+**Notaus und Rückweg.** `wamo-job-kern-rueckweg.sh notaus` wirkt ohne Neustart des Kerns, in fester Reihenfolge: (1) Sperrdatei anlegen, (2) Schlüsselzeile sichern und löschen, `KANAL=zu` setzen und das Schlüsselpaar von wamo-core beiseitelegen (Endung `.notaus-<Zeit>`), (3) alle Aufträge mit `kanal=kern`
+per lokalem `cancel` beenden (laufende zuerst, Sandbox gestoppt, Token widerrufen; ein fehlgeschlagenes `cancel` bricht nie vor Schritt 4 ab), (4) erneut suchen, bis keiner mehr läuft, und das Ergebnis protokollieren. Wieder öffnen: `notaus-aufheben` öffnet nichts, `schluessel` legt ein neues Paar an (nie den womöglich kompromittierten Schlüssel), erst `kanal` öffnet. Der Baum `/var/lib/wamo-core/.ssh` gehört dem Kern: beide Skripte arbeiten dort nur als wamo-core und verweigern bei einem Link.
+`wamo-job-kern-rueckweg.sh --entfernen` verweigert, solange das Drop-in besteht (erst `schalter aus`) oder ein Kern-Auftrag läuft, und entfernt sonst Schlüsselzeile, Schlüsselpaar, known_hosts,
+`kernkanal.conf` und Sperrdatei. `--trocken` zeigt nur an. **`wamo-job-rueckweg.sh` verweigert mit Exit 3, solange `authorized_keys.d/wamo-kern` besteht:** ein älterer Dispatcher kennt den Kern-Kanal nicht,
+die Zeile des Kerns bekäme die Rechte des PC-Kanals. Der Kern selbst bleibt bei jedem Rückweg unberührt: ältere Releases lesen `WAMO_ENTWICKLUNG_BUERO` nicht und starten mit Entwicklung aus.
+
+**Ablauf.** Die Schlüsselzeile läuft nicht über `expiry-time` (eine unbekannte Option macht die ganze Zeile ungültig), sondern über `ABLAUF=JJJJMMTT` in `kernkanal.conf`: bis einschließlich dieses Tages, höchstens 400 Tage
+voraus, Standard 30 Tage. Der Dispatcher erzwingt ihn (`abgelaufen`, hörbar statt „Schlüssel abgelehnt“). Verlängern: `schluessel --ablauf <JJJJMMTT> --hostfingerabdruck <SHA256:...>` (sichert die alte Konfiguration).
+
+**Risiko des Claude-Zugangs und Widerrufsstelle.** Der Kern kennt über `WAMO_SCHLUESSEL_KEK` die Zugänge aller Profile, ein übernommener Kern wäre ein Risiko für alle. Im Kern-Kanal gilt deshalb nur der eigene
+Zugang des Profils je Lauf (zweite stdin-Zeile, Quelle `token` oder `api`), nie der Serverzugang. Der Zugang erreicht die Sandbox, und Port 443 ist dort bewusst offen: Ein langlebiges Claude-Code-Token kann der
+Dispatcher **nicht widerrufen**. Darum ist ein API-Schlüssel mit Ausgabenlimit im Workspace die bevorzugte Wahl, ein Claude-Code-Token nur mit Rotation nach den Stufen 4 und 5. Die Widerrufsstelle liegt im Konto,
+bei dem der Zugang erzeugt wurde (API-Schlüssel: Schlüsselverwaltung des Workspaces, Claude-Code-Token: Kontoeinstellungen). Niko notiert den Weg dorthin vor Stufe 3a (Arbeitsliste N4), nie einen Wert; im Repo
+und auf dem Server steht kein Zugangswert im Klartext.
+
+**Was bleibt gesperrt:** Selbständerung (`SELF_REPO = "wamo"` im Kern und im Dispatcher, dazu die Fork-Prüfung), Supabase und `deployment` in der Sandbox, der Befehl `pruefen` im Kern-Kanal (auch mit
+`WAMO_PRUEFEN=an`), Jira und Vercel, bis ein enges Konto in `DIENSTE` steht. `PARALLEL_MAX = 1` gilt für beide Kanäle.
 
 ---
 
