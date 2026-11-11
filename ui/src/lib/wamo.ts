@@ -547,6 +547,13 @@ export function applyServerMessage(msg: ServerMessage) {
         ansage: "Sitzung vom Voice-Core beendet",
       }));
       return;
+    case "labor_durchlauf_ende":
+      wamo.set((s) => ({
+        ...s,
+        error: { art: "hinweis", text: "Durchlauf beendet. Die Seite lädt neu." },
+        ansage: "Durchlauf beendet",
+      }));
+      return;
     case "modellzugang": {
       const { type: _typ, ...stand } = msg;
       void _typ;
