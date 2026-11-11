@@ -201,11 +201,12 @@ class EntwicklungsSchalterNieUebertragenTest(unittest.TestCase):
 # Einstellungen des Testlabors (labor_*.py): kommen vom Server (core.env), nie aus der .env des PCs. WAMO_LABOR_TOKEN ist ein Geheimnis
 # (256 Bit Bearer für den Dienst der Kollegen), die Adresse und alle übrigen Namen sind keine.
 LABOR_GEHEIMNISSE = ("WAMO_LABOR_TOKEN",)
-LABOR_NAMEN = (  # die neun Einstellungen des Testlabors und die vier der Ratenbegrenzung
+LABOR_NAMEN = (  # die neun Einstellungen des Testlabors und die sechs der Ratenbegrenzung
     "WAMO_LABOR_URL", "WAMO_LABOR_TOKEN", "WAMO_LABOR_MAIL_DOMAIN", "WAMO_LABOR_EINWILLIGUNG_MIN", "WAMO_LABOR_FREIGABE_SECS",
     "WAMO_LABOR_MAX_OFFEN", "WAMO_LABOR_MAX_SCHREIBEN", "WAMO_LABOR_TEXT_SPEICHERN", "WAMO_LABOR_DATEN",
     # Ratenbegrenzung (labor_limit.py)
     "WAMO_LABOR_TEXT_ABSTAND_SECS", "WAMO_LABOR_TEXT_MAX_ZEICHEN", "WAMO_LABOR_SUCHEN_MAX", "WAMO_LABOR_ANFRAGEN_MAX",
+    "WAMO_LABOR_KLICK_ABSTAND_SECS", "WAMO_LABOR_KLICK_MAX",
 )
 
 

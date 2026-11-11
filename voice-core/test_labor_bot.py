@@ -18,11 +18,13 @@ import pytest
 
 import labor
 import labor_durchlauf
+import labor_limit
 import labor_testhilfe
 import labor_werkzeuge
 from auth_gate import Identity
 from labor_attrappe import ATTRAPPE_URL, Attrappe
 from labor_client import LaborClient
+from labor_rtvi import LaborRTVIProcessor
 from test_smoke_bot import FakeTransport
 
 DUMMY_ENV = {
@@ -51,7 +53,9 @@ LABOR = laborprofil()
 def _umgebung(monkeypatch):
     for name, wert in DUMMY_ENV.items():
         monkeypatch.setenv(name, wert)
-    with mock.patch("llm_anbieter.claude_problem", mock.AsyncMock(return_value=None)):
+    # Die Zähler je Profil und Durchlauf (labor_limit.LIMITS) gehören dem Prozess: jeder Test bekommt ein frisches Register
+    with mock.patch("llm_anbieter.claude_problem", mock.AsyncMock(return_value=None)), \
+         mock.patch.object(labor_limit, "LIMITS", labor_limit.LimitRegister()):
         yield
 
 
@@ -310,6 +314,237 @@ async def test_ende_zu_ende_start_werkzeuge_freigabeklick_und_durchlaufende():
         assert len(app.tickets(3)) == vorher + 1  # nach dem Ende wird nichts mehr geschrieben
         await m.session.cleanup()
         assert m.werkz.client._http.is_closed
+
+
+# ---------- Der Klickweg über den LaborRTVIProcessor und die RTVI-Strecke ----------
+class FesteUhr:
+    def __init__(self):
+        self.jetzt = 1000.0
+
+    def __call__(self) -> float:
+        return self.jetzt
+
+
+async def rtvi_starten(rtvi):
+    """Der echte RTVIProcessor (hier der LaborRTVIProcessor der Sitzung) bekommt Setup und StartFrame wie in der Pipeline: danach läuft jede Nachricht
+    durch process_frame, den Filter, die Warteschlange und den Ereignisbehandler on_client_message von bot.py."""
+    from pipecat.clocks.system_clock import SystemClock
+    from pipecat.frames.frames import StartFrame
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
+    from pipecat.utils.asyncio.task_manager import TaskManager
+
+    await rtvi.setup(FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=mock.Mock()))
+    await rtvi.process_frame(StartFrame(), FrameDirection.DOWNSTREAM)
+
+
+async def rtvi_klick(rtvi, **data):
+    """Die Nachricht, die ein Browser über die Verbindung schickt: client-message mit t freigabe (RTVI-Rahmen)."""
+    from pipecat.frames.frames import InputTransportMessageFrame
+    from pipecat.processors.frame_processor import FrameDirection
+
+    nachricht = {"label": "rtvi-ai", "type": "client-message", "id": "x", "data": {"t": "freigabe", "d": data}}
+    await rtvi.process_frame(InputTransportMessageFrame(message=nachricht), FrameDirection.DOWNSTREAM)
+    for _ in range(200):
+        await asyncio.sleep(0)
+
+
+def modellzuege(m) -> list:
+    """Jede Nachricht, die das Sprachmodell zu einer Antwort bringt (LLMMessagesAppendFrame mit run_llm)."""
+    from pipecat.frames.frames import LLMMessagesAppendFrame
+
+    return [f for f in m.frames if isinstance(f, LLMMessagesAppendFrame) and f.run_llm]
+
+
+async def test_klickweg_erfundene_kennungen_erzeugen_ueber_rtvi_keine_meldung_und_keinen_modellzug():
+    """Befund Klickweg: jede Nachricht freigabe mit job labor und einer erfundenen, aber formal gültigen Kennung (32 Hex) war ein Modellzug mit
+    Sprachausgabe, ohne Abstand und Obergrenze. Der Weg geht hier wirklich über LaborRTVIProcessor und RTVI, nicht direkt in on_client_message."""
+    with labor_testhilfe.dienst() as app, mock.patch.object(bot, "vorwaermen", mock.AsyncMock()):
+        m = await Mitschnitt().aufbauen(LABOR)
+        rtvi = m.session.task.rtvi
+        assert isinstance(rtvi, LaborRTVIProcessor)
+        uhr = FesteUhr()
+        rtvi.klicks._uhr = uhr
+        await rtvi_starten(rtvi)
+        vorher = len(app.tickets(3))
+        antwort = await m.rufen("ticket_anlegen", typ="bug", prioritaet="hoch", titel="Anmeldung schlägt fehl", beschreibung="Der Knopf reagiert nicht.")
+        assert antwort["status"] == "wartet_auf_klick"
+        karten_id = m.nachrichten("freigaben")[-1]["items"][0]["id"]
+        entscheiden = mock.AsyncMock(wraps=m.werkz.freigaben.entscheiden)
+        m.werkz.freigaben.entscheiden = entscheiden
+        frames_vorher = len(m.frames)
+
+        # a) Mit der Standardgrenze (Abstand): von 50 Klicks hintereinander kommt höchstens einer bis zur Freigabe, keiner ergibt eine Meldung
+        for i in range(50):
+            await rtvi_klick(rtvi, job="labor", id=f"{i + 1:032x}", entscheidung="ja")
+        assert entscheiden.await_count == 1
+        assert m.meldungen() == [] and modellzuege(m) == [] and len(m.frames) == frames_vorher
+
+        # b) Auch ohne die Grenze (Abstand 0, Höchstzahl 1000) erzeugen 50 erfundene Kennungen null Meldungen und null Modellzüge
+        rtvi.klicks.abstand_secs, rtvi.klicks.maximum = 0.0, 1000
+        entscheiden.reset_mock()
+        for i in range(50):
+            await rtvi_klick(rtvi, job="labor", id=f"{i + 100:032x}", entscheidung="ja" if i % 2 else "nein")
+        assert entscheiden.await_count == 50
+        assert m.meldungen() == [] and modellzuege(m) == [] and len(m.frames) == frames_vorher
+        assert len(app.tickets(3)) == vorher and m.werkz.freigaben.offen  # nichts geschrieben, die echte Karte wartet weiter
+
+        # c) Die echte Karte geht über denselben Weg: genau ein Ticket, genau eine Meldung
+        await rtvi_klick(rtvi, job="labor", id=karten_id, entscheidung="ja")
+        await warten(lambda: len(app.tickets(3)) == vorher + 1, "Ticket angelegt")
+        await warten(lambda: len(m.meldungen()) == 1 and "angelegt" in m.meldungen()[0], "genau eine Meldung")
+        assert len(modellzuege(m)) == 1
+        await rtvi.cleanup()
+        await m.session.cleanup()
+
+
+async def test_klicks_auf_freigabekarten_sind_ueber_rtvi_begrenzt_nach_abstand_und_hoechstzahl():
+    with labor_testhilfe.dienst(), mock.patch.object(bot, "vorwaermen", mock.AsyncMock()):
+        m = await Mitschnitt().aufbauen(LABOR)
+        rtvi = m.session.task.rtvi
+        uhr = FesteUhr()
+        rtvi.klicks = labor_limit.KlickBegrenzer(abstand_secs=1, maximum=3, uhr=uhr)
+        await rtvi_starten(rtvi)
+        entscheiden = mock.AsyncMock(return_value=None)
+        m.werkz.freigaben.entscheiden = entscheiden
+        for _ in range(10):  # ohne Zeitablauf: nur der erste kommt durch
+            await rtvi_klick(rtvi, job="labor", id="a" * 32, entscheidung="ja")
+        assert entscheiden.await_count == 1
+        for _ in range(10):  # mit Abstand: genau bis zur Höchstzahl, danach nie mehr
+            uhr.jetzt += 2
+            await rtvi_klick(rtvi, job="labor", id="a" * 32, entscheidung="ja")
+        assert entscheiden.await_count == 3
+        await rtvi.cleanup()
+        await m.session.cleanup()
+
+
+async def test_zaehler_gelten_je_profil_und_durchlauf_nicht_je_verbindung(monkeypatch):
+    """Befund 2: eine Neuverbindung desselben Profils im selben Durchlauf setzt Text, Klicks und Suchen nicht zurück, ein neuer Durchlauf schon."""
+    monkeypatch.setenv("WAMO_LABOR_SUCHEN_MAX", "2")
+    import tools
+
+    with labor_testhilfe.dienst() as app, mock.patch.object(bot, "vorwaermen", mock.AsyncMock()), \
+         mock.patch.object(tools, "websuche_ergebnis", mock.AsyncMock(return_value={"ergebnis": "sonnig"})) as suche:
+        erste = await Mitschnitt().aufbauen(LABOR)
+        for _ in range(2):
+            assert (await erste.rufen("websuche", anfrage="Wetter"))["ergebnis"] == "sonnig"
+        assert "Suchen" in (await erste.rufen("websuche", anfrage="Wetter"))["ergebnis"]  # die Suchen dieses Durchlaufs sind verbraucht
+        neu = await Mitschnitt().aufbauen(LABOR)  # Neuverbindung, derselbe Durchlauf
+        assert "Suchen" in (await neu.rufen("websuche", anfrage="Wetter"))["ergebnis"]
+        assert suche.await_count == 2  # die Neuverbindung hat den Schlüssel nicht berührt
+        assert erste.session.task.rtvi.begrenzer is neu.session.task.rtvi.begrenzer
+        assert erste.session.task.rtvi.klicks is neu.session.task.rtvi.klicks
+        app.neuer_durchlauf(3)  # der nächste Test: neue Zähler
+        spaeter = await Mitschnitt().aufbauen(LABOR)
+        assert spaeter.session.task.rtvi.begrenzer is not erste.session.task.rtvi.begrenzer
+        assert (await spaeter.rufen("websuche", anfrage="Wetter"))["ergebnis"] == "sonnig"
+        for m in (erste, neu, spaeter):
+            await m.session.cleanup()
+
+
+async def test_nach_dem_ende_des_durchlaufs_schreibt_der_speicher_nichts_mehr_auch_wenn_cancel_scheitert(monkeypatch):
+    """Befund 4: labor_ende sperrt die Textspeicherung sofort. Schlägt task.cancel() still fehl (die Pipeline läuft weiter), kommt trotzdem keine Zeile mehr."""
+    import labor_speicher
+    from test_labor_speicher import StrengeDb
+
+    monkeypatch.setenv("WAMO_LABOR_TEXT_SPEICHERN", "an")
+    db = StrengeDb()
+    with labor_testhilfe.dienst() as app, mock.patch.object(bot, "vorwaermen", mock.AsyncMock()), mock.patch.object(bot, "ENDE_MELDUNG_SECS", 0.01),          mock.patch.object(labor_speicher, "shared_database", lambda: db):
+        m = await Mitschnitt().aufbauen(LABOR)
+        memory = m.annahme.memory
+        assert memory.enabled and not memory.gestoppt
+        m.session.task.cancel = mock.AsyncMock(side_effect=RuntimeError("scheitert"))
+        m.annahme.wache.interval = 0.01  # statt 5 Sekunden
+        await m.transport._event_handlers["on_client_connected"].handlers[0](m.transport, None)
+        await memory.log_turn("user", "vor dem Ende gesagt")
+        assert "turns" in db.tabellen()
+        app.durchlauf_beenden(3)
+        await warten(lambda: m.nachrichten("sitzung_beendet"), "sitzung_beendet")
+        await warten(lambda: memory._session_state == "beendet", "Sitzungsende im Speicher")  # die Aufräumarbeit ist durch
+        assert memory.gestoppt
+        vorher = len(db.anweisungen)
+        await memory.log_turn("user", "nach dem Ende gesagt")
+        await memory.log_turn("assistant", "nach dem Ende geantwortet")
+        assert await memory.log_action("ticket_anlegen", {"nummer": "LAB-9"}, "Freigabe", "change") is None
+        assert await memory.save_canvas("document", "Bericht", {"kind": "document", "text": "x"}) is None
+        assert len(db.anweisungen) == vorher
+
+
+# ---------- bot(): jede Ausnahme beim Aufbau endet mit einem festen Satz und getrennter Verbindung ----------
+class Verbindung:
+    """Die WebRTC-Verbindung: was die Person als Meldung bekommt und ob getrennt wurde."""
+
+    def __init__(self):
+        self.gesendet: list[dict] = []
+        self.getrennt = 0
+
+    def send_app_message(self, nachricht):
+        self.gesendet.append(nachricht)
+
+    async def disconnect(self):
+        self.getrennt += 1
+
+
+def bot_args(verbindung, identity=None):
+    ident = identity or Identity(USER, "Gast", "mitglied", "du", anmeldung=1760000000.0, labor_art="platz", labor_platz=3, labor_aktiv=True)
+    return types.SimpleNamespace(body={"wamo": ident.to_body()}, webrtc_connection=verbindung, handle_sigint=False)
+
+
+def zugaenge_merken():
+    """Merkt sich jeden Modellzugang, den build_session lädt (zugang_laden), um zu prüfen, dass er geschlossen wird."""
+    gemerkt, echt = [], bot.zugang_laden
+
+    async def laden(*a, **kw):
+        z = await echt(*a, **kw)
+        gemerkt.append(z)
+        return z
+
+    return gemerkt, laden
+
+
+def assert_fester_satz(verbindung, geheimnis: str):
+    assert verbindung.getrennt == 1 and len(verbindung.gesendet) == 1  # nicht still offen, genau eine Meldung
+    daten = verbindung.gesendet[0]["data"]
+    assert daten == {"type": "sitzung_beendet", "grund": bot.SITZUNG_FEHLER_TEXT}
+    assert geheimnis not in str(verbindung.gesendet)  # nie ein Detail der Ausnahme
+
+
+async def test_bot_politikverletzung_der_laborsitzung_trennt_mit_festem_satz_und_schliesst_dienstclient_und_modellzugang():
+    """LaborPolitikFehler (Werkzeuge außerhalb der Erlaubnisliste) wurde in bot() nicht behandelt: die Verbindung blieb ohne Pipeline offen."""
+    b, v = Beobachter(), Verbindung()
+    zugaenge, laden = zugaenge_merken()
+    with labor_testhilfe.dienst(b.app), mock.patch.object(labor_werkzeuge, "labor_sitzung", b), mock.patch.object(bot, "zugang_laden", laden),          mock.patch.object(bot, "create_transport", mock.AsyncMock(return_value=FakeTransport())), mock.patch.object(bot, "vorwaermen", mock.AsyncMock()),          mock.patch.object(bot, "ENDE_MELDUNG_SECS", 0.01),          mock.patch.object(labor, "werkzeuge_pruefen", side_effect=labor.LaborPolitikFehler("Werkzeuge außerhalb der Laborliste: geheim_xyz")):
+        await bot.bot(bot_args(v))
+    assert_fester_satz(v, "geheim_xyz")
+    assert b.aufrufe == 1 and b.client._http.is_closed  # der Dienstclient der Werkzeuge ist zu
+    assert zugaenge and zugaenge[0]._zu  # und der Modellzugang
+
+
+async def test_bot_unerwartete_ausnahme_in_den_laborwerkzeugen_trennt_mit_festem_satz_und_schliesst_den_modellzugang():
+    """Auch eine Ausnahme, die keiner der drei bekannten Fälle ist (hier ein KeyError beim Bau der Werkzeuge), lässt keine Verbindung offen und
+    keinen Modellzugang zurück."""
+    b, v = Beobachter(), Verbindung()
+    zugaenge, laden = zugaenge_merken()
+    with labor_testhilfe.dienst(b.app), mock.patch.object(labor_werkzeuge, "labor_sitzung", mock.AsyncMock(side_effect=KeyError("geheim_xyz"))),          mock.patch.object(bot, "zugang_laden", laden), mock.patch.object(bot, "create_transport", mock.AsyncMock(return_value=FakeTransport())),          mock.patch.object(bot, "vorwaermen", mock.AsyncMock()), mock.patch.object(bot, "ENDE_MELDUNG_SECS", 0.01):
+        await bot.bot(bot_args(v))
+    assert_fester_satz(v, "geheim_xyz")
+    assert zugaenge and zugaenge[0]._zu
+
+
+async def test_bot_jede_andere_ausnahme_trennt_mit_festem_satz_auch_ohne_labor():
+    v = Verbindung()
+    admin = Identity(USER, "Niko", "admin", "du", anmeldung=1760000000.0)
+    with mock.patch.object(bot, "create_transport", mock.AsyncMock(return_value=FakeTransport())), mock.patch.object(bot, "ENDE_MELDUNG_SECS", 0.01),          mock.patch.object(bot, "run_bot", mock.AsyncMock(side_effect=RuntimeError("geheim_xyz"))):
+        await bot.bot(bot_args(v, admin))
+    assert_fester_satz(v, "geheim_xyz")
+
+
+async def test_bot_bricht_ein_abbruch_der_aufgabe_nicht_ab():
+    """Wird die Sitzung abgebrochen (CancelledError), bleibt das ein Abbruch: sie wird nicht zu einem Fehler mit Meldung."""
+    v = Verbindung()
+    with mock.patch.object(bot, "create_transport", mock.AsyncMock(return_value=FakeTransport())),          mock.patch.object(bot, "run_bot", mock.AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await bot.bot(bot_args(v))
+    assert v.gesendet == [] and v.getrennt == 0
 
 
 # ---------- Reihenfolge der Starts: nichts bleibt halb offen ----------

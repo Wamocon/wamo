@@ -5,6 +5,7 @@ Ausführen:  python -m pytest -p no:cacheprovider -q test_labor_durchlauf.py   (
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -203,6 +204,16 @@ class ClientQuelleTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("getenv(\"WAMO_LABOR_TOKEN\")", quelltext)
 
 
+class Uhr:
+    """Künstliche Uhr: die Zeit vergeht nur, wenn ein Test sie weiterstellt."""
+
+    def __init__(self):
+        self.jetzt = 1000.0
+
+    def __call__(self) -> float:
+        return self.jetzt
+
+
 class WacheTests(unittest.IsolatedAsyncioTestCase):
     def wache(self, *antworten, **kw):
         return ld.LaborWache(3, ld.Durchlauf(D1, True, 2), quelle=FesteQuelle(*antworten), min_version=2, **kw)
@@ -230,34 +241,76 @@ class WacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(w.fehler, 0)
 
     async def test_ein_langer_ausfall_beendet_die_sitzung_fail_closed(self):
-        """Einwilligung und Durchlauf sind nicht mehr prüfbar: nach 12 Fehlversuchen (60 Sekunden bei 5 Sekunden Abstand) endet die Sitzung samt
-        Textspeicherung, sie läuft nicht bis zur Höchstdauer weiter."""
-        self.assertEqual(ld.MAX_AUSFALL_VERSUCHE * ld.POLL_SECS, 60)
-        w = self.wache(httpx.ConnectError("weg"))
-        for _ in range(ld.MAX_AUSFALL_VERSUCHE - 1):
-            self.assertIsNone(await w.check())
-        self.assertEqual(await w.check(), ld.GRUND_AUSFALL)
+        """Einwilligung und Durchlauf sind nicht mehr prüfbar: nach 60 Sekunden ohne gelungene Prüfung (gemessen an der Uhr) endet die Sitzung samt
+        Textspeicherung, sie läuft nicht bis zur Höchstdauer weiter. Bei sofortigen Fehlern im Abstand von 5 Sekunden ist das der zwölfte Versuch."""
+        self.assertEqual(ld.MAX_AUSFALL_SECS, 60)
+        uhr = Uhr()
+        w = self.wache(httpx.ConnectError("weg"), uhr=uhr)
+        for _ in range(11):
+            uhr.jetzt += ld.POLL_SECS
+            self.assertIsNone(await w.check())  # 55 Sekunden: noch kein Ende
+        uhr.jetzt += ld.POLL_SECS
+        self.assertEqual(await w.check(), ld.GRUND_AUSFALL)  # 60 Sekunden
         self.assertEqual(await w.check(), ld.GRUND_AUSFALL)  # und bleibt dabei
-        w._quelle = FesteQuelle(stand())  # kommt der Dienst vorher zurück, zählt von vorn
-        self.assertEqual(await self.nach_ausfall(11, stand()), None)
 
-    async def nach_ausfall(self, anzahl: int, antwort):
-        w = self.wache(*([httpx.ConnectError("weg")] * anzahl + [antwort]))
-        for _ in range(anzahl):
+    async def test_viele_schnelle_fehler_beenden_die_sitzung_nicht_vor_der_zeit(self):
+        """Gemessen wird die Zeit, nicht die Zahl: zwölf Fehlversuche in einer Sekunde sind noch kein Ausfall von 60 Sekunden."""
+        uhr = Uhr()
+        w = self.wache(httpx.ConnectError("weg"), uhr=uhr)
+        for _ in range(50):
+            uhr.jetzt += 0.02
             self.assertIsNone(await w.check())
-        return await w.check()
+        self.assertEqual(w.fehler, 50)
+
+    async def test_kommt_der_dienst_vorher_zurueck_zaehlt_die_frist_von_vorn(self):
+        uhr = Uhr()
+        w = self.wache(*([httpx.ConnectError("weg")] * 11 + [stand()] + [httpx.ConnectError("weg")] * 11), uhr=uhr)
+        for _ in range(11):
+            uhr.jetzt += ld.POLL_SECS
+            self.assertIsNone(await w.check())
+        uhr.jetzt += ld.POLL_SECS
+        self.assertIsNone(await w.check())  # der Dienst antwortet: die Frist beginnt neu
+        self.assertEqual(w.fehler, 0)
+        for _ in range(11):
+            uhr.jetzt += ld.POLL_SECS
+            self.assertIsNone(await w.check())
 
     async def test_run_beendet_die_sitzung_nach_dem_langen_ausfall(self):
         enden = []
+        uhr = Uhr()
 
         async def schlafen(s):
-            pass
+            uhr.jetzt += s  # die Zeit vergeht wirklich (künstliche Uhr)
 
         async def ende(grund):
             enden.append(grund)
 
-        await self.wache(httpx.ConnectError("weg"), sleep=schlafen).run(ende)
+        await self.wache(httpx.ConnectError("weg"), sleep=schlafen, uhr=uhr).run(ende)
         self.assertEqual(enden, [ld.GRUND_AUSFALL])
+        self.assertEqual(uhr.jetzt - 1000.0, 60.0)  # nach genau zwölf Fehlversuchen im Abstand von 5 Sekunden
+
+    async def test_haengender_dienst_beendet_die_sitzung_nach_60_sekunden_nicht_nach_132(self):
+        """Hängt der Dienst, dauert jeder Versuch bis zur Lesefrist: zwölf Versuche wären (5 + 6) * 12 = 132 Sekunden. Die Frist gilt der Uhr.
+        Der Schlaf der Wache ist echt (asyncio.sleep, Abstand 0), die Zeit vergeht in der künstlichen Uhr: jeder Versuch kostet 11 Sekunden."""
+        uhr = Uhr()
+        versuche, enden = [], []
+
+        class Haengt:
+            async def durchlauf(self, platz):
+                versuche.append(uhr.jetzt)
+                uhr.jetzt += ld.POLL_SECS + ld.LESE_TIMEOUT_SECS + 1  # Abstand und Lesefrist dieses Versuchs
+                raise TimeoutError
+
+        async def ende(grund):
+            enden.append(grund)
+
+        w = ld.LaborWache(3, ld.Durchlauf(D1, True, 2), quelle=Haengt(), min_version=2, interval=0, uhr=uhr)
+        await asyncio.wait_for(w.run(ende), 5)
+        self.assertEqual(enden, [ld.GRUND_AUSFALL])
+        verstrichen = uhr.jetzt - 1000.0
+        self.assertGreaterEqual(verstrichen, ld.MAX_AUSFALL_SECS)
+        self.assertLessEqual(verstrichen, ld.MAX_AUSFALL_SECS + ld.POLL_SECS + ld.LESE_TIMEOUT_SECS + 1)  # höchstens ein Versuch über die Frist
+        self.assertLessEqual(len(versuche), 6)
 
     async def test_unlesbare_antwort_beendet_nicht(self):
         self.assertIsNone(await self.wache({"offen": True}).check())

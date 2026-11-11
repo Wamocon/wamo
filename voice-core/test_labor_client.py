@@ -341,6 +341,93 @@ def test_falscher_token_wird_abgelehnt_ohne_ihn_zu_nennen(monkeypatch, token):
     assert (token or "zz") not in str(e.value) or token in (None, "")
 
 
+@pytest.fixture
+def frisches_vertrauen():
+    """Der Zwischenspeicher des SSL-Kontexts gehört dem Prozess: jeder Test fängt leer an und hinterlässt nichts."""
+    labor_client.vertrauen_leeren()
+    yield
+    labor_client.vertrauen_leeren()
+
+
+def _verify_je_client(monkeypatch, anzahl: int) -> list:
+    """Baut anzahl Clients aus der Umgebung und liefert das verify, das jeder bekommen hat (LaborClient wird nur beobachtet)."""
+    gesehen = []
+    echt = labor_client.LaborClient
+
+    def beobachten(*a, **kw):
+        gesehen.append(kw["verify"])
+        return echt(*a, **kw)
+
+    monkeypatch.setattr(labor_client, "LaborClient", beobachten)
+    for _ in range(anzahl):
+        client_aus_umgebung(4)
+    return gesehen
+
+
+def test_der_ssl_kontext_wird_einmal_gebaut_und_geteilt_ohne_ca(monkeypatch, frisches_vertrauen):
+    """Befund 5: jeder Client baute seinen SSL-Kontext neu (etwa 7 ms auf der Ereignisschleife des Sprachpfads, je Wache-Takt, /start und Offer)."""
+    import ssl
+
+    _env(monkeypatch)
+    monkeypatch.delenv("WAMO_CA_FILE", raising=False)
+    echt = ssl.create_default_context
+    aufrufe = []
+    monkeypatch.setattr(ssl, "create_default_context", lambda *a, **kw: aufrufe.append(1) or echt(*a, **kw))
+    verify = _verify_je_client(monkeypatch, 10)
+    assert len(aufrufe) == 1  # einmal für alle zehn
+    assert isinstance(verify[0], ssl.SSLContext) and all(v is verify[0] for v in verify)  # und wirklich derselbe Kontext, nie das ungeprüfte True
+    assert verify[0].verify_mode == ssl.CERT_REQUIRED and verify[0].check_hostname  # und er prüft Zertifikat und Rechnername wie der Standard von httpx
+
+
+def test_der_ssl_kontext_mit_der_wamo_ca_wird_einmal_gebaut_und_geteilt(monkeypatch, frisches_vertrauen):
+    import ssl
+
+    import certifi
+    import wamo_tls
+
+    _env(monkeypatch)
+    monkeypatch.setenv("WAMO_CA_FILE", certifi.where())  # eine gültige PEM-Datei mit Zertifikaten genügt
+    echt = wamo_tls.https_context
+    aufrufe = []
+    monkeypatch.setattr(wamo_tls, "https_context", lambda: aufrufe.append(1) or echt())
+    verify = _verify_je_client(monkeypatch, 10)
+    assert len(aufrufe) == 1
+    assert isinstance(verify[0], ssl.SSLContext) and all(v is verify[0] for v in verify)
+
+
+def test_anderer_ca_pfad_gibt_einen_neuen_kontext_und_ein_fehler_wird_nicht_gemerkt(monkeypatch, frisches_vertrauen, tmp_path):
+    import certifi
+
+    _env(monkeypatch)
+    monkeypatch.setenv("WAMO_CA_FILE", str(tmp_path / "fehlt.pem"))
+    for _ in range(2):  # ein unbrauchbarer Pfad ist jedes Mal ein Fehler (nichts Halbes im Speicher)
+        with pytest.raises(LaborKonfigFehler):
+            client_aus_umgebung(4)
+    monkeypatch.setenv("WAMO_CA_FILE", certifi.where())
+    erster = _verify_je_client(monkeypatch, 1)[0]  # ab jetzt geht es
+    monkeypatch.delenv("WAMO_CA_FILE")
+    ohne = _verify_je_client(monkeypatch, 1)[0]
+    assert ohne is not erster  # der Pfad gehört zum Schlüssel: ohne CA gilt ein anderer Kontext
+
+
+@pytest.mark.asyncio
+async def test_die_quelle_der_wache_baut_den_kontext_nicht_je_frage_neu(monkeypatch, frisches_vertrauen):
+    import ssl
+
+    import labor_durchlauf
+
+    app = Attrappe()
+    _env(monkeypatch, token=app.token)
+    monkeypatch.delenv("WAMO_CA_FILE", raising=False)
+    echt = ssl.create_default_context
+    aufrufe = []
+    monkeypatch.setattr(ssl, "create_default_context", lambda *a, **kw: aufrufe.append(1) or echt(*a, **kw))
+    quelle = labor_durchlauf.ClientQuelle(transport=httpx.ASGITransport(app=app))
+    for _ in range(10):
+        assert (await quelle.durchlauf(3))["offen"] is True
+    assert len(aufrufe) == 1
+
+
 def test_nur_die_attrappe_und_der_test_importieren_die_attrappe():
     produktiv = ("labor_client", "labor_vertrag", "labor_freigaben", "labor_ticket", "labor_mail", "labor_werkzeuge", "labor_durchlauf", "labor_sitzung",
                  "labor", "auth_gate", "bot")

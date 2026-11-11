@@ -12,6 +12,10 @@ Bearer nirgends anders hingeht; Proxys aus der Umgebung gelten nicht.
 client_aus_umgebung() liest WAMO_LABOR_URL und WAMO_LABOR_TOKEN streng (HTTPS, nur Loopback darf Klartext, keine Zugangsdaten und keine Abfrage in
 der Adresse) und lehnt die Adresse der Attrappe ab (labor_vertrag.ATTRAPPE_HOST): Die Attrappe läuft nie vor Besuchern. Das Modul importiert die
 Attrappe nicht. Das Geheimnis steht nie in Meldungen, Protokollen oder repr().
+
+Der SSL-Kontext wird einmal je Pfad von WAMO_CA_FILE gebaut und danach wiederverwendet (vertrauen()): Ihn zu bauen kostet etwa 7 Millisekunden
+auf der Ereignisschleife, und die Wache, /start und jedes Offer bauen einen Client je Frage. Ändert sich die Datei der CA im laufenden Betrieb,
+gilt das erst nach einem Neustart des Kerns (eine Änderung der Einstellung auf einen anderen Pfad gilt sofort). Ein Fehler wird nie gemerkt.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import ipaddress
 import json
 import os
 import re
+import ssl
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -316,6 +321,30 @@ def adresse_pruefen(url: object) -> str:
     return f"{teile.scheme}://{host if ':' not in host else '[' + host + ']'}" + (f":{port}" if port else "")
 
 
+_VERTRAUEN: dict[str | None, ssl.SSLContext] = {}  # Pfad von WAMO_CA_FILE (oder None) -> fertiger Kontext; höchstens wenige Einträge (eine Einstellung)
+
+
+def vertrauen_leeren() -> None:
+    """Vergisst die zwischengespeicherten SSL-Kontexte (für Tests)."""
+    _VERTRAUEN.clear()
+
+
+def vertrauen() -> ssl.SSLContext:
+    """Der SSL-Kontext für den Dienst: certifi plus die WAMO-CA, falls WAMO_CA_FILE gesetzt ist (wamo_tls.https_context), sonst nur certifi, so wie
+    httpx ihn bei verify=True selbst bauen würde. Einmal je Pfad gebaut und zwischengespeichert; ein Fehler (TlsConfigError) wird nicht gemerkt."""
+    pfad = wamo_tls.ca_file()
+    kontext = _VERTRAUEN.get(pfad)
+    if kontext is None:
+        kontext = wamo_tls.https_context()
+        if kontext is None:
+            import certifi
+
+            kontext = ssl.create_default_context(cafile=certifi.where())
+        _VERTRAUEN.clear()  # nur der Kontext der jetzigen Einstellung bleibt: der Speicher wächst nie
+        _VERTRAUEN[pfad] = kontext
+    return kontext
+
+
 def client_aus_umgebung(platz: int, *, transport: httpx.AsyncBaseTransport | None = None) -> LaborClient:
     """Client für diesen Platz aus WAMO_LABOR_URL und WAMO_LABOR_TOKEN (Geheimnis nur in core.env). Jeder Fehler ist LaborKonfigFehler."""
     basis = adresse_pruefen(os.getenv("WAMO_LABOR_URL"))
@@ -323,7 +352,7 @@ def client_aus_umgebung(platz: int, *, transport: httpx.AsyncBaseTransport | Non
     if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
         raise LaborKonfigFehler("WAMO_LABOR_TOKEN fehlt oder ist unbrauchbar (32 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-)")
     try:
-        verify = wamo_tls.https_context() or True  # die WAMO-CA, falls gesetzt
+        verify = vertrauen()  # certifi plus die WAMO-CA, falls gesetzt: einmal gebaut, danach geteilt
     except wamo_tls.TlsConfigError as e:
         raise LaborKonfigFehler("WAMO_CA_FILE ist unbrauchbar") from e
     return LaborClient(basis, token, platz, transport=transport, verify=verify)

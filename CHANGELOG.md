@@ -359,6 +359,21 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   Verhaltenstest `test_labor_pc_unveraendert.py`). Oberfläche: `ui/src/lib/laborKarte.ts` gibt der Freigabekarte für Labor-Aktionen ihre Texte
   („Aktion freigeben“, „Du entscheidest, nicht WAMO.“), die PC-Karte bleibt wie sie war.
 
+### Behoben
+
+- Testlabor, Befunde der Zweitprüfung am Kerncode (Zweig `labor/fix2`, nicht ausgerollt, wirkt nur für Laborprofile). Klickweg: Eine Nachricht
+  `freigabe` mit `job: "labor"` und einer erfundenen, aber formal gültigen Kennung endete in einer Meldung an das Sprachmodell (Modellzug, Sprachausgabe,
+  Logzeile, Kontextzuwachs) ohne Abstand und Obergrenze. Jetzt wird jede Kennung, die nicht zu einer offenen Karte gehört, nur ohne Inhalt geloggt und nie
+  gemeldet, und der `LaborRTVIProcessor` begrenzt die Klicks auf Freigabekarten (Abstand 0,5 Sekunden, höchstens 100; neue Einstellungen
+  `WAMO_LABOR_KLICK_ABSTAND_SECS` und `WAMO_LABOR_KLICK_MAX`, ungültige Werte ergeben den Standard, in `ERLAUBT` von `wamo_core_env.py`). Text, Klicks und
+  Websuchen zählen je Profil und Durchlauf statt je Verbindung (`labor_limit.LimitRegister`, begrenzter Speicher): eine Neuverbindung setzt sie nicht mehr
+  zurück. Die Wache misst einen Ausfall des Dienstes an der Uhr (60 Sekunden ohne gelungene Prüfung) statt an zwölf Fehlversuchen, die bei hängendem Dienst
+  bis zu 132 Sekunden dauerten. Beim Ende des Durchlaufs sperrt `LaborSpeicher.stoppen()` die Textspeicherung sofort, auch wenn der Abbruch der Pipeline
+  still scheitert. Der SSL-Kontext des Dienstclients wird einmal je CA-Pfad gebaut und geteilt (bisher je Wache-Takt, `/start` und Offer neu, etwa 7
+  Millisekunden auf der Ereignisschleife; eine geänderte CA-Datei gilt erst nach einem Neustart). `bot()` beendet bei jeder Ausnahme beim Aufbau, auch bei
+  einer Verletzung der Erlaubnisliste, die Verbindung mit einem festen Satz, und der Laborabschnitt schließt dann Dienstclient und Modellzugang. Neu getestet:
+  der Klickweg über `LaborRTVIProcessor` und die RTVI-Strecke.
+
 ## [0.1.0] - 2026-10-22
 
 Erstes Release: der Stand, auf dem alle Pakete (`ui`, `desktop`, `voice-core`, `host`, `geraete`) stehen.

@@ -248,6 +248,7 @@ _background_tasks: set[asyncio.Task] = set()
 # Eine Sitzung je Profil (sitzungen.py, WAMO_SITZUNG_EINZELN): eine neue löst die laufende desselben Profils ab
 SITZUNGEN = Sitzungen()
 ENDE_MELDUNG_SECS = 0.5  # so lange darf die Meldung "sitzung_beendet" laufen, bevor die Pipeline endet
+SITZUNG_FEHLER_TEXT = "Die Sitzung wurde wegen eines Fehlers beendet. Bitte noch einmal verbinden."  # fester Satz, nie ein Detail der Ausnahme
 
 transport_params = {
     "webrtc": lambda: TransportParams(
@@ -634,9 +635,13 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Fremdinhalte im laufenden Zug (Websuche, Bildschirm, PC, Entwicklungs-Ergebnisse) merken: kein
     # sofort wirksames gemeinsames Wissen (M4) und kein Lernen aus diesen Abschnitten.
     turn = TurnState(transcript_len=lambda: len(transcript))
+    # Labor: Text, Klicks auf Freigabekarten und Suchen zählen je Profil und Durchlauf, nicht je Verbindung (labor_limit.LimitRegister): eine
+    # Neuverbindung setzt nichts zurück. Das Schaufenster ohne Platz hat keinen Durchlauf, dort zählt das Profil allein.
+    labor_grenzen = (labor_limit.LIMITS.fuer(identity.user_id, labor_sitzung.stand.durchlauf_id if labor_sitzung.stand else None)
+                     if labor_sitzung else None)
     if labor_sitzung:  # Laborprofil: nur die Erlaubnisliste, nie merken oder Fernzugriff (labor.WERKZEUGE_BASIS)
         standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, erlaubt=labor.WERKZEUGE_BASIS,
-                                             suchen_max=labor_limit.suchen_max()).standard_tools)
+                                             suchen_zaehler=labor_grenzen.suchen).standard_tools)
     else:
         standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, fernzugriff=fernzugriff).standard_tools)
     # Vorgänge (vorgaenge.py): was WAMO gerade abarbeitet, live für die Tafel "Vorgänge". Alle Änderungen sind synchron, das
@@ -818,7 +823,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
         observers=[latenz_beobachter] if latenz_beobachter else [],
         # Labor: Client-Nachrichten gegen die Erlaubnisliste prüfen, bevor Pipecat sie auswertet (labor_rtvi.py)
-        rtvi_processor=LaborRTVIProcessor(art=identity.labor_art) if labor_sitzung else None,
+        rtvi_processor=(LaborRTVIProcessor(art=identity.labor_art, begrenzer=labor_grenzen.text, klicks=labor_grenzen.klicks)
+                        if labor_sitzung else None),
     )
     if dev:
         dev.attach(task)
@@ -930,6 +936,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             logger.warning("Laborsitzung: Werkzeuge nicht bereit ({})", type(e).__name__)
             await zugang.schliessen()
             raise labor.LaborAbgelehnt(labor_durchlauf.GRUND_DIENST, 503, labor_durchlauf.CODE_DIENST) from e
+        except Exception:  # jede andere Ausnahme: der schon gebaute Modellzugang bleibt nicht offen, bot() beendet die Verbindung
+            await zugang.schliessen()
+            raise
         if labor_werkz is not None:  # None: das Schau-Profil ohne Platz hat kein Test-Jira
             standard_tools += labor_werkz.schemas
             context.set_tools(ToolsSchema(standard_tools=standard_tools))
@@ -939,7 +948,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         # also erst nach den Werkzeugen von labor_werkzeuge.
         try:
             labor_sitzung.werkzeuge_pruefen(llm, standard_tools, mit_tickets=labor_werkz is not None)
-        except labor.LaborPolitikFehler:
+        except Exception:  # LaborPolitikFehler und alles andere: Dienstclient und Modellzugang schließen, bot() beendet die Verbindung
             if labor_werkz is not None:
                 await labor_werkz.schliessen()
             await zugang.schliessen()
@@ -1198,6 +1207,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     async def labor_ende(grund: str) -> None:
         """Der Durchlauf ist beendet oder gewechselt: die Oberfläche lädt sich neu (Untertitel und Canvas liegen im Speicher der Seite)."""
+        # Zuerst die Textspeicherung sperren: die Einwilligung gilt nicht mehr, und der Abbruch der Pipeline (task.cancel in cleanup) kann
+        # still scheitern. Ohne diese Sperre schriebe der Speicher bis zum Ende der Pipeline weiter.
+        labor_sitzung.memory.stoppen()
         if labor_werkz is not None:
             labor_werkz.durchlauf_beendet()  # offene Karten sind erledigt, keine neuen, kein Klick wirkt mehr (schon vor der Meldung und dem Aufräumen)
         with contextlib.suppress(Exception):
@@ -1314,6 +1326,18 @@ async def run_bot(
         await session.cleanup()
 
 
+async def _verbindung_beenden(connection, grund: str) -> None:
+    """Der Person sagen, warum die Verbindung endet (Datenkanal, noch ohne Pipeline), dann trennen. Jeder Schritt für sich, damit ein Fehler im
+    einen den anderen nicht verhindert: die WebRTC-Verbindung bleibt nie ohne Pipeline offen."""
+    if connection is None:
+        return
+    with contextlib.suppress(Exception):
+        connection.send_app_message({"label": "rtvi-ai", "type": "server-message", "data": {"type": "sitzung_beendet", "grund": grund}})
+        await asyncio.sleep(ENDE_MELDUNG_SECS * 2)
+    with contextlib.suppress(Exception):
+        await connection.disconnect()
+
+
 async def bot(runner_args: RunnerArguments):
     # Die Identität setzt allein die Zugangskontrolle (auth_gate.py). Ohne sie: sofort beenden.
     identity = identity_from_body(getattr(runner_args, "body", None))
@@ -1337,25 +1361,21 @@ async def bot(runner_args: RunnerArguments):
         # LiteLLM nicht nutzbar und kein Rückfall erlaubt (WAMO_LLM_RUECKFALL): Sitzung sauber beenden,
         # statt die Verbindung ohne Pipeline offen zu lassen.
         logger.error("Sitzung beendet, kein Gesprächsmodell: {}", e)
-        if connection is not None:
-            # Der Person klar sagen, warum die Verbindung endet (Datenkanal, noch ohne Pipeline); die Oberfläche zeigt
-            # die Meldung wie jedes "Sitzung beendet"
-            with contextlib.suppress(Exception):
-                connection.send_app_message({"label": "rtvi-ai", "type": "server-message", "data": {
-                    "type": "sitzung_beendet", "grund": kein_modell_text(e, identity.is_admin)}})
-                await asyncio.sleep(ENDE_MELDUNG_SECS * 2)
-            with contextlib.suppress(Exception):
-                await connection.disconnect()
+        # Der Person klar sagen, warum die Verbindung endet; die Oberfläche zeigt die Meldung wie jedes "Sitzung beendet"
+        await _verbindung_beenden(connection, kein_modell_text(e, identity.is_admin))
     except labor.LaborAbgelehnt as e:
         # Laborprofil: Durchlauf beendet, keine Einwilligung oder Dienst nicht erreichbar (labor_sitzung.py). Der Person sagen, warum.
         logger.warning("Laborsitzung nicht angenommen: {}", e.code)
-        if connection is not None:
-            with contextlib.suppress(Exception):
-                connection.send_app_message({"label": "rtvi-ai", "type": "server-message", "data": {
-                    "type": "sitzung_beendet", "grund": e.grund}})
-                await asyncio.sleep(ENDE_MELDUNG_SECS * 2)
-            with contextlib.suppress(Exception):
-                await connection.disconnect()
+        await _verbindung_beenden(connection, e.grund)
+    except labor.LaborPolitikFehler as e:
+        # Eine Laborsitzung verstößt gegen ihre Erlaubnisliste (build_session hat Dienstclient und Modellzugang schon geschlossen): nicht bauen
+        logger.error("Laborsitzung nicht gebaut: {}", e)
+        await _verbindung_beenden(connection, SITZUNG_FEHLER_TEXT)
+    except Exception:
+        # Jede andere Ausnahme beim Aufbau oder im Lauf: die Verbindung nicht ohne Pipeline offen lassen. Der Person nur ein fester Satz, das Log
+        # bekommt die Ausnahme mit Ablauf (Abbrüche der Aufgabe, CancelledError, fängt das nicht: sie sind keine Exception)
+        logger.exception("Sitzung beendet, unerwarteter Fehler")
+        await _verbindung_beenden(connection, SITZUNG_FEHLER_TEXT)
     finally:
         SITZUNGEN.freigeben(sitzung)
 
