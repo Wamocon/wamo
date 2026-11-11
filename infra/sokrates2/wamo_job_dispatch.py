@@ -75,9 +75,19 @@ der Einheiten des Auftrags beenden, Pfade im Aufruf über Links auflösen (müss
 pruefen führt keine Buchführung der Zugänge (zugang_pruefen): der Lauf hat keine Zugänge. cancel wirkt jobweit (Datei abbruch, alle
 Einheiten des Auftrags); der Kern ruft es nach dem Ende von pruefen nicht mehr. Protokollzeilen aus freiem Inhalt sind bereinigt.
 
-Nur Standardbibliothek, im App-Modus zusätzlich das Systempaket python3-cryptography. Wächter, Werkzeugkarte, Kontingent-Parser
-und die Prüflogik von pruefen (abnahme_befehl.py, wamo_job_pruefen.py) kommen aus /opt/wamo/waechter (Kopien aus voice-core
-und infra/sokrates2).
+Kanäle (Version 7): Jede ssh-Verbindung gehört zu einem Kanal. lokal (ohne SSH_CONNECTION und SSH_ORIGINAL_COMMAND: Betreiber,
+Rauchtests, Notaus), pc (Schlüssel aus authorized_keys.d/wamo, Verhalten wie Version 6) oder kern (Schlüssel aus
+authorized_keys.d/wamo-kern). Die Zuordnung hängt am benutzten Schlüssel (SSH_USER_AUTH, sshd ExposeAuthInfo), nie an der Adresse.
+Existiert ein Kern-Schlüssel oder /etc/wamo/kernkanal.conf, gilt der strikte Modus: was sich nicht eindeutig zuordnen lässt,
+endet mit dem Ereignis kanal_gesperrt (herkunft_unklar) und Exit 2, vor jedem Lesen von geheim.env. Im Kern-Kanal gelten Befehlsliste,
+nur eigene Aufträge (auftrag.json mit kanal=kern), Namensraum kern-, nur zugang=folgt und die Grenzen aus kernkanal.conf (Wendungen und
+Kosten je Lauf als Flags von Claude Code, Starts, Laufzeit, Folgen, Abstand, Platz); eine Notaus-Datei lässt nur ping und status zu.
+Die Regeln stehen in wamo_job_kernkanal.py, hier nur die Einhängepunkte. Jeder Verstoß: {"type": "wamo", "ereignis":
+"kanal_gesperrt", "grund": <Code>} und Exit 2. ping meldet kanal und kernkanal.
+
+Nur Standardbibliothek, im App-Modus zusätzlich das Systempaket python3-cryptography. Wächter, Werkzeugkarte, Kontingent-Parser,
+die Prüflogik von pruefen (abnahme_befehl.py, wamo_job_pruefen.py) und die Regeln des Kern-Kanals (wamo_job_kernkanal.py) kommen aus
+/opt/wamo/waechter (Kopien aus voice-core und infra/sokrates2).
 """
 
 from __future__ import annotations
@@ -105,7 +115,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-VERSION = "6"
+VERSION = "7"
 
 HEIM = Path("/srv/wamo")
 APP = Path("/opt/wamo")  # root-eigen; Programme in bin/, Wächter in waechter/ (in der Sandbox derselbe Pfad)
@@ -125,6 +135,12 @@ LAN_PROBE = "192.168.178.1"  # Ziel der Firewall-Probe im Selbsttest (Router, Po
 ENTWICKLUNGS_PORTS = range(20000, 21000)  # 127.0.0.1:20000-20999 lässt der Ausgangsfilter für eigene Server zu
 MAX_OFFENE_FREIGABEN = 10  # Karten je Auftrag
 ZUGANG_TOOL = "WAMO-Zugang"  # Freigabe-Anfrage für mehr Zugänge als frühere Läufe im Projekt
+WAMO_REPO_GESPERRT = "Das WAMO-Repo selbst ist für Aufträge gesperrt"
+KERN_PRAEFIX = "kern-"  # Namensraum der Projekte des Kern-Kanals; dem PC-Kanal verschlossen
+KANAL = "lokal"  # Kanal der laufenden Verbindung (lokal, pc, kern; unklar bei unbekannter Herkunft): main setzt ihn, log schreibt ihn mit
+KERN_PFADE = None  # nur für Tests: andere Pfade des Kern-Kanals (None: die echten, siehe wamo_job_kernkanal.PFADE)
+KERN_LESER = None  # nur für Tests: anderer Dateizugriff (Eigentümer und Rechte)
+KERN_UID = None  # nur für Tests: Benutzerkennung des Dispatchers
 
 # Exit-Codes von "start" (zusätzlich zu den Ereignissen im Datenstrom)
 EXIT_OK = 0
@@ -279,7 +295,7 @@ def check_project(value: str) -> str:
     if not PROJECT_RE.fullmatch(value) or "--" in value:
         raise Abgewiesen("Projektname ungültig (3 bis 50 Zeichen, a-z, 0-9, Bindestrich)")
     if value == SELF_REPO:
-        raise Abgewiesen("Das WAMO-Repo selbst ist für Aufträge gesperrt")
+        raise Abgewiesen(WAMO_REPO_GESPERRT)
     return value
 
 
@@ -338,7 +354,7 @@ def check_repo(value: object) -> str:
     if name in (".", "..") or name.lower().endswith(".git"):
         raise Abgewiesen("Kopfzeile: repo ungültig (Name . oder .. oder mit .git)")
     if name.lower() == SELF_REPO:
-        raise Abgewiesen("Das WAMO-Repo selbst ist für Aufträge gesperrt")
+        raise Abgewiesen(WAMO_REPO_GESPERRT)
     return value
 
 
@@ -371,6 +387,8 @@ def parse_header(raw: bytes) -> Kopf:
     auftrag, system = data.get("auftrag"), data.get("system", "")
     if not isinstance(auftrag, str) or not isinstance(system, str):
         raise Abgewiesen("Kopfzeile: auftrag und system müssen Text sein")
+    if KANAL == "kern" and (_versteckt(auftrag) or _versteckt(system)):
+        raise Abgewiesen("Kopfzeile: unsichtbare Zeichen (Unicode-Format-, Tag-, Privat- oder Trennzeichen) sind im Kern-Kanal nicht erlaubt")
     auftrag, system = _clean(auftrag), _clean(system)
     if not auftrag.strip():
         raise Abgewiesen("Auftrag ist leer")
@@ -449,8 +467,41 @@ def pruefen_aktiv(geheim: dict[str, str]) -> bool:
     return True
 
 
+# Unsichtbare Zeichen können eine Zusatzanweisung an Claude Code tragen, die niemand liest. Zwei Stufen:
+#  1. _clean (jeder Kanal, auch die Statustexte) entfernt nur die gefährlichen: Tag-Zeichen (U+E0000 bis U+E007F), Bidi-Steuerzeichen
+#     (U+202A bis U+202E, U+2066 bis U+2069, U+200E, U+200F, U+061C), U+200B, U+2060 bis U+2064, U+206A bis U+206F, U+180E, U+FEFF, Privatbereich (Co),
+#     Surrogate (Cs), Zeilen- und Absatztrenner (Zl, Zp) und Steuerzeichen (Cc). ZWJ (U+200D), ZWNJ (U+200C), Variationsselektoren und das weiche
+#     Trennzeichen bleiben, sonst zerfallen Emoji-Sequenzen (Familie, Flaggen, Herz) und persische oder indische Schrift.
+#  2. _versteckt (nur der Kern-Kanal) lehnt jedes Format-, Privat-, Trenn-, Tag-Zeichen und jeden Variationsselektor ab, auch ZWJ und ZWNJ.
+UNSICHTBAR_KATEGORIEN = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})  # streng (Kern-Kanal)
+GEFAEHRLICH_KATEGORIEN = frozenset({"Cc", "Cs", "Co", "Zl", "Zp"})
+GEFAEHRLICH_ZEICHEN = frozenset(
+    {0x061C, 0x180E, 0x200B, 0x200E, 0x200F, 0x2060, 0xFEFF}
+    | set(range(0x202A, 0x202F)) | set(range(0x2061, 0x2065)) | set(range(0x2066, 0x206A)) | set(range(0x206A, 0x2070))
+    | set(range(0xE0000, 0xE0080)))
+
+
+def _unsichtbar(c: str) -> bool:
+    """Streng (Kern-Kanal): jedes unsichtbare Zeichen, auch ZWJ, ZWNJ, Variationsselektoren und nicht zugewiesene Zeichen."""
+    n = ord(c)
+    return unicodedata.category(c) in UNSICHTBAR_KATEGORIEN or 0xFE00 <= n <= 0xFE0F or 0xE0000 <= n <= 0xE01EF
+
+
+def _gefaehrlich(c: str) -> bool:
+    """Mild (alle Kanäle): nur die gefährlichen unsichtbaren Zeichen. Nicht zugewiesene Zeichen bleiben, sie können neue Emojis sein."""
+    return unicodedata.category(c) in GEFAEHRLICH_KATEGORIEN or ord(c) in GEFAEHRLICH_ZEICHEN
+
+
 def _clean(text: str) -> str:
-    return "".join(c for c in text if c in "\n\t" or (ord(c) >= 32 and ord(c) != 127))
+    """Entfernt die gefährlichen unsichtbaren Zeichen (siehe oben), erhalten bleiben Zeilenumbruch, Tabulator, ZWJ, ZWNJ und Variationsselektoren.
+    Gilt für jeden Kanal."""
+    return "".join(c for c in text if c in "\n\t" or not _gefaehrlich(c))
+
+
+def _versteckt(text: str) -> bool:
+    """Enthält der Text ein unsichtbares Zeichen, das mehr ist als ein gewöhnliches Steuerzeichen unter 32 oder DEL? Der Kern bereinigt selbst:
+    kommt so etwas im Kern-Kanal an, ist es keine Panne, sondern ein Versuch, eine unsichtbare Anweisung einzuschleusen."""
+    return any(_unsichtbar(c) and not (ord(c) < 32 or ord(c) == 127) for c in text)
 
 
 # ---------------------------------------------------------------- Geheimnisse und Umgebung
@@ -1026,7 +1077,7 @@ def log(text: str, pflicht: bool = False) -> None:
     bricht ein Schreibfehler den Befehl ab, statt still weiterzulaufen."""
     client = (os.environ.get("SSH_CONNECTION") or "lokal").split(" ")[0]
     text = text.replace("\n", " ").replace("\r", " ")
-    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {client} {text}\n"
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {client} {text} kanal={KANAL}\n"
     try:
         with open(LOGS / "auftraege.log", "a", encoding="utf-8") as f:
             f.write(line)
@@ -1222,14 +1273,15 @@ def claude_konfiguration(claude_dir: Path, geheim: dict[str, str]) -> None:
     (claude_dir / "settings.local.json").unlink(missing_ok=True)
 
 
-def vorbereiten(jobdir: Path, job: str, projekt: str, art: str, repo: str | None = None) -> None:
+def vorbereiten(jobdir: Path, job: str, projekt: str, art: str, repo: str | None = None, kanal: str | None = None) -> None:
     """Legt den Auftragsordner an oder prüft die Bindung an Projekt, Art und Ziel-Repo (unter der Auftragssperre).
-    Das Repo begrenzt das GitHub-Token; eine Fortsetzung mit einem anderen Repo wird abgewiesen."""
+    Das Repo begrenzt das GitHub-Token; eine Fortsetzung mit einem anderen Repo wird abgewiesen. Neue Aufträge aus dem
+    Kern-Kanal oder dem PC-Kanal tragen kanal (kern oder pc); ein Auftrag ohne das Feld gehört nie dem Kern-Kanal."""
     meta_path = jobdir / "auftrag.json"
     meta = read_json(meta_path, None)
     if meta is None:
         write_json_atomic(meta_path, {"job": job, "projekt": projekt, "art": art, "repo": repo,
-                                      "erstellt": int(time.time())})
+                                      "erstellt": int(time.time()), **({"kanal": kanal} if kanal in ("kern", "pc") else {})})
     elif not isinstance(meta, dict) or meta.get("projekt") != projekt or meta.get("art") != art:
         raise Abgewiesen("Auftrag gehört zu einem anderen Projekt oder einer anderen Art")
     elif meta.get("repo") != repo:
@@ -1950,7 +2002,7 @@ def cmd_ping() -> int:
     emit({"ok": True, "version": VERSION, "runner": RUNNER.is_file(), "waechter": (WAECHTER / "dev_guard.py").is_file(),
           "github": github_status(), "serverzugang": serverzugang_erlaubt(geheim),
           "kontingent": kontingent_modul() is not None, "pruefen": pruefen_aktiv(geheim),
-          "abnahme_befehl_sha256": modul_sha256("abnahme_befehl")})
+          "abnahme_befehl_sha256": modul_sha256("abnahme_befehl"), "kanal": KANAL, "kernkanal": kernkanal_ping()})
     return EXIT_OK
 
 
@@ -2352,8 +2404,193 @@ def zugang_aufraeumen(jobdir: Path, job: str, ersetzungen: list[tuple[bytes, byt
         log(f"schwaerzen {job} FEHLER {type(e).__name__}")
 
 
+# ---------------------------------------------------------------- Kern-Kanal (Version 7): Einhängepunkte, die Regeln stehen in wamo_job_kernkanal.py
+def kern_modul():
+    """Das Kern-Kanal-Modul: in /opt/wamo/waechter installiert, im Repo neben dieser Datei. Es wird erst beim ersten Gebrauch geladen
+    (jeder ssh-Aufruf, ping); fehlt es oder ist es defekt, wirft das Laden."""
+    geladen = sys.modules.get("wamo_job_kernkanal")
+    if geladen is not None:
+        return geladen
+    if (WAECHTER / "wamo_job_kernkanal.py").is_file():
+        return _modul("wamo_job_kernkanal")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("wamo_job_kernkanal", Path(__file__).resolve().with_name("wamo_job_kernkanal.py"))
+    modul = importlib.util.module_from_spec(spec)
+    sys.modules["wamo_job_kernkanal"] = modul
+    try:
+        spec.loader.exec_module(modul)
+    except BaseException:
+        sys.modules.pop("wamo_job_kernkanal", None)
+        raise
+    return modul
+
+
+def kern_zustand():
+    """Notaus-Datei und Konfiguration des Kern-Kanals, jedes Mal frisch gelesen (Regeln 1 und 2)."""
+    k = kern_modul()
+    return k.kanal_zustand(KERN_PFADE or k.PFADE, lesen=KERN_LESER or k.datei_lesen, bekannte_arten=werkzeugkarte().AUFTRAGSARTEN)
+
+
+def _kern_vorhanden(pfad) -> bool:
+    try:
+        os.lstat(pfad)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True  # unlesbar heißt vorhanden
+    return True
+
+
+def kanal_ermitteln() -> str | None:
+    """Kanal dieser Verbindung: lokal, pc oder kern; None, wenn die Herkunft im strikten Modus unklar ist. Fehlt das Modul oder ist
+    es defekt, gilt ssh ohne Kern-Schlüssel und ohne kernkanal.conf (Stufe 0) weiter als pc, sonst als unklar (fail-closed)."""
+    ssh = "SSH_CONNECTION" in os.environ or "SSH_ORIGINAL_COMMAND" in os.environ
+    try:
+        k = kern_modul()
+        uid = KERN_UID if KERN_UID is not None else (os.getuid() if hasattr(os, "getuid") else None)
+        return k.kanal_bestimmen(os.environ, KERN_PFADE or k.PFADE, lesen=KERN_LESER or k.datei_lesen, eigene_uid=uid).kanal
+    except Exception:  # noqa: BLE001 (Modul fehlt oder ist defekt)
+        if not ssh:
+            return "lokal"
+        pfade = KERN_PFADE
+        strikt = _kern_vorhanden(pfade.kern_schluessel if pfade else "/etc/ssh/authorized_keys.d/wamo-kern") \
+            or _kern_vorhanden(pfade.konfig if pfade else "/etc/wamo/kernkanal.conf")
+        return None if strikt else "pc"
+
+
+def kernkanal_ping() -> dict:
+    """Das Objekt kernkanal der ping-Antwort (I7). Wirft nie; ein Fehler sieht aus wie ein geschlossener, fehlerhafter Kanal."""
+    try:
+        k = kern_modul()
+        pfade = KERN_PFADE or k.PFADE
+        return k.kernkanal_bericht(kern_zustand(), k.existiert(pfade.kern_schluessel) or k.existiert(pfade.konfig))
+    except Exception:  # noqa: BLE001 (ping muss immer antworten)
+        return {"strikt": True, "offen": False, "grund": "konfig_ungueltig", "arten": [], "repos": [], "ablauf": None, "tage_rest": None}
+
+
+def kanal_abweisen(grund: str) -> int:
+    """Ereignis kanal_gesperrt (I6, Grund aus KANAL_GRUENDE) und Exit 2. Nie mit Token, nie mit einem Wert aus geheim.env."""
+    log(f"kanal_gesperrt grund={grund}")
+    wamo_event("kanal_gesperrt", grund=grund)
+    print(f"WAMO-Auftrag abgewiesen: Kanal gesperrt ({grund})", file=sys.stderr)
+    return EXIT_ABGEWIESEN
+
+
+def kern_befehl_pruefen(name: str, args: list[str]) -> str | None:
+    """Regeln 1 bis 4 für einen Befehl aus dem Kern-Kanal: None (erlaubt) oder ein Code. In den anderen Kanälen immer None.
+    start prüft cmd_start selbst, nach dem Lesen der Kopfzeile."""
+    if KANAL != "kern":
+        return None
+    k = kern_modul()
+    grund = k.pruefe_befehl(name, kern_zustand())
+    if grund is None and name in ("status", "pending", "approve", "cancel"):
+        grund = k.pruefe_eigener_auftrag(read_json(JOBS / args[0] / "auftrag.json", None))
+    return grund
+
+
+def kern_projekt_lage(projekt: str, repo: str | None) -> tuple[bool, bool]:
+    """(fremd, kollision) für den Projektordner eines Starts im Kern-Kanal. fremd: der Ordner besteht (oder ein Link steht dort), aber kein Auftrag
+    mit kanal=kern hat ihn angelegt (die Auftragsordner sind für die Sandbox unsichtbar, ein Marker im Projektordner wäre fälschbar): der
+    Kern-Auftrag liefe sonst in fremdem Inhalt. kollision: ein Kern-Auftrag hat denselben Ordner mit einem anderen Repo belegt (my_repo und
+    my-repo ergeben beide kern-my-repo)."""
+    belegt: list[str | None] = []
+    gefunden = False
+    if JOBS.is_dir():
+        for meta_pfad in JOBS.glob("*/auftrag.json"):
+            meta = read_json(meta_pfad, None)
+            if isinstance(meta, dict) and meta.get("kanal") == "kern" and meta.get("projekt") == projekt:
+                gefunden = True
+                belegt.append(meta.get("repo") if isinstance(meta.get("repo"), str) else None)
+    ordner = PROJEKTE / projekt
+    fremd = (ordner.is_symlink() or os.path.lexists(ordner)) and (ordner.is_symlink() or not gefunden)
+    return fremd, kern_modul().repo_kollision(repo, belegt)
+
+
+def kern_start_pruefen(job: str, projekt: str, art: str, kopf: Kopf, app_modus: bool, eigener_versuch: bool = False):
+    """Regeln 1 bis 7 und 9 für einen Start aus dem Kern-Kanal. Liefert (Code oder None, Konfiguration). Liest keine Geheimnisse:
+    app_modus ist vor dem Lesen von geheim.env nicht bekannt (die erste Prüfung nimmt True an, die zweite den echten Wert).
+    eigener_versuch: die zweite Prüfung zählt den Versuch dieses Starts, den die erste schon gebucht hat, nicht mit."""
+    k = kern_modul()
+    pfade = KERN_PFADE or k.PFADE
+    zustand = kern_zustand()
+    wk = werkzeugkarte()
+    meta_pfad = JOBS / job / "auftrag.json"
+    projekt_fremd, projekt_kollision = kern_projekt_lage(projekt, kopf.repo)
+    anfrage = k.StartAnfrage(
+        job=job, projekt=projekt, art=art, repo=kopf.repo, zugang=kopf.zugang, profil=kopf.profil,
+        github=wk.github_stufe(art) is not None, dienste=tuple(sorted(set(wk.KARTEN[art].zugaenge) - {"github", "github_lesen"})),
+        app_modus=app_modus, fremd=meta_pfad.exists() and k.pruefe_eigener_auftrag(read_json(meta_pfad, None)) is not None,
+        projekt_fremd=projekt_fremd, projekt_kollision=projekt_kollision)
+    try:
+        ereignisse = k.zaehler_lesen(pfade.zaehler)
+    except OSError:
+        ereignisse = None  # nicht lesbar: die Grenzen sind nicht prüfbar, Regel 9 sperrt
+    if eigener_versuch and ereignisse is not None:
+        eigene = [i for i, e in enumerate(ereignisse) if e["ereignis"] == "versuch" and e["job"] == job]
+        if eigene:
+            del ereignisse[eigene[-1]]
+    grund = k.pruefe_start(anfrage, zustand, ereignisse=ereignisse, jetzt=time.time(), freier_platz_mb=k.freier_platz_mb(pfade.platz))
+    return grund, zustand.konfig
+
+
+def kern_versuch_buchen(job: str) -> bool:
+    """Bucht den Versuch (Ereignis versuch im Zähler), sobald ein Start die erste Prüfung besteht: auch Starts, die später an einer Sperre
+    scheitern (belegt, zugang_erweitert, App-Fehler), zählen so gegen die Grenze je Stunde. False, wenn der Zähler nicht schreibbar ist."""
+    k = kern_modul()
+    try:
+        k.zaehler_schreiben((KERN_PFADE or k.PFADE).zaehler, job, "versuch", time.time())
+    except OSError:
+        return False
+    return True
+
+
+def kern_fork_grund(repo: str | None, token: str) -> str | None:
+    """Regel 8: die Metadaten des Repos bei GitHub abfragen (mit dem Token dieses Laufs) und prüfen. Unklar heißt gesperrt."""
+    if not repo:
+        return "repo_fehlt"
+    try:
+        status, obj = _github("GET", f"/repos/{repo}", token)
+    except GithubAppFehler:
+        return "fork"
+    return "fork" if status != 200 else kern_modul().fork_pruefen(obj, repo)
+
+
+@contextmanager
+def kern_buchung(job: str):
+    """Im Kern-Kanal Start und Ende des Laufs in den Zähler schreiben (kernkanal.jsonl). Lässt sich der Start nicht buchen, startet
+    nichts (die Grenzen wären nicht mehr prüfbar). Das Ende wird auch bei einer Ausnahme oder einem Signal gebucht."""
+    if KANAL != "kern":
+        yield
+        return
+    k = kern_modul()
+    zaehler = (KERN_PFADE or k.PFADE).zaehler
+    beginn = time.time()
+    k.zaehler_schreiben(zaehler, job, "start", beginn)
+    try:
+        yield
+    finally:
+        try:
+            k.zaehler_schreiben(zaehler, job, "ende", time.time(), dauer_s=max(0, int(time.time() - beginn)))
+        except OSError:
+            log(f"kernkanal: Ende von {job} nicht gebucht")
+
+
 def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> int:
-    kopf = parse_header(_kopfzeile_lesen())
+    kern = KANAL == "kern"
+    try:
+        kopf = parse_header(_kopfzeile_lesen())
+    except Abgewiesen as e:
+        if kern and str(e) == WAMO_REPO_GESPERRT:
+            return kanal_abweisen("repo")
+        raise
+    if kern:  # erste Prüfung: vor Geheimnissen, Sperren und Selbsttest
+        grund, _konfig = kern_start_pruefen(job, projekt, art, kopf, app_modus=True)
+        if grund is not None:
+            return kanal_abweisen(grund)
+        if not kern_versuch_buchen(job):  # ohne Zähler lassen sich die Grenzen nicht erzwingen
+            return kanal_abweisen("grenze_start")
+    elif KANAL == "pc" and projekt.startswith(KERN_PRAEFIX):
+        raise Abgewiesen("Projektnamen mit kern- sind dem Kern-Kanal vorbehalten")
     auftrag, system, wunsch, repo = kopf.auftrag, kopf.system, kopf.modell, kopf.repo
     try:
         werkzeugkarte().modell_fuer(art, wunsch)  # ein Wunsch außerhalb der Allowlist scheitert vor allem anderen
@@ -2375,7 +2612,7 @@ def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> i
     if not gehalten[0].versuchen():
         wamo_event("belegt", grund="Dieser Auftrag läuft bereits")
         return EXIT_BELEGT
-    vorbereiten(jobdir, job, projekt, art, repo)
+    vorbereiten(jobdir, job, projekt, art, repo, KANAL)
     gehalten.append(Sperre(sperren / f"projekt-{projekt}"))
     if not gehalten[-1].versuchen():
         wamo_event("belegt", grund="Im Projekt läuft schon ein anderer Auftrag")
@@ -2427,15 +2664,26 @@ def cmd_start(job: str, projekt: str, art: str, session: str | None = None) -> i
     github = "-" if werkzeugkarte().github_stufe(art) is None else "app" if app is not None else "token"
     if github == "app":
         system = f"{system}\n{github_hinweis(repo)}"
-    argv = [str(RUNNER), "--auftrag", job, "--projekt", projekt, "--", *claude_argv(system, modell, session)]
+    grenzen = None
+    if kern:  # zweite Prüfung unmittelbar vor der Token-Erzeugung: eine Notaus-Datei oder eine neue Konfiguration seit der ersten greift noch
+        grund, konfig = kern_start_pruefen(job, projekt, art, kopf, app_modus=app is not None, eigener_versuch=True)
+        if grund is not None:
+            return kanal_abweisen(grund)
+        grenzen = (str(konfig.max_turns), konfig.max_budget_usd)  # nur aus kernkanal.conf, die Kopfzeile kann nichts steuern
+    claude = claude_argv(system, modell, session, grenzen) if grenzen else claude_argv(system, modell, session)
+    argv = [str(RUNNER), "--auftrag", job, "--projekt", projekt, "--", *claude]
     # Ab hier lebt ggf. ein GitHub-Token: SIGTERM und SIGHUP werden zur Ausnahme, damit Sandbox-Stopp und Widerruf
     # (finally in github_token_fuer_lauf) sicher laufen. SIGKILL lässt sich nicht abfangen: dann läuft das Token
     # nach spätestens einer Stunde ab.
-    with _signale(_als_ausnahme):
+    with _signale(_als_ausnahme), kern_buchung(job):
         try:
             with github_token_fuer_lauf(job, art, repo, app) as gh_token:
                 if gh_token is not None:
                     env = sandbox_env(art, geheim, app_modus=True, gh_token=gh_token, zugang=zugang)
+                    if kern:  # Regel 8: kein Fork, keine Vorlage, kein Ursprung wamo; das Token wird danach widerrufen
+                        grund = kern_fork_grund(repo, gh_token)
+                        if grund is not None:
+                            return kanal_abweisen(grund)
                 log(f"start {job} {projekt} {art} {'fortsetzung' if session else 'neu'} modell={modell} "
                     f"zugaenge={','.join(zugaenge)} github={github} repo={repo or '-'} claude={quelle} "
                     f"profil={kopf.profil or '-'}", pflicht=True)
@@ -2455,12 +2703,15 @@ def _start_abgelehnt(jobdir: Path, job: str, projekt: str, art: str, grund: str)
     return EXIT_GITHUB_APP
 
 
-def claude_argv(system: str, modell: str, session: str | None = None) -> list[str]:
-    """Aufruf von Claude Code in der Sandbox (auch vom Rauchtest genutzt)."""
+def claude_argv(system: str, modell: str, session: str | None = None, grenzen: tuple[str, str] | None = None) -> list[str]:
+    """Aufruf von Claude Code in der Sandbox (auch vom Rauchtest genutzt). grenzen (Wendungen, Kosten in USD) gibt es nur im
+    Kern-Kanal und nur aus kernkanal.conf: --max-turns und --max-budget-usd."""
     argv = [str(CLAUDE), "-p", "--output-format", "stream-json", "--verbose", "--permission-mode",
             "bypassPermissions", "--model", modell, "--settings", PLUGIN_SETTINGS, "--append-system-prompt", system]
     if session:
         argv += ["--resume", session]
+    if grenzen:
+        argv += ["--max-turns", grenzen[0], "--max-budget-usd", grenzen[1]]
     return argv
 
 
@@ -2920,12 +3171,19 @@ def speicher_begrenzen() -> None:
 def main(argv: list[str] | None = None) -> int:
     # Über SSH zählt NUR SSH_ORIGINAL_COMMAND (argv ist durch command="..." fest leer). Ohne SSH (Rauchtest
     # als wamo) gelten die Argumente, mit derselben Prüfung.
+    global KANAL
     if "SSH_CONNECTION" in os.environ or "SSH_ORIGINAL_COMMAND" in os.environ:
         raw = os.environ.get("SSH_ORIGINAL_COMMAND")
     else:
         raw = " ".join(sys.argv[1:] if argv is None else argv)
     try:
+        KANAL = kanal_ermitteln() or "unklar"  # vor allem anderen: unklare Herkunft im strikten Modus endet hier
+        if KANAL == "unklar":
+            return kanal_abweisen("herkunft_unklar")
         name, args = parse_command(raw)
+        gesperrt = kern_befehl_pruefen(name, args)
+        if gesperrt is not None:
+            return kanal_abweisen(gesperrt)
         if name == "start":  # Eingang; approve und cancel protokollieren selbst (Pflichtzeile), sonst doppelt
             log(f"{name} {' '.join(args)}")
         return HANDLER[name](*args)
@@ -2942,6 +3200,8 @@ def main(argv: list[str] | None = None) -> int:
         log(f"FEHLER {type(e).__name__}: {str(e)[:200]}")
         print(f"WAMO-Auftrag: interner Fehler ({type(e).__name__})", file=sys.stderr)
         return EXIT_INTERN
+    finally:
+        KANAL = "lokal"  # der Kanal gilt nur für diese Verbindung
 
 
 def beenden(code: int) -> None:

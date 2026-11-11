@@ -45,6 +45,26 @@ pruefe_herkunft() {
   done < <(stat -c '%u %a %n' "$(dirname "$HERE")"; find "$HERE" \( -type l -printf '%U 777 %p\n' \) -o -printf '%U %m %p\n')
 }
 
+# Slot-Betrieb: läuft eine Instanz der Vorlage wamo-core@.service, gehört der Kern den Slots. Die alte Unit wamo-core.service wird dann
+# weder neu gestartet noch aktiviert (sie liefe neben den Slots und besetzte den alten Socket); neue Kern-Releases gehen über
+# wamo-core-slots.sh umschalten-kern.
+slot_betrieb() {
+  # Slot-Betrieb, solange eine Instanz der Vorlage in Gang ist (auch im Fenster activating beim automatischen Neustart, in dem der Dienst noch nicht als aktiv gilt)
+  # oder sich der Zustand nicht sicher lesen lässt: ein Fehler beim Prüfen gilt als Slot-Betrieb (fail-closed), die alte Unit wird dann nicht
+  # gestartet. Die Slot-Verweise liegen in einem Ordner root:wamo-core 0750, für wamocon nur mit sudo sichtbar.
+  local s zustand
+  for s in a b; do
+    zustand="$(systemctl show -p ActiveState --value "wamo-core@$s" 2>/dev/null)" || return 0
+    [ -n "$zustand" ] || return 0
+    if grep -qE '^(active|activating|reloading|deactivating)$' <<<"$zustand"; then return 0; fi
+  done
+  sudo -n true 2>/dev/null || return 0
+  for s in a b; do
+    if sudo -n test -e "/opt/wamo-core/slots/$s" || sudo -n test -L "/opt/wamo-core/slots/$s"; then return 0; fi
+  done
+  return 1
+}
+
 [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo ausführen." >&2; exit 1; }
 pruefe_herkunft
 for datei in wamo-core.service wamo_core_env.py wamo-core-vorpruefung.sh wamo-ca.crt wamo-firewall.sh \
@@ -141,12 +161,19 @@ install -o root -g root -m 0644 "$HERE/wamo-core.service" /etc/systemd/system/wa
 sed -i 's/\r$//' /etc/systemd/system/wamo-core.service
 systemd-analyze verify /etc/systemd/system/wamo-core.service 2>&1 | grep -v '^$' | sed 's/^/  verify: /' || true
 systemctl daemon-reload
-systemctl enable wamo-core.service >/dev/null 2>&1
+if slot_betrieb; then
+  echo "  Slot-Betrieb: wamo-core.service wird nicht aktiviert (die Slots führen den Kern)"
+else
+  systemctl enable wamo-core.service >/dev/null 2>&1
+fi
 echo "  Import-Probe als $BENUTZER"
 ( cd "$alt/voice-core" && runuser -u "$BENUTZER" -- env -i PATH=/usr/bin:/bin HOME=/var/lib/wamo-core \
     PYTHONDONTWRITEBYTECODE=1 WAMO_PC_HOST=off "$APP/venv/bin/python" -c 'import bot, kern_dienst, pc_tunnel; print("  Import ok")' 2>&1 \
     | grep -E 'Import ok|Error|error' | head -5 )
-if /usr/local/sbin/wamo-core-env pruefen; then
+if slot_betrieb; then
+  echo "  Slot-Betrieb: wamo-core.service wird NICHT neu gestartet (das Skript endet hier mit Exit 0)."
+  echo "  Neues Kern-Release: sudo bash ~/wamo-infra/wamo-core-slots.sh release <name>, dann umschalten-kern <name> (ohne Lücke), bewaehren 30, ausleiten."
+elif /usr/local/sbin/wamo-core-env pruefen; then
   systemctl restart wamo-core.service
   sleep 4
   systemctl is-active wamo-core.service | sed 's/^/  Dienst: /'

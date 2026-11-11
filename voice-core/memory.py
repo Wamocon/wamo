@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from loguru import logger
@@ -124,6 +126,17 @@ def initial_status(bereich: str, quelle: str, rolle: str) -> str:
     if quelle != "ausdruecklich":
         raise ValueError(f"unbekannte quelle {quelle!r}")
     return "aktiv" if rolle == "admin" else "vorgeschlagen"
+
+
+ZEITZONE = ZoneInfo(os.getenv("WAMO_TIMEZONE") or "Europe/Berlin")  # Zeit des Büros: Tag der Kostengrenze hier, Datum im Gespräch (tools.py)
+ENTWICKLUNGSAUFTRAG = "entwicklungsauftrag"  # Werkzeugname der Audit-Zeile je Entwicklungsauftrag im Büro (entwicklung_betrieb.py)
+KOSTEN_JE_ZEILE_MAX = 1000.0  # USD: höchstens so viel zählt eine Zeile in den Tageskosten und ein result-Ereignis eines Laufs
+
+
+def tagesanfang(jetzt: datetime | None = None, zone: tzinfo = ZEITZONE) -> datetime:
+    """Mitternacht des heutigen Tages in der Zeitzone des Büros (mit Zeitzone), Beginn des Tageszeitraums der Kostengrenze."""
+    lokal = (jetzt or datetime.now(timezone.utc)).astimezone(zone)
+    return lokal.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _affected(status: str) -> int:
@@ -528,6 +541,83 @@ class MemoryStore:
             logger.warning("Gedächtnis: Aktion {} nicht im Status {} (Ergebnis {!r})", action_id, previous, result)
             return False
         return True
+
+    async def aktion_abschliessen(self, action_id: str | None, status: str, result: dict) -> bool:
+        """Schließt eine laufende Aktion ab: Status (done oder failed), result und finished_at in einem Schritt, nur aus running (Automat
+        von actions_guard). result ist ein dict und wird wie jeder Aktionsinhalt geschwärzt. True, wenn genau eine Zeile wechselte;
+        wirft nie. Braucht kein neues Recht (wamo_core darf status, result und finished_at ändern)."""
+        previous = ACTION_TRANSITIONS.get(status)
+        if status not in ("done", "failed") or previous is None or not isinstance(result, dict) or not (self.enabled and action_id):
+            return False
+        db = self.db
+        try:
+            text = schwaerzen(json.dumps(result, ensure_ascii=False, default=str))
+            antwort = await db.execute(
+                f"update {db.t('actions')} set status = $2::text::{db.t('action_status')}, result = $3::text::jsonb, "
+                f"finished_at = now() "
+                f"where id = $1::uuid and user_id = $4::uuid and status = $5::text::{db.t('action_status')}",
+                action_id, status, text, self.user_id, previous,
+            )
+        except (*DB_ERRORS, TypeError) as e:
+            logger.warning("Gedächtnis: Aktion nicht abgeschlossen ({})", type(e).__name__)
+            return False
+        if _affected(antwort) != 1:
+            logger.warning("Gedächtnis: Aktion {} nicht im Status {} (Ergebnis {!r})", action_id, previous, antwort)
+            return False
+        return True
+
+    def _eigenes_profil(self, user_id: object) -> bool:
+        """Ohne Angabe gilt das Profil dieses Speichers; ein anderes wird nie bedient."""
+        return user_id is None or normalize_uuid(user_id) == self.user_id
+
+    async def tageskosten(self, user_id: str | None = None, laufend_usd: float = 0.0) -> float | None:
+        """Summe der Kosten (result.kosten_usd) der Zeilen entwicklungsauftrag dieses Profils seit Mitternacht in der Zeitzone des Büros
+        (USD). Es zählen nur Zeilen in running, done und failed (eine in pending, approved oder rejected stehen gebliebene hatte nie einen
+        Lauf und kein result, sie zehrte sonst mit der Auftragsgrenze den Tag auf), jede mindestens null und höchstens KOSTEN_JE_ZEILE_MAX,
+        NaN zählt nicht als Zahl. Laufende Zeilen und Zeilen ohne verwertbare Kosten zählen mindestens mit laufend_usd (der Auftragsgrenze).
+        None, wenn sich das nicht feststellen lässt (keine Datenbank, Fehler, fremdes Profil): im Büro startet dann nichts (fail closed)."""
+        if not self.enabled or not self._eigenes_profil(user_id):
+            return None
+        db = self.db
+        status = db.t("action_status")
+        untergrenze = float(laufend_usd) if math.isfinite(laufend_usd) and laufend_usd > 0 else 0.0
+        try:
+            summe = await db.fetchval(
+                f"select coalesce(sum(case when z.status = 'running'::{status} then greatest(z.kosten, $4::float8::numeric) "
+                f"else z.kosten end), 0)::float8 from ("
+                f"select status, least($3::float8::numeric, greatest(0::numeric, "
+                f"coalesce(nullif((result ->> 'kosten_usd')::numeric, 'NaN'::numeric), $4::float8::numeric))) as kosten "
+                f"from {db.t('actions')} where user_id = $1::uuid and tool = '{ENTWICKLUNGSAUFTRAG}' and created_at >= $2 "
+                f"and status in ('running'::{status}, 'done'::{status}, 'failed'::{status})) z",
+                self.user_id, tagesanfang(), KOSTEN_JE_ZEILE_MAX, untergrenze,
+            )
+        except (*DB_ERRORS, TypeError) as e:
+            logger.warning("Gedächtnis: Tageskosten nicht lesbar ({})", type(e).__name__)
+            return None
+        kosten = float(summe or 0)
+        return None if math.isnan(kosten) else kosten
+
+    async def veraltete_schliessen(self, user_id: str | None = None, nach_stunden: int = 2, kosten_usd: float = 0.0) -> int | None:
+        """Setzt Zeilen entwicklungsauftrag, die seit mehr als nach_stunden Stunden auf running stehen (der Kern ist abgestürzt, das
+        Ende wurde nie gebucht), auf failed mit result {grund: abgelaufen, kosten_usd, geschaetzt}. kosten_usd ist die Annahme für
+        die unbekannten Kosten (die Auftragsgrenze): so zählt jede solche Zeile in den Tageskosten mit. Liefert die Zahl der
+        geschlossenen Zeilen oder None, wenn das nicht ging (keine Datenbank, Fehler, fremdes Profil)."""
+        if not self.enabled or not self._eigenes_profil(user_id):
+            return None
+        db = self.db
+        status = db.t("action_status")
+        try:
+            antwort = await db.execute(
+                f"update {db.t('actions')} set status = 'failed'::{status}, finished_at = now(), "
+                f"result = jsonb_build_object('grund', 'abgelaufen', 'kosten_usd', $3::float8, 'geschaetzt', true) "
+                f"where user_id = $1::uuid and tool = '{ENTWICKLUNGSAUFTRAG}' and status = 'running'::{status} "
+                f"and created_at < now() - make_interval(hours => $2::int)",
+                self.user_id, int(nach_stunden), float(kosten_usd),
+            )
+        except (*DB_ERRORS, TypeError) as e:
+            logger.warning("Gedächtnis: veraltete Aufträge nicht geschlossen ({})", type(e).__name__)
+            return None
+        return _affected(antwort)
 
     async def save_canvas(self, type_: str, title: str, data: dict) -> str | None:
         """Canvas-Inhalt ablegen (canvas_items), damit er später wieder aufrufbar ist."""

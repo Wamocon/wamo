@@ -8,6 +8,31 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Entwicklungsaufträge im Betrieb, Büro (vorbereitet, standardmäßig aus, nicht ausgerollt; Zweig `feat/entwicklung-im-betrieb`, Konzept
+  `docs/entwicklung-im-betrieb.md`, Schnittstellen und Pakete `docs/entwicklung-im-betrieb-arbeitsliste.md`). Kern: Im Büro zählt nur der
+  neue Schalter `WAMO_ENTWICKLUNG_BUERO` (Standard aus), der alte `WAMO_ENTWICKLUNG` bleibt in den Units `aus` und wird dort ignoriert.
+  Dazu `WAMO_ENTWICKLUNG_PROFILE` (Profilbindung, Pflicht), `WAMO_ENTWICKLUNG_KOSTEN_AUFTRAG_USD` und `WAMO_ENTWICKLUNG_KOSTEN_TAG_USD`
+  (Pflicht, fehlend heißt aus) und `WAMO_ENTWICKLUNG_BEFEHLE_BUERO` (Standard aus). Jeder Fehler der Einstellung schaltet nur die
+  Entwicklung aus, nie den Kern. Ein Auftrag braucht eine `BueroZulassung` (nur Admins mit Profil aus der Liste) und den eigenen
+  Claude-Zugang des Profils, der Serverzugang gilt im Büro nie. Arten mit GitHub-Stufe verlangen ein Repo, das Projekt heißt
+  `kern-<Name>` und wird aus dem Repo abgeleitet (Umlaute und ß werden wie jedes Zeichen außerhalb von a-z0-9- verworfen, nicht
+  umgeschrieben). Jeder Start wird mit `auftrag_quittung` beantwortet (`ok` oder ein Grund als Satz), die Oberfläche meldet „gestartet“
+  erst danach und zeigt Admins den Grund einer abgeschalteten Entwicklung in der Statusleiste (`entwicklung_grund`). Je Auftrag steht
+  eine Zeile `entwicklungsauftrag` in `actions` (pending, approved, running, done oder failed, ohne Migration), sie zählt die Kosten je
+  Auftrag und je Tag; ist die Datenbank nicht erreichbar, startet im Büro nichts.
+  Dispatcher Version 7: neues Modul `infra/sokrates2/wamo_job_kernkanal.py`. Der Kanal (`lokal`, `pc`, `kern`) wird am benutzten
+  SSH-Schlüssel erkannt (`ExposeAuthInfo`, zweite Schlüsseldatei `authorized_keys.d/wamo-kern`), im strikten Modus gilt alles Unklare
+  als gesperrt. Im Kern-Kanal gelten eine Befehlsliste, die Regeln aus `/etc/wamo/kernkanal.conf` (Art, Repo, Dienste, Starts je
+  Stunde und Tag, Laufzeit, Folgen, Abstand, Platz, `--max-turns` und `--max-budget-usd`), die Fork-Prüfung, der Ablauf und die
+  Sperrdatei `kernkanal.notaus`. Abweisungen kommen als Ereignis `kanal_gesperrt` mit einem Code aus `KANAL_GRUENDE` und Exit 2. Der
+  PC-Kanal verhält sich wie bisher und darf den Namensraum `kern-` nicht öffnen, `ping` meldet `kanal` und `kernkanal`.
+  Skripte: `wamo-job-kern-einrichten.sh` (`schluessel`, `kanal`, `schalter`, `notaus-aufheben`, `status`), `wamo-job-kern-rueckweg.sh`
+  (`notaus` in fester Reihenfolge, `--entfernen`) und der Rauchtest `wamo_job_kern_rauchtest.py`. Alle schreiben eine Bedienspur ohne
+  Werte und starten nie einen Dienst neu, der Kern wechselt nur über `wamo-core-slots.sh umschalten-kern`. `wamo-job-einrichten.sh`
+  verlangt jetzt Ruhe und sichert die vorige sshd-Konfiguration dauerhaft, `wamo-job-rueckweg.sh` verweigert, solange die Schlüsselzeile
+  des Kerns besteht. Der Vertragstest `voice-core/test_kernkanal_vertrag.py` prüft Kern und Dispatcher gegeneinander (Grund-Codes,
+  Projektnamen, `SCHRANKEN_VERSION`, Standardwerte, ssh-Optionen des Rauchtests). Keine Migration, `SELF_REPO` unverändert. Alle Proben des
+  Rauchtests sind nur am Server prüfbar und dort noch nicht gelaufen.
 - Dispatcher-Befehl `pruefen` (Version 6, standardmäßig AUS, nicht ausgerollt): Ein Befehl der Abnahme läuft im Projekt des Auftrags in
   einer Sandbox, die enger ist als der Auftragslauf (eigener Netz-Namensraum, kein Token, kein Claude-Zugang, kein Zustand, Zeitlimit
   120 s; `wamo-job.sh --modus pruefen`). Eingang ist eine stdin-Zeile `{"argv": [...]}`, Antwort eine JSON-Zeile mit `ok` nur bei einem
@@ -154,6 +179,14 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   Standardterminal (Windows 11), blitzte trotz `-WindowStyle Hidden` bei jedem Start ein Terminalfenster auf. `scripts/wamo-tunnel-einrichten.ps1`
   startet die Aufgabe jetzt über `conhost.exe --headless`, dabei entsteht kein Fenster. Auf bestehenden PCs wirkt das, sobald das
   Einrichtungsskript die Aufgabe das nächste Mal anlegt (neuer Desktop-Installer, Anmeldung in der App).
+
+### Geändert
+
+- Slot-Betrieb: Solange eine Instanz von `wamo-core@.service` läuft oder die Slot-Verweise stehen, startet keines der Einrichtungsskripte
+  (`wamo-core-einrichten.sh`, `wamo-ui-einrichten.sh`, `wamo-rd-einrichten.sh`) die alte Unit `wamo-core.service` mehr neu. Sie nennen den
+  Hinweis auf `wamo-core-slots.sh umschalten-kern` und enden mit Exit 0. `scripts/wamo_kern_sokrates2.py` verweigert `neustart`,
+  `--neustart` und `alles` im Slot-Betrieb mit Exit 3, `status` zeigt Slots und Schalter (nur Namen). `wamo-core-slots.sh`,
+  `wamo-core-vorpruefung.sh` und `wamo-core@.service` sind unverändert (der Anker prüft die Prüfsumme des Slot-Skripts).
 
 ### Hinzugefügt
 

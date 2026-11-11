@@ -114,7 +114,7 @@ echo "  55443 (API): HTTP $code"
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --cacert "$CA" "https://$HOST_IP:55444/start" || true)"
 case "$code" in
   401) echo "  55444 (Kern): HTTP 401 ohne Anmeldung, wie erwartet" ;;
-  502) echo "  55444 (Kern): HTTP 502, Caddy läuft, der Kern noch nicht (sudo systemctl start wamo-core)" ;;
+  502) echo "  55444 (Kern): HTTP 502, Caddy läuft, der Kern noch nicht (im Slot-Betrieb: sudo bash ~/wamo-infra/wamo-core-slots.sh status, dann umschalten-kern <release>)" ;;
   *) echo "  55444 (Kern): HTTP $code (unerwartet)" >&2; docker logs --tail 20 wamo-caddy >&2; exit 1 ;;
 esac
 ergebnis="$(openssl s_client -connect "$HOST_IP:55444" -CAfile "$CA" -verify_ip "$HOST_IP" -verify_return_error -brief </dev/null 2>&1 || true)"

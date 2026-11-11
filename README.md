@@ -16,6 +16,30 @@ gemeinsamem Gedächtnis.
 
 ## Stand
 
+### Stand 11.11.2026
+
+Entwicklungsaufträge im Betrieb (Zweig `feat/entwicklung-im-betrieb`, Basis `2a90999`): vorbereitet, noch nicht gemergt und nicht
+ausgerollt, alles standardmäßig aus. Der Kern auf Sokrates-2 soll Aufträge selbst starten dürfen, über einen eigenen Kern-Kanal des
+Dispatchers (Version 7) mit eigenem SSH-Schlüssel. Konzept: `docs/entwicklung-im-betrieb.md`, Schnittstellen und Pakete:
+`docs/entwicklung-im-betrieb-arbeitsliste.md`, Server: `infra/sokrates2/README.md` (Abschnitt 18).
+
+- Kern: eigener Schalter `WAMO_ENTWICKLUNG_BUERO` (der alte `WAMO_ENTWICKLUNG` zählt im Büro nicht) mit Profilbindung
+  (`WAMO_ENTWICKLUNG_PROFILE`) und Pflicht-Kostengrenzen je Auftrag und je Tag (`WAMO_ENTWICKLUNG_KOSTEN_AUFTRAG_USD`,
+  `WAMO_ENTWICKLUNG_KOSTEN_TAG_USD`). Zulassung nur für Admins, Repo-Pflicht für Arten mit GitHub-Stufe, Quittung `auftrag_quittung`
+  mit Grund, Audit über die Tabelle `actions`, Grund der abgeschalteten Entwicklung für Admins in der Statusleiste.
+- Dispatcher 7: Der Kanal (`lokal`, `pc`, `kern`) wird am benutzten Schlüssel erkannt. Im Kern-Kanal gelten Befehlsliste, Regeln
+  aus `/etc/wamo/kernkanal.conf`, Projektnamen `kern-<Name>`, Fork-Prüfung, Grenzen, Ablauf und Notaus. Abweisungen kommen als
+  Ereignis `kanal_gesperrt` mit festem Code.
+- Skripte: `wamo-job-kern-einrichten.sh`, `wamo-job-kern-rueckweg.sh` und der Rauchtest `wamo_job_kern_rauchtest.py`. Im
+  Slot-Betrieb startet kein Einrichtungsskript die alte Unit `wamo-core.service` mehr neu, sie nennen `umschalten-kern`.
+- Prüfung: Der Vertragstest `voice-core/test_kernkanal_vertrag.py` prüft Kern und Dispatcher gegeneinander (Grund-Codes,
+  Projektnamen, Release-Nachweis `SCHRANKEN_VERSION`, Standardwerte, ssh-Optionen). Keine Migration, `SELF_REPO` unverändert,
+  `wamo-core-slots.sh`, `wamo-core-vorpruefung.sh` und `wamo-core@.service` unverändert.
+
+Offen: der Pull Request mit Prüfstrecke (Merge erst nach Nikos Ja), der Server-Rollout in Stufen (Arbeitsliste, Abschnitt 5) und
+die Schritte von Niko (eigener Claude-Zugang in der Karte Modellzugang, GitHub-App und Testrepo, Token widerrufen, Branch-Schutz,
+ausdrückliches Ja vor den Stufen 4 und 5). Der Rauchtest und alle Proben sind nur am Server prüfbar und dort noch nicht gelaufen.
+
 ### Stand 10.11.2026
 
 Ausgerollt ist Version 0.1.0 (Tag `v0.1.0`), `main` steht bei Commit `3185349` (PR 69 und 70). Am 09.11.2026 kamen fünf Pakete dazu:
@@ -128,7 +152,11 @@ Offen:
 - Weitere PCs: `infra/sokrates2/wamo-ca.crt` importieren (ein `certutil`-Befehl, siehe `infra/sokrates2/README.md`,
   Abschnitt 5.2 und die Anleitung für den Browser in Abschnitt 12.3). Seit 19.10.2026 gilt Stufe 2: HTTP 55321 ist im LAN geschlossen, nur noch HTTPS 55443.
 - Zugangsschlüssel auf Sokrates-2 enger fassen (Repo-gebundene GitHub-Token, Lese-Token, Jira-Konto nur lesend),
-  bevor Entwicklungsaufträge eingeschaltet werden.
+  bevor Entwicklungsaufträge eingeschaltet werden. *Stand 11.11.2026:* Die Auflage bleibt, ist aber nach Stufen geordnet
+  (`docs/entwicklung-im-betrieb.md`, Abschnitt 5): Eine Recherche ohne GitHub (Stufe 3a) braucht keinen GitHub-Zugang. Arten mit
+  GitHub-Stufe starten erst, wenn die GitHub-App ohne das WAMO-Repo eingerichtet und `GH_TOKEN` samt `GH_TOKEN_LESEN` gelöscht und
+  widerrufen sind (Server-Schritt S8, Schritte N1 bis N3 von Niko). Jira und Vercel bleiben gesperrt, bis ein Jira-Lesekonto und ein
+  Vercel-Token nur für Vorschauen bereitstehen (vor Stufe 5).
 - P3: Den PC an das eigene Admin-Profil binden, sobald das Konto angelegt ist
   (`python scripts\wamo_kern_sokrates2.py profil --email … --neustart`); bis dahin hat im Büro niemand PC-Werkzeuge.
   Büro bleibt bis zur Abnahme durch Niko Wahlmöglichkeit, Standard ist Unterwegs.

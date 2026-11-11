@@ -11,6 +11,7 @@ löschen und nichts freigeben; wamo_admin darf Profile verwalten, aber keine Ges
 Ausführen:  uv run python -m pytest -q test_integration_db.py   (im Ordner voice-core/)
 """
 
+import json
 import os
 import ssl
 import unittest
@@ -142,6 +143,143 @@ class CoreRoleTests(_SchemaTest):
         for table in ("profiles", "memories", "sessions", "turns", "actions", "canvas_items", "feedback", "devices"):
             with self.subTest(table=table):
                 await self.expect_denied(f"delete from {self.db.t(table)} where false")
+
+
+class _TxDb:
+    """Dieselbe Schnittstelle wie memory.Database, aber alles über eine Verbindung in einer offenen Transaktion: der Test rollt sie
+    am Ende zurück und hinterlässt nichts."""
+
+    configured = True
+
+    def __init__(self, conn, schema: str):
+        self._conn, self.schema = conn, schema
+
+    def t(self, name: str) -> str:
+        return f"{self.schema}.{name}"
+
+    async def fetch(self, sql, *args):
+        return await self._conn.fetch(sql, *args)
+
+    async def fetchrow(self, sql, *args):
+        return await self._conn.fetchrow(sql, *args)
+
+    async def fetchval(self, sql, *args):
+        return await self._conn.fetchval(sql, *args)
+
+    async def execute(self, sql, *args):
+        return await self._conn.execute(sql, *args)
+
+
+@unittest.skipUnless(CORE_DSN, "WAMO_DATABASE_URL fehlt")
+class EntwicklungsAuftragAuditTests(_SchemaTest):
+    """Audit der Entwicklungsaufträge im Büro über actions (Folge pending, approved, running, done mit result, Tageskosten,
+    veraltete Zeilen). Braucht ein vorhandenes Profil im Schema (Fremdschlüssel auf auth.users) und legt nichts dauerhaft an."""
+
+    dsn = CORE_DSN
+
+    async def test_folge_kosten_und_veraltete_zeilen_in_einer_zurueckgerollten_transaktion(self):
+        pool = await self.db.pool()
+        async with pool.acquire() as conn:
+            user = await conn.fetchval(f"select user_id::text from {self.db.t('profiles')} limit 1")
+            if user is None:
+                self.skipTest("kein Profil im Schema wamo_test")
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                store = m.MemoryStore(user, _TxDb(conn, SCHEMA))
+                vorher = await store.tageskosten()
+                self.assertIsNotNone(vorher)
+                aktion = await store.log_action("entwicklungsauftrag", {"job": "probe", "art": "analyse"}, "Probe", "read")
+                self.assertIsNotNone(aktion)
+                for status in ("approved", "running"):
+                    self.assertTrue(await store.update_action(aktion, status), status)
+                self.assertFalse(await store.aktion_abschliessen(aktion, "approved", {}))  # nur done oder failed
+                ergebnis = {"job": "probe", "art": "analyse", "status": "fertig", "dauer_s": 5, "kosten_usd": 1.25, "runden": 1}
+                self.assertTrue(await store.aktion_abschliessen(aktion, "done", ergebnis))
+                zeile = await conn.fetchrow(
+                    f"select status::text as status, result, finished_at from {self.db.t('actions')} where id = $1::uuid", aktion)
+                self.assertEqual(zeile["status"], "done")
+                self.assertIsNotNone(zeile["finished_at"])
+                self.assertEqual(json.loads(zeile["result"]), ergebnis)
+                self.assertFalse(await store.aktion_abschliessen(aktion, "failed", {}))  # schon abgeschlossen
+                self.assertAlmostEqual(await store.tageskosten() - vorher, 1.25, places=4)
+
+                # eine seit drei Stunden laufende Zeile wird geschlossen und mit der Auftragsgrenze gezählt
+                alt = await conn.fetchval(
+                    f"insert into {self.db.t('actions')} (user_id, tool, params, risk, created_at) "
+                    "values ($1::uuid, 'entwicklungsauftrag', '{}'::jsonb, 'read', now() - interval '3 hours') returning id::text",
+                    user)
+                for status in ("approved", "running"):
+                    self.assertTrue(await store.update_action(alt, status), status)
+                self.assertEqual(await store.veraltete_schliessen(nach_stunden=2, kosten_usd=3.0), 1)
+                geschlossen = await conn.fetchrow(
+                    f"select status::text as status, result from {self.db.t('actions')} where id = $1::uuid", alt)
+                self.assertEqual(geschlossen["status"], "failed")
+                self.assertEqual(json.loads(geschlossen["result"])["grund"], "abgelaufen")
+                self.assertEqual(await store.veraltete_schliessen(nach_stunden=2, kosten_usd=3.0), 0)  # nichts mehr offen
+            finally:
+                await tr.rollback()
+
+    async def test_tageskosten_mit_unsinnigen_und_offenen_zeilen_in_einer_zurueckgerollten_transaktion(self):
+        """Die kritischen Teile der Abfrage von tageskosten einmal gegen echtes Postgres: negative Kosten, NaN, absurd große Werte,
+        eine laufende Zeile ohne result und offene Zeilen ohne result (pending, approved, rejected), die nie mitzählen dürfen.
+        Die Auftragsgrenze steht als Ersatzwert (laufend_usd) im Test auf 3 USD."""
+        grenze = 3.0
+        pool = await self.db.pool()
+        async with pool.acquire() as conn:
+            user = await conn.fetchval(f"select user_id::text from {self.db.t('profiles')} limit 1")
+            if user is None:
+                self.skipTest("kein Profil im Schema wamo_test")
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                store = m.MemoryStore(user, _TxDb(conn, SCHEMA))
+                vorher = await store.tageskosten(laufend_usd=grenze)
+                vorher_ohne = await store.tageskosten()
+                self.assertIsNotNone(vorher)
+                self.assertIsNotNone(vorher_ohne)
+
+                async def neue_zeile(status: str, ergebnis: dict | None = None) -> str:
+                    """Eine Zeile entwicklungsauftrag, die nach dem Automaten bis zu diesem Status geführt wird."""
+                    aktion = await store.log_action("entwicklungsauftrag", {"job": "probe"}, "Probe", "read")
+                    self.assertIsNotNone(aktion)
+                    if status == "pending":
+                        return aktion
+                    if status == "rejected":
+                        self.assertTrue(await store.update_action(aktion, "rejected"))
+                        return aktion
+                    self.assertTrue(await store.update_action(aktion, "approved"))
+                    if status == "approved":
+                        return aktion
+                    self.assertTrue(await store.update_action(aktion, "running"))
+                    if status != "running":
+                        self.assertTrue(await store.aktion_abschliessen(aktion, status, ergebnis or {}))
+                    return aktion
+
+                await neue_zeile("done", {"kosten_usd": -5})  # nie unter null: senkt die Summe nicht, zählt 0
+                await neue_zeile("failed", {"kosten_usd": "NaN"})  # NaN ist keine Zahl: zählt mit der Auftragsgrenze
+                await neue_zeile("done", {"kosten_usd": 1e9})  # nach oben begrenzt auf m.KOSTEN_JE_ZEILE_MAX
+                await neue_zeile("done", {})  # ohne verwertbare Kosten: zählt mit der Auftragsgrenze
+                await neue_zeile("running")  # läuft noch, kein result: mindestens die Auftragsgrenze
+                for offen in ("pending", "approved", "rejected"):
+                    await neue_zeile(offen)  # nie ein Lauf, kein result: zählen nicht
+                erwartet = grenze + m.KOSTEN_JE_ZEILE_MAX + grenze + grenze  # NaN, 1e9 (begrenzt), ohne Kosten, laufend; -5 und offene: 0
+                self.assertAlmostEqual(await store.tageskosten(laufend_usd=grenze) - vorher, erwartet, places=4)
+
+                # ohne Untergrenze zählen die Zeilen ohne Kosten null, nur die große Zeile bleibt bei der Obergrenze
+                self.assertAlmostEqual(await store.tageskosten() - vorher_ohne, m.KOSTEN_JE_ZEILE_MAX, places=4)
+
+                # ein Text, der keine Zahl ist, bricht die Abfrage: tageskosten meldet None (im Büro startet dann nichts)
+                class _Zurueck(Exception):
+                    pass
+
+                with self.assertRaises(_Zurueck):
+                    async with conn.transaction():  # Sicherungspunkt: der Fehler zerstört nicht die äußere Transaktion
+                        await neue_zeile("done", {"kosten_usd": "abc"})
+                        self.assertIsNone(await store.tageskosten(laufend_usd=grenze))
+                        raise _Zurueck
+            finally:
+                await tr.rollback()
 
 
 @unittest.skipUnless(ADMIN_DSN, "WAMO_ADMIN_DATABASE_URL fehlt")

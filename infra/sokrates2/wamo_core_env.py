@@ -13,8 +13,12 @@ nie ausgegeben. Die Datei wird atomar ersetzt (neue Datei im selben Ordner, fsyn
 einfachen Anführungszeichen; systemd liest sie dann wörtlich (EnvironmentFile, ohne Escape-Regeln). Einfache
 Anführungszeichen, Zeilenumbrüche und Steuerzeichen in Werten werden abgelehnt.
 
-Was die Unit wamo-core.service selbst festlegt (Betriebsart, Socket-Pfade, SUPABASE_URL, CA-Datei, erlaubte
-Herkunft, Entwicklung aus, Log-Stufe), lässt sich hier nicht setzen: EnvironmentFile hätte Vorrang vor Environment=.
+Was die Unit wamo-core.service und die Slot-Vorlage wamo-core@.service selbst festlegen (Betriebsart, Socket-Pfade,
+SUPABASE_URL, CA-Datei, erlaubte Herkunft, WAMO_ENTWICKLUNG=aus, Log-Stufe), lässt sich hier nicht setzen:
+EnvironmentFile hätte Vorrang vor Environment=. Das gilt auch für den Büro-Schalter der Entwicklungsaufträge
+(WAMO_ENTWICKLUNG_BUERO und seine Begleiter WAMO_ENTWICKLUNG_PROFILE und WAMO_ENTWICKLUNG_KOSTEN_*): Er steht im Drop-in
+/etc/systemd/system/wamo-core@.service.d/wamo-entwicklung-buero.conf, das nur wamo-job-kern-einrichten.sh schalter schreibt.
+Kein Name WAMO_ENTWICKLUNG* steht in ERLAUBT, damit er sich vom PC aus nie setzen lässt.
 """
 
 from __future__ import annotations
@@ -57,7 +61,8 @@ ERLAUBT = set(PFLICHT) | {
     # Fehlerbehebungen aus der Sitzung vom 31.10.2026 (voice-core/werkzeug_wache.py), Standard an
     "WAMO_ABBRUCH_HINWEIS", "WAMO_WERKZEUG_DOPPELT", "WAMO_LERNEN_HAUS_SECS", "WAMO_MARKER_FALLBACK",
     # Entwicklungsaufträge und lange Werkzeugausgaben (09.11.2026): prüfbares Ziel in Runden, Befehlskriterien der Abnahme
-    # (Standard aus, ohne Wirkung auf Sokrates-2), Schwelle zum Kürzen langer Werkzeugausgaben
+    # (Standard aus; im Büro wirkt WAMO_ABNAHME_BEFEHLE nur, wenn zusätzlich WAMO_ENTWICKLUNG_BEFEHLE_BUERO=an im Drop-in
+    # wamo-entwicklung-buero.conf steht, nie hier), Schwelle zum Kürzen langer Werkzeugausgaben
     "WAMO_PERSONA_ABNAHME", "WAMO_ABNAHME_BEFEHLE", "WAMO_AUSGABE_SCHWELLE",
     "LITELLM_BASE_URL", "WAMO_SUCHE", "WAMO_SEARXNG_URL", "WAMO_LITELLM_EXTRA",
     # Eine Sitzung je Profil und Höchstalter der Anmeldung (bot.py, auth_gate.py)

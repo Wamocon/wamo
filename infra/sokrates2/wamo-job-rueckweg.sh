@@ -7,9 +7,14 @@
 # auf den Stand vor der letzten Änderung, der zweite auf den davor, und so fort. Sind alle zurückgespielt, ändert ein Aufruf nichts
 # mehr und meldet das (Exit 0). Eine neue Einrichtung legt eine neue, unmarkierte Sicherung an, die beim nächsten Aufruf zuerst dran ist.
 #
-#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-job-rueckweg.sh"             # Stand vor der letzten Änderung wiederherstellen
-#   ssh sokrates2 "sudo bash ~/wamo-infra/wamo-job-rueckweg.sh --trocken"   # zeigt nur, was geschähe
+#   ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-job-rueckweg.sh"             # Stand vor der letzten Änderung wiederherstellen
+#   ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-job-rueckweg.sh --trocken"   # zeigt nur, was geschähe
 # Probelauf in einem Wegwerf-Ordner (kein root, kein sudo): WAMO_JOB_WURZEL=/tmp/job-probe bash wamo-job-rueckweg.sh
+#
+# Sperre: Solange /etc/ssh/authorized_keys.d/wamo-kern besteht (der Schlüssel des Kerns, Kern-Kanal), verweigert der Rückweg mit Exit 3 und
+# ändert nichts: ein älterer Dispatcher kennt den Kern-Kanal nicht, die Zeile des Kerns bekäme dann die Rechte des PC-Kanals. Erst
+#   ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-job-kern-rueckweg.sh notaus"        (schließt den Kanal sofort)
+#   ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-job-kern-rueckweg.sh --entfernen"   (entfernt die Datei, nur ohne Schalter im Kern)
 #
 # Der Rückweg berührt nur die Dateien dieser Liste unter /opt/wamo (bin, waechter, claude-code). Nicht berührt werden: die Geheimnisse
 # (/etc/wamo/geheim.env, dort bleibt eine Zeile WAMO_PRUEFEN=an stehen, sie wirkt beim alten Dispatcher nicht), wamo-job.conf,
@@ -70,6 +75,16 @@ else
   echo "Probelauf unter $WURZEL (kein root)"
 fi
 [ "$TROCKEN" = 0 ] || echo "Trockenlauf: nichts wird geändert."
+
+# Sperre vor allem anderen (auch im Trockenlauf): ein bestehender Kern-Schlüssel, auch ein Link ins Leere, verbietet den Rückweg
+KERN_DATEI="$WURZEL/etc/ssh/authorized_keys.d/wamo-kern"
+if [ -e "$KERN_DATEI" ] || [ -L "$KERN_DATEI" ]; then
+  echo "Rückweg verweigert: $KERN_DATEI besteht (Kern-Kanal eingerichtet). Ein älterer Dispatcher kennt ihn nicht," \
+    "der Schlüssel des Kerns bekäme die Rechte des PC-Kanals. Nichts geändert." >&2
+  echo "Erst: sudo bash ~/wamo-infra/wamo-job-kern-rueckweg.sh notaus, dann (nach schalter aus)" \
+    "sudo bash ~/wamo-infra/wamo-job-kern-rueckweg.sh --entfernen." >&2
+  exit 3
+fi
 
 echo "== 1. Neueste Sicherung suchen, die noch nicht zurückgespielt wurde ($APP/vorher)"
 NEUESTE="" ANZAHL=0 OFFEN=0

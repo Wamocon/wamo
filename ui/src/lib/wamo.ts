@@ -13,6 +13,8 @@ import type {
   ServerMessage,
   Vorgang,
 } from "@/lib/nachrichten";
+import { fristLoeschen } from "./auftragFrist.ts"; // relativ aus demselben Grund
+import { auftraegeNachQuittung } from "./auftragStart.ts"; // relativ aus demselben Grund
 import { liveBildLoeschen } from "./liveBild.ts"; // relativ aus demselben Grund
 import { createStore } from "./store.ts"; // relativ, damit node:test diese Datei laden kann (textEingabe.test.ts)
 import { vorgangAnsage, vorgangEinordnen } from "./vorgaenge.ts";
@@ -492,6 +494,7 @@ export function applyServerMessage(msg: ServerMessage) {
         modellModus: msg.modellModus,
         modellQuelle: msg.modellQuelle,
         modellHinweis: msg.modellHinweis,
+        entwicklungGrund: msg.entwicklungGrund,
       };
       const vorher = wamo.get().betrieb;
       wamo.set((s) => ({
@@ -512,12 +515,29 @@ export function applyServerMessage(msg: ServerMessage) {
       zeigeMemo({ bereich: msg.bereich, status: msg.status, text: msg.text, id: msg.id });
       return;
     case "auftrag": {
-      const a: Auftrag = { job: msg.job, projekt: msg.projekt, art: msg.art, auftrag: msg.auftrag, abnahme: msg.abnahme };
+      const a: Auftrag = {
+        job: msg.job,
+        projekt: msg.projekt,
+        art: msg.art,
+        auftrag: msg.auftrag,
+        abnahme: msg.abnahme,
+        repo: msg.repo,
+      };
       wamo.set((s) => ({
         ...s,
         auftraege: [...s.auftraege.filter((x) => x.job !== a.job), a],
         ansage: `Entwicklungsauftrag wartet: ${a.art || "Auftrag"} für ${a.projekt || "ein Projekt"}`,
       }));
+      return;
+    }
+    case "auftrag_quittung": {
+      // Antwort des Kerns auf "Starten": ok entfernt die Karte (jetzt erst "gestartet"), nicht ok lässt sie mit dem Grund stehen.
+      // Die Frist dieses Auftrags (neutraler Hinweis nach 15 Sekunden) ist damit erledigt.
+      fristLoeschen(msg.job);
+      wamo.set((s) => {
+        const r = auftraegeNachQuittung(s.auftraege, msg);
+        return r.auftraege === s.auftraege ? s : { ...s, auftraege: r.auftraege, ansage: r.ansage ?? s.ansage };
+      });
       return;
     }
     case "sitzung_beendet":

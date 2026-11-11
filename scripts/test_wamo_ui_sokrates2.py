@@ -407,3 +407,13 @@ def test_befehle_gehen_an_die_richtigen_skripte(monkeypatch):
         with pytest.raises(SystemExit) as e:
             w.main()
         assert e.value.code == 0 and aufrufe == [soll], (argv, aufrufe)
+
+
+def test_hilfetext_zu_neustart_nennt_den_slot_betrieb():
+    """Im Slot-Betrieb startet wamo-ui-einrichten.sh nichts neu (Hinweis auf umschalten-kern, Exit 0): der Hilfetext sagt es."""
+    hilfe = next(a.help for a in w.parser_bauen()._actions if "--neustart" in a.option_strings)
+    assert "umschalten-kern" in hilfe and "Slot" in hilfe
+    quelle = Path(w.__file__).read_text(encoding="utf-8")
+    kopf = quelle.split('"""', 2)[1]
+    assert "--neustart" in kopf and "umschalten-kern" in kopf
+    assert "startet wamo-core neu, aber nur," not in kopf  # die alte, im Slot-Betrieb falsche Zusage

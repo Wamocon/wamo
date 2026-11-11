@@ -23,8 +23,9 @@ Befehle (im Repo-Hauptordner):
   python scripts/wamo_ui_sokrates2.py bauen        neue Fassung in der inaktiven Farbe bauen und starten, ohne umzuschalten
   python scripts/wamo_ui_sokrates2.py eintrag      Eintrag der live Fassung im Format der Zustandsdatei des Notankers (JSON)
   python scripts/wamo_ui_sokrates2.py einrichten [--neustart]
-        alles: Firewall, Caddy, Umschalten, erlaubte Herkunft des Kerns, Prüfung. --neustart startet wamo-core neu, aber nur,
-        wenn gerade keine Sitzung läuft (sonst bleibt es ein Schritt für später)
+        alles: Firewall, Caddy, Umschalten, erlaubte Herkunft des Kerns, Prüfung. --neustart startet die alte Unit wamo-core
+        neu, aber nur ohne Slot-Betrieb und wenn gerade keine Sitzung läuft. Im Slot-Betrieb (wamo-core@a und wamo-core@b)
+        startet nichts neu: das Skript nennt den Hinweis "wamo-core-slots.sh umschalten-kern <release>" und endet mit Exit 0
   python scripts/wamo_ui_sokrates2.py pruefen      Zertifikatskette, Header, Härtung, Isolation, Ladezeit
   python scripts/wamo_ui_sokrates2.py status       Zustand anzeigen (nur lesend)
 """
@@ -221,7 +222,8 @@ def parser_bauen() -> argparse.ArgumentParser:
                                            "pruefen", "status"])
     parser.add_argument("--mit-firewall-und-caddy", action="store_true",
                         help="verteilen: auch wamo-firewall.sh/.service und wamo-caddy/docker-compose.yml")
-    parser.add_argument("--neustart", action="store_true", help="einrichten: wamo-core neu starten, wenn keine Sitzung läuft")
+    parser.add_argument("--neustart", action="store_true", help="einrichten: die alte Unit wamo-core neu starten, wenn keine Sitzung läuft; im Slot-Betrieb nie "
+                             "(stattdessen der Hinweis auf wamo-core-slots.sh umschalten-kern)")
     parser.add_argument("--bewaehrung", type=_zahl(0, 1800), default=None,
                         help="umschalten: Sekunden der Bewährung nach dem Umschalten (Standard 30)")
     parser.add_argument("--fehlerquote", type=_zahl(0, 50), default=None,

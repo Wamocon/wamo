@@ -81,15 +81,18 @@ from pipecat.services.llm_service import FunctionCallParams
 
 import abnahme
 import abnahme_remote
+import entwicklung_betrieb
 import kontingent as kt
+import pc_host
 from dev_guard import REPO_ROOT, SELF_REPO, _skript_befehl, decide, fingerprint, write_json_atomic
+from entwicklung_betrieb import BueroZulassung
 from memory import normalize_uuid, shared_database
 from persona import clean_inline
 from schluessel import schwaerzen
 from teilen import eigene_fassung
 from vorgaenge import Vorgaenge
 from vorgang_stream import EntwicklungsVorgang, endstatus
-from werkzeugkarte import AUFTRAGSARTEN, KARTEN, MODELLE_ERLAUBT, anweisungsblock, art_beschreibung, modell_fuer
+from werkzeugkarte import AUFTRAGSARTEN, KARTEN, MODELLE_ERLAUBT, anweisungsblock, art_beschreibung, github_stufe, modell_fuer
 
 try:  # liefert der Modellzugang (Karte "Modellzugang"): {"typ": "oauth" | "api", "wert": str[, "workspace"]} oder None
     from modellzugang import claude_code_zugang_fuer
@@ -149,6 +152,10 @@ REMOTE_EREIGNIS_STATUS = {
     "zugang_erweitert": "wartet auf Freigabe (mehr Zugänge als frühere Aufträge im Projekt)",
     "start_abgelehnt": "nicht gestartet (GitHub-Token der App nicht erzeugt)",
     "zugang_ungueltig": "nicht gestartet (Claude-Zugang ungültig, bitte in der Karte Modellzugang neu hinterlegen)",
+    # Kern-Kanal (Büro), grund ist einer der Codes aus entwicklung_betrieb.GRUND_SAETZE. Dieser Eintrag wird nie erreicht: remote_status
+    # und _read_stream behandeln kanal_gesperrt vorher mit dem Satz zum Code. Er bleibt, weil ihn die Schnittstelle I6 nennt und der
+    # Vertragstest (test_kernkanal_vertrag.py) ihn prüft, als Rückfall für jeden, der dieses Wörterbuch ohne die Sonderbehandlung liest.
+    "kanal_gesperrt": "nicht gestartet (Kanal gesperrt)",
 }
 REMOTE_ENDE_STATUS = {
     "fertig": "fertig", "zeitlimit": "abgebrochen (Zeitlimit)", "abgebrochen": "abgebrochen",
@@ -213,7 +220,10 @@ REMOTE_RULES = """- Du arbeitest auf Sokrates-2 in einer abgeschotteten Sandbox.
 
 
 def entwicklung_enabled() -> bool:
-    """Schalter WAMO_ENTWICKLUNG=an|aus (Standard aus)."""
+    """Schalter WAMO_ENTWICKLUNG=an|aus (Standard aus). Im Büro (pc_host.buero) zählt nur WAMO_ENTWICKLUNG_BUERO, der alte
+    Schalter wird dort ignoriert (entwicklung_betrieb.py); ein ungültiger Wert heißt aus."""
+    if pc_host.buero():
+        return entwicklung_betrieb.buero_schalter() == "an"
     return (os.getenv("WAMO_ENTWICKLUNG") or "aus").strip().lower() in ("an", "on", "ja", "1", "true")
 
 
@@ -244,16 +254,31 @@ def ssh_known_hosts() -> Path:
     return Path(os.path.expanduser(raw.strip()))
 
 
+def _lesbar(pfad: Path) -> bool:
+    """Lässt sich die Datei wirklich öffnen und lesen? (is_file allein sagt nichts über die Rechte.) Nur der Ausgang, nie der Pfad."""
+    try:
+        with open(pfad, "rb") as f:
+            f.read(1)
+    except OSError:
+        return False
+    return True
+
+
 def ssh_problem() -> str | None:
-    """Grund, warum die Betriebsart sokrates2 nicht startbar ist, oder None."""
+    """Grund, warum die Betriebsart sokrates2 nicht startbar ist, oder None. Schlüssel und Hostschlüssel-Datei müssen
+    vorhanden und lesbar sein; der Text nennt nie einen Pfad."""
     if not shutil.which("ssh"):
         return "ssh nicht gefunden (OpenSSH-Client installieren)"
     if not SSH_ZIEL_RE.fullmatch(ssh_ziel()):
         return "WAMO_ENTWICKLUNG_SSH_ZIEL ist ungültig (Form benutzer@host)"
     if not ssh_schluessel().is_file():
         return f"SSH-Schlüssel für Aufträge fehlt ({ssh_schluessel().name})"
+    if not _lesbar(ssh_schluessel()):
+        return "SSH-Schlüssel für Aufträge ist nicht lesbar"
     if not ssh_known_hosts().is_file():
         return f"Hostschlüssel-Datei für Aufträge fehlt ({ssh_known_hosts().name})"
+    if not _lesbar(ssh_known_hosts()):
+        return "Hostschlüssel-Datei für Aufträge ist nicht lesbar"
     return None
 
 
@@ -276,7 +301,10 @@ def modell_wunsch() -> str | None:
 def serverzugang_erlaubt(user_id: object) -> bool:
     """Darf dieses Profil ohne eigenen Zugang den Claude-Zugang aus /etc/wamo/geheim.env auf Sokrates-2 nutzen? Nur das
     eine Profil, dem er gehört (WAMO_ENTWICKLUNG_SERVERZUGANG_PROFIL, ersatzweise das des Kernschlüssels
-    WAMO_CLAUDE_SCHLUESSEL_PROFIL); für alle anderen nie, damit niemand auf fremde Kosten oder fremdes Kontingent arbeitet."""
+    WAMO_CLAUDE_SCHLUESSEL_PROFIL); für alle anderen nie, damit niemand auf fremde Kosten oder fremdes Kontingent arbeitet.
+    Im Büro nie: dort zählt nur der eigene Zugang des Profils (kein Rückfall auf die Kernzuordnung)."""
+    if pc_host.buero():
+        return False
     ziel = normalize_uuid(os.getenv(SERVERZUGANG_ENV) or os.getenv("WAMO_CLAUDE_SCHLUESSEL_PROFIL") or "")
     uid = normalize_uuid(user_id) if user_id else None
     return bool(ziel and uid and ziel == uid)
@@ -321,6 +349,8 @@ def entwicklung_problem() -> str | None:
     wunsch = modell_wunsch()
     if wunsch and wunsch not in MODELLE_ERLAUBT:
         return f"WAMO_ENTWICKLUNG_MODELL ist ungültig (erlaubt: {', '.join(MODELLE_ERLAUBT)})"
+    if pc_host.buero():  # Büro: Schalter, Ort, Profilbindung, Kostengrenzen und ssh_problem (entwicklung_betrieb.py)
+        return entwicklung_betrieb.buero_problem(ssh_problem)
     return lokal_problem() if ort == "lokal" else ssh_problem()
 
 
@@ -358,6 +388,8 @@ def remote_status(returncode: int | None, ereignisse: dict[str, dict]) -> str:
         return REMOTE_ENDE_STATUS[ende["ergebnis"]]
     if ende.get("ergebnis") == "fehler":
         return f"beendet (Code {ende.get('code')})"
+    if "kanal_gesperrt" in ereignisse:  # mit dem Satz zum Grund-Code, nie mit Werten des Dispatchers
+        return entwicklung_betrieb.kanal_status(ereignisse["kanal_gesperrt"])
     for name, text in REMOTE_EREIGNIS_STATUS.items():
         if name in ereignisse:
             return text
@@ -378,6 +410,16 @@ def projects_dir_problem(projects_dir: Path | None = None) -> str | None:
     if p.is_relative_to(REPO_ROOT):
         return "WAMO_PROJECTS_DIR liegt im WAMO-Repo"
     return None
+
+
+def auftrag_bereinigen(roh: object) -> str:
+    """Der Auftragstext genau so, wie die Karte ihn zeigt und Claude Code ihn bekommt: je Zeile ohne Steuer-, Format-, Tag-,
+    Bidi-, Nullbreiten-, private und nicht vergebene Zeichen (sie werden zu Leerzeichen), Leerraum zusammengefasst, die
+    Zeilenumbrüche des Auftrags bleiben, höchstens MAX_TASK_CHARS Zeichen. Nur so kann in einem Auftrag keine Anweisung stehen, die die
+    Person auf der Karte nicht sieht (Unicode-Tag-Zeichen U+E0000 bis U+E007F, U+200B bis U+200F, U+202A bis U+202E, U+2066 bis
+    U+2069, U+FEFF und alles in den Kategorien Cc, Cf, Cs, Co, Cn, Zl, Zp)."""
+    text = str(roh if roh is not None else "")[:MAX_TASK_CHARS * 4]  # die Arbeit bleibt begrenzt, auch bei riesigen Eingaben
+    return "\n".join(clean_inline(zeile, MAX_TASK_CHARS) for zeile in text.splitlines())[:MAX_TASK_CHARS].strip()
 
 
 def repo_pruefen(value: object) -> str:
@@ -564,6 +606,19 @@ _DISPATCHER_PING: abnahme_remote.DispatcherPing | None = None
 BEFEHLE_AUS_HINWEIS = "Befehlskriterien (befehl:) sind in dieser Betriebsart nicht zugeschaltet (Schalter aus)"
 
 
+REPO_PFLICHT_BESCHREIBUNG = (
+    "Pflicht für jede Auftragsart außer recherche: das GitHub-Repo, an dem gearbeitet wird, als owner/name, z. B. "
+    "acme/rezepte-app. Begrenzt den GitHub-Zugang des Auftrags auf dieses Repo, das Projekt leitet der Kern daraus ab. "
+    "Fehlt es, frag einmal kurz danach."
+)
+
+
+def _befehle_an() -> bool:
+    """Ist der Schalter für Befehlskriterien an? WAMO_ABNAHME_BEFEHLE, im Büro zusätzlich WAMO_ENTWICKLUNG_BEFEHLE_BUERO=an
+    (Standard aus): so überlebt der Zustand jede Übertragung der core.env, und ein Büro-Kern führt keine Befehle ohne eigenes Ja aus."""
+    return abnahme.befehle_eingeschaltet() and (not pc_host.buero() or entwicklung_betrieb.befehle_buero_an())
+
+
 def _dispatcher_ping() -> abnahme_remote.DispatcherPing:
     """Der Ping an den Dispatcher auf Sokrates-2 (pruefen möglich?), einer je Prozess: Der Cache gilt über Gespräche hinweg. ssh_argv und
     _kill_tree werden erst beim Aufruf aufgelöst (Tests ersetzen sie)."""
@@ -586,6 +641,10 @@ class Job:
     cost_usd: float = 0.0
     status: str = "vorbereitet"
     started: bool = False
+    quittiert: bool = False  # die Quittung (auftrag_quittung) für den letzten Klick auf Starten ist gesendet
+    aktion_id: str | None = None  # die offene Audit-Zeile in actions (nur im Büro, entwicklung_betrieb.AuftragsBuch)
+    kosten_gemeldet: bool = False  # der letzte Lauf hat verwertbare Kosten gemeldet (result mit gültigem total_cost_usd)
+    kosten_geschaetzt: bool = False  # cost_usd enthält die Untergrenze, weil ein gestarteter Lauf keine Kosten gemeldet hat (Büro)
     pending: dict[str, dict] = field(default_factory=dict)
     ereignisse: dict[str, dict] = field(default_factory=dict)  # wamo-Ereignisse des Dispatchers (sokrates2)
     repo: str | None = None  # Ziel-Repo owner/name: begrenzt das GitHub-Token auf Sokrates-2 auf dieses Repo
@@ -619,15 +678,27 @@ class DevAgent:
     Befehl pruefen (abnahme_remote.RemoteAusfuehrer, je Auftrag). Beides gilt nur mit WAMO_ABNAHME_BEFEHLE=ja (Standard aus) und auf
     Sokrates-2 nur, wenn ein gecachter ping zeigt, dass der Dispatcher pruefen bietet und dieselbe Allowlist hat; sonst wird
     befehl: schon beim Vorbereiten abgewiesen, mit dem Grund in einem Satz.
-    dispatcher_ping: der Ping samt Cache (abnahme_remote.DispatcherPing); Standard ist einer je Prozess."""
+    dispatcher_ping: der Ping samt Cache (abnahme_remote.DispatcherPing); Standard ist einer je Prozess.
+    zulassung: Nachweis für das Büro (entwicklung_betrieb.BueroZulassung, nur bot.build_session erzeugt ihn aus der geprüften
+    Identität). Im Büro (pc_host.buero) wirft der Konstruktor ohne gültige Zulassung, _vorbereiten, _auftrag_start und _freigabe
+    prüfen sie erneut. Außerhalb des Büros hat der Wert keine Wirkung."""
 
     def __init__(self, memory, auftraggeber: str, ort: str | None = None, vorgaenge: Vorgaenge | None = None,
                  beurteiler: abnahme.Beurteiler | None = None, befehl_ausfuehrer: abnahme.Ausfuehrer | None = None,
-                 dispatcher_ping: abnahme_remote.DispatcherPing | None = None):
+                 dispatcher_ping: abnahme_remote.DispatcherPing | None = None, zulassung: BueroZulassung | None = None):
+        if pc_host.buero():
+            nutzer = getattr(memory, "user_id", None)
+            if not isinstance(zulassung, BueroZulassung) or (nutzer and not entwicklung_betrieb.zulassung_gueltig(zulassung, nutzer)):
+                raise entwicklung_betrieb.ZulassungFehlt("Entwicklungsaufträge im Büro brauchen eine gültige Zulassung")
+        self._zulassung = zulassung
+        # Büro: Audit und Kostengrenzen über actions (E9); sonst keine Buchführung, wie bisher
+        self._buch = entwicklung_betrieb.AuftragsBuch(memory, zulassung) if pc_host.buero() else None
         self._memory = memory
         self._vorgaenge = vorgaenge
         self._auftraggeber = clean_inline(auftraggeber, 60) or "Admin"
         self._ort = ort or entwicklung_ort() or "sokrates2"
+        if pc_host.buero() and self._ort != "sokrates2":
+            raise ValueError("Im Büro gibt es nur die Betriebsart sokrates2")
         if self._ort == "lokal":
             logger.warning(LOKAL_WARNUNG)
         self._beurteiler = beurteiler
@@ -653,6 +724,7 @@ class DevAgent:
         self._kontingent_gesendet = float("-inf")
         self._kontingent_gespeichert = float("-inf")
         self._eigener_zugang = False  # der laufende Lauf nutzt den Zugang des Profils (nur dann gilt sein Kontingent)
+        self._startet = False  # ein Start (Prüfungen, Buchung in actions) läuft gerade: kein zweiter Start dazwischen
 
     def attach(self, pipeline_task) -> None:
         self._task = pipeline_task
@@ -662,7 +734,7 @@ class DevAgent:
     def _remote_befehle(self) -> bool:
         """Läuft ein befehl: hier über den Dispatcher (Sokrates-2, kein eingesetzter Ausführer) und ist der Schalter an? Nur dann
         wird der Dispatcher gefragt."""
-        return self._ort == "sokrates2" and self._ausfuehrer is None and abnahme.befehle_eingeschaltet()
+        return self._ort == "sokrates2" and self._ausfuehrer is None and _befehle_an()
 
     def _ping_aufwaermen(self) -> None:
         """Holt den Ping im Hintergrund, damit die Beschreibung des Werkzeugs im nächsten Gespräch weiß, ob der Dispatcher pruefen
@@ -723,7 +795,8 @@ class DevAgent:
                                                 "Namen, leite ihn aus dem Auftrag ab und frag nie danach.")},
                     "repo": {
                         "type": "string",
-                        "description": ("Nur wenn der Auftrag ein bestehendes GitHub-Repo nennt: owner/name, z. B. "
+                        "description": (REPO_PFLICHT_BESCHREIBUNG if pc_host.buero() else
+                                        "Nur wenn der Auftrag ein bestehendes GitHub-Repo nennt: owner/name, z. B. "
                                         "wamocon/rezepte-app. Begrenzt den GitHub-Zugang des Auftrags auf dieses Repo. "
                                         "Sonst weglassen."),
                     },
@@ -762,7 +835,7 @@ class DevAgent:
         5 Minuten alt), der pruefen mit derselben Allowlist meldet. Liest nur den Cache und blockiert nie; ohne frischen ping
         (nie gefragt, abgelaufen, Fehler) ist es nicht möglich. Projektcode läuft dabei ohne Hook: lokal mit den Rechten des
         Kerns, auf Sokrates-2 in der engeren Sandbox des Dispatchers."""
-        if not abnahme.befehle_eingeschaltet():
+        if not _befehle_an():
             return False
         if self._ausfuehrer is not None:
             return True
@@ -771,7 +844,7 @@ class DevAgent:
     def _befehle_hinweis(self) -> str:
         """Warum befehl: abgelehnt wird, in einem Satz: Schalter aus, oder (Sokrates-2) der Grund aus dem ping: Dispatcher ohne
         pruefen, Prüfsumme der Allowlist weicht ab, Dispatcher nicht erreichbar."""
-        if not abnahme.befehle_eingeschaltet():
+        if not _befehle_an():
             return BEFEHLE_AUS_HINWEIS
         if self._ausfuehrer is None and self._ort == "sokrates2" and (grund := self._ping.grund()):
             return f"Befehlskriterien (befehl:) gehen hier nicht: {grund}"
@@ -783,7 +856,7 @@ class DevAgent:
         nach einer Pause leer ist. Das ist nur ein Hinweis an das Modell; beim Vorbereiten entscheidet _befehle_moeglich."""
         if self._befehle_moeglich():
             return True
-        return abnahme.befehle_eingeschaltet() and self._ausfuehrer is None and self._ort == "sokrates2" and self._ping.angeboten()
+        return _befehle_an() and self._ausfuehrer is None and self._ort == "sokrates2" and self._ping.angeboten()
 
     def _ausfuehrer_fuer(self, job: Job) -> abnahme.Ausfuehrer | None:
         """Der Ausführer für die Befehlskriterien dieses Auftrags: ein eingesetzter oder der lokale; auf Sokrates-2 ein
@@ -792,7 +865,7 @@ class DevAgent:
         inzwischen zurückgebaut ist, lehnt den Aufruf mit Exit 2 ab (nicht erfüllt)."""
         if self._ausfuehrer is not None:
             return self._ausfuehrer
-        if self._ort == "sokrates2" and abnahme.befehle_eingeschaltet():
+        if self._ort == "sokrates2" and _befehle_an():
             return abnahme_remote.RemoteAusfuehrer(
                 job.id, lambda args: ssh_argv(args), beenden=lambda proc: _kill_tree(proc),
                 abbrechen=lambda: self._ssh_kurz(["cancel", job.id], timeout=10))
@@ -821,11 +894,27 @@ class DevAgent:
         if self._task:
             await self._task.queue_frames([RTVIServerMessageFrame(data=data)])
 
+    def _buero_darf(self, aktion: str) -> bool:
+        """Im Büro: gilt die Zulassung noch für das Profil dieser Sitzung? Ein Versuch ohne wird mit Kurzkennung ins Log geschrieben
+        (nie ein Wert). Außerhalb des Büros immer True."""
+        if not pc_host.buero():
+            return True
+        nutzer = getattr(self._memory, "user_id", None)
+        if entwicklung_betrieb.zulassung_gueltig(self._zulassung, nutzer):
+            return True
+        logger.warning("Entwicklungsauftrag ({}) im Büro ohne Zulassung abgewiesen, Profil {}", aktion,
+                       entwicklung_betrieb.kennung_von(nutzer))
+        return False
+
     async def _vorbereiten(self, params: FunctionCallParams):
-        auftrag = str(params.arguments.get("auftrag", "")).strip()[:MAX_TASK_CHARS]
+        auftrag = auftrag_bereinigen(params.arguments.get("auftrag", ""))  # einmal, Karte und Start nutzen genau diesen Text
         art = str(params.arguments.get("art", "")).strip()
-        try:
-            projekt = validate_project(params.arguments.get("projekt"), self._ort)
+        if not self._buero_darf("vorbereiten"):
+            await params.result_callback({"ok": False, "fehler": entwicklung_betrieb.SATZ_KEINE_ZULASSUNG})
+            return
+        im_buero = pc_host.buero()
+        try:  # im Büro entsteht der Projektname erst nach dem Repo (Namensraum kern-, entwicklung_betrieb.buero_projekt)
+            projekt = None if im_buero else validate_project(params.arguments.get("projekt"), self._ort)
         except ValueError as e:
             await params.result_callback({"ok": False, "fehler": str(e)})
             return
@@ -838,6 +927,8 @@ class DevAgent:
         repo_arg = params.arguments.get("repo")
         try:  # ausdrücklich genannt (Werkzeugaufruf) oder eindeutig als GitHub-Adresse im Auftrag
             repo = repo_pruefen(repo_arg) if isinstance(repo_arg, str) and repo_arg.strip() else repo_aus_auftrag(auftrag)
+            if im_buero:  # Repo-Pflicht für Arten mit GitHub-Stufe, Projekt kern-<Name aus dem Repo>
+                projekt = validate_project(entwicklung_betrieb.buero_projekt(art, repo, params.arguments.get("projekt")), self._ort)
         except ValueError as e:
             await params.result_callback({"ok": False, "fehler": str(e)})
             return
@@ -859,7 +950,7 @@ class DevAgent:
         self._jobs[job.id] = job
         self._vorgang_anlegen(job)
         karte = {"type": "auftrag", "job": job.id, "projekt": projekt.name, "art": art,
-                 "auftrag": clean_inline(auftrag, MAX_TASK_CHARS)}
+                 "auftrag": auftrag}  # derselbe Text, den Claude Code bekommt: nichts Unsichtbares kommt dazu
         if repo:
             karte["repo"] = repo
         if kriterien:  # die Person bestätigt mit dem Klick auch die Kriterien (und damit Befehle), also muss sie sie sehen
@@ -908,40 +999,94 @@ class DevAgent:
             await self._kontingent_laden()
             await self._kontingent_senden()
 
+    async def _quittung(self, job: Job | str, ok: bool, grund: str | None = None) -> None:
+        """auftrag_quittung an die Oberfläche: ok, oder nicht ok mit einem Satz als Grund (nie Pfade oder Werte). Je Klick auf Starten
+        genau eine (Job.quittiert); ein unbekannter Auftrag (nur die Kennung des Klicks) bekommt immer eine."""
+        if isinstance(job, Job):
+            if job.quittiert:
+                return
+            job.quittiert = True
+        daten = {"type": "auftrag_quittung", "job": job.id if isinstance(job, Job) else clean_inline(job, 100), "ok": ok}
+        if not ok:
+            daten["grund"] = clean_inline(grund or entwicklung_betrieb.GRUND_NICHT_GESTARTET, 300)
+        await self._send(daten)
+
     async def _auftrag_start(self, data: dict) -> None:
-        job = self._jobs.get(str(data.get("job", "")))
-        if not job or job.started:
+        job_id, ja = str(data.get("job", "")), data.get("entscheidung") == "ja"
+        job = self._jobs.get(job_id)
+        if not job:
+            if ja and job_id:  # die Karte stammt aus einer früheren Sitzung: nicht still bleiben
+                await self._quittung(job_id, False, entwicklung_betrieb.SATZ_UNBEKANNT)
             return
-        if data.get("entscheidung") != "ja":
+        if job.started:
+            return
+        if not self._buero_darf("start"):
+            if ja:
+                await self._quittung(job, False, entwicklung_betrieb.SATZ_KEINE_ZULASSUNG)
+            return
+        if not ja:
             self._jobs.pop(job.id, None)
             self._fuehrung(job, "verwerfen")
             logger.info("Entwicklungsauftrag {} in der Oberfläche verworfen", job.id)
             return
-        if self._running and not self._running.done():
+        job.quittiert = False
+        if (self._running and not self._running.done()) or self._startet:
             await self._notify(f"Entwicklungsauftrag {job.projekt.name} wartet: es läuft schon ein Auftrag.")
+            await self._quittung(job, False, entwicklung_betrieb.SATZ_BELEGT)
             return
-        wunsch = modell_wunsch()
-        problem = (f"WAMO_ENTWICKLUNG_MODELL {wunsch!r} ist nicht erlaubt" if wunsch and wunsch not in MODELLE_ERLAUBT
-                   else lokal_problem() if self._ort == "lokal" else ssh_problem())
-        if problem:
-            logger.error("Entwicklungsauftrag {} nicht gestartet: {}", job.id, problem)
-            return
-        job.started = True
-        self._running = asyncio.create_task(self._run(job, self._start_prompt(job), resume=False))
+        # Ab hier bis zum Anlegen des Laufs gehört der Start diesem Klick: _startet gilt schon vor dem ersten await, sonst kämen zwei
+        # schnelle Klicks auf verschiedene Karten beide durch die Prüfung (self._running entsteht erst nach der Buchung in actions)
+        self._startet = True
+        angelegt = False
+        try:
+            wunsch = modell_wunsch()
+            problem = (f"WAMO_ENTWICKLUNG_MODELL {wunsch!r} ist nicht erlaubt" if wunsch and wunsch not in MODELLE_ERLAUBT
+                       else entwicklung_betrieb.buero_problem(ssh_problem) if pc_host.buero()
+                       else lokal_problem() if self._ort == "lokal" else ssh_problem())
+            if problem:
+                logger.error("Entwicklungsauftrag {} nicht gestartet: {}", job.id, problem)
+                await self._quittung(job, False, entwicklung_betrieb.SATZ_PROBLEM)
+                return
+            job.started = True  # sofort, ohne await davor: ein zweiter Klick auf dieselbe Karte startet nichts doppelt
+            if self._buch is not None:  # Büro: Tagesgrenze, Datenbank und Audit-Zeile (pending, approved, running) vor dem Start
+                job.aktion_id, grund = await self._buch.beginnen(job.id, job.art, job.projekt.name, job.repo,
+                                                                 github_stufe(job.art) == "schreiben", abbruch=lambda: self._zu)
+                if grund:
+                    await self._quittung(job, False, grund)
+                    return
+            if self._zu:  # close() lief während der Buchung: kein bezahlter Lauf ohne Sitzung, die Zeile wird geschlossen
+                await self._aktion_abschliessen(job, STATUS_ABGEBROCHEN_SITZUNG)
+                with contextlib.suppress(Exception):  # die Oberfläche ist womöglich schon weg
+                    await self._quittung(job, False, entwicklung_betrieb.SATZ_SITZUNG_ENDE)
+                return
+            self._running = asyncio.create_task(self._run(job, self._start_prompt(job), resume=False))
+            angelegt = True
+        except Exception as e:  # noqa: BLE001 (ein Fehler beim Start: Quittung mit festem Satz, nie der Fehlertext)
+            logger.error("Entwicklungsauftrag {} nicht gestartet: Ausnahme {}", job.id, type(e).__name__)
+            await self._aktion_abschliessen(job, "fehlgeschlagen")  # eine Zeile, die beginnen schon geliefert hat, nicht offen lassen
+            with contextlib.suppress(Exception):
+                await self._quittung(job, False, entwicklung_betrieb.SATZ_INTERN)
+        finally:
+            self._startet = False
+            if not angelegt:  # abgelehnt oder Fehler: die Karte bleibt und ein zweiter Klick geht
+                job.started = False
 
     async def _freigabe(self, data: dict) -> None:
+        if not self._buero_darf("freigabe"):
+            return
         job = self._jobs.get(str(data.get("job", "")))
         req = job.pending.pop(str(data.get("id", "")), None) if job else None
         if not job or not req:
             return
         approved = data.get("entscheidung") == "ja"
-        await self._memory.update_action(req.get("action_id"), "approved" if approved else "rejected")
         if approved:
             if self._ort == "sokrates2":
-                code, _ = await self._ssh_kurz(["approve", job.id, req["id"]])
-                if code != 0:
+                code, ausgabe = await self._ssh_kurz(["approve", job.id, req["id"]])
+                if code != 0:  # nichts verbuchen: die Freigabe bleibt offen (pending), der zweite Klick wird verbucht
                     logger.error("Freigabe für Auftrag {} nicht übertragen (Code {})", job.id, code)
-                    job.steps.append(f"Freigabe nicht übertragen, bitte erneut versuchen: {req['grund']}")
+                    satz = entwicklung_betrieb.grund_aus_ausgabe(ausgabe)
+                    job.steps.append(f"Freigabe nicht übertragen, bitte erneut versuchen: {req['grund']}"
+                                     + (f" ({satz.rstrip('.')})" if satz else ""))
                     job.pending[req["id"]] = req
                     await self._canvas(job)
                     return
@@ -954,8 +1099,11 @@ class DevAgent:
                 if not isinstance(current, list):
                     current = []
                 write_json_atomic(path, [*current, req["id"]])
+            await self._memory.update_action(req.get("action_id"), "approved")  # erst nach Code 0 von approve
             job.steps.append(f"Freigegeben: {req['grund']}")
             self._fuehrung(job, "freigabe_entschieden", req, True, job.pending)
+            if self._zu:  # close() lief, während die Freigabe übertragen wurde: kein neuer Lauf ohne Sitzung (die Zeile ist schon zu)
+                return
             if req.get("tool") == ZUGANG_TOOL:  # Projekt mit diesen Zugängen freigegeben: Auftrag neu starten
                 self._running = asyncio.create_task(self._run(job, self._start_prompt(job), resume=False))
                 return
@@ -967,10 +1115,12 @@ class DevAgent:
             # Nicht im Handler auf den laufenden Auftrag warten: _run wartet selbst auf das Lock.
             self._running = asyncio.create_task(self._run(job, follow_up, resume=True))
         else:
+            await self._memory.update_action(req.get("action_id"), "rejected")
             job.steps.append(f"Abgelehnt: {req['grund']}")
             job.beendet = True  # eine Absage beendet den Auftrag, die Abnahme läuft nicht weiter
             self._fuehrung(job, "freigabe_entschieden", req, False, job.pending, lauf_folgt=False)
             await self._canvas(job)
+            await self._aktion_abschliessen(job, "abgebrochen (Freigabe abgelehnt)")
 
     # ---------- Ausführung ----------
     def _start_prompt(self, job: Job) -> str:
@@ -1002,8 +1152,11 @@ class DevAgent:
         Schleife sofort; _run_locked beendet dabei Claude Code und jeden Prüfbefehl."""
         async with self._run_lock:
             while True:
+                if self._buch is not None and entwicklung_betrieb.auftragsgrenze_erreicht(job.cost_usd):
+                    await self._kostengrenze_erreicht(job)  # Büro: vor jedem weiteren Lauf die Grenze je Auftrag
+                    return
                 job.weiter, job.lauf_beginn = None, self._jetzt()
-                job.lauf_ok = job.lauf_gemeldet = False
+                job.lauf_ok = job.lauf_gemeldet = job.kosten_gemeldet = False
                 try:
                     await self._run_locked(job, prompt, resume)
                 except asyncio.CancelledError:  # Abbruch (close): nie verschlucken, aber der Vorgang bleibt nicht offen
@@ -1015,9 +1168,51 @@ class DevAgent:
                     return
                 finally:
                     job.aktiv_s += max(0.0, self._jetzt() - job.lauf_beginn)
+                    self._kosten_festschreiben(job)  # Büro: ein gestarteter Lauf ohne gemeldete Kosten zählt mindestens die Grenze
                 if job.weiter is None or self._zu:
                     return
                 prompt, resume = job.weiter, True
+
+    async def _kostengrenze_erreicht(self, job: Job) -> None:
+        """Die Kosten dieses Auftrags (alle Läufe) haben die Grenze erreicht: kein weiterer Lauf, der Auftrag endet und die Zeile
+        in actions wird geschlossen."""
+        job.status, job.weiter, job.beendet = entwicklung_betrieb.STATUS_AUFTRAGSGRENZE, None, True
+        job.steps.append(entwicklung_betrieb.SATZ_AUFTRAGSGRENZE)
+        self._ende_melden(job, "lauf_endet", job.status, job.pending)
+        await self._canvas(job)
+        await self._aktion_abschliessen(job)
+        await self._announce(job)
+
+    def _kosten_festschreiben(self, job: Job) -> None:
+        """Büro: Hat der letzte Lauf gestartet (Ereignis gestartet), aber keine verwertbaren Kosten gemeldet (Abbruch, Auflegen,
+        Zeitlimit, ungültiger Wert statt total_cost_usd), zählt der Auftrag mindestens die Auftragsgrenze. Ein abgewiesener Start
+        (kein gestartet) kostet nichts. Idempotent: ein zweiter Aufruf ändert nichts."""
+        if self._buch is None or "gestartet" not in job.ereignisse or job.kosten_gemeldet:
+            return
+        if entwicklung_betrieb.kosten_auftrag() is not None:
+            job.cost_usd = entwicklung_betrieb.kosten_mit_untergrenze(job.cost_usd)
+            job.kosten_geschaetzt = True
+
+    async def _aktion_abschliessen(self, job: Job, status: str | None = None) -> None:
+        """Büro: die offene Audit-Zeile dieses Auftrags schließen (done bei fertig, sonst failed), genau einmal. status ersetzt den
+        Statustext des Auftrags (Auflegen, abgelehnte Freigabe). Ein Fehler der Datenbank stört den Auftrag nie."""
+        if self._buch is None or not job.aktion_id:
+            return
+        aktion, job.aktion_id = job.aktion_id, None
+        self._kosten_festschreiben(job)
+        text = status or job.status
+        gesperrt = job.ereignisse.get("kanal_gesperrt")
+        grund = None  # nur ein bekannter Code des Kanals kommt ins result, nie ein freier Text des Dispatchers
+        if isinstance(gesperrt, dict):
+            code = gesperrt.get("grund")
+            grund = code if isinstance(code, str) and code in entwicklung_betrieb.GRUND_SAETZE else "unbekannt"
+        try:
+            await self._buch.abschliessen(
+                aktion, endstatus(text) == "fertig",
+                entwicklung_betrieb.auftrag_ergebnis(job.id, job.art, job.projekt.name, job.repo, text, job.aktiv_s,
+                                                     job.cost_usd, job.runde, grund, geschaetzt=job.kosten_geschaetzt))
+        except Exception as e:  # noqa: BLE001 (die Buchführung hält den Auftrag nie auf)
+            logger.warning("Entwicklungsauftrag {}: Ende nicht gebucht ({})", job.id, type(e).__name__)
 
     def _lauf_scheitert(self, job: Job, status: str) -> None:
         """Beendet Auftrag und Vorgang, wenn der Lauf keinen eigenen Abschluss mehr melden konnte (Abbruch, Ausnahme). Ein
@@ -1035,6 +1230,8 @@ class DevAgent:
     async def _lauf_fehlgeschlagen(self, job: Job, e: Exception) -> None:
         """Eine Ausnahme außerhalb des Laufs selbst (Ordner, Selbsttest, Freigaben, Canvas): Auftrag und Vorgang enden als
         fehlgeschlagen, die Person erfährt es. Nur der Ausnahmetyp geht ins Log und ins Ergebnis, nie Inhalte."""
+        if not job.quittiert:  # der Klick auf Starten bekommt auch bei einem Fehler im Kern eine Antwort
+            await self._quittung_nicht_gestartet(job, entwicklung_betrieb.SATZ_INTERN)
         if job.lauf_gemeldet:  # der Lauf war schon abgeschlossen, nur die Zustellung scheiterte: das Ergebnis bleibt gültig
             return
         job.result = job.result or f"Fehler beim Ausführen von Claude Code: {type(e).__name__}"
@@ -1060,10 +1257,12 @@ class DevAgent:
         if not await guard_selftest(job.projekt, job.dir):
             job.status = "nicht gestartet (Wächter-Selbsttest fehlgeschlagen)"
             self._ende_melden(job, "lauf_endet", job.status, {})
+            await self._quittung_nicht_gestartet(job, "Der Wächter-Selbsttest ist fehlgeschlagen.")
             await self._canvas(job)
             await self._announce(job)
             return
 
+        await self._quittung(job, True)
         job.status = "läuft"
         self._fuehrung(job, "starten", resume)
         if job.kriterien:
@@ -1207,6 +1406,7 @@ class DevAgent:
             logger.warning("Entwicklungsauftrag {} nicht gestartet: kein Claude-Zugang für Profil {}", job.id,
                            str(getattr(self._memory, "user_id", None) or "?")[:8])
             self._ende_melden(job, "lauf_endet", job.status, {})
+            await self._quittung_nicht_gestartet(job, entwicklung_betrieb.SATZ_KEIN_ZUGANG)
             await self._canvas(job)
             await self._announce(job)
             return
@@ -1223,6 +1423,7 @@ class DevAgent:
         stderr_tail: deque[str] = deque(maxlen=40)
         stderr_task: asyncio.Task | None = None
         sauber = False
+        ende_code: int | None = None
         self._running_job = job
         try:
             self._proc = await asyncio.create_subprocess_exec(
@@ -1246,6 +1447,7 @@ class DevAgent:
             await self._proc.stdin.drain()  # stdin NICHT schließen: Lebenslinie des entfernten Auftrags
             await asyncio.wait_for(self._read_stream(job), self._frist(job, JOB_TIMEOUT_SECS + REMOTE_PUFFER_SECS))
             await asyncio.wait_for(self._proc.wait(), 30)
+            ende_code = self._proc.returncode
             job.status = remote_status(self._proc.returncode, job.ereignisse)
             job.lauf_ok = endstatus(job.status) == "fertig"
             # sauber: Ende gemeldet, oder der Dispatcher hat gar nicht erst gestartet (Codes 2 bis 5, 7, 8)
@@ -1267,12 +1469,21 @@ class DevAgent:
                 await self._ssh_kurz(["cancel", job.id], timeout=15)  # zweite Absicherung
             self._running_job = None
             if stderr_task is not None:
+                await asyncio.wait({stderr_task}, timeout=1.0)  # die letzten Zeilen noch einsammeln (Grund eines ssh-Fehlers)
                 stderr_task.cancel()
             if proc is not None and proc.returncode not in (0, None) and stderr_tail:
                 logger.warning("Sokrates-2 meldete: {}", " | ".join(stderr_tail)[-1500:])
 
+        if not job.quittiert:  # nie ein Lauf ohne Quittung: nicht angenommen, mit dem Grund aus Ereignis, Exit-Code oder stderr
+            await self._quittung_nicht_gestartet(job, entwicklung_betrieb.ablehn_grund(ende_code, job.ereignisse,
+                                                                                       " ".join(stderr_tail)))
         await self._kontingent_abschliessen()
         await self._lauf_ende(job, None)
+
+    async def _quittung_nicht_gestartet(self, job: Job, grund: str) -> None:
+        """Quittung ok=false und der Auftrag gilt wieder als nicht gestartet: die Karte bleibt, ein zweiter Klick ist möglich."""
+        await self._quittung(job, False, grund)
+        job.started = False
 
     async def _remote_zugang(self) -> tuple[dict, bytes | None] | None:
         """Felder der Kopfzeile und, mit eigenem Zugang, die zweite Zeile für den Dispatcher; None ohne erlaubten Zugang.
@@ -1384,8 +1595,12 @@ class DevAgent:
                     continue
                 if name:
                     job.ereignisse[name] = ev
+                if name in ("gestartet", "zugang_erweitert"):  # der Dispatcher hat den Auftrag angenommen (oder wartet auf die Freigabe)
+                    await self._quittung(job, True)
                 if name == "selbsttest_ok":
                     job.steps.append("Wächter-Selbsttest in der Sandbox bestanden")
+                elif name == "kanal_gesperrt":  # nur der Satz zum Grund-Code, nie ein Wert des Dispatchers
+                    job.steps.append(f"Kanal gesperrt: {entwicklung_betrieb.grund_satz(ev.get('grund'))}")
                 elif name == "start_abgelehnt":  # Grund nur auf dem Canvas, nie ans Sprachmodell
                     job.steps.append(f"Start abgelehnt: {clean_inline(str(ev.get('grund') or ''), 300)}")
                 elif name == "zugang_ungueltig":  # der Dispatcher nennt nie den Zugang selbst, nur was am Format nicht passt
@@ -1397,7 +1612,10 @@ class DevAgent:
                     job.steps.append(REMOTE_EREIGNIS_STATUS[name])
             elif ev.get("type") == "result":
                 job.result = str(ev.get("result") or "")
-                job.cost_usd += float(ev.get("total_cost_usd") or 0)
+                kosten = entwicklung_betrieb.kosten_aus_ereignis(ev.get("total_cost_usd"))  # aus der Sandbox: nie ungeprüft addieren
+                if kosten is not None:
+                    job.cost_usd += kosten
+                    job.kosten_gemeldet = True
                 job.session_id = ev.get("session_id") or job.session_id
                 if ev.get("is_error") and any(k in job.result.lower() for k in AUTH_FEHLER):
                     job.steps.append("Anthropic hat den Claude-Zugang abgelehnt (abgelaufen oder widerrufen?). "
@@ -1521,6 +1739,8 @@ class DevAgent:
         damit nichts aus dem Auftrag (Webseiten, Dateien, Ausgaben) als Anweisung wirken kann."""
         if callable(self.on_result):
             self.on_result()
+        if not job.pending:  # mit offener Freigabe geht der Auftrag nach dem Klick weiter, die Zeile bleibt auf running
+            await self._aktion_abschliessen(job)
         await self._ergebnis_speichern(job)
         if job.gespeichert_id:
             await self._canvas(job)  # jetzt mit teilbar_id: die Oberfläche bietet "Teilen" an
@@ -1548,6 +1768,9 @@ class DevAgent:
             await self._ssh_kurz(["cancel", running_job.id], timeout=10)
         with contextlib.suppress(Exception, asyncio.TimeoutError):  # der Abbruch unten lässt das Endspeichern des Laufs aus
             await asyncio.wait_for(self._kontingent_abschliessen(), 5)
+        for job in list(self._jobs.values()):  # Büro: offene Audit-Zeilen schließen (der Abbruch bucht sonst nichts mehr)
+            with contextlib.suppress(Exception, asyncio.TimeoutError):
+                await asyncio.wait_for(self._aktion_abschliessen(job, STATUS_ABGEBROCHEN_SITZUNG), 5)
         if self._running and not self._running.done():
             self._running.cancel()
 

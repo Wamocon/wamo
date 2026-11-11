@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Rückweg zu wamo-ui-einrichten.sh: Oberfläche auf Sokrates-2 abschalten. Als wamocon ausführen (nicht mit sudo):
 #   ssh sokrates2 "bash ~/wamo-infra/wamo-ui-rueckweg.sh"                       # Container weg, Site weg, Drop-in weg
-#   ssh sokrates2 "bash ~/wamo-infra/wamo-ui-rueckweg.sh --neustart"            # zusätzlich wamo-core neu starten (nur ohne Sitzung)
+#   ssh sokrates2 "bash ~/wamo-infra/wamo-ui-rueckweg.sh --neustart"            # zusätzlich wamo-core neu starten (nur ohne Sitzung;
+#                                                                               im Slot-Betrieb nie: Hinweis auf umschalten-kern, Exit 0)
 #   ssh sokrates2 "bash ~/wamo-infra/wamo-ui-rueckweg.sh --entfernen"           # zusätzlich Images, Einstellungen, Quellen löschen
 #
 # Was bleibt: Port 55445 im Compose von wamo-caddy und in WAMO-FW-LAN sowie das Netz wamo-ui-netz. Ohne Site-Datei
@@ -61,13 +62,35 @@ else
   echo "  keine Site vorhanden"
 fi
 
+# Slot-Betrieb: läuft eine Instanz der Vorlage wamo-core@.service, gehört der Kern den Slots. Die alte Unit wamo-core.service wird dann nie
+# neu gestartet (sie liefe neben den Slots); das Entfernen des Drop-ins gilt ab dem nächsten Kern-Wechsel über umschalten-kern.
+slot_betrieb() {
+  # Slot-Betrieb, solange eine Instanz der Vorlage in Gang ist (auch im Fenster activating beim automatischen Neustart, in dem der Dienst noch nicht als aktiv gilt)
+  # oder sich der Zustand nicht sicher lesen lässt: ein Fehler beim Prüfen gilt als Slot-Betrieb (fail-closed), die alte Unit wird dann nicht
+  # gestartet. Die Slot-Verweise liegen in einem Ordner root:wamo-core 0750, für wamocon nur mit sudo sichtbar.
+  local s zustand
+  for s in a b; do
+    zustand="$(systemctl show -p ActiveState --value "wamo-core@$s" 2>/dev/null)" || return 0
+    [ -n "$zustand" ] || return 0
+    if grep -qE '^(active|activating|reloading|deactivating)$' <<<"$zustand"; then return 0; fi
+  done
+  sudo -n true 2>/dev/null || return 0
+  for s in a b; do
+    if sudo -n test -e "/opt/wamo-core/slots/$s" || sudo -n test -L "/opt/wamo-core/slots/$s"; then return 0; fi
+  done
+  return 1
+}
+
 echo "== 3. Erlaubte Herkunft des Kerns"
 if sudo -n test -f "$DROPIN"; then
   sudo -n rm -f "$DROPIN"
   sudo -n rmdir "$DROPIN_DIR" 2>/dev/null || true
   sudo -n systemctl daemon-reload
   echo "  Drop-in entfernt (der laufende Kern kennt die Herkunft bis zu seinem nächsten Start weiter)"
-  if [ "$NEUSTART" = ja ]; then
+  if slot_betrieb; then
+    echo "  Slot-Betrieb: wamo-core wird NICHT neu gestartet (auch nicht mit --neustart). Das Entfernen gilt ab dem nächsten Kern-Wechsel:" \
+      "umschalten-kern nutzen (sudo bash ~/wamo-infra/wamo-core-slots.sh umschalten-kern <release>, spiegelt die Drop-ins)."
+  elif [ "$NEUSTART" = ja ]; then
     # Fail-closed wie in wamo-ui-einrichten.sh: Nur wenn sich der Zustand sicher lesen lässt und keine Sitzung läuft
     pid="$(systemctl show wamo-core -p MainPID --value)"
     ruhig=nein

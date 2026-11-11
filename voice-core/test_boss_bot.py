@@ -71,6 +71,87 @@ class BossSitzungTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("modell_hinweis", ohne)
 
 
+ANDERES_PROFIL = smoke.ANDERES_PROFIL
+BUERO_ENV = {**ENV, "WAMO_BETRIEB": "buero", "WAMO_ENTWICKLUNG": "aus", "WAMO_ENTWICKLUNG_BUERO": "an",
+             "WAMO_ENTWICKLUNG_ORT": "sokrates2", "WAMO_ENTWICKLUNG_PROFILE": USER,
+             "WAMO_ENTWICKLUNG_KOSTEN_AUFTRAG_USD": "3", "WAMO_ENTWICKLUNG_KOSTEN_TAG_USD": "10"}
+
+
+class BueroEntwicklungTests(unittest.IsolatedAsyncioTestCase):
+    """Büro-Schranken in build_session: Admin, Profilbindung, eigener Zugang, eine Logzeile je Sitzung (entwicklung_betrieb.py).
+    Außerhalb des Büros bleibt alles wie bisher (BossSitzungTests)."""
+
+    async def build(self, zugang=None, rolle="admin", benutzer=USER, **extra):
+        from loguru import logger
+
+        zugang = zugang or Zugang(benutzer, "claude", "profil", claude_schluessel=KEY)
+        meldungen: list[str] = []
+        sink = logger.add(lambda m: meldungen.append(str(m)), level="INFO")
+        try:
+            with mock.patch.dict(os.environ, {**BUERO_ENV, **extra}), \
+                 mock.patch.object(bot, "zugang_laden", mock.AsyncMock(return_value=zugang)), \
+                 mock.patch.object(bot, "DevAgent", wraps=bot.DevAgent) as dev, \
+                 mock.patch.object(bot, "entwicklung_problem", return_value=None), \
+                 mock.patch("llm_anbieter.litellm_problem", mock.AsyncMock(return_value=None)), \
+                 mock.patch("llm_anbieter.claude_problem", mock.AsyncMock(return_value=None)):
+                session = await bot.build_session(smoke.FakeTransport(), Identity(benutzer, "Niko", rolle, "du"))
+            await session.cleanup()
+        finally:
+            logger.remove(sink)
+        return dev, "\n".join(meldungen)
+
+    async def test_admin_im_profil_mit_eigenem_zugang_bekommt_entwicklung(self):
+        for zugang in (Zugang(USER, "claude", "profil", claude_schluessel=KEY),
+                       Zugang.haus(USER, "keiner", claude_code=True)):
+            dev, log = await self.build(zugang)
+            self.assertTrue(dev.called)
+            self.assertIn("entwicklung=an", log)
+            self.assertNotIn("Entwicklungsaufträge aus", log)
+            zulassung = dev.call_args.kwargs["zulassung"]  # entsteht nur hier, aus der geprüften Identität
+            self.assertEqual((type(zulassung).__name__, zulassung.user_id), ("BueroZulassung", USER))
+
+    async def test_admin_ausserhalb_des_profils_bekommt_keine_entwicklung(self):
+        dev, log = await self.build(benutzer=ANDERES_PROFIL)
+        self.assertFalse(dev.called)
+        self.assertIn("Entwicklungsaufträge aus: Dieses Profil ist für Entwicklungsaufträge im Büro nicht freigegeben", log)
+        dev, _ = await self.build(benutzer=ANDERES_PROFIL, WAMO_ENTWICKLUNG_PROFILE=f"{ANDERES_PROFIL},{USER}")
+        self.assertTrue(dev.called)  # weitere Admins stehen einzeln in der Liste
+
+    async def test_mitglied_nie_auch_nicht_im_profil(self):
+        dev, log = await self.build(rolle="mitglied")
+        self.assertFalse(dev.called)
+        self.assertIn("Entwicklungsaufträge aus: Entwicklungsaufträge gibt es nur für Admins", log)
+
+    async def test_uebergang_zaehlt_im_buero_wie_keine(self):
+        zugang = Zugang(USER, "claude", "zuordnung", claude_schluessel=KEY)
+        dev, log = await self.build(zugang)
+        self.assertFalse(dev.called)
+        self.assertIn("kein eigener Zugang", log)
+        dev, log = await self.build(Zugang.haus(USER, "keiner"))
+        self.assertFalse(dev.called)
+        self.assertIn("Entwicklungsaufträge aus: kein eigener Zugang", log)
+
+    async def test_schalter_aus_oder_nur_der_alte_schalter_gibt_keine_entwicklung_und_eine_logzeile(self):
+        for extra in ({"WAMO_ENTWICKLUNG_BUERO": "aus"}, {"WAMO_ENTWICKLUNG_BUERO": "", "WAMO_ENTWICKLUNG": "an"},
+                      {"WAMO_ENTWICKLUNG_BUERO": "vielleicht"}):
+            with self.subTest(extra=extra):
+                dev, log = await self.build(**extra)
+                self.assertFalse(dev.called)
+                self.assertEqual(log.count("Entwicklungsaufträge aus:"), 1)  # eine Zeile je Sitzung, auch bei Schalter aus
+
+    async def test_problem_der_einstellung_schaltet_nur_die_entwicklung_ab(self):
+        dev, log = await self.build(WAMO_ENTWICKLUNG_PROFILE="kaputt")  # entwicklung_problem ist hier ersetzt: der Grund kommt aus der Zulassung
+        self.assertFalse(dev.called)
+        self.assertIn("Entwicklungsaufträge aus:", log)
+
+    async def test_ausserhalb_des_buero_keine_zeile_und_keine_bindung(self):
+        dev, log = await self.build(WAMO_BETRIEB="", WAMO_ENTWICKLUNG="an", WAMO_ENTWICKLUNG_PROFILE="", benutzer=ANDERES_PROFIL)
+        self.assertTrue(dev.called)  # Unterwegs: wie bisher (nur admin und WAMO_ENTWICKLUNG)
+        self.assertIsNone(dev.call_args.kwargs["zulassung"])
+        self.assertNotIn("entwicklung=an", log)
+        self.assertNotIn("Entwicklungsaufträge aus", log)
+
+
 class KeinModellTests(unittest.IsolatedAsyncioTestCase):
     """Ist kein Gesprächsmodell nutzbar, sagt die Sitzung der Person, warum sie endet (statt stumm zu trennen)."""
 

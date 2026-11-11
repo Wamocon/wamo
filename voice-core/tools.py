@@ -15,7 +15,6 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import anthropic
 from loguru import logger
@@ -27,7 +26,7 @@ from pipecat.services.llm_service import FunctionCallParams
 
 from auth_gate import Identity
 from llm_anbieter import Zugang, verbrauch_loggen
-from memory import BEREICHE, MemoryStore, initial_status
+from memory import BEREICHE, ZEITZONE, MemoryStore, initial_status
 from suche import (
     HINWEIS as SUCHE_HINWEIS,
     VERTRAUEN as SUCHE_VERTRAUEN,
@@ -37,7 +36,7 @@ from suche import (
     suchmodus,
 )
 
-TZ = ZoneInfo(os.getenv("WAMO_TIMEZONE") or "Europe/Berlin")
+TZ = ZEITZONE  # WAMO_TIMEZONE, Standard Europe/Berlin: eine Quelle mit der Tagesgrenze der Kosten (memory.py)
 WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
 MONATE = [
     "Januar", "Februar", "März", "April", "Mai", "Juni",

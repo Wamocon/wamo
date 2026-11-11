@@ -20,6 +20,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -2073,8 +2074,10 @@ class PersoenlicherZugangStartTests(unittest.TestCase):
         ping = self.ereignisse[-1]
         self.assertIs(ping["serverzugang"], False)
         self.assertIs(ping["kontingent"], True)
-        self.assertEqual(ping["version"], "6")  # 6: Befehl pruefen (standardmäßig aus)
+        self.assertEqual(ping["version"], "7")  # 7: Kern-Kanal (6: Befehl pruefen, standardmäßig aus)
         self.assertIs(ping["pruefen"], False)  # ohne WAMO_PRUEFEN=an
+        self.assertEqual(ping["kanal"], "lokal")  # I7: kanal und kernkanal, nie ein Wert aus geheim.env
+        self.assertEqual(set(ping["kernkanal"]), {"strikt", "offen", "grund", "arten", "repos", "ablauf", "tage_rest"})
 
     @unittest.skipUnless(LINUX, "Prozess mit /bin/sh nur unter Linux")
     def test_ausgabe_log_und_dateien_ohne_zugangswert_und_kontingent_nur_aus_der_allowlist(self):
@@ -2155,6 +2158,678 @@ class AbschottungTests(unittest.TestCase):
              mock.patch.object(A.os, "execvp") as execvp, mock.patch("sys.stderr"):
             self.assertEqual(A.main(["--sperrports", "22", "--", "claude"]), A.EXIT_FEHLER)
         execvp.assert_not_called()
+
+
+class KernKanalDispatchTests(unittest.TestCase):
+    """Dispatcher Version 7 (Paket R8): Kanal aus dem Schlüssel, Regeln des Kern-Kanals vor jedem Geheimnis, Befehlsliste,
+    Notaus, Grenzen, Fork-Prüfung, zweite Prüfung vor dem Token. Alle Dateien liegen in einem Wegwerf-Ordner; Eigentümer und
+    Rechte stellt ein Attrappen-Zugriff nach (läuft unter Windows und Linux). Das Modul selbst prüfen test_kernkanal.py."""
+
+    EIGENE_UID = 995
+    PROFIL = "1a2b3c4d"
+
+    @staticmethod
+    def schluessel(n: int) -> str:
+        import base64
+        blob = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" + bytes([n]) * 32
+        return "ssh-ed25519 " + base64.b64encode(blob).decode("ascii")
+
+    def setUp(self):
+        self.K = D.kern_modul()
+        self.tmp = tempfile.TemporaryDirectory()
+        w = Path(self.tmp.name)
+        self.jobs, self.projekte, self.heim, self.logs, self.etc, self.ssh = (w / n for n in ("jobs", "projekte", "heim", "logs", "etc", "ssh"))
+        for p in (self.jobs, self.projekte, self.heim, self.logs, self.etc, self.ssh):
+            p.mkdir(parents=True)
+        self.auth = w / "sshd_auth"
+        self.pfade = self.K.Pfade(kern_schluessel=self.ssh / "wamo-kern", pc_schluessel=self.ssh / "wamo",
+                                  konfig=self.etc / "kernkanal.conf", notaus=self.etc / "kernkanal.notaus",
+                                  zaehler=self.logs / "kernkanal.jsonl", platz=self.heim)
+        self.kern_key, self.pc_key, self.fremd_key = (self.schluessel(i) for i in (1, 2, 3))
+        self.pfade.kern_schluessel.write_text(f'restrict,from="192.168.178.136",command="/opt/wamo/bin/wamo-job-dispatch" {self.kern_key} wamo-kern-jobs\n')
+        self.pfade.pc_schluessel.write_text(f'restrict,from="192.168.178.0/24",command="/opt/wamo/bin/wamo-job-dispatch" {self.pc_key} wamo-jobs\n')
+        self.konfig()
+        self.logzeilen: list[str] = []
+        self.ereignisse: list[dict] = []
+        self.selbsttests = 0
+        self.geheim_gelesen = 0
+        self.token_laeufe: list[tuple] = []
+        self.patches = [mock.patch.object(D, "log", side_effect=lambda t, pflicht=False: self.logzeilen.append(t)),
+                        mock.patch.object(D, "JOBS", self.jobs), mock.patch.object(D, "PROJEKTE", self.projekte),
+                        mock.patch.object(D, "HEIM", self.heim), mock.patch.object(D, "LOGS", self.logs),
+                        mock.patch.object(D, "KERN_PFADE", self.pfade), mock.patch.object(D, "KERN_LESER", self._leser()),
+                        mock.patch.object(D, "KERN_UID", self.EIGENE_UID),
+                        mock.patch.object(D, "emit", side_effect=lambda ev: self.ereignisse.append(ev) or True),
+                        mock.patch.object(D, "Sperre", PersoenlicherZugangStartTests._Sperre), mock.patch.object(D, "aufraeumen"),
+                        mock.patch.object(D, "exklusiv", lambda pfad: contextlib.nullcontext()),
+                        mock.patch.object(D, "selbsttest", side_effect=self._selbsttest),
+                        mock.patch.object(D, "projekt_entschaerfen", return_value=[]),
+                        mock.patch.object(D, "lese_geheimnisse", side_effect=self._geheim),
+                        mock.patch.object(self.K, "freier_platz_mb", return_value=50_000)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+        self.tmp.cleanup()
+
+    # ---- Hilfen
+    def _selbsttest(self, *_):
+        self.selbsttests += 1
+        return True, "ok"
+
+    def _geheim(self, *_):
+        self.geheim_gelesen += 1
+        return dict(NIKO_GEHEIM)
+
+    def _leser(self):
+        echt = self.K.datei_lesen
+
+        def lesen(pfad, limit):
+            daten, _st = echt(pfad, limit)
+            eigen = str(pfad) == str(self.auth)
+            modus = 0o100600 if eigen else 0o100640
+            return daten, os.stat_result((modus, 0, 0, 1, self.EIGENE_UID if eigen else 0, 0, len(daten), 0, 0, 0))
+        return lesen
+
+    def konfig(self, **ueber):
+        ablauf = (datetime.now() + timedelta(days=30)).strftime("%Y%m%d")
+        werte = {"KANAL": "offen", "ABLAUF": ablauf, "ARTEN": "recherche,review,analyse,sicherheit", "REPOS": "acme/test-repo",
+                 "DIENSTE": "", "MAX_TURNS": "17", "MAX_BUDGET_USD": "0.75", "MAX_START_STUNDE": "4", "MAX_START_TAG": "8",
+                 "MAX_LAUFZEIT_TAG_S": "14400", "MAX_FOLGEN": "5", "MIN_ABSTAND_S": "0", "MIN_PLATZ_MB": "2048",
+                 "MAX_VERSUCH_STUNDE": "20"}
+        werte.update(ueber)
+        self.pfade.konfig.write_text("".join(f"{k}={v}\n" for k, v in werte.items() if v is not None), encoding="utf-8")
+
+    def gesperrt(self) -> list[str]:
+        return [e["grund"] for e in self.ereignisse if e.get("ereignis") == "kanal_gesperrt"]
+
+    def main(self, raw: str, schluessel: str | None = None, handler: dict | None = None, ssh: bool = True) -> int:
+        """D.main wie über ssh aufgerufen. schluessel steht in der Datei, auf die SSH_USER_AUTH zeigt (None: die Variable fehlt)."""
+        env = {"SSH_CONNECTION": "192.168.178.136 50000 192.168.178.136 22", "SSH_ORIGINAL_COMMAND": raw} if ssh else {}
+        if schluessel is not None:
+            self.auth.write_text(f"publickey {schluessel}\n")
+            env["SSH_USER_AUTH"] = str(self.auth)
+        mocks = {n: mock.Mock(return_value=D.EXIT_OK) for n in D.HANDLER} if handler is None else handler
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.dict(D.HANDLER, mocks), mock.patch("sys.stderr"):
+            code = D.main([] if ssh else raw.split())
+        self.handler = mocks
+        return code
+
+    def start(self, kopf_extra=None, zugangszeile=None, projekt="kern-marktstudie", art="recherche", job=JOB, kanal="kern",
+              geheim=None, session=None):
+        """cmd_start im Kern-Kanal mit Attrappen für Sperren, Selbsttest und Sandbox. Gibt (Code, Aufrufe von _ausfuehren) zurück.
+        Ein Wert None in kopf_extra entfernt das Feld."""
+        aufrufe: list[tuple] = []
+
+        def fake_ausfuehren(argv, env, auftrag, jobdir, job_, projekt_, art_):
+            aufrufe.append((list(argv), dict(env)))
+            return D.EXIT_OK
+
+        kopf = {"auftrag": "Recherchiere den Markt", "system": "Regeln", "zugang": "folgt", "profil": self.PROFIL, **(kopf_extra or {})}
+        kopf = {k: v for k, v in kopf.items() if v is not None}
+        zeile_ = zeile() if zugangszeile is None else zugangszeile
+        with mock.patch.object(D, "KANAL", kanal), \
+             mock.patch.object(D, "_kopfzeile_lesen", return_value=json.dumps(kopf).encode() + b"\n"), \
+             mock.patch.object(D, "_zugangszeile_lesen", return_value=zeile_), \
+             mock.patch.object(D, "_ausfuehren", side_effect=fake_ausfuehren):
+            if geheim is not None:
+                with mock.patch.object(D, "lese_geheimnisse", side_effect=lambda *_: (self._zaehle_geheim(), dict(geheim))[1]):
+                    code = D.cmd_start(job, projekt, art, session)
+            else:
+                code = D.cmd_start(job, projekt, art, session)
+        return code, aufrufe
+
+    def _zaehle_geheim(self):
+        self.geheim_gelesen += 1
+
+    def zaehler(self) -> list[dict]:
+        return self.K.zaehler_lesen(self.pfade.zaehler)
+
+    # ---- Kanal im main
+    def test_pruefen_aus_dem_kern_kanal_wird_abgewiesen_auch_mit_pruefen_an(self):
+        with mock.patch.object(D, "lese_geheimnisse", side_effect=lambda *_: {"WAMO_PRUEFEN": "an"}) as lesen:
+            code = self.main(f"pruefen {JOB}", self.kern_key)
+        self.assertEqual(code, D.EXIT_ABGEWIESEN)
+        self.assertEqual(self.gesperrt(), ["befehl"])
+        self.handler["pruefen"].assert_not_called()
+        lesen.assert_not_called()
+
+    def test_unklare_herkunft_im_strikten_modus_endet_mit_exit_2_vor_jedem_handler(self):
+        for schluessel in (self.fremd_key, None):
+            self.ereignisse.clear()
+            code = self.main("ping", schluessel)
+            self.assertEqual((code, self.gesperrt()), (D.EXIT_ABGEWIESEN, ["herkunft_unklar"]), schluessel)
+            for h in self.handler.values():
+                h.assert_not_called()
+        self.assertEqual(self.geheim_gelesen, 0)
+
+    def test_ein_pc_schluessel_laeuft_wie_bisher_und_ein_kern_schluessel_im_kern_kanal(self):
+        self.assertEqual(self.main("ping", self.pc_key), D.EXIT_OK)
+        self.handler["ping"].assert_called_once()
+        self.assertEqual(self.gesperrt(), [])
+        # der PC-Kanal kennt die Befehlsliste des Kerns nicht: pruefen bleibt Sache der Schalter in geheim.env
+        self.assertEqual(self.main(f"pruefen {JOB}", self.pc_key), D.EXIT_OK)
+        self.handler["pruefen"].assert_called_once()
+        self.assertEqual(self.main(f"status {JOB}", self.kern_key), D.EXIT_ABGEWIESEN)  # unbekannter Auftrag ist fremd
+        self.assertEqual(self.gesperrt(), ["fremd"])
+
+    def test_ohne_kern_schluessel_und_ohne_konfiguration_gilt_jeder_ssh_aufruf_als_pc(self):
+        self.pfade.kern_schluessel.unlink()
+        self.pfade.konfig.unlink()
+        self.assertEqual(self.main("ping", self.fremd_key), D.EXIT_OK)  # Stufe 0: es kann kein Kern ankommen
+        self.assertEqual(self.main("ping", None), D.EXIT_OK)
+        self.assertEqual(self.gesperrt(), [])
+
+    def test_lokal_ohne_ssh_variablen_ignoriert_notaus_und_kanalregeln(self):
+        self.pfade.notaus.write_text("Test")
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.dict(D.HANDLER, {"cancel": mock.Mock(return_value=D.EXIT_OK)}):
+            self.assertEqual(D.main(["cancel", JOB]), D.EXIT_OK)
+        self.assertEqual(self.gesperrt(), [])
+
+    def test_der_kanal_gilt_nur_fuer_die_laufende_verbindung(self):
+        self.main("ping", self.kern_key)
+        self.assertEqual(D.KANAL, "lokal")
+
+    def test_notaus_laesst_nur_ping_und_status_zu(self):
+        self.pfade.notaus.write_text("Notaus per Test")
+        for befehl, erwartet in (("ping", None), (f"status {JOB}", None), (f"pending {JOB}", "notaus"), (f"cancel {JOB}", "notaus"),
+                                 (f"approve {JOB} {FP}", "notaus"), (f"start {JOB} kern-x recherche", "notaus"), (f"pruefen {JOB}", "notaus")):
+            with self.subTest(befehl=befehl):
+                self.ereignisse.clear()
+                (self.jobs / JOB).mkdir(exist_ok=True)
+                (self.jobs / JOB / "auftrag.json").write_text(json.dumps({"job": JOB, "projekt": "kern-x", "art": "recherche", "kanal": "kern"}))
+                code = self.main(befehl, self.kern_key)
+                self.assertEqual(self.gesperrt(), [erwartet] if erwartet else [])
+                self.assertEqual(code, D.EXIT_ABGEWIESEN if erwartet else D.EXIT_OK)
+
+    def test_geschlossener_kanal_laesst_start_und_freigaben_nicht_zu_aber_ping_status_pending_cancel(self):
+        self.konfig(KANAL="zu")
+        (self.jobs / JOB).mkdir()
+        (self.jobs / JOB / "auftrag.json").write_text(json.dumps({"job": JOB, "projekt": "kern-x", "art": "recherche", "kanal": "kern"}))
+        for befehl, erwartet in (("ping", None), (f"status {JOB}", None), (f"pending {JOB}", None), (f"cancel {JOB}", None),
+                                 (f"approve {JOB} {FP}", "kanal_zu"), (f"start {JOB} kern-x recherche", "kanal_zu")):
+            with self.subTest(befehl=befehl):
+                self.ereignisse.clear()
+                code = self.main(befehl, self.kern_key)
+                self.assertEqual(self.gesperrt(), [erwartet] if erwartet else [])
+                self.assertEqual(code, D.EXIT_ABGEWIESEN if erwartet else D.EXIT_OK)
+
+    def test_jede_konfigurationsstoerung_schliesst_den_kanal_mit_dem_passenden_grund(self):
+        faelle = (("konfig_ungueltig", {"MAX_TURNS": "0"}), ("abgelaufen", {"ABLAUF": "20200101"}), ("abgelaufen", {"ABLAUF": None}),
+                  ("kanal_zu", {"KANAL": None}), ("konfig_ungueltig", {"REPOS": "acme/wamo"}), ("konfig_ungueltig", {"DIENSTE": "supabase"}))
+        for erwartet, ueber in faelle:
+            with self.subTest(erwartet=erwartet, ueber=ueber):
+                self.konfig(**ueber)
+                self.ereignisse.clear()
+                self.assertEqual(self.main(f"start {JOB} kern-x recherche", self.kern_key), D.EXIT_ABGEWIESEN)
+                self.assertEqual(self.gesperrt(), [erwartet])
+        self.konfig()
+        self.pfade.konfig.unlink()
+        self.ereignisse.clear()
+        self.assertEqual(self.main(f"start {JOB} kern-x recherche", self.kern_key), D.EXIT_ABGEWIESEN)
+        self.assertEqual(self.gesperrt(), ["konfig_ungueltig"])  # fehlende Konfiguration bei vorhandenem Kern-Schlüssel
+
+    def test_fremde_auftraege_werden_bei_status_pending_approve_und_cancel_abgewiesen(self):
+        for befehl in (f"status {JOB}", f"pending {JOB}", f"approve {JOB} {FP}", f"cancel {JOB}"):
+            for meta in (None, {"job": JOB}, {"job": JOB, "kanal": "pc"}, {"job": JOB, "kanal": "KERN"}):
+                with self.subTest(befehl=befehl, meta=meta):
+                    self.ereignisse.clear()
+                    ordner = self.jobs / JOB
+                    if ordner.exists():
+                        (ordner / "auftrag.json").unlink(missing_ok=True)
+                    else:
+                        ordner.mkdir()
+                    if meta is not None:
+                        (ordner / "auftrag.json").write_text(json.dumps(meta))
+                    self.assertEqual(self.main(befehl, self.kern_key), D.EXIT_ABGEWIESEN)
+                    self.assertEqual(self.gesperrt(), ["fremd"])
+                    for h in self.handler.values():
+                        h.assert_not_called()
+            (self.jobs / JOB / "auftrag.json").write_text(json.dumps({"job": JOB, "kanal": "kern"}))
+            self.ereignisse.clear()
+            self.assertEqual(self.main(befehl, self.kern_key), D.EXIT_OK)  # der eigene Auftrag geht
+            self.assertEqual(self.gesperrt(), [])
+
+    # ---- ping
+    def test_ping_meldet_kanal_und_den_zustand_des_kern_kanals(self):
+        with mock.patch.object(D, "github_status", return_value="token"), mock.patch.object(D, "KANAL", "kern"):
+            D.cmd_ping()
+        ping = self.ereignisse[-1]
+        self.assertEqual(ping["version"], "7")
+        self.assertEqual(ping["kanal"], "kern")
+        kk = ping["kernkanal"]
+        self.assertTrue(kk["strikt"] and kk["offen"])
+        self.assertEqual((kk["grund"], kk["arten"], kk["repos"]), (None, ["recherche", "review", "analyse", "sicherheit"], ["acme/test-repo"]))
+        self.assertRegex(kk["ablauf"], r"^\d{8}$")
+        self.assertIn(kk["tage_rest"], (29, 30))
+        self.assertNotIn("ANTHROPIC", json.dumps(ping))
+
+    def test_ping_ohne_kern_kanal_ist_nicht_strikt(self):
+        self.pfade.kern_schluessel.unlink()
+        self.pfade.konfig.unlink()
+        with mock.patch.object(D, "github_status", return_value="token"):
+            D.cmd_ping()
+        kk = self.ereignisse[-1]["kernkanal"]
+        self.assertEqual((kk["strikt"], kk["offen"], kk["grund"]), (False, False, None))
+
+    def test_ping_zeigt_den_grund_bei_notaus_und_wirft_nie(self):
+        self.pfade.notaus.write_text("x")
+        with mock.patch.object(D, "github_status", return_value="token"):
+            D.cmd_ping()
+        self.assertEqual(self.ereignisse[-1]["kernkanal"]["grund"], "notaus")
+        self.ereignisse.clear()
+        with mock.patch.object(D, "github_status", return_value="token"), mock.patch.object(D, "kern_modul", side_effect=ImportError("fehlt")):
+            self.assertEqual(D.cmd_ping(), D.EXIT_OK)
+        kk = self.ereignisse[-1]["kernkanal"]
+        self.assertEqual((kk["strikt"], kk["offen"], kk["grund"]), (True, False, "konfig_ungueltig"))  # fail-closed
+
+    # ---- cmd_start im Kern-Kanal: Regeln vor dem Lesen der Geheimnisse
+    def test_start_ohne_feld_zugang_endet_mit_exit_2_und_liest_nie_geheimnisse(self):
+        code, aufrufe = self.start({"zugang": None, "profil": None})
+        self.assertEqual((code, aufrufe), (D.EXIT_ABGEWIESEN, []))
+        self.assertEqual(self.gesperrt(), ["zugang"])
+        self.assertEqual((self.geheim_gelesen, self.selbsttests), (0, 0))
+        self.assertFalse((self.jobs / JOB).exists())  # nichts angelegt, nichts gesperrt
+
+    def test_start_mit_zugang_server_endet_mit_exit_2_und_liest_nie_geheimnisse(self):
+        code, aufrufe = self.start({"zugang": "server", "profil": None})
+        self.assertEqual((code, aufrufe, self.gesperrt(), self.geheim_gelesen), (D.EXIT_ABGEWIESEN, [], ["zugang"], 0))
+
+    def test_jede_regel_5_bis_7_wird_vor_den_geheimnissen_abgewiesen(self):
+        faelle = (("art", dict(art="umsetzung", projekt="kern-test-repo", kopf={"repo": "acme/test-repo"})),
+                  ("repo_fehlt", dict(art="review", projekt="kern-x")),
+                  ("repo", dict(art="review", projekt="kern-anderes", kopf={"repo": "acme/anderes"})),
+                  ("repo", dict(art="recherche", projekt="kern-anderes", kopf={"repo": "acme/anderes"})),
+                  ("repo", dict(art="review", projekt="kern-wamo", kopf={"repo": "acme/wamo"})),
+                  ("repo", dict(art="review", projekt="kern-wamo", kopf={"repo": "acme/WAMO"})),
+                  ("dienst", dict(art="planung", projekt="kern-test-repo", kopf={"repo": "acme/test-repo"})),  # planung bekommt auch Jira
+                  ("projekt", dict(art="recherche", projekt="marktstudie")),
+                  ("projekt", dict(art="review", projekt="kern-anderes", kopf={"repo": "acme/test-repo"})),
+                  ("zugang", dict(art="recherche", projekt="kern-x", kopf={"zugang": None, "profil": None})))
+        self.konfig(ARTEN="recherche,review,analyse,planung")
+        for erwartet, f in faelle:
+            with self.subTest(erwartet=erwartet, fall=f):
+                self.ereignisse.clear()
+                code, aufrufe = self.start(f.get("kopf"), projekt=f["projekt"], art=f["art"])
+                self.assertEqual((code, aufrufe, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], [erwartet]))
+        self.assertEqual((self.geheim_gelesen, self.selbsttests), (0, 0))
+
+    def test_der_projektname_wird_ohne_vorherige_spuren_abgewiesen_und_ein_bestehender_fremder_auftrag_ist_fremd(self):
+        (self.jobs / JOB).mkdir()
+        (self.jobs / JOB / "auftrag.json").write_text(json.dumps({"job": JOB, "projekt": "kern-marktstudie", "art": "recherche", "repo": None}))
+        code, aufrufe = self.start()
+        self.assertEqual((code, aufrufe, self.gesperrt(), self.geheim_gelesen), (D.EXIT_ABGEWIESEN, [], ["fremd"], 0))
+
+    def test_ein_start_mit_dem_wamo_repo_im_kern_kanal_meldet_repo(self):
+        code, _ = self.start({"repo": "wamocon/wamo"}, art="review", projekt="kern-wamo")
+        self.assertEqual((code, self.gesperrt()), (D.EXIT_ABGEWIESEN, ["repo"]))
+
+    def test_ein_gueltiger_start_laeuft_mit_den_grenzen_aus_der_konfiguration(self):
+        code, aufrufe = self.start()
+        self.assertEqual(code, D.EXIT_OK)
+        argv, env = aufrufe[0]
+        self.assertEqual(argv[argv.index("--max-turns") + 1], "17")
+        self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "0.75")
+        self.assertEqual(self.gesperrt(), [])
+        meta = json.loads((self.jobs / JOB / "auftrag.json").read_text(encoding="utf-8"))
+        self.assertEqual((meta["kanal"], meta["projekt"], meta["art"]), ("kern", "kern-marktstudie", "recherche"))
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], OAUTH_WERT)
+        self.assertTrue(any(z.startswith(f"start {JOB} kern-marktstudie recherche") and f"profil={self.PROFIL}" in z for z in self.logzeilen))
+
+    def test_die_grenzen_kommen_nur_aus_der_konfiguration_nie_aus_der_kopfzeile(self):
+        for feld in ("max_turns", "max_budget_usd", "max-turns", "grenzen"):
+            with self.assertRaises(D.Abgewiesen):
+                self.start({feld: 999}, job=uuid.uuid4().hex[:16])
+        self.konfig(MAX_TURNS="3", MAX_BUDGET_USD="0.05")
+        argv = self.start(job=uuid.uuid4().hex[:16])[1][0][0]
+        self.assertEqual((argv[argv.index("--max-turns") + 1], argv[argv.index("--max-budget-usd") + 1]), ("3", "0.05"))
+
+    def test_der_aufruf_von_claude_enthaelt_die_flags_nur_im_kern_kanal(self):
+        for kanal in ("lokal", "pc"):
+            argv = self.start(kanal=kanal, projekt="rezepte-app", art="recherche", job=uuid.uuid4().hex[:16])[1][0][0]
+            self.assertNotIn("--max-turns", argv)
+            self.assertNotIn("--max-budget-usd", argv)
+        grundlinie = D.claude_argv("S", "claude-haiku-5-5")
+        self.assertNotIn("--max-turns", grundlinie)
+        mit = D.claude_argv("S", "claude-haiku-5-5", None, ("5", "1.50"))
+        self.assertEqual(mit[mit.index("--max-turns") + 1], "5")
+        self.assertEqual(mit[mit.index("--max-budget-usd") + 1], "1.50")
+        self.assertEqual(mit[:len(grundlinie)], grundlinie)  # der übrige Aufruf bleibt gleich
+
+    def test_der_kanal_steht_im_auftrag_und_in_den_logzeilen(self):
+        self.start(kanal="pc", projekt="rezepte-app", job="a" * 16)
+        self.assertEqual(json.loads((self.jobs / ("a" * 16) / "auftrag.json").read_text(encoding="utf-8"))["kanal"], "pc")
+        self.patches[0].stop()  # die echte log-Funktion in den Wegwerf-Ordner schreiben lassen
+        try:
+            for kanal in ("lokal", "pc", "kern"):
+                with mock.patch.object(D, "KANAL", kanal):
+                    D.log("probe")
+                zeile_ = (self.logs / "auftraege.log").read_text(encoding="utf-8").splitlines()[-1]
+                self.assertTrue(zeile_.endswith(f"probe kanal={kanal}"), zeile_)
+        finally:
+            self.patches[0].start()
+
+    def test_der_pc_kanal_darf_den_namensraum_kern_nicht_oeffnen(self):
+        with self.assertRaises(D.Abgewiesen):
+            self.start(kanal="pc", projekt="kern-test-repo", art="recherche", kopf_extra={"zugang": None, "profil": None})
+        self.assertFalse((self.projekte / "kern-test-repo").exists())
+        code, _ = self.start(kanal="lokal", projekt="rezepte-app", art="recherche", job="b" * 16)
+        self.assertEqual(code, D.EXIT_OK)
+
+    # ---- zweite Prüfung, Grenzen, Zähler
+    def test_die_notaus_datei_zwischen_beiden_pruefungen_stoppt_den_start_vor_dem_token(self):
+        def selbsttest_mit_notaus(*_):
+            self.selbsttests += 1
+            self.pfade.notaus.write_text("Notaus nach der ersten Prüfung")
+            return True, "ok"
+
+        besucht: list[str] = []
+
+        @contextlib.contextmanager
+        def token(job, art, repo, app):
+            besucht.append(art)
+            yield None
+
+        with mock.patch.object(D, "selbsttest", side_effect=selbsttest_mit_notaus), \
+             mock.patch.object(D, "github_token_fuer_lauf", token):
+            code, aufrufe = self.start()
+        self.assertEqual((code, aufrufe, besucht, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], [], ["notaus"]))
+        self.assertEqual(self.selbsttests, 1)  # die erste Prüfung bestand
+        self.assertEqual([e["ereignis"] for e in self.zaehler()], ["versuch"])  # nur der Versuch, kein Start und kein Ende
+
+    def test_eine_aenderung_der_konfiguration_zwischen_den_pruefungen_greift_ebenfalls(self):
+        def selbsttest_schliesst(*_):
+            self.konfig(KANAL="zu")
+            return True, "ok"
+
+        with mock.patch.object(D, "selbsttest", side_effect=selbsttest_schliesst):
+            code, aufrufe = self.start()
+        self.assertEqual((code, aufrufe, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], ["kanal_zu"]))
+
+    def test_start_und_ende_stehen_im_zaehler_auch_wenn_der_lauf_scheitert(self):
+        self.assertEqual(self.start()[0], D.EXIT_OK)
+        z = self.zaehler()
+        self.assertEqual([e["ereignis"] for e in z], ["versuch", "start", "ende"])
+        self.assertEqual(z[1]["job"], JOB)
+        self.assertGreaterEqual(z[2]["dauer_s"], 0)
+        with mock.patch.object(D, "_ausfuehren", side_effect=RuntimeError("Absturz")), \
+             mock.patch.object(D, "_kopfzeile_lesen", return_value=b'{"auftrag": "x", "zugang": "folgt", "profil": "1a2b3c4d"}\n'), \
+             mock.patch.object(D, "_zugangszeile_lesen", return_value=zeile()), mock.patch.object(D, "KANAL", "kern"):
+            with self.assertRaises(RuntimeError):
+                D.cmd_start("c" * 16, "kern-marktstudie", "recherche")
+        self.assertEqual([e["ereignis"] for e in self.zaehler()], ["versuch", "start", "ende", "versuch", "start", "ende"])
+
+    def test_nur_der_kern_kanal_schreibt_in_den_zaehler(self):
+        self.start(kanal="pc", projekt="rezepte-app", job="d" * 16)
+        self.start(kanal="lokal", projekt="rezepte-app", job="e" * 16)
+        self.assertEqual(self.zaehler(), [])
+
+    def test_grenzen_greifen_vor_den_geheimnissen(self):
+        jetzt = int(time.time())
+        zaehler = self.pfade.zaehler
+        for i in range(4):  # MAX_START_STUNDE = 4: der fünfte Start in einer Stunde geht nicht
+            self.K.zaehler_schreiben(zaehler, uuid.uuid4().hex[:16], "start", jetzt - 100 - i)
+        code, aufrufe = self.start()
+        self.assertEqual((code, aufrufe, self.gesperrt(), self.geheim_gelesen), (D.EXIT_ABGEWIESEN, [], ["grenze_start"], 0))
+
+    def test_ein_nicht_lesbarer_zaehler_sperrt_den_start(self):
+        with mock.patch.object(self.K, "zaehler_lesen", side_effect=PermissionError("keine Rechte")):
+            code, aufrufe = self.start()
+        self.assertEqual((code, aufrufe, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], ["grenze_start"]))
+
+    def test_zu_wenig_platz_sperrt_den_start(self):
+        with mock.patch.object(self.K, "freier_platz_mb", return_value=100):
+            code, _ = self.start()
+        self.assertEqual((code, self.gesperrt()), (D.EXIT_ABGEWIESEN, ["platz"]))
+
+    def test_ein_start_mit_buchung_scheitert_nicht_am_abstand_wenn_er_null_ist_und_sonst_schon(self):
+        self.assertEqual(self.start()[0], D.EXIT_OK)
+        self.konfig(MIN_ABSTAND_S="3600")
+        code, _ = self.start(job=uuid.uuid4().hex[:16])
+        self.assertEqual((code, self.gesperrt()), (D.EXIT_ABGEWIESEN, ["abstand"]))
+
+    # ---- Nachbesserung: unsichtbare Unicode-Zeichen (Tag-Zeichen, Zero-Width, Bidi, Formatzeichen) im Kern-Kanal
+    # Tag-Zeichen, Zero-Width, Bidi, Wortverbinder, Formatzeichen, Privatbereich, Zeilen- und Absatztrenner, C1, Variationsselektoren, Surrogat
+    # Gefährlich (_clean entfernt sie in jedem Kanal): Tag-Zeichen, Bidi-Steuerzeichen, U+200B, U+2060, U+FEFF, Privatbereich, Zeilen- und
+    # Absatztrenner, C1 und Surrogat sowie die übrigen unsichtbaren Formatzeichen ohne Bedeutung für Emojis (U+061C, U+2061, U+206A, U+180E)
+    GEFAEHRLICH = [chr(0xE0041), chr(0xE0001), chr(0xE007F), chr(0x200B), chr(0x200E), chr(0x200F), chr(0x202A), chr(0x202E), chr(0x2060),
+                   chr(0x2066), chr(0x2069), chr(0xFEFF), chr(0xE000), chr(0x2028), chr(0x2029), chr(0x0085), chr(0xD800), chr(0x061C),
+                   chr(0x2061), chr(0x206A), chr(0x180E)]
+    # Bleiben im PC- und lokalen Kanal stehen, weil sie zu Emojis und Schriften gehören: ZWNJ, ZWJ, Variationsselektoren, weiches Trennzeichen
+    ERHALTEN = [chr(0x200C), chr(0x200D), chr(0xFE0F), chr(0xFE0E), chr(0xE0100), chr(0x00AD)]
+    # Der Kern-Kanal lehnt beides ab
+    UNSICHTBAR = GEFAEHRLICH + ERHALTEN
+
+    def test_clean_entfernt_gefaehrliche_unsichtbare_zeichen_und_laesst_sichtbaren_text_stehen(self):
+        for z in self.GEFAEHRLICH:
+            with self.subTest(zeichen=f"U+{ord(z):04X}"):
+                self.assertEqual(D._clean(f"Baue{z} eine{z}{z} App"), "Baue eine App")
+        sichtbar = "Größe: 5 € für 日本語 \U0001f600 ok\n\tZeile zwei"
+        self.assertEqual(D._clean(sichtbar), sichtbar)  # Umlaute, Eurozeichen, CJK, Emoji, Zeilenumbruch und Tabulator bleiben
+        self.assertEqual(D._clean("a\x07b\x7fc\rd"), "abcd")  # die bisherigen Steuerzeichen fliegen weiter heraus
+
+    def test_clean_laesst_zwj_zwnj_und_variationsselektoren_stehen_emojis_bleiben_heil(self):
+        for z in self.ERHALTEN:
+            with self.subTest(zeichen=f"U+{ord(z):04X}"):
+                self.assertEqual(D._clean(f"Baue{z} eine App"), f"Baue{z} eine App")
+        familie = "\U0001f468" + chr(0x200D) + "\U0001f469" + chr(0x200D) + "\U0001f467" + chr(0x200D) + "\U0001f466"  # ZWJ-Sequenz
+        herz = "❤" + chr(0xFE0F)  # Emoji-Darstellung per Variationsselektor
+        regenbogen = "\U0001f3f3" + chr(0xFE0F) + chr(0x200D) + "\U0001f308"
+        hautton = "\U0001f44d\U0001f3fd"
+        persisch = "می" + chr(0x200C) + "خواهم"  # ZWNJ in Schrift
+        for text in (familie, herz, regenbogen, hautton, persisch, f"Feiere {familie} und {herz} {regenbogen} {hautton}"):
+            with self.subTest(text=ascii(text)):
+                self.assertEqual(D._clean(text), text)
+
+    def test_der_kopf_wird_in_jedem_kanal_von_gefaehrlichen_unsichtbaren_zeichen_befreit(self):
+        for kanal in ("lokal", "pc"):
+            for z in self.GEFAEHRLICH[:8]:
+                kopf = json.dumps({"auftrag": f"Baue{z} eine App", "system": f"Regeln{z}"}).encode() + b"\n"
+                with self.subTest(kanal=kanal, zeichen=f"U+{ord(z):04X}"), mock.patch.object(D, "KANAL", kanal):
+                    k = D.parse_header(kopf)
+                    self.assertEqual((k.auftrag, k.system), ("Baue eine App", "Regeln"))
+
+    def test_ein_pc_auftrag_mit_emoji_zwj_sequenz_bleibt_heil_und_das_tag_zeichen_geht(self):
+        familie = "\U0001f468" + chr(0x200D) + "\U0001f469" + chr(0x200D) + "\U0001f467"
+        herz = "❤" + chr(0xFE0F)
+        text = f"Baue eine App {familie} {herz}" + chr(0xE0041) + chr(0xE007F) + " fertig"
+        for kanal in ("lokal", "pc"):
+            kopf = json.dumps({"auftrag": text, "system": f"Ton {herz}"}).encode() + b"\n"
+            with self.subTest(kanal=kanal), mock.patch.object(D, "KANAL", kanal):
+                k = D.parse_header(kopf)
+                self.assertEqual(k.auftrag, f"Baue eine App {familie} {herz} fertig")
+                self.assertEqual(k.system, f"Ton {herz}")
+
+    def test_im_kern_kanal_lehnt_der_kopf_zwj_zwnj_und_variationsselektoren_ab(self):
+        familie = "\U0001f468" + chr(0x200D) + "\U0001f469"
+        for feld in ("auftrag", "system"):
+            for text in (familie, "ok" + chr(0x200C), "❤" + chr(0xFE0F)):
+                werte = {"auftrag": "Baue eine App", "system": "Regeln", feld: text}
+                with self.subTest(feld=feld, text=ascii(text)), mock.patch.object(D, "KANAL", "kern"):
+                    with self.assertRaises(D.Abgewiesen):
+                        D.parse_header(json.dumps(werte).encode() + b"\n")
+
+    def test_im_kern_kanal_lehnt_der_kopf_auftrag_oder_systemtext_mit_unsichtbaren_zeichen_ab(self):
+        for feld in ("auftrag", "system"):
+            for z in self.UNSICHTBAR:
+                werte = {"auftrag": "Baue eine App", "system": "Regeln", feld: f"Text{z}mit Zeichen"}
+                kopf = json.dumps(werte).encode() + b"\n"
+                with self.subTest(feld=feld, zeichen=f"U+{ord(z):04X}"), mock.patch.object(D, "KANAL", "kern"):
+                    with self.assertRaises(D.Abgewiesen) as info:
+                        D.parse_header(kopf)
+                    self.assertIn("unsichtbare Zeichen", str(info.exception))
+        with mock.patch.object(D, "KANAL", "kern"):  # gewöhnliche Steuerzeichen und sichtbarer Text gehen weiter durch (bereinigt)
+            k = D.parse_header(json.dumps({"auftrag": "Größe\r\nZeile \U0001f600\a", "system": ""}).encode() + b"\n")
+            self.assertEqual(k.auftrag, "Größe\nZeile \U0001f600")
+
+    def test_ein_start_im_kern_kanal_mit_unsichtbarem_zeichen_im_auftrag_endet_vor_allem_anderen(self):
+        for feld in ("auftrag", "system"):
+            with self.subTest(feld=feld):
+                with self.assertRaises(D.Abgewiesen):
+                    self.start({feld: "Recherchiere" + chr(0x200B) + " den Markt" + chr(0xE0041)}, job=uuid.uuid4().hex[:16])
+        self.assertEqual((self.geheim_gelesen, self.selbsttests, self.zaehler(), self.gesperrt()), (0, 0, [], []))  # kein Versuch, keine Spur
+        self.assertEqual(list(self.jobs.iterdir()), [])
+
+    def test_unsichtbare_zeichen_in_repo_projekt_modell_profil_und_kriterien_werden_abgewiesen(self):
+        for z in self.UNSICHTBAR:
+            with self.subTest(zeichen=f"U+{ord(z):04X}"):
+                for feld, wert in (("repo", f"acme/te{z}st-repo"), ("modell", f"claude-sonnet{z}-5-5"), ("profil", f"1a2b3c{z}d")):
+                    kopf = json.dumps({"auftrag": "x", "zugang": "folgt", "profil": "1a2b3c4d", feld: wert}).encode() + b"\n"
+                    with mock.patch.object(D, "KANAL", "kern"), self.assertRaises(D.Abgewiesen):
+                        D.parse_header(kopf)
+                with self.assertRaises(D.Abgewiesen):
+                    D.parse_command(f"start {JOB} kern-te{z}st recherche")  # Projekt
+                with self.assertRaises(D.Abgewiesen):
+                    D.parse_command(f"start {JOB} kern-test rech{z}erche")  # Art
+                self.assertIsNotNone(D.abnahme_modul().argv_grund(["npm", "run", f"te{z}st"]))  # Kriterien (Abnahmebefehl)
+
+    # ---- Nachbesserung: Versuche, fremde Projektordner, Kollisionen
+    class _PlatzBelegt:
+        """Alle Sperren frei außer dem Platz: jeder Start endet mit belegt, nachdem der Auftragsordner angelegt wurde."""
+
+        def __init__(self, pfad):
+            self.pfad, self.datei = pfad, None
+
+        def versuchen(self):
+            return not Path(self.pfad).name.startswith("platz-")
+
+    def test_versuche_die_an_einer_sperre_scheitern_werden_gezaehlt_und_je_stunde_begrenzt(self):
+        self.konfig(MAX_VERSUCH_STUNDE="2")
+        jobs = [uuid.uuid4().hex[:16] for _ in range(3)]
+        with mock.patch.object(D, "Sperre", self._PlatzBelegt):
+            codes = [self.start(job=job)[0] for job in jobs]
+        self.assertEqual(codes, [D.EXIT_BELEGT, D.EXIT_BELEGT, D.EXIT_ABGEWIESEN])
+        self.assertEqual([e["ereignis"] for e in self.zaehler()], ["versuch", "versuch"])
+        self.assertEqual(self.gesperrt(), ["grenze_start"])
+        self.assertTrue((self.jobs / jobs[1]).exists() and not (self.jobs / jobs[2]).exists())  # der dritte legt keinen Ordner mehr an
+
+    def test_ein_start_zaehlt_seinen_eigenen_versuch_in_der_zweiten_pruefung_nicht_doppelt(self):
+        self.konfig(MAX_VERSUCH_STUNDE="1", MAX_START_STUNDE="60", MAX_START_TAG="200")
+        code, aufrufe = self.start(job="a" * 16)
+        self.assertEqual((code, len(aufrufe)), (D.EXIT_OK, 1))  # Versuch Nummer 1 von 1 läuft durch
+        self.assertEqual([e["ereignis"] for e in self.zaehler()], ["versuch", "start", "ende"])
+        code, aufrufe = self.start(job="b" * 16)
+        self.assertEqual((code, aufrufe, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], ["grenze_start"]))
+
+    def test_ein_projektordner_den_kein_kern_auftrag_angelegt_hat_ist_gesperrt(self):
+        (self.projekte / "kern-marktstudie").mkdir()  # etwa vom PC-Kanal oder von Hand
+        code, aufrufe = self.start()
+        self.assertEqual((code, aufrufe, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], ["projekt"]))
+        self.assertEqual((self.geheim_gelesen, self.selbsttests), (0, 0))
+        # mit einem Kern-Auftrag, der den Ordner belegt hat, geht ein weiterer Auftrag in dasselbe Projekt
+        (self.jobs / ("c" * 16)).mkdir()
+        (self.jobs / ("c" * 16) / "auftrag.json").write_text(json.dumps(
+            {"job": "c" * 16, "projekt": "kern-marktstudie", "art": "recherche", "repo": None, "kanal": "kern"}), encoding="utf-8")
+        self.ereignisse.clear()
+        self.assertEqual(self.start(job="d" * 16)[0], D.EXIT_OK)
+        self.assertEqual(self.gesperrt(), [])
+        # ein Auftrag mit kanal=pc im selben Namen belegt den Ordner nicht für den Kern
+        (self.projekte / "kern-andere").mkdir()
+        (self.jobs / ("e" * 16)).mkdir()
+        (self.jobs / ("e" * 16) / "auftrag.json").write_text(json.dumps(
+            {"job": "e" * 16, "projekt": "kern-andere", "art": "recherche", "repo": None, "kanal": "pc"}), encoding="utf-8")
+        self.assertEqual(self.start(projekt="kern-andere", job="f" * 16)[0], D.EXIT_ABGEWIESEN)
+        self.assertEqual(self.gesperrt(), ["projekt"])
+
+    def test_ein_neuer_projektordner_ist_kein_hindernis_und_ein_link_an_der_stelle_schon(self):
+        self.assertEqual(self.start()[0], D.EXIT_OK)  # der Ordner entsteht erst im Lauf
+        if os.name == "nt":
+            self.skipTest("symbolische Links brauchen unter Windows besondere Rechte")
+        ziel = Path(self.tmp.name) / "fremd"
+        ziel.mkdir()
+        (self.projekte / "kern-verlinkt").symlink_to(ziel)
+        self.assertEqual(self.start(projekt="kern-verlinkt", job="a" * 16)[0], D.EXIT_ABGEWIESEN)
+        self.assertEqual(self.gesperrt()[-1], "projekt")
+
+    def test_zwei_repos_mit_gleichem_normalisiertem_namen_teilen_sich_keinen_projektordner(self):
+        self.konfig(REPOS="acme/my_repo,acme/my-repo")
+        (self.jobs / ("c" * 16)).mkdir()
+        (self.jobs / ("c" * 16) / "auftrag.json").write_text(json.dumps(
+            {"job": "c" * 16, "projekt": "kern-my-repo", "art": "review", "repo": "acme/my_repo", "kanal": "kern"}), encoding="utf-8")
+        (self.projekte / "kern-my-repo").mkdir()
+        code, aufrufe = self.start({"repo": "acme/my-repo"}, art="review", projekt="kern-my-repo", job="d" * 16)
+        self.assertEqual((code, aufrufe, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], ["projekt"]))
+
+    def test_kern_wamo_ohne_repo_wird_im_dispatcher_abgelehnt(self):
+        code, aufrufe = self.start(projekt="kern-wamo")
+        self.assertEqual((code, aufrufe, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], ["projekt"]))
+
+    # ---- GitHub: nur App, Fork-Prüfung, kein Token vor der Abweisung
+    def _app(self, antwort=None, status=200):
+        """GitHub-App-Modus mit Attrappen: Token, Widerruf und die Repo-Abfrage. Liefert (Aufrufe der Token-Erzeugung, Widerrufe)."""
+        erzeugt: list[tuple] = []
+        widerrufe: list[str] = []
+        anfragen: list[str] = []
+
+        def token(app, art, repo):
+            erzeugt.append((art, repo))
+            return "ghs_" + "T0k3n" * 7 + "x", "2026-11-11T13:00:00Z"
+
+        def github(methode, pfad, anmeldung, koerper=None):
+            anfragen.append(f"{methode} {pfad}")
+            return status, antwort
+
+        def widerruf(t):
+            widerrufe.append(t)
+            return True
+
+        for p in (mock.patch.object(D, "github_app_konfig", return_value=D.GithubApp("1", "2", "gh-app.pem")),
+                  mock.patch.object(D, "installations_token", side_effect=token), mock.patch.object(D, "_github", side_effect=github),
+                  mock.patch.object(D, "token_widerrufen", side_effect=widerruf)):
+            p.start()
+            self.addCleanup(p.stop)
+        return erzeugt, widerrufe, anfragen
+
+    def test_ein_github_start_prueft_den_fork_status_mit_dem_token_und_laeuft_dann(self):
+        erzeugt, widerrufe, anfragen = self._app({"full_name": "acme/test-repo", "name": "test-repo", "fork": False})
+        code, aufrufe = self.start({"repo": "acme/test-repo"}, art="review", projekt="kern-test-repo")
+        self.assertEqual((code, self.gesperrt()), (D.EXIT_OK, []))
+        self.assertEqual(erzeugt, [("review", "acme/test-repo")])
+        self.assertEqual(anfragen, ["GET /repos/acme/test-repo"])
+        self.assertEqual(len(widerrufe), 1)  # am Ende widerrufen
+        self.assertEqual(aufrufe[0][1]["GH_TOKEN"], "ghs_" + "T0k3n" * 7 + "x")
+
+    def test_ein_fork_ein_repo_aus_vorlage_und_eine_unklare_antwort_stoppen_den_lauf_und_widerrufen_das_token(self):
+        antworten = ({"full_name": "acme/test-repo", "fork": True}, {"full_name": "acme/test-repo", "fork": False, "template_repository": {"full_name": "a/v"}},
+                     {"full_name": "acme/test-repo", "fork": False, "source": {"full_name": "wamocon/wamo"}},
+                     {"full_name": "acme/test-repo"}, [], None)
+        self.konfig(MAX_START_STUNDE="60", MAX_START_TAG="200")  # auch ein abgewiesener Start zählt als Start
+        for antwort in antworten:
+            with self.subTest(antwort=antwort):
+                self.ereignisse.clear()
+                erzeugt, widerrufe, _ = self._app(antwort)
+                code, aufrufe = self.start({"repo": "acme/test-repo"}, art="review", projekt="kern-test-repo", job=uuid.uuid4().hex[:16])
+                self.assertEqual((code, aufrufe, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], ["fork"]))
+                self.assertEqual(len(erzeugt), 1)
+                self.assertEqual(len(widerrufe), 1)  # das Token wurde erzeugt und sofort widerrufen
+
+    def test_eine_github_art_ohne_app_modus_wird_vor_dem_token_abgewiesen(self):
+        with mock.patch.object(D, "installations_token") as token:
+            code, aufrufe = self.start({"repo": "acme/test-repo"}, art="review", projekt="kern-test-repo")
+        self.assertEqual((code, aufrufe, self.gesperrt()), (D.EXIT_ABGEWIESEN, [], ["repo"]))  # NIKO_GEHEIM hat keine App-Variablen
+        token.assert_not_called()
+
+    def test_eine_abweisung_im_kern_kanal_erzeugt_nie_ein_token(self):
+        erzeugt, widerrufe, anfragen = self._app({"full_name": "acme/test-repo", "fork": False})
+        for ueber in ({"zugang": None, "profil": None}, {"zugang": "server", "profil": None}):
+            code, _ = self.start({"repo": "acme/test-repo", **ueber}, art="review", projekt="kern-test-repo", job=uuid.uuid4().hex[:16])
+            self.assertEqual(code, D.EXIT_ABGEWIESEN)
+        self.pfade.notaus.write_text("x")
+        self.assertEqual(self.start({"repo": "acme/test-repo"}, art="review", projekt="kern-test-repo", job=uuid.uuid4().hex[:16])[0], D.EXIT_ABGEWIESEN)
+        self.assertEqual((erzeugt, widerrufe, anfragen), ([], [], []))
+
+    # ---- Eigenschaften der Datei
+    def test_selbstschutz_und_parallelitaet_bleiben_und_das_modul_wird_erst_bei_bedarf_geladen(self):
+        self.assertEqual(D.SELF_REPO, "wamo")
+        self.assertEqual(D.PARALLEL_MAX, 1)
+        self.assertEqual(D.VERSION, "7")
+        import ast
+        baum = ast.parse((INFRA / "wamo_job_dispatch.py").read_text(encoding="utf-8"))
+        oben = {a.name for n in baum.body if isinstance(n, ast.Import) for a in n.names}
+        oben |= {n.module for n in baum.body if isinstance(n, ast.ImportFrom) and n.module}
+        self.assertNotIn("wamo_job_kernkanal", oben)
 
 
 if __name__ == "__main__":

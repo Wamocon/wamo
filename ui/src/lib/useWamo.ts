@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { PipecatClient, RTVIError } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport, WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
 import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type BetriebsartBruecke } from "@/lib/betriebsart";
+import { alleFristenLoeschen, fristStarten } from "@/lib/auftragFrist";
+import { auftraegeNachFrist, auftraegeNachStart, auftragStartbar, auftragVerwerfbar } from "@/lib/auftragStart";
+import { useNeuladenWarnung } from "@/lib/useNeuladenWarnung";
 import { aktiverSlot, startUrl } from "@/lib/kernSlot";
 import { pcAutoLesen } from "@/lib/einstellungen";
 import { einstellungenOeffnen } from "@/lib/einstellungenHash";
@@ -411,6 +414,7 @@ export function useWamo(): WamoAktionen {
     const vomKern = kernEnde.current;
     kernEnde.current = null;
     liveBildLoeschen(); // kein Bild bleibt nach dem Gespräch stehen
+    alleFristenLoeschen(); // die Startkarten sind weg, ihre Fristen laufen nicht weiter
     if (grund === "unmount") return;
     wamo.set((s) => {
       const verfallen = s.approvals.length > 0 || s.auftraege.length > 0;
@@ -1021,8 +1025,13 @@ export function useWamo(): WamoAktionen {
     return true;
   }, []);
 
-  // Entwicklungsauftrag: Karte erst nach erfolgreichem Senden entfernen
+  // Entwicklungsauftrag: Verwerfen entfernt die Karte erst nach erfolgreichem Senden, Starten lässt sie bis zur Quittung stehen
   const entscheideAuftrag = useCallback((a: Auftrag, ja: boolean) => {
+    // Nichts senden, was der Kern nicht mehr umsetzt: Ein zweiter Start während des Wartens ist doppelt, und Verwerfen wirkt bei einem
+    // gesendeten Auftrag nicht (der Kern ignoriert "nein" bei einem gestarteten Auftrag, die Karte würde "verworfen" sagen und der
+    // Auftrag liefe weiter). Die Karte sperrt beides schon, das hier sichert den Aufruf.
+    const karten = wamo.get().auftraege;
+    if (ja ? !auftragStartbar(karten, a.job) : !auftragVerwerfbar(karten, a.job)) return false;
     const client = clientRef.current;
     if (!client || !istOnline(wamo.get())) {
       setFehler({ art: "verbindung", text: "Keine Verbindung: Die Entscheidung zum Auftrag konnte nicht gesendet werden." });
@@ -1034,13 +1043,29 @@ export function useWamo(): WamoAktionen {
       setFehler({ art: "sonst", text: "Die Entscheidung zum Auftrag konnte nicht gesendet werden. Bitte noch einmal versuchen." });
       return false;
     }
+    if (!ja) {
+      wamo.set((s) => ({ ...s, auftraege: s.auftraege.filter((x) => x.job !== a.job), ansage: `Auftrag verworfen: ${a.art || a.projekt}` }));
+      return true;
+    }
+    // Starten: "gestartet" meldet erst die Quittung des Kerns (wamo.ts, auftrag_quittung). Bis dahin bleibt die Karte, nach
+    // 15 Sekunden ohne Antwort zeigt sie einen neutralen Hinweis (lib/auftragStart.ts, auch für einen Kern ohne Quittung)
+    // Die Uhr ist performance.now (monoton, unabhängig von der Systemzeit); die Frist je Auftrag endet mit der Quittung (wamo.ts)
     wamo.set((s) => ({
       ...s,
-      auftraege: s.auftraege.filter((x) => x.job !== a.job),
-      ansage: ja ? `Auftrag gestartet: ${a.art || a.projekt}` : `Auftrag verworfen: ${a.art || a.projekt}`,
+      auftraege: auftraegeNachStart(s.auftraege, a.job, performance.now()),
+      ansage: `Auftrag wird gesendet: ${a.art || a.projekt}`,
     }));
+    fristStarten(a.job, () => {
+      wamo.set((s) => {
+        const neu = auftraegeNachFrist(s.auftraege, performance.now());
+        return neu === s.auftraege ? s : { ...s, auftraege: neu };
+      });
+    });
     return true;
   }, []);
+
+  // Neuladen oder Schließen, solange ein Auftrag läuft: Nachfrage (lib/useNeuladenWarnung.ts)
+  useNeuladenWarnung();
 
   // Live-Bild: nur senden; den Zustand meldet der Kern (Nachricht bildstrom), Bilder zeichnet lib/liveBild.ts
   const liveBild = useMemo<LiveBildAktionen>(() => {

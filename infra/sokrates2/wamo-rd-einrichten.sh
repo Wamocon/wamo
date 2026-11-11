@@ -108,20 +108,25 @@ bilder_liste() { grep -E '^[[:space:]]+image: .*@sha256:' "$COMPOSE_QUELLE" | se
 
 # Ruhe: keine Sitzung im Kern (wie wamo-ui-einrichten.sh): ein Neustart von wamo-caddy unterbräche das Gespräch kurz
 kern_ruhig() {
-  local pid udp log roh
-  pid="$(systemctl show wamo-core -p MainPID --value 2>/dev/null || echo 0)"
-  if [ -z "$pid" ] || [ "$pid" = 0 ]; then return 0; fi
-  # Fail-closed: Lässt sich der Zustand nicht lesen, gilt der Kern als nicht ruhig
-  sudo -n true 2>/dev/null || { echo "  Kern nicht prüfbar: sudo -n nicht verfügbar" >&2; return 1; }
-  roh="$(sudo -n ss -uanpH 2>/dev/null)" || { echo "  Kern nicht prüfbar: ss fehlgeschlagen" >&2; return 1; }
-  udp="$(grep -c "pid=$pid," <<<"$roh" || true)"
-  roh="$(sudo -n journalctl -u wamo-core --since '-5 min' --no-pager -q 2>/dev/null)" \
-    || { echo "  Kern nicht prüfbar: journalctl fehlgeschlagen" >&2; return 1; }
-  log="$(grep -vE 'Zugang abgelehnt|401 Unauthorized|^$' <<<"$roh" | wc -l || true)"
-  if [ "${udp:-0}" != 0 ] || [ "${log:-0}" != 0 ]; then
-    echo "  Kern nicht ruhig: UDP-Sockets $udp, Journalzeilen der letzten 5 Minuten $log" >&2
-    return 1
-  fi
+  # Keine Sitzung in einer der Instanzen: die alte Unit wamo-core und die Slots wamo-core@a und wamo-core@b (im Slot-Betrieb hat die alte Unit
+  # keine MainPID, die Slots tragen die Sitzungen). Läuft keine, gilt der Kern als ruhig.
+  local unit pid udp log roh_ss roh_log
+  for unit in wamo-core wamo-core@a wamo-core@b; do
+    pid="$(systemctl show "$unit" -p MainPID --value 2>/dev/null || echo 0)"
+    if [ -z "$pid" ] || [ "$pid" = 0 ]; then continue; fi
+    # Fail-closed: Lässt sich der Zustand nicht lesen (kein sudo, ss oder journalctl fehlgeschlagen), gilt der Kern als nicht ruhig
+    sudo -n true 2>/dev/null || { echo "  Kern nicht prüfbar: sudo -n nicht verfügbar" >&2; return 1; }
+    roh_ss="$(sudo -n ss -uanpH 2>/dev/null)" || { echo "  Kern nicht prüfbar: ss fehlgeschlagen" >&2; return 1; }
+    udp="$(grep -c "pid=$pid," <<<"$roh_ss" || true)"
+    roh_log="$(sudo -n journalctl -u "$unit" --since '-5 min' --no-pager -q 2>/dev/null)" \
+      || { echo "  Kern nicht prüfbar: journalctl fehlgeschlagen" >&2; return 1; }
+    # abgewiesene Anfragen ohne Anmeldung (401) sind keine Sitzung
+    log="$(grep -vE 'Zugang abgelehnt|401 Unauthorized|^$' <<<"$roh_log" | wc -l || true)"
+    if [ "${udp:-0}" != 0 ] || [ "${log:-0}" != 0 ]; then
+      echo "  Kern nicht ruhig ($unit): UDP-Sockets $udp, Journalzeilen der letzten 5 Minuten $log" >&2
+      return 1
+    fi
+  done
   return 0
 }
 
@@ -400,6 +405,25 @@ pruefen() {
   python3 -I "$HERE/wamo_rd_rauchtest.py" --betrieb --ca "$CA"
 }
 
+# Slot-Betrieb: läuft eine Instanz der Vorlage wamo-core@.service, gehört der Kern den Slots. Die alte Unit wamo-core.service wird dann nie
+# neu gestartet (sie liefe neben den Slots); das Drop-in gilt ab dem nächsten Kern-Wechsel über wamo-core-slots.sh umschalten-kern.
+slot_betrieb() {
+  # Slot-Betrieb, solange eine Instanz der Vorlage in Gang ist (auch im Fenster activating beim automatischen Neustart, in dem der Dienst noch nicht als aktiv gilt)
+  # oder sich der Zustand nicht sicher lesen lässt: ein Fehler beim Prüfen gilt als Slot-Betrieb (fail-closed), die alte Unit wird dann nicht
+  # gestartet. Die Slot-Verweise liegen in einem Ordner root:wamo-core 0750, für wamocon nur mit sudo sichtbar.
+  local s zustand
+  for s in a b; do
+    zustand="$(systemctl show -p ActiveState --value "wamo-core@$s" 2>/dev/null)" || return 0
+    [ -n "$zustand" ] || return 0
+    if grep -qE '^(active|activating|reloading|deactivating)$' <<<"$zustand"; then return 0; fi
+  done
+  sudo -n true 2>/dev/null || return 0
+  for s in a b; do
+    if sudo -n test -e "/opt/wamo-core/slots/$s" || sudo -n test -L "/opt/wamo-core/slots/$s"; then return 0; fi
+  done
+  return 1
+}
+
 # ---------- Kern anbinden (bewusst nicht Teil von "alles")
 kern() {
   echo "== Kern anbinden (Fernzugriff in WAMO einschalten)"
@@ -407,19 +431,28 @@ kern() {
   if [ "$TROCKEN" = nein ]; then
     docker inspect -f '{{.State.Health.Status}}' wamo-rd-zugang 2>/dev/null | grep -q '^healthy$' \
       || fehler "wamo-rd-zugang läuft nicht gesund (zuerst die Schritte bilder und start)."
-    kern_ruhig || fehler "Abbruch: Gerade läuft eine Sitzung. wamo-core wird neu gestartet, sobald niemand spricht (Skript erneut ausführen)."
+    slot_betrieb || kern_ruhig || fehler "Abbruch: Gerade läuft eine Sitzung. wamo-core wird neu gestartet, sobald niemand spricht (Skript erneut ausführen)."
   fi
   local inhalt
   inhalt="$(printf '# WAMO Remote Desktop (infra/sokrates2/wamo-rd-einrichten.sh kern). Entfernen: wamo-rd-rueckweg.sh\n[Service]\nSupplementaryGroups=%s\nEnvironment=WAMO_RD_AKTIV=ja\nEnvironment=WAMO_RD_URL=%s\n' "$DIENST_BENUTZER" "$RD_URL")"
   if [ "$TROCKEN" = ja ]; then
     printf '  [trocken] %s:\n%s\n' "$KERN_DROPIN" "$inhalt"
-    echo "  [trocken] systemctl daemon-reload; systemctl restart wamo-core"
+    if slot_betrieb; then
+      echo "  [trocken] systemctl daemon-reload; Slot-Betrieb: kein Neustart von wamo-core, stattdessen umschalten-kern nutzen"
+    else
+      echo "  [trocken] systemctl daemon-reload; systemctl restart wamo-core"
+    fi
     return 0
   fi
   sudo -n install -d -m 0755 "$KERN_DROPIN_DIR"
   printf '%s\n' "$inhalt" | sudo -n tee "$KERN_DROPIN" >/dev/null
   sudo -n chmod 0644 "$KERN_DROPIN"
   sudo -n systemctl daemon-reload
+  if slot_betrieb; then
+    echo "  Slot-Betrieb: wamo-core wird NICHT neu gestartet. Der Fernzugriff gilt ab dem nächsten Kern-Wechsel:" \
+      "umschalten-kern nutzen (sudo bash ~/wamo-infra/wamo-core-slots.sh umschalten-kern <release>, spiegelt die Drop-ins), dann bewaehren 30 und ausleiten."
+    return 0
+  fi
   sudo -n systemctl restart wamo-core
   sleep 5
   systemctl is-active --quiet wamo-core || fehler "wamo-core läuft nach dem Neustart nicht (journalctl -u wamo-core). Rückweg: wamo-rd-rueckweg.sh"

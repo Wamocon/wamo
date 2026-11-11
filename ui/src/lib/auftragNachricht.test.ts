@@ -88,3 +88,87 @@ test("Anzeige: HTML in einem Befehl bleibt unverändert als Text (React setzt es
     { art: "befehl", text: "grep -q <img src=x onerror=alert(1)> a.txt" },
   ]);
 });
+
+test("repo der Startkarte: owner/name wird übernommen, alles andere und Fehlendes ergibt kein repo und keinen Fehler", () => {
+  assert.equal(auftrag({ repo: "acme/testrepo" }).repo, "acme/testrepo");
+  assert.equal(auftrag({ repo: "Acme/Test-Repo.js_x" }).repo, "Acme/Test-Repo.js_x");
+  assert.equal(auftrag().repo, undefined);
+  for (const roh of [null, 5, true, {}, [], "", "   ", "kein-repo", "a/b/c", "../x", "a/b c", "https://github.com/a/b", "x".repeat(300)]) {
+    assert.equal(auftrag({ repo: roh }).repo, undefined, JSON.stringify(roh));
+  }
+});
+
+test("auftrag_quittung: ok, oder nicht ok mit bereinigtem Grund", () => {
+  const ok = parseServerMessage({ type: "auftrag_quittung", job: "abc123", ok: true });
+  assert.deepEqual(ok, { type: "auftrag_quittung", job: "abc123", ok: true, grund: undefined });
+  const nein = parseServerMessage({ type: "auftrag_quittung", job: "abc123", ok: false, grund: "Der Kanal ist geschlossen.\n‮" });
+  assert.ok(nein && nein.type === "auftrag_quittung");
+  assert.equal(nein.ok, false);
+  assert.equal(nein.grund, "Der Kanal ist geschlossen.");
+  const lang = parseServerMessage({ type: "auftrag_quittung", job: "a", ok: false, grund: "x".repeat(5000) });
+  assert.ok(lang && lang.type === "auftrag_quittung" && (lang.grund ?? "").length < 330);
+});
+
+test("auftrag_quittung: ungültige Formen werden ignoriert", () => {
+  for (const roh of [
+    { type: "auftrag_quittung" },
+    { type: "auftrag_quittung", job: "", ok: true },
+    { type: "auftrag_quittung", job: 5, ok: true },
+    { type: "auftrag_quittung", job: "a", ok: "ja" },
+    { type: "auftrag_quittung", job: "a" },
+  ]) {
+    assert.equal(parseServerMessage(roh), null, JSON.stringify(roh));
+  }
+});
+
+test("entwicklung_grund: ein Zeichen außerhalb der Grundebene wird nie in der Mitte getrennt", () => {
+  const BASIS = { type: "betrieb", modus: "buero", modelle: {}, pc: "aus", entwicklung: "aus" };
+  // 119 einfache Zeichen, dann ein Emoji (zwei UTF-16-Einheiten): die Grenze von 120 Einheiten fällt in die Mitte des Zeichens
+  const m = parseServerMessage({ ...BASIS, entwicklung_grund: `${"x".repeat(119)}😀 Rest` });
+  assert.ok(m && m.type === "betrieb");
+  const grund = m.entwicklungGrund ?? "";
+  assert.ok(grund.length <= 120, String(grund.length));
+  assert.doesNotMatch(grund, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u, "kein einzelnes Ersatzzeichen");
+  assert.equal(grund, "x".repeat(119));
+  const kurz = parseServerMessage({ ...BASIS, entwicklung_grund: "Schalter aus 😀" });
+  assert.ok(kurz && kurz.type === "betrieb");
+  assert.equal(kurz.entwicklungGrund, "Schalter aus 😀", "ein kurzer Text bleibt ganz");
+});
+
+test("entwicklung_grund läuft durch die Bereinigung: Zeilenumbrüche, Steuer- und Bidi-Zeichen werden zu Leerzeichen", () => {
+  const BASIS = { type: "betrieb", modus: "buero", modelle: {}, pc: "aus", entwicklung: "aus" };
+  const m = parseServerMessage({ ...BASIS, entwicklung_grund: "Der Schalter\nist\taus‮ ​ ja\u0007" });
+  assert.ok(m && m.type === "betrieb");
+  assert.equal(m.entwicklungGrund, "Der Schalter ist aus ja");
+});
+
+test("auftrag_quittung: ein langer Grund wird nicht in der Mitte eines Zeichens getrennt", () => {
+  const m = parseServerMessage({ type: "auftrag_quittung", job: "a", ok: false, grund: `${"y".repeat(299)}😀 Rest` });
+  assert.ok(m && m.type === "auftrag_quittung");
+  assert.doesNotMatch(m.grund ?? "", /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
+});
+
+test("stand gehört nicht zur Nachricht des Kerns: ein Feld stand aus dem Netz kommt nie in die Karte", () => {
+  // Der Zustand der Startkarte entsteht allein in der Oberfläche (lib/auftragStart.ts), der Kern kann ihn nicht vorgeben
+  const m = auftrag({ stand: { phase: "abgelehnt", grund: "vom Kern eingeschmuggelt" } });
+  assert.equal("stand" in m, false);
+  assert.equal((m as Record<string, unknown>).stand, undefined);
+});
+
+test("betrieb: entwicklung_grund ist optional, bereinigt und höchstens 120 Zeichen", () => {
+  const BASIS = { type: "betrieb", modus: "buero", modelle: {}, pc: "aus", entwicklung: "aus" };
+  const ohne = parseServerMessage(BASIS);
+  assert.ok(ohne && ohne.type === "betrieb");
+  assert.equal(ohne.entwicklungGrund, undefined);
+  const mit = parseServerMessage({ ...BASIS, entwicklung_grund: "Der Schalter für Entwicklungsaufträge im Büro ist aus\u0000" });
+  assert.ok(mit && mit.type === "betrieb");
+  assert.equal(mit.entwicklungGrund, "Der Schalter für Entwicklungsaufträge im Büro ist aus");
+  const lang = parseServerMessage({ ...BASIS, entwicklung_grund: "y".repeat(500) });
+  assert.ok(lang && lang.type === "betrieb");
+  assert.equal(lang.entwicklungGrund?.length, 120);
+  for (const roh of [null, 7, "", "   ", {}, []]) {
+    const m = parseServerMessage({ ...BASIS, entwicklung_grund: roh });
+    assert.ok(m && m.type === "betrieb");
+    assert.equal(m.entwicklungGrund, undefined, JSON.stringify(roh));
+  }
+});
