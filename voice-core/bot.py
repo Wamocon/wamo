@@ -634,9 +634,13 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Fremdinhalte im laufenden Zug (Websuche, Bildschirm, PC, Entwicklungs-Ergebnisse) merken: kein
     # sofort wirksames gemeinsames Wissen (M4) und kein Lernen aus diesen Abschnitten.
     turn = TurnState(transcript_len=lambda: len(transcript))
+    # Labor: Text, Klicks auf Freigabekarten und Suchen zählen je Profil und Durchlauf, nicht je Verbindung (labor_limit.LimitRegister): eine
+    # Neuverbindung setzt nichts zurück. Das Schaufenster ohne Platz hat keinen Durchlauf, dort zählt das Profil allein.
+    labor_grenzen = (labor_limit.LIMITS.fuer(identity.user_id, labor_sitzung.stand.durchlauf_id if labor_sitzung.stand else None)
+                     if labor_sitzung else None)
     if labor_sitzung:  # Laborprofil: nur die Erlaubnisliste, nie merken oder Fernzugriff (labor.WERKZEUGE_BASIS)
         standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, erlaubt=labor.WERKZEUGE_BASIS,
-                                             suchen_max=labor_limit.suchen_max()).standard_tools)
+                                             suchen_zaehler=labor_grenzen.suchen).standard_tools)
     else:
         standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, fernzugriff=fernzugriff).standard_tools)
     # Vorgänge (vorgaenge.py): was WAMO gerade abarbeitet, live für die Tafel "Vorgänge". Alle Änderungen sind synchron, das
@@ -818,7 +822,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
         observers=[latenz_beobachter] if latenz_beobachter else [],
         # Labor: Client-Nachrichten gegen die Erlaubnisliste prüfen, bevor Pipecat sie auswertet (labor_rtvi.py)
-        rtvi_processor=LaborRTVIProcessor(art=identity.labor_art) if labor_sitzung else None,
+        rtvi_processor=(LaborRTVIProcessor(art=identity.labor_art, begrenzer=labor_grenzen.text, klicks=labor_grenzen.klicks)
+                        if labor_sitzung else None),
     )
     if dev:
         dev.attach(task)

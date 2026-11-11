@@ -346,8 +346,36 @@ async def test_fremde_sitzung_findet_den_antrag_nicht():
     aid = a.karte_id()
     assert await b.fr.entscheiden({"job": "labor", "id": aid, "entscheidung": "ja"}) is None
     assert b.ausgefuehrt == [] and a.ausgefuehrt == [] and a.fr.offen_anzahl == 1
-    assert "unbekannt oder abgelaufen" in b.meldungen[0]
+    assert b.meldungen == []  # eine Kennung, die diese Sitzung nie ausgegeben hat, ergibt keine Meldung und keinen Modellzug (Befund Klickweg)
     assert await a.fr.entscheiden({"job": "labor", "id": aid, "entscheidung": "ja"}) is not None  # in der eigenen Sitzung geht es
+
+
+async def test_erfundene_kennungen_erzeugen_keine_meldung_und_keinen_modellzug(u):
+    """Eine formal gültige (32 Hex), aber nie ausgegebene Kennung wird nur geloggt: je Klick sonst ein Modellzug mit Sprachausgabe, ohne Obergrenze."""
+    await u.beantragen()
+    for i in range(50):
+        assert await u.fr.entscheiden({"job": "labor", "id": f"{i + 1:032x}", "entscheidung": "ja" if i % 2 else "nein"}) is None
+    await ruhe()
+    assert u.meldungen == [] and u.ausgefuehrt == [] and u.fremd == 0
+    assert u.fr.offen_anzahl == 1 and u.speicher.stati("a1") == ["pending"]  # die echte Karte bleibt unberührt
+    assert await u.fr.entscheiden({"job": "labor", "id": u.karte_id(), "entscheidung": "ja"}) is not None  # und gilt weiter
+
+
+async def test_schon_entschiedene_oder_erledigte_kennung_wird_nicht_erneut_gemeldet(u):
+    """Auch eine echte, aber nicht mehr offene Kennung (zweiter Klick, nach dem Ende) erzeugt keine Meldung: höchstens eine Meldung je Karte."""
+    await u.beantragen()
+    aid = u.karte_id()
+    await u.fr.entscheiden({"job": "labor", "id": aid, "entscheidung": "nein"})
+    assert len(u.meldungen) == 1
+    for _ in range(20):
+        assert await u.fr.entscheiden({"job": "labor", "id": aid, "entscheidung": "ja"}) is None
+    assert len(u.meldungen) == 1 and u.ausgefuehrt == []
+    await u.beantragen("ticket_anlegen", dict(ANLEGEN, titel="Zweites"))
+    zweite = u.karte_id()
+    await u.fr.schliessen()  # Sitzungsende: die Kennung ist weg, nicht entschieden
+    for _ in range(20):
+        assert await u.fr.entscheiden({"job": "labor", "id": zweite, "entscheidung": "ja"}) is None
+    assert len(u.meldungen) == 1 and u.ausgefuehrt == []
 
 
 async def test_werte_im_klick_gelten_nicht(u):

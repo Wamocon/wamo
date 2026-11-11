@@ -71,6 +71,87 @@ class TextBegrenzerTests(unittest.TestCase):
                 self.assertEqual((b.abstand_secs, b.max_zeichen), (labor_limit.TEXT_ABSTAND_SECS, labor_limit.TEXT_MAX_ZEICHEN))
 
 
+class KlickBegrenzerTests(unittest.TestCase):
+    """Der Klick auf eine Freigabekarte (client-message freigabe) ist begrenzt: Abstand und Höchstzahl, damit kein Teilnehmer den Klickweg flutet."""
+
+    def test_standardwerte_sind_benannt(self):
+        self.assertEqual((labor_limit.KLICK_ABSTAND_SECS, labor_limit.KLICK_MAX), (0.5, 100))
+
+    def test_abstand_zwischen_zwei_klicks(self):
+        uhr = Uhr()
+        b = labor_limit.KlickBegrenzer(uhr=uhr)
+        self.assertTrue(b.zulassen())
+        uhr.jetzt += 0.4
+        self.assertFalse(b.zulassen())  # zu schnell
+        uhr.jetzt += 0.2  # 0,6 Sekunden nach dem angenommenen Klick: der abgelehnte hat die Frist nicht verlängert
+        self.assertTrue(b.zulassen())
+
+    def test_hoechstzahl_je_sitzung_auch_nach_beliebiger_wartezeit(self):
+        uhr = Uhr()
+        b = labor_limit.KlickBegrenzer(abstand_secs=1, maximum=5, uhr=uhr)
+        for _ in range(5):
+            self.assertTrue(b.zulassen())
+            uhr.jetzt += 2
+        self.assertFalse(b.zulassen())
+        uhr.jetzt += 3600
+        self.assertFalse(b.zulassen())
+
+    def test_ueberschreibung_ueber_die_umgebung_und_ungueltiges_heisst_standard(self):
+        with mock.patch.dict("os.environ", {"WAMO_LABOR_KLICK_ABSTAND_SECS": "3", "WAMO_LABOR_KLICK_MAX": "7"}):
+            b = labor_limit.KlickBegrenzer(uhr=Uhr())
+            self.assertEqual((b.abstand_secs, b.maximum), (3.0, 7))
+        for roh in ("", "abc", "-1", "0", "0.05", "1e9", "99999999", "inf", "nan", "1001"):
+            with self.subTest(roh=roh), mock.patch.dict("os.environ", {"WAMO_LABOR_KLICK_ABSTAND_SECS": roh, "WAMO_LABOR_KLICK_MAX": roh}):
+                b = labor_limit.KlickBegrenzer(uhr=Uhr())
+                self.assertEqual((b.abstand_secs, b.maximum), (labor_limit.KLICK_ABSTAND_SECS, labor_limit.KLICK_MAX))
+
+
+class LimitRegisterTests(unittest.TestCase):
+    """Befund 2: Text, Suchen und Klicks zählen je Profil und Durchlauf, nicht je Verbindung: eine Neuverbindung setzt nichts zurück."""
+
+    def test_dasselbe_profil_im_selben_durchlauf_teilt_die_zaehler(self):
+        register = labor_limit.LimitRegister()
+        erste = register.fuer("profil-1", "durchlauf-1")
+        zweite = register.fuer("profil-1", "durchlauf-1")  # Neuverbindung
+        self.assertIs(erste.text, zweite.text)
+        self.assertIs(erste.suchen, zweite.suchen)
+        self.assertIs(erste.klicks, zweite.klicks)
+
+    def test_verbrauch_bleibt_nach_der_neuverbindung(self):
+        register = labor_limit.LimitRegister()
+        erste = register.fuer("profil-1", "durchlauf-1")
+        erste.suchen.maximum = 2
+        self.assertTrue(erste.suchen.verbrauchen())
+        self.assertTrue(erste.suchen.verbrauchen())
+        self.assertFalse(register.fuer("profil-1", "durchlauf-1").suchen.verbrauchen())  # auch die neue Verbindung hat keine Suche mehr
+        erste.text.max_zeichen = 10
+        self.assertTrue(erste.text.zulassen(10))
+        self.assertFalse(register.fuer("profil-1", "durchlauf-1").text.zulassen(1))
+
+    def test_anderes_profil_und_anderer_durchlauf_haben_eigene_zaehler(self):
+        register = labor_limit.LimitRegister()
+        a = register.fuer("profil-1", "durchlauf-1")
+        for anderer in (register.fuer("profil-2", "durchlauf-1"), register.fuer("profil-1", "durchlauf-2"), register.fuer("profil-1", None)):
+            self.assertIsNot(a.text, anderer.text)
+            self.assertIsNot(a.suchen, anderer.suchen)
+            self.assertIsNot(a.klicks, anderer.klicks)
+
+    def test_kein_trennzeichen_verwischt_die_schluessel(self):
+        register = labor_limit.LimitRegister()
+        self.assertIsNot(register.fuer("a|b", "c").text, register.fuer("a", "b|c").text)
+
+    def test_der_speicher_ist_begrenzt_die_aeltesten_fallen_weg(self):
+        register = labor_limit.LimitRegister(max_schluessel=3)
+        erste = register.fuer("p0", "d")
+        for i in range(1, 50):
+            register.fuer(f"p{i}", "d")
+        self.assertEqual(register.groesse(), 3)
+        self.assertIsNot(register.fuer("p0", "d").text, erste.text)  # der älteste ist längst weg
+        letzter = register.fuer("p49", "d")
+        register.fuer("p50", "d")
+        self.assertIs(register.fuer("p49", "d").text, letzter.text)  # ein neuer Schlüssel bleibt
+
+
 class SuchZaehlerTests(unittest.TestCase):
     def test_hoechstens_so_viele_suchen_je_sitzung(self):
         z = labor_limit.SuchZaehler(3)
@@ -222,12 +303,50 @@ class RtviProzessorTests(unittest.IsolatedAsyncioTestCase):
             await sende(rtvi("send-text", {"content": "f"}))  # alles verbraucht
         self.assertEqual(gesehen, ["a" * 10, "client-ready", "client-message", "c" * 10, "e" * 10])
 
+    async def test_freigabe_klicks_sind_nach_abstand_und_hoechstzahl_begrenzt(self):
+        from pipecat.frames.frames import InputTransportMessageFrame
+        from pipecat.processors.frame_processor import FrameDirection
+        from pipecat.processors.frameworks.rtvi import RTVIProcessor
+
+        from labor_rtvi import LaborRTVIProcessor
+        from test_labor_sperre import client_msg, rtvi
+
+        uhr = Uhr()
+        verarbeiter = LaborRTVIProcessor(art="platz", klicks=labor_limit.KlickBegrenzer(abstand_secs=1, maximum=3, uhr=uhr))
+        gesehen = []
+
+        async def fake(self, frame, direction):
+            gesehen.append(frame.message["data"]["d"]["id"] if frame.message["type"] == "client-message" else frame.message["type"])
+
+        with mock.patch.object(RTVIProcessor, "process_frame", fake):
+            async def sende(nachricht):
+                await verarbeiter.process_frame(InputTransportMessageFrame(message=nachricht), FrameDirection.DOWNSTREAM)
+
+            def klick(n):
+                return client_msg("freigabe", {"job": "labor", "id": f"{n:032x}", "entscheidung": "ja"})
+
+            await sende(klick(1))  # angenommen
+            await sende(klick(2))  # zu schnell
+            await sende(rtvi("send-text", {"content": "hallo"}))  # Text und Klick teilen keine Zähler
+            uhr.jetzt += 1.5
+            await sende(klick(3))  # angenommen
+            uhr.jetzt += 1.5
+            await sende(klick(4))  # angenommen, 3 von 3
+            uhr.jetzt += 1.5
+            await sende(klick(5))  # Höchstzahl erreicht
+            uhr.jetzt += 3600
+            await sende(klick(6))  # auch nach beliebiger Wartezeit
+            await sende(rtvi("client-ready", {"version": "1.0.0"}))  # alles andere bleibt unbegrenzt
+        self.assertEqual(gesehen, [f"{1:032x}", "send-text", f"{3:032x}", f"{4:032x}", "client-ready"])
+
     async def test_ohne_angabe_hat_jeder_verarbeiter_seine_eigene_begrenzung(self):
         from labor_rtvi import LaborRTVIProcessor
 
         a, b = LaborRTVIProcessor(art="platz"), LaborRTVIProcessor(art="schaufenster")
         self.assertIsNot(a.begrenzer, b.begrenzer)
         self.assertIsInstance(a.begrenzer, labor_limit.TextBegrenzer)
+        self.assertIsNot(a.klicks, b.klicks)
+        self.assertIsInstance(a.klicks, labor_limit.KlickBegrenzer)
 
 
 class WebsucheTests(unittest.IsolatedAsyncioTestCase):

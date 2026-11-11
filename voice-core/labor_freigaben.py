@@ -396,8 +396,10 @@ class LaborFreigaben:
             return None
         antrag = self._offen.pop(aid, None)  # genau einmal, vor dem ersten await: ein zweiter Klick findet nichts mehr
         if antrag is None:
-            logger.warning("Labor-Freigabe {} unbekannt oder abgelaufen", aid[:8])
-            await self._melden_kurz("Diese Freigabe ist unbekannt oder abgelaufen. Es wurde nichts ausgeführt.")
+            # Nie ausgegeben, nicht mehr offen oder aus einer fremden Sitzung: nur loggen, ohne die Kennung (sie stammt vom Browser), und NICHT melden.
+            # Jede Meldung ist ein Modellzug mit Sprachausgabe: ein Teilnehmer könnte sonst mit erfundenen, formal gültigen Kennungen ohne Obergrenze
+            # Modellläufe auslösen. Eine Meldung gibt es nur für eine offene Karte (und damit höchstens einmal je Karte).
+            logger.warning("Labor-Freigabe: Kennung ist nicht offen, nichts gemeldet")
             return None
         self._entschieden.append(aid)
         was = AKTIONEN[antrag.aktion].was

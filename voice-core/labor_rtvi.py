@@ -5,8 +5,9 @@ client-ready, disconnect-bot, client-message, ui-event, ui-snapshot, ui-cancel-j
 raw-audio, raw-audio-batch, dtmf; ältere Versionen kennen zusätzlich append-to-context, action und update-config). Ein Teilnehmer kann
 sein Token aus dem Browser lesen und solche Nachrichten selbst senden, zum Beispiel ein erfundenes Werkzeugergebnis
 (llm-function-call-result) oder Text in den Kontext (append-to-context). Deshalb sitzt dieser Filter VOR dem Verarbeiter:
-labor.rtvi_nachricht_erlaubt lässt nur client-ready, send-text (begrenzt) und die Freigabe mit job labor durch. Die Liste ist eine
-Erlaubnisliste, also gilt sie auch für jeden Typ, den eine künftige Pipecat-Version dazubringt.
+labor.rtvi_nachricht_erlaubt lässt nur client-ready, send-text (begrenzt) und die Freigabe mit job labor (begrenzt) durch. Die Liste ist
+eine Erlaubnisliste, also gilt sie auch für jeden Typ, den eine künftige Pipecat-Version dazubringt. Auch der Klick auf eine Freigabekarte hat
+Abstand und Höchstzahl (labor_limit.KlickBegrenzer): ohne sie wäre der Klickweg, der bis in die Prüfung und das Log reicht, ungedrosselt.
 """
 
 from __future__ import annotations
@@ -18,17 +19,19 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.processors.frameworks.rtvi import RTVIProcessor
 
 import labor
-from labor_limit import TextBegrenzer
+from labor_limit import KlickBegrenzer, TextBegrenzer
 
 
 class LaborRTVIProcessor(RTVIProcessor):
-    """RTVIProcessor, der Nachrichten des Browsers gegen die Laborliste prüft und getippten Text begrenzt. art kommt aus der geprüften Identität.
-    begrenzer: Abstand und Gesamtmenge der getippten Eingaben dieser Sitzung (Standard: eigene Zähler nach labor_limit)."""
+    """RTVIProcessor, der Nachrichten des Browsers gegen die Laborliste prüft sowie getippten Text und Klicks auf Freigabekarten begrenzt. art kommt
+    aus der geprüften Identität. begrenzer: Abstand und Gesamtmenge der getippten Eingaben; klicks: Abstand und Höchstzahl der Klicks auf Freigabekarten
+    (Standard: eigene Zähler nach labor_limit; bot.py reicht die Zähler je Profil und Durchlauf, damit eine Neuverbindung nichts zurücksetzt)."""
 
-    def __init__(self, *, art: str, begrenzer: TextBegrenzer | None = None, **kwargs):
+    def __init__(self, *, art: str, begrenzer: TextBegrenzer | None = None, klicks: KlickBegrenzer | None = None, **kwargs):
         super().__init__(**kwargs)
         self._labor_art = labor.art_normalisieren(art) or labor.STRENGSTE_ART
         self.begrenzer = begrenzer or TextBegrenzer()
+        self.klicks = klicks or KlickBegrenzer()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, InputTransportMessageFrame):
@@ -40,5 +43,8 @@ class LaborRTVIProcessor(RTVIProcessor):
                 return
             if typ == "send-text" and not self.begrenzer.zulassen(len(message["data"]["content"])):  # rtvi_nachricht_erlaubt hat die Form geprüft
                 logger.warning("Labor: getippte Eingabe verworfen (zu schnell oder Menge der Sitzung verbraucht)")
+                return
+            if typ == "client-message" and message["data"]["t"] == "freigabe" and not self.klicks.zulassen():  # Form und Inhalt hat rtvi_nachricht_erlaubt geprüft
+                logger.warning("Labor: Klick auf eine Freigabekarte verworfen (zu schnell oder Höchstzahl erreicht)")
                 return
         await super().process_frame(frame, direction)
