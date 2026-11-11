@@ -276,6 +276,21 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   `wamo-core-einrichten.sh` den Hilfsdienst `wamo-core-env` erneuert hat; bis dahin lehnt der alte Hilfsdienst eine Übertragung mit
   diesen Namen als Ganzes ab.
 
+### Hinzugefügt
+
+- Testlabor 28.11.2026, Strang S (Datenbank, Zugang, Verwaltung, Oberfläche, Messen; Plan `docs/testlabor-wamo.md`, Zweig `labor/s`,
+  nicht angewendet und nicht ausgerollt). Migration `0018_labor_profile.sql` mit `.down.sql`: Spalten `profiles.labor_art`, `labor_platz`
+  und `labor_aktiv`. Ein Laborprofil bleibt dauerhaft `aktiv = false` und hat die Rolle `mitglied`, auch das Schau-Profil; freigeschaltet wird
+  allein über `labor_aktiv`, das nur ein Kern mit Laborlogik liest. `labor_art` und `labor_platz` sind nach dem Anlegen für jede Rolle
+  unveränderlich (Trigger), `wamo_core`, `anon`, `authenticated`, `service_role` und PUBLIC schreiben die Spalten nie (Selbsttest für INSERT
+  und UPDATE). Die Funktionen `labor_loeschen` (gesamter Text eines gesperrten Laborprofils oder nur ein Zeitfenster) und `labor_zaehlen`
+  sind nur für `wamo_admin` ausführbar; die Löschliste steht als Daten in `voice-core/labor_loeschliste.py`, ein Test prüft sie gegen alle
+  Migrationen auf Vollständigkeit (T10), der Rückweg bricht bei jedem Laborprofil ab. Neue Zugangsquelle `labor` in `zugang_laden`
+  (Parameter `labor_art`, Server-Schlüssel, Haiku, nie für Entwicklungsaufträge). `scripts/wamo_labor.py` (anlegen, aktivieren, sperren,
+  status, loeschen; Trockenlauf als Standard, Schreiben nur als `wamo_admin`, Passwörter nur in eine Umschlag-Datei) und
+  `wamo_admin.py labor-zaehlen` und `labor-loeschen`. Die Oberfläche lädt bei `labor_durchlauf_ende` neu und blendet die Quelle `labor` aus.
+  Eval-Fälle für die 17 Karten in `voice-core/eval/faelle_labor.py`.
+
 ## [0.1.0] - 2026-10-22
 
 Erstes Release: der Stand, auf dem alle Pakete (`ui`, `desktop`, `voice-core`, `host`, `geraete`) stehen.
