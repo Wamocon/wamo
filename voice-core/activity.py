@@ -187,6 +187,11 @@ def _status(result) -> str:
             # Nur mit Anfrage-ID gibt es einen Freigabeweg; sonst ist die Aktion einfach nicht ausgeführt
             aid = data.get("approval_id")
             return "wartet" if isinstance(aid, str) and APPROVAL_ID_RE.fullmatch(aid) else "abgelehnt"
+        # Labor-Werkzeuge (labor_werkzeuge.py): die Freigabekarte wartet auf den Klick, ein abgelehnter Aufruf ist nicht ausgeführt
+        if status == "wartet_auf_klick":
+            return "wartet"
+        if status == "abgelehnt":
+            return "abgelehnt"
         # locked: Bildschirm gesperrt; wartet: eine Freigabe ist offen, Eingaben ruhen
         if status in ("rejected", "blocked", "duplicate", "nicht_gefunden", "locked", "wartet"):
             return "abgelehnt"

@@ -31,6 +31,8 @@ Nachrichten von der Oberfläche:
   {"type": "freigabe", "data": {"job": "pc", "id", "entscheidung"}}
                                           Freigabe einer kritischen PC-Aktion (pc_freigaben.py; nur admin, PC-Steuerung
                                           an, Sitzung hält die PC-Sperre), geprüft vor den Entwicklungsaufträgen
+  {"type": "freigabe", "data": {"job": "labor", "id", "entscheidung"}}
+                                          Freigabe einer schreibenden Labor-Aktion (labor_freigaben.py; nur Laborprofile)
   {"type": "bildstrom", "data": {"aktion", ...}}
                                           Live-Bild des eigenen Laptops (bildstrom.py; nur admin mit gebundenem Gerät)
   {"type": "freigabe", "data": {...}}     sonst Freigabe für Entwicklungsaufträge (nur admin)
@@ -135,6 +137,7 @@ from pc_host import (
 )
 import bild_fern
 from bildstrom import NICHT_ERLAUBT as BILD_NICHT_ERLAUBT, Bildstrom
+import labor_werkzeuge
 from pc_freigaben import PcFreigaben
 from persona import build_system_prompt
 from screen import PC_OFF, foto as screen_foto, register_screen_tools
@@ -776,6 +779,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         try:
             if freigaben is not None and freigaben._offen:
                 return True
+            if labor is not None and labor.freigaben.offen:  # Labor-Karte (labor_freigaben.py)
+                return True
             return dev is not None and any(j.pending for j in dev._jobs.values())
         except AttributeError:
             logger.warning("Ja-Wächter: Freigabe-Zustand nicht lesbar, es gilt als offen")
@@ -917,6 +922,15 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     ) if pc_client else None
     if freigaben is not None and is_admin:  # Mitglieder können nichts freigeben: keine Karte, die ins Leere läuft
         aktivitaet.on_freigabe = freigaben.anfrage
+
+    # Testlabor (labor_werkzeuge.py): nur Laborprofile (Identität mit labor_art). Werkzeuge (ticket_*, mail_senden) und Freigabekarte; ist der
+    # Dienst nicht erreichbar, der Durchlauf nicht offen oder keine Einwilligung erfasst, wirft das den Start (fail-closed), es gibt keine Sitzung.
+    labor = None
+    if labor_werkzeuge.laborart(identity):
+        labor = await labor_werkzeuge.labor_sitzung(identity, memory, llm, turn_taint=turn.taint, senden=send, melden=melde_llm)
+        if labor is not None:  # None: das Schau-Profil ohne Platz hat kein Test-Jira
+            standard_tools += labor.schemas
+            context.set_tools(ToolsSchema(standard_tools=standard_tools))
 
     async def refresh_prompt() -> None:
         await task.queue_frame(
@@ -1072,6 +1086,12 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 logger.warning("PC-Freigabe ohne PC-Werkzeuge in dieser Sitzung abgewiesen")
                 return
             await freigaben.entscheiden(data)
+        elif msg.type == "freigabe" and data.get("job") == "labor":
+            # Labor-Freigabe (labor_freigaben.py): nur in einer Laborsitzung, sonst ohne Wirkung (auch nicht für einen Admin)
+            if labor is None:
+                logger.warning("Labor-Freigabe ohne Laborsitzung abgewiesen")
+                return
+            await labor.entscheiden(data)
         elif msg.type == "modellzugang":
             # Eigener Claude-Schlüssel: hinterlegen, ersetzen, löschen, Stand (gilt ab der nächsten Sitzung).
             # Der Inhalt dieser Nachricht wird nie geloggt und nie zurückgeschickt.
@@ -1239,6 +1259,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             # offene PC-Freigaben ablehnen: keine Eingabesperre am PC und keine offene Zeile in actions zurücklassen
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(freigaben.schliessen(), CLEANUP_DB_TIMEOUT_SECS)
+        if labor is not None:
+            # offene Labor-Karten ablehnen (actions) und den Client des Dienstes schließen
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(labor.schliessen(), CLEANUP_DB_TIMEOUT_SECS)
         if pc_client:
             with contextlib.suppress(Exception):
                 await pc_client.close()

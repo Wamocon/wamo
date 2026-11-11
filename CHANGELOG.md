@@ -307,6 +307,23 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   `wamo_admin.py labor-zaehlen` und `labor-loeschen`. Die Oberfläche lädt bei `labor_durchlauf_ende` neu und blendet die Quelle `labor` aus.
   Eval-Fälle für die 17 Karten in `voice-core/eval/faelle_labor.py`.
 
+### Hinzugefügt
+
+- Testlabor, Strang K2 (Kern Werkzeuge und Karte; Plan `docs/testlabor-wamo.md`, Zweig `labor/k2`, nicht ausgerollt, wirkt nur für Profile mit
+  `labor_art`, die es erst mit Migration 0018 gibt). `docs/labor-dienst-vertrag.md` ist die Übergabedatei für die Kollegen, die den Test-Jira-Dienst
+  bauen: Vertrag Version 1 (Aufrufe V1 bis V7 unter `/api/kern/`, Köpfe, Reihenfolge der Prüfungen, Wertebereiche, Fehlercodes), Sicherheitsanforderungen
+  D1 bis D13, Abnahmekriterien A1 bis A11 und Termine. Neue Module in `voice-core/`: `labor_vertrag.py` (Festlegungen, Textnormierung, Längenmaß in
+  UTF-16-Einheiten), `labor_attrappe.py` (Nachbildung des Dienstes im Prozess, nur für Tests, mit Variante `verwundbar`), `labor_client.py`
+  (Dienstclient mit `durchlauf_id` und Idempotenzschlüssel in jedem Schreibaufruf, einmaliger Wiederholung mit demselben Schlüssel und festen Sätzen
+  je Fehlercode; lehnt die Adresse der Attrappe ab), `labor_freigaben.py` (`LaborFreigaben`: Job `labor`, Antrag gebunden an Sitzung, Profil, Durchlauf,
+  Aktion, Werte und Ticketversion, Frist 120 s, genau einmal, höchstens 3 offene und 25 Anträge je Durchlauf, Karte höchstens 1900 UTF-16-Einheiten
+  sonst keine Karte), `labor_ticket.py` und `labor_mail.py` (Prüfungen im Code, Domänenfilter mit `re.fullmatch`), `labor_werkzeuge.py` (die sechs
+  Werkzeuge `ticket_suchen`, `ticket_anlegen`, `ticket_aendern`, `ticket_verschieben`, `ticket_kommentieren`, `mail_senden` als `LaborSitzung`).
+  `mail_senden` ist eine reine Bestätigung, es gibt keinen Versandweg. In `bot.py` hängen nur vier schmale Stellen (Laborsitzung bauen, Klick
+  `freigabe` mit `job: "labor"`, Aufräumen, Ja-Wächter). `PcFreigaben`, `pc_host.py` und `darf_pc_freigeben` bleiben unverändert (Hash- und
+  Verhaltenstest `test_labor_pc_unveraendert.py`). Oberfläche: `ui/src/lib/laborKarte.ts` gibt der Freigabekarte für Labor-Aktionen ihre Texte
+  („Aktion freigeben“, „Du entscheidest, nicht WAMO.“), die PC-Karte bleibt wie sie war.
+
 ## [0.1.0] - 2026-10-22
 
 Erstes Release: der Stand, auf dem alle Pakete (`ui`, `desktop`, `voice-core`, `host`, `geraete`) stehen.

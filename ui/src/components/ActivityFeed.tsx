@@ -37,6 +37,13 @@ export const LABEL: Record<string, string> = {
   boss_aufgabe: "Spezialist arbeitet",
   dark_mode: "schaltet Dark Mode",
   system_info: "liest Systeminfos",
+  // Testlabor: bis zum Klick auf die Karte geschieht nichts, deshalb "bereitet vor" statt "legt an" (voice-core/labor_werkzeuge.py)
+  ticket_suchen: "sucht Tickets",
+  ticket_anlegen: "bereitet ein Ticket vor",
+  ticket_aendern: "bereitet eine Änderung vor",
+  ticket_verschieben: "bereitet einen Statuswechsel vor",
+  ticket_kommentieren: "bereitet einen Kommentar vor",
+  mail_senden: "bereitet eine Mail vor",
 };
 
 const STATUS_TEXT: Record<ActivityStatus, string> = {
@@ -113,7 +120,7 @@ function Zeile({ a }: { a: Activity }) {
   );
 }
 
-/** "wartet" nur, solange noch eine PC-Freigabe offen ist; sonst ist die Aktion nicht ausgeführt worden. */
+/** "wartet" nur, solange noch eine PC-Freigabe oder eine Labor-Freigabe offen ist; sonst ist die Aktion nicht ausgeführt worden. */
 function mitFreigabeStand(a: Activity, pcOffen: boolean): Activity {
   return a.status === "wartet" && !pcOffen ? { ...a, status: "abgelehnt", detail: "Freigabe nicht mehr offen" } : a;
 }
@@ -121,7 +128,7 @@ function mitFreigabeStand(a: Activity, pcOffen: boolean): Activity {
 export const ActivityTimeline = memo(function ActivityTimeline() {
   const roh = useSelect(wamo, (s) => s.activities);
   const turn = useSelect(wamo, (s) => s.turn);
-  const pcOffen = useSelect(wamo, (s) => s.approvals.some((a) => a.job === "pc"));
+  const pcOffen = useSelect(wamo, (s) => s.approvals.some((a) => a.job === "pc" || a.job === "labor"));
   const items = roh.map((a) => mitFreigabeStand(a, pcOffen));
   if (!items.length) return null;
   // aktueller Zug (und alles, was noch läuft) oben, frühere Schritte eingeklappt

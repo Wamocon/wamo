@@ -398,6 +398,7 @@ p, li { text-wrap: pretty; }
 }
 .approval h3 { margin: 2px 0 8px; font: 700 19px/1.25 var(--font-wmc); }
 .approval h3:focus-visible { outline-offset: 4px; }
+.approval-hinweis { margin: -4px 0 8px; font-size: 15px; font-weight: 700; color: var(--ink); }
 .approval-von { margin: -4px 0 8px; font-size: 15px; color: var(--ink-soft); }
 .approval-ziel { margin: 0 0 8px; font-size: 15px; color: var(--ink); overflow-wrap: anywhere; }
 .approval-ziel-label { font-weight: 700; }
