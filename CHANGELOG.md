@@ -144,6 +144,9 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Ruhe-Prüfung von `wamo-job-einrichten.sh`: Die Benutzerdienste `xdg-document-portal` und `xdg-permission-store` von `wamo` (D-Bus-aktiviert,
+  laufen seit Wochen) zählten als laufender Auftrag und brachten die Einrichtung mit Exit 3 zum Abbruch (nichts geändert). Beide Namen
+  stehen jetzt in der Ausnahmeliste, jeder andere Prozess und jeder Auftrag neben den Portalen bricht weiter ab (Test).
 - Rauchtest des Kern-Kanals (`wamo_job_kern_rauchtest.py`): Zwei Nein-Proben erwarteten einen Grund, den der Dispatcher am Server nicht
   meldet, obwohl er die Anfrage richtig abweist (Exit 2, Audit-Log `ABGEWIESEN ... kanal=kern`). Die Probe „Start mit Projekt wamo“ gilt auch
   mit der Abweisung des Selbstschutzes (der greift vor der Regel des Kanals), die Probe „sftp“ auch als stumme Abweisung (sshd leitet stderr

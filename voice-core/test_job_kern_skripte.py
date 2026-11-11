@@ -182,6 +182,20 @@ def test_ruhe_ist_gegeben_wenn_nur_der_benutzerdienst_laeuft_und_kein_totmann_of
 
 
 @braucht_bash
+def test_die_portale_des_benutzerdienstes_zaehlen_nicht_als_auftrag(einrichten):
+    """Am Server beobachtet (11.11.2026): xdg-document-portal und xdg-permission-store laufen als Benutzerdienste von wamo
+    (D-Bus-aktiviert, seit Wochen) und brachten die Ruhe-Prüfung mit Exit 3 zum Abbruch. ps kürzt den Namen auf 15 Zeichen."""
+    portale = "xdg-document-po\nxdg-permission-\n"
+    p = _ruhe(einrichten, BASIS + portale)
+    assert p.returncode == 0 and "RUHE" in p.stdout, p.stdout + p.stderr
+    assert _ruhe(einrichten, BASIS + "xdg-document-po\n").returncode == 0
+    assert _ruhe(einrichten, BASIS + "xdg-permission-\n").returncode == 0
+    for fremd in ("xdg-open\n", "xdg-document-portal-x\n", "xdg-desktop-por\n", "xdg-permission-store-x\n"):  # nur genau diese zwei Namen
+        assert _ruhe(einrichten, BASIS + portale + fremd).returncode == 3, fremd
+    assert _ruhe(einrichten, BASIS + portale + "claude\n").returncode == 3  # ein Auftrag neben den Portalen bleibt ein Auftrag
+
+
+@braucht_bash
 @pytest.mark.parametrize("ps_ausgabe", [BASIS + "claude\n", BASIS + "bwrap\n", BASIS + "wamo-job-dispatch\n", "node\n",
                                         BASIS + "wamo-job.sh\n", BASIS + "sleep\n"])
 def test_ein_laufender_auftrag_oder_irgendein_anderer_prozess_von_wamo_bricht_mit_exit_3_ab(einrichten, ps_ausgabe):
