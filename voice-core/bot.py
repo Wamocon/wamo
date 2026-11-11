@@ -628,8 +628,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Fremdinhalte im laufenden Zug (Websuche, Bildschirm, PC, Entwicklungs-Ergebnisse) merken: kein
     # sofort wirksames gemeinsames Wissen (M4) und kein Lernen aus diesen Abschnitten.
     turn = TurnState(transcript_len=lambda: len(transcript))
-    standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, fernzugriff=fernzugriff,
-                                         erlaubt=labor.WERKZEUGE_BASIS if labor_sitzung else None).standard_tools)
+    if labor_sitzung:  # Laborprofil: nur die Erlaubnisliste, nie merken oder Fernzugriff (labor.WERKZEUGE_BASIS)
+        standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, erlaubt=labor.WERKZEUGE_BASIS).standard_tools)
+    else:
+        standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, fernzugriff=fernzugriff).standard_tools)
     # Vorgänge (vorgaenge.py): was WAMO gerade abarbeitet, live für die Tafel "Vorgänge". Alle Änderungen sind synchron, das
     # Senden und Speichern machen Hintergrundtasks mit Frist: der Audiopfad wartet nie darauf. send entsteht weiter unten.
     # Labor: keine Ablage in der Datenbank (vorgaenge bleibt leer, labor_speicher.py)
