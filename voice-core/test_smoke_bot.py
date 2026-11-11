@@ -177,6 +177,25 @@ class SwitchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.build("admin", "an")).called)
 
 
+class EntwicklungGrundTests(unittest.TestCase):
+    """Statusnachricht betrieb: das optionale Feld entwicklung_grund (nur Admins, höchstens 120 Zeichen)."""
+
+    def test_feld_nur_mit_grund_und_gekuerzt(self):
+        self.assertNotIn("entwicklung_grund", bot.betrieb_message("aus"))
+        self.assertNotIn("entwicklung_grund", bot.betrieb_message("aus", entwicklung_grund=None))
+        self.assertNotIn("entwicklung_grund", bot.betrieb_message("aus", entwicklung_grund=""))
+        msg = bot.betrieb_message("aus", entwicklung_grund="Der Schalter ist aus")
+        self.assertEqual(msg["entwicklung_grund"], "Der Schalter ist aus")
+        self.assertEqual(msg["entwicklung"], "aus")
+        self.assertEqual(len(bot.betrieb_message("aus", entwicklung_grund="x" * 500)["entwicklung_grund"]), 120)
+
+    def test_mitglieder_bekommen_den_grund_nie(self):
+        from entwicklung_betrieb import anzeige_grund
+
+        self.assertIsNone(anzeige_grund(False, "Der Schalter ist aus"))
+        self.assertEqual(anzeige_grund(True, "Der Schalter ist aus"), "Der Schalter ist aus")
+
+
 class PcFreigabeWiringTests(unittest.IsolatedAsyncioTestCase):
     """Freigabeweg für PC-Aktionen: nur Sitzungen mit PC-Werkzeugen (admin) bekommen ihn."""
 

@@ -4,19 +4,23 @@
 # wamo-einrichten.sh lief (Benutzer wamo, Claude Code, Node, ECC, REA). Wiederholbar, richtet keine Geheimnisse ein.
 #
 # Vom PC aus (Repo-Wurzel, Git Bash). Der Ordner liegt im Home von wamocon, nie in /tmp:
-#   cd infra/sokrates2 && scp -r wamo-job.sh wamo-job-einrichten.sh wamo-job-ecc.py wamo_job_dispatch.py wamo_job_pruefen.py #     wamo_job_rauchtest.py wamo_pruefen_rauchtest.py wamo-job-rueckweg.sh abschottung.py wamo-egress.nft wamo-egress.service wamo-egress-rueckweg.sh claude-code #     sokrates2:wamo-infra/ && cd ../..
-#   scp voice-core/dev_guard.py voice-core/werkzeugkarte.py voice-core/kontingent.py voice-core/abnahme_befehl.py ~/.ssh/id_ed25519_wamo_jobs.pub sokrates2:wamo-infra/
-#   (~/wamo-infra teilen sich mehrere Einrichtungsskripte: nur die eigenen Dateien ersetzen, den Ordner nicht leeren)
-#   ssh sokrates2 "chmod -R go-w ~/wamo-infra && sudo bash ~/wamo-infra/wamo-job-einrichten.sh"
+#   cd infra/sokrates2 && scp -r wamo-job.sh wamo-job-einrichten.sh wamo-job-ecc.py wamo_job_dispatch.py wamo_job_kernkanal.py wamo_job_pruefen.py #     wamo_job_rauchtest.py wamo_pruefen_rauchtest.py wamo-job-rueckweg.sh abschottung.py wamo-egress.nft wamo-egress.service wamo-egress-rueckweg.sh claude-code #     wamo-sokrates2:wamo-infra/ && cd ../..
+#   scp voice-core/dev_guard.py voice-core/werkzeugkarte.py voice-core/kontingent.py voice-core/abnahme_befehl.py ~/.ssh/id_ed25519_wamo_jobs.pub wamo-sokrates2:wamo-infra/
+#   (~/wamo-infra teilen sich mehrere Einrichtungsskripte: nur die eigenen Dateien ersetzen, den Ordner nicht leeren; der öffentliche
+#   Schlüssel des Kerns (wamo-kern-jobs) liegt nie dort, er entsteht allein auf dem Server durch wamo-job-kern-einrichten.sh)
+#   ssh wamo-sokrates2 "chmod -R go-w ~/wamo-infra && sudo bash ~/wamo-infra/wamo-job-einrichten.sh"
+# Die Einrichtung verlangt Ruhe (kein laufender Auftrag, kein offener Totmannschalter), sonst endet sie mit Exit 3, bevor sie etwas ändert:
+# sie startet wamo-egress neu, ein laufender Auftrag hätte kurz keinen Ausgangsfilter.
 # Danach innerhalb von 5 Minuten mit einer NEUEN Verbindung bestätigen, dass die Anmeldung als wamocon weiter geht
-# (sonst nimmt ein Zeitschalter den sshd-Drop-in automatisch zurück):
-#   ssh sokrates2 "sudo touch /run/wamo-sshd-bestaetigt"
-# Rauchtest:  ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp --attrappe"
+# (sonst nimmt ein Zeitschalter den sshd-Drop-in automatisch zurück, auf die gesicherte vorige Fassung):
+#   ssh wamo-sokrates2 "sudo touch /run/wamo-sshd-bestaetigt"
+# Rauchtest:  ssh wamo-sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-job-rauchtest --mcp --attrappe"
 #             Befehl pruefen (nur wenn er eingeschaltet werden soll, Schalter WAMO_PRUEFEN=an in /etc/wamo/geheim.env, Standard AUS):
-#             ssh sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-pruefen-rauchtest"
-# Rückweg:    ssh sokrates2 "sudo bash ~/wamo-infra/wamo-job-rueckweg.sh"  (stellt die Dateien aus $APP/vorher/ wieder her:
+#             ssh wamo-sokrates2 "sudo -u wamo -H /opt/wamo/bin/wamo-pruefen-rauchtest"
+# Rückweg:    ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-job-rueckweg.sh"  (stellt die Dateien aus $APP/vorher/ wieder her:
 #             die neueste Sicherung, die noch nicht zurückgespielt wurde; sie bekommt die Markierung ZURUECK.txt und bleibt liegen.
-#             Jeder weitere Aufruf geht eine Sicherung weiter zurück, bis alle zurückgespielt sind)
+#             Jeder weitere Aufruf geht eine Sicherung weiter zurück, bis alle zurückgespielt sind. Der Rückweg verweigert, solange
+#             /etc/ssh/authorized_keys.d/wamo-kern besteht: erst wamo-job-kern-rueckweg.sh notaus und --entfernen)
 #             (nach dem Einrichten der GitHub-App zusätzlich --app-echt, nur lesend, README Abschnitt 2)
 #
 # Was das Skript am System ändert (nur WAMO):
@@ -27,7 +31,7 @@
 #   loginctl enable-linger wamo          systemd-Benutzerdienst (Grenzen und Abbruch über systemd-run --user)
 #   /opt/wamo                            root:wamo 0750, für wamo nur lesbar und ausführbar (nicht umbenennbar):
 #     bin/{wamo-job-dispatch,wamo-job.sh,wamo-job-rauchtest,wamo-pruefen-rauchtest}, wamo-job.conf (Grenzen, CLAUDE_VERSION),
-#     waechter/{dev_guard,werkzeugkarte,kontingent,abschottung,abnahme_befehl,wamo_job_pruefen}.py, waechter/seccomp.bpf,
+#     waechter/{dev_guard,werkzeugkarte,kontingent,abschottung,abnahme_befehl,wamo_job_pruefen,wamo_job_kernkanal}.py, waechter/seccomp.bpf,
 #     vorher/<Zeitstempel>/  Sicherung der ersetzten Dateien (nur was sich ändert), Grundlage von wamo-job-rueckweg.sh
 #     claude-code/{managed-settings.json,managed-mcp.json},
 #     claude-plugins/ (Kopie des ECC-Plugins von wamo ohne Hooks, lokaler Marketplace "ecc", wamo-job-ecc.py)
@@ -35,7 +39,11 @@
 #   Aufräumen der Auftrags-Caches erledigt der Dispatcher als wamo (frühere /etc/tmpfiles.d/wamo-jobs.conf wird entfernt)
 #   /etc/ssh/authorized_keys.d/wamo      root, Zeile restrict,from=...,command="/opt/wamo/bin/wamo-job-dispatch"
 #   /etc/ssh/sshd_config.d/wamo.conf     Match User wamo: nur Public Key, ForceCommand wamo-job-dispatch, keine
-#                                        Weiterleitungen, kein TTY, PermitUserRC no, MaxSessions 2 (geprüft mit sshd -t)
+#                                        Weiterleitungen, kein TTY, PermitUserRC no, MaxSessions 2 (geprüft mit sshd -t), dazu
+#                                        ExposeAuthInfo yes (der Dispatcher erkennt den Kanal am benutzten Schlüssel) und die zweite
+#                                        AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u-kern (die Datei des Kerns, sshd überspringt
+#                                        eine fehlende Datei; dieses Skript schreibt sie nie)
+#   /var/backups/wamo-job-kern/<Zeit>/wamo.conf.vorher   die vorige wamo.conf, dauerhaft (root 0700): Grundlage des Totmannschalters
 #   Audio-Benutzerdienste (pipewire, wireplumber) von wamo maskiert; Login-Shell /bin/sh
 #   entfernt: /srv/wamo/app und /srv/wamo/.ssh aus früheren Fassungen
 # Umgebung: WAMO_JOBS_FROM_EXTRA="10.8.0.0/24" ergänzt das Büro-LAN 192.168.178.0/24 im from= des Schlüssels.
@@ -50,6 +58,8 @@ REA_VERSION="${REA_VERSION:-6.5.0}"
 JOBS_FROM="192.168.178.0/24${WAMO_JOBS_FROM_EXTRA:+,$WAMO_JOBS_FROM_EXTRA}"
 DROPIN=/etc/ssh/sshd_config.d/wamo.conf
 KEYS=/etc/ssh/authorized_keys.d/wamo
+KERN_SICHERUNG_ORDNER=/var/backups/wamo-job-kern
+WURZEL="${WAMO_JOB_WURZEL:-}"  # nur die Ruhe-Prüfung kennt einen Probelauf (Tests); die Einrichtung selbst läuft nie damit
 
 # Schutz gegen untergeschobene Dateien: Der Ordner dieses Skripts, sein Elternordner und alles darin müssen dem
 # Aufrufer (bei sudo dem aufrufenden Benutzer) oder root gehören und dürfen weder für die Gruppe noch für alle
@@ -65,9 +75,33 @@ pruefe_herkunft() {
   done < <(stat -c '%u %a %n' "$(dirname "$HERE")"; find "$HERE" \( -type l -printf '%U 777 %p\n' \) -o -printf '%U %m %p\n')
 }
 
+# Ruhe: kein laufender Auftrag und kein offener Totmannschalter. Die Einrichtung startet wamo-egress neu (der ExecStop löscht die
+# nft-Tabelle), ein laufender Auftrag hätte kurz keinen Ausgangsfilter; ein offener Totmannschalter würde den neuen sshd-Block
+# überholen. "Aufträge" sind alle Prozesse von wamo außer dem systemd-Benutzerdienst (wamo hat Lingering). Im Probelauf mit Wurzel
+# gibt es keine echten Prozesse: dort entfällt die Prüfung. Exit 3: Vorbedingung nicht erfüllt, es wurde nichts geändert.
+ruhe_pruefen() {
+  [ -z "$WURZEL" ] || return 0
+  local aktiv offen
+  command -v ps >/dev/null 2>&1 || { echo "Ruhe nicht prüfbar: ps fehlt. Nichts geändert." >&2; exit 3; }
+  command -v systemctl >/dev/null 2>&1 || { echo "Ruhe nicht prüfbar: systemctl fehlt. Nichts geändert." >&2; exit 3; }
+  aktiv="$(ps -u "$WAMO_USER" -o comm= 2>/dev/null | grep -Evx 'systemd|\(sd-pam\)|dbus-daemon|dbus-broker|dbus-broker-lau|' || true)"
+  if [ -n "$aktiv" ]; then
+    echo "Keine Ruhe: Prozesse von $WAMO_USER laufen (Auftrag?): $(echo "$aktiv" | sort -u | tr '\n' ' ')" >&2
+    echo "Erst warten, bis kein Auftrag mehr läuft (ps -u $WAMO_USER), dann erneut ausführen. Nichts geändert." >&2
+    exit 3
+  fi
+  offen="$(systemctl list-timers --all --no-legend 2>/dev/null | grep -c 'wamo-sshd-rueckfall' || true)"
+  if [ "${offen:-0}" != 0 ]; then
+    echo "Keine Ruhe: ein Totmannschalter ist offen (wamo-sshd-rueckfall). Erst mit einer NEUEN Verbindung" \
+      "\"sudo touch /run/wamo-sshd-bestaetigt\" ausführen oder die fünf Minuten abwarten. Nichts geändert." >&2
+    exit 3
+  fi
+}
+
 [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo ausführen." >&2; exit 1; }
+[ -z "$WURZEL" ] || { echo "WAMO_JOB_WURZEL gilt nicht für diese Einrichtung (sie schreibt nach /opt, /etc und /srv)." >&2; exit 1; }
 pruefe_herkunft
-for datei in wamo-job.sh wamo_job_dispatch.py wamo_job_rauchtest.py abschottung.py claude-code/managed-settings.json \
+for datei in wamo-job.sh wamo_job_dispatch.py wamo_job_kernkanal.py wamo_job_rauchtest.py abschottung.py claude-code/managed-settings.json \
   claude-code/managed-mcp.json wamo-job-ecc.py \
   dev_guard.py werkzeugkarte.py kontingent.py abnahme_befehl.py wamo_job_pruefen.py wamo_pruefen_rauchtest.py \
   wamo-egress.nft wamo-egress.service; do
@@ -86,6 +120,10 @@ UID_WAMO=$(id -u "$WAMO_USER")
 # lehnt der Dispatcher im App-Modus jeden Start mit GitHub ab (fail-closed), der Rückfall auf GH_TOKEN bleibt möglich
 /usr/bin/python3 -I -c 'import cryptography' 2>/dev/null \
   || echo "Hinweis: python3-cryptography fehlt; der GitHub-App-Modus braucht es (apt-get install python3-cryptography)." >&2
+
+echo "== 0. Ruhe (kein laufender Auftrag, kein offener Totmannschalter)"
+ruhe_pruefen
+echo "  ok."
 
 echo "== 1. bubblewrap-Kopie nur für die Gruppe wamo, AppArmor-Profil mit Benutzer-Namensräumen"
 install -d -o root -g "$WAMO_USER" -m 0750 /usr/local/lib/wamo
@@ -136,6 +174,7 @@ echo "== 2c. Sicherung der Dateien, die dieses Skript ersetzt ($APP/vorher/<Zeit
 # ein zweiter Lauf überschreibt nie den Stand vor der ersten Änderung. Für den Vergleich werden Zeilenenden angeglichen.
 DATEIEN=(
   "bin/wamo-job-dispatch:wamo_job_dispatch.py"
+  "waechter/wamo_job_kernkanal.py:wamo_job_kernkanal.py"
   "bin/wamo-job.sh:wamo-job.sh"
   "bin/wamo-job-rauchtest:wamo_job_rauchtest.py"
   "bin/wamo-pruefen-rauchtest:wamo_pruefen_rauchtest.py"
@@ -181,11 +220,12 @@ install -o root -g "$WAMO_USER" -m 0750 "$HERE/wamo_pruefen_rauchtest.py" "$APP/
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/dev_guard.py" "$HERE/werkzeugkarte.py" "$HERE/kontingent.py" "$HERE/abschottung.py" "$APP/waechter/"
 # Befehl pruefen: die Allowlist (Kopie aus voice-core) und die Prüflogik. Der Dispatcher lädt sie erst, wenn WAMO_PRUEFEN=an in
 # /etc/wamo/geheim.env steht (Standard AUS, dieses Skript schaltet nichts ein). Die Summe von abnahme_befehl.py meldet ping.
-install -o root -g "$WAMO_USER" -m 0640 "$HERE/abnahme_befehl.py" "$HERE/wamo_job_pruefen.py" "$APP/waechter/"
+# Dazu das Kern-Kanal-Modul des Dispatchers (Version 7): ohne Kern-Schlüssel und ohne /etc/wamo/kernkanal.conf ändert es nichts.
+install -o root -g "$WAMO_USER" -m 0640 "$HERE/abnahme_befehl.py" "$HERE/wamo_job_pruefen.py" "$HERE/wamo_job_kernkanal.py" "$APP/waechter/"
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/claude-code/managed-settings.json" "$APP/claude-code/managed-settings.json"
 install -o root -g "$WAMO_USER" -m 0640 "$HERE/claude-code/managed-mcp.json" "$APP/claude-code/managed-mcp.json"
 sed -i 's/\r$//' "$APP/bin/wamo-job.sh" "$APP/bin/wamo-job-dispatch" "$APP/bin/wamo-job-rauchtest" "$APP/bin/wamo-pruefen-rauchtest"
-sed -i 's/\r$//' "$APP/waechter/abnahme_befehl.py" "$APP/waechter/wamo_job_pruefen.py"  # ping meldet die Summe der Datei, sie soll zu voice-core passen
+sed -i 's/\r$//' "$APP/waechter/abnahme_befehl.py" "$APP/waechter/wamo_job_pruefen.py" "$APP/waechter/wamo_job_kernkanal.py"  # ping meldet die Summe der Datei, sie soll zu voice-core passen
 bpf=$(mktemp)
 /usr/bin/python3 -I "$APP/waechter/abschottung.py" --seccomp-bpf > "$bpf"
 [ -s "$bpf" ] || { echo "seccomp-Filter leer" >&2; exit 1; }
@@ -285,14 +325,17 @@ echo "  Schlüssel: $(ssh-keygen -l -f <(echo "$typ_und_wert") | awk '{print $2}
 
 neu=$(mktemp)
 cat > "$neu" <<'SSHD'
-# WAMO: Benutzer wamo nur mit dem Auftragsschlüssel (Forced Command /opt/wamo/bin/wamo-job-dispatch).
+# WAMO: Benutzer wamo nur mit den Auftragsschlüsseln (Forced Command /opt/wamo/bin/wamo-job-dispatch): der PC aus
+# authorized_keys.d/wamo, der Kern des Sprachassistenten aus authorized_keys.d/wamo-kern (sshd überspringt eine fehlende
+# Datei). ExposeAuthInfo: der Dispatcher erkennt den Kanal am benutzten Schlüssel (SSH_USER_AUTH).
 # Installiert durch infra/sokrates2/wamo-job-einrichten.sh. "Match all" am Ende beendet den Block, damit die
 # Zeilen nach dem Include in sshd_config wieder für alle gelten.
 Match User wamo
     PasswordAuthentication no
     KbdInteractiveAuthentication no
     AuthenticationMethods publickey
-    AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u
+    AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u /etc/ssh/authorized_keys.d/%u-kern
+    ExposeAuthInfo yes
     ForceCommand /opt/wamo/bin/wamo-job-dispatch
     PermitUserRC no
     MaxSessions 2
@@ -307,26 +350,34 @@ Match User wamo
 Match all
 SSHD
 if ! cmp -s "$neu" "$DROPIN"; then
-  vorher=$(mktemp)
-  [ -f "$DROPIN" ] && cp -p "$DROPIN" "$vorher" || rm -f "$vorher"
+  # Die vorige Fassung bleibt dauerhaft liegen (nicht nur bis zum Abschluss): der Totmannschalter und der Rückweg brauchen sie
+  vorher=""
+  if [ -f "$DROPIN" ]; then
+    KERN_SICHERUNG="$KERN_SICHERUNG_ORDNER/$(date -u +%Y%m%d-%H%M%S)"
+    install -d -o root -g root -m 0700 "$KERN_SICHERUNG_ORDNER" "$KERN_SICHERUNG"
+    cp -p "$DROPIN" "$KERN_SICHERUNG/wamo.conf.vorher"
+    vorher="$KERN_SICHERUNG/wamo.conf.vorher"
+    echo "  vorige wamo.conf gesichert: $vorher"
+  fi
   install -o root -g root -m 0644 "$neu" "$DROPIN"
   if ! /usr/sbin/sshd -t; then
-    if [ -f "$vorher" ]; then install -o root -g root -m 0644 "$vorher" "$DROPIN"; else rm -f "$DROPIN"; fi
+    if [ -n "$vorher" ]; then install -o root -g root -m 0644 "$vorher" "$DROPIN"; else rm -f "$DROPIN"; fi
     echo "sshd -t meldet einen Fehler: Drop-in zurückgenommen, sshd unverändert." >&2
     exit 1
   fi
   # Globale Einstellungen dürfen sich nicht ändern (Match-Block endet wirklich)
   global_t=$(/usr/sbin/sshd -T -C user=wamocon,host=pc,addr=192.168.178.2)
   grep -qx 'permittty yes' <<<"$global_t" && grep -qx 'allowtcpforwarding yes' <<<"$global_t" \
-    || { rm -f "$DROPIN"; echo "Drop-in wirkt über wamo hinaus, zurückgenommen." >&2; exit 1; }
+    || { if [ -n "$vorher" ]; then install -o root -g root -m 0644 "$vorher" "$DROPIN"; else rm -f "$DROPIN"; fi
+         echo "Drop-in wirkt über wamo hinaus, zurückgenommen." >&2; exit 1; }
   rm -f /run/wamo-sshd-bestaetigt
   if systemctl is-active --quiet ssh.service; then systemctl reload ssh.service; fi
-  # Totmannschalter: ohne Bestätigung über eine neue Verbindung binnen 5 Minuten wird zurückgenommen
+  # Totmannschalter: ohne Bestätigung über eine neue Verbindung binnen 5 Minuten wird zurückgenommen. Gab es eine vorige Fassung,
+  # stellt er sie wieder her (aus der dauerhaften Sicherung), sonst löscht er die Datei. Danach lädt er ssh neu.
   systemd-run --quiet --unit="wamo-sshd-rueckfall-$(date +%s)" --on-active=300 /bin/sh -c \
-    "test -e /run/wamo-sshd-bestaetigt || { rm -f $DROPIN; systemctl reload ssh.service || true; logger -t wamo 'sshd-Drop-in ohne Bestätigung zurückgenommen'; }"
-  rm -f "$vorher"
+    "test -e /run/wamo-sshd-bestaetigt || { if [ -n '$vorher' ] && [ -f '$vorher' ]; then install -o root -g root -m 0644 '$vorher' $DROPIN; else rm -f $DROPIN; fi; systemctl reload ssh.service || true; logger -t wamo 'sshd-Drop-in ohne Bestätigung zurückgenommen'; }"
   echo "  sshd-Drop-in aktiv. BESTÄTIGEN binnen 5 Minuten über eine NEUE Verbindung:"
-  echo "    ssh sokrates2 \"sudo touch /run/wamo-sshd-bestaetigt\""
+  echo "    ssh wamo-sokrates2 \"sudo touch /run/wamo-sshd-bestaetigt\""
 else
   echo "  sshd-Drop-in unverändert"
 fi

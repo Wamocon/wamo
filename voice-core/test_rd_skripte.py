@@ -1498,5 +1498,39 @@ class RauchtestHilfenTests(unittest.TestCase):
         self.assertEqual(r.returncode, 124)
 
 
+class KernSlotBetriebTests(unittest.TestCase):
+    """Paket R11, Schnittstelle I11: Im Slot-Betrieb startet wamo-rd-einrichten.sh kern die alte Unit nie neu. Es schreibt das Drop-in,
+    meldet den Hinweis umschalten-kern und endet mit Exit 0. Textprüfung (der Probelauf mit echtem systemd gehört auf Sokrates-2)."""
+
+    def setUp(self):
+        self.text = (SOKRATES2 / "wamo-rd-einrichten.sh").read_text(encoding="utf-8")
+        self.kern = self.text[self.text.index("\nkern() {"):self.text.index("\nstatus() {")]
+
+    def test_der_slot_schutz_steht_vor_dem_neustart_und_beendet_die_funktion_mit_exit_0(self):
+        self.assertIn("slot_betrieb() {" + chr(10), self.text)
+        self.assertIn("systemctl show -p ActiveState --value", self.text)  # der Zustand, nicht is-active (Fenster activating)
+        self.assertLess(self.text.index("slot_betrieb() {"), self.text.index("\nkern() {"))
+        schutz = self.kern.index("  if slot_betrieb; then\n    echo \"  Slot-Betrieb: wamo-core wird NICHT neu gestartet.")
+        neustart = self.kern.index("sudo -n systemctl restart wamo-core")
+        self.assertLess(schutz, neustart)
+        zwischen = self.kern[schutz:neustart]
+        self.assertIn("return 0", zwischen)
+        self.assertIn("umschalten-kern nutzen", zwischen)
+        self.assertEqual(self.kern.count("sudo -n systemctl restart wamo-core"), 1)
+
+    def test_die_ruhe_eines_gespraechs_wird_im_slot_betrieb_nicht_verlangt(self):
+        self.assertIn("slot_betrieb || kern_ruhig || fehler", self.kern)  # kein Neustart, also muss niemand schweigen
+
+    def test_der_probelauf_trocken_nennt_im_slot_betrieb_keinen_neustart(self):
+        self.assertIn("Slot-Betrieb: kein Neustart von wamo-core, stattdessen umschalten-kern nutzen", self.kern)
+
+    @unittest.skipUnless(BASH, "keine Bash vorhanden")
+    def test_bash_syntax_der_geaenderten_skripte(self):
+        for name in ("wamo-rd-einrichten.sh", "wamo-rd-rueckweg.sh", "wamo-ui-einrichten.sh", "wamo-ui-rueckweg.sh", "wamo-core-einrichten.sh",
+                     "wamo-core-caddy.sh"):
+            p = subprocess.run([BASH, "-n", str(SOKRATES2 / name)], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, f"{name}: {p.stderr}")
+
+
 if __name__ == "__main__":
     unittest.main()

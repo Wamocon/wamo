@@ -184,7 +184,7 @@ def test_schlechte_aufrufe_werden_abgewiesen(roh):
 
 
 def test_die_version_zaehlt_hoch():
-    assert D.VERSION == "6"
+    assert D.VERSION == "7"  # 7: Kern-Kanal (6: Befehl pruefen)
 
 
 @pytest.mark.parametrize("geheim, erwartet", [
@@ -218,7 +218,7 @@ def test_ping_meldet_ob_pruefen_aktiv_ist_und_die_pruefsumme_der_allowlist(welt)
     erwartet = hashlib.sha256((VOICE_CORE / "abnahme_befehl.py").read_bytes()).hexdigest()
     D.cmd_ping()
     ping = welt.emitted[-1]
-    assert ping["pruefen"] is True and ping["abnahme_befehl_sha256"] == erwartet and ping["version"] == "6" and ping["ok"] is True
+    assert ping["pruefen"] is True and ping["abnahme_befehl_sha256"] == erwartet and ping["version"] == "7" and ping["ok"] is True
     welt.geheim = {}
     welt.emitted.clear()
     D.cmd_ping()

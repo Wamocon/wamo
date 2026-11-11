@@ -1,4 +1,5 @@
 import type { CanvasItem } from "@/components/Canvas";
+import type { AuftragStand } from "./auftragStart.ts"; // relativ, nur der Typ (beide Dateien laden unter node:test)
 
 /**
  * RTVI-Servernachrichten des Voice-Core (kommen über onServerMessage in useWamo.ts an).
@@ -35,6 +36,8 @@ export type Betrieb = {
   modellQuelle?: ModellQuelle;
   /** warum der Boss nicht das beste Modell nehmen konnte (zu langsam, nicht erreichbar) */
   modellHinweis?: string;
+  /** warum Entwicklungsaufträge im Büro aus sind; der Kern schickt das Feld nur Admins, die Anzeige prüft die Rolle trotzdem */
+  entwicklungGrund?: string;
 };
 
 /** Modellwahl je Profil: Automatisch (der Boss wählt) oder Nur Hausmodelle */
@@ -135,7 +138,17 @@ export const AUFTRAG_ABNAHME_ZEICHEN = 300;
  * Entwicklungsauftrag, den das Profil vor dem Start bestätigen muss (Servernachricht "auftrag").
  * abnahme: die Kriterien, die WAMO nach jeder Runde prüft (Texte, Befehle beginnen mit "befehl:"); leer ohne Ziel.
  */
-export type Auftrag = { job: string; projekt: string; art: string; auftrag: string; abnahme: string[] };
+export type Auftrag = {
+  job: string;
+  projekt: string;
+  art: string;
+  auftrag: string;
+  abnahme: string[];
+  /** Ziel-Repo owner/name; fehlt bei einem Kern ohne dieses Feld und bei einer Recherche ohne Repo */
+  repo?: string;
+  /** Zustand der Startkarte nach dem Klick (lib/auftragStart.ts); nie vom Kern gesetzt, fehlt bis zum Klick */
+  stand?: AuftragStand;
+};
 
 /**
  * Vorgang (voice-core/vorgaenge.py): was WAMO gerade abarbeitet, mit Gesamtfortschritt, Schritten und Prüfkriterien.
@@ -245,7 +258,10 @@ export type ServerMessage =
   | ({ type: "profil" } & Profil)
   | ({ type: "betrieb" } & Betrieb)
   | ({ type: "gemerkt" } & Gemerkt)
-  | ({ type: "auftrag" } & Auftrag)
+  // Ohne stand: den Zustand der Startkarte setzt allein die Oberfläche (lib/auftragStart.ts), der Kern kann ihn nicht vorgeben
+  | ({ type: "auftrag" } & Omit<Auftrag, "stand">)
+  /** Antwort des Kerns auf den Klick "Starten": ok, oder nicht ok mit einem Satz als Grund (voice-core/dev_agent.py) */
+  | { type: "auftrag_quittung"; job: string; ok: boolean; grund?: string }
   | { type: "sitzung_beendet"; grund: string; anmelden?: boolean }
   | ({ type: "modellzugang" } & Modellzugang)
   | ({ type: "kontingent" } & Kontingent)
@@ -258,7 +274,16 @@ const isObj = (v: unknown): v is Roh => typeof v === "object" && v !== null && !
 const isStr = (v: unknown): v is string => typeof v === "string";
 const oneOf = <T extends string>(v: unknown, werte: readonly T[]): v is T =>
   isStr(v) && (werte as readonly string[]).includes(v);
-const optStr = (v: unknown, max = 80) => (isStr(v) && v.trim() ? v.trim().slice(0, max) : undefined);
+/** Auf höchstens max UTF-16-Einheiten kürzen, ohne ein Zeichen außerhalb der Grundebene (Emoji) in der Mitte zu trennen. */
+function schnitt(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let ende = max;
+  const letzte = t.charCodeAt(ende - 1);
+  if (letzte >= 0xd800 && letzte <= 0xdbff) ende -= 1; // die erste Hälfte eines Paares bliebe allein stehen
+  return t.slice(0, ende);
+}
+
+const optStr = (v: unknown, max = 80) => (isStr(v) && v.trim() ? schnitt(v.trim(), max) : undefined);
 
 const CANVAS_KINDS = ["tabelle", "code", "dokument", "mermaid"] as const;
 
@@ -307,7 +332,15 @@ const STEUER = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u20
 export function sauber(text: string, max: number, zeilen = true): string {
   let t = text.replace(STEUER, "");
   if (!zeilen) t = t.replace(/[\r\n\t]+/g, " ");
-  return t.length > max ? `${t.slice(0, max)} … (gekürzt)` : t;
+  return t.length > max ? `${schnitt(t, max)} … (gekürzt)` : t;
+}
+
+/** Eine Zeile Text für eine Anzeige mit fester Länge: wie sauber (ohne Steuer-, Bidi- und Nullbreitenzeichen, Umbrüche zu Leerzeichen),
+ *  Leerraum zusammengefasst, hart auf max Einheiten gekürzt (ohne den Zusatz "(gekürzt)"). */
+function zeile(roh: unknown, max: number): string | undefined {
+  if (!isStr(roh)) return undefined;
+  const t = sauber(schnitt(roh, 1000), 1000, false).replace(/\s+/g, " ").trim();
+  return t ? schnitt(t, max) : undefined;
 }
 
 /** Abnahmekriterien der Auftragskarte: nur Texte, höchstens 5 (aus den ersten 50 Einträgen), je höchstens 300 Zeichen, bereinigt. */
@@ -319,6 +352,13 @@ function abnahmeKriterien(roh: unknown): string[] {
     .map((t) => sauber(t, AUFTRAG_ABNAHME_ZEICHEN, false).trim())
     .filter((t) => t !== "")
     .slice(0, AUFTRAG_ABNAHME_MAX);
+}
+
+const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
+
+/** Ziel-Repo der Auftragskarte: nur owner/name (wie der Kern es prüft), alles andere und Fehlendes ergibt undefined. */
+function repoName(roh: unknown): string | undefined {
+  return isStr(roh) && REPO_NAME.test(roh.trim()) ? roh.trim() : undefined;
 }
 
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -563,6 +603,7 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         modellModus: oneOf(m.modell_modus, MODELL_MODI) ? m.modell_modus : undefined,
         modellQuelle: oneOf(m.modell_quelle, MODELL_QUELLEN) ? m.modell_quelle : undefined,
         modellHinweis: optStr(m.modell_hinweis, 200),
+        entwicklungGrund: zeile(m.entwicklung_grund, 120),
       };
     }
     case "gemerkt":
@@ -588,7 +629,13 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
         art: isStr(m.art) ? sauber(m.art, 60, false) : "",
         auftrag: sauber(m.auftrag, 20_000),
         abnahme: abnahmeKriterien(m.abnahme),
+        repo: repoName(m.repo),
       };
+    case "auftrag_quittung": {
+      if (!isStr(m.job) || !m.job || typeof m.ok !== "boolean") return null;
+      const grund = m.ok || !isStr(m.grund) ? "" : sauber(m.grund, 300, false).trim();
+      return { type: "auftrag_quittung", job: m.job.slice(0, 100), ok: m.ok, grund: grund || undefined };
+    }
     case "sitzung_beendet":
       // Kern beendet die Sitzung selbst (Profil gesperrt, Rolle geändert, Höchstdauer erreicht)
       // anmelden: der Kern verlangt eine neue Anmeldung (Anmeldung zu alt); die Oberfläche meldet dann ab

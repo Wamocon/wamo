@@ -16,6 +16,11 @@ import pytest
 @pytest.fixture(autouse=True)
 def _kein_echtes_sokrates2(monkeypatch):
     monkeypatch.setenv("WAMO_ENTWICKLUNG_SSH_ZIEL", "wamo@sokrates2.test.invalid")
+    # Büro-Schranken der Entwicklungsaufträge (entwicklung_betrieb.py): nichts aus der Umgebung oder einer .env wirkt in einen
+    # Test hinein, jeder Test setzt seine Werte selbst
+    for name in ("WAMO_ENTWICKLUNG_BUERO", "WAMO_ENTWICKLUNG_PROFILE", "WAMO_ENTWICKLUNG_KOSTEN_AUFTRAG_USD",
+                 "WAMO_ENTWICKLUNG_KOSTEN_TAG_USD", "WAMO_ENTWICKLUNG_BEFEHLE_BUERO"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

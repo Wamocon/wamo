@@ -12,8 +12,10 @@ Befehle (im Repo-Hauptordner):
                                                          (host-token, host-freigabe; scripts\\wamo-tunnel-einrichten.ps1)
   python scripts/wamo_kern_sokrates2.py profil --email E PC an genau dieses Admin-Profil binden (WAMO_PC_HOST_PROFILE)
   python scripts/wamo_kern_sokrates2.py alles --email E  db, geheimnisse, token, profil, dann Neustart des Dienstes
-  python scripts/wamo_kern_sokrates2.py status           Schlüsselnamen in core.env und Zustand des Dienstes
-Option --neustart startet wamo-core danach neu (bei alles immer).
+  python scripts/wamo_kern_sokrates2.py status           Schlüsselnamen in core.env, Zustand des Dienstes, Slots und Schalter (nur Namen)
+Option --neustart startet wamo-core danach neu (bei alles immer). Im Slot-Betrieb (wamo-core@a und wamo-core@b, wamo-core-slots.sh)
+verweigern neustart, --neustart und alles, bevor etwas geändert wird (Exit 3, Hinweis auf "wamo-core-slots.sh umschalten-kern"):
+die alte Unit wamo-core.service wird dann nie neu gestartet.
 
 Datenbank: Die Rolle wamo_core_s2 ist LOGIN, INHERIT, Mitglied von wamo_core (WITH INHERIT TRUE, SET FALSE) und
 bekommt deren Rollen-Einstellungen (statement_timeout usw., die werden nicht vererbt). RLS-Policies "to wamo_core"
@@ -69,8 +71,9 @@ AUS_ENV = (
     # Fehlerbehebungen aus der Sitzung vom 31.10.2026 (voice-core/werkzeug_wache.py), Standard an
     "WAMO_ABBRUCH_HINWEIS", "WAMO_WERKZEUG_DOPPELT", "WAMO_LERNEN_HAUS_SECS", "WAMO_MARKER_FALLBACK",
     # Entwicklungsaufträge und lange Werkzeugausgaben (09.11.2026): prüfbares Ziel in Runden (persona.py, Standard an),
-    # Befehlskriterien der Abnahme (abnahme.py, Standard aus, brauchen die Betriebsart lokal und bleiben auf Sokrates-2 ohne
-    # Wirkung), Schwelle zum Kürzen langer Werkzeugausgaben (ausgaben_kuerzen.py, Standard 3000, 0 = aus)
+    # Befehlskriterien der Abnahme (abnahme.py, Standard aus; im Büro wirken sie erst mit WAMO_ENTWICKLUNG_BEFEHLE_BUERO=an im
+    # Drop-in wamo-entwicklung-buero.conf, und der Kern-Kanal des Dispatchers sperrt den Befehl pruefen ohnehin), Schwelle zum
+    # Kürzen langer Werkzeugausgaben (ausgaben_kuerzen.py, Standard 3000, 0 = aus)
     "WAMO_PERSONA_ABNAHME", "WAMO_ABNAHME_BEFEHLE", "WAMO_AUSGABE_SCHWELLE",
 )
 AUS_ENV_PRAEFIX = ("WAMO_LLM_",)
@@ -115,8 +118,10 @@ def verteilen(_args) -> None:
     subprocess.run(["scp", "-q", "-r", str(ROOT / "infra" / "sokrates2"), f"{HOST}:wamo-infra"], check=True)
     ssh("rm -rf ~/wamo-infra/__pycache__ && mkdir -p ~/wamo-infra/kern")
     subprocess.run(["scp", "-q", *map(str, kern), f"{HOST}:wamo-infra/kern/"], check=True)
-    # Für wamo-job-einrichten.sh (wie in dessen Kopfkommentar) und den Tunnel
-    extra = [(ROOT / "voice-core" / "dev_guard.py", "dev_guard.py"), (ROOT / "voice-core" / "werkzeugkarte.py", "werkzeugkarte.py")]
+    # Für wamo-job-einrichten.sh (genau die Dateien aus dessen Kopfkommentar; wamo_job_kernkanal.py, wamo_job_pruefen.py und die
+    # Kern-Weg-Dateien liegen im Ordner infra/sokrates2 oben) und den Tunnel. Der öffentliche Schlüssel des Kerns (wamo-kern-jobs)
+    # entsteht nur auf dem Server und wird hier nie übertragen.
+    extra = [(ROOT / "voice-core" / name, name) for name in ("dev_guard.py", "werkzeugkarte.py", "kontingent.py", "abnahme_befehl.py")]
     if JOBS_PUB.is_file():
         extra.append((JOBS_PUB, "id_ed25519_wamo_jobs.pub"))
     if TUNNEL_PUB.is_file():
@@ -237,13 +242,76 @@ def profil(args) -> None:
     print(f"PC gebunden an {args.email} ({user_id}).")
 
 
+# Slot-Betrieb (infra/sokrates2/wamo-core-slots.sh): zwei Instanzen wamo-core@a und wamo-core@b statt der alten Unit. Zwei Merkmale je
+# Instanz: der ActiveState (active, activating, reloading, deactivating zählen als laufend, denn nach einem Absturz steht die Instanz
+# kurz auf "activating (auto-restart)" und is-active meldet dann nicht active) und der Verweis /opt/wamo-core/slots/<a|b>. Der Ordner
+# slots ist root:wamo-core 0750: der Verweis wird deshalb mit sudo -n test -e gelesen, ohne die Rechte wäre jeder Test "nein". Kann ein
+# Merkmal nicht geprüft werden (systemctl, sudo, Antwort abgeschnitten), gilt das als Slot-Betrieb (fehler-*): im Zweifel kein
+# Neustart. Die Abfrage ändert nichts und endet mit der Marke pruefung-ende (fehlt sie, war sie nicht vollständig).
+SLOT_ENDE = "pruefung-ende"
+SLOT_ABFRAGE = (
+    "for s in a b; do "
+    "if st=$(systemctl show -p ActiveState --value wamo-core@$s 2>/dev/null); then "
+    "echo \"$st\" | grep -qE '^(active|activating|reloading|deactivating)$' && echo aktiv-$s; "
+    "else echo fehler-$s; fi; "
+    "out=$(sudo -n test -e /opt/wamo-core/slots/$s 2>&1); rc=$?; "
+    "if [ $rc -eq 0 ]; then echo slot-$s; elif [ $rc -ne 1 ] || [ -n \"$out\" ]; then echo fehler-$s; fi; "
+    f"done; echo {SLOT_ENDE}"
+)
+SLOT_ZEILE = re.compile(r"(aktiv|slot|fehler)-[ab]")
+SLOT_HINWEIS = (
+    "Auf Sokrates-2 läuft der Kern im Slot-Betrieb ({slots}). Die alte Unit wamo-core.service wird hier nie neu gestartet.\n"
+    "Neue Werte und neuer Code wirken erst mit einem Wechsel des Slots, ohne Lücke:\n"
+    "  ssh {host} \"sudo bash ~/wamo-infra/wamo-core-slots.sh umschalten-kern <release>\"\n"
+    "Vorher mit \"verteilen\" bereitstellen und mit \"wamo-core-slots.sh release <name>\" ein Release anlegen."
+)
+SLOT_HINWEIS_FEHLER = (
+    "Hinweis: Die Prüfung war nicht vollständig möglich (fehler-*). Das gilt vorsichtshalber als Slot-Betrieb, es wird nichts neu gestartet."
+)
+
+
+def slot_zeilen(ausgabe: str) -> list[str]:
+    """Die Zeilen aktiv-a, slot-a, fehler-a usw. (sortiert) aus der Ausgabe von SLOT_ABFRAGE. Fehlt die Schlussmarke, war die Abfrage
+    nicht vollständig: dann kommt fehler-pruefung dazu (unbekannt zählt nie als frei)."""
+    zeilen = {z.strip() for z in ausgabe.splitlines()}
+    gefunden = {z for z in zeilen if SLOT_ZEILE.fullmatch(z)}
+    if SLOT_ENDE not in zeilen:
+        gefunden.add("fehler-pruefung")
+    return sorted(gefunden)
+
+
+def slot_betrieb() -> list[str]:
+    """Die Zeilen der Slot-Abfrage (sortiert). Leer heißt: kein Slot-Betrieb. Schlägt ssh fehl, endet das Skript (unbekannt zählt nie
+    als frei)."""
+    return slot_zeilen(ssh(SLOT_ABFRAGE))
+
+
+def kein_slot_betrieb() -> None:
+    """Beendet das Skript mit Exit 3 und dem Hinweis auf umschalten-kern, sobald ein Slot läuft, vorhanden ist oder sich das nicht
+    sicher ausschließen lässt."""
+    slots = slot_betrieb()
+    if slots:
+        hinweis = SLOT_HINWEIS.format(slots=", ".join(slots), host=HOST)
+        if any(z.startswith("fehler-") for z in slots):
+            hinweis += "\n" + SLOT_HINWEIS_FEHLER
+        print(hinweis, file=sys.stderr)
+        sys.exit(3)
+
+
 def neustart() -> None:
+    kein_slot_betrieb()  # nie die alte Unit neu starten, solange es Slots gibt
     print(ssh("sudo -n systemctl restart wamo-core && sleep 4 && systemctl is-active wamo-core || "
               "sudo -n journalctl -u wamo-core -n 20 --no-pager").strip())
 
 
 def status(_args) -> None:
-    print(ssh(f"{ENV_HELFER} liste; echo; systemctl is-active wamo-core; "
+    # Slots und Schalter nur als Namen und Zustände: grep -o gibt den Namen des Schalters aus, nie seinen Wert
+    print(ssh(f"{ENV_HELFER} liste; echo; echo 'alte Unit:'; systemctl is-active wamo-core; "
+              "echo 'Slots:'; for s in a b; do printf '  wamo-core@%s: %s\\n' \"$s\" \"$(systemctl is-active wamo-core@$s)\"; done; "
+              "ls -l /opt/wamo-core/slots 2>&1 | sed 's/^/  /'; "
+              "echo 'Schalter der Entwicklung im Drop-in (nur Namen):'; "
+              "grep -ho 'WAMO_ENTWICKLUNG[A-Z_]*' /etc/systemd/system/wamo-core@.service.d/wamo-entwicklung-buero.conf 2>/dev/null "
+              "| sort -u | sed 's/^/  /'; "
               "ls -la /run/wamo-core/core.sock /run/wamo-tunnel/pc.sock 2>&1 | sed 's/^/  /'").rstrip())
 
 
@@ -260,6 +328,8 @@ def main() -> None:
     parser.add_argument("--email", help="Admin-Profil, an das der PC gebunden wird (profil, alles)")
     parser.add_argument("--neustart", action="store_true", help="wamo-core danach neu starten")
     args = parser.parse_args()
+    if args.neustart or args.befehl == "alles":
+        kein_slot_betrieb()  # vor jeder Änderung: im Slot-Betrieb endet das Skript hier mit Hinweis auf umschalten-kern
     {"verteilen": verteilen, "db": _db, "geheimnisse": geheimnisse, "token": token, "profil": profil,
      "alles": alles, "status": status}[args.befehl](args)
     if args.neustart or args.befehl == "alles":

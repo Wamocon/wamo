@@ -97,6 +97,7 @@ from activity import ActivityReporter
 from ausgaben_kuerzen import Ausgaben, AusgabenKuerzer, register_nachladen
 from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
+import entwicklung_betrieb
 from dev_agent import DevAgent, abnahme_befehle_im_betrieb, entwicklung_enabled, entwicklung_problem
 from learning import Gemerkt, learn_from_session
 import kontingent
@@ -117,6 +118,7 @@ from vorgaenge import Vorgaenge, datenbank_ablage
 from werkzeug_wache import AbbruchHinweis, DoppelWache, abbruch_hinweis_an, umhuellen, werkzeug_doppelt_an
 from wartesatz import Wartesatz, wartesatz_an, wartesatz_modell_an, wartesatz_modell_secs, wartesatz_secs
 from pc_host import (
+    buero,
     call_host_tool,
     host_client,
     host_tools,
@@ -297,6 +299,7 @@ def betrieb_message(
     pc: str, pc_latenz_ms: int | None = None, pc_steuerung: bool = False, entwicklung: bool = False,
     llm: str | None = None, pc_name: str | None = None, pc_belegt: bool = False, sprache: dict[str, str] | None = None,
     modell_modus: str | None = None, modell_quelle: str | None = None, modell_hinweis: str | None = None,
+    entwicklung_grund: str | None = None,
 ) -> dict:
     """pc: verbindet | verbunden | gesperrt | getrennt | aus (gesperrt: Bildschirm am PC gesperrt, pc_anzeige).
     pc_steuerung: ob die PC-Werkzeuge in dieser Sitzung eingeschaltet sind (Standard aus).
@@ -307,7 +310,9 @@ def betrieb_message(
     sprache: Anzeigenamen für Hören und Stimme (sprache_anbieter.SprachWahl.anzeige), Standard Soniox.
     modell_modus: wirksamer Modus dieser Sitzung (automatisch | nur_haus, boss.modus_wirksam), modell_quelle: warum
     (festgelegt: Admin, wahl: Person, keiner: kein eigener Schlüssel), modell_hinweis: warum der Boss nicht das beste
-    Modell nehmen konnte (zu langsam, nicht erreichbar), für die Anzeige in der Statusleiste."""
+    Modell nehmen konnte (zu langsam, nicht erreichbar), für die Anzeige in der Statusleiste.
+    entwicklung_grund: warum Entwicklungsaufträge im Büro aus sind (höchstens 120 Zeichen); der Aufrufer reicht ihn nur für
+    Admins durch (entwicklung_betrieb.anzeige_grund), nie für Mitglieder."""
     sprache = sprache or {}
     message = {
         "type": "betrieb",
@@ -331,6 +336,8 @@ def betrieb_message(
         message["modell_quelle"] = modell_quelle
     if modell_hinweis:
         message["modell_hinweis"] = modell_hinweis[:200]
+    if entwicklung_grund:
+        message["entwicklung_grund"] = " ".join(entwicklung_grund.split())[:entwicklung_betrieb.ANZEIGE_ZEICHEN]
     return message
 
 
@@ -537,9 +544,16 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Fernzugriff auf die Sparks (rd_api): WAMO kennt ihn und kann den Dialog öffnen, nur für Admins und nur bei eingeschaltetem Schalter
     from rd_api import aktiv as rd_aktiv
     fernzugriff = is_admin and rd_aktiv()
-    if entwicklung and (problem := entwicklung_problem()):
+    problem = entwicklung_problem() if entwicklung else None
+    im_buero = buero()
+    if problem and not im_buero:
         logger.error("Entwicklungsaufträge aus: {}", problem)
         entwicklung = False
+    # Büro: Admin, Profilbindung und eigener Zugang (hier und nach zugang_laden), Grund für Log und Statusleiste der Admins;
+    # Unterwegs bleibt alles wie bisher (entwicklung_betrieb.py)
+    ent_grund = entwicklung_betrieb.grund_vorab(identity.user_id, is_admin, problem) if im_buero else None
+    if im_buero:
+        entwicklung = ent_grund is None
     # PC-Steuerung je Sitzung standardmäßig aus; nur ein Admin schaltet sie in der UI ein.
     state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
                    "client_ready": False, "live": True, "cleaned": False, "guard": None,
@@ -556,7 +570,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         return build_system_prompt(
             identity.name, identity.anrede, recall.persoenlich, recall.gemeinsam,
             pc_werkzeuge=pc_enabled, entwicklung=entwicklung, pc_erreichbar=not state["pc_weg"], fernzugriff=fernzugriff,
-            abnahme_befehle=abnahme_befehle_im_betrieb(),
+            abnahme_befehle=abnahme_befehle_im_betrieb(), repo_pflicht=im_buero,
         )
 
     # Gedächtnis je Sitzung laden (kein prozessweiter Cache: jedes Profil sieht nur seins).
@@ -569,12 +583,16 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # summary_llm None: Pipecat fasst mit dem Gesprächsmodell zusammen.
     zugang = await zugang_laden(identity.user_id)
     dev_quelle = entwicklung_quelle(zugang)
-    if entwicklung and dev_quelle == "keine":
+    if im_buero and entwicklung and (quelle_grund := entwicklung_betrieb.grund_quelle(dev_quelle)):
+        ent_grund, entwicklung = quelle_grund, False  # Büro: nur ein eigener Zugang zählt, uebergang wie keine
+    elif entwicklung and dev_quelle == "keine":
         # Claude Code läuft über Anthropic, mit dem Zugang der Person (boss.entwicklung_quelle): Claude-Code-Token oder
         # eigener API-Schlüssel. Ohne beides, oder bei nur Hausmodellen, startet kein Entwicklungsauftrag
         logger.warning("Entwicklungsaufträge aus: Profil {} hat keinen eigenen Zugang für Claude Code oder nutzt nur Hausmodelle",
                        zugang.kennung)
         entwicklung = False
+    if im_buero:  # eine Logzeile je Sitzung, auch bei Schalter aus
+        entwicklung_betrieb.protokollieren(entwicklung, ent_grund, identity.user_id, fehler=bool(problem))
     try:
         (llm, llm_wahl), summary_llm = await asyncio.gather(
             gespraech_llm(prompt_for(recall), zugang), zusammenfassung_llm(zugang)
@@ -610,7 +628,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         # Zugang läuft der Auftrag auf dem Token oder Schlüssel dieses Profils (je Lauf frisch entschlüsselt, siehe
         # dev_agent.persoenlicher_zugang), ohne ihn nur das Profil des Kernschlüssels.
         # beurteiler: das günstigste Modell des Profils beurteilt die Aussagekriterien der Abnahme (abnahme.py)
-        dev = DevAgent(memory, auftraggeber=identity.name, vorgaenge=vorgaenge, beurteiler=llm_beurteiler(zugang))
+        # Büro: die Zulassung entsteht allein hier, aus der geprüften Identität (Admin, Profil aus WAMO_ENTWICKLUNG_PROFILE);
+        # ohne sie wirft der Konstruktor. Unterwegs bleibt sie None.
+        dev = DevAgent(memory, auftraggeber=identity.name, vorgaenge=vorgaenge, beurteiler=llm_beurteiler(zugang),
+                       zulassung=entwicklung_betrieb.zulassung_erteilen(identity.user_id, is_admin) if im_buero else None)
         dev.on_result = turn.taint
         dev.register(llm)
         standard_tools += dev.schemas()
@@ -787,7 +808,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                                    state["pc_steuerung"], entwicklung, llm=llm_wahl.anzeige, pc_name=state["pc_name"],
                                    pc_belegt=state["pc_belegt"], sprache=sprache.anzeige(SONIOX_VOICE),
                                    modell_modus=modus_wirksam(zugang), modell_quelle=zugang.quelle,
-                                   modell_hinweis=llm_wahl.grund))
+                                   modell_hinweis=llm_wahl.grund,
+                                   entwicklung_grund=entwicklung_betrieb.anzeige_grund(is_admin, ent_grund)))
 
     async def ansage(text: str) -> None:
         """Kurze Meldung im Gespräch (Live-Bild an oder aus): wird gesprochen, das Modell erfährt es ohne zu antworten."""

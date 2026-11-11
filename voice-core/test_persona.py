@@ -345,3 +345,31 @@ class PersonaTabTests(unittest.TestCase):
         self.assertNotIn(" – ", p)
         self.assertNotIn("—", p)
         self.assertNotIn(" - ", p.replace("\n- ", "\n"))
+
+
+class PersonaRepoPflichtTests(unittest.TestCase):
+    """Im Büro nennen Aufträge mit GitHub-Stufe das Repo (entwicklung_betrieb.buero_projekt): der Prompt sagt es kurz, ohne Markdown."""
+
+    def bauen(self, **kw):
+        return build_system_prompt("Max", "du", entwicklung=kw.pop("entwicklung", True), **kw)
+
+    def test_standard_aus_aendert_den_prompt_nicht(self):
+        self.assertEqual(self.bauen(), self.bauen(repo_pflicht=False))
+        self.assertNotIn("owner/name", self.bauen())
+
+    def test_pflicht_steht_bei_den_entwicklungsauftraegen_und_ist_kurz(self):
+        ohne, mit = self.bauen(abnahme=True), self.bauen(abnahme=True, repo_pflicht=True)
+        self.assertIn("owner/name", mit)
+        self.assertIn("Recherche", mit)
+        self.assertLess(mit.index("Entwicklungsaufträge\n"), mit.index("owner/name"))
+        self.assertLess(mit.index("owner/name"), mit.index("Schlüssel und Modellzugang"))
+        self.assertLess(len(mit) - len(ohne), 600)
+        self.assertNotRegex(mit[mit.index("owner/name") - 200: mit.index("owner/name") + 200], r"[*#`]")
+
+    def test_ohne_entwicklung_keine_pflicht(self):
+        self.assertNotIn("owner/name", self.bauen(entwicklung=False, repo_pflicht=True))
+
+    def test_ohne_gedankenstrich(self):
+        p = self.bauen(abnahme=True, repo_pflicht=True)
+        self.assertNotIn(" – ", p)
+        self.assertNotIn(" - ", p.replace("\n- ", "\n"))

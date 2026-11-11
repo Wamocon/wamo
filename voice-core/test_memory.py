@@ -4,6 +4,7 @@ Ausführen:  uv run python -m pytest -q test_memory.py   (im Ordner voice-core/)
 """
 
 import asyncio
+import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -293,6 +294,159 @@ class AdminDirectoryTests(unittest.IsolatedAsyncioTestCase):
         for name in ("create_profile", "list_profiles", "list_proposed_shared", "review_shared"):
             self.assertFalse(hasattr(m.ProfileDirectory, name), name)
             self.assertTrue(hasattr(m.AdminDirectory, name), name)
+
+
+class EntwicklungsAuftragTests(unittest.IsolatedAsyncioTestCase):
+    """Audit und Kostenbremse der Entwicklungsaufträge über die Tabelle actions (aktion_abschliessen, tageskosten,
+    veraltete_schliessen). Keine Migration, kein neues Recht: wamo_core darf status, result und finished_at ändern."""
+
+    async def test_aktion_abschliessen_setzt_status_result_und_finished_at_in_einem_schritt(self):
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        result = {"job": "ab12", "art": "analyse", "status": "fertig", "dauer_s": 12, "kosten_usd": 0.12, "runden": 1}
+        for status in ("done", "failed"):
+            with self.subTest(status=status):
+                self.assertTrue(await store.aktion_abschliessen(SESSION, status, result))
+                sql, args = db.calls[-1][1], db.calls[-1][2]
+                self.assertIn("result = ", sql)
+                self.assertIn("finished_at", sql)
+                self.assertNotIn("decided_at", sql)  # setzt der Trigger actions_guard
+                self.assertEqual((args[0], args[1], args[3], args[4]), (SESSION, status, USER, "running"))  # nur aus running
+                self.assertEqual(json.loads(args[2]), result)
+
+    async def test_aktion_abschliessen_nimmt_nur_done_oder_failed_und_ein_dict(self):
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        for status in ("running", "approved", "pending", "x", ""):
+            self.assertFalse(await store.aktion_abschliessen(SESSION, status, {}))
+        self.assertFalse(await store.aktion_abschliessen(SESSION, "done", None))  # type: ignore[arg-type]
+        self.assertFalse(await store.aktion_abschliessen(None, "done", {}))
+        self.assertEqual(db.calls, [])
+        db.update_status = "UPDATE 0"
+        self.assertFalse(await store.aktion_abschliessen(SESSION, "done", {}))  # nicht im Status running
+
+    async def test_aktion_abschliessen_schwaerzt_und_faengt_datenbankfehler(self):
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        await store.aktion_abschliessen(SESSION, "failed", {"grund": "sk-ant-api03-GEHEIMgeheim-0123456789abcdefghij"})
+        self.assertNotIn("GEHEIMgeheim", repr(db.calls))
+
+        async def kaputt(sql, *args):
+            raise asyncpg.PostgresError("weg")
+
+        db.execute = kaputt
+        self.assertFalse(await store.aktion_abschliessen(SESSION, "done", {}))  # wirft nie
+
+    async def test_tageskosten_summe_der_zeilen_seit_mitternacht_in_berlin(self):
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        db.fetchval = mock.AsyncMock(return_value=2.5)
+        self.assertEqual(await store.tageskosten(), 2.5)
+        sql, args = db.fetchval.call_args.args[0], db.fetchval.call_args.args[1:]
+        self.assertIn("entwicklungsauftrag", sql)
+        self.assertIn("kosten_usd", sql)
+        self.assertEqual(args[0], USER)  # immer nur das eigene Profil
+        anfang = args[1]
+        self.assertEqual(anfang.tzinfo, m.ZEITZONE)  # die Zeitzone des Büros (WAMO_TIMEZONE, Standard Europe/Berlin), wie im Gespräch
+        self.assertEqual((anfang.hour, anfang.minute, anfang.second), (0, 0, 0))
+
+    async def test_tageskosten_sql_ist_gegen_negative_und_nan_werte_gesichert_und_parametrisiert(self):
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        db.fetchval = mock.AsyncMock(return_value=0)
+        await store.tageskosten(laufend_usd=3.0)
+        sql, args = db.fetchval.call_args.args[0], db.fetchval.call_args.args[1:]
+        self.assertIn("greatest(", sql)  # nie unter null: eine negative Zahl senkt die Summe nicht
+        self.assertIn("'NaN'::numeric", sql)  # NaN zählt nicht als Zahl
+        self.assertIn("least(", sql)  # je Zeile nach oben begrenzt
+        self.assertNotRegex(sql, r"\b3\.0\b|1000")  # die Grenzen stehen als Parameter, nie im SQL-Text
+        self.assertEqual(args[0], USER)
+        self.assertEqual(args[2], m.KOSTEN_JE_ZEILE_MAX)  # höchstens je Zeile
+        self.assertEqual(args[3], 3.0)  # laufende Zeilen und Zeilen ohne verwertbare Kosten zählen mit diesem Wert
+
+    async def test_tageskosten_zaehlt_laufende_zeilen_mit_der_untergrenze(self):
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        db.fetchval = mock.AsyncMock(return_value=0)
+        await store.tageskosten()
+        sql, args = db.fetchval.call_args.args[0], db.fetchval.call_args.args[1:]
+        self.assertIn("'running'", sql)  # eine laufende Zeile hat noch keine Kosten im result
+        self.assertEqual(args[3], 0.0)  # ohne Angabe gilt keine Untergrenze (wie bisher)
+
+    async def test_tageskosten_zaehlt_nur_zeilen_die_einen_lauf_hatten(self):
+        """Eine Zeile, die in beginnen auf pending, approved oder rejected stehen blieb, hat kein result und nie einen Lauf. Niemand
+        schließt sie, mit der Auftragsgrenze als Ersatzwert zehrte sie den Tag auf: gezählt werden nur running, done und failed."""
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        db.fetchval = mock.AsyncMock(return_value=0)
+        await store.tageskosten(laufend_usd=3.0)
+        sql = db.fetchval.call_args.args[0]
+        bedingung = sql[sql.index("where user_id"):]
+        self.assertRegex(bedingung, r"status in \(\s*'running'::\S+,\s*'done'::\S+,\s*'failed'::\S+\s*\)")
+        for status in ("pending", "approved", "rejected", "blocked"):
+            self.assertNotIn(f"'{status}'", sql)  # keiner der anderen Status kommt in der Abfrage vor
+
+    async def test_tageskosten_ist_none_bei_nan_oder_unendlich_aus_der_datenbank_nicht_bei_inf(self):
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        db.fetchval = mock.AsyncMock(return_value=float("nan"))
+        self.assertIsNone(await store.tageskosten())  # nicht feststellbar: im Büro startet nichts
+        db.fetchval = mock.AsyncMock(return_value=float("inf"))
+        self.assertEqual(await store.tageskosten(), float("inf"))  # über jeder Grenze
+
+    async def test_tageskosten_tagesanfang_in_berlin_auch_zur_zeitumstellung(self):
+        from zoneinfo import ZoneInfo
+
+        berlin = ZoneInfo("Europe/Berlin")
+        sommer = m.tagesanfang(datetime(2026, 7, 1, 22, 30, tzinfo=timezone.utc), berlin)  # 00:30 am 2. Juli in Berlin
+        self.assertEqual(sommer, datetime(2026, 7, 2, 0, 0, tzinfo=berlin))
+        self.assertEqual(sommer.utcoffset(), timedelta(hours=2))
+        winter = m.tagesanfang(datetime(2026, 12, 1, 22, 59, tzinfo=timezone.utc), berlin)  # 23:59 am 1. Dezember
+        self.assertEqual(winter, datetime(2026, 12, 1, 0, 0, tzinfo=berlin))
+        self.assertEqual(winter.utcoffset(), timedelta(hours=1))
+
+    async def test_ohne_angabe_gilt_die_zeitzone_des_buero(self):
+        jetzt = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+        self.assertEqual(m.tagesanfang(jetzt), m.tagesanfang(jetzt, m.ZEITZONE))
+        self.assertEqual(m.tagesanfang(jetzt).tzinfo, m.ZEITZONE)
+
+    async def test_tageskosten_ist_none_wenn_nicht_feststellbar(self):
+        store = m.MemoryStore(USER, FakeDb())
+
+        async def kaputt(sql, *args):
+            raise OSError("weg")
+
+        store._db.fetchval = kaputt
+        self.assertIsNone(await store.tageskosten())  # None heißt: im Büro startet nichts
+        self.assertIsNone(await m.MemoryStore(USER, m.Database(None, "wamo_test")).tageskosten())  # keine Datenbank
+        self.assertIsNone(await m.MemoryStore(USER, FakeDb()).tageskosten(user_id=SESSION))  # fremdes Profil
+
+    async def test_veraltete_schliessen_setzt_alte_running_zeilen_auf_failed_mit_grund_abgelaufen(self):
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        db.update_status = "UPDATE 2"
+        self.assertEqual(await store.veraltete_schliessen(nach_stunden=2, kosten_usd=3.0), 2)
+        sql, args = db.calls[-1][1], db.calls[-1][2]
+        self.assertTrue(sql.startswith("update"))
+        for teil in ("entwicklungsauftrag", "'failed'", "'running'", "abgelaufen", "finished_at", "kosten_usd"):
+            self.assertIn(teil, sql)
+        self.assertEqual(args, (USER, 2, 3.0))
+        self.assertNotIn("decided_at", sql)
+
+    async def test_veraltete_schliessen_standard_zwei_stunden_und_fehler_ergeben_none(self):
+        db = FakeDb()
+        store = m.MemoryStore(USER, db)
+        db.update_status = "UPDATE 0"
+        self.assertEqual(await store.veraltete_schliessen(), 0)
+        self.assertEqual(db.calls[-1][2][1], 2)
+        self.assertIsNone(await store.veraltete_schliessen(user_id=SESSION))  # fremdes Profil
+
+        async def kaputt(sql, *args):
+            raise asyncpg.PostgresError("weg")
+
+        db.execute = kaputt
+        self.assertIsNone(await store.veraltete_schliessen())
+        self.assertIsNone(await m.MemoryStore(USER, m.Database(None, "wamo_test")).veraltete_schliessen())
 
 
 if __name__ == "__main__":

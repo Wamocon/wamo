@@ -7,7 +7,8 @@
 # Was geschieht ohne --entfernen:
 #   0. Kern abkoppeln: das Drop-in /etc/systemd/system/wamo-core.service.d/wamo-rd.conf entfernen (Gruppe, WAMO_RD_AKTIV=ja). Der
 #      Kern läuft weiter und meldet den Fernzugriff erst nach seinem nächsten Neustart als nicht eingeschaltet; ohne Gateway
-#      scheitert jeder Start bis dahin mit einer Fehlermeldung. Wer sofort will: sudo systemctl restart wamo-core (unterbricht Gespräche).
+#      scheitert jeder Start bis dahin mit einer Fehlermeldung. Wer sofort will: einen Kern-Wechsel über umschalten-kern
+#      (sudo bash ~/wamo-infra/wamo-core-slots.sh umschalten-kern <release>, spiegelt die Drop-ins, ohne Lücke und ohne Gespräche zu trennen).
 #   1. Container wamo-rd-web, wamo-rd-guacd und wamo-rd-zugang und ihre Netze wamo-rd-guacd-netz und wamo-rd-ziel entfernen
 #      (docker compose down); der Socket in /run/wamo-rd verschwindet mit dem Zugangsdienst
 #   2. Caddy-Site wamo-rd.caddy entfernen und Caddy neu laden (55443 bis 55445 bleiben unberührt)
@@ -72,7 +73,7 @@ echo "== 0. Kern abkoppeln"
 if [ "$TROCKEN" = ja ] || [ -f "$KERN_DROPIN" ]; then
   tu sudo -n rm -f "$KERN_DROPIN"
   tu sudo -n systemctl daemon-reload
-  echo "  Drop-in entfernt. wamo-core übernimmt es beim nächsten Neustart (sudo systemctl restart wamo-core)"
+  echo "  Drop-in entfernt. wamo-core übernimmt es beim nächsten Kern-Wechsel (umschalten-kern: sudo bash ~/wamo-infra/wamo-core-slots.sh umschalten-kern <release>)"
 else
   echo "  kein Drop-in vorhanden"
 fi

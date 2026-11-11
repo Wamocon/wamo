@@ -483,6 +483,28 @@ class RemoteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(fp, job.pending)
         self.assertTrue(any("nicht übertragen" in s for s in job.steps))
 
+    async def test_approved_wird_erst_nach_code_0_von_approve_verbucht(self):
+        """Scheitert approve, bleibt die Freigabe offen (pending) und der zweite Klick wird verbucht."""
+        self.start_procs += [FakeProc(stream()), FakeProc(stream(tool=False))]
+        job = await self.prepare_and_start()
+        fp = dev_guard.fingerprint("Bash", PUSH)
+        self.approve_rc = 2
+        await self.agent.on_client_message("freigabe", {"job": job.id, "id": fp, "entscheidung": "ja"})
+        self.assertNotIn({"update": "a1", "status": "approved"}, self.memory.actions)  # nichts verbucht
+        self.assertIn(fp, job.pending)
+        self.approve_rc = 0
+        await self.agent.on_client_message("freigabe", {"job": job.id, "id": fp, "entscheidung": "ja"})
+        await self.agent._running
+        self.assertEqual(self.memory.actions.count({"update": "a1", "status": "approved"}), 1)
+
+    async def test_ablehnen_wird_sofort_verbucht(self):
+        self.start_procs.append(FakeProc(stream()))
+        job = await self.prepare_and_start()
+        fp = dev_guard.fingerprint("Bash", PUSH)
+        await self.agent.on_client_message("freigabe", {"job": job.id, "id": fp, "entscheidung": "nein"})
+        self.assertIn({"update": "a1", "status": "rejected"}, self.memory.actions)
+        self.assertEqual(self.remote("approve"), [])
+
     async def test_forged_pending_line_is_dropped(self):
         self.pending_line = json.dumps({"id": "0" * 16, "grund": "harmlos", "tool": "Bash", "input": PUSH})
         self.start_procs.append(FakeProc(stream()))

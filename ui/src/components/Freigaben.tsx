@@ -3,6 +3,7 @@
 import { memo, useEffect, useLayoutEffect, useRef } from "react";
 import { useSelect } from "@/lib/store";
 import { abnahmeEintraege } from "@/lib/auftragAbnahme";
+import { kartenAnsicht, repoAnzeige } from "@/lib/auftragStart";
 import type { Auftrag } from "@/lib/nachrichten";
 import { wamo, type Approval } from "@/lib/wamo";
 
@@ -112,8 +113,9 @@ export const Freigaben = memo(function Freigaben({ onDecide }: { onDecide: Entsc
  * Auftragskarte für Entwicklungsaufträge (Servernachricht "auftrag"): Projekt, Auftragsart, der
  * vollständige, bereinigte Auftragstext und, falls vorhanden, die Abnahmekriterien (Befehle in Festbreite,
  * alles als Text, nie als Markup: wer startet, bestätigt auch diese Befehle). "Starten" und "Verwerfen" sind gleichgewichtig; die Karte
- * verschwindet erst, wenn die Entscheidung gesendet wurde. Meldet der Kern betrieb.entwicklung "aus",
- * ist Starten gesperrt.
+ * verschwindet bei "Verwerfen" sofort, bei "Starten" erst mit der Quittung des Kerns (lib/auftragStart.ts): bis dahin
+ * wartet sie, bei einem Grund bleibt sie mit dem Grund stehen, nach 15 Sekunden ohne Antwort zeigt sie einen neutralen
+ * Hinweis. Meldet der Kern betrieb.entwicklung "aus", ist Starten gesperrt.
  */
 function AuftragCard({
   a,
@@ -125,15 +127,32 @@ function AuftragCard({
   onDecide: (a: Auftrag, ja: boolean) => void;
 }) {
   const head = useRef<HTMLHeadingElement>(null);
+  const karte = useRef<HTMLElement>(null);
   const id = `auftrag-${a.job}`.replace(/[^a-zA-Z0-9_-]/g, "_");
   const abnahme = abnahmeEintraege(a.abnahme);
+  const ansicht = kartenAnsicht(a, gesperrt);
+  const repo = repoAnzeige(a);
+  const phase = a.stand?.phase;
 
   useEffect(() => {
     if (document.activeElement === document.body) head.current?.focus();
   }, []);
 
+  // Nach "Starten" ist die Schaltfläche gesperrt, bis die Quittung kommt: den Fokus auf die Überschrift der Karte legen
+  useEffect(() => {
+    if (phase === "wartet") head.current?.focus();
+  }, [phase]);
+
+  // Verschwindet die Karte nach der Quittung (ok), während der Fokus in ihr liegt: Fokus weitergeben
+  useLayoutEffect(() => {
+    const el = karte.current;
+    return () => {
+      if (el && el.contains(document.activeElement)) fokusNachEntscheidung = true;
+    };
+  }, []);
+
   return (
-    <article className="approval auftrag" aria-labelledby={id}>
+    <article className="approval auftrag" aria-labelledby={id} ref={karte}>
       <p className="sr-only" role="alert">
         Entwicklungsauftrag wartet: {a.art || "Auftrag"}
       </p>
@@ -150,6 +169,12 @@ function AuftragCard({
           <dt>Auftragsart</dt>
           <dd>{a.art || "unbekannt"}</dd>
         </div>
+        {repo && (
+          <div>
+            <dt>Repo</dt>
+            <dd>{repo}</dd>
+          </div>
+        )}
       </dl>
       <div className="auftrag-text" tabIndex={0} role="region" aria-label="Auftragstext">
         {a.auftrag}
@@ -177,11 +202,21 @@ function AuftragCard({
         </section>
       )}
       {gesperrt && <p className="notice">Entwicklungsaufträge sind gesperrt.</p>}
+      {ansicht.grund && (
+        <p className="notice" role="alert">
+          Nicht gestartet: {ansicht.grund}
+        </p>
+      )}
+      {ansicht.hinweis && (
+        <p className="notice" role="status">
+          {ansicht.hinweis}
+        </p>
+      )}
       <div className="approval-actions">
-        <button type="button" className="btn-decide" disabled={gesperrt} onClick={() => onDecide(a, true)}>
-          Starten
+        <button type="button" className="btn-decide" disabled={ansicht.startGesperrt} onClick={() => onDecide(a, true)}>
+          {ansicht.startText}
         </button>
-        <button type="button" className="btn-decide" onClick={() => onDecide(a, false)}>
+        <button type="button" className="btn-decide" disabled={ansicht.verwerfenGesperrt} onClick={() => onDecide(a, false)}>
           Verwerfen
         </button>
       </div>
@@ -199,7 +234,8 @@ export const Auftraege = memo(function Auftraege({
   useEffect(fokusWeitergeben, [auftraege]);
 
   const entscheide = (a: Auftrag, ja: boolean) => {
-    fokusNachEntscheidung = true;
+    // Starten lässt die Karte stehen, bis die Quittung des Kerns kommt: nur Verwerfen entfernt sie sofort und gibt den Fokus weiter
+    fokusNachEntscheidung = !ja;
     if (!onDecide(a, ja)) fokusNachEntscheidung = false;
   };
 

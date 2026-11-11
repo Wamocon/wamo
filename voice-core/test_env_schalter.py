@@ -158,3 +158,41 @@ class ErlaubnislisteTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EntwicklungsSchalterNieUebertragenTest(unittest.TestCase):
+    """Die Schalter der Entwicklungsaufträge im Büro (WAMO_ENTWICKLUNG*) stehen nie in core.env und lassen sich vom PC aus nie
+    setzen: sonst hätte die EnvironmentFile der Unit Vorrang vor dem Drop-in wamo-entwicklung-buero.conf (entwicklung_betrieb.py)."""
+
+    @staticmethod
+    def _laden(name: str, pfad: Path):
+        import importlib.util
+        import sys
+        import types
+
+        spec = importlib.util.spec_from_file_location(name, pfad)
+        modul = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {"grp": types.ModuleType("grp")}):  # grp gibt es nur unter Linux; hier genügt der Import
+            spec.loader.exec_module(modul)
+        return modul
+
+    def test_erlaubt_enthaelt_keinen_entwicklungsschalter(self):
+        env = self._laden("wamo_core_env_probe", Path(__file__).resolve().parent.parent / "infra" / "sokrates2" / "wamo_core_env.py")
+        self.assertFalse([n for n in env.ERLAUBT if n.startswith("WAMO_ENTWICKLUNG")])
+        self.assertFalse([p for p in env.ERLAUBT_PRAEFIX if p.startswith("WAMO_ENTWICKLUNG")])
+        for name in ("WAMO_ENTWICKLUNG", "WAMO_ENTWICKLUNG_BUERO", "WAMO_ENTWICKLUNG_PROFILE", "WAMO_ENTWICKLUNG_KOSTEN_AUFTRAG_USD",
+                     "WAMO_ENTWICKLUNG_KOSTEN_TAG_USD", "WAMO_ENTWICKLUNG_BEFEHLE_BUERO", "WAMO_ENTWICKLUNG_ORT"):
+            self.assertFalse(env.erlaubt(name), name)
+
+    def test_aus_env_des_pc_skripts_enthaelt_keinen_entwicklungsschalter(self):
+        skript = self._laden("wamo_kern_sokrates2_probe", Path(__file__).resolve().parent.parent / "scripts" / "wamo_kern_sokrates2.py")
+        self.assertFalse([n for n in skript.AUS_ENV if n.startswith("WAMO_ENTWICKLUNG")])
+        self.assertFalse([p for p in skript.AUS_ENV_PRAEFIX if p.startswith("WAMO_ENTWICKLUNG")])
+
+    def test_alle_neuen_variablen_sind_bekannt_und_in_keiner_der_beiden_listen(self):
+        import entwicklung_betrieb
+
+        env = self._laden("wamo_core_env_probe2", Path(__file__).resolve().parent.parent / "infra" / "sokrates2" / "wamo_core_env.py")
+        for name in entwicklung_betrieb.ALLE_VARIABLEN:
+            self.assertTrue(name.startswith("WAMO_ENTWICKLUNG"), name)
+            self.assertNotIn(name, env.ERLAUBT)

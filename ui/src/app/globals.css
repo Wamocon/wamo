@@ -419,9 +419,10 @@ p, li { text-wrap: pretty; }
   font: 700 19px/1 var(--font-wmc); cursor: pointer;
   transition-property: transform, background-color, color; transition-duration: var(--dur-press);
 }
-.btn-decide:hover { background: var(--ink); color: var(--bg); }
+.btn-decide:hover:not(:disabled) { background: var(--ink); color: var(--bg); }
 .btn-decide:active:not(:disabled) { transform: scale(0.96); }
-.btn-decide:disabled { opacity: 0.45; cursor: not-allowed; }
+/* Gesperrt: Grautöne statt Transparenz, damit die Beschriftung lesbar bleibt (5,3:1 hell, 7,6:1 dunkel, WCAG AA verlangt 4,5:1) */
+.btn-decide:disabled { color: var(--ink-soft); border-color: var(--rule-strong); cursor: not-allowed; }
 
 /* Entwicklungsauftrag: Projekt, Art und vollständiger Auftragstext */
 .auftrag-meta { margin: 0 0 10px; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 15px; }

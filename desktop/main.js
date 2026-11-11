@@ -69,6 +69,7 @@ const path = require("node:path");
 const { GeraetFehler, erzeugeGeraet } = require("./geraet");
 const { erzeugeLiveBild, EINWILLIGUNG } = require("./livebild");
 const { fuerRandFenster, pruefeMarkierung, ruhezustand, sollZeichnen } = require("./lichtrahmen");
+const { entladenBehandeln } = require("./entladen");
 const { erzeugeHostUmgebung } = require("./host-umgebung");
 const { adressen, loeseAuf, wirksameBetriebsart } = require("./installation");
 const { erzeugePruefer, ladeCa, pruefeSocket } = require("./zertifikat");
@@ -571,6 +572,9 @@ function createMainWindow() {
   wc.on("will-frame-navigate", (event) => {
     if (!sameOrigin(event.url)) event.preventDefault();
   });
+  // Läuft ein Entwicklungsauftrag, hält die Oberfläche das Entladen mit beforeunload an (ui/src/lib/useNeuladenWarnung.ts). Electron
+  // fragt dann nicht selbst nach: ohne diesen Hörer blieben Beenden und Neuladen still hängen (entladen.js)
+  wc.on("will-prevent-unload", (event) => entladenBehandeln(event, dialog, mainWin));
   // Ladefehler der Oberfläche: Fehlerseite mit "Wiederholen" statt eines leeren Fensters
   wc.on("did-fail-load", (_event, code, beschreibung, url, isMainFrame) => {
     if (!isMainFrame || code === -3 || !sameOrigin(url)) return; // -3 = abgebrochen

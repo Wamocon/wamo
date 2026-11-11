@@ -263,6 +263,13 @@ DEV_ABNAHME_PROMPT = """- Gib einem Auftrag, der etwas baut oder behebt, ein pr�
 DEV_ABNAHME_BEFEHLE_PROMPT = """- Befehlskriterien sind zugeschaltet: Hat das Projekt Tests, darf ein Kriterium „befehl: pytest -q“ sein.
 """
 
+# Büro (Kern auf Sokrates-2): Aufträge mit GitHub-Stufe brauchen das Repo, das Projekt leitet der Kern daraus ab
+# (entwicklung_betrieb.buero_projekt). Nur die Recherche kommt ohne Repo aus. Steht nur bei Entwicklungsaufträgen im Büro im Prompt.
+DEV_REPO_PFLICHT_PROMPT = """- Im Büro braucht jeder Auftrag außer der Recherche das GitHub-Repo als owner/name im Feld repo. Hat {name}
+  es nicht genannt, frag genau einmal kurz danach, statt die Karte ohne Repo anzulegen. Das Projekt leitet der Kern aus dem
+  Repo ab.
+"""
+
 DEV_LOCKED_PROMPT = """
 Entwicklungsaufträge
 - Aufträge an Claude Code (Software bauen, prüfen, testen) sind derzeit gesperrt. Fragt {name}
@@ -371,6 +378,7 @@ def build_system_prompt(
     fernzugriff: bool = False,
     abnahme: bool | None = None,
     abnahme_befehle: bool = False,
+    repo_pflicht: bool = False,
 ) -> str:
     """fernzugriff=True (nur Admin mit eingeschaltetem Fernzugriff): WAMO kennt den Fernzugriff auf die Sparks und das Werkzeug
     fernzugriff_oeffnen. pc_erreichbar=False (nur zusammen mit pc_werkzeuge): Hinweis, dass der PC gerade nicht erreichbar ist.
@@ -378,7 +386,8 @@ def build_system_prompt(
     WAMO_PERSONA_PC_ORDNER, WAMO_PERSONA_BROWSER, WAMO_PERSONA_TAB, WAMO_PERSONA_GESPRAECH, WAMO_PERSONA_ABNAHME).
     abnahme_befehle=True (nur zusammen mit abnahme): Befehlskriterien sind erlaubt, der Absatz nennt dann das Beispiel
     „befehl: pytest -q“. Die Entscheidung trifft dev_agent.abnahme_befehle_im_betrieb, dieselbe wie für die Werkzeugbeschreibung;
-    Standard aus, damit der Prompt dem Modell nie etwas anbietet, das der Kern abweist."""
+    Standard aus, damit der Prompt dem Modell nie etwas anbietet, das der Kern abweist.
+    repo_pflicht=True (nur Büro, nur mit entwicklung): Aufträge außer der Recherche brauchen das Repo als owner/name."""
     values = {"name": clean_inline(name, MAX_NAME_CHARS) or "Gast", "anrede": ANREDE.get(anrede, "du")}
     rueckfragen = persona_rueckfragen_an() if rueckfragen is None else rueckfragen
     pc_ordner = persona_pc_ordner_an() if pc_ordner is None else pc_ordner
@@ -409,6 +418,7 @@ def build_system_prompt(
         parts.append(_fill(FERNZUGRIFF_PROMPT, values))
     if entwicklung:
         dev = DEV_PROMPT + (DEV_ABNAHME_PROMPT + (DEV_ABNAHME_BEFEHLE_PROMPT if abnahme_befehle else "") if abnahme else "")
+        dev += DEV_REPO_PFLICHT_PROMPT if repo_pflicht else ""
     else:
         dev = DEV_LOCKED_PROMPT
     parts.append(_fill(dev, values))

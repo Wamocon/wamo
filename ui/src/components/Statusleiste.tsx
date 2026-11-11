@@ -100,6 +100,9 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
   const micOn = useSelect(wamo, (s) => s.micOn);
   const mikrofon = useSelect(wamo, (s) => s.mikrofon);
   const gewaehlt = useBetriebsart();
+  const istAdmin = useSelect(wamo, (s) => s.profil?.rolle === "admin");
+  // Warum Entwicklungsaufträge aus sind: nur Admins sehen den Grund (der Kern schickt ihn auch nur ihnen)
+  const entwicklungGrund = istAdmin ? betrieb?.entwicklungGrund : undefined;
   const dt = kompakt ? "sr-only" : undefined;
   // Verbunden: was der Kern meldet. Sonst: die gewählte Betriebsart für das nächste Gespräch.
   const art = betrieb ? MODUS_ART[betrieb.modus] : gewaehlt;
@@ -198,7 +201,12 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
       {betrieb?.entwicklung === "aus" && (
         <div data-feld="entwicklung">
           <dt className={dt}>Entwicklung</dt>
-          <dd>{kompakt ? "Entwicklung gesperrt" : "gesperrt"}</dd>
+          <dd>
+            {kompakt ? "Entwicklung gesperrt" : "gesperrt"}
+            {/* Der Grund steht im Text, nie nur in einem title (per Tastatur und Touch nicht erreichbar): kompakt für Screenreader,
+                im ausführlichen Menü sichtbar */}
+            {entwicklungGrund && <span className={kompakt ? "sr-only" : "status-label"}> ({entwicklungGrund})</span>}
+          </dd>
         </div>
       )}
       <div data-feld="pc" data-pc={betrieb?.pc}>
