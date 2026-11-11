@@ -938,7 +938,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         # Die Grenze: Namen im Kontext und am LLM müssen der Erlaubnisliste entsprechen, sonst entsteht keine Sitzung. Sie gilt für das Endergebnis,
         # also erst nach den Werkzeugen von labor_werkzeuge.
         try:
-            labor_sitzung.werkzeuge_pruefen(llm, standard_tools)
+            labor_sitzung.werkzeuge_pruefen(llm, standard_tools, mit_tickets=labor_werkz is not None)
         except labor.LaborPolitikFehler:
             if labor_werkz is not None:
                 await labor_werkz.schliessen()

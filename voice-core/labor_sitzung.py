@@ -60,10 +60,12 @@ class LaborSitzung:
         return build_labor_prompt(self.identity.name, self.identity.anrede, self.identity.labor_art, self.daten.regeln, self.daten.daten,
                                   text_speichern=bool(self.memory.enabled))  # maßgebend ist, ob der Speicher wirklich schreibt
 
-    def werkzeuge_pruefen(self, llm: Any, standard_tools: list) -> None:
-        """Die Namen im Kontext und die am LLM registrierten Namen müssen der Erlaubnisliste entsprechen, sonst bricht die Sitzung ab."""
-        labor.werkzeuge_pruefen(self.identity, [s.name for s in standard_tools])
-        labor.werkzeuge_pruefen(self.identity, labor.registrierte_namen(llm))
+    def werkzeuge_pruefen(self, llm: Any, standard_tools: list, *, mit_tickets: bool = False) -> None:
+        """Die Namen im Kontext und die am LLM registrierten Namen müssen genau der Liste dieser Sitzung entsprechen, sonst bricht die Sitzung ab:
+        die Basiswerkzeuge, mit Platz (und damit Test-Jira, mit_tickets) dazu Ticket und Mail. Das Schaufenster hat keinen Platz und keine Tickets."""
+        genau = labor.WERKZEUGE_BASIS | (labor.WERKZEUGE_TICKET if mit_tickets else frozenset())
+        labor.werkzeuge_pruefen(self.identity, [s.name for s in standard_tools], genau=genau)
+        labor.werkzeuge_pruefen(self.identity, labor.registrierte_namen(llm), genau=genau)
 
     async def client_nachricht(self, typ: str, data: Any) -> bool:
         """Schicht a der Client-Nachrichten. True, wenn sie an die Labor-Freigabe ging."""

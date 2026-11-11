@@ -363,3 +363,30 @@ async def test_die_laborsitzung_hat_nur_eine_begrenzte_zahl_websuchen():
     assert [a["ergebnis"] for a in antworten[:2]] == ["sonnig", "sonnig"]
     assert "Suchen" in antworten[2]["ergebnis"] and antworten[3] == antworten[2]
     assert suche.await_count == 2
+
+
+async def test_die_endliste_muss_genau_die_erwartete_sein_auch_wenn_eines_fehlt():
+    """Nicht nur "nichts Fremdes": die Werkzeuge einer Platzsitzung sind genau Basis plus Ticket und Mail. Fehlt eines am LLM, entsteht keine Sitzung."""
+    echt = labor_werkzeuge.LaborSitzung.registrieren
+
+    def ohne_mail(self, llm):
+        echt(self, llm)
+        del llm._functions["mail_senden"]
+
+    m = Mitschnitt()
+    with labor_testhilfe.dienst(), mock.patch.object(labor_werkzeuge.LaborSitzung, "registrieren", ohne_mail):
+        with pytest.raises(labor.LaborPolitikFehler, match="mail_senden"):
+            await m.aufbauen(LABOR)
+    assert m.zugang._zu and m.werkz.client._http.is_closed
+
+
+def test_labor_werkzeuge_pruefen_kennt_die_genaue_liste():
+    ident = laborprofil()
+    basis, ticket = labor.WERKZEUGE_BASIS, labor.WERKZEUGE_TICKET
+    labor.werkzeuge_pruefen(ident, basis | ticket, genau=basis | ticket)
+    labor.werkzeuge_pruefen(laborprofil("schaufenster"), basis, genau=basis)
+    for namen, genau in ((basis, basis | ticket),  # Ticket und Mail fehlen
+                         (basis | ticket, basis),  # das Schaufenster ohne Platz hat kein Test-Jira
+                         (basis | {"ticket_suchen"}, basis | ticket)):  # eines fehlt
+        with pytest.raises(labor.LaborPolitikFehler):
+            labor.werkzeuge_pruefen(ident, namen, genau=genau)
