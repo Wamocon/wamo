@@ -84,7 +84,9 @@ ruhe_pruefen() {
   local aktiv offen
   command -v ps >/dev/null 2>&1 || { echo "Ruhe nicht prüfbar: ps fehlt. Nichts geändert." >&2; exit 3; }
   command -v systemctl >/dev/null 2>&1 || { echo "Ruhe nicht prüfbar: systemctl fehlt. Nichts geändert." >&2; exit 3; }
-  aktiv="$(ps -u "$WAMO_USER" -o comm= 2>/dev/null | grep -Evx 'systemd|\(sd-pam\)|dbus-daemon|dbus-broker|dbus-broker-lau|' || true)"
+  # Ausnahmen: der systemd-Benutzerdienst samt D-Bus und die Portale xdg-document-portal und xdg-permission-store (ps kürzt auf 15 Zeichen);
+  # die Portale sind D-Bus-aktivierte Benutzerdienste, laufen seit Wochen und sind kein Auftrag (Befund am Server, 11.11.2026)
+  aktiv="$(ps -u "$WAMO_USER" -o comm= 2>/dev/null | grep -Evx 'systemd|\(sd-pam\)|dbus-daemon|dbus-broker|dbus-broker-lau|xdg-document-po|xdg-permission-|' || true)"
   if [ -n "$aktiv" ]; then
     echo "Keine Ruhe: Prozesse von $WAMO_USER laufen (Auftrag?): $(echo "$aktiv" | sort -u | tr '\n' ' ')" >&2
     echo "Erst warten, bis kein Auftrag mehr läuft (ps -u $WAMO_USER), dann erneut ausführen. Nichts geändert." >&2
