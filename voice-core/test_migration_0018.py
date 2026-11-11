@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 import labor_loeschliste as ll
 
 SUPABASE = Path(__file__).resolve().parent.parent / "supabase"
@@ -461,3 +463,306 @@ def test_sql_test_prueft_vollstaendigkeit_dynamisch_aus_dem_katalog():
         assert f"'{tabelle}'" in code, tabelle
     for tabelle in ll.tabellen():
         assert tabelle in code, tabelle
+
+
+# ---------- Wahrheitstabelle der CHECK-Bedingungen, aus dem SQL gelesen ----------
+# Ein kleiner Auswerter für genau die SQL-Teilmenge, die die vier Prüfungen nutzen (and, or, not, is [not] null, =, in, between, case),
+# mit der dreiwertigen Logik von SQL (None ist unbekannt). Er liest die Bedingung aus dem Text der Migration, nichts ist nachgebaut:
+# Ändert jemand die Bedingung, ändert sich das Ergebnis dieses Tests.
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"'(?:[^']|'')*'|\d+|<>|=|\(|\)|,|[A-Za-z_][A-Za-z_0-9]*", text)
+
+
+def _und(a, b):
+    return False if a is False or b is False else (None if a is None or b is None else True)
+
+
+def _oder(a, b):
+    return True if a is True or b is True else (None if a is None or b is None else False)
+
+
+class _Pruefung:
+    """Wertet eine CHECK-Bedingung für eine Zeile aus (Spaltenname klein -> Wert). Gibt True, False oder None zurück."""
+
+    def __init__(self, text: str, zeile: dict):
+        self.t, self.i, self.z = _tokens(text), 0, zeile
+
+    def _peek(self) -> str | None:
+        return self.t[self.i].lower() if self.i < len(self.t) else None
+
+    def _nimm(self, erwartet: str | None = None) -> str:
+        tok = self.t[self.i]
+        assert erwartet is None or tok.lower() == erwartet, (erwartet, tok, self.t)
+        self.i += 1
+        return tok
+
+    def auswerten(self):
+        wert = self._oder()
+        assert self.i == len(self.t), f"unverstandener Rest: {self.t[self.i:]}"
+        return wert
+
+    def _oder(self):
+        wert = self._und_()
+        while self._peek() == "or":
+            self._nimm()
+            wert = _oder(wert, self._und_())
+        return wert
+
+    def _und_(self):
+        wert = self._nicht()
+        while self._peek() == "and":
+            self._nimm()
+            wert = _und(wert, self._nicht())
+        return wert
+
+    def _nicht(self):
+        if self._peek() == "not":
+            self._nimm()
+            wert = self._nicht()
+            return None if wert is None else not wert
+        return self._vergleich()
+
+    def _vergleich(self):
+        links = self._wert()
+        wort = self._peek()
+        if wort == "is":
+            self._nimm()
+            negiert = self._peek() == "not"
+            if negiert:
+                self._nimm()
+            self._nimm("null")
+            return (links is not None) if negiert else (links is None)
+        if wort in ("=", "<>"):
+            self._nimm()
+            rechts = self._wert()
+            return None if links is None or rechts is None else (links == rechts) == (wort == "=")
+        if wort == "in":
+            self._nimm()
+            self._nimm("(")
+            kandidaten = [self._wert()]
+            while self._peek() == ",":
+                self._nimm()
+                kandidaten.append(self._wert())
+            self._nimm(")")
+            if links is None:
+                return None
+            return True if links in kandidaten else (None if None in kandidaten else False)
+        if wort == "between":
+            self._nimm()
+            unten = self._wert()
+            self._nimm("and")
+            oben = self._wert()
+            return None if None in (links, unten, oben) else unten <= links <= oben
+        return links
+
+    def _wert(self):
+        tok = self._nimm()
+        wort = tok.lower()
+        if tok == "(":
+            wert = self._oder()
+            self._nimm(")")
+            return wert
+        if wort == "case":
+            ergebnis, gewaehlt = None, False
+            while self._peek() == "when":
+                self._nimm()
+                bedingung = self._oder()
+                self._nimm("then")
+                folge = self._oder()
+                if bedingung is True and not gewaehlt:
+                    ergebnis, gewaehlt = folge, True
+            if self._peek() == "else":
+                self._nimm()
+                sonst = self._oder()
+                ergebnis = ergebnis if gewaehlt else sonst
+            self._nimm("end")
+            return ergebnis
+        if tok.startswith("'"):
+            return tok[1:-1].replace("''", "'")
+        if tok.isdigit():
+            return int(tok)
+        if wort in ("true", "false"):
+            return wort == "true"
+        if wort == "null":
+            return None
+        return self.z[wort]
+
+
+def _bedingung(name: str) -> str:
+    treffer = re.search(rf"add constraint {name}\s+check \((.*?)\);", _ohne_kommentare(SQL), re.S)
+    assert treffer, name
+    return treffer.group(1)
+
+
+ARTEN = (None, "platz", "schaufenster", "beobachter")
+PLAETZE = (None, 0, 1, 16, 17)
+WAHR_FALSCH = (False, True)
+ROLLEN = ("mitglied", "admin")
+ZEILEN = [dict(labor_art=a, labor_platz=p, labor_aktiv=la, rolle=r, aktiv=ak)
+          for a in ARTEN for p in PLAETZE for la in WAHR_FALSCH for r in ROLLEN for ak in WAHR_FALSCH]
+
+
+def _besteht(name: str, zeile: dict) -> bool:
+    """Eine CHECK-Bedingung lässt die Zeile durch, wenn sie nicht falsch ist (unbekannt besteht in SQL)."""
+    return _Pruefung(_bedingung(name), zeile).auswerten() is not False
+
+
+def _erwartet_form(z: dict) -> bool:
+    if z["labor_art"] is None:
+        return z["labor_platz"] is None and not z["labor_aktiv"]  # ohne Laborart weder Platz noch Freischaltung
+    if z["labor_art"] == "platz":
+        return z["labor_platz"] is not None  # platz verlangt einen Platz
+    return z["labor_platz"] is None  # schaufenster hat keinen
+
+
+def test_wahrheitstabelle_art_und_platz():
+    for z in ZEILEN:
+        assert _besteht("profiles_labor_art_chk", z) == (z["labor_art"] in (None, "platz", "schaufenster")), z
+        assert _besteht("profiles_labor_platz_chk", z) == (z["labor_platz"] is None or 1 <= z["labor_platz"] <= 16), z
+
+
+def test_wahrheitstabelle_form_und_streng_nie_unbekannt():
+    """form_chk als case geschrieben: Das Ergebnis ist für jede Zeile ein Wahrheitswert, nie null (ein null bestünde die Prüfung)."""
+    for z in ZEILEN:
+        form = _Pruefung(_bedingung("profiles_labor_form_chk"), z).auswerten()
+        streng = _Pruefung(_bedingung("profiles_labor_streng_chk"), z).auswerten()
+        assert form is not None and streng is not None, z
+        assert form == _erwartet_form(z), z
+        # Befund 1 und 2: ein Laborprofil heißt immer Mitglied und ist dauerhaft aktiv = false; ein gewöhnliches Profil bleibt frei
+        assert streng == (z["labor_art"] is None or (z["rolle"] == "mitglied" and not z["aktiv"])), z
+
+
+def test_wahrheitstabelle_gesamt_welche_zeilen_zulaessig_sind():
+    """Alle vier Prüfungen zusammen: Genau die vorgesehenen Zustände sind zulässig, und die Gegenprobe (hier leer wäre der Test wertlos)."""
+    namen = ("profiles_labor_art_chk", "profiles_labor_platz_chk", "profiles_labor_form_chk", "profiles_labor_streng_chk")
+    zulaessig = [z for z in ZEILEN if all(_besteht(n, z) for n in namen)]
+    erwartet = [z for z in ZEILEN
+                if z["labor_art"] in (None, "platz", "schaufenster")
+                and (z["labor_platz"] is None or 1 <= z["labor_platz"] <= 16)
+                and _erwartet_form(z)
+                and (z["labor_art"] is None or (z["rolle"] == "mitglied" and not z["aktiv"]))]
+    assert zulaessig == erwartet and zulaessig and len(zulaessig) < len(ZEILEN)
+    for z in zulaessig:
+        if z["labor_art"] is not None:
+            assert z["rolle"] == "mitglied" and not z["aktiv"], z  # nie Admin, nie aktiv
+        else:
+            assert z["labor_platz"] is None and not z["labor_aktiv"], z  # ein gewöhnliches Profil trägt nichts von alledem
+    # ein paar Zeilen, die der Entwurf ausdrücklich ablehnt
+    abgelehnt = [dict(labor_art="platz", labor_platz=5, labor_aktiv=False, rolle="admin", aktiv=False),
+                 dict(labor_art="schaufenster", labor_platz=None, labor_aktiv=False, rolle="mitglied", aktiv=True),
+                 dict(labor_art=None, labor_platz=5, labor_aktiv=False, rolle="mitglied", aktiv=True),
+                 dict(labor_art=None, labor_platz=None, labor_aktiv=True, rolle="mitglied", aktiv=True),
+                 dict(labor_art="platz", labor_platz=None, labor_aktiv=False, rolle="mitglied", aktiv=False),
+                 dict(labor_art="schaufenster", labor_platz=3, labor_aktiv=False, rolle="mitglied", aktiv=False)]
+    for z in abgelehnt:
+        assert not all(_besteht(n, z) for n in namen), z
+
+
+def test_der_auswerter_selbst_dreiwertige_logik_und_case():
+    """Selbstprüfung des Auswerters: Ohne das taugt die Wahrheitstabelle nichts."""
+    z = dict(a=None, b=True, c=False)
+    assert _Pruefung("a is null and not c", z).auswerten() is True
+    assert _Pruefung("a = 1", z).auswerten() is None  # unbekannt
+    assert _Pruefung("a = 1 or b", z).auswerten() is True and _Pruefung("a = 1 and c", z).auswerten() is False
+    assert _Pruefung("a = 1 and b", z).auswerten() is None
+    assert _Pruefung("a in (1, 2)", z).auswerten() is None and _Pruefung("3 in (1, 2)", z).auswerten() is False
+    assert _Pruefung("5 between 1 and 16", z).auswerten() is True and _Pruefung("17 between 1 and 16", z).auswerten() is False
+    assert _Pruefung("case when a = 1 then b else c end", z).auswerten() is False  # unbekannte Bedingung gilt als nicht erfüllt
+    assert _Pruefung("case when a is null then (b and not c) else c end", z).auswerten() is True
+    assert _Pruefung("case when c then b end", z).auswerten() is None  # kein else, keine Bedingung wahr
+    with pytest.raises(KeyError):
+        _Pruefung("unbekannte_spalte is null", z).auswerten()
+
+
+# ---------- Lexikalische Prüfung der gerenderten SQL-Dateien (pglast steht im Python des Hauptrepos nicht zur Verfügung) ----------
+# Kein Parser: Der Test zerlegt die gerenderten Dateien (__SCHEMA__ ersetzt) wie psql in Anweisungen und prüft Anführungszeichen,
+# Dollar-Quotes, Kommentare, Klammern und das Semikolon am Ende jeder Anweisung, auch im Rumpf von do-Blöcken, Funktionen und den
+# SQL-Texten, die der SQL-Test per execute ausführt. Mit pglast wäre ein echter Syntaxtest möglich (nicht installiert, nicht nachgeladen).
+
+VERBEN = {"set", "reset", "do", "alter", "create", "comment", "drop", "revoke", "grant", "insert", "update", "delete", "select",
+          "begin", "rollback", "commit", "with"}
+
+
+def _zerlegen(text: str, *, streng: bool) -> list[str]:
+    """Anweisungen am Semikolon außerhalb von Kommentaren, Zeichenketten und Dollar-Quotes. Meldet jeden Formfehler per assert."""
+    anweisungen: list[str] = []
+    aktuell: list[str] = []
+    tiefe, i, n = 0, 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and (i == 0 or text[i - 1] == "\n"):  # psql-Metabefehl (\set, \echo): bis zum Zeilenende
+            ende = text.find("\n", i)
+            i = n if ende < 0 else ende + 1
+            continue
+        if text.startswith("--", i):
+            ende = text.find("\n", i)
+            i = n if ende < 0 else ende
+            continue
+        if text.startswith("/*", i):
+            ende = text.find("*/", i + 2)
+            assert ende >= 0, "Blockkommentar nicht geschlossen"
+            i = ende + 2
+            continue
+        if c in "'\"":
+            j = i + 1
+            while True:
+                j = text.find(c, j)
+                assert j >= 0, f"{c} nicht geschlossen bei: {text[i:i + 60]!r}"
+                if text[j:j + 2] == c * 2:
+                    j += 2
+                    continue
+                break
+            aktuell.append(text[i:j + 1])
+            i = j + 1
+            continue
+        if c == "$":
+            marke = re.match(r"\$(?:[A-Za-z_]\w*)?\$", text[i:])
+            if marke:
+                ende = text.find(marke.group(0), i + len(marke.group(0)))
+                assert ende >= 0, f"Dollar-Quote {marke.group(0)} nicht geschlossen"
+                rumpf = text[i + len(marke.group(0)):ende]
+                _zerlegen(rumpf, streng=False)  # SQL-Text oder plpgsql-Rumpf: dieselben Regeln, nur ohne Pflicht zum letzten Semikolon
+                aktuell.append(marke.group(0) + "..." + marke.group(0))
+                i = ende + len(marke.group(0))
+                continue
+        if c == "(":
+            tiefe += 1
+        elif c == ")":
+            tiefe -= 1
+            assert tiefe >= 0, f"Klammer zu ohne auf: {''.join(aktuell)[-80:]!r}"
+        if c == ";" and tiefe == 0:
+            anweisung = "".join(aktuell).strip()
+            assert anweisung, "leere Anweisung (doppeltes Semikolon)"
+            anweisungen.append(anweisung)
+            aktuell = []
+        else:
+            aktuell.append(c)
+        i += 1
+    assert tiefe == 0, "Klammer nicht geschlossen"
+    rest = "".join(aktuell).strip()
+    assert not streng or not rest, f"letzte Anweisung ohne Semikolon: {rest[:80]!r}"
+    return anweisungen
+
+
+DATEIEN = {"0018_labor_profile.sql": SQL, "0018_labor_profile.down.sql": DOWN, "0018_labor_profile_test.sql": TEST}
+
+
+@pytest.mark.parametrize("name", sorted(DATEIEN))
+def test_gerenderte_sql_dateien_sind_lexikalisch_in_ordnung(name):
+    gerendert = DATEIEN[name].replace("__SCHEMA__", "wamo_test")
+    assert "__SCHEMA__" not in gerendert, name
+    anweisungen = _zerlegen(gerendert, streng=True)
+    assert anweisungen, name
+    for a in anweisungen:
+        assert a.split(None, 1)[0].lower() in VERBEN, (name, a[:60])
+
+
+def test_der_lexikalische_test_erkennt_typische_fehler():
+    """Rot-Beispiele: Ohne diese Gegenprobe wüsste man nicht, ob die Prüfung überhaupt etwas findet."""
+    for kaputt in ("select 'offen;", "select (1;", "select 1);", "do $$ begin null; end;", "do $x$ begin null; end $y$;",
+                   "select 1;;", "select 1", "/* offen select 1;"):
+        with pytest.raises(AssertionError):
+            _zerlegen(kaputt, streng=True)
+    assert _zerlegen("select 'a;b'; -- ; Kommentar\nselect $q$x;y$q$;\ndo $$ begin null; end $$;", streng=True) == [
+        "select 'a;b'", "select $q$...$q$", "do $$...$$"]
