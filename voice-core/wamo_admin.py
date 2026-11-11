@@ -15,6 +15,12 @@ Beispiele (im Ordner voice-core/):
   uv run python wamo_admin.py modellzugang-setzen --user-id <uuid> --nur-haus an [--stt haus --tts haus]
   uv run python wamo_admin.py modellzugang-setzen --user-id <uuid> --modell claude-haiku-5-5
 
+  uv run python wamo_admin.py labor-zaehlen --user-id <uuid>
+  uv run python wamo_admin.py labor-loeschen --user-id <uuid> [--ab <ISO mit Zeitzone> --bis <ISO mit Zeitzone>]
+
+Laborprofile (Testlabor): labor-zaehlen und labor-loeschen rufen die Funktionen labor_zaehlen und labor_loeschen aus Migration 0018 auf
+(nur als Rolle wamo_admin möglich). Löschen geht nur bei einem gesperrten Laborprofil ohne laufende Sitzung und prüft danach auf null Zeilen.
+
 Modellzugang: Den eigenen Claude-Schlüssel hinterlegt die Person selbst (Oberfläche) oder der Betrieb mit
 voice-core/modellzugang.py; die Verwaltung sieht nur die letzten vier Zeichen und kann den Schlüssel nie lesen.
 """
@@ -31,6 +37,7 @@ import asyncpg
 from dotenv import load_dotenv
 
 from memory import ADMIN_DSN_ENV, ANREDEN, ROLLEN, AdminDirectory, DatabaseUnavailable, ProfileError, admin_database
+from labor_verwaltung import LaborFehler, loeschen as labor_loeschen, zaehlen as labor_zaehlen, zeit_pruefen
 from persona import clean_inline
 
 HERE = Path(__file__).resolve().parent
@@ -65,7 +72,27 @@ def _parser() -> argparse.ArgumentParser:
     m.add_argument("--modell", help="Claude-Modell für dieses Profil, z. B. claude-haiku-5-5 (Standard: Haiku)")
     m.add_argument("--stt", choices=("soniox", "haus"))
     m.add_argument("--tts", choices=("soniox", "haus"))
+    lz = sub.add_parser("labor-zaehlen", help="Zeilen eines Laborprofils je Tabelle zählen (nur lesen)")
+    lz.add_argument("--user-id", required=True)
+    ll_ = sub.add_parser("labor-loeschen", help="gesamten Text eines gesperrten Laborprofils löschen (oder nur ein Zeitfenster)")
+    ll_.add_argument("--user-id", required=True)
+    ll_.add_argument("--ab", help="nur ab diesem Zeitpunkt (ISO 8601 mit Zeitzone)")
+    ll_.add_argument("--bis", help="nur bis zu diesem Zeitpunkt (ISO 8601 mit Zeitzone)")
     return p
+
+
+async def _labor(args: argparse.Namespace) -> int:
+    db = admin_database()
+    if args.befehl == "labor-zaehlen":
+        zahlen = await labor_zaehlen(db, args.user_id)
+        print("Zeilen: " + ", ".join(f"{t} {n}" for t, n in zahlen.items()))
+        return 0
+    ab, bis = zeit_pruefen(args.ab, "--ab"), zeit_pruefen(args.bis, "--bis")
+    ergebnis = await labor_loeschen(db, args.user_id, ab, bis)
+    print(ergebnis.zusammenfassung())
+    print("Danach ist nichts mehr da (alle Tabellen der Löschliste geprüft)." if ergebnis.rest is not None
+          else "Nur das Zeitfenster wurde gelöscht; der Rest des Profils bleibt.")
+    return 0
 
 
 async def _modellzugang(args: argparse.Namespace) -> int:
@@ -106,6 +133,8 @@ async def _run(args: argparse.Namespace) -> int:
     print(f"Schema: {directory.schema}")
     if args.befehl.startswith("modellzugang"):
         return await _modellzugang(args)
+    if args.befehl.startswith("labor-"):
+        return await _labor(args)
     if args.befehl == "profile":
         profile = await directory.list_profiles()
         if not profile:
@@ -159,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return asyncio.run(_main_async(args))
-    except (ProfileError, PermissionError) as e:
+    except (ProfileError, PermissionError, LaborFehler) as e:
         print(f"Fehler: {e}", file=sys.stderr)
         return 1
     except DatabaseUnavailable as e:

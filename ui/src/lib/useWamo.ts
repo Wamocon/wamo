@@ -7,6 +7,7 @@ import { betriebsartFuerStart, KERN, kernUrl, type Betriebsart, type Betriebsart
 import { alleFristenLoeschen, fristStarten } from "@/lib/auftragFrist";
 import { auftraegeNachFrist, auftraegeNachStart, auftragStartbar, auftragVerwerfbar } from "@/lib/auftragStart";
 import { useNeuladenWarnung } from "@/lib/useNeuladenWarnung";
+import { neuladenPlanen } from "@/lib/laborNeuladen";
 import { aktiverSlot, startUrl } from "@/lib/kernSlot";
 import { pcAutoLesen } from "@/lib/einstellungen";
 import { einstellungenOeffnen } from "@/lib/einstellungenHash";
@@ -904,6 +905,8 @@ export function useWamo(): WamoAktionen {
             } else {
               if (msg.type === "sitzung_beendet") kernEnde.current = msg.grund;
               applyServerMessage(msg);
+              // Testlabor: Durchlauf vom Betreuer beendet, die Seite lädt sich neu (Untertitel und Canvas dürfen nicht bleiben)
+              if (msg.type === "labor_durchlauf_ende") neuladenPlanen({ neuladen: () => window.location.reload() });
               if (msg.type === "sitzung_beendet" && msg.anmelden) neuAnmelden(msg.grund || "Bitte neu anmelden.");
             }
           },
