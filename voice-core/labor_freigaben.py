@@ -69,6 +69,7 @@ JOB = "labor"
 ID_RE = re.compile(r"[0-9a-f]{32}")  # 128 Bit
 AUSFUEHREN_TIMEOUT_SECS = 25.0  # der Dienstclient hat eigene Fristen (8 s, einmal wiederholt), das hier ist nur die Obergrenze
 SCHLIESSEN_TIMEOUT_SECS = 3.0
+DURCHLAUF_PRUEFEN_TIMEOUT_SECS = 10.0  # Abfrage des Durchlaufs beim Klick: der Dienstclient braucht höchstens etwa 8 Sekunden, hier die Obergrenze
 TEXT_PREFIX = "> "  # jede Zeile eines Freitextes: so kann kein Text eine Zeile der Karte vortäuschen
 
 
@@ -439,8 +440,8 @@ class LaborFreigaben:
 
     async def _durchlauf_noch_offen(self) -> bool:
         try:
-            return bool(await self._durchlauf_offen())
-        except Exception as e:  # noqa: BLE001 (nicht lesbar heißt: nicht ausführen)
+            return bool(await asyncio.wait_for(self._durchlauf_offen(), DURCHLAUF_PRUEFEN_TIMEOUT_SECS))
+        except Exception as e:  # noqa: BLE001 (nicht lesbar oder keine Antwort in der Frist heißt: nicht ausführen)
             logger.warning("Labor-Freigabe: Durchlauf nicht lesbar ({})", type(e).__name__)
             return False
 

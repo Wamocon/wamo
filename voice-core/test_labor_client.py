@@ -7,9 +7,11 @@ nur feste Fehlercodes und nimmt nie die Adresse der Attrappe aus der Umgebung.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import json
 import pathlib
+import time
 import uuid
 
 import httpx
@@ -352,3 +354,52 @@ def test_nur_die_attrappe_und_der_test_importieren_die_attrappe():
 def test_der_name_der_attrappe_steht_nur_in_der_festlegung():
     assert ATTRAPPE_HOST.endswith(".invalid")
     assert json.dumps(sorted(FEHLER_SAETZE))  # die Sätze sind reine Daten
+
+
+# ---------- Gesamtfrist je Aufruf ----------
+class Haengt(httpx.AsyncBaseTransport):
+    """Der Dienst antwortet nie (oder tropft): die Fristen von httpx gelten je Schritt, nicht für den ganzen Aufruf."""
+
+    async def handle_async_request(self, request):
+        await asyncio.sleep(30)
+
+
+async def test_jeder_aufruf_hat_eine_gesamtfrist(monkeypatch):
+    monkeypatch.setattr("labor_client.VERBINDEN_SECS", 0.05)
+    c = LaborClient("https://dienst.example", TOKEN, 3, transport=Haengt(), lese_secs=0.05, schreib_secs=0.05)
+    start = time.monotonic()
+    with pytest.raises(LaborFehler) as e:
+        await c.durchlauf()
+    assert e.value.code == "zeitueberschreitung"
+    assert time.monotonic() - start < 2
+
+
+async def test_ein_haengender_schreibaufruf_endet_auch_nach_der_wiederholung(monkeypatch):
+    monkeypatch.setattr("labor_client.VERBINDEN_SECS", 0.05)
+    c = LaborClient("https://dienst.example", TOKEN, 3, transport=Haengt(), lese_secs=0.05, schreib_secs=0.05)
+    start = time.monotonic()
+    with pytest.raises(LaborFehler) as e:
+        await c.status_setzen(durchlauf_id=str(uuid.uuid4()), schluessel=str(uuid.uuid4()), nummer="LAB-12", erwartete_version=1, status="erledigt")
+    assert e.value.code == "zeitueberschreitung"
+    assert time.monotonic() - start < 2  # zwei Versuche mit je höchstens 0,1 Sekunden
+
+
+async def test_ein_tropfender_dienst_haelt_den_aufruf_nicht_ueber_die_frist(monkeypatch):
+    """Die Antwort kommt Stück für Stück, jedes Stück innerhalb der Lesefrist von httpx: der Aufruf endet trotzdem nach der Gesamtfrist."""
+    monkeypatch.setattr("labor_client.VERBINDEN_SECS", 0.05)
+
+    class Tropft(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(200):
+                await asyncio.sleep(0.02)
+                yield b" "
+
+    class Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            return httpx.Response(200, stream=Tropft())
+
+    c = LaborClient("https://dienst.example", TOKEN, 3, transport=Transport(), lese_secs=0.2)
+    start = time.monotonic()
+    with pytest.raises(LaborFehler) as e:
+        await c.durchlauf()
+    assert e.value.code == "zeitueberschreitung" and time.monotonic() - start < 2

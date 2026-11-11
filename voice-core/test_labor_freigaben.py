@@ -519,3 +519,17 @@ async def test_offen_zeigt_antraege_fuer_den_ja_waechter(u):
     assert u.fr.offen is False
     await u.beantragen()
     assert u.fr.offen is True
+
+
+async def test_haengt_die_durchlaufabfrage_beim_klick_wird_nichts_ausgefuehrt(u, monkeypatch):
+    """Die Abfrage des Durchlaufs beim Klick hat eine Frist: ein hängender Dienst blockiert den Klick nicht, und es wird nichts geschrieben."""
+    monkeypatch.setattr(lf, "DURCHLAUF_PRUEFEN_TIMEOUT_SECS", 0.05)
+
+    async def haengt():
+        await asyncio.sleep(30)
+
+    await u.beantragen()
+    u.fr._durchlauf_offen = haengt
+    await asyncio.wait_for(u.fr.entscheiden({"job": "labor", "id": u.karte_id(), "entscheidung": "ja"}), 2)
+    assert u.ausgefuehrt == [] and u.speicher.stati() == ["pending", "rejected"]
+    assert "Durchlauf" in u.meldungen[0]
