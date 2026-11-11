@@ -8,6 +8,18 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- `expiry-time` in der Schlüsselzeile des Kern-Kanals (F7, Paket FP1-1 des Folgepakets `docs/folgepaket-1.md` Abschnitt 3.5, vorbereitet,
+  nicht ausgerollt). `wamo-job-kern-einrichten.sh schluessel` schreibt die Zeile jetzt mit `expiry-time="<JJJJMMTT>"` am Tag nach `ABLAUF`
+  (ein reines Datum gilt ab 00:00, `ABLAUF` bis einschließlich) als zweite Schicht neben `ABLAUF` im Dispatcher. Die Schreibreihenfolge
+  hält sshd nie früher als den Dispatcher: bei einer Verlängerung erst die Zeile, dann `kernkanal.conf`, bei einer Verkürzung umgekehrt.
+  Ohne `--ablauf` gilt der Wert aus `kernkanal.conf` (so bekommt auch eine Zeile aus der Zeit vor F7 ihr `expiry-time`), ein überschrittener
+  oder ungültiger Wert stoppt vor jeder Änderung mit Exit 3, und scheitert die Ja-Probe `ping`, kommen die Zeile und ein geänderter `ABLAUF`
+  zurück. `status` zeigt `expiry-time` und meldet jede Abweichung zu `ABLAUF`, der Rauchtest prüft die Zeile mit `expiry-time` passend zu
+  `ABLAUF` (statt wie bisher ohne). Neu ist `infra/sokrates2/wamo-job-kern-ablaufprobe.sh`: Sie belegt mit einem Wegwerf-Schlüssel an einer
+  zweiten sshd-Instanz (nur `127.0.0.1:22222`, Wegwerf-Benutzer außer `wamo` und `root`, `AllowUsers`, Aufräumen per `trap`, eigene Logdatei),
+  dass sshd den Ablauf durchsetzt (Proben A bis F als Tabelle: Anmeldung vor und nach dem Ablauf, offene Sitzung bleibt, reines Datum von
+  gestern, heute und morgen, Tippfehler im Optionsnamen, Zeitzone). Die Probe und die Zeile in der Produktion sind nur am Server prüfbar und
+  dort noch nicht gelaufen. Der PC-Weg (`authorized_keys.d/wamo`), der Dispatcher, `wamo-core-slots.sh` und `SELF_REPO` sind unverändert.
 - Entwicklungsaufträge im Betrieb, Büro (vorbereitet, standardmäßig aus, nicht ausgerollt; Zweig `feat/entwicklung-im-betrieb`, Konzept
   `docs/entwicklung-im-betrieb.md`, Schnittstellen und Pakete `docs/entwicklung-im-betrieb-arbeitsliste.md`). Kern: Im Büro zählt nur der
   neue Schalter `WAMO_ENTWICKLUNG_BUERO` (Standard aus), der alte `WAMO_ENTWICKLUNG` bleibt in den Units `aus` und wird dort ignoriert.

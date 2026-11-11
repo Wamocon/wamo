@@ -7,8 +7,12 @@
 # Aufrufformen (Exit-Codes: 0 ok, 1 Fehler, 2 falsche Aufrufform, 3 Vorbedingung nicht erfüllt, 4 teilweise umgesetzt):
 #   wamo-job-kern-einrichten.sh schluessel [--trocken] [--ablauf JJJJMMTT] [--hostfingerabdruck SHA256:...]
 #       Vorbedingungen (OpenSSH, /usr/bin/ssh, fail2ban, Dispatcher 7, sshd-Block, Ruhe), Schlüssel für wamo-core, known_hosts aus dem
-#       lokalen Hostschlüssel (Abgleich gegen --hostfingerabdruck, Pflicht außer mit --trocken), Zeile in authorized_keys.d/wamo-kern,
-#       kernkanal.conf mit KANAL=zu, Rauchtest installieren, Ja-Probe ping, bei Fehler Rücknahme der Zeile. --trocken schreibt nichts.
+#       lokalen Hostschlüssel (Abgleich gegen --hostfingerabdruck, Pflicht außer mit --trocken), Zeile in authorized_keys.d/wamo-kern
+#       mit expiry-time (der Tag nach ABLAUF, zweite Schicht neben ABLAUF im Dispatcher), kernkanal.conf mit KANAL=zu, Rauchtest
+#       installieren, Ja-Probe ping, bei Fehler Rücknahme der Zeile (und eines geänderten ABLAUF). --trocken schreibt nichts.
+#       Zeile und ABLAUF laufen nie auseinander: bei einer Verlängerung entsteht erst die Zeile, dann kernkanal.conf, bei einer
+#       Verkürzung erst kernkanal.conf, dann die Zeile, damit sshd den Schlüssel nie früher ablehnt als der Dispatcher. Ohne --ablauf
+#       gilt der Wert aus kernkanal.conf: ein neuer Lauf versieht so auch eine Zeile aus der Zeit vor F7 mit expiry-time.
 #   wamo-job-kern-einrichten.sh kanal --arten A,B --repos O/N[,O/N] [--dienste D[,D]] [--max-turns N] [--max-budget-usd X]
 #   wamo-job-kern-einrichten.sh kanal zu
 #       Regeln des Kern-Kanals öffnen oder schließen. Öffnen und Ändern nur ohne laufenden Kern-Auftrag, GitHub-Arten nur, wenn
@@ -21,12 +25,15 @@
 #       Sperrdatei entfernen. Der Kanal bleibt zu (der Notaus hat KANAL=zu gesetzt und das Schlüsselpaar beiseitegelegt): erst schluessel
 #       legt ein neues Paar an und setzt die Zeile neu, erst kanal öffnet. schluessel verweigert, solange die Sperrdatei besteht.
 #   wamo-job-kern-einrichten.sh status
-#       Resttage, Kanalzustand, Schalter je Slot (nur Namen und Schalterwert), laufende Kern-Aufträge, Zahl der Kern-Ordner, Abweichungen.
+#       Resttage, Kanalzustand, expiry-time der Zeile, Schalter je Slot (nur Namen und Schalterwert), laufende Kern-Aufträge, Zahl der
+#       Kern-Ordner, jede Abweichung (auch zwischen expiry-time und ABLAUF).
+#   Dass sshd expiry-time wirklich durchsetzt, belegt wamo-job-kern-ablaufprobe.sh (zweite sshd-Instanz auf Loopback, Wegwerf-Schlüssel,
+#   nur am Server prüfbar). Sie berührt die Produktion nie: die Zeile der Produktion prüft nur die Ja-Probe ping von schluessel.
 #
 # Dateien (alle nur auf dem Server; der öffentliche Schlüssel des Kerns liegt nie in ~/wamo-infra):
 #   /var/lib/wamo-core/.ssh/id_ed25519_wamo_jobs       wamo-core 0600 (ssh-keygen per runuser, nur wenn er fehlt)
 #   /var/lib/wamo-core/.ssh/known_hosts_wamo_jobs      wamo-core 0644, eine Zeile aus dem lokalen Hostschlüssel
-#   /etc/ssh/authorized_keys.d/wamo-kern                root 0644, genau eine Zeile restrict,from=...,command=... (ohne expiry-time)
+#   /etc/ssh/authorized_keys.d/wamo-kern                root 0644, genau eine Zeile restrict,from=...,expiry-time=<Tag nach ABLAUF>,command=...
 #   /etc/wamo/kernkanal.conf                            root:wamo 0640, SCHLUESSEL=wert (der Dispatcher prüft Besitzer, Rechte und Werte)
 #   /etc/systemd/system/wamo-core@.service.d/wamo-entwicklung-buero.conf   root 0644, der Schalter (ohne Spiegel-Marke)
 #   /opt/wamo-core/bin/wamo-job-kern-rauchtest          root 0755, aus wamo_job_kern_rauchtest.py
@@ -180,6 +187,7 @@ heute() { date +%Y%m%d; }
 tage_bis() {   # Tage von heute bis JJJJMMTT (negativ: vorbei)
   echo $(( ( $(date -d "$1" +%s) - $(date -d "$(heute)" +%s) ) / 86400 ))
 }
+folgetag() { date -d "$1 +1 day" +%Y%m%d; }   # der Tag nach JJJJMMTT: expiry-time gilt als reines Datum ab 00:00, ABLAUF bis einschließlich
 
 pruefe_herkunft() {   # wie in den übrigen Einrichtungsskripten: nichts Untergeschobenes im Ordner dieses Skripts
   local erlaubt=" 0 $(id -u) ${SUDO_UID:-} " uid modus pfad
@@ -316,6 +324,7 @@ konfig_standard() {
 }
 
 KONFIG_FEHLER=""
+KONFIG_GESCHRIEBEN=0
 konfig_lesen() {   # liest die vorhandene Datei über die Standardwerte; unbekannte Schlüssel stoppen (nichts darf verloren gehen)
   local zeile name wert bekannt k
   konfig_standard
@@ -344,6 +353,7 @@ konfig_schreiben() {   # sichert die alte Datei, schreibt atomar, nur wenn sich 
   if gleich_wie "$KONFIG" "$neu"; then echo "  kernkanal.conf unverändert"; return 0; fi
   sichern "$KONFIG"
   printf '%s\n' "$neu" | schreibe_datei "$KONFIG" 0640 root:wamo
+  KONFIG_GESCHRIEBEN=1
   echo "  kernkanal.conf geschrieben (KANAL=${K[KANAL]})"
 }
 
@@ -424,8 +434,53 @@ else
 fi
 
 # ---------------------------------------------------------------- schluessel
+# Zeile und kernkanal.conf schreiben und bei einer gescheiterten Ja-Probe zurücknehmen. Die Reihenfolge sorgt dafür, dass sshd (expiry-time)
+# den Schlüssel nie früher ablehnt als der Dispatcher (ABLAUF): bei einer Verlängerung zuerst die Zeile, bei einer Verkürzung zuerst die
+# Konfiguration, beim Zurücknehmen die umgekehrte Reihenfolge des Schreibens.
+ZEILE=""             # die Schlüsselzeile dieses Laufs
+FP=""                # Fingerabdruck des Schlüssels (nur für Meldungen)
+NEU_ABLAUF=""        # ABLAUF dieses Laufs (JJJJMMTT)
+ZEILE_GESCHRIEBEN=0  # 1, wenn dieser Lauf die Zeile geändert hat
+
+schritt_zeile() {
+  echo "== 3. Zeile in authorized_keys.d/wamo-kern (genau eine, mit expiry-time am Tag nach ABLAUF)"
+  if gleich_wie "$KERN_DATEI" "$ZEILE"; then echo "  unverändert ($FP)"
+  else
+    sichern "$KERN_DATEI"
+    ZEILE_GESCHRIEBEN=1
+    printf '%s\n' "$ZEILE" | schreibe_datei "$KERN_DATEI" 0644 root:root
+    echo "  geschrieben ($FP)"
+  fi
+}
+
+schritt_konfig() {
+  echo "== 4. kernkanal.conf (Kanal bleibt zu, bis kanal ihn öffnet)"
+  K[ABLAUF]="$NEU_ABLAUF"
+  konfig_schreiben
+}
+
+zuruecknehmen() {   # die Schritte in der übergebenen Reihenfolge (zeile, konfig) auf den gesicherten Stand zurücksetzen
+  local schritt
+  for schritt in "$@"; do
+    case "$schritt" in
+      zeile)
+        if [ "$ZEILE_GESCHRIEBEN" = 1 ]; then
+          if [ -n "$SICHERUNG" ] && [ -f "$SICHERUNG/wamo-kern" ]; then cp -p "$SICHERUNG/wamo-kern" "$KERN_DATEI"; else rm -f "$KERN_DATEI"; fi
+        fi ;;
+      konfig)
+        if [ "$KONFIG_GESCHRIEBEN" = 1 ] && [ -n "$SICHERUNG" ] && [ -f "$SICHERUNG/kernkanal.conf" ]; then cp -p "$SICHERUNG/kernkanal.conf" "$KONFIG"; fi ;;
+    esac
+  done
+}
+
+ja_probe() {   # ping als wamo-core mit den Eigenschaften der Unit; im Probelauf nur mit der Attrappe $WURZEL/attrappen/ja-probe
+  if [ -z "$WURZEL" ]; then "$RAUCHTEST" --ping
+  elif [ -x "$WURZEL/attrappen/ja-probe" ]; then "$WURZEL/attrappen/ja-probe" --ping
+  else echo "  (Probelauf: keine Ja-Probe)"; fi
+}
+
 cmd_schluessel() {
-  local ssh_version dispatcher zeile typ blob pub fp host_fp htyp hblob hosteintrag stand_zeile neu_ablauf
+  local ssh_version dispatcher zeile typ blob pub fp host_fp htyp hblob hosteintrag alt_ablauf="" expiry zuerst=zeile
   echo "== 0. Vorbedingungen (nur lesend)"
   ssh_version="$(ssh -V 2>&1 | head -n1 | sed -n 's/^OpenSSH_\([0-9]*\)\.\([0-9]*\).*/\1.\2/p')"
   [[ "$ssh_version" =~ ^[0-9]+\.[0-9]+$ ]] || vorbedingung "OpenSSH-Version nicht lesbar (ssh -V)"
@@ -453,9 +508,17 @@ cmd_schluessel() {
     vorbedingung "der Hostschlüssel dieses Servers ($host_fp) passt nicht zu --hostfingerabdruck: falscher Server oder falscher Wert"
   fi
   echo "  Hostschlüssel $host_fp${HOSTFP:+ (stimmt mit --hostfingerabdruck überein)}"
+  # Ziel-Ablauf: --ablauf, sonst der Wert aus kernkanal.conf, sonst der Standard. Daraus folgt expiry-time (der Tag nach ABLAUF). Alles wird
+  # vor der ersten Änderung geprüft: ein unbrauchbarer Wert oder ein unbekannter Schlüssel in kernkanal.conf stoppt, bevor etwas geschrieben ist.
+  if [ -f "$KONFIG" ]; then konfig_lesen_hart; alt_ablauf="${K[ABLAUF]}"; else konfig_standard; fi
+  NEU_ABLAUF="${ABLAUF:-${K[ABLAUF]}}"
+  gueltiges_datum "$NEU_ABLAUF" || vorbedingung "ABLAUF in kernkanal.conf ($NEU_ABLAUF) ist ungültig (schluessel --ablauf <JJJJMMTT>)"
+  [ "$(tage_bis "$NEU_ABLAUF")" -ge 0 ] || vorbedingung "ABLAUF $NEU_ABLAUF ist überschritten: ohne einen Tag danach gibt es keine gültige expiry-time (schluessel --ablauf <JJJJMMTT>)"
+  expiry="$(folgetag "$NEU_ABLAUF")"
+  echo "  Ablauf $NEU_ABLAUF, expiry-time $expiry (der Tag nach ABLAUF, ein reines Datum gilt ab 00:00)"
   if [ "$TROCKEN" = 1 ]; then
     echo "Trockenlauf: nichts wird geändert. Es würden angelegt oder geprüft:"
-    echo "  Schlüssel ${KEY#"$WURZEL"} (nur wenn er fehlt), ${KNOWN#"$WURZEL"}, ${KERN_DATEI#"$WURZEL"} (genau eine Zeile)," \
+    echo "  Schlüssel ${KEY#"$WURZEL"} (nur wenn er fehlt), ${KNOWN#"$WURZEL"}, ${KERN_DATEI#"$WURZEL"} (genau eine Zeile mit expiry-time=$expiry)," \
       "${KONFIG#"$WURZEL"} (KANAL=$STD_KANAL), Rauchtest ${RAUCHTEST#"$WURZEL"}, Ja-Probe ping"
     return 0
   fi
@@ -490,26 +553,18 @@ cmd_schluessel() {
     echo "  geschrieben"
   fi
 
-  echo "== 3. Zeile in authorized_keys.d/wamo-kern (genau eine, ohne expiry-time)"
-  zeile="restrict,from=\"$KERN_IP\",command=\"/opt/wamo/bin/wamo-job-dispatch\" $typ $blob wamo-kern-jobs"
-  stand_zeile=""
-  if gleich_wie "$KERN_DATEI" "$zeile"; then echo "  unverändert ($fp)"
-  else
-    sichern "$KERN_DATEI"
-    stand_zeile=neu
-    printf '%s\n' "$zeile" | schreibe_datei "$KERN_DATEI" 0644 root:root
-    echo "  geschrieben ($fp)"
+  zeile="restrict,from=\"$KERN_IP\",expiry-time=\"$expiry\",command=\"/opt/wamo/bin/wamo-job-dispatch\" $typ $blob wamo-kern-jobs"
+  ZEILE="$zeile"
+  FP="$fp"
+  if [[ "$alt_ablauf" =~ ^[0-9]{8}$ ]]; then
+    if [ "$NEU_ABLAUF" -lt "$alt_ablauf" ]; then
+      zuerst=konfig
+      echo "  Verkürzung ($alt_ablauf auf $NEU_ABLAUF): erst kernkanal.conf, dann die Zeile, damit sshd den Schlüssel nie früher ablehnt als der Dispatcher"
+    elif [ "$NEU_ABLAUF" -gt "$alt_ablauf" ]; then
+      echo "  Verlängerung ($alt_ablauf auf $NEU_ABLAUF): erst die Zeile, dann kernkanal.conf, damit sshd den Schlüssel nie früher ablehnt als der Dispatcher"
+    fi
   fi
-
-  echo "== 4. kernkanal.conf (Kanal bleibt zu, bis kanal ihn öffnet)"
-  if [ -f "$KONFIG" ]; then
-    konfig_lesen_hart
-    if [ -n "$ABLAUF" ]; then K[ABLAUF]="$ABLAUF"; fi
-  else
-    konfig_standard
-    [ -z "$ABLAUF" ] || K[ABLAUF]="$ABLAUF"
-  fi
-  konfig_schreiben
+  if [ "$zuerst" = konfig ]; then schritt_konfig; schritt_zeile; else schritt_zeile; schritt_konfig; fi
 
   echo "== 5. Rauchtest installieren"
   [ -f "$HERE/wamo_job_kern_rauchtest.py" ] || fehler "$HERE/wamo_job_kern_rauchtest.py fehlt"
@@ -522,17 +577,13 @@ cmd_schluessel() {
     echo "  ${RAUCHTEST#"$WURZEL"} geschrieben"
   fi
 
-  echo "== 6. Ja-Probe ping (als wamo-core mit den Eigenschaften der Unit)"
-  if [ -n "$WURZEL" ]; then
-    echo "  (Probelauf: keine Ja-Probe)"
-  elif ! "$RAUCHTEST" --ping; then
-    echo "Ja-Probe fehlgeschlagen: die Zeile des Kerns wird zurückgenommen." >&2
-    if [ "$stand_zeile" = neu ] && [ -f "$SICHERUNG/wamo-kern" ]; then cp -p "$SICHERUNG/wamo-kern" "$KERN_DATEI"
-    elif [ "$stand_zeile" = neu ]; then rm -f "$KERN_DATEI"; fi
+  echo "== 6. Ja-Probe ping (als wamo-core mit den Eigenschaften der Unit; eine ungültige Zeile, auch ein Tippfehler in expiry-time, fängt sie hier)"
+  if ! ja_probe; then
+    echo "Ja-Probe fehlgeschlagen: die Zeile des Kerns wird zurückgenommen (ein geänderter ABLAUF mit ihr)." >&2
+    if [ "$zuerst" = konfig ]; then zuruecknehmen zeile konfig; else zuruecknehmen konfig zeile; fi
     fehler "Ja-Probe fehlgeschlagen, ${KERN_DATEI#"$WURZEL"} zurückgenommen"
   fi
-  neu_ablauf="${K[ABLAUF]}"
-  echo "Fertig. Schlüssel $fp, Ablauf $neu_ablauf ($(tage_bis "$neu_ablauf") Tage), Kanal ${K[KANAL]}. Weiter: Rauchtest --produktiv, dann schalter an."
+  echo "Fertig. Schlüssel $fp, Ablauf $NEU_ABLAUF ($(tage_bis "$NEU_ABLAUF") Tage), expiry-time $expiry, Kanal ${K[KANAL]}. Weiter: Rauchtest --produktiv, dann schalter an."
 }
 
 fail2ban_pruefen() {   # fail2ban muss die eigene Adresse und Loopback ausnehmen (sonst träfe ein Bann Supavisor und die API des Kerns)
@@ -702,13 +753,21 @@ schalter_wert() {   # an oder aus aus /proc/<pid>/environ (nur der Schalter)
 }
 
 cmd_status() {
-  local abw=() tage s pid zustand release soll ist n ordner laufend fp
+  local abw=() tage s pid zustand release soll ist n ordner laufend fp et="" et_datum=0 soll_et
   echo "== Kern-Kanal"
   if [ -f "$KERN_DATEI" ]; then
     fp="$(ssh-keygen -l -E sha256 -f "$KERN_DATEI" 2>/dev/null | awk '{print $2}' || true)"
     echo "Schlüsselzeile: vorhanden${fp:+ ($fp)}"
     if [ "$(wc -l < "$KERN_DATEI")" != 1 ]; then abw+=("die Datei ${KERN_DATEI#"$WURZEL"} hat nicht genau eine Zeile"); fi
-    if grep -q 'expiry-time' "$KERN_DATEI"; then abw+=("die Schlüsselzeile enthält expiry-time (der Ablauf steht in kernkanal.conf)"); fi
+    et="$(sed -n 's/.*expiry-time="\([^"]*\)".*/\1/p' "$KERN_DATEI" | head -n1)"
+    if [ -z "$et" ]; then
+      echo "expiry-time: keiner"
+      abw+=("die Schlüsselzeile enthält kein expiry-time (sshd erzwingt den Ablauf nicht, nur der Dispatcher): schluessel schreibt es neu")
+    else
+      echo "expiry-time: $et"
+      if [[ "$et" =~ ^[0-9]{8}$ ]] && gueltiges_datum "$et"; then et_datum=1
+      else abw+=("expiry-time $et in der Schlüsselzeile ist kein reines Datum der Form JJJJMMTT"); fi
+    fi
   else
     echo "Schlüsselzeile: keine"
   fi
@@ -720,6 +779,11 @@ cmd_status() {
       tage="$(tage_bis "${K[ABLAUF]}")"
       echo "Ablauf: ${K[ABLAUF]} (noch $tage Tage)"
       if [ "$tage" -lt 0 ]; then abw+=("der Ablauf ${K[ABLAUF]} ist überschritten: der Kanal ist zu"); elif [ "$tage" -le 7 ]; then abw+=("der Ablauf ${K[ABLAUF]} ist in $tage Tagen"); fi
+      if [ "$et_datum" = 1 ] && gueltiges_datum "${K[ABLAUF]}"; then   # beide Schichten müssen gleich enden: expiry-time ist der Tag nach ABLAUF
+        soll_et="$(folgetag "${K[ABLAUF]}")"
+        if [ "$et" -lt "$soll_et" ]; then abw+=("expiry-time $et liegt vor dem Tag nach ABLAUF ($soll_et): sshd lehnt den Schlüssel früher ab als der Dispatcher")
+        elif [ "$et" -gt "$soll_et" ]; then abw+=("expiry-time $et liegt nach dem Tag nach ABLAUF ($soll_et): sshd lässt den Schlüssel länger zu als der Dispatcher"); fi
+      fi
     fi
     if [ "${K[KANAL]}" = offen ] && [ ! -f "$KERN_DATEI" ]; then abw+=("der Kanal ist offen, aber die Schlüsselzeile fehlt"); fi
   else

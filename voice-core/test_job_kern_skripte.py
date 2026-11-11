@@ -645,6 +645,75 @@ def test_der_rauchtest_hat_keine_geheimnisse_keine_gedankenstriche_und_unix_zeil
     assert not re.search(r"systemctl\s+(restart|start|stop)", text)
 
 
+KERN_ZEILE = ('restrict,from="192.168.178.136",expiry-time="{et}",command="/opt/wamo/bin/wamo-job-dispatch" '
+              "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPfX3Yv0H8r5wq2K1mYk0y8sZb9d1QwVt7n4o6cUeRz3 wamo-kern-jobs")
+
+
+def test_der_tag_nach_ablauf_rechnet_ueber_monats_jahres_und_schaltjahresgrenzen():
+    assert R.folgetag("20261231") == "20270101" and R.folgetag("20260228") == "20260301" and R.folgetag("20240228") == "20240229"
+    assert R.folgetag("20261111") == "20261112"
+    for kaputt in ("", "2026123", "morgen", "20261301", "20260230", "202612310"):
+        assert R.folgetag(kaputt) is None, kaputt
+
+
+def test_die_schluesselzeile_besteht_nur_mit_expiry_time_am_tag_nach_ablauf():
+    gut = KERN_ZEILE.format(et="20270101")
+    assert R.zeile_ok(gut, "20261231")[0] is True
+    for ablauf in ("20261230", "20270101", None, "morgen"):  # ein anderer, kein oder ein kaputter ABLAUF
+        assert R.zeile_ok(gut, ablauf)[0] is False, ablauf
+    assert R.zeile_ok(KERN_ZEILE.format(et="20261231"), "20261231")[0] is False  # der Tag selbst: sshd schlösse einen Tag zu früh
+    assert R.zeile_ok(KERN_ZEILE.format(et="202701010000"), "20261231")[0] is False  # nur ein reines Datum
+    assert R.zeile_ok(KERN_ZEILE.format(et="20270101")[:-len(" wamo-kern-jobs")], "20261231")[0] is False
+    ohne = gut.replace(',expiry-time="20270101"', "")  # die Form vor F7
+    assert R.zeile_ok(ohne, "20261231")[0] is False
+    for bose in (gut.replace("restrict,", ""), gut.replace(',command="/opt/wamo/bin/wamo-job-dispatch"', ""),
+                 gut.replace(",expiry-time", ",expiry-time=\"20270102\",expiry-time"), gut.replace("ssh-ed25519", "ssh-rsa"),
+                 gut.replace(',from="192.168.178.136"', ',from="0.0.0.0/0"'), gut + "\nrestrict ssh-ed25519 AAAA x", gut.replace("restrict,", "restrict,pty,")):
+        assert R.zeile_ok(bose, "20261231")[0] is False, bose
+
+
+@braucht_bash
+@pytest.mark.parametrize("tag, erwartet", [("20261231", "20270101"), ("20260228", "20260301"), ("20240228", "20240229"), ("20240229", "20240301"),
+                                           ("20261111", "20261112")])
+def test_der_tag_nach_ablauf_im_skript_ist_der_des_rauchtests(tag, erwartet):
+    """folgetag() im Einrichtungsskript (date -d) und folgetag() im Rauchtest (datetime) rechnen am Monats-, Jahres- und Schalttag gleich."""
+    funktion = re.search(r"^folgetag\(\) \{[^}]*\}", lies(KERN_EINRICHTEN), re.M).group(0)
+    p = subprocess.run([BASH, "-c", f"{funktion}\nfolgetag {tag}"], capture_output=True, text=True, timeout=30)
+    assert p.returncode == 0 and p.stdout.strip() == erwartet == R.folgetag(tag), p.stderr
+
+
+def test_die_meldung_der_zeilenpruefung_nennt_nie_den_schluessel():
+    ok, text = R.zeile_ok(KERN_ZEILE.format(et="20270102"), "20261231")
+    assert ok is False and "AAAAC3" not in text and "20270101" in text  # erwartet wird genannt, der Schlüssel nie
+
+
+def test_der_ablauf_wird_aus_der_konfiguration_gelesen_ohne_andere_werte():
+    assert R.ablauf_aus_konfig("# x\nKANAL=zu\nABLAUF=20261231\nARTEN=\n") == "20261231"
+    assert R.ablauf_aus_konfig("KANAL=zu\n") is None and R.ablauf_aus_konfig("ABLAUF=\n") == ""
+    assert R.ablauf_aus_konfig("ABLAUF=1\nABLAUF=2\n") is None  # doppelt gilt der Dispatcher als ungültig: nicht raten
+
+
+def test_die_dateipruefung_der_schluesselzeile_liest_beide_dateien_und_meldet_ok_oder_fehler(tmp_path, monkeypatch):
+    zeile, konfig = tmp_path / "wamo-kern", tmp_path / "kernkanal.conf"
+    monkeypatch.setattr(R, "KERN_DATEI", zeile)
+    monkeypatch.setattr(R, "KONFIG", konfig)
+    monkeypatch.setattr(R, "ergebnisse", [])
+    zeile.write_text(KERN_ZEILE.format(et="20270101") + "\n")
+    konfig.write_text("KANAL=zu\nABLAUF=20261231\n")
+    R.schluesselzeile_pruefen()
+    assert [ok for ok, _ in R.ergebnisse] == [True] and "expiry-time" in R.ergebnisse[0][1]
+    konfig.write_text("KANAL=zu\nABLAUF=20261230\n")  # die beiden Werte laufen auseinander
+    R.schluesselzeile_pruefen()
+    assert [ok for ok, _ in R.ergebnisse] == [True, False]
+    zeile.write_text("")  # keine Zeile
+    R.schluesselzeile_pruefen()
+    assert R.ergebnisse[-1][0] is False
+    zeile.unlink()
+    konfig.unlink()  # nichts da: ein Fehler, keine Ausnahme
+    R.schluesselzeile_pruefen()
+    assert R.ergebnisse[-1][0] is False
+
+
 @braucht_linux
 def test_dateirechte_pruefung_meldet_modus_und_besitzer_ohne_inhalt(tmp_path):
     datei = tmp_path / "x"
@@ -762,6 +831,21 @@ def ablauf_in(tage: int) -> str:
     return (datetime.now() + timedelta(days=tage)).strftime("%Y%m%d")
 
 
+def folgetag(ablauf: str) -> str:
+    """Der Wert von expiry-time zu einem ABLAUF: der Tag danach (ein reines Datum gilt ab 00:00, ABLAUF gilt bis einschließlich)."""
+    return (datetime.strptime(ablauf, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+
+
+def schluesselzeile(welt) -> str:
+    return (welt["w"] / "etc/ssh/authorized_keys.d/wamo-kern").read_text(encoding="utf-8")
+
+
+def zeile_ohne_expiry(welt) -> None:
+    """Stellt den Stand vor F7 her: die Zeile des Kerns ohne expiry-time (so lag sie bis zu diesem Paket auf dem Server)."""
+    pfad = welt["w"] / "etc/ssh/authorized_keys.d/wamo-kern"
+    pfad.write_text(re.sub(r',expiry-time="[0-9]+"', "", pfad.read_text(encoding="utf-8")), encoding="utf-8")
+
+
 def dateien_liste(w: Path) -> dict[str, str]:
     """Pfad -> Prüfsumme aller Dateien (ohne die Attrappen), um 'ändert nichts' zu prüfen."""
     erg = {}
@@ -873,13 +957,13 @@ def test_schluessel_trocken_prueft_nur_und_schreibt_nichts(welt):
     vorher = dateien_liste(welt["w"])
     p = einr(welt, "schluessel", "--trocken")
     assert p.returncode == 0, p.stdout + p.stderr
-    assert "Trockenlauf" in p.stdout and "OpenSSH" in p.stdout
+    assert "Trockenlauf" in p.stdout and "OpenSSH" in p.stdout and "expiry-time" in p.stdout  # die Zeile mit expiry-time wird angekündigt
     assert dateien_liste(welt["w"]) == vorher
     assert not (welt["w"] / "var").exists()
 
 
 @braucht_bash
-def test_schluessel_legt_alles_an_mit_der_zeilenform_aus_i1_ohne_expiry_time(welt):
+def test_schluessel_legt_alles_an_mit_der_zeilenform_aus_f7_mit_expiry_time_am_folgetag(welt):
     w = welt["w"]
     pc_vorher = hashlib.sha256((w / "etc/ssh/authorized_keys.d/wamo").read_bytes()).hexdigest()
     ablauf = ablauf_in(30)
@@ -888,8 +972,10 @@ def test_schluessel_legt_alles_an_mit_der_zeilenform_aus_i1_ohne_expiry_time(wel
     assert (w / "var/lib/wamo-core/.ssh/id_ed25519_wamo_jobs").is_file()
     pub = (w / "var/lib/wamo-core/.ssh/id_ed25519_wamo_jobs.pub").read_text().split()
     zeile = (w / "etc/ssh/authorized_keys.d/wamo-kern").read_text()
-    assert zeile == f'restrict,from="192.168.178.136",command="/opt/wamo/bin/wamo-job-dispatch" {pub[0]} {pub[1]} wamo-kern-jobs\n'
-    assert "expiry-time" not in zeile and zeile.count("\n") == 1
+    assert zeile == (f'restrict,from="192.168.178.136",expiry-time="{folgetag(ablauf)}",'
+                     f'command="/opt/wamo/bin/wamo-job-dispatch" {pub[0]} {pub[1]} wamo-kern-jobs\n')
+    assert zeile.count("\n") == 1 and zeile.count("expiry-time") == 1
+    assert not re.search(r'expiry-time="[0-9]{9,}', zeile)  # nur ein reines Datum, nie eine Uhrzeit (Annahme 7)
     host = (w / "etc/ssh/ssh_host_ed25519_key.pub").read_text().split()
     assert (w / "var/lib/wamo-core/.ssh/known_hosts_wamo_jobs").read_text() == f"192.168.178.136 {host[0]} {host[1]}\n"
     konfig = (w / "etc/wamo/kernkanal.conf").read_text(encoding="utf-8").splitlines()
@@ -939,6 +1025,152 @@ def test_ein_neuer_ablauf_verlaengert_nur_die_zeile_ablauf_und_sichert_die_alte_
     assert f"ABLAUF={neu}" in (welt["w"] / "etc/wamo/kernkanal.conf").read_text()
     sicherungen = list((welt["w"] / "var/backups/wamo-job-kern").glob("*/kernkanal.conf"))
     assert len(sicherungen) == 1 and f"ABLAUF={ablauf_in(30)}" in sicherungen[0].read_text()
+
+
+# ---- F7: expiry-time als zweite Schicht neben ABLAUF
+def _schreibreihenfolge(ausgabe: str) -> list[str]:
+    """Was schluessel geschrieben hat, in der Reihenfolge der Ausgabe (jede Meldung folgt unmittelbar auf das Schreiben)."""
+    ereignisse = []
+    for z in ausgabe.splitlines():
+        if re.match(r"\s+geschrieben \(SHA256:", z):
+            ereignisse.append("zeile")
+        elif "kernkanal.conf geschrieben" in z:
+            ereignisse.append("konfig")
+    return ereignisse
+
+
+def ja_probe_attrappe(welt, rc: int = 0) -> None:
+    """Die Ja-Probe ping (im Probelauf sonst übersprungen): hält fest, was in der Zeile steht, und endet mit rc."""
+    welt["schreibe"]("attrappen/ja-probe", '''#!/usr/bin/env bash
+A="$(dirname "$0")"
+W="$A/.."
+echo "ja-probe $* $(grep -o 'expiry-time="[0-9]*"' "$W/etc/ssh/authorized_keys.d/wamo-kern" 2>/dev/null || echo ohne-expiry-time)" >> "$A/aufrufe.log"
+exit "$(cat "$A/ja_probe_rc" 2>/dev/null || echo 0)"
+''')
+    (welt["a"] / "ja_probe_rc").write_text(str(rc))
+
+
+@braucht_bash
+def test_das_erste_einrichten_schreibt_zuerst_die_zeile_dann_die_konfiguration(welt):
+    p = schluessel_einrichten(welt, ablauf_in(30), echt=True)
+    assert _schreibreihenfolge(p.stdout) == ["zeile", "konfig"]
+
+
+@braucht_bash
+def test_eine_verlaengerung_schreibt_zuerst_die_zeile_dann_die_konfiguration_sshd_laeuft_nie_frueher_ab(welt):
+    schluessel_einrichten(welt, ablauf_in(30))
+    neu = ablauf_in(180)
+    p = einr(welt, "schluessel", "--ablauf", neu, "--hostfingerabdruck", welt["fp"])
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert _schreibreihenfolge(p.stdout) == ["zeile", "konfig"]
+    assert f'expiry-time="{folgetag(neu)}"' in schluesselzeile(welt) and konfig_von(welt)["ABLAUF"] == neu
+
+
+@braucht_bash
+def test_eine_verkuerzung_schreibt_zuerst_die_konfiguration_dann_die_zeile(welt):
+    schluessel_einrichten(welt, ablauf_in(180))
+    neu = ablauf_in(30)
+    p = einr(welt, "schluessel", "--ablauf", neu, "--hostfingerabdruck", welt["fp"])
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert _schreibreihenfolge(p.stdout) == ["konfig", "zeile"]
+    assert f'expiry-time="{folgetag(neu)}"' in schluesselzeile(welt) and konfig_von(welt)["ABLAUF"] == neu
+
+
+@braucht_bash
+def test_eine_zeile_aus_der_zeit_vor_f7_bekommt_beim_naechsten_lauf_ihr_expiry_time_und_die_konfiguration_bleibt(welt):
+    schluessel_einrichten(welt, ablauf_in(30))
+    zeile_ohne_expiry(welt)
+    assert "expiry-time" not in schluesselzeile(welt)
+    konfig_vorher = (welt["w"] / "etc/wamo/kernkanal.conf").read_bytes()
+    p = einr(welt, "schluessel", "--hostfingerabdruck", welt["fp"])  # ohne --ablauf: gilt der Wert aus kernkanal.conf
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert f'expiry-time="{folgetag(ablauf_in(30))}"' in schluesselzeile(welt)
+    assert (welt["w"] / "etc/wamo/kernkanal.conf").read_bytes() == konfig_vorher and _schreibreihenfolge(p.stdout) == ["zeile"]
+    gesichert = list((welt["w"] / "var/backups/wamo-job-kern").glob("*/wamo-kern"))
+    assert len(gesichert) == 1 and "expiry-time" not in gesichert[0].read_text()  # die alte Zeile ist gesichert
+
+
+@braucht_bash
+def test_ein_zweiter_lauf_mit_expiry_time_aendert_die_zeile_nicht(welt):
+    schluessel_einrichten(welt, ablauf_in(30))
+    zeile = schluesselzeile(welt)
+    p = einr(welt, "schluessel", "--hostfingerabdruck", welt["fp"])
+    assert p.returncode == 0 and schluesselzeile(welt) == zeile and _schreibreihenfolge(p.stdout) == []
+
+
+@braucht_bash
+@pytest.mark.parametrize("wert, erwartet", [("20200101", "überschritten"), ("morgen", "ungültig"), ("2026123", "ungültig")])
+def test_ein_unbrauchbarer_ablauf_in_der_konfiguration_stoppt_schluessel_vor_jeder_aenderung(welt, wert, erwartet):
+    """Ohne einen Tag nach ABLAUF gibt es keinen Wert für expiry-time. Ein überschrittener Ablauf ergäbe eine Zeile, die sshd sofort ablehnt."""
+    schluessel_einrichten(welt, ablauf_in(30))
+    konfig = welt["w"] / "etc/wamo/kernkanal.conf"
+    konfig.write_text(konfig.read_text().replace(f"ABLAUF={ablauf_in(30)}", f"ABLAUF={wert}"))
+    vorher = dateien_liste(welt["w"])
+    p = einr(welt, "schluessel", "--hostfingerabdruck", welt["fp"])
+    assert p.returncode == 3 and erwartet in p.stderr and "--ablauf" in p.stderr, (p.stdout, p.stderr)
+    assert ohne_spur(dateien_liste(welt["w"])) == ohne_spur(vorher)
+
+
+@braucht_bash
+def test_ein_unbekannter_schluessel_in_der_konfiguration_stoppt_schluessel_bevor_die_zeile_geschrieben_wird(welt):
+    schluessel_einrichten(welt, ablauf_in(30))
+    zeile_ohne_expiry(welt)  # eine Zeile, die der Lauf neu schreiben würde
+    konfig = welt["w"] / "etc/wamo/kernkanal.conf"
+    konfig.write_text(konfig.read_text() + "UNBEKANNT=1\n")
+    zeile = schluesselzeile(welt)
+    p = einr(welt, "schluessel", "--ablauf", ablauf_in(180), "--hostfingerabdruck", welt["fp"])
+    assert p.returncode == 3 and "UNBEKANNT" in p.stderr
+    assert schluesselzeile(welt) == zeile  # die Zeile bleibt, wie sie war (früher stand sie schon neu, die Konfiguration alt)
+
+
+@braucht_bash
+def test_die_ja_probe_sieht_die_zeile_mit_expiry_time(welt):
+    schluessel_einrichten(welt, ablauf_in(30))
+    ja_probe_attrappe(welt)
+    p = einr(welt, "schluessel", "--ablauf", ablauf_in(60), "--hostfingerabdruck", welt["fp"])
+    assert p.returncode == 0 and "(Probelauf: keine Ja-Probe)" not in p.stdout, p.stdout + p.stderr
+    assert f'ja-probe --ping expiry-time="{folgetag(ablauf_in(60))}"' in aufrufe(welt)
+
+
+@braucht_bash
+def test_scheitert_die_ja_probe_beim_ersten_einrichten_wird_die_zeile_zurueckgenommen(welt):
+    ja_probe_attrappe(welt, rc=1)
+    p = einr(welt, "schluessel", "--ablauf", ablauf_in(30), "--hostfingerabdruck", welt["fp"])
+    assert p.returncode == 1 and "Ja-Probe fehlgeschlagen" in p.stderr, p.stdout + p.stderr
+    assert not (welt["w"] / "etc/ssh/authorized_keys.d/wamo-kern").exists()  # eine ungültige Zeile (zum Beispiel ein Tippfehler) bleibt nie liegen
+
+
+@braucht_bash
+@pytest.mark.parametrize("vorher_tage, neu_tage", [(30, 180), (180, 30)])
+def test_scheitert_die_ja_probe_bei_einem_neuen_ablauf_kehren_zeile_und_konfiguration_zum_alten_stand_zurueck(welt, vorher_tage, neu_tage):
+    schluessel_einrichten(welt, ablauf_in(vorher_tage))
+    zeile, konfig = schluesselzeile(welt), (welt["w"] / "etc/wamo/kernkanal.conf").read_text()
+    ja_probe_attrappe(welt, rc=1)
+    p = einr(welt, "schluessel", "--ablauf", ablauf_in(neu_tage), "--hostfingerabdruck", welt["fp"])
+    assert p.returncode == 1 and "Ja-Probe fehlgeschlagen" in p.stderr, p.stdout + p.stderr
+    assert schluesselzeile(welt) == zeile  # die alte Zeile mit dem alten expiry-time
+    assert (welt["w"] / "etc/wamo/kernkanal.conf").read_text() == konfig  # und der alte ABLAUF: beide Werte bleiben gleich
+    assert "Abweichung: " not in einr(welt, "status").stdout.replace("Abweichung: Slot", "")
+
+
+@braucht_bash
+def test_status_nennt_expiry_time_und_meldet_jede_abweichung_zum_ablauf(welt):
+    ablauf = ablauf_in(30)
+    schluessel_einrichten(welt, ablauf)
+    o = einr(welt, "status").stdout
+    assert f"expiry-time: {folgetag(ablauf)}" in o and "Abweichungen: keine" in o and "expiry-time (" not in o
+    pfad = welt["w"] / "etc/ssh/authorized_keys.d/wamo-kern"
+    gut = pfad.read_text()
+
+    def abweichungen(text: str) -> str:
+        pfad.write_text(text)
+        return "\n".join(z for z in einr(welt, "status").stdout.splitlines() if z.startswith("Abweichung: "))
+
+    assert "kein expiry-time" in abweichungen(re.sub(r',expiry-time="[0-9]+"', "", gut))  # der Stand vor F7: sshd erzwingt nichts
+    assert "früher ab" in abweichungen(gut.replace(f'expiry-time="{folgetag(ablauf)}"', f'expiry-time="{ablauf}"'))  # gleicher Tag: sshd schließt einen Tag zu früh
+    assert "länger zu" in abweichungen(gut.replace(f'expiry-time="{folgetag(ablauf)}"', f'expiry-time="{folgetag(folgetag(ablauf))}"'))
+    assert "kein reines Datum" in abweichungen(gut.replace(f'expiry-time="{folgetag(ablauf)}"', f'expiry-time="{folgetag(ablauf)}0000"'))
+    assert abweichungen(gut) == ""  # und wieder gut: keine Abweichung
 
 
 @braucht_bash
@@ -1344,6 +1576,13 @@ def test_bash_syntax_der_kern_skripte(skript):
     assert p.returncode == 0, p.stderr
 
 
+def test_das_einrichtungsskript_nennt_expiry_time_im_kopf_und_sagt_nirgends_mehr_ohne_expiry_time():
+    text = lies(KERN_EINRICHTEN)
+    assert "ohne expiry-time" not in text and "ohne expiry" not in text.lower()
+    kopf = text[:text.index("set -euo pipefail")]
+    assert "expiry-time" in kopf and "Tag nach ABLAUF" in kopf and "wamo-job-kern-ablaufprobe.sh" in kopf
+
+
 def test_das_einrichtungsskript_schreibt_nie_in_die_pc_datei_und_hat_die_standardwerte_aus_i2():
     text = lies(KERN_EINRICHTEN)
     for zeile in text.splitlines():
@@ -1391,8 +1630,19 @@ def test_die_readme_beschreibt_den_kern_kanal_vollstaendig_und_ohne_gedankenstri
             assert "bleibt unverändert" in zeile
 
 
+def test_die_readme_beschreibt_expiry_time_als_zweite_schicht_und_die_ablaufprobe_ohne_die_alte_aussage():
+    text = (INFRA / "README.md").read_text(encoding="utf-8")
+    abschnitt = text[text.index("## 18. Kern-Kanal der Entwicklungsaufträge"):]
+    for wort in ("wamo-job-kern-ablaufprobe.sh", "expiry-time", "Tag nach", "zweite Schicht", "22222", "127.0.0.1", "nur am Server prüfbar", "ssh wamo-sokrates2",
+                 "kein Journal der Produktion", "Verlängerung", "Verkürzung"):
+        assert wort in abschnitt, wort
+    assert "ohne `expiry-time`" not in abschnitt and "läuft nicht über `expiry-time`" not in abschnitt  # der Stand vor F7
+    assert chr(0x2014) not in abschnitt and chr(0x2013) not in abschnitt
+    assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", abschnitt)  # keine user_id
+
+
 # ---------------------------------------------------------------- Nachbesserung nach der Sicherheitsprüfung
-WURZEL_REF = re.compile(r'\$\{(?:SSH_ORDNER|KEY|KNOWN)#"\$WURZEL"\}')
+WURZEL_REF =re.compile(r'\$\{(?:SSH_ORDNER|KEY|KNOWN)#"\$WURZEL"\}')
 BAUM_REF = re.compile(r'\$\{?(?:SSH_ORDNER|KEY|KNOWN)\b')
 ROOT_BEFEHLE = re.compile(r"\b(chmod|chown|mktemp|rm|cp|mv|tee|cat|install|mkdir|ssh-keygen|touch|ln|sed|read)\b")
 
@@ -1635,3 +1885,303 @@ def test_werte_mit_zeilenumbruechen_und_steuerzeichen_werden_ganz_geprueft_und_a
 def test_gueltige_werte_bestehen_die_ganze_pruefung(aufruf_zeile):
     p = _pruef_snippet(aufruf_zeile)
     assert p.returncode == 0 and "GEPRUEFT" in p.stdout, (aufruf_zeile, p.stdout, p.stderr)
+
+
+# ================================================================ F7: wamo-job-kern-ablaufprobe.sh (Probelauf mit Attrappen)
+# Das Skript startet am Server eine zweite sshd-Instanz und belegt mit einem Wegwerf-Schlüssel, dass sshd expiry-time durchsetzt. Das ist nur am
+# Server prüfbar. Im Repo prüft der Probelauf den Ablauf des Skripts: Reihenfolge, Zeilen der Probe, Tabelle, Aufräumen, Fehlerwege. Die Attrappe
+# ssh gibt vor, ein sshd zu sein, der authorized_keys und expiry-time auswertet (mit einer Uhr, die das sleep der Attrappen weiterdreht).
+ABLAUFPROBE = INFRA / "wamo-job-kern-ablaufprobe.sh"
+PROBE_BENUTZER = "wamo-ablaufprobe"
+PROBE_TABELLE = ["A", "B", "B2", "C", "D1", "D2", "D3", "E", "F"]
+
+ATTRAPPEN_PROBE = {
+    "date": '''#!/usr/bin/env bash
+# die Uhr der Probe steht in $A/jetzt (Sekunden) und wird vom sleep dieser Attrappen weitergedreht
+A="$(dirname "$0")"
+REAL="$(PATH=/usr/bin:/bin command -v date)"
+for arg in "$@"; do case "$arg" in -d|--date|--date=*|-d?*) exec "$REAL" "$@" ;; esac; done
+t=""
+until [ -n "$t" ]; do t="$(cat "$A/jetzt" 2>/dev/null)"; done
+exec "$REAL" -d "@$t" "$@"
+''',
+    "sleep": '''#!/usr/bin/env bash
+A="$(dirname "$0")"
+t=""
+until [ -n "$t" ]; do t="$(cat "$A/jetzt" 2>/dev/null)"; done
+echo $((t + ${1%%.*})) > "$A/jetzt"
+"$(PATH=/usr/bin:/bin command -v sleep)" 0.2
+''',
+    "sshd": '''#!/usr/bin/env bash
+A="$(dirname "$0")"
+echo "sshd $*" >> "$A/aufrufe.log"
+konfig="" logdatei="" nur_test=0
+while [ "$#" -gt 0 ]; do case "$1" in -f) konfig="$2"; shift 2 ;; -E) logdatei="$2"; shift 2 ;; -t) nur_test=1; shift ;; *) shift ;; esac; done
+if [ "$nur_test" = 1 ]; then [ ! -e "$A/sshd_t_fehlt" ] || { echo "sshd: Konfigurationsfehler" >&2; exit 255; }; exit 0; fi
+cp "$konfig" "$A/sshd_konfig_inhalt"
+echo "$konfig" > "$A/sshd_konfig"
+echo "$logdatei" > "$A/sshd_log"
+: > "$logdatei"
+echo $$ > "$A/sshd_laeuft"
+trap 'rm -f "$A/sshd_laeuft"; echo "sshd beendet" >> "$A/aufrufe.log"; exit 0' TERM INT
+while :; do "$(PATH=/usr/bin:/bin command -v sleep)" 0.1; done
+''',
+    "ss": '''#!/usr/bin/env bash
+A="$(dirname "$0")"
+echo "State Recv-Q Send-Q Local Address:Port Peer Address:Port"
+echo "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*"
+[ ! -e "$A/sshd_laeuft" ] || echo "LISTEN 0 128 127.0.0.1:22222 0.0.0.0:*"
+[ ! -e "$A/sshd_laeuft" ] || [ ! -e "$A/ss_aussen" ] || echo "LISTEN 0 128 0.0.0.0:22222 0.0.0.0:*"
+[ ! -e "$A/ss_belegt" ] || echo "LISTEN 0 128 127.0.0.1:22222 0.0.0.0:*"
+''',
+    "useradd": '#!/usr/bin/env bash\nA="$(dirname "$0")"\necho "useradd $*" >> "$A/aufrufe.log"\n: > "$A/passwd_belegt"\n',
+    "userdel": '#!/usr/bin/env bash\nA="$(dirname "$0")"\necho "userdel $*" >> "$A/aufrufe.log"\nrm -f "$A/passwd_belegt"\n',
+    "getent": '#!/usr/bin/env bash\nA="$(dirname "$0")"\n[ -e "$A/passwd_belegt" ] || exit 2\necho "$2:*:900:900::/:/bin/sh"\n',
+    "pkill": '#!/usr/bin/env bash\necho "pkill $*" >> "$(dirname "$0")/aufrufe.log"\nexit 1\n',
+    "timedatectl": '#!/usr/bin/env bash\necho "Europe/Berlin"\n',
+    "ssh": '''#!/usr/bin/env bash
+# gibt vor, ein Client mit einem sshd dahinter zu sein: wertet authorized_keys aus (Optionen, expiry-time) und kennt die erzwungenen Befehle
+A="$(dirname "$0")"
+if [ "${1:-}" = -V ]; then echo "OpenSSH_9.6p1 (Attrappe)" >&2; exit 0; fi
+schluessel="" ziel="" befehl=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -i) schluessel="$2"; shift 2 ;;
+    -F|-o|-p|-l) shift 2 ;;
+    -*) shift ;;
+    *) if [ -z "$ziel" ]; then ziel="$1"; else befehl+=("$1"); fi; shift ;;
+  esac
+done
+read -r -a befehl <<< "${befehl[*]:-}"   # wie bei ssh: die Wörter gehen als eine Zeichenkette zum Server, der sie wieder zerlegt
+[ -e "$A/sshd_laeuft" ] || { echo "ssh: connect to host 127.0.0.1 port 22222: Connection refused" >&2; exit 255; }
+konfig="$(cat "$A/sshd_konfig")"
+logdatei="$(cat "$A/sshd_log")"
+benutzer="${ziel%@*}"
+opts=""
+abgelehnt() {
+  echo "ssh-versuch befehl=${befehl[*]:-} optionen=$opts ergebnis=abgelehnt" >> "$A/aufrufe.log"
+  echo "Failed publickey for $benutzer from 127.0.0.1 port 40000 ssh2 ($1)" >> "$logdatei"
+  echo "Permission denied (publickey)." >&2
+  exit 255
+}
+[ "$benutzer" = "$(sed -n 's/^AllowUsers[[:space:]]*//p' "$konfig")" ] || abgelehnt "Benutzer nicht erlaubt"
+blob="$(cut -d' ' -f2 "${schluessel}.pub")"
+datei="$(sed -n 's/^AuthorizedKeysFile[[:space:]]*//p' "$konfig")"
+zeile="$(grep -F " $blob " "$datei" | head -n1)"
+[ -n "$zeile" ] || abgelehnt "Schluessel unbekannt"
+opts="${zeile%% ssh-ed25519 *}"
+opt='(restrict|from="[^"]*"|expiry-time="[0-9]{8,14}"|command="[^"]*")'
+[ ! -e "$A/ssh_kennt_ablauf_nicht" ] || opt='(restrict|from="[^"]*"|command="[^"]*")'
+if ! [[ "$opts" =~ ^${opt}(,${opt})*$ ]] && [ ! -e "$A/ssh_ignoriert_tippfehler" ]; then abgelehnt "bad key options: invalid key option"; fi
+grenze=0
+if [[ "$opts" =~ expiry-time=\\"([0-9]+)\\" ]]; then
+  wert="${BASH_REMATCH[1]}"
+  if [ "${#wert}" = 8 ]; then grenze="$(date -d "$wert" +%s)"; else grenze="$(date -d "${wert:0:8} ${wert:8:2}:${wert:10:2}" +%s)"; fi
+  if [ "$(date +%s)" -gt "$grenze" ] && [ ! -e "$A/ssh_ignoriert_ablauf" ]; then abgelehnt "key expired: authorized_keys line 1 expiry-time $wert"; fi
+fi
+echo "ssh-versuch befehl=${befehl[*]:-} optionen=$opts ergebnis=angenommen" >> "$A/aufrufe.log"
+echo "wamo-ablaufprobe-ok"
+case "${befehl[0]:-}" in
+  halten)
+    ende=$(( $(date +%s) + ${befehl[1]} ))
+    for _ in $(seq 1 400); do
+      [ "$(date +%s)" -lt "$ende" ] || break
+      if [ -e "$A/ssh_sitzung_endet" ] && [ "$grenze" -gt 0 ] && [ "$(date +%s)" -gt "$grenze" ]; then exit 255; fi
+      "$(PATH=/usr/bin:/bin command -v sleep)" 0.1
+    done
+    echo "noch-da" ;;
+esac
+''',
+}
+
+
+@pytest.fixture
+def probe(wurzel):
+    """Ein Wegwerf-System für die Ablaufprobe: Attrappen, eine Uhr (12 Uhr, damit die Datumsgrenzen nie in die Probe laufen), /run und die
+    Dateien der Produktion, die die Probe nie anfassen darf."""
+    w, shell = wurzel
+    a = w / "attrappen"
+    a.mkdir()
+    (w / "run").mkdir()
+    produktion = w / "etc/ssh/authorized_keys.d"
+    produktion.mkdir(parents=True)
+    (produktion / "wamo-kern").write_text("produktiv-kern\n")
+    (produktion / "wamo").write_text("produktiv-pc\n")
+    for name, text in ATTRAPPEN_PROBE.items():
+        (a / name).write_bytes(text.encode("utf-8"))
+        (a / name).chmod(0o755)
+    start = datetime.now().replace(hour=12, minute=0, second=7, microsecond=0)
+    (a / "jetzt").write_text(str(int(start.timestamp())))
+    return {"w": w, "shell": shell, "a": a, "start": start}
+
+
+def probelauf(probe, *args: str) -> subprocess.CompletedProcess:
+    return lauf(ABLAUFPROBE, *args, shell_wurzel=probe["shell"], variable="WAMO_JOB_KERN_WURZEL")
+
+
+def probe_log(probe) -> list[str]:
+    pfad = probe["a"] / "aufrufe.log"
+    return pfad.read_text(encoding="utf-8").splitlines() if pfad.exists() else []
+
+
+def versuche(probe) -> list[tuple[str, str, str]]:
+    """Alle Anmeldungen der Probe an der Attrappe: (Befehl, Optionen der Zeile, Ergebnis), in der Reihenfolge der Aufrufe."""
+    erg = []
+    for z in probe_log(probe):
+        m = re.fullmatch(r"ssh-versuch befehl=(.*?) optionen=(.*) ergebnis=(angenommen|abgelehnt)", z)
+        if m:
+            erg.append((re.sub(r"^halten \d+$", "halten N", m.group(1)), m.group(2), m.group(3)))
+    return erg
+
+
+def zeilen_der_tabelle(ausgabe: str) -> dict[str, str]:
+    return {m.group(1): z for z in ausgabe.splitlines() if (m := re.match(r"\| ([A-Z][0-9]?) \|", z))}
+
+
+def aufgeraeumt(probe) -> None:
+    assert list((probe["w"] / "run").iterdir()) == [], "der Arbeitsordner der Probe ist weg"
+    assert not (probe["a"] / "passwd_belegt").exists(), "der Wegwerf-Benutzer ist entfernt"
+    assert not (probe["a"] / "sshd_laeuft").exists(), "die sshd-Instanz der Probe ist beendet"
+    if any(z.startswith("useradd ") for z in probe_log(probe)):
+        assert f"userdel {PROBE_BENUTZER}" in probe_log(probe)
+
+
+@braucht_bash
+def test_die_ablaufprobe_belegt_die_proben_a_bis_f_und_raeumt_alles_auf(probe):
+    vorher = dateien_liste(probe["w"])
+    p = probelauf(probe)
+    assert p.returncode == 0, p.stdout + p.stderr
+    tab = zeilen_der_tabelle(p.stdout)
+    assert list(tab) == PROBE_TABELLE, list(tab)
+    for kennung, zeile in tab.items():
+        assert zeile.endswith("| notiert |" if kennung in ("D3", "F") else "| ok |"), zeile
+    assert dateien_liste(probe["w"]) == vorher  # nichts in der Produktion (authorized_keys.d, kernkanal.conf, ...) angefasst, nichts zurückgelassen
+    aufgeraeumt(probe)
+    log = probe_log(probe)
+    assert log.index(f"userdel {PROBE_BENUTZER}") > log.index("sshd beendet") > [i for i, z in enumerate(log) if z.startswith("useradd ")][0]
+    assert "key expired" in p.stdout and "bad key options" in p.stdout  # die Journalzeilen von B und E stehen wörtlich in der Ausgabe
+    assert "Europe/Berlin" in p.stdout  # F: die Zeitzone laut timedatectl
+
+
+@braucht_bash
+def test_die_ablaufprobe_meldet_die_anmeldungen_in_der_geplanten_reihenfolge_mit_den_geplanten_zeilen(probe):
+    p = probelauf(probe)
+    assert p.returncode == 0, p.stdout + p.stderr
+    start = probe["start"]
+    minute = (start + timedelta(minutes=3)).strftime("%Y%m%d%H%M")  # Form JJJJMMTTHHMM, drei Minuten voraus
+    gestern, heute, morgen = ((start + timedelta(days=d)).strftime("%Y%m%d") for d in (-1, 0, 1))
+    basis = 'restrict,from="127.0.0.1"'
+    mit = f'{basis},expiry-time="{minute}"'
+    assert versuche(probe) == [
+        ("probe", mit, "angenommen"),                                        # A
+        ("halten N", mit, "angenommen"),                                     # C: die Sitzung wird vor dem Ablauf geöffnet
+        ("probe", mit, "abgelehnt"),                                         # B: nach dem Ablauf
+        ("probe", basis, "angenommen"),                                      # B2: Kontrolle, dieselbe Zeile ohne expiry-time geht
+        ("probe", f'{basis},expiry-time="{gestern}"', "abgelehnt"),          # D1
+        ("probe", f'{basis},expiry-time="{morgen}"', "angenommen"),          # D2
+        ("probe", f'{basis},expiry-time="{heute}"', "abgelehnt"),            # D3: ein reines Datum gilt ab 00:00
+        ("probe", f'{basis},expiry-tme="{morgen}"', "abgelehnt"),            # E: der Tippfehler macht die Zeile ungültig
+    ]
+    assert "gilt ab 00:00" in zeilen_der_tabelle(p.stdout)["D3"]
+
+
+@braucht_bash
+def test_die_sshd_instanz_der_probe_lauscht_nur_auf_loopback_mit_eigener_konfiguration_und_einem_fremden_benutzer(probe):
+    assert probelauf(probe).returncode == 0
+    konfig = (probe["a"] / "sshd_konfig_inhalt").read_text(encoding="utf-8").splitlines()
+    for zeile in ("Port 22222", "ListenAddress 127.0.0.1", "AddressFamily inet", f"AllowUsers {PROBE_BENUTZER}", "PermitRootLogin no",
+                  "PasswordAuthentication no", "AuthenticationMethods publickey", "StrictModes yes", "AllowTcpForwarding no", "PermitTTY no"):
+        assert zeile in konfig, zeile
+    assert any(z.startswith("ForceCommand /bin/sh ") and z.endswith("/force.sh") for z in konfig)
+    assert not any(z.startswith(("Include", "Match")) for z in konfig)  # nie die Konfiguration der Produktion
+    assert [z.split()[1:] for z in konfig if z.startswith("AllowUsers")] == [[PROBE_BENUTZER]]  # genau ein Benutzer, weder wamo noch root
+    aufrufe_sshd = [z for z in probe_log(probe) if z.startswith("sshd ")]
+    assert aufrufe_sshd[0].startswith("sshd -t -f ") and any(z.startswith("sshd -D -f ") and " -E " in z for z in aufrufe_sshd)
+    useradd = next(z for z in probe_log(probe) if z.startswith("useradd "))
+    assert PROBE_BENUTZER in useradd and "--system" in useradd and "--shell /bin/sh" in useradd and "-p *" in useradd.replace("--password ", "-p ")
+
+
+@braucht_bash
+@pytest.mark.parametrize("fehler, kennung", [
+    ("ssh_ignoriert_ablauf", "B"),       # sshd setzt den Ablauf nicht durch: die Probe schlägt an
+    ("ssh_ignoriert_tippfehler", "E"),   # ein Tippfehler würde die Zeile nicht ungültig machen
+    ("ssh_sitzung_endet", "C"),          # die offene Sitzung bricht beim Ablauf ab
+])
+def test_belegt_die_probe_das_verhalten_nicht_endet_sie_mit_exit_1_und_raeumt_trotzdem_auf(probe, fehler, kennung):
+    (probe["a"] / fehler).write_text("")
+    p = probelauf(probe)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert zeilen_der_tabelle(p.stdout)[kennung].endswith("| FEHLER |")
+    aufgeraeumt(probe)
+
+
+@braucht_bash
+def test_kennt_sshd_die_option_nicht_bricht_die_probe_nach_a_ab_denn_alles_weitere_waere_wertlos(probe):
+    (probe["a"] / "ssh_kennt_ablauf_nicht").write_text("")
+    p = probelauf(probe)
+    assert p.returncode == 1 and "abgebrochen" in p.stdout + p.stderr, p.stdout + p.stderr
+    tab = zeilen_der_tabelle(p.stdout)
+    assert list(tab) == ["A"] and tab["A"].endswith("| FEHLER |")
+    assert len(versuche(probe)) == 1
+    aufgeraeumt(probe)
+
+
+@braucht_bash
+def test_lauscht_die_instanz_auch_ausserhalb_von_loopback_stoppt_die_probe_vor_der_ersten_anmeldung(probe):
+    (probe["a"] / "ss_aussen").write_text("")
+    p = probelauf(probe)
+    assert p.returncode == 1 and "127.0.0.1:22222" in p.stderr and "0.0.0.0:22222" in p.stderr, p.stdout + p.stderr
+    assert versuche(probe) == []
+    aufgeraeumt(probe)
+
+
+@braucht_bash
+@pytest.mark.parametrize("marke, erwartet", [("passwd_belegt", "besteht schon"), ("ss_belegt", "22222"), ("sshd_t_fehlt", "sshd -t")])
+def test_jede_vorbedingung_der_ablaufprobe_endet_mit_exit_3_ohne_benutzer_und_ohne_instanz(probe, marke, erwartet):
+    (probe["a"] / marke).write_text("")
+    p = probelauf(probe)
+    assert p.returncode == 3 and erwartet in p.stderr, p.stdout + p.stderr
+    assert not [z for z in probe_log(probe) if z.startswith(("useradd", "userdel", "sshd -D"))]
+    assert list((probe["w"] / "run").iterdir()) == []
+    assert versuche(probe) == []
+    assert (probe["a"] / "passwd_belegt").exists() == (marke == "passwd_belegt")  # einen schon vorhandenen Benutzer entfernt die Probe nie
+
+
+@braucht_bash
+def test_trocken_prueft_nur_die_vorbedingungen_und_schreibt_nichts(probe):
+    vorher = dateien_liste(probe["w"])
+    p = probelauf(probe, "--trocken")
+    assert p.returncode == 0 and "Trockenlauf" in p.stdout and "22222" in p.stdout, p.stdout + p.stderr
+    assert dateien_liste(probe["w"]) == vorher and probe_log(probe) == [] and list((probe["w"] / "run").iterdir()) == []
+
+
+@braucht_bash
+@pytest.mark.parametrize("args", [["--unfug"], ["ding"], ["--trocken", "extra"], ["--port", "22"]])
+def test_falsche_aufrufformen_der_ablaufprobe_enden_mit_exit_2_und_tun_nichts(probe, args):
+    p = probelauf(probe, *args)
+    assert p.returncode == 2, (args, p.stdout, p.stderr)
+    assert probe_log(probe) == [] and list((probe["w"] / "run").iterdir()) == []
+
+
+def test_die_ablaufprobe_hat_die_form_der_vorhandenen_und_fasst_die_produktion_nie_an():
+    text = lies(ABLAUFPROBE)
+    assert text.startswith("#!/usr/bin/env bash\n") and "set -euo pipefail" in text
+    assert "\r" not in text and chr(0x2014) not in text and chr(0x2013) not in text
+    assert not re.search(r"sk-ant-|ghp_|-----BEGIN", text)
+    assert "WAMO_JOB_KERN_WURZEL" in text and "läuft nicht als root" in text
+    kopf = text[:text.index("set -euo pipefail")]
+    for wort in ("Exit-Codes", "3 Vorbedingung nicht erfüllt", "nur am Server prüfbar", "22222", "127.0.0.1", "expiry-time", "Wegwerf"):
+        assert wort in kopf, wort
+    code = "\n".join(z for z in text.splitlines() if not z.strip().startswith("#"))
+    assert not re.search(r"systemctl|authorized_keys\.d|/etc/|logger|kernkanal|wamo-kern|/opt/wamo", code), "die Probe berührt die Produktion nie"
+    benutzer = re.search(r"^BENUTZER=(\S+)$", text, re.M).group(1)
+    assert benutzer == PROBE_BENUTZER and benutzer not in ("wamo", "root", "wamo-core")
+    assert re.search(r"^PORT=22222$", text, re.M) and "ListenAddress 127.0.0.1" in text and "AllowUsers $BENUTZER" in text
+    assert "trap aufraeumen EXIT" in text and 'userdel "$BENUTZER"' in text and "ANGELEGT" in text  # entfernt wird nur, was die Probe selbst anlegte
+    assert re.search(r"pkill -KILL -u \"\$BENUTZER\"", text) and not re.search(r"pkill (?!-KILL -u \"\$BENUTZER\")", text)  # nie ein anderer Benutzer
+
+
+@braucht_bash
+def test_bash_syntax_der_ablaufprobe():
+    p = subprocess.run([BASH, "-n", str(ABLAUFPROBE)], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr

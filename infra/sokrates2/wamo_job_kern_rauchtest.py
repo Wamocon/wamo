@@ -10,7 +10,8 @@ Jede Nein-Probe kennt ihren Grund: der Dispatcher meldet ihn im Ereignis kanal_g
 vergleicht ihn. Ein Exit-Code allein genügt nie: ein ssh-Fehler (255), eine Zeitüberschreitung oder ein anderer Grund gelten als nicht bestanden.
 
     --ping       Ja-Probe: ping über ssh, Antwort mit Version 7 oder höher und kanal=kern
-    --produktiv  alle Ja- und Nein-Proben, Isolation (wamo-core und wamo), Hostschlüssel, Dateirechte, PC-Datei unverändert (Prüfsumme)
+    --produktiv  alle Ja- und Nein-Proben, Isolation (wamo-core und wamo), Hostschlüssel, Dateirechte, Schlüsselzeile mit expiry-time am
+                 Tag nach ABLAUF, PC-Datei unverändert (Prüfsumme)
 
 Exit 0: alle Proben bestanden. 1: eine Probe ist fehlgeschlagen. 2: Umgebung ungeeignet (kein root, kein Linux, kein Schlüssel, keine laufende
 Instanz). Die Ausgabe nennt nie Werte aus Geheimnisdateien (nur Namen, Modi und ok oder FEHLER). Die Übergangsproben (Absturz-Neustart,
@@ -29,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 NUR_AM_SERVER = True  # alle Proben dieses Tests sind nur am Server prüfbar (S3), im Repo prüfen Tests nur den Aufbau
@@ -50,10 +52,14 @@ ABWEISUNG = "WAMO-Auftrag abgewiesen: "  # Anfang der Meldung des Dispatchers au
 BEFEHLE_GESCHLOSSEN = ("ping", "status", "pending", "cancel")  # wie wamo_job_kernkanal.py: Befehle bei geschlossenem Kanal
 BEFEHLE_NOTAUS = ("ping", "status")  # und bei gesetzter Notaus-Datei (ein Test vergleicht beide Listen mit dem Modul)
 ART_RE = re.compile(r"[a-z][a-z_]{1,29}")
+# Die Schlüsselzeile des Kerns (F7): expiry-time ist ein reines Datum, der Tag nach ABLAUF (die Form schreibt wamo-job-kern-einrichten.sh schluessel)
+ZEILE_RE = re.compile(rf'restrict,from="{re.escape(HOST)}",expiry-time="(?P<et>[0-9]{{8}})",command="/opt/wamo/bin/wamo-job-dispatch" '
+                      r"ssh-ed25519 [A-Za-z0-9+/]{68} wamo-kern-jobs")
 KOPF_START = {"auftrag": "Rauchtest, darf nie laufen", "system": "", "zugang": "folgt", "profil": "00000000"}
 UEBERGAENGE = ("Absturz-Neustart am freien Slot (systemctl kill, dann warte_auf_slot)", "Rückweg auf ein älteres Release (Entwicklung aus)",
                "PC und Kern gleichzeitig (belegt in beide Richtungen)", "ein PC über WireGuard landet nie im Kern-Kanal",
-               "Notaus mit laufendem Kern-Auftrag")
+               "Notaus mit laufendem Kern-Auftrag",
+               "sshd setzt expiry-time durch (wamo-job-kern-ablaufprobe.sh, Wegwerf-Schlüssel an einer zweiten sshd-Instanz auf Loopback)")
 
 # Sandbox-Eigenschaften der Unit, die der Test für den ssh-Aufruf übernimmt (nur einfache Werte; Exec*, Pfade und Zähler nie)
 UNIT_EIGENSCHAFTEN = ("NoNewPrivileges", "ProtectSystem", "ProtectHome", "PrivateTmp", "PrivateDevices", "ProtectKernelTunables",
@@ -381,9 +387,58 @@ def dateirechte() -> None:
     if NOTAUS.exists():
         ok, text = datei_ok(NOTAUS, 0o640, "root", "wamo")
         pruefe(ok, "Rechte " + text)
-    zeilen = [z for z in KERN_DATEI.read_text().splitlines() if z.strip()] if KERN_DATEI.exists() else []
-    pruefe(len(zeilen) == 1 and "expiry-time" not in zeilen[0] and zeilen[0].startswith('restrict,from="192.168.178.136",command="/opt/wamo/bin/wamo-job-dispatch" ssh-ed25519 ')
-           and zeilen[0].endswith(" wamo-kern-jobs"), "authorized_keys.d/wamo-kern: genau eine Zeile in der Form aus I1, ohne expiry-time")
+    schluesselzeile_pruefen()
+
+
+def folgetag(ablauf: str | None) -> str | None:
+    """Der Tag nach ABLAUF (JJJJMMTT): der Wert von expiry-time. Ein reines Datum gilt ab 00:00, ABLAUF gilt bis einschließlich. None, wenn
+    ablauf kein echtes Datum der Form JJJJMMTT ist."""
+    if not re.fullmatch(r"[0-9]{8}", ablauf or ""):
+        return None
+    try:
+        tag = datetime.strptime(ablauf, "%Y%m%d")
+    except ValueError:
+        return None
+    return (tag + timedelta(days=1)).strftime("%Y%m%d")
+
+
+def ablauf_aus_konfig(text: str) -> str | None:
+    """Der Wert von ABLAUF in kernkanal.conf; None, wenn der Schlüssel fehlt oder mehrfach steht (der Dispatcher lehnt Doppelte ab: nicht raten)."""
+    werte = [z.partition("=")[2].strip() for z in text.splitlines() if z.startswith("ABLAUF=")]
+    return werte[0] if len(werte) == 1 else None
+
+
+def zeile_ok(zeile: str, ablauf: str | None) -> tuple[bool, str]:
+    """Ist das die Schlüsselzeile des Kerns in der Form aus F7, mit expiry-time am Tag nach ABLAUF? Der Text nennt nie den Schlüssel."""
+    treffer = ZEILE_RE.fullmatch(zeile)
+    if not treffer:
+        fehlt = " (expiry-time fehlt: die Form vor F7)" if "expiry-time" not in zeile else ""
+        return False, "die Form stimmt nicht (restrict, from, expiry-time als reines Datum, command, ssh-ed25519, wamo-kern-jobs)" + fehlt
+    soll = folgetag(ablauf)
+    if soll is None:
+        return False, "ABLAUF in kernkanal.conf fehlt oder ist kein Datum der Form JJJJMMTT: expiry-time lässt sich nicht abgleichen"
+    if treffer.group("et") != soll:
+        return False, f"expiry-time {treffer.group('et')}, erwartet {soll} (der Tag nach ABLAUF)"
+    return True, f"expiry-time {soll} ist der Tag nach ABLAUF"
+
+
+def schluesselzeile_pruefen() -> None:
+    """authorized_keys.d/wamo-kern: genau eine Zeile in der Form aus F7, expiry-time passend zu ABLAUF in kernkanal.conf. Dass sshd die Option
+    durchsetzt, belegt nicht dieser Test, sondern wamo-job-kern-ablaufprobe.sh (nur am Server prüfbar, mit Wegwerf-Schlüssel); die Zeile der
+    Produktion prüft die Ja-Probe ping."""
+    try:
+        zeilen = [z for z in KERN_DATEI.read_text().splitlines() if z.strip()]
+    except OSError:
+        zeilen = []
+    try:
+        ablauf = ablauf_aus_konfig(KONFIG.read_text())
+    except OSError:
+        ablauf = None
+    if len(zeilen) != 1:
+        pruefe(False, f"authorized_keys.d/wamo-kern: genau eine Zeile erwartet, gefunden {len(zeilen)}")
+        return
+    ok, text = zeile_ok(zeilen[0], ablauf)
+    pruefe(ok, f"authorized_keys.d/wamo-kern: genau eine Zeile in der Form aus F7, {text}")
 
 
 def summe(pfad: Path) -> str | None:

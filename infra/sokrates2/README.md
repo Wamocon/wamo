@@ -1345,7 +1345,7 @@ aus `geheim.env`.
 | --- | --- | --- |
 | `/var/lib/wamo-core/.ssh/id_ed25519_wamo_jobs` | `wamo-core` 0600 | Schlüssel des Kerns, entsteht nur auf dem Server (`ssh-keygen` per `runuser`) und verlässt ihn nie. Der öffentliche Teil liegt nie in `~/wamo-infra` |
 | `/var/lib/wamo-core/.ssh/known_hosts_wamo_jobs` | `wamo-core` 0644 | eine Zeile aus dem lokalen Hostschlüssel, abgeglichen gegen `--hostfingerabdruck` |
-| `/etc/ssh/authorized_keys.d/wamo-kern` | root 0644 | genau eine Zeile `restrict,from="192.168.178.136",command="/opt/wamo/bin/wamo-job-dispatch" ssh-ed25519 ... wamo-kern-jobs`, ohne `expiry-time` |
+| `/etc/ssh/authorized_keys.d/wamo-kern` | root 0644 | genau eine Zeile `restrict,from="192.168.178.136",expiry-time="<JJJJMMTT>",command="/opt/wamo/bin/wamo-job-dispatch" ssh-ed25519 ... wamo-kern-jobs`; `expiry-time` ist der Tag nach `ABLAUF` aus `kernkanal.conf` |
 | `/etc/wamo/kernkanal.conf` | root:wamo 0640 | Regeln `SCHLUESSEL=wert`: `KANAL`, `ABLAUF`, `ARTEN`, `REPOS`, `DIENSTE`, `MAX_TURNS`, `MAX_BUDGET_USD`, `MAX_START_STUNDE`, `MAX_START_TAG`, `MAX_LAUFZEIT_TAG_S`, `MAX_FOLGEN`, `MIN_ABSTAND_S`, `MIN_PLATZ_MB`. Der Dispatcher lehnt unbekannte oder doppelte Schlüssel und Werte außerhalb der Bereiche ab |
 | `/etc/wamo/kernkanal.notaus` | root:wamo 0640 | Sperrdatei, schon die Existenz schließt den Kanal |
 | `/etc/systemd/system/wamo-core@.service.d/wamo-entwicklung-buero.conf` | root 0644, ohne Spiegel-Marke | der Schalter `WAMO_ENTWICKLUNG_BUERO=an` mit `WAMO_ENTWICKLUNG_ORT`, `WAMO_ENTWICKLUNG_PROFILE`, `WAMO_ENTWICKLUNG_KOSTEN_AUFTRAG_USD`, `WAMO_ENTWICKLUNG_KOSTEN_TAG_USD`; die Units behalten `WAMO_ENTWICKLUNG=aus`, die Vorprüfung bleibt unverändert |
@@ -1359,8 +1359,8 @@ aus `geheim.env`.
 
 1. `wamo-job-einrichten.sh` (Dispatcher 7, sshd-Block, Modul). Es bricht ohne Ruhe mit Exit 3 ab, sichert die vorige `wamo.conf` dauerhaft und der Totmannschalter stellt sie wieder her.
 2. `wamo-job-kern-einrichten.sh schluessel --trocken`, dann `schluessel --ablauf <JJJJMMTT> --hostfingerabdruck <SHA256:...>`: Vorbedingungen (OpenSSH ab 7.6, `fail2ban` mit Ausnahme für
-   192.168.178.136 und 127.0.0.1, Dispatcher 7, sshd-Block, Ruhe), Schlüssel, known_hosts, Zeile, `kernkanal.conf` mit `KANAL=zu`, Rauchtest, Ja-Probe `ping`; scheitert sie, wird die Zeile zurückgenommen.
-3. `/opt/wamo-core/bin/wamo-job-kern-rauchtest --produktiv` (als root): alle Ja- und Nein-Proben, Isolation, Dateirechte, PC-Datei unverändert. **Alle Proben sind nur am Server prüfbar**; die Übergangsproben
+   192.168.178.136 und 127.0.0.1, Dispatcher 7, sshd-Block, Ruhe), Schlüssel, known_hosts, Zeile mit `expiry-time`, `kernkanal.conf` mit `KANAL=zu`, Rauchtest, Ja-Probe `ping`; scheitert sie, wird die Zeile zurückgenommen.
+3. `/opt/wamo-core/bin/wamo-job-kern-rauchtest --produktiv` (als root): alle Ja- und Nein-Proben, Isolation, Dateirechte, Schlüsselzeile mit `expiry-time` am Tag nach `ABLAUF`, PC-Datei unverändert. **Alle Proben sind nur am Server prüfbar**; die Übergangsproben
    (Absturz-Neustart, Rückweg, PC und Kern gleichzeitig, WireGuard, Notaus mit laufendem Auftrag) sind Handarbeit.
 4. `wamo-job-kern-einrichten.sh schalter an <release> --profil <user_id> --kosten-auftrag 3 --kosten-tag 10` (Vorabprüfungen: Schlüssel, known_hosts, Rauchtest, `SCHRANKEN_VERSION` im Zielrelease, kein
    `WAMO_ENTWICKLUNG*` in `core.env`, keine gleichnamige Datei in `wamo-core.service.d`, Ruhe), dann `wamo-core-slots.sh umschalten-kern`, `bewaehren 30`, `ausleiten`. Scheitert das vor dem Umschalten,
@@ -1375,8 +1375,23 @@ per lokalem `cancel` beenden (laufende zuerst, Sandbox gestoppt, Token widerrufe
 `kernkanal.conf` und Sperrdatei. `--trocken` zeigt nur an. **`wamo-job-rueckweg.sh` verweigert mit Exit 3, solange `authorized_keys.d/wamo-kern` besteht:** ein älterer Dispatcher kennt den Kern-Kanal nicht,
 die Zeile des Kerns bekäme die Rechte des PC-Kanals. Der Kern selbst bleibt bei jedem Rückweg unberührt: ältere Releases lesen `WAMO_ENTWICKLUNG_BUERO` nicht und starten mit Entwicklung aus.
 
-**Ablauf.** Die Schlüsselzeile läuft nicht über `expiry-time` (eine unbekannte Option macht die ganze Zeile ungültig), sondern über `ABLAUF=JJJJMMTT` in `kernkanal.conf`: bis einschließlich dieses Tages, höchstens 400 Tage
-voraus, Standard 30 Tage. Der Dispatcher erzwingt ihn (`abgelaufen`, hörbar statt „Schlüssel abgelehnt“). Verlängern: `schluessel --ablauf <JJJJMMTT> --hostfingerabdruck <SHA256:...>` (sichert die alte Konfiguration).
+**Ablauf in zwei Schichten (F7).** Die erste Schicht ist `ABLAUF=JJJJMMTT` in `kernkanal.conf`: bis einschließlich dieses Tages, höchstens 400 Tage voraus, Standard 30 Tage. Der Dispatcher
+erzwingt ihn (`abgelaufen`, hörbar statt „Schlüssel abgelehnt“). Die zweite Schicht ist `expiry-time` in der Schlüsselzeile: der **Tag nach `ABLAUF`**, nur als Datum, weil ein reines Datum ab 00:00 Systemzeit
+gilt und `ABLAUF` bis einschließlich gilt. sshd lehnt den Schlüssel dann selbst ab (nur „Schlüssel abgelehnt“, eine schon offene Sitzung bleibt bestehen). `schluessel` hält beide Werte gleich: bei einer
+Verlängerung schreibt es erst die Zeile, dann `kernkanal.conf`, bei einer Verkürzung erst `kernkanal.conf`, dann die Zeile, damit sshd den Schlüssel nie früher ablehnt als der Dispatcher. Ohne `--ablauf` gilt der
+Wert aus `kernkanal.conf`: ein neuer Lauf versieht so auch eine Zeile aus der Zeit vor F7 mit `expiry-time`. Ein überschrittener oder ungültiger `ABLAUF` stoppt vor jeder Änderung (Exit 3). Scheitert die
+Ja-Probe `ping` (ein Tippfehler im Optionsnamen macht die ganze Zeile ungültig), kommen die Zeile und ein geänderter `ABLAUF` zurück. `status` zeigt `expiry-time` und meldet jede Abweichung zu `ABLAUF`
+(fehlt, früher, später, kein reines Datum), der Rauchtest prüft die Zeile mit `expiry-time` am Tag nach `ABLAUF`. Verlängern: `schluessel --ablauf <JJJJMMTT> --hostfingerabdruck <SHA256:...>` (sichert die
+alte Konfiguration und die alte Zeile). F7 schützt nur den ssh-Schlüssel des Kerns und endet mit seinem Abbau. Für den PC-Weg (`authorized_keys.d/wamo`) gilt es nie: ein Ablauf dort sperrte den Laptop aus.
+
+**Ablaufprobe (nur am Server prüfbar).** `sudo bash ~/wamo-infra/wamo-job-kern-ablaufprobe.sh` (über `ssh wamo-sokrates2`, `--trocken` prüft nur die Vorbedingungen) belegt vor dem Einsatz, dass sshd `expiry-time`
+durchsetzt, ohne die Produktion zu berühren: eine zweite sshd-Instanz nur auf `127.0.0.1:22222` (eigene Konfiguration ohne `Include`, eigener Hostschlüssel, eigene `authorized_keys`, ein fester Echo-Befehl als
+`ForceCommand`, `AllowUsers` auf den Wegwerf-Benutzer `wamo-ablaufprobe`, weder `wamo` noch `root`) und ein Wegwerf-Schlüssel. Benutzer, Instanz und Ordner unter `/run` entfernt ein `trap` auch bei Abbruch. Die
+Instanz schreibt in eine eigene Logdatei: kein Journal der Produktion, kein `fail2ban`-Eintrag. Die Tabelle am Ende hält fest: A `expiry-time` drei Minuten voraus (Form `JJJJMMTTHHMM`), die Anmeldung gelingt. B nach
+dem Ablauf scheitert sie, die Journalzeilen stehen wörtlich in der Ausgabe, B2 ist die Kontrolle (dieselbe Zeile ohne die Option `expiry-time` geht wieder). C eine vor dem Ablauf geöffnete Sitzung bleibt bestehen. D1 und D2 ein
+reines Datum von gestern wird abgelehnt, von morgen angenommen, D3 das Datum von heute wird nach der beobachteten Grenze notiert (Annahme 7: ab 00:00). E ein Tippfehler im Optionsnamen macht die Zeile ungültig.
+F die Zeitzone laut `timedatectl`. Ein `FEHLER` ergibt Exit 1, und ohne ein bestandenes A bricht die Probe ab. Die Probe dauert rund vier Minuten. Reihenfolge am Server: Probe, dann `schluessel`
+(schreibt die Zeile mit `expiry-time`, Ja-Probe `ping`), dann `wamo-job-kern-rauchtest --produktiv`. Im Repo prüfen Tests nur den Ablauf der Probe mit Attrappen (Probelauf mit `WAMO_JOB_KERN_WURZEL`).
 
 **Risiko des Claude-Zugangs und Widerrufsstelle.** Der Kern kennt über `WAMO_SCHLUESSEL_KEK` die Zugänge aller Profile, ein übernommener Kern wäre ein Risiko für alle. Im Kern-Kanal gilt deshalb nur der eigene
 Zugang des Profils je Lauf (zweite stdin-Zeile, Quelle `token` oder `api`), nie der Serverzugang. Der Zugang erreicht die Sandbox, und Port 443 ist dort bewusst offen: Ein langlebiges Claude-Code-Token kann der

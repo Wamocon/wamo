@@ -495,11 +495,24 @@ def test_die_schluesselzeile_hat_in_skript_und_rauchtest_dieselbe_form():
     treffer = re.search(r'^\s*zeile="(restrict,.*)"$', SKRIPT, flags=re.M)
     assert treffer, "die Schlüsselzeile steht nicht mehr als zeile=... im Skript"
     zeile = treffer.group(1).replace('\\"', '"')
-    assert zeile == 'restrict,from="$KERN_IP",command="/opt/wamo/bin/wamo-job-dispatch" $typ $blob wamo-kern-jobs'  # I1, ohne expiry-time
+    # I1 mit F7: expiry-time steht zwischen from= und command= und trägt den Tag nach ABLAUF (nur ein Datum)
+    assert zeile == 'restrict,from="$KERN_IP",expiry-time="$expiry",command="/opt/wamo/bin/wamo-job-dispatch" $typ $blob wamo-kern-jobs'
     kern_ip = re.search(r"^KERN_IP=(\S+)$", SKRIPT, flags=re.M).group(1)
-    kopf = zeile.replace("$KERN_IP", kern_ip).replace("$typ $blob wamo-kern-jobs", "ssh-ed25519 ")
-    pruefung = _text(INFRA / "wamo_job_kern_rauchtest.py")
-    assert f"startswith('{kopf}')" in pruefung and 'endswith(" wamo-kern-jobs")' in pruefung
+    blob = "AAAAC3NzaC1lZDI1NTE5AAAAI" + "A" * 43
+    gebaut = zeile.replace("$KERN_IP", kern_ip).replace("$expiry", "20270101").replace("$typ", "ssh-ed25519").replace("$blob", blob)
+    assert R.zeile_ok(gebaut, "20261231")[0], R.zeile_ok(gebaut, "20261231")[1]  # der Rauchtest nimmt genau die Zeile an, die das Skript schreibt
+    assert not R.zeile_ok(gebaut, "20270101")[0] and not R.zeile_ok(gebaut.replace(',expiry-time="20270101"', ""), "20261231")[0]
+
+
+def test_expiry_time_ist_in_skript_und_rauchtest_derselbe_tag_nach_ablauf():
+    """Das Skript rechnet mit date, der Rauchtest mit datetime: beide müssen am Monats- und Jahresende und im Schaltjahr gleich rechnen."""
+    assert re.search(r'^folgetag\(\) \{.*date -d "\$1 \+1 day" \+%Y%m%d', SKRIPT, flags=re.M), "der Tag nach ABLAUF kommt aus folgetag()"
+    for tag in ("20261231", "20260228", "20240228", "20240229", "20261111"):
+        erwartet = (datetime.strptime(tag, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+        assert R.folgetag(tag) == erwartet, tag
+        if shutil.which("bash") and os.name != "nt":
+            ist = subprocess.run(["bash", "-c", f'date -d "{tag} +1 day" +%Y%m%d'], capture_output=True, text=True).stdout.strip()
+            assert ist == erwartet, tag
 
 
 # ================================================================== unveränderte Dateien (Prüfsummen), SELF_REPO
