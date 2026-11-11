@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import types
 import uuid
 from dataclasses import dataclass
 
@@ -31,6 +32,12 @@ SECHS = {"ticket_suchen", "ticket_anlegen", "ticket_aendern", "ticket_verschiebe
 class LaborIdentity(Identity):
     labor_art: str | None = "platz"
     labor_platz: int | None = 3
+
+
+@pytest.fixture(autouse=True)
+def _mindestversion(monkeypatch):
+    """Ohne WAMO_LABOR_EINWILLIGUNG_MIN nimmt der Kern keine Laborsitzung an: die Attrappe erfasst Version 1."""
+    monkeypatch.setenv("WAMO_LABOR_EINWILLIGUNG_MIN", "1")
 
 
 async def ruhe():
@@ -154,8 +161,12 @@ def test_laborart_und_platz_aus_der_identitaet():
     ohne = Identity(PROFIL, "Niko", "admin", "du")
     assert w.laborart(ohne) is None and w.platz_von(ohne) is None
     assert w.laborart(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_art="schaufenster")) == "schaufenster"
-    assert w.laborart(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_art="")) is None
     assert w.laborart(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_art=None)) is None
+    # dieselbe Regel wie im Kern (labor.art_normalisieren): ein leerer oder unbekannter Wert heißt platz, nie "kein Labor"
+    for roh in ("", "irgendwas", 5):
+        assert w.laborart(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_art=roh)) == "platz", roh
+        assert w.laborart(types.SimpleNamespace(labor_art=roh)) == "platz", roh  # auch eine Identität, die nicht von Identity erbt
+    assert w.laborart(types.SimpleNamespace()) is None
     assert w.platz_von(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_platz=16)) == 16
     for kaputt in (0, 17, -1, "3", True, 3.5, None):
         assert w.platz_von(LaborIdentity(PROFIL, "G", "mitglied", "du", labor_platz=kaputt)) is None
@@ -202,6 +213,17 @@ async def test_start_liest_den_durchlauf_und_ist_fail_closed():
                               client=client, mail_domain="labor.test")
     assert e.value.code == "nicht_erreichbar"
     await client.aclose()
+
+
+@pytest.mark.parametrize("fehlt", [None, "", " ", "0", "00"])
+async def test_ohne_gueltige_mindestversion_gibt_es_keine_sitzung(monkeypatch, fehlt):
+    """Dieselbe Regel wie bei der Annahme (labor.einwilligung_min): fehlt die Einstellung oder ist sie 0, gilt keine Einwilligung (fail-closed)."""
+    if fehlt is None:
+        monkeypatch.delenv("WAMO_LABOR_EINWILLIGUNG_MIN", raising=False)
+    else:
+        monkeypatch.setenv("WAMO_LABOR_EINWILLIGUNG_MIN", fehlt)
+    with pytest.raises(w.LaborNichtBereit):
+        await bauen()
 
 
 async def test_einwilligung_mindestversion_aus_der_umgebung(monkeypatch):

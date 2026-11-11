@@ -16,6 +16,7 @@ Attrappe nicht. Das Geheimnis steht nie in Meldungen, Protokollen oder repr().
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import os
@@ -232,13 +233,22 @@ class LaborClient:
         versuche = 2 if schreibend else 1  # nur ein Schreibaufruf mit demselben Idempotenzschlüssel darf wiederholt werden
         for versuch in range(versuche):
             try:
-                return await self._einmal(methode, PFAD + pfad, params, roh, kopf, schreibend, erwartet)
+                return await self._mit_gesamtfrist(methode, PFAD + pfad, params, roh, kopf, schreibend, erwartet)
             except LaborFehler as e:
                 if versuch + 1 < versuche and e.code in WIEDERHOLBAR:
                     logger.info("Labor-Dienst: {} {} ({}), wiederhole mit demselben Schlüssel", methode, pfad.split("/")[1] if "/" in pfad else pfad, e.code)
                     continue
                 raise
         raise LaborFehler("dienst_fehler")  # nicht erreichbar
+
+    async def _mit_gesamtfrist(self, methode, pfad, params, roh, kopf, schreibend, erwartet) -> tuple[int, object]:
+        """Ein Versuch mit einer Gesamtfrist (Verbinden plus Lese- oder Schreibfrist). Die Fristen von httpx gelten je Schritt: ein Dienst, der
+        die Antwort Stück für Stück tropft, könnte den Aufruf sonst beliebig lange halten."""
+        try:
+            async with asyncio.timeout(VERBINDEN_SECS + (self._schreib if schreibend else self._lese)):
+                return await self._einmal(methode, pfad, params, roh, kopf, schreibend, erwartet)
+        except TimeoutError as e:
+            raise LaborFehler("zeitueberschreitung") from e
 
     async def _einmal(self, methode, pfad, params, roh, kopf, schreibend, erwartet) -> tuple[int, object]:
         frist = httpx.Timeout(self._schreib if schreibend else self._lese, connect=VERBINDEN_SECS)

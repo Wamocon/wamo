@@ -144,6 +144,24 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Testlabor, Integration der Stränge K1, K2 und S (Zweig `labor/int`, nicht ausgerollt; Sicherheitsreview des Gesamtstands). Der Klick auf eine
+  Labor-Freigabekarte (`freigabe` mit job `labor`) erreicht jetzt `LaborFreigaben`: `build_session` hängt den Entscheider in die Annahme
+  (`LaborSitzung.freigabe`), vorher blieb jeder Klick wirkungslos. Die Erlaubnisliste der Werkzeuge wird für das Endergebnis geprüft, nach den
+  Ticket- und Mail-Werkzeugen. Fällt der Dienst zwischen Annahme und Werkzeugen aus, bekommt die Person eine klare Ablehnung (503) statt einer
+  Ausnahme, der Modellzugang wird geschlossen; das Ende des Durchlaufs erledigt offene Karten vor dem Schließen. Es gibt nur noch einen Weg zum
+  Dienst der Kollegen: `labor_durchlauf.ClientQuelle` nutzt `labor_client.client_aus_umgebung` (Adresse, Token, Zertifikat, Antwort streng, keine
+  Proxys aus der Umgebung, nie die Attrappe), die Mindestversion der Einwilligung gilt in den Werkzeugen wie bei der Annahme. Jeder Aufruf des
+  Dienstes hat eine Gesamtfrist, die Durchlaufabfrage beim Klick höchstens 10 Sekunden. Fällt der Dienst länger als 60 Sekunden aus (12
+  Fehlversuche der Wache), endet die Sitzung samt Textspeicherung. Ratenbegrenzung im Kern (`labor_limit.py`, Werte über Einstellungen
+  änderbar): getippter Text mit 2 Sekunden Abstand und 40000 Zeichen je Sitzung (`WAMO_LABOR_TEXT_ABSTAND_SECS`, `WAMO_LABOR_TEXT_MAX_ZEICHEN`),
+  höchstens 10 Websuchen je Sitzung (`WAMO_LABOR_SUCHEN_MAX`), höchstens 20 `/start` und Offer je Profil und Minute mit 429 und Code
+  `labor_zu_viele_anfragen` (`WAMO_LABOR_ANFRAGEN_MAX`). Der Laborprompt sagt bei `WAMO_LABOR_TEXT_SPEICHERN=an` nicht mehr, es werde nichts
+  gespeichert. Alle 13 Einstellungen `WAMO_LABOR_*` stehen in `ERLAUBT` von `infra/sokrates2/wamo_core_env.py` (nicht in `AUS_ENV` des
+  PC-Skripts), `WAMO_LABOR_TOKEN` ist ein Geheimnis und wird nie angezeigt. Reihenfolge beim Ausrollen: erst die Migration 0018, dann der Kern.
+  Ohne die Spalten `labor_art`, `labor_platz` und `labor_aktiv` bekommt jedes Profil 503, auch der Admin (gewollt, Ausfall statt Öffnung).
+  Tests: Der Dienst der Kollegen ist in den Tests an einer Stelle die Attrappe (`labor_testhilfe.py`), ein Test führt eine ganze Laborsitzung von der
+  Annahme über Werkzeuge und Freigabeklick bis zum Ende des Durchlaufs durch `build_session`. Das Schau-Profil ohne Platz hat laut Migration kein
+  Test-Jira und damit nur die Basiswerkzeuge (Plan 3.1 nennt Ticket und Mail auch für das Schaufenster, offen für Niko).
 - Ruhe-Prüfung von `wamo-job-einrichten.sh`: Die Benutzerdienste `xdg-document-portal` und `xdg-permission-store` von `wamo` (D-Bus-aktiviert,
   laufen seit Wochen) zählten als laufender Auftrag und brachten die Einrichtung mit Exit 3 zum Abbruch (nichts geändert). Beide Namen
   stehen jetzt in der Ausnahmeliste, jeder andere Prozess und jeder Auftrag neben den Portalen bricht weiter ab (Test).

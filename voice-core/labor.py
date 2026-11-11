@@ -25,6 +25,8 @@ ARTEN = ("platz", "schaufenster")
 STRENGSTE_ART = "platz"  # ein unbekannter Wert in labor_art heißt platz, nie "kein Labor"
 PLATZ_MIN, PLATZ_MAX = 1, 16
 CODE_PFAD_GESPERRT = "labor_pfad_gesperrt"
+CODE_ZU_OFT = "labor_zu_viele_anfragen"  # /start und Offer eines Profils über der Grenze (labor_limit.AnfragenFenster), Status 429
+GRUND_ZU_OFT = "Zu viele Anfragen in kurzer Zeit. Bitte kurz warten und dann noch einmal versuchen."
 CODE_PROFIL = "labor_profil_unstimmig"
 GRUND_PROFIL = "Das Laborprofil ist nicht stimmig eingerichtet."
 GRUND_DEAKTIVIERT = "Das WAMO-Profil ist deaktiviert."
@@ -201,9 +203,10 @@ def werkzeuge_erlaubt(art: object) -> frozenset[str]:
     return _WERKZEUGE[art_normalisieren(art) or STRENGSTE_ART]
 
 
-def werkzeuge_pruefen(identity: object, namen: Iterable[object]) -> None:
+def werkzeuge_pruefen(identity: object, namen: Iterable[object], *, genau: frozenset[str] | None = None) -> None:
     """Die Namen der Werkzeuge einer Laborsitzung (im Kontext und am LLM registriert) müssen die Basiswerkzeuge enthalten und dürfen nichts
-    außerhalb der Erlaubnisliste enthalten. Sonst wirft sie LaborPolitikFehler, und die Sitzung wird nicht gebaut."""
+    außerhalb der Erlaubnisliste enthalten. genau: die Liste, die diese Sitzung tatsächlich haben muss (Basis, mit Platz dazu Ticket und Mail): dann
+    muss die Menge ihr gleichen, nichts Fremdes und nichts Fehlendes. Sonst wirft sie LaborPolitikFehler, und die Sitzung wird nicht gebaut."""
     art = art_normalisieren(getattr(identity, "labor_art", None))
     if art is None:
         raise LaborPolitikFehler("werkzeuge_pruefen ohne Laborprofil")
@@ -214,6 +217,14 @@ def werkzeuge_pruefen(identity: object, namen: Iterable[object]) -> None:
     fehlend = sorted(WERKZEUGE_BASIS - vorhanden)
     if fehlend:
         raise LaborPolitikFehler(f"Basiswerkzeuge fehlen in der Laborsitzung: {', '.join(fehlend)}")
+    if genau is not None:
+        if not genau <= _WERKZEUGE[art]:
+            raise LaborPolitikFehler("Die erwartete Werkzeugliste liegt außerhalb der Laborliste")
+        zu_viel, zu_wenig = sorted(str(n) for n in vorhanden - genau), sorted(genau - vorhanden)
+        if zu_viel or zu_wenig:
+            raise LaborPolitikFehler(
+                "Die Werkzeuge der Laborsitzung weichen von der erwarteten Liste ab"
+                + (f", zu viel: {', '.join(zu_viel)}" if zu_viel else "") + (f", fehlt: {', '.join(zu_wenig)}" if zu_wenig else ""))
 
 
 def registrierte_namen(llm: object) -> set[object]:

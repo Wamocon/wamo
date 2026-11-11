@@ -64,6 +64,7 @@ from loguru import logger
 
 import labor
 import labor_durchlauf
+import labor_limit
 from memory import ANREDEN, ROLLEN, DatabaseUnavailable, Profile, ProfileDirectory, normalize_uuid, shared_database
 from wamo_tls import https_context
 
@@ -491,11 +492,14 @@ def _replay(body: bytes, receive: Receive) -> Receive:
 class AccessMiddleware:
     """ASGI-Middleware vor dem Pipecat-Runner (eingehängt über install_access_gate)."""
 
-    def __init__(self, app, gate: AccessGate, labor_pruefer: Callable[[Identity], Awaitable[Any]] | None = None):
+    def __init__(self, app, gate: AccessGate, labor_pruefer: Callable[[Identity], Awaitable[Any]] | None = None,
+                 labor_fenster: labor_limit.AnfragenFenster | None = None):
         self.app = app
         self.gate = gate
         # Laborprofile: Durchlauf und Einwilligung bei /start und jedem Offer (labor_durchlauf.pruefen); nur Tests setzen etwas anderes
         self._labor_pruefer = labor_pruefer or labor_durchlauf.pruefen
+        # Laborprofile: höchstens so viele /start und Offer je Profil und Fenster (Ratenbegrenzung, noch vor dem Aufruf des Dienstes)
+        self._labor_fenster = labor_fenster or labor_limit.AnfragenFenster()
 
     async def _labor_urteil(self, identity: Identity, scope) -> tuple[int, str, str | None] | None:
         """None, wenn die Anfrage eines Laborprofils durchgelassen wird, sonst (Status, Grund, Code). Zuerst die Pfadliste (exakt, Default deny),
@@ -505,6 +509,8 @@ class AccessMiddleware:
             return 403, "Dieser Weg ist für dieses Profil gesperrt.", labor.CODE_PFAD_GESPERRT
         if art not in ("start", "offer"):
             return None
+        if not self._labor_fenster.zulassen(identity.user_id):
+            return 429, labor.GRUND_ZU_OFT, labor.CODE_ZU_OFT
         try:
             urteil = await self._labor_pruefer(identity)
         except Exception as e:  # fail-closed

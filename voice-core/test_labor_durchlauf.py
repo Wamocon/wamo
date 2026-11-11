@@ -6,11 +6,14 @@ Ausführen:  python -m pytest -p no:cacheprovider -q test_labor_durchlauf.py   (
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import httpx
 
+import labor_client
 import labor_durchlauf as ld
+import labor_vertrag
 from auth_gate import Identity
 from labor import laborfelder_stimmig  # noqa: F401  (Schnittstelle, die labor_durchlauf nutzt)
 
@@ -121,9 +124,19 @@ class PruefenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await ld.pruefen(ident, quelle=FesteQuelle(stand()), min_version=2)).status, 503)
 
 
-class HttpQuelleTests(unittest.IsolatedAsyncioTestCase):
+TOKEN = "t" * 43
+URL = "https://labor.test.invalid:9443"
+
+
+def einstellung(**kw):
+    return mock.patch.dict("os.environ", {"WAMO_LABOR_URL": URL, "WAMO_LABOR_TOKEN": TOKEN, **kw})
+
+
+class ClientQuelleTests(unittest.IsolatedAsyncioTestCase):
+    """Die Quelle der Zugangskontrolle ist der Dienstclient des Kerns (labor_client.py): ein Weg zum Dienst für Start, Wache und Werkzeuge."""
+
     def quelle(self, handler):
-        return ld.HttpQuelle("https://labor.test.invalid:9443", "TESTTOKEN", transport=httpx.MockTransport(handler))
+        return ld.ClientQuelle(transport=httpx.MockTransport(handler))
 
     async def test_aufruf_nach_vertrag_v1(self):
         gesehen = {}
@@ -132,41 +145,62 @@ class HttpQuelleTests(unittest.IsolatedAsyncioTestCase):
             gesehen["url"], gesehen["kopf"] = str(request.url), dict(request.headers)
             return httpx.Response(200, json=stand())
 
-        antwort = await self.quelle(handler).durchlauf(4)
+        with einstellung():
+            antwort = await self.quelle(handler).durchlauf(4)
         self.assertEqual(gesehen["url"], "https://labor.test.invalid:9443/api/kern/durchlauf")
-        self.assertEqual(gesehen["kopf"]["authorization"], "Bearer TESTTOKEN")
+        self.assertEqual(gesehen["kopf"]["authorization"], f"Bearer {TOKEN}")
         self.assertEqual(gesehen["kopf"]["x-wamo-platz"], "4")
-        self.assertEqual(ld.durchlauf_lesen(antwort).durchlauf_id, D1)
+        self.assertEqual(ld.durchlauf_lesen(antwort), ld.Durchlauf(D1, True, 2))
 
-    async def test_fehlerantworten(self):
-        for status in (401, 404, 409, 429, 500, 503):
-            with self.subTest(status=status), self.assertRaises(ld.DurchlaufFehler):
-                await self.quelle(lambda r, s=status: httpx.Response(s, json={"fehler": "x"})).durchlauf(1)
-        with self.assertRaises(ld.DurchlaufFehler):
-            await self.quelle(lambda r: httpx.Response(200, content=b"<html>")).durchlauf(1)
-        with self.assertRaises(ld.DurchlaufFehler):
-            await self.quelle(lambda r: httpx.Response(200, content=b'{"x": "' + b"a" * 70000 + b'"}')).durchlauf(1)
+    async def test_fehlerantworten_sind_fehler_und_die_pruefung_ist_zu(self):
+        antworten = [httpx.Response(s, json={"fehler": "x"}) for s in (401, 404, 409, 429, 500, 503)]
+        antworten += [httpx.Response(200, content=b"<html>"), httpx.Response(200, content=b'{"x": "' + b"a" * 70000 + b'"}'),
+                      httpx.Response(200, json={**stand(), "zusatz": 1})]  # nur die Felder des Vertrags
+        for antwort in antworten:
+            with self.subTest(status=antwort.status_code, laenge=len(antwort.content)), einstellung():
+                quelle = self.quelle(lambda r, a=antwort: a)
+                with self.assertRaises(labor_client.LaborFehler):
+                    await quelle.durchlauf(1)
+                urteil = await ld.pruefen(platz_identitaet(), quelle=quelle, min_version=2)
+                self.assertEqual((urteil.status, urteil.code), (503, ld.CODE_DIENST))
 
-    def test_adresse_und_token_werden_geprueft(self):
-        for url in ("", "ftp://x", "http://labor.test.invalid", "labor.test", "https://"):
-            with self.subTest(url=url), self.assertRaises(ValueError):
-                ld.HttpQuelle(url, "t")
-        with self.assertRaises(ValueError):
-            ld.HttpQuelle("https://labor.test.invalid", "")
-        ld.HttpQuelle("http://127.0.0.1:9000", "t")  # Loopback ohne TLS ist erlaubt
+    async def test_unbrauchbare_einstellung_ist_zu_ohne_einen_wert_zu_nennen(self):
+        faelle = [("", TOKEN), ("ftp://x", TOKEN), ("http://labor.test.invalid", TOKEN), ("labor.test", TOKEN), ("https://", TOKEN),
+                  (f"https://{labor_vertrag.ATTRAPPE_HOST}", TOKEN), (URL, ""), (URL, "kurz"), (URL, "t" * 300)]
+        for url, token in faelle:
+            with self.subTest(url=url, token=len(token)), mock.patch.dict("os.environ", {"WAMO_LABOR_URL": url, "WAMO_LABOR_TOKEN": token}):
+                quelle = self.quelle(lambda r: httpx.Response(200, json=stand()))
+                with self.assertRaises(labor_client.LaborKonfigFehler) as ctx:
+                    await quelle.durchlauf(1)
+                self.assertNotIn(token or "\0", str(ctx.exception))
+                self.assertEqual((await ld.pruefen(platz_identitaet(), quelle=quelle, min_version=2)).status, 503)
 
-    def test_der_token_steht_nicht_in_der_darstellung(self):
-        self.assertNotIn("TESTTOKEN", repr(self.quelle(lambda r: httpx.Response(200))))
+    async def test_der_client_ist_nach_jeder_frage_zu(self):
+        clients = []
+        echt = labor_client.client_aus_umgebung
 
-    def test_quelle_aus_env(self):
-        with mock.patch.dict("os.environ", {"WAMO_LABOR_URL": "", "WAMO_LABOR_TOKEN": ""}):
-            self.assertIsNone(ld.quelle_aus_env())
-        with mock.patch.dict("os.environ", {"WAMO_LABOR_URL": "https://labor.test.invalid", "WAMO_LABOR_TOKEN": ""}):
-            self.assertIsNone(ld.quelle_aus_env())
-        with mock.patch.dict("os.environ", {"WAMO_LABOR_URL": "http://labor.test.invalid", "WAMO_LABOR_TOKEN": "t"}):
-            self.assertIsNone(ld.quelle_aus_env())  # kein TLS im Netz
-        with mock.patch.dict("os.environ", {"WAMO_LABOR_URL": "https://labor.test.invalid", "WAMO_LABOR_TOKEN": "t"}):
-            self.assertIsInstance(ld.quelle_aus_env(), ld.HttpQuelle)
+        def merken(platz, **kw):
+            clients.append(echt(platz, **kw))
+            return clients[-1]
+
+        with einstellung(), mock.patch.object(labor_client, "client_aus_umgebung", merken):
+            await self.quelle(lambda r: httpx.Response(200, json=stand())).durchlauf(2)
+            with self.assertRaises(labor_client.LaborFehler):
+                await self.quelle(lambda r: httpx.Response(500)).durchlauf(2)
+        self.assertEqual(len(clients), 2)
+        self.assertTrue(all(c._http.is_closed for c in clients))
+
+    def test_quelle_aus_env_ist_der_dienstclient(self):
+        self.assertIsInstance(ld.quelle_aus_env(), ld.ClientQuelle)  # die Einstellung wird erst bei der Frage gelesen und geprüft
+        with mock.patch.object(ld, "_quelle", None):
+            self.assertIs(ld.quelle_holen(), ld.quelle_holen())
+
+    def test_es_gibt_keinen_zweiten_weg_zum_dienst(self):
+        """Das Modul baut keinen eigenen HTTP-Client und liest die Einstellung nicht selbst: Adresse, Token, Zertifikat und Antwort prüft nur labor_client."""
+        quelltext = Path(ld.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("httpx.AsyncClient", quelltext)
+        self.assertNotIn("getenv(\"WAMO_LABOR_URL\")", quelltext)
+        self.assertNotIn("getenv(\"WAMO_LABOR_TOKEN\")", quelltext)
 
 
 class WacheTests(unittest.IsolatedAsyncioTestCase):
@@ -194,6 +228,36 @@ class WacheTests(unittest.IsolatedAsyncioTestCase):
         w._quelle = FesteQuelle(stand())
         self.assertIsNone(await w.check())
         self.assertEqual(w.fehler, 0)
+
+    async def test_ein_langer_ausfall_beendet_die_sitzung_fail_closed(self):
+        """Einwilligung und Durchlauf sind nicht mehr prüfbar: nach 12 Fehlversuchen (60 Sekunden bei 5 Sekunden Abstand) endet die Sitzung samt
+        Textspeicherung, sie läuft nicht bis zur Höchstdauer weiter."""
+        self.assertEqual(ld.MAX_AUSFALL_VERSUCHE * ld.POLL_SECS, 60)
+        w = self.wache(httpx.ConnectError("weg"))
+        for _ in range(ld.MAX_AUSFALL_VERSUCHE - 1):
+            self.assertIsNone(await w.check())
+        self.assertEqual(await w.check(), ld.GRUND_AUSFALL)
+        self.assertEqual(await w.check(), ld.GRUND_AUSFALL)  # und bleibt dabei
+        w._quelle = FesteQuelle(stand())  # kommt der Dienst vorher zurück, zählt von vorn
+        self.assertEqual(await self.nach_ausfall(11, stand()), None)
+
+    async def nach_ausfall(self, anzahl: int, antwort):
+        w = self.wache(*([httpx.ConnectError("weg")] * anzahl + [antwort]))
+        for _ in range(anzahl):
+            self.assertIsNone(await w.check())
+        return await w.check()
+
+    async def test_run_beendet_die_sitzung_nach_dem_langen_ausfall(self):
+        enden = []
+
+        async def schlafen(s):
+            pass
+
+        async def ende(grund):
+            enden.append(grund)
+
+        await self.wache(httpx.ConnectError("weg"), sleep=schlafen).run(ende)
+        self.assertEqual(enden, [ld.GRUND_AUSFALL])
 
     async def test_unlesbare_antwort_beendet_nicht(self):
         self.assertIsNone(await self.wache({"offen": True}).check())

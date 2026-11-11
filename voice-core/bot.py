@@ -117,6 +117,9 @@ from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from ja_waechter import JaWaechter, ja_waechter_an
 import labor
+import labor_durchlauf
+import labor_limit
+from labor_client import LaborFehler, LaborKonfigFehler
 from labor_rtvi import LaborRTVIProcessor
 from labor_sitzung import LaborSitzung
 from turn_wache import TurnWache
@@ -632,7 +635,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # sofort wirksames gemeinsames Wissen (M4) und kein Lernen aus diesen Abschnitten.
     turn = TurnState(transcript_len=lambda: len(transcript))
     if labor_sitzung:  # Laborprofil: nur die Erlaubnisliste, nie merken oder Fernzugriff (labor.WERKZEUGE_BASIS)
-        standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, erlaubt=labor.WERKZEUGE_BASIS).standard_tools)
+        standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, erlaubt=labor.WERKZEUGE_BASIS,
+                                             suchen_max=labor_limit.suchen_max()).standard_tools)
     else:
         standard_tools = list(register_tools(llm, memory, identity, turn, zugang=zugang, fernzugriff=fernzugriff).standard_tools)
     # Vorgänge (vorgaenge.py): was WAMO gerade abarbeitet, live für die Tafel "Vorgänge". Alle Änderungen sind synchron, das
@@ -658,14 +662,6 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         dev.on_result = turn.taint
         dev.register(llm)
         standard_tools += dev.schemas()
-    if labor_sitzung:
-        # Hier hängt Strang K2 die Ticket- und Mail-Werkzeuge ein (standard_tools += ...), vor der Prüfung. Die Prüfung ist die Grenze:
-        # Namen im Kontext und am LLM müssen der Erlaubnisliste entsprechen, sonst entsteht keine Sitzung.
-        try:
-            labor_sitzung.werkzeuge_pruefen(llm, standard_tools)
-        except labor.LaborPolitikFehler:
-            await zugang.schliessen()
-            raise
     context = LLMContext(tools=ToolsSchema(standard_tools=standard_tools))
 
     # PC-Werkzeuge nur für admin; im Hintergrund dazuholen (lokal per stdio, im Büro über den Tunnel).
@@ -923,14 +919,31 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     if freigaben is not None and is_admin:  # Mitglieder können nichts freigeben: keine Karte, die ins Leere läuft
         aktivitaet.on_freigabe = freigaben.anfrage
 
-    # Testlabor (labor_werkzeuge.py): nur Laborprofile (Identität mit labor_art). Werkzeuge (ticket_*, mail_senden) und Freigabekarte; ist der
-    # Dienst nicht erreichbar, der Durchlauf nicht offen oder keine Einwilligung erfasst, wirft das den Start (fail-closed), es gibt keine Sitzung.
+    # Testlabor (labor_werkzeuge.py): nur Laborprofile, nach der Annahme oben (labor_sitzung.py). Werkzeuge (ticket_*, mail_senden) und Freigabekarte.
+    # Fällt der Dienst zwischen Annahme und diesem Schritt aus (oder endet der Durchlauf dort), gibt es keine Sitzung: die Person bekommt dieselbe
+    # Meldung wie bei der Annahme, nicht eine Ausnahme aus dem Dienstclient, und der schon gebaute Modellzugang wird geschlossen.
     labor_werkz = None  # nie "labor": so heißt das Modul (labor.py), das build_session weiter oben benutzt
-    if labor_werkzeuge.laborart(identity):
-        labor_werkz = await labor_werkzeuge.labor_sitzung(identity, memory, llm, turn_taint=turn.taint, senden=send, melden=melde_llm)
+    if labor_sitzung:
+        try:
+            labor_werkz = await labor_werkzeuge.labor_sitzung(identity, memory, llm, turn_taint=turn.taint, senden=send, melden=melde_llm)
+        except (labor_werkzeuge.LaborNichtBereit, LaborFehler, LaborKonfigFehler) as e:
+            logger.warning("Laborsitzung: Werkzeuge nicht bereit ({})", type(e).__name__)
+            await zugang.schliessen()
+            raise labor.LaborAbgelehnt(labor_durchlauf.GRUND_DIENST, 503, labor_durchlauf.CODE_DIENST) from e
         if labor_werkz is not None:  # None: das Schau-Profil ohne Platz hat kein Test-Jira
             standard_tools += labor_werkz.schemas
             context.set_tools(ToolsSchema(standard_tools=standard_tools))
+            # Der Klick auf die Freigabekarte (Nachricht freigabe mit job labor) geht über die Annahme (Schicht a in on_client_message) hierher
+            labor_sitzung.freigabe = labor_werkz.entscheiden
+        # Die Grenze: Namen im Kontext und am LLM müssen der Erlaubnisliste entsprechen, sonst entsteht keine Sitzung. Sie gilt für das Endergebnis,
+        # also erst nach den Werkzeugen von labor_werkzeuge.
+        try:
+            labor_sitzung.werkzeuge_pruefen(llm, standard_tools, mit_tickets=labor_werkz is not None)
+        except labor.LaborPolitikFehler:
+            if labor_werkz is not None:
+                await labor_werkz.schliessen()
+            await zugang.schliessen()
+            raise
 
     async def refresh_prompt() -> None:
         await task.queue_frame(
@@ -1087,11 +1100,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 return
             await freigaben.entscheiden(data)
         elif msg.type == "freigabe" and data.get("job") == "labor":
-            # Labor-Freigabe (labor_freigaben.py): nur in einer Laborsitzung, sonst ohne Wirkung (auch nicht für einen Admin)
-            if labor_werkz is None:
-                logger.warning("Labor-Freigabe ohne Laborsitzung abgewiesen")
-                return
-            await labor_werkz.entscheiden(data)
+            # Labor-Freigaben (labor_freigaben.py) gibt es nur in einer Laborsitzung, dort gehen sie oben über labor_sitzung.client_nachricht an
+            # labor_werkz.entscheiden. Hier, in jeder anderen Sitzung, auch bei einem Admin, ist der Klick ohne Wirkung.
+            logger.warning("Labor-Freigabe ohne Laborsitzung abgewiesen")
         elif msg.type == "modellzugang":
             # Eigener Claude-Schlüssel: hinterlegen, ersetzen, löschen, Stand (gilt ab der nächsten Sitzung).
             # Der Inhalt dieser Nachricht wird nie geloggt und nie zurückgeschickt.
@@ -1187,6 +1198,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     async def labor_ende(grund: str) -> None:
         """Der Durchlauf ist beendet oder gewechselt: die Oberfläche lädt sich neu (Untertitel und Canvas liegen im Speicher der Seite)."""
+        if labor_werkz is not None:
+            labor_werkz.durchlauf_beendet()  # offene Karten sind erledigt, keine neuen, kein Klick wirkt mehr (schon vor der Meldung und dem Aufräumen)
         with contextlib.suppress(Exception):
             await send({"type": "labor_durchlauf_ende"})
         await end_session(grund)
