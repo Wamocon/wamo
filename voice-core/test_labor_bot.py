@@ -469,6 +469,84 @@ async def test_nach_dem_ende_des_durchlaufs_schreibt_der_speicher_nichts_mehr_au
         assert len(db.anweisungen) == vorher
 
 
+# ---------- bot(): jede Ausnahme beim Aufbau endet mit einem festen Satz und getrennter Verbindung ----------
+class Verbindung:
+    """Die WebRTC-Verbindung: was die Person als Meldung bekommt und ob getrennt wurde."""
+
+    def __init__(self):
+        self.gesendet: list[dict] = []
+        self.getrennt = 0
+
+    def send_app_message(self, nachricht):
+        self.gesendet.append(nachricht)
+
+    async def disconnect(self):
+        self.getrennt += 1
+
+
+def bot_args(verbindung, identity=None):
+    ident = identity or Identity(USER, "Gast", "mitglied", "du", anmeldung=1760000000.0, labor_art="platz", labor_platz=3, labor_aktiv=True)
+    return types.SimpleNamespace(body={"wamo": ident.to_body()}, webrtc_connection=verbindung, handle_sigint=False)
+
+
+def zugaenge_merken():
+    """Merkt sich jeden Modellzugang, den build_session lädt (zugang_laden), um zu prüfen, dass er geschlossen wird."""
+    gemerkt, echt = [], bot.zugang_laden
+
+    async def laden(*a, **kw):
+        z = await echt(*a, **kw)
+        gemerkt.append(z)
+        return z
+
+    return gemerkt, laden
+
+
+def assert_fester_satz(verbindung, geheimnis: str):
+    assert verbindung.getrennt == 1 and len(verbindung.gesendet) == 1  # nicht still offen, genau eine Meldung
+    daten = verbindung.gesendet[0]["data"]
+    assert daten == {"type": "sitzung_beendet", "grund": bot.SITZUNG_FEHLER_TEXT}
+    assert geheimnis not in str(verbindung.gesendet)  # nie ein Detail der Ausnahme
+
+
+async def test_bot_politikverletzung_der_laborsitzung_trennt_mit_festem_satz_und_schliesst_dienstclient_und_modellzugang():
+    """LaborPolitikFehler (Werkzeuge außerhalb der Erlaubnisliste) wurde in bot() nicht behandelt: die Verbindung blieb ohne Pipeline offen."""
+    b, v = Beobachter(), Verbindung()
+    zugaenge, laden = zugaenge_merken()
+    with labor_testhilfe.dienst(b.app), mock.patch.object(labor_werkzeuge, "labor_sitzung", b), mock.patch.object(bot, "zugang_laden", laden),          mock.patch.object(bot, "create_transport", mock.AsyncMock(return_value=FakeTransport())), mock.patch.object(bot, "vorwaermen", mock.AsyncMock()),          mock.patch.object(bot, "ENDE_MELDUNG_SECS", 0.01),          mock.patch.object(labor, "werkzeuge_pruefen", side_effect=labor.LaborPolitikFehler("Werkzeuge außerhalb der Laborliste: geheim_xyz")):
+        await bot.bot(bot_args(v))
+    assert_fester_satz(v, "geheim_xyz")
+    assert b.aufrufe == 1 and b.client._http.is_closed  # der Dienstclient der Werkzeuge ist zu
+    assert zugaenge and zugaenge[0]._zu  # und der Modellzugang
+
+
+async def test_bot_unerwartete_ausnahme_in_den_laborwerkzeugen_trennt_mit_festem_satz_und_schliesst_den_modellzugang():
+    """Auch eine Ausnahme, die keiner der drei bekannten Fälle ist (hier ein KeyError beim Bau der Werkzeuge), lässt keine Verbindung offen und
+    keinen Modellzugang zurück."""
+    b, v = Beobachter(), Verbindung()
+    zugaenge, laden = zugaenge_merken()
+    with labor_testhilfe.dienst(b.app), mock.patch.object(labor_werkzeuge, "labor_sitzung", mock.AsyncMock(side_effect=KeyError("geheim_xyz"))),          mock.patch.object(bot, "zugang_laden", laden), mock.patch.object(bot, "create_transport", mock.AsyncMock(return_value=FakeTransport())),          mock.patch.object(bot, "vorwaermen", mock.AsyncMock()), mock.patch.object(bot, "ENDE_MELDUNG_SECS", 0.01):
+        await bot.bot(bot_args(v))
+    assert_fester_satz(v, "geheim_xyz")
+    assert zugaenge and zugaenge[0]._zu
+
+
+async def test_bot_jede_andere_ausnahme_trennt_mit_festem_satz_auch_ohne_labor():
+    v = Verbindung()
+    admin = Identity(USER, "Niko", "admin", "du", anmeldung=1760000000.0)
+    with mock.patch.object(bot, "create_transport", mock.AsyncMock(return_value=FakeTransport())), mock.patch.object(bot, "ENDE_MELDUNG_SECS", 0.01),          mock.patch.object(bot, "run_bot", mock.AsyncMock(side_effect=RuntimeError("geheim_xyz"))):
+        await bot.bot(bot_args(v, admin))
+    assert_fester_satz(v, "geheim_xyz")
+
+
+async def test_bot_bricht_ein_abbruch_der_aufgabe_nicht_ab():
+    """Wird die Sitzung abgebrochen (CancelledError), bleibt das ein Abbruch: sie wird nicht zu einem Fehler mit Meldung."""
+    v = Verbindung()
+    with mock.patch.object(bot, "create_transport", mock.AsyncMock(return_value=FakeTransport())),          mock.patch.object(bot, "run_bot", mock.AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await bot.bot(bot_args(v))
+    assert v.gesendet == [] and v.getrennt == 0
+
+
 # ---------- Reihenfolge der Starts: nichts bleibt halb offen ----------
 class NachErstemAufruf(httpx.AsyncBaseTransport):
     """Der Dienst antwortet einmal (die Prüfung der Annahme) und ist dann weg (die Werkzeuge): der Start darf nicht halb gelingen."""
