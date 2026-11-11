@@ -16,6 +16,7 @@ import type {
 import { fristLoeschen } from "./auftragFrist.ts"; // relativ aus demselben Grund
 import { auftraegeNachQuittung } from "./auftragStart.ts"; // relativ aus demselben Grund
 import { liveBildLoeschen } from "./liveBild.ts"; // relativ aus demselben Grund
+import { STILL_AUS, type StillStand } from "./stillStart.ts"; // relativ aus demselben Grund
 import { createStore } from "./store.ts"; // relativ, damit node:test diese Datei laden kann (textEingabe.test.ts)
 import { vorgangAnsage, vorgangEinordnen } from "./vorgaenge.ts";
 
@@ -134,6 +135,9 @@ export type WamoState = {
   textMoeglich: boolean;
   /** Name des Mikrofons der laufenden Verbindung (aus der Spur), null ohne Verbindung */
   mikrofon: string | null;
+  /** Start beim Tippen (lib/stillStart.ts): still = Sitzung ohne Mikrofon und Stimme, perTippen = von selbst gestartet (nur dann gilt die
+   *  Leerlaufregel), uebernommen = eine neuere Sitzung dieses Profils hat die letzte hier abgelöst */
+  stillStart: StillStand;
   /** Text für role="status": nur bedeutsame Wechsel (verbunden, getrennt, Mikro, PC) */
   ansage: string;
   /** kurzer sichtbarer Hinweis (z. B. "PC-Steuerung automatisch eingeschaltet"), verschwindet selbst */
@@ -171,6 +175,7 @@ export const initialState: WamoState = {
   micOn: true,
   textMoeglich: false,
   mikrofon: null,
+  stillStart: STILL_AUS,
   ansage: "",
   toast: null,
 };

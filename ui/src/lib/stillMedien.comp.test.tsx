@@ -15,7 +15,7 @@ vi.hoisted(() => {
   (URL as unknown as { createObjectURL: (b: unknown) => string }).createObjectURL = () => "blob:wamo-test";
 });
 
-type Optionen = { enableMic: boolean; enableCam: boolean; callbacks: Record<string, (...a: unknown[]) => void> };
+type Optionen = { enableMic: boolean; enableCam: boolean; callbacks: Record<string, ((...a: unknown[]) => void) | undefined> };
 
 function optionen(extra: Partial<Optionen["callbacks"]> = {}): Optionen {
   return { enableMic: false, enableCam: false, callbacks: { ...extra } };

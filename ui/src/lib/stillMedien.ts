@@ -32,6 +32,12 @@ type Basis = {
 
 type Spuren = { local: { audio?: MediaStreamTrack } };
 
+/** Die geerbten Mitglieder, die der Transport und die Tests brauchen (die Typen der Basisklasse sind nicht eingebunden). */
+export interface StillMedienManager {
+  setClientOptions(optionen: unknown): void;
+  readonly isMicEnabled: boolean;
+}
+
 export class StillMedienManager extends WavMediaManager {
   /** Das Mikrofon ist geöffnet (nach "Sprechen"). */
   #offen = false;
