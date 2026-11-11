@@ -275,6 +275,22 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   bleiben aus), ein Test in `voice-core/test_env_schalter.py` prüft das. Auf Sokrates-2 wirken die neuen Namen erst, wenn
   `wamo-core-einrichten.sh` den Hilfsdienst `wamo-core-env` erneuert hat; bis dahin lehnt der alte Hilfsdienst eine Übertragung mit
   diesen Namen als Ganzes ab.
+- Testlabor, Strang K1 (Kern Sicherheit, Zweig `labor/k1`, Plan `docs/testlabor-wamo.md` 3.1 und 3.6; nicht ausgerollt, nichts davon wirkt ohne die
+  Migration 0018 und ohne Laborprofile). Ein Laborprofil (`labor_art` platz oder schaufenster, Rolle mitglied, `aktiv = false` dauerhaft) ist
+  nur über `labor_aktiv` freigeschaltet; ältere Kerne lehnen es mit 403 ab. Der Kern setzt die Einschränkung als Erlaubnisliste durch
+  (`voice-core/labor.py`): Das Gate prüft stimmige Felder, ein unbekannter Wert in `labor_art` ergibt platz, die `AccessMiddleware` lässt nur
+  `/start`, die Offer-Pfade und `/wamo/api/labor/<Name>` durch (exakter Regex je Methode, keine Normalisierung, Rest 403 `labor_pfad_gesperrt`) und
+  prüft bei `/start` und jedem Offer Durchlauf und Einwilligung (`labor_durchlauf.py`, Aufruf V1 des Vertrags, ohne Dienst keine Sitzung). Ein
+  eigener RTVI-Verarbeiter (`labor_rtvi.py`) verwirft vor Pipecat jede Client-Nachricht außer `client-ready`, `send-text` (höchstens 4000
+  Zeichen) und der Freigabe mit job `labor`. `build_session` nimmt für Laborprofile einen eigenen Zweig: Werkzeuge nur `aktuelle_zeit`,
+  `websuche` und `canvas_zeigen` (Prüfung im Kontext und am LLM, sonst keine Sitzung), kein PC-Weg, kein Gerätezugang, kein Entwicklungsagent, kein
+  Boss, kein Lernen, kein Nachladen, Laborprompt (`labor_prompt.py`) statt Normalprompt, alle 5 Sekunden eine Prüfung des Durchlaufs mit dem
+  Ereignis `labor_durchlauf_ende`. `LaborSpeicher` (`labor_speicher.py`) speichert den Gesprächstext nur bei `WAMO_LABOR_TEXT_SPEICHERN=an`, mit
+  gültiger Einwilligung (`WAMO_LABOR_EINWILLIGUNG_MIN`) und nur in `sessions`, `turns`, `actions` und `canvas_items`, der Vermerk
+  `labor_einwilligung` steht vor jedem Text; Gedächtnis gibt es nie. Der Lader (`labor_daten.py`) liest Regeln, Kontakte, Vorlagen und Wissen aus
+  `WAMO_LABOR_DATEN` mit `O_NOFOLLOW`, Besitzer root, ohne Schreibrecht für Dritte, fester Namensliste und Grenzen (6000 Zeichen insgesamt, 2000 für
+  den Regelteil), Regeln und Daten getrennt. Beweistests T1 bis T5, T8, T9 und T12 (Kernanteil) in `test_labor_*.py`; offen bleiben Migration,
+  Löschfunktion, Zugangsquelle `labor`, Labor-Freigabe und Ticket-Werkzeuge (Stränge S und K2) sowie die Servertests T11 und T13.
 
 ## [0.1.0] - 2026-10-22
 

@@ -5,7 +5,8 @@ Pipeline:  Mikrofon (WebRTC, Browser-AEC) -> Silero-VAD -> Soniox STT (Streaming
 
 Anmeldung: auth_gate.py prüft Token, zweiten Faktor und aktives Profil und schreibt die geprüfte
 Identität in runner_args.body["wamo"]. Fehlt sie, endet die Sitzung sofort; einen Weg ohne
-Anmeldung gibt es nicht. PC-Werkzeuge und Entwicklungsaufträge bekommt nur die Rolle admin.
+Anmeldung gibt es nicht. PC-Werkzeuge und Entwicklungsaufträge bekommt nur die Rolle admin. Laborprofile (labor.py, Testlabor) bekommen
+einen eigenen, engen Zweig: nur Zeit, Websuche und Canvas, kein Gedächtnis, kein PC, keine Entwicklung.
 
 Unterbrechungen:
   * Während WAMO spricht, laufen VAD und STT weiter.
