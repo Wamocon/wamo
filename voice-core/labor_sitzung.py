@@ -57,7 +57,8 @@ class LaborSitzung:
 
     def prompt(self) -> str:
         """Der Prompt dieser Sitzung: immer der Laborprompt, nie der normale mit Gedächtnis und PC. Regeln als eigener Block, alles andere als Daten."""
-        return build_labor_prompt(self.identity.name, self.identity.anrede, self.identity.labor_art, self.daten.regeln, self.daten.daten)
+        return build_labor_prompt(self.identity.name, self.identity.anrede, self.identity.labor_art, self.daten.regeln, self.daten.daten,
+                                  text_speichern=bool(self.memory.enabled))  # maßgebend ist, ob der Speicher wirklich schreibt
 
     def werkzeuge_pruefen(self, llm: Any, standard_tools: list) -> None:
         """Die Namen im Kontext und die am LLM registrierten Namen müssen der Erlaubnisliste entsprechen, sonst bricht die Sitzung ab."""

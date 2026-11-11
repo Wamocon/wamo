@@ -306,6 +306,35 @@ class PromptTests(unittest.TestCase):
         with self.assertRaises(LaborPolitikFehler):
             build_labor_prompt("Gast", "du", None)
 
+    def test_ohne_speichern_sagt_der_prompt_dass_nichts_gespeichert_wird(self):
+        prompt = build_labor_prompt("Gast", "du")
+        self.assertIn("Du speicherst nichts über dieses Gespräch hinaus", prompt)
+        self.assertEqual(prompt, build_labor_prompt("Gast", "du", text_speichern=False))
+
+    def test_mit_speichern_ist_der_prompt_ehrlich(self):
+        """Wird der Gesprächstext gespeichert, darf der Prompt das Gegenteil nicht behaupten (der Datenschutzhinweis am Platz sagt es auch)."""
+        prompt = build_labor_prompt("Gast", "du", text_speichern=True)
+        self.assertNotIn("speicherst nichts", prompt)
+        self.assertIn("Dieses Gespräch wird für die Auswertung des Testlabors gespeichert", prompt)
+        self.assertIn("Gast hat am Platz zugestimmt", prompt)
+        self.assertIn("kennst Gast nicht von früher", prompt)  # das Gedächtnis gibt es weiter nie
+        for intern in ("Gedächtnis", "merken", "Datenbank", "Supabase"):
+            self.assertNotIn(intern, prompt)
+
+    def test_die_sitzung_nennt_nur_das_tatsaechliche_speichern(self):
+        """Maßgebend ist, ob der Speicher der Sitzung wirklich schreibt (Schalter, Einwilligung, Datenbank), nicht der Schalter allein."""
+        from types import SimpleNamespace
+
+        from auth_gate import Identity
+        from labor_sitzung import LaborSitzung
+
+        identity = Identity("0f6c2b1e-5d1a-4c3e-9a7b-2e8d4f6a1b3c", "Gast", "mitglied", "du", labor_art="platz", labor_platz=3, labor_aktiv=True)
+        schreibt = LaborSitzung(identity, None, SimpleNamespace(enabled=True), None)
+        schweigt = LaborSitzung(identity, None, SimpleNamespace(enabled=False), None)
+        self.assertIn("wird für die Auswertung des Testlabors gespeichert", schreibt.prompt())
+        self.assertNotIn("speicherst nichts", schreibt.prompt())
+        self.assertIn("Du speicherst nichts über dieses Gespräch hinaus", schweigt.prompt())
+
 
 if __name__ == "__main__":
     unittest.main()
