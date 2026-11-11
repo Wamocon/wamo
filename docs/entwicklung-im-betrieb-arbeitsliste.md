@@ -299,6 +299,14 @@ Abnahme: Journal zeigt für Niko `entwicklung=an` oder „kein eigener Zugang“
 
 **S11** Nach Nikos Ja und den Voraussetzungen aus Stufe 5: Repos in App-Auswahl (N1) und `REPOS`, Ablauf verlängern (180 Tage), `DIENSTE` erst nach engem Jira und Vercel. Abnahme: die ersten fünf Aufträge ohne Befund, wöchentlicher Abgleich Dispatcher-Log gegen `actions`, nur Repos aus `REPOS` erhalten ein Token.
 
+**Stand des Rollouts (11.11.2026).** S1 bis S4 sind am Server ausgeführt. Der Kanal ist zu, es kann kein Auftrag starten, bis S7 ihn mit `kanal --arten ...` öffnet.
+
+- **S1:** Dispatcher Version 7, sshd-Block mit `ExposeAuthInfo`, Totmannschalter bestätigt, Rauchtest 58 von 58, `ping` vom PC meldet `kanal=pc`. **Befund:** Die Ruhe-Prüfung von `wamo-job-einrichten.sh` zählt die Benutzerdienste `xdg-document-portal` und `xdg-permission-store` von `wamo` als Auftrag und endet mit Exit 3, ohne etwas zu ändern. Beide wurden vor dem Lauf mit `systemctl --user --machine=wamo@.host stop` gestoppt (sie starten bei Bedarf neu). Folgearbeit: beide Namen in die Ausnahmeliste von `ruhe_pruefen` aufnehmen.
+- **S2:** Kern-Release `v0.1.0-ee5b595` (`main` nach PR 79 und 80) in Slot a, Bewährung 30 Minuten bestanden, Oberfläche blau live (Image `wamo-ui:v0.1.0-b6d9b1c463e1`, Bewährung 58 Proben ohne Fehler). Ob die Logzeile „Entwicklungsaufträge aus“ mit Grund erscheint, zeigt sich erst bei der nächsten Büro-Sitzung (die Funktionen `grund_vorab` und `anzeige_grund` liefern im neuen Release den Grund für Admins und nichts für Mitglieder).
+- **S3:** Kern-Schlüssel mit Ablauf 20261211 (30 Tage), der Hostschlüssel wurde gegen den Pin des PCs geprüft. Rauchtest `--produktiv`: 28 von 30, die zwei Abweichungen waren falsche Erwartungen der Proben (der Dispatcher wies beide richtig ab, Audit-Log `ABGEWIESEN`), behoben mit PR 81. Notaus-Übung bestanden (Kern-`ping` scheitert, Sperrdatei und Schlüsselzeile weg, nach `notaus-aufheben` und neuem Schlüssel geht er wieder), PC-Datei unverändert (Prüfsumme gleich), `kernkanal.conf` steht auf `KANAL=zu`. Offen aus den Übergangsproben: Notaus mit laufendem Kern-Auftrag (erst mit S7 möglich).
+- **S4:** Absturz-Neustart-Probe am freien Slot bestanden (Neustart nach `systemctl kill -s KILL`, antwortet wieder mit 401). `schalter an` für Nikos Profil mit Kosten 3 USD je Auftrag und 10 USD je Tag, Kanal zu.
+- **Kleinigkeit für später:** `aktiver_slot()` im Rauchtest nimmt den ersten laufenden Slot, während der Auslaufzeit also den auslaufenden. Nach `ausleiten` stimmt es.
+
 ## 6. Niko, manuell (N)
 
 Diese Schritte kann nur Niko ausführen (GitHub-Einstellungen, Konto, Entscheidungen). Alles andere im Papier läuft ohne ihn. Zu keinem Schritt gehört, einen Wert zu nennen: Niko hinterlegt Werte nur an den genannten
@@ -326,7 +334,15 @@ Mit Auslöser im Planpapier, Abschnitt 9. Jedes bekommt bei Bedarf ein eigenes P
 
 - **Auslagerung großer Dateien, `dev_agent.py`: erledigt** (Zweig `refactor/dev-agent-module`). 21 Definitionen sind unverändert nach `dev_agent_weg.py` (SSH-Weg, Statustexte) und `dev_agent_regeln.py` (Umgebungs-Allowlist, Sperrmuster, Regeltexte) gezogen, per AST-Vergleich belegt. Die Selbstschutz-Prüfungen (`project_slug`, `repo_pruefen`, `repo_aus_auftrag`, `SELF_REPO`) bleiben bewusst in `dev_agent.py`. Die Klasse `DevAgent` (etwa 1100 Zeilen, ein gemeinsamer Zustand) bleibt ungeteilt, ein Schnitt in Mischklassen brächte mehr Umwege als Lesbarkeit.
 - **Auslagerung im Dispatcher: bewusst nicht jetzt.** Jedes neue Modul braucht Änderungen am Auslieferungsweg (Einrichtungsskript an sechs Stellen, Rückweg, Prüfsumme in `ping`), ein Fehler dort träfe auch den PC-Kanal. Die Funktionen des Blocks „Projekt entschärfen“ arbeiten mit Dateideskriptoren und laufen laut Kommentar nur auf dem Server, ihre Tests werden auf der Entwicklungsmaschine übersprungen. Der Block „GitHub-App“ hängt an Patchpunkten der Tests (`_https`, `SCHLUESSEL_ORDNER`, `HEIM`, `emit`, `log`). Der richtige Zeitpunkt ist F1, denn F1 baut genau auf dem Git-Block auf.
-- **F1 bis F8: nicht umgesetzt, weil ihr Auslöser fehlt** (Planpapier, Abschnitt 9). F1 wartet auf Nikos Entscheidung N5 (Branch-Schutz oder Auftrag für F1), F2 auf Hinweise aus Stufe 4, F3 und F4 auf Störungen durch Sitzungsbindung, F5 auf mehr als 20 Kern-Ordner, F6 auf die Neubewertung vor Stufe 5, F7 auf die Antwort zu `expiry-time` (OpenSSH 9.6p1 laut Befund S0), F8 auf Stufe 4.
+- **F1 bis F8: Entscheidungen von Niko (11.11.2026).** Die Auslöser aus dem Planpapier (Abschnitt 9) waren nicht erfüllt, Niko hat jede Folgestufe einzeln entschieden:
+  - **F1 bauen.** Der Dispatcher veröffentlicht selbst (eigener Zweig `wamo/<job>`, Pull Request, der Auftrag hat nur ein Lese-Token). Branch-Schutz bei GitHub ersetzt F1 nicht. Damit ist N5 zur Hälfte beantwortet (Auftrag für F1); Token rotieren und Jira- und Vercel-Zugänge bleiben vor S11 offen.
+  - **F2 zusammen mit F1.** Der Freigabe-Beleg des Freigabe-Dienstes (an das aal2-Token gebunden) wird im selben Paket gebaut, weil der Dispatcher mit F1 selbst pusht und den Klick belegt bekommen soll.
+  - **F3 und F4 jetzt einplanen, F5 zusammen mit ihnen.** Eigener Auftragsdienst mit Unix-Socket und `SO_PEERCRED`, Aufträge überleben das Auflegen, kein Schlüssel mehr auf der Platte, Aufräumen der Kern-Ordner und Plattenquote im selben Entwurf.
+  - **F6 entfällt.** Die Anmeldung der Sitzung mit zweitem Faktor genügt, es gibt keine frische aal2-Prüfung je Auftragsstart.
+  - **F7 mit den Folgepaketen.** Der Auslöser ist erfüllt: die Handbuchseite des installierten sshd (OpenSSH 9.6p1) nennt `expiry-time`. Bei der Umsetzung ist mit einem Probeschlüssel zu belegen, dass sshd den Ablauf wirklich durchsetzt. Die frühere Annahme, F7 warte auf diese Antwort, ist überholt.
+  - **F8 nach Stufe 4 entscheiden**, wie im Plan.
+
+  Daraus entsteht ein **Folgepaket 1 (F1, F2, F3, F4, F5, F7)**. Es ist sicherheitskritisch und bekommt vor dem ersten Code ein eigenes Planpapier mit Sicherheitsreview. Es blockiert S5 bis S10 nicht: Der Kern-Kanal läuft in den Stufen bis 4 ohne diese Pakete. Vor S11 (echte Repos) müssen F1 und F2 stehen.
 
 ## 8. Reihenfolge und Aufwand
 
