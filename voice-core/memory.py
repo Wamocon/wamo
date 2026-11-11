@@ -21,6 +21,11 @@ Nutzergrenzen setzt dieser Code selbst (wamo_core sieht alle Zeilen):
 
 Ohne WAMO_DATABASE_URL sind alle Gedächtnisfunktionen No-Op. Die Anmeldung ist dann gesperrt
 (auth_gate.py), weil ohne Datenbank kein Profil geprüft werden kann.
+
+Reihenfolge beim Ausrollen: Die Anmeldung des Kerns liest seit dem Testlabor die Spalten labor_art, labor_platz und labor_aktiv
+(Migration 0018_labor_profile.sql, ProfileDirectory.get). Fehlt eine Spalte, scheitert die Abfrage, und JEDES Profil bekommt 503, auch der
+Admin. Das ist gewollt (Ausfall statt Öffnung, ein Laborprofil darf nie am Gate vorbeikommen), hängt aber an der Reihenfolge: erst die Migration
+auf dem Schema anwenden, dann den Kern ausrollen. Der Rückweg ist umgekehrt: erst den alten Kern, dann die Migration zurücknehmen.
 """
 
 from __future__ import annotations
