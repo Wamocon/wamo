@@ -24,6 +24,8 @@
 # Ausgang: 0 gelöscht (oder nichts zu löschen), 1 Fehler (zum Beispiel ein Pfad ist nicht so, wie er sein muss), 2 Aufruf falsch, 3 nur
 # der Plan gezeigt oder die Aufbewahrung läuft noch.
 #
+# Sicherungen gegen Umwege: shred bekommt nur gewöhnliche Dateien (shred folgt Symlinks), Links werden nur entfernt, find bleibt auf dem Dateisystem des
+# Ordners (-xdev), und der Container muss nach dem Stopp wirklich gestoppt sein (docker inspect), sonst wird nichts gelöscht.
 # Probelauf ohne root (nur für Tests): WAMO_LABOR_WURZEL=/pfad/zu/einem/wegwerf/ordner, dazu WAMO_LABOR_HEUTE=JJJJMMTT für das Datum.
 set -euo pipefail
 
@@ -64,13 +66,29 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# Schutz gegen untergeschobene Dateien (wie in den übrigen Einrichtungsskripten): alles gehört root oder dem aufrufenden Benutzer, nichts ist
+# für die Gruppe oder alle beschreibbar, keine symbolischen Links
+pruefe_ordner() {
+  local ordner="$1" erlaubt uid modus pfad
+  erlaubt=" 0 $(id -u) ${SUDO_UID:-} "
+  while read -r uid modus pfad; do
+    if [[ "$erlaubt" != *" $uid "* ]] || (( 8#$modus & 8#022 )); then
+      echo "Unsicherer Ablageort: $pfad (Besitzer $uid, Rechte $modus). Ordner im eigenen Home ablegen und" \
+        "mit chmod -R go-w schützen." >&2
+      exit 1
+    fi
+  done < <(stat -c '%u %a %n' "$(dirname "$ordner")"; find "$ordner" \( -type l -printf '%U 777 %p\n' \) -o -printf '%U %m %p\n')
+}
+
 HEUTE="$(date +%Y%m%d)"
 if [ -n "$W" ]; then
   [[ "$W" =~ ^/[A-Za-z0-9/_.:~-]+$ ]] || fehler "WAMO_LABOR_WURZEL muss ein absoluter Ordner aus A-Z, a-z, 0-9 und / _ . : ~ - sein."
   HEUTE="${WAMO_LABOR_HEUTE:-$HEUTE}"
   echo "Probelauf unter $W (kein root)"
+  [ "${WAMO_LABOR_HERKUNFT:-}" != ja ] || pruefe_ordner "$HERE"   # nur für Tests: der Herkunftsschutz auch im Probelauf
 else
   [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo ausführen." >&2; exit 1; }
+  pruefe_ordner "$HERE"
 fi
 [[ "$HEUTE" =~ ^[0-9]{8}$ ]] || fehler "Das Datum ist ungültig: $HEUTE"
 if [ -n "$WORT" ] && [ "$WORT" != "$WORT_SOLL" ]; then
@@ -93,7 +111,7 @@ liste_dateien() {
   if [ -d "$DATEN" ]; then
     while IFS= read -r -d '' f; do
       printf '  Datei  /var/lib/wamo-labor/%s  Größe %s Byte\n' "${f#"$DATEN"/}" "$(stat -c %s "$f")"
-    done < <(find "$DATEN" -mindepth 1 \( -type f -o -type l \) -print0 | sort -z)
+    done < <(find "$DATEN" -xdev -mindepth 1 \( -type f -o -type l \) -print0 | sort -z)
   fi
   for f in $TOKEN_NAMEN; do
     if [ -f "$ETC/$f" ]; then printf '  Datei  /etc/wamo-labor/%s  Größe %s Byte\n' "$f" "$(stat -c %s "$ETC/$f")"; fi
@@ -104,15 +122,15 @@ liste_images() { docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null |
 
 # Dateien überschreiben (wo shred da ist) und löschen; das Überschreiben ist auf Journal- und Copy-on-Write-Dateisystemen keine Garantie
 datei_loeschen() {
-  shred -n 1 "$1" 2>/dev/null || true
+  if [ -f "$1" ] && [ ! -L "$1" ]; then shred -n 1 "$1" 2>/dev/null || true; fi
   rm -f "$1"
 }
 
 daten_loeschen() {
   local f
   [ -d "$DATEN" ] || return 0
-  while IFS= read -r -d '' f; do datei_loeschen "$f"; done < <(find "$DATEN" -mindepth 1 \( -type f -o -type l \) -print0)
-  find "$DATEN" -depth -type d -empty -delete
+  while IFS= read -r -d '' f; do datei_loeschen "$f"; done < <(find "$DATEN" -xdev -mindepth 1 \( -type f -o -type l \) -print0)
+  find "$DATEN" -xdev -depth -type d -empty -delete
   [ ! -e "$DATEN" ] || fehler "$DATEN ist nach dem Löschen nicht leer (andere Dateiarten?), bitte ansehen."
 }
 
@@ -128,16 +146,27 @@ nachweis_text() {
   echo "  Kern-Einstellungen WAMO_LABOR_URL und WAMO_LABOR_TOKEN in /etc/wamo/core.env (die laufende Kern-Instanz hält sie bis zum nächsten Kern-Release im Speicher)"
   echo "Was bleibt: /etc/wamo-labor/betreuer-adressen, plaetze-adressen und basis-image (Konfiguration ohne personenbezogene Daten),"
   echo "  /var/backups/wamo-labor (Stand von Compose, Firewall und Caddy vor dem Einrichten, keine Token, keine Daten) und dieser Nachweis."
+  echo "Restrisiko: Das Protokoll des Containers wamo-caddy (docker logs) kann Besucheradressen enthalten, soweit Fehler protokolliert wurden. Es gehört zum"
+  echo "  Container und verschwindet erst mit dem Neuanlegen von wamo-caddy. Das geschieht hier nicht (es legte 55443 bis 55446 lahm). Vorschlag: das nächste"
+  echo "  ohnehin nötige Neuanlegen von wamo-caddy nach dem Labor nutzen (in einer ruhigen Minute, frühestens nach der Frist)."
   echo "Von Hand zu prüfen (liegt außerhalb des Dienstes, Vertrag D10): keine Snapshots oder Sicherungen von /var/lib/wamo-labor oder des ganzen"
   echo "  Servers, die über den 11.12.2026 hinaus bestehen; auch Hostsicherungen und Datenträgerabbilder zählen."
 }
 
+dienst_stoppen() {
+  local state
+  echo "== Dienst stoppen"
+  if [ -f "$COMPOSE" ]; then tu docker compose -f "$COMPOSE" down --remove-orphans; fi
+  if docker inspect wamo-labor-dienst >/dev/null 2>&1; then tu docker rm -f wamo-labor-dienst; fi
+  tu docker network rm wamo-labor-lokal || true
+  if [ "$TROCKEN" = ja ]; then return 0; fi
+  state="$(docker inspect -f '{{.State.Running}}' wamo-labor-dienst 2>/dev/null || echo absent)"
+  [ "$state" != true ] || fehler "Der Container wamo-labor-dienst läuft noch, es wurde nichts gelöscht."
+}
+
 stoppen_und_loeschen() {
   local f tag
-  echo "== Dienst stoppen"
-  if [ -f "$COMPOSE" ]; then tu docker compose -f "$COMPOSE" down --remove-orphans || true; fi
-  tu docker rm -f wamo-labor-dienst || true
-  tu docker network rm wamo-labor-lokal || true
+  dienst_stoppen
   echo "== Daten und Token löschen"
   if [ "$TROCKEN" = ja ]; then
     printf '%s' "$LISTE" | sed 's/^  /  [trocken] löschen: /'

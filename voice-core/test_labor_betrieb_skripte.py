@@ -701,7 +701,7 @@ class EinrichtenTextTests(unittest.TestCase):
         self.assertEqual(snippet.strip(), f"remote_ip {m.group(1)}")
 
     def test_herkunftsschutz_auch_fuer_pruefen_und_in_rueckweg_und_loeschlauf(self):
-        for skript in (EINRICHTEN,):  # Rückweg und Löschlauf folgen in ihrer Gruppe
+        for skript in (EINRICHTEN, RUECKWEG, LOESCHLAUF):
             c = code(skript)
             self.assertIn("pruefe_ordner()", c, skript.name)
             self.assertIn('pruefe_ordner "$HERE"', c, skript.name)
@@ -1078,6 +1078,7 @@ class BetriebsstandWerkstatt(Werkstatt):
         schreibe(self.p("var/backups/wamo-labor/20261112-100000/wamo-firewall.vorher"), FIREWALL_ALT)
         schreibe(self.p("var/backups/wamo-labor/20261112-110000/wamo-firewall.vorher"), FIREWALL_NEU)  # zweiter Lauf: schon neu
         self.ausgabe("docker.images", f"wamo-labor-dienst:1\nwamo-labor-dienst:alt\nfremd:1\n")
+        self.ausgabe("docker.inspect", "false\n")  # docker inspect -f {{.State.Running}}: der Container läuft nicht
 
     def lauf_skript(self, skript, *args, heute: str | None = None):
         return self.lauf(skript, *args, extra={"WAMO_LABOR_HEUTE": heute} if heute else None)
@@ -1126,6 +1127,21 @@ class RueckwegTests(BetriebsstandWerkstatt):
         self.assertIn("wamo-firewall.sh", r.stdout)
         self.assertNotIn("systemctl reload wamo-firewall.service", self.aufrufe())
 
+    def test_nach_dem_rueckweg_antworten_55443_bis_55446_wieder(self):
+        r = self.lauf_skript(RUECKWEG)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        aufrufe = self.aufrufe()
+        reload = max(i for i, z in enumerate(aufrufe) if z.startswith("docker exec wamo-caddy caddy reload"))
+        for port in (55443, 55444, 55445, 55446):
+            self.assertTrue([z for z in aufrufe[reload:] if z.startswith("curl") and f"https://192.168.178.136:{port}/" in z], port)
+        self.assertRegex(r.stdout, r"Ausfalldauer: \d+ Sekunden")
+
+    def test_antworten_die_ports_nach_dem_rueckweg_nicht_ist_das_ein_fehler(self):
+        self.ausgabe("curl", "000")
+        r = self.lauf_skript(RUECKWEG)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("55443 bis 55446", r.stderr)
+
     def test_trockenlauf_aendert_nichts(self):
         r = self.lauf_skript(RUECKWEG, "--trocken")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1134,7 +1150,7 @@ class RueckwegTests(BetriebsstandWerkstatt):
         self.assertEqual(self.p("usr/local/sbin/wamo-firewall").read_text(encoding="utf-8"), FIREWALL_NEU)
         self.assertTrue(self.daten_da())
         for z in self.aufrufe():
-            self.assertNotRegex(z, r"^(docker (rm|network rm|exec|compose -f \S+ down)|systemctl reload|iptables -w 5 -[FX])", z)
+            self.assertNotRegex(z, r"^(docker (rm|network rm|exec wamo-caddy caddy|compose -f \S+ down)|systemctl reload|iptables -w 5 -[FX]|curl)", z)
 
     def test_daten_loeschen_braucht_das_bestaetigungswort(self):
         r = self.lauf_skript(RUECKWEG, "--daten-loeschen")
@@ -1177,6 +1193,58 @@ class LoeschlaufTests(BetriebsstandWerkstatt):
             self.assertIn(name, r.stdout)
         self.assertNotIn(INHALT, r.stdout + r.stderr)  # Namen und Größen, nie Inhalte
         self.assertFalse([z for z in self.aufrufe() if z.startswith(("docker rm", "docker image rm", "wamo-core-env", "shred"))])
+
+    def test_laeuft_der_container_nach_dem_stopp_noch_wird_nichts_geloescht(self):
+        self.ausgabe("docker.inspect", "true\n")
+        r = self.loeschen("--bestaetigung", WORT)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("läuft noch", r.stderr)
+        self.assertTrue(self.daten_da())
+        self.assertTrue(self.p("etc/wamo-labor/kern-token").exists())
+        self.assertFalse([z for z in self.aufrufe() if z.startswith(("shred", "docker image rm", "wamo-core-env"))])
+
+    def test_ein_fehler_beim_stoppen_wird_nicht_verschluckt(self):
+        self.ausgabe("docker.compose", "", rc=1)  # docker compose down schlägt fehl
+        r = self.loeschen("--bestaetigung", WORT)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(self.daten_da())
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("shred")])
+
+    def test_ist_der_container_schon_weg_wird_er_nicht_erneut_entfernt(self):
+        self.ausgabe("docker.inspect", "", rc=1)  # docker inspect findet ihn nicht
+        r = self.loeschen("--bestaetigung", WORT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("docker rm -f wamo-labor-dienst", self.aufrufe())
+        self.assertFalse(self.daten_da())
+
+    @unittest.skipIf(os.name == "nt", "Symbolische Links brauchen unter Windows besondere Rechte")
+    def test_symbolische_links_im_datenordner_werden_nie_ueberschrieben_nur_entfernt(self):
+        fremd = self.t / "fremd.txt"
+        schreibe(fremd, "bleibt")
+        (self.p("var/lib/wamo-labor") / "link.sqlite3").symlink_to(fremd)
+        r = self.loeschen("--bestaetigung", WORT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(fremd.read_text(encoding="utf-8"), "bleibt")  # das Ziel des Links ist unberührt
+        self.assertFalse(self.daten_da())
+        for z in self.aufrufe():
+            self.assertFalse(z.startswith("shred") and ("link.sqlite3" in z or "fremd.txt" in z), z)  # shred bekommt nie einen Link
+        self.assertTrue([z for z in self.aufrufe() if z.startswith("shred") and "platz-03.sqlite3" in z])  # gewöhnliche Dateien schon
+
+    def test_nur_ein_dateisystem_und_shred_nur_fuer_gewoehnliche_dateien(self):
+        c = code(LOESCHLAUF)
+        finds = [z for z in c.splitlines() if 'find "$DATEN"' in z]
+        self.assertEqual(len(finds), 3)
+        for z in finds:
+            self.assertIn("-xdev", z)  # jedes find im Datenordner bleibt auf dessen Dateisystem
+        self.assertIn('[ -f "$1" ] && [ ! -L "$1" ]', c)
+        self.assertNotRegex(c, r"shred[^\n]*\$DATEN")
+
+    def test_nachweis_nennt_das_protokoll_von_wamo_caddy_als_restrisiko(self):
+        r = self.loeschen("--bestaetigung", WORT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for soll in ("wamo-caddy", "Besucheradressen", "Restrisiko", "Neuanlegen"):
+            self.assertIn(soll, r.stdout, soll)
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("docker compose up") or "wamo-caddy" in z and z.startswith("docker rm")])
 
     def test_falsches_wort(self):
         r = self.loeschen("--bestaetigung", "loeschen")
