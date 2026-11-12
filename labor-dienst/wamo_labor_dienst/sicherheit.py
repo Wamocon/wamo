@@ -214,6 +214,10 @@ class SchutzMiddleware:
         if dienst is None:
             return
         methode = scope.get("method", "")
+        bereich = _bereich(scope.get("path", ""))
+        if bereich == "gesundheit" and status == 200:  # die Gesundheitsprobe des Containers wird nur gezählt (eine Zeile je Minute)
+            dienst.protokoll.gezaehlt("anfrage", bereich=bereich, status=status)
+            return
         schreiben = dienst.protokoll.abgetastet if status in ABGETASTET else dienst.protokoll.ereignis
-        schreiben("anfrage", bereich=_bereich(scope.get("path", "")), methode=methode if methode in _METHODEN else "SONST", status=status,
+        schreiben("anfrage", bereich=bereich, methode=methode if methode in _METHODEN else "SONST", status=status,
                   platz=scope.get("state", {}).get("platz"), ms=round((time.perf_counter() - start) * 1000, 1))

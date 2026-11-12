@@ -16,6 +16,7 @@ from .sicherheit import PLATZ_TOKEN_RE, digest, token_hash
 BOARD_RATE, BOARD_SCHUB = 2.0, 5  # je Platz-Token: etwa 2 Abfragen je Sekunde, kurzzeitig 5
 BOARD_GLOBAL_RATE, BOARD_GLOBAL_SCHUB = 20.0, 40  # alle Plätze zusammen (8 Plätze mit je 2 je Sekunde, dazu Luft)
 FEHLVERSUCHE_GRENZE, FEHLVERSUCHE_FENSTER_SECS = 120, 60.0  # je Quelle und Minute
+GESUNDHEIT_CACHE_SECS = 1.0  # so lange gilt der Zustand der Gesundheitsprobe, ohne die Datei erneut zu prüfen
 
 
 class Dienst:
@@ -33,6 +34,8 @@ class Dienst:
         self.fehlversuche = FehlerZaehler(FEHLVERSUCHE_GRENZE, FEHLVERSUCHE_FENSTER_SECS, uhr)
         self._tokens: dict[str, int] = {}  # Hash -> Platz: unbekannte Token werden hier erkannt, ohne Datenbank und ohne Faden
         self._token_sperre = threading.Lock()  # kurz: schützt nur den Austausch des Index im Speicher (die Ereignisschleife liest ihn)
+        self._gesundheit: tuple[bool, float] | None = None
+        self._gesundheit_sperre = threading.Lock()
         self._token_aenderung = threading.Lock()  # lang: ein Wechsel von Datei und Index läuft immer ganz oder gar nicht neben einem anderen
 
     def einrichten(self) -> None:
@@ -45,6 +48,20 @@ class Dienst:
         with self._token_sperre:
             self._tokens = self.zentral.alle_hashes()
         self.aufbewahrung_pruefen()
+
+    def gesundheit_gecacht(self) -> bool | None:
+        """Der Zustand der letzten Prüfung, wenn sie höchstens eine Sekunde alt ist, sonst None. Ohne Datenbankzugriff und ohne Faden."""
+        jetzt = self.uhr()
+        with self._gesundheit_sperre:
+            stand = self._gesundheit
+        return stand[0] if stand is not None and 0 <= jetzt - stand[1] < GESUNDHEIT_CACHE_SECS else None
+
+    def gesundheit_pruefen(self) -> bool:
+        """Prüft die Datei und merkt sich das Ergebnis (für eine Sekunde)."""
+        ok = self.zentral.pruefen()
+        with self._gesundheit_sperre:
+            self._gesundheit = (ok, self.uhr())
+        return ok
 
     def platz_von_token(self, token: str) -> int | None:
         """Der Platz zu einem Platz-Token oder None. Nur im Speicher: kein Datenbankzugriff, kein Faden aus dem gemeinsamen Pool."""

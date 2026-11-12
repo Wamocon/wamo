@@ -27,7 +27,10 @@ AUFRAEUMEN_SECS = 3600
 
 async def gesundheit(request: Request):
     """Nur der Zustand, keine Daten, ohne Token (Healthcheck des Containers)."""
-    ok = await run_in_threadpool(dienst_von(request).zentral.pruefen)
+    dienst = dienst_von(request)
+    ok = dienst.gesundheit_gecacht()  # höchstens eine Sekunde alt: dann kein Faden und keine Datenbankverbindung
+    if ok is None:
+        ok = await run_in_threadpool(dienst.gesundheit_pruefen)
     return json_antwort(200 if ok else 503, {"zustand": "ok" if ok else "gestoert"})
 
 
