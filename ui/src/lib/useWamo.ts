@@ -1217,7 +1217,7 @@ export function useWamo(): WamoAktionen {
     letzteEingabe.current = Date.now();
   }, []);
 
-  // Start beim Tippen: nur mit Schalter (je Gerät und Person, Standard aus), nie für Laborkonten, nie im verdeckten Tab, nie nach einer
+  // Start beim Tippen: nur mit Schalter (je Gerät und Person, Standard an), nie für Laborkonten, nie im verdeckten Tab, nie nach einer
   // Übernahme durch ein anderes Fenster, höchstens 6 Starts je 10 Minuten. Alles Weitere entscheidet lib/stillStart.ts.
   const stillStarten = useCallback((): boolean => {
     const s = wamo.get();

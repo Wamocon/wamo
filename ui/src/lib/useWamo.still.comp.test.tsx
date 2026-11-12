@@ -85,7 +85,7 @@ const fluss = (ms = 10) =>
 function einschalten(an = true, email = "niko@wamocon.com") {
   nutzerSetzen({ id: NUTZER, email });
   if (an) localStorage.setItem(`wamo.stillStart.${NUTZER}`, "an");
-  else localStorage.removeItem(`wamo.stillStart.${NUTZER}`);
+  else localStorage.setItem(`wamo.stillStart.${NUTZER}`, "aus");
 }
 
 /** Der Kern hat "Bot bereit" gemeldet und die Betriebsdaten geschickt (stoppt auch die Verbindungsfrist). */

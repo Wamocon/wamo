@@ -8,9 +8,9 @@ import { useStillStartErlaubt } from "@/lib/useStillStart";
 const MINUTEN = Math.round(LEERLAUF_MS / 60_000);
 
 /**
- * Geräteschalter "Still starten beim Tippen" (Abschnitt Sprache und Ton): Standard aus, gilt für diese Person auf diesem Gerät (kein
+ * Geräteschalter "Still starten beim Tippen" (Abschnitt Sprache und Ton): Standard an, gilt für diese Person auf diesem Gerät (kein
  * Server-Zustand). Auf Laborplätzen gibt es ihn nicht. Der Hinweis nennt die Grenze: Der Kern löst je Profil die laufende Sitzung ab, und die
- * Oberfläche erfährt vor dem Start nichts von einer Sitzung auf einem anderen Gerät. Deshalb gehört der Schalter nur auf ein Gerät je Person.
+ * Oberfläche erfährt vor dem Start nichts von einer Sitzung auf einem anderen Gerät. Wer das nicht will, schaltet es auf dem jeweiligen Gerät aus.
  */
 export const StillStartEinstellung = memo(function StillStartEinstellung() {
   const id = useId();
@@ -40,8 +40,8 @@ export const StillStartEinstellung = memo(function StillStartEinstellung() {
               Entscheidung wartet, bleibt sie offen.
             </p>
             <p className="ez-klein">
-              Nur auf einem Gerät je Person einschalten. Ein stiller Start löst eine laufende Sitzung auf einem anderen Gerät ab, denn der
-              Kern führt je Profil nur eine Sitzung, und dieses Gerät kann vorher nicht erkennen, ob anderswo eine läuft.
+              Ein stiller Start löst eine laufende Sitzung auf einem anderen Gerät ab, denn der Kern führt je Profil nur eine Sitzung, und
+              dieses Gerät kann vorher nicht erkennen, ob anderswo eine läuft. Schalte es dort aus, wo du das nicht willst.
             </p>
           </>
         )}
