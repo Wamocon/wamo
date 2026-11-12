@@ -192,3 +192,43 @@ test("Rollentext", () => {
   assert.equal(rolleText("mitglied"), "Mitglied");
   assert.equal(rolleText(null), "noch unbekannt");
 });
+
+test("Laborsicht: nur der Abschnitt mit der Mikrofonwahl, für jede Rolle", () => {
+  for (const rolle of ["admin", "mitglied", null] as const) {
+    assert.deepEqual(abschnitteFuer({ rolle, labor: true }).map((a) => a.id), ["sprache"], `Rolle ${rolle}`);
+  }
+  assert.equal(abschnitteFuer({ rolle: "mitglied", labor: true })[0].titel, "Sprache und Ton");
+});
+
+test("Laborsicht aus (oder nicht angegeben): die Abschnitte je Rolle bleiben genau wie vorher", () => {
+  for (const rolle of ["admin", "mitglied", null] as const) {
+    assert.deepEqual(abschnitteFuer({ rolle, labor: false }), abschnitteFuer({ rolle }), `Rolle ${rolle}`);
+  }
+  assert.equal(ids("admin").length, ABSCHNITT_IDS.length);
+});
+
+test("Laborsicht: ein Hash auf einen gesperrten Abschnitt führt zur Mikrofonwahl oder zur Liste, nie in den gesperrten Abschnitt", () => {
+  const erlaubt = abschnitteFuer({ rolle: "mitglied", labor: true });
+  for (const hash of ["#einstellungen/modellzugang", "#einstellungen/geraete", "#einstellungen/konto", "#einstellungen/info"]) {
+    assert.equal(wirksamerAbschnitt(parseHash(hash), erlaubt, true), "sprache", hash);
+    assert.equal(wirksamerAbschnitt(parseHash(hash), erlaubt, false), null, hash);
+  }
+  assert.equal(wirksamerAbschnitt(parseHash("#einstellungen/sprache"), erlaubt, false), "sprache");
+});
+
+test("Laborsicht: der Abschnitt hat eine eigene Kurzzeile, die Gliederung der anderen Konten bleibt", () => {
+  const labor = abschnitteFuer({ rolle: "mitglied", labor: true });
+  assert.equal(labor.length, 1);
+  assert.equal(labor[0].kurz, "Mikrofon wählen");
+  assert.equal(labor[0].titel, "Sprache und Ton");
+  assert.equal(labor[0].id, "sprache");
+  // alle anderen Sichten behalten die Kurzzeile und die Liste selbst bleibt unverändert
+  for (const rolle of ["admin", "mitglied", null] as const) {
+    assert.equal(abschnitteFuer({ rolle }).find((a) => a.id === "sprache")?.kurz, "Mikrofon, Hören und Stimme", `Rolle ${rolle}`);
+  }
+  assert.equal(ABSCHNITTE.find((a) => a.id === "sprache")?.kurz, "Mikrofon, Hören und Stimme");
+});
+
+test("Texte der Laborsicht ohne Gedankenstrich, nur an der Laborsicht zu erkennen", () => {
+  for (const a of abschnitteFuer({ rolle: null, labor: true })) assert.ok(!/[–—]|\s-\s/.test(`${a.titel} ${a.kurz}`), a.id);
+});

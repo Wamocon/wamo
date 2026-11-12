@@ -9,6 +9,7 @@
 @import "../components/liveBild.css"; /* Live-Bild des Laptops: Regeln mit Präfix .lb- */
 @import "../components/modellzugang.css"; /* Karte Modellzugang: Regeln mit Präfix .mz- */
 @import "../components/kommando/bueroKarte.css"; /* Büro-Karte (Radialansicht der Bürogeräte): Regeln mit Präfix .bk- */
+@import "../components/abmeldenRueckfrage.css"; /* Rückfrage vor dem Abmelden (Laborkonten): Regeln mit Präfix .ab- */
 
 /* =====================================================================
    WAMO im WMC-Corporate-Design (WAMOCON GmbH)

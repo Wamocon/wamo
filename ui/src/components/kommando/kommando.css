@@ -42,6 +42,9 @@
 .kz .topbar { gap: 14px; }
 @media (max-width: 1023px) { .kz .topbar { gap: 8px; } }
 .kz .wordmark-sm { letter-spacing: 0.14em; }
+/* Laborkonten (lib/laborPlatz.ts): "WAMO Testlabor, Platz N" ist länger als die Wortmarke, also kleiner gesetzt; zuerst kürzt sie sich */
+.kz .wordmark-sm[data-labor] { font-size: 19px; letter-spacing: 0.06em; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1023px) { .kz .wordmark-sm[data-labor] { font-size: 16px; } }
 .kz .topbar-end, .kz .topbar-btn, .kz .profile { flex: none; } /* die Statuszeile gibt nach, nicht die Schaltflächen */
 .kz-status { display: flex; align-items: center; gap: 14px; margin-right: 4px; }
 .kz-meter { display: flex; flex-direction: column; gap: 4px; width: 118px; }

@@ -20,6 +20,7 @@ import {
   useZweispaltig,
   zurListe,
 } from "@/lib/einstellungenHash";
+import { laborAnsicht } from "@/lib/laborPlatz";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
 import { wamo } from "@/lib/wamo";
@@ -98,7 +99,9 @@ export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props)
   const ziel = useEinstellungenZiel();
   const zweispaltig = useZweispaltig();
   const rolle = useSelect(wamo, (s) => s.profil?.rolle ?? null);
-  const erlaubt = abschnitteFuer({ rolle });
+  // Laborkonten (lib/laborPlatz.ts): nur die Mikrofonwahl; ein Hash auf einen anderen Abschnitt führt dann zur Liste oder zur Mikrofonwahl
+  const labor = laborAnsicht(email).einstellungen === "mikrofon";
+  const erlaubt = abschnitteFuer({ rolle, labor });
   const wirksam = wirksamerAbschnitt(ziel, erlaubt, zweispaltig);
   const titel = wirksam ? abschnittTitel(wirksam) : "";
 
@@ -217,7 +220,7 @@ export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props)
                 {wirksam === "modellzugang" && <ModellZugang onAnfrage={aktionen.modellzugang} />}
                 {wirksam === "verbrauch" && <VerbrauchAbschnitt />}
                 {wirksam === "sprache" && (
-                  <SpracheAbschnitt mikrofone={aktionen.mikrofone} mikrofonWaehlen={aktionen.mikrofonWaehlen} />
+                  <SpracheAbschnitt mikrofone={aktionen.mikrofone} mikrofonWaehlen={aktionen.mikrofonWaehlen} nurMikrofon={labor} />
                 )}
                 {wirksam === "gedaechtnis" && <GedaechtnisAbschnitt />}
                 {wirksam === "darstellung" && <DarstellungAbschnitt />}

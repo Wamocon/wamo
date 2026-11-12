@@ -34,13 +34,17 @@ export type Abschnitt = {
   kurz: string;
   /** nur für Profile mit der Rolle admin (die Rolle kommt vom Kern, der Kern prüft sie noch einmal) */
   nurAdmin?: boolean;
+  /** gilt in der Laborsicht (Laborkonten, lib/laborPlatz.ts): dort gibt es nur die Abschnitte mit diesem Zeichen */
+  laborSicht?: boolean;
+  /** Kurzzeile in der Laborsicht, wenn dort weniger zu finden ist als sonst (sonst gilt kurz) */
+  laborKurz?: string;
 };
 
 export const ABSCHNITTE: readonly Abschnitt[] = [
   { id: "konto", titel: "Konto und Profil", kurz: "E-Mail, Rolle und Abmelden" },
   { id: "modellzugang", titel: "Modellzugang", kurz: "API-Schlüssel, Token und Modus" },
   { id: "verbrauch", titel: "Verbrauch", kurz: "Kontingent deines Claude-Abos", nurAdmin: true },
-  { id: "sprache", titel: "Sprache und Ton", kurz: "Mikrofon, Hören und Stimme" },
+  { id: "sprache", titel: "Sprache und Ton", kurz: "Mikrofon, Hören und Stimme", laborSicht: true, laborKurz: "Mikrofon wählen" },
   { id: "gedaechtnis", titel: "Gedächtnis", kurz: "Vorschläge für alle prüfen", nurAdmin: true },
   { id: "darstellung", titel: "Darstellung", kurz: "Normal, Fokus, Zentrale und Nacht" },
   { id: "geraete", titel: "Geräte und PC", kurz: "Verbindungen, Geräteverwaltung, PC-Steuerung und Betriebsart" },
@@ -60,8 +64,13 @@ export const ABSCHNITTE: readonly Abschnitt[] = [
   { id: "info", titel: "Info", kurz: "Version, Kern und Hinweise" },
 ];
 
-/** Abschnitte, die diese Rolle sieht. Eine unbekannte Rolle (noch kein Profil vom Kern) zählt wie mitglied. */
-export function abschnitteFuer({ rolle }: { rolle: Rolle | null }): readonly Abschnitt[] {
+/**
+ * Abschnitte, die diese Rolle sieht. Eine unbekannte Rolle (noch kein Profil vom Kern) zählt wie mitglied. In der Laborsicht
+ * (labor: Laborkonto, lib/laborPlatz.ts) gibt es nur die Abschnitte mit laborSicht, die Rolle spielt dort keine Rolle, und ihre
+ * Kurzzeile ist laborKurz, wo es eine gibt (die Liste ABSCHNITTE selbst bleibt unverändert).
+ */
+export function abschnitteFuer({ rolle, labor = false }: { rolle: Rolle | null; labor?: boolean }): readonly Abschnitt[] {
+  if (labor) return ABSCHNITTE.filter((a) => a.laborSicht).map((a) => ({ ...a, kurz: a.laborKurz ?? a.kurz }));
   return ABSCHNITTE.filter((a) => !a.nurAdmin || rolle === "admin");
 }
 

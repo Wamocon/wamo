@@ -61,12 +61,14 @@ export function useModellzugangSenden(onAnfrage?: (anfrage: ModellzugangAnfrage)
  * versuchen"), wird er genau einmal je Lücke abgefragt. Die Hauptansicht ruft das einmal auf, damit die Seitenleiste ihre
  * Kurzzeile und die Einstellungsseite ihren Stand haben, auch wenn die Karte Modellzugang gerade nicht offen ist. Die
  * Karte selbst fragt nicht mehr; sie setzt zum erneuten Versuch den Stand auf null zurück.
+ * aktiv = false (Laborkonten, lib/laborPlatz.ts): gar kein Abruf. Der Hook wird trotzdem in jedem Render aufgerufen (Regeln der Hooks).
  */
-export function useModellzugangStandHalten(onAnfrage?: (anfrage: ModellzugangAnfrage) => boolean) {
+export function useModellzugangStandHalten(onAnfrage?: (anfrage: ModellzugangAnfrage) => boolean, aktiv = true) {
   const sende = useModellzugangSenden(onAnfrage);
   const zugang = useSelect(wamo, (s) => s.modellzugang);
   const angefragt = useRef(false);
   useEffect(() => {
+    if (!aktiv) return;
     if (zugang) {
       angefragt.current = false;
       return;
@@ -74,5 +76,5 @@ export function useModellzugangStandHalten(onAnfrage?: (anfrage: ModellzugangAnf
     if (angefragt.current) return;
     angefragt.current = true;
     sende({ aktion: "status" });
-  }, [zugang, sende]);
+  }, [aktiv, zugang, sende]);
 }

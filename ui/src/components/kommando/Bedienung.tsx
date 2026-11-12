@@ -169,8 +169,9 @@ const Schnellaktionen = memo(function Schnellaktionen({
   onVerlauf,
   senden,
 }: {
-  verlaufOffen: boolean;
-  onVerlauf: () => void;
+  verlaufOffen?: boolean;
+  /** ohne diese Funktion gibt es den Knopf "Verlauf" nicht (Laborkonten, lib/laborPlatz.ts) */
+  onVerlauf?: () => void;
   senden?: TextSenden;
 }) {
   const online = useSelect(wamo, istOnline);
@@ -196,17 +197,19 @@ const Schnellaktionen = memo(function Schnellaktionen({
             </button>
           </li>
         ))}
-      <li>
-        <button
-          type="button"
-          className="kz-chip"
-          aria-expanded={verlaufOffen}
-          aria-controls="verlauf"
-          onClick={onVerlauf}
-        >
-          Verlauf
-        </button>
-      </li>
+      {onVerlauf && (
+        <li>
+          <button
+            type="button"
+            className="kz-chip"
+            aria-expanded={verlaufOffen}
+            aria-controls="verlauf"
+            onClick={onVerlauf}
+          >
+            Verlauf
+          </button>
+        </li>
+      )}
       <li>
         <button type="button" className="kz-chip" onClick={zeigeCanvas}>
           Canvas
@@ -247,8 +250,8 @@ export const Bedienung = memo(function Bedienung({
   /** Start beim Tippen (nur mit Geräteschalter, lib/stillStart.ts); ohne diese Funktionen bleibt das Feld ohne Sitzung gesperrt */
   stillStarten?: () => boolean;
   eingabeMelden?: () => void;
-  verlaufOffen: boolean;
-  onVerlauf: () => void;
+  verlaufOffen?: boolean;
+  onVerlauf?: () => void;
 }) {
   return (
     <div className="kz-bedienung" data-p="kern">
