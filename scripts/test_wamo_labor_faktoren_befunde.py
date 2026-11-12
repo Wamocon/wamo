@@ -273,3 +273,50 @@ def test_strg_c_mit_netzfehler_beim_aufraeumen_sagt_nicht_entfernt(capsys, umgeb
     assert code == 130
     assert "labor-01: abgebrochen; der neue Faktor konnte NICHT entfernt werden" in err and "--neu" in err and "Admin am Server" in err
     assert PW[1] not in out + err and "Traceback" not in err
+
+
+# ---------- Befund 3: normalisierter Seed, nur [A-Z2-7=] in der Datei ----------
+
+LEERRAUM = "\n\r\t "
+
+
+def mit_leerraum(seed: str) -> str:
+    """Wie ein Server, der den Seed gruppiert und teils klein schreibt: Zeilenumbruch, Wagenrücklauf, Tabulator, U+2028."""
+    return seed[:8] + "\n" + seed[8:16].lower() + "\r" + seed[16:24] + "\t" + seed[24:28] + " " + seed[28:]
+
+
+def test_seed_des_servers_wird_normalisiert_gespeichert(capsys, umgebung, labor, tmp_path):
+    labor.seed_darstellung = mit_leerraum
+    datei = umschlag_datei(tmp_path)
+    code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")
+    server = labor.faktoren_von(email("labor-01"))[0]["seed"]
+    gespeichert = seed_der_datei(datei, "labor-01")
+    assert code == 0 and gespeichert == server
+    assert not any(z in gespeichert for z in LEERRAUM) and gespeichert == gespeichert.upper()
+    assert len(datei.read_text(encoding="utf-8").splitlines()) == 3, "die Datei hat keine zusätzliche Zeile bekommen"
+
+
+def test_api_liefert_den_seed_normalisiert(labor):
+    import wamo_labor_faktoren_api as api
+    labor.seed_darstellung = mit_leerraum
+    v = api.Verbindung(labor.basis, "anon-" + "a" * 8, None)
+    s = v.anmelden(email("labor-01"), PW[1])
+    neu = v.faktor_anlegen(s.access_token, "WAMO-test")
+    assert neu.seed == [f for f in labor.faktoren.values()][0]["seed"]
+
+
+@pytest.mark.parametrize("seed", ["AB\nCDEFGHIJKLMNOP", "ABCDEFGH\rIJKLMNOP", "ABCDEFGH\tIJKLMNOP", "ABCDEFGH IJKLMNOP",
+                                  "abcdefghijklmnop", "ABCDEFGH IJKLMNOP", "ABCDEFGH1JKLMNOP", "ABCDEFGH\x00IJKLMNOP", ""])
+def test_umschlag_schreibt_nur_zeichen_aus_a_bis_z_und_2_bis_7(tmp_path, seed):
+    original = umschlag_text()
+    datei = umschlag_datei(tmp_path, original)
+    with pytest.raises(um.UmschlagFehler, match="Seed") as e:
+        um.Umschlag(datei, rechte=Rechte()).seed_speichern("labor-01", seed)
+    assert datei.read_text(encoding="utf-8") == original and not [p for p in datei.parent.iterdir() if ".sicherung-" in p.name]
+    assert seed.strip() == "" or seed not in str(e.value)
+
+
+def test_umschlag_nimmt_einen_gueltigen_seed_mit_auffuellzeichen(tmp_path):
+    datei = umschlag_datei(tmp_path)
+    um.Umschlag(datei, rechte=Rechte()).seed_speichern("labor-01", "ABCDEFGHIJKLMNOP" + "======")
+    assert seed_der_datei(datei, "labor-01") == "ABCDEFGHIJKLMNOP======"

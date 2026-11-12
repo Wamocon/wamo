@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from wamo_labor_faktoren_totp import jwt_claims, seed_gueltig, zeitversatz
+from wamo_labor_faktoren_totp import jwt_claims, seed_gueltig, seed_normalisieren, zeitversatz
 
 STANDARD_BASIS = "https://192.168.178.136:55443"
 ANTWORT_GRENZE = 1_000_000
@@ -232,7 +232,7 @@ class Verbindung:
         fid, seed = d.get("id"), totp.get("secret")
         if not isinstance(fid, str) or not FAKTOR_ID_FORM.fullmatch(fid) or not seed_gueltig(seed):
             raise ApiFehler("Faktor anlegen: ungültige Antwort des Servers")
-        return NeuerFaktor(fid, seed)
+        return NeuerFaktor(fid, seed_normalisieren(seed))  # ohne Leerraum, in Großbuchstaben: so steht er später in der Datei
 
     def challenge(self, token: str, faktor_id: str) -> str:
         a = self.anfrage("POST", f"/auth/v1/factors/{_id(faktor_id)}/challenge", {}, token, aktion="challenge")

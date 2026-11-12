@@ -44,6 +44,7 @@ class GoTrueAttrappe:
         self.aal2_nie = False          # verify bestätigt den Faktor, hebt die Sitzung aber nicht auf aal2
         self.erneuern_aal1 = False     # Token nach dem Erneuern trägt aal1
         self.verzoegerung = 0.0        # Sekunden, bevor die Attrappe antwortet
+        self.seed_darstellung = None   # Funktion: wie der Server den Seed in der Antwort schreibt (Leerraum, Kleinschreibung)
         self.nutzer: dict[str, dict] = {}      # E-Mail -> Nutzer
         self.sitzungen: dict[str, dict] = {}   # Sitzungskennung -> Sitzung
         self.tokens: dict[str, str] = {}       # Access- oder Refresh-Token -> Sitzungskennung
@@ -265,7 +266,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._senden(422, {"code": 422, "error_code": "mfa_factor_name_conflict", "msg": "Name vergeben"})
         fid, seed = o.faktor_anlegen(s["email"], "unverified", name)
         uri = f"otpauth://totp/WAMO:{s['email']}?secret={seed}&issuer=WAMO"
-        self._senden(200, {"id": fid, "type": "totp", "friendly_name": name, "totp": {"qr_code": "<svg/>", "secret": seed, "uri": uri}})
+        gezeigt = o.seed_darstellung(seed) if o.seed_darstellung else seed
+        self._senden(200, {"id": fid, "type": "totp", "friendly_name": name, "totp": {"qr_code": "<svg/>", "secret": gezeigt, "uri": uri}})
 
     def _challenge(self, f: dict) -> None:
         o = self.owner

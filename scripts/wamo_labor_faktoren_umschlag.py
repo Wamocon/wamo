@@ -123,6 +123,8 @@ def _mit_seed(zeile: str, seed: str | None) -> str:
         elif len(felder) > SEED_SPALTE + 1:
             felder[SEED_SPALTE] = ""
     else:
+        if not _SEED_ZEICHEN.fullmatch(seed):  # nie Tabulator, Zeilenumbruch oder anderer Leerraum in die Datei
+            raise UmschlagFehler("Der Seed enthält unzulässige Zeichen (erlaubt sind A bis Z, 2 bis 7 und =), die Datei bleibt unverändert")
         felder[SEED_SPALTE:SEED_SPALTE + 1] = [seed]
     return "\t".join(felder) + cr
 
