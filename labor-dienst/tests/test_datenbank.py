@@ -265,3 +265,12 @@ def test_zentral_tokens_loeschen(zentral):
 
 def test_zentral_gesundheit(zentral):
     assert zentral.pruefen() is True
+
+
+def test_zentral_token_loeschen_entfernt_nur_den_hash_des_platzes(zentral):
+    zentral.token_setzen(1, "11" * 32)
+    zentral.token_setzen(2, "22" * 32)
+    zentral.token_loeschen(1)
+    assert zentral.hat_token(1) is False and zentral.platz_von_hash("11" * 32) is None
+    assert zentral.hat_token(2) is True
+    zentral.token_loeschen(1)  # ein zweites Mal ist kein Fehler

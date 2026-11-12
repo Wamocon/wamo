@@ -30,6 +30,17 @@ class Dienst:
             platz.anlegen()
         self.aufbewahrung_pruefen()
 
+    def neuer_besucher(self, platz: int, einwilligung_version: int) -> None:
+        """Besucherwechsel: Der alte Platz-Token verliert zuerst den Zugang (schlägt danach etwas fehl, bleibt der Platz eher zu als offen), dann beginnt
+        ein neuer Durchlauf mit Seed. Den neuen Token holt der Betreuer mit platz-token."""
+        self.zentral.token_loeschen(platz)
+        self.plaetze[platz].neuer_durchlauf(einwilligung_version)
+
+    def platz_leeren(self, platz: int) -> None:
+        """Alle Daten des Platzes löschen. Auch hier verliert der Platz-Token den Zugang."""
+        self.zentral.token_loeschen(platz)
+        self.plaetze[platz].daten_loeschen()
+
     def aufbewahrung_pruefen(self) -> bool:
         """Liegt heute (UTC) nach dem Datum der Aufbewahrung (WAMO_LABOR_DIENST_BIS), werden alle Daten gelöscht: Tickets, Kommentare, Einwilligungen,
         Platz-Token und Protokoll. Liefert wahr, wenn die Frist abgelaufen ist."""

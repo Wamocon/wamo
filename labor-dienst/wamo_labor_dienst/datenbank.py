@@ -313,6 +313,11 @@ class ZentralDB(_Basis):
         with self._lesen() as conn:
             return conn.execute("SELECT 1 FROM platz_token WHERE platz = ?", (platz,)).fetchone() is not None
 
+    def token_loeschen(self, platz: int) -> None:
+        """Entfernt den Hash des Platzes: Der alte Token öffnet nichts mehr. Ohne Hash ist das Löschen kein Fehler."""
+        with self._transaktion() as conn:
+            conn.execute("DELETE FROM platz_token WHERE platz = ?", (platz,))
+
     def tokens_loeschen(self) -> None:
         with self._transaktion() as conn:
             conn.execute("DELETE FROM platz_token")

@@ -2,9 +2,10 @@
 
 GET  /api/betreuer/plaetze                          Zustand aller 16 Plätze ohne Texte
 POST /api/betreuer/plaetze/<n>/durchlauf-beenden    V1 liefert offen falsch, Schreiben mit der alten durchlauf_id ist 409
-POST /api/betreuer/plaetze/<n>/neuer-durchlauf      Körper {"einwilligung_version": <int>}: Seed, neue durchlauf_id, Einwilligung mit Zeit
+POST /api/betreuer/plaetze/<n>/neuer-durchlauf      Körper {"einwilligung_version": <int>}: Seed, neue durchlauf_id, Einwilligung mit Zeit,
+                                                    der alte Platz-Token verliert den Zugang (neuen holt der Betreuer mit platz-token)
 POST /api/betreuer/plaetze/<n>/zuruecksetzen        Board und Ablage auf den Seed, Durchlauf bleibt
-POST /api/betreuer/plaetze/<n>/daten-loeschen       alle Daten des Platzes, danach geschlossen und ohne Einwilligung
+POST /api/betreuer/plaetze/<n>/daten-loeschen       alle Daten des Platzes, danach geschlossen und ohne Einwilligung, Platz-Token entzogen
 POST /api/betreuer/plaetze/<n>/platz-token          erzeugt oder erneuert den Platz-Token, gibt ihn EINMAL zurück, speichert nur den Hash
 Ohne Token 401, mit falschem Token (auch Platz-Token und Bearer des Kerns) 403. Jeder Aufruf steht mit Zeit, Platz und Art im Protokoll, nie mit Texten.
 """
@@ -60,7 +61,7 @@ async def _neuer_durchlauf(request: Request, dienst: Dienst, platz: int) -> dict
     version = nur_felder(json_lesen(roh), {"einwilligung_version"})["einwilligung_version"]
     if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= EINWILLIGUNG_MAX:
         raise eingabe("Das Feld einwilligung_version ist ungültig.")
-    await run_in_threadpool(dienst.plaetze[platz].neuer_durchlauf, version)
+    await run_in_threadpool(dienst.neuer_besucher, platz, version)
     return await run_in_threadpool(_zustand, dienst, platz)
 
 
@@ -72,7 +73,7 @@ async def _zuruecksetzen(request: Request, dienst: Dienst, platz: int) -> dict:
 
 async def _daten_loeschen(request: Request, dienst: Dienst, platz: int) -> dict:
     await _ohne_inhalt(request)
-    await run_in_threadpool(dienst.plaetze[platz].daten_loeschen)
+    await run_in_threadpool(dienst.platz_leeren, platz)
     return await run_in_threadpool(_zustand, dienst, platz)
 
 

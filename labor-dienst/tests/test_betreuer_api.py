@@ -222,3 +222,55 @@ def test_anfragen_stehen_als_metadaten_im_protokoll(client, konfig):
     client.get("/api/kern/durchlauf", headers=kern_kopf(5))
     e = [x for x in _protokoll(konfig) if x["art"] == "anfrage"][-1]
     assert (e["bereich"], e["methode"], e["status"], e["platz"]) == ("kern", "GET", 200, 5) and isinstance(e["ms"], (int, float))
+
+
+# ---------- Platz-Token und Besucherwechsel (Befund 1 des Reviews) ----------
+def _neuer_platz_token(client, platz: int = PLATZ) -> str:
+    r = client.post(f"/api/betreuer/plaetze/{platz}/platz-token", headers=betreuer_kopf())
+    assert r.status_code == 200
+    return r.json()["platz_token"]
+
+
+def _board_status(client, token: str) -> int:
+    return client.get("/api/browser/board", headers={"X-Platz-Token": token}).status_code
+
+
+def test_neuer_durchlauf_entzieht_dem_alten_platz_token_den_zugang(client):
+    oeffnen(client, PLATZ)
+    alt = _neuer_platz_token(client)
+    assert _board_status(client, alt) == 200
+    oeffnen(client, PLATZ)  # der nächste Besucher
+    assert _board_status(client, alt) == 401
+    assert _zustand(client)["hat_platz_token"] is False
+    neu = _neuer_platz_token(client)
+    assert neu != alt and _board_status(client, neu) == 200 and _board_status(client, alt) == 401
+
+
+def test_daten_loeschen_entzieht_dem_platz_token_den_zugang(client):
+    oeffnen(client, PLATZ)
+    alt = _neuer_platz_token(client)
+    assert client.post(f"/api/betreuer/plaetze/{PLATZ}/daten-loeschen", headers=betreuer_kopf()).status_code == 200
+    assert _board_status(client, alt) == 401 and _zustand(client)["hat_platz_token"] is False
+
+
+def test_durchlauf_beenden_und_zuruecksetzen_behalten_den_platz_token(client):
+    oeffnen(client, PLATZ)
+    token = _neuer_platz_token(client)
+    client.post(f"/api/betreuer/plaetze/{PLATZ}/zuruecksetzen", headers=betreuer_kopf())
+    client.post(f"/api/betreuer/plaetze/{PLATZ}/durchlauf-beenden", headers=betreuer_kopf())
+    assert _board_status(client, token) == 200
+
+
+def test_besucherwechsel_trifft_nur_den_eigenen_platz(client):
+    oeffnen(client, 3)
+    oeffnen(client, 4)
+    t3, t4 = _neuer_platz_token(client, 3), _neuer_platz_token(client, 4)
+    oeffnen(client, 3)
+    assert _board_status(client, t3) == 401 and _board_status(client, t4) == 200
+
+
+def test_ungueltiger_neuer_durchlauf_laesst_den_token_stehen(client):
+    oeffnen(client, PLATZ)
+    token = _neuer_platz_token(client)
+    r = client.post(f"/api/betreuer/plaetze/{PLATZ}/neuer-durchlauf", json={"einwilligung_version": 0}, headers=betreuer_kopf())
+    assert r.status_code == 422 and _board_status(client, token) == 200

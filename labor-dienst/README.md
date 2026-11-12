@@ -45,8 +45,10 @@ Alle Antworten tragen `Cache-Control: no-store`, `X-Content-Type-Options: nosnif
 * **Betreuer, `/api/betreuer/`** (Bearer mit dem Betreuer-Token, ohne Token 401, falscher Token auch Platz-Token oder Bearer des Kerns 403):
   `GET plaetze` (Zustand aller 16 Plätze ohne Texte), `POST plaetze/<n>/durchlauf-beenden`, `neuer-durchlauf` (Körper
   `{"einwilligung_version": 1}`, Seed, neue `durchlauf_id`, Einwilligung mit Zeit), `zuruecksetzen` (Seed, Durchlauf bleibt), `daten-loeschen`
-  (alles weg, Platz danach geschlossen und ohne Seed, der Platz-Token bleibt) und `platz-token` (erzeugt oder erneuert, 128 Bit, wird nur einmal
-  ausgegeben und nur als Hash gespeichert). Jeder Aufruf steht mit Zeit, Platz und Art im Protokoll.
+  (alles weg, Platz danach geschlossen und ohne Seed) und `platz-token` (erzeugt oder erneuert, 128 Bit, wird nur einmal ausgegeben und nur als
+  Hash gespeichert). **Besucherwechsel:** `neuer-durchlauf` und `daten-loeschen` entziehen dem alten Platz-Token sofort den Zugang. Danach holt der
+  Betreuer mit `platz-token` den neuen Token für den Platz (`durchlauf-beenden` und `zuruecksetzen` lassen den Token stehen). Jeder Aufruf steht
+  mit Zeit, Platz und Art im Protokoll.
 * **`GET /gesundheit`** ohne Token: nur der Zustand, keine Daten.
 
 Antwortformen der Schnittstellen für die Oberfläche (sie ändern sich nicht):
