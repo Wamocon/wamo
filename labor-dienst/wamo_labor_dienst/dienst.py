@@ -10,7 +10,7 @@ from .datenbank import NichtBereinigt, PlatzDB, ZentralDB
 from .grenzen import Begrenzer, FehlerZaehler
 from .konfig import FRUEHESTES_DATUM, Konfig, KonfigFehler
 from .protokoll import MAX_BYTES, Protokoll
-from .regeln import PLAETZE
+from .regeln import PLAETZE, eingabe
 from .sicherheit import PLATZ_TOKEN_RE, digest, token_hash
 
 BOARD_RATE, BOARD_SCHUB = 2.0, 5  # je Platz-Token: etwa 2 Abfragen je Sekunde, kurzzeitig 5
@@ -64,8 +64,11 @@ class Dienst:
             self._tokens = {h: p for h, p in self._tokens.items() if p != platz}
 
     def neuer_besucher(self, platz: int, einwilligung_version: int) -> None:
-        """Besucherwechsel: Der alte Platz-Token verliert zuerst den Zugang (schlägt danach etwas fehl, bleibt der Platz eher zu als offen), dann beginnt
-        ein neuer Durchlauf mit Seed. Den neuen Token holt der Betreuer mit platz-token."""
+        """Besucherwechsel: Zuerst muss die Einwilligungsversion passen (sie darf nur wachsen, sonst 422 und nichts ändert sich). Dann verliert der alte
+        Platz-Token den Zugang (schlägt danach etwas fehl, bleibt der Platz eher zu als offen), dann beginnt ein neuer Durchlauf mit Seed. Den neuen
+        Token holt der Betreuer mit platz-token."""
+        if not self.zentral.einwilligung_anheben(einwilligung_version):
+            raise eingabe("Die Einwilligungsversion darf nicht kleiner sein als die zuletzt erfasste.")
         self.token_entziehen(platz)
         self.plaetze[platz].neuer_durchlauf(einwilligung_version)
 

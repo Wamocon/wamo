@@ -349,6 +349,7 @@ class ZentralDB(_Basis):
             conn.close()
         with self._transaktion() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS platz_token (platz INTEGER PRIMARY KEY CHECK (platz BETWEEN 1 AND 16), hash TEXT NOT NULL UNIQUE)")
+            conn.execute("CREATE TABLE IF NOT EXISTS einwilligung_max (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)")
 
     def token_setzen(self, platz: int, token_hash: str) -> None:
         """Erzeugt oder erneuert den Hash des Platzes. Ein Hash eines anderen Platzes ergibt sqlite3.IntegrityError."""
@@ -368,6 +369,16 @@ class ZentralDB(_Basis):
     def hat_token(self, platz: int) -> bool:
         with self._lesen() as conn:
             return conn.execute("SELECT 1 FROM platz_token WHERE platz = ?", (platz,)).fetchone() is not None
+
+    def einwilligung_anheben(self, version: int) -> bool:
+        """Die Versionsnummer des Datenschutzhinweises darf nur wachsen (Vertrag Abschnitt 8). Prüft und merkt in einer Transaktion: wahr, wenn version
+        mindestens so groß ist wie die höchste bisher erfasste (dann ist sie die neue höchste), falsch, wenn sie kleiner ist (nichts ändert sich)."""
+        with self._transaktion() as conn:
+            zeile = conn.execute("SELECT version FROM einwilligung_max").fetchone()
+            if zeile is not None and version < zeile["version"]:
+                return False
+            conn.execute("INSERT INTO einwilligung_max(id, version) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET version = excluded.version", (version,))
+            return True
 
     def token_loeschen(self, platz: int) -> None:
         """Entfernt den Hash des Platzes: Der alte Token öffnet nichts mehr. Ohne Hash ist das Löschen kein Fehler."""

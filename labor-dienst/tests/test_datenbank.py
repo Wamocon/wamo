@@ -274,3 +274,11 @@ def test_zentral_token_loeschen_entfernt_nur_den_hash_des_platzes(zentral):
     assert zentral.hat_token(1) is False and zentral.platz_von_hash("11" * 32) is None
     assert zentral.hat_token(2) is True
     zentral.token_loeschen(1)  # ein zweites Mal ist kein Fehler
+
+
+def test_zentral_einwilligung_darf_nur_wachsen(zentral):
+    assert zentral.einwilligung_anheben(3) is True
+    assert zentral.einwilligung_anheben(3) is True  # dieselbe Version ist erlaubt (derselbe Hinweis für den nächsten Besucher)
+    assert zentral.einwilligung_anheben(2) is False
+    assert zentral.einwilligung_anheben(10) is True
+    assert zentral.einwilligung_anheben(9) is False and zentral.einwilligung_anheben(10) is True
