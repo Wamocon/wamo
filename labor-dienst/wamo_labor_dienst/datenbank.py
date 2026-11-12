@@ -261,9 +261,9 @@ class PlatzDB(_Basis):
     def schreiben(self, aufruf: Aufruf) -> Antwort:
         """Ein Schreibaufruf in einer Transaktion. Jede Antwort des Vertrags kommt als Antwort zurück (auch 409, 422 und 429).
         Nur ein unerwarteter Fehler wird zur Ausnahme (nach dem Rückrollen ist der Platz unverändert)."""
-        jetzt = self._uhr()
         try:
             with self._transaktion() as conn:
+                jetzt = self._uhr()  # erst nach BEGIN IMMEDIATE: Die Zeit folgt der Reihenfolge der Sperre, sonst löschte ein älterer Aufruf die Einträge der anderen
                 return schreibpfad.ausfuehren(conn, aufruf, jetzt, iso_zeit(jetzt))
         except DienstFehler as e:
             return fehler_antwort(e)

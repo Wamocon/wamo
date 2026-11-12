@@ -18,6 +18,7 @@ from .regeln import (
     QUOTE_RATE,
     QUOTE_TICKETS,
     RATE_FENSTER_SECS,
+    RATE_ZUKUNFT_SECS,
     TICKET_NUMMER_MAX,
     DienstFehler,
     eingabe,
@@ -106,7 +107,9 @@ def _ausfuehren(conn: sqlite3.Connection, a: Aufruf, meta: sqlite3.Row, iso: str
 
 def _rate_pruefen(conn: sqlite3.Connection, jetzt: float) -> None:
     """7. Schreibrate: höchstens 30 Schreibaufrufe in den letzten 60 Sekunden. Der abgelehnte Aufruf zählt nicht mit (die Ausnahme rollt zurück)."""
-    conn.execute("DELETE FROM schreibzeit WHERE t <= ? OR t > ?", (jetzt - RATE_FENSTER_SECS, jetzt))  # auch Einträge aus der Zukunft (Uhr zurückgestellt)
+    # jetzt ist erst nach BEGIN IMMEDIATE gelesen: Es ist nie älter als der Eintrag eines Aufrufs, der vor uns die Sperre hatte. Verworfen werden nur Einträge,
+    # die deutlich in der Zukunft liegen (Uhr zurückgestellt), nie die eines Aufrufs, der bloß einen Wimpernschlag später dran war.
+    conn.execute("DELETE FROM schreibzeit WHERE t <= ? OR t > ?", (jetzt - RATE_FENSTER_SECS, jetzt + RATE_ZUKUNFT_SECS))
     if _zahl(conn, "SELECT COUNT(*) FROM schreibzeit") >= QUOTE_RATE:
         raise _quote("Zu viele Schreibaufrufe, bitte später.")
     conn.execute("INSERT INTO schreibzeit(t) VALUES (?)", (jetzt,))
