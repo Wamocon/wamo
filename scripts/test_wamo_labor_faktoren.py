@@ -57,7 +57,7 @@ def test_totp_fenstergrenzen_und_kleinschreibung():
 
 @pytest.mark.parametrize("seed,gueltig", [
     (RFC_SEED, True), (RFC_SEED.lower(), True), ("ABCD EFGH IJKL MNOP", True),
-    ("", False), ("ABC", False), ("1" * 20, False), ("A" * 15, False), ("AB!D" * 6, False), (None, False),
+    ("", False), ("ABC", False), ("1" * 20, False), ("A" * 15, False), ("A" * 17, False), ("AB!D" * 6, False), (None, False),
 ])
 def test_seed_gueltig(seed, gueltig):
     assert tt.seed_gueltig(seed) is gueltig
@@ -136,6 +136,8 @@ import re  # noqa: E402
 import subprocess  # noqa: E402
 
 import wamo_labor_faktoren_umschlag as um  # noqa: E402
+
+windows_nur_vorab = pytest.mark.skipif(os.name != "nt", reason="nur unter Windows")
 
 PW = {n: f"Pw{n}-" + "ab" * 3 for n in range(1, 10)}  # kurze, erfundene Testpasswörter (nur Attrappe)
 
@@ -320,6 +322,83 @@ def test_nicht_setzbare_rechte_hinterlassen_keine_datei_und_aendern_nichts(tmp_p
     assert datei.read_text(encoding="utf-8") == original
 
 
+def test_seed_entfernen_leert_die_spalte_bei_weiteren_spalten(tmp_path):
+    datei = umschlag_datei(tmp_path, f"labor-01\tlabor-01@wamo.test\t{PW[1]}\t{seed_von('a')}\tnotiz\n")
+    um.Umschlag(datei, rechte=Rechte()).seed_entfernen("labor-01")
+    assert datei.read_text(encoding="utf-8") == f"labor-01\tlabor-01@wamo.test\t{PW[1]}\t\tnotiz\n"
+
+
+def test_unvollstaendige_zeile_wird_nicht_beschrieben(tmp_path):
+    original = "labor-01\tlabor-01@wamo.test\n"
+    datei = umschlag_datei(tmp_path, original)
+    with pytest.raises(um.UmschlagFehler, match="unvollständig"):
+        um.Umschlag(datei, rechte=Rechte()).seed_speichern("labor-01", seed_von("a"))
+    assert datei.read_text(encoding="utf-8") == original and sicherungen(datei) == []
+
+
+def test_nicht_lesbare_datei_ist_ein_fehler(tmp_path):
+    with pytest.raises(um.UmschlagFehler, match="nicht lesbar"):
+        um.Umschlag(tmp_path / "gibt-es-nicht.txt", rechte=Rechte()).zugang("labor-01")
+
+
+def _os_open_scheitert_fuer(monkeypatch, teil: str):
+    echt = os.open
+
+    def open_(pfad, *a, **k):
+        if teil in str(pfad):
+            raise PermissionError("kein Zugriff " + PW[1])
+        return echt(pfad, *a, **k)
+
+    monkeypatch.setattr(os, "open", open_)
+
+
+def test_sicherung_nicht_moeglich_aendert_nichts(tmp_path, monkeypatch):
+    original = umschlag_text()
+    datei = umschlag_datei(tmp_path, original)
+    _os_open_scheitert_fuer(monkeypatch, ".sicherung-")
+    with pytest.raises(um.UmschlagFehler, match="Sicherung") as e:
+        um.Umschlag(datei, rechte=Rechte()).seed_speichern("labor-01", seed_von("a"))
+    assert PW[1] not in str(e.value) and datei.read_text(encoding="utf-8") == original
+
+
+def test_schreibprobe_ohne_schreibrecht_ist_ein_fehler(tmp_path, monkeypatch):
+    datei = umschlag_datei(tmp_path)
+    _os_open_scheitert_fuer(monkeypatch, ".probe-")
+    with pytest.raises(um.UmschlagFehler, match="nicht geschrieben werden"):
+        um.Umschlag(datei, rechte=Rechte()).schreibprobe()
+
+
+@windows_nur_vorab
+def test_unter_windows_fehlendes_whoami_ist_ein_fehler(tmp_path, monkeypatch):
+    datei = umschlag_datei(tmp_path)
+    um._benutzer_sid.cache_clear()
+    monkeypatch.setattr(um, "_system32", lambda name: str(tmp_path / "gibt-es-nicht" / name))
+    try:
+        with pytest.raises(um.UmschlagFehler, match="Benutzer"):
+            um.rechte_nur_benutzer(datei)
+    finally:
+        um._benutzer_sid.cache_clear()
+
+
+@windows_nur_vorab
+def test_unter_windows_scheiternder_icacls_ist_ein_fehler(tmp_path, monkeypatch):
+    datei = umschlag_datei(tmp_path)
+    um._benutzer_sid.cache_clear()
+    echt = subprocess.run
+
+    def icacls_scheitert(befehl, *a, **k):
+        if str(befehl[0]).lower().endswith("icacls.exe"):
+            return subprocess.CompletedProcess(befehl, 5, "", "")
+        return echt(befehl, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", icacls_scheitert)
+    try:
+        with pytest.raises(um.UmschlagFehler, match="icacls"):
+            um.rechte_nur_benutzer(datei)
+    finally:
+        um._benutzer_sid.cache_clear()
+
+
 posix_nur = pytest.mark.skipif(os.name != "posix", reason="nur unter Linux")
 windows_nur = pytest.mark.skipif(os.name != "nt", reason="nur unter Windows")
 
@@ -385,6 +464,7 @@ def verbindung(server, **kw) -> api.Verbindung:
     ("ftp://127.0.0.1", False, False), ("https://", True, False), ("kein-schema", True, False),
     ("https://name:pw@192.168.178.136:55443", True, False), ("https://192.168.178.136:55443/auth", True, False),
     ("https://192.168.178.136:55443?x=1", True, False), ("http://127.0.0.1.example.org:5000", False, False),
+    ("https://192.168.178.136:99999", True, False),
 ])
 def test_basis_pruefen(basis, ca, gut):
     if gut:
@@ -397,14 +477,16 @@ def test_basis_pruefen(basis, ca, gut):
 
 def test_anmelden_liefert_sitzung_und_faktoren(server):
     fid, _ = server.faktor_anlegen(EMAIL, "verified")
-    s = verbindung(server).anmelden(EMAIL, PW[3])
+    v = verbindung(server)
+    s = v.anmelden(EMAIL, PW[3])
     assert s.access_token and s.refresh_token and s.aal == "aal1"
-    assert [(f.id, f.status, f.typ) for f in s.faktoren] == [(fid, "verified", "totp")]
+    assert [(f.id, f.status, f.typ) for f in v.faktoren(s.access_token)] == [(fid, "verified", "totp")]
     assert PW[3] not in repr(s) and s.access_token not in repr(s)
 
 
 def test_anmelden_ohne_faktoren_im_nutzer(server):
-    assert verbindung(server).anmelden(EMAIL, PW[3]).faktoren == ()
+    v = verbindung(server)
+    assert v.faktoren(v.anmelden(EMAIL, PW[3]).access_token) == ()
 
 
 def test_falsches_passwort_nennt_status_und_kennung_ohne_wert(server):
@@ -426,6 +508,12 @@ def test_antworttext_des_servers_gelangt_nie_in_den_fehler(server):
     with pytest.raises(api.ApiFehler) as e:
         verbindung(server).anmelden(EMAIL, PW[3])
     assert "GEHEIMER" not in str(e.value) and PW[3] not in str(e.value)
+
+
+def test_zeitueberschreitung_ist_ein_fehler(server):
+    server.verzoegerung = 1.0
+    with pytest.raises(api.ApiFehler, match="Zeitüberschreitung"):
+        verbindung(server, zeitlimit=0.2).anmelden(EMAIL, PW[3])
 
 
 def test_unbrauchbare_antwort_ist_ein_fehler(server):
@@ -536,6 +624,17 @@ def test_faktorkennung_aus_der_antwort_wird_geprueft(server):
     s = v.anmelden(EMAIL, PW[3])
     with pytest.raises(api.ApiFehler, match="ungültige Antwort"):
         v.faktor_anlegen(s.access_token, "WAMO-test")
+
+
+def test_challenge_ohne_kennung_und_ungueltige_faktorkennung_sind_fehler(server):
+    fid, _ = server.faktor_anlegen(EMAIL, "unverified")
+    server.fehler("POST", "/challenge", 200, koerper={"type": "totp"})
+    v = verbindung(server)
+    s = v.anmelden(EMAIL, PW[3])
+    with pytest.raises(api.ApiFehler, match="ungültige Antwort"):
+        v.challenge(s.access_token, fid)
+    with pytest.raises(api.ApiFehler, match="Ungültige Faktorkennung"):
+        v.faktor_loeschen(s.access_token, "../admin")
 
 
 def test_ungueltiger_seed_aus_der_antwort_wird_abgelehnt(server):

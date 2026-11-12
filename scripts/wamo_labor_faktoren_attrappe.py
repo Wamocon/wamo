@@ -41,11 +41,15 @@ class GoTrueAttrappe:
         self.versatz = versatz
         self.mit_datum = mit_datum
         self.umleiten = False
+        self.aal2_nie = False          # verify bestätigt den Faktor, hebt die Sitzung aber nicht auf aal2
+        self.erneuern_aal1 = False     # Token nach dem Erneuern trägt aal1
+        self.verzoegerung = 0.0        # Sekunden, bevor die Attrappe antwortet
         self.nutzer: dict[str, dict] = {}      # E-Mail -> Nutzer
         self.sitzungen: dict[str, dict] = {}   # Sitzungskennung -> Sitzung
         self.tokens: dict[str, str] = {}       # Access- oder Refresh-Token -> Sitzungskennung
         self.faktoren: dict[str, dict] = {}    # Faktorkennung -> Faktor
         self.challenges: dict[str, str] = {}   # Challenge -> Faktorkennung
+        self.alle_seeds: list[str] = []        # jeder Seed, den die Attrappe je vergeben hat (auch gelöschter Faktoren)
         self.anfragen: list[tuple[str, str]] = []
         self.regeln: list[dict] = []
         self._zaehler = 0
@@ -71,6 +75,7 @@ class GoTrueAttrappe:
         fid = self._neue_id("faktor")
         seed = base64.b32encode(hashlib.sha1(f"{email}/{fid}".encode()).digest()).decode()
         self.faktoren[fid] = {"id": fid, "email": email, "status": status, "name": name, "seed": seed}
+        self.alle_seeds.append(seed)
         return fid, seed
 
     def faktoren_von(self, email: str) -> list[dict]:
@@ -128,12 +133,12 @@ class GoTrueAttrappe:
         self.tokens[t] = sid
         return t
 
-    def _sitzung_ausgeben(self, sid: str) -> dict:
+    def _sitzung_ausgeben(self, sid: str, aal: str | None = None) -> dict:
         s = self.sitzungen[sid]
         self._zaehler += 1
         refresh = hashlib.sha1(f"refresh{sid}{self._zaehler}".encode()).hexdigest()[:12]
         self.tokens[refresh] = sid
-        return {"access_token": self._token(s["email"], sid, s["aal"]), "token_type": "bearer", "expires_in": 3600,
+        return {"access_token": self._token(s["email"], sid, aal or s["aal"]), "token_type": "bearer", "expires_in": 3600,
                 "refresh_token": refresh, "user": self._user_json(s["email"])}
 
 
@@ -192,6 +197,8 @@ class _Handler(BaseHTTPRequestHandler):
         teile = urlsplit(self.path)
         pfad, abfrage = teile.path, parse_qs(teile.query)
         koerper = self._koerper() if methode == "POST" else {}
+        if self.owner.verzoegerung:
+            time.sleep(self.owner.verzoegerung)
         with self.owner._sperre:
             self.owner.anfragen.append((methode, pfad))
             if self.headers.get("apikey") != self.owner.schluessel:
@@ -249,7 +256,7 @@ class _Handler(BaseHTTPRequestHandler):
         sid = o.tokens.get(k.get("refresh_token", ""))
         if sid is None or sid not in o.sitzungen:
             return self._senden(400, {"code": 400, "error_code": "refresh_token_not_found", "msg": "unbekannt"})
-        self._senden(200, o._sitzung_ausgeben(sid))
+        self._senden(200, o._sitzung_ausgeben(sid, "aal1" if o.erneuern_aal1 else None))
 
     def _faktor_anlegen(self, s: dict, k: dict) -> None:
         o = self.owner
@@ -276,7 +283,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._senden(400, {"code": 400, "error_code": "mfa_verification_failed", "msg": "Invalid TOTP code entered"})
         o.challenges.pop(k["challenge_id"], None)
         f["status"] = "verified"
-        o.sitzungen[sid]["aal"] = "aal2"
+        if not o.aal2_nie:
+            o.sitzungen[sid]["aal"] = "aal2"
         self._senden(200, o._sitzung_ausgeben(sid))
 
     def _loeschen(self, s: dict, f: dict) -> None:

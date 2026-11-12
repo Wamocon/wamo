@@ -56,7 +56,6 @@ class Faktor:
 class Sitzung:
     access_token: str = field(repr=False)
     refresh_token: str = field(repr=False)
-    faktoren: tuple[Faktor, ...] = ()
 
     @property
     def aal(self) -> str:
@@ -276,5 +275,4 @@ def _sitzung(daten: object, aktion: str) -> Sitzung:
     zugriff, erneuern = d.get("access_token"), d.get("refresh_token")
     if not isinstance(zugriff, str) or not zugriff or not isinstance(erneuern, str) or not erneuern:
         raise ApiFehler(f"{aktion}: ungültige Antwort des Servers")
-    user = d.get("user") if isinstance(d.get("user"), dict) else {}
-    return Sitzung(zugriff, erneuern, _faktoren(user))
+    return Sitzung(zugriff, erneuern)
