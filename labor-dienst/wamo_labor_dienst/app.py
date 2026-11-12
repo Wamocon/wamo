@@ -58,9 +58,10 @@ async def _aufraeumen_schleife(dienst: Dienst) -> None:
             dienst.protokoll.ereignis("fehler", fehlerart=type(e).__name__)
 
 
-def create_app(konfig: Konfig, *, uhr: Callable[[], float] = time.time, protokoll_max_bytes: int = MAX_BYTES) -> FastAPI:
+def create_app(konfig: Konfig, *, uhr: Callable[[], float] = time.time, protokoll_max_bytes: int = MAX_BYTES,
+               monotonic: Callable[[], float] = time.monotonic) -> FastAPI:
     """Baut die Anwendung und richtet den Speicher ein (Dateien, Tabellen, Aufbewahrung). uhr ist für Tests."""
-    dienst = Dienst(konfig, uhr, protokoll_max_bytes=protokoll_max_bytes)
+    dienst = Dienst(konfig, uhr, protokoll_max_bytes=protokoll_max_bytes, monotonic=monotonic)
     dienst.einrichten()
 
     @contextlib.asynccontextmanager

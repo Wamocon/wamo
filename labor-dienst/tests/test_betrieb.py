@@ -74,12 +74,12 @@ def test_beim_start_werden_daten_nach_der_aufbewahrung_geloescht(konfig, jetzt, 
 
 def test_aufbewahrung_loescht_auch_das_protokoll_und_die_tokens(konfig):
     uhr = Uhr(_tag(2026, 11, 28))
-    app = create_app(konfig, uhr=uhr)
+    app = create_app(konfig, uhr=uhr, monotonic=uhr.monotonic)
     with TestClient(app, base_url="http://127.0.0.1") as c:
         oeffnen(c, 3)
         c.post("/api/betreuer/plaetze/3/platz-token", headers=betreuer_kopf())
     assert (konfig.daten / "protokoll" / "dienst.jsonl").stat().st_size > 0
-    uhr.t = _tag(2026, 12, 12)
+    uhr.vor(_tag(2026, 12, 12) - uhr.t)  # die Zeit vergeht wirklich (ein bloßer Sprung der Wanduhr löscht nichts)
     assert app.state.dienst.aufbewahrung_pruefen() is True
     assert not (konfig.daten / "protokoll" / "dienst.jsonl").exists() and not (konfig.daten / "protokoll" / "betreuer.jsonl").exists()
     assert app.state.dienst.zentral.hat_token(3) is False

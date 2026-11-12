@@ -21,12 +21,19 @@ class Uhr:
 
     def __init__(self, start: float = LABORTAG):
         self.t = start
+        self.mono = 1000.0  # die monotone Uhr zum Dienst (create_app(..., monotonic=uhr.monotonic)): läuft nur vorwärts
 
     def __call__(self) -> float:
         return self.t
 
+    def monotonic(self) -> float:
+        return self.mono
+
     def vor(self, sekunden: float) -> None:
+        """Die Zeit vergeht (wirklich: auch die monotone Uhr läuft). Negativ: Die Wanduhr wird zurückgestellt, die monotone Uhr bleibt."""
         self.t += sekunden
+        if sekunden > 0:
+            self.mono += sekunden
 
 
 def aufruf(db, name: str, daten: dict, nummer: int | None = None, *, durchlauf: str | None = None, schluessel: str | None = None) -> Aufruf:

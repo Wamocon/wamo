@@ -31,7 +31,7 @@ Meldung ohne Werte.
 | `WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI` | Datei mit dem Betreuer-Token, muss ein anderer Wert sein | Pflicht |
 | `WAMO_LABOR_DIENST_DATEN` | Ordner für Datenbanken und Protokoll (im Container `/data`) | `/data` |
 | `WAMO_LABOR_DIENST_HOST`, `WAMO_LABOR_DIENST_PORT` | Adresse zum Lauschen (im Container `0.0.0.0`) | `127.0.0.1`, `8080` |
-| `WAMO_LABOR_DIENST_BIS` | Ende der Aufbewahrung (JJJJ-MM-TT, höchstens `2026-12-11`, ein späteres Datum ist ein Konfigurationsfehler), danach löscht der Dienst alle Daten. Geht die Uhr des Rechners vor dem 12.11.2026, startet der Dienst nicht (Ausgang 2) | `2026-12-11` |
+| `WAMO_LABOR_DIENST_BIS` | Ende der Aufbewahrung (JJJJ-MM-TT, zwischen `2026-11-28` (Labortag) und `2026-12-11`, alles andere ist ein Konfigurationsfehler), danach löscht der Dienst alle Daten. Geht die Uhr des Rechners vor dem 12.11.2026, startet der Dienst nicht (Ausgang 2) | `2026-12-11` |
 | `WAMO_LABOR_DIENST_PLATZ_MB` | harte Obergrenze der Datenbankdatei je Platz (2 bis 64) | `16` |
 | `WAMO_LABOR_DIENST_PROXYS` | Adressen vertrauter Proxys (durch Komma getrennt, zum Beispiel die von Caddy im internen Netz). Nur von ihnen zählt `X-Forwarded-For` für die Zählung der Fehlversuche, sonst zählt die Adresse der Verbindung | leer |
 
@@ -84,7 +84,16 @@ Groß- und Kleinschreibung nicht, auch bei Umlauten. Der Speicher für Idempoten
 
 **Einwilligungsversion:** `neuer-durchlauf` verlangt eine Version, die nicht kleiner ist als die höchste bisher erfasste (Vertrag Abschnitt 8, die
 Nummer wächst nur). Sie gilt für alle Plätze zusammen und steht in `zentral.sqlite3`. Eine zu kleine Version ergibt 422, und es ändert sich nichts
-(auch der Platz-Token bleibt).
+(auch der Platz-Token bleibt). Die Version liegt zwischen 1 und 1000 (eine Obergrenze, damit ein Tippfehler nicht für immer alle kleineren Versionen sperrt).
+
+Rücksetzweg für ein falsch erfasstes Maximum: `POST /api/betreuer/einwilligung-minimum-setzen` mit `{"einwilligung_version": <kleinere Zahl>, "bestaetigung": "senken"}`.
+Er senkt das Maximum nur (eine gleiche oder größere Zahl ist 422), nur wenn kein Durchlauf läuft (sonst 409 `durchlauf_laeuft`, vorher alle Durchläufe
+beenden) und steht mit Zeit, Art und Wert in der Betreuer-Spur. Befehl (der Token kommt aus der Datei, nie als Text in die Befehlszeile):
+
+```text
+curl -X POST -H "Authorization: Bearer $(cat <Datei mit dem Betreuer-Token>)" -H "Content-Type: application/json" \
+     -d '{"einwilligung_version": 3, "bestaetigung": "senken"}' https://HOST/api/betreuer/einwilligung-minimum-setzen
+```
 
 ## Bekannte Restrisiken
 
@@ -162,7 +171,9 @@ Art. Nie Pfade, Abfragen, Köpfe, Tokens oder Texte. Das Zugriffsprotokoll des W
 
 Geschrieben wird in einem eigenen Faden hinter einer begrenzten Warteschlange (die Ereignisschleife wartet nie auf die Platte, ist die Schlange
 voll, wird gezählt und verworfen). Beim Start und danach stündlich löscht der Dienst alle Daten (Tickets, Kommentare, Einwilligungen, Platz-Token,
-beide Protokolldateien), wenn das Datum nach `WAMO_LABOR_DIENST_BIS` liegt. Der Dienst legt keine Sicherungen an.
+beide Protokolldateien), wenn das Datum nach `WAMO_LABOR_DIENST_BIS` liegt und die Uhr seit dem Start plausibel läuft: Die Wanduhr darf der monotonen Uhr
+höchstens einen Tag vorauslaufen, sonst löscht der Dienst nichts und schreibt `Uhrsprung` ins Protokoll (ein Sprung der Uhr nach vorn leert keine Plätze).
+Der Dienst legt keine Sicherungen an.
 
 ## Prüfen
 

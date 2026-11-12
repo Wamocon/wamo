@@ -20,7 +20,7 @@ def _token(verschiebung: int) -> str:
 
 @pytest.fixture
 def dienst(konfig, uhr):
-    return create_app(konfig, uhr=uhr).state.dienst
+    return create_app(konfig, uhr=uhr, monotonic=uhr.monotonic).state.dienst
 
 
 def _einig(dienst, tokens: list[str]) -> bool:

@@ -24,7 +24,7 @@ from .sicherheit import betreuer_zugang, dienst_von, fehlerfrei, json_antwort, k
 
 KOERPER_MAX = 1024
 ABNAHME_PLAETZE = (15, 16)
-EINWILLIGUNG_MAX = 2**31 - 1
+EINWILLIGUNG_MAX = 1000  # eine vernünftige Obergrenze: Ein Tippfehler (zum Beispiel 77777) sperrt nicht für immer alle kleineren Versionen
 
 
 def _platz(request: Request) -> int:
@@ -49,6 +49,12 @@ async def _ohne_inhalt(request: Request) -> None:
         raise eingabe("Diese Aktion nimmt keine Eingabe an.")
 
 
+def _einwilligung(version: object) -> int:
+    if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= EINWILLIGUNG_MAX:
+        raise eingabe("Das Feld einwilligung_version ist ungültig.")
+    return version
+
+
 async def _beenden(request: Request, dienst: Dienst, platz: int) -> dict:
     await _ohne_inhalt(request)
     await run_in_threadpool(dienst.plaetze[platz].durchlauf_beenden)
@@ -59,9 +65,7 @@ async def _neuer_durchlauf(request: Request, dienst: Dienst, platz: int) -> dict
     roh = await koerper_lesen(request, KOERPER_MAX)
     if (kopf_eins(request, "content-type") or "").split(";")[0].strip().lower() != "application/json":
         raise eingabe("Der Inhalt muss JSON sein.")
-    version = nur_felder(json_lesen(roh), {"einwilligung_version"})["einwilligung_version"]
-    if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= EINWILLIGUNG_MAX:
-        raise eingabe("Das Feld einwilligung_version ist ungültig.")
+    version = _einwilligung(nur_felder(json_lesen(roh), {"einwilligung_version"})["einwilligung_version"])
     await run_in_threadpool(dienst.neuer_besucher, platz, version)
     return await run_in_threadpool(_zustand, dienst, platz)
 
@@ -88,10 +92,10 @@ async def _platz_token(request: Request, dienst: Dienst, platz: int) -> dict:
     return {"platz": platz, "platz_token": token}
 
 
-def _spur(dienst: Dienst, aktion: str, platz: int | None, status: int, angemeldet: bool) -> None:
+def _spur(dienst: Dienst, aktion: str, platz: int | None, status: int, angemeldet: bool, **zusatz: object) -> None:
     """Mit gültigem Token: Betreuer-Spur (eigene Datei, nie abgetastet, nie rotiert). Ohne: abgetastet in der allgemeinen Datei (D10)."""
     if angemeldet:
-        dienst.protokoll.betreuer(aktion=aktion, platz=platz, status=status)
+        dienst.protokoll.betreuer(aktion=aktion, platz=platz, status=status, **zusatz)
     else:
         dienst.protokoll.abgetastet("betreuer_abgelehnt", aktion=aktion, bereich="betreuer", platz=platz, status=status)
 
@@ -131,7 +135,33 @@ async def plaetze(request: Request):
         _spur(dienst, "plaetze", None, status, angemeldet)
 
 
+@fehlerfrei
+async def einwilligung_minimum_setzen(request: Request):
+    """Rücksetzweg für das Maximum der Einwilligungsversion (zum Beispiel nach einem Tippfehler): Körper {"einwilligung_version": <int>, "bestaetigung":
+    "senken"}, nur zum Senken, nur wenn kein Durchlauf läuft (409 durchlauf_laeuft), mit Eintrag in der Betreuer-Spur."""
+    dienst, status, angemeldet, wert = dienst_von(request), 500, False, None
+    try:
+        betreuer_zugang(request, dienst)
+        angemeldet = True
+        roh = await koerper_lesen(request, KOERPER_MAX)
+        if (kopf_eins(request, "content-type") or "").split(";")[0].strip().lower() != "application/json":
+            raise eingabe("Der Inhalt muss JSON sein.")
+        daten = nur_felder(json_lesen(roh), {"einwilligung_version", "bestaetigung"})
+        wert = _einwilligung(daten["einwilligung_version"])
+        if daten["bestaetigung"] != "senken":
+            raise eingabe("Das Feld bestaetigung muss senken lauten.")
+        await run_in_threadpool(dienst.einwilligung_minimum_setzen, wert)
+        status = 200
+        return json_antwort(200, {"einwilligung_hoechste": wert})
+    except DienstFehler as e:
+        status = e.status
+        raise
+    finally:
+        _spur(dienst, "einwilligung_minimum_setzen", None, status, angemeldet, wert=wert)
+
+
 def registrieren(app: FastAPI) -> None:
+    app.add_api_route("/api/betreuer/einwilligung-minimum-setzen", einwilligung_minimum_setzen, methods=["POST"], include_in_schema=False, response_model=None)
     app.add_api_route("/api/betreuer/plaetze", plaetze, methods=["GET"], include_in_schema=False, response_model=None)
     for pfad, name, funktion in (("durchlauf-beenden", "durchlauf_beenden", _beenden), ("neuer-durchlauf", "neuer_durchlauf", _neuer_durchlauf),
                                  ("zuruecksetzen", "zuruecksetzen", _zuruecksetzen), ("daten-loeschen", "daten_loeschen", _daten_loeschen),

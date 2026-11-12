@@ -380,6 +380,21 @@ class ZentralDB(_Basis):
             conn.execute("INSERT INTO einwilligung_max(id, version) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET version = excluded.version", (version,))
             return True
 
+    def einwilligung_hoechste(self) -> int | None:
+        with self._lesen() as conn:
+            zeile = conn.execute("SELECT version FROM einwilligung_max").fetchone()
+        return zeile["version"] if zeile else None
+
+    def einwilligung_senken(self, version: int) -> bool:
+        """Rücksetzweg für ein falsch erfasstes Maximum (zum Beispiel ein Tippfehler): Senkt die höchste erfasste Version auf version. Nur wenn es eine gibt
+        und version kleiner ist, sonst wahr nie und nichts ändert sich."""
+        with self._transaktion() as conn:
+            zeile = conn.execute("SELECT version FROM einwilligung_max").fetchone()
+            if zeile is None or version >= zeile["version"]:
+                return False
+            conn.execute("UPDATE einwilligung_max SET version = ?", (version,))
+            return True
+
     def token_loeschen(self, platz: int) -> None:
         """Entfernt den Hash des Platzes: Der alte Token öffnet nichts mehr. Ohne Hash ist das Löschen kein Fehler."""
         with self._transaktion() as conn:
