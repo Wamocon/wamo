@@ -538,9 +538,9 @@ def test_tipp_ist_auch_bei_stoerung_und_unbekannt_vorhanden():
 
 
 # ---------- Verbotsproben ----------
-def test_quelltext_kennt_keine_steuerung_und_keine_routerliste():
-    """Als Zeichenkette im Code (ohne Dokumentation) kommt nur das Werkzeug "status" vor, nie ein ändernder oder
-    Admin-naher Name."""
+def test_quelltext_kennt_nur_status_und_das_schalten_aber_kein_drucken_und_keine_routerliste():
+    """Als Zeichenkette im Code (ohne Dokumentation) kommen nur die Werkzeuge "status" und "steuern" vor (seit 12.11.2026 für den
+    Knopf, nur mit den sechs festen Aktionen), nie Drucken, Scannen, NAS, Ablage oder ein Admin-naher Name."""
     baum = ast.parse(open(api.__file__, encoding="utf-8").read())
     doku = {id(n.body[0].value) for n in ast.walk(baum)
             if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.body
@@ -549,5 +549,6 @@ def test_quelltext_kennt_keine_steuerung_und_keine_routerliste():
              and id(n) not in doku}
     assert "status" in texte
     assert "unbekannt_zaehlen" in texte  # nur die Zahl der unbekannten Geräte, nie die Liste (die ist nur für Admins)
-    assert not texte & {"steuern", "drucken", "scannen", "router_geraete", "unbekannte_geraete", "nas_abrufen", "nas_suchen",
+    assert "steuern" in texte
+    assert not texte & {"drucken", "scannen", "router_geraete", "unbekannte_geraete", "nas_abrufen", "nas_suchen",
                         "ablage_holen", "ablage_liste", "ablage_loeschen"}

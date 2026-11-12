@@ -10,8 +10,15 @@ der FRITZ!Box, kein Scan), oder null, wenn es keine brauchbare Zahl gibt (nicht 
 nur die Zahl: Namen, Adressen und MAC-Adressen der unbekannten Geräte gibt es hier nie; die Liste sieht nur ein Admin und
 nur per Sprache (Werkzeug unbekannte_geraete in geraete_werkzeuge.py).
 
-Es ist nur eine Ansicht. Gesteuert wird weiter per Sprache mit den Werkzeugen aus geraete_werkzeuge.py; diese Route
-steuert, druckt und scannt nie.
+  POST /wamo/api/buero/steuern {"geraet": "<kennung>", "aktion": "an|aus|lauter|leiser|stumm|laut"}
+                               {"ok": true, "geraet": "<kennung>", "aktion": "<aktion>"}
+
+Die Ansicht (GET) steuert, druckt und scannt nie. Gesteuert wird per Sprache (geraete_werkzeuge.py) oder mit dem Knopf in der
+Detailkarte (POST /buero/steuern, nur Fernseher, Lautsprecher und Steckdosen, nur diese sechs Aktionen, nur Admins). Für Admins
+trägt jedes steuerbare Gerät im Stand das Feld "aktionen" (was jetzt sinnvoll ist: ein Fernseher im Standby nur "an"); alle
+anderen sehen es nie. Der Knopf ist eine ausdrückliche Handlung der Person, deshalb gibt es keine Freigabekarte. Der Aufruf geht
+mit der Identität des Profils an den Gerätedienst, der Rechte, Lautstärkegrenzen und seine eigene Grenze (20 je Minute) prüft.
+Jeder Versuch steht in actions (Werkzeug buerogeraet_steuern, Grund "Bürogerät (Knopf in der Oberfläche)").
 
 Regeln:
   * Anmeldung wie bei allen Routen (wamo_api.identitaet: Token mit zweitem Faktor, aktives Profil). Jede Rolle darf lesen,
@@ -30,6 +37,7 @@ Regeln:
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import re
 import time
@@ -41,7 +49,8 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from loguru import logger
 
 import geraete_client as gc
-from wamo_api import identitaet
+from memory import shared_database
+from wamo_api import identitaet, lies_json
 
 router = APIRouter()
 
@@ -59,6 +68,11 @@ KLASSE_NAME = {
 IMMER_AN = frozenset({"server", "drucker", "scanner", "router", "switch", "accesspoint", "nas", "steckdose"})
 
 GRENZE = (6, 60.0)  # Abrufe, Sekunden, je Profil
+STEUER_GRENZE = (20, 60.0)  # Schaltvorgänge, Sekunden, je Profil (der Gerätedienst begrenzt ebenfalls auf 20 je Minute)
+STEUER_ROLLEN = frozenset({"admin"})  # wer die Knöpfe benutzen darf; alle anderen sehen weder Knöpfe noch dürfen sie POSTen
+STEUER_AKTIONEN = ("an", "aus", "lauter", "leiser", "stumm", "laut")  # nur diese sechs; Lautstärke-Zahl und Eingang gibt es hier nie
+STEUER_ZEIT = 15.0
+MAX_STEUER_BODY = 1024
 MAX_GERAETE = 64
 MAX_NAME, MAX_TEXT, MAX_TIPP = 60, 80, 120
 DIENST_ZEIT = 12.0
@@ -71,21 +85,24 @@ WIEDERGABE = frozenset({"spielt", "pausiert", "gestoppt", "wechselt", "nichts ge
 EINZUG_STOERUNG = frozenset({"Papierstau", "Einzugsfehler", "Klappe offen"})
 
 _versuche: dict[str, deque[float]] = {}
+_schaltungen: dict[str, deque[float]] = {}
 
 
 # ---------- Grenze je Profil ----------
-def _drosseln(user_id: str, jetzt: float | None = None) -> None:
-    anzahl, fenster = GRENZE
+def _drosseln(user_id: str, jetzt: float | None = None, *, speicher: dict[str, deque[float]] | None = None,
+              grenze: tuple[int, float] = GRENZE, text: str = "Zu viele Abrufe, bitte kurz warten") -> None:
+    anzahl, fenster = grenze
     jetzt = time.monotonic() if jetzt is None else jetzt
-    q = _versuche.setdefault(user_id, deque())
+    speicher = _versuche if speicher is None else speicher
+    q = speicher.setdefault(user_id, deque())
     while q and jetzt - q[0] > fenster:
         q.popleft()
     if len(q) >= anzahl:
-        raise HTTPException(429, "Zu viele Abrufe, bitte kurz warten")
+        raise HTTPException(429, text)
     q.append(jetzt)
-    if len(_versuche) > 500:  # abgelaufene Profile aufräumen
-        for k in [k for k, d in _versuche.items() if not d or jetzt - d[-1] > fenster]:
-            del _versuche[k]
+    if len(speicher) > 500:  # abgelaufene Profile aufräumen
+        for k in [k for k, d in speicher.items() if not d or jetzt - d[-1] > fenster]:
+            del speicher[k]
 
 
 # ---------- Hilfen ohne Netz ----------
@@ -347,6 +364,26 @@ def _tipp(klasse: str, name: str, d: dict) -> str:
     return TIPPS[klasse]
 
 
+# ---------- Aktionen je Gerät (nur Admins sehen sie) ----------
+def _aktionen(klasse: str, roh: dict, erreichbar: bool | None) -> list[str]:
+    """Was der Knopf-Bereich jetzt anbieten darf. Nur, wenn der Dienst Werte geliefert hat. Ein Fernseher im Standby kennt nur "an"
+    (der Dienst weckt ihn per Wake-on-LAN oder Taste), ein laufender "aus" und die Lautstärke, ein nicht gekoppelter nichts."""
+    if roh.get("status") != "success":
+        return []
+    if klasse == "fernseher":
+        if _wahr(roh, "gekoppelt") is False:
+            return []
+        if erreichbar is True and _wahr(roh, "an") is True:
+            return ["aus", "leiser", "lauter", "stumm", "laut"]
+        return ["an"] if _wahr(roh, "an") is False or erreichbar is False else []
+    if klasse == "steckdose" and erreichbar is True:
+        an = _wahr(roh, "an")
+        return [] if an is None else ["aus"] if an else ["an"]
+    if klasse == "lautsprecher" and erreichbar is True:
+        return ["leiser", "lauter", "stumm", "laut"]
+    return []
+
+
 # ---------- Modell je Gerät ----------
 def geraet_modell(roh: object) -> dict | None:
     """Ein Gerät aus der Liste des Dienstes als schmale Antwortzeile. None, wenn Kennung oder Klasse nicht passen."""
@@ -368,6 +405,8 @@ def geraet_modell(roh: object) -> dict | None:
               "tipp": _tipp(klasse, name, roh)[:MAX_TIPP]}
     if zahlen:
         modell["kennzahlen"] = zahlen
+    if roh.get("status") == "success" and (aktionen := _aktionen(klasse, roh, erreichbar)):
+        modell["aktionen"] = aktionen
     return modell
 
 
@@ -420,5 +459,61 @@ async def status(request: Request, response: Response) -> dict:
     liste = antwort.get("geraete")
     if antwort.get("status") != "success" or not isinstance(liste, list):
         raise HTTPException(502, "Der Gerätedienst hat nicht brauchbar geantwortet")
-    return {"geraete": modelle(liste), "unbekannt": unbekannt,
+    geraete = modelle(liste)
+    if ich.rolle not in STEUER_ROLLEN:
+        for g in geraete:
+            g.pop("aktionen", None)
+    return {"geraete": geraete, "unbekannt": unbekannt,
             "stand": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
+# ---------- Schalten mit dem Knopf ----------
+async def _protokollieren(user_id: str, kennung: str, aktion: str, status: str, ergebnis: str) -> None:
+    """Der Versuch steht in actions. Das Protokoll ist ein Nachweis und hält den Schaltvorgang nie auf: jeder Fehler wird nur geloggt."""
+    try:
+        db = shared_database()
+        if not db.configured:
+            return
+        await db.execute(
+            f"insert into {db.t('actions')} (user_id, tool, params, reason, risk, status, result, decided_at, finished_at) "
+            f"values ($1::uuid, 'buerogeraet_steuern', $2::text::jsonb, 'Bürogerät (Knopf in der Oberfläche)', "
+            f"'change'::{db.t('risk_class')}, $3::text::{db.t('action_status')}, $4::text::jsonb, now(), now())",
+            user_id, json.dumps({"geraet": kennung, "aktion": aktion, "quelle": "oberflaeche"}), status,
+            json.dumps({"status": ergebnis[:20]}))
+    except Exception as e:  # noqa: BLE001 (Nachweis, nicht Voraussetzung)
+        logger.warning("Büro-Karte: Schaltvorgang nicht protokolliert ({})", type(e).__name__)
+
+
+@router.post("/buero/steuern")
+async def steuern(request: Request, response: Response) -> dict:
+    ich = await identitaet(request)
+    if ich.rolle not in STEUER_ROLLEN:
+        raise HTTPException(403, "Bürogeräte schalten dürfen nur Admins")
+    _drosseln(ich.user_id, speicher=_schaltungen, grenze=STEUER_GRENZE, text="Zu viele Schaltvorgänge, bitte kurz warten")
+    response.headers["Cache-Control"] = "no-store"
+    if not gc.verfuegbar():
+        raise HTTPException(503, gc.NUR_IM_BUERO)
+    body = await lies_json(request, MAX_STEUER_BODY)
+    kennung, aktion = body.get("geraet"), body.get("aktion")
+    if not isinstance(kennung, str) or not KENNUNG_RE.fullmatch(kennung):
+        raise HTTPException(400, "Unbekanntes Gerät")
+    if not isinstance(aktion, str) or aktion not in STEUER_AKTIONEN:
+        raise HTTPException(400, "Diese Aktion gibt es hier nicht")
+    kontext = gc.Kontext(ich.user_id, ich.rolle, None, ich.name)
+    try:
+        antwort, _ = await gc.aufruf("steuern", kontext, geraet=kennung, argumente={"aktion": aktion}, timeout=STEUER_ZEIT)
+    except gc.GeraeteNichtVerfuegbar as e:
+        await _protokollieren(ich.user_id, kennung, aktion, "failed", "nicht_erreichbar")
+        raise HTTPException(503, str(e)) from e
+    status = antwort.get("status") if isinstance(antwort, dict) else None
+    await _protokollieren(ich.user_id, kennung, aktion, "done" if status == "success" else "failed", str(status))
+    logger.info("Büro-Karte: {} {} durch Profil {} ({})", kennung, aktion, ich.user_id[:8], status)
+    if status == "success":
+        return {"ok": True, "geraet": kennung, "aktion": aktion}
+    if status == "grenze":
+        raise HTTPException(429, "Zu viele Schaltvorgänge, bitte kurz warten")
+    if status == "rejected":
+        raise HTTPException(409, "Das geht mit diesem Gerät nicht")
+    if status == "nicht_eingerichtet":
+        raise HTTPException(409, "Dieses Gerät ist noch nicht für WAMO eingerichtet")
+    raise HTTPException(502, "Das Gerät hat nicht geantwortet. Ist es erreichbar?")
