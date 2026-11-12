@@ -120,7 +120,7 @@ if [ "$NUR_SITZUNGSGRENZEN" = 1 ]; then
   echo "  Auth: ${zustand:-unbekannt}"
   # Nur Namen, nie Werte: sind beide Grenzen im Container angekommen?
   docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' wamo-supabase-auth | cut -d= -f1 \
-    | grep -E '^GOTRUE_SESSIONS_(TIMEBOX|INACTIVITY_TIMEOUT)$' | sed 's/^/  gesetzt: /'
+    | grep -E '^GOTRUE_(SESSIONS_(TIMEBOX|INACTIVITY_TIMEOUT)|SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION)$' | sed 's/^/  gesetzt: /'
   exit 0
 fi
 

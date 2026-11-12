@@ -624,7 +624,7 @@ Ein Update des Kerns ist `verteilen` und erneut `wamo-core-einrichten.sh` (erset
 | --- | --- | --- |
 | Freigabe-Schlüssel | PC `%LOCALAPPDATA%\WAMO\host-freigabe`, Kern `WAMO_PC_HOST_FREIGABE` in `/etc/wamo/core.env` | zweites Geheimnis neben dem Host-Token; nur damit führt der Host eine freigegebene kritische Aktion aus (`freigabe_entscheiden`, nie für das Sprachmodell). Fehlt er, startet der Host trotzdem, gibt aber nichts frei |
 | Kern-Einstellungen | `/etc/wamo/core.env` | `WAMO_SITZUNG_EINZELN` (eine Sitzung je Profil, Standard an), `WAMO_ANMELDUNG_MAX_STUNDEN` (Standard 168); `wamo-core-env` kennt die neuen Namen erst nach `wamo-core-einrichten.sh` |
-| GoTrue | `/home/wamocon/supabase-wamo/.env` und `docker-compose.wamo-sitzungen.yml` | `GOTRUE_SESSIONS_TIMEBOX` (168h) und `GOTRUE_SESSIONS_INACTIVITY_TIMEOUT` (72h), geprüft gegen gotrue v2.196.0; erstellt nur den Auth-Container neu |
+| GoTrue | `/home/wamocon/supabase-wamo/.env` und `docker-compose.wamo-sitzungen.yml` | `GOTRUE_SESSIONS_TIMEBOX` (168h), `GOTRUE_SESSIONS_INACTIVITY_TIMEOUT` (72h) und `GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION` (true, Passwortwechsel nur mit erneuter Anmeldung, Befund des Token-Tests vom 12.11.2026), geprüft gegen gotrue v2.196.0; erstellt nur den Auth-Container neu |
 
 ```bash
 # PC: Freigabe-Schlüssel anlegen (Token bleibt), Überwacher dabei neu starten
