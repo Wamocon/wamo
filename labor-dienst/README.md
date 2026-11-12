@@ -157,6 +157,10 @@ Platz 3 hat einen beendeten Durchlauf, alle anderen Plätze sind geschlossen. Mi
 * **Verbindungen:** höchstens 64 gleichzeitig (darüber antwortet uvicorn 503). Eine Verbindung, deren Kopfzeilen nicht binnen 10 Sekunden vollständig
   sind (ab dem Verbindungsaufbau und nach jeder Antwort), wird geschlossen, ein Inhalt, der länger als 10 Sekunden braucht, ergibt 408. Das ersetzt nicht
   die Fristen von Caddy davor.
+* **Betrieb (Caddy und Compose):** Das 503, das uvicorn bei Überschreiten von `limit_concurrency` sendet, ist Klartext ohne die Schutzköpfe des Dienstes. Caddy
+  davor fängt Fehler des Dienstes ab und liefert eine eigene Antwort mit denselben Köpfen (kein Code im Dienst nötig). Die Warnzeilen von uvicorn (zum Beispiel
+  „Invalid HTTP request received“) gehen auf stderr: In der späteren Compose-Datei begrenzt `logging` mit `driver: json-file` und `options: max-size: 10m`,
+  `max-file: 3` ihre Größe (D10: Die Container-Protokolle zählen zur Aufbewahrung).
 
 ## Protokoll und Aufbewahrung
 

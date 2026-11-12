@@ -14,7 +14,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir --require-hashes -r requirements.txt
+# nur fertige Pakete (Wheels): keine Bauskripte aus Quellpaketen, dazu die Hashes der Dateien
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r requirements.txt
 
 COPY wamo_labor_dienst ./wamo_labor_dienst
 # Bytecode beim Bau erzeugen (zur Laufzeit ist das Dateisystem schreibgeschützt), Nutzer ohne root, einziger beschreibbarer Ort ist /data
