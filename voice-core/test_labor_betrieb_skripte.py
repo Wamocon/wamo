@@ -21,6 +21,7 @@ Werkstatt (Wegwerf-Ordner, Attrappen, Protokoll) und dieselben Hilfen nutzen. Un
 
 import importlib.util
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -514,16 +515,18 @@ LINUX = sys.platform.startswith("linux")
 # Nur diese Befehle mit Wirkung gibt es im Probelauf, und zwar als Attrappe (sie schreiben jeden Aufruf in ein Protokoll)
 ATTRAPPEN = ("docker", "iptables", "iptables-save", "systemctl", "curl", "ss", "getent", "journalctl", "sudo", "useradd", "userdel", "shred",
              "chown")
+ARCH_SCHLUESSEL = "docker.image_inspect_" + "___Architecture__"  # docker image inspect -f {{.Architecture}} (Zeichen außer Buchstaben und Ziffern werden zu _)
+ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[platform.machine().lower()]  # wie uname -m im Skript
 BASIS_IMAGE = "python:3.11-slim@sha256:" + "ab" * 32  # berechnet: kein Literal, das die Secret-Prüfung stört
 ATTRAPPE = r"""#!/bin/sh
 n="$(basename "$0")"
 echo "$n $*" >> "$ATTRAPPE_LOG"
-a1=""; a2=""
+a1=""; a2=""; a3=""
 for a in "$@"; do
   case "$a" in -*) continue ;; esac
-  if [ -z "$a1" ]; then a1="$a"; elif [ -z "$a2" ]; then a2="$a"; break; fi
+  if [ -z "$a1" ]; then a1="$a"; elif [ -z "$a2" ]; then a2="$a"; elif [ -z "$a3" ]; then a3="$(printf %s "$a" | tr -c 'A-Za-z0-9' _)"; break; fi
 done
-for k in "$n.${a1}_${a2}" "$n.${a1}" "$n"; do
+for k in "$n.${a1}_${a2}_${a3}" "$n.${a1}_${a2}" "$n.${a1}" "$n"; do
   if [ -f "$ATTRAPPE_DIR/$k.out" ]; then cat "$ATTRAPPE_DIR/$k.out"; fi
   if [ -f "$ATTRAPPE_DIR/$k.rc" ] || [ -f "$ATTRAPPE_DIR/$k.out" ]; then
     [ -f "$ATTRAPPE_DIR/$k.rc" ] && exit "$(cat "$ATTRAPPE_DIR/$k.rc")"
@@ -594,6 +597,7 @@ class Werkstatt(unittest.TestCase):
         # Standardantworten der Attrappen: wamo-caddy läuft, nichts anderes ist belegt, das Image fehlt noch, alles wird gesund
         self.ausgabe("docker.ps", "4711cafe\n")
         self.ausgabe("docker.image_inspect", "", rc=1)
+        self.ausgabe(ARCH_SCHLUESSEL, ARCH + "\n")  # Basis-Image und gebautes Image haben die Architektur des Rechners
         self.ausgabe("docker.inspect", "healthy\n")
         self.ausgabe("curl", "200")
         self.ausgabe("systemctl.show", "0\n")
@@ -695,6 +699,21 @@ class EinrichtenTextTests(unittest.TestCase):
         self.assertIsNotNone(m)
         snippet = block(code(SITE), "(labor_intern_adressen)")
         self.assertEqual(snippet.strip(), f"remote_ip {m.group(1)}")
+
+    def test_herkunftsschutz_auch_fuer_pruefen_und_in_rueckweg_und_loeschlauf(self):
+        for skript in (EINRICHTEN,):  # Rückweg und Löschlauf folgen in ihrer Gruppe
+            c = code(skript)
+            self.assertIn("pruefe_ordner()", c, skript.name)
+            self.assertIn('pruefe_ordner "$HERE"', c, skript.name)
+            self.assertIn("WAMO_LABOR_HERKUNFT", c, skript.name)  # in Tests auch im Probelauf erzwingbar
+        c = code(EINRICHTEN)
+        self.assertRegex(c, r'\[ "\$BEFEHL" = einrichten \] \|\| \[ "\$BEFEHL" = pruefen \]')  # pruefen läuft als root und prüft die Herkunft wie einrichten
+
+    def test_zwei_stufen_und_ruhe_im_text(self):
+        c = code(EINRICHTEN)
+        for soll in ("sport = :$port", "config -q", "--project-directory", "netstat -tn", "Ausfalldauer", "am Server zu messen", "ruhe_pruefen", "caddy_ports_pruefen",
+                     "uname -m", "Architektur", "55443 55444 55445 55446"):
+            self.assertIn(soll, c, soll)
 
     def test_firewall_und_caddy_werden_ueber_die_vorhandenen_skripte_gesetzt(self):
         self.assertIn("wamo-firewall-einrichten.sh", self.code)
@@ -820,7 +839,7 @@ class EinrichtenProbelaufTests(Werkstatt):
         self.assertEqual(list((self.caddy / "etc" / "kern").iterdir()), [])
         self.assertFalse((self.att / "wamo-core-env.stdin").exists())
         for z in self.aufrufe():
-            self.assertNotRegex(z, r"^(docker (pull|run|rm|build|exec|network (create|rm))|docker compose (-f|up|down|build)|systemctl (restart|stop|start)|wamo-core-env setzen)", z)
+            self.assertNotRegex(z, r"^(docker (pull|run|rm|build|exec|network (create|rm))|docker compose (-f \S+ (up|down)|up|down|build)|systemctl (restart|stop|start)|wamo-core-env setzen)", z)
 
     def test_vorbedingungen(self):
         self.ausgabe("docker.ps", "", rc=0)  # wamo-caddy läuft nicht
@@ -902,6 +921,129 @@ class EinrichtenProbelaufTests(Werkstatt):
         for args in (["--unbekannt"], ["betreuer-token-ausgeben"], ["einrichten", "--basis-image"], ["einrichten", "--quelle"], ["x"]):
             self.assertEqual(self.lauf(EINRICHTEN, *args).returncode, 2, args)
 
+    def stufen(self):
+        aufrufe = self.aufrufe()
+        return {"reload": aufrufe.index("docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile"),
+                "up": aufrufe.index("docker compose up -d")}
+
+    def test_caddy_in_zwei_stufen_erst_site_und_reload_dann_compose_und_neuanlegen(self):
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        aufrufe = self.aufrufe()
+        stufen = self.stufen()
+        self.assertLess(stufen["reload"], stufen["up"])  # die Site ist im Container geladen, bevor wamo-caddy neu angelegt wird
+        adapt = next(i for i, z in enumerate(aufrufe) if z.startswith("docker run") and "caddy adapt" in z)
+        self.assertLess(adapt, stufen["reload"])
+        # vorher: beide Ports frei, beide Compose-Dateien gültig
+        for port in ("55447", "18765"):
+            self.assertIn(f"ss -tlnH sport = :{port}", aufrufe[:adapt])
+        compose = posix(self.p("opt/wamo-labor/docker-compose.yml"))
+        self.assertTrue([z for z in aufrufe[:adapt] if z.startswith("docker compose -f ") and z.endswith(" config -q") and "wamo-labor/docker-compose.yml" in z])
+        self.assertTrue([z for z in aufrufe[:adapt] if z.startswith("docker compose -f ") and z.endswith(" config -q") and "wamo-caddy/docker-compose.yml" in z
+                         and "--project-directory" in z])
+        self.assertNotIn(compose, "\n".join(aufrufe[:adapt]))  # das Compose des Dienstes wird erst später installiert, geprüft wird die Quelle
+
+    def test_nach_dem_neuanlegen_antworten_55443_bis_55446_und_die_dauer_wird_genannt(self):
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        nach = self.aufrufe()[self.stufen()["up"]:]
+        for port in (55443, 55444, 55445, 55446):
+            self.assertTrue([z for z in nach if z.startswith("curl") and f"https://192.168.178.136:{port}/" in z], port)
+        self.assertRegex(r.stdout, r"Ausfalldauer: \d+ Sekunden")
+        self.assertIn("am Server zu messen", r.stdout)
+
+    def test_antworten_die_ports_nach_der_aenderung_nicht_wird_zurueckgenommen_und_erneut_geprueft(self):
+        self.ausgabe("curl", "000")
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("zurückgenommen", r.stderr)
+        self.assertIn("55443 bis 55446", r.stderr)
+        self.assertEqual(list((self.caddy / "etc" / "kern").iterdir()), [])  # Site wieder weg
+        aufrufe = self.aufrufe()
+        letzter_reload = max(i for i, z in enumerate(aufrufe) if z.startswith("docker exec wamo-caddy caddy reload"))
+        self.assertTrue([z for z in aufrufe[letzter_reload:] if z.startswith("curl") and ":55446/" in z])  # auch nach der Rücknahme wird geprüft
+
+    def test_rueckweg_bei_fehler_prueft_die_ports_und_meldet_den_ausfall(self):
+        self.ausgabe("docker.compose_up", "", rc=1)
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        aufrufe = self.aufrufe()
+        letzter_up = max(i for i, z in enumerate(aufrufe) if z == "docker compose up -d")
+        for port in (55443, 55444, 55445, 55446):
+            self.assertTrue([z for z in aufrufe[letzter_up:] if z.startswith("curl") and f":{port}/" in z], port)
+        self.assertIn("Ausfalldauer", r.stdout + r.stderr)
+
+    def test_port_belegt_bricht_ab_ausser_er_gehoert_dem_eigenen_stack(self):
+        self.ausgabe("ss", "LISTEN 0 4096 0.0.0.0:55447 0.0.0.0:*\n")
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("55447", r.stderr)
+        self.assertFalse([z for z in self.aufrufe() if z.startswith(("docker build", "docker run"))])
+        self.ausgabe("docker.port", "55447/tcp -> 0.0.0.0:55447\n8080/tcp -> 127.0.0.1:18765\n")  # zweiter Lauf: die Ports gehören wamo-caddy und dem Dienst
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ruhe_vor_dem_neuanlegen_sitzung_im_kern(self):
+        self.ausgabe("systemctl.show", "4711\n")
+        self.ausgabe("journalctl", "Sitzung laeuft\n")
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("nicht ruhig", r.stderr)
+        self.assertFalse([z for z in self.aufrufe() if z.startswith(("docker build", "docker run", "docker compose up"))])  # Abbruch vor jeder Änderung
+        self.assertFalse(self.p("etc/wamo-labor/kern-token").exists())
+
+    def test_ruhe_vor_dem_neuanlegen_offene_verbindungen_an_den_caddy_ports(self):
+        self.ausgabe("docker.exec", "tcp 0 0 172.24.0.2:55445 192.168.178.50:50123 ESTABLISHED\ntcp 0 0 172.24.0.2:55443 192.168.178.51:50124 TIME_WAIT\n")
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("1 Verbindungen", r.stderr)
+        self.assertIn("docker exec wamo-caddy netstat -tn", self.aufrufe())
+        self.assertFalse([z for z in self.aufrufe() if z.startswith(("docker build", "docker run", "docker compose up"))])
+
+    def test_ruhe_wird_im_trockenlauf_angezeigt_und_nur_bei_geaendertem_compose_verlangt(self):
+        self.ausgabe("systemctl.show", "4711\n")
+        self.ausgabe("journalctl", "Sitzung laeuft\n")
+        r = self.einrichten("--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("WARNUNG (im Echtlauf Abbruch)", r.stderr)
+        self.assertIn("nicht ruhig", r.stderr)
+        schreibe(self.caddy / "docker-compose.yml", (CADDY / "docker-compose.yml").read_text(encoding="utf-8"))  # Compose unverändert: kein Neuanlegen, keine Ruhe nötig
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_werkzeuge_werden_vorab_geprueft(self):
+        if any(shutil.which(w, path=system_pfad()) for w in ("ss", "journalctl", "curl")):
+            self.skipTest("das System hat ss, journalctl oder curl selbst")
+        (self.bin / "ss").unlink()
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("ss fehlt", r.stderr)
+        self.assertFalse(self.p("etc/wamo-labor/kern-token").exists())
+
+    def test_architektur_des_images_muss_die_des_servers_sein(self):
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"Architektur {ARCH}", r.stdout)
+        self.assertNotIn("--platform", "\n".join(self.aufrufe()))  # gebaut wird für die eigene Architektur, nie für eine fremde
+        self.ausgabe(ARCH_SCHLUESSEL, ("arm64" if ARCH == "amd64" else "amd64") + "\n")
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Architektur", r.stderr)
+
+    @unittest.skipIf(os.name == "nt", "Rechte der Gruppe sind unter Windows nicht prüfbar")
+    def test_herkunftsschutz_in_allen_drei_skripten(self):
+        for skript in (EINRICHTEN, RUECKWEG, LOESCHLAUF):
+            ordner = self.t / f"unsicher-{skript.stem}"
+            ordner.mkdir()
+            ziel = ordner / skript.name
+            shutil.copy(skript, ziel)
+            os.chmod(ordner, 0o777)
+            argumente = ("einrichten", "--basis-image", BASIS_IMAGE) if skript == EINRICHTEN else ()
+            r = self.lauf(ziel, *argumente, extra={"WAMO_LABOR_HERKUNFT": "ja"})
+            self.assertEqual(r.returncode, 1, (skript.name, r.stdout, r.stderr))
+            self.assertIn("Unsicherer Ablageort", r.stderr, skript.name)
+            self.assertEqual(self.aufrufe(), [], skript.name)
+
     def test_ohne_probelauf_nur_als_root(self):
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("läuft als root")
@@ -925,8 +1067,8 @@ class BetriebsstandWerkstatt(Werkstatt):
         super().setUp()
         schreibe(self.p("opt/wamo-labor/docker-compose.yml"), "name: wamo-labor\n")
         schreibe(self.caddy / "etc" / "kern" / "wamo-labor.caddy", "# Site\n")
-        schreibe(self.p("etc/wamo-labor/kern-token"), "k" * 20 + "AbCdEfGhIjKlMnOpQrStUv123")
-        schreibe(self.p("etc/wamo-labor/betreuer-token"), "b" * 20 + "ZyXwVuTsRqPoNmLkJiHgFe987")
+        schreibe(self.p("etc/wamo-labor/kern-token"), "k" * 43)
+        schreibe(self.p("etc/wamo-labor/betreuer-token"), "b" * 43)
         schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "# Adressen\n192.168.178.50\n")
         schreibe(self.p("etc/wamo-labor/basis-image"), BASIS_IMAGE + "\n")
         schreibe(self.p("var/lib/wamo-labor/platz-03.sqlite3"), INHALT)

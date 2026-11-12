@@ -78,6 +78,7 @@ BILD=wamo-labor-dienst:1
 KERN_URL="http://127.0.0.1:18765"
 INTERN="127.0.0.0/8 172.24.0.1/32 192.168.178.136/32"
 NETZE="wamo-labor-netz=172.28.0.0/24 wamo-labor-lokal=172.28.1.0/29"
+CADDY_PORTS="55443 55444 55445 55446"   # die Dienste hinter wamo-caddy, die ein Neuanlegen kurz lahmlegt
 
 TROCKEN=nein
 BEFEHL=einrichten
@@ -164,6 +165,29 @@ kern_ruhig() {
   return 0
 }
 
+# Offene Verbindungen an 55443 bis 55447: Das Neuanlegen von wamo-caddy trennt sie. Gezählt wird im Container (netstat aus dem Busybox des Images),
+# fehlt es dort, auf dem Host mit ss.
+verbindungen_offen() {
+  local roh
+  if roh="$(docker exec wamo-caddy netstat -tn 2>/dev/null)"; then
+    awk '$6 == "ESTABLISHED" && $4 ~ /:5544[3-7]$/' <<<"$roh" | wc -l
+  else
+    ss -tn state established 2>/dev/null | awk '$3 ~ /:5544[3-7]$/' | wc -l
+  fi
+}
+
+# Ruhe vor dem Neuanlegen von wamo-caddy: keine Sitzung im Kern und keine offene Verbindung an den Ports von Caddy
+ruhe_pruefen() {
+  local n
+  kern_ruhig || return 1
+  n="$(verbindungen_offen)"
+  if [ "${n:-0}" != 0 ]; then
+    echo "  Es bestehen $n Verbindungen an 55443 bis 55447 (wamo-caddy würde sie trennen)" >&2
+    return 1
+  fi
+  echo "  ruhig: keine Sitzung im Kern, keine offene Verbindung an 55443 bis 55447"
+}
+
 # ---------- Vorprüfung
 UEBERSCHNEIDUNG='
 import ipaddress, sys
@@ -238,6 +262,23 @@ basis_image_pruefen() {
     || muss "Das Basis-Image braucht einen festen Digest (--basis-image NAME:TAG@sha256:DIGEST), kein wanderndes Tag."
 }
 
+# Ein Port muss frei sein oder dem eigenen Stack gehören (zweiter Lauf: 55447 hat wamo-caddy, 18765 der Dienst). Ohne Pipe zu grep -q (pipefail).
+port_frei() {
+  local port="$1" container="$2" belegt eigener
+  belegt="$(ss -tlnH "sport = :$port" 2>/dev/null || true)"
+  [ -n "$belegt" ] || return 0
+  eigener="$(docker port "$container" 2>/dev/null || true)"
+  case "$eigener" in *":$port"*) return 0 ;; esac
+  muss "Port $port ist schon belegt (nicht von $container)."
+}
+
+# Beide Compose-Dateien müssen gültig sein, bevor etwas geändert wird
+compose_pruefen() {
+  docker compose -f "$COMPOSE_QUELLE" config -q >/dev/null || muss "docker compose config -q schlägt für $COMPOSE_QUELLE fehl."
+  docker compose -f "$HERE/wamo-caddy/docker-compose.yml" --project-directory "$CADDY_DIR" config -q >/dev/null \
+    || muss "docker compose config -q schlägt für wamo-caddy/docker-compose.yml fehl."
+}
+
 quelle_und_benutzer_pruefen() {
   # Die Kennung 10001 steht im Image; auf dem Host darf sie keinem anderen Konto gehören (es könnte die Daten und die Token lesen)
   local name
@@ -249,7 +290,10 @@ quelle_und_benutzer_pruefen() {
 
 vorpruefung() {
   echo "== Vorprüfung"
-  command -v docker >/dev/null 2>&1 || muss "docker fehlt."
+  local w
+  for w in docker curl ss journalctl; do
+    command -v "$w" >/dev/null 2>&1 || muss "$w fehlt (gebraucht für die Prüfung vor und nach dem Neuanlegen von wamo-caddy)."
+  done
   docker compose version >/dev/null 2>&1 || muss "docker compose fehlt."
   [ -n "$(docker ps -q -f name=^wamo-caddy$ 2>/dev/null || true)" ] || muss "wamo-caddy läuft nicht (zuerst wamo-tls-einrichten.sh)."
   [ -d "$CADDY_DIR/etc" ] && [ -f "$CADDY_COMPOSE" ] || muss "$CADDY_DIR fehlt oder ist unvollständig (zuerst wamo-tls-einrichten.sh)."
@@ -259,8 +303,14 @@ vorpruefung() {
   basis_image_pruefen
   quelle_und_benutzer_pruefen
   netze_pruefen
+  port_frei "$LABOR_PORT" wamo-caddy
+  port_frei 18765 wamo-labor-dienst
+  compose_pruefen
   ADRESSEN="$(betreuer_adressen)"
   echo "  Betreuer-Adressen: $ADRESSEN"
+  if ! cmp -s "$HERE/wamo-caddy/docker-compose.yml" "$CADDY_COMPOSE"; then
+    ruhe_pruefen || muss "Abbruch: Gerade ist Betrieb (siehe oben). wamo-caddy wird neu angelegt, sobald niemand spricht (Skript erneut ausführen)."
+  fi
 }
 
 # ---------- Sicherung
@@ -354,11 +404,26 @@ ordner_und_token() {
 }
 
 # ---------- Image
+# Der Bau geschieht auf dem Server selbst (kein --platform): Basis-Image und gebautes Image müssen die Architektur des Servers haben, sonst
+# bräche der Start später mit einem Format-Fehler ab. Der Container, der danach gesund meldet (Rauchtest P01), belegt, dass das Image läuft.
+arch_pruefen() {
+  local host erwartet img got
+  host="$(uname -m)"
+  case "$host" in x86_64) erwartet=amd64 ;; aarch64|arm64) erwartet=arm64 ;; *) erwartet="$host" ;; esac
+  for img in "$BASIS_IMAGE" "$BILD"; do
+    got="$(docker image inspect -f '{{.Architecture}}' "$img" 2>/dev/null || true)"
+    [ "$got" = "$erwartet" ] || fehler "Das Image $img hat die Architektur '$got', der Server ist $erwartet ($host): Es muss auf dem Server gebaut werden."
+  done
+  echo "  Architektur $erwartet (wie der Server, $host)"
+}
+
 bilder() {
-  echo "== Image $BILD (Basis über festen Digest)"
+  echo "== Image $BILD (Basis über festen Digest, Bau auf dem Server)"
   docker image inspect "$BASIS_IMAGE" >/dev/null 2>&1 || tu docker pull "$BASIS_IMAGE"
   tu docker build --pull=false --build-arg "BASIS=$BASIS_IMAGE" --tag "$BILD" "$QUELLE"
-  [ "$TROCKEN" = ja ] || echo "  fertig (die Abhängigkeiten installiert das Dockerfile mit --require-hashes)"
+  [ "$TROCKEN" = ja ] && return 0
+  arch_pruefen
+  echo "  fertig (die Abhängigkeiten installiert das Dockerfile mit --require-hashes)"
 }
 
 # ---------- Firewall
@@ -414,7 +479,9 @@ caddy_pruefen() {
 
 undo_caddy() {
   [ "$CADDY_UNDO" = aktiv ] || return 0
+  local start
   echo "  FEHLER: Caddy-Änderung wird zurückgenommen" >&2
+  start="$(date +%s)"
   if [ -n "$CADDY_SITE_ALT" ]; then caddy_installieren 644 "$CADDY_SITE_ALT" "$SITE_DATEI"; else rm -f "$SITE_DATEI"; fi
   if [ "$CADDY_COMPOSE_NEU" = ja ] && [ -n "$CADDY_COMPOSE_ALT" ]; then
     caddy_installieren 644 "$CADDY_COMPOSE_ALT" "$CADDY_COMPOSE"
@@ -422,58 +489,83 @@ undo_caddy() {
   else
     caddy_neu_laden >&2 || true
   fi
+  # Nach jeder Rücknahme müssen 55443 bis 55446 wieder antworten (der Lauf endet ohnehin mit einem Fehler)
+  caddy_ports_pruefen "$start" >&2 || echo "  FEHLER: Nach der Rücknahme antworten 55443 bis 55446 nicht, bitte sofort ansehen (docker logs wamo-caddy)." >&2
   echo "  Zurückgenommen. Bitte das Protokoll prüfen (docker logs wamo-caddy)." >&2
 }
 
 # 55443 (API) darf durch die Änderung nie wegfallen, und die neue Site muss antworten (ohne Dienst mit 502 von Caddy, aber mit TLS)
-caddy_antwortet() {
-  local code=000 url runde
-  for url in "https://192.168.178.136:55443/auth/v1/health" "$LABOR_URL/gesundheit"; do
-    code=000
-    for runde in $(seq 1 30); do
-      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --cacert "$CA" "$url" || true)"
-      [ "$code" != 000 ] && break
-      sleep 2
-    done
-    echo "  ${url##*:}: HTTP $code"
-    [ "$code" != 000 ] || fehler "Keine Antwort von $url nach der Caddy-Änderung."
+# Antwortet eine Adresse mit irgendeinem HTTP-Status (nur 000 heißt keine Antwort)? Je Adresse höchstens WARTE_RUNDEN mal WARTE_SEKUNDEN.
+antwortet() {
+  local url="$1" code runde runden="${WAMO_LABOR_WARTE_RUNDEN:-60}" sek="${WAMO_LABOR_WARTE_SEKUNDEN:-2}"
+  [[ "$runden" =~ ^[0-9]+$ ]] || runden=60
+  [[ "$sek" =~ ^[0-9]+$ ]] || sek=2
+  for ((runde = 0; runde < runden; runde++)); do
+    code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)"
+    [ "$code" != 000 ] && return 0
+    sleep "$sek"
   done
+  return 1
+}
+
+# 55443 bis 55446 müssen antworten (nach einer Änderung an Caddy und nach jeder Rücknahme). Die Dauer ab START wird genannt: Sie ist am Server
+# zu messen, vorab gibt es dafür keine Zusage.
+caddy_ports_pruefen() {
+  local start="$1" p fehlt=""
+  for p in $CADDY_PORTS; do antwortet "https://192.168.178.136:$p/" || fehlt="$fehlt $p"; done
+  if [ -n "$fehlt" ]; then
+    echo "  FEHLER: Von wamo-caddy antworten die Ports$fehlt nicht (55443 bis 55446 gehören anderen Diensten, docker logs wamo-caddy)" >&2
+    return 1
+  fi
+  echo "  Ausfalldauer: $(( $(date +%s) - start )) Sekunden (Zeit zwischen Stopp und erster Antwort aller Ports 55443 bis 55446; am Server zu messen)"
+}
+
+# Stufe 1: Site installieren und Caddy neu laden. Das prüft die Konfiguration atomar und ohne Ausfall; weil der Port 55447 im Container noch nicht
+# veröffentlicht ist, gilt die Site vorerst nur im Container (gewollt).
+caddy_stufe1() {
+  local start
+  caddy_installieren 644 "$ARBEIT/etc/kern/wamo-labor.caddy" "$SITE_DATEI"
+  start="$(date +%s)"
+  caddy_neu_laden
+  echo "  Stufe 1: Site geladen (nur im Container aktiv, 55447 ist noch nicht veröffentlicht)"
+  caddy_ports_pruefen "$start"
+}
+
+# Stufe 2 (nur wenn sich das Compose von wamo-caddy ändert): Port 55447 und das Netz wamo-labor-netz, wamo-caddy wird EINMAL neu angelegt
+caddy_stufe2() {
+  local start
+  ruhe_pruefen || fehler "Abbruch: Gerade ist Betrieb (siehe oben). wamo-caddy wird neu angelegt, sobald niemand spricht (Skript erneut ausführen)."
+  CADDY_COMPOSE_NEU=ja
+  caddy_installieren 644 "$HERE/wamo-caddy/docker-compose.yml" "$CADDY_COMPOSE"
+  echo "  Stufe 2: Compose von wamo-caddy geändert (Port $LABOR_PORT, Netz wamo-labor-netz): Container wird neu angelegt"
+  start="$(date +%s)"
+  ( cd "$CADDY_DIR" && docker compose up -d )
+  caddy_ports_pruefen "$start"
 }
 
 caddy_anwenden() {
   local compose_neu="$1"
-  CADDY_COMPOSE_NEU="$compose_neu"
+  CADDY_COMPOSE_NEU=nein
   if [ -f "$SITE_DATEI" ]; then CADDY_SITE_ALT="$ARBEIT/site.vorher"; cp -a "$SITE_DATEI" "$CADDY_SITE_ALT"; fi
   CADDY_COMPOSE_ALT="$ARBEIT/compose.vorher"
   cp -a "$CADDY_COMPOSE" "$CADDY_COMPOSE_ALT"
   CADDY_UNDO=aktiv
   UNDO+=(undo_caddy)
-  caddy_installieren 644 "$ARBEIT/etc/kern/wamo-labor.caddy" "$SITE_DATEI"
-  if [ "$compose_neu" = ja ]; then
-    caddy_installieren 644 "$HERE/wamo-caddy/docker-compose.yml" "$CADDY_COMPOSE"
-    echo "  Compose von wamo-caddy geändert (Port $LABOR_PORT, Netz wamo-labor-netz): Container wird neu angelegt"
-    ( cd "$CADDY_DIR" && docker compose up -d )
-  else
-    caddy_neu_laden
-    echo "  Caddy neu geladen"
-  fi
-  caddy_antwortet
+  caddy_stufe1
+  if [ "$compose_neu" = ja ]; then caddy_stufe2; fi
+  antwortet "$LABOR_URL/gesundheit" || fehler "Keine Antwort von $LABOR_URL nach der Caddy-Änderung."
   CADDY_UNDO=fertig
 }
 
 caddy() {
-  echo "== Caddy: Site $LABOR_URL"
+  echo "== Caddy: Site $LABOR_URL (in zwei Stufen)"
   local compose_neu=nein
   cmp -s "$HERE/wamo-caddy/docker-compose.yml" "$CADDY_COMPOSE" || compose_neu=ja
   if [ "$TROCKEN" = ja ]; then
     echo "  [trocken] Konfiguration prüfen (caddy adapt in einem Wegwerf-Container ohne Netz)"
-    echo "  [trocken] Site-Datei $SITE_DATEI installieren"
-    [ "$compose_neu" = nein ] || echo "  [trocken] Compose von wamo-caddy ändern (Port $LABOR_PORT, Netz wamo-labor-netz): Container wird neu angelegt"
-    echo "  [trocken] caddy reload"
+    echo "  [trocken] Stufe 1: Site-Datei $SITE_DATEI installieren und caddy reload (ohne Ausfall)"
+    [ "$compose_neu" = nein ] || echo "  [trocken] Stufe 2: Ruhe prüfen, Compose von wamo-caddy ändern (Port $LABOR_PORT, Netz wamo-labor-netz), Container neu anlegen, dann 55443 bis 55446 prüfen"
     return 0
-  fi
-  if [ "$compose_neu" = ja ]; then
-    kern_ruhig || fehler "Abbruch: Gerade läuft eine Sitzung. wamo-caddy wird neu angelegt, sobald niemand spricht (Skript erneut ausführen)."
   fi
   if [ -z "$W" ]; then CADDY_OWNER="$(stat -c %U "$CADDY_DIR")"; CADDY_GROUP="$(stat -c %G "$CADDY_DIR")"; fi
   caddy_pruefen
@@ -571,10 +663,11 @@ done
 if [ -n "$W" ]; then
   [[ "$W" =~ ^/[A-Za-z0-9/_.:~-]+$ ]] || fehler "WAMO_LABOR_WURZEL muss ein absoluter Ordner aus A-Z, a-z, 0-9 und / _ . : ~ - sein."
   echo "Probelauf unter $W (kein root, keine Firewall, kein Rauchtest)"
-elif [ "$TROCKEN" = nein ] && [ "$BEFEHL" = einrichten ]; then
+  [ "${WAMO_LABOR_HERKUNFT:-}" != ja ] || pruefe_ordner "$HERE"   # nur für Tests: der Herkunftsschutz auch im Probelauf
+elif [ "$TROCKEN" = nein ] && { [ "$BEFEHL" = einrichten ] || [ "$BEFEHL" = pruefen ]; }; then
   [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo ausführen." >&2; exit 1; }
   pruefe_ordner "$HERE"
-  pruefe_ordner "$QUELLE"
+  [ "$BEFEHL" != einrichten ] || pruefe_ordner "$QUELLE"
 fi
 
 case "$BEFEHL" in
