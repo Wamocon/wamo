@@ -12,16 +12,16 @@ import httpx
 import uvicorn
 from hilfen import BETREUER_TOKEN, betreuer_kopf
 
-from wamo_labor_dienst.__main__ import uvicorn_einstellungen
+from wamo_labor_dienst.server import uvicorn_einstellungen
 
 
 @contextlib.contextmanager
-def laufender_dienst(app) -> Iterator[str]:
+def laufender_dienst(app, **einstellung) -> Iterator[str]:
     """Der Dienst auf 127.0.0.1 mit freiem Port. Liefert die Adresse (http://127.0.0.1:PORT)."""
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     adresse = f"http://127.0.0.1:{sock.getsockname()[1]}"
-    server = uvicorn.Server(uvicorn.Config(app, **uvicorn_einstellungen()))
+    server = uvicorn.Server(uvicorn.Config(app, **{**uvicorn_einstellungen(), **einstellung}))
     faden = threading.Thread(target=lambda: asyncio.run(server.serve(sockets=[sock])), daemon=True)
     faden.start()
     ende = time.monotonic() + 15

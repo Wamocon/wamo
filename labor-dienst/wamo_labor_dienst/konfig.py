@@ -5,6 +5,7 @@ Variable, nie einen Wert. Ein unbrauchbarer Token ist ein Fehler beim Start (der
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from collections.abc import Mapping
@@ -23,6 +24,7 @@ V_HOST = "WAMO_LABOR_DIENST_HOST"
 V_PORT = "WAMO_LABOR_DIENST_PORT"
 V_BIS = "WAMO_LABOR_DIENST_BIS"
 V_PLATZ_MB = "WAMO_LABOR_DIENST_PLATZ_MB"
+V_PROXYS = "WAMO_LABOR_DIENST_PROXYS"
 
 
 class KonfigFehler(ValueError):
@@ -38,6 +40,7 @@ class Konfig:
     port: int = 8080
     bis: date = STANDARD_BIS
     platz_mb: int = PLATZ_MB_STANDARD
+    proxys: frozenset[str] = frozenset()  # vertraute Proxys (Adressen): nur von ihnen zählt X-Forwarded-For
 
     @property
     def platz_max_bytes(self) -> int:
@@ -78,6 +81,16 @@ def _datum(env: Mapping[str, str], name: str, standard: date) -> date:
         raise KonfigFehler(f"{name} muss ein Datum der Form JJJJ-MM-TT sein") from None
 
 
+def _proxys(env: Mapping[str, str]) -> frozenset[str]:
+    roh = env.get(V_PROXYS)
+    if roh is None:
+        return frozenset()
+    try:
+        return frozenset(str(ipaddress.ip_address(teil.strip())) for teil in roh.split(","))
+    except ValueError:
+        raise KonfigFehler(f"{V_PROXYS} muss eine Liste von IP-Adressen sein (durch Komma getrennt)") from None
+
+
 def aus_umgebung(env: Mapping[str, str] | None = None) -> Konfig:
     """Liest alle Einstellungen. env ist für Tests (Standard os.environ)."""
     env = os.environ if env is None else env
@@ -91,5 +104,5 @@ def aus_umgebung(env: Mapping[str, str] | None = None) -> Konfig:
     return Konfig(
         daten=Path(env.get(V_DATEN) or "/data"), kern_token=kern, betreuer_token=betreuer, host=host.strip(),
         port=_ganz(env, V_PORT, 8080, 1, 65535), bis=_datum(env, V_BIS, STANDARD_BIS),
-        platz_mb=_ganz(env, V_PLATZ_MB, PLATZ_MB_STANDARD, PLATZ_MB_MIN, PLATZ_MB_MAX),
+        platz_mb=_ganz(env, V_PLATZ_MB, PLATZ_MB_STANDARD, PLATZ_MB_MIN, PLATZ_MB_MAX), proxys=_proxys(env),
     )

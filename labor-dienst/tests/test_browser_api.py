@@ -46,9 +46,10 @@ def test_board_sieht_nie_ein_anderer_platz(client, d):
     assert j16["platz"] == 16 and "Geheim auf Platz sechzehn" in str(j16)
 
 
-def test_platz_kommt_nur_aus_dem_token_nie_aus_der_eingabe(client, d):
+def test_platz_kommt_nur_aus_dem_token_nie_aus_der_eingabe(client, d, uhr):
     token = _token(client)
     for kopf in ({"X-WAMO-Platz": "16"}, {"X-Platz": "16"}, {"X-Platz-Nummer": "16"}):
+        uhr.vor(2)  # die Rate der Board-Schnittstelle: höchstens etwa 2 je Sekunde
         assert _board(client, token).json()["platz"] == PLATZ
         assert client.get("/api/browser/board", headers={"X-Platz-Token": token, **kopf}).json()["platz"] == PLATZ
     assert client.get("/api/browser/board?platz=16", headers={"X-Platz-Token": token}).status_code == 422

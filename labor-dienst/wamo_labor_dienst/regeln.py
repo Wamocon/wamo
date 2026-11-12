@@ -40,9 +40,9 @@ _FELDER_AENDERN = frozenset({"titel", "beschreibung", "typ", "prioritaet"})
 class DienstFehler(Exception):
     """Ein Fehler des Dienstes mit Status, Code aus Vertrag Abschnitt 4 und einem kurzen deutschen Satz ohne Interna."""
 
-    def __init__(self, status: int, code: str, text: str, *, allow: str | None = None):
+    def __init__(self, status: int, code: str, text: str, *, allow: str | None = None, retry_after: int | None = None):
         super().__init__(code)
-        self.status, self.code, self.text, self.allow = status, code, text, allow
+        self.status, self.code, self.text, self.allow, self.retry_after = status, code, text, allow, retry_after
 
 
 def eingabe(text: str) -> DienstFehler:

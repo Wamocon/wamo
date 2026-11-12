@@ -80,7 +80,7 @@ async def _daten_loeschen(request: Request, dienst: Dienst, platz: int) -> dict:
 async def _platz_token(request: Request, dienst: Dienst, platz: int) -> dict:
     await _ohne_inhalt(request)
     token = neuer_platz_token()
-    await run_in_threadpool(dienst.zentral.token_setzen, platz, token_hash(token))
+    await run_in_threadpool(dienst.token_vergeben, platz, token_hash(token))
     return {"platz": platz, "platz_token": token}
 
 

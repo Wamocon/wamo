@@ -10,20 +10,21 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 
 from .regeln import DienstFehler, eingabe
-from .sicherheit import PLATZ_TOKEN_RE, dienst_von, fehlerfrei, json_antwort, kopf_eins, token_hash
+from .sicherheit import dienst_von, fehlerfrei, fehlversuch, json_antwort, kopf_eins
 
 
 @fehlerfrei
 async def board(request: Request):
     dienst = dienst_von(request)
-    token = kopf_eins(request, "x-platz-token") or ""
-    platz = await run_in_threadpool(dienst.zentral.platz_von_hash, token_hash(token)) if PLATZ_TOKEN_RE.fullmatch(token) else None
+    platz = dienst.platz_von_token(kopf_eins(request, "x-platz-token") or "")  # nur im Speicher: ein unbekannter Token kostet keinen Faden und keine Abfrage
     if platz is None:
-        raise DienstFehler(401, "token_ungueltig", "Der Zugang ist nicht gültig.")
+        raise fehlversuch(request, dienst, DienstFehler(401, "token_ungueltig", "Der Zugang ist nicht gültig."))
     request.state.platz = platz
+    if not dienst.board_je_token.erlaubt(platz) or not dienst.board_global.erlaubt("alle"):  # erst die Grenze des Tokens, damit einer nicht alle sperrt
+        raise DienstFehler(429, "quote_erreicht", "Zu viele Anfragen, bitte später.", retry_after=1)
     if request.scope.get("query_string"):
         raise eingabe("Dieser Aufruf nimmt keine Abfrage.")
-    return json_antwort(200, await run_in_threadpool(dienst.plaetze[platz].board))
+    return json_antwort(200, await run_in_threadpool(dienst.plaetze[platz].board_bytes))
 
 
 def registrieren(app: FastAPI) -> None:

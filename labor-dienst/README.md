@@ -30,6 +30,7 @@ Meldung ohne Werte.
 | `WAMO_LABOR_DIENST_HOST`, `WAMO_LABOR_DIENST_PORT` | Adresse zum Lauschen (im Container `0.0.0.0`) | `127.0.0.1`, `8080` |
 | `WAMO_LABOR_DIENST_BIS` | Ende der Aufbewahrung (JJJJ-MM-TT), danach löscht der Dienst alle Daten | `2026-12-11` |
 | `WAMO_LABOR_DIENST_PLATZ_MB` | harte Obergrenze der Datenbankdatei je Platz (2 bis 64) | `16` |
+| `WAMO_LABOR_DIENST_PROXYS` | Adressen vertrauter Proxys (durch Komma getrennt, zum Beispiel die von Caddy im internen Netz). Nur von ihnen zählt `X-Forwarded-For` für die Zählung der Fehlversuche, sonst zählt die Adresse der Verbindung | leer |
 
 ## Schnittstellen
 
@@ -77,6 +78,17 @@ Je Platz eine SQLite-Datei (WAL) mit `max_page_count` (16 MB), dazu eine kleine 
 300 Kommentare, 1 MB Nutztext (UTF-8, Seed zählt mit), 30 Schreibaufrufe in 60 Sekunden. Darüber antwortet der Dienst 429 `quote_erreicht`,
 auch wenn die Datei voll ist, nie mit einem Absturz. Alle Abfragen sind parametrisiert, die Suche ist wörtlich (kein `LIKE`) und beachtet
 Groß- und Kleinschreibung nicht, auch bei Umlauten. Der Speicher für Idempotenzschlüssel ist auf 2000 je Platz begrenzt (wirkt nur bei Missbrauch).
+
+## Grenzen für Lesen, Fehlversuche und Verbindungen
+
+* **Board:** höchstens etwa 2 Abfragen je Sekunde und Platz-Token (kurzzeitig 5), alle Plätze zusammen höchstens 20 je Sekunde, darüber 429
+  `quote_erreicht` mit `Retry-After: 1`. Die Antwort wird je Platz eine Sekunde zwischengespeichert, jede Änderung des Platzes macht sie sofort ungültig.
+* **Fehlversuche:** Falsche Bearer, Betreuer-Tokens und Platz-Token werden je Quelle gezählt (120 je Minute), danach antwortet der Dienst 429 mit
+  `Retry-After: 60`. Ein richtiger Zugang wird nie gesperrt. Ein unbekannter Platz-Token wird nur im Speicher erkannt (kein Datenbankzugriff, kein
+  Faden aus dem gemeinsamen Pool). Hinter Caddy gehört dessen Adresse in `WAMO_LABOR_DIENST_PROXYS`, sonst haben alle Besucher dieselbe Quelle.
+* **Verbindungen:** höchstens 64 gleichzeitig (darüber antwortet uvicorn 503). Eine Verbindung, deren Kopfzeilen nicht binnen 10 Sekunden vollständig
+  sind (ab dem Verbindungsaufbau und nach jeder Antwort), wird geschlossen, ein Inhalt, der länger als 10 Sekunden braucht, ergibt 408. Das ersetzt nicht
+  die Fristen von Caddy davor.
 
 ## Protokoll und Aufbewahrung
 

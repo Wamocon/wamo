@@ -7,6 +7,7 @@ Zufall und werden nur als Hash gespeichert. Jeder Token öffnet genau eine Grupp
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import re
@@ -20,6 +21,7 @@ from starlette.responses import Response
 from .modell import json_bytes
 from .regeln import KOPF_MAX, PLAETZE, PLATZ_RE, DienstFehler
 
+KOERPER_FRIST_SECS = 10.0  # so lange darf der Inhalt einer Anfrage höchstens ankommen (danach 408)
 PLATZ_TOKEN_RE = re.compile(r"[0-9a-f]{32}")
 SICHERHEITSKOEPFE = {
     "Content-Security-Policy": "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
@@ -67,11 +69,31 @@ def bearer(request: Request) -> str | None:
     return zeichen if schema.lower() == "bearer" else None
 
 
+def quelle(request: Request, dienst) -> str:
+    """Die Quelle einer Anfrage für die Zählung der Fehlversuche: die Adresse der Verbindung. Nur von einem vertrauten Proxy (Einstellung
+    WAMO_LABOR_DIENST_PROXYS) zählt X-Forwarded-For, und zwar die Adresse, die dieser Proxy hinten angehängt hat. Sonst kann sich der Absender
+    mit einem Kopf jede Quelle geben."""
+    peer = request.client.host if request.client else "unbekannt"
+    if peer in dienst.konfig.proxys:
+        werte = request.headers.getlist("x-forwarded-for")
+        if len(werte) == 1 and werte[0].strip():
+            return werte[0].split(",")[-1].strip()[:64]
+    return peer
+
+
+def fehlversuch(request: Request, dienst, fehler: DienstFehler) -> DienstFehler:
+    """Zählt einen Fehlversuch der Quelle. Über der Grenze wird aus dem Fehler ein 429. Der richtige Zugang wird nie gesperrt: Gezählt wird nur, wer
+    scheitert, geprüft wird jeder Zugang."""
+    if dienst.fehlversuche.melden(quelle(request, dienst)):
+        return DienstFehler(429, "quote_erreicht", "Zu viele Fehlversuche, bitte später.", retry_after=60)
+    return fehler
+
+
 def kern_zugang(request: Request, dienst) -> int:
     """Schritte 2 und 3 des Vertrags: Bearer des Kerns (401), dann Platz aus dem Kopf des Kerns (404). Liefert den Platz."""
     token = bearer(request)
     if token is None or not gleich(token, dienst.kern_digest):
-        raise DienstFehler(401, "token_ungueltig", "Der Zugang ist nicht gültig.")
+        raise fehlversuch(request, dienst, DienstFehler(401, "token_ungueltig", "Der Zugang ist nicht gültig."))
     roh = kopf_eins(request, "x-wamo-platz") or ""
     if not PLATZ_RE.fullmatch(roh) or int(roh) not in PLAETZE:
         raise DienstFehler(404, "platz_unbekannt", "Dieser Platz ist nicht bekannt.")
@@ -83,9 +105,9 @@ def betreuer_zugang(request: Request, dienst) -> None:
     """Fehlt der Token: 401. Ist er falsch (auch ein gültiger Platz-Token oder der Bearer des Kerns): 403."""
     token = bearer(request)
     if token is None:
-        raise DienstFehler(401, "token_ungueltig", "Der Zugang ist nicht gültig.")
+        raise fehlversuch(request, dienst, DienstFehler(401, "token_ungueltig", "Der Zugang ist nicht gültig."))
     if not gleich(token, dienst.betreuer_digest):
-        raise DienstFehler(403, "zugriff_verweigert", "Dafür fehlt die Berechtigung.")
+        raise fehlversuch(request, dienst, DienstFehler(403, "zugriff_verweigert", "Dafür fehlt die Berechtigung."))
 
 
 # ---------- Antworten ----------
@@ -95,7 +117,8 @@ def json_antwort(status: int, inhalt: object, *, extra: dict[str, str] | None = 
 
 
 def fehler_http(e: DienstFehler) -> Response:
-    return json_antwort(e.status, {"fehler": e.code, "text": e.text}, extra={"Allow": e.allow} if e.allow else None)
+    extra = {**({"Allow": e.allow} if e.allow else {}), **({"Retry-After": str(e.retry_after)} if e.retry_after else {})}
+    return json_antwort(e.status, {"fehler": e.code, "text": e.text}, extra=extra or None)
 
 
 def zu_gross() -> DienstFehler:
@@ -109,11 +132,15 @@ async def koerper_lesen(request: Request, maximum: int) -> bytes:
         raise zu_gross()
     teile: list[bytes] = []
     summe = 0
-    async for stueck in request.stream():
-        summe += len(stueck)
-        if summe > maximum:
-            raise zu_gross()
-        teile.append(stueck)
+    try:
+        async with asyncio.timeout(KOERPER_FRIST_SECS):
+            async for stueck in request.stream():
+                summe += len(stueck)
+                if summe > maximum:
+                    raise zu_gross()
+                teile.append(stueck)
+    except TimeoutError:
+        raise DienstFehler(408, "eingabe_ungueltig", "Die Anfrage kam zu langsam an.") from None
     return b"".join(teile)
 
 

@@ -15,14 +15,7 @@ import uvicorn
 
 from .app import create_app
 from .konfig import KonfigFehler, aus_umgebung
-
-
-def uvicorn_einstellungen() -> dict:
-    """Einstellungen des Webservers (auch die Integrationstests starten mit ihnen): h11, kein Zugriffsprotokoll, kein Server-Kopf, keine Weiterleitungs-
-    köpfe, Köpfe bis 128 KB werden gelesen (der Dienst lehnt über 16 KB mit 431 und einer Fehlerantwort des Vertrags ab, erst darüber lehnt h11
-    mit 400 ab, das einen bekannten Randfall von uvicorn auslöst: eine Ausnahme im Ereignisschleifen-Rückruf, der Dienst läuft weiter)."""
-    return {"log_level": "warning", "access_log": False, "http": "h11", "server_header": False, "proxy_headers": False,
-            "h11_max_incomplete_event_size": 128 * 1024, "timeout_keep_alive": 5}
+from .server import uvicorn_einstellungen
 
 
 def gesundheit_pruefen() -> int:

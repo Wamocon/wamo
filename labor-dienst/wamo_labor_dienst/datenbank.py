@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -21,6 +22,7 @@ from .seed import SEED
 
 SEITE_BYTES = 4096
 BUSY_SECS = 10.0
+BOARD_CACHE_SECS = 1.0  # so lange darf die Antwort der Board-Schnittstelle höchstens alt sein (jede Änderung macht sie vorher ungültig)
 ZENTRAL_MAX_BYTES = 1024 * 1024
 
 
@@ -133,6 +135,9 @@ class PlatzDB(_Basis):
     def __init__(self, platz: int, pfad: Path, max_bytes: int, uhr: Callable[[], float] = time.time):
         super().__init__(pfad, max_bytes)
         self.platz, self._uhr = platz, uhr
+        self._stand = 0  # zählt jede Änderung des Platzes hoch: Der Zwischenspeicher des Boards gilt nur für denselben Stand
+        self._cache_sperre = threading.Lock()
+        self._board_cache: tuple[int, float, bytes] | None = None
 
     # ---------- Einrichten ----------
     def anlegen(self) -> None:
@@ -221,6 +226,22 @@ class PlatzDB(_Basis):
                 "tickets": [{**ticket_ausgabe(t), "angelegt": t["angelegt"], "geaendert": t["geaendert"], "kommentare": je_ticket.get(t["nummer"], [])}
                             for t in tickets]}
 
+    def _geaendert(self) -> None:
+        with self._cache_sperre:
+            self._stand += 1
+
+    def board_bytes(self) -> bytes:
+        """Das Board als fertiges JSON, höchstens BOARD_CACHE_SECS alt und nie älter als die letzte Änderung dieses Platzes."""
+        jetzt = self._uhr()
+        with self._cache_sperre:
+            stand, cache = self._stand, self._board_cache
+            if cache is not None and cache[0] == stand and 0 <= jetzt - cache[1] < BOARD_CACHE_SECS:
+                return cache[2]
+        daten = json_bytes(self.board())  # mit dem Stand von vorher abgelegt: Ändert sich der Platz währenddessen, gilt der Eintrag nicht
+        with self._cache_sperre:
+            self._board_cache = (stand, jetzt, daten)
+        return daten
+
     def zustand(self) -> dict:
         """Für die Betreuer: Zustand ohne Texte."""
         with self._lesen() as conn:
@@ -244,11 +265,14 @@ class PlatzDB(_Basis):
             if _ist_voll(e):  # max_page_count erreicht: nie ein Absturz, sondern 429
                 return fehler_antwort(DienstFehler(429, "quote_erreicht", "Das Limit für diesen Platz ist erreicht."))
             raise
+        finally:
+            self._geaendert()
 
     # ---------- Betreuer ----------
     def durchlauf_beenden(self) -> None:
         with self._transaktion() as conn:
             conn.execute("UPDATE meta SET offen = 0")
+        self._geaendert()
 
     def neuer_durchlauf(self, einwilligung_version: int) -> None:
         """Neuer Teilnehmer, Einwilligung liegt vor: neue durchlauf_id, Seed, Zähler ab 30, frische Schlüssel und Schreibrate."""
@@ -257,6 +281,7 @@ class PlatzDB(_Basis):
             self._seed(conn)
             conn.execute("UPDATE meta SET durchlauf_id = ?, offen = 1, einwilligung_version = ?, einwilligung_zeit = ?, ticket_zaehler = ?, kommentar_zaehler = 0",
                          (str(uuid.uuid4()), einwilligung_version, self._jetzt(), ZAEHLER_START))
+        self._geaendert()
 
     def zuruecksetzen(self) -> None:
         """Board und Ablage zurück auf den Seed. Durchlauf und Einwilligung bleiben, die Schreibrate auch (sie hängt nicht am Board)."""
@@ -266,6 +291,7 @@ class PlatzDB(_Basis):
             self._seed(conn)
             conn.executemany("INSERT INTO schreibzeit(t) VALUES (?)", [(r["t"],) for r in rate])
             conn.execute("UPDATE meta SET ticket_zaehler = ?, kommentar_zaehler = 0", (ZAEHLER_START,))
+        self._geaendert()
 
     def daten_loeschen(self) -> None:
         """Alle Daten des Platzes löschen (D9, D10): Tickets, Kommentare, Einwilligung, Schlüssel. Der Platz ist danach geschlossen, mit neuer
@@ -274,6 +300,7 @@ class PlatzDB(_Basis):
             self._leeren(conn)
             conn.execute("UPDATE meta SET durchlauf_id = ?, offen = 0, einwilligung_version = NULL, einwilligung_zeit = NULL, ticket_zaehler = ?, kommentar_zaehler = 0",
                          (str(uuid.uuid4()), ZAEHLER_START))
+        self._geaendert()
         conn = verbinden(self.pfad, self._max)
         try:
             with contextlib.suppress(sqlite3.OperationalError):  # ein gleichzeitiger Leser darf das Verkleinern verhindern, gelöscht ist es trotzdem
@@ -308,6 +335,11 @@ class ZentralDB(_Basis):
         with self._lesen() as conn:
             zeile = conn.execute("SELECT platz FROM platz_token WHERE hash = ?", (token_hash,)).fetchone()
         return zeile["platz"] if zeile else None
+
+    def alle_hashes(self) -> dict[str, int]:
+        """Alle Hashes mit ihrem Platz (für den Index im Speicher des Prozesses)."""
+        with self._lesen() as conn:
+            return {z["hash"]: z["platz"] for z in conn.execute("SELECT platz, hash FROM platz_token").fetchall()}
 
     def hat_token(self, platz: int) -> bool:
         with self._lesen() as conn:
