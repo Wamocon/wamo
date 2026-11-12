@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 
+from .datenbank import NichtBereinigt
 from .dienst import Dienst
 from .regeln import PLAETZE, PLATZ_RE, DienstFehler, eingabe, json_lesen, nur_felder
 from .sicherheit import betreuer_zugang, dienst_von, fehlerfrei, json_antwort, koerper_lesen, kopf_eins, neuer_platz_token, token_hash
@@ -73,7 +74,10 @@ async def _zuruecksetzen(request: Request, dienst: Dienst, platz: int) -> dict:
 
 async def _daten_loeschen(request: Request, dienst: Dienst, platz: int) -> dict:
     await _ohne_inhalt(request)
-    await run_in_threadpool(dienst.platz_leeren, platz)
+    try:
+        await run_in_threadpool(dienst.platz_leeren, platz)
+    except NichtBereinigt:  # kein Erfolg melden: Die Daten sind gelöscht, die Datei aber noch nicht bereinigt (der Betreuer wiederholt den Aufruf)
+        raise DienstFehler(503, "dienst_fehler", "Das Löschen ist noch nicht abgeschlossen, die Datei ist nicht bereinigt. Bitte wiederholen.") from None
     return await run_in_threadpool(_zustand, dienst, platz)
 
 

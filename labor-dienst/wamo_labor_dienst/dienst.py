@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from .datenbank import PlatzDB, ZentralDB
+from .datenbank import NichtBereinigt, PlatzDB, ZentralDB
 from .grenzen import Begrenzer, FehlerZaehler
 from .konfig import Konfig
 from .protokoll import MAX_BYTES, Protokoll
@@ -74,13 +74,19 @@ class Dienst:
 
     def aufbewahrung_pruefen(self) -> bool:
         """Liegt heute (UTC) nach dem Datum der Aufbewahrung (WAMO_LABOR_DIENST_BIS), werden alle Daten gelöscht: Tickets, Kommentare, Einwilligungen,
-        Platz-Token und Protokoll. Liefert wahr, wenn die Frist abgelaufen ist."""
+        Platz-Token und Protokoll. Liefert wahr nur, wenn die Frist abgelaufen ist und alle Dateien bereinigt sind. Scheitert die Bereinigung eines Platzes
+        (NichtBereinigt), steht im Protokoll ein Fehler, der Rest wird trotzdem gelöscht, das Ergebnis ist falsch und die stündliche Prüfung wiederholt es."""
         if datetime.fromtimestamp(self.uhr(), UTC).date() <= self.konfig.bis:
             return False
+        vollstaendig = True
         for platz in self.plaetze.values():
-            platz.daten_loeschen()
+            try:
+                platz.daten_loeschen()
+            except NichtBereinigt:
+                vollstaendig = False
+                self.protokoll.ereignis("fehler", fehlerart="NichtBereinigt", platz=platz.platz)
         self.zentral.tokens_loeschen()
         with self._token_sperre:
             self._tokens = {}
         self.protokoll.leeren()
-        return True
+        return vollstaendig

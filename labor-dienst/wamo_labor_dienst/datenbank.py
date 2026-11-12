@@ -22,6 +22,8 @@ from .seed import SEED
 
 SEITE_BYTES = 4096
 BUSY_SECS = 10.0
+VERDICHTEN_VERSUCHE = 20  # so oft wird das Zurückschreiben der WAL-Datei versucht (ein offener Lesesnapshot kann es blockieren)
+VERDICHTEN_PAUSE_SECS = 0.1
 BOARD_CACHE_SECS = 1.0  # so lange darf die Antwort der Board-Schnittstelle höchstens alt sein (jede Änderung macht sie vorher ungültig)
 ZENTRAL_MAX_BYTES = 1024 * 1024
 
@@ -91,6 +93,10 @@ def verbinden(pfad: Path, max_bytes: int) -> sqlite3.Connection:
     conn.execute(f"PRAGMA max_page_count = {int(seiten)}")  # PRAGMA nimmt keine Parameter: eine Zahl aus der Konfiguration (D1)
     conn.create_function("wamo_enthaelt", 2, _enthaelt, deterministic=True)
     return conn
+
+
+class NichtBereinigt(RuntimeError):
+    """Die Daten sind gelöscht, aber die Datei ist noch nicht bereinigt (WAL-Datei nicht zurückgeschrieben): Es darf kein Erfolg gemeldet werden."""
 
 
 def _ist_voll(e: sqlite3.OperationalError) -> bool:
@@ -301,11 +307,29 @@ class PlatzDB(_Basis):
             conn.execute("UPDATE meta SET durchlauf_id = ?, offen = 0, einwilligung_version = NULL, einwilligung_zeit = NULL, ticket_zaehler = ?, kommentar_zaehler = 0",
                          (str(uuid.uuid4()), ZAEHLER_START))
         self._geaendert()
+        self._verdichten()
+
+    def _verdichten(self) -> None:
+        """Verkleinert die Datei (VACUUM) und schreibt die WAL-Datei vollständig zurück (wal_checkpoint TRUNCATE). Das Ergebnis wird ausgewertet:
+        busy, ein nicht vollständig zurückgeschriebener Stand oder eine nicht leere WAL-Datei heißen, dass der alte Text noch in einer Datei stehen
+        kann. Nach VERDICHTEN_VERSUCHEN Versuchen gilt das Löschen als nicht gelungen (NichtBereinigt), nie als Erfolg."""
         conn = verbinden(self.pfad, self._max)
+        wal = self.pfad.with_name(self.pfad.name + "-wal")
         try:
-            with contextlib.suppress(sqlite3.OperationalError):  # ein gleichzeitiger Leser darf das Verkleinern verhindern, gelöscht ist es trotzdem
-                conn.execute("VACUUM")
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("PRAGMA busy_timeout = 100")
+            verdichtet = False
+            for versuch in range(VERDICHTEN_VERSUCHE):
+                try:
+                    if not verdichtet:
+                        conn.execute("VACUUM")
+                        verdichtet = True
+                    busy, protokolliert, zurueckgeschrieben = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                    if not busy and zurueckgeschrieben >= protokolliert and (not wal.exists() or wal.stat().st_size == 0):
+                        return
+                except sqlite3.OperationalError:
+                    pass  # gesperrt: wiederholen
+                time.sleep(VERDICHTEN_PAUSE_SECS)
+            raise NichtBereinigt(self.platz)
         finally:
             conn.close()
 
