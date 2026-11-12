@@ -53,7 +53,9 @@ import {
   spurEndeText,
   STILLE_DBFS,
   startGeraet,
+  stilleAusgeblendet,
   stilleText,
+  stilleWiederAufnehmen,
   tonLog,
   windowsGesperrt,
   windowsGesperrtText,
@@ -583,7 +585,9 @@ export function useWamo(): WamoAktionen {
         if (ergebnis === "still") {
           warnungNachWechsel.current = false;
           console.warn("[WAMO] Mikrofon liefert seit 3 s nur Stille:", mic.track.label || "unbekanntes Gerät", mic.track.readyState);
-          setFehler({ art: "mikrofon", text: stilleText(mic.track.label) });
+          // "Ohne Mikrofon weiter": für dieses Gerät keine Warnung mehr, bis es wieder Ton liefert (lib/mikrofon.ts)
+          if (stilleAusgeblendet(mic.track.label)) console.info("[WAMO] Mikrofon still, Warnung ausgeblendet:", mic.track.label || "unbekanntes Gerät");
+          else setFehler({ art: "mikrofon", text: stilleText(mic.track.label) });
           // Sperrt Windows das Mikrofon für Desktop-Apps, kommt nur Stille an, ohne Fehler: dann den Grund nennen
           void window.wamoDesktop
             ?.mikrofonStatus?.()
@@ -595,6 +599,7 @@ export function useWamo(): WamoAktionen {
             .catch(() => undefined);
         } else if (ergebnis === "wieder_da" || tonNachWechsel) {
           warnungNachWechsel.current = false;
+          if (ergebnis === "wieder_da") stilleWiederAufnehmen(mic.track.label); // liefert es wieder Ton, warnt WAMO bei der nächsten Stille wieder
           if (!kernStille.current && wamo.get().error?.art === "mikrofon") setFehler(null);
         }
       }
@@ -933,7 +938,7 @@ export function useWamo(): WamoAktionen {
               if (msg.zustand === "fehlt" && st.micOn) {
                 // Die Spur ist abgerissen: wichtiger als eine Stille-Meldung der Oberfläche
                 setFehler({ art: "mikrofon", text: kernFehltText(msg.sekunden) });
-              } else if (msg.zustand === "still" && st.micOn && st.error?.art !== "mikrofon") {
+              } else if (msg.zustand === "still" && st.micOn && st.error?.art !== "mikrofon" && !stilleAusgeblendet(micMeter.current?.track.label)) {
                 setFehler({ art: "mikrofon", text: kernStilleText(msg.sekunden) });
               } else if (msg.zustand === "ok" && !stille.current.gemeldet && st.error?.art === "mikrofon") {
                 setFehler(null);

@@ -20,64 +20,15 @@ import { GeraetEinrichtung, GeraetZeile } from "@/components/GeraetEinrichtung";
 import { Hinweise as AdminHinweise, HinweiseZaehler } from "@/components/Hinweise";
 import { Kopfzeile } from "@/components/Kopfzeile";
 import type { Sitzung } from "@/components/LoginGate";
-import { MikrofonWahl } from "@/components/MikrofonWahl";
+import { FehlerAnzeige } from "@/components/FehlerAnzeige";
 import { StillAktionen, UebernehmenHinweis } from "@/components/StillStart";
 import { Verlauf } from "@/components/Verlauf";
 import { einstellungenSchliessen, oeffnerFuerFokus, useEinstellungenZiel } from "@/lib/einstellungenHash";
-import type { Mikrofon } from "@/lib/mikrofon";
 import { useModellzugangStandHalten } from "@/lib/modellzugangApi";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
 import { useVerlaufHalten } from "@/lib/vorgaengeApi";
 import { istOnline, wamo, type Memo } from "@/lib/wamo";
-
-/** Fehler in Tinte mit rotem Symbol und sicherer nächster Aktion. */
-const FehlerAnzeige = memo(function FehlerAnzeige({
-  onRetry,
-  onAbmelden,
-  onSchliessen,
-  onMikrofone,
-  onMikrofonWaehlen,
-}: {
-  onRetry: () => void;
-  onAbmelden: () => void;
-  onSchliessen: () => void;
-  onMikrofone: () => Promise<Mikrofon[]>;
-  onMikrofonWaehlen: (id: string) => boolean;
-}) {
-  const error = useSelect(wamo, (s) => s.error);
-  const offline = useSelect(wamo, (s) => s.presence === "offline");
-  if (!error) return null;
-  const hinweis = error.art === "hinweis";
-  const retry = offline && !hinweis && error.art !== "anmeldung";
-  return (
-    <div className="error" role={hinweis ? "status" : "alert"} data-art={error.art}>
-      <svg className="sym sym-warn" viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="1" y="1" width="14" height="14" rx="2" />
-        <path d="M8 4v5M8 11.2v.6" />
-      </svg>
-      <div className="error-body">
-        <p>{error.text}</p>
-        <div className="error-actions">
-          {retry && (
-            <button type="button" className="btn-secondary btn-small" onClick={onRetry}>
-              Erneut verbinden
-            </button>
-          )}
-          {error.art === "anmeldung" && (
-            <button type="button" className="btn-secondary btn-small" onClick={onAbmelden}>
-              Abmelden
-            </button>
-          )}
-          {error.art === "mikrofon" && <MikrofonWahl laden={onMikrofone} waehlen={onMikrofonWaehlen} />}
-          <button type="button" className="error-close" onClick={onSchliessen}>
-            Schließen
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-});
 
 /** Hauptschaltfläche (unter 1100 px unten fixiert). Das Mikrofon sitzt in der Eingabepille (kommando/Bedienung.tsx). */
 const Aktionen = memo(function Aktionen({ aktionen }: { aktionen: WamoAktionen }) {
