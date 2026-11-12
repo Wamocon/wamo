@@ -63,7 +63,21 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import LLMMessagesAppendFrame, LLMUpdateSettingsFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    BotSpeakingFrame,
+    FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+    InputTextRawFrame,
+    InterimTranscriptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMMessagesAppendFrame,
+    LLMUpdateSettingsFrame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+    UserSpeakingFrame,
+    UserStartedSpeakingFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -213,6 +227,22 @@ DEFAULT_GREETING = "Hallo {name}, WAMO ist bereit."
 # 0,15 s spart 50 ms bis zum Transkript (gemessen am 21.10.2026: 308 gegen 356 ms) und trennt Sätze mit Pausen nicht
 # häufiger; Pipecat meldet einmal je Sitzung, dass der Wert vom Standard abweicht (Warnung im Log, harmlos).
 VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.15)
+# Was als Lebenszeichen einer Sitzung zählt: der Pipecat-Standard (Sprache) plus Text, Antworten des Modells und Werkzeuge. Ohne den Zusatz
+# bekam eine Sitzung ohne Sprache (stiller Start beim Tippen, nur Text) nie ein Lebenszeichen und wurde 300 Sekunden nach dem Start beendet, auch mitten
+# im Schreiben (Journal 12.11.2026: 08:49:34 und 08:55:08, jeweils trotz Antworten des Modells kurz davor). Test: test_bot_leerlauf.py
+IDLE_FRAMES = (
+    BotSpeakingFrame,
+    InterimTranscriptionFrame,
+    TranscriptionFrame,
+    UserSpeakingFrame,
+    UserStartedSpeakingFrame,
+    InputTextRawFrame,
+    LLMMessagesAppendFrame,
+    LLMFullResponseStartFrame,
+    LLMFullResponseEndFrame,
+    FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+)
 # Hält Smart-Turn einen Satz für unvollständig, wartet WAMO so lange (Sekunden Stille) auf den Rest; danach entscheidet
 # Claude mit dem Satzende-Marker. Jeder unvollständige Befund kostete bis zu 0,85 s (früher 1,0 s).
 SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.5)
@@ -826,6 +856,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+        idle_timeout_frames=IDLE_FRAMES,
         observers=[latenz_beobachter] if latenz_beobachter else [],
         # Labor: Client-Nachrichten gegen die Erlaubnisliste prüfen, bevor Pipecat sie auswertet (labor_rtvi.py)
         rtvi_processor=(LaborRTVIProcessor(art=identity.labor_art, begrenzer=labor_grenzen.text, klicks=labor_grenzen.klicks)
