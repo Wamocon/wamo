@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import sqlite3
-import uuid
 
 import pytest
-from hilfen import Uhr, anlegen, inhalt, kommentieren, status_setzen
+from hilfen import anlegen, inhalt, kommentieren
 
-from wamo_labor_dienst.datenbank import PlatzDB, ZentralDB
+from wamo_labor_dienst.datenbank import PlatzDB
 from wamo_labor_dienst.modell import iso_zeit, ticket_ausgabe
 from wamo_labor_dienst.regeln import UUID_RE, Suche
 from wamo_labor_dienst.seed import SEED

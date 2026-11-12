@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,11 @@ for _ordner in (WURZEL / "scripts", WURZEL / "voice-core"):
 
 from hilfen import BETREUER_TOKEN, KERN_TOKEN, Uhr  # noqa: E402
 
+from fastapi.testclient import TestClient  # noqa: E402
+
+from wamo_labor_dienst.app import create_app  # noqa: E402
 from wamo_labor_dienst.datenbank import PlatzDB, ZentralDB  # noqa: E402
+from wamo_labor_dienst.konfig import Konfig  # noqa: E402
 
 
 @pytest.fixture
@@ -39,3 +44,19 @@ def zentral(tmp_path) -> ZentralDB:
 @pytest.fixture
 def tokens() -> dict[str, str]:
     return {"kern": KERN_TOKEN, "betreuer": BETREUER_TOKEN}
+
+
+@pytest.fixture
+def konfig(tmp_path) -> Konfig:
+    return Konfig(daten=tmp_path / "daten", kern_token=KERN_TOKEN, betreuer_token=BETREUER_TOKEN, host="127.0.0.1", port=0, bis=date(2026, 12, 11), platz_mb=16)
+
+
+@pytest.fixture
+def app(konfig, uhr):
+    return create_app(konfig, uhr=uhr)
+
+
+@pytest.fixture
+def client(app):
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
+        yield c

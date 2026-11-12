@@ -51,3 +51,27 @@ def aendern(db, nummer: int, version: int, felder: dict, **kw) -> Antwort:
 
 def inhalt(a: Antwort) -> dict:
     return json.loads(a.koerper)
+
+
+# ---------- Schnittstelle (TestClient) ----------
+def betreuer_kopf(**extra: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {BETREUER_TOKEN}", **extra}
+
+
+def kern_kopf(platz: int | str = 3, **extra: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {KERN_TOKEN}", "X-WAMO-Platz": str(platz), **extra}
+
+
+def oeffnen(client, platz: int = 3, version: int = 1) -> str:
+    """Der Betreuer startet einen neuen Durchlauf mit Einwilligung. Liefert die durchlauf_id."""
+    r = client.post(f"/api/betreuer/plaetze/{platz}/neuer-durchlauf", json={"einwilligung_version": version}, headers=betreuer_kopf())
+    assert r.status_code == 200, r.text
+    return r.json()["durchlauf_id"]
+
+
+def schreib_kopf(durchlauf: str, platz: int | str = 3, schluessel: str | None = None, **extra: str) -> dict[str, str]:
+    return kern_kopf(platz, **{"X-WAMO-Durchlauf": durchlauf, "Idempotency-Key": schluessel or str(uuid.uuid4()), **extra})
+
+
+def anlegen_http(client, durchlauf: str, platz: int = 3, **felder):
+    return client.post("/api/kern/tickets", json={**ANLEGEN, **felder}, headers=schreib_kopf(durchlauf, platz))
