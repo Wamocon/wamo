@@ -102,6 +102,7 @@ from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
 import entwicklung_betrieb
 from dev_agent import DevAgent, abnahme_befehle_im_betrieb, entwicklung_enabled, entwicklung_problem
+from geraete_werkzeuge import JOB as GERAETE_JOB, Buerogeraete
 from learning import Gemerkt, learn_from_session
 import kontingent
 from llm_anbieter import LLMNichtVerfuegbar, ausblenden_text, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
@@ -782,6 +783,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 return True
             if labor_werkz is not None and labor_werkz.freigaben.offen:  # Labor-Karte (labor_freigaben.py)
                 return True
+            if buerogeraete is not None and buerogeraete._offen:  # Karte der Bürogeräte (geraete_werkzeuge.py)
+                return True
             return dev is not None and any(j.pending for j in dev._jobs.values())
         except AttributeError:
             logger.warning("Ja-Wächter: Freigabe-Zustand nicht lesbar, es gilt als offen")
@@ -954,6 +957,19 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             await zugang.schliessen()
             raise
 
+    # Bürogeräte (geraete_werkzeuge.py): Status, Fernseher, Lautsprecher, Steckdosen, Drucker, Scanner, NAS. Nur im Büro (dort läuft der
+    # Gerätedienst) und nie in einer Laborsitzung. Fehlt der Dienst oder antwortet er nicht rechtzeitig, bleibt die Liste leer und die
+    # Sitzung läuft ohne diese Werkzeuge. Rechte und Grenzen prüft der Dienst, kritische Aufrufe laufen über eine Freigabekarte (job "geraet").
+    buerogeraete: Buerogeraete | None = None
+    if im_buero and not labor_sitzung:
+        buerogeraete = Buerogeraete(identity, memory, fremdinhalt=turn.taint, ist_fremd=lambda: turn.tainted)
+        buerogeraete.anbinden(senden=send, melden=melde_llm)
+        geraete_schemas = await buerogeraete.schemas()
+        if geraete_schemas:
+            standard_tools += geraete_schemas
+            context.set_tools(ToolsSchema(standard_tools=standard_tools))
+            logger.info("Bürogeräte: {} Werkzeuge in der Sitzung", len(geraete_schemas))
+
     async def refresh_prompt() -> None:
         await task.queue_frame(
             LLMUpdateSettingsFrame(delta=LLMSettings(system_instruction=prompt_for(await memory.recall())))
@@ -1108,6 +1124,12 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 logger.warning("PC-Freigabe ohne PC-Werkzeuge in dieser Sitzung abgewiesen")
                 return
             await freigaben.entscheiden(data)
+        elif msg.type == "freigabe" and data.get("job") == GERAETE_JOB:
+            # Freigabe einer Bürogeräte-Aktion (geraete_werkzeuge.py): Karte und Klick gehören zur selben Sitzung
+            if buerogeraete is None:
+                logger.warning("Bürogeräte-Freigabe ohne Bürogeräte in dieser Sitzung abgewiesen")
+                return
+            await buerogeraete.entscheiden(data)
         elif msg.type == "freigabe" and data.get("job") == "labor":
             # Labor-Freigaben (labor_freigaben.py) gibt es nur in einer Laborsitzung, dort gehen sie oben über labor_sitzung.client_nachricht an
             # labor_werkz.entscheiden. Hier, in jeder anderen Sitzung, auch bei einem Admin, ist der Klick ohne Wirkung.
@@ -1280,6 +1302,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             await dev.close()  # laufenden Entwicklungsauftrag beim Auflegen beenden
         with contextlib.suppress(Exception, asyncio.TimeoutError):
             await asyncio.wait_for(vorgaenge.schliessen(), CLEANUP_DB_TIMEOUT_SECS)  # offene Vorgänge gelten als abgebrochen
+        if buerogeraete is not None:  # offene Karten der Bürogeräte ablehnen (keine offene Zeile in actions zurücklassen)
+            with contextlib.suppress(Exception, asyncio.TimeoutError):
+                await asyncio.wait_for(buerogeraete.schliessen(), CLEANUP_DB_TIMEOUT_SECS)
         if freigaben is not None:
             # offene PC-Freigaben ablehnen: keine Eingabesperre am PC und keine offene Zeile in actions zurücklassen
             with contextlib.suppress(Exception):
