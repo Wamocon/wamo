@@ -156,7 +156,8 @@ class LaborClient:
         self._lese, self._schreib = lese_secs, schreib_secs
         self._http = httpx.AsyncClient(
             base_url=self._url, transport=transport, verify=verify, follow_redirects=False, trust_env=False,
-            headers={"Authorization": f"Bearer {token}", "X-WAMO-Platz": str(platz), "Accept": "application/json"})
+            headers={"Authorization": f"Bearer {token}", "X-WAMO-Platz": str(platz), "Accept": "application/json",
+                     "Accept-Encoding": "identity"})  # keine Kompression: Die Grenze von 64 KB gilt für die Rohbytes, nichts wird entpackt
 
     def __repr__(self) -> str:
         return f"LaborClient(platz={self.platz})"
@@ -259,6 +260,8 @@ class LaborClient:
         frist = httpx.Timeout(self._schreib if schreibend else self._lese, connect=VERBINDEN_SECS)
         try:
             async with self._http.stream(methode, pfad, params=params, content=roh, headers=kopf, timeout=frist) as antwort:
+                if antwort.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity"):
+                    raise _ungueltig()  # der Dienst darf nicht komprimieren (Accept-Encoding: identity): Der Inhalt wird weder gelesen noch entpackt
                 status, teile, summe = antwort.status_code, [], 0
                 async for stueck in antwort.aiter_bytes():
                     summe += len(stueck)

@@ -490,3 +490,59 @@ async def test_ein_tropfender_dienst_haelt_den_aufruf_nicht_ueber_die_frist(monk
     with pytest.raises(LaborFehler) as e:
         await c.durchlauf()
     assert e.value.code == "zeitueberschreitung" and time.monotonic() - start < 2
+
+
+# ---------- Kompression (Befund 5 des Sicherheitsreviews) ----------
+V1_OBJ = {"durchlauf_id": "5b0f0c1e-7a1d-4c61-9b52-0f6d2a8e41aa", "offen": True, "einwilligung_version": 1, "einwilligung_zeit": "2026-11-28T09:30:00Z"}
+
+
+async def test_client_verlangt_unkomprimierte_antworten():
+    gesehen: list[httpx.Request] = []
+
+    def antwort(r):
+        gesehen.append(r)
+        return json_antwort(200, V1_OBJ)
+
+    await mock(antwort).durchlauf()
+    assert gesehen[0].headers["accept-encoding"] == "identity"
+
+
+@pytest.mark.parametrize("kodierung", ["gzip", "deflate", "br", "zstd", "GZIP", "gzip, identity"])
+async def test_antwort_mit_content_encoding_wird_verworfen(kodierung):
+    import gzip
+    import json
+    import zlib
+
+    roh = (zlib.compress if kodierung == "deflate" else gzip.compress)(json.dumps(V1_OBJ).encode())
+    c = mock(lambda r: httpx.Response(200, content=roh, headers={"content-type": "application/json", "content-encoding": kodierung}))
+    with pytest.raises(LaborFehler) as e:
+        await c.durchlauf()
+    assert e.value.code == "antwort_ungueltig"
+
+
+async def test_komprimierte_fehlerantwort_wird_ebenfalls_verworfen():
+    import gzip
+
+    c = mock(lambda r: httpx.Response(409, content=gzip.compress(b'{"fehler": "durchlauf_beendet", "text": "x"}'), headers={"content-encoding": "gzip"}))
+    with pytest.raises(LaborFehler) as e:
+        await c.anlegen(durchlauf_id=str(uuid.uuid4()), schluessel=str(uuid.uuid4()), typ="bug", prioritaet="hoch", titel="Drei", beschreibung="")
+    assert e.value.code == "antwort_ungueltig"  # nicht durchlauf_beendet: Der Inhalt wird gar nicht erst gelesen
+
+
+async def test_dekompressionsbombe_wird_nicht_entpackt():
+    import gzip
+
+    bombe = gzip.compress(b"0" * 200_000_000, 9)  # wenige hundert KB, entpackt 200 MB
+    c = mock(lambda r: httpx.Response(200, content=bombe, headers={"content-type": "application/json", "content-encoding": "gzip"}))
+    import time
+
+    start = time.perf_counter()
+    with pytest.raises(LaborFehler) as e:
+        await c.durchlauf()
+    assert e.value.code == "antwort_ungueltig" and time.perf_counter() - start < 1.0
+
+
+@pytest.mark.parametrize("kodierung", ["identity", "Identity", ""])
+async def test_identity_ist_erlaubt(kodierung):
+    d = await mock(lambda r: json_antwort(200, V1_OBJ, **{"content-encoding": kodierung})).durchlauf()
+    assert d.offen is True and d.id == V1_OBJ["durchlauf_id"]

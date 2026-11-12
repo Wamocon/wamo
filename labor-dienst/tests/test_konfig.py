@@ -1,0 +1,185 @@
+"""Konfiguration nur über Umgebungsvariablen und Dateien (Auftrag Punkt 7)."""
+from __future__ import annotations
+
+from datetime import date
+from pathlib import Path
+
+import pytest
+
+from wamo_labor_dienst.konfig import KonfigFehler, Konfig, aus_umgebung, token_aus_datei
+
+KERN = "kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMqA3"
+BETREUER = "Bn4Wd8Zs1Yh6Kt3Qe9Jx5Cv2Rm7Lg0Pa+Uo/Fi-Nz._~=Tq"
+
+
+def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
+    kern, betreuer = tmp_path / "kern.token", tmp_path / "betreuer.token"
+    kern.write_text(KERN + "\n", encoding="utf-8")
+    betreuer.write_text(BETREUER, encoding="utf-8")
+    return {"WAMO_LABOR_DIENST_KERN_TOKEN_DATEI": str(kern), "WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI": str(betreuer), **extra}
+
+
+def test_standardwerte(tmp_path):
+    k = aus_umgebung(_env(tmp_path))
+    assert isinstance(k, Konfig)
+    assert k.daten == Path("/data")
+    assert k.host == "127.0.0.1"
+    assert k.port == 8080
+    assert k.bis == date(2026, 12, 11)
+    assert k.platz_mb == 16
+    assert k.kern_token == KERN
+    assert k.betreuer_token == BETREUER
+
+
+def test_werte_aus_der_umgebung(tmp_path):
+    k = aus_umgebung(_env(tmp_path, WAMO_LABOR_DIENST_DATEN=str(tmp_path / "d"), WAMO_LABOR_DIENST_HOST="0.0.0.0",
+                          WAMO_LABOR_DIENST_PORT="9100", WAMO_LABOR_DIENST_BIS="2026-12-01", WAMO_LABOR_DIENST_PLATZ_MB="8"))
+    assert (k.daten, k.host, k.port, k.bis, k.platz_mb) == (tmp_path / "d", "0.0.0.0", 9100, date(2026, 12, 1), 8)
+
+
+def test_token_aus_datei_streift_leerraum_und_bom(tmp_path):
+    datei = tmp_path / "t"
+    datei.write_bytes(b"\xef\xbb\xbf" + KERN.encode() + b"\r\n")
+    assert token_aus_datei(str(datei), "X") == KERN
+
+
+@pytest.mark.parametrize("fehlend", ["WAMO_LABOR_DIENST_KERN_TOKEN_DATEI", "WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI"])
+def test_fehlende_tokendatei_nennt_die_variable(tmp_path, fehlend):
+    env = _env(tmp_path)
+    del env[fehlend]
+    with pytest.raises(KonfigFehler, match=fehlend):
+        aus_umgebung(env)
+
+
+def test_nicht_lesbare_tokendatei(tmp_path):
+    env = _env(tmp_path, WAMO_LABOR_DIENST_KERN_TOKEN_DATEI=str(tmp_path / "gibt-es-nicht"))
+    with pytest.raises(KonfigFehler, match="WAMO_LABOR_DIENST_KERN_TOKEN_DATEI"):
+        aus_umgebung(env)
+
+
+@pytest.mark.parametrize("inhalt", ["", "zu-kurz", "a" * 31, "a" * 201, "mit leerzeichen " + "a" * 40, "umlaut-ä" + "a" * 40])
+def test_unbrauchbarer_token_wird_abgelehnt_ohne_den_wert_zu_nennen(tmp_path, inhalt):
+    env = _env(tmp_path)
+    Path(env["WAMO_LABOR_DIENST_KERN_TOKEN_DATEI"]).write_text(inhalt, encoding="utf-8")
+    with pytest.raises(KonfigFehler) as e:
+        aus_umgebung(env)
+    assert inhalt.strip() == "" or inhalt.strip() not in str(e.value)
+
+
+def test_gleicher_token_fuer_kern_und_betreuer_wird_abgelehnt(tmp_path):
+    env = _env(tmp_path)
+    Path(env["WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI"]).write_text(KERN, encoding="utf-8")
+    with pytest.raises(KonfigFehler, match="verschieden"):
+        aus_umgebung(env)
+
+
+@pytest.mark.parametrize("name,wert", [("WAMO_LABOR_DIENST_PORT", "0"), ("WAMO_LABOR_DIENST_PORT", "70000"), ("WAMO_LABOR_DIENST_PORT", "abc"),
+                                       ("WAMO_LABOR_DIENST_BIS", "11.12.2026"), ("WAMO_LABOR_DIENST_BIS", "2026-13-01"),
+                                       ("WAMO_LABOR_DIENST_PLATZ_MB", "1"), ("WAMO_LABOR_DIENST_PLATZ_MB", "65"), ("WAMO_LABOR_DIENST_PLATZ_MB", "x"),
+                                       ("WAMO_LABOR_DIENST_HOST", "")])
+def test_ungueltige_werte_nennen_die_variable(tmp_path, name, wert):
+    with pytest.raises(KonfigFehler, match=name):
+        aus_umgebung(_env(tmp_path, **{name: wert}))
+
+
+def test_repr_verraet_keinen_token(tmp_path):
+    k = aus_umgebung(_env(tmp_path))
+    assert KERN not in repr(k) and BETREUER not in repr(k)
+    assert KERN not in str(k)
+
+
+# ---------- Aufbewahrung und Uhr (Befund 6 des Sicherheitsreviews) ----------
+def test_bis_darf_hoechstens_der_11_12_2026_sein(tmp_path):
+    assert aus_umgebung(_env(tmp_path, WAMO_LABOR_DIENST_BIS="2026-12-11")).bis == date(2026, 12, 11)
+    assert aus_umgebung(_env(tmp_path, WAMO_LABOR_DIENST_BIS="2026-11-30")).bis == date(2026, 11, 30)
+    for zu_spaet in ("2026-12-12", "2027-01-01", "2099-12-31"):
+        with pytest.raises(KonfigFehler, match="WAMO_LABOR_DIENST_BIS.*2026-12-11"):
+            aus_umgebung(_env(tmp_path, WAMO_LABOR_DIENST_BIS=zu_spaet))
+
+
+def test_uhr_vor_dem_12_11_2026_ist_ein_konfigurationsfehler(konfig):
+    from datetime import UTC, datetime
+
+    from hilfen import Uhr
+
+    from wamo_labor_dienst.app import create_app
+
+    for zu_frueh in (datetime(2026, 11, 11, 23, 59, tzinfo=UTC), datetime(1970, 1, 1, tzinfo=UTC), datetime(2025, 6, 1, tzinfo=UTC)):
+        with pytest.raises(KonfigFehler, match="Uhr"):
+            create_app(konfig, uhr=Uhr(zu_frueh.timestamp()))
+    create_app(konfig, uhr=Uhr(datetime(2026, 11, 12, 0, 0, tzinfo=UTC).timestamp()))  # genau der Stichtag ist in Ordnung
+
+
+def test_einstieg_meldet_eine_falsche_uhr_mit_ausgang_2(tmp_path, monkeypatch, capsys):
+    from datetime import UTC, datetime
+
+    from wamo_labor_dienst import __main__ as einstieg
+
+    kern, betreuer = tmp_path / "k", tmp_path / "b"
+    kern.write_text(KERN, encoding="utf-8")
+    betreuer.write_text(BETREUER, encoding="utf-8")
+    for name, wert in (("WAMO_LABOR_DIENST_KERN_TOKEN_DATEI", str(kern)), ("WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI", str(betreuer)), ("WAMO_LABOR_DIENST_DATEN", str(tmp_path / "d"))):
+        monkeypatch.setenv(name, wert)
+    echtes = einstieg.create_app
+    falsche_uhr = datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(einstieg, "create_app", lambda k: echtes(k, uhr=lambda: falsche_uhr))  # der Rechner geht vor
+    def nicht_starten(*_a, **_k):
+        raise AssertionError("Der Dienst darf mit falscher Uhr nicht starten")
+
+    monkeypatch.setattr(einstieg.uvicorn, "run", nicht_starten)
+    assert einstieg.main([]) == 2
+    assert "Uhr" in capsys.readouterr().err
+
+
+# ---------- Token-Qualität und Dateirechte (Befund 8 des Sicherheitsreviews) ----------
+@pytest.mark.parametrize("token,ok", [
+    ("kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMq", False),  # 42 Zeichen: zu kurz
+    ("kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMqA", True),  # 43 Zeichen, 43 verschiedene
+    ("abcdefghijklmno" * 3, False),  # 45 Zeichen, aber nur 15 verschiedene
+    ("abcdefghijklmnop" * 3, True),  # 48 Zeichen, genau 16 verschiedene
+    ("a" * 60, False), ("0123456789" * 6, False),
+    ("kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMqA3" * 4, True),  # 176 Zeichen
+    ("kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMqA3" * 5, False),  # 220 Zeichen: zu lang
+])
+def test_tokenqualitaet_mindestens_43_zeichen_und_16_verschiedene(tmp_path, token, ok):
+    env = _env(tmp_path)
+    Path(env["WAMO_LABOR_DIENST_KERN_TOKEN_DATEI"]).write_text(token, encoding="utf-8")
+    if ok:
+        assert aus_umgebung(env).kern_token == token
+    else:
+        with pytest.raises(KonfigFehler, match="WAMO_LABOR_DIENST_KERN_TOKEN_DATEI") as e:
+            aus_umgebung(env)
+        assert token not in str(e.value)
+
+
+def test_fehler_der_tokenqualitaet_nennen_den_grund_ohne_den_wert(tmp_path):
+    env = _env(tmp_path)
+    Path(env["WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI"]).write_text("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", encoding="utf-8")
+    with pytest.raises(KonfigFehler, match="verschiedene Zeichen"):
+        aus_umgebung(env)
+
+
+@pytest.mark.parametrize("modus,ok", [(0o100600, True), (0o100400, True), (0o100644, False), (0o100640, False), (0o100604, False), (0o100660, False), (0o100777, False)])
+def test_dateirechte_nur_der_besitzer_0600(tmp_path, monkeypatch, modus, ok):
+    from wamo_labor_dienst import konfig as modul
+
+    monkeypatch.setattr(modul, "_ist_windows", lambda: False)
+    monkeypatch.setattr(modul, "_modus", lambda pfad: modus)
+    if ok:
+        assert aus_umgebung(_env(tmp_path)).kern_token == KERN
+    else:
+        with pytest.raises(KonfigFehler, match="Besitzer") as e:
+            aus_umgebung(_env(tmp_path))
+        assert KERN not in str(e.value) and BETREUER not in str(e.value)
+
+
+def test_dateirechte_gelten_fuer_beide_dateien_und_nicht_unter_windows(tmp_path, monkeypatch):
+    from wamo_labor_dienst import konfig as modul
+
+    env = _env(tmp_path)
+    monkeypatch.setattr(modul, "_ist_windows", lambda: False)
+    monkeypatch.setattr(modul, "_modus", lambda pfad: 0o100600 if pfad == env["WAMO_LABOR_DIENST_KERN_TOKEN_DATEI"] else 0o100644)
+    with pytest.raises(KonfigFehler, match="WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI"):
+        aus_umgebung(env)
+    monkeypatch.setattr(modul, "_ist_windows", lambda: True)  # Windows kennt keine Unix-Rechte: nichts zu prüfen
+    assert aus_umgebung(env).betreuer_token == BETREUER

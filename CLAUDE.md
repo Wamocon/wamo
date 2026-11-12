@@ -3,7 +3,9 @@
 WAMO ist der Sprachassistent der WAMOCON GmbH. Stand, offene Punkte und Ausbaustufen stehen in `README.md`.
 
 Monorepo: `ui/` (Next.js 16), `voice-core/` (Python, Pipecat 1.x), `host/` (Python, MCP v1, Windows),
-`desktop/` (Electron), `supabase/` (SQL-Migrationen mit `__SCHEMA__`-Platzhalter), `scripts/`.
+`desktop/` (Electron), `supabase/` (SQL-Migrationen mit `__SCHEMA__`-Platzhalter), `scripts/`,
+`labor-dienst/` (Python, FastAPI, SQLite: das Test-Jira des Testlabors, Paket `wamo-labor-dienst`, Umgebung `WAMO_LABOR_DIENST_*`,
+Vertrag `docs/labor-dienst-vertrag.md`, Start `python -m wamo_labor_dienst`, Tests `python -m pytest labor-dienst/tests`).
 
 ## Namensvertrag (verbindlich, alle Teile gleichzeitig)
 
