@@ -28,6 +28,8 @@ SICHERHEITSKOEPFE = {
     "Cache-Control": "no-store",
     "X-Frame-Options": "DENY",
 }
+# Antworten, die ein Angreifer ohne Zugang erzeugen kann: Das Protokoll tastet sie ab (je Minute wenige Zeilen, der Rest wird gezählt)
+ABGETASTET = frozenset({400, 401, 403, 404, 405, 413, 429, 431})
 _METHODEN = frozenset({"GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"})
 
 
@@ -182,5 +184,6 @@ class SchutzMiddleware:
         if dienst is None:
             return
         methode = scope.get("method", "")
-        dienst.protokoll.ereignis("anfrage", bereich=_bereich(scope.get("path", "")), methode=methode if methode in _METHODEN else "SONST", status=status,
-                                  platz=scope.get("state", {}).get("platz"), ms=round((time.perf_counter() - start) * 1000, 1))
+        schreiben = dienst.protokoll.abgetastet if status in ABGETASTET else dienst.protokoll.ereignis
+        schreiben("anfrage", bereich=_bereich(scope.get("path", "")), methode=methode if methode in _METHODEN else "SONST", status=status,
+                  platz=scope.get("state", {}).get("platz"), ms=round((time.perf_counter() - start) * 1000, 1))

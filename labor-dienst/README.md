@@ -80,10 +80,18 @@ Groß- und Kleinschreibung nicht, auch bei Umlauten. Der Speicher für Idempoten
 
 ## Protokoll und Aufbewahrung
 
-Das Protokoll (`<Daten>/protokoll/dienst.jsonl`, rotiert bei 10 MB) enthält nur Metadaten: Zeit, Bereich, Methode, Status, Platz, Dauer und bei
-Betreuer-Aufrufen die Art. Nie Pfade, Abfragen, Köpfe, Tokens oder Texte. Das Zugriffsprotokoll des Webservers ist aus. Beim Start und danach
-stündlich löscht der Dienst alle Daten (Tickets, Kommentare, Einwilligungen, Platz-Token, Protokoll), wenn das Datum nach `WAMO_LABOR_DIENST_BIS` liegt.
-Der Dienst legt keine Sicherungen an.
+Das Protokoll liegt in `<Daten>/protokoll/` und enthält nur Metadaten: Zeit, Bereich, Methode, Status, Platz, Dauer und bei Betreuer-Aufrufen die
+Art. Nie Pfade, Abfragen, Köpfe, Tokens oder Texte. Das Zugriffsprotokoll des Webservers ist aus. Zwei Dateien:
+
+* `dienst.jsonl` (alle Anfragen und Fehler, rotiert bei 10 MB mit einer Sicherung). Antworten, die ein Angreifer ohne Zugang erzeugen kann (400, 401,
+  403, 404, 405, 413, 429, 431, auch abgelehnte Betreuer-Aufrufe), werden abgetastet: je Art, Bereich und Status höchstens 5 Zeilen je Minute, der
+  Rest wird gezählt und als eine Zeile `abgetastet` mit der Zahl festgehalten.
+* `betreuer.jsonl` (die Spur der Betreuer-Aufrufe mit gültigem Token): rotiert nie und überschreibt nie, nur eine Obergrenze von 5 MB. Eine Flut
+  unberechtigter Anfragen kann sie nicht wegspülen.
+
+Geschrieben wird in einem eigenen Faden hinter einer begrenzten Warteschlange (die Ereignisschleife wartet nie auf die Platte, ist die Schlange
+voll, wird gezählt und verworfen). Beim Start und danach stündlich löscht der Dienst alle Daten (Tickets, Kommentare, Einwilligungen, Platz-Token,
+beide Protokolldateien), wenn das Datum nach `WAMO_LABOR_DIENST_BIS` liegt. Der Dienst legt keine Sicherungen an.
 
 ## Prüfen
 

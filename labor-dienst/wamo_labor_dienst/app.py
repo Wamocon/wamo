@@ -18,6 +18,7 @@ from starlette.requests import Request
 from . import betreuer_api, browser_api, kern_api
 from .dienst import Dienst
 from .konfig import Konfig
+from .protokoll import MAX_BYTES
 from .regeln import DienstFehler
 from .sicherheit import SchutzMiddleware, dienst_von, fehler_http, fehlerfrei, json_antwort
 
@@ -54,9 +55,9 @@ async def _aufraeumen_schleife(dienst: Dienst) -> None:
             dienst.protokoll.ereignis("fehler", fehlerart=type(e).__name__)
 
 
-def create_app(konfig: Konfig, *, uhr: Callable[[], float] = time.time) -> FastAPI:
+def create_app(konfig: Konfig, *, uhr: Callable[[], float] = time.time, protokoll_max_bytes: int = MAX_BYTES) -> FastAPI:
     """Baut die Anwendung und richtet den Speicher ein (Dateien, Tabellen, Aufbewahrung). uhr ist für Tests."""
-    dienst = Dienst(konfig, uhr)
+    dienst = Dienst(konfig, uhr, protokoll_max_bytes=protokoll_max_bytes)
     dienst.einrichten()
 
     @contextlib.asynccontextmanager
@@ -68,6 +69,7 @@ def create_app(konfig: Konfig, *, uhr: Callable[[], float] = time.time) -> FastA
             aufgabe.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await aufgabe
+            await run_in_threadpool(dienst.protokoll.beenden)  # wartende Zeilen und offene Zähler schreiben
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False, lifespan=lebenszeit)
     app.state.dienst = dienst

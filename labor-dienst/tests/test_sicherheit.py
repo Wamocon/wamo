@@ -47,6 +47,7 @@ def test_protokoll_schreibt_json_zeilen_mit_zeit_und_art(tmp_path):
     p = Protokoll(tmp_path / "log", Uhr())
     p.ereignis("anfrage", bereich="kern", status=200, platz=3, ms=1.5, text=None)
     p.ereignis("betreuer", aktion="durchlauf_beenden", platz=3)
+    p.abwarten()
     zeilen = [json.loads(z) for z in (tmp_path / "log" / "dienst.jsonl").read_text(encoding="utf-8").splitlines()]
     assert zeilen[0] == {"zeit": "2026-11-28T09:30:00Z", "art": "anfrage", "bereich": "kern", "status": 200, "platz": 3, "ms": 1.5, "text": None}
     assert zeilen[1]["aktion"] == "durchlauf_beenden"
@@ -55,6 +56,7 @@ def test_protokoll_schreibt_json_zeilen_mit_zeit_und_art(tmp_path):
 def test_protokoll_nimmt_nur_einfache_werte_und_kuerzt_lange_texte(tmp_path):
     p = Protokoll(tmp_path, Uhr())
     p.ereignis("x", liste=[1, 2], objekt={"a": 1}, lang="a" * 500, ok=True)
+    p.abwarten()
     e = json.loads((tmp_path / "dienst.jsonl").read_text(encoding="utf-8"))
     assert "liste" not in e and "objekt" not in e and len(e["lang"]) <= 80 and e["ok"] is True
 
@@ -63,6 +65,7 @@ def test_protokoll_rotiert_bei_der_grenze_und_leeren_loescht_alles(tmp_path):
     p = Protokoll(tmp_path, Uhr(), max_bytes=500)
     for i in range(30):
         p.ereignis("anfrage", nr=i)
+    p.abwarten()
     dateien = sorted(f.name for f in tmp_path.iterdir())
     assert dateien == ["dienst.jsonl", "dienst.jsonl.1"] and (tmp_path / "dienst.jsonl").stat().st_size <= 600
     p.leeren()
@@ -72,4 +75,6 @@ def test_protokoll_rotiert_bei_der_grenze_und_leeren_loescht_alles(tmp_path):
 def test_protokoll_scheitert_nie_laut(tmp_path):
     blockiert = tmp_path / "datei"
     blockiert.write_text("x", encoding="utf-8")
-    Protokoll(blockiert / "unter", Uhr()).ereignis("anfrage", status=200)  # der Ordner lässt sich nicht anlegen: kein Absturz
+    p = Protokoll(blockiert / "unter", Uhr())
+    p.ereignis("anfrage", status=200)  # der Ordner lässt sich nicht anlegen: kein Absturz
+    p.abwarten()

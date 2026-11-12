@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from .datenbank import PlatzDB, ZentralDB
 from .konfig import Konfig
-from .protokoll import Protokoll
+from .protokoll import MAX_BYTES, Protokoll
 from .regeln import PLAETZE
 from .sicherheit import digest
 
@@ -15,9 +15,9 @@ from .sicherheit import digest
 class Dienst:
     """Hält alles, was die Schnittstellen brauchen (app.state.dienst). uhr: Sekunden seit 1970, in Tests verstellbar."""
 
-    def __init__(self, konfig: Konfig, uhr: Callable[[], float] = time.time):
+    def __init__(self, konfig: Konfig, uhr: Callable[[], float] = time.time, *, protokoll_max_bytes: int = MAX_BYTES):
         self.konfig, self.uhr = konfig, uhr
-        self.protokoll = Protokoll(konfig.daten / "protokoll", uhr)
+        self.protokoll = Protokoll(konfig.daten / "protokoll", uhr, protokoll_max_bytes)
         self.zentral = ZentralDB(konfig.daten / "zentral.sqlite3")
         self.plaetze = {n: PlatzDB(n, konfig.daten / "plaetze" / f"platz-{n:02d}.sqlite3", konfig.platz_max_bytes, uhr) for n in PLAETZE}
         self.kern_digest = digest(konfig.kern_token)

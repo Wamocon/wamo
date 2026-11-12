@@ -84,12 +84,21 @@ async def _platz_token(request: Request, dienst: Dienst, platz: int) -> dict:
     return {"platz": platz, "platz_token": token}
 
 
+def _spur(dienst: Dienst, aktion: str, platz: int | None, status: int, angemeldet: bool) -> None:
+    """Mit gültigem Token: Betreuer-Spur (eigene Datei, nie abgetastet, nie rotiert). Ohne: abgetastet in der allgemeinen Datei (D10)."""
+    if angemeldet:
+        dienst.protokoll.betreuer(aktion=aktion, platz=platz, status=status)
+    else:
+        dienst.protokoll.abgetastet("betreuer_abgelehnt", aktion=aktion, bereich="betreuer", platz=platz, status=status)
+
+
 def _aktion(name: str, funktion: Callable[[Request, Dienst, int], Awaitable[dict]]):
     @fehlerfrei
     async def endpunkt(request: Request):
-        dienst, status = dienst_von(request), 500
+        dienst, status, angemeldet = dienst_von(request), 500, False
         try:
             betreuer_zugang(request, dienst)
+            angemeldet = True
             antwort = json_antwort(200, await funktion(request, dienst, _platz(request)))
             status = antwort.status_code
             return antwort
@@ -97,16 +106,17 @@ def _aktion(name: str, funktion: Callable[[Request, Dienst, int], Awaitable[dict
             status = e.status
             raise
         finally:
-            dienst.protokoll.ereignis("betreuer", aktion=name, platz=_platz_oder_none(request), status=status)
+            _spur(dienst, name, _platz_oder_none(request), status, angemeldet)
 
     return endpunkt
 
 
 @fehlerfrei
 async def plaetze(request: Request):
-    dienst, status = dienst_von(request), 500
+    dienst, status, angemeldet = dienst_von(request), 500, False
     try:
         betreuer_zugang(request, dienst)
+        angemeldet = True
         liste = await run_in_threadpool(lambda: [_zustand(dienst, n) for n in PLAETZE])
         status = 200
         return json_antwort(200, {"plaetze": liste})
@@ -114,7 +124,7 @@ async def plaetze(request: Request):
         status = e.status
         raise
     finally:
-        dienst.protokoll.ereignis("betreuer", aktion="plaetze", platz=None, status=status)
+        _spur(dienst, "plaetze", None, status, angemeldet)
 
 
 def registrieren(app: FastAPI) -> None:

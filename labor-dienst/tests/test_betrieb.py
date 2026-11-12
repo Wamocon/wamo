@@ -69,6 +69,7 @@ def test_beim_start_werden_daten_nach_der_aufbewahrung_geloescht(konfig, jetzt, 
             assert c.get("/api/kern/durchlauf", headers=kern_kopf()).json()["offen"] is False
             assert c.get("/api/kern/tickets", headers=kern_kopf()).json()["gesamt"] == 0
             assert '"betreuer"' not in (protokoll.read_text(encoding="utf-8") if protokoll.exists() else "")  # das Protokoll des Labortags ist weg
+            assert not (konfig.daten / "protokoll" / "betreuer.jsonl").exists()  # auch die Betreuer-Spur
 
 
 def test_aufbewahrung_loescht_auch_das_protokoll_und_die_tokens(konfig):
@@ -80,7 +81,7 @@ def test_aufbewahrung_loescht_auch_das_protokoll_und_die_tokens(konfig):
     assert (konfig.daten / "protokoll" / "dienst.jsonl").stat().st_size > 0
     uhr.t = _tag(2026, 12, 12)
     assert app.state.dienst.aufbewahrung_pruefen() is True
-    assert not (konfig.daten / "protokoll" / "dienst.jsonl").exists()
+    assert not (konfig.daten / "protokoll" / "dienst.jsonl").exists() and not (konfig.daten / "protokoll" / "betreuer.jsonl").exists()
     assert app.state.dienst.zentral.hat_token(3) is False
     assert app.state.dienst.aufbewahrung_pruefen() is True  # wiederholbar
 
@@ -146,6 +147,7 @@ def test_stuendliche_pruefung_laeuft_nach_einem_fehler_weiter(app, monkeypatch):
 
 
 def konfig_protokoll(dienst) -> str:
+    dienst.protokoll.abwarten()
     return dienst.protokoll.datei.read_text(encoding="utf-8")
 
 

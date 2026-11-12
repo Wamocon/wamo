@@ -178,9 +178,11 @@ def test_antworten_tragen_die_schutzkoepfe(client):
 
 
 # ---------- Protokoll (D10) ----------
-def _protokoll(konfig) -> list[dict]:
-    datei = konfig.daten / "protokoll" / "dienst.jsonl"
-    return [json.loads(z) for z in datei.read_text(encoding="utf-8").splitlines()] if datei.exists() else []
+def _protokoll(client, datei: str = "dienst.jsonl") -> list[dict]:
+    dienst = client.app.state.dienst
+    dienst.protokoll.abwarten()
+    pfad = dienst.protokoll.ordner / datei
+    return [json.loads(z) for z in pfad.read_text(encoding="utf-8").splitlines()] if pfad.exists() else []
 
 
 def test_betreuer_aufrufe_stehen_mit_zeit_platz_und_art_im_protokoll(client, konfig):
@@ -188,16 +190,18 @@ def test_betreuer_aufrufe_stehen_mit_zeit_platz_und_art_im_protokoll(client, kon
     client.post(f"/api/betreuer/plaetze/{PLATZ}/durchlauf-beenden", headers=betreuer_kopf())
     client.post(f"/api/betreuer/plaetze/{PLATZ}/platz-token", headers=betreuer_kopf())
     client.get("/api/betreuer/plaetze", headers=betreuer_kopf())
-    ereignisse = [e for e in _protokoll(konfig) if e["art"] == "betreuer"]
+    ereignisse = _protokoll(client, "betreuer.jsonl")  # eigene Datei, die nie rotiert
     assert [(e.get("aktion"), e.get("platz")) for e in ereignisse] == [("neuer_durchlauf", 3), ("durchlauf_beenden", 3), ("platz_token", 3), ("plaetze", None)]
-    assert all(e["zeit"] == "2026-11-28T09:30:00Z" and e["status"] == 200 for e in ereignisse)
+    assert all(e["art"] == "betreuer" and e["zeit"] == "2026-11-28T09:30:00Z" and e["status"] == 200 for e in ereignisse)
 
 
 def test_abgelehnte_betreuer_aufrufe_stehen_ohne_token_im_protokoll(client, konfig):
     client.post(f"/api/betreuer/plaetze/{PLATZ}/daten-loeschen", headers={"Authorization": f"Bearer {KERN_TOKEN}"})
+    ereignisse = _protokoll(client)
     roh = (konfig.daten / "protokoll" / "dienst.jsonl").read_text(encoding="utf-8")
     assert KERN_TOKEN not in roh and BETREUER_TOKEN not in roh
-    assert any(e["art"] == "betreuer" and e["status"] == 403 for e in _protokoll(konfig))
+    assert any(e["art"] == "betreuer_abgelehnt" and e["status"] == 403 for e in ereignisse)  # abgelehnte Aufrufe gehören nie in die Betreuer-Spur
+    assert _protokoll(client, "betreuer.jsonl") == []
 
 
 def test_protokoll_enthaelt_nie_ticket_kommentar_oder_einwilligungstexte_und_tokens(client, konfig):
@@ -209,18 +213,19 @@ def test_protokoll_enthaelt_nie_ticket_kommentar_oder_einwilligungstexte_und_tok
     client.get("/api/kern/tickets/Streng-geheim", headers=kern_kopf())
     client.get("/api/browser/board", headers={"X-Platz-Token": token})
     client.get(f"/api/browser/board?token={token}")
+    client.app.state.dienst.protokoll.beenden()
     roh = "\n".join(p.read_text(encoding="utf-8") for p in (konfig.daten / "protokoll").glob("*") if p.is_file())
     for verboten in ("Streng", "geheim", token, KERN_TOKEN, BETREUER_TOKEN, d, "Bearer", "Authorization"):
         assert verboten not in roh, verboten
     assert roh.count("\n") >= 6
-    for zeile in roh.splitlines():
+    for zeile in (z for z in roh.splitlines() if z.strip()):
         e = json.loads(zeile)
-        assert set(e) <= {"zeit", "art", "bereich", "methode", "status", "platz", "ms", "aktion"}, e
+        assert set(e) <= {"zeit", "art", "bereich", "methode", "status", "platz", "ms", "aktion", "abgelehnt", "anzahl"}, e
 
 
 def test_anfragen_stehen_als_metadaten_im_protokoll(client, konfig):
     client.get("/api/kern/durchlauf", headers=kern_kopf(5))
-    e = [x for x in _protokoll(konfig) if x["art"] == "anfrage"][-1]
+    e = [x for x in _protokoll(client) if x["art"] == "anfrage"][-1]
     assert (e["bereich"], e["methode"], e["status"], e["platz"]) == ("kern", "GET", 200, 5) and isinstance(e["ms"], (int, float))
 
 
