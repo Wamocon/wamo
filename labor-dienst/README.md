@@ -118,7 +118,7 @@ Was der Dienst bewusst nicht löst und wer es lösen muss:
   `neuer-durchlauf`, `daten-loeschen`, ein neues `platz-token` und das Ende der Aufbewahrung.
 * **`neuer-durchlauf` verlangt in der Schnittstelle keine Bestätigung:** Ein versehentlicher Aufruf setzt das Board eines Besuchers zurück und entzieht dessen
   Platz-Token. Die Betreuer-Seite verlangt dafür das Eintippen der Platznummer, ein Skript oder `curl` nicht.
-* **Plätze 15 und 16:** `neuer-durchlauf` und `daten-loeschen` entziehen den Platz-Token dort ebenso wie bei jedem Platz. Mit „nicht gesperrt“ ist nur gemeint, dass der
+* **Plätze 15 und 16:** `neuer-durchlauf` entzieht den Token dort ebenso wie bei jedem Platz, `daten-loeschen` auch. Mit „nicht gesperrt“ ist nur gemeint, dass der
   Dienst die Ausgabe eines Platz-Tokens für die Abnahmeplätze nicht verbietet (die Abnahme braucht ihn). Der Betreuer gibt für sie keinen Besucher-Token aus.
 * **Ein Prozess:** Token-Index, Raten, Fehlerzähler und Zwischenspeicher liegen im Speicher dieses einen Prozesses (mehrere Prozesse hinter einem Verteiler
   würden die Grenzen je Prozess zählen).
