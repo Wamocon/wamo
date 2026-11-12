@@ -362,9 +362,10 @@ def test_adresse_nur_https_mit_ca_oder_loopback(capsys, umgebung, labor, tmp_pat
 def test_einstellung_aus_env_datei_und_umgebung(capsys, umgebung, labor, tmp_path, monkeypatch):
     monkeypatch.delenv("SUPABASE_PUBLISHABLE_KEY")
     env = tmp_path / "test.env"
-    env.write_text(f"# Kommentar\nexport SUPABASE_PUBLISHABLE_KEY='{SCHLUESSEL}'\nSUPABASE_URL={labor.basis}\n", encoding="utf-8")
+    env.write_text(f"# Kommentar\nexport SUPABASE_PUBLISHABLE_KEY='{SCHLUESSEL}'\n", encoding="utf-8")
     datei = umschlag_datei(tmp_path)
-    code, out, err = lauf(capsys, ["einrichten", "--env-datei", str(env), "--umschlag-datei", str(datei), "--profile", "labor-01"])
+    code, out, err = lauf(capsys, ["einrichten", "--env-datei", str(env), "--basis", labor.basis, "--umschlag-datei", str(datei),
+                                   "--profile", "labor-01"])
     assert code == 0 and "labor-01: Faktor eingerichtet" in out
 
 

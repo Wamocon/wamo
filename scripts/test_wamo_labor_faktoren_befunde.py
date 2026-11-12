@@ -352,3 +352,46 @@ def test_zeile_mit_falscher_email_scheitert_ohne_aufruf_des_servers(capsys, umge
     assert code == 1 and "labor-02: FEHLER: Die E-Mail in der Zeile für labor-02 passt nicht" in err
     assert "labor-01: Faktor eingerichtet" in out and "labor-03: Faktor eingerichtet" in out
     assert [f for f in labor.faktoren_von(email("labor-02"))] == [] and len(labor.faktoren_von(email("labor-01"))) == 1
+
+
+# ---------- Befund 5: Host:Port als erste Zeile, Loopback-http nur mit ausdrücklichem --basis ----------
+
+@pytest.mark.parametrize("quelle,erwartet", [
+    ("basis", "Anmeldeserver: 192.168.178.136:55443 (aus --basis)"),
+    ("env", "Anmeldeserver: 192.168.178.136:55443 (aus SUPABASE_URL)"),
+    ("standard", "Anmeldeserver: 192.168.178.136:55443 (Standard)")])
+def test_host_und_port_stehen_als_erste_zeile(capsys, umgebung, tmp_path, monkeypatch, quelle, erwartet):
+    datei = umschlag_datei(tmp_path)
+    argv = ["einrichten", "--trocken", "--profile", "labor-01", "--umschlag-datei", str(datei)]
+    if quelle == "basis":
+        argv += ["--basis", "https://192.168.178.136:55443"]
+    if quelle == "env":
+        monkeypatch.setenv("SUPABASE_URL", "https://192.168.178.136:55443")
+    code, out, err = lauf(capsys, argv)
+    assert code == 0 and out.splitlines()[0] == erwartet, out
+
+
+def test_host_und_port_stehen_auch_im_echten_lauf_vor_allem_anderen(capsys, umgebung, labor, tmp_path):
+    datei = umschlag_datei(tmp_path)
+    um.Umschlag(datei, rechte=Rechte()).zwischen_schreiben("labor-02", "faktor-0123456789ab", seed_von("zwei"))
+    code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")
+    assert out.splitlines()[0] == f"Anmeldeserver: {labor.basis.removeprefix('http://')} (aus --basis)"
+    assert "Zwischendatei" in out.splitlines()[1]
+
+
+def test_loopback_http_aus_umgebung_wird_abgelehnt(capsys, umgebung, labor, tmp_path, monkeypatch):
+    datei = umschlag_datei(tmp_path)
+    monkeypatch.setenv("SUPABASE_URL", labor.basis)
+    code, out, err = lauf(capsys, ["einrichten", "--umschlag-datei", str(datei)])
+    assert code == 2 and "--basis" in err and "SUPABASE_URL" in err and out == "" and labor.anfragen == []
+
+
+def test_loopback_http_aus_env_datei_wird_abgelehnt_und_mit_basis_erlaubt(capsys, umgebung, labor, tmp_path):
+    env = tmp_path / "test.env"
+    env.write_text(f"SUPABASE_URL={labor.basis}\n", encoding="utf-8")
+    datei = umschlag_datei(tmp_path)
+    code, out, err = lauf(capsys, ["einrichten", "--trocken", "--env-datei", str(env), "--umschlag-datei", str(datei)])
+    assert code == 2 and "--basis" in err
+    argv = ["einrichten", "--trocken", "--profile", "labor-01", "--env-datei", str(env), "--basis", labor.basis, "--umschlag-datei", str(datei)]
+    code, out, err = lauf(capsys, argv)
+    assert code == 0 and "(aus --basis)" in out.splitlines()[0]

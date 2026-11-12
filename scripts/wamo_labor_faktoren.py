@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 import wamo_labor_faktoren_api as api
 import wamo_labor_faktoren_signale as sg
@@ -70,6 +71,7 @@ class Einstellung:
     basis: str
     ca: Path | None
     apikey: str = field(repr=False)
+    quelle: str = "Standard"  # woher die Adresse stammt: --basis, SUPABASE_URL oder Standard
 
 
 class Ausgabe:
@@ -118,10 +120,31 @@ def einstellung_laden(args: argparse.Namespace) -> Einstellung:
     apikey = _env_wert("SUPABASE_PUBLISHABLE_KEY", dateien)
     if not apikey:
         raise EingabeFehler("SUPABASE_PUBLISHABLE_KEY fehlt (Umgebung oder .env, --env-datei nennt eine weitere Datei)")
-    basis = args.basis or _env_wert("SUPABASE_URL", dateien) or api.STANDARD_BASIS
+    aus_umgebung = _env_wert("SUPABASE_URL", dateien)
+    basis = args.basis or aus_umgebung or api.STANDARD_BASIS
+    quelle = "--basis" if args.basis else "SUPABASE_URL" if aus_umgebung else "Standard"
+    if quelle != "--basis" and _ist_loopback_http(basis):
+        raise EingabeFehler(f"Die Adresse aus {quelle} zeigt per http auf diesen Rechner: Das wird nur mit ausdrücklichem --basis benutzt, "
+                            "damit eine Einstellung in der Umgebung Passwörter nie an einen lokalen Dienst schickt")
     ca_text = args.ca or _env_wert("WAMO_CA_FILE", dateien)
     ca = Path(ca_text) if ca_text else (CA_STANDARD if CA_STANDARD.is_file() else None)
-    return Einstellung(basis, ca, apikey)
+    return Einstellung(basis, ca, apikey, quelle)
+
+
+def _ist_loopback_http(basis: str) -> bool:
+    try:
+        teile = urlsplit(basis)
+        return teile.scheme == "http" and bool(teile.hostname) and api.ist_loopback(teile.hostname)
+    except ValueError:
+        return False
+
+
+def server_zeile(einstellung: Einstellung) -> str:
+    """Host und Port des Anmeldeservers, damit auf einen Blick sichtbar ist, wohin Passwörter gehen."""
+    teile = urlsplit(einstellung.basis)
+    port = teile.port or (443 if teile.scheme == "https" else 80)
+    quelle = "Standard" if einstellung.quelle == "Standard" else f"aus {einstellung.quelle}"
+    return f"Anmeldeserver: {teile.hostname}:{port} ({quelle})"
 
 
 def profile_lesen(text: str | None) -> list[str]:
@@ -314,6 +337,7 @@ def befehl_einrichten(args: argparse.Namespace, profile: list[str], umschlag: um
     einstellung = einstellung_laden(args)
     verbindung = api.Verbindung(einstellung.basis, einstellung.apikey, einstellung.ca, zeit=zeit)  # prüft Adresse und CA-Datei
     ausgabe.merke(einstellung.apikey)
+    ausgabe.zeile(server_zeile(einstellung))
     for kennung in profile:  # Passwörter vorab merken, damit keine Meldung eines anderen Profils eines nennt
         try:
             ausgabe.merke(umschlag.zugang(kennung).passwort)

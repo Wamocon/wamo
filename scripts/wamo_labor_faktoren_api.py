@@ -76,7 +76,7 @@ class Antwort:
     kopf_date: str | None
 
 
-def _ist_loopback(host: str) -> bool:
+def ist_loopback(host: str) -> bool:
     if host == "localhost":
         return True
     try:
@@ -97,7 +97,7 @@ def basis_pruefen(basis: str, hat_ca: bool) -> None:
         raise ApiFehler("Die Adresse des Anmeldeservers muss mit https:// beginnen und einen Rechner nennen")
     if teile.username is not None or teile.password is not None or teile.path not in ("", "/") or teile.query or teile.fragment:
         raise ApiFehler("Die Adresse des Anmeldeservers darf nur Schema, Rechner und Port enthalten (keine Zugangsdaten, kein Pfad)")
-    if teile.scheme == "http" and not _ist_loopback(host):
+    if teile.scheme == "http" and not ist_loopback(host):
         raise ApiFehler("Die Adresse des Anmeldeservers ist nicht lokal: Dort ist nur https mit CA-Datei erlaubt, damit Passwörter "
                         "nie im Klartext übertragen werden")
     if teile.scheme == "https" and not hat_ca:
