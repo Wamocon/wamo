@@ -1387,7 +1387,123 @@ und auf dem Server steht kein Zugangswert im Klartext.
 **Was bleibt gesperrt:** Selbständerung (`SELF_REPO = "wamo"` im Kern und im Dispatcher, dazu die Fork-Prüfung), Supabase und `deployment` in der Sandbox, der Befehl `pruefen` im Kern-Kanal (auch mit
 `WAMO_PRUEFEN=an`), Jira und Vercel, bis ein enges Konto in `DIENSTE` steht. `PARALLEL_MAX = 1` gilt für beide Kanäle.
 
-## 19. Labor-Daten des Testlabors (vorbereitet am 13.11.2026, nicht ausgerollt)
+## 19. Labor-Dienst (Test-Jira des Testlabors, Betrieb, vorbereitet am 12.11.2026, noch nicht ausgerollt)
+
+Der Dienst selbst liegt im Repo unter `labor-dienst/` (Vertrag `docs/labor-dienst-vertrag.md`, Umgebung `WAMO_LABOR_DIENST_*`, Weboberflächen `/board` und
+`/betreuer`, Schnittstellen `/api/kern/`, `/api/browser/`, `/api/betreuer/`, `/gesundheit`). Dieser Abschnitt beschreibt nur seinen Betrieb auf Sokrates-2
+für das Testlabor am 28.11.2026. Alles läuft als root (sudo), nach dem Muster des Remote-Desktop-Gateways (Abschnitt 16): feste Namen, feste Adressen,
+Probelauf mit `--trocken`, Sicherung vor jeder Änderung, Rückweg, Rauchtest.
+
+```text
+Besucher ──HTTPS 55447──> wamo-caddy ──HTTP 8080 (Netz wamo-labor-netz, intern)──> wamo-labor-dienst
+Kern     ──HTTP 127.0.0.1:18765 (Loopback)────────────────────────────────────> wamo-labor-dienst   (Caddy reicht /api/kern/ nie weiter)
+```
+
+| Baustein | Datei |
+| --- | --- |
+| Compose des Dienstes (Container, Netze, Härtung, Bind-Mounts) | `wamo-labor/docker-compose.yml` |
+| Caddy-Site auf 55447 (Vorlage mit Platzhalter für die Betreuer-Adressen) | `wamo-caddy/kern/wamo-labor.caddy` |
+| Port 55447 und Netz `wamo-labor-netz` (172.28.0.0/24, Caddy 172.28.0.2) | `wamo-caddy/docker-compose.yml` |
+| Kette `WAMO-FW-LABOR` (Quellen für 55447) und `WAMO-FW-LABAUS` (Ausgang des Dienstes) | `wamo-firewall.sh` |
+| Einrichten (`einrichten`, `status`, `pruefen`, `--trocken`) | `wamo-labor-einrichten.sh` |
+| Rückweg | `wamo-labor-rueckweg.sh` |
+| Löschlauf nach der Aufbewahrung | `wamo-labor-loeschlauf.sh` |
+| Rauchtest (20 Proben) und seine Attrappe für den Lauf ohne Server (`--attrappe`) | `wamo_labor_rauchtest.py`, `wamo_labor_rauchtest_attrappe.py` |
+| Tests der Skripte, der Compose-Dateien, der Site und des Rauchtests (Attrappen) | `voice-core/test_labor_betrieb_skripte.py` |
+
+**Einrichten (Handgriffe von Niko, nichts davon läuft ohne ihn).**
+
+```bash
+# 1. Digest des Basis-Images am Server holen (kein wanderndes Tag, Zeile "Digest: sha256:..." des Index)
+ssh sokrates2 "docker buildx imagetools inspect python:3.11-slim"
+# 2. Ablage: Infrastruktur und die Quellen des Dienstes ins Home von wamocon (nie nach /tmp)
+ssh sokrates2 "rm -rf ~/wamo-infra ~/wamo-labor-quelle" && scp -r infra/sokrates2 sokrates2:wamo-infra && scp -r labor-dienst sokrates2:wamo-labor-quelle
+ssh sokrates2 "chmod -R go-w ~/wamo-infra ~/wamo-labor-quelle"
+# 3. nur anzeigen, was geschehen würde
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-labor-einrichten.sh einrichten --trocken --basis-image python:3.11-slim@sha256:<Digest>"
+# 4. einrichten (Vorprüfung, Sicherung, Ordner und Token, Image, Firewall, Caddy, Start, Kern, Rauchtest)
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-labor-einrichten.sh einrichten --basis-image python:3.11-slim@sha256:<Digest>"
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-labor-einrichten.sh status"          # nur Namen und Zustände, nie Werte
+```
+
+Das Skript prüft vorab die Werkzeuge (`docker`, `curl`, `ss`, `journalctl`, sonst Abbruch mit klarer Meldung), `wamo-caddy`, die Kennung 10001 (darf auf dem Host keinem
+anderen Konto gehören), die Quellen, freie Netzadressen (172.28.0.0/24 und 172.28.1.0/29), das Basis-Image, dass 55447 und 18765 frei sind (oder dem eigenen Stack gehören, wie beim
+zweiten Lauf) und dass beide Compose-Dateien gültig sind (`docker compose config -q`). Es erzeugt beim ersten Lauf `kern-token` und `betreuer-token` (je 32 Zufallsbytes, URL-sicher,
+Modus 0400, Besitzer 10001) und gibt sie nie aus. Ein späterer Lauf lässt sie unberührt. Der Bau geschieht auf dem Server (kein `--platform`); danach müssen Basis-Image und Image die
+Architektur des Servers haben (`uname -m`, auf Sokrates-2 arm64), sonst bricht das Skript ab.
+
+**Caddy in zwei Stufen.** Stufe 1 installiert die Site und lädt Caddy neu (`caddy reload`): Das prüft die Konfiguration atomar und ohne Ausfall. Weil 55447 im Container noch nicht
+veröffentlicht ist, gilt die Site vorerst nur im Container (gewollt). Erst Stufe 2 ändert das Compose von `wamo-caddy` (Port 55447, Netz `wamo-labor-netz`) und legt den Container einmal
+neu an. Das legt 55443 bis 55446 kurz lahm, deshalb verlangt das Skript vorher Ruhe: keine Sitzung im Kern und keine offene Verbindung an 55443 bis 55447 (gezählt mit `netstat` im
+Container, sonst mit `ss` auf dem Host). Das meldet es früh in der Vorprüfung und zeigt es im Trockenlauf an, im Echtlauf bricht es ab. Nach der Änderung und nach jeder Rücknahme
+müssen 55443 bis 55446 wieder antworten (Zeitgrenze, Meldung, Ausgang ungleich 0). Die Ausfalldauer (Zeit zwischen Stopp und erster Antwort) gibt das Skript nach dem Lauf aus;
+**sie ist am Server zu messen**, vorab gibt es dafür keine Zusage. Bei einem Fehler nimmt das Skript die Änderung an Caddy und den Start zurück. `WAMO_LABOR_URL=http://127.0.0.1:18765`
+und `WAMO_LABOR_TOKEN` setzt es über `wamo-core-env setzen` (nur über stdin). Der Kern liest sie erst mit dem nächsten Kern-Release (`wamo-core-slots.sh umschalten-kern`), `wamo-core`
+wird nie neu gestartet. Alle drei Skripte prüfen wie `wamo-rd-einrichten.sh` die Herkunft ihres Ordners (Besitzer root oder der aufrufende Benutzer, nichts für Gruppe oder alle
+beschreibbar, keine Links), auch der Unterbefehl `pruefen`.
+
+**Adressen.** Der Server selbst (Loopback, das Gateway 172.24.0.1 von `wamo-caddy_default` unter dem Caddy Verbindungen des Hosts sieht, und 192.168.178.136)
+erreicht immer alles. Dazu zwei Listen in `/etc/wamo-labor` (nach dem ersten Lauf als Vorlage mit Kommentaren, eine Adresse oder ein Netz je Zeile):
+`betreuer-adressen` (wer `/betreuer` und `/api/betreuer/` erreicht, Netze nur von /24 bis /32, nach einer Änderung `einrichten` erneut ausführen, dann setzt das
+Skript die Adressen in die Site ein) und `plaetze-adressen` (Quellen für 55447 in der Firewall, Frage Q13: bis die Liste da ist, gilt das Büro-LAN; nach einer
+Änderung `sudo systemctl reload wamo-firewall`). `/api/kern/` erreicht von außen nie jemand, `/gesundheit` nur der Server selbst. Alles außerhalb der Pfadliste
+(`/`, `/board`, `/web/<Datei>`, `/api/browser/<Name>`, Betreuer-Pfade, `/gesundheit`) beantwortet Caddy mit 404.
+
+**Ohne Ausgang (Vertrag D2) trotz veröffentlichtem Port, und was daran hängt.** Docker veröffentlicht keine Ports über ein internes Netz. Der Dienst hängt deshalb in zwei Netzen:
+`wamo-labor-netz` (intern, nur mit Caddy) und `wamo-labor-lokal` (nicht intern, nur für `127.0.0.1:18765`, Maskierung aus). Aus dem zweiten Netz verwirft `WAMO-FW-LABAUS` alles, was
+weitergeleitet wird (Internet, Büro-LAN, fremde Container), und `WAMO-FW-LABIN` lässt zum Host (INPUT, Bridge-Adresse 172.28.1.1) nur Antworten auf Verbindungen des Hosts durch.
+**Der Ausgang hängt allein an `wamo-firewall`:** Mehr Schutz gibt es nicht. Nach `systemctl stop wamo-firewall` (oder `wamo-firewall stop`) sind alle Labor-Ketten weg, der Dienst hat dann
+wieder einen Weg nach außen und zum Host. Deshalb vorher den Dienst stoppen (`wamo-labor-rueckweg.sh`). Der Rauchtest prüft es von innen (P14: Internet, Router, Namensauflösung; P19: aus
+einem fremden Container ist der Dienst nicht erreichbar, A10; P20: aus dem lokalen Netz ist 172.28.1.1:22 zu), jeweils mit einer Kontrolle, damit eine Probe nie nur deshalb besteht, weil sie
+selbst nicht funktioniert. Zusätzlich verwirft `WAMO-FW` Pakete mit dem ursprünglichen Ziel 18765, die nicht von Loopback kommen (falls `route_localnet` je auf 1 steht).
+
+**Regeln für die Adressliste der Plätze.** `plaetze-adressen` nimmt nur private Bereiche nach RFC 1918 mit mindestens /16 (10.x und 192.168.x, einzelne Adressen als /32). 172.16.0.0/12 ist der
+Docker-Bereich und nie erlaubt (damit auch kein Docker-Netz des Labors und keine Liste, die den ganzen Bereich überdeckt), alles Ungültige wird ausgelassen und gemeldet. Docker-Absender
+gelten nur über eine Brücke als echt (Wache `! -i br-+`). **Auch die Betreuer-PCs müssen in dieser Liste stehen**, sonst erreichen sie die Seite nicht. Vor jedem `systemctl reload wamo-firewall`
+`sudo wamo-firewall regeln` ansehen: Es zeigt, was `start` setzen würde.
+
+**Prüfen.** `wamo-labor-einrichten.sh pruefen` (läuft am Ende von `einrichten` mit) startet den Rauchtest: Container gesund, Benutzer 10001, `read_only`,
+`cap_drop ALL`, `no-new-privileges`, Grenzen, Netze und Adressen, Port 18765 nur auf Loopback, Dateirechte, TLS-Kette und Schutzköpfe auf 55447, `/api/kern/`
+über Caddy nie erreichbar (sechs Schreibweisen), Betreuer-Pfade und `/gesundheit` von einer fremden Adresse nicht erreichbar (kurzlebiger Container auf dem
+Netz von `wamo-caddy`) mit Gegenprobe, kein Weg nach außen, Firewall-Ketten, Roundtrip V1 des Kerns über Loopback, `core.env`, Aufbewahrung, A10 und die Bridge-Adresse (20 Proben). P01 ist der Beleg "Image gebaut und gestartet" (Architektur wie der Server). Jede Probe
+nennt in der Ausgabe, was sie belegt und was nicht, und unter der Tabelle steht, was nur von Hand prüfbar ist (Caddy sieht echte LAN-Adressen nur von einem Büro-PC: dort `/betreuer` und `/gesundheit` öffnen, je 403). Ohne Server: `python wamo_labor_rauchtest.py --attrappe` (alles grün) und `--attrappe --fehler kern_offen`
+(die Probe dafür wird rot). Danach kommt das Abnahmeskript (`scripts/wamo_labor_abnahme.py`, README von `labor-dienst/`) und von Hand A10 des Vertrags.
+
+**Rückweg.** `sudo bash ~/wamo-infra/wamo-labor-rueckweg.sh [--trocken]` entfernt Container und das Netz `wamo-labor-lokal`, die Caddy-Site (mit Reload) und spielt
+die älteste Sicherung der Firewall ohne Labor-Kette wieder ein (danach werden die Ketten `WAMO-FW-LABOR` und `WAMO-FW-LABAUS` entfernt). Daten und Token bleiben.
+Port 55447 und das Netz im Compose von `wamo-caddy` bleiben (ohne Site lauscht Caddy dort nicht), ebenso `WAMO_LABOR_URL` und `WAMO_LABOR_TOKEN` in `core.env`
+(`wamo-core-env loeschen WAMO_LABOR_URL WAMO_LABOR_TOKEN`, wirkt mit dem nächsten Kern-Release).
+
+**Aufbewahrung und Löschlauf (Vertrag D10).** Der Dienst löscht seine Daten ab dem 11.12.2026 selbst, solange er läuft. Die Container-Protokolle sind auf 3 Dateien zu
+10 MB begrenzt und verschwinden mit dem Container. Nach der Frist (frühestens am 12.12.2026) löscht
+`sudo bash ~/wamo-infra/wamo-labor-loeschlauf.sh --bestaetigung LABOR-LOESCHEN` Container, Daten (nach Kontrolle der festen Pfade, kein symbolischer Link), Token, alle Tags
+des Images und die Kern-Einstellungen und schreibt einen Nachweis nach `/var/log/wamo-labor/loeschnachweis-<Zeit>.txt`: Namen, Größen und Zählungen, nie Inhalte. Ohne das
+Bestätigungswort zeigt das Skript nur den Plan (Ausgang 3). Dieselbe Löschung vor der Frist: `wamo-labor-rueckweg.sh --daten-loeschen --bestaetigung LABOR-LOESCHEN`. Die
+Sicherungen des Einrichtens (`/var/backups/wamo-labor`) enthalten weder Token noch Daten. Nicht in der Hand des Skripts: Snapshots und Sicherungen des Servers über den
+11.12.2026 hinaus (der Nachweis nennt es, der Betrieb prüft es von Hand).
+
+**Offene Punkte (vor dem Labortag).**
+
+1. **Q13, Adressen der Plätze.** Niko nennt die Büro-Adressen der Plätze und der Betreuer-PCs. Bis dahin gilt für 55447 das ganze Büro-/24. Eintragen in `/etc/wamo-labor/plaetze-adressen`
+   (Regeln oben), `sudo wamo-firewall regeln` ansehen, dann `sudo systemctl reload wamo-firewall` (vorher die Verbindungsliste lesen, wie bei den anderen Ports).
+2. **Image-Bau und Digest am Server.** Der Digest des Basis-Images muss am Server geholt werden (Schritt 1 oben). Der Bau dort ist ungetestet und geschieht bewusst auf der Architektur des
+   Servers (arm64): Das Skript bricht ab, wenn Basis-Image oder Image eine andere Architektur haben. Ob die Hashes in `labor-dienst/requirements.txt` für aarch64 reichen, wird gesondert geprüft
+   (`pydantic-core` trägt 137 Hashes). Scheitert `pip install --require-hashes` an einem fehlenden Hash, Pins und Hashes mit `pip-compile --generate-hashes` neu erzeugen (README von `labor-dienst/`).
+3. **Start mit echten Secrets.** Der erste Start mit den echten Token ist der erste Lauf überhaupt gegen den Server. Sollte die Veröffentlichung auf Loopback über das zweite Netz wider
+   Erwarten nicht greifen (Probe P08 oder P16 rot), ist das Netz `wamo-labor-lokal` der erste Verdächtige.
+4. **Betreuer-Token holen.** Der Betreuer-Token geht später über ein PC-Skript per ssh in eine lokale Datei auf dem PC des Betreuers (Folgeschritt, das Einrichtungsskript hat dafür
+   bewusst keinen Befehl und zeigt keinen Token an).
+5. **Lesefrist der Kopfzeilen.** Caddy kennt `read_header` nur für den ganzen Server (Block `servers` im Caddyfile), nie je Site. Die Site setzt bewusst nur Fristen zum Dienst
+   (`dial_timeout`, `response_header_timeout`, `read_timeout`), damit keine bestehende Site berührt wird. Der Dienst schließt unvollständige Kopfzeilen nach 10 Sekunden selbst.
+   Ein `servers :55447 { timeouts { read_header 10s } }` im Caddyfile wäre ein eigener, kleiner Schritt (Reihenfolge der `servers`-Blöcke beachten).
+6. **Ausfalldauer von 55443 bis 55446 ist am Server zu messen.** Stufe 2 legt `wamo-caddy` neu an. Das Skript verlangt Ruhe, misst die Zeit zwischen Stopp und erster Antwort und gibt sie aus;
+   notiert man sie beim ersten Lauf, gibt es erstmals eine belastbare Zahl.
+7. **Protokoll von `wamo-caddy` (Restrisiko).** `docker logs wamo-caddy` kann bei Fehlern Besucheradressen enthalten und ist an die Container-ID gebunden. Es verschwindet erst, wenn der Container
+   neu angelegt wird. Der Löschlauf tut das bewusst nicht (es legte 55443 bis 55446 lahm) und nennt es im Nachweis. Vorschlag: das nächste ohnehin nötige Neuanlegen von `wamo-caddy` nach dem Labor
+   (zum Beispiel mit dem nächsten Compose-Update, in einer ruhigen Minute, frühestens nach dem 11.12.2026) dafür nutzen.
+8. **Der Ausgang hängt allein an `wamo-firewall`.** Es gibt keine zweite Schicht außer der abgeschalteten Maskierung. Bei `systemctl stop wamo-firewall` ist er offen (siehe oben): vorher den Dienst stoppen.
+
+## 20. Labor-Daten des Testlabors (vorbereitet am 13.11.2026, nicht ausgerollt)
 
 Regeln, Kontakte, Vorlagen, Fachwissen und Schlusstext des Testlabors vom 28.11.2026 liegen als Dateien in `infra/sokrates2/labor-daten/` (Zweck, Zuständigkeiten und Freigabeablauf: dortige `README.md`) und
 auf dem Server unter `/etc/wamo/labor/`. Der Kern liest sie bei jedem Sitzungsstart (`voice-core/labor_daten.py`), eine Änderung braucht kein Release und keinen Neustart.

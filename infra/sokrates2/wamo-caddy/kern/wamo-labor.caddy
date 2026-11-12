@@ -1,0 +1,146 @@
+# Labor-Dienst (Test-Jira des Testlabors, Container wamo-labor-dienst auf Sokrates-2) über HTTPS 55447. Vorlage: wamo-labor-einrichten.sh
+# setzt den Platzhalter __BETREUER_ADRESSEN__ ein und installiert das Ergebnis als wamo-labor.caddy nach <wamo-caddy>/etc/kern/ (das Caddyfile
+# lädt die Datei mit "import /etc/caddy/kern/*.caddy"). Rückweg: wamo-labor-rueckweg.sh (Datei weg, caddy reload). Die Datei ändert keine
+# bestehende Site: Sie legt nur diese eine Site und Schnipsel mit dem Präfix labor_ an.
+#
+# Platzhalter (nie von Hand ändern, sondern das Skript neu ausführen):
+#   __BETREUER_ADRESSEN__   Adressen, die /betreuer und /api/betreuer/ erreichen: immer die internen Adressen des Servers selbst (Loopback
+#                           127.0.0.0/8, das Gateway 172.24.0.1 von wamo-caddy_default, unter dem Caddy Verbindungen des Hosts über den Docker-
+#                           Proxy sieht, und die eigene LAN-Adresse 192.168.178.136), dazu die Zeilen aus /etc/wamo-labor/betreuer-adressen.
+#                           Ohne Datei gilt nur der Server selbst.
+#
+# Eigene Herkunft (Port 55447), getrennt von der Oberfläche (55445): Der Speicher der Oberfläche mit dem WAMO-Token ist für diese Seite
+# unsichtbar. Die Seiten des Dienstes tragen ihre eigene CSP (default-src 'none', frame-ancestors 'none'); Caddy überschreibt keinen Kopf
+# des Dienstes. Nur die Antworten, die Caddy selbst erzeugt (404, 403, 405, Fehler beim Weiterleiten und die rohe 503 von uvicorn bei
+# Überlast), bekommen die Schutzköpfe aus dem Schnipsel labor_koepfe und einen kurzen deutschen Text.
+#
+# Wer was erreicht (alles andere ist 404, die Liste ist eine Positivliste mit genauen Mustern ohne Punkt, Prozentzeichen und Großschreibung):
+#   /, /board, /web/<Datei>, /api/browser/<Name>   Büro-LAN (die Quellen begrenzt die Firewall: Kette WAMO-FW-LABOR in wamo-firewall.sh)
+#   /betreuer, /api/betreuer/...                   nur die Betreuer-Adressen (sonst 403)
+#   /gesundheit                                    nur der Server selbst (sonst 403)
+#   /api/kern/...                                  nie: Der Kern geht über Loopback 127.0.0.1:18765 direkt zum Dienst (sonst 404)
+# Statische Prüfung: voice-core/test_labor_betrieb_skripte.py, am Server infra/sokrates2/wamo_labor_rauchtest.py.
+#
+# Die Zeit, in der ein Client seine Kopfzeilen senden darf (read_header), lässt sich in Caddy nur für den ganzen Server setzen (Block servers
+# im Caddyfile), nie je Site. Sie wird hier bewusst nicht angefasst, damit keine bestehende Site berührt wird; der Dienst schließt Verbindungen
+# mit unvollständigen Kopfzeilen nach 10 Sekunden selbst (labor-dienst/README.md, Abschnitt Grenzen).
+
+# Schutzköpfe für Antworten, die Caddy selbst erzeugt
+(labor_koepfe) {
+	header Cache-Control "no-store"
+	header X-Content-Type-Options "nosniff"
+	header Referrer-Policy "no-referrer"
+	header X-Frame-Options "DENY"
+	header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+	header Content-Type "text/plain; charset=utf-8"
+}
+
+# Betreuer-Adressen (vom Einrichtungsskript eingesetzt) und interne Adressen
+(labor_betreuer_adressen) {
+	remote_ip __BETREUER_ADRESSEN__
+}
+(labor_intern_adressen) {
+	remote_ip 127.0.0.0/8 172.24.0.1/32 192.168.178.136/32
+}
+
+# Weiterleitung an den Dienst. Fristen: Der Kern wartet höchstens 8 Sekunden, Besucher lesen nur.
+(labor_weiter) {
+	reverse_proxy wamo-labor-dienst:8080 {
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 10s
+			read_timeout 15s
+		}
+		# uvicorn antwortet bei mehr als 64 gleichzeitigen Verbindungen mit einem 503 in Klartext ohne die Köpfe des Dienstes (die Fehler des
+		# Dienstes selbst sind JSON): Nur diese rohe Antwort ersetzt Caddy durch eine eigene mit Schutzköpfen.
+		@ueberlast {
+			status 503
+			header Content-Type text/plain*
+		}
+		handle_response @ueberlast {
+			import labor_koepfe
+			respond "Der Labor-Dienst ist gerade überlastet. Bitte einen Moment warten und die Seite neu laden." 503
+		}
+	}
+}
+
+https://192.168.178.136:55447, https://sokrates2:55447, https://spark-651f.local:55447 {
+	tls internal
+	request_body {
+		max_size 2MB
+	}
+
+	@methode {
+		not method GET HEAD POST
+	}
+	@kern {
+		path_regexp (?i)^/+api/+kern(/|$)
+	}
+	@browser_pfad {
+		path_regexp ^/(board|api/browser/[a-z0-9_-]+|web/[a-z][a-z0-9-]*\.(css|js))?$
+	}
+	@betreuer_pfad {
+		path_regexp ^/(betreuer|api/betreuer/[a-z0-9_-]+(/[a-z0-9_-]+(/[a-z0-9_-]+)?)?)$
+	}
+	@gesundheit_pfad {
+		path_regexp ^/gesundheit$
+	}
+
+	handle @methode {
+		import labor_koepfe
+		header Allow "GET, HEAD, POST"
+		respond "Diese Methode ist nicht erlaubt." 405
+	}
+
+	# Der Kern wird von Caddy nie weitergereicht (Vertrag D2, Besucher kommen nie an /api/kern/)
+	handle @kern {
+		import labor_koepfe
+		respond "Nicht gefunden." 404
+	}
+
+	handle @browser_pfad {
+		import labor_weiter
+	}
+
+	handle @betreuer_pfad {
+		@fremd {
+			not {
+				import labor_betreuer_adressen
+			}
+		}
+		handle @fremd {
+			import labor_koepfe
+			respond "Dieser Bereich ist nur für die Betreuer erreichbar." 403
+		}
+		handle {
+			import labor_weiter
+		}
+	}
+
+	handle @gesundheit_pfad {
+		@fremd {
+			not {
+				import labor_intern_adressen
+			}
+		}
+		handle @fremd {
+			import labor_koepfe
+			respond "Dieser Bereich ist nur intern erreichbar." 403
+		}
+		handle {
+			import labor_weiter
+		}
+	}
+
+	# alles andere
+	handle {
+		import labor_koepfe
+		respond "Nicht gefunden." 404
+	}
+
+	# Fehler von Caddy selbst (Dienst nicht erreichbar, Zeitüberschreitung, zu große Anfrage)
+	handle_errors {
+		import labor_koepfe
+		respond "Die Anfrage konnte nicht verarbeitet werden oder der Labor-Dienst ist gerade nicht erreichbar. Bitte einen Moment warten und es erneut versuchen." {http.error.status_code}
+	}
+}

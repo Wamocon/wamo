@@ -17,6 +17,33 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   `--persona standard|streng` die Fassung der Regeln, sichert den vorigen Stand unter `/var/backups/wamo-labor-daten`, prüft vor und nach der Installation mit dem echten Lader (als `wamo-core`) und nimmt bei Ablehnung zurück.
   `status` zeigt nur Prüfsummen, `rueckweg` stellt die letzte Sicherung her. Das Skript ändert den Kern nie und startet nichts neu. Die Kontakte nutzen `labor.test`, die Standard-Domäne des Mail-Filters von
   `mail_senden`, der Kern bleibt unverändert (ein Test prüft die Übereinstimmung). Tests: `voice-core/test_labor_daten_inhalt.py` und `voice-core/test_labor_daten_skript.py`. `.gitattributes` hält den Ordner auf LF.
+- Betrieb des Labor-Dienstes auf Sokrates-2 (Test-Jira des Testlabors, vorbereitet, nicht ausgerollt, Abschnitt 19 in `infra/sokrates2/README.md`): Compose-Projekt
+  `wamo-labor` mit dem Container `wamo-labor-dienst` (Benutzer 10001, `read_only`, `cap_drop ALL`, `no-new-privileges`, Grenzen, begrenzte Protokolle, Port nur auf
+  `127.0.0.1:18765` für den Kern), eigenes internes Netz `wamo-labor-netz` mit Caddy, Caddy-Site auf HTTPS 55447 mit Positivliste der Pfade (`/api/kern/` nie, Betreuer-Pfade nur
+  von den Betreuer-Adressen, `/gesundheit` nur intern, Schutzköpfe und deutscher Text für Fehler von Caddy und die rohe 503 von uvicorn), Firewall-Kette `WAMO-FW-LABOR` mit
+  austauschbarer Adressliste der Plätze (`/etc/wamo-labor/plaetze-adressen`, Frage Q13 offen, bis dahin das Büro-LAN) und `WAMO-FW-LABAUS` gegen jeden Ausgang des Dienstes.
+  Skripte `wamo-labor-einrichten.sh` (idempotent, mit `--trocken`, Sicherung vor jeder Änderung, Token nie ausgegeben, Kern-Einstellungen nur über `wamo-core-env` mit
+  Wirkung ab dem nächsten Kern-Release), `wamo-labor-rueckweg.sh` und `wamo-labor-loeschlauf.sh` (nach dem 11.12.2026, Bestätigungswort, Nachweis ohne Inhalte) sowie
+  `wamo_labor_rauchtest.py` (20 Proben, jede nennt, was sie belegt und was nicht, mit Attrappe für den Lauf ohne Server). Nach der unabhängigen Prüfung nachgezogen: Caddy wird in zwei Stufen
+  geändert (erst Site und Reload, dann Port und Neuanlegen) mit Ruheprüfung, Prüfung von 55443 bis 55446 nach jeder Änderung und Rücknahme und Ausgabe der Ausfalldauer (am Server zu messen),
+  INPUT-Kette `WAMO-FW-LABIN` und Rückkehr-Regeln über die Docker-Brücke, nur private Adressen ab /16 in der Liste der Plätze, Symlink-sicherer Löschlauf, Herkunftsschutz in allen Skripten,
+  Architekturprüfung des Images. Tests in `voice-core/test_labor_betrieb_skripte.py`.
+- Zweiter Faktor der Laborprofile automatisch einrichten (Entscheidung E15, `docs/testlabor-wamo.md`): `scripts/wamo_labor_faktoren.py` mit
+  `einrichten` (`--profile`, `--neu`, `--trocken`), `pruefen` (je Profil ja oder nein, nur die Datei) und `codes --profil` (aktueller Code für
+  genau ein Profil mit Ablaufsekunden). Je Profil: Anmeldung mit dem Passwort aus der Umschlag-Datei per TLS (CA-Datei, Hostname geprüft,
+  keine Umleitung, kein Proxy aus der Umgebung), TOTP-Faktor anlegen, Code selbst berechnen (RFC 6238, mit dem Versatz der Serveruhr aus dem
+  Kopf Date), challenge und verify, ein neues Token auf aal2 prüfen, Sitzung beenden und erst dann den Seed als vierte Spalte in die
+  Umschlag-Datei schreiben (Sicherung mit Zeitstempel, atomar, Rechte nur für den Benutzer: icacls unter Windows, sonst 0600). Scheitert ein
+  Profil nach dem Anlegen des Faktors, wird der Faktor wieder entfernt, die übrigen Profile laufen weiter, der Ausgang ist 1. Passwörter,
+  Seeds, Token und Codes erscheinen nie in Ausgabe, Fehlertext oder Befehlszeile (einzige Ausnahme: `codes` gibt genau einen Code aus). Teile:
+  `wamo_labor_faktoren_totp.py`, `wamo_labor_faktoren_api.py`, `wamo_labor_faktoren_umschlag.py`; Tests `test_wamo_labor_faktoren.py` und
+  `test_wamo_labor_faktoren_lauf.py` mit einer Attrappe von GoTrue (`wamo_labor_faktoren_attrappe.py`, nur für Tests).
+  Nach der unabhängigen Prüfung: Signale (SIGINT, SIGTERM, unter Windows SIGBREAK) lösen das Aufräumen aus und werden währenddessen ignoriert
+  (`wamo_labor_faktoren_signale.py`), der Seed steht sofort nach verify in der Zwischendatei `<Datei>.neu`, die ein späterer Lauf übernimmt,
+  der Seed wird normalisiert und nur mit A bis Z, 2 bis 7 und = gespeichert, nur `labor-01` bis `labor-09` mit E-Mail `<Kennung>@wamo.test`
+  sind zulässig, Host und Port des Anmeldeservers stehen als erste Zeile (http auf Loopback aus der Umgebung wird abgelehnt), es bleiben
+  die letzten drei Sicherungen, der Zeitversatz gilt bis 300 Sekunden und Date ohne Zeitzone als UTC, kein Code wird im selben
+  30-Sekunden-Fenster zweimal gesendet, jede Anfrage hat ein Gesamtlimit von 60 Sekunden, `pruefen` belegt nur den Seed in der Datei.
 - Seitenleisten der Kommandozentrale per Ziehen in der Breite ändern (nur Oberfläche): Zwischen linker Leiste und Mitte sowie zwischen Mitte
   und rechter Leiste sitzt ein Griff (`role="separator"`), den man mit Maus, Stift oder Finger ziehen kann (Pointer Events mit Pointer
   Capture). Links gelten 200 bis 520 px, rechts 260 bis 640 px, die Mitte behält mindestens 360 px. Tastatur: Pfeil links und rechts ändert
