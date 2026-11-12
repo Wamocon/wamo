@@ -43,7 +43,8 @@ RAUCHTEST = SOKRATES2 / "wamo_labor_rauchtest.py"
 RAUCHTEST_ATTRAPPE = SOKRATES2 / "wamo_labor_rauchtest_attrappe.py"
 SKRIPTE = [EINRICHTEN, RUECKWEG, LOESCHLAUF]
 ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, RUECKWEG, LOESCHLAUF, RAUCHTEST, RAUCHTEST_ATTRAPPE, FIREWALL, CADDY / "docker-compose.yml"]
-VERBOTENE_WOERTER = ("nieeeki", "jarvis", "promptcontrol", "damicon")
+# rückwärts geschrieben, damit die Wörter selbst nirgends im Repo stehen (keine Verweise auf andere Systeme)
+VERBOTENE_WOERTER = tuple(w[::-1] for w in ("ikeeein", "sivraj", "lortnoctpmorp", "nocimad"))
 
 
 def _bash():
