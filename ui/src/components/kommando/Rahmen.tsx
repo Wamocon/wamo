@@ -7,6 +7,8 @@ import { offeneEntscheidungen, useBreit, useEffektiveDarstellung } from "./ansic
 import { DarstellungsWahl } from "./DarstellungsWahl";
 import { RahmenKontext } from "./rahmenKontext";
 import { Reiterleiste, type ReiterDef } from "./Reiter";
+import { Seitengriff } from "./Seitengriff";
+import { useSeitenbreiten } from "./useSeitenbreiten";
 import { tafelSichtbar, type TafelMobil as Mobil, type TafelRechts as Rechts } from "./tafeln";
 
 /** Alle Bausteine kommen von WamoAnsicht; der Rahmen legt sie nur an und verwaltet die Reiter. */
@@ -56,10 +58,15 @@ const tafel = (name: string, reiter: string | null) =>
  * Rollen: Tafeln sind nur dort role="tabpanel", wo die zugehörige Reiterleiste sichtbar ist (useBreit);
  * sonst Bereiche (region) mit Namen. Nacht erzwingt dunkel über data-theme auf html (das Theme-Gerüst
  * in globals.css kennt es bereits) und stellt den vorigen Wert wieder her.
+ *
+ * Breite der Seitenleisten: Zwei Griffe (Seitengriff.tsx) zwischen den Spalten ändern --kz-links und --kz-rechts am Hauptbereich
+ * (useSeitenbreiten.ts, seitenbreite.ts). Es gibt sie nur in den Ansichten mit drei Spalten; ab 1280 px zeigt sie das CSS
+ * (seitengriff.css), darunter gelten die festen Breiten wie bisher.
  */
 export function KommandoRahmen(inhalt: RahmenInhalt) {
   const { gewaehlt, effektiv } = useEffektiveDarstellung();
   const breit = useBreit();
+  const seiten = useSeitenbreiten();
   const offen = useSelect(wamo, offeneEntscheidungen);
   // Kennungen aller offenen Karten: auch eine Karte, die eine andere ersetzt, zählt als neu
   const kennungen = useSelect(wamo, (s) =>
@@ -79,6 +86,8 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
     }
   }
   const mobilEff: Mobil = effektiv === "normal" || effektiv === "nacht" ? mobil : "kern";
+  // Reiterleiste fürs Handy und Griffe der Seitenleisten gibt es nur dort, wo die Seitenleisten stehen (nicht in Fokus und Zentrale)
+  const mitSeitenleisten = effektiv !== "fokus" && effektiv !== "zentrale";
   // Büro-Karte und Vorgänge arbeiten nur, solange ihr Reiter wirklich zu sehen ist (nicht in Fokus und Zentrale, nicht unter den
   // Einstellungen): sonst bliebe die Büro-Karte beim Abruf und die Tafel Vorgänge bei jedem Fortschrittsereignis im Neurendern.
   const lage = { einstellungen: Boolean(inhalt.einstellungen), breit, effektiv, rechts, mobilEff };
@@ -150,9 +159,9 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
         data-mobil={mobilEff}
       >
         {inhalt.kopf}
-        <main className="kz-main" hidden={Boolean(inhalt.einstellungen)}>
+        <main className="kz-main" hidden={Boolean(inhalt.einstellungen)} style={seiten.stil} data-zieht={seiten.zieht ?? undefined}>
           <div className="kz-sterne" aria-hidden="true" />
-          {effektiv !== "fokus" && effektiv !== "zentrale" && (
+          {mitSeitenleisten && (
             <Reiterleiste
               name="Bereiche"
               reiter={mobilReiter}
@@ -166,6 +175,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
           <div id="kz-p-hinweise" className="kz-links" data-p="hinweise" {...tafel("Hinweise", breit ? null : "kz-tab-m-hinweise")}>
             {inhalt.hinweise}
           </div>
+          {mitSeitenleisten && <Seitengriff {...seiten.links} />}
 
           <div className="kz-mitte">
             <div className="kz-kopf" data-p="kern">
@@ -195,6 +205,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
               {inhalt.canvas}
             </section>
           </div>
+          {mitSeitenleisten && <Seitengriff {...seiten.rechts} />}
 
           <div className="kz-rechts">
             <Reiterleiste

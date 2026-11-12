@@ -8,6 +8,16 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Seitenleisten der Kommandozentrale per Ziehen in der Breite ändern (nur Oberfläche): Zwischen linker Leiste und Mitte sowie zwischen Mitte
+  und rechter Leiste sitzt ein Griff (`role="separator"`), den man mit Maus, Stift oder Finger ziehen kann (Pointer Events mit Pointer
+  Capture). Links gelten 200 bis 520 px, rechts 260 bis 640 px, die Mitte behält mindestens 360 px. Tastatur: Pfeil links und rechts ändert
+  um 16 px, mit Umschalt um 48 px, Pos1 und Ende springen auf Mindest- und Höchstbreite, Doppelklick stellt den Standard (300 und 380 px)
+  wieder her. Die Wahl liegt je Gerät in `localStorage` (`wamo.seitenbreite.links` und `wamo.seitenbreite.rechts`, jeder Zugriff in
+  try/catch, Werte werden geklemmt, Ungültiges wird verworfen) und gilt erst nach dem Laden, ohne Hydrationsfehler. Die Breiten laufen über
+  die CSS-Variablen `--kz-links` und `--kz-rechts` am Hauptbereich. Die Griffe gibt es ab 1280 px in den Ansichten Normal und Nacht; in
+  Fokus, Zentrale, zwischen 1100 und 1279 px und am Handy bleibt alles wie bisher. Sind die vier Reiter der rechten Leiste breiter als die
+  Leiste, scrollt die Reiterleiste seitlich. Neue Dateien: `seitenbreite.ts` (Logik), `useSeitenbreiten.ts`, `Seitengriff.tsx`,
+  `seitengriff.css` in `ui/src/components/kommando/`.
 - Start beim Tippen (Komfort-Paket KP-1A, nur Oberfläche, Schalter „Still starten beim Tippen“ je Gerät und Person, Standard aus): Der erste
   Tastendruck im Eingabefeld startet eine Sitzung ohne Mikrofon (neuer `StillMedienManager`, denn der Standardmanager der
   Transportbibliothek öffnet das Mikrofon beim Verbinden immer), Antworten kommen als Text, die erste Zeile wird gehalten und genau einmal
