@@ -14,7 +14,10 @@
 #                                     gilt X-Forwarded-For für die Zählung der Fehlversuche (WAMO_LABOR_DIENST_PROXYS).
 #   wamo-labor-lokal   172.28.1.0/29  nur für die Veröffentlichung 127.0.0.1:18765. Docker veröffentlicht keine Ports über ein internes Netz,
 #                                     deshalb braucht der Dienst dieses zweite, nicht interne Netz. Einen Ausgang hat er dort trotzdem nicht:
-#                                     Die Kette WAMO-FW-LABAUS in wamo-firewall.sh verwirft alles, was aus diesem Netz weitergeleitet wird.
+#                                     Die Kette WAMO-FW-LABAUS in wamo-firewall.sh verwirft alles, was aus diesem Netz weitergeleitet wird, und
+#                                     WAMO-FW-LABIN lässt zum Host (INPUT, Bridge-Adresse 172.28.1.1) nur Antworten durch. Der Ausgang hängt
+#                                     allein an dieser Firewall (die Maskierung ist aus, mehr Schutz gibt es nicht): Nach "systemctl stop
+#                                     wamo-firewall" ist er offen. Deshalb vorher den Dienst stoppen (wamo-labor-rueckweg.sh).
 #
 # Dateien auf dem Host (alle ohne Anlegen durch Docker: fehlt etwas, startet der Container nicht, statt mit einem leeren Ordner zu laufen):
 #   /var/lib/wamo-labor           Daten (Datenbanken und Protokoll), Besitzer 10001, Modus 0700, einziger beschreibbarer Ort
@@ -112,6 +115,9 @@ networks:
     external: true
   lokal:
     name: wamo-labor-lokal
+    driver_opts:
+      # keine Maskierung: Selbst ohne Firewall würden Pakete des Dienstes nach außen mit einer privaten Absenderadresse gehen und nie zurückkehren
+      com.docker.network.bridge.enable_ip_masquerade: "false"
     ipam:
       config:
         - subnet: 172.28.1.0/29

@@ -40,7 +40,7 @@ RUECKWEG = SOKRATES2 / "wamo-labor-rueckweg.sh"
 LOESCHLAUF = SOKRATES2 / "wamo-labor-loeschlauf.sh"
 RAUCHTEST = SOKRATES2 / "wamo_labor_rauchtest.py"
 SKRIPTE = [EINRICHTEN, RUECKWEG, LOESCHLAUF]
-ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, RUECKWEG, LOESCHLAUF, RAUCHTEST]
+ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, RUECKWEG, LOESCHLAUF, RAUCHTEST, FIREWALL, CADDY / "docker-compose.yml"]
 VERBOTENE_WOERTER = ("nieeeki", "jarvis", "promptcontrol", "damicon")
 
 
@@ -175,6 +175,7 @@ class ComposeDienstTests(unittest.TestCase):
         self.assertRegex(self.code, r"labor:\n\s+name: wamo-labor-netz\n\s+external: true")  # legt wamo-caddy an (internal)
         self.assertRegex(self.code, r"lokal:\n\s+name: wamo-labor-lokal\n(?!\s+internal)(\s+.*\n)*?\s+- subnet: 172\.28\.1\.0/29")
         self.assertIn("ipv4_address: 172.28.1.2", dienst)
+        self.assertRegex(self.code, r"lokal:\n\s+name: wamo-labor-lokal\n\s+driver_opts:\n\s+com\.docker\.network\.bridge\.enable_ip_masquerade: \"false\"")  # auch ohne Firewall nirgends hin maskiert
         self.assertEqual(len(re.findall(r"^\s+- subnet:", self.code, flags=re.M)), 1)
 
     @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML fehlt")
@@ -403,42 +404,35 @@ class FirewallLaborTests(unittest.TestCase):
 
     def test_ohne_datei_gilt_das_buero_lan(self):
         kette = self.kette(self.regeln().stdout, "WAMO-FW-LABOR")
-        self.assertEqual(kette[0], "-A WAMO-FW-LABOR -s 127.0.0.0/8 -j RETURN")
-        self.assertEqual(kette[1], "-A WAMO-FW-LABOR -s 192.168.178.0/24 -j RETURN")
-        self.assertIn("-j LOG", kette[2])
+        self.assertEqual(kette[0], "-A WAMO-FW-LABOR -s 172.16.0.0/12 ! -i br-+ -j DROP")  # Wache gegen gefälschte Docker-Adressen
+        self.assertEqual(kette[1], "-A WAMO-FW-LABOR -s 127.0.0.0/8 -j RETURN")
+        self.assertEqual(kette[2], "-A WAMO-FW-LABOR -s 192.168.178.0/24 -j RETURN")
+        self.assertIn("-j LOG", kette[-2])
         self.assertEqual(kette[-1], "-A WAMO-FW-LABOR -j DROP")
-        self.assertEqual(len(kette), 4)
-
+        self.assertEqual(len(kette), 8)  # Wache, Loopback, Büro-LAN, drei Docker-Netze, LOG, DROP
     def test_nur_kommentare_in_der_datei_heisst_standard(self):
         kette = self.kette(self.regeln("# Plätze (Frage Q13), eine Adresse oder ein Netz je Zeile\n\n").stdout, "WAMO-FW-LABOR")
         self.assertIn("-A WAMO-FW-LABOR -s 192.168.178.0/24 -j RETURN", kette)
 
     def test_die_datei_ersetzt_das_buero_lan(self):
         r = self.regeln("# Plätze\n192.168.178.50\n192.168.178.60/32  # Platz 2\n\n  192.168.178.64/29 \n")
-        quellen = [z.split()[3] for z in self.kette(r.stdout, "WAMO-FW-LABOR") if z.endswith("-j RETURN")]
-        self.assertEqual(quellen, ["127.0.0.0/8", "192.168.178.50", "192.168.178.60/32", "192.168.178.64/29"])
+        self.assertEqual(self.quellen(r.stdout), ["127.0.0.0/8", "192.168.178.50", "192.168.178.60/32", "192.168.178.64/29"])
         self.assertNotIn("-A WAMO-FW-LABOR -s 192.168.178.0/24", r.stdout)
         self.assertEqual(r.stderr, "")
-
     def test_ungueltige_eintraege_werden_ausgelassen_und_gemeldet(self):
         r = self.regeln("300.1.1.1\n0.0.0.0/0\n10.0.0.0/4\n1.2.3.4/33\n1.2.3.4;reboot\n127.0.0.1\n172.20.0.5\n224.0.0.1\n010.0.0.1\n"
                         "169.254.1.1\nabc\n192.168.178.77\n")
-        quellen = [z.split()[3] for z in self.kette(r.stdout, "WAMO-FW-LABOR") if z.endswith("-j RETURN")]
-        self.assertEqual(quellen, ["127.0.0.0/8", "192.168.178.77"])
+        self.assertEqual(self.quellen(r.stdout), ["127.0.0.0/8", "192.168.178.77"])
         self.assertIn("ungültig", r.stderr)
         self.assertNotIn("reboot", r.stdout)
-
     def test_nur_ungueltige_eintraege_heisst_nur_loopback(self):
         """Eine kaputte Datei öffnet nie das ganze Büro-LAN: lieber zu streng als zu offen."""
         r = self.regeln("0.0.0.0/0\n")
-        quellen = [z.split()[3] for z in self.kette(r.stdout, "WAMO-FW-LABOR") if z.endswith("-j RETURN")]
-        self.assertEqual(quellen, ["127.0.0.0/8"])
+        self.assertEqual(self.quellen(r.stdout), ["127.0.0.0/8"])
         self.assertIn("ungültig", r.stderr)
-
     def test_hoechstens_64_adressen(self):
         r = self.regeln("".join(f"192.168.178.{n}\n" for n in range(1, 101)))
-        self.assertEqual(len([z for z in self.kette(r.stdout, "WAMO-FW-LABOR") if z.endswith("-j RETURN")]), 1 + 64)
-
+        self.assertEqual(len(self.quellen(r.stdout)), 1 + 64)
     def test_der_ausgang_des_labor_dienstes_ist_gesperrt(self):
         out = self.regeln().stdout
         self.assertIn("-A WAMO-FW -s 172.28.1.0/29 -j WAMO-FW-LABAUS", out)  # das Netz wamo-labor-lokal (nur für die Veröffentlichung auf Loopback)
@@ -459,18 +453,56 @@ class FirewallLaborTests(unittest.TestCase):
                 self.assertTrue(z.split()[1].startswith("WAMO-FW"), z)
         text = code(FIREWALL)
         self.assertNotIn("iptables -F", text)
-        self.assertEqual(len(re.findall(r"ipt -I INPUT", text)), 1)  # kein neuer Sprung in INPUT
-
+        # INPUT: der Sprung für das Netz des Gateways (RDIN) und der für das lokale Labor-Netz (LABIN), sonst nichts
+        self.assertEqual(len(re.findall(r"ipt -I INPUT", text)), 2)
     def test_start_stop_und_status_kennen_die_neuen_ketten(self):
         text = code(FIREWALL)
-        self.assertEqual(text.count('"$KETTE_LABOR" "$KETTE_LABAUS"'), 3)  # stop (leeren, löschen) und status
+        self.assertEqual(text.count('"$KETTE_LABOR" "$KETTE_LABAUS" "$KETTE_LABIN"'), 3)  # stop (leeren, löschen) und status
         self.assertRegex(text, r"lies_labor_quellen\n\s+ipt -n -L DOCKER-USER")  # start liest die Adressliste vor dem Setzen
         self.assertRegex(text, r"regeln\) .*lies_labor_quellen")  # auch der Probelauf
-
+        self.assertIn('ipt -I INPUT 1 -s "$NETZ_LABOR_LOKAL" -j "$KETTE_LABIN"', text)
+        self.assertIn('ipt -D INPUT -s "$NETZ_LABOR_LOKAL" -j "$KETTE_LABIN"', text)
     def test_kopf_nennt_die_adressliste_und_die_offene_frage(self):
-        kopf = "\n".join(lies(FIREWALL).splitlines()[:45])
-        for soll in ("55447", "Q13", "/etc/wamo-labor/plaetze-adressen", "WAMO-FW-LABOR", "WAMO-FW-LABAUS", "systemctl reload wamo-firewall"):
+        kopf = "\n".join(lies(FIREWALL).splitlines()[:60])
+        for soll in ("55447", "Q13", "/etc/wamo-labor/plaetze-adressen", "WAMO-FW-LABOR", "WAMO-FW-LABAUS", "WAMO-FW-LABIN", "systemctl reload wamo-firewall",
+                     "RFC 1918", "Betreuer", "wamo-firewall regeln", "stop wamo-firewall"):
             self.assertIn(soll, kopf)
+    @staticmethod
+    def quellen(ausgabe: str) -> list[str]:
+        """Die Quellen der Liste (ohne die Rückkehr-Regeln der Docker-Netze, die über die Brücke kommen)."""
+        return [z.split()[3] for z in FirewallLaborTests.kette(ausgabe, "WAMO-FW-LABOR") if z.endswith("-j RETURN") and "-i br-+" not in z]
+
+    def test_docker_netze_des_labors_kommen_ueber_die_bruecke_durch(self):
+        """Caddy (172.24.0.2), der Dienst (172.28.0.10) und der Helfer-Container des Rauchtests schicken an Caddy:55447; ist br_netfilter geladen, liefe
+        das durch DOCKER-USER und würde sonst verworfen. Dort leben nur Caddy und der Dienst, deshalb nur über eine Docker-Brücke."""
+        for datei in (None, "192.168.178.50\n"):
+            kette = self.kette(self.regeln(datei).stdout, "WAMO-FW-LABOR")
+            log = next(i for i, z in enumerate(kette) if "-j LOG" in z)
+            for netz in ("172.24.0.0/24", "172.28.0.0/24", "172.28.1.0/29"):
+                soll = f"-A WAMO-FW-LABOR -s {netz} -i br-+ -j RETURN"
+                self.assertIn(soll, kette)
+                self.assertLess(kette.index(soll), log)  # vor LOG und DROP
+        self.assertNotIn("-A WAMO-FW-LABOR -s 172.16.0.0/12 -j RETURN", kette)
+
+    def test_loopback_port_nur_von_loopback_gegen_route_localnet(self):
+        out = self.regeln().stdout
+        self.assertIn("-A WAMO-FW -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 18765 ! -s 127.0.0.0/8 -j DROP", out)
+        self.assertEqual(out.count("18765"), 1)
+
+    def test_input_kette_fuer_das_lokale_labor_netz(self):
+        out = self.regeln().stdout
+        self.assertIn(":WAMO-FW-LABIN - [0:0]", out)
+        kette = self.kette(out, "WAMO-FW-LABIN")
+        self.assertEqual(kette[0], "-A WAMO-FW-LABIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN")  # nur Antworten auf Verbindungen des Hosts
+        self.assertIn("-j LOG", kette[1])
+        self.assertEqual(kette[2], "-A WAMO-FW-LABIN -j DROP")
+        self.assertEqual(len(kette), 3)
+
+    def test_nur_private_bereiche_mit_mindestens_16_und_nie_ein_docker_netz(self):
+        r = self.regeln("10.20.0.0/16\n10.1.2.3\n192.168.178.0/24\n192.168.0.0/16\n192.168.7.7/32\n"
+                        "10.0.0.0/8\n10.1.0.0/15\n192.168.0.0/15\n8.8.8.8\n172.16.0.0/12\n172.20.0.0/16\n172.28.0.0/24\n172.24.0.5\n100.64.0.1\n192.169.1.1\n")
+        self.assertEqual(self.quellen(r.stdout), ["127.0.0.0/8", "10.20.0.0/16", "10.1.2.3", "192.168.178.0/24", "192.168.0.0/16", "192.168.7.7/32"])
+        self.assertEqual(r.stderr.count("ungültig"), 10)
 
     def test_bash_n(self):
         r = subprocess.run([BASH, "-n", str(FIREWALL)], capture_output=True, text=True, encoding="utf-8", errors="replace")

@@ -24,8 +24,18 @@
 #   Port 55447 (HTTPS, Labor-Dienst, Test-Jira des Testlabors, über Caddy): eigene Kette WAMO-FW-LABOR statt LAN_PORTS, damit die Quellen
 #   austauschbar sind. Vorläufig gilt das Büro-LAN; Frage Q13 (die genauen Adressen der Plätze) ist offen. Sie kommt als eine Adresse oder
 #   ein Netz je Zeile in /etc/wamo-labor/plaetze-adressen (ersetzt das Büro-LAN, Loopback gilt immer), danach  systemctl reload wamo-firewall.
+#   Erlaubt sind nur private Bereiche nach RFC 1918 mit mindestens /16 (10.x und 192.168.x, einzelne Adressen als /32); 172.16.0.0/12 ist der
+#   Docker-Bereich und nie erlaubt, alles Ungültige wird ausgelassen. Wichtig: Auch die PCs der Betreuer müssen in dieser Liste stehen, sonst
+#   erreichen sie die Seite nicht. Vor dem reload immer  wamo-firewall regeln  ansehen (zeigt, was start setzen würde).
+#   Docker-Absender aus 172.16.0.0/12 gelten nur über eine Brücke (br-*) als echt; Caddy, der Dienst und der Helfer des Rauchtests schicken
+#   über die Brücke und kommen deshalb durch (RETURN je Netz), alles andere im Docker-Bereich wird verworfen.
+#   Port 18765 (Loopback des Labor-Dienstes, nur für den Kern): Pakete mit diesem ursprünglichen Ziel, die nicht von 127.0.0.0/8 kommen, werden
+#   verworfen (Absicherung für den Fall route_localnet=1).
 #   Der Labor-Dienst hat keinen Ausgang (Vertrag D2): Aus seinem Netz wamo-labor-lokal 172.28.1.0/29 (nur für die Veröffentlichung auf
-#   Loopback 18765) wird nichts weitergeleitet, Kette WAMO-FW-LABAUS. Beide Ketten entstehen und verschwinden mit start und stop.
+#   Loopback 18765) wird nichts weitergeleitet (Kette WAMO-FW-LABAUS), und nach INPUT, also zu Diensten des Hosts über die Bridge-Adresse
+#   172.28.1.1, kommen nur Antworten auf Verbindungen des Hosts durch (Kette WAMO-FW-LABIN). Der Ausgang hängt allein an dieser Firewall: Nach
+#   systemctl stop wamo-firewall oder wamo-firewall stop sind alle drei Ketten weg, und der Dienst hat wieder einen Weg nach außen. Vorher den
+#   Dienst stoppen (wamo-labor-rueckweg.sh). Die Ketten entstehen und verschwinden mit start und stop.
 #
 #   wamo-firewall start    Regeln setzen; wiederholbar und atomar (iptables-restore --noflush); legt DOCKER-USER
 #                          bei Bedarf selbst an, damit die Regeln schon vor dem Start von Docker stehen
@@ -55,7 +65,10 @@ NETZ_RD_ZIEL="172.27.0.0/24"        # wamo-rd-ziel, fest in infra/sokrates2/wamo
 RD_PORT=3389
 KETTE_LABOR=WAMO-FW-LABOR           # Quellen für 55447, Labor-Dienst über Caddy (FORWARD, über DOCKER-USER)
 KETTE_LABAUS=WAMO-FW-LABAUS         # Ausgang des Labor-Dienstes (FORWARD, über DOCKER-USER)
+KETTE_LABIN=WAMO-FW-LABIN           # Pakete des Labor-Dienstes an den Host selbst (INPUT)
 LABOR_PORT=55447
+LABOR_LOOPBACK_PORT=18765           # Veröffentlichung des Dienstes nur für den Kern, 127.0.0.1:18765
+NETZ_LABOR_INTERN="172.28.0.0/24"   # wamo-labor-netz, fest in infra/sokrates2/wamo-caddy/docker-compose.yml
 NETZ_LABOR_LOKAL="172.28.1.0/29"    # wamo-labor-lokal, fest in infra/sokrates2/wamo-labor/docker-compose.yml
 LABOR_QUELLEN_DATEI="${WAMO_FW_LABOR_QUELLEN:-/etc/wamo-labor/plaetze-adressen}"
 ZIELE_DATEI="${WAMO_FW_RD_ZIELE:-/etc/wamo-rd/ziele.toml}"
@@ -106,17 +119,21 @@ lies_ziele() {
   done < <(grep -E '^[[:space:]]*adresse[[:space:]]*=' "$ZIELE_DATEI" || true)
 }
 
-# Quellen für 55447 (Frage Q13): Zeilen  a.b.c.d  oder  a.b.c.d/n  (n von 8 bis 32) in LABOR_QUELLEN_DATEI, Kommentare mit #. Keine Datei oder nur
-# Kommentare: das Büro-LAN. Eine Datei mit Einträgen ersetzt das Büro-LAN; sind alle ungültig, bleibt nur Loopback (zu streng ist besser als zu
-# offen). Ungültiges wird ausgelassen und gemeldet; höchstens 64. Vier Zahlen ohne führende Nullen (iptables läse sie als oktal), nie 0.x,
-# Loopback (gilt ohnehin immer), Multicast, Link-Local und nie ein Docker-Netz (dort wären gefälschte Absender möglich).
+# Quellen für 55447 (Frage Q13): Zeilen  a.b.c.d  oder  a.b.c.d/n  in LABOR_QUELLEN_DATEI, Kommentare mit #. Keine Datei oder nur Kommentare: das
+# Büro-LAN. Eine Datei mit Einträgen ersetzt das Büro-LAN; sind alle ungültig, bleibt nur Loopback (zu streng ist besser als zu offen). Ungültiges
+# wird ausgelassen und gemeldet; höchstens 64. Gültig sind nur private Bereiche nach RFC 1918 mit mindestens /16 (10.x und 192.168.x, eine Adresse
+# ohne Länge gilt als /32), vier Zahlen ohne führende Nullen (iptables läse sie als oktal). 172.16.0.0/12 ist der Docker-Bereich (dort sind
+# gefälschte Absender möglich) und nie erlaubt, damit auch kein Netz der Docker-Netze des Labors und keine Liste, die den ganzen Bereich überdeckt.
 LABOR_QUELLEN=""
 quelle_gueltig() {
-  local o
+  local o praefix
   [[ "$1" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})(/([0-9]{1,2}))?$ ]] || return 1
   for o in "${BASH_REMATCH[@]:1:4}"; do (( o <= 255 )) || return 1; done
-  (( ${BASH_REMATCH[6]:-32} >= 8 && ${BASH_REMATCH[6]:-32} <= 32 )) || return 1
-  if (( BASH_REMATCH[1] == 0 || BASH_REMATCH[1] == 127 || BASH_REMATCH[1] >= 224 ))     || (( BASH_REMATCH[1] == 169 && BASH_REMATCH[2] == 254 ))     || (( BASH_REMATCH[1] == 172 && BASH_REMATCH[2] >= 16 && BASH_REMATCH[2] <= 31 )); then return 1; fi
+  praefix="${BASH_REMATCH[6]:-32}"
+  (( praefix >= 16 && praefix <= 32 )) || return 1
+  (( BASH_REMATCH[1] == 10 )) && return 0
+  (( BASH_REMATCH[1] == 192 && BASH_REMATCH[2] == 168 )) && return 0
+  return 1
 }
 
 lies_labor_quellen() {
@@ -124,7 +141,7 @@ lies_labor_quellen() {
   [ -r "$LABOR_QUELLEN_DATEI" ] || return 0
   local zeile wert n=0 gelesen=nein liste=""
   while IFS= read -r zeile || [ -n "$zeile" ]; do
-    wert="$(tr -d " 	\"'" <<<"${zeile%%#*}")"
+    wert="$(tr -d " \t\r\"'" <<<"${zeile%%#*}")"
     [ -n "$wert" ] || continue
     gelesen=ja
     if ! quelle_gueltig "$wert"; then echo "Quelle '$wert' in $LABOR_QUELLEN_DATEI ist ungültig und wird ausgelassen." >&2; continue; fi
@@ -137,17 +154,24 @@ lies_labor_quellen() {
 
 ipt() { iptables -w 5 "$@"; }
 
-# Labor-Dienst: 55447 nur aus Loopback und den Quellen der Liste; aus dem Netz des Dienstes (wamo-labor-lokal) geht nichts hinaus
+# Labor-Dienst: 55447 nur aus Loopback, den Quellen der Liste und über die Docker-Brücke aus den Netzen von Caddy und des Dienstes; aus dem Netz
+# des Dienstes (wamo-labor-lokal) geht nichts hinaus (FORWARD) und nichts an den Host außer Antworten (INPUT)
 regeln_labor() {
-  local q
+  local q n
+  echo "-A $KETTE_LABOR -s $NETZ_DOCKER ! -i br-+ -j DROP"
   echo "-A $KETTE_LABOR -s $NETZ_LOOPBACK -j RETURN"
   for q in $LABOR_QUELLEN; do echo "-A $KETTE_LABOR -s $q -j RETURN"; done
+  for n in $NETZ_CADDY $NETZ_LABOR_INTERN $NETZ_LABOR_LOKAL; do echo "-A $KETTE_LABOR -s $n -i br-+ -j RETURN"; done
   echo "-A $KETTE_LABOR $LOG"
   echo "-A $KETTE_LABOR -j DROP"
   echo "-A $KETTE -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport $LABOR_PORT -j $KETTE_LABOR"
+  echo "-A $KETTE -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport $LABOR_LOOPBACK_PORT ! -s $NETZ_LOOPBACK -j DROP"
   echo "-A $KETTE_LABAUS $LOG"
   echo "-A $KETTE_LABAUS -j DROP"
   echo "-A $KETTE -s $NETZ_LABOR_LOKAL -j $KETTE_LABAUS"
+  echo "-A $KETTE_LABIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN"
+  echo "-A $KETTE_LABIN $LOG"
+  echo "-A $KETTE_LABIN -j DROP"
 }
 
 regeln() {
@@ -160,6 +184,7 @@ regeln() {
   echo ":$KETTE_RDIN - [0:0]"
   echo ":$KETTE_LABOR - [0:0]"
   echo ":$KETTE_LABAUS - [0:0]"
+  echo ":$KETTE_LABIN - [0:0]"
   # 55321: Docker-Absender nur echt, wenn sie über eine Docker-Bridge kommen
   echo "-A $KETTE_HTTP -s $NETZ_DOCKER ! -i br-+ -j DROP"
   echo "-A $KETTE_HTTP -s $NETZ_LOOPBACK -j RETURN"
@@ -213,6 +238,12 @@ sprung_input_an_position_1() {
   done
 }
 
+# Ein Sprung nach WAMO-FW-LABIN für das lokale Labor-Netz (nur Antworten auf Verbindungen des Hosts, sonst verworfen); die Reihenfolge zu RDIN
+# ist egal, die Netze sind verschieden
+sprung_input_labor() {
+  ipt -C INPUT -s "$NETZ_LABOR_LOKAL" -j "$KETTE_LABIN" 2>/dev/null || ipt -I INPUT 1 -s "$NETZ_LABOR_LOKAL" -j "$KETTE_LABIN"
+}
+
 start() {
   local k
   lies_einstellung
@@ -222,6 +253,7 @@ start() {
   regeln | iptables-restore -w 5 --noflush
   sprung_an_position_1
   sprung_input_an_position_1
+  sprung_input_labor
   for k in $ALTE_KETTEN; do ipt -F "$k" 2>/dev/null && ipt -X "$k" 2>/dev/null || true; done
   echo "WAMO-Firewall aktiv: HTTP $HTTP_PORT nur intern: $HTTP_NUR_INTERN; LAN-Ports $LAN_PORTS; Remote-Desktop-Ziele:${RD_ZIELE:- keine}; Labor-Dienst 55447 aus:${LABOR_QUELLEN:- nur Loopback}"
 }
@@ -230,15 +262,16 @@ stop() {
   local k
   while ipt -C DOCKER-USER -j "$KETTE" 2>/dev/null; do ipt -D DOCKER-USER -j "$KETTE"; done
   while ipt -C INPUT -s "$NETZ_RD_ZIEL" -j "$KETTE_RDIN" 2>/dev/null; do ipt -D INPUT -s "$NETZ_RD_ZIEL" -j "$KETTE_RDIN"; done
-  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" "$KETTE_RD" "$KETTE_RDIN" "$KETTE_LABOR" "$KETTE_LABAUS" $ALTE_KETTEN; do ipt -F "$k" 2>/dev/null || true; done
-  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" "$KETTE_RD" "$KETTE_RDIN" "$KETTE_LABOR" "$KETTE_LABAUS" $ALTE_KETTEN; do ipt -X "$k" 2>/dev/null || true; done
+  while ipt -C INPUT -s "$NETZ_LABOR_LOKAL" -j "$KETTE_LABIN" 2>/dev/null; do ipt -D INPUT -s "$NETZ_LABOR_LOKAL" -j "$KETTE_LABIN"; done
+  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" "$KETTE_RD" "$KETTE_RDIN" "$KETTE_LABOR" "$KETTE_LABAUS" "$KETTE_LABIN" $ALTE_KETTEN; do ipt -F "$k" 2>/dev/null || true; done
+  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" "$KETTE_RD" "$KETTE_RDIN" "$KETTE_LABOR" "$KETTE_LABAUS" "$KETTE_LABIN" $ALTE_KETTEN; do ipt -X "$k" 2>/dev/null || true; done
   echo "WAMO-Firewall entfernt"
 }
 
 status() {
   local k
   ipt -n -v -L DOCKER-USER --line-numbers
-  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" "$KETTE_RD" "$KETTE_RDIN" "$KETTE_LABOR" "$KETTE_LABAUS"; do
+  for k in "$KETTE" "$KETTE_HTTP" "$KETTE_LAN" "$KETTE_RD" "$KETTE_RDIN" "$KETTE_LABOR" "$KETTE_LABAUS" "$KETTE_LABIN"; do
     echo
     ipt -n -v -L "$k" 2>/dev/null || echo "Kette $k fehlt"
   done
