@@ -161,6 +161,10 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Auth (Befund des Token-Tests vom 12.11.2026): Ein Konto mit aal2-Token konnte sein Passwort ohne erneute Anmeldung ändern, ein Laborbesucher
+  hätte den Platz für den Nächsten sperren können. `docker-compose.wamo-sitzungen.yml` setzt jetzt
+  `GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION=true`, am Server wird nur der Auth-Container neu erstellt. Ob GoTrue die erneute
+  Anmeldung nur bei Sitzungen über 24 Stunden verlangt, klärt der Vergleichslauf `labor_tokentest.py --nach-einstellung`.
 - Unterbrechungen und Wiederholungen (Analyse vom 12.11.2026 aus Journal und Gedächtnis): Am Server stand `MIN_INTERRUPT_WORDS=1`, 30 von
   41 Einwürfen in 90 Minuten waren ein einzelnes Wort, WAMO brach ständig ab. Der Standard bleibt 1, am Server gilt künftig 3. Damit ein
   Stoppwort weiter sofort unterbricht ("Stopp", "Moment", "Nein", "Was", `STOPP_WORDS`), prüft `MeaningfulWordsUserTurnStartStrategy`

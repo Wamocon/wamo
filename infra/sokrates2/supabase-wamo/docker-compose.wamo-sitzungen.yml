@@ -8,8 +8,14 @@
 #                 passend zu WAMO_ANMELDUNG_MAX_STUNDEN im Voice-Core, Standard 168h).
 #   Inaktivität:  Wird eine Sitzung so lange nicht erneuert (App und Browser zu), endet sie.
 # Das laufende Access-Token gilt danach noch bis zu seinem Ablauf (JWT_EXPIRY); der Voice-Core prüft das Alter selbst.
+#
+# Passwortwechsel (Befund des Token-Tests vom 12.11.2026, infra/sokrates2/labor_tokentest.py): Ohne diese Einstellung ändert ein Konto mit
+# aal2-Token sein Passwort ohne erneute Anmeldung, ein Laborbesucher könnte den Platz für den Nächsten sperren.
+# GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION: Der Wechsel verlangt einen Bestätigungscode (Nonce) aus einer erneuten
+# Anmeldung. Struktur-Tag security.update_password_require_reauthentication im Programm von v2.196.0 geprüft.
 services:
   auth:
     environment:
       GOTRUE_SESSIONS_TIMEBOX: ${SESSIONS_TIMEBOX:-168h}
       GOTRUE_SESSIONS_INACTIVITY_TIMEOUT: ${SESSIONS_INACTIVITY_TIMEOUT:-72h}
+      GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION: "true"
