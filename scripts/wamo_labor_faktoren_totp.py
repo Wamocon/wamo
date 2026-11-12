@@ -84,10 +84,14 @@ def zeitversatz(date_kopf: str | None, lokal_mitte: float) -> float:
 def frisches_fenster(jetzt: Callable[[], float], warte: Callable[[float], None], reserve: float = 2.0, nach: int | None = None) -> float:
     """Die Zeit für den nächsten Code. Endet das Fenster in weniger als reserve Sekunden, wird bis zum nächsten gewartet,
     damit der Code beim Server nicht gerade abläuft. nach ist das zuletzt benutzte Fenster (Zeit geteilt durch 30): Ein Code gilt
-    beim Server nur einmal, also wird nie im selben oder einem früheren Fenster ein zweiter Code gebildet."""
+    beim Server nur einmal, also stammt der nächste Code immer aus einem späteren Fenster. Die Schätzung der Serveruhr schwankt um
+    etwa eine Sekunde, deshalb wird bis zum Anfang des Fensters nach+1 gewartet und nicht nur bis zum nächsten Fensterwechsel."""
     t = jetzt()
+    if nach is not None and int(t // PERIODE) <= nach:
+        warte((nach + 1) * PERIODE - t + 0.2)
+        t = jetzt()
     rest = PERIODE - (t % PERIODE)
-    if rest < reserve or (nach is not None and int(t // PERIODE) <= nach):
+    if rest < reserve:
         warte(rest + 0.2)
         t = jetzt()
     return t

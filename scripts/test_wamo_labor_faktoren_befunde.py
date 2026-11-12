@@ -502,6 +502,19 @@ def test_frisches_fenster_wartet_nach_einem_schon_benutzten_fenster():
     assert tt.frisches_fenster(lambda: 70.0, waren.append) == 70.0 and len(waren) == 1, "ohne nach gilt nur die Reserve am Fensterende"
 
 
+@pytest.mark.parametrize("start,nach", [(59.5, 2), (89.9, 2), (60.0, 2), (150.0, 4)])
+def test_frisches_fenster_liegt_nach_einer_zeitschwankung_immer_hinter_dem_benutzten_fenster(start, nach):
+    """Die Schätzung der Serveruhr schwankt um etwa eine Sekunde (Date-Kopf in ganzen Sekunden): Liegt sie wieder vor dem Ende des
+    benutzten Fensters, muss der nächste Code trotzdem aus einem späteren Fenster stammen, sonst wäre es derselbe Code."""
+    uhr = {"t": start}
+
+    def warte(s):
+        uhr["t"] += s
+
+    t = tt.frisches_fenster(lambda: uhr["t"], warte, nach=nach)
+    assert int(t // 30) > nach and (t == start or (t % 30) >= 0.19)
+
+
 def test_aufraeumen_nach_der_abmeldung_nutzt_keinen_code_zweimal(capsys, umgebung, labor, tmp_path, monkeypatch):
     """Der Seed lässt sich nicht speichern: Das Aufräumen meldet sich neu an und bestätigt den Faktor mit demselben Seed noch einmal.
     Im selben 30-Sekunden-Fenster käme derselbe Code, den der Server ablehnt, also wartet das Skript auf das nächste Fenster."""
@@ -514,18 +527,18 @@ def test_aufraeumen_nach_der_abmeldung_nutzt_keinen_code_zweimal(capsys, umgebun
         return echt(quelle, ziel)
 
     monkeypatch.setattr(os, "replace", nur_umschlag_scheitert)
-    uhr = Uhr()
+    uhr = Uhr(labor)
     code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01", uhr=uhr)
     assert code == 1 and "Faktor wieder entfernt" in err and labor.faktoren_von(email("labor-01")) == []
-    assert any(0.1 < s <= 30.5 for s in uhr.gewartet), "das Skript hat auf das nächste Fenster gewartet"
+    assert any(0.1 < s <= 32 for s in uhr.gewartet), "das Skript hat auf das nächste Fenster gewartet"
     assert len(labor.benutzte_codes) == 2 and len({c for _, c in labor.benutzte_codes}) == 2, "zwei verschiedene Codes für denselben Faktor"
 
 
 class FesteUhr(Uhr):
     """Steht beim Start still und springt nur beim Warten: zwei Läufe liegen so sicher im selben 30-Sekunden-Fenster."""
 
-    def __init__(self, start: float):
-        super().__init__()
+    def __init__(self, start: float, server=None):
+        super().__init__(server)
         self.start = start
 
     def zeit(self) -> float:
@@ -537,10 +550,10 @@ def test_neu_gleich_nach_dem_einrichten_wartet_auf_das_naechste_fenster(capsys, 
     statt zu melden, der Seed passe nicht."""
     datei = umschlag_datei(tmp_path)
     start = time.time()
-    assert einrichten(capsys, labor, datei, "--profile", "labor-01", uhr=FesteUhr(start))[0] == 0
-    zweite = FesteUhr(start)
+    assert einrichten(capsys, labor, datei, "--profile", "labor-01", uhr=FesteUhr(start, labor))[0] == 0
+    zweite = FesteUhr(start, labor)
     code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01", "--neu", uhr=zweite)
-    assert code == 0 and err == "" and "Faktor eingerichtet" in out and any(0.1 < s <= 30.5 for s in zweite.gewartet)
+    assert code == 0 and err == "" and "Faktor eingerichtet" in out and any(0.1 < s <= 32 for s in zweite.gewartet)
     assert len(labor.faktoren_von(email("labor-01"))) == 1
 
 

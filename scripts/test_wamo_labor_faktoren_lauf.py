@@ -50,11 +50,13 @@ def labor():
 
 
 class Uhr:
-    """Eine Uhr, die beim Warten vorspringt, statt zu schlafen: Die Tests warten nie wirklich."""
+    """Eine Uhr, die beim Warten vorspringt, statt zu schlafen: Die Tests warten nie wirklich. Mit server geht dessen Uhr gleich weit
+    vor, wie es bei echtem Warten der Fall wäre (sonst läge der Code nach dem Warten außerhalb der Toleranz der Attrappe)."""
 
-    def __init__(self):
+    def __init__(self, server=None):
         self.vorsprung = 0.0
         self.gewartet: list[float] = []
+        self.server = server
 
     def zeit(self) -> float:
         return time.time() + self.vorsprung
@@ -62,6 +64,8 @@ class Uhr:
     def warte(self, sekunden: float) -> None:
         self.gewartet.append(sekunden)
         self.vorsprung += sekunden
+        if self.server is not None:
+            self.server.versatz += sekunden
 
 
 def lauf(capsys, argv, **kw):
@@ -74,6 +78,8 @@ def lauf(capsys, argv, **kw):
 
 
 def einrichten(capsys, labor, datei, *extra, **kw):
+    if "zeit" not in kw:
+        kw.setdefault("uhr", Uhr(labor))
     return lauf(capsys, ["einrichten", "--basis", labor.basis, "--umschlag-datei", str(datei), *extra], **kw)
 
 
