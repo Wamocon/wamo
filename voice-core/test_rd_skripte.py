@@ -863,8 +863,8 @@ class FirewallRegelnTests(Werkstatt):
         self.assertNotIn("iptables -F", code)
         self.assertNotIn("-P INPUT", code)
         self.assertNotIn("-P FORWARD", code)
-        # INPUT wird nur um genau einen Sprung für das Netz des Gateways ergänzt
-        self.assertEqual(len(re.findall(r"ipt -I INPUT", code)), 1)
+        # INPUT wird nur um zwei Sprünge ergänzt: für das Netz des Gateways (RDIN) und seit dem Labor-Dienst für dessen lokales Netz (LABIN, test_labor_betrieb_skripte.py)
+        self.assertEqual(len(re.findall(r"ipt -I INPUT", code)), 2)
         self.assertIn('ipt -I INPUT 1 -s "$NETZ_RD_ZIEL" -j "$KETTE_RDIN"', code)
 
     def test_regeln_laden_in_einem_wegwerf_namensraum(self):
