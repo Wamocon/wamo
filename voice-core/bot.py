@@ -128,6 +128,7 @@ from cache_waerme import vorwaermen
 from env_schalter import schalter_an
 from latenz import LatenzObserver, api_messen, latenz_log_an
 from pc_geraet import geraet_wache, rechnername_passt
+from pipeline_protokoll import PipelineProtokoll
 from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from ja_waechter import JaWaechter, ja_waechter_an
@@ -857,7 +858,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
         idle_timeout_frames=IDLE_FRAMES,
-        observers=[latenz_beobachter] if latenz_beobachter else [],
+        observers=[PipelineProtokoll(), *([latenz_beobachter] if latenz_beobachter else [])],
         # Labor: Client-Nachrichten gegen die Erlaubnisliste prüfen, bevor Pipecat sie auswertet (labor_rtvi.py)
         rtvi_processor=(LaborRTVIProcessor(art=identity.labor_art, begrenzer=labor_grenzen.text, klicks=labor_grenzen.klicks)
                         if labor_sitzung else None),

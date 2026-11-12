@@ -30,7 +30,7 @@ import {
 import { parseServerMessage, type Auftrag, type Markierung, type ModellModus } from "@/lib/nachrichten";
 import type { SchluesselArt } from "@/lib/schluesselhilfe";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
-import { textAbschicken, unterstuetztText } from "@/lib/textEingabe";
+import { HAENGT_HINWEIS, HAENGT_NACH_MS, textAbschicken, unterstuetztText } from "@/lib/textEingabe";
 import { vorgaengeBeenden } from "@/lib/vorgaenge";
 import { erstelleFrist, fristMeldung, sollVerlaengern } from "@/lib/verbindungsfrist";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
@@ -411,6 +411,7 @@ export function useWamo(): WamoAktionen {
   const kernEnde = useRef<string | null>(null);
   // Läuft gerade das Senden einer getippten Nachricht? Höchstens eine Sendung zugleich.
   const textLaeuft = useRef(false);
+  const haengTimer = useRef<ReturnType<typeof setTimeout> | null>(null); // Hinweis, wenn WAMO nach einer getippten Nachricht nicht antwortet
   // Verbindungs-Watchdog (lib/verbindungsfrist.ts): ohne Betriebsmeldung nach 20 s Abbruch mit Meldung
   const fristRef = useRef<ReturnType<typeof erstelleFrist> | null>(null);
   // Start beim Tippen (lib/stillStart.ts): Zeitpunkt der letzten Eingabe (Date.now) für die Leerlaufregel, Zeiten der letzten stillen Starts
@@ -428,6 +429,8 @@ export function useWamo(): WamoAktionen {
     genRef.current += 1;
     fristRef.current?.stoppe();
     textLaeuft.current = false;
+    if (haengTimer.current) clearTimeout(haengTimer.current);
+    haengTimer.current = null;
     pcAuto.current = { aktiv: false, gesendet: false, manuellAus: false, wartet: false };
     const client = clientRef.current;
     clientRef.current = null;
@@ -1296,6 +1299,12 @@ export function useWamo(): WamoAktionen {
       fehler: (art, text) => setFehler({ art, text }),
       angenommen: (text) => {
         letzteEingabe.current = Date.now();
+        // Antwortet WAMO nicht (Puls dreht sich weiter), sagt die Oberfläche es nach 45 Sekunden, statt still zu bleiben
+        if (haengTimer.current) clearTimeout(haengTimer.current);
+        haengTimer.current = setTimeout(() => {
+          haengTimer.current = null;
+          if (genRef.current === gen && wamo.get().presence === "thinking") setFehler({ art: "hinweis", text: HAENGT_HINWEIS });
+        }, HAENGT_NACH_MS);
         if (wamo.get().presence === "speaking") {
           // Unterbrechung durch Tippen: Stimmlinie und Rand zeigen sie wie bei einem gesprochenen Einwurf
           levelsRef.current.cut = true;

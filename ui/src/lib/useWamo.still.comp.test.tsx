@@ -67,6 +67,7 @@ vi.mock("@/lib/supabase", () => ({ getSupabase: () => null, accessToken: async (
 import { StillMedienManager } from "@/lib/stillMedien";
 import { nutzerSetzen } from "@/lib/nutzer";
 import { HINWEIS_ANDERES_FENSTER, HINWEIS_ZU_OFT, LEERLAUF_MS, STARTS_MAX, STILL_AUS, GRUND_UEBERNOMMEN } from "@/lib/stillStart";
+import { HAENGT_HINWEIS } from "@/lib/textEingabe";
 import { useWamo } from "@/lib/useWamo";
 import { resetWamo, wamo } from "@/lib/wamo";
 import { WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
@@ -228,6 +229,36 @@ describe("useWamo, stiller Start beim Tippen", () => {
       await fluss();
       expect(letzter().sendText).toHaveBeenCalledTimes(1);
       expect(letzter().sendText).toHaveBeenCalledWith("Wie spät ist es?", { run_immediately: true, audio_response: false });
+    });
+
+    it("antwortet WAMO auf eine getippte Nachricht 45 Sekunden nicht (Puls dreht sich), erscheint ein Hinweis", async () => {
+      einschalten();
+      const { result } = renderHook(() => useWamo());
+      result.current.stillStarten?.();
+      await fluss();
+      await bereit(letzter());
+      result.current.textSenden?.("Wie spät ist es?");
+      await fluss();
+      expect(aktuell().presence).toBe("thinking");
+      await fluss(44_000);
+      expect(aktuell().error).toBeNull();
+      await fluss(1_500);
+      expect(aktuell().error).toEqual({ art: "hinweis", text: HAENGT_HINWEIS });
+    });
+
+    it("antwortet WAMO rechtzeitig (Präsenz wechselt), bleibt der Hinweis aus", async () => {
+      einschalten();
+      const { result } = renderHook(() => useWamo());
+      result.current.stillStarten?.();
+      await fluss();
+      await bereit(letzter());
+      result.current.textSenden?.("Wie spät ist es?");
+      await fluss();
+      await act(async () => {
+        wamo.set((s) => ({ ...s, presence: "speaking" }));
+      });
+      await fluss(60_000);
+      expect(aktuell().error).toBeNull();
     });
 
     it("Sprechen (Mikrofonknopf): Mikrofon an, Stimme an, die Sitzung gilt nicht mehr als still", async () => {
