@@ -981,15 +981,6 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             context.set_tools(ToolsSchema(standard_tools=standard_tools))
             # Der Klick auf die Freigabekarte (Nachricht freigabe mit job labor) geht über die Annahme (Schicht a in on_client_message) hierher
             labor_sitzung.freigabe = labor_werkz.entscheiden
-        # Die Grenze: Namen im Kontext und am LLM müssen der Erlaubnisliste entsprechen, sonst entsteht keine Sitzung. Sie gilt für das Endergebnis,
-        # also erst nach den Werkzeugen von labor_werkzeuge.
-        try:
-            labor_sitzung.werkzeuge_pruefen(llm, standard_tools, mit_tickets=labor_werkz is not None)
-        except Exception:  # LaborPolitikFehler und alles andere: Dienstclient und Modellzugang schließen, bot() beendet die Verbindung
-            if labor_werkz is not None:
-                await labor_werkz.schliessen()
-            await zugang.schliessen()
-            raise
 
     # Bürogeräte (geraete_werkzeuge.py): Status, Fernseher, Lautsprecher, Steckdosen, Drucker, Scanner, NAS. Nur im Büro (dort läuft der
     # Gerätedienst) und nie in einer Laborsitzung. Fehlt der Dienst oder antwortet er nicht rechtzeitig, bleibt die Liste leer und die
@@ -1002,6 +993,19 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             standard_tools += geraete_schemas
             context.set_tools(ToolsSchema(standard_tools=standard_tools))
             logger.info("Bürogeräte: {} Werkzeuge in der Sitzung", len(geraete_schemas))
+
+    # Die Grenze der Laborsitzung: Namen im Kontext und am LLM müssen der Erlaubnisliste entsprechen, sonst entsteht keine Sitzung. Sie gilt für das
+    # Endergebnis und steht deshalb hinter dem letzten Block, der Werkzeuge einhängt (labor_werkzeuge, Bürogeräte). Heute hält zusätzlich die
+    # Bedingung "not labor_sitzung" den Bürogeräte-Block aus der Laborsitzung heraus; hängt später jemand dort oder davor etwas ein, scheitert
+    # die Sitzung hier (test_bot_geraete.py prüft die Reihenfolge, test_labor_sitzung.py das Verhalten).
+    if labor_sitzung:
+        try:
+            labor_sitzung.werkzeuge_pruefen(llm, standard_tools, mit_tickets=labor_werkz is not None)
+        except Exception:  # LaborPolitikFehler und alles andere: Dienstclient und Modellzugang schließen, bot() beendet die Verbindung
+            if labor_werkz is not None:
+                await labor_werkz.schliessen()
+            await zugang.schliessen()
+            raise
 
     async def refresh_prompt() -> None:
         await task.queue_frame(

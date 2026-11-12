@@ -179,7 +179,7 @@ Die Entscheidungen nach dem Review (E1 bis E8) stehen oben im Abschnitt "Stand n
 3. Ob das LiteLLM-Gateway Audiomodelle anbietet (entscheidet über den Ausweichweg 3.9) und welche Hausmodelle mit Werkzeugen umgehen können.
 4. Tarif und Ratenlimits des Claude-Schlüssels (Anthropic-Konsole), Parallelitätsgrenze bei Soniox.
 5. Freier Speicher und CPU von Sokrates-2, freier UDP-Bereich des Kerns.
-6. Aufbewahrung des Journals und der Sicherungen (Dumps der Datenbank, Rotation des Journals und von `auftraege.log`): Sie entscheidet, wo Labortext außerhalb der Datenbank noch liegt und wie die Löschfrist 05.12. dort eingehalten wird (3.1, Löschliste).
+6. Aufbewahrung des Journals und der Sicherungen (Dumps der Datenbank, Rotation des Journals und von `auftraege.log`): Sie entscheidet, wo Labortext außerhalb der Datenbank noch liegt und wie die Löschfrist 11.12. dort eingehalten wird (3.1, Löschliste).
 7. Wer die Ports 55322, 55446 und 56543 aus dem Büronetz heute nutzt (Verbindungsliste lesen), bevor die Firewall sie auf Büro-Adressen begrenzt (3.9).
 8. Ob GoTrue bei einer Passwortänderung eine erneute Anmeldung verlangt, ob der Server-Schlüssel `ANTHROPIC_API_KEY` zu einem eigenen Workspace mit Ausgabenlimit gehört und ob `/i/<alt>/` auf dem Server wie in der Vorlage geroutet ist.
 
@@ -279,7 +279,7 @@ Durchlauf offen ist und `einwilligung_version` mindestens `WAMO_LABOR_EINWILLIGU
 
 **Löschfunktion (P1L, 8 h plus 2 h Review).** `__SCHEMA__.labor_loeschen(p_profil uuid, p_ab timestamptz default null, p_bis timestamptz default null)`, `security definer`, `set search_path = ''`, Recht für `public` entzogen, `execute` **nur** für `wamo_admin`. `wamo_core` hat es nicht (Selbsttest). Sie wirft bei einem Profil
 ohne `labor_art`, bei `labor_aktiv = true` und bei einer laufenden Sitzung. Mit `p_ab` und `p_bis` löscht sie nur das Zeitfenster eines Durchlaufs (Wunsch eines Besuchers), ohne Angabe alles des Profils. Aufruf nur über die Verwaltungsrolle (`voice-core/wamo_admin.py`, Unterbefehl `labor-loeschen`) oder das
-Betreuer-Skript `scripts/wamo_labor.py loeschen`, **nie durch `wamo_core`**. **Löschfrist:** Alle Texte der Laborprofile spätestens am 05.12.2026, der Löschlauf `wamo_labor.py loeschen --alle` läuft am Mo 30.11. Der `database-reviewer` prüft Migration und Funktion vor jedem Apply.
+Betreuer-Skript `scripts/wamo_labor.py loeschen`, **nie durch `wamo_core`**. **Löschfrist:** Alle Texte der Laborprofile spätestens am 11.12.2026 (14 Tage Aufbewahrung nach dem Labortag, Entscheidung Q11 vom 11.11.), der Löschlauf `wamo_labor.py loeschen --alle` läuft spätestens am Fr 11.12. Der `database-reviewer` prüft Migration und Funktion vor jedem Apply.
 
 | Ort (Befund 4) | Was dort landet | Löschweg | Prüfung |
 | --- | --- | --- | --- |
@@ -291,8 +291,8 @@ Betreuer-Skript `scripts/wamo_labor.py loeschen`, **nie durch `wamo_core`**. **L
 | `memories`, `feedback`, `speakers` | für Laborprofile gesperrt, kein Schreibweg | `labor_loeschen` löscht trotzdem | T10 zählt sie mit |
 | Journal des Kerns | Bei INFO kein Text, bei DEBUG Text (`bot.py:1067`, `tools.py:373`) | Stufe INFO fest in der Unit | Test der Unit-Zeile und des Logs |
 | `auftraege.log` des Dispatchers und Sandbox-Arbeitsordner (Schau-Profil) | Auftragstext und Ergebnisse (V) | Kürzen und Löschen am Mo 30.11. (S) | Prüfung am Server, 2.3 Punkt 6 |
-| Dienst der Kollegen | Tickets, Kommentare, Protokolle, Einwilligungsvermerke | Löschfunktion der Betreuer-Seite je Platz und Durchlauf, Frist 05.12. | Anforderung D9 und D10, Nachweis durch die Kollegen |
-| Sicherungen und Journal-Rotation | je nach Aufbewahrung (V) | Aufbewahrung höchstens bis 05.12. oder Löschen der Sicherungen vom 20.11. bis 05.12. | 2.3 Punkt 6 |
+| Dienst der Kollegen | Tickets, Kommentare, Protokolle, Einwilligungsvermerke | Löschfunktion der Betreuer-Seite je Platz und Durchlauf, Frist 11.12. | Anforderung D9 und D10, Nachweis durch die Kollegen |
+| Sicherungen und Journal-Rotation | je nach Aufbewahrung (V) | Aufbewahrung höchstens bis 11.12. oder Löschen der Sicherungen vom 20.11. bis 11.12. | 2.3 Punkt 6 |
 | Browser des Platzes | Untertitel und Canvas im Seitenspeicher, Verlauf | Neuladen beim Durchlaufende, Gast-Profil nach dem Labortag löschen (Kollegen) | Prüfliste |
 | Soniox und Anthropic | Audio und Text als Auftragsverarbeiter | Fristen laut Verträgen, Liste der Kollegen (1.1) | liegt nicht bei WAMO |
 | `model_access` und `profiles` (Konto) | Schlüssel des Schau-Profils, Kontoeintrag | Konten nach dem Labortag löschen (löscht per Verweis die Zeilen aller Tabellen mit Besitzerspalte), Sitzungen widerrufen | 3.9, 5.2 |
@@ -315,7 +315,7 @@ Laborprofile über ssh: `anlegen`, `aktivieren`, `sperren`, `status`, `loeschen`
 | `labor_art` unlesbar oder unbekannt | Datenbankfehler heißt 503 wie heute, unbekannter Wert heißt `platz` |
 | Schau-Profil erbt Admin-Rechte oder zählt als zweiter Admin der Sonderfreigabe | Rolle `mitglied`, `labor_art` hat Vorrang, Entwicklungsgate am `labor_art`, Test T12 mit `release_anzahl_admins()` und `release_ist_admin()` |
 | Besucher ändert Passwort oder Faktoren über die Anmeldung (GoTrue, aal2-Sitzung) | Konten haben lange Zufallspasswörter, Registrierung ist zu (`CLAUDE.md`), Re-Auth bei Passwortänderung, Konten nach dem Labortag löschen, Rauchtest mit Labortoken (3.9) |
-| Text eines Besuchers bleibt nach dem Labortag liegen | Löschliste, `labor_loeschen`, Frist 05.12., Test T10, Löschung der Dienst-Ablage durch die Kollegen |
+| Text eines Besuchers bleibt nach dem Labortag liegen | Löschliste, `labor_loeschen`, Frist 11.12., Test T10, Löschung der Dienst-Ablage durch die Kollegen |
 | Klick im Zeitfenster nach dem Durchlaufwechsel wirkt beim Nächsten | `durchlauf_id` in jedem Schreibaufruf, atomare Prüfung im Dienst, Test T14 |
 
 **Tests, Rot zuerst.** (T1) Matrix: `build_session` mit `Identity(labor="platz")` und `("schaufenster", mitglied)` unter allen Kombinationen von `WAMO_ENTWICKLUNG_BUERO`, PC-Host, Register, Fernzugriff, Gerätedienst: die Namen im Kontext sind **gleich** der Erlaubnisliste, nicht nur eine
@@ -422,7 +422,7 @@ Die Plätze 15 und 16 des Dienstes sind für die Abnahme reserviert.
 | D7 | Kein Löschweg für Besucher und Kern: kein DELETE, kein Feld, das Zeilen verschwinden lässt. Einzige Ausnahmen sind die Betreuer-Funktionen (D9) |
 | D8 | Tokens: Platz-Token 128 Bit, nur als Hash gespeichert, Betreuer-Token getrennt, Bearer des Kerns in konstanter Zeit verglichen, Tokens nie in Adresszeilen-Protokollen |
 | D9 | Betreuer-Funktionen (Durchlauf beenden und starten, Einwilligung mit Versionsnummer erfassen, Platz zurücksetzen, Daten eines Platzes oder Durchlaufs löschen) hinter eigenem Token, eigene Pfade, nicht mit dem Platz-Token erreichbar |
-| D10 | Protokolle ohne Ticket-, Kommentar- oder Einwilligungstexte (nur Metadaten), Aufbewahrung höchstens bis 05.12.2026, danach gelöscht. Auch Sicherungen des Dienstes folgen dieser Frist |
+| D10 | Protokolle ohne Ticket-, Kommentar- oder Einwilligungstexte (nur Metadaten), Aufbewahrung höchstens bis 11.12.2026, danach gelöscht. Auch Sicherungen des Dienstes folgen dieser Frist |
 | D11 | Container: Nutzer ohne root, `read_only`, `cap_drop: ALL`, `no-new-privileges`, Speicher- und CPU-Grenzen (Empfehlung 256 MB, 0,5 CPU), Image mit festem Digest |
 | D12 | Sicherheitsreview des Dienstes durch jemanden, der ihn nicht gebaut hat, schriftlich, vor dem 24.11. Ohne Review kein Einsatz am Labortag |
 | D13 | Konsistenz: Der Dienst prüft `durchlauf_id` und `erwartete_version` atomar in derselben Transaktion wie das Schreiben (409 `durchlauf_beendet`, 409 `ticket_veraendert`), und er liefert beim Wiederholen mit demselben Idempotenzschlüssel dieselbe Antwort |
@@ -655,7 +655,7 @@ Wartezeit auf Niko und Integration. Das sind **27 Stunden je Strang** (6 Tage ma
 | Do 26.11. | Generalprobe | | | |
 | Fr 27.11. | Rückwegübung, Morgencheckliste, **Daten-Freeze 12:00** | | | |
 | Sa 28.11. | Labortag | | | |
-| Mo 30.11. | Löschlauf, Konten löschen, Sitzungen widerrufen (Frist 05.12.) | | | |
+| Mo 30.11. | Laborprofile sperren; Löschlauf, Konten löschen und Sitzungen widerrufen spätestens Fr 11.12. (Frist 11.12.) | | | |
 
 ### 4.3 Prüfung der Terminfolge der Vorlage
 
@@ -716,7 +716,7 @@ Server-Skripte wiederholbar mit `--trocken`, nie `systemctl restart wamo-core`. 
 | Oberfläche | `python scripts/wamo_ui_sokrates2.py zurueck` (eine Sekunde) |
 | Dienst der Kollegen | nach deren Runbook. Für WAMO heißt das: Labor ohne Dienst, J1 bis J3 und der Testbericht entfallen (7) |
 | Claude-Schlüssel | Zeile `ANTHROPIC_API_KEY` in `/etc/wamo/core.env` ändern und `umschalten-kern` (Ablauf nicht geprüft, V), oder `nur_haus = true` (3.9) |
-| Nach dem Labortag (Mo 30.11., Frist 05.12.) | Laborprofile sperren (`labor_aktiv = false`), `wamo_labor.py loeschen --alle` (alle Texte, T10 als Zählung gegen die echten Daten), **Laborkonten löschen und alle Sitzungen widerrufen** (Entscheidung Q11, Befund 11), Dienst-Ablage durch die Kollegen, `auftraege.log` und Sicherungen nach 3.1 bereinigen. Danach `ausleiten`, falls es noch aussteht |
+| Nach dem Labortag (sperren am Mo 30.11., Löschen bis Fr 11.12., Frist 11.12.) | Laborprofile sperren (`labor_aktiv = false`), `wamo_labor.py loeschen --alle` (alle Texte, T10 als Zählung gegen die echten Daten), **Laborkonten löschen und alle Sitzungen widerrufen** (Entscheidung Q11, Befund 11), Dienst-Ablage durch die Kollegen, `auftraege.log` und Sicherungen nach 3.1 bereinigen. Danach `ausleiten`, falls es noch aussteht |
 
 ### 5.3 Freeze-Regeln ab Freitag, 20.11.
 
@@ -738,7 +738,7 @@ Nur echte Entscheidungen. Ohne Antwort gilt die Empfehlung. Nikos Hände sind mi
 
 | Nr | Frage | Stand und Empfehlung | Frist |
 | --- | --- | --- | --- |
-| Q1 | Soll der Kern für Laborprofile Gesprächstext speichern? | **Entschieden: Ja** (E2, Variante B). Folgen in 3.1: Löschfunktion, Einwilligungsprüfung, Löschfrist 05.12., Test T10 | erledigt |
+| Q1 | Soll der Kern für Laborprofile Gesprächstext speichern? | **Entschieden: Ja** (E2, Variante B). Folgen in 3.1: Löschfunktion, Einwilligungsprüfung, Löschfrist 11.12., Test T10 | erledigt |
 | Q2 | Wohin geht eine gesendete Mail? | **Entschieden:** nur die Bestätigung "gesendet", kein Postfach, kein SMTP (E3, 3.5) | erledigt |
 | Q3 | Schaufenster live mit eigenem Schau-Profil, oder Aufzeichnung? | **Entschieden:** grundsätzlich live und nur lesend, Go am Mi 18.11. 12:00 nach den Bedingungen in 3.10, sonst Aufzeichnung. **N:** Ja zum Öffnen des Kanals (S7), eigener Zugang für das Schau-Profil nach dessen Anlage | Go 18.11. |
 | Q4 | Claude-Zugang für die Laborprofile | **Entschieden** (Nachtrag 11.11.): Nikos Schlüssel im Server (`ANTHROPIC_API_KEY`), Quelle `labor`, Haiku, nie für Entwicklungsaufträge (3.1). **N:** Ausgabenlimit in der Konsole setzen, für das Schau-Profil einmal einen eigenen Zugang hinterlegen, bei Bedarf Schlüssel tauschen | Limit bis 20.11., Zugang nach Anlage |
@@ -748,7 +748,7 @@ Nur echte Entscheidungen. Ohne Antwort gilt die Empfehlung. Nikos Hände sind mi
 | Q8 | Wer verantwortet Hinweis und Einwilligung? | **Entschieden:** die Kollegen liefern Text, Version, Altersgrenze und die verantwortliche Person bis 18.11. WAMO speichert und prüft nur die Versionsnummer (3.1) | 18.11. |
 | Q9 | Alten Kern-Slot nach der Bewährung abschalten (`ausleiten`) oder für den schnellen Rückweg behalten? | Empfehlung: **ausleiten**, wie es der Review nennt (Befund 1). Caddy routet `/i/<alt>/*` dauerhaft, und `labor_aktiv` allein schützt zwar, aber ein laufender alter Kern bleibt unnötige Fläche. Preis: Der Rückweg ist danach das erneute Bereitstellen des vorigen Releases (Minuten, Dauer V, Übung am 27.11.). Alternative: behalten, Schutz nur durch `labor_aktiv`, `aktiv = false` per Constraint und T11 | Fr 13.11. |
 | Q10 | Rolle und Bediener des Schau-Profils | Empfehlung: Rolle `mitglied` mit `labor_art = schaufenster` (Befund 2), Anlage erst nach dem Lab-Release, **nur ein Betreuer bedient**, Themenliste vorbereitet (3.10) | Fr 13.11. |
-| Q11 | Was geschieht mit den Laborkonten nach dem Labortag? | Empfehlung: alle Laborkonten löschen und alle Sitzungen widerrufen am Mo 30.11., Texte spätestens am 05.12. löschen (3.1, 5.2). Besucher erhalten nie ein eigenes Konto | Fr 13.11. |
+| Q11 | Was geschieht mit den Laborkonten nach dem Labortag? | Empfehlung: Laborprofile am Mo 30.11. sperren, alle Laborkonten löschen, alle Sitzungen widerrufen und Texte spätestens am Fr 11.12. löschen (14 Tage Aufbewahrung, entschieden am 11.11.; 3.1, 5.2). Besucher erhalten nie ein eigenes Konto | Fr 13.11. |
 | Q12 | Reichen die Stunden bis zum Freeze? Welche Kürzungen gelten, bleibt es beim 20.11.? | Empfehlung: Kürzungen (1) bis (4) aus 4.4 sofort bestätigen, Löschfunktion mit hoher Priorität, Entscheidung am Mi 18.11. 12:00 über den Rückfall (5) (Text zunächst nicht speichern). Hebel: Kern-Freeze auf Mo 23.11. oder ein vierter Umsetzer (4.4) | Fr 13.11. |
 | Q13 | Welche Büro-Adressen dürfen 55322, 55446 und 56543 erreichen? | Empfehlung: nur die Admin-PCs, nach Lesen der Verbindungsliste (2.3 Punkt 7). Niko nennt die Liste, WAMO trägt sie in `wamo-firewall.sh` ein (3.9) | Fr 20.11. |
 
@@ -761,7 +761,7 @@ Nur echte Entscheidungen. Ohne Antwort gilt die Empfehlung. Nikos Hände sind mi
 | Der alte Kern (`/i/<alt>/*`) oder ein Rückweg macht Laborprofile zu Mitgliedern mit Interna | Interna erreichbar | Laborprofile bleiben `aktiv = false` (Constraint), Freischaltung nur über `labor_aktiv`, den nur der neue Kern liest, alter Slot wird ausgeleitet (Q9), Test T11 | gering |
 | Schau-Profil zählt als zweiter Admin der Sonderfreigabe oder erbt Rechte | Freigabe einer Änderung ohne echten zweiten Admin | Rolle `mitglied`, Anlage erst nach dem Lab-Release, Entwicklungsgate am `labor_art`, Test T12 | gering |
 | Gäste-Laptops im flachen Büronetz (Annahme, V) | Gäste erreichen 55446 (Remote-Desktop-Gateway), die Pooler-Ports und andere Dienste | Segmentierung durch die Kollegen, Firewall auf Büro-Adressen (3 h), Kiosk-Konto ohne Admin und PowerShell, Prüfliste | mittel |
-| Text von Besuchern wird gespeichert (Q1), Audio und Text gehen an Soniox und Anthropic, Besucher nennen echte Daten | Verstoß, Beschwerde | Einwilligung vor dem Speichern mit Versionsnummer (der Kern prüft), Hinweistext durch die Kollegen, Löschfunktion mit Test T10, Frist 05.12., Konten löschen, Fantasienamen auf den Karten | mittel, Text liegt nicht bei uns |
+| Text von Besuchern wird gespeichert (Q1), Audio und Text gehen an Soniox und Anthropic, Besucher nennen echte Daten | Verstoß, Beschwerde | Einwilligung vor dem Speichern mit Versionsnummer (der Kern prüft), Hinweistext durch die Kollegen, Löschfunktion mit Test T10, Frist 11.12., Konten löschen, Fantasienamen auf den Karten | mittel, Text liegt nicht bei uns |
 | Die Löschliste ist unvollständig: neue Tabelle mit Besitzerspalte, Orte außerhalb der Datenbank (Journal, `auftraege.log`, Sicherungen, Dienst-Ablage) | Text bleibt über die Frist hinaus liegen | dynamischer Test T10 über das Schema, Liste in 3.1, Serverprüfung (2.3 Punkt 6), Nachweis der Kollegen für die Dienst-Ablage | mittel, Orte am Server sind V |
 | Dienst der Kollegen verspätet, unsicher oder ausgefallen | Kein Board, J1 bis J3 und der Testbericht fallen aus, im schlimmsten Fall XSS oder Datenabfluss im Dienst | Vorversion am 18.11., Vertrag und Anforderungen D1 bis D13, Abnahmeskript am 23.11., Review vor dem 24.11. Scheitert A1, A2, A6 oder A7, geht der Dienst nicht an Besucher, die übrigen 14 Karten laufen. Die Attrappe ersetzt ihn nie | mittel bis hoch, liegt nicht bei uns |
 | Vertrag weicht im Dienst ab, nach dem Freeze nicht mehr im Kern korrigierbar | Werkzeuge scheitern am Labortag | Integrationstest gegen die Vorversion am 19.11., Vertrag am 13.11. eingefroren, Abweichungen werden im Dienst korrigiert | mittel |
@@ -779,7 +779,7 @@ Nur echte Entscheidungen. Ohne Antwort gilt die Empfehlung. Nikos Hände sind mi
 
 **Restrisiken, die bleiben.** (1) Ohne Soniox gibt es keine Sprache, daran ändert dieses Papier nichts. (2) Die Zahlen aus 2.1 gelten für eine Person und müssen bei 8 Plätzen neu belegt werden; bis dahin ist jede
 Aussage zur Last eine Annahme. (3) Ein Teilnehmer kann ohne Lesen auf "Freigeben" klicken, das ist gewollt und nur durch die Gestaltung der Karte gemildert. (4) Der Erlaubnisweg schützt die Interna, nicht die
-Testdaten anderer Plätze vor einem gekaperten Kern. (5) Die Anhebung von Claude Code (S6) berührt auch die PC-Aufträge. (6) Ein Schlüssel für alle: Fällt er aus, fallen alle Plätze aus, abgefedert nur durch `nur_haus` und den Tausch. (7) Gesprächstext liegt bis 05.12. bei uns, bei den Auftragsverarbeitern nach deren Fristen.
+Testdaten anderer Plätze vor einem gekaperten Kern. (5) Die Anhebung von Claude Code (S6) berührt auch die PC-Aufträge. (6) Ein Schlüssel für alle: Fällt er aus, fallen alle Plätze aus, abgefedert nur durch `nur_haus` und den Tausch. (7) Gesprächstext liegt bis 11.12. bei uns, bei den Auftragsverarbeitern nach deren Fristen.
 
 ## 8. Neue Namen (passend zum Namensvertrag in `CLAUDE.md`)
 
