@@ -111,13 +111,50 @@ describe("useWamo, stiller Start beim Tippen", () => {
   });
 
   describe("Start und Sperren", () => {
-    it("Schalter aus (Standard): das Tippen startet nichts", async () => {
+    it("ausdrücklich ausgeschaltet: das Tippen startet nichts", async () => {
       einschalten(false);
       const { result } = renderHook(() => useWamo());
       expect(result.current.stillStarten?.()).toBe(false);
       await fluss();
       expect(clients()).toHaveLength(0);
       expect(aktuell().presence).toBe("offline");
+    });
+
+    it("kein Eintrag (nie entschieden): Standard an, das Tippen startet still", async () => {
+      nutzerSetzen({ id: NUTZER, email: "niko@wamocon.com" }); // localStorage ist leer
+      const { result } = renderHook(() => useWamo());
+      expect(result.current.stillStarten?.()).toBe(true);
+      await fluss();
+      expect(clients()).toHaveLength(1);
+      expect(letzter().opts.enableMic).toBe(false);
+    });
+
+    it("kein Eintrag bei einem Laborkonto: startet nie", async () => {
+      nutzerSetzen({ id: NUTZER, email: "labor-03@wamo.test" });
+      const { result } = renderHook(() => useWamo());
+      expect(result.current.stillStarten?.()).toBe(false);
+      await fluss();
+      expect(clients()).toHaveLength(0);
+    });
+
+    it("unlesbarer Speicher (strenger Datenschutzmodus): startet nicht von selbst", async () => {
+      const vorher = Object.getOwnPropertyDescriptor(window, "localStorage")!;
+      const gesperrt = () => {
+        throw new Error("gesperrt");
+      };
+      Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        value: { getItem: gesperrt, setItem: gesperrt, removeItem: gesperrt, clear: gesperrt },
+      });
+      try {
+        nutzerSetzen({ id: NUTZER, email: "niko@wamocon.com" });
+        const { result } = renderHook(() => useWamo());
+        expect(result.current.stillStarten?.()).toBe(false);
+        await fluss();
+        expect(clients()).toHaveLength(0);
+      } finally {
+        Object.defineProperty(window, "localStorage", vorher);
+      }
     });
 
     it("Schalter an: der Client entsteht ohne Mikrofon und mit dem stillen Medienmanager", async () => {

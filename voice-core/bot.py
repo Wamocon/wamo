@@ -775,6 +775,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Doppelte Aufrufe im selben Zug und abgebrochene Werkzeuge (werkzeug_wache.py)
     doppel = DoppelWache(turn_nr=lambda: turn.turn_nr) if werkzeug_doppelt_an() else None
 
+    buerogeraete: Buerogeraete | None = None  # wird weiter unten im Büro gesetzt; hier gebunden, damit freigabe_offen nie ins Leere greift
+
     def freigabe_offen() -> bool:
         """Wartet eine Freigabe (PC-Freigabe-Karte oder Entwicklungsauftrag)? Dann greift der Ja-Wächter nie."""
         # Fail closed: fehlt ein erwartetes Attribut (Umbenennung), gilt eine Freigabe als offen
@@ -960,7 +962,6 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Bürogeräte (geraete_werkzeuge.py): Status, Fernseher, Lautsprecher, Steckdosen, Drucker, Scanner, NAS. Nur im Büro (dort läuft der
     # Gerätedienst) und nie in einer Laborsitzung. Fehlt der Dienst oder antwortet er nicht rechtzeitig, bleibt die Liste leer und die
     # Sitzung läuft ohne diese Werkzeuge. Rechte und Grenzen prüft der Dienst, kritische Aufrufe laufen über eine Freigabekarte (job "geraet").
-    buerogeraete: Buerogeraete | None = None
     if im_buero and not labor_sitzung:
         buerogeraete = Buerogeraete(identity, memory, fremdinhalt=turn.taint, ist_fremd=lambda: turn.tainted)
         buerogeraete.anbinden(senden=send, melden=melde_llm)

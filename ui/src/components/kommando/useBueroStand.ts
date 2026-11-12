@@ -34,31 +34,63 @@ let takt: Takt = TAKT_NEU;
 let laufend: Promise<Ergebnis> | null = null;
 let epoche = 0; // zählt die Abmeldungen: ein Abruf aus früherer Zeit trägt nichts mehr ein
 const hoerer = new Set<(e: Ergebnis) => void>(); // Instanzen der Karte, die ein Ergebnis auch außerhalb ihres Taktes bekommen
-let nachSchalten: ReturnType<typeof setTimeout>[] = [];
+type Geplant = { zeit: number; id: ReturnType<typeof setTimeout> };
+let nachSchalten: Geplant[] = [];
+let zwangsAbrufe: number[] = []; // Zeitpunkte der Neu-Abrufe nach einem Schaltvorgang (Obergrenze je Minute)
+
+/** Der Kern erlaubt 6 Abrufe je Minute und Profil, der Takt braucht 2: für Neu-Abrufe nach dem Schalten bleiben höchstens 3. */
+const ZWANG_MAX = 3;
+const ZWANG_FENSTER_MS = 60_000;
+/** Liegt schon ein geplanter Neu-Abruf so nah an einem neuen Zeitpunkt, reicht er. */
+const ZWANG_NAHE_MS = 2000;
 
 function nachSchaltenLoeschen(): void {
-  for (const t of nachSchalten) clearTimeout(t);
+  for (const t of nachSchalten) clearTimeout(t.id);
   nachSchalten = [];
+  zwangsAbrufe = [];
 }
 
 function anwenden(alt: BueroZustand, ergebnis: Ergebnis): BueroZustand {
   return "stand" in ergebnis ? { stand: ergebnis.stand, fehler: null, geladen: true } : { ...alt, fehler: ergebnis.fehler, geladen: true };
 }
 
+/** Zähler der Abmeldungen: Wer vor einem langsamen Aufruf (zum Beispiel dem Schalten) die Epoche merkt, kann danach prüfen, ob er noch gilt. */
+export function bueroEpoche(): number {
+  return epoche;
+}
+
+/** Ein Neu-Abruf nach dem Schalten: wartet einen laufenden Takt-Abruf ab (dessen Stand ist von vor dem Schalten), dann frisch. */
+async function frischAbrufen(meine: number): Promise<void> {
+  const jetzt = Date.now();
+  zwangsAbrufe = zwangsAbrufe.filter((t) => jetzt - t < ZWANG_FENSTER_MS);
+  if (zwangsAbrufe.length >= ZWANG_MAX) return;
+  zwangsAbrufe.push(jetzt);
+  if (laufend) await laufend;
+  if (meine !== epoche) return;
+  const ergebnis = await abrufen();
+  if (meine !== epoche) return; // inzwischen abgemeldet: nichts mehr an eine neue Karte geben
+  hoerer.forEach((h) => h(ergebnis));
+}
+
 /**
  * Nach einem Schaltvorgang den Stand bald neu holen, damit die Karte den neuen Zustand zeigt (nach 2,5 Sekunden; ein eingeschalteter
- * Fernseher braucht länger, dafür kommt nach 10 Sekunden noch ein Abruf). Mehrere Schaltvorgänge hintereinander setzen die Zeiten neu, es
- * bleibt bei höchstens zwei Abrufen, und der Kern erlaubt 6 je Minute (der Takt ruft nur alle 30 Sekunden).
+ * Fernseher braucht länger, dafür kommt nach 10 Sekunden noch ein Abruf). Mehrere Schaltvorgänge hintereinander ergänzen die geplanten
+ * Zeiten, statt sie zu ersetzen (ein Zeitpunkt, der nah an einem geplanten liegt, entfällt), und es gibt höchstens 3 solche Abrufe je
+ * Minute. epocheVorher: die Epoche vor dem Schalten; wurde inzwischen abgemeldet, passiert nichts.
  */
-export function bueroNachSchalten(aktion: Aktion): void {
-  nachSchaltenLoeschen();
-  const meine = epoche;
-  nachSchalten = (aktion === "an" ? [2500, 10_000] : [2500]).map((ms) =>
-    setTimeout(() => {
-      if (meine !== epoche) return;
-      void abrufen().then((e) => hoerer.forEach((h) => h(e)));
-    }, ms),
-  );
+export function bueroNachSchalten(aktion: Aktion, epocheVorher: number = epoche): void {
+  if (epocheVorher !== epoche) return;
+  const jetzt = Date.now();
+  for (const ms of aktion === "an" ? [2500, 10_000] : [2500]) {
+    const ziel = jetzt + ms;
+    if (nachSchalten.some((t) => Math.abs(t.zeit - ziel) < ZWANG_NAHE_MS)) continue;
+    const eintrag = { zeit: ziel } as Geplant;
+    eintrag.id = setTimeout(() => {
+      nachSchalten = nachSchalten.filter((t) => t !== eintrag);
+      void frischAbrufen(epocheVorher);
+    }, ms);
+    nachSchalten.push(eintrag);
+  }
 }
 
 function frisch(): { stand: BueroStand; geholt: number } | null {
@@ -153,7 +185,9 @@ export function useBueroStand(): BueroZustand {
     };
 
     const frischer = (ergebnis: Ergebnis) => {
-      if (!beendet) setZustand((alt) => anwenden(alt, ergebnis));
+      if (beendet) return;
+      setZustand((alt) => anwenden(alt, ergebnis));
+      planen(); // der Takt zählt ab dem frischen Stand, sonst käme kurz danach noch ein überflüssiger Abruf
     };
     hoerer.add(frischer);
 

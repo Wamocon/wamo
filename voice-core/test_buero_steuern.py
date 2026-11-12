@@ -6,6 +6,9 @@ Gilt seit 12.11.2026: Admins können Fernseher, Lautsprecher und Steckdosen auch
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -200,6 +203,22 @@ async def test_protokollfehler_haelt_den_schaltvorgang_nie_auf(monkeypatch):
 
     monkeypatch.setattr(api, "shared_database", kaputt)
     await api._protokollieren(USER, "fernseher", "an", "done", "success")  # wirft nicht
+
+
+@pytest.mark.asyncio
+async def test_langsames_protokoll_haelt_die_antwort_nicht_auf(monkeypatch):
+    async def langsam(*_args):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(api, "_protokoll_schreiben", langsam)
+    monkeypatch.setattr(api, "PROTOKOLL_ZEIT", 0.05)
+    start = time.monotonic()
+    await api._protokollieren(USER, "fernseher", "an", "done", "success")
+    assert time.monotonic() - start < 1.0  # das Gerät ist schon geschaltet, die Antwort wartet nicht auf die Datenbank
+
+
+def test_der_dienst_bekommt_etwas_mehr_zeit_als_seine_eigene_frist():
+    assert api.STEUER_ZEIT > 15.0  # geraete/wamo_geraete/dienst.py: 15 Sekunden
 
 
 # ---------- Aktionen im Stand (nur Admins) ----------

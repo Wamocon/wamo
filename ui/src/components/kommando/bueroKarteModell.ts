@@ -43,7 +43,7 @@ export function brauchtBestaetigung(g: BueroGeraet, aktion: Aktion): boolean {
 export function schaltFehlerText(status: number, text: string): string {
   if (status === 403) return "Bürogeräte schalten dürfen nur Admins.";
   if (status === 401) return "Bitte melde dich neu an.";
-  if (status === 0) return "Der Kern ist gerade nicht erreichbar. Bitte gleich noch einmal versuchen.";
+  if (status === 0) return "Unklar, ob der Befehl angekommen ist. Der Zustand oben zeigt gleich, was das Gerät macht.";
   const sauberer = sauber(text, 120);
   return sauberer || "Das hat nicht geklappt. Bitte gleich noch einmal versuchen.";
 }

@@ -59,6 +59,12 @@ def test_offene_karten_werden_beim_ende_abgelehnt_und_halten_den_ja_waechter_zur
     assert "buerogeraete is not None and buerogeraete._offen" in QUELLE
 
 
+def test_die_variable_ist_vor_dem_ja_waechter_zustand_gebunden():
+    """freigabe_offen liest buerogeraete; ein Aufruf vor der Bindung wäre ein NameError, den except AttributeError nicht fängt."""
+    assert QUELLE.count("buerogeraete: Buerogeraete | None = None") == 1
+    assert QUELLE.index("buerogeraete: Buerogeraete | None = None") < QUELLE.index("def freigabe_offen")
+
+
 def test_job_name_stimmt_mit_der_oberflaeche_ueberein():
     ui = Path(__file__).resolve().parent.parent / "ui" / "src" / "lib" / "laborKarte.ts"
     assert gw.JOB == "geraet"

@@ -65,17 +65,18 @@ export function schalterSchluessel(userId: string | null | undefined): string | 
 export const SCHALTER_STANDARD = true;
 
 /**
- * Ist der Schalter für diese Person auf diesem Gerät an? "an" und "aus" sind ausdrückliche Wahlen, ein fehlender Eintrag oder ein
- * unlesbarer Speicher heißt Standard (an), jeder andere Wert gilt als aus. Ohne brauchbare Kennung immer aus (kein Schlüssel, keine Person).
+ * Ist der Schalter für diese Person auf diesem Gerät an? "an" und "aus" sind ausdrückliche Wahlen, ein sauber gelesener, fehlender Eintrag
+ * heißt Standard (an), jeder andere Wert gilt als aus. Ohne brauchbare Kennung, ohne Speicher und bei einem Lesefehler (strenger Datenschutzmodus)
+ * immer aus: Dort kann die Person nichts dauerhaft wählen, also bleibt es beim sicheren Verhalten.
  */
 export function schalterLesen(speicher: Speicher | null | undefined, userId: string | null | undefined): boolean {
   const k = schalterSchluessel(userId);
-  if (!k) return false;
-  let wert: string | null = null;
+  if (!k || !speicher) return false;
+  let wert: string | null;
   try {
-    wert = speicher ? speicher.getItem(k) : null;
+    wert = speicher.getItem(k);
   } catch {
-    wert = null;
+    return false;
   }
   if (wert === "an") return true;
   if (wert === "aus") return false;

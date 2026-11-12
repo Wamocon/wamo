@@ -12,7 +12,7 @@ import { BueroKarte } from "./BueroKarte";
 import { beschriftung, UNBEKANNT_TIPP, type BueroGeraet, type BueroStand } from "./bueroKarteModell";
 import { bueroNachSchalten, useBueroStand, type BueroZustand } from "./useBueroStand";
 
-vi.mock("./useBueroStand", () => ({ useBueroStand: vi.fn(), bueroNachSchalten: vi.fn() }));
+vi.mock("./useBueroStand", () => ({ useBueroStand: vi.fn(), bueroNachSchalten: vi.fn(), bueroEpoche: vi.fn(() => 0) }));
 vi.mock("@/lib/bueroApi", () => ({ bueroSteuern: vi.fn() }));
 
 const server: BueroGeraet = { id: "srv-1", name: "Sokrates-2", gruppe: "server", ampel: "ok", text: "läuft, Last niedrig", tipp: "Sag: Wie geht es dem Server?" };
@@ -322,7 +322,7 @@ describe("BueroKarte", () => {
       await user.click(knopf("Einschalten"));
       expect(bueroSteuern).toHaveBeenCalledTimes(1);
       expect(bueroSteuern).toHaveBeenCalledWith("tv-2", "an");
-      expect(bueroNachSchalten).toHaveBeenCalledWith("an");
+      expect(bueroNachSchalten).toHaveBeenCalledWith("an", expect.any(Number));
       expect(await screen.findByText(/Einschalten gesendet/)).toBeTruthy();
     });
 
@@ -332,7 +332,9 @@ describe("BueroKarte", () => {
       expect(bueroSteuern).toHaveBeenCalledTimes(1);
     });
 
-    it("während ein Befehl läuft, sind alle Knöpfe aus", async () => {
+    const aus = (b: HTMLElement) => b.getAttribute("aria-disabled") === "true";
+
+    it("während ein Befehl läuft, sind alle Knöpfe aria-disabled (nicht disabled: der Fokus bleibt), ein Tipp dazwischen zählt nicht", async () => {
       let fertig: () => void = () => undefined;
       vi.mocked(bueroSteuern).mockImplementation(
         () =>
@@ -343,51 +345,140 @@ describe("BueroKarte", () => {
       const user = await oeffnen(tvAn);
       await user.click(knopf("Lauter"));
       const gruppe = screen.getByRole("group", { name: "Fernseher LG schalten" });
-      for (const b of within(gruppe).getAllByRole("button")) expect((b as HTMLButtonElement).disabled).toBe(true);
+      for (const b of within(gruppe).getAllByRole("button")) {
+        expect(aus(b)).toBe(true);
+        expect((b as HTMLButtonElement).disabled).toBe(false);
+      }
       expect(screen.getByText("Wird gesendet …")).toBeTruthy();
+      await user.click(knopf("Leiser"));
+      expect(bueroSteuern).toHaveBeenCalledTimes(1);
       await act(async () => fertig());
       expect(await screen.findByText("Lauter gesendet.")).toBeTruthy();
-      for (const b of within(gruppe).getAllByRole("button")) expect((b as HTMLButtonElement).disabled).toBe(false);
+      for (const b of within(gruppe).getAllByRole("button")) expect(aus(b)).toBe(false);
     });
 
-    it("Steckdose ausschalten verlangt einen zweiten Tipp", async () => {
-      const user = await oeffnen(dose);
-      await user.click(knopf("Ausschalten"));
-      expect(bueroSteuern).not.toHaveBeenCalled();
-      expect(screen.getByText("Sicher? Noch einmal tippen")).toBeTruthy();
-      await user.click(knopf("Sicher? Noch einmal tippen"));
-      expect(bueroSteuern).toHaveBeenCalledWith("steckdose-1", "aus");
+    it("derselbe Befehl geht nicht doppelt, auch nicht nach Schließen und erneutem Öffnen der Karte", async () => {
+      let fertig: () => void = () => undefined;
+      vi.mocked(bueroSteuern).mockImplementation(
+        () =>
+          new Promise<void>((r) => {
+            fertig = r;
+          }),
+      );
+      const user = await oeffnen(tvAn);
+      await user.click(knopf("Lauter"));
+      await user.click(screen.getByRole("button", { name: "Detailkarte zu Fernseher LG schließen" }));
+      await user.click(punkt(tvAn));
+      await user.click(knopf("Lauter"));
+      expect(bueroSteuern).toHaveBeenCalledTimes(1);
+      await act(async () => fertig());
+      await user.click(knopf("Lauter"));
+      expect(bueroSteuern).toHaveBeenCalledTimes(2);
     });
 
-    it("die Rückfrage der Steckdose verfällt nach ein paar Sekunden", async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      try {
-        const user = await oeffnen(dose);
-        await user.click(knopf("Ausschalten"));
-        expect(screen.getByText("Sicher? Noch einmal tippen")).toBeTruthy();
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(4100);
+    describe("Rückfrage bei Steckdose ausschalten", () => {
+      const mitUhr = async (test: (user: ReturnType<typeof userEvent.setup>) => Promise<void>) => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+          const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+          zustand({ stand: stand([tvAn, tvAus, dose, server]) });
+          render(<BueroKarte />);
+          await user.click(punkt(dose));
+          await test(user);
+        } finally {
+          vi.useRealTimers();
+        }
+      };
+      const warte = (ms: number) =>
+        act(async () => {
+          await vi.advanceTimersByTimeAsync(ms);
         });
-        expect(screen.queryByText("Sicher? Noch einmal tippen")).toBeNull();
-        expect(bueroSteuern).not.toHaveBeenCalled();
-      } finally {
-        vi.useRealTimers();
-      }
+
+      it("verlangt einen zweiten, bewussten Tipp und nennt das Gerät in der Meldung", async () => {
+        await mitUhr(async (user) => {
+          await user.click(knopf("Ausschalten"));
+          expect(bueroSteuern).not.toHaveBeenCalled();
+          expect(screen.getByText("Sicher? Noch einmal tippen")).toBeTruthy();
+          expect(screen.getByText(/Steckdose 1 wirklich ausschalten\? Tippe innerhalb von 6 Sekunden noch einmal auf „Ausschalten“\./)).toBeTruthy();
+          await warte(500);
+          await user.click(knopf("Sicher? Noch einmal tippen"));
+          expect(bueroSteuern).toHaveBeenCalledWith("steckdose-1", "aus");
+        });
+      });
+
+      it("ein zu schneller zweiter Tipp (Doppelklick, gehaltene Taste) zählt nicht", async () => {
+        await mitUhr(async (user) => {
+          await user.click(knopf("Ausschalten"));
+          await warte(100);
+          await user.click(knopf("Sicher? Noch einmal tippen"));
+          expect(bueroSteuern).not.toHaveBeenCalled();
+          await warte(400);
+          await user.click(knopf("Sicher? Noch einmal tippen"));
+          expect(bueroSteuern).toHaveBeenCalledTimes(1);
+        });
+      });
+
+      it("verfällt nach 6 Sekunden und sagt, dass nichts passiert ist", async () => {
+        await mitUhr(async (user) => {
+          await user.click(knopf("Ausschalten"));
+          await warte(6100);
+          expect(screen.queryByText("Sicher? Noch einmal tippen")).toBeNull();
+          expect(screen.getByText("Die Rückfrage ist abgelaufen, es ist nichts passiert.")).toBeTruthy();
+          expect(bueroSteuern).not.toHaveBeenCalled();
+        });
+      });
+
+      it("Escape bricht nur die Rückfrage ab, die Karte bleibt offen", async () => {
+        await mitUhr(async (user) => {
+          await user.click(knopf("Ausschalten"));
+          knopf("Sicher? Noch einmal tippen").focus();
+          await user.keyboard("{Escape}");
+          expect(screen.queryByText("Sicher? Noch einmal tippen")).toBeNull();
+          expect(screen.getByText("Abgebrochen, es ist nichts passiert.")).toBeTruthy();
+          expect(detail(dose)).not.toBeNull();
+          expect(bueroSteuern).not.toHaveBeenCalled();
+          await user.keyboard("{Escape}"); // ohne Rückfrage schließt Escape die Karte wie bisher
+          expect(detail(dose)).toBeNull();
+        });
+      });
+    });
+
+    it("andere Aktionen brauchen keine Rückfrage, auch nicht auf der Steckdose", async () => {
+      const einAus: BueroGeraet = { ...dose, id: "steckdose-9", name: "Steckdose 9", aktionen: ["an"] };
+      const user = await oeffnen(einAus, [einAus, server]);
+      await user.click(knopf("Einschalten"));
+      expect(bueroSteuern).toHaveBeenCalledWith("steckdose-9", "an");
     });
 
     it.each([
-      [new KernFehler(403, "Bürogeräte schalten dürfen nur Admins"), "Bürogeräte schalten dürfen nur Admins."],
-      [new KernFehler(409, "Das geht mit diesem Gerät nicht"), "Das geht mit diesem Gerät nicht"],
-      [new KernFehler(502, "Das Gerät hat nicht geantwortet. Ist es erreichbar?"), "Das Gerät hat nicht geantwortet. Ist es erreichbar?"],
-      [new KernFehler(0, "Kern nicht erreichbar"), "Der Kern ist gerade nicht erreichbar. Bitte gleich noch einmal versuchen."],
-      [new Error("irgendwas"), "Der Kern ist gerade nicht erreichbar. Bitte gleich noch einmal versuchen."],
-    ])("Fehler %#: ruhige Meldung, kein Neuladen, Knöpfe wieder frei", async (fehler, text) => {
+      [new KernFehler(403, "Bürogeräte schalten dürfen nur Admins"), "Bürogeräte schalten dürfen nur Admins.", false],
+      [new KernFehler(409, "Das geht mit diesem Gerät nicht"), "Das geht mit diesem Gerät nicht", false],
+      [new KernFehler(502, "Das Gerät hat nicht geantwortet. Ist es erreichbar?"), "Das Gerät hat nicht geantwortet. Ist es erreichbar?", false],
+      [new KernFehler(0, "Kern nicht erreichbar"), "Unklar, ob der Befehl angekommen ist. Der Zustand oben zeigt gleich, was das Gerät macht.", true],
+      [new Error("irgendwas"), "Unklar, ob der Befehl angekommen ist. Der Zustand oben zeigt gleich, was das Gerät macht.", true],
+    ])("Fehler %#: ruhige Meldung, Neu-Abruf nur wenn unklar, Knöpfe wieder frei", async (fehler, text, unklar) => {
       vi.mocked(bueroSteuern).mockRejectedValue(fehler);
       const user = await oeffnen(tvAn);
       await user.click(knopf("Leiser"));
       expect(await screen.findByText(text)).toBeTruthy();
-      expect(bueroNachSchalten).not.toHaveBeenCalled();
-      expect((knopf("Leiser") as HTMLButtonElement).disabled).toBe(false);
+      if (unklar) expect(bueroNachSchalten).toHaveBeenCalledWith("leiser", expect.any(Number));
+      else expect(bueroNachSchalten).not.toHaveBeenCalled();
+      expect(aus(knopf("Leiser"))).toBe(false);
+    });
+
+    it("verschwindet der Knopf mit dem Fokus (der Zustand wechselt), geht der Fokus an einen Knopf der neuen Liste", async () => {
+      const user = userEvent.setup();
+      zustand({ stand: stand([tvAus, server]) });
+      const { rerender } = render(<BueroKarte />);
+      await user.click(punkt(tvAus));
+      await user.click(knopf("Einschalten"));
+      expect(document.activeElement).toBe(knopf("Einschalten"));
+      const jetztAn: BueroGeraet = { ...tvAus, text: "an", aktionen: ["aus", "lauter"] };
+      zustand({ stand: stand([jetztAn, server]) });
+      rerender(<BueroKarte />);
+      await screen.findByRole("button", { name: "Ausschalten" });
+      expect(screen.queryByRole("button", { name: "Einschalten" })).toBeNull();
+      expect(document.activeElement).toBe(knopf("Ausschalten"));
     });
 
     it("die Meldung steht in einem Statusbereich für Bildschirmleser", async () => {

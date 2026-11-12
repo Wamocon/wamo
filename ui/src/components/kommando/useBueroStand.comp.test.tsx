@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bueroLaden } from "@/lib/bueroApi";
 import { KernFehler } from "@/lib/kernApi";
 import type { BueroStand } from "./bueroKarteModell";
-import { bueroNachSchalten, bueroStandVergessen, useBueroStand, useBueroStandHalten } from "./useBueroStand";
+import { bueroEpoche, bueroNachSchalten, bueroStandVergessen, useBueroStand, useBueroStandHalten } from "./useBueroStand";
 
 vi.mock("@/lib/bueroApi", () => ({ bueroLaden: vi.fn() }));
 
@@ -380,17 +380,73 @@ describe("useBueroStand", () => {
       expect(laden).toHaveBeenCalledTimes(3);
     });
 
-    it("ein neuer Schaltvorgang setzt die Zeiten neu: höchstens zwei Abrufe, nie ein Stapel", async () => {
+    it("Schaltvorgänge kurz hintereinander teilen sich einen Abruf (Zeitpunkte nah beieinander entfallen)", async () => {
       laden.mockResolvedValue(STAND);
       renderHook(() => useBueroStand());
       await vor(0);
-      for (let i = 0; i < 5; i++) {
+      bueroNachSchalten("lauter");
+      await vor(1000);
+      bueroNachSchalten("lauter"); // Ziel 3,5 s statt 2,5 s: näher als 2 s, entfällt
+      await vor(1000);
+      bueroNachSchalten("lauter"); // Ziel 4,5 s: genau 2 s nach dem ersten, kommt dazu
+      await vor(5000);
+      expect(laden).toHaveBeenCalledTimes(3);
+    });
+
+    it("höchstens drei Neu-Abrufe je Minute, damit der Takt unter den 6 des Kerns bleibt", async () => {
+      laden.mockResolvedValue(STAND);
+      renderHook(() => useBueroStand());
+      await vor(0);
+      for (let i = 0; i < 8; i++) {
         bueroNachSchalten("lauter");
-        await vor(1000);
+        await vor(3000);
       }
-      expect(laden).toHaveBeenCalledTimes(1); // noch kein Abruf: jedes Mal neu begonnen
+      // 1 Abruf beim Einhängen, 3 Neu-Abrufe (Grenze), dazu der Takt nach 30 Sekunden
+      await vor(10 * SEK);
+      expect(laden.mock.calls.length).toBeLessThanOrEqual(1 + 3 + 1);
+      expect(laden.mock.calls.length).toBeGreaterThanOrEqual(1 + 3);
+    });
+
+    it("das Einschalten behält seinen Abruf nach 10 Sekunden, auch wenn danach ein anderes Gerät geschaltet wird", async () => {
+      laden.mockResolvedValue(STAND);
+      renderHook(() => useBueroStand());
+      await vor(0);
+      bueroNachSchalten("an"); // Abrufe bei 2,5 und 10 Sekunden
+      await vor(4000);
+      bueroNachSchalten("lauter"); // ersetzt nichts, ergänzt höchstens
+      await vor(10 * SEK);
+      const nach = laden.mock.calls.length;
+      expect(nach).toBeGreaterThanOrEqual(1 + 3); // Einhängen, 2,5 s, 6,5 s und 10 s
+    });
+
+    it("nach dem frischen Stand zählt der Takt neu: kein überflüssiger Abruf zur alten Zeit", async () => {
+      laden.mockResolvedValue(STAND);
+      renderHook(() => useBueroStand());
+      await vor(0); // Abruf 1 bei 0, Takt bei 30 s
+      await vor(20 * SEK);
+      bueroNachSchalten("lauter"); // Neu-Abruf bei 22,5 s, danach Takt bei 52,5 s
       await vor(2500);
       expect(laden).toHaveBeenCalledTimes(2);
+      await vor(10 * SEK); // 32,5 s: der alte Takt bei 30 s wäre jetzt fällig gewesen
+      expect(laden).toHaveBeenCalledTimes(2);
+      await vor(20 * SEK); // 52,5 s
+      expect(laden).toHaveBeenCalledTimes(3);
+    });
+
+    it("läuft gerade ein Takt-Abruf (Stand von vor dem Schalten), folgt danach ein frischer", async () => {
+      const erster = aufgeschoben();
+      laden.mockReturnValueOnce(erster.p).mockResolvedValue(NEU);
+      const karte = renderHook(() => useBueroStand());
+      await vor(0);
+      bueroNachSchalten("lauter");
+      await vor(2500); // der Takt-Abruf hängt noch, der Neu-Abruf wartet auf ihn
+      expect(laden).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        erster.ok(STAND);
+      });
+      await vor(0);
+      expect(laden).toHaveBeenCalledTimes(2); // frisch, nicht dasselbe Ergebnis noch einmal
+      expect(karte.result.current.stand).toEqual(NEU);
     });
 
     it("beim Abmelden (Stand vergessen) fällt der geplante Abruf weg", async () => {
@@ -401,6 +457,31 @@ describe("useBueroStand", () => {
       bueroStandVergessen();
       await vor(15 * SEK);
       expect(laden).toHaveBeenCalledTimes(1);
+    });
+
+    it("wurde nach dem Schalten abgemeldet (Epoche geändert), passiert nichts", async () => {
+      laden.mockResolvedValue(STAND);
+      renderHook(() => useBueroStand());
+      await vor(0);
+      const vorher = bueroEpoche();
+      bueroStandVergessen();
+      bueroNachSchalten("an", vorher);
+      await vor(15 * SEK);
+      expect(laden).toHaveBeenCalledTimes(1);
+    });
+
+    it("meldet sich jemand ab, während der Neu-Abruf läuft, geht dessen Ergebnis an keine Karte", async () => {
+      const spaet = aufgeschoben();
+      laden.mockResolvedValueOnce(STAND).mockReturnValueOnce(spaet.p);
+      const karte = renderHook(() => useBueroStand());
+      await vor(0);
+      bueroNachSchalten("lauter");
+      await vor(2500); // Neu-Abruf läuft
+      bueroStandVergessen();
+      await act(async () => {
+        spaet.ok(NEU);
+      });
+      expect(karte.result.current.stand).toEqual(STAND);
     });
 
     it("eine ausgehängte Karte bekommt nichts mehr", async () => {

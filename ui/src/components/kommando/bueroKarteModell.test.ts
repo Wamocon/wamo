@@ -501,7 +501,9 @@ test("jede Aktion hat Knopftext und Meldung, ohne Gedankenstrich", () => {
   for (const a of AKTIONEN) {
     assert.ok(AKTION_KNOPF[a].length > 0, a);
     assert.ok(AKTION_GESENDET[a].endsWith("."), a);
-    assert.doesNotMatch(AKTION_KNOPF[a] + AKTION_GESENDET[a], /[–—]|\s-\s/);
+    const text = AKTION_KNOPF[a] + AKTION_GESENDET[a];
+    assert.doesNotMatch(text, new RegExp("[" + String.fromCharCode(0x2013, 0x2014) + "]"));
+    assert.ok(!text.includes(" - "), a);
   }
 });
 
@@ -515,9 +517,9 @@ test("nur Ausschalten einer Steckdose verlangt einen zweiten Tipp", () => {
 test("Fehlersätze: 403, 401 und keine Verbindung haben feste Sätze, sonst gilt der gesäuberte Satz des Kerns", () => {
   assert.equal(schaltFehlerText(403, "egal"), "Bürogeräte schalten dürfen nur Admins.");
   assert.equal(schaltFehlerText(401, "egal"), "Bitte melde dich neu an.");
-  assert.match(schaltFehlerText(0, "Kern nicht erreichbar"), /nicht erreichbar/);
+  assert.match(schaltFehlerText(0, "Kern nicht erreichbar"), /Unklar, ob der Befehl angekommen ist/);
   assert.equal(schaltFehlerText(409, "Das geht mit diesem Gerät nicht"), "Das geht mit diesem Gerät nicht");
-  assert.equal(schaltFehlerText(502, "a‮b c   d"), "a b c d");
+  assert.equal(schaltFehlerText(502, "a\u202eb\u0000c   d"), "a b c d");
   assert.match(schaltFehlerText(500, ""), /nicht geklappt/);
   assert.ok(schaltFehlerText(500, "x".repeat(500)).length <= 120);
 });

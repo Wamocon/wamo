@@ -253,7 +253,7 @@ export function BueroKarte() {
             })}
           </div>
 
-          <div className="bk-detail-wrap" aria-live="polite" aria-atomic="true">
+          <div className="bk-detail-wrap" aria-live="polite" aria-atomic="false" aria-relevant="additions">
             {aktuell && <Detail geraet={aktuell} onSchliessen={schliessen} />}
           </div>
 

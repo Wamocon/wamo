@@ -82,9 +82,9 @@ describe("Einstellung 'Still starten beim Tippen'", () => {
     try {
       nutzerSetzen({ id: "ee000000-0000-4000-8000-000000000000", email: "x@wamocon.com" });
       render(<StillStartEinstellung />);
-      expect(kasten().checked).toBe(true); // Standard an, obwohl der Speicher nichts liefert
+      expect(kasten().checked).toBe(false); // der Speicher ist unlesbar: aus, nicht der Standard
       await userEvent.click(kasten());
-      expect(kasten().checked).toBe(false); // die Wahl gilt bis zum Neuladen
+      expect(kasten().checked).toBe(true); // die Wahl gilt bis zum Neuladen
     } finally {
       Object.defineProperty(window, "localStorage", vorher);
     }

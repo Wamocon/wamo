@@ -71,7 +71,8 @@ GRENZE = (6, 60.0)  # Abrufe, Sekunden, je Profil
 STEUER_GRENZE = (20, 60.0)  # Schaltvorgänge, Sekunden, je Profil (der Gerätedienst begrenzt ebenfalls auf 20 je Minute)
 STEUER_ROLLEN = frozenset({"admin"})  # wer die Knöpfe benutzen darf; alle anderen sehen weder Knöpfe noch dürfen sie POSTen
 STEUER_AKTIONEN = ("an", "aus", "lauter", "leiser", "stumm", "laut")  # nur diese sechs; Lautstärke-Zahl und Eingang gibt es hier nie
-STEUER_ZEIT = 15.0
+STEUER_ZEIT = 20.0  # der Dienst gibt sich 15 Sekunden (geraete/wamo_geraete/dienst.py), der Kern wartet etwas länger
+PROTOKOLL_ZEIT = 2.0  # das Protokoll hält die Antwort nach einem schon erfolgten Schaltvorgang nie länger auf
 MAX_STEUER_BODY = 1024
 MAX_GERAETE = 64
 MAX_NAME, MAX_TEXT, MAX_TIPP = 60, 80, 120
@@ -471,17 +472,21 @@ async def status(request: Request, response: Response) -> dict:
 async def _protokollieren(user_id: str, kennung: str, aktion: str, status: str, ergebnis: str) -> None:
     """Der Versuch steht in actions. Das Protokoll ist ein Nachweis und hält den Schaltvorgang nie auf: jeder Fehler wird nur geloggt."""
     try:
-        db = shared_database()
-        if not db.configured:
-            return
+        async with asyncio.timeout(PROTOKOLL_ZEIT):
+            await _protokoll_schreiben(user_id, kennung, aktion, status, ergebnis)
+    except Exception as e:  # noqa: BLE001 (Nachweis, nicht Voraussetzung)
+        logger.warning("Büro-Karte: Schaltvorgang nicht protokolliert ({})", type(e).__name__)
+
+
+async def _protokoll_schreiben(user_id: str, kennung: str, aktion: str, status: str, ergebnis: str) -> None:
+    db = shared_database()
+    if db.configured:
         await db.execute(
             f"insert into {db.t('actions')} (user_id, tool, params, reason, risk, status, result, decided_at, finished_at) "
             f"values ($1::uuid, 'buerogeraet_steuern', $2::text::jsonb, 'Bürogerät (Knopf in der Oberfläche)', "
             f"'change'::{db.t('risk_class')}, $3::text::{db.t('action_status')}, $4::text::jsonb, now(), now())",
             user_id, json.dumps({"geraet": kennung, "aktion": aktion, "quelle": "oberflaeche"}), status,
             json.dumps({"status": ergebnis[:20]}))
-    except Exception as e:  # noqa: BLE001 (Nachweis, nicht Voraussetzung)
-        logger.warning("Büro-Karte: Schaltvorgang nicht protokolliert ({})", type(e).__name__)
 
 
 @router.post("/buero/steuern")

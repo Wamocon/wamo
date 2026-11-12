@@ -50,9 +50,9 @@ function speicher(gesperrt = false) {
 
 // ---------- Schalter je Gerät und Person ----------
 
-test("Standard ist an, solange nichts gewählt wurde, auch ohne Speicher; ohne Kennung bleibt er aus", () => {
+test("Standard ist an, solange nichts gewählt wurde; ohne Speicher und ohne Kennung bleibt er aus", () => {
   assert.equal(schalterLesen(speicher(), NUTZER), true);
-  assert.equal(schalterLesen(null, NUTZER), true);
+  assert.equal(schalterLesen(null, NUTZER), false);
   assert.equal(schalterLesen(speicher(), null), false);
   assert.equal(schalterLesen(speicher(), ""), false);
 });
@@ -85,9 +85,9 @@ test("Ausschalten speichert die ausdrückliche Wahl 'aus', sie bleibt auch nach 
   assert.equal(schalterLesen(s, NUTZER), true);
 });
 
-test("gesperrter Speicher: Lesen ergibt den Standard (an), Schreiben meldet false, nichts wirft", () => {
+test("gesperrter Speicher (strenger Datenschutzmodus): Lesen ergibt aus, Schreiben meldet false, nichts wirft", () => {
   const s = speicher(true);
-  assert.equal(schalterLesen(s, NUTZER), true);
+  assert.equal(schalterLesen(s, NUTZER), false);
   assert.equal(schalterSchreiben(s, NUTZER, true), false);
 });
 
