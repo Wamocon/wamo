@@ -77,7 +77,7 @@ Die Tokens öffnen nie die Pfade der anderen: Der Bearer des Kerns nur `/api/ker
 Je Platz eine SQLite-Datei (WAL) mit `max_page_count` (16 MB), dazu eine kleine Datei für die Token-Hashes. Quoten je Platz (D1): 100 Tickets,
 300 Kommentare, 1 MB Nutztext (UTF-8, Seed zählt mit), 30 Schreibaufrufe in 60 Sekunden. Darüber antwortet der Dienst 429 `quote_erreicht`,
 auch wenn die Datei voll ist, nie mit einem Absturz. Alle Abfragen sind parametrisiert, die Suche ist wörtlich (kein `LIKE`) und beachtet
-Groß- und Kleinschreibung nicht, auch bei Umlauten. Der Speicher für Idempotenzschlüssel ist auf 2000 je Platz begrenzt (wirkt nur bei Missbrauch).
+Groß- und Kleinschreibung nicht, auch bei Umlauten. Der Speicher für Idempotenzschlüssel ist auf 200 je Platz begrenzt (wirkt nur bei Missbrauch).
 
 ## Grenzen für Lesen, Fehlversuche und Verbindungen
 

@@ -399,3 +399,19 @@ def test_schreibrate_ignoriert_eintraege_aus_der_zukunft_wenn_die_uhr_zurueckges
     for _ in range(29):
         anlegen(db)
     _fehler(anlegen(db), 429, "quote_erreicht")  # die Grenze gilt weiter
+
+
+def test_idempotenzspeicher_haelt_je_platz_hoechstens_200_schluessel(db, uhr):
+    """Der Kern schreibt höchstens 25 je Durchlauf: 200 Schlüssel genügen weit, und ein Missbrauch füllt die Datei nicht."""
+    import sqlite3
+
+    assert schreibpfad.IDEM_MAX == 200
+    version = 1
+    for i in range(230):
+        if i % 25 == 24:
+            uhr.vor(61)
+        version = inhalt(status_setzen(db, 12, version, "in_arbeit" if i % 2 else "erledigt"))["version"]
+    verbindung = sqlite3.connect(db.pfad)
+    zahl = verbindung.execute("SELECT COUNT(*) FROM idempotenz").fetchone()[0]
+    verbindung.close()
+    assert zahl == 200
