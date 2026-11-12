@@ -37,13 +37,27 @@
 
 https://192.168.178.136:55443, https://sokrates2:55443, https://spark-651f.local:55443 {
 	tls internal
-	# Envoy des WAMO-Stacks (veröffentlicht auf 55321, über das Docker-Gateway des Hosts erreichbar).
-	# Host-Header und WebSockets (Realtime) reicht Caddy unverändert durch.
-	reverse_proxy host.docker.internal:55321 {
-		# Streaming-Antworten (Edge Functions, Server-Sent Events) sofort weitergeben
-		flush_interval -1
-		# Offene WebSockets bei "caddy reload" nicht sofort trennen
-		stream_close_delay 5m
+	# Kein Passwortwechsel über das Netz (Befund des Token-Tests vom 12.11.2026): Ein Konto mit aal2-Token ändert sein Passwort mit
+	# PUT /auth/v1/user, GoTrue verlangt die erneute Anmeldung nur bei Sitzungen über 24 Stunden. WAMO ändert Passwörter nie so (Konten legt
+	# nur der Admin an), also weist Caddy jedes PUT und PATCH auf .../auth/.../user ab. Der Muster-Pfad fängt auch Groß-Schreibung, einen
+	# Schrägstrich am Ende und Umwege mit . und .. (der Envoy bereinigt sie). Admin-Pfade (/auth/v1/admin/users/<id>) bleiben offen. Der Envoy
+	# selbst ist von außen nicht erreichbar (Firewallkette WAMO-FW-HTTP), Caddy ist der einzige Eingang. Test: voice-core/test_caddy_passwortwechsel.py.
+	@passwortwechsel {
+		method PUT PATCH
+		path_regexp (?i)/auth/(.*/)?user/*$
+	}
+	handle @passwortwechsel {
+		respond "Der Passwortwechsel ist über diesen Weg gesperrt." 403
+	}
+	handle {
+		# Envoy des WAMO-Stacks (veröffentlicht auf 55321, über das Docker-Gateway des Hosts erreichbar).
+		# Host-Header und WebSockets (Realtime) reicht Caddy unverändert durch.
+		reverse_proxy host.docker.internal:55321 {
+			# Streaming-Antworten (Edge Functions, Server-Sent Events) sofort weitergeben
+			flush_interval -1
+			# Offene WebSockets bei "caddy reload" nicht sofort trennen
+			stream_close_delay 5m
+		}
 	}
 }
 
