@@ -307,6 +307,8 @@ test("Meldungen ohne Gedankenstrich", () => {
   const texte = [
     startMeldung("Sokrates-2", true),
     startMeldung("Sokrates-2", false),
+    startMeldung("Sokrates-2", true, true),
+    startMeldung("Sokrates-2", false, true),
     endeMeldung("Sokrates-2", true),
     endeMeldung("Sokrates-2", false),
     ...Object.values(STATUS_INFO).flatMap((i) => [i.wort, i.erklaerung]),
@@ -314,6 +316,11 @@ test("Meldungen ohne Gedankenstrich", () => {
   ];
   for (const t of texte) assert.ok(!/[–—]|\s-\s/.test(t), t);
   assert.match(startMeldung("Sokrates-2", false), /blockiert/);
+  // Desktop-App: die Adresse geht an den Browser, die Meldung sagt das und mahnt zur Eile (ohne Verbindung endet die Sitzung nach wenigen Minuten)
+  assert.match(startMeldung("Sokrates-2", true, true), /im Browser/);
+  assert.match(startMeldung("Sokrates-2", true, true), /gleich/);
+  assert.doesNotMatch(startMeldung("Sokrates-2", true, true), /blockiert/);
+  assert.match(startMeldung("Sokrates-2", false, true), /Fenster öffnen/);
   assert.match(endeMeldung("Sokrates-2", false), /nicht bestätigt/);
 });
 
