@@ -1,0 +1,59 @@
+/* =====================================================================
+   Griffe der Seitenleisten (kommando/Seitengriff.tsx): Breite der linken und rechten Leiste ziehen.
+   Eingebunden über globals.css. Farben nur aus dem WMC-Satz: graue Linie, beim Überfahren, bei Fokus und beim Ziehen Rot (--accent).
+   Die Breiten selbst stehen in kommando.css (--kz-links und --kz-rechts am .kz-main).
+   ===================================================================== */
+
+/* Ohne Griffe: unter 1280 px gelten die festen Breiten (kommando.css), unter 1100 px steht alles in einer Spalte */
+.kz-griff { display: none; }
+
+@media (min-width: 1280px) {
+  .kz-griff {
+    display: block; position: absolute; z-index: 3; top: 0; bottom: 0; width: 12px;
+    cursor: col-resize; touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  /* mittig auf der Trennlinie der Leiste (1 px Rand, 6 px zu jeder Seite) */
+  .kz-griff[data-seite="links"] { left: calc(var(--kz-links) - 6px); }
+  .kz-griff[data-seite="rechts"] { right: calc(var(--kz-rechts) - 6px); }
+  .kz-griff::before {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 1px; background: var(--rule);
+    transition-property: background-color; transition-duration: var(--dur-fast);
+  }
+  .kz-griff[data-seite="links"]::before { left: 5px; }
+  .kz-griff[data-seite="rechts"]::before { left: 6px; }
+  .kz-griff:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .kz-griff:focus-visible::before,
+  .kz-main[data-zieht="links"] .kz-griff[data-seite="links"]::before,
+  .kz-main[data-zieht="rechts"] .kz-griff[data-seite="rechts"]::before { width: 3px; background: var(--accent); }
+  .kz-griff[data-seite="links"]:focus-visible::before,
+  .kz-main[data-zieht="links"] .kz-griff[data-seite="links"]::before { left: 4px; }
+  .kz-griff[data-seite="rechts"]:focus-visible::before,
+  .kz-main[data-zieht="rechts"] .kz-griff[data-seite="rechts"]::before { left: 5px; }
+}
+@media (min-width: 1280px) and (hover: hover) {
+  .kz-griff:hover::before { width: 3px; background: var(--accent); }
+  .kz-griff[data-seite="links"]:hover::before { left: 4px; }
+  .kz-griff[data-seite="rechts"]:hover::before { left: 5px; }
+}
+/* Finger: breiterer Griff, damit er sich treffen lässt */
+@media (min-width: 1280px) and (pointer: coarse) {
+  .kz-griff { width: 24px; }
+  .kz-griff[data-seite="links"] { left: calc(var(--kz-links) - 12px); }
+  .kz-griff[data-seite="rechts"] { right: calc(var(--kz-rechts) - 12px); }
+  .kz-griff[data-seite="links"]::before { left: 11px; }
+  .kz-griff[data-seite="rechts"]::before { left: 12px; }
+  .kz-griff[data-seite="links"]:focus-visible::before,
+  .kz-main[data-zieht="links"] .kz-griff[data-seite="links"]::before { left: 10px; }
+  .kz-griff[data-seite="rechts"]:focus-visible::before,
+  .kz-main[data-zieht="rechts"] .kz-griff[data-seite="rechts"]::before { left: 11px; }
+}
+
+/* Beim Ziehen: Cursor überall gleich und kein Text markieren (der Griff fängt den Zeiger, auch über Canvas und Tafeln hinweg) */
+.kz-main[data-zieht] { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+.kz-main[data-zieht] * { cursor: col-resize !important; }
+
+/* Schmale rechte Leiste (ab 260 px): Die vier Reiter scrollen seitlich, statt die Leiste zu sprengen.
+   Das 1 px Innenabstand unten ersetzt 1 px des Außenabstands (die Reiter ragen sonst 1 px über die Linie und würden abgeschnitten). */
+@media (min-width: 1100px) {
+  .kz-reiter-seite { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; padding-bottom: 1px; margin-bottom: 3px; }
+}

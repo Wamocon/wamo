@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
+@import "../components/kommando/seitengriff.css"; /* Griffe der Seitenleisten (Breite ziehen): Regeln mit Präfix .kz-griff */
 @import "../components/kommando/vorgaenge.css"; /* Tafel "Vorgänge" (Karten, Balken, Schritte): Regeln mit Präfix .vg- */
 @import "../components/einstellungen/einstellungen.css"; /* Einstellungsseite: Regeln unter .ez */
 @import "../components/einstellungen/geraeteVerwaltung.css"; /* Geräteverwaltung der Admins: Regeln mit Präfix .gv- */

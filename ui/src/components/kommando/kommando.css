@@ -94,7 +94,9 @@
 .kz-main {
   position: relative; flex: none; min-height: 0;
   display: grid;
-  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr) minmax(320px, 380px);
+  /* Breite der Seitenleisten: per Ziehen änderbar (Seitengriff.tsx setzt die Variablen am Element), sonst gelten diese Standardwerte */
+  --kz-links: 300px; --kz-rechts: 380px;
+  grid-template-columns: var(--kz-links) minmax(0, 1fr) var(--kz-rechts);
   grid-template-rows: minmax(0, 1fr); /* jede Spalte scrollt für sich, nicht die Seite */
   height: calc(100dvh - var(--top));
   overflow: hidden;
