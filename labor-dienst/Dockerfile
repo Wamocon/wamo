@@ -1,10 +1,10 @@
 # WAMO Labor-Dienst (Test-Jira des Testlabors). Das Image wird auf dem Server aus diesen Quellen gebaut.
 #
-# D11: Das Basisimage gehört mit festem Digest gebaut, zum Beispiel
+# D11: Das Basisimage hat keinen Standardwert (kein wanderndes Tag): Es wird beim Bau mit festem Digest übergeben, sonst bricht der Bau ab:
 #   docker build --build-arg BASIS=python:3.11-slim@sha256:<Digest> -t wamo-labor-dienst:<Stand> .
 # Laufzeit (Empfehlung, D11): --read-only, --cap-drop ALL, --security-opt no-new-privileges, --memory 256m, --cpus 0.5,
 # ein beschreibbares Volume nur auf /data, die Tokendateien als Secrets (Pfade in WAMO_LABOR_DIENST_*_TOKEN_DATEI), kein Weg nach außen (D2).
-ARG BASIS=python:3.11-slim
+ARG BASIS
 FROM ${BASIS}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -14,7 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 COPY wamo_labor_dienst ./wamo_labor_dienst
 # Bytecode beim Bau erzeugen (zur Laufzeit ist das Dateisystem schreibgeschützt), Nutzer ohne root, einziger beschreibbarer Ort ist /data

@@ -15,7 +15,10 @@ WAMO_LABOR_DIENST_KERN_TOKEN_DATEI=... WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI=..
 
 Healthcheck des Containers: `python -m wamo_labor_dienst gesundheit` (Ausgang 0 nur bei `GET /gesundheit` mit Zustand ok).
 Das Image entsteht auf dem Server aus den Quellen (`Dockerfile`: Nutzer ohne root, schreibt nur nach `/data`, lauffähig mit `--read-only`,
-nichts wird zur Laufzeit installiert, das Basisimage wird mit festem Digest gebaut).
+nichts wird zur Laufzeit installiert). Das Basisimage hat keinen Standardwert und wird mit festem Digest übergeben, ohne ihn bricht der Bau ab:
+`docker build --build-arg BASIS=python:3.11-slim@sha256:<Digest> -t wamo-labor-dienst:<Stand> .` Die Abhängigkeiten stehen in `requirements.txt` mit
+Version und den Hashes aller Dateien (erzeugt wie `pip-compile --generate-hashes`), das Image installiert sie mit `pip install --require-hashes`
+(geprüft für Python 3.11 auf Linux x86_64). Neue Versionen: Pins ändern, Hashes mit `pip-compile --generate-hashes` neu erzeugen.
 
 ## Umgebung
 
