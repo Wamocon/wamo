@@ -97,12 +97,33 @@ curl -X POST -H "Authorization: Bearer $(cat <Datei mit dem Betreuer-Token>)" -H
 
 ## Bekannte Restrisiken
 
-* `neuer-durchlauf` verlangt keine Bestätigung für einen laufenden Durchlauf: Ein versehentlicher Aufruf setzt das Board eines Besuchers zurück und
-  entzieht dessen Platz-Token. Die Betreuer-Seite sollte vorher nachfragen.
-* Für die Abnahmeplätze 15 und 16 sperrt der Dienst keinen Platz-Token (die Abnahme braucht ihn). Der Betreuer gibt für sie keinen Besucher-Token aus.
-* Der Dienst läuft als genau ein Prozess: Token-Index, Raten, Fehlerzähler und Zwischenspeicher liegen im Speicher dieses Prozesses (mehrere Prozesse
-  hinter einem Verteiler würden die Grenzen je Prozess zählen).
-* Die Frist für Kopfzeilen (10 Sekunden) und die Höchstzahl der Verbindungen (64) schützen den Dienst selbst, sie ersetzen nicht die Fristen von Caddy.
+Was der Dienst bewusst nicht löst und wer es lösen muss:
+
+* **Löschen nur auf SQLite-Ebene:** `daten-loeschen`, `zuruecksetzen` und die Aufbewahrung löschen in den Datenbanken (Zeilen überschrieben, Datei verkleinert,
+  WAL-Datei zurückgeschrieben und geprüft). Dateisystemblöcke, Volume-Snapshots und Hostsicherungen liegen außerhalb des Dienstes. D10 verlangt, dass der Betrieb
+  dafür sorgt (keine Snapshots oder Sicherungen des Volumes über den 11.12.2026 hinaus, sonst löschen).
+* **Die Aufbewahrung greift nur bei laufendem Dienst:** Gelöscht wird beim Start und stündlich, solange der Dienst läuft. Nach dem 11.12.2026 den Dienst
+  weiterlaufen lassen (oder neu starten) oder das Volume löschen. Ein Dienst, der vorher abgeschaltet wird, löscht nichts mehr.
+* **Uhrabhängigkeit:** Aufbewahrung, Schreibrate, Gültigkeit der Idempotenzschlüssel, Anzeigezeit des neuen Tokens und die Zeitpunkte in den Tickets nutzen die
+  Uhr des Rechners. Der Dienst prüft sie beim Start (nicht vor dem 12.11.2026) und löscht nie nach einem Sprung der Wanduhr von mehr als einem Tag gegen die
+  monotone Uhr. Eine dauerhaft falsche Uhr, die schon beim Start nach dem 11.12.2026 steht, löscht trotzdem (es lässt sich nicht von einem Neustart danach
+  unterscheiden), und ein Rechner, der länger als einen Tag ruht (Suspend), verschiebt die Wanduhr gegen die monotone Uhr: Dann löscht die Aufbewahrung nicht,
+  bis der Dienst neu gestartet wird.
+* **Einwilligungsmaximum und Rücksetzweg:** Die Version des Datenschutzhinweises darf nur wachsen (1 bis 1000). Ein falsch erfasstes Maximum lässt sich nur mit
+  der Funktion `einwilligung-minimum-setzen` senken (nur ohne laufenden Durchlauf, mit ausdrücklicher Bestätigung, mit Eintrag in der Spur, Befehl siehe oben).
+* **Der Betreuer-Token ist ein Generalschlüssel:** Wer ihn hat, liest mit `platz-token` jeden Platz (er erzeugt sich einen Token und öffnet das Board), setzt jeden
+  Platz zurück und löscht jeden Platz. Die Betreuer-Spur (`betreuer.jsonl`) lässt sich mit gültigem Token bis 5 MB füllen, danach schreibt der Dienst still
+  keine Einträge mehr (nie überschreiben). Der Token wird nur beim Start aus der Datei gelesen, ein Wechsel geht nur per Neustart.
+* **Der Platz-Token bleibt gültig** nach `durchlauf-beenden` und `zuruecksetzen` (der Besucher sieht weiter sein Board). Ungültig wird er nur durch
+  `neuer-durchlauf`, `daten-loeschen`, ein neues `platz-token` und das Ende der Aufbewahrung.
+* **`neuer-durchlauf` verlangt in der Schnittstelle keine Bestätigung:** Ein versehentlicher Aufruf setzt das Board eines Besuchers zurück und entzieht dessen
+  Platz-Token. Die Betreuer-Seite verlangt dafür das Eintippen der Platznummer, ein Skript oder `curl` nicht.
+* **Plätze 15 und 16:** `neuer-durchlauf` und `daten-loeschen` entziehen den Platz-Token dort ebenso wie bei jedem Platz. Mit „nicht gesperrt“ ist nur gemeint, dass der
+  Dienst die Ausgabe eines Platz-Tokens für die Abnahmeplätze nicht verbietet (die Abnahme braucht ihn). Der Betreuer gibt für sie keinen Besucher-Token aus.
+* **Ein Prozess:** Token-Index, Raten, Fehlerzähler und Zwischenspeicher liegen im Speicher dieses einen Prozesses (mehrere Prozesse hinter einem Verteiler
+  würden die Grenzen je Prozess zählen).
+* **Fristen und Verbindungen:** Die Frist für Kopfzeilen (10 Sekunden) und die Höchstzahl der Verbindungen (64) schützen den Dienst selbst, sie ersetzen nicht
+  die Fristen von Caddy davor.
 
 ## Weboberflächen
 

@@ -50,3 +50,13 @@ def test_readme_nennt_die_betriebshinweise_zu_503_und_log_groesse():
     text = (ORDNER / "README.md").read_text(encoding="utf-8")
     assert "limit_concurrency" in text and "Klartext" in text and "Caddy" in text
     assert "max-size" in text
+
+
+def test_readme_nennt_die_restrisiken_ehrlich():
+    text = (ORDNER / "README.md").read_text(encoding="utf-8")
+    treffer = re.search(r"^## Bekannte Restrisiken(.*?)(?=^## )", text, re.S | re.M)
+    assert treffer, "Abschnitt Bekannte Restrisiken"
+    abschnitt = treffer.group(1)
+    for aussage in ("SQLite-Ebene", "Volume-Snapshots", "Hostsicherungen", "weiterlaufen", "Volume löschen", "Uhrabhängigkeit", "Generalschlüssel",
+                    "5 MB", "Neustart", "durchlauf-beenden", "zuruecksetzen", "nicht gesperrt", "entzieht den Token", "Einwilligungsmaximum", "Rücksetzweg"):
+        assert aussage in abschnitt, aussage
