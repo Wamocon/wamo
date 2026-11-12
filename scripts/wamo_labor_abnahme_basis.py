@@ -15,11 +15,15 @@ import sys
 import time
 import uuid
 from collections import Counter, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 import httpx
 
 BESTANDEN, DURCHGEFALLEN, VON_HAND, NICHT_GELAUFEN = "bestanden", "durchgefallen", "von Hand", "nicht gelaufen"
+STRENGER = "strenger"  # der Dienst ist strenger als der Vertrag: weder grün noch rot, von Hand prüfen
+ABGEBROCHEN = "abgebrochen"  # der Lauf konnte nicht weiter (Dienst weg): kein Befund über den Dienst
+SKRIPTFEHLER = "Skriptfehler"  # ein Fehler im Skript selbst: nie ein Befund über den Dienst
 PLATZ_A, PLATZ_B = 15, 16
 PFAD = "/api/kern"
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -46,9 +50,32 @@ class Ergebnis:
 class Optionen:
     """Angaben, ohne die ein Teil von A1, A6 und A9 nicht läuft (der Vertrag legt Board-Seite, Platz-Token und Betreuer-Pfade nicht fest)."""
     board_url: str | None = None
-    platz_token: str | None = None  # Platz-Token des Abnahmeplatzes 15
-    betreuer_pfade: tuple[str, ...] = ()  # "PFAD" oder "METHODE PFAD"
-    platz_pfade: tuple[str, ...] = ()  # Pfad mit {platz}
+    platz_token: str | None = field(default=None, repr=False)  # Platz-Token des Abnahmeplatzes 15, nie in einer Ausgabe
+    betreuer_pfade: tuple[str, ...] = ()  # "PFAD" oder "METHODE PFAD", nur Pfade (pfad_gueltig)
+    platz_pfade: tuple[str, ...] = ()  # Pfad mit {platz}, nur Pfade (pfad_gueltig)
+    nicht_get_frei: bool = False  # ausdrückliche Freigabe für Betreuer-Pfade mit einer anderen Methode als GET
+
+
+def pfad_gueltig(pfad: str) -> bool:
+    """Nur ein Pfad auf dem Host des Dienstes: beginnt mit /, kein // (auch nicht am Anfang) und kein ://, keine Leer-, Steuer- und Gegenschrägstriche.
+    Der Bearer des Kerns darf nie an einen anderen Host gehen."""
+    return (pfad.startswith("/") and "//" not in pfad and "://" not in pfad and "\\" not in pfad
+            and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in pfad))
+
+
+def betreuer_spezifikation(text: str) -> tuple[str, str] | None:
+    """("METHODE", "/pfad") aus "PFAD" oder "METHODE PFAD", sonst None (kein Pfad, fremder Host, ungültige Methode)."""
+    text = text.strip()
+    methode, pfad = ("GET", text) if text.startswith("/") else (text.partition(" ")[0].upper(), text.partition(" ")[2].strip())
+    return (methode, pfad) if re.fullmatch(r"[A-Z]{3,8}", methode) and pfad_gueltig(pfad) else None
+
+
+class Takt(Protocol):
+    """Die Uhr des Laufs: echt (EchterTakt) oder falsch (FalscherTakt, Warten kostet nichts)."""
+
+    def jetzt(self) -> float: ...
+
+    async def warte_bis(self, ziel: float) -> None: ...
 
 
 class Antwort:
@@ -115,7 +142,7 @@ class FalscherTakt:
 class Schreibtakt:
     """Die Schreibaufrufe eines Platzes im laufenden Fenster. Wartet, bis ein weiterer Aufruf die Rate des Vertrags nicht berührt."""
 
-    def __init__(self, takt, grenze: int = 25, fenster: float = 62.0):
+    def __init__(self, takt: Takt, grenze: int = 25, fenster: float = 62.0):
         self.takt, self.grenze, self.fenster = takt, grenze, fenster
         self.zeiten: deque[float] = deque()
 
@@ -152,9 +179,17 @@ class Sammler:
         self.von_hand: list[str] = []
         self.notizen: list[str] = []  # was beobachtet wurde (zum Beispiel "429 bei 100 Tickets"), steht in der Meldung einer bestandenen Prüfung
         self.proben: list[Antwort] = []  # Fehlerantworten, deren Format am Ende geprüft wird (A11)
+        self.strenger: list[str] = []  # Grenzen, die früher greifen als im Vertrag: kein Rot, aber auch kein stilles Grün
 
     def notiz(self, text: str) -> None:
         self.notizen.append(text)
+
+    def grenze(self, was: str, ist: float, soll: float, einheit: str = "", *, ab: float | None = None) -> None:
+        """Ein 429 bei ist. Genau bei soll (oder ab soll mal Schwelle) ist die Quote des Vertrags getroffen, früher heißt: strenger als der Vertrag."""
+        if ist == soll or (ab is not None and ist >= ab):
+            self.notiz(f"{was}: 429 bei {ist:g}{einheit}")
+        else:
+            self.strenger.append(f"{was}: 429 schon bei {ist:g}{einheit} statt {soll:g}{einheit}, strenger als der Vertrag (oder die Schreibrate), von Hand prüfen")
 
     def erwarte(self, bedingung: bool, text: str) -> bool:
         self.anzahl += 1
@@ -174,6 +209,8 @@ class Sammler:
 
     def ergebnis(self, nr: str, titel: str, gut: str = "") -> Ergebnis:
         hand = tuple(self.von_hand)
+        if not self.fehler and self.strenger:
+            return Ergebnis(nr, titel, STRENGER, "strenger als der Vertrag, von Hand prüfen: " + "; ".join(self.strenger), hand + tuple(self.strenger))
         if not self.fehler:
             rest = "; ".join(t for t in (gut, "; ".join(self.notizen)) if t)
             return Ergebnis(nr, titel, BESTANDEN, f"{self.anzahl} Einzelprüfungen" + (f", {rest}" if rest else ""), hand)
@@ -196,7 +233,7 @@ def verbindungsfehler(e: BaseException) -> str:
 
 
 class Zugang:
-    def __init__(self, client: httpx.AsyncClient, token: str, takt, *, frist: float | None = None, basis: str = ""):
+    def __init__(self, client: httpx.AsyncClient, token: str, takt: Takt, *, frist: float | None = None, basis: str = ""):
         self.client, self._token, self.takt, self.basis = client, token, takt, basis
         self.frist_lesen, self.frist_schreiben = (frist, frist) if frist else (5.0, 8.0)  # so lange wartet der Kern
         self.durchlauf: dict[int, str] = {}
@@ -212,15 +249,15 @@ class Zugang:
         return self._token[:-1] if anhang is None else self._token + anhang
 
     # ---------- eine Anfrage ----------
-    async def senden(self, methode: str, pfad: str, *, platz: int | str | None = PLATZ_A, bearer=STANDARD, kopf: dict | None = None,
-                     params: dict | None = None, inhalt: bytes | None = None, daten: object = None, schreibend: bool = False,
+    async def senden(self, methode: str, pfad: str, *, platz: int | str | None = PLATZ_A, bearer: object = STANDARD, kopf: dict | None = None,
+                     params: dict | list | None = None, inhalt: bytes | None = None, daten: object = None, schreibend: bool = False,
                      abbruch_ok: bool = False) -> Antwort:
         """Eine Anfrage, so wie der Kern sie schickt (Bearer, Platz, Accept). kopf überschreibt Köpfe, None entfernt sie."""
         k: dict[str, str] = {"Accept": "application/json"}
         if bearer is STANDARD:
             k["Authorization"] = f"Bearer {self._token}"
         elif bearer is not None:
-            k["Authorization"] = f"Bearer {bearer}"
+            k["Authorization"] = f"Bearer {bearer}" if bearer else "Bearer"  # ein Leerzeichen am Ende lehnt schon h11 ab (LocalProtocolError)
         if platz is not None:
             k["X-WAMO-Platz"] = str(platz)
         if daten is not None:
@@ -241,7 +278,7 @@ class Zugang:
             self._fehlstarts = 0
         return antwort
 
-    async def _schicken(self, methode, pfad, kopf, params, inhalt, frist) -> Antwort:
+    async def _schicken(self, methode: str, pfad: str, kopf: dict[str, str], params: dict | list | None, inhalt: bytes | None, frist: float) -> Antwort:
         try:
             async with asyncio.timeout(frist):
                 r = await self.client.request(methode, pfad, headers=kopf, params=params, content=inhalt)
@@ -256,18 +293,18 @@ class Zugang:
         return await self._schicken("GET", url, {"Accept": "text/html"}, None, None, self.frist_lesen)
 
     # ---------- lesende Aufrufe V1 bis V3 ----------
-    async def v1(self, platz: int = PLATZ_A, **kw) -> Antwort:
+    async def v1(self, platz: int | str | None = PLATZ_A, **kw: Any) -> Antwort:
         return await self.senden("GET", f"{PFAD}/durchlauf", platz=platz, **kw)
 
     async def tickets(self, platz: int = PLATZ_A, **params) -> Antwort:
         return await self.senden("GET", f"{PFAD}/tickets", platz=platz, params={k: str(v) for k, v in params.items()} or None)
 
-    async def ticket(self, platz: int, nummer: str, **kw) -> Antwort:
+    async def ticket(self, platz: int, nummer: str, **kw: Any) -> Antwort:
         return await self.senden("GET", f"{PFAD}/tickets/{nummer}", platz=platz, **kw)
 
     # ---------- schreibende Aufrufe V4 bis V7 ----------
     async def schreiben(self, methode: str, pfad: str, daten: object, *, platz: int = PLATZ_A, durchlauf: str | None = None,
-                        schluessel: str | None = None, modus: str = "normal", kopf: dict | None = None, **kw) -> Antwort:
+                        schluessel: str | None = None, modus: str = "normal", kopf: dict | None = None, **kw: Any) -> Antwort:
         """modus: normal (Rate einhalten, nach 429 einmal mit demselben Schlüssel wiederholen), gebremst (Rate einhalten, jedes 429 ist
         ein Ergebnis), frei (nicht warten, aber vermerken), sonde (zählt nicht: eine Form-Prüfung, die vor der Schreibrate scheitert)."""
         schluessel = schluessel or str(uuid.uuid4())
@@ -284,17 +321,17 @@ class Zugang:
             antwort = await self.senden(methode, pfad, platz=platz, daten=daten, kopf=k, schreibend=True, **kw)
         return antwort
 
-    async def anlegen(self, platz: int, titel: str, beschreibung: str = "", *, typ: str = "bug", prioritaet: str = "mittel", **kw) -> Antwort:
+    async def anlegen(self, platz: int, titel: str, beschreibung: str = "", *, typ: str = "bug", prioritaet: str = "mittel", **kw: Any) -> Antwort:
         daten = {"typ": typ, "prioritaet": prioritaet, "titel": titel, "beschreibung": beschreibung}
         return await self.schreiben("POST", f"{PFAD}/tickets", daten, platz=platz, **kw)
 
-    async def aendern(self, platz: int, nummer: str, version: int, felder: dict, **kw) -> Antwort:
+    async def aendern(self, platz: int, nummer: str, version: int, felder: dict, **kw: Any) -> Antwort:
         return await self.schreiben("PATCH", f"{PFAD}/tickets/{nummer}", {"erwartete_version": version, "felder": felder}, platz=platz, **kw)
 
-    async def status_setzen(self, platz: int, nummer: str, version: int, status: str, **kw) -> Antwort:
+    async def status_setzen(self, platz: int, nummer: str, version: int, status: str, **kw: Any) -> Antwort:
         return await self.schreiben("POST", f"{PFAD}/tickets/{nummer}/status", {"erwartete_version": version, "status": status}, platz=platz, **kw)
 
-    async def kommentieren(self, platz: int, nummer: str, version: int, text: str, **kw) -> Antwort:
+    async def kommentieren(self, platz: int, nummer: str, version: int, text: str, **kw: Any) -> Antwort:
         a = await self.schreiben("POST", f"{PFAD}/tickets/{nummer}/kommentare", {"erwartete_version": version, "text": text}, platz=platz, **kw)
         if a.status == 201:
             self.kommentare[platz] += 1

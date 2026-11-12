@@ -20,9 +20,10 @@ import json
 import re
 import sys
 import uuid
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from unittest import mock
 from urllib.parse import parse_qsl, urlencode
 
@@ -41,6 +42,10 @@ KOPF_MAX = 16 * 1024
 LISTE_MAX = 60 * 1024
 _TICKET_PFAD = re.compile(r"/api/kern/tickets/(LAB-[1-9][0-9]{0,3})(/status|/kommentare)?")
 _PLATZ = re.compile(rb"[1-9][0-9]?")
+Koepfe = list[tuple[bytes, bytes]]
+Scope = dict[str, Any]
+Empfangen = Callable[[], Awaitable[dict[str, Any]]]
+Senden = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,7 @@ DEFEKTE: dict[str, Defekt] = {
     "version": Defekt("A8", "die erwartete Version wird nicht geprüft (kein Schutz vor gleichzeitigen Änderungen)", neben=frozenset({"A11"})),
     "idempotenz": Defekt("A8", "derselbe Idempotenzschlüssel wird nicht erkannt, es entsteht ein zweites Ticket", neben=frozenset({"A2", "A11"})),
     "bearer": Defekt("A9", "ohne oder mit falschem Bearer geht jede Anfrage durch", neben=frozenset({"A2", "A6", "A11"})),
+    "liste64": Defekt("A11", "V2 kürzt erst über 64 KB statt über 60 KB"),
     "status422": Defekt("A11", "Formfehler ergeben 400 statt 422", neben=frozenset({"A1", "A2", "A5", "A7", "A8"})),
     "felder": Defekt("A11", "Tickets tragen ein zusätzliches Feld"),
     "reihenfolge": Defekt("A11", "der Platz wird vor dem Bearer geprüft (Reihenfolge Abschnitt 2.2)", neben=frozenset({"A6"})),
@@ -79,16 +85,16 @@ class _Frueh(Exception):
         self.status, self.obj = status, obj
 
 
-def _kopf(koepfe: list[tuple[bytes, bytes]], name: bytes) -> bytes | None:
+def _kopf(koepfe: Koepfe, name: bytes) -> bytes | None:
     return next((v for n, v in koepfe if n == name), None)
 
 
-def _setzen(koepfe: list[tuple[bytes, bytes]], name: bytes, wert: bytes | None) -> list[tuple[bytes, bytes]]:
+def _setzen(koepfe: Koepfe, name: bytes, wert: bytes | None) -> Koepfe:
     rest = [(n, v) for n, v in koepfe if n != name]
     return rest + ([(name, wert)] if wert is not None else [])
 
 
-def _platz(koepfe: list[tuple[bytes, bytes]]) -> int | None:
+def _platz(koepfe: Koepfe) -> int | None:
     roh = _kopf(koepfe, b"x-wamo-platz")
     return int(roh) if roh is not None and _PLATZ.fullmatch(roh) and 1 <= int(roh) <= 16 else None
 
@@ -99,7 +105,7 @@ class Nachbildung:
     def __init__(self, attrappe: Attrappe, defekte: frozenset[str] = frozenset()):
         self.attrappe, self.defekte = attrappe, frozenset(defekte)
 
-    async def __call__(self, scope, receive, send) -> None:
+    async def __call__(self, scope: Scope, receive: Empfangen, send: Senden) -> None:
         if scope["type"] != "http":
             return await self.attrappe(scope, receive, send)
         try:
@@ -113,7 +119,7 @@ class Nachbildung:
         start: dict = {}
         teile: list[bytes] = []
 
-        async def abfangen(nachricht) -> None:
+        async def abfangen(nachricht: dict[str, Any]) -> None:
             if nachricht["type"] == "http.response.start":
                 start.update(nachricht)
                 return
@@ -127,7 +133,7 @@ class Nachbildung:
         await self.attrappe(scope, receive, abfangen)
 
     # ---------- Anfrage ----------
-    async def _anfrage(self, scope, receive):
+    async def _anfrage(self, scope: Scope, receive: Empfangen) -> tuple[Scope, Empfangen]:
         d, koepfe, query = self.defekte, list(scope["headers"]), scope.get("query_string", b"")
         methode, pfad = scope["method"], scope["path"]
         if "kopfgroesse" not in d and sum(len(n) + len(v) + 4 for n, v in koepfe) > KOPF_MAX:
@@ -158,7 +164,7 @@ class Nachbildung:
                 return {"type": "http.request", "body": body, "more_body": False}
         return scope, receive
 
-    def _loeschen(self, koepfe, methode: str, pfad: str) -> None:
+    def _loeschen(self, koepfe: Koepfe, methode: str, pfad: str) -> None:
         ueberschrieben = (_kopf(koepfe, b"x-http-method-override") or b"").upper() == b"DELETE"
         treffer, platz = _TICKET_PFAD.fullmatch(pfad), _platz(koepfe)
         if (methode == "DELETE" or ueberschrieben) and treffer and not treffer.group(2) and platz is not None:
@@ -179,7 +185,7 @@ class Nachbildung:
                 weg.add(name)  # der Platzhalter passt auf alles
         return urlencode([(n, w) for n, w in paare if n not in weg]).encode() if weg else query
 
-    def _schreibkoepfe(self, d: frozenset[str], methode: str, koepfe):
+    def _schreibkoepfe(self, d: frozenset[str], methode: str, koepfe: Koepfe) -> Koepfe:
         if methode not in ("POST", "PATCH"):
             return koepfe
         if "durchlauf" in d and (platz := _platz(koepfe)) is not None:
@@ -188,7 +194,7 @@ class Nachbildung:
             koepfe = _setzen(koepfe, b"idempotency-key", str(uuid.uuid4()).encode())
         return koepfe
 
-    def _body(self, d: frozenset[str], pfad: str, koepfe, body: bytes) -> bytes:
+    def _body(self, d: frozenset[str], pfad: str, koepfe: Koepfe, body: bytes) -> bytes:
         if "sql" in d and b"DROP TABLE" in body:
             raise _Frueh(500, {"fehler": "dienst_fehler", "text": "Interner Fehler."})
         treffer, platz = _TICKET_PFAD.fullmatch(pfad), _platz(koepfe)
@@ -203,7 +209,7 @@ class Nachbildung:
         return body
 
     @staticmethod
-    async def _lesen(receive) -> bytes:
+    async def _lesen(receive: Empfangen) -> bytes:
         teile = []
         while True:
             nachricht = await receive()
@@ -212,11 +218,12 @@ class Nachbildung:
                 return b"".join(teile)
 
     # ---------- Antwort ----------
-    def _antwort(self, scope, status: int, koepfe, body: bytes):
+    def _antwort(self, scope: Scope, status: int, koepfe: Koepfe, body: bytes) -> tuple[int, Koepfe, bytes]:
         d = self.defekte
-        if scope["method"] == "GET" and scope["path"] == "/api/kern/tickets" and status == 200 and len(body) > LISTE_MAX:
+        grenze = 64 * 1024 if "liste64" in d else LISTE_MAX
+        if scope["method"] == "GET" and scope["path"] == "/api/kern/tickets" and status == 200 and len(body) > grenze:
             daten = json.loads(body)
-            while daten["tickets"] and len(json.dumps(daten, ensure_ascii=False).encode()) > LISTE_MAX:
+            while daten["tickets"] and len(json.dumps(daten, ensure_ascii=False).encode()) > grenze:
                 daten["tickets"].pop()  # den Anfang der Liste behalten, gesamt bleibt die echte Zahl
             body = json.dumps(daten, ensure_ascii=False).encode()
         if "xss" in d:
@@ -231,7 +238,7 @@ class Nachbildung:
         return status, _setzen(koepfe, b"content-length", str(len(body)).encode()), body
 
     @classmethod
-    def _ergaenzt(cls, obj):
+    def _ergaenzt(cls, obj: object) -> object:
         if isinstance(obj, dict):
             neu = {k: cls._ergaenzt(v) for k, v in obj.items()}
             return {**neu, "intern": "x"} if "nummer" in obj else neu

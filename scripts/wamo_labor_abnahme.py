@@ -3,22 +3,28 @@
 Das Skript spricht einen laufenden Dienst mit rohem HTTP an (V1 bis V7 unter /api/kern/), nur auf den Abnahmeplätzen 15 und 16, und prüft
 A1 XSS, A2 SQL-Injektion, A3 Prozent und Unterstrich, A4 Quoten, A5 Größenlimits, A6 Platztrennung, A7 kein Löschweg, A8 Durchlauf und Version,
 A9 Zugang und A11 Vertrag. A10 (Netz) bleibt von Hand am Server, ebenso Browserlauf und Datenbankgröße (die Tabelle nennt, was offen bleibt).
-Es löscht nichts, legt aber Tickets und Kommentare an: Die Plätze müssen frisch sein (neuer Durchlauf mit Einwilligung, Seed) und nach dem
-Lauf wieder zurückgesetzt werden. A4 füllt die Plätze bis zu den Quoten und dauert wegen der Schreibrate (30 je Minute) gegen den echten Dienst
-etwa 20 bis 25 Minuten; Mengenprüfungen brechen an einer Schwelle ab (101 Tickets, 301 Kommentare, über 1 MB Text).
+Das Skript hat selbst keinen Löschaufruf und schickt jeder schreibenden Anfrage den festen Platzkopf 15 oder 16 (dazu Proben mit ungültigem
+Platz wie 99, die der Dienst mit 404 ablehnen muss). Es legt Tickets und Kommentare an, die Plätze müssen frisch sein (neuer Durchlauf mit
+Einwilligung, Seed) und nach dem Lauf wieder zurückgesetzt werden. Ein Dienst, der trotz Vertrag einen Löschweg anbietet, kann dabei Tickets der
+Plätze 15 und 16 verlieren: Genau das prüft A7. Vor dem ersten Schreiben verlangt das Skript die Bestätigung --ja. A4 füllt die Plätze bis zu den
+Quoten und dauert wegen der Schreibrate (30 je Minute) gegen den echten Dienst etwa 20 bis 25 Minuten; Mengenprüfungen brechen an einer Schwelle
+ab (101 Tickets, 301 Kommentare, über 1 MB Text).
 
 Aufrufe (aus dem Ordner scripts, mit der Python-Umgebung von voice-core):
-  python wamo_labor_abnahme.py https://HOST[:PORT]            Token aus WAMO_LABOR_TOKEN (oder --token-datei DATEI), nie als Argument
-  python wamo_labor_abnahme.py https://HOST --trocken         zeigt nur den Plan, sendet nichts
-  python wamo_labor_abnahme.py https://HOST --auswahl A2 A9   nur diese Prüfungen (Teillauf, nie grün)
+  python wamo_labor_abnahme.py https://HOST[:PORT] --ja       Token aus WAMO_LABOR_TOKEN (oder --token-datei DATEI), nie als Argument
+  python wamo_labor_abnahme.py https://HOST --trocken         zeigt nur den Plan, sendet nichts (ohne --ja)
+  python wamo_labor_abnahme.py https://HOST --ja --auswahl A2 A9   nur diese Prüfungen (Teillauf, nie grün)
   python wamo_labor_abnahme.py --attrappe                     startet die Attrappe von WAMO im Prozess und prüft sie (muss grün sein)
   python wamo_labor_abnahme.py --verwundbar [--defekt NAME]   startet die absichtlich fehlerhafte Variante (jeder Defekt muss rot werden)
 Optionen: --ca-datei (oder WAMO_CA_FILE) für das Zertifikat der WAMO-CA, --frist SEKUNDEN je Anfrage (Standard 5 lesend, 8 schreibend, so lange
-wartet der Kern), --board-url URL (Köpfe der Board-Seite für A1), --betreuer-pfad "[METHODE ]PFAD" und --platz-pfad "PFAD mit {platz}" (A9 und A6,
-mit dem Platz-Token des Platzes 15 aus WAMO_LABOR_PLATZ_TOKEN oder --platz-token-datei; der Vertrag legt diese Pfade nicht fest).
+wartet der Kern), --board-url URL (nur Köpfe der Board-Seite für A1, ohne Bearer), --betreuer-pfad "[METHODE ]PFAD" und --platz-pfad "PFAD mit {platz}"
+(A9 und A6, mit dem Platz-Token des Platzes 15 aus WAMO_LABOR_PLATZ_TOKEN oder --platz-token-datei; der Vertrag legt diese Pfade nicht fest). Beide
+nehmen nur Pfade auf dem Host des Dienstes an (mit / am Anfang, ohne // und ://), Betreuer-Pfade nur mit GET, eine andere Methode nur mit der
+ausdrücklichen Freigabe --nicht-get-freigeben.
 
-Ausgang: 0 alle automatischen Prüfungen bestanden (offen bleibt, was in der Tabelle als "von Hand" steht), 1 mindestens eine Prüfung durchgefallen,
-2 Aufruf, Verbindung, Zeit oder Ausgangsstand der Plätze falsch (kein Urteil über den Dienst), 3 Teillauf ohne durchgefallene Prüfung.
+Ausgang: 0 alle automatischen Prüfungen bestanden (offen bleibt, was in der Tabelle als "von Hand" steht), 1 mindestens eine Prüfung durchgefallen
+(hat Vorrang vor 2), 2 Aufruf, Verbindung, Zeit, Ausgangsstand der Plätze oder ein Fehler im Skript selbst (kein Urteil über den Dienst), 3 Teillauf
+oder eine Grenze, die strenger ist als der Vertrag (A4: von Hand prüfen), ohne durchgefallene Prüfung.
 Ein Fehler in A1, A2, A6 oder A7 heißt: Der Dienst geht nicht an Besucher.
 
 Geheimnisse: Der Token steht nur in der Umgebung oder in einer Datei (nie im Repo), wird nie als Argument gelesen und nie ausgegeben (jede Ausgabe
@@ -37,6 +43,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import httpx
@@ -44,20 +51,29 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wamo_labor_abnahme_pruefungen as pr  # noqa: E402
 from wamo_labor_abnahme_basis import (  # noqa: E402
+    ABGEBROCHEN,
     BESTANDEN,
     DURCHGEFALLEN,
     NICHT_GELAUFEN,
     PFAD,
     PLATZ_A,
     PLATZ_B,
+    SKRIPTFEHLER,
+    STRENGER,
     UUID_RE,
     VON_HAND,
     EchterTakt,
     Ergebnis,
     LaufAbbruch,
     Optionen,
+    Takt,
     Zugang,
+    betreuer_spezifikation,
+    pfad_gueltig,
 )
+
+if TYPE_CHECKING:
+    from wamo_labor_abnahme_verwundbar import Ziel
 
 EXIT_OK, EXIT_DURCHGEFALLEN, EXIT_AUFRUF, EXIT_TEILLAUF = 0, 1, 2, 3
 TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/=-]{32,200}")
@@ -81,11 +97,13 @@ class LaufErgebnis:
 
 
 def exit_code(lauf: LaufErgebnis) -> int:
-    if lauf.abbruch:
-        return EXIT_AUFRUF
-    if any(e.status == DURCHGEFALLEN for e in lauf.ergebnisse):
+    """Rot hat Vorrang: Ein durchgefallener Befund bleibt ein Befund, auch wenn der Lauf danach abbrach. Abbruch und Skriptfehler sind nie ein Befund."""
+    status = {e.status for e in lauf.ergebnisse}
+    if DURCHGEFALLEN in status:
         return EXIT_DURCHGEFALLEN
-    return EXIT_TEILLAUF if lauf.teillauf else EXIT_OK
+    if lauf.abbruch or status & {ABGEBROCHEN, SKRIPTFEHLER}:
+        return EXIT_AUFRUF
+    return EXIT_TEILLAUF if lauf.teillauf or STRENGER in status else EXIT_OK
 
 
 # ---------- Ausgabe ----------
@@ -101,16 +119,20 @@ def tabelle(lauf: LaufErgebnis, ziel: str) -> str:
     for e in lauf.ergebnisse:
         zeilen.append(f"{e.nr:<4} {e.titel:<24} {e.status:<15} {e.meldung}")
     zeilen.append("-" * 100)
-    zaehler = {s: sum(e.status == s for e in lauf.ergebnisse) for s in (BESTANDEN, DURCHGEFALLEN, VON_HAND, NICHT_GELAUFEN)}
+    zaehler = {s: sum(e.status == s for e in lauf.ergebnisse) for s in (BESTANDEN, DURCHGEFALLEN, STRENGER, ABGEBROCHEN, SKRIPTFEHLER, VON_HAND, NICHT_GELAUFEN)}
     zeilen.append("Zusammenfassung: " + ", ".join(f"{n} {s}" for s, n in zaehler.items()))
     offen = [f"{e.nr}: {rest}" for e in lauf.ergebnisse for rest in e.von_hand]
     if offen:
         zeilen += ["Noch von Hand:"] + [f"  {o}" for o in offen]
     rot = [e.nr for e in lauf.ergebnisse if e.status == DURCHGEFALLEN]
-    if lauf.abbruch:
-        zeilen.append("Ergebnis: Lauf abgebrochen, kein Urteil über den Dienst (siehe Fehlermeldung)")
-    elif rot:
-        zeilen.append(f"Ergebnis: DURCHGEFALLEN ({', '.join(rot)})")
+    streng = [e.nr for e in lauf.ergebnisse if e.status == STRENGER]
+    unvollstaendig = lauf.abbruch or any(e.status in (ABGEBROCHEN, SKRIPTFEHLER) for e in lauf.ergebnisse)
+    if rot:
+        zeilen.append(f"Ergebnis: DURCHGEFALLEN ({', '.join(rot)})" + (", der Lauf blieb unvollständig (Abbruch oder Skriptfehler)" if unvollstaendig else ""))
+    elif unvollstaendig:
+        zeilen.append("Ergebnis: Lauf unvollständig (Abbruch oder Skriptfehler), kein Urteil über den Dienst")
+    elif streng:
+        zeilen.append(f"Ergebnis: nicht abnahmefähig, weil der Dienst strenger ist als der Vertrag ({', '.join(streng)}): von Hand prüfen")
     elif lauf.teillauf:
         zeilen.append("Ergebnis: Teillauf, nicht abnahmefähig (nur die gewählten Prüfungen liefen, alle bestanden)")
     else:
@@ -152,6 +174,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--ca-datei", help="CA-Datei (sonst WAMO_CA_FILE)")
     p.add_argument("--auswahl", nargs="+", help="nur diese Prüfungen, zum Beispiel A2 A9 oder A2,A9")
     p.add_argument("--trocken", action="store_true", help="nur den Plan zeigen, nichts senden")
+    p.add_argument("--ja", action="store_true", help="bestätigt, dass auf Platz 15 und 16 des Dienstes Tickets und Kommentare angelegt werden dürfen")
+    p.add_argument("--nicht-get-freigeben", action="store_true", help="erlaubt Betreuer-Pfade mit einer anderen Methode als GET")
     p.add_argument("--frist", type=float, help="Frist je Anfrage in Sekunden (Standard 5 lesend, 8 schreibend)")
     p.add_argument("--board-url", help="Adresse der Board-Seite (A1: Köpfe und Rohseite)")
     p.add_argument("--betreuer-pfad", action="append", default=[], help='Betreuer-Pfad, "PFAD" oder "METHODE PFAD" (A9)')
@@ -180,10 +204,13 @@ def adresse_pruefen(text: object, *, mit_pfad: bool = False) -> str:
 
 
 def _lesen(datei: str, was: str) -> str:
+    """Text einer Datei als UTF-8 (ein BOM von Notepad stört nicht). UTF-16 aus PowerShell oder Latin-1 ergeben eine klare Meldung ohne den Inhalt."""
     try:
-        return Path(datei).read_text(encoding="utf-8").strip()
+        return Path(datei).read_text(encoding="utf-8-sig").strip()
     except OSError:
         raise AufrufFehler(f"Die {was}-Datei kann nicht gelesen werden.") from None
+    except UnicodeError:
+        raise AufrufFehler(f"Die {was}-Datei ist nicht UTF-8 (UTF-16 aus PowerShell oder Latin-1?): als UTF-8 speichern, zum Beispiel mit Set-Content -Encoding utf8.") from None
 
 
 def token_lesen(env: Mapping[str, str], datei: str | None) -> str:
@@ -263,30 +290,51 @@ async def lauf(z: Zugang, optionen: Optionen, auswahl: list[str] | None = None) 
                 ergebnis = funktion(z, optionen)
                 ergebnisse[nr] = await ergebnis if inspect.isawaitable(ergebnis) else ergebnis
             except LaufAbbruch as e:
-                ergebnisse[nr], abbruch = Ergebnis(nr, titel, DURCHGEFALLEN, "Lauf abgebrochen"), str(e)
-            except Exception as e:  # noqa: BLE001 (eine Antwort, die nicht zum Vertrag passt, ist ein Befund und kein Absturz des Prüfmittels)
-                ergebnisse[nr] = Ergebnis(nr, titel, DURCHGEFALLEN, f"unerwartete Form der Antwort ({type(e).__name__})")
+                ergebnisse[nr], abbruch = Ergebnis(nr, titel, ABGEBROCHEN, "Lauf abgebrochen, kein Befund über den Dienst"), str(e)
+            except Exception as e:  # noqa: BLE001 (ein Fehler im Skript ist nie ein Befund über den Dienst: Ausgang 2, die übrigen Prüfungen laufen weiter)
+                ergebnisse[nr] = Ergebnis(nr, titel, SKRIPTFEHLER, f"Skriptfehler ({type(e).__name__}), kein Befund über den Dienst")
     teil = bool(auswahl) and set(auswahl) != set(pr.PRUEFUNGEN)
     return LaufErgebnis([ergebnisse[nr] for nr in REIHENFOLGE], abbruch, teil)
 
 
-async def _ablauf(client: httpx.AsyncClient, token: str, takt, basis: str, frist: float | None, optionen: Optionen, auswahl) -> LaufErgebnis:
+async def _ablauf(client: httpx.AsyncClient, token: str, takt: Takt, basis: str, frist: float | None, optionen: Optionen, auswahl: list[str] | None) -> LaufErgebnis:
     async with client:
         return await lauf(Zugang(client, token, takt, frist=frist, basis=basis), optionen, auswahl)
 
 
-def pruefe_ziel(ziel, *, optionen: Optionen | None = None, auswahl: list[str] | None = None, transport=None, frist: float | None = None) -> LaufErgebnis:
+def pruefe_ziel(ziel: Ziel, *, optionen: Optionen | None = None, auswahl: list[str] | None = None, transport: httpx.AsyncBaseTransport | None = None,
+                frist: float | None = None) -> LaufErgebnis:
     """Prüft eine Nachbildung aus wamo_labor_abnahme_verwundbar.starten (für Tests und --attrappe). LaufAbbruch geht an den Aufrufer."""
     client = httpx.AsyncClient(base_url=ziel.url, transport=transport or ziel.transport, follow_redirects=False, trust_env=False)
     return asyncio.run(_ablauf(client, ziel.token, ziel.takt, ziel.url, frist, optionen or Optionen(), auswahl))
 
 
-def _optionen(args, env: Mapping[str, str]) -> Optionen:
+def _betreuer_pfade(werte: list[str], frei: bool) -> tuple[str, ...]:
+    """"METHODE PFAD" je Angabe. Nur Pfade (der Bearer des Kerns darf nie an einen fremden Host gehen), nur GET ohne ausdrückliche Freigabe."""
+    pfade = []
+    for wert in werte:
+        teile = betreuer_spezifikation(wert)
+        if teile is None:
+            raise AufrufFehler('Betreuer-Pfad ungültig: erwartet "/pfad" oder "METHODE /pfad", nur ein Pfad auf dem Host des Dienstes (mit / am Anfang, ohne // und ://).')
+        if teile[0] != "GET" and not frei:
+            raise AufrufFehler(f"Betreuer-Pfad mit {teile[0]}: Betreuer-Pfade gehen nur mit GET, jede andere Methode nur mit der Freigabe --nicht-get-freigeben.")
+        pfade.append(f"{teile[0]} {teile[1]}")
+    return tuple(pfade)
+
+
+def _platz_pfade(werte: list[str]) -> tuple[str, ...]:
+    if not all(pfad_gueltig(w) for w in werte):
+        raise AufrufFehler("Platz-Pfad ungültig: erwartet ein Pfad mit {platz} auf dem Host des Dienstes (mit / am Anfang, ohne // und ://).")
+    return tuple(werte)
+
+
+def _optionen(args: argparse.Namespace, env: Mapping[str, str]) -> Optionen:
     platz_token = _lesen(args.platz_token_datei, "Platz-Token") if args.platz_token_datei else (env.get("WAMO_LABOR_PLATZ_TOKEN") or "").strip() or None
     if platz_token and not TOKEN_RE.fullmatch(platz_token):
         raise AufrufFehler("Der Platz-Token ist unbrauchbar (32 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-).")
     board = adresse_pruefen(args.board_url, mit_pfad=True) if args.board_url else None
-    return Optionen(board_url=board, platz_token=platz_token, betreuer_pfade=tuple(args.betreuer_pfad), platz_pfade=tuple(args.platz_pfad))
+    return Optionen(board_url=board, platz_token=platz_token, betreuer_pfade=_betreuer_pfade(args.betreuer_pfad, args.nicht_get_freigeben),
+                    platz_pfade=_platz_pfade(args.platz_pfad), nicht_get_frei=args.nicht_get_freigeben)
 
 
 def _ausgeben(lauf_: LaufErgebnis, ziel: str, geheimnisse: list[str]) -> int:
@@ -296,7 +344,7 @@ def _ausgeben(lauf_: LaufErgebnis, ziel: str, geheimnisse: list[str]) -> int:
     return exit_code(lauf_)
 
 
-def _gegen_nachbildung(args, optionen: Optionen, auswahl) -> int:
+def _gegen_nachbildung(args: argparse.Namespace, optionen: Optionen, auswahl: list[str] | None) -> int:
     import wamo_labor_abnahme_verwundbar as vw
 
     defekte = tuple(args.defekt) if args.verwundbar else ()
@@ -315,12 +363,17 @@ def _gegen_nachbildung(args, optionen: Optionen, auswahl) -> int:
         return _ausgeben(ergebnis, ziel_text, [ziel.token, optionen.platz_token or ""])
 
 
-def _gegen_dienst(args, env: Mapping[str, str], optionen: Optionen, auswahl, transport, takt) -> int:
+def _gegen_dienst(args: argparse.Namespace, env: Mapping[str, str], optionen: Optionen, auswahl: list[str] | None, transport: httpx.AsyncBaseTransport | None,
+                  takt: Takt | None) -> int:
     adresse = adresse_pruefen(args.adresse)
     token = token_lesen(env, args.token_datei)
     if args.trocken:
         print(bereinigen(plan(adresse, auswahl), [token, optionen.platz_token or ""]))
         return EXIT_OK
+    if not args.ja:
+        raise AufrufFehler(f"Bestätigung fehlt, es wurde nichts gesendet. Das Skript legt auf Platz {PLATZ_A} und Platz {PLATZ_B} des Dienstes {adresse} Tickets und "
+                           "Kommentare an und füllt die Plätze bis zu den Quoten (jede Anfrage trägt den Platzkopf 15 oder 16, dazu Proben mit ungültigem Platz). "
+                           "Mit --ja bestätigen, --trocken zeigt nur den Plan.")
     client = httpx.AsyncClient(base_url=adresse, transport=transport, verify=_vertrauen(args.ca_datei or env.get("WAMO_CA_FILE")), follow_redirects=False,
                                trust_env=False, timeout=httpx.Timeout(args.frist or 8.0, connect=3.0))
     try:
@@ -330,7 +383,7 @@ def _gegen_dienst(args, env: Mapping[str, str], optionen: Optionen, auswahl, tra
     return _ausgeben(ergebnis, f"{adresse} (Plätze {PLATZ_A} und {PLATZ_B})", [token, optionen.platz_token or ""])
 
 
-def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None, transport=None, takt=None) -> int:
+def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None, transport: httpx.AsyncBaseTransport | None = None, takt: Takt | None = None) -> int:
     """env, transport und takt sind für Tests (Umgebung, Transport im Prozess, falsche Uhr)."""
     env = os.environ if env is None else env
     args = _parser().parse_args(argv)
