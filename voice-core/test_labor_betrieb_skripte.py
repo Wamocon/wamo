@@ -36,7 +36,7 @@ RUECKWEG = SOKRATES2 / "wamo-labor-rueckweg.sh"
 LOESCHLAUF = SOKRATES2 / "wamo-labor-loeschlauf.sh"
 RAUCHTEST = SOKRATES2 / "wamo_labor_rauchtest.py"
 SKRIPTE = [EINRICHTEN, RUECKWEG, LOESCHLAUF]
-ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, RUECKWEG, LOESCHLAUF]  # wächst mit dem Teil: Rauchtest
+ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, RUECKWEG, LOESCHLAUF, RAUCHTEST]
 VERBOTENE_WOERTER = ("nieeeki", "jarvis", "promptcontrol", "damicon")
 
 
@@ -1111,6 +1111,149 @@ class RueckwegLoeschlaufTextTests(unittest.TestCase):
         self.assertIn("docker image rm", c)
         self.assertIn("wamo-core-env", c)
         self.assertIn("loeschen WAMO_LABOR_URL WAMO_LABOR_TOKEN", c)
+
+
+# ====================================================================================== Teil 5: Rauchtest mit Attrappen
+def rauchtest_laden():
+    spez = importlib.util.spec_from_file_location("wamo_labor_rauchtest_t", RAUCHTEST)
+    m = importlib.util.module_from_spec(spez)
+    sys.modules["wamo_labor_rauchtest_t"] = m  # für dataclasses
+    spez.loader.exec_module(m)
+    return m
+
+
+class RauchtestTests(unittest.TestCase):
+    """Der Rauchtest läuft am Server. Hier läuft er gegen eine Attrappe der Welt: einmal in gutem Zustand (alles grün), dann je mit einem
+    eingebauten Fehler (genau die zuständige Probe wird rot, die übrigen bleiben grün)."""
+
+    # Fehler der Attrappe und die Probe, die ihn finden muss
+    FEHLER = {
+        "ungesund": "P01", "root": "P02", "schreibbar": "P03", "caps": "P04", "privilegiert": "P05", "ohne_nnp": "P05",
+        "ohne_grenzen": "P06", "ohne_loggrenze": "P06", "netz_extern": "P07", "falscher_proxy": "P07", "port_offen": "P08", "port_zusatz": "P08",
+        "token_modus": "P09", "token_besitzer": "P09", "daten_modus": "P09", "token_gleich": "P09", "token_kurz": "P09",
+        "ca_falsch": "P10", "koepfe_fehlen": "P10", "kern_offen": "P11", "kern_variante_offen": "P11", "betreuer_offen": "P12",
+        "betreuer_gegenprobe": "P12", "gesundheit_offen": "P13", "ausgang_internet": "P14", "ausgang_dns": "P14", "ausgang_kontrolle": "P14",
+        "firewall_fehlt": "P15", "firewall_offen": "P15", "roundtrip_kaputt": "P16", "roundtrip_ohne_token": "P16", "env_url": "P17", "env_token": "P17",
+        "token_in_env": "P18", "ende_falsch": "P18",
+    }
+
+    def setUp(self):
+        self.m = rauchtest_laden()
+
+    def lauf(self, welt):
+        return self.m.alle_proben(welt)
+
+    def ergebnisse(self, welt) -> dict:
+        return {r.nr: r for r in self.lauf(welt)}
+
+    def test_gute_attrappe_alles_gruen_und_jede_probe_sagt_was_sie_belegt(self):
+        ergebnisse = self.lauf(self.m.Attrappe())
+        self.assertEqual([r.nr for r in ergebnisse], [f"P{n:02d}" for n in range(1, 19)])
+        for r in ergebnisse:
+            self.assertEqual(r.ergebnis, "OK", f"{r.nr} {r.name}: {r.befunde}")
+            self.assertGreater(len(r.belegt), 20, r.nr)
+            self.assertGreater(len(r.nicht), 20, r.nr)  # und was sie NICHT belegt
+            self.assertTrue(r.pruefungen, r.nr)
+
+    def test_jeder_eingebaute_fehler_wird_von_genau_der_zustaendigen_probe_gefunden(self):
+        for fehler, nr in self.FEHLER.items():
+            with self.subTest(fehler=fehler):
+                ergebnisse = self.ergebnisse(self.m.Attrappe(fehler={fehler}))
+                self.assertEqual(ergebnisse[nr].ergebnis, "FEHLER", f"{fehler} wurde von {nr} nicht gefunden")
+                self.assertTrue(ergebnisse[nr].befunde)
+                for andere, r in ergebnisse.items():
+                    if andere != nr:
+                        self.assertEqual(r.ergebnis, "OK", f"{fehler} hat auch {andere} rot gemacht: {r.befunde}")
+
+    def test_die_fehlerliste_deckt_alle_proben_ab(self):
+        self.assertEqual(sorted(set(self.FEHLER.values())), [f"P{n:02d}" for n in range(1, 19)])
+        self.assertEqual(set(self.FEHLER), set(self.m.Attrappe.BEKANNTE_FEHLER))
+
+    def test_tabelle_und_ausgang(self):
+        import contextlib
+        import io
+
+        puffer = io.StringIO()
+        with contextlib.redirect_stdout(puffer):
+            rc = self.m.main(["--attrappe"])
+        text = puffer.getvalue()
+        self.assertEqual(rc, 0)
+        for soll in ("Nr", "Probe", "Ergebnis", "belegt", "belegt nicht", "P01", "P18", "18 OK, 0 FEHLER"):
+            self.assertIn(soll, text)
+        puffer = io.StringIO()
+        with contextlib.redirect_stdout(puffer):
+            rc = self.m.main(["--attrappe", "--fehler", "kern_offen"])
+        self.assertEqual(rc, 1)
+        self.assertIn("FEHLER", puffer.getvalue())
+        self.assertIn("kern_offen", puffer.getvalue())
+
+    def test_tokens_stehen_nie_in_der_ausgabe(self):
+        import contextlib
+        import io
+
+        welt = self.m.Attrappe()
+        puffer = io.StringIO()
+        with contextlib.redirect_stdout(puffer), contextlib.redirect_stderr(puffer):
+            self.m.ausgeben(self.lauf(welt))
+        for wert in (welt.kern, welt.betreuer):
+            self.assertTrue(token_ok(wert))
+            self.assertNotIn(wert, puffer.getvalue())
+        # auch nicht in den Befunden eines Fehlers (token_in_env legt den Wert in die Umgebung des Containers)
+        welt = self.m.Attrappe(fehler={"token_in_env", "env_token"})
+        puffer = io.StringIO()
+        with contextlib.redirect_stdout(puffer), contextlib.redirect_stderr(puffer):
+            self.m.ausgeben(self.lauf(welt))
+        self.assertNotIn(welt.kern, puffer.getvalue())
+        self.assertNotIn(welt.betreuer, puffer.getvalue())
+
+    def test_ausnahme_in_einer_probe_ist_ein_fehler_und_stoppt_die_anderen_nicht(self):
+        welt = self.m.Attrappe()
+        welt.inspect = lambda name: (_ for _ in ()).throw(RuntimeError("kaputt " + welt.kern))
+        ergebnisse = self.ergebnisse(welt)
+        self.assertEqual(ergebnisse["P01"].ergebnis, "FEHLER")
+        self.assertNotIn(welt.kern, "\n".join(ergebnisse["P01"].befunde))  # nur der Typ der Ausnahme, nie ihr Text
+        self.assertEqual(ergebnisse["P11"].ergebnis, "OK")
+
+    def test_token_wird_nur_gelesen_nie_gesendet_ausser_an_loopback(self):
+        welt = self.m.Attrappe()
+        self.lauf(welt)
+        gesendet = [(a["ziel"], a["pfad"]) for a in welt.anfragen if a["bearer"]]
+        self.assertTrue(gesendet)
+        for ziel, pfad in gesendet:
+            self.assertEqual(ziel, "loopback", pfad)  # der Bearer geht nie über Caddy oder in einen fremden Container
+            self.assertTrue(pfad.startswith("/api/kern/"), pfad)
+        for a in welt.anfragen:
+            self.assertEqual(a["methode"] if a["bearer"] else "GET", "GET")  # nur lesend (V1)
+
+    def test_hilfen_antwort_und_env_datei(self):
+        roh = b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Frame-Options: DENY\r\n\r\nnicht erlaubt"
+        a = self.m.antwort_lesen(roh)
+        self.assertEqual((a.status, a.kopf["content-type"], a.kopf["x-frame-options"], a.body), (403, "text/plain; charset=utf-8", "DENY", b"nicht erlaubt"))
+        self.assertIsNone(self.m.antwort_lesen(b"Muell"))
+        env = self.m.env_datei_lesen(b"# Kommentar\nA='eins'\nB=zwei\nC='mit=gleich'\n\nkaputt\n")
+        self.assertEqual(env, {"A": "eins", "B": "zwei", "C": "mit=gleich"})
+
+    def test_token_pruefung_wie_der_dienst(self):
+        self.assertTrue(self.m.token_gueltig("A" * 20 + "bcdefghijklmnopqrstuvwxyz"))
+        self.assertFalse(self.m.token_gueltig("a" * 60))  # zu wenig verschiedene Zeichen
+        self.assertFalse(self.m.token_gueltig("Ab" * 10))  # zu kurz
+        self.assertFalse(self.m.token_gueltig("Ab cdefghijklmnopqrstuvwxyz" * 3))  # Leerzeichen
+
+    def test_form_und_text(self):
+        text = lies(RAUCHTEST)
+        self.assertTrue(text.startswith("#!/usr/bin/env python3\n"))
+        self.assertLess(len(text.splitlines()), 800)
+        self.assertNotIn("import requests", text)
+        for erlaubt in re.findall(r"^(?:import|from) ([a-z_.]+)", text, flags=re.M):
+            self.assertIn(erlaubt.split(".")[0], sys.stdlib_module_names | {"__future__"}, erlaubt)  # nur die Standardbibliothek
+        import ast
+
+        baum = ast.parse(text)
+        for knoten in ast.walk(baum):
+            if isinstance(knoten, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                laenge = knoten.end_lineno - knoten.lineno + 1
+                self.assertLessEqual(laenge, 50, f"{knoten.name} hat {laenge} Zeilen")
+        self.assertNotIn("print(token", text)
 
 
 if __name__ == "__main__":
