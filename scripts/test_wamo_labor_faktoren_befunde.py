@@ -395,3 +395,61 @@ def test_loopback_http_aus_env_datei_wird_abgelehnt_und_mit_basis_erlaubt(capsys
     argv = ["einrichten", "--trocken", "--profile", "labor-01", "--env-datei", str(env), "--basis", labor.basis, "--umschlag-datei", str(datei)]
     code, out, err = lauf(capsys, argv)
     assert code == 0 and "(aus --basis)" in out.splitlines()[0]
+
+
+# ---------- Befund 6: Sicherungen begrenzen und in der Zusammenfassung nennen ----------
+
+def alte_sicherungen(datei: Path, stempel: list[str]) -> list[Path]:
+    kopien = []
+    for s in stempel:
+        p = Path(str(datei) + f".sicherung-{s}")
+        p.write_text("alt\n", encoding="utf-8")
+        kopien.append(p)
+    return kopien
+
+
+def test_nur_die_letzten_drei_sicherungen_bleiben(tmp_path):
+    datei = umschlag_datei(tmp_path)
+    alt = alte_sicherungen(datei, ["20260101-000001", "20260102-000001", "20260103-000001", "20260104-000001", "20260105-000001"])
+    fremd = [tmp_path / "umschlag" / n for n in ("umschlag-labor.txt.sicherung-xyz", "andere.txt.sicherung-20260101-000001",
+                                                 "umschlag-labor.txt.neu", "umschlag-labor.txt.sicherung-20260101-000001.kopie")]
+    for f in fremd:
+        f.write_text("fremd\n", encoding="utf-8")
+    u = um.Umschlag(datei, rechte=Rechte(), jetzt=lambda: 1_794_000_000.0)
+    u.seed_speichern("labor-01", seed_von("a"))
+    bleibt = sorted(p.name for p in datei.parent.iterdir() if p.name.startswith("umschlag-labor.txt.sicherung-") and p not in fremd)
+    assert u.sicherung is not None and u.sicherung.name in bleibt and len(bleibt) == 3
+    assert [p.exists() for p in alt] == [False, False, False, True, True], "die ältesten sind weg, die zwei neuesten alten bleiben"
+    assert all(f.exists() for f in fremd), "fremde Dateien bleiben unberührt"
+
+
+def test_die_neue_sicherung_bleibt_auch_bei_rueckwaerts_laufender_uhr(tmp_path):
+    datei = umschlag_datei(tmp_path)
+    alt = alte_sicherungen(datei, ["20260101-000001", "20260102-000001", "20260103-000001"])
+    u = um.Umschlag(datei, rechte=Rechte(), jetzt=lambda: 1_000_000_000.0)  # 2001, älter als alle vorhandenen
+    u.seed_speichern("labor-01", seed_von("a"))
+    assert u.sicherung.exists() and [p.exists() for p in alt] == [False, True, True]
+
+
+def test_ohne_schreiben_gibt_es_keine_sicherung(tmp_path):
+    datei = umschlag_datei(tmp_path)
+    assert um.Umschlag(datei, rechte=Rechte()).sicherung is None
+
+
+def test_zusammenfassung_nennt_den_namen_der_sicherung(capsys, umgebung, labor, tmp_path):
+    datei = umschlag_datei(tmp_path)
+    code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")
+    name = [p.name for p in datei.parent.iterdir() if ".sicherung-" in p.name][0]
+    zeilen = [z for z in out.splitlines() if z.startswith("Sicherung")]
+    assert zeilen == [f"Sicherung der Umschlag-Datei: {name} (enthält Passwörter, nach dem Labortag löschen, es bleiben die letzten 3)"]
+    assert "Passwort" not in name and PW[1] not in out
+
+
+def test_ohne_schreibvorgang_keine_sicherungszeile(capsys, umgebung, labor, tmp_path):
+    datei = umschlag_datei(tmp_path)
+    code, out, err = einrichten(capsys, labor, datei, "--trocken", "--profile", "labor-01")
+    assert "Sicherung" not in out
+    einrichten(capsys, labor, datei, "--profile", "labor-01")
+    capsys.readouterr()
+    code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")  # übersprungen: nichts geschrieben
+    assert "übersprungen" in out and "Sicherung" not in out

@@ -356,7 +356,7 @@ def befehl_einrichten(args: argparse.Namespace, profile: list[str], umschlag: um
             ergebnisse.append(e.art)
     finally:
         sg.zuruecksetzen(alt)
-    return _abschluss(ergebnisse, args.trocken, verbindung, ausgabe)
+    return _abschluss(ergebnisse, args.trocken, verbindung, umschlag, ausgabe)
 
 
 def _zwischen_uebernehmen(umschlag: um.Umschlag, ausgabe: Ausgabe, trocken: bool) -> None:
@@ -382,7 +382,7 @@ def _melden(ausgabe: Ausgabe, e: Ergebnis) -> None:
         ausgabe.zeile(f"{e.kennung}: {e.text}")
 
 
-def _abschluss(ergebnisse: list[str], trocken: bool, verbindung: api.Verbindung, ausgabe: Ausgabe) -> int:
+def _abschluss(ergebnisse: list[str], trocken: bool, verbindung: api.Verbindung, umschlag: um.Umschlag, ausgabe: Ausgabe) -> int:
     n = {art: ergebnisse.count(art) for art in (EINGERICHTET, UEBERSPRUNGEN, FEHLER, GEPLANT)}
     if trocken:
         ausgabe.zeile(f"Zusammenfassung (Trockenlauf, nichts geändert): {n[GEPLANT]} Profile bereit, {n[FEHLER]} mit Problem")
@@ -391,6 +391,9 @@ def _abschluss(ergebnisse: list[str], trocken: bool, verbindung: api.Verbindung,
         if abs(verbindung.versatz) >= HINWEIS_UHR_AB_S:
             ausgabe.zeile(f"Hinweis: Die lokale Uhr weicht um etwa {abs(round(verbindung.versatz))} Sekunden von der des Servers ab. "
                           "Der Befehl codes rechnet mit der lokalen Uhr, bitte die Uhrzeit per NTP abgleichen.")
+    if umschlag.sicherung is not None:
+        ausgabe.zeile(f"Sicherung der Umschlag-Datei: {umschlag.sicherung.name} (enthält Passwörter, nach dem Labortag löschen, "
+                      f"es bleiben die letzten {um.SICHERUNGEN_BEHALTEN})")
     return EXIT_FEHLER if n[FEHLER] else EXIT_OK
 
 

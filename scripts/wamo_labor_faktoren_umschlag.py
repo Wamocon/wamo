@@ -34,6 +34,7 @@ DATEI_NAME = "umschlag-labor.txt"
 ORDNER_NAME = ".wamo-labor"
 SEED_SPALTE = 3  # Kennung, E-Mail, Passwort, Seed
 ZWISCHEN_ENDUNG = ".neu"
+SICHERUNGEN_BEHALTEN = 3
 _FAKTOR_FORM = re.compile(r"[A-Za-z0-9-]{8,64}")
 _SEED_ZEICHEN = re.compile(r"[A-Z2-7=]{16,}")
 _BINAER = getattr(os, "O_BINARY", 0)
@@ -138,6 +139,7 @@ class Umschlag:
         self._rechte = rechte
         self._jetzt = jetzt
         self._gesichert = False
+        self.sicherung: Path | None = None  # die Sicherung dieses Laufs (nur der Name geht in die Zusammenfassung, nie der Inhalt)
 
     # ---- lesen ----
 
@@ -218,10 +220,21 @@ class Umschlag:
                 except FileExistsError:
                     continue
                 self._gesichert = True
+                self.sicherung = ziel
+                self._sicherungen_begrenzen()
                 return
         except OSError:
             raise UmschlagFehler("Die Sicherung der Umschlag-Datei konnte nicht angelegt werden") from None
         raise UmschlagFehler("Die Sicherung der Umschlag-Datei konnte nicht angelegt werden")
+
+    def _sicherungen_begrenzen(self) -> None:
+        """Von den Sicherungen dieser Datei bleiben die neue und die zwei neuesten älteren. Andere Dateien werden nie angefasst."""
+        muster = re.compile(re.escape(self.pfad.name) + r"\.sicherung-\d{8}-\d{6}(-\d+)?")
+        andere = sorted((p for p in self.pfad.parent.iterdir() if muster.fullmatch(p.name) and p != self.sicherung),
+                        key=lambda p: p.name, reverse=True)
+        for p in andere[SICHERUNGEN_BEHALTEN - 1:]:
+            with contextlib.suppress(OSError):
+                p.unlink()
 
     def _wegwerf(self, art: str) -> Path:
         return self.pfad.with_name(f".{self.pfad.name}.{art}-{secrets.token_hex(4)}")
