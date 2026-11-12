@@ -172,6 +172,7 @@ class _Lauf:
         self.neuer: api.NeuerFaktor | None = None
         self.alte_entfernt = False
         self.gespeichert = False
+        self._fenster: dict[str, int] = {}  # je Seed das zuletzt benutzte 30-Sekunden-Fenster
 
     def _sitzung(self, s: api.Sitzung) -> api.Sitzung:
         self.token, self.refresh = s.access_token, s.refresh_token
@@ -179,7 +180,9 @@ class _Lauf:
         return s
 
     def _code(self, seed: str) -> str:
-        code = tt.totp_code(seed, tt.frisches_fenster(self.v.jetzt, self.warte))
+        zeit = tt.frisches_fenster(self.v.jetzt, self.warte, nach=self._fenster.get(seed))
+        self._fenster[seed] = int(zeit // tt.PERIODE)
+        code = tt.totp_code(seed, zeit)
         self.aus.merke(code)
         return code
 
@@ -192,15 +195,21 @@ class _Lauf:
         return s
 
     def _alten_faktor_bestaetigen(self, faktor: api.Faktor) -> None:
-        """Ein bestätigter Faktor lässt sich nur mit aal2 entfernen: dafür dient der Seed aus der Datei."""
+        """Ein bestätigter Faktor lässt sich nur mit aal2 entfernen: dafür dient der Seed aus der Datei. Lehnt der Server den Code ab,
+        kann er gerade (von einem Lauf im selben 30-Sekunden-Fenster) benutzt worden sein: Dann gilt der Code des nächsten Fensters."""
         if not tt.seed_gueltig(self.z.seed):
             raise api.ApiFehler("Der vorhandene Faktor lässt sich ohne Seed in der Datei nicht entfernen (aal2 nötig), "
                                 "bitte als Admin am Server entfernen")
-        try:
-            self._bestaetigen(faktor.id, self.z.seed)
-        except api.ApiFehler as e:
-            raise api.ApiFehler(f"Der Seed in der Datei passt nicht zum vorhandenen Faktor ({e}), bitte als Admin am Server "
-                                "entfernen") from None
+        for versuch in (1, 2):
+            try:
+                self._bestaetigen(faktor.id, self.z.seed)
+                return
+            except api.ApiFehler as e:
+                if versuch == 1 and e.kennung == "mfa_verification_failed":
+                    self._fenster[self.z.seed] = int(self.v.jetzt() // tt.PERIODE)
+                    continue
+                raise api.ApiFehler(f"Der Seed in der Datei passt nicht zum vorhandenen Faktor ({e}), bitte als Admin am Server "
+                                    "entfernen") from None
 
     def _alte_entfernen(self, alt: list[api.Faktor]) -> None:
         for f in (f for f in alt if f.status != "verified"):  # liegengebliebene, nie bestätigte Faktoren, wie in der Oberfläche

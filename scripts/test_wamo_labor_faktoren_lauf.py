@@ -49,8 +49,26 @@ def labor():
     a.beenden()
 
 
+class Uhr:
+    """Eine Uhr, die beim Warten vorspringt, statt zu schlafen: Die Tests warten nie wirklich."""
+
+    def __init__(self):
+        self.vorsprung = 0.0
+        self.gewartet: list[float] = []
+
+    def zeit(self) -> float:
+        return time.time() + self.vorsprung
+
+    def warte(self, sekunden: float) -> None:
+        self.gewartet.append(sekunden)
+        self.vorsprung += sekunden
+
+
 def lauf(capsys, argv, **kw):
-    code = wlf.main(argv, warte=lambda s: None, **kw)
+    if "zeit" not in kw and "warte" not in kw:
+        uhr = kw.pop("uhr", None) or Uhr()
+        kw.update(zeit=uhr.zeit, warte=uhr.warte)
+    code = wlf.main(argv, **kw)
     ausgabe = capsys.readouterr()
     return code, ausgabe.out, ausgabe.err
 
@@ -275,11 +293,10 @@ def test_neu_mit_fehler_nach_dem_entfernen_loescht_den_alten_seed(capsys, umgebu
     datei = umschlag_datei(tmp_path)
     einrichten(capsys, labor, datei, "--profile", "labor-01")
     echt = wlf.api.Verbindung.verify
-    aufrufe = {"n": 0}
+    alt_id = labor.faktoren_von(email("labor-01"))[0]["id"]
 
     def zweite_bestaetigung_scheitert(self, *a, **k):
-        aufrufe["n"] += 1  # 1: der alte Faktor (aal2 zum Entfernen), 2: der neue Faktor
-        if aufrufe["n"] == 2:
+        if a[1] != alt_id:  # nur die Bestätigung des neuen Faktors scheitert, die des alten (aal2 zum Entfernen) gelingt
             labor.fehler("POST", "/verify", 400, "mfa_verification_failed", email=email("labor-01"), einmal=True)
         return echt(self, *a, **k)
 
@@ -457,11 +474,10 @@ def test_alter_seed_laesst_sich_nicht_loeschen_wird_gemeldet(capsys, umgebung, l
 
     monkeypatch.setattr(um.Umschlag, "seed_entfernen", nein)
     echt = wlf.api.Verbindung.verify
-    aufrufe = {"n": 0}
+    alt_id = labor.faktoren_von(email("labor-01"))[0]["id"]
 
     def zweite_scheitert(self, *a, **k):
-        aufrufe["n"] += 1  # 1: der alte Faktor (aal2 zum Entfernen), 2: der neue Faktor
-        if aufrufe["n"] == 2:
+        if a[1] != alt_id:  # nur die Bestätigung des neuen Faktors scheitert
             labor.fehler("POST", "/verify", 400, "mfa_verification_failed", email=email("labor-01"), einmal=True)
         return echt(self, *a, **k)
 

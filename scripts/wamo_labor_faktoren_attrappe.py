@@ -8,7 +8,7 @@ und bestimmt auch den Kopf Date der Antworten. Die TOTP-Prüfung ist hier unabh�
 geschrieben, damit die Tests nicht sich selbst prüfen.
 
 Fehler lassen sich gezielt einspielen (fehler(...)): je Methode, Pfadteil und auf Wunsch je E-Mail, einmal oder dauerhaft.
-Seeds und Tokens entstehen zur Laufzeit aus Hashwerten, nie als Zeichenfolge im Quelltext.
+Ein Code gilt je Faktor nur einmal (wie in GoTrue). Seeds und Tokens entstehen zur Laufzeit aus Hashwerten, nie als Zeichenfolge im Quelltext.
 """
 from __future__ import annotations
 
@@ -50,6 +50,7 @@ class GoTrueAttrappe:
         self.tokens: dict[str, str] = {}       # Access- oder Refresh-Token -> Sitzungskennung
         self.faktoren: dict[str, dict] = {}    # Faktorkennung -> Faktor
         self.challenges: dict[str, str] = {}   # Challenge -> Faktorkennung
+        self.benutzte_codes: set[tuple[str, str]] = set()  # (Faktor, Code) nach erfolgreichem verify: wie GoTrue gilt ein Code nur einmal
         self.alle_seeds: list[str] = []        # jeder Seed, den die Attrappe je vergeben hat (auch gelöschter Faktoren)
         self.anfragen: list[tuple[str, str]] = []
         self.regeln: list[dict] = []
@@ -281,9 +282,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._senden(400, {"code": 400, "error_code": "mfa_challenge_expired", "msg": "Challenge unbekannt"})
         jetzt = o.jetzt()
         gueltig = {totp_unabhaengig(f["seed"], jetzt + d * 30) for d in (-1, 0, 1)}
-        if k.get("code") not in gueltig:
+        if k.get("code") not in gueltig or (f["id"], k.get("code")) in o.benutzte_codes:
             return self._senden(400, {"code": 400, "error_code": "mfa_verification_failed", "msg": "Invalid TOTP code entered"})
         o.challenges.pop(k["challenge_id"], None)
+        o.benutzte_codes.add((f["id"], k["code"]))
         f["status"] = "verified"
         if not o.aal2_nie:
             o.sitzungen[sid]["aal"] = "aal2"

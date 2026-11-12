@@ -16,13 +16,14 @@ import json
 import math
 import re
 import struct
+from datetime import timezone
 from email.utils import parsedate_to_datetime
 from typing import Callable
 
 PERIODE = 30
 STELLEN = 6
 MIN_SEED_ZEICHEN = 16  # 80 Bit, GoTrue liefert 32 Zeichen
-MAX_VERSATZ_S = 86_400  # ein größerer Unterschied stammt aus einem kaputten Kopf und wird nicht berücksichtigt
+MAX_VERSATZ_S = 300  # ein größerer Unterschied stammt aus einem kaputten Kopf und wird nicht berücksichtigt
 _SEED_FORM = re.compile(r"[A-Z2-7]+=*")
 
 
@@ -70,19 +71,23 @@ def zeitversatz(date_kopf: str | None, lokal_mitte: float) -> float:
     if not date_kopf:
         return 0.0
     try:
-        server = parsedate_to_datetime(date_kopf).timestamp() + 0.5
-    except (TypeError, ValueError, IndexError, OverflowError):
+        zeitpunkt = parsedate_to_datetime(date_kopf)
+        if zeitpunkt.tzinfo is None:  # "-0000" oder gar keine Zeitzone: HTTP-Zeiten sind UTC, nie die Ortszeit dieses Rechners
+            zeitpunkt = zeitpunkt.replace(tzinfo=timezone.utc)
+        server = zeitpunkt.timestamp() + 0.5
+    except (TypeError, ValueError, IndexError, OverflowError, OSError):
         return 0.0
     versatz = server - lokal_mitte
     return versatz if abs(versatz) <= MAX_VERSATZ_S else 0.0
 
 
-def frisches_fenster(jetzt: Callable[[], float], warte: Callable[[float], None], reserve: float = 2.0) -> float:
+def frisches_fenster(jetzt: Callable[[], float], warte: Callable[[float], None], reserve: float = 2.0, nach: int | None = None) -> float:
     """Die Zeit für den nächsten Code. Endet das Fenster in weniger als reserve Sekunden, wird bis zum nächsten gewartet,
-    damit der Code beim Server nicht gerade abläuft."""
+    damit der Code beim Server nicht gerade abläuft. nach ist das zuletzt benutzte Fenster (Zeit geteilt durch 30): Ein Code gilt
+    beim Server nur einmal, also wird nie im selben oder einem früheren Fenster ein zweiter Code gebildet."""
     t = jetzt()
     rest = PERIODE - (t % PERIODE)
-    if rest < reserve:
+    if rest < reserve or (nach is not None and int(t // PERIODE) <= nach):
         warte(rest + 0.2)
         t = jetzt()
     return t

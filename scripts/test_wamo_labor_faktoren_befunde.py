@@ -453,3 +453,92 @@ def test_ohne_schreibvorgang_keine_sicherungszeile(capsys, umgebung, labor, tmp_
     capsys.readouterr()
     code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")  # übersprungen: nichts geschrieben
     assert "übersprungen" in out and "Sicherung" not in out
+
+
+# ---------- Befund 7: Zeitversatz begrenzt und als UTC gedeutet, kein Code zweimal im selben Fenster ----------
+
+import calendar  # noqa: E402
+import time  # noqa: E402
+from email.utils import formatdate  # noqa: E402
+
+import wamo_labor_faktoren_totp as tt  # noqa: E402
+from test_wamo_labor_faktoren_lauf import Uhr  # noqa: E402
+
+LOKAL = float(calendar.timegm((2026, 11, 12, 10, 0, 0)))
+
+
+def test_hoechstversatz_sind_300_sekunden():
+    assert tt.MAX_VERSATZ_S == 300
+    assert tt.zeitversatz(formatdate(LOKAL + 250, usegmt=True), LOKAL) == pytest.approx(250.5, abs=0.6)
+    assert tt.zeitversatz(formatdate(LOKAL + 400, usegmt=True), LOKAL) == 0.0
+    assert tt.zeitversatz(formatdate(LOKAL - 400, usegmt=True), LOKAL) == 0.0
+
+
+@pytest.mark.parametrize("kopf", ["Thu, 12 Nov 2026 10:00:40 -0000", "Thu, 12 Nov 2026 10:00:40", "Thu, 12 Nov 2026 10:00:40 +0000",
+                                  "Thu, 12 Nov 2026 10:00:40 GMT"])
+def test_date_kopf_ohne_oder_mit_unbestimmter_zeitzone_gilt_als_utc(kopf, monkeypatch):
+    if hasattr(time, "tzset"):  # unter Linux die Ortszeit auf eine Zone mit großem Abstand zu UTC stellen
+        monkeypatch.setenv("TZ", "Asia/Tokyo")
+        time.tzset()
+    try:
+        assert tt.zeitversatz(kopf, LOKAL) == pytest.approx(40.5, abs=0.6)
+    finally:
+        if hasattr(time, "tzset"):
+            monkeypatch.delenv("TZ", raising=False)
+            time.tzset()
+
+
+def test_frisches_fenster_wartet_nach_einem_schon_benutzten_fenster():
+    uhr = {"t": 70.0}  # Fenster 2 (60 bis 90)
+    waren = []
+
+    def warte(s):
+        waren.append(s)
+        uhr["t"] += s
+
+    t = tt.frisches_fenster(lambda: uhr["t"], warte, nach=2)
+    assert len(waren) == 1 and 19.9 < waren[0] < 21 and int(t // 30) == 3
+    assert tt.frisches_fenster(lambda: 95.0, waren.append, nach=2) == 95.0 and len(waren) == 1, "ein neueres Fenster braucht keine Wartezeit"
+    assert tt.frisches_fenster(lambda: 70.0, waren.append) == 70.0 and len(waren) == 1, "ohne nach gilt nur die Reserve am Fensterende"
+
+
+def test_aufraeumen_nach_der_abmeldung_nutzt_keinen_code_zweimal(capsys, umgebung, labor, tmp_path, monkeypatch):
+    """Der Seed lässt sich nicht speichern: Das Aufräumen meldet sich neu an und bestätigt den Faktor mit demselben Seed noch einmal.
+    Im selben 30-Sekunden-Fenster käme derselbe Code, den der Server ablehnt, also wartet das Skript auf das nächste Fenster."""
+    datei = umschlag_datei(tmp_path)
+    echt = os.replace
+
+    def nur_umschlag_scheitert(quelle, ziel):
+        if Path(ziel).resolve() == datei.resolve():
+            raise OSError("Platte voll")
+        return echt(quelle, ziel)
+
+    monkeypatch.setattr(os, "replace", nur_umschlag_scheitert)
+    uhr = Uhr()
+    code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01", uhr=uhr)
+    assert code == 1 and "Faktor wieder entfernt" in err and labor.faktoren_von(email("labor-01")) == []
+    assert any(0.1 < s <= 30.5 for s in uhr.gewartet), "das Skript hat auf das nächste Fenster gewartet"
+    assert len(labor.benutzte_codes) == 2 and len({c for _, c in labor.benutzte_codes}) == 2, "zwei verschiedene Codes für denselben Faktor"
+
+
+class FesteUhr(Uhr):
+    """Steht beim Start still und springt nur beim Warten: zwei Läufe liegen so sicher im selben 30-Sekunden-Fenster."""
+
+    def __init__(self, start: float):
+        super().__init__()
+        self.start = start
+
+    def zeit(self) -> float:
+        return self.start + self.vorsprung
+
+
+def test_neu_gleich_nach_dem_einrichten_wartet_auf_das_naechste_fenster(capsys, umgebung, labor, tmp_path):
+    """Der Code des alten Faktors wäre im selben Fenster ein zweites Mal derselbe und würde abgelehnt: Das Skript nimmt das nächste Fenster,
+    statt zu melden, der Seed passe nicht."""
+    datei = umschlag_datei(tmp_path)
+    start = time.time()
+    assert einrichten(capsys, labor, datei, "--profile", "labor-01", uhr=FesteUhr(start))[0] == 0
+    zweite = FesteUhr(start)
+    code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01", "--neu", uhr=zweite)
+    assert code == 0 and err == "" and "Faktor eingerichtet" in out and any(0.1 < s <= 30.5 for s in zweite.gewartet)
+    assert len(labor.faktoren_von(email("labor-01"))) == 1
