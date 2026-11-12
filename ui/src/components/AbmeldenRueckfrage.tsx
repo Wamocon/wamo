@@ -19,7 +19,11 @@ export function AbmeldenRueckfrage({ onBestaetigt, onAbbruch }: { onBestaetigt: 
 
   useEffect(() => {
     const d = dialog.current;
-    if (d && !d.open) d.showModal();
+    if (d && !d.open) {
+      // Ohne showModal (sehr alte Browser, Testumgebungen) öffnet das Attribut das Fenster, nur eben nicht modal
+      if (typeof d.showModal === "function") d.showModal();
+      else d.setAttribute("open", "");
+    }
     bleiben.current?.focus();
   }, []);
 

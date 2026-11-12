@@ -60,7 +60,7 @@ export const Kopfzeile = memo(function Kopfzeile({
 
   return (
     <header className="topbar" ref={kopf}>
-      <h1 className="wordmark-sm" data-labor={ansicht.kopfTitel ? "" : undefined}>
+      <h1 className="wordmark-sm" data-labor={ansicht.kopfTitel ? "" : undefined} title={ansicht.kopfTitel ?? undefined}>
         {ansicht.kopfTitel ?? "WAMO"}
       </h1>
       <ProfilChip email={email} onAbmelden={ansicht.abmeldenFragen ? abmeldenAnfragen : onAbmelden} />

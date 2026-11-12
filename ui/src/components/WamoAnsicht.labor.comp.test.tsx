@@ -194,6 +194,20 @@ describe("Hauptansicht eines Laborkontos: Einstellungen nur mit Mikrofon", () =>
     expect(within(nav).getAllByRole("link").map((l) => l.textContent)).toEqual([expect.stringMatching(/^Sprache und Ton/)]);
   });
 
+  it("die Gliederung beschreibt den Abschnitt in der Laborsicht kurz mit Mikrofon wählen", async () => {
+    zeige(PLATZ, { hash: "#einstellungen" });
+    await ruhe();
+    const nav = screen.getByRole("navigation", { name: "Abschnitte der Einstellungen" });
+    expect(within(nav).getByText("Mikrofon wählen", { selector: ".ez-nav-kurz" })).toBeTruthy();
+    expect(within(nav).queryByText(/Hören und Stimme/)).toBeNull();
+  });
+
+  it("der Abschnitt selbst trägt dieselbe Kurzzeile", async () => {
+    zeige(PLATZ, { hash: "#einstellungen/sprache" });
+    await ruhe();
+    expect(document.querySelector(".ez-abschnitt-kurz")?.textContent).toBe("Mikrofon wählen");
+  });
+
   it("zeigt in diesem Abschnitt die Mikrofonwahl, aber nicht Start beim Tippen oder Hören und Sprechen", async () => {
     zeige(PLATZ, { hash: "#einstellungen/sprache" });
     await ruhe();
@@ -235,6 +249,23 @@ describe("Hauptansicht eines Laborkontos: Abmelden fragt nach", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(a.disconnect).not.toHaveBeenCalled();
     expect(signOut).not.toHaveBeenCalled();
+  });
+
+  it("Escape schließt nur die Rückfrage, nicht die Einstellungsseite dahinter", async () => {
+    const user = userEvent.setup();
+    const { signOut } = zeige(PLATZ, { hash: "#einstellungen" });
+    await ruhe();
+    expect(document.querySelector(".ez")).not.toBeNull();
+    await user.click(abmeldenKnopf());
+    expect(screen.getByRole("dialog", { name: "Wirklich abmelden?" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelector(".ez")).not.toBeNull(); // die Einstellungen sind noch offen
+    expect(window.location.hash).toBe("#einstellungen");
+    expect(signOut).not.toHaveBeenCalled();
+    // das nächste Escape gehört wieder der Seite und schließt sie
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(document.querySelector(".ez")).toBeNull());
   });
 
   it("Ja, abmelden beendet das Gespräch und meldet ab", async () => {
@@ -331,6 +362,7 @@ describe("Hauptansicht eines normalen Admin-Kontos: unverändert alles", () => {
   it("zeigt bei Sprache und Ton auch Start beim Tippen und Hören und Sprechen", async () => {
     zeige(ADMIN, { hash: "#einstellungen/sprache" });
     await ruhe();
+    expect(document.querySelector(".ez-abschnitt-kurz")?.textContent).toBe("Mikrofon, Hören und Stimme");
     expect(screen.getByText("Start beim Tippen")).toBeTruthy();
     expect(screen.getByText("Hören und Sprechen")).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "Mikrofon" })).toBeTruthy();

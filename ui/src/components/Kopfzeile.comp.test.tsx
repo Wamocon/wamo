@@ -46,6 +46,7 @@ describe("Kopfzeile eines normalen Kontos", () => {
   it("zeigt die Wortmarke WAMO und den Verlauf, wie bisher", () => {
     const { onVerlauf } = zeige(NORMAL);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("WAMO");
+    expect(screen.getByRole("heading", { level: 1 }).hasAttribute("title")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Verlauf" }));
     expect(onVerlauf).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Verlauf öffnen", hidden: true })).toBeTruthy(); // im Menü (Popover)
@@ -75,6 +76,16 @@ describe("Kopfzeile eines Laborkontos", () => {
   it("nennt beim Schaufenster nur das Testlabor", () => {
     zeige(SCHAU);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("WAMO Testlabor");
+  });
+
+  it("trägt den vollen Titel zusätzlich als title, damit er beim Kürzen lesbar bleibt", () => {
+    zeige(PLATZ);
+    expect(screen.getByRole("heading", { level: 1 }).getAttribute("title")).toBe("WAMO Testlabor, Platz 3");
+  });
+
+  it("das Schaufenster trägt ebenfalls den vollen Titel", () => {
+    zeige(SCHAU);
+    expect(screen.getByRole("heading", { level: 1 }).getAttribute("title")).toBe("WAMO Testlabor");
   });
 
   it("hat keinen Verlauf, weder als Knopf noch im Menü", () => {
@@ -151,6 +162,23 @@ describe("Kopfzeile eines Laborkontos", () => {
     await user.click(abmeldenKnopf());
     expect(screen.getByRole("dialog", { name: "Wirklich abmelden?" })).toBeTruthy();
     expect(onAbmelden).not.toHaveBeenCalled();
+  });
+
+  it("ohne showModal (ältere Umgebung) öffnet die Rückfrage trotzdem und lässt sich bedienen", async () => {
+    const user = userEvent.setup();
+    const original = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "showModal");
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: undefined });
+    try {
+      const { onAbmelden } = zeige(PLATZ);
+      await user.click(abmeldenKnopf());
+      const dialog = screen.getByRole("dialog", { name: "Wirklich abmelden?" });
+      expect(dialog.hasAttribute("open")).toBe(true);
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Angemeldet bleiben" }));
+      await user.click(screen.getByRole("button", { name: "Ja, abmelden" }));
+      expect(onAbmelden).toHaveBeenCalledTimes(1);
+    } finally {
+      if (original) Object.defineProperty(HTMLDialogElement.prototype, "showModal", original);
+    }
   });
 
   it("die Texte der Rückfrage haben keinen Gedankenstrich", () => {
