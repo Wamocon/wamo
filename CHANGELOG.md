@@ -8,6 +8,15 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Labor-Daten des Testlabors, erste Fassung (nicht ausgerollt, Konzept `docs/testlabor-wamo.md` 3.6 und 3.8): Der Ordner `infra/sokrates2/labor-daten/` enthält die acht Dateien, die der Lader
+  `voice-core/labor_daten.py` aus `/etc/wamo/labor` liest. Regelteil `persona-zusatz.md` in der Standardfassung (Mail erst als Entwurf, Tickets nur über Werkzeuge, Datum per Werkzeug, kurze Antworten, nichts erfinden,
+  bewusst ohne den Satz "frag bei fehlenden Angaben nach", damit die Basis gemessen wird) und die vorbereitete strenge Fassung `persona-zusatz.streng.md` mit diesem Satz und der Regel "Fehler nicht wegbessern" (Frage Q6).
+  Datenteil: `kontakte.md` (erfundene Kontakte, Adressen nur `@wamo.test`), `anforderung-vorlage.md`, `wissen-istqb.md` (Entwurf, Fachlichkeit prüft der Trainer), `bericht-vorlage.md`, `ausgang.md` (höchstens 400 Zeichen,
+  ohne Termin, Preis und Anmeldung) und `ctfl-zuordnung.json` (alle 17 Karten mit Thema und Lernziel, Entwurf). Offene Angaben der Kollegen und Trainer stehen in der `README.md` des Ordners. Beide Fassungen der Regeln
+  passen mit allen Daten unter die Grenze von 6000 Zeichen. Das Skript `infra/sokrates2/wamo-labor-daten-einrichten.sh` (nur root) installiert die Dateien nach `/etc/wamo/labor` (nie nach `/etc/wamo` selbst), wählt mit
+  `--persona standard|streng` die Fassung der Regeln, sichert den vorigen Stand unter `/var/backups/wamo-labor-daten`, prüft vor und nach der Installation mit dem echten Lader (als `wamo-core`) und nimmt bei Ablehnung zurück.
+  `status` zeigt nur Prüfsummen, `rueckweg` stellt die letzte Sicherung her. Das Skript ändert den Kern nie und startet nichts neu. Hinweis: Der Mail-Filter des Kerns erlaubt standardmäßig nur `labor.test`, für die
+  Kontakte braucht es `WAMO_LABOR_MAIL_DOMAIN=wamo.test` (das Skript warnt). Tests: `voice-core/test_labor_daten_inhalt.py` und `voice-core/test_labor_daten_skript.py`. `.gitattributes` hält den Ordner auf LF.
 - Seitenleisten der Kommandozentrale per Ziehen in der Breite ändern (nur Oberfläche): Zwischen linker Leiste und Mitte sowie zwischen Mitte
   und rechter Leiste sitzt ein Griff (`role="separator"`), den man mit Maus, Stift oder Finger ziehen kann (Pointer Events mit Pointer
   Capture). Links gelten 200 bis 520 px, rechts 260 bis 640 px, die Mitte behält mindestens 360 px. Tastatur: Pfeil links und rechts ändert
