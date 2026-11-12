@@ -1503,6 +1503,37 @@ Sicherungen des Einrichtens (`/var/backups/wamo-labor`) enthalten weder Token no
    (zum Beispiel mit dem nächsten Compose-Update, in einer ruhigen Minute, frühestens nach dem 11.12.2026) dafür nutzen.
 8. **Der Ausgang hängt allein an `wamo-firewall`.** Es gibt keine zweite Schicht außer der abgeschalteten Maskierung. Bei `systemctl stop wamo-firewall` ist er offen (siehe oben): vorher den Dienst stoppen.
 
+## 20. Labor-Daten des Testlabors (vorbereitet am 13.11.2026, nicht ausgerollt)
+
+Regeln, Kontakte, Vorlagen, Fachwissen und Schlusstext des Testlabors vom 28.11.2026 liegen als Dateien in `infra/sokrates2/labor-daten/` (Zweck, Zuständigkeiten und Freigabeablauf: dortige `README.md`) und
+auf dem Server unter `/etc/wamo/labor/`. Der Kern liest sie bei jedem Sitzungsstart (`voice-core/labor_daten.py`), eine Änderung braucht kein Release und keinen Neustart.
+
+| Pfad | Besitz, Modus | Inhalt |
+| --- | --- | --- |
+| `/etc/wamo/labor/` | root:root 0755 | nie `/etc/wamo` selbst (dort liegt die Geheimnisdatei), keine Links |
+| `/etc/wamo/labor/persona-zusatz.md` | root:root 0644 | Regelteil, Standardfassung oder strenge Fassung (Wahl mit `--persona`) |
+| `/etc/wamo/labor/persona-zusatz.streng.md` | root:root 0644 | die vorbereitete strenge Fassung, vom Lader nie gelesen |
+| `/etc/wamo/labor/{kontakte.md,anforderung-vorlage.md,wissen-istqb.md,bericht-vorlage.md,ausgang.md,ctfl-zuordnung.json}` | root:root 0644 | Datenteil, zusammen mit dem Regelteil höchstens 6000 Zeichen |
+| `/var/backups/wamo-labor-daten/<JJJJMMTT-HHMMSS>/` | root 0700 | Sicherung des vorigen Stands, die Datei `VORHER` schließt sie ab |
+
+**Einrichten und Bedienen** (nur als root, `sudo bash ~/wamo-infra/wamo-labor-daten-einrichten.sh <Unterbefehl>` über `ssh wamo-sokrates2`, Ablage wie in Abschnitt 0; Exit-Codes: 0 ok, 1 Fehler, 2 falsche Aufrufform,
+3 Vorbedingung nicht erfüllt):
+
+1. `einrichten --trocken`: prüft die Lieferung mit dem echten Lader in einem Wegwerf-Ordner und zeigt je Datei neu, geändert oder unverändert. Es ändert nichts.
+2. `einrichten [--persona standard|streng] [--release NAME]`: sichert den vorigen Stand, installiert die acht Dateien, prüft sie am Ziel noch einmal mit dem Lader und nimmt bei jeder Ablehnung alles zurück
+   (Exit 1). Ohne `--persona` bleibt die vorhandene Fassung der Regeln. Ein zweiter Lauf mit gleichem Inhalt ändert nichts.
+3. `status`: Rechte, Prüfsummen (die ersten 16 Zeichen von SHA-256, wie in der Logzeile `Labor-Daten:` des Sitzungsstarts), Vergleich mit der Lieferung, gewählte Fassung, Urteil des Laders, Sicherungen. Nie Inhalte.
+4. `rueckweg [--trocken]`: stellt die letzte vollständige Sicherung wieder her, der Stand davor bleibt als `<Zeit>.vor-rueckweg` liegen.
+
+Der Lader läuft als `wamo-core` (so wie der Kern liest) aus dem jüngsten Release mit `voice-core/labor_daten.py` und dessen `venv`, mit `--release NAME` aus einem bestimmten. Fehlt das Paket `loguru` oder gibt es
+kein solches Release (der Lab-Release des Kerns muss zuerst angelegt sein), bricht das Skript vor jeder Änderung mit Exit 3 ab. Es startet nichts neu und ändert den Kern nie.
+
+**Mail-Domäne.** Die Kontakte nutzen `labor.test`, die Standard-Domäne des Mail-Filters von `mail_senden` (`DOMAIN_STANDARD` in `voice-core/labor_mail.py`). Der Kern bleibt unverändert, ein Test prüft die
+Übereinstimmung. Das Skript liest `core.env` nicht.
+
+Probelauf ohne root in einem Wegwerf-Ordner: `WAMO_LABOR_DATEN_WURZEL=/tmp/labor-probe WAMO_LABOR_DATEN_LADER=<voice-core> WAMO_LABOR_DATEN_PYTHON=<python mit loguru> bash wamo-labor-daten-einrichten.sh einrichten`. Tests im Ordner
+`voice-core`: `python -m pytest -q test_labor_daten_inhalt.py test_labor_daten_skript.py`. Was echte Besitzer und den Benutzer `wamo-core` braucht (Herkunftsschutz mit fremdem Besitzer, Lader als `wamo-core`), ist nur am Server prüfbar.
+
 ---
 
 WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn

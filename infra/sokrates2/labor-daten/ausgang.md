@@ -1,0 +1,1 @@
+Danke für Ihren Besuch im Testlabor von WAMOCON. Sie haben selbst ausprobiert, wo ein Sprachassistent verlässlich arbeitet und wo er Fehler macht. Genau dafür gibt es das Testen. Mehr zum Seminar erhalten Sie am Stand von WAMOCON.
