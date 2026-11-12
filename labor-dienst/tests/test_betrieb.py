@@ -114,3 +114,42 @@ def test_einstieg_mit_unbrauchbarem_datenordner_meldet_klar_und_startet_nicht(tm
                             "WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI": str(betreuer)})
     assert r.returncode == 3 and "Speicher" in r.stderr and "Traceback" not in r.stderr
     assert KERN_TOKEN not in r.stdout + r.stderr and BETREUER_TOKEN not in r.stdout + r.stderr
+
+
+def test_stuendliche_pruefung_laeuft_nach_einem_fehler_weiter(app, monkeypatch):
+    import asyncio
+
+    from wamo_labor_dienst.app import _aufraeumen_schleife
+
+    dienst = app.state.dienst
+    aufrufe: list[int] = []
+
+    def pruefen() -> bool:
+        aufrufe.append(1)
+        if len(aufrufe) == 1:
+            raise RuntimeError("Fehler beim Aufräumen")
+        return False
+
+    pausen: list[float] = []
+
+    async def schlafen(sekunden: float) -> None:
+        pausen.append(sekunden)
+        if len(pausen) > 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(dienst, "aufbewahrung_pruefen", pruefen)
+    monkeypatch.setattr("wamo_labor_dienst.app.asyncio.sleep", schlafen)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_aufraeumen_schleife(dienst))
+    assert len(aufrufe) == 2 and pausen == [3600, 3600, 3600]
+    assert "RuntimeError" in (konfig_protokoll(dienst))
+
+
+def konfig_protokoll(dienst) -> str:
+    return dienst.protokoll.datei.read_text(encoding="utf-8")
+
+
+def test_zentraldatei_unbrauchbar_ist_nicht_gesund(tmp_path):
+    from wamo_labor_dienst.datenbank import ZentralDB
+
+    assert ZentralDB(tmp_path).pruefen() is False  # ein Ordner statt einer Datei

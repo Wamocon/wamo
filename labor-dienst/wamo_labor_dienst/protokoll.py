@@ -42,7 +42,7 @@ class Protokoll:
         try:
             with self._sperre:
                 self._schreiben(zeile)
-        except OSError:
+        except Exception:  # noqa: BLE001 (ein Protokollfehler darf den Dienst nie stören)
             if not self._gemeldet:  # einmal, ohne Pfad und Einzelheiten
                 self._gemeldet = True
                 print("Protokoll nicht schreibbar", file=sys.stderr)

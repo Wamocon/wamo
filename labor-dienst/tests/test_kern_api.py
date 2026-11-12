@@ -405,3 +405,37 @@ def test_fehlertexte_ohne_interna(client, d):
               client.get("/api/kern/durchlauf"), client.get("/api/kern/durchlauf", headers=kern_kopf(99))):
         text = r.json()["text"]
         assert 0 < len(text) <= 200 and not any(w in text for w in ("Traceback", ".py", "sqlite", "SELECT", "/usr/", "/opt/", "\\"))
+
+
+def test_abgebrochene_verbindung_beim_lesen_ist_eine_fehlerantwort_ohne_absturz(client, d, monkeypatch):
+    from starlette.requests import ClientDisconnect
+
+    async def abgebrochen(*_args):
+        raise ClientDisconnect
+
+    monkeypatch.setattr("wamo_labor_dienst.kern_api.koerper_lesen", abgebrochen)
+    _fehler(client.post("/api/kern/tickets", json=ANLEGEN, headers=schreib_kopf(d)), 400, "eingabe_ungueltig")
+
+
+def test_protokollfehler_stoert_den_dienst_nicht(client, d, monkeypatch):
+    from wamo_labor_dienst.protokoll import Protokoll
+
+    def kaputt(self, *_args, **_kw):
+        raise TypeError("Protokoll kaputt")
+
+    monkeypatch.setattr(Protokoll, "_schreiben", kaputt)
+    r = client.get("/api/kern/durchlauf", headers=kern_kopf())
+    assert r.status_code == 200 and r.json()["offen"] is True
+
+
+def test_unerwarteter_fehler_ausserhalb_der_endpunkte_ist_500_im_vertragsformat(app):
+    from fastapi.testclient import TestClient
+
+    async def knall():
+        raise RuntimeError("Geheim /opt/pfad sqlite")
+
+    app.add_api_route("/knall", knall, methods=["GET"])
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
+        r = c.get("/knall")
+    assert r.status_code == 500 and r.json() == {"fehler": "dienst_fehler", "text": "Interner Fehler."}
+    assert "Geheim" not in r.text and r.headers["cache-control"] == "no-store" and "default-src 'self'" in r.headers["content-security-policy"]

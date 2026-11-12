@@ -363,3 +363,27 @@ def test_neuer_durchlauf_waehrend_geschrieben_wird_laesst_nie_altes_zu(db):
     db.neuer_durchlauf(2)
     for _ in range(3):
         assert status_setzen(db, 12, 1, "erledigt", durchlauf=alt).status == 409
+
+
+def test_ticketnummer_ueber_9999_ist_429_nie_ein_ungueltiges_ticket(db):
+    import sqlite3
+
+    verbindung = sqlite3.connect(db.pfad)
+    verbindung.execute("UPDATE meta SET ticket_zaehler = 10000")
+    verbindung.commit()
+    verbindung.close()
+    _fehler(anlegen(db), 429, "quote_erreicht")
+    assert db.suchen(Suche())["gesamt"] == 6
+
+
+def test_datenbankfehler_ohne_volllauf_wird_zur_ausnahme_und_laesst_den_platz_unveraendert(db, monkeypatch):
+    import sqlite3
+
+    def gesperrt(*_args):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(schreibpfad, "ausfuehren", gesperrt)
+    with pytest.raises(sqlite3.OperationalError):
+        anlegen(db)
+    monkeypatch.undo()
+    assert db.suchen(Suche())["gesamt"] == 6 and anlegen(db).status == 201
