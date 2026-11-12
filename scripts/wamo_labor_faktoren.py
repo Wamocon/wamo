@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Callable
 
 import wamo_labor_faktoren_api as api
+import wamo_labor_faktoren_signale as sg
 import wamo_labor_faktoren_totp as tt
 import wamo_labor_faktoren_umschlag as um
 
@@ -192,6 +193,7 @@ class _Lauf:
         self.neuer = self.v.faktor_anlegen(self.token, "WAMO-" + secrets.token_hex(3))
         self.aus.merke(self.neuer.seed)
         self._bestaetigen(self.neuer.id, self.neuer.seed)
+        self.um.zwischen_schreiben(self.kennung, self.neuer.id, self.neuer.seed)  # sofort: bei hartem Abbruch geht der Seed nicht verloren
         if self._sitzung(self.v.erneuern(self.refresh)).aal != "aal2":
             raise api.ApiFehler("Ein neues Token trägt nicht aal2")
 
@@ -214,6 +216,7 @@ class _Lauf:
         self._abmelden()
         self.um.seed_speichern(k, self.neuer.seed)  # erst nach dem Ende der Sitzung
         self.gespeichert = True
+        self._zwischen_loeschen_still()
         return Ergebnis(EINGERICHTET, k, "Faktor eingerichtet, aal2 geprüft")
 
     # ---- Abbruch ----
@@ -239,11 +242,29 @@ class _Lauf:
             return False
         return True
 
+    def _zwischen_loeschen_still(self) -> None:
+        """Die Zwischendatei ist überholt (der Seed steht in der Umschlag-Datei oder der Faktor ist weg). Bleibt sie liegen, übernimmt
+        der nächste Lauf denselben Seed noch einmal, das schadet nicht."""
+        try:
+            self.um.zwischen_loeschen()
+        except um.UmschlagFehler:
+            pass
+
     def abbruch(self, grund: str) -> str:
+        alt = sg.ignorieren()  # während des Aufräumens zählt kein weiteres Signal, ein zweites Strg+C schneidet nichts ab
+        try:
+            return grund + self._aufraeumen()
+        finally:
+            sg.zuruecksetzen(alt)
+
+    def _aufraeumen(self) -> str:
         hinweise = []
         if self.neuer is not None and not self.gespeichert:
-            hinweise.append("Faktor wieder entfernt" if self._faktor_aufraeumen()
-                            else "der neue Faktor konnte NICHT entfernt werden, bitte als Admin am Server prüfen")
+            if self._faktor_aufraeumen():
+                hinweise.append("Faktor wieder entfernt")
+                self._zwischen_loeschen_still()
+            else:
+                hinweise.append("der neue Faktor konnte NICHT entfernt werden, bitte als Admin am Server prüfen")
         if self.alte_entfernt and not self.gespeichert:
             hinweise.append("der alte Faktor war schon entfernt, der alte Seed wurde aus der Datei gelöscht" if self._seed_der_datei_loeschen()
                             else "der alte Faktor war schon entfernt, der alte Seed steht noch in der Datei und gilt nicht mehr")
@@ -251,7 +272,7 @@ class _Lauf:
             self._abmelden()
         except api.ApiFehler:
             pass
-        return grund + ("; " + "; ".join(hinweise) if hinweise else "")
+        return "; " + "; ".join(hinweise) if hinweise else ""
 
 
 def profil_einrichten(kennung: str, umschlag: um.Umschlag, verbindung: api.Verbindung, neu: bool, ausgabe: Ausgabe,
@@ -266,7 +287,7 @@ def profil_einrichten(kennung: str, umschlag: um.Umschlag, verbindung: api.Verbi
         return lauf.ausfuehren(neu)
     except (api.ApiFehler, um.UmschlagFehler) as e:
         grund = lauf.abbruch(str(e))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, sg.Signal):
         lauf.abbruch("abgebrochen")
         raise
     except Exception as e:  # nie der Text einer unerwarteten Ausnahme: er könnte einen Wert enthalten
@@ -299,12 +320,34 @@ def befehl_einrichten(args: argparse.Namespace, profile: list[str], umschlag: um
             pass
     if not args.trocken:
         umschlag.schreibprobe()
+    _zwischen_uebernehmen(umschlag, ausgabe, args.trocken)
     ergebnisse = []
-    for kennung in profile:
-        e = _plan(kennung, umschlag, args.neu) if args.trocken else profil_einrichten(kennung, umschlag, verbindung, args.neu, ausgabe, warte)
-        _melden(ausgabe, e)
-        ergebnisse.append(e.art)
+    alt = {} if args.trocken else sg.umsetzen()  # Signale lösen das Aufräumen aus
+    try:
+        for kennung in profile:
+            e = (_plan(kennung, umschlag, args.neu) if args.trocken
+                 else profil_einrichten(kennung, umschlag, verbindung, args.neu, ausgabe, warte))
+            _melden(ausgabe, e)
+            ergebnisse.append(e.art)
+    finally:
+        sg.zuruecksetzen(alt)
     return _abschluss(ergebnisse, args.trocken, verbindung, ausgabe)
+
+
+def _zwischen_uebernehmen(umschlag: um.Umschlag, ausgabe: Ausgabe, trocken: bool) -> None:
+    """Hat ein früherer Lauf hart abgebrochen, steht der Seed seines Faktors in der Zwischendatei: Er kommt jetzt in die Umschlag-Datei.
+    Ob der Faktor am Server noch besteht, klärt danach der normale Ablauf für dieses Profil (einrichten)."""
+    z = umschlag.zwischen_lesen()
+    if z is None:
+        return
+    ausgabe.merke(z.seed)
+    if trocken:
+        ausgabe.zeile(f"{z.kennung}: Zwischendatei eines abgebrochenen Laufs vorhanden, einrichten übernimmt den Seed")
+        return
+    umschlag.seed_speichern(z.kennung, z.seed)
+    umschlag.zwischen_loeschen()
+    ausgabe.zeile(f"{z.kennung}: Seed aus der Zwischendatei eines abgebrochenen Laufs übernommen, einrichten für dieses Profil "
+                  "prüft den Faktor am Server")
 
 
 def _melden(ausgabe: Ausgabe, e: Ergebnis) -> None:
@@ -335,6 +378,8 @@ def _seed_vorhanden(umschlag: um.Umschlag, kennung: str) -> bool:
 
 def befehl_pruefen(profile: list[str], umschlag: um.Umschlag, ausgabe: Ausgabe) -> int:
     """Nur die Datei, kein Netz: Ein Faktor gilt als vorhanden, wenn sein Seed in der Datei steht."""
+    if umschlag.zwischen_pfad.exists():
+        ausgabe.fehler("Hinweis: Eine Zwischendatei eines abgebrochenen Laufs ist vorhanden, einrichten übernimmt den Seed daraus.")
     ergebnisse = [_seed_vorhanden(umschlag, k) for k in profile]
     for kennung, ok in zip(profile, ergebnisse):
         ausgabe.zeile(f"{kennung}: Faktor und Seed in der Datei: {'ja' if ok else 'nein'}")
@@ -410,6 +455,9 @@ def main(argv: list[str] | None = None, *, zeit: Callable[[], float] = time.time
     except (EingabeFehler, um.UmschlagFehler, api.ApiFehler) as e:
         ausgabe.fehler(f"Fehler: {e}")
         return EXIT_EINGABE
+    except sg.Signal as s:
+        ausgabe.fehler("Abgebrochen.")
+        return 128 + s.nummer
     except KeyboardInterrupt:
         ausgabe.fehler("Abgebrochen.")
         return EXIT_ABBRUCH

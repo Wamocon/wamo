@@ -8,6 +8,10 @@ Die Datei wird nur gelesen und geschrieben, nie angezeigt. Fehlertexte nennen ni
 Schreiben eines Laufs entsteht eine Sicherung mit Zeitstempel im selben Ordner. Geschrieben wird atomar: in eine Wegwerf-Datei im
 selben Ordner (Rechte werden gesetzt, solange sie noch leer ist), dann ersetzen. Die Rechte erlauben nur dem Benutzer den Zugriff:
 unter Windows mit icacls, sonst 0600.
+
+Zwischendatei: Gleich nach der Bestätigung eines neuen Faktors steht sein Seed in <Datei>.neu (ein Eintrag, Kennung, Faktorkennung und
+Seed, gleiche Rechte, atomar). Sie verschwindet nach dem Schreiben in die Umschlag-Datei. Bricht ein Lauf hart ab, übernimmt der nächste
+den Seed aus ihr, so geht er nie verloren.
 """
 from __future__ import annotations
 
@@ -28,6 +32,9 @@ KENNUNG_RE = re.compile(r"labor-(0[1-9]|1[0-6])")
 DATEI_NAME = "umschlag-labor.txt"
 ORDNER_NAME = ".wamo-labor"
 SEED_SPALTE = 3  # Kennung, E-Mail, Passwort, Seed
+ZWISCHEN_ENDUNG = ".neu"
+_FAKTOR_FORM = re.compile(r"[A-Za-z0-9-]{8,64}")
+_SEED_ZEICHEN = re.compile(r"[A-Z2-7=]{16,}")
 _BINAER = getattr(os, "O_BINARY", 0)
 _SID_FORM = re.compile(r"S-\d-\d+(-\d+)+")
 
@@ -42,6 +49,14 @@ class Zugang:
     email: str
     passwort: str = field(repr=False)
     seed: str = field(default="", repr=False)
+
+
+@dataclass(frozen=True)
+class Zwischen:
+    """Der Eintrag der Zwischendatei: ein neu bestätigter Faktor und sein Seed."""
+    kennung: str
+    faktor: str
+    seed: str = field(repr=False)
 
 
 def standard_pfad(heim: Path | None = None) -> Path:
@@ -202,11 +217,11 @@ class Umschlag:
     def _wegwerf(self, art: str) -> Path:
         return self.pfad.with_name(f".{self.pfad.name}.{art}-{secrets.token_hex(4)}")
 
-    def _atomar(self, daten: bytes) -> None:
-        temporaer = self._wegwerf("neu")
+    def _atomar(self, daten: bytes, ziel: Path | None = None) -> None:
+        temporaer = self._wegwerf("tmp")
         try:
             self._neu_anlegen(temporaer, daten)
-            os.replace(temporaer, self.pfad)
+            os.replace(temporaer, ziel or self.pfad)
         except OSError as e:
             raise UmschlagFehler(f"Die Umschlag-Datei konnte nicht geschrieben werden ({type(e).__name__})") from None
         finally:
@@ -223,3 +238,35 @@ class Umschlag:
         finally:
             with contextlib.suppress(OSError):
                 probe.unlink(missing_ok=True)
+
+    # ---- Zwischendatei ----
+
+    @property
+    def zwischen_pfad(self) -> Path:
+        return self.pfad.with_name(self.pfad.name + ZWISCHEN_ENDUNG)
+
+    def zwischen_schreiben(self, kennung: str, faktor_id: str, seed: str) -> None:
+        """Hält den Seed eines gerade bestätigten Faktors fest, bis er in der Umschlag-Datei steht."""
+        if not KENNUNG_RE.fullmatch(kennung) or not _FAKTOR_FORM.fullmatch(faktor_id) or not _SEED_ZEICHEN.fullmatch(seed):
+            raise UmschlagFehler("Die Zwischendatei konnte nicht geschrieben werden (ungültige Angaben)")
+        self._atomar(f"{kennung}\t{faktor_id}\t{seed}\n".encode("utf-8"), self.zwischen_pfad)
+
+    def zwischen_lesen(self) -> Zwischen | None:
+        try:
+            roh = self.zwischen_pfad.read_bytes().decode("utf-8")
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeDecodeError):
+            raise UmschlagFehler(f"Die Zwischendatei {self.zwischen_pfad.name} ist nicht lesbar, bitte prüfen") from None
+        felder = roh.rstrip("\r\n").split("\t")
+        if (len(felder) != 3 or not KENNUNG_RE.fullmatch(felder[0]) or not _FAKTOR_FORM.fullmatch(felder[1])
+                or not _SEED_ZEICHEN.fullmatch(felder[2])):
+            raise UmschlagFehler(f"Die Zwischendatei {self.zwischen_pfad.name} ist ungültig (ein früherer Lauf wurde abgebrochen), "
+                                 "bitte prüfen")
+        return Zwischen(*felder)
+
+    def zwischen_loeschen(self) -> None:
+        try:
+            self.zwischen_pfad.unlink(missing_ok=True)
+        except OSError:
+            raise UmschlagFehler(f"Die Zwischendatei {self.zwischen_pfad.name} konnte nicht gelöscht werden") from None
