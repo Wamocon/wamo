@@ -165,6 +165,21 @@ test("Meldungen zu fehlender, beendeter und von Windows gesperrter Spur nennen A
   assert.match(windowsGesperrtText(), /Datenschutz und Sicherheit/);
 });
 
+test("Stille-Warnung bei einem Bluetooth-Kopfhörer nennt die Abhilfe für das Profil, beim eingebauten Mikrofon den Dock-Hinweis", () => {
+  const bt = stilleText("Kopfhörer (LE-nieee QC Ultras) (Bluetooth)");
+  assert.match(bt, /Bluetooth-Kopfhörer wechselt Windows manchmal nicht/);
+  assert.match(bt, /aus und wieder ein/);
+  assert.match(bt, /zweites verbundenes Bluetooth-Gerät/);
+  assert.match(bt, /für Ausgabe und Eingabe denselben Kopfhörer/);
+  assert.doesNotMatch(bt, /Dock mit zugeklapptem Laptop/); // der Satz gilt nur für das eingebaute Mikrofon
+  assert.ok(!/[–—]|\s-\s/.test(bt), "kein Gedankenstrich");
+  const eingebaut = stilleText("Onboard MIC (Intel® Smart Sound Technologie für digitale Mikrofone)");
+  assert.match(eingebaut, /Dock mit zugeklapptem Laptop/);
+  assert.doesNotMatch(eingebaut, /Bluetooth/);
+  assert.doesNotMatch(stilleText(null), /Bluetooth/);
+  assert.match(stilleText("Headset (Hands-Free AG Audio)"), /Bluetooth-Kopfhörer/); // Freisprech-Profil gilt als Bluetooth
+});
+
 test("Windows sperrt nur bei denied und restricted", () => {
   assert.equal(windowsGesperrt("denied"), true);
   assert.equal(windowsGesperrt("restricted"), true);

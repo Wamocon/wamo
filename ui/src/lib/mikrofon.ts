@@ -69,9 +69,22 @@ export function stilleText(geraet?: string | null): string {
   return (
     `Das Mikrofon${welches} liefert keinen Ton, WAMO hört dich nicht. Prüfe die Stummschaltung am Gerät oder ` +
     `Headset, wähle unten ein anderes Mikrofon oder stelle ${WINDOWS_EINGABE} das richtige Gerät ein. ` +
-    "Am Dock mit zugeklapptem Laptop ist das eingebaute Mikrofon meist aus."
+    (istBluetoothGeraet(geraet) ? BLUETOOTH_HINWEIS : "Am Dock mit zugeklapptem Laptop ist das eingebaute Mikrofon meist aus.")
   );
 }
+
+/** Bluetooth-Kopfhörer (auch im Freisprech-Profil). Das eingebaute Mikrofon und Kabel-Headsets gehören nicht dazu. */
+const BLUETOOTH_GERAET = /bluetooth|airpods|buds|freisprech|hands-?free/i;
+export const istBluetoothGeraet = (geraet?: string | null): boolean => Boolean(geraet && BLUETOOTH_GERAET.test(geraet));
+
+/**
+ * 12.11.2026: Das Mikrofon eines Bluetooth-Kopfhörers lieferte in WAMO erst keinen Ton, später ging es. Windows wechselt bei Bluetooth zwischen
+ * Stereo-Wiedergabe und Freisprech-Betrieb, nur im Freisprech-Betrieb gibt es ein Mikrofon. Das hilft meist: aus- und einschalten,
+ * ein zweites verbundenes Bluetooth-Gerät trennen, Ausgabe und Eingabe auf denselben Kopfhörer stellen.
+ */
+const BLUETOOTH_HINWEIS =
+  "Bei einem Bluetooth-Kopfhörer wechselt Windows manchmal nicht in den Freisprech-Betrieb: Schalte den Kopfhörer aus und wieder ein, " +
+  "trenne ein zweites verbundenes Bluetooth-Gerät und wähle in Windows für Ausgabe und Eingabe denselben Kopfhörer.";
 
 /** Warnung vom Kern: bei ihm kommt seit einigen Sekunden nur digitale Stille an. */
 export function kernStilleText(sekunden: number): string {
