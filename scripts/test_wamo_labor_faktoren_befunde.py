@@ -542,3 +542,62 @@ def test_neu_gleich_nach_dem_einrichten_wartet_auf_das_naechste_fenster(capsys, 
     code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01", "--neu", uhr=zweite)
     assert code == 0 and err == "" and "Faktor eingerichtet" in out and any(0.1 < s <= 30.5 for s in zweite.gewartet)
     assert len(labor.faktoren_von(email("labor-01"))) == 1
+
+
+# ---------- Befund 8: repr, Wortlaut von pruefen, Gesamtlimit je Anfrage, OSError ----------
+
+import wamo_labor_faktoren_api as api  # noqa: E402
+
+SCHLUESSEL_B = "anon-" + "a" * 8
+
+
+def test_antwort_zeigt_ihre_daten_nicht_in_der_darstellung():
+    a = api.Antwort(200, {"access_token": "T" * 8, "totp": {"secret": "S" * 8}}, "Thu, 12 Nov 2026 10:00:00 GMT")
+    assert "access_token" not in repr(a) and "T" * 8 not in repr(a) and "S" * 8 not in repr(a)
+
+
+def test_pruefen_belegt_nur_den_seed(capsys, umgebung, tmp_path):
+    datei = umschlag_datei(tmp_path, umschlag_text(2, seeds={"labor-01": seed_von("eins")}))
+    code, out, err = lauf(capsys, ["pruefen", "--profile", "labor-01,labor-02", "--umschlag-datei", str(datei)])
+    assert out.splitlines() == ["labor-01: Seed in der Datei: ja", "labor-02: Seed in der Datei: nein"] and code == 1
+
+
+def test_gesamtlimit_je_anfrage_bricht_eine_traege_antwort_ab(labor):
+    assert api.GESAMTLIMIT_S == 60
+    labor.verzoegerung = 3.0  # die Antwort kommt später als das Gesamtlimit, jede einzelne Wartezeit bliebe unter dem Zeitlimit
+    v = api.Verbindung(labor.basis, SCHLUESSEL_B, None, zeitlimit=10.0, gesamtlimit=0.5)
+    beginn = time.monotonic()
+    with pytest.raises(api.ApiFehler, match="Zeitüberschreitung"):
+        v.anmelden(email("labor-01"), PW[1])
+    assert time.monotonic() - beginn < 2.5
+
+
+def test_gesamtlimit_gilt_auch_fuer_einen_tropfenweise_gelieferten_antworttext(labor):
+    labor.tropfen = 0.1  # jedes Byte einzeln: kein einzelner Lesevorgang erreicht das Zeitlimit von 2 Sekunden
+    v = api.Verbindung(labor.basis, SCHLUESSEL_B, None, zeitlimit=2.0, gesamtlimit=0.6)
+    beginn = time.monotonic()
+    with pytest.raises(api.ApiFehler, match="Zeitüberschreitung"):
+        v.anmelden(email("labor-01"), PW[1])
+    assert time.monotonic() - beginn < 3.0
+
+
+def test_nach_einem_abbruch_durch_das_gesamtlimit_geht_die_naechste_anfrage(labor):
+    v = api.Verbindung(labor.basis, SCHLUESSEL_B, None, zeitlimit=10.0, gesamtlimit=0.5)
+    labor.verzoegerung = 1.5
+    with pytest.raises(api.ApiFehler, match="Zeitüberschreitung"):
+        v.anmelden(email("labor-01"), PW[1])
+    labor.verzoegerung = 0.0
+    assert v.anmelden(email("labor-01"), PW[1]).access_token
+
+
+def test_oserror_in_main_wird_zu_ausgang_2_ohne_werte(capsys, umgebung, tmp_path, monkeypatch):
+    datei = umschlag_datei(tmp_path)
+
+    def kaputt(*a, **k):
+        raise PermissionError(13, "Zugriff verweigert " + PW[1], str(datei))
+
+    monkeypatch.setattr(wlf, "befehl_pruefen", kaputt)
+    code, out, err = lauf(capsys, ["pruefen", "--umschlag-datei", str(datei)])
+    assert code == 2 and "Ein-/Ausgabefehler (PermissionError)" in err and PW[1] not in out + err and "Traceback" not in err
+    assert str(datei) not in err
+

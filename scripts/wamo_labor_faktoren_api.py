@@ -5,7 +5,10 @@ TOTP-Faktor anlegen, mit dem Code bestätigen (challenge und verify), danach tr�
 
 Sicherheit der Verbindung: Nur https mit der CA-Datei (Zertifikat und Hostname werden geprüft) oder http auf Loopback für Tests.
 Keine Zugangsdaten in der Adresse. Keine Umleitung wird befolgt, und die Umgebung nennt keinen Proxy (HTTP_PROXY und Verwandte
-werden ignoriert), damit Passwörter und Token nie über einen fremden Weg gehen.
+werden ignoriert), damit Passwörter und Token nie über einen fremden Weg gehen. Beides gilt von selbst, weil die Anfragen
+direkt über http.client laufen. Je Anfrage gilt ein Gesamtlimit (60 Sekunden) für Senden, Antwortkopf und Antworttext zusammen:
+Vor jedem Lesen und Senden wird die Wartezeit auf den Rest des Limits gekürzt, so zählt auch eine Antwort, die der Server
+Byte für Byte langsam liefert (das Zeitlimit je Vorgang allein würde sie nie abbrechen).
 
 Fehlertexte nennen nur die Handlung, die Ursache in Worten, den HTTP-Status und eine kurze Kennung des Servers (error_code), nie
 den Text der Antwort und nie einen Wert der Anfrage. Die Tokens und der Seed stehen nicht in der Darstellung der Objekte (repr).
@@ -16,12 +19,11 @@ import http.client
 import ipaddress
 import json
 import re
+import io
 import socket
 import ssl
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -30,7 +32,8 @@ from wamo_labor_faktoren_totp import jwt_claims, seed_gueltig, seed_normalisiere
 
 STANDARD_BASIS = "https://192.168.178.136:55443"
 ANTWORT_GRENZE = 1_000_000
-ZEITLIMIT_S = 30.0
+ZEITLIMIT_S = 30.0  # je einzelner Vorgang (Verbindung, Lesen)
+GESAMTLIMIT_S = 60.0  # je Anfrage insgesamt
 KENNUNG_FORM = re.compile(r"[A-Za-z0-9_]{1,40}")
 FAKTOR_ID_FORM = re.compile(r"[A-Za-z0-9-]{8,64}")
 
@@ -72,8 +75,8 @@ class NeuerFaktor:
 @dataclass(frozen=True)
 class Antwort:
     status: int
-    daten: object
-    kopf_date: str | None
+    daten: object = field(repr=False)
+    kopf_date: str | None = None
 
 
 def ist_loopback(host: str) -> bool:
@@ -115,13 +118,6 @@ def tls_kontext(ca_datei: Path | str) -> ssl.SSLContext:
     return kontext
 
 
-class _OhneUmleitung(urllib.request.HTTPRedirectHandler):
-    """Folgt keiner Umleitung: Passwörter und Token gehen nur an die geprüfte Adresse. Die 3xx-Antwort wird zum Fehler."""
-
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-
 def _kennung(daten: object) -> str:
     if isinstance(daten, dict):
         for schluessel in ("error_code", "error"):
@@ -147,60 +143,124 @@ def _json(roh: bytes) -> object:
         return None
 
 
+class _Gesamtfrist(TimeoutError):
+    """Das Gesamtlimit der Anfrage ist erreicht."""
+
+
+def _rest(ablauf: float, einzel: float) -> float:
+    rest = ablauf - time.monotonic()
+    if rest <= 0:
+        raise _Gesamtfrist("Gesamtlimit je Anfrage")
+    return min(einzel, rest)
+
+
+class _FristLesen(io.RawIOBase):
+    def __init__(self, sock: socket.socket, ablauf: float, einzel: float):
+        self._sock, self._ablauf, self._einzel = sock, ablauf, einzel
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, puffer) -> int:
+        self._sock.settimeout(_rest(self._ablauf, self._einzel))
+        return self._sock.recv_into(puffer)
+
+
+class _FristSocket:
+    """Ein Anschluss, dessen Senden und Lesen zusammen nie länger als bis zum Ablauf dauert (für http.client)."""
+
+    def __init__(self, sock: socket.socket, ablauf: float, einzel: float):
+        self._sock, self._ablauf, self._einzel = sock, ablauf, einzel
+
+    def sendall(self, daten) -> None:
+        self._sock.settimeout(_rest(self._ablauf, self._einzel))
+        self._sock.sendall(daten)
+
+    def makefile(self, *args, **kwargs) -> io.BufferedReader:
+        return io.BufferedReader(_FristLesen(self._sock, self._ablauf, self._einzel))
+
+    def close(self) -> None:
+        self._sock.close()
+
+    def __getattr__(self, name: str):
+        return getattr(self._sock, name)
+
+
+class _FristVerbindung:
+    """Mischt das Gesamtlimit in HTTPConnection und HTTPSConnection: Nach dem Aufbau (bei https samt TLS) wird der Anschluss umhüllt."""
+    ablauf: float
+    einzel: float
+
+    def connect(self) -> None:
+        super().connect()
+        self.sock = _FristSocket(self.sock, self.ablauf, self.einzel)
+
+
+class _FristHttp(_FristVerbindung, http.client.HTTPConnection):
+    pass
+
+
+class _FristHttps(_FristVerbindung, http.client.HTTPSConnection):
+    pass
+
+
 class Verbindung:
     """Ein Anschluss an GoTrue. versatz ist Server minus lokale Uhr (aus dem Kopf Date der letzten Antwort)."""
 
     def __init__(self, basis: str, apikey: str, ca_datei: Path | str | None = None, *, zeit: Callable[[], float] = time.time,
-                 zeitlimit: float = ZEITLIMIT_S):
+                 zeitlimit: float = ZEITLIMIT_S, gesamtlimit: float = GESAMTLIMIT_S):
         basis_pruefen(basis, ca_datei is not None)
+        teile = urllib.parse.urlsplit(basis)
         self.basis = basis.rstrip("/")
+        self._https = teile.scheme == "https"
+        self._host, self._port = teile.hostname or "", teile.port
+        self._kontext = tls_kontext(ca_datei) if self._https and ca_datei is not None else None
         self._apikey = apikey
         self._zeit = zeit
         self._zeitlimit = zeitlimit
+        self._gesamtlimit = gesamtlimit
         self.versatz = 0.0
-        handler: list = [urllib.request.ProxyHandler({}), _OhneUmleitung()]  # kein Proxy aus der Umgebung, keine Umleitung
-        if ca_datei is not None:
-            handler.append(urllib.request.HTTPSHandler(context=tls_kontext(ca_datei)))
-        self._opener = urllib.request.build_opener(*handler)
 
     def jetzt(self) -> float:
         """Die Zeit des Servers: lokale Uhr plus gemessener Versatz."""
         return self._zeit() + self.versatz
+
+    def _neue_verbindung(self) -> http.client.HTTPConnection:
+        timeout = min(self._zeitlimit, self._gesamtlimit)
+        if self._https:
+            verbindung = _FristHttps(self._host, self._port, timeout=timeout, context=self._kontext)
+        else:
+            verbindung = _FristHttp(self._host, self._port, timeout=timeout)
+        verbindung.ablauf, verbindung.einzel = time.monotonic() + self._gesamtlimit, self._zeitlimit
+        return verbindung
 
     def anfrage(self, methode: str, pfad: str, daten: dict | None = None, bearer: str | None = None, aktion: str = "Anfrage") -> Antwort:
         kopf = {"apikey": self._apikey, "Authorization": "Bearer " + (bearer or self._apikey), "Accept": "application/json",
                 "User-Agent": "wamo-labor-faktoren"}
         if daten is not None:
             kopf["Content-Type"] = "application/json"
-        req = urllib.request.Request(self.basis + pfad, data=None if daten is None else json.dumps(daten).encode(), method=methode,
-                                     headers=kopf)
+        verbindung = self._neue_verbindung()
         beginn = self._zeit()
         try:
-            with self._opener.open(req, timeout=self._zeitlimit) as r:
-                status, roh, datum = r.status, r.read(ANTWORT_GRENZE), r.headers.get("Date")
-        except urllib.error.HTTPError as e:
-            status, datum = e.code, e.headers.get("Date") if e.headers else None
-            roh = self._lesen_ohne_fehler(e)
-            self._versatz_merken(datum, beginn)
-            raise _fehler_fuer(aktion, status, _json(roh)) from None
-        except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
+            verbindung.request(methode, pfad, body=None if daten is None else json.dumps(daten).encode(), headers=kopf)
+            antwort = verbindung.getresponse()
+            status, roh, datum = antwort.status, antwort.read(ANTWORT_GRENZE), antwort.getheader("Date")
+        except _Gesamtfrist:
+            raise ApiFehler(f"{aktion}: Zeitüberschreitung (Gesamtlimit je Anfrage)") from None
+        except (OSError, http.client.HTTPException, ValueError) as e:
             raise ApiFehler(f"{aktion}: {self._netzfehler(e)}") from None
+        finally:
+            verbindung.close()
         self._versatz_merken(datum, beginn)
+        if status >= 300:
+            raise _fehler_fuer(aktion, status, _json(roh))
         return Antwort(status, _json(roh), datum)
 
     @staticmethod
-    def _lesen_ohne_fehler(e: urllib.error.HTTPError) -> bytes:
-        try:
-            return e.read(ANTWORT_GRENZE)
-        except (OSError, http.client.HTTPException):
-            return b""
-
-    @staticmethod
     def _netzfehler(e: BaseException) -> str:
-        ursache = getattr(e, "reason", e)
-        if isinstance(ursache, ssl.SSLError):
+        if isinstance(e, ssl.SSLError):  # vor ValueError: SSLCertVerificationError ist auch ein ValueError
             return "TLS-Prüfung fehlgeschlagen (Zertifikat oder Adresse stimmt nicht zur CA-Datei)"
-        if isinstance(ursache, (socket.timeout, TimeoutError)):
+        if isinstance(e, (socket.timeout, TimeoutError)):
             return "Zeitüberschreitung"
         if isinstance(e, ValueError):
             return "ungültige Anfrage"

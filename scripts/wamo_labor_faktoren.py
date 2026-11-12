@@ -9,7 +9,7 @@ Aufrufe (im Repo-Hauptordner, nur Standardbibliothek):
   python scripts/wamo_labor_faktoren.py einrichten                                # alle neun Profile
   python scripts/wamo_labor_faktoren.py einrichten --profile labor-01,labor-02    # nur diese
   python scripts/wamo_labor_faktoren.py einrichten --profile labor-03 --neu       # Faktor entfernen und neu einrichten
-  python scripts/wamo_labor_faktoren.py pruefen                                   # je Profil ja oder nein, nur die Datei, kein Netz
+  python scripts/wamo_labor_faktoren.py pruefen                                   # je Profil: Seed in der Datei ja oder nein, kein Netz
   python scripts/wamo_labor_faktoren.py codes --profil labor-03                   # der aktuelle Code für genau ein Profil
 Optionen: --umschlag-datei (Standard %USERPROFILE%\\.wamo-labor\\umschlag-labor.txt, nie im Repo), --basis (Standard SUPABASE_URL aus der
 Umgebung oder .env, sonst https://192.168.178.136:55443), --ca (Standard WAMO_CA_FILE, sonst infra/sokrates2/wamo-ca.crt), --env-datei
@@ -414,12 +414,12 @@ def _seed_vorhanden(umschlag: um.Umschlag, kennung: str) -> bool:
 
 
 def befehl_pruefen(profile: list[str], umschlag: um.Umschlag, ausgabe: Ausgabe) -> int:
-    """Nur die Datei, kein Netz: Ein Faktor gilt als vorhanden, wenn sein Seed in der Datei steht."""
+    """Nur die Datei, kein Netz: Belegt ist allein, dass ein gültiger Seed in der Datei steht, nichts über den Faktor am Server."""
     if umschlag.zwischen_pfad.exists():
         ausgabe.fehler("Hinweis: Eine Zwischendatei eines abgebrochenen Laufs ist vorhanden, einrichten übernimmt den Seed daraus.")
     ergebnisse = [_seed_vorhanden(umschlag, k) for k in profile]
     for kennung, ok in zip(profile, ergebnisse):
-        ausgabe.zeile(f"{kennung}: Faktor und Seed in der Datei: {'ja' if ok else 'nein'}")
+        ausgabe.zeile(f"{kennung}: Seed in der Datei: {'ja' if ok else 'nein'}")
     return EXIT_OK if all(ergebnisse) else EXIT_FEHLER
 
 
@@ -450,7 +450,7 @@ def _parser() -> argparse.ArgumentParser:
     ein.add_argument("--basis", help="Adresse des Anmeldeservers (Standard SUPABASE_URL)")
     ein.add_argument("--ca", help="CA-Datei (Standard WAMO_CA_FILE, sonst infra/sokrates2/wamo-ca.crt)")
     ein.add_argument("--env-datei", action="append", help="weitere .env-Datei, darf mehrfach stehen")
-    pr = sub.add_parser("pruefen", help="je Profil ja oder nein: Faktor und Seed in der Datei (kein Netz)")
+    pr = sub.add_parser("pruefen", help="je Profil ja oder nein: Seed in der Datei (kein Netz, nichts über den Faktor am Server)")
     pr.add_argument("--profile", help="Profile mit Komma getrennt (Standard: labor-01 bis labor-09)")
     co = sub.add_parser("codes", help="aktuellen Code für genau ein Profil ausgeben")
     co.add_argument("--profil", required=True, help="genau ein Profil, zum Beispiel labor-03")
@@ -491,6 +491,9 @@ def main(argv: list[str] | None = None, *, zeit: Callable[[], float] = time.time
         return befehl_einrichten(args, profile, umschlag, ausgabe, zeit, warte)
     except (EingabeFehler, um.UmschlagFehler, api.ApiFehler) as e:
         ausgabe.fehler(f"Fehler: {e}")
+        return EXIT_EINGABE
+    except OSError as e:  # nie der Text der Ausnahme: er könnte Pfade oder Werte enthalten
+        ausgabe.fehler(f"Fehler: Ein-/Ausgabefehler ({type(e).__name__}), bitte Dateien, Rechte und Verbindung prüfen")
         return EXIT_EINGABE
     except sg.Signal as s:
         ausgabe.fehler("Abgebrochen.")

@@ -414,7 +414,8 @@ def test_pruefen_meldet_nur_ja_oder_nein(capsys, umgebung, tmp_path, monkeypatch
     datei = umschlag_datei(tmp_path, umschlag_text(3, seeds=seeds))
     code, out, err = lauf(capsys, ["pruefen", "--profile", "labor-01,labor-02,labor-03,labor-04", "--umschlag-datei", str(datei)])
     assert code == 1 and err == ""
-    assert out.splitlines() == [f"labor-0{n}: Faktor und Seed in der Datei: {w}" for n, w in ((1, "ja"), (2, "nein"), (3, "nein"), (4, "nein"))]
+    assert out.splitlines() == [f"labor-0{n}: Seed in der Datei: {w}" for n, w in ((1, "ja"), (2, "nein"), (3, "nein"), (4, "nein"))]
+    assert "Faktor" not in out, "die Datei belegt nur den Seed, nichts über den Faktor am Server"
     assert seed_von("eins") not in out and PW[1] not in out
 
 

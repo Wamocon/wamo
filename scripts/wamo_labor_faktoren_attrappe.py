@@ -35,6 +35,11 @@ def _b64(d: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
 
 
+class _StillerServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):  # ein vom Client abgebrochener Aufruf ist hier kein Fehler
+        pass
+
+
 class GoTrueAttrappe:
     def __init__(self, schluessel: str = "anon-attrappe", versatz: float = 0.0, mit_datum: bool = True):
         self.schluessel = schluessel
@@ -44,6 +49,7 @@ class GoTrueAttrappe:
         self.aal2_nie = False          # verify bestätigt den Faktor, hebt die Sitzung aber nicht auf aal2
         self.erneuern_aal1 = False     # Token nach dem Erneuern trägt aal1
         self.verzoegerung = 0.0        # Sekunden, bevor die Attrappe antwortet
+        self.tropfen = 0.0             # Sekunden zwischen den einzelnen Bytes des Antworttexts (eine zähe Antwort)
         self.seed_darstellung = None   # Funktion: wie der Server den Seed in der Antwort schreibt (Leerraum, Kleinschreibung)
         self.nutzer: dict[str, dict] = {}      # E-Mail -> Nutzer
         self.sitzungen: dict[str, dict] = {}   # Sitzungskennung -> Sitzung
@@ -98,7 +104,7 @@ class GoTrueAttrappe:
         class Handler(_Handler):
             owner = attrappe
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server = _StillerServer(("127.0.0.1", 0), Handler)
         schema = "http"
         if tls is not None:
             kontext = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -177,8 +183,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(roh)))
         self.end_headers()
-        if roh:
-            self.wfile.write(roh)
+        for i in range(len(roh)):
+            self.wfile.write(roh[i:i + 1])
+            if self.owner.tropfen:
+                time.sleep(self.owner.tropfen)
 
     def _sitzung(self) -> tuple[str, dict] | None:
         bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
