@@ -264,7 +264,8 @@ class _Lauf:
                 hinweise.append("Faktor wieder entfernt")
                 self._zwischen_loeschen_still()
             else:
-                hinweise.append("der neue Faktor konnte NICHT entfernt werden, bitte als Admin am Server prüfen")
+                hinweise.append("der neue Faktor konnte NICHT entfernt werden, bitte als Admin am Server prüfen oder einrichten mit "
+                                "--neu wiederholen")
         if self.alte_entfernt and not self.gespeichert:
             hinweise.append("der alte Faktor war schon entfernt, der alte Seed wurde aus der Datei gelöscht" if self._seed_der_datei_loeschen()
                             else "der alte Faktor war schon entfernt, der alte Seed steht noch in der Datei und gilt nicht mehr")
@@ -288,7 +289,7 @@ def profil_einrichten(kennung: str, umschlag: um.Umschlag, verbindung: api.Verbi
     except (api.ApiFehler, um.UmschlagFehler) as e:
         grund = lauf.abbruch(str(e))
     except (KeyboardInterrupt, sg.Signal):
-        lauf.abbruch("abgebrochen")
+        ausgabe.fehler(f"{kennung}: {lauf.abbruch('abgebrochen')}")  # der Text geht vor dem Beenden hinaus, ohne Werte
         raise
     except Exception as e:  # nie der Text einer unerwarteten Ausnahme: er könnte einen Wert enthalten
         grund = lauf.abbruch(f"unerwarteter Fehler ({type(e).__name__})")

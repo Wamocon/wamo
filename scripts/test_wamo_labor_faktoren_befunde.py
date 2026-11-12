@@ -66,7 +66,7 @@ def test_sigterm_im_lauf_raeumt_auf_und_endet_mit_143(capsys, umgebung, labor, t
     monkeypatch.setattr(wlf.api.Verbindung, "erneuern", lambda self, *a, **k: signal.raise_signal(signal.SIGTERM))
     code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")
     assert {s: signal.getsignal(s) for s in sg.SIGNALE} == vorher, "die Handler sind nach dem Lauf wieder zurückgesetzt"
-    assert code == 128 + signal.SIGTERM and "Abgebrochen" in err
+    assert code == 128 + signal.SIGTERM and "labor-01: abgebrochen; Faktor wieder entfernt" in err and "Abgebrochen" in err
     assert labor.faktoren_von(email("labor-01")) == [] and labor.sitzungen_von(email("labor-01")) == 0
     assert seed_der_datei(datei, "labor-01") == "" and not zwischen_datei(datei).exists()
 
@@ -90,7 +90,7 @@ def test_zweites_strg_c_waehrend_des_aufraeumens_bricht_nicht_ab(capsys, umgebun
 
     monkeypatch.setattr(wlf.api.Verbindung, "faktor_loeschen", loeschen_nach_zweitem_signal)
     code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")
-    assert code == 130
+    assert code == 130 and "Faktor wieder entfernt" in err
     assert labor.faktoren_von(email("labor-01")) == [] and labor.sitzungen_von(email("labor-01")) == 0
 
 
@@ -242,3 +242,34 @@ def test_zwischendatei_wird_nach_erfolgreichem_aufraeumen_geloescht(capsys, umge
     datei = umschlag_datei(tmp_path)
     code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")
     assert code == 1 and "Faktor wieder entfernt" in err and not zwischen_datei(datei).exists()
+
+
+# ---------- Befund 2: Text bei Strg+C ----------
+
+def test_strg_c_gibt_den_aufraeumtext_vor_dem_beenden_aus(capsys, umgebung, labor, tmp_path, monkeypatch):
+    datei = umschlag_datei(tmp_path)
+
+    def abbruch(self, *a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(wlf.api.Verbindung, "verify", abbruch)
+    code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")
+    assert code == 130 and "labor-01: abgebrochen; Faktor wieder entfernt" in err and "Abgebrochen." in err
+    assert PW[1] not in out + err
+
+
+def test_strg_c_mit_netzfehler_beim_aufraeumen_sagt_nicht_entfernt(capsys, umgebung, labor, tmp_path, monkeypatch):
+    datei = umschlag_datei(tmp_path)
+
+    def abbruch(self, *a, **k):
+        raise KeyboardInterrupt
+
+    def netzfehler(self, token, faktor_id):
+        raise wlf.api.ApiFehler("Faktor löschen: keine Verbindung zum Anmeldeserver")
+
+    monkeypatch.setattr(wlf.api.Verbindung, "verify", abbruch)
+    monkeypatch.setattr(wlf.api.Verbindung, "faktor_loeschen", netzfehler)
+    code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01")
+    assert code == 130
+    assert "labor-01: abgebrochen; der neue Faktor konnte NICHT entfernt werden" in err and "--neu" in err and "Admin am Server" in err
+    assert PW[1] not in out + err and "Traceback" not in err
