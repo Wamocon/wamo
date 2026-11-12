@@ -360,5 +360,115 @@ class CaddySiteTests(unittest.TestCase):
             self.assertIn(soll, weiter)
 
 
+# ====================================================================================== Teil 2: Firewall (Kette für 55447)
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class FirewallLaborTests(unittest.TestCase):
+    """wamo-firewall.sh regeln gibt aus, was start setzen würde (ohne root, ohne iptables)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="labor-fw-")
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def regeln(self, quellen: str | None = None) -> subprocess.CompletedProcess:
+        if quellen is not None:
+            (self.dir / "plaetze-adressen").write_text(quellen, encoding="utf-8")
+        env = {"PATH": os.environ["PATH"], "WAMO_FW_CONF": str(self.dir / "gibt-es-nicht.conf"), "WAMO_FW_RD_ZIELE": str(self.dir / "ziele.toml"),
+               "WAMO_FW_LABOR_QUELLEN": str(self.dir / "plaetze-adressen")}
+        r = subprocess.run([BASH, str(FIREWALL), "regeln"], capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r
+
+    @staticmethod
+    def kette(ausgabe: str, name: str) -> list[str]:
+        return [z for z in ausgabe.splitlines() if z.startswith(f"-A {name} ")]
+
+    def test_port_55447_geht_in_die_labor_kette_und_die_anderen_bleiben(self):
+        out = self.regeln().stdout
+        self.assertIn("-A WAMO-FW -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 55447 -j WAMO-FW-LABOR", out)
+        for kette in ("WAMO-FW-LABOR", "WAMO-FW-LABAUS"):
+            self.assertIn(f":{kette} - [0:0]", out)
+        for port in (55443, 55444, 55445, 55446, 55322, 56543):
+            self.assertIn(f"-A WAMO-FW -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport {port} -j WAMO-FW-LAN", out)
+        self.assertIn("--ctorigdstport 55321 -j WAMO-FW-HTTP", out)
+        self.assertNotIn("--ctorigdstport 55447 -j WAMO-FW-LAN", out)  # eigene Kette: Die Adressliste der Plätze ist austauschbar (Frage Q13)
+        self.assertEqual(out.count("55447"), 1)
+
+    def test_ohne_datei_gilt_das_buero_lan(self):
+        kette = self.kette(self.regeln().stdout, "WAMO-FW-LABOR")
+        self.assertEqual(kette[0], "-A WAMO-FW-LABOR -s 127.0.0.0/8 -j RETURN")
+        self.assertEqual(kette[1], "-A WAMO-FW-LABOR -s 192.168.178.0/24 -j RETURN")
+        self.assertIn("-j LOG", kette[2])
+        self.assertEqual(kette[-1], "-A WAMO-FW-LABOR -j DROP")
+        self.assertEqual(len(kette), 4)
+
+    def test_nur_kommentare_in_der_datei_heisst_standard(self):
+        kette = self.kette(self.regeln("# Plätze (Frage Q13), eine Adresse oder ein Netz je Zeile\n\n").stdout, "WAMO-FW-LABOR")
+        self.assertIn("-A WAMO-FW-LABOR -s 192.168.178.0/24 -j RETURN", kette)
+
+    def test_die_datei_ersetzt_das_buero_lan(self):
+        r = self.regeln("# Plätze\n192.168.178.50\n192.168.178.60/32  # Platz 2\n\n  192.168.178.64/29 \n")
+        quellen = [z.split()[3] for z in self.kette(r.stdout, "WAMO-FW-LABOR") if z.endswith("-j RETURN")]
+        self.assertEqual(quellen, ["127.0.0.0/8", "192.168.178.50", "192.168.178.60/32", "192.168.178.64/29"])
+        self.assertNotIn("-A WAMO-FW-LABOR -s 192.168.178.0/24", r.stdout)
+        self.assertEqual(r.stderr, "")
+
+    def test_ungueltige_eintraege_werden_ausgelassen_und_gemeldet(self):
+        r = self.regeln("300.1.1.1\n0.0.0.0/0\n10.0.0.0/4\n1.2.3.4/33\n1.2.3.4;reboot\n127.0.0.1\n172.20.0.5\n224.0.0.1\n010.0.0.1\n"
+                        "169.254.1.1\nabc\n192.168.178.77\n")
+        quellen = [z.split()[3] for z in self.kette(r.stdout, "WAMO-FW-LABOR") if z.endswith("-j RETURN")]
+        self.assertEqual(quellen, ["127.0.0.0/8", "192.168.178.77"])
+        self.assertIn("ungültig", r.stderr)
+        self.assertNotIn("reboot", r.stdout)
+
+    def test_nur_ungueltige_eintraege_heisst_nur_loopback(self):
+        """Eine kaputte Datei öffnet nie das ganze Büro-LAN: lieber zu streng als zu offen."""
+        r = self.regeln("0.0.0.0/0\n")
+        quellen = [z.split()[3] for z in self.kette(r.stdout, "WAMO-FW-LABOR") if z.endswith("-j RETURN")]
+        self.assertEqual(quellen, ["127.0.0.0/8"])
+        self.assertIn("ungültig", r.stderr)
+
+    def test_hoechstens_64_adressen(self):
+        r = self.regeln("".join(f"192.168.178.{n}\n" for n in range(1, 101)))
+        self.assertEqual(len([z for z in self.kette(r.stdout, "WAMO-FW-LABOR") if z.endswith("-j RETURN")]), 1 + 64)
+
+    def test_der_ausgang_des_labor_dienstes_ist_gesperrt(self):
+        out = self.regeln().stdout
+        self.assertIn("-A WAMO-FW -s 172.28.1.0/29 -j WAMO-FW-LABAUS", out)  # das Netz wamo-labor-lokal (nur für die Veröffentlichung auf Loopback)
+        kette = self.kette(out, "WAMO-FW-LABAUS")
+        self.assertEqual(len(kette), 2)
+        self.assertIn("-j LOG", kette[0])
+        self.assertEqual(kette[1], "-A WAMO-FW-LABAUS -j DROP")
+        for z in kette:
+            self.assertNotIn("RETURN", z)
+            self.assertNotIn("ACCEPT", z)
+
+    def test_nur_eigene_ketten_und_kein_flush(self):
+        out = self.regeln().stdout
+        for z in out.splitlines():
+            if z.startswith(":"):
+                self.assertTrue(z.startswith(":WAMO-FW"), z)
+            if z.startswith("-A "):
+                self.assertTrue(z.split()[1].startswith("WAMO-FW"), z)
+        text = code(FIREWALL)
+        self.assertNotIn("iptables -F", text)
+        self.assertEqual(len(re.findall(r"ipt -I INPUT", text)), 1)  # kein neuer Sprung in INPUT
+
+    def test_start_stop_und_status_kennen_die_neuen_ketten(self):
+        text = code(FIREWALL)
+        self.assertEqual(text.count('"$KETTE_LABOR" "$KETTE_LABAUS"'), 3)  # stop (leeren, löschen) und status
+        self.assertRegex(text, r"lies_labor_quellen\n\s+ipt -n -L DOCKER-USER")  # start liest die Adressliste vor dem Setzen
+        self.assertRegex(text, r"regeln\) .*lies_labor_quellen")  # auch der Probelauf
+
+    def test_kopf_nennt_die_adressliste_und_die_offene_frage(self):
+        kopf = "\n".join(lies(FIREWALL).splitlines()[:45])
+        for soll in ("55447", "Q13", "/etc/wamo-labor/plaetze-adressen", "WAMO-FW-LABOR", "WAMO-FW-LABAUS", "systemctl reload wamo-firewall"):
+            self.assertIn(soll, kopf)
+
+    def test_bash_n(self):
+        r = subprocess.run([BASH, "-n", str(FIREWALL)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
