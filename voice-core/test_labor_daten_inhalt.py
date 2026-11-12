@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import labor_daten as ld
+import labor_mail
 from labor_prompt import DATEN_HINWEIS, REGELN_KOPF, build_labor_prompt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "eval"))
@@ -31,7 +32,7 @@ STRENG = "persona-zusatz.streng.md"
 LIEFERUNG = {*ld.DATEIEN_ALLE, STRENG, "README.md"}
 RESERVE = 150  # so viele Zeichen unter der Gesamtgrenze bleiben frei, damit der Trainer etwas ergänzen kann
 SATZ_NACHFRAGEN = "frag bei fehlenden angaben nach"
-TESTDOMAENE = "wamo.test"
+TESTDOMAENE = "labor.test"  # die Standard-Domäne des Mail-Filters (labor_mail.DOMAIN_STANDARD), der Kern bleibt unverändert
 ADRESSE = re.compile(r"[^\s,;<>()\[\]\"']+@[^\s,;<>()\[\]\"']+")
 
 
@@ -182,6 +183,16 @@ def test_kontakte_nur_adressen_der_testdomaene():
     assert re.findall(r"[\w.-]+\.(?:com|de|org|net|eu|info)\b", text) == []
 
 
+def test_die_domaene_der_kontakte_ist_die_standard_domaene_des_mail_filters():
+    """Der Kern lässt mail_senden nur an die erlaubte Domäne zu (Standard labor_mail.DOMAIN_STANDARD): jede Adresse der Kontakte muss durch den echten Filter."""
+    assert TESTDOMAENE == labor_mail.DOMAIN_STANDARD
+    adressen = ADRESSE.findall(lies("kontakte.md"))
+    assert adressen
+    for adresse in adressen:
+        assert labor_mail.adresse_erlaubt(adresse, labor_mail.DOMAIN_STANDARD), adresse
+    assert {a.partition("@")[2] for a in adressen} == {labor_mail.DOMAIN_STANDARD}
+
+
 def test_jeder_kontakt_hat_einen_namen_und_die_adresse_passt_zum_namen():
     zeilen = [z for z in lies("kontakte.md").splitlines() if z.startswith("- ")]
     assert len(zeilen) >= 3
@@ -293,13 +304,13 @@ def test_der_prompt_trennt_regeln_und_daten(standard):
     assert i_regeln < i_daten
     regelblock, datenblock = prompt[i_regeln:i_daten], prompt[i_daten:]
     assert "Entwurf" in regelblock and "aktuelle_zeit" in regelblock
-    for datum in ("@wamo.test", "Verifikation", '"karten"', "Gegeben <Ausgangslage>"):
+    for datum in ("@labor.test", "Verifikation", '"karten"', "Gegeben <Ausgangslage>"):
         assert datum not in regelblock, datum  # keine Datenzeile im Regelblock
     for name in ld.DATEIEN_DATEN:
         assert f"--- Daten: {name} ---" in datenblock and f"--- Ende der Daten: {name} ---" in datenblock, name
-    assert "@wamo.test" in datenblock and "Verifikation" in datenblock
+    assert "@labor.test" in datenblock and "Verifikation" in datenblock
     assert "Erfinde nichts" not in datenblock  # keine Regel im Datenteil
 
 
 def test_die_kontaktliste_kommt_nur_aus_der_datei_nicht_aus_dem_laborprompt():
-    assert "@wamo.test" not in build_labor_prompt("Gast", "du")
+    assert "@labor.test" not in build_labor_prompt("Gast", "du")

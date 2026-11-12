@@ -108,10 +108,9 @@ def test_nur_root_und_der_herkunftsschutz_kommen_vor_jedem_zugriff(text):
 
 def test_das_skript_fasst_den_kern_nie_an(text):
     ohne = code(text)
-    for verboten in ("systemctl", "docker", "daemon-reload", "wamo-core-slots", "umschalten", "restart", "kill ", "service ", "core.env\""):
-        assert verboten not in ohne.replace('KERN_ENV="$WURZEL/etc/wamo/core.env"', ""), verboten
-    # core.env wird nur gelesen (grep, sed), nie geschrieben
-    assert not re.search(r">\s*\"?\$KERN_ENV|install[^\n]*\$KERN_ENV|tee[^\n]*\$KERN_ENV|sed -i[^\n]*\$KERN_ENV", ohne)
+    for verboten in ("systemctl", "docker", "daemon-reload", "wamo-core-slots", "umschalten", "restart", "kill ", "service ",
+                     "core.env", "KERN_ENV", "WAMO_LABOR_MAIL_DOMAIN"):
+        assert verboten not in ohne, verboten  # der Kern und seine Einstellungen (auch die Mail-Domäne) sind nicht Sache dieses Skripts
 
 
 def test_das_ziel_ist_ein_unterordner_nie_etc_wamo_selbst(text):
@@ -249,7 +248,7 @@ class TestProbelauf:
         assert "gleich der Lieferung" in welt.lauf("status").stdout
 
     def test_eine_abgelehnte_lieferung_aendert_nichts(self, welt):
-        welt.schreiben("kontakte.md", "Anna Test, anna.test@wamo.test\x1b[31m")  # Steuerzeichen: der Lader lehnt ab
+        welt.schreiben("kontakte.md", "Anna Test, anna.test@labor.test\x1b[31m")  # Steuerzeichen: der Lader lehnt ab
         r = welt.lauf("einrichten")
         assert r.returncode == 1, welt.ausgabe(r)
         assert "kontakte.md: ABGELEHNT (zeichen)" in r.stdout and "Nichts wurde geändert." in welt.ausgabe(r)
@@ -362,15 +361,14 @@ class TestProbelauf:
             assert r.returncode == 2, (args, welt.ausgabe(r))
         assert not welt.ziel.exists() and welt.sicherungen() == []
 
-    def test_der_hinweis_zur_mail_domaene_zeigt_nur_die_domaene(self, welt):
-        (welt.w / "etc" / "wamo" / "core.env").write_text("ANTHROPIC_API_KEY=sk-test-GEHEIM\nWAMO_LABOR_MAIL_DOMAIN=labor.test\n", encoding="utf-8")
-        r = welt.lauf("status")
-        assert "WAMO_LABOR_MAIL_DOMAIN=labor.test" in r.stdout and "WARNUNG" in r.stdout and "wamo.test" in r.stdout
-        (welt.w / "etc" / "wamo" / "core.env").write_text("ANTHROPIC_API_KEY=sk-test-GEHEIM\nWAMO_LABOR_MAIL_DOMAIN=wamo.test\n", encoding="utf-8")
-        r = welt.lauf("status")
-        assert "WAMO_LABOR_MAIL_DOMAIN=wamo.test" in r.stdout and "WARNUNG" not in r.stdout
-        assert "GEHEIM" not in welt.ausgabe(r)
-        assert (welt.w / "etc" / "wamo" / "core.env").read_text(encoding="utf-8").count("\n") == 2  # core.env bleibt unberührt
+    def test_die_einstellungen_des_kerns_bleiben_unberuehrt_und_ungelesen(self, welt):
+        env = welt.w / "etc" / "wamo" / "core.env"
+        env.write_text("ANTHROPIC_API_KEY=sk-test-GEHEIM\nWAMO_LABOR_MAIL_DOMAIN=anders.test\n", encoding="utf-8")
+        vorher = env.read_bytes()
+        for args in (("einrichten",), ("status",), ("rueckweg",)):
+            r = welt.lauf(*args)
+            assert "GEHEIM" not in welt.ausgabe(r) and "WARNUNG" not in welt.ausgabe(r) and "MAIL_DOMAIN" not in welt.ausgabe(r), args
+        assert env.read_bytes() == vorher
 
     @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="als root würde der Lauf das echte System anfassen")
     def test_ohne_probelauf_und_ohne_root_wird_nichts_getan(self, welt):

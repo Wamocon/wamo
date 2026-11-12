@@ -9,7 +9,7 @@
 #       mit dem Lader und nimmt bei jeder Ablehnung alles zurück. --persona wählt, welche Fassung der Regeln als persona-zusatz.md liegt (ohne Angabe
 #       bleibt die vorhandene Fassung, sonst standard). persona-zusatz.streng.md wird immer mit abgelegt. --trocken zeigt nur den Plan.
 #   wamo-labor-daten-einrichten.sh status [--release NAME]
-#       Rechte, Prüfsummen, Vergleich mit der Lieferung, gewählte Fassung, Urteil des Laders, Sicherungen, Hinweis zur Mail-Domäne.
+#       Rechte, Prüfsummen, Vergleich mit der Lieferung, gewählte Fassung, Urteil des Laders, Sicherungen.
 #   wamo-labor-daten-einrichten.sh rueckweg [--release NAME] [--trocken]
 #       Stellt den Stand der letzten Sicherung wieder her (Dateien, die es dort nicht gab, werden entfernt). Der Stand davor bleibt als
 #       <Zeit>.vor-rueckweg liegen.
@@ -39,7 +39,6 @@ QUELLE="$HERE/labor-daten"
 ZIEL="$WURZEL/etc/wamo/labor"
 SICHERUNG_BASIS="$WURZEL/var/backups/wamo-labor-daten"
 KERN_APP="$WURZEL/opt/wamo-core"
-KERN_ENV="$WURZEL/etc/wamo/core.env"
 KERN_BENUTZER=wamo-core
 NAME_RE='^v[0-9A-Za-z._-]{1,40}$'
 REGEL=persona-zusatz.md
@@ -332,18 +331,6 @@ installieren() {
   done
 }
 
-# ---------------------------------------------------------------- Hinweis zur Mail-Domäne
-mail_hinweis() {   # nur die Domäne aus core.env, nie ein anderer Wert; ändert nichts
-  local kontakt gesetzt=""
-  kontakt="$(grep -Eo '@[A-Za-z0-9.-]+' "$QUELLE/kontakte.md" | tr -d '@' | sort -u | paste -sd' ' - || true)"
-  if [ -r "$KERN_ENV" ]; then gesetzt="$(sed -n 's/^WAMO_LABOR_MAIL_DOMAIN=//p' "$KERN_ENV" | tail -n 1 | tr -d "\"' \r")"; fi
-  echo "  Mail-Domäne: Die Kontakte nutzen $kontakt. mail_senden erlaubt im Kern nur die Domäne aus WAMO_LABOR_MAIL_DOMAIN (Standard labor.test)."
-  echo "    core.env: WAMO_LABOR_MAIL_DOMAIN=${gesetzt:-nicht gesetzt}"
-  if [ "${gesetzt:-labor.test}" != "$kontakt" ]; then
-    echo "    WARNUNG: Der Kern lehnt Mails an diese Kontakte ab, solange die Einstellung nicht $kontakt lautet (Hinweis, dieses Skript ändert den Kern nie)."
-  fi
-}
-
 # ---------------------------------------------------------------- Befehle
 einrichten() {
   local n
@@ -359,7 +346,6 @@ einrichten() {
   for n in "${ALLE[@]}"; do echo "  $n: $(dateistand "$n")"; done
   if stand_gleich; then
     echo "  Alles unverändert, nichts zu tun."
-    mail_hinweis
     return 0
   fi
   if [ "$TROCKEN" = ja ]; then
@@ -367,7 +353,6 @@ einrichten() {
     plan "Ordner $ZIEL (root:root 0755) und acht Dateien (root:root 0644) schreiben, Fassung der Regeln: $PERSONA"
     plan "Lader am Ziel prüfen, bei Ablehnung alles zurücknehmen"
     echo "  Trockenlauf: es wurde nichts geändert."
-    mail_hinweis
     return 0
   fi
   sichern ""
@@ -379,7 +364,6 @@ einrichten() {
     fehler "Zurückgenommen auf den Stand vor dem Lauf (Sicherung $SICHERUNG)."
   fi
   echo "  Eingerichtet. Der Kern liest die Dateien beim nächsten Sitzungsstart, ein Neustart ist nicht nötig."
-  mail_hinweis
 }
 
 zeile_status() {   # eine Datei: Name, Prüfsumme, Vergleich mit der Lieferung, Rechte
@@ -410,7 +394,6 @@ status() {
     while IFS= read -r d; do echo "  $d"; anzahl=$((anzahl + 1)); done < <(ls -1 "$SICHERUNG_BASIS" | sort || true)
   fi
   echo "  Anzahl: $anzahl"
-  mail_hinweis
 }
 
 rueckweg() {

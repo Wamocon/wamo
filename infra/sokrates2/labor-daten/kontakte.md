@@ -1,6 +1,6 @@
-Kontakte im Testlabor, erfundene Personen, Adressen nur in der Testdomäne wamo.test
-- Anna Test, Projektleitung, anna.test@wamo.test
-- Ben Beispiel, Entwicklung, ben.beispiel@wamo.test
-- Clara Muster, Qualitätssicherung, clara.muster@wamo.test
-- David Probe, Vertrieb, david.probe@wamo.test
-- Emma Demo, Support, emma.demo@wamo.test
+Kontakte im Testlabor, erfundene Personen, Adressen nur in der Testdomäne labor.test
+- Anna Test, Projektleitung, anna.test@labor.test
+- Ben Beispiel, Entwicklung, ben.beispiel@labor.test
+- Clara Muster, Qualitätssicherung, clara.muster@labor.test
+- David Probe, Vertrieb, david.probe@labor.test
+- Emma Demo, Support, emma.demo@labor.test

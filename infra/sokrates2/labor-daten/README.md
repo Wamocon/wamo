@@ -11,7 +11,7 @@ nie auf den Server installiert und nie vom Kern gelesen.
 | --- | --- | --- | --- | --- |
 | `persona-zusatz.md` | Regelteil | Anweisungen an WAMO: Mail erst als Entwurf, Tickets nur über Werkzeuge, Datum per Werkzeug, kurze Antworten, nichts erfinden | WAMO-Team | Kollegen (Review) |
 | `persona-zusatz.streng.md` | Regelteil, Variante | wie oben, dazu "frag bei fehlenden Angaben nach" und "Fehler nicht wegbessern" (nur bei Sicherheit eingreifen) | WAMO-Team | Trainer nach Messrunde 1 (Frage Q6) |
-| `kontakte.md` | Daten | erfundene Kontakte, Adressen nur `@wamo.test` | WAMO-Team | WAMO-Team |
+| `kontakte.md` | Daten | erfundene Kontakte, Adressen nur `@labor.test` | WAMO-Team | WAMO-Team |
 | `anforderung-vorlage.md` | Daten | Gerüst eines Anforderungsdokuments (3 bis 7 Stories, je mindestens 2 Kriterien Gegeben, Wenn, Dann) | WAMO-Team | WAMO-Team |
 | `wissen-istqb.md` | Daten | Glossar-Auszug in eigenen Worten, Entwurf | Format: WAMO-Team, Fachlichkeit: Trainer | Trainer (bis 19.11.) |
 | `bericht-vorlage.md` | Daten | Gerüst des Testberichts mit Spalten Karte, Eingabe, erwartet, tatsächlich, bestanden, Ticket, CTFL | WAMO-Team | Kollegen |
@@ -55,12 +55,11 @@ das prüft der Test. Der Wortlaut der Wegbessern-Regel ist ein Entwurf und brauc
 Kommen sie, ersetzt Niko den Satz zum Seminar in `ausgang.md` (zusammen höchstens 400 Zeichen) und passt `test_ausgang_erfindet_weder_termin_noch_preis_noch_anmeldung`
 in `voice-core/test_labor_daten_inhalt.py` bewusst an, denn diese Prüfung gilt der ersten Fassung ohne Ziffern. Ohne Freigabe der Kollegen bleibt die Datei wie sie ist.
 
-## Achtung: Domäne der Kontakte und Mail-Filter des Kerns
+## Domäne der Kontakte
 
-Die Kontakte nutzen die Testdomäne `wamo.test`. Der Domänenfilter von `mail_senden` (`voice-core/labor_mail.py`) lässt aber nur die Domäne aus
-`WAMO_LABOR_MAIL_DOMAIN` zu, **Standard `labor.test`**. Ohne die Einstellung `WAMO_LABOR_MAIL_DOMAIN=wamo.test` in `/etc/wamo/core.env` lehnt der Kern jede Mail an
-einen dieser Kontakte ab (Karten M1 und S1). Entweder die Einstellung setzen (Slot-Wechsel über `wamo-core-slots.sh umschalten-kern`) oder die Kontakte auf
-`labor.test` ändern. Das Einrichtungsskript prüft den Wert in `core.env` und warnt, ändert aber nie den Kern.
+Die Kontakte nutzen die Testdomäne `labor.test`. Das ist die Standard-Domäne des Mail-Filters von `mail_senden` (`DOMAIN_STANDARD` in `voice-core/labor_mail.py`), der Kern
+bleibt dafür unverändert. Der Test `test_die_domaene_der_kontakte_ist_die_standard_domaene_des_mail_filters` lässt jede Adresse durch den echten Filter laufen. Wer die Domäne im Kern ändert,
+muss die Kontakte anpassen. Die Anmelde-Adressen der Laborprofile (`@wamo.test`) sind eine andere Sache und bleiben.
 
 ## Freigabeablauf
 

@@ -1412,8 +1412,8 @@ auf dem Server unter `/etc/wamo/labor/`. Der Kern liest sie bei jedem Sitzungsst
 Der Lader läuft als `wamo-core` (so wie der Kern liest) aus dem jüngsten Release mit `voice-core/labor_daten.py` und dessen `venv`, mit `--release NAME` aus einem bestimmten. Fehlt das Paket `loguru` oder gibt es
 kein solches Release (der Lab-Release des Kerns muss zuerst angelegt sein), bricht das Skript vor jeder Änderung mit Exit 3 ab. Es startet nichts neu und ändert den Kern nie.
 
-**Mail-Domäne.** Die Kontakte nutzen `wamo.test`. `mail_senden` erlaubt im Kern nur die Domäne aus `WAMO_LABOR_MAIL_DOMAIN` (Standard `labor.test`). Ohne `WAMO_LABOR_MAIL_DOMAIN=wamo.test` in `/etc/wamo/core.env`
-lehnt der Kern jede Mail an diese Kontakte ab. Das Skript liest nur diesen einen Wert und warnt, die Einstellung gilt erst nach einem Slot-Wechsel (`wamo-core-slots.sh umschalten-kern`).
+**Mail-Domäne.** Die Kontakte nutzen `labor.test`, die Standard-Domäne des Mail-Filters von `mail_senden` (`DOMAIN_STANDARD` in `voice-core/labor_mail.py`). Der Kern bleibt unverändert, ein Test prüft die
+Übereinstimmung. Das Skript liest `core.env` nicht.
 
 Probelauf ohne root in einem Wegwerf-Ordner: `WAMO_LABOR_DATEN_WURZEL=/tmp/labor-probe WAMO_LABOR_DATEN_LADER=<voice-core> WAMO_LABOR_DATEN_PYTHON=<python mit loguru> bash wamo-labor-daten-einrichten.sh einrichten`. Tests im Ordner
 `voice-core`: `python -m pytest -q test_labor_daten_inhalt.py test_labor_daten_skript.py`. Was echte Besitzer und den Benutzer `wamo-core` braucht (Herkunftsschutz mit fremdem Besitzer, Lader als `wamo-core`), ist nur am Server prüfbar.
