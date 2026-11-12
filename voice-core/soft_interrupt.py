@@ -355,8 +355,10 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         if not self._bot_speaking and not werkzeug:
             return await super()._handle_transcription(frame)
         count = meaningful_word_count(frame.text, interim=isinstance(frame, InterimTranscriptionFrame))
-        # Schweigt WAMO (Werkzeug läuft), gilt wie bei Pipecat schon ein Wort; MIN_INTERRUPT_WORDS betrifft nur das Sprechen
-        if count >= (self._min_words if self._bot_speaking else 1):
+        # Schweigt WAMO (Werkzeug läuft), gilt wie bei Pipecat schon ein Wort; MIN_INTERRUPT_WORDS betrifft nur das Sprechen.
+        # Ein Stoppwort ("Stopp", "Moment", "Nein", "Was") unterbricht auch unter der Schwelle sofort (12.11.2026).
+        stoppwort = self._bot_speaking and count >= 1 and hat_stoppwort(frame.text)
+        if count >= (self._min_words if self._bot_speaking else 1) or stoppwort:
             urteil = self._urteil(frame.text)
             if urteil != "echo" and self.echo_modus_aktiv() and not hat_stoppwort(frame.text):
                 self.echo_vermutet += 1

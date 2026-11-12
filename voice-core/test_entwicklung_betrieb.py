@@ -848,6 +848,87 @@ class QuittungTests(BueroFlow):
         self.assertNotIn("GEHEIMbuero", repr(self.task.messages()) + repr(self.task.llm_texts()))
 
 
+class WiederholsperreTests(BueroFlow):
+    """Hat der Kanal einen Auftrag aus einem dauerhaften Grund abgewiesen (geschlossen, Notaus, abgelaufen), stellt WAMO zwei Minuten
+    lang keine neue Karte. Am 12.11.2026 kamen so in drei Minuten sechs Karten desselben Auftrags, jede wurde abgewiesen. Der Klick
+    auf eine vorhandene Karte bleibt möglich (QuittungTests)."""
+
+    DAUERHAFT = ("notaus", "konfig_ungueltig", "kanal_zu", "abgelaufen", "herkunft_unklar")
+
+    def frischer_agent(self):
+        agent = dev_agent.DevAgent(memory=self.memory, auftraggeber="Niko", zulassung=eb.BueroZulassung(NIKO))
+        agent.attach(self.task)
+        return agent
+
+    async def abweisen(self, agent, grund):
+        self.start_procs.append(self.sk.FakeProc([{"type": "wamo", "ereignis": "kanal_gesperrt", "grund": grund}], returncode=2))
+        job = self.neuer_job(agent)
+        await agent.on_client_message("auftrag_start", {"job": job.id, "entscheidung": "ja"})
+        if agent._running is not None:
+            await agent._running
+        return job
+
+    def karten(self):
+        return [m for m in self.task.messages() if m.get("type") == "auftrag"]
+
+    async def test_nach_kanal_zu_kommt_keine_neue_karte_sondern_der_grund(self):
+        await self.abweisen(self.agent, "kanal_zu")
+        self.task.frames.clear()
+        ergebnis = await self.vorbereiten()
+        self.assertFalse(ergebnis["ok"])
+        self.assertEqual(ergebnis["fehler"], eb.GRUND_SAETZE["kanal_zu"])
+        self.assertIn("zwei Minuten", ergebnis["hinweis"])
+        self.assertEqual(self.karten(), [])
+        self.assertEqual(len(self.agent._jobs), 1)  # nur die abgewiesene Karte von vorher
+
+    async def test_nach_zwei_minuten_geht_ein_neuer_versuch(self):
+        uhr = [1000.0]
+        self.agent._jetzt = lambda: uhr[0]
+        await self.abweisen(self.agent, "kanal_zu")
+        uhr[0] += 119.0
+        self.assertFalse((await self.vorbereiten())["ok"])
+        uhr[0] += 2.0
+        self.assertTrue((await self.vorbereiten())["ok"])
+
+    async def test_jeder_dauerhafte_grund_sperrt(self):
+        for code in self.DAUERHAFT:
+            with self.subTest(code=code):
+                agent = self.frischer_agent()
+                await self.abweisen(agent, code)
+                ergebnis = await self.vorbereiten(agent)
+                self.assertEqual((ergebnis["ok"], ergebnis["fehler"]), (False, eb.GRUND_SAETZE[code]))
+
+    async def test_gruende_die_vom_auftrag_abhaengen_sperren_nicht(self):
+        for code in ("art", "repo", "repo_fehlt", "befehl", "fremd", "dienst", "projekt", "zugang", "fork", "grenze_start",
+                     "grenze_laufzeit", "grenze_folgen", "abstand", "platz"):
+            with self.subTest(code=code):
+                agent = self.frischer_agent()
+                await self.abweisen(agent, code)
+                self.assertTrue((await self.vorbereiten(agent))["ok"])
+
+    async def test_ein_fremder_oder_kaputter_grund_sperrt_nicht(self):
+        for grund in (["kanal_zu"], {"a": 1}, 5, None, "sk-ant-api03-" + "GEHEIMbuero" * 4):
+            with self.subTest(grund=grund):
+                agent = self.frischer_agent()
+                await self.abweisen(agent, grund)
+                self.assertTrue((await self.vorbereiten(agent))["ok"])
+        self.assertNotIn("GEHEIMbuero", repr(self.task.messages()) + repr(self.task.llm_texts()))
+
+    async def test_ein_gestarteter_auftrag_hebt_die_sperre_auf(self):
+        job = await self.abweisen(self.agent, "kanal_zu")
+        self.assertFalse((await self.vorbereiten())["ok"])
+        self.start_procs.append(self.sk.FakeProc(self.sk.stream()))
+        await self.agent.on_client_message("auftrag_start", {"job": job.id, "entscheidung": "ja"})  # der Klick geht immer durch
+        await self.agent._running
+        self.assertTrue((await self.vorbereiten())["ok"])
+
+    async def test_die_sperre_gilt_nur_im_buero(self):
+        with mock.patch.dict(os.environ, {"WAMO_BETRIEB": ""}):
+            agent = dev_agent.DevAgent(memory=None, auftraggeber="Erika")
+            agent._kanal_abweisung = ("kanal_zu", agent._jetzt())
+            self.assertIsNone(agent._kanal_sperre_satz())
+
+
 # ---------------------------------------------------------------- R4: Audit und Kostenbremse über actions
 def stream_mit_kosten(kosten: float, tool: bool = False):
     s = [dict(z) if isinstance(z, dict) else z for z in sk_stream(tool=tool)]
