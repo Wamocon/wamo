@@ -1544,7 +1544,8 @@ class DokumentationTests(unittest.TestCase):
         zeile = next((z for z in lies(REPO / "CLAUDE.md").splitlines() if z.startswith("| Labor-Dienst (Betrieb) |")), None)
         self.assertIsNotNone(zeile, "Zeile Labor-Dienst (Betrieb) fehlt in der Tabelle")
         for soll in ("wamo-labor-dienst", "wamo-labor-netz", "wamo-labor-lokal", "55447", "127.0.0.1:18765", "/etc/wamo-labor", "/var/lib/wamo-labor", "10001",
-                     "wamo-labor-einrichten.sh", "wamo-labor-rueckweg.sh", "wamo-labor-loeschlauf.sh", "wamo_labor_rauchtest.py", "WAMO_LABOR_DIENST_*",
+                     "wamo-labor-einrichten.sh", "wamo-labor-rueckweg.sh", "wamo-labor-loeschlauf.sh", "wamo_labor_rauchtest.py", "WAMO_LABOR_DIENST_*", "WAMO-FW-LABIN",
+                     "allein an `wamo-firewall`", "systemctl stop wamo-firewall",
                      "WAMO_LABOR_URL", "WAMO_LABOR_TOKEN", "WAMO-FW-LABOR", "WAMO-FW-LABAUS", "11.12.2026", "wamo-labor.caddy"):
             self.assertIn(soll, zeile, soll)
         self.assertNotIn(chr(0x2014), zeile)
@@ -1555,7 +1556,8 @@ class DokumentationTests(unittest.TestCase):
         abschnitt = text.split("## 19. Labor-Dienst", 1)[1]
         for soll in ("wamo-labor-einrichten.sh", "wamo-labor-rueckweg.sh", "wamo-labor-loeschlauf.sh", "wamo_labor_rauchtest.py", "--trocken", "Q13",
                      "betreuer-adressen", "plaetze-adressen", "11.12.2026", "Digest", "Offene Punkte", "Image-Bau", "echten Secrets", "LABOR-LOESCHEN",
-                     "umschalten-kern", "Aufbewahrung"):
+                     "umschalten-kern", "Aufbewahrung", "stop wamo-firewall", "WAMO-FW-LABIN", "zwei Stufen", "am Server zu messen", "RFC 1918", "arm64", "Neuanlegen",
+                     "Besucheradressen", "P19", "P20", "Betreuer-PCs", "wamo-firewall regeln", "Herkunft", "allein an `wamo-firewall`"):
             self.assertIn(soll, abschnitt, soll)
         for verboten in (chr(0x2014), chr(0x2013), *VERBOTENE_WOERTER):
             self.assertNotIn(verboten, abschnitt.lower() if verboten in VERBOTENE_WOERTER else abschnitt)
@@ -1566,7 +1568,7 @@ class DokumentationTests(unittest.TestCase):
         hinzugefuegt = offen.split("### Hinzugefügt", 1)[1]
         eintrag = next((b for b in hinzugefuegt.split("\n- ") if b.startswith("Betrieb des Labor-Dienstes")), None)
         self.assertIsNotNone(eintrag, "Eintrag zum Betrieb des Labor-Dienstes fehlt unter Hinzugefügt")
-        for soll in ("wamo-labor-einrichten.sh", "wamo_labor_rauchtest.py", "55447", "Q13"):
+        for soll in ("wamo-labor-einrichten.sh", "wamo_labor_rauchtest.py", "55447", "Q13", "zwei Stufen", "WAMO-FW-LABIN", "Ausfalldauer"):
             self.assertIn(soll, eintrag, soll)
         self.assertNotIn(chr(0x2014), eintrag)
 
