@@ -349,3 +349,274 @@ def test_rechte_unter_windows_nur_der_benutzer(tmp_path):
         for fremd in ("Everyone", "BUILTIN", "NT AUTHORITY", "Authenticated Users"):
             assert fremd not in ausgabe, ausgabe
     assert u.zugang("labor-01").seed == seed_von("a")
+
+
+# ---------- Verbindung zu GoTrue: Adresse, TLS, keine Umleitung, kein Proxy, Zeitversatz ----------
+
+import http.server  # noqa: E402
+import shutil  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+
+import wamo_labor_faktoren_api as api  # noqa: E402
+from wamo_labor_faktoren_attrappe import GoTrueAttrappe, totp_unabhaengig  # noqa: E402
+
+SCHLUESSEL = "anon-" + "a" * 8  # erfundener öffentlicher Schlüssel der Attrappe
+EMAIL = "labor-03@wamo.test"
+
+
+@pytest.fixture
+def server():
+    a = GoTrueAttrappe(schluessel=SCHLUESSEL)
+    a.nutzer_anlegen(EMAIL, PW[3])
+    a.starten()
+    yield a
+    a.beenden()
+
+
+def verbindung(server, **kw) -> api.Verbindung:
+    return api.Verbindung(server.basis, SCHLUESSEL, None, **kw)
+
+
+@pytest.mark.parametrize("basis,ca,gut", [
+    ("https://192.168.178.136:55443", True, True), ("https://192.168.178.136:55443/", True, True),
+    ("https://192.168.178.136:55443", False, False), ("http://192.168.178.136:55321", True, False),
+    ("http://127.0.0.1:5000", False, True), ("http://localhost:5000", False, True), ("http://[::1]:5000", False, True),
+    ("ftp://127.0.0.1", False, False), ("https://", True, False), ("kein-schema", True, False),
+    ("https://name:pw@192.168.178.136:55443", True, False), ("https://192.168.178.136:55443/auth", True, False),
+    ("https://192.168.178.136:55443?x=1", True, False), ("http://127.0.0.1.example.org:5000", False, False),
+])
+def test_basis_pruefen(basis, ca, gut):
+    if gut:
+        api.basis_pruefen(basis, ca)
+    else:
+        with pytest.raises(api.ApiFehler) as e:
+            api.basis_pruefen(basis, ca)
+        assert "name:pw" not in str(e.value)
+
+
+def test_anmelden_liefert_sitzung_und_faktoren(server):
+    fid, _ = server.faktor_anlegen(EMAIL, "verified")
+    s = verbindung(server).anmelden(EMAIL, PW[3])
+    assert s.access_token and s.refresh_token and s.aal == "aal1"
+    assert [(f.id, f.status, f.typ) for f in s.faktoren] == [(fid, "verified", "totp")]
+    assert PW[3] not in repr(s) and s.access_token not in repr(s)
+
+
+def test_anmelden_ohne_faktoren_im_nutzer(server):
+    assert verbindung(server).anmelden(EMAIL, PW[3]).faktoren == ()
+
+
+def test_falsches_passwort_nennt_status_und_kennung_ohne_wert(server):
+    with pytest.raises(api.ApiFehler) as e:
+        verbindung(server).anmelden(EMAIL, "falsch-" + PW[3])
+    assert (e.value.status, e.value.kennung) == (400, "invalid_credentials")
+    assert "400" in str(e.value) and PW[3] not in str(e.value)
+
+
+def test_ratenbegrenzung_wird_benannt(server):
+    server.fehler("POST", "/token", 429, "over_request_rate_limit")
+    with pytest.raises(api.ApiFehler, match="Ratenbegrenzung") as e:
+        verbindung(server).anmelden(EMAIL, PW[3])
+    assert e.value.status == 429
+
+
+def test_antworttext_des_servers_gelangt_nie_in_den_fehler(server):
+    server.fehler("POST", "/token", 400, koerper={"error_code": "x y", "msg": "GEHEIMER-Satz " + PW[3]})
+    with pytest.raises(api.ApiFehler) as e:
+        verbindung(server).anmelden(EMAIL, PW[3])
+    assert "GEHEIMER" not in str(e.value) and PW[3] not in str(e.value)
+
+
+def test_unbrauchbare_antwort_ist_ein_fehler(server):
+    server.fehler("POST", "/token", 200, koerper=[1, 2])
+    with pytest.raises(api.ApiFehler, match="ungültige Antwort"):
+        verbindung(server).anmelden(EMAIL, PW[3])
+
+
+def test_keine_verbindung_ist_ein_fehler(server):
+    server.beenden()
+    with pytest.raises(api.ApiFehler, match="keine Verbindung"):
+        verbindung(server).anmelden(EMAIL, PW[3])
+
+
+def test_zeitversatz_kommt_aus_dem_date_kopf(server):
+    server.versatz = 70.0
+    v = verbindung(server)
+    assert v.versatz == 0.0
+    v.anmelden(EMAIL, PW[3])
+    assert v.versatz == pytest.approx(70.0, abs=1.6)
+    assert v.jetzt() == pytest.approx(time.time() + 70.0, abs=1.6)
+
+
+def test_ohne_date_kopf_bleibt_der_versatz_null(server):
+    server.mit_datum = False
+    v = verbindung(server)
+    v.anmelden(EMAIL, PW[3])
+    assert v.versatz == 0.0
+
+
+def test_umleitung_wird_nicht_befolgt(server):
+    server.umleiten = True
+    with pytest.raises(api.ApiFehler, match="Umleitung"):
+        verbindung(server).anmelden(EMAIL, PW[3])
+    assert ("GET", "/ziel") not in server.anfragen and server.anfragen == [("POST", "/auth/v1/token")]
+
+
+def test_kein_proxy_aus_der_umgebung(server, monkeypatch):
+    zugriffe = []
+
+    class Proxy(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            zugriffe.append(self.path)
+            self.send_response(502)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    proxy = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    try:
+        for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+            monkeypatch.setenv(name, f"http://127.0.0.1:{proxy.server_address[1]}")
+        for name in ("NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(name, raising=False)
+        import urllib.request
+        assert urllib.request.getproxies().get("http"), "Voraussetzung: die Umgebung nennt einen Proxy"
+        assert verbindung(server).anmelden(EMAIL, PW[3]).access_token
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+    assert zugriffe == []
+
+
+def test_faktor_ablauf_bis_aal2_und_abmeldung(server):
+    v = verbindung(server)
+    s = v.anmelden(EMAIL, PW[3])
+    neu = v.faktor_anlegen(s.access_token, "WAMO-test")
+    assert tt.seed_gueltig(neu.seed) and neu.seed not in repr(neu)
+    c = v.challenge(s.access_token, neu.id)
+    s2 = v.verify(s.access_token, neu.id, c, totp_unabhaengig(neu.seed, server.jetzt()))
+    assert s2.aal == "aal2"
+    s3 = v.erneuern(s2.refresh_token)
+    assert s3.aal == "aal2" and s3.access_token != s2.access_token
+    v.abmelden(s3.access_token)
+    with pytest.raises(api.ApiFehler) as e:
+        v.faktoren(s3.access_token)
+    assert e.value.status == 401
+
+
+def test_verify_mit_falschem_code_wird_abgelehnt(server):
+    v = verbindung(server)
+    s = v.anmelden(EMAIL, PW[3])
+    neu = v.faktor_anlegen(s.access_token, "WAMO-test")
+    c = v.challenge(s.access_token, neu.id)
+    with pytest.raises(api.ApiFehler) as e:
+        v.verify(s.access_token, neu.id, c, "000000")
+    assert e.value.kennung == "mfa_verification_failed" and "000000" not in str(e.value)
+
+
+def test_bestaetigter_faktor_braucht_zum_loeschen_aal2(server):
+    fid, seed = server.faktor_anlegen(EMAIL, "verified")
+    v = verbindung(server)
+    s = v.anmelden(EMAIL, PW[3])
+    with pytest.raises(api.ApiFehler) as e:
+        v.faktor_loeschen(s.access_token, fid)
+    assert e.value.kennung == "insufficient_aal"
+    s2 = v.verify(s.access_token, fid, v.challenge(s.access_token, fid), totp_unabhaengig(seed, server.jetzt()))
+    v.faktor_loeschen(s2.access_token, fid)
+    assert server.faktoren_von(EMAIL) == []
+
+
+def test_faktorkennung_aus_der_antwort_wird_geprueft(server):
+    server.fehler("POST", "/auth/v1/factors", 200, koerper={"id": "../admin", "totp": {"secret": seed_von("x")}})
+    v = verbindung(server)
+    s = v.anmelden(EMAIL, PW[3])
+    with pytest.raises(api.ApiFehler, match="ungültige Antwort"):
+        v.faktor_anlegen(s.access_token, "WAMO-test")
+
+
+def test_ungueltiger_seed_aus_der_antwort_wird_abgelehnt(server):
+    server.fehler("POST", "/auth/v1/factors", 200, koerper={"id": "faktor-0123456789ab", "totp": {"secret": "kurz"}})
+    v = verbindung(server)
+    s = v.anmelden(EMAIL, PW[3])
+    with pytest.raises(api.ApiFehler, match="ungültige Antwort"):
+        v.faktor_anlegen(s.access_token, "WAMO-test")
+
+
+def _openssl() -> str | None:
+    return shutil.which("openssl") or next((p for p in (r"C:\Program Files\Git\usr\bin\openssl.exe",) if os.path.exists(p)), None)
+
+
+@pytest.fixture(scope="module")
+def zertifikate(tmp_path_factory):
+    """Eine Test-CA und zwei Serverzertifikate (Adresse 127.0.0.1 passend und unpassend), nur für diesen Testlauf erzeugt."""
+    ossl = _openssl()
+    if not ossl:
+        pytest.skip("openssl fehlt")
+    d = tmp_path_factory.mktemp("tls")
+
+    def lauf(*args):
+        subprocess.run([ossl, *args], check=True, capture_output=True, cwd=d)
+
+    kurve = ("-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes")
+    lauf("req", "-x509", *kurve, "-keyout", "ca.key", "-out", "ca.crt", "-subj", "/CN=Test-CA", "-days", "2")
+    for name, san in (("gut", "IP:127.0.0.1"), ("falsch", "IP:10.9.8.7")):
+        (d / f"{name}.cnf").write_text(f"subjectAltName={san}\n")
+        lauf("req", *kurve, "-keyout", f"{name}.key", "-out", f"{name}.csr", "-subj", "/CN=server")
+        lauf("x509", "-req", "-in", f"{name}.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial", "-out", f"{name}.crt",
+             "-days", "2", "-extfile", f"{name}.cnf")
+    return d
+
+
+def _tls_server(zertifikate, name: str) -> GoTrueAttrappe:
+    a = GoTrueAttrappe(schluessel=SCHLUESSEL)
+    a.nutzer_anlegen(EMAIL, PW[3])
+    a.starten(tls=(str(zertifikate / f"{name}.crt"), str(zertifikate / f"{name}.key")))
+    return a
+
+
+def test_tls_mit_der_ca_datei_gelingt(zertifikate):
+    a = _tls_server(zertifikate, "gut")
+    try:
+        v = api.Verbindung(a.basis, SCHLUESSEL, zertifikate / "ca.crt")
+        assert v.anmelden(EMAIL, PW[3]).access_token
+    finally:
+        a.beenden()
+
+
+def test_tls_pruefung_ist_streng(zertifikate):
+    kontext = api.tls_kontext(zertifikate / "ca.crt")
+    import ssl
+    assert kontext.verify_mode == ssl.CERT_REQUIRED and kontext.check_hostname is True
+
+
+def test_tls_unbekannte_ca_wird_abgelehnt(zertifikate):
+    a = _tls_server(zertifikate, "gut")
+    try:
+        fremde_ca = Path(__file__).resolve().parent.parent / "infra" / "sokrates2" / "wamo-ca.crt"
+        with pytest.raises(api.ApiFehler, match="TLS") as e:
+            api.Verbindung(a.basis, SCHLUESSEL, fremde_ca).anmelden(EMAIL, PW[3])
+        assert PW[3] not in str(e.value)
+    finally:
+        a.beenden()
+
+
+def test_tls_falscher_hostname_wird_abgelehnt(zertifikate):
+    a = _tls_server(zertifikate, "falsch")
+    try:
+        with pytest.raises(api.ApiFehler, match="TLS"):
+            api.Verbindung(a.basis, SCHLUESSEL, zertifikate / "ca.crt").anmelden(EMAIL, PW[3])
+    finally:
+        a.beenden()
+
+
+def test_unlesbare_ca_datei_ist_ein_fehler(tmp_path):
+    kaputt = tmp_path / "ca.crt"
+    kaputt.write_text("kein Zertifikat")
+    with pytest.raises(api.ApiFehler, match="CA-Datei"):
+        api.Verbindung("https://192.168.178.136:55443", SCHLUESSEL, kaputt)
+    with pytest.raises(api.ApiFehler, match="CA-Datei"):
+        api.Verbindung("https://192.168.178.136:55443", SCHLUESSEL, tmp_path / "fehlt.crt")
