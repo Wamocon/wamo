@@ -1,0 +1,88 @@
+# WAMO Labor-Dienst
+
+Das Test-Jira des Testlabors am 28.11.2026. Bis zu acht Besucher legen an je einem Platz mit dem Assistenten WAMO Fehler als Ticket an, ändern,
+verschieben und kommentieren Tickets. Der Dienst setzt den Vertrag Version 1 um (`docs/labor-dienst-vertrag.md`, Quelle der Wahrheit) und
+ist ein eigener Teil des Monorepos: Paket `wamo-labor-dienst`, Python 3.11 oder neuer, FastAPI, uvicorn und SQLite aus der Standardbibliothek.
+Dieser Stand ist der API-Teil mit Speicher und Betreuer-Funktionen. Die Webseiten (Board und Betreuer-Seite) kommen als zweiter Schritt.
+
+## Start
+
+```text
+cd labor-dienst
+pip install -r requirements.txt
+WAMO_LABOR_DIENST_KERN_TOKEN_DATEI=... WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI=... python -m wamo_labor_dienst
+```
+
+Healthcheck des Containers: `python -m wamo_labor_dienst gesundheit` (Ausgang 0 nur bei `GET /gesundheit` mit Zustand ok).
+Das Image entsteht auf dem Server aus den Quellen (`Dockerfile`: Nutzer ohne root, schreibt nur nach `/data`, lauffähig mit `--read-only`,
+nichts wird zur Laufzeit installiert, das Basisimage wird mit festem Digest gebaut).
+
+## Umgebung
+
+Der Dienst liest nur Umgebungsvariablen und Dateien. Eine fehlende oder unbrauchbare Einstellung beendet den Start mit Ausgang 2 und einer
+Meldung ohne Werte.
+
+| Variable | Bedeutung | Standard |
+| --- | --- | --- |
+| `WAMO_LABOR_DIENST_KERN_TOKEN_DATEI` | Datei mit dem Bearer des Kerns (`WAMO_LABOR_TOKEN`, 32 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-) | Pflicht |
+| `WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI` | Datei mit dem Betreuer-Token, muss ein anderer Wert sein | Pflicht |
+| `WAMO_LABOR_DIENST_DATEN` | Ordner für Datenbanken und Protokoll (im Container `/data`) | `/data` |
+| `WAMO_LABOR_DIENST_HOST`, `WAMO_LABOR_DIENST_PORT` | Adresse zum Lauschen (im Container `0.0.0.0`) | `127.0.0.1`, `8080` |
+| `WAMO_LABOR_DIENST_BIS` | Ende der Aufbewahrung (JJJJ-MM-TT), danach löscht der Dienst alle Daten | `2026-12-11` |
+| `WAMO_LABOR_DIENST_PLATZ_MB` | harte Obergrenze der Datenbankdatei je Platz (2 bis 64) | `16` |
+
+## Schnittstellen
+
+Alle Antworten tragen `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` und eine CSP mit
+`default-src 'self'` und `frame-ancestors 'none'`. Fehler haben immer die Form `{"fehler": "<Code>", "text": "<Satz>"}`.
+
+* **Kern, `/api/kern/`** (Bearer des Kerns, Kopf `X-WAMO-Platz`): V1 bis V7 genau nach Vertrag, Pfade, Felder, Fehlercodes, Reihenfolge der
+  Prüfungen (Abschnitt 2.2), Wertebereiche (2.3), Idempotenz 24 Stunden, 405 mit `Allow`, unbekannte Felder und Parameter 422, 413 vor dem Lesen.
+  Durchlauf und Version werden in derselben Transaktion geprüft wie das Schreiben (D13). Es gibt keinen Weg zum Löschen.
+* **Browser, `GET /api/browser/board`** (nur lesend, Kopf `X-Platz-Token`): das Board des eigenen Platzes mit Tickets, Kommentaren,
+  Zeitpunkten (ISO, UTC) und dem Zustand des Durchlaufs (`offen`, `einwilligung_version`). Der Platz kommt immer aus dem Token. Ein Token in der
+  Adresszeile gilt nie (Abfrage 422).
+* **Betreuer, `/api/betreuer/`** (Bearer mit dem Betreuer-Token, ohne Token 401, falscher Token auch Platz-Token oder Bearer des Kerns 403):
+  `GET plaetze` (Zustand aller 16 Plätze ohne Texte), `POST plaetze/<n>/durchlauf-beenden`, `neuer-durchlauf` (Körper
+  `{"einwilligung_version": 1}`, Seed, neue `durchlauf_id`, Einwilligung mit Zeit), `zuruecksetzen` (Seed, Durchlauf bleibt), `daten-loeschen`
+  (alles weg, Platz danach geschlossen und ohne Seed, der Platz-Token bleibt) und `platz-token` (erzeugt oder erneuert, 128 Bit, wird nur einmal
+  ausgegeben und nur als Hash gespeichert). Jeder Aufruf steht mit Zeit, Platz und Art im Protokoll.
+* **`GET /gesundheit`** ohne Token: nur der Zustand, keine Daten.
+
+Die Tokens öffnen nie die Pfade der anderen: Der Bearer des Kerns nur `/api/kern/`, der Platz-Token nur `/api/browser/`, der Betreuer-Token nur
+`/api/betreuer/`. Ein neuer Platz ist geschlossen und ohne Einwilligung, bis der Betreuer `neuer-durchlauf` aufruft.
+
+## Speicher und Quoten
+
+Je Platz eine SQLite-Datei (WAL) mit `max_page_count` (16 MB), dazu eine kleine Datei für die Token-Hashes. Quoten je Platz (D1): 100 Tickets,
+300 Kommentare, 1 MB Nutztext (UTF-8, Seed zählt mit), 30 Schreibaufrufe in 60 Sekunden. Darüber antwortet der Dienst 429 `quote_erreicht`,
+auch wenn die Datei voll ist, nie mit einem Absturz. Alle Abfragen sind parametrisiert, die Suche ist wörtlich (kein `LIKE`) und beachtet
+Groß- und Kleinschreibung nicht, auch bei Umlauten. Der Speicher für Idempotenzschlüssel ist auf 2000 je Platz begrenzt (wirkt nur bei Missbrauch).
+
+## Protokoll und Aufbewahrung
+
+Das Protokoll (`<Daten>/protokoll/dienst.jsonl`, rotiert bei 10 MB) enthält nur Metadaten: Zeit, Bereich, Methode, Status, Platz, Dauer und bei
+Betreuer-Aufrufen die Art. Nie Pfade, Abfragen, Köpfe, Tokens oder Texte. Das Zugriffsprotokoll des Webservers ist aus. Beim Start und danach
+stündlich löscht der Dienst alle Daten (Tickets, Kommentare, Einwilligungen, Platz-Token, Protokoll), wenn das Datum nach `WAMO_LABOR_DIENST_BIS` liegt.
+Der Dienst legt keine Sicherungen an.
+
+## Prüfen
+
+```text
+cd labor-dienst
+python -m pytest -p no:cacheprovider -q tests
+```
+
+Die Tests laufen ohne Netz und Server, außer den Integrationstests: Sie starten den Dienst auf Loopback und lassen das Abnahmeskript von WAMO
+(`scripts/wamo_labor_abnahme.py`) und den Dienstclient des Kerns (`voice-core/labor_client.py`) gegen ihn laufen. Mit gemeinsamer falscher Uhr
+dauert auch A4 nur Sekunden. Mit `WAMO_LABOR_ECHTZEIT=1` läuft die Abnahme zusätzlich mit echter Schreibrate (20 bis 25 Minuten).
+
+Abnahme am echten Dienst (Aufruf aus dem Ordner `scripts`, mit der Python-Umgebung von `voice-core`):
+
+```text
+python wamo_labor_abnahme.py https://HOST[:PORT] --ja --token-datei <Datei mit dem Bearer des Kerns> --ca-datei <wamo-ca.crt>
+```
+
+Vorher legt der Betreuer für die Plätze 15 und 16 einen neuen Durchlauf mit Einwilligung an (`neuer-durchlauf`) und setzt sie danach zurück
+(`zuruecksetzen`). Für die Betreuer- und Platz-Proben gibt es `--betreuer-pfad`, `--platz-pfad` und `WAMO_LABOR_PLATZ_TOKEN`. A10 (Netz) und der
+Browserlauf bleiben von Hand am Server.
