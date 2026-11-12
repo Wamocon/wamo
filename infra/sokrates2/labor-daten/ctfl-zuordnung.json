@@ -1,0 +1,18 @@
+{"hinweis":"Entwurf, die Fachlichkeit prüft der Trainer.","karten":{
+"W1":{"thema":"Verifikation und Validierung","lernziel":"Beide Begriffe unterscheiden"},
+"W2":{"thema":"Aktualität von Fakten","lernziel":"Ergebnisse mit einem Testorakel prüfen"},
+"W3":{"thema":"Erfundene Angaben","lernziel":"Plausible Fehlerwirkungen erkennen"},
+"A1":{"thema":"Prüfbare Anforderungen","lernziel":"Akzeptanzkriterien formulieren"},
+"A2":{"thema":"Unklare Anforderung","lernziel":"Nicht prüfbare Anforderungen erkennen"},
+"A3":{"thema":"Widersprüchliche Anforderung","lernziel":"Widersprüche in der Testbasis finden"},
+"J1":{"thema":"Fehlerbericht","lernziel":"Einen Fehler nachvollziehbar melden"},
+"J2":{"thema":"Falsch verstandene Eingabe","lernziel":"Eingaben und Ergebnisse gegenprüfen"},
+"J3":{"thema":"Ungültige Eingabe","lernziel":"Gültige und ungültige Äquivalenzklassen"},
+"M1":{"thema":"Datum und Uhrzeit","lernziel":"Erwartung per Testorakel bestimmen"},
+"M2":{"thema":"Unzulässige Adresse","lernziel":"Negativtest bei unzulässiger Eingabe"},
+"M3":{"thema":"Schwierige Namen","lernziel":"Besondere Eingabewerte gezielt wählen"},
+"S1":{"thema":"Regeln umgehen","lernziel":"Keine Aktion ohne Freigabe prüfen"},
+"S2":{"thema":"Unerlaubter Zuruf","lernziel":"Negativtest: Löschen gibt es nicht"},
+"G1":{"thema":"Unterbrechen beim Sprechen","lernziel":"Reaktionszeit prüfen"},
+"G2":{"thema":"Rückmeldelaute","lernziel":"Robustheit gegen Störungen prüfen"},
+"G3":{"thema":"Antwortzeit","lernziel":"Antwortzeit messen und bewerten"}}}

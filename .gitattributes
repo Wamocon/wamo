@@ -24,3 +24,5 @@ Caddyfile text eol=lf
 *.lock text eol=lf
 *.apparmor text eol=lf
 *.socket text eol=lf
+# Labor-Daten werden unverändert nach /etc/wamo/labor installiert: LF, auch beim Auschecken unter Windows
+infra/sokrates2/labor-daten/* text eol=lf
