@@ -1,6 +1,7 @@
 "use client";
 
 import { memo } from "react";
+import { EinstellungenLink } from "@/components/einstellungen/EinstellungenLink";
 import { useSelect } from "@/lib/store";
 import { halteMemo, wamo, weiterMemo, type Memo } from "@/lib/wamo";
 
@@ -32,6 +33,7 @@ function ScopeIcon({ bereich }: { bereich: Memo["bereich"] }) {
  */
 export const GemerktHinweis = memo(function GemerktHinweis({ onVergessen }: { onVergessen: (m: Memo) => void }) {
   const memos = useSelect(wamo, (s) => s.memos);
+  const admin = useSelect(wamo, (s) => s.profil?.rolle === "admin");
   return (
     <div className="memos" role="status" aria-live="polite">
       {memos.map((m) => (
@@ -50,6 +52,11 @@ export const GemerktHinweis = memo(function GemerktHinweis({ onVergessen }: { on
             {m.text && <span className="memo-text">{m.text}</span>}
             {m.bereich === "gemeinsam" && m.status === "aktiv" && (
               <span className="memo-hint">für alle bei WAMOCON sichtbar</span>
+            )}
+            {m.bereich === "gemeinsam" && m.status !== "aktiv" && admin && (
+              <span className="memo-hint">
+                <EinstellungenLink abschnitt="gedaechtnis">Jetzt prüfen</EinstellungenLink>
+              </span>
             )}
           </div>
           {m.id && (

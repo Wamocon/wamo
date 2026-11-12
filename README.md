@@ -964,6 +964,16 @@ Modells beim Nachladen; die Stichwortliste für Problemzeilen ist eine Annahme u
 - **Persönlich:** Eigenschaften, Vorlieben und Verhalten eines Profils, nur für dieses Profil sichtbar.
 - **Gemeinsam:** Wissen über Firma, Kunden, Projekte und Abläufe. Wirkt erst nach Freigabe durch einen Admin;
   ausdrücklich gemerkte Einträge eines Admins gelten sofort.
+- **Vorschläge in der Oberfläche prüfen (seit 12.11.2026, Migration `0020_gedaechtnis_vorschlaege.sql`):** Admins finden unter
+  Einstellungen, „Gedächtnis“ alle offenen Vorschläge mit vollem Text, Art, Autor und Zeit und entscheiden mit „Für alle freigeben“
+  oder „Ablehnen“ (gleich gewichtet). Ein Admin sieht beim Entstehen eines Vorschlags im Hinweis „Gemerkt“ den Link „Jetzt prüfen“.
+  Kern: `voice-core/gedaechtnis_api.py` (`GET /wamo/api/gedaechtnis/vorschlaege`, `POST /wamo/api/gedaechtnis/entscheiden`, nur Admin,
+  30 Aufrufe je Minute). Der Kern hat weiter kein `UPDATE` auf `memories.status`: Er ruft die Datenbankfunktion
+  `gedaechtnis_vorschlag_entscheiden` (SECURITY DEFINER, `EXECUTE` nur für `wamo_core`) mit der aus dem Token geprüften Admin-Kennung
+  auf; sie prüft den Admin in der Datenbank noch einmal und ändert genau eine offene Zeile (`status`, `reviewed_by`, `reviewed_at`).
+  Ein freigegebener Eintrag gilt in allen Sitzungen, die danach beginnen. Reihenfolge beim Einspielen: Migration, dann Kern, dann
+  Oberfläche. Der Weg über `wamo_admin.py` bleibt. Tests: `voice-core/test_gedaechtnis_api.py`, `test_migration_0020.py`,
+  `supabase/tests/0020_gedaechtnis_vorschlaege_test.sql`, `ui/src/lib/gedaechtnis.test.ts`, `Gedaechtnis.comp.test.tsx`.
 - PC-Werkzeuge und Entwicklungsaufträge stehen vorerst nur Profilen mit Rolle `admin` zur Verfügung.
 
 ## Entwicklungsaufträge mit ECC und REA

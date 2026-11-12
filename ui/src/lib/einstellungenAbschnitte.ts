@@ -17,6 +17,7 @@ export const ABSCHNITT_IDS = [
   "modellzugang",
   "verbrauch",
   "sprache",
+  "gedaechtnis",
   "darstellung",
   "geraete",
   "fernzugriff",
@@ -40,6 +41,7 @@ export const ABSCHNITTE: readonly Abschnitt[] = [
   { id: "modellzugang", titel: "Modellzugang", kurz: "API-Schlüssel, Token und Modus" },
   { id: "verbrauch", titel: "Verbrauch", kurz: "Kontingent deines Claude-Abos", nurAdmin: true },
   { id: "sprache", titel: "Sprache und Ton", kurz: "Mikrofon, Hören und Stimme" },
+  { id: "gedaechtnis", titel: "Gedächtnis", kurz: "Vorschläge für alle prüfen", nurAdmin: true },
   { id: "darstellung", titel: "Darstellung", kurz: "Normal, Fokus, Zentrale und Nacht" },
   { id: "geraete", titel: "Geräte und PC", kurz: "Verbindungen, Geräteverwaltung, PC-Steuerung und Betriebsart" },
   {
