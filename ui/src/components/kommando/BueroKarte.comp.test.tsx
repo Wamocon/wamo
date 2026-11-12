@@ -2,15 +2,18 @@
 // über Farbe, Leerzustand und Hinweis auf unbekannte Geräte. Der Abruf (useBueroStand) ist durch eine Attrappe ersetzt,
 // sein eigenes Verhalten prüft useBueroStand.comp.test.tsx.
 // Ausführen im Ordner ui/:  npm run test:komponenten
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { bueroSteuern } from "@/lib/bueroApi";
+import { KernFehler } from "@/lib/kernApi";
 import { resetWamo, wamo } from "@/lib/wamo";
 import { BueroKarte } from "./BueroKarte";
 import { beschriftung, UNBEKANNT_TIPP, type BueroGeraet, type BueroStand } from "./bueroKarteModell";
-import { useBueroStand, type BueroZustand } from "./useBueroStand";
+import { bueroNachSchalten, useBueroStand, type BueroZustand } from "./useBueroStand";
 
-vi.mock("./useBueroStand", () => ({ useBueroStand: vi.fn() }));
+vi.mock("./useBueroStand", () => ({ useBueroStand: vi.fn(), bueroNachSchalten: vi.fn() }));
+vi.mock("@/lib/bueroApi", () => ({ bueroSteuern: vi.fn() }));
 
 const server: BueroGeraet = { id: "srv-1", name: "Sokrates-2", gruppe: "server", ampel: "ok", text: "läuft, Last niedrig", tipp: "Sag: Wie geht es dem Server?" };
 const drucker: BueroGeraet = { id: "drucker-1", name: "Drucker Empfang", gruppe: "drucker", ampel: "stoerung", text: "Papierstau", tipp: "Sag: Was ist am Drucker?" };
@@ -34,6 +37,8 @@ describe("BueroKarte", () => {
   beforeEach(() => {
     resetWamo();
     vi.mocked(useBueroStand).mockReset();
+    vi.mocked(bueroSteuern).mockReset().mockResolvedValue(undefined);
+    vi.mocked(bueroNachSchalten).mockReset();
   });
 
   describe("Punkte", () => {
@@ -277,6 +282,128 @@ describe("BueroKarte", () => {
       wamo.set((s) => ({ ...s, profil: { name: "Admin", rolle: "admin" } }));
       render(<BueroKarte />);
       expect(screen.getByText(UNBEKANNT_TIPP)).toBeTruthy();
+    });
+  });
+
+  describe("Schalten (Knöpfe der Detailkarte)", () => {
+    const tvAn: BueroGeraet = { id: "tv-1", name: "Fernseher LG", gruppe: "medien", ampel: "ok", text: "an", tipp: "Sag: Schalte den Fernseher aus", aktionen: ["aus", "lauter", "leiser", "stumm", "laut"] };
+    const tvAus: BueroGeraet = { id: "tv-2", name: "Fernseher Samsung", gruppe: "medien", ampel: "ok", text: "aus", tipp: "", aktionen: ["an"] };
+    const dose: BueroGeraet = { id: "steckdose-1", name: "Steckdose 1", gruppe: "steckdosen", ampel: "ok", text: "an, 12 Watt", tipp: "", aktionen: ["aus"] };
+
+    const oeffnen = async (g: BueroGeraet, geraete: BueroGeraet[] = [tvAn, tvAus, dose, server]) => {
+      const user = userEvent.setup();
+      zustand({ stand: stand(geraete) });
+      render(<BueroKarte />);
+      await user.click(punkt(g));
+      return user;
+    };
+    const knopf = (name: string | RegExp) => screen.getByRole("button", { name });
+
+    it("zeigt in der Detailkarte genau die Knöpfe, die der Kern anbietet", async () => {
+      await oeffnen(tvAn);
+      const gruppe = screen.getByRole("group", { name: "Fernseher LG schalten" });
+      expect(within(gruppe).getAllByRole("button").map((b) => b.textContent)).toEqual(["Ausschalten", "Lauter", "Leiser", "Stumm", "Ton an"]);
+    });
+
+    it("ein Fernseher im Standby bietet nur Einschalten an", async () => {
+      await oeffnen(tvAus);
+      const gruppe = screen.getByRole("group", { name: "Fernseher Samsung schalten" });
+      expect(within(gruppe).getAllByRole("button").map((b) => b.textContent)).toEqual(["Einschalten"]);
+    });
+
+    it("ohne aktionen (Mitglied, nicht gekoppelt, kein steuerbares Gerät) gibt es keine Knöpfe und der Sprechtipp bleibt", async () => {
+      await oeffnen(server);
+      expect(screen.queryByRole("group", { name: /schalten/ })).toBeNull();
+      expect(screen.getByText("Sag: Wie geht es dem Server?")).toBeTruthy();
+    });
+
+    it("ein Tipp schaltet: Aufruf mit Kennung und Aktion, Meldung, danach holt die Karte den Stand neu", async () => {
+      const user = await oeffnen(tvAus);
+      await user.click(knopf("Einschalten"));
+      expect(bueroSteuern).toHaveBeenCalledTimes(1);
+      expect(bueroSteuern).toHaveBeenCalledWith("tv-2", "an");
+      expect(bueroNachSchalten).toHaveBeenCalledWith("an");
+      expect(await screen.findByText(/Einschalten gesendet/)).toBeTruthy();
+    });
+
+    it("ein Doppelklick zählt einmal", async () => {
+      const user = await oeffnen(tvAn);
+      await user.dblClick(knopf("Lauter"));
+      expect(bueroSteuern).toHaveBeenCalledTimes(1);
+    });
+
+    it("während ein Befehl läuft, sind alle Knöpfe aus", async () => {
+      let fertig: () => void = () => undefined;
+      vi.mocked(bueroSteuern).mockImplementation(
+        () =>
+          new Promise<void>((r) => {
+            fertig = r;
+          }),
+      );
+      const user = await oeffnen(tvAn);
+      await user.click(knopf("Lauter"));
+      const gruppe = screen.getByRole("group", { name: "Fernseher LG schalten" });
+      for (const b of within(gruppe).getAllByRole("button")) expect((b as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.getByText("Wird gesendet …")).toBeTruthy();
+      await act(async () => fertig());
+      expect(await screen.findByText("Lauter gesendet.")).toBeTruthy();
+      for (const b of within(gruppe).getAllByRole("button")) expect((b as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("Steckdose ausschalten verlangt einen zweiten Tipp", async () => {
+      const user = await oeffnen(dose);
+      await user.click(knopf("Ausschalten"));
+      expect(bueroSteuern).not.toHaveBeenCalled();
+      expect(screen.getByText("Sicher? Noch einmal tippen")).toBeTruthy();
+      await user.click(knopf("Sicher? Noch einmal tippen"));
+      expect(bueroSteuern).toHaveBeenCalledWith("steckdose-1", "aus");
+    });
+
+    it("die Rückfrage der Steckdose verfällt nach ein paar Sekunden", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const user = await oeffnen(dose);
+        await user.click(knopf("Ausschalten"));
+        expect(screen.getByText("Sicher? Noch einmal tippen")).toBeTruthy();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(4100);
+        });
+        expect(screen.queryByText("Sicher? Noch einmal tippen")).toBeNull();
+        expect(bueroSteuern).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      [new KernFehler(403, "Bürogeräte schalten dürfen nur Admins"), "Bürogeräte schalten dürfen nur Admins."],
+      [new KernFehler(409, "Das geht mit diesem Gerät nicht"), "Das geht mit diesem Gerät nicht"],
+      [new KernFehler(502, "Das Gerät hat nicht geantwortet. Ist es erreichbar?"), "Das Gerät hat nicht geantwortet. Ist es erreichbar?"],
+      [new KernFehler(0, "Kern nicht erreichbar"), "Der Kern ist gerade nicht erreichbar. Bitte gleich noch einmal versuchen."],
+      [new Error("irgendwas"), "Der Kern ist gerade nicht erreichbar. Bitte gleich noch einmal versuchen."],
+    ])("Fehler %#: ruhige Meldung, kein Neuladen, Knöpfe wieder frei", async (fehler, text) => {
+      vi.mocked(bueroSteuern).mockRejectedValue(fehler);
+      const user = await oeffnen(tvAn);
+      await user.click(knopf("Leiser"));
+      expect(await screen.findByText(text)).toBeTruthy();
+      expect(bueroNachSchalten).not.toHaveBeenCalled();
+      expect((knopf("Leiser") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("die Meldung steht in einem Statusbereich für Bildschirmleser", async () => {
+      const user = await oeffnen(tvAn);
+      await user.click(knopf("Stumm"));
+      const meldung = await screen.findByText("Stumm gesendet.");
+      expect(meldung.getAttribute("role")).toBe("status");
+      expect(meldung.getAttribute("aria-live")).toBe("polite");
+    });
+
+    it("beim Wechsel zu einem anderen Gerät beginnt die Meldung neu", async () => {
+      const user = await oeffnen(tvAn);
+      await user.click(knopf("Stumm"));
+      await screen.findByText("Stumm gesendet.");
+      await user.click(punkt(tvAus));
+      expect(screen.queryByText("Stumm gesendet.")).toBeNull();
     });
   });
 });

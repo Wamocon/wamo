@@ -5,6 +5,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
+  AKTION_GESENDET,
+  AKTION_KNOPF,
+  AKTIONEN,
+  brauchtBestaetigung,
+  schaltFehlerText,
   ABRUF_MAX_MS,
   ABRUF_MIN_MS,
   ABRUF_MS,
@@ -468,4 +473,51 @@ test("Stil des Hinweises ist grau und nie im Alarmrot", () => {
   assert.ok(regeln.length > 0, "Regel .bk-unbekannt fehlt");
   for (const [, , inhalt] of regeln) assert.ok(!/accent|red|#f40e0e|stoerung/i.test(inhalt), inhalt);
   assert.ok(regeln.some(([, , inhalt]) => /ink-soft/.test(inhalt)), "Text soll grau (--ink-soft) sein");
+});
+
+// ---------- Schalten (Aktionen vom Kern) ----------
+
+test("aktionen: nur die sechs bekannten, ohne Doppelte, in fester Reihenfolge", () => {
+  const s = pruefeBuero(rohAntwort([rohGeraet({ id: "fernseher", gruppe: "medien", aktionen: ["lauter", "aus", "aus", "leiser"] })]));
+  assert.deepEqual(s?.geraete[0].aktionen, ["aus", "lauter", "leiser"]);
+  assert.deepEqual(AKTIONEN, ["an", "aus", "lauter", "leiser", "stumm", "laut"]);
+});
+
+test("aktionen: Unbekanntes, Fremdes und Falsches fällt weg, ohne Rest fehlt das Feld", () => {
+  for (const roh of [["lautstaerke"], ["eingang"], ["AN"], [5, null, {}], "an", [], undefined, ["rm -rf"]]) {
+    const s = pruefeBuero(rohAntwort([rohGeraet({ aktionen: roh })]));
+    assert.equal(s?.geraete[0].aktionen, undefined, JSON.stringify(roh));
+  }
+  const s = pruefeBuero(rohAntwort([rohGeraet({ aktionen: ["an", "lautstaerke", 7] })]));
+  assert.deepEqual(s?.geraete[0].aktionen, ["an"]);
+});
+
+test("aktionen: höchstens sechs Einträge werden gelesen", () => {
+  const viele = Array.from({ length: 50 }, () => "an");
+  assert.deepEqual(pruefeBuero(rohAntwort([rohGeraet({ aktionen: viele })]))?.geraete[0].aktionen, ["an"]);
+});
+
+test("jede Aktion hat Knopftext und Meldung, ohne Gedankenstrich", () => {
+  for (const a of AKTIONEN) {
+    assert.ok(AKTION_KNOPF[a].length > 0, a);
+    assert.ok(AKTION_GESENDET[a].endsWith("."), a);
+    assert.doesNotMatch(AKTION_KNOPF[a] + AKTION_GESENDET[a], /[–—]|\s-\s/);
+  }
+});
+
+test("nur Ausschalten einer Steckdose verlangt einen zweiten Tipp", () => {
+  const g = (gruppe: string) => pruefeBuero(rohAntwort([rohGeraet({ gruppe })]))!.geraete[0];
+  assert.equal(brauchtBestaetigung(g("steckdosen"), "aus"), true);
+  for (const a of AKTIONEN) if (a !== "aus") assert.equal(brauchtBestaetigung(g("steckdosen"), a), false, a);
+  for (const gr of ["medien", "server", "drucker", "netz", "speicher"]) assert.equal(brauchtBestaetigung(g(gr), "aus"), false, gr);
+});
+
+test("Fehlersätze: 403, 401 und keine Verbindung haben feste Sätze, sonst gilt der gesäuberte Satz des Kerns", () => {
+  assert.equal(schaltFehlerText(403, "egal"), "Bürogeräte schalten dürfen nur Admins.");
+  assert.equal(schaltFehlerText(401, "egal"), "Bitte melde dich neu an.");
+  assert.match(schaltFehlerText(0, "Kern nicht erreichbar"), /nicht erreichbar/);
+  assert.equal(schaltFehlerText(409, "Das geht mit diesem Gerät nicht"), "Das geht mit diesem Gerät nicht");
+  assert.equal(schaltFehlerText(502, "a‮b c   d"), "a b c d");
+  assert.match(schaltFehlerText(500, ""), /nicht geklappt/);
+  assert.ok(schaltFehlerText(500, "x".repeat(500)).length <= 120);
 });

@@ -3,7 +3,17 @@
 import { useEffect, useState } from "react";
 import { bueroLaden } from "@/lib/bueroApi";
 import { KernFehler } from "@/lib/kernApi";
-import { abrufAbstand, naechsterAbruf, TAKT_NEU, taktErfolg, taktFehler, taktNeuBeginnen, type BueroStand, type Takt } from "./bueroKarteModell";
+import {
+  abrufAbstand,
+  naechsterAbruf,
+  TAKT_NEU,
+  taktErfolg,
+  taktFehler,
+  taktNeuBeginnen,
+  type Aktion,
+  type BueroStand,
+  type Takt,
+} from "./bueroKarteModell";
 
 export type BueroZustand = {
   stand: BueroStand | null;
@@ -23,6 +33,33 @@ let gemerkt: { stand: BueroStand; geholt: number } | null = null;
 let takt: Takt = TAKT_NEU;
 let laufend: Promise<Ergebnis> | null = null;
 let epoche = 0; // zählt die Abmeldungen: ein Abruf aus früherer Zeit trägt nichts mehr ein
+const hoerer = new Set<(e: Ergebnis) => void>(); // Instanzen der Karte, die ein Ergebnis auch außerhalb ihres Taktes bekommen
+let nachSchalten: ReturnType<typeof setTimeout>[] = [];
+
+function nachSchaltenLoeschen(): void {
+  for (const t of nachSchalten) clearTimeout(t);
+  nachSchalten = [];
+}
+
+function anwenden(alt: BueroZustand, ergebnis: Ergebnis): BueroZustand {
+  return "stand" in ergebnis ? { stand: ergebnis.stand, fehler: null, geladen: true } : { ...alt, fehler: ergebnis.fehler, geladen: true };
+}
+
+/**
+ * Nach einem Schaltvorgang den Stand bald neu holen, damit die Karte den neuen Zustand zeigt (nach 2,5 Sekunden; ein eingeschalteter
+ * Fernseher braucht länger, dafür kommt nach 10 Sekunden noch ein Abruf). Mehrere Schaltvorgänge hintereinander setzen die Zeiten neu, es
+ * bleibt bei höchstens zwei Abrufen, und der Kern erlaubt 6 je Minute (der Takt ruft nur alle 30 Sekunden).
+ */
+export function bueroNachSchalten(aktion: Aktion): void {
+  nachSchaltenLoeschen();
+  const meine = epoche;
+  nachSchalten = (aktion === "an" ? [2500, 10_000] : [2500]).map((ms) =>
+    setTimeout(() => {
+      if (meine !== epoche) return;
+      void abrufen().then((e) => hoerer.forEach((h) => h(e)));
+    }, ms),
+  );
+}
 
 function frisch(): { stand: BueroStand; geholt: number } | null {
   return gemerkt && Date.now() - gemerkt.geholt < MERKEN_MS ? gemerkt : null;
@@ -61,6 +98,7 @@ function taktErneuern(): void {
 
 /** Beim Abmelden: Stand, Takt und laufenden Abruf des bisherigen Profils verwerfen. */
 export function bueroStandVergessen(): void {
+  nachSchaltenLoeschen();
   epoche++;
   gemerkt = null;
   takt = TAKT_NEU;
@@ -110,11 +148,14 @@ export function useBueroStand(): BueroZustand {
       const ergebnis = await abrufen();
       wartet = false;
       if (beendet) return;
-      setZustand((alt) =>
-        "stand" in ergebnis ? { stand: ergebnis.stand, fehler: null, geladen: true } : { ...alt, fehler: ergebnis.fehler, geladen: true },
-      );
+      setZustand((alt) => anwenden(alt, ergebnis));
       planen();
     };
+
+    const frischer = (ergebnis: Ergebnis) => {
+      if (!beendet) setZustand((alt) => anwenden(alt, ergebnis));
+    };
+    hoerer.add(frischer);
 
     const beiSichtbarkeit = () => {
       if (sichtbar()) taktErneuern();
@@ -126,6 +167,7 @@ export function useBueroStand(): BueroZustand {
     planen();
     return () => {
       beendet = true;
+      hoerer.delete(frischer);
       document.removeEventListener("visibilitychange", beiSichtbarkeit);
       if (timer !== null) clearTimeout(timer);
     };

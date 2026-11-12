@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bueroLaden } from "@/lib/bueroApi";
 import { KernFehler } from "@/lib/kernApi";
 import type { BueroStand } from "./bueroKarteModell";
-import { bueroStandVergessen, useBueroStand, useBueroStandHalten } from "./useBueroStand";
+import { bueroNachSchalten, bueroStandVergessen, useBueroStand, useBueroStandHalten } from "./useBueroStand";
 
 vi.mock("@/lib/bueroApi", () => ({ bueroLaden: vi.fn() }));
 
@@ -348,6 +348,69 @@ describe("useBueroStand", () => {
       expect(naechster.result.current).toEqual({ stand: null, fehler: null, geladen: false });
       await vor(0);
       expect(laden).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("bueroNachSchalten", () => {
+    const NEU: BueroStand = { ...STAND, geraete: [{ ...STAND.geraete[0], text: "neu" }] };
+
+    it("holt nach einem Schaltvorgang den Stand nach 2,5 Sekunden neu und gibt ihn an die Karte", async () => {
+      laden.mockResolvedValueOnce(STAND).mockResolvedValue(NEU);
+      const karte = renderHook(() => useBueroStand());
+      await vor(0);
+      expect(karte.result.current.stand).toEqual(STAND);
+      bueroNachSchalten("lauter");
+      await vor(2499);
+      expect(laden).toHaveBeenCalledTimes(1);
+      await vor(1);
+      expect(laden).toHaveBeenCalledTimes(2);
+      expect(karte.result.current.stand).toEqual(NEU);
+      await vor(20 * SEK); // Lauter: kein zweiter Abruf, nur der normale Takt nach 30 Sekunden vom zweiten
+      expect(laden).toHaveBeenCalledTimes(2);
+    });
+
+    it("beim Einschalten kommt nach 10 Sekunden noch ein Abruf (der Fernseher braucht länger)", async () => {
+      laden.mockResolvedValue(STAND);
+      renderHook(() => useBueroStand());
+      await vor(0);
+      bueroNachSchalten("an");
+      await vor(2500);
+      expect(laden).toHaveBeenCalledTimes(2);
+      await vor(7500);
+      expect(laden).toHaveBeenCalledTimes(3);
+    });
+
+    it("ein neuer Schaltvorgang setzt die Zeiten neu: höchstens zwei Abrufe, nie ein Stapel", async () => {
+      laden.mockResolvedValue(STAND);
+      renderHook(() => useBueroStand());
+      await vor(0);
+      for (let i = 0; i < 5; i++) {
+        bueroNachSchalten("lauter");
+        await vor(1000);
+      }
+      expect(laden).toHaveBeenCalledTimes(1); // noch kein Abruf: jedes Mal neu begonnen
+      await vor(2500);
+      expect(laden).toHaveBeenCalledTimes(2);
+    });
+
+    it("beim Abmelden (Stand vergessen) fällt der geplante Abruf weg", async () => {
+      laden.mockResolvedValue(STAND);
+      renderHook(() => useBueroStand());
+      await vor(0);
+      bueroNachSchalten("an");
+      bueroStandVergessen();
+      await vor(15 * SEK);
+      expect(laden).toHaveBeenCalledTimes(1);
+    });
+
+    it("eine ausgehängte Karte bekommt nichts mehr", async () => {
+      laden.mockResolvedValueOnce(STAND).mockResolvedValue(NEU);
+      const karte = renderHook(() => useBueroStand());
+      await vor(0);
+      karte.unmount();
+      bueroNachSchalten("lauter");
+      await vor(3000);
+      expect(karte.result.current.stand).toEqual(STAND);
     });
   });
 });

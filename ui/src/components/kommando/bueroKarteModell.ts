@@ -3,12 +3,50 @@
  * lässt (bueroKarteModell.test.ts). Die Daten kommen vom Kern (voice-core/buero_api.py, GET /wamo/api/buero/status) und
  * werden hier streng geprüft: nur bekannte Felder, Texte begrenzt und von Steuerzeichen gesäubert, Gerätetexte sind Daten.
  *
- * Die Karte ist nur eine Ansicht. Sie steuert nichts; gesteuert wird per Sprache.
+ * Die Karte zeigt den Stand. Gesteuert wird per Sprache oder (nur Admins) mit den Knöpfen der Detailkarte: Der Kern liefert dafür je
+ * Gerät die Liste "aktionen", nie mehr als diese sechs (voice-core/buero_api.py, POST /buero/steuern).
  */
 
 export type Ampel = "ok" | "stoerung" | "unbekannt";
 
 export type GruppeId = "server" | "drucker" | "netz" | "speicher" | "medien" | "steckdosen";
+
+/** Die sechs Schaltaktionen, die es in der Oberfläche gibt. Lautstärke als Zahl und Eingang gibt es hier nie. */
+export type Aktion = "an" | "aus" | "lauter" | "leiser" | "stumm" | "laut";
+export const AKTIONEN: readonly Aktion[] = ["an", "aus", "lauter", "leiser", "stumm", "laut"];
+const AKTION_IDS = new Set<string>(AKTIONEN);
+
+export const AKTION_KNOPF: Record<Aktion, string> = {
+  an: "Einschalten",
+  aus: "Ausschalten",
+  lauter: "Lauter",
+  leiser: "Leiser",
+  stumm: "Stumm",
+  laut: "Ton an",
+};
+
+export const AKTION_GESENDET: Record<Aktion, string> = {
+  an: "Einschalten gesendet. Der Zustand oben aktualisiert sich gleich.",
+  aus: "Ausschalten gesendet. Der Zustand oben aktualisiert sich gleich.",
+  lauter: "Lauter gesendet.",
+  leiser: "Leiser gesendet.",
+  stumm: "Stumm gesendet.",
+  laut: "Ton an gesendet.",
+};
+
+/** Eine Steckdose auszuschalten kappt, was daran hängt: dafür braucht es einen zweiten Tipp (Fernseher und Lautsprecher nicht). */
+export function brauchtBestaetigung(g: BueroGeraet, aktion: Aktion): boolean {
+  return g.gruppe === "steckdosen" && aktion === "aus";
+}
+
+/** Satz für die Meldung unter den Knöpfen nach einem Fehler. Nur der Kern spricht ruhig und ohne Gerätetexte (400 bis 599 mit Text). */
+export function schaltFehlerText(status: number, text: string): string {
+  if (status === 403) return "Bürogeräte schalten dürfen nur Admins.";
+  if (status === 401) return "Bitte melde dich neu an.";
+  if (status === 0) return "Der Kern ist gerade nicht erreichbar. Bitte gleich noch einmal versuchen.";
+  const sauberer = sauber(text, 120);
+  return sauberer || "Das hat nicht geklappt. Bitte gleich noch einmal versuchen.";
+}
 
 export type BueroGeraet = {
   id: string;
@@ -20,6 +58,8 @@ export type BueroGeraet = {
   /** Sprechtipp, zum Beispiel "Sag: Schalte den Fernseher aus" */
   tipp: string;
   kennzahlen?: Record<string, number>;
+  /** Was der Kern gerade zum Schalten anbietet (nur für Admins, sonst fehlt das Feld), höchstens die sechs aus AKTIONEN. */
+  aktionen?: readonly Aktion[];
 };
 
 export type BueroStand = {
@@ -75,6 +115,13 @@ function geraetPruefen(roh: unknown): BueroGeraet | null {
       if (KENNZAHL.test(k) && typeof v === "number" && Number.isFinite(v)) zahlen[k] = v;
     }
     if (Object.keys(zahlen).length) aus.kennzahlen = zahlen;
+  }
+  if (Array.isArray(g.aktionen)) {
+    const bekannt = new Set<Aktion>();
+    for (const a of g.aktionen.slice(0, AKTIONEN.length)) {
+      if (typeof a === "string" && AKTION_IDS.has(a)) bekannt.add(a as Aktion);
+    }
+    if (bekannt.size) aus.aktionen = AKTIONEN.filter((a) => bekannt.has(a));
   }
   return aus;
 }
