@@ -4,9 +4,10 @@
 # bestehende Site: Sie legt nur diese eine Site und Schnipsel mit dem Präfix labor_ an.
 #
 # Platzhalter (nie von Hand ändern, sondern das Skript neu ausführen):
-#   __BETREUER_ADRESSEN__   Adressen, die /betreuer und /api/betreuer/ erreichen: immer Loopback (127.0.0.0/8 und 172.24.0.1/32, das
-#                           Gateway von wamo-caddy_default, unter dem Caddy Verbindungen des Hosts über den Docker-Proxy sieht), dazu die
-#                           Zeilen aus /etc/wamo-labor/betreuer-adressen. Ohne Datei gilt nur Loopback.
+#   __BETREUER_ADRESSEN__   Adressen, die /betreuer und /api/betreuer/ erreichen: immer die internen Adressen des Servers selbst (Loopback
+#                           127.0.0.0/8, das Gateway 172.24.0.1 von wamo-caddy_default, unter dem Caddy Verbindungen des Hosts über den Docker-
+#                           Proxy sieht, und die eigene LAN-Adresse 192.168.178.136), dazu die Zeilen aus /etc/wamo-labor/betreuer-adressen.
+#                           Ohne Datei gilt nur der Server selbst.
 #
 # Eigene Herkunft (Port 55447), getrennt von der Oberfläche (55445): Der Speicher der Oberfläche mit dem WAMO-Token ist für diese Seite
 # unsichtbar. Die Seiten des Dienstes tragen ihre eigene CSP (default-src 'none', frame-ancestors 'none'); Caddy überschreibt keinen Kopf
@@ -16,7 +17,7 @@
 # Wer was erreicht (alles andere ist 404, die Liste ist eine Positivliste mit genauen Mustern ohne Punkt, Prozentzeichen und Großschreibung):
 #   /, /board, /web/<Datei>, /api/browser/<Name>   Büro-LAN (die Quellen begrenzt die Firewall: Kette WAMO-FW-LABOR in wamo-firewall.sh)
 #   /betreuer, /api/betreuer/...                   nur die Betreuer-Adressen (sonst 403)
-#   /gesundheit                                    nur Loopback (sonst 403)
+#   /gesundheit                                    nur der Server selbst (sonst 403)
 #   /api/kern/...                                  nie: Der Kern geht über Loopback 127.0.0.1:18765 direkt zum Dienst (sonst 404)
 # Statische Prüfung: voice-core/test_labor_betrieb_skripte.py, am Server infra/sokrates2/wamo_labor_rauchtest.py.
 #
@@ -39,7 +40,7 @@
 	remote_ip __BETREUER_ADRESSEN__
 }
 (labor_intern_adressen) {
-	remote_ip 127.0.0.0/8 172.24.0.1/32
+	remote_ip 127.0.0.0/8 172.24.0.1/32 192.168.178.136/32
 }
 
 # Weiterleitung an den Dienst. Fristen: Der Kern wartet höchstens 8 Sekunden, Besucher lesen nur.

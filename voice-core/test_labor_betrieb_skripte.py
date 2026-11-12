@@ -15,6 +15,7 @@ werden nur gelesen, nie ausgegeben.
 Ausführen:  python -m pytest -q test_labor_betrieb_skripte.py   (im Ordner voice-core/)
 """
 
+import importlib.util
 import os
 import re
 import shutil
@@ -34,13 +35,15 @@ EINRICHTEN = SOKRATES2 / "wamo-labor-einrichten.sh"
 RUECKWEG = SOKRATES2 / "wamo-labor-rueckweg.sh"
 LOESCHLAUF = SOKRATES2 / "wamo-labor-loeschlauf.sh"
 RAUCHTEST = SOKRATES2 / "wamo_labor_rauchtest.py"
-SKRIPTE = []  # wächst mit den Teilen: EINRICHTEN, RUECKWEG, LOESCHLAUF
-ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE]  # wächst mit den Teilen: Skripte und Rauchtest
+SKRIPTE = [EINRICHTEN]  # wächst mit den Teilen: RUECKWEG, LOESCHLAUF
+ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN]  # wächst mit den Teilen: Rückweg, Löschlauf und Rauchtest
 VERBOTENE_WOERTER = ("nieeeki", "jarvis", "promptcontrol", "damicon")
 
 
 def _bash():
-    kandidaten = [r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe"] if os.name == "nt" else []
+    # Unter Windows zuerst die Bash ohne Startdatei: Die Bash in Git\bin stellt ihre eigenen Ordner (zum Beispiel mit curl) vor den PATH, dann
+    # fänden die Probeläufe die echten Programme statt der Attrappen.
+    kandidaten = [r"C:\Program Files\Git\usr\bin\bash.exe", r"C:\Program Files\Git\bin\bash.exe"] if os.name == "nt" else []
     kandidaten.append(shutil.which("bash") if os.name != "nt" else None)
     for k in kandidaten:
         if k and os.path.exists(k):
@@ -170,7 +173,7 @@ class ComposeDienstTests(unittest.TestCase):
         self.assertIn("ipv4_address: 172.28.1.2", dienst)
         self.assertEqual(len(re.findall(r"^\s+- subnet:", self.code, flags=re.M)), 1)
 
-    @unittest.skipUnless(__import__("importlib").util.find_spec("yaml"), "PyYAML fehlt")
+    @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML fehlt")
     def test_yaml_ist_gueltig_und_hat_einen_dienst(self):
         import yaml
 
@@ -310,7 +313,7 @@ class CaddySiteTests(unittest.TestCase):
     def test_gesundheit_nur_intern(self):
         self._begrenzt("handle @gesundheit_pfad", "labor_intern_adressen")
         adressen = block(self.code, "(labor_intern_adressen)")
-        self.assertEqual(adressen.strip(), "remote_ip 127.0.0.0/8 172.24.0.1/32")  # Loopback, auch über den Docker-Proxy (Gateway von wamo-caddy_default)
+        self.assertEqual(adressen.strip(), "remote_ip 127.0.0.0/8 172.24.0.1/32 192.168.178.136/32")  # der Server selbst: Loopback, Docker-Proxy (Gateway von wamo-caddy_default), eigene LAN-Adresse
 
     def test_browser_pfade_fuer_das_lan(self):
         ok = block(self.site, "handle @browser_pfad")
@@ -468,6 +471,408 @@ class FirewallLaborTests(unittest.TestCase):
     def test_bash_n(self):
         r = subprocess.run([BASH, "-n", str(FIREWALL)], capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+
+# ====================================================================================== Werkstatt für die Probeläufe der Skripte
+LINUX = sys.platform.startswith("linux")
+# Nur diese Befehle mit Wirkung gibt es im Probelauf, und zwar als Attrappe (sie schreiben jeden Aufruf in ein Protokoll)
+ATTRAPPEN = ("docker", "iptables", "iptables-save", "systemctl", "curl", "ss", "getent", "journalctl", "sudo", "useradd", "userdel", "shred",
+             "chown")
+BASIS_IMAGE = "python:3.11-slim@sha256:" + "ab" * 32  # berechnet: kein Literal, das die Secret-Prüfung stört
+ATTRAPPE = r"""#!/bin/sh
+n="$(basename "$0")"
+echo "$n $*" >> "$ATTRAPPE_LOG"
+a1=""; a2=""
+for a in "$@"; do
+  case "$a" in -*) continue ;; esac
+  if [ -z "$a1" ]; then a1="$a"; elif [ -z "$a2" ]; then a2="$a"; break; fi
+done
+for k in "$n.${a1}_${a2}" "$n.${a1}" "$n"; do
+  if [ -f "$ATTRAPPE_DIR/$k.out" ]; then cat "$ATTRAPPE_DIR/$k.out"; fi
+  if [ -f "$ATTRAPPE_DIR/$k.rc" ] || [ -f "$ATTRAPPE_DIR/$k.out" ]; then
+    [ -f "$ATTRAPPE_DIR/$k.rc" ] && exit "$(cat "$ATTRAPPE_DIR/$k.rc")"
+    exit 0
+  fi
+done
+exit 0
+"""
+# Attrappe für /usr/local/sbin/wamo-core-env: hält fest, was auf stdin ankommt (das einzige Mal, dass ein Token durch eine Pipe geht)
+CORE_ENV = r"""#!/bin/sh
+echo "wamo-core-env $*" >> "$ATTRAPPE_LOG"
+cat > "$ATTRAPPE_DIR/wamo-core-env.stdin"
+echo "Übernommen: WAMO_LABOR_TOKEN, WAMO_LABOR_URL (Werte nicht angezeigt)"
+"""
+
+
+def posix(p) -> str:
+    """Pfad in der Schreibweise der Bash (unter Git für Windows: C:\\x wird /c/x)."""
+    s = str(p).replace("\\", "/")
+    if os.name == "nt" and re.match(r"^[A-Za-z]:/", s):
+        s = "/" + s[0].lower() + s[2:]
+    return s
+
+
+def schreibe(pfad: Path, text: str, ausfuehrbar: bool = False) -> None:
+    pfad.parent.mkdir(parents=True, exist_ok=True)
+    with open(pfad, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    if ausfuehrbar:
+        pfad.chmod(0o755)
+
+
+def system_pfad() -> str:
+    if os.name != "nt":
+        return "/usr/bin:/bin"
+    b = Path(BASH)
+    return str(b.parent if b.parent.parent.name == "usr" else b.parent.parent / "usr" / "bin")
+
+
+def token_ok(wert: str) -> bool:
+    """Form und Vielfalt wie die Konfiguration des Dienstes verlangt (43 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-, mindestens 16 verschiedene)."""
+    return re.fullmatch(r"[A-Za-z0-9._~+/=-]{43,200}", wert) is not None and len(set(wert)) >= 16
+
+
+class Werkstatt(unittest.TestCase):
+    """Wegwerf-Ordner mit Wurzel, Attrappen und Protokoll; nichts außerhalb davon wird angefasst."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="labor-skripte-")
+        self.addCleanup(self.tmp.cleanup)
+        self.t = Path(self.tmp.name)
+        self.wurzel, self.bin, self.att = self.t / "wurzel", self.t / "bin", self.t / "att"
+        self.caddy, self.quelle, self.log = self.t / "caddy", self.t / "quelle", self.t / "aufrufe.log"
+        for d in (self.wurzel, self.bin, self.att):
+            d.mkdir()
+        schreibe(self.log, "")
+        for n in ATTRAPPEN:
+            schreibe(self.bin / n, ATTRAPPE, ausfuehrbar=True)
+        schreibe(self.bin / "python3", f'#!/bin/sh\nexec "{posix(sys.executable)}" "$@"\n', ausfuehrbar=True)
+        # der Stand vor dem Lauf: Caddy mit altem Compose und leerem kern-Ordner, die alte Firewall, die Quellen des Dienstes
+        schreibe(self.caddy / "docker-compose.yml", "name: wamo-caddy\n# alter Stand\n")
+        schreibe(self.caddy / "etc" / "Caddyfile", "import /etc/caddy/kern/*.caddy\n")
+        (self.caddy / "etc" / "kern").mkdir()
+        schreibe(self.p("usr/local/sbin/wamo-firewall"), "#!/bin/sh\necho alte Firewall\n", ausfuehrbar=True)
+        schreibe(self.p("usr/local/sbin/wamo-core-env"), CORE_ENV, ausfuehrbar=True)
+        schreibe(self.quelle / "Dockerfile", "ARG BASIS\nFROM ${BASIS}\n")
+        (self.quelle / "wamo_labor_dienst").mkdir()
+        # Standardantworten der Attrappen: wamo-caddy läuft, nichts anderes ist belegt, das Image fehlt noch, alles wird gesund
+        self.ausgabe("docker.ps", "4711cafe\n")
+        self.ausgabe("docker.image_inspect", "", rc=1)
+        self.ausgabe("docker.inspect", "healthy\n")
+        self.ausgabe("curl", "200")
+        self.ausgabe("systemctl.show", "0\n")
+
+    def p(self, *teile) -> Path:
+        return self.wurzel.joinpath(*[t.lstrip("/") for t in teile])
+
+    def ausgabe(self, schluessel: str, text: str = "", rc: int | None = None) -> None:
+        schreibe(self.att / f"{schluessel}.out", text)
+        rcdatei = self.att / f"{schluessel}.rc"
+        if rc is None:
+            rcdatei.unlink(missing_ok=True)
+        else:
+            schreibe(rcdatei, str(rc))
+
+    def aufrufe(self) -> list[str]:
+        return self.log.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    def lauf(self, skript: Path, *args: str, extra: dict | None = None, wurzel: bool = True) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env.update({"PATH": f"{self.bin}{os.pathsep}{system_pfad()}", "ATTRAPPE_LOG": posix(self.log), "ATTRAPPE_DIR": posix(self.att),
+                    "HOME": posix(self.t), "LC_ALL": "C.UTF-8", "WAMO_LABOR_CADDY_DIR": posix(self.caddy), "WAMO_LABOR_QUELLE": posix(self.quelle),
+                    "WAMO_LABOR_CA": posix(self.t / "wamo-ca.crt"), "WAMO_LABOR_WARTE_RUNDEN": "2", "WAMO_LABOR_WARTE_SEKUNDEN": "0"})
+        if wurzel:
+            env["WAMO_LABOR_WURZEL"] = posix(self.wurzel)
+        env.update(extra or {})
+        return subprocess.run([BASH, str(skript), *args], capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+                              timeout=120, stdin=subprocess.DEVNULL)
+
+    def tokens(self) -> tuple[str, str]:
+        return (self.p("etc/wamo-labor/kern-token").read_text(encoding="utf-8"), self.p("etc/wamo-labor/betreuer-token").read_text(encoding="utf-8"))
+
+
+def funktionen(text: str) -> list[tuple[str, int]]:
+    """Alle Funktionen auf oberster Ebene (Kopf `name() {` in Spalte 0, Ende `}` in Spalte 0) mit ihrer Länge in Zeilen."""
+    ergebnis, name, start = [], None, 0
+    for i, z in enumerate(text.splitlines(), 1):
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(\) \{", z)
+        if m and name is None:
+            name, start = m.group(1), i
+        elif z == "}" and name:
+            ergebnis.append((name, i - start + 1))
+            name = None
+    return ergebnis
+
+
+# ====================================================================================== Teil 3: wamo-labor-einrichten.sh
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class EinrichtenTextTests(unittest.TestCase):
+    def setUp(self):
+        self.text = lies(EINRICHTEN)
+        self.code = ohne_kommentare(self.text)
+
+    def test_syntax_und_form(self):
+        r = subprocess.run([BASH, "-n", str(EINRICHTEN)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.text.startswith("#!/usr/bin/env bash\n"))
+        self.assertIn("set -euo pipefail", self.text)
+        self.assertLess(len(self.text.splitlines()), 800)
+        for name, laenge in funktionen(self.text):
+            self.assertLessEqual(laenge, 50, f"Funktion {name} hat {laenge} Zeilen")
+
+    def test_nie_ein_kern_neustart_und_kein_eval(self):
+        self.assertIsNone(re.search(r"\beval\b", self.code))
+        self.assertNotRegex(self.code, r"systemctl\s+(restart|reload|stop|kill)\s+wamo-core")
+        self.assertNotRegex(self.code, r"(?m)^\s*(tu\s+)?systemctl restart")
+        self.assertIn("nächsten Kern-Release", self.text)
+
+    def test_tokens_nie_ausgeben_und_nie_als_argument(self):
+        self.assertIsNone(re.search(r"(echo|printf)[^\n]*\$\{?(KERN_TOKEN|BETREUER_TOKEN|TOKEN)\b", self.code))
+        self.assertNotRegex(self.code, r"\$\(\s*cat\s+[^)]*token")  # nie in eine Variable lesen
+        self.assertNotRegex(self.code, r"\btoken\w*=\"?\$\(")
+        # der Wert entsteht in einer Pipe aus /dev/urandom und geht nur in die Datei, die Kern-Einstellung bekommt ihn nur über stdin
+        self.assertIn("head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\\n'", self.code)
+        self.assertIn("tr -d '\\r\\n' < \"$KERN_TOKEN_DATEI\"", self.code)
+        self.assertIn('"$CORE_ENV" setzen', self.code)
+        self.assertNotRegex(self.code, r"docker[^\n]*(KERN_TOKEN|BETREUER_TOKEN)")  # nie in einem docker-Aufruf
+        self.assertNotIn("set -x", self.code)
+        self.assertNotIn("xtrace", self.code)
+
+    def test_kein_befehl_zum_ausgeben_des_betreuer_tokens(self):
+        """Der Betreuer-Token geht später über ein PC-Skript per ssh in eine lokale Datei (Folgeschritt, nur im Kopf genannt)."""
+        kopf = "\n".join(z for z in self.text.splitlines() if z.startswith("#"))
+        self.assertIn("Folgeschritt", kopf)
+        self.assertIn("betreuer-token-ausgeben", kopf)
+        self.assertNotIn("betreuer-token-ausgeben", self.code)
+        m = re.search(r"case \"\$1\" in\n(.*?)\n\s+esac", self.code, re.S)
+        self.assertIsNotNone(m)
+        self.assertNotIn("ausgeben", m.group(1))
+
+    def test_namen_nach_dem_namensvertrag(self):
+        for soll in ("wamo-labor-dienst", "wamo-labor-netz", "wamo-labor-lokal", "/etc/wamo-labor", "/var/lib/wamo-labor", "/opt/wamo-labor",
+                     "WAMO_LABOR_URL", "WAMO_LABOR_TOKEN", "http://127.0.0.1:18765", "10001", "55447", "wamo-labor.caddy", "wamo_labor_rauchtest.py",
+                     "plaetze-adressen", "betreuer-adressen", "basis-image", "/usr/local/sbin/wamo-core-env", "172.28.0.0/24", "172.28.1.0/29"):
+            self.assertIn(soll, self.code, soll)
+
+    def test_interne_adressen_wie_in_der_caddy_site(self):
+        m = re.search(r'^INTERN="([^"]+)"', self.code, re.M)
+        self.assertIsNotNone(m)
+        snippet = block(code(SITE), "(labor_intern_adressen)")
+        self.assertEqual(snippet.strip(), f"remote_ip {m.group(1)}")
+
+    def test_firewall_und_caddy_werden_ueber_die_vorhandenen_skripte_gesetzt(self):
+        self.assertIn("wamo-firewall-einrichten.sh", self.code)
+        self.assertIn("caddy adapt", self.code)
+        self.assertIn("--cap-drop ALL", self.code)
+        self.assertIn("--network none", self.code)
+        self.assertIn("kern_ruhig", self.code)  # Caddy wird nur ohne laufende Sitzung neu angelegt
+        self.assertIn("up -d --no-build", self.code)
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class EinrichtenProbelaufTests(Werkstatt):
+    def setUp(self):
+        super().setUp()
+        schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "# Betreuer\n192.168.178.50\n192.168.178.60/32  # zweiter\n")
+
+    def einrichten(self, *args, extra=None, basis=True):
+        return self.lauf(EINRICHTEN, "einrichten", *(["--basis-image", BASIS_IMAGE] if basis else []), *args, extra=extra)
+
+    def test_einrichten_legt_alles_an(self):
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for schritt in ("== Vorprüfung", "== Sicherung", "== Ordner und Token", "== Image", "== Firewall", "== Caddy", "== Start", "== Kern", "Fertig."):
+            self.assertIn(schritt, r.stdout)
+        kern, betreuer = self.tokens()
+        self.assertTrue(token_ok(kern))
+        self.assertTrue(token_ok(betreuer))
+        self.assertNotEqual(kern, betreuer)
+        self.assertTrue(self.p("var/lib/wamo-labor").is_dir())
+        self.assertEqual(self.p("etc/wamo-labor/basis-image").read_text(encoding="utf-8").strip(), BASIS_IMAGE)
+        self.assertTrue(self.p("etc/wamo-labor/plaetze-adressen").is_file())
+        self.assertEqual(self.p("opt/wamo-labor/docker-compose.yml").read_bytes(), (LABOR / "docker-compose.yml").read_bytes())
+
+    def test_kein_token_in_ausgabe_oder_protokoll(self):
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for wert in self.tokens():
+            for ort in (r.stdout, r.stderr, "\n".join(self.aufrufe())):
+                self.assertNotIn(wert, ort)
+        self.assertIsNone(re.search(r"[A-Za-z0-9_-]{43}", r.stdout + r.stderr))
+
+    def test_image_wird_mit_digest_gebaut_und_gestartet(self):
+        self.assertEqual(self.einrichten().returncode, 0)
+        aufrufe = self.aufrufe()
+        self.assertIn(f"docker pull {BASIS_IMAGE}", aufrufe)
+        bau = [z for z in aufrufe if z.startswith("docker build")]
+        self.assertEqual(len(bau), 1)
+        self.assertEqual(bau[0], f"docker build --pull=false --build-arg BASIS={BASIS_IMAGE} --tag wamo-labor-dienst:1 {posix(self.quelle)}")
+        compose = f"docker compose -f {posix(self.p('opt/wamo-labor/docker-compose.yml'))} up -d --no-build"
+        self.assertIn(compose, aufrufe)
+        self.assertLess(aufrufe.index(bau[0]), aufrufe.index(compose))
+        # nichts, was Daten oder den Kern berührt
+        for z in aufrufe:
+            self.assertNotRegex(z, r"^(docker (rm|volume|system|network rm)|systemctl (restart|stop|disable)|userdel|useradd|shred)\b", z)
+
+    def test_caddy_site_aus_der_vorlage_mit_den_adressen(self):
+        self.assertEqual(self.einrichten().returncode, 0)
+        site = (self.caddy / "etc" / "kern" / "wamo-labor.caddy").read_text(encoding="utf-8")
+        self.assertNotIn("__BETREUER_ADRESSEN__", site)
+        self.assertIn("remote_ip 127.0.0.0/8 172.24.0.1/32 192.168.178.136/32 192.168.178.50 192.168.178.60/32", site)
+        self.assertEqual(site.replace("127.0.0.0/8 172.24.0.1/32 192.168.178.136/32 192.168.178.50 192.168.178.60/32", "__BETREUER_ADRESSEN__"),
+                         lies(SITE))
+        # die neue Compose von wamo-caddy kommt dazu (Port 55447, Netz), vor dem Anlegen wird die Konfiguration geprüft
+        self.assertEqual((self.caddy / "docker-compose.yml").read_bytes(), (CADDY / "docker-compose.yml").read_bytes())
+        aufrufe = self.aufrufe()
+        adapt = [z for z in aufrufe if z.startswith("docker run") and "caddy adapt" in z]
+        self.assertEqual(len(adapt), 1)
+        for soll in ("--rm", "--network none", "--cap-drop ALL", "--read-only", "no-new-privileges:true"):
+            self.assertIn(soll, adapt[0])
+        self.assertIn("docker compose up -d", aufrufe)  # Compose von wamo-caddy hat sich geändert: einmal neu anlegen
+
+    def test_gleiche_caddy_compose_heisst_nur_neu_laden(self):
+        schreibe(self.caddy / "docker-compose.yml", (CADDY / "docker-compose.yml").read_text(encoding="utf-8"))
+        self.assertEqual(self.einrichten().returncode, 0)
+        aufrufe = self.aufrufe()
+        self.assertIn("docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile", aufrufe)
+        self.assertNotIn("docker compose up -d", aufrufe)
+
+    def test_sicherung_vor_jeder_aenderung(self):
+        self.assertEqual(self.einrichten().returncode, 0)
+        ordner = list(self.p("var/backups/wamo-labor").iterdir())
+        self.assertEqual(len(ordner), 1)
+        self.assertRegex(ordner[0].name, r"^\d{8}-\d{6}")
+        self.assertEqual((ordner[0] / "wamo-caddy-compose.vorher").read_text(encoding="utf-8"), "name: wamo-caddy\n# alter Stand\n")
+        self.assertIn("alte Firewall", (ordner[0] / "wamo-firewall.vorher").read_text(encoding="utf-8"))
+        for datei in ordner[0].iterdir():  # keine Token, keine Daten in der Sicherung
+            self.assertNotIn("token", datei.name)
+        r = self.einrichten()
+        self.assertEqual(len(list(self.p("var/backups/wamo-labor").iterdir())), 2)
+
+    def test_kern_bekommt_url_und_token_nur_ueber_stdin(self):
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        kern, _ = self.tokens()
+        stdin = (self.att / "wamo-core-env.stdin").read_text(encoding="utf-8")
+        self.assertEqual(stdin, f"WAMO_LABOR_URL=http://127.0.0.1:18765\nWAMO_LABOR_TOKEN={kern}\n")
+        self.assertIn("wamo-core-env setzen", self.aufrufe())  # ohne ein weiteres Argument: nichts steht in der Prozessliste
+        self.assertIn("nächsten Kern-Release", r.stdout)
+        self.assertIn("umschalten-kern", r.stdout)
+        self.assertNotIn("wamo-core neu", "\n".join(self.aufrufe()))
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("systemctl") and "wamo-core" in z and not z.startswith("systemctl show ")])  # nur lesen
+        # der Kern bekommt den Dienst erst nach dem Start des Dienstes (die Reihenfolge der Schritte)
+        self.assertLess(r.stdout.index("== Start"), r.stdout.index("== Kern"))
+
+    def test_zweiter_lauf_aendert_die_token_nicht(self):
+        self.assertEqual(self.einrichten().returncode, 0)
+        vorher = self.tokens()
+        r = self.einrichten(basis=False)  # das Basis-Image steht jetzt in /etc/wamo-labor/basis-image
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.tokens(), vorher)
+        self.assertIn("vorhanden", r.stdout)
+        self.assertFalse(any(f.name.startswith(".token") for f in self.p("etc/wamo-labor").iterdir()))  # keine Reste
+
+    def test_trockenlauf_aendert_nichts(self):
+        r = self.einrichten("--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[trocken]", r.stdout)
+        for erwartet in ("docker build", "wamo-firewall-einrichten.sh", "caddy adapt", "docker compose -f", "wamo-core-env setzen", "wamo_labor_rauchtest.py"):
+            self.assertIn(erwartet, r.stdout)
+        self.assertFalse(self.p("etc/wamo-labor/kern-token").exists())
+        self.assertFalse(self.p("var").exists())
+        self.assertFalse(self.p("opt").exists())
+        self.assertEqual(list((self.caddy / "etc" / "kern").iterdir()), [])
+        self.assertFalse((self.att / "wamo-core-env.stdin").exists())
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(docker (pull|run|rm|build|exec|network (create|rm))|docker compose (-f|up|down|build)|systemctl (restart|stop|start)|wamo-core-env setzen)", z)
+
+    def test_vorbedingungen(self):
+        self.ausgabe("docker.ps", "", rc=0)  # wamo-caddy läuft nicht
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("wamo-caddy", r.stderr)
+        self.assertFalse(self.p("etc/wamo-labor/kern-token").exists())
+
+    def test_ohne_basis_image_oder_mit_falscher_angabe(self):
+        r = self.einrichten(basis=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--basis-image", r.stderr)
+        for falsch in ("python:3.11-slim", "python:latest", "python:3.11-slim@sha256:abc", "a;b@sha256:" + "ab" * 32, "$(x)@sha256:" + "ab" * 32):
+            r = self.lauf(EINRICHTEN, "einrichten", "--basis-image", falsch)
+            self.assertNotEqual(r.returncode, 0, falsch)
+        self.assertFalse(self.p("etc/wamo-labor/kern-token").exists())
+
+    def test_fremder_benutzer_mit_der_kennung_10001_bricht_ab(self):
+        self.ausgabe("getent", "fremd:x:10001:10001::/home/fremd:/bin/bash\n")
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("10001", r.stderr)
+
+    def test_quelle_fehlt(self):
+        (self.quelle / "Dockerfile").unlink()
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Dockerfile", r.stderr)
+
+    def test_betreuer_adressen_werden_streng_geprueft(self):
+        for falsch in ("0.0.0.0/0", "192.168.0.0/16", "192.168.178.500", "1.2.3.4;reboot", "abc", "127.0.0.1", "10.0.0.1/33"):
+            schreibe(self.p("etc/wamo-labor/betreuer-adressen"), f"192.168.178.50\n{falsch}\n")
+            r = self.einrichten()
+            self.assertNotEqual(r.returncode, 0, falsch)
+            self.assertIn("Ungültige Adresse", r.stderr)
+            self.assertEqual(list((self.caddy / "etc" / "kern").iterdir()), [], falsch)  # nichts installiert
+            self.assertNotIn("reboot", r.stdout)
+
+    def test_ohne_adressdatei_gilt_nur_der_server_selbst(self):
+        self.p("etc/wamo-labor/betreuer-adressen").unlink()
+        self.assertEqual(self.einrichten().returncode, 0)
+        site = (self.caddy / "etc" / "kern" / "wamo-labor.caddy").read_text(encoding="utf-8")
+        self.assertIn("remote_ip 127.0.0.0/8 172.24.0.1/32 192.168.178.136/32\n", site)
+        vorlage = self.p("etc/wamo-labor/betreuer-adressen").read_text(encoding="utf-8")  # eine Vorlage mit Kommentaren entsteht
+        self.assertTrue(all(z.startswith("#") or not z.strip() for z in vorlage.splitlines()))
+
+    def test_fehler_in_caddy_nimmt_alles_zurueck(self):
+        self.ausgabe("docker.compose_up", "", rc=1)  # docker compose up -d in wamo-caddy schlägt fehl (nicht compose version und nicht -f ...)
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("zurückgenommen", r.stderr)
+        self.assertEqual(list((self.caddy / "etc" / "kern").iterdir()), [])  # Site wieder weg
+        self.assertEqual((self.caddy / "docker-compose.yml").read_text(encoding="utf-8"), "name: wamo-caddy\n# alter Stand\n")
+        self.assertFalse((self.att / "wamo-core-env.stdin").exists())  # der Kern bekommt nichts
+        self.assertNotIn("== Kern", r.stdout)
+
+    def test_dienst_wird_nicht_gesund_nimmt_den_start_zurueck(self):
+        self.ausgabe("docker.inspect", "starting\n")
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("nicht gesund", r.stderr)
+        down = [z for z in self.aufrufe() if " down" in z and "wamo-labor" in z]
+        self.assertTrue(down, self.aufrufe())
+        self.assertFalse((self.att / "wamo-core-env.stdin").exists())
+
+    def test_status_zeigt_nur_namen_und_zustaende(self):
+        self.assertEqual(self.einrichten().returncode, 0)
+        self.ausgabe("docker.ps", "wamo-labor-dienst Up 2 minutes (healthy)\n")
+        r = self.lauf(EINRICHTEN, "status")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("== Status", r.stdout)
+        self.assertIn("kern-token", r.stdout)
+        self.assertIn("betreuer-token", r.stdout)
+        for wert in self.tokens():
+            self.assertNotIn(wert, r.stdout + r.stderr)
+        self.assertIsNone(re.search(r"[A-Za-z0-9_-]{43}", r.stdout))
+
+    def test_falsche_aufrufe(self):
+        for args in (["--unbekannt"], ["betreuer-token-ausgeben"], ["einrichten", "--basis-image"], ["einrichten", "--quelle"], ["x"]):
+            self.assertEqual(self.lauf(EINRICHTEN, *args).returncode, 2, args)
+
+    def test_ohne_probelauf_nur_als_root(self):
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("läuft als root")
+        r = self.lauf(EINRICHTEN, "einrichten", "--basis-image", BASIS_IMAGE, wurzel=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("sudo", r.stderr)
+        self.assertEqual(self.aufrufe(), [])
 
 
 if __name__ == "__main__":
