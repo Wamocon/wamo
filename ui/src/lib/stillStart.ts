@@ -4,7 +4,8 @@
  * Reine Logik ohne Browser und ohne React, damit sie sich mit node:test prüfen lässt (stillStart.test.ts). Alle Importe relativ.
  *
  * Schutzregeln (jede steht als Test):
- *  - Der Schalter gilt je Gerät UND je Person (localStorage, Schlüssel mit der user_id), Standard aus, nie als Server-Zustand.
+ *  - Der Schalter gilt je Gerät UND je Person (localStorage, Schlüssel mit der user_id), nie als Server-Zustand. Standard an (seit
+ *    12.11.2026: wer nie entschieden hat, kann sofort tippen); eine ausdrückliche Wahl ("an" oder "aus") bleibt gespeichert.
  *  - Laborkonten (labor-NN@wamo.test, labor-schau@wamo.test) starten nie von selbst: Die Oberfläche kennt das Laborprofil vor dem
  *    Verbinden sonst nicht (das Profil kommt erst vom Kern); die Ablehnung im Kern selbst kommt erst mit KP-1C.
  *  - Ein stiller Start darf eine laufende Sitzung nie verdrängen. Das lässt sich ohne Kern nur teilweise sichern: Der Kern löst
@@ -60,24 +61,34 @@ export function schalterSchluessel(userId: string | null | undefined): string | 
   return `${SCHALTER_PRAEFIX}${userId}`;
 }
 
-/** Ist der Schalter für diese Person auf diesem Gerät an? Standard aus; ohne Speicher oder Kennung und bei einem Fehler aus. */
+/** Standard, solange die Person nichts gewählt hat. */
+export const SCHALTER_STANDARD = true;
+
+/**
+ * Ist der Schalter für diese Person auf diesem Gerät an? "an" und "aus" sind ausdrückliche Wahlen, ein sauber gelesener, fehlender Eintrag
+ * heißt Standard (an), jeder andere Wert gilt als aus. Ohne brauchbare Kennung, ohne Speicher und bei einem Lesefehler (strenger Datenschutzmodus)
+ * immer aus: Dort kann die Person nichts dauerhaft wählen, also bleibt es beim sicheren Verhalten.
+ */
 export function schalterLesen(speicher: Speicher | null | undefined, userId: string | null | undefined): boolean {
   const k = schalterSchluessel(userId);
   if (!k || !speicher) return false;
+  let wert: string | null;
   try {
-    return speicher.getItem(k) === "an";
+    wert = speicher.getItem(k);
   } catch {
     return false;
   }
+  if (wert === "an") return true;
+  if (wert === "aus") return false;
+  return wert === null ? SCHALTER_STANDARD : false;
 }
 
-/** Schalter schreiben. true, wenn der Speicher den Wert angenommen hat (sonst gilt er nur bis zum Neuladen, das regelt der Aufrufer). */
+/** Schalter schreiben (ausdrücklich "an" oder "aus"). true, wenn der Speicher den Wert angenommen hat (sonst gilt er nur bis zum Neuladen, das regelt der Aufrufer). */
 export function schalterSchreiben(speicher: Speicher | null | undefined, userId: string | null | undefined, an: boolean): boolean {
   const k = schalterSchluessel(userId);
   if (!k || !speicher) return false;
   try {
-    if (an) speicher.setItem(k, "an");
-    else speicher.removeItem(k);
+    speicher.setItem(k, an ? "an" : "aus");
     return true;
   } catch {
     return false;

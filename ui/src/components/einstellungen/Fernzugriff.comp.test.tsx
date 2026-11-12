@@ -4,7 +4,7 @@
 // eine Sitzung; es braucht immer den Klick der Person. Ausführen im Ordner ui/:  npm run test:komponenten
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Fernzugriff } from "@/components/einstellungen/Fernzugriff";
 import type { Uebersicht } from "@/lib/fernzugriff";
 
@@ -71,6 +71,60 @@ async function dialogOeffnen(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole("button", { name: "Verbinden: Sokrates-2" }));
   return screen.findByRole("dialog");
 }
+
+// Befund vom 12.11.2026: In der Desktop-App liefert window.open("", "_blank") immer null (der Hörer in desktop/main.js verweigert jedes
+// Fenster und reicht nur http(s)-Adressen an den Browser weiter). Das leere Fenster gab es dort nie, die Adresse wurde nicht geöffnet,
+// und die Sitzung endete nach etwa drei Minuten ohne Verbindung. Gemessen mit Electron: window.open("") und window.open(url) geben null.
+describe("Fernzugriff: Fenster öffnen in der Desktop-App und im Browser", () => {
+  afterEach(() => {
+    delete (window as unknown as { wamoDesktop?: unknown }).wamoDesktop;
+  });
+
+  async function verbinden() {
+    api.starten.mockResolvedValue(START);
+    const user = userEvent.setup();
+    const dialog = await dialogOeffnen(user);
+    await user.click(within(dialog).getByRole("button", { name: "Verbinden" }));
+    await waitFor(() => expect(api.starten).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  }
+
+  it("im Browser öffnet der Klick sofort ein leeres Fenster, nur dann erlaubt es der Browser", async () => {
+    await verbinden();
+    expect(window.open).toHaveBeenCalledTimes(1);
+    expect(window.open).toHaveBeenCalledWith("", "_blank");
+    expect(screen.getByText(/Fernzugriff auf Sokrates-2 gestartet/).textContent).toMatch(/blockiert/);
+  });
+
+  it("in der Desktop-App gibt es kein leeres Fenster: nach dem Start geht genau die Adresse des Gateways an den Browser", async () => {
+    (window as unknown as { wamoDesktop: unknown }).wamoDesktop = { isDesktop: true };
+    await verbinden();
+    expect(vi.mocked(window.open).mock.calls.map((c) => c[0])).toEqual([START.start.url]);
+    expect(window.open).toHaveBeenCalledWith(START.start.url, "_blank", "noopener,noreferrer");
+    const meldung = screen.getByText(/Fernzugriff auf Sokrates-2 gestartet/).textContent ?? "";
+    expect(meldung).toMatch(/im Browser/);
+    expect(meldung).not.toMatch(/blockiert/);
+  });
+
+  it("in der Desktop-App kommt die Adresse erst nach dem Start und nie, wenn der Start scheitert", async () => {
+    (window as unknown as { wamoDesktop: unknown }).wamoDesktop = { isDesktop: true };
+    api.starten.mockResolvedValue(BELEGT);
+    const user = userEvent.setup();
+    const dialog = await dialogOeffnen(user);
+    await user.click(within(dialog).getByRole("button", { name: "Verbinden" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it("wirft window.open in der Desktop-App, bleibt der Hinweis auf den Knopf Fenster öffnen", async () => {
+    (window as unknown as { wamoDesktop: unknown }).wamoDesktop = { isDesktop: true };
+    vi.mocked(window.open).mockImplementation(() => {
+      throw new Error("nicht erlaubt");
+    });
+    await verbinden();
+    expect(screen.getByText(/Fernzugriff auf Sokrates-2 gestartet/).textContent).toMatch(/Fenster öffnen/);
+  });
+});
 
 describe("Fernzugriff: Verbinden ohne Code", () => {
   it("die Karte zeigen startet nie eine Sitzung und öffnet keinen Dialog (so öffnet WAMO sie mit fernzugriff_oeffnen)", async () => {

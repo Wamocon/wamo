@@ -67,6 +67,7 @@ vi.mock("@/lib/supabase", () => ({ getSupabase: () => null, accessToken: async (
 import { StillMedienManager } from "@/lib/stillMedien";
 import { nutzerSetzen } from "@/lib/nutzer";
 import { HINWEIS_ANDERES_FENSTER, HINWEIS_ZU_OFT, LEERLAUF_MS, STARTS_MAX, STILL_AUS, GRUND_UEBERNOMMEN } from "@/lib/stillStart";
+import { HAENGT_HINWEIS } from "@/lib/textEingabe";
 import { useWamo } from "@/lib/useWamo";
 import { resetWamo, wamo } from "@/lib/wamo";
 import { WavMediaManager } from "@pipecat-ai/small-webrtc-transport";
@@ -85,7 +86,7 @@ const fluss = (ms = 10) =>
 function einschalten(an = true, email = "niko@wamocon.com") {
   nutzerSetzen({ id: NUTZER, email });
   if (an) localStorage.setItem(`wamo.stillStart.${NUTZER}`, "an");
-  else localStorage.removeItem(`wamo.stillStart.${NUTZER}`);
+  else localStorage.setItem(`wamo.stillStart.${NUTZER}`, "aus");
 }
 
 /** Der Kern hat "Bot bereit" gemeldet und die Betriebsdaten geschickt (stoppt auch die Verbindungsfrist). */
@@ -111,13 +112,50 @@ describe("useWamo, stiller Start beim Tippen", () => {
   });
 
   describe("Start und Sperren", () => {
-    it("Schalter aus (Standard): das Tippen startet nichts", async () => {
+    it("ausdrücklich ausgeschaltet: das Tippen startet nichts", async () => {
       einschalten(false);
       const { result } = renderHook(() => useWamo());
       expect(result.current.stillStarten?.()).toBe(false);
       await fluss();
       expect(clients()).toHaveLength(0);
       expect(aktuell().presence).toBe("offline");
+    });
+
+    it("kein Eintrag (nie entschieden): Standard an, das Tippen startet still", async () => {
+      nutzerSetzen({ id: NUTZER, email: "niko@wamocon.com" }); // localStorage ist leer
+      const { result } = renderHook(() => useWamo());
+      expect(result.current.stillStarten?.()).toBe(true);
+      await fluss();
+      expect(clients()).toHaveLength(1);
+      expect(letzter().opts.enableMic).toBe(false);
+    });
+
+    it("kein Eintrag bei einem Laborkonto: startet nie", async () => {
+      nutzerSetzen({ id: NUTZER, email: "labor-03@wamo.test" });
+      const { result } = renderHook(() => useWamo());
+      expect(result.current.stillStarten?.()).toBe(false);
+      await fluss();
+      expect(clients()).toHaveLength(0);
+    });
+
+    it("unlesbarer Speicher (strenger Datenschutzmodus): startet nicht von selbst", async () => {
+      const vorher = Object.getOwnPropertyDescriptor(window, "localStorage")!;
+      const gesperrt = () => {
+        throw new Error("gesperrt");
+      };
+      Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        value: { getItem: gesperrt, setItem: gesperrt, removeItem: gesperrt, clear: gesperrt },
+      });
+      try {
+        nutzerSetzen({ id: NUTZER, email: "niko@wamocon.com" });
+        const { result } = renderHook(() => useWamo());
+        expect(result.current.stillStarten?.()).toBe(false);
+        await fluss();
+        expect(clients()).toHaveLength(0);
+      } finally {
+        Object.defineProperty(window, "localStorage", vorher);
+      }
     });
 
     it("Schalter an: der Client entsteht ohne Mikrofon und mit dem stillen Medienmanager", async () => {
@@ -191,6 +229,36 @@ describe("useWamo, stiller Start beim Tippen", () => {
       await fluss();
       expect(letzter().sendText).toHaveBeenCalledTimes(1);
       expect(letzter().sendText).toHaveBeenCalledWith("Wie spät ist es?", { run_immediately: true, audio_response: false });
+    });
+
+    it("antwortet WAMO auf eine getippte Nachricht 45 Sekunden nicht (Puls dreht sich), erscheint ein Hinweis", async () => {
+      einschalten();
+      const { result } = renderHook(() => useWamo());
+      result.current.stillStarten?.();
+      await fluss();
+      await bereit(letzter());
+      result.current.textSenden?.("Wie spät ist es?");
+      await fluss();
+      expect(aktuell().presence).toBe("thinking");
+      await fluss(44_000);
+      expect(aktuell().error).toBeNull();
+      await fluss(1_500);
+      expect(aktuell().error).toEqual({ art: "hinweis", text: HAENGT_HINWEIS });
+    });
+
+    it("antwortet WAMO rechtzeitig (Präsenz wechselt), bleibt der Hinweis aus", async () => {
+      einschalten();
+      const { result } = renderHook(() => useWamo());
+      result.current.stillStarten?.();
+      await fluss();
+      await bereit(letzter());
+      result.current.textSenden?.("Wie spät ist es?");
+      await fluss();
+      await act(async () => {
+        wamo.set((s) => ({ ...s, presence: "speaking" }));
+      });
+      await fluss(60_000);
+      expect(aktuell().error).toBeNull();
     });
 
     it("Sprechen (Mikrofonknopf): Mikrofon an, Stimme an, die Sitzung gilt nicht mehr als still", async () => {

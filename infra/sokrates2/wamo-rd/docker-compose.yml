@@ -115,10 +115,12 @@ services:
       # (fest 172.26.0.2); die Vorgabe von Tomcat würde jedes private Netz als Proxy ansehen.
       REMOTE_IP_VALVE_ENABLED: "true"
       REMOTE_IP_VALVE_INTERNAL_PROXIES: ${WAMO_RD_PROXY_REGEX:-172[.]26[.]0[.]2}
-      # Fehlversuche sperren die Quelladresse (Erweiterung guacamole-auth-ban, im Image eingeschaltet)
+      # Fehlversuche sperren die Quelladresse (Erweiterung guacamole-auth-ban, im Image eingeschaltet). Das Gateway kennt keine Kennwörter,
+      # nur signierte Token mit 256 Bit Zufall: Die Sperre dient als Flutschutz. Ein alter Tab mit totem Token meldet sich beim Neuladen
+      # mehrfach hintereinander an; mit 3 Versuchen und 900 Sekunden war der Laptop dadurch 15 Minuten ausgesperrt (12.11.2026).
       BAN_ENABLED: "true"
-      BAN_MAX_INVALID_ATTEMPTS: "3"
-      BAN_ADDRESS_DURATION: "900"
+      BAN_MAX_INVALID_ATTEMPTS: "15"
+      BAN_ADDRESS_DURATION: "60"
       # Leerlauf der API-Sitzung in Minuten (laufende Verbindungen halten sie am Leben); Standard wäre 60
       API_SESSION_TIMEOUT: "15"
     healthcheck:

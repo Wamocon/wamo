@@ -1,5 +1,5 @@
 // Komponententest der Bausteine für den Start beim Tippen (components/StillStart.tsx, components/einstellungen/StillStart.tsx, KP-1A):
-// der Geräteschalter in den Einstellungen (Standard aus, je Person, nie für Laborkonten, Hinweis "nur auf einem Gerät"), der Hinweis
+// der Geräteschalter in den Einstellungen (Standard an, ausdrückliche Wahl je Person, nie für Laborkonten), der Hinweis
 // "WAMO läuft in einem anderen Fenster" mit "Hier übernehmen" und die Knöpfe einer stillen Sitzung.
 // Ausführen im Ordner ui/:  npm run test:komponenten
 import { act, render, screen } from "@testing-library/react";
@@ -23,32 +23,34 @@ describe("Einstellung 'Still starten beim Tippen'", () => {
     nutzerSetzen({ id: NUTZER, email: "niko@wamocon.com" });
   });
 
-  it("Standard ist aus", () => {
+  it("Standard ist an, solange die Person nichts gewählt hat", () => {
     render(<StillStartEinstellung />);
-    expect(kasten().checked).toBe(false);
-    expect(kasten().disabled).toBe(false);
-  });
-
-  it("Einschalten speichert je Gerät und Person und gilt für niemand sonst", async () => {
-    render(<StillStartEinstellung />);
-    await userEvent.click(kasten());
     expect(kasten().checked).toBe(true);
-    expect(localStorage.getItem(schluessel(NUTZER))).toBe("an");
-    expect(localStorage.getItem(schluessel(ANDERER))).toBeNull();
-    await userEvent.click(kasten());
+    expect(kasten().disabled).toBe(false);
     expect(localStorage.getItem(schluessel(NUTZER))).toBeNull();
   });
 
-  it("eine andere Person am selben Gerät sieht ihren eigenen Wert (aus)", () => {
-    localStorage.setItem(schluessel(NUTZER), "an");
-    nutzerSetzen({ id: ANDERER, email: "kollege@wamocon.com" });
+  it("Aus- und Einschalten speichert die Wahl je Gerät und Person und gilt für niemand sonst", async () => {
     render(<StillStartEinstellung />);
+    await userEvent.click(kasten());
     expect(kasten().checked).toBe(false);
+    expect(localStorage.getItem(schluessel(NUTZER))).toBe("aus");
+    expect(localStorage.getItem(schluessel(ANDERER))).toBeNull();
+    await userEvent.click(kasten());
+    expect(kasten().checked).toBe(true);
+    expect(localStorage.getItem(schluessel(NUTZER))).toBe("an");
   });
 
-  it("der Hinweis sagt, dass der Schalter nur auf einem Gerät je Person gehört und was sonst passiert", () => {
+  it("eine andere Person am selben Gerät sieht ihren eigenen Wert", () => {
+    localStorage.setItem(schluessel(NUTZER), "aus");
+    nutzerSetzen({ id: ANDERER, email: "kollege@wamocon.com" });
     render(<StillStartEinstellung />);
-    expect(screen.getByText(/Nur auf einem Gerät je Person einschalten/)).toBeTruthy();
+    expect(kasten().checked).toBe(true);
+  });
+
+  it("der Hinweis sagt, was bei mehreren Geräten passiert und wo man es ausschaltet", () => {
+    render(<StillStartEinstellung />);
+    expect(screen.getByText(/Schalte es dort aus, wo du das nicht willst/)).toBeTruthy();
     expect(screen.getByText(/löst eine laufende Sitzung auf einem anderen Gerät ab/)).toBeTruthy();
     expect(screen.getByText(/20 Minuten/)).toBeTruthy();
   });
@@ -80,8 +82,9 @@ describe("Einstellung 'Still starten beim Tippen'", () => {
     try {
       nutzerSetzen({ id: "ee000000-0000-4000-8000-000000000000", email: "x@wamocon.com" });
       render(<StillStartEinstellung />);
+      expect(kasten().checked).toBe(false); // der Speicher ist unlesbar: aus, nicht der Standard
       await userEvent.click(kasten());
-      expect(kasten().checked).toBe(true);
+      expect(kasten().checked).toBe(true); // die Wahl gilt bis zum Neuladen
     } finally {
       Object.defineProperty(window, "localStorage", vorher);
     }
@@ -120,6 +123,7 @@ describe("Hinweis 'WAMO läuft in einem anderen Fenster'", () => {
   });
 
   it("ohne eingeschalteten Schalter bleibt die Oberfläche unverändert (kein neuer Hinweis)", () => {
+    localStorage.setItem(schluessel(NUTZER), "aus");
     wamo.set((s) => ({ ...s, stillStart: { ...STILL_AUS, uebernommen: true } }));
     render(<UebernehmenHinweis onUebernehmen={() => undefined} />);
     expect(screen.queryByText(HINWEIS_ANDERES_FENSTER)).toBeNull();

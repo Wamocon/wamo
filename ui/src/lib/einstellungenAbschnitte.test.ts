@@ -88,6 +88,14 @@ test("hashFuer und parseHash sind zueinander umkehrbar", () => {
   for (const id of ABSCHNITT_IDS) assert.deepEqual(parseHash(hashFuer(id)), { offen: true, abschnitt: id });
 });
 
+test("Gedächtnis: eigener Abschnitt nur für Admins, mit Adresse", () => {
+  assert.ok(ids("admin").includes("gedaechtnis"));
+  for (const rolle of ["mitglied", null] as const) assert.ok(!ids(rolle).includes("gedaechtnis"), `Rolle ${rolle}`);
+  assert.equal(abschnitteFuer({ rolle: "admin" }).find((a) => a.id === "gedaechtnis")?.nurAdmin, true);
+  assert.deepEqual(parseHash("#einstellungen/gedaechtnis"), { offen: true, abschnitt: "gedaechtnis" });
+  assert.equal(wirksamerAbschnitt({ offen: true, abschnitt: "gedaechtnis" }, abschnitteFuer({ rolle: "mitglied" }), true), "konto");
+});
+
 test("wirksamer Abschnitt: zweispaltig der erste, einspaltig die Liste", () => {
   const admin = abschnitteFuer({ rolle: "admin" });
   const mitglied = abschnitteFuer({ rolle: "mitglied" });

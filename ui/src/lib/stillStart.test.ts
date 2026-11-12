@@ -50,17 +50,18 @@ function speicher(gesperrt = false) {
 
 // ---------- Schalter je Gerät und Person ----------
 
-test("Standard ist aus, auch ohne Speicher und ohne Kennung", () => {
-  assert.equal(schalterLesen(speicher(), NUTZER), false);
+test("Standard ist an, solange nichts gewählt wurde; ohne Speicher und ohne Kennung bleibt er aus", () => {
+  assert.equal(schalterLesen(speicher(), NUTZER), true);
   assert.equal(schalterLesen(null, NUTZER), false);
   assert.equal(schalterLesen(speicher(), null), false);
+  assert.equal(schalterLesen(speicher(), ""), false);
 });
 
 test("der Schlüssel gehört zur Person: zwei Personen am selben Gerät teilen den Schalter nicht", () => {
   const s = speicher();
-  assert.equal(schalterSchreiben(s, NUTZER, true), true);
-  assert.equal(schalterLesen(s, NUTZER), true);
-  assert.equal(schalterLesen(s, ANDERER), false);
+  assert.equal(schalterSchreiben(s, NUTZER, false), true);
+  assert.equal(schalterLesen(s, NUTZER), false);
+  assert.equal(schalterLesen(s, ANDERER), true);
   assert.notEqual(schalterSchluessel(NUTZER), schalterSchluessel(ANDERER));
   assert.match(schalterSchluessel(NUTZER)!, /^wamo\.stillStart\./);
 });
@@ -74,21 +75,23 @@ test("ohne brauchbare Kennung gibt es keinen Schlüssel, nichts wird geschrieben
   assert.equal(s.m.size, 0);
 });
 
-test("Ausschalten löscht den Eintrag", () => {
+test("Ausschalten speichert die ausdrückliche Wahl 'aus', sie bleibt auch nach dem Neuladen aus", () => {
   const s = speicher();
   schalterSchreiben(s, NUTZER, true);
   schalterSchreiben(s, NUTZER, false);
-  assert.equal(s.m.size, 0);
+  assert.equal(s.m.get(schalterSchluessel(NUTZER)!), "aus");
   assert.equal(schalterLesen(s, NUTZER), false);
+  schalterSchreiben(s, NUTZER, true);
+  assert.equal(schalterLesen(s, NUTZER), true);
 });
 
-test("gesperrter Speicher: Lesen ergibt aus, Schreiben meldet false, nichts wirft", () => {
+test("gesperrter Speicher (strenger Datenschutzmodus): Lesen ergibt aus, Schreiben meldet false, nichts wirft", () => {
   const s = speicher(true);
   assert.equal(schalterLesen(s, NUTZER), false);
   assert.equal(schalterSchreiben(s, NUTZER, true), false);
 });
 
-test("nur der genaue Wert 'an' schaltet ein (kein 'true', kein '1')", () => {
+test("nur die genauen Werte 'an' und 'aus' gelten; jeder andere Wert ist aus (kein 'true', kein '1')", () => {
   const s = speicher();
   for (const v of ["true", "1", "ja", "AN", "an "]) {
     s.m.set(schalterSchluessel(NUTZER)!, v);

@@ -290,8 +290,15 @@ export function restzeitAnsage(vorher: number, jetzt: number): string | null {
 /** Wird die Restzeit knapp (höchstens zwei Minuten)? Dann hebt die Karte sie hervor. */
 export const restzeitKnapp = (sekunden: number): boolean => sekunden > 0 && sekunden <= 120;
 
-/** Erfolgsmeldung nach dem Start. geoeffnet: false, wenn der Browser das Fenster blockiert hat. */
-export function startMeldung(anzeige: string, geoeffnet: boolean): string {
+/**
+ * Erfolgsmeldung nach dem Start. geoeffnet: false, wenn das Fenster nicht aufging (im Browser blockiert, in der App ein Fehler).
+ * ueberBrowser: Die Desktop-App öffnet die Seite im normalen Browser; sie mahnt zur Eile, weil eine Sitzung ohne Verbindung nach
+ * wenigen Minuten endet (Aufseher im Kern).
+ */
+export function startMeldung(anzeige: string, geoeffnet: boolean, ueberBrowser = false): string {
+  if (geoeffnet && ueberBrowser) {
+    return `Fernzugriff auf ${anzeige} gestartet. Der Desktop öffnet sich im Browser. Nutze ihn gleich, denn eine Sitzung ohne Verbindung endet nach wenigen Minuten wieder.`;
+  }
   return geoeffnet
     ? `Fernzugriff auf ${anzeige} gestartet. Der Desktop hat sich in einem neuen Fenster geöffnet.`
     : `Fernzugriff auf ${anzeige} gestartet. Der Browser hat das neue Fenster blockiert, bitte tippe auf "Fenster öffnen".`;

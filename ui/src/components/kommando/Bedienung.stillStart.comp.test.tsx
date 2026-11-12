@@ -15,7 +15,7 @@ const NUTZER = "0b7f3c1e-2d4a-4c55-9a10-1a2b3c4d5e6f";
 function schalter(an: boolean, email = "niko@wamocon.com") {
   nutzerSetzen({ id: NUTZER, email });
   if (an) localStorage.setItem(`wamo.stillStart.${NUTZER}`, "an");
-  else localStorage.removeItem(`wamo.stillStart.${NUTZER}`);
+  else localStorage.setItem(`wamo.stillStart.${NUTZER}`, "aus");
 }
 
 /** stillStarten verhält sich wie das echte: Die Verbindung beginnt (presence connecting, still). */

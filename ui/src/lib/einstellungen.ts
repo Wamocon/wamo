@@ -57,7 +57,7 @@ export function usePcAuto(): boolean {
 }
 
 // ---------- Still starten beim Tippen (KP-1A, lib/stillStart.ts) ----------
-// Schalter je Gerät und je Person (Schlüssel mit der user_id), Standard aus, kein Server-Zustand. Ohne localStorage gilt der Wert bis zum
+// Schalter je Gerät und je Person (Schlüssel mit der user_id), Standard an (lib/stillStart.ts, SCHALTER_STANDARD), kein Server-Zustand. Ohne localStorage gilt der Wert bis zum
 // Neuladen. Wirksam wird er nur für Konten, die keine Laborkonten sind (lib/useStillStart.ts, useWamo.stillStarten).
 const stillSpeicher = new Map<string, boolean>(); // Rückfall, wenn localStorage nicht verfügbar ist
 

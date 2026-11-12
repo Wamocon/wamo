@@ -1,6 +1,7 @@
 // Tests für Mikrofon-Wächter, Meldungen, Gerätewahl und Sendespur (lib/mikrofon.ts).
 // Ausführen im Ordner ui/:  npm test
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   STILLE_DBFS,
@@ -18,7 +19,10 @@ import {
   sendeSpurErsetzen,
   spurEndeText,
   startGeraet,
+  stilleAusblenden,
+  stilleAusgeblendet,
   stilleText,
+  stilleWiederAufnehmen,
   tonLog,
   windowsGesperrt,
   windowsGesperrtText,
@@ -171,4 +175,48 @@ test("Positive Logzeile nennt Gerät und gerundete Spitze", () => {
   assert.equal(tonLog("Onboard MIC", -52.7), "Mikrofon liefert Ton: Onboard MIC, Spitze -53 dBFS");
   assert.match(tonLog(null, -60), /unbekanntes Gerät/);
   assert.ok(tonLog("x".repeat(500), -60).length < 200);
+});
+
+// ---------- "Ohne Mikrofon weiter" (12.11.2026: die Warnung kam bei jedem Gespräch wieder, obwohl das Gerät tot war) ----------
+test("Ohne Mikrofon weiter: die Warnung bleibt für genau dieses Gerät aus, auch bei einem neuen Gespräch", () => {
+  const geraet = "Onboard MIC (Intel® Smart Sound Technologie für digitale Mikrofone)";
+  assert.equal(stilleAusgeblendet(geraet), false);
+  stilleAusblenden(geraet);
+  assert.equal(stilleAusgeblendet(geraet), true);
+  assert.equal(stilleAusgeblendet("Headset (eMeet M220 Lite)"), false); // ein anderes Gerät warnt weiter
+  stilleAusblenden(geraet); // zweimal ist nicht schlimmer
+  stilleWiederAufnehmen(geraet);
+  assert.equal(stilleAusgeblendet(geraet), false); // liefert es wieder Ton, warnt WAMO bei der nächsten Stille wieder
+  stilleWiederAufnehmen(geraet); // ohne Eintrag passiert nichts
+});
+
+test("Ohne Mikrofon weiter: Bezeichnung wie in der Oberfläche (auf 120 Zeichen gekürzt), ohne Namen gilt ein gemeinsamer Eintrag", () => {
+  const lang = "M".repeat(300);
+  stilleAusblenden(lang);
+  assert.equal(stilleAusgeblendet("M".repeat(120)), true); // useWamo speichert das Label gekürzt auf 120 Zeichen
+  stilleWiederAufnehmen(lang);
+  assert.equal(stilleAusgeblendet(lang), false);
+  for (const ohne of [null, undefined, "", "   "]) {
+    stilleAusblenden(ohne);
+    assert.equal(stilleAusgeblendet(null), true, String(ohne));
+    stilleWiederAufnehmen(undefined);
+    assert.equal(stilleAusgeblendet(""), false, String(ohne));
+  }
+});
+
+test("Ohne Mikrofon weiter: useWamo.ts fragt vor beiden Stille-Warnungen nach und nimmt sie bei neuem Ton wieder auf", () => {
+  const quelle = readFileSync(new URL("./useWamo.ts", import.meta.url), "utf8");
+  assert.match(quelle, /if \(stilleAusgeblendet\(mic\.track\.label\)\)[^\n]*\n\s*else setFehler\(\{ art: "mikrofon", text: stilleText\(/); // Wächter der Oberfläche
+  assert.match(quelle, /msg\.zustand === "still"[^\n]*!stilleAusgeblendet\(/); // Meldung des Kerns
+  assert.match(quelle, /ergebnis === "wieder_da"\) stilleWiederAufnehmen\(mic\.track\.label\)/);
+  assert.match(quelle, /msg\.zustand === "fehlt" && st\.micOn\)/); // eine abgerissene Spur wird nie ausgeblendet
+});
+
+test("Ohne Mikrofon weiter: höchstens 20 Geräte, das älteste fällt zuerst heraus", () => {
+  for (let i = 0; i < 25; i++) stilleAusblenden(`Gerät ${i}`);
+  assert.equal(stilleAusgeblendet("Gerät 0"), false);
+  assert.equal(stilleAusgeblendet("Gerät 4"), false);
+  assert.equal(stilleAusgeblendet("Gerät 5"), true);
+  assert.equal(stilleAusgeblendet("Gerät 24"), true);
+  for (let i = 5; i < 25; i++) stilleWiederAufnehmen(`Gerät ${i}`);
 });

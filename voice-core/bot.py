@@ -63,7 +63,21 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import LLMMessagesAppendFrame, LLMUpdateSettingsFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    BotSpeakingFrame,
+    FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+    InputTextRawFrame,
+    InterimTranscriptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMMessagesAppendFrame,
+    LLMUpdateSettingsFrame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+    UserSpeakingFrame,
+    UserStartedSpeakingFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -102,6 +116,7 @@ from audio_monitor import AudioInputMonitor, SpeakerTracker
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
 import entwicklung_betrieb
 from dev_agent import DevAgent, abnahme_befehle_im_betrieb, entwicklung_enabled, entwicklung_problem
+from geraete_werkzeuge import JOB as GERAETE_JOB, Buerogeraete
 from learning import Gemerkt, learn_from_session
 import kontingent
 from llm_anbieter import LLMNichtVerfuegbar, ausblenden_text, gespraech_llm, lesbarer_modellname, zusammenfassung_llm
@@ -113,6 +128,7 @@ from cache_waerme import vorwaermen
 from env_schalter import schalter_an
 from latenz import LatenzObserver, api_messen, latenz_log_an
 from pc_geraet import geraet_wache, rechnername_passt
+from pipeline_protokoll import PipelineProtokoll
 from schluessel_filter import SchluesselFilter, absichern
 from sprache_anbieter import haus_stt, haus_tts, sprach_wahl
 from ja_waechter import JaWaechter, ja_waechter_an
@@ -212,6 +228,22 @@ DEFAULT_GREETING = "Hallo {name}, WAMO ist bereit."
 # 0,15 s spart 50 ms bis zum Transkript (gemessen am 21.10.2026: 308 gegen 356 ms) und trennt Sätze mit Pausen nicht
 # häufiger; Pipecat meldet einmal je Sitzung, dass der Wert vom Standard abweicht (Warnung im Log, harmlos).
 VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.15)
+# Was als Lebenszeichen einer Sitzung zählt: der Pipecat-Standard (Sprache) plus Text, Antworten des Modells und Werkzeuge. Ohne den Zusatz
+# bekam eine Sitzung ohne Sprache (stiller Start beim Tippen, nur Text) nie ein Lebenszeichen und wurde 300 Sekunden nach dem Start beendet, auch mitten
+# im Schreiben (Journal 12.11.2026: 08:49:34 und 08:55:08, jeweils trotz Antworten des Modells kurz davor). Test: test_bot_leerlauf.py
+IDLE_FRAMES = (
+    BotSpeakingFrame,
+    InterimTranscriptionFrame,
+    TranscriptionFrame,
+    UserSpeakingFrame,
+    UserStartedSpeakingFrame,
+    InputTextRawFrame,
+    LLMMessagesAppendFrame,
+    LLMFullResponseStartFrame,
+    LLMFullResponseEndFrame,
+    FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+)
 # Hält Smart-Turn einen Satz für unvollständig, wartet WAMO so lange (Sekunden Stille) auf den Rest; danach entscheidet
 # Claude mit dem Satzende-Marker. Jeder unvollständige Befund kostete bis zu 0,85 s (früher 1,0 s).
 SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.5)
@@ -774,6 +806,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Doppelte Aufrufe im selben Zug und abgebrochene Werkzeuge (werkzeug_wache.py)
     doppel = DoppelWache(turn_nr=lambda: turn.turn_nr) if werkzeug_doppelt_an() else None
 
+    buerogeraete: Buerogeraete | None = None  # wird weiter unten im Büro gesetzt; hier gebunden, damit freigabe_offen nie ins Leere greift
+
     def freigabe_offen() -> bool:
         """Wartet eine Freigabe (PC-Freigabe-Karte oder Entwicklungsauftrag)? Dann greift der Ja-Wächter nie."""
         # Fail closed: fehlt ein erwartetes Attribut (Umbenennung), gilt eine Freigabe als offen
@@ -781,6 +815,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             if freigaben is not None and freigaben._offen:
                 return True
             if labor_werkz is not None and labor_werkz.freigaben.offen:  # Labor-Karte (labor_freigaben.py)
+                return True
+            if buerogeraete is not None and buerogeraete._offen:  # Karte der Bürogeräte (geraete_werkzeuge.py)
                 return True
             return dev is not None and any(j.pending for j in dev._jobs.values())
         except AttributeError:
@@ -821,7 +857,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
-        observers=[latenz_beobachter] if latenz_beobachter else [],
+        idle_timeout_frames=IDLE_FRAMES,
+        observers=[PipelineProtokoll(), *([latenz_beobachter] if latenz_beobachter else [])],
         # Labor: Client-Nachrichten gegen die Erlaubnisliste prüfen, bevor Pipecat sie auswertet (labor_rtvi.py)
         rtvi_processor=(LaborRTVIProcessor(art=identity.labor_art, begrenzer=labor_grenzen.text, klicks=labor_grenzen.klicks)
                         if labor_sitzung else None),
@@ -953,6 +990,18 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 await labor_werkz.schliessen()
             await zugang.schliessen()
             raise
+
+    # Bürogeräte (geraete_werkzeuge.py): Status, Fernseher, Lautsprecher, Steckdosen, Drucker, Scanner, NAS. Nur im Büro (dort läuft der
+    # Gerätedienst) und nie in einer Laborsitzung. Fehlt der Dienst oder antwortet er nicht rechtzeitig, bleibt die Liste leer und die
+    # Sitzung läuft ohne diese Werkzeuge. Rechte und Grenzen prüft der Dienst, kritische Aufrufe laufen über eine Freigabekarte (job "geraet").
+    if im_buero and not labor_sitzung:
+        buerogeraete = Buerogeraete(identity, memory, fremdinhalt=turn.taint, ist_fremd=lambda: turn.tainted)
+        buerogeraete.anbinden(senden=send, melden=melde_llm)
+        geraete_schemas = await buerogeraete.schemas()
+        if geraete_schemas:
+            standard_tools += geraete_schemas
+            context.set_tools(ToolsSchema(standard_tools=standard_tools))
+            logger.info("Bürogeräte: {} Werkzeuge in der Sitzung", len(geraete_schemas))
 
     async def refresh_prompt() -> None:
         await task.queue_frame(
@@ -1108,6 +1157,12 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 logger.warning("PC-Freigabe ohne PC-Werkzeuge in dieser Sitzung abgewiesen")
                 return
             await freigaben.entscheiden(data)
+        elif msg.type == "freigabe" and data.get("job") == GERAETE_JOB:
+            # Freigabe einer Bürogeräte-Aktion (geraete_werkzeuge.py): Karte und Klick gehören zur selben Sitzung
+            if buerogeraete is None:
+                logger.warning("Bürogeräte-Freigabe ohne Bürogeräte in dieser Sitzung abgewiesen")
+                return
+            await buerogeraete.entscheiden(data)
         elif msg.type == "freigabe" and data.get("job") == "labor":
             # Labor-Freigaben (labor_freigaben.py) gibt es nur in einer Laborsitzung, dort gehen sie oben über labor_sitzung.client_nachricht an
             # labor_werkz.entscheiden. Hier, in jeder anderen Sitzung, auch bei einem Admin, ist der Klick ohne Wirkung.
@@ -1280,6 +1335,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             await dev.close()  # laufenden Entwicklungsauftrag beim Auflegen beenden
         with contextlib.suppress(Exception, asyncio.TimeoutError):
             await asyncio.wait_for(vorgaenge.schliessen(), CLEANUP_DB_TIMEOUT_SECS)  # offene Vorgänge gelten als abgebrochen
+        if buerogeraete is not None:  # offene Karten der Bürogeräte ablehnen (keine offene Zeile in actions zurücklassen)
+            with contextlib.suppress(Exception, asyncio.TimeoutError):
+                await asyncio.wait_for(buerogeraete.schliessen(), CLEANUP_DB_TIMEOUT_SECS)
         if freigaben is not None:
             # offene PC-Freigaben ablehnen: keine Eingabesperre am PC und keine offene Zeile in actions zurücklassen
             with contextlib.suppress(Exception):

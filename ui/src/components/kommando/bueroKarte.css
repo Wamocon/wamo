@@ -133,3 +133,20 @@
 .bk-zeile-text { display: flex; flex-direction: column; min-width: 0; }
 .bk-zeile-name { font-weight: 700; overflow-wrap: anywhere; }
 .bk-zeile-zustand { color: var(--ink-soft); }
+
+/* ---------- Schalten (Detailkarte, nur Admins): Knöpfe in Tinte auf Weiß, mindestens 44 px hoch, Zustand nie nur über Farbe ---------- */
+.bk-schalter { display: flex; flex-direction: column; gap: 8px; margin: 4px 0; }
+.bk-schalter-reihe { display: flex; flex-wrap: wrap; gap: 8px; }
+.bk-schalt {
+  min-height: 44px; padding: 8px 16px; cursor: pointer;
+  font: 700 15px/1.2 var(--font-wmc); color: var(--ink); background: var(--bg);
+  border: 1.5px solid var(--ink); border-radius: 8px;
+  transition: background-color var(--dur-fast);
+}
+.bk-schalt:hover:not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ink) 10%, transparent); }
+.bk-schalt:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.bk-schalt[aria-disabled="true"] { opacity: 0.55; cursor: progress; }
+.bk-schalt[data-frage="ja"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.bk-schalt-meldung { margin: 0; min-height: 1.35em; font-size: 14px; line-height: 1.35; color: var(--ink); }
+.bk-schalt-meldung[data-art="fehler"] { padding-left: 8px; border-left: 3px solid var(--accent); }
+.bk-schalt-meldung[data-art="frage"] { padding-left: 8px; border-left: 3px solid var(--ink); font-weight: 700; }

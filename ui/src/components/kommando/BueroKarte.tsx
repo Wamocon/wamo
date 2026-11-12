@@ -23,6 +23,7 @@ import {
   type BueroGeraet,
   type Leer,
 } from "./bueroKarteModell";
+import { BueroSchalter } from "./BueroSchalter";
 import { useBueroStand } from "./useBueroStand";
 
 /**
@@ -31,7 +32,8 @@ import { useBueroStand } from "./useBueroStand";
  * langsamem Pulsieren (entfällt bei reduzierter Bewegung), unbekannt = grauer, hohler Kreis mit gestricheltem Rand.
  *
  * Jeder Punkt ist ein Button (Tab, Enter, Leertaste); ein Klick öffnet eine Detailkarte mit Zustand in Klartext und
- * Sprechtipp. Es gibt nur diese Ansicht, keine Steuerung (das geschieht per Sprache). Unter der Zeichnung steht dieselbe
+ * Sprechtipp. Admins finden dort auch die Knöpfe zum Schalten (BueroSchalter.tsx), für alle anderen bleibt es bei der Ansicht und
+ * der Sprache. Unter der Zeichnung steht dieselbe
  * Auskunft als Liste (Textalternative). Daten und Prüfung: bueroKarteModell.ts, Abruf: useBueroStand.ts.
  *
  * Gibt es Geräte im Netz, die WAMO nicht kennt, steht ein ruhiger Hinweis mit der Zahl da (grau, kein Alarmrot, nur die Zahl,
@@ -99,6 +101,7 @@ function Detail({ geraet, onSchliessen }: { geraet: BueroGeraet; onSchliessen: (
         <strong>{d.wort}</strong>
         <span>{geraet.text}</span>
       </p>
+      <BueroSchalter key={geraet.id} geraet={geraet} />
       {geraet.tipp && (
         <p className="bk-tipp">
           <span className="bk-etikett">Sprechtipp</span>
@@ -250,7 +253,7 @@ export function BueroKarte() {
             })}
           </div>
 
-          <div className="bk-detail-wrap" aria-live="polite" aria-atomic="true">
+          <div className="bk-detail-wrap" aria-live="polite" aria-atomic="false" aria-relevant="additions">
             {aktuell && <Detail geraet={aktuell} onSchliessen={schliessen} />}
           </div>
 

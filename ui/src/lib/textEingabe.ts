@@ -18,6 +18,10 @@ export const MAX_TEXT = 500;
 
 export const SCHLUESSEL_MARKE = "[Schlüssel entfernt]";
 
+/** So lange darf WAMO nach einer getippten Nachricht "denken", bevor die Oberfläche einen Hinweis zeigt (12.11.2026: Der Puls drehte sich, nichts kam). */
+export const HAENGT_NACH_MS = 45_000;
+export const HAENGT_HINWEIS = "WAMO antwortet ungewöhnlich lange. Wenn nichts passiert, beende das Gespräch und schreibe noch einmal.";
+
 // Gleiche Erkennung wie der Kern (voice-core/schluessel_filter.py): genaue Form und gesprochene Form
 const GENAU = /sk-ant-[A-Za-z0-9_-]{6,}/gi;
 const BINDESTRICHE = /[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g; // Unicode-Striche, die wie ein Bindestrich aussehen

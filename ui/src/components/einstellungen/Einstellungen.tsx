@@ -29,6 +29,7 @@ import { Fernzugriff } from "./Fernzugriff";
 import { GeraeteAbschnitt } from "./Geraete";
 import { VerbrauchAbschnitt } from "./Verbrauch";
 import { AenderungenAbschnitt } from "./Aenderungen";
+import { GedaechtnisAbschnitt } from "./Gedaechtnis";
 
 /**
  * Die Einstellungsseite: eine Ansicht der Hauptseite, kein eigener Pfad (siehe lib/einstellungenAbschnitte.ts). Ab 860 px
@@ -218,6 +219,7 @@ export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props)
                 {wirksam === "sprache" && (
                   <SpracheAbschnitt mikrofone={aktionen.mikrofone} mikrofonWaehlen={aktionen.mikrofonWaehlen} />
                 )}
+                {wirksam === "gedaechtnis" && <GedaechtnisAbschnitt />}
                 {wirksam === "darstellung" && <DarstellungAbschnitt />}
                 {wirksam === "geraete" && <GeraeteAbschnitt onPcSteuerung={aktionen.pcSteuerung} />}
                 {wirksam === "fernzugriff" && (

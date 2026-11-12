@@ -647,6 +647,12 @@ class GatewayDateiTests(unittest.TestCase):
         self.assertIn("${WAMO_RD_KEY:-/etc/wamo-rd/json.key}:/run/wamo-rd/json.key:ro", self.compose)
         self.assertRegex(self.compose, r"JSON_TRUSTED_NETWORKS: \$\{WAMO_RD_VERTRAUT:-172\.26\.0\.10/32\}")
         self.assertIn('BAN_ENABLED: "true"', self.compose)
+        # Das Gateway kennt nur signierte Token, keine Kennwörter: Die Sperre ist ein Flutschutz, kein Schutz vor Raten. Ein alter Tab mit totem
+        # Token meldet sich beim Neuladen mehrfach hintereinander an (12.11.2026: 3 Fehlversuche in 3 Sekunden sperrten den Laptop 15 Minuten).
+        versuche = int(re.search(r'BAN_MAX_INVALID_ATTEMPTS: "(\d+)"', self.compose).group(1))
+        dauer = int(re.search(r'BAN_ADDRESS_DURATION: "(\d+)"', self.compose).group(1))
+        self.assertGreaterEqual(versuche, 10)
+        self.assertLessEqual(dauer, 120)
         # echte Absenderadresse hinter Caddy; vertraut wird nur Caddy (feste Adresse), nicht jedes private Netz
         self.assertIn('REMOTE_IP_VALVE_ENABLED: "true"', self.compose)
         self.assertIn("REMOTE_IP_VALVE_INTERNAL_PROXIES: ${WAMO_RD_PROXY_REGEX:-172[.]26[.]0[.]2}", self.compose)

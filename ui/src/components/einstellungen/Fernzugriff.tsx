@@ -91,6 +91,24 @@ function leeresFenster(): Window | null {
   }
 }
 
+// Die Desktop-App kennt keine Fenster im Fenster: Der Hörer in desktop/main.js (setWindowOpenHandler) verweigert jedes Fenster, window.open
+// liefert dort immer null (mit Electron gemessen, auch für Adressen). Ein leeres Fenster, das später zur Adresse wechselt, kann es dort nicht
+// geben. Der Hörer reicht jede http(s)-Adresse an den normalen Browser weiter. Deshalb ruft die App window.open erst mit der fertigen Adresse
+// auf. Eine Sperre für Fenster ohne Klick gibt es in der App nicht. Die Person muss die Seite danach gleich benutzen: Der Kern beendet eine
+// Sitzung ohne Verbindung nach wenigen Minuten.
+function inDerDesktopApp(): boolean {
+  return typeof window !== "undefined" && Boolean(window.wamoDesktop?.isDesktop);
+}
+
+function imBrowserOeffnen(url: string): boolean {
+  try {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function inFensterOeffnen(w: Window | null, url: string): boolean {
   if (!w || w.closed) return false;
   try {
@@ -276,7 +294,8 @@ function VerbindenDialog({
     laeuft.current = true;
     setBeschaeftigt(true);
     setFehler("");
-    const fenster = leeresFenster(); // sofort, solange der Tastendruck oder Tipp zählt
+    const inApp = inDerDesktopApp();
+    const fenster = inApp ? null : leeresFenster(); // sofort, solange der Tastendruck oder Tipp zählt (nur im Browser, siehe oben)
     let verwendet = false;
     try {
       if (eingabe !== null) {
@@ -290,7 +309,7 @@ function VerbindenDialog({
       }
       const antwort = await starten(ziel.name, window.location.origin);
       if (antwort.ok) {
-        verwendet = inFensterOeffnen(fenster, antwort.start.url);
+        verwendet = inApp ? imBrowserOeffnen(antwort.start.url) : inFensterOeffnen(fenster, antwort.start.url);
         onFertig(antwort.start, verwendet);
         return;
       }
@@ -443,7 +462,7 @@ export const Fernzugriff = memo(function Fernzugriff() {
   const gestartet = (start: Start, geoeffnet: boolean) => {
     schliessen();
     stand.set((alt) => ({ ...alt, offeneSeite: { sitzung: start.sitzung, url: start.url } }));
-    meldungZeigen({ text: startMeldung(start.anzeige, geoeffnet), art: "ok" });
+    meldungZeigen({ text: startMeldung(start.anzeige, geoeffnet, inDerDesktopApp()), art: "ok" });
     void laden();
   };
   const fehlgeschlagen = (text: string, neuLaden: boolean) => {

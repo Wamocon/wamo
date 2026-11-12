@@ -197,6 +197,37 @@ export function merkeMikrofon(id: string | null) {
   }
 }
 
+// ---------- "Ohne Mikrofon weiter" ----------
+/**
+ * Wählt die Person bei einer Mikrofon-Warnung "Ohne Mikrofon weiter", bleibt die Stille-Warnung für dieses Gerät aus, auch bei einem
+ * neuen Gespräch (12.11.2026: Bei einem Mikrofon, das Windows als "OK" führt und nur Nullen liefert, kam die Warnung bei jedem Start
+ * wieder). Das Gedächtnis gilt nur für dieses Fenster bis zum Neuladen und wird nirgends gespeichert. Liefert das Gerät später wieder
+ * Ton (pruefeStille meldet "wieder_da"), warnt WAMO bei der nächsten Stille wieder. Andere Fehler (kein Gerät, von Windows gesperrt,
+ * abgerissene Spur) bleiben davon unberührt.
+ */
+const OHNE_MIKROFON_MAX = 20;
+const ohneMikrofon = new Set<string>();
+
+/** Schlüssel wie in der Oberfläche (WamoState.mikrofon): die Bezeichnung der Spur, auf 120 Zeichen gekürzt; ohne Namen ein gemeinsamer Eintrag. */
+const geraeteSchluessel = (geraet: string | null | undefined): string => (geraet ?? "").trim().slice(0, 120) || "unbekanntes Gerät";
+
+export function stilleAusblenden(geraet: string | null | undefined): void {
+  const k = geraeteSchluessel(geraet);
+  ohneMikrofon.delete(k); // wieder ans Ende: das zuletzt gewählte Gerät fällt zuletzt heraus
+  ohneMikrofon.add(k);
+  while (ohneMikrofon.size > OHNE_MIKROFON_MAX) {
+    const aeltestes = ohneMikrofon.values().next().value;
+    if (aeltestes === undefined) break;
+    ohneMikrofon.delete(aeltestes);
+  }
+}
+
+export const stilleAusgeblendet = (geraet: string | null | undefined): boolean => ohneMikrofon.has(geraeteSchluessel(geraet));
+
+export function stilleWiederAufnehmen(geraet: string | null | undefined): void {
+  ohneMikrofon.delete(geraeteSchluessel(geraet));
+}
+
 // ---------- Sendespur ----------
 type Sender = { track: MediaStreamTrack | null; replaceTrack: (t: MediaStreamTrack | null) => Promise<void> };
 type Transceiver = { sender: Sender; receiver: { track: { kind: string } | null } };

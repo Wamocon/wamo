@@ -3,7 +3,7 @@
 // Ausführen im Ordner ui/:  npm test
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { abgelaufenHinweis, karteTexte, LABOR_JOB } from "./laborKarte.ts";
+import { abgelaufenHinweis, GERAET_JOB, karteTexte, LABOR_JOB } from "./laborKarte.ts";
 import { parseServerMessage } from "./nachrichten.ts";
 
 test("Job labor hat eigene Texte, die PC-Karte und die Entwicklungskarte behalten ihre", () => {
@@ -25,6 +25,16 @@ test("abgelaufen: bei Labor ist nichts passiert, nur bei PC am PC", () => {
   assert.equal(abgelaufenHinweis("labor"), "Die Freigabe ist abgelaufen; es ist nichts passiert.");
   assert.equal(abgelaufenHinweis("pc"), "Die Freigabe ist abgelaufen; am PC ist nichts passiert.");
   assert.doesNotMatch(abgelaufenHinweis("labor"), /PC/);
+});
+
+test("Job geraet (Bürogeräte) hat eigene Texte und sagt nach Ablauf, dass nichts passiert ist", () => {
+  assert.equal(GERAET_JOB, "geraet");
+  const g = karteTexte("geraet");
+  assert.equal(g.ueberschrift, "Bürogerät freigeben");
+  assert.equal(g.hinweis, "Du entscheidest, nicht WAMO.");
+  assert.equal(g.zielLabel, "Gerät:");
+  assert.equal(abgelaufenHinweis("geraet"), "Die Freigabe ist abgelaufen; es ist nichts passiert.");
+  assert.doesNotMatch(abgelaufenHinweis("geraet"), /PC/);
 });
 
 const KARTE = {

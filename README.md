@@ -460,8 +460,10 @@ in der Mitte WAMO (Sokrates-2), je Gerätegruppe ein Ring (von innen: Server, Dr
 Steckdosen), je Gerät ein Punkt. Weiß und gefüllt heißt in Ordnung, rot mit Strich und langsam pulsierend heißt Störung, grau und
 hohl heißt unbekannt oder nicht eingerichtet; der Zustand steht nie nur in der Farbe, sondern auch in Form und Wort. Ein Klick oder
 Enter auf einen Punkt öffnet eine Detailkarte mit Name, Zustand in Klartext (zum Beispiel „bereit, Toner 80 Prozent“, „Internet
-verbunden, 86 Mbit runter“) und einem Sprechtipp („Sag: Schalte den Fernseher aus“). Es ist nur eine Ansicht: Gesteuert wird
-weiter per Sprache. Unter der Zeichnung steht dieselbe Auskunft als Liste (für Screenreader und zum Lesen); jeder Punkt ist ein
+verbunden, 86 Mbit runter“) und einem Sprechtipp („Sag: Schalte den Fernseher aus“). Admins finden in der Detailkarte außerdem Knöpfe
+zum Schalten (Fernseher: Einschalten, Ausschalten, Lauter, Leiser, Stumm, Ton an; Steckdosen: Ein und Aus, Ausschalten mit zweitem Tipp;
+Lautsprecher: Lauter, Leiser, Stumm, Ton an), nur das, was zum Zustand passt (ein Fernseher im Standby bietet nur „Einschalten“). Für alle
+anderen bleibt es bei der Ansicht und der Sprache. Unter der Zeichnung steht dieselbe Auskunft als Liste (für Screenreader und zum Lesen); jeder Punkt ist ein
 Button mit Tastaturbedienung, das Pulsieren entfällt bei reduzierter Bewegung. Die Karte läuft auf dem Handy (ab 360 px) wie am PC.
 
 - **Kern-API:** `GET /wamo/api/buero/status` (`voice-core/buero_api.py`, Token, aal2 und aktives Profil wie bei allen Routen, jede Rolle).
@@ -473,6 +475,14 @@ Button mit Tastaturbedienung, das Pulsieren entfällt bei reduzierter Bewegung. 
   gibt die Route nie aus; der Klartext entsteht aus eigenen Wörtern, nur der Name kommt vom Gerät und wird gesäubert und begrenzt.
   Grenze: 6 Abrufe je Minute und Profil. Ohne Gerätedienst (zum Beispiel unterwegs) antwortet die Route mit 503, die Karte zeigt dann
   ruhig „Gerätedienst nicht erreichbar“.
+- **Schalten:** `POST /wamo/api/buero/steuern` mit `{"geraet": "<kennung>", "aktion": "an|aus|lauter|leiser|stumm|laut"}`, nur Admins
+  (403 sonst), nur diese sechs Aktionen (Lautstärke als Zahl und Eingang gibt es hier nie), höchstens 20 Schaltvorgänge je Minute und
+  Profil. Der Kern ruft den Gerätedienst (`steuern`) mit der Identität des Profils; der Dienst prüft Rechte und Lautstärkegrenzen. Der
+  Knopf ist eine ausdrückliche Handlung, deshalb gibt es keine Freigabekarte. Jeder Versuch steht in `actions` (Werkzeug
+  `buerogeraet_steuern`, Grund „Bürogerät (Knopf in der Oberfläche)“). Fehler sind ruhige Sätze ohne Gerätetexte (409, 429, 502, 503).
+  Im Stand (`GET`) tragen steuerbare Geräte für Admins das Feld `aktionen`. Seit 12.11.2026 hängen außerdem die Bürogeräte-Werkzeuge
+  (`geraete_werkzeuge.py`) in jeder Büro-Sitzung (vorher waren sie gebaut, aber in `bot.py` nicht eingehängt): WAMO kann Geräte per Sprache
+  und Text steuern, Freigabekarten tragen den Job `geraet`.
 - **Oberfläche:** `ui/src/components/kommando/BueroKarte.tsx` (SVG ohne neue Abhängigkeit), reine Logik in `bueroKarteModell.ts`,
   Abruf in `useBueroStand.ts`: alle 30 Sekunden und nur, solange der Reiter sichtbar und die Seite nicht verborgen ist.
 - **Vorschau ohne Gerätedienst:** `npm run dev` mit `NEXT_PUBLIC_WAMO_VORSCHAU=1`, dann `/?vorschau=1&buero=beispiel` (weitere Werte:
@@ -730,8 +740,9 @@ Der Router bleibt ausschließlich lesbar. Mögliche Schreibaktionen stehen nur a
 
 ### Start beim Tippen (stiller Start, nur Oberfläche)
 
-Wer in den Einstellungen unter „Sprache und Ton“ den Schalter „Still starten beim Tippen“ einschaltet (je Gerät und je Person, Standard
-aus, kein Server-Zustand, `localStorage`-Schlüssel `wamo.stillStart.<user_id>`), muss „Gespräch starten“ nicht mehr klicken: Der erste
+Der Schalter „Still starten beim Tippen“ (Einstellungen, „Sprache und Ton“; je Gerät und je Person, **Standard an seit 12.11.2026**, wer ihn
+ausschaltet, behält „aus“; kein Server-Zustand, `localStorage`-Schlüssel `wamo.stillStart.<user_id>`, Wert `an` oder `aus`) sorgt dafür,
+dass man „Gespräch starten“ nicht mehr klicken muss: Der erste
 Tastendruck im Eingabefeld startet eine Sitzung ohne Mikrofon (der Medienmanager `ui/src/lib/stillMedien.ts` öffnet es erst bei „Sprechen“,
 kein `getUserMedia`, keine Audiospur am Sender), die Wiedergabe bleibt stumm, Antworten kommen als Text (`audio_response: false`). Die erste
 Zeile wird gehalten und genau einmal gesendet, sobald die Sitzung steht. Der Mikrofonknopf und „Gespräch starten“ machen aus der stillen
@@ -953,6 +964,16 @@ Modells beim Nachladen; die Stichwortliste für Problemzeilen ist eine Annahme u
 - **Persönlich:** Eigenschaften, Vorlieben und Verhalten eines Profils, nur für dieses Profil sichtbar.
 - **Gemeinsam:** Wissen über Firma, Kunden, Projekte und Abläufe. Wirkt erst nach Freigabe durch einen Admin;
   ausdrücklich gemerkte Einträge eines Admins gelten sofort.
+- **Vorschläge in der Oberfläche prüfen (seit 12.11.2026, Migration `0020_gedaechtnis_vorschlaege.sql`):** Admins finden unter
+  Einstellungen, „Gedächtnis“ alle offenen Vorschläge mit vollem Text, Art, Autor und Zeit und entscheiden mit „Für alle freigeben“
+  oder „Ablehnen“ (gleich gewichtet). Ein Admin sieht beim Entstehen eines Vorschlags im Hinweis „Gemerkt“ den Link „Jetzt prüfen“.
+  Kern: `voice-core/gedaechtnis_api.py` (`GET /wamo/api/gedaechtnis/vorschlaege`, `POST /wamo/api/gedaechtnis/entscheiden`, nur Admin,
+  30 Aufrufe je Minute). Der Kern hat weiter kein `UPDATE` auf `memories.status`: Er ruft die Datenbankfunktion
+  `gedaechtnis_vorschlag_entscheiden` (SECURITY DEFINER, `EXECUTE` nur für `wamo_core`) mit der aus dem Token geprüften Admin-Kennung
+  auf; sie prüft den Admin in der Datenbank noch einmal und ändert genau eine offene Zeile (`status`, `reviewed_by`, `reviewed_at`).
+  Ein freigegebener Eintrag gilt in allen Sitzungen, die danach beginnen. Reihenfolge beim Einspielen: Migration, dann Kern, dann
+  Oberfläche. Der Weg über `wamo_admin.py` bleibt. Tests: `voice-core/test_gedaechtnis_api.py`, `test_migration_0020.py`,
+  `supabase/tests/0020_gedaechtnis_vorschlaege_test.sql`, `ui/src/lib/gedaechtnis.test.ts`, `Gedaechtnis.comp.test.tsx`.
 - PC-Werkzeuge und Entwicklungsaufträge stehen vorerst nur Profilen mit Rolle `admin` zur Verfügung.
 
 ## Entwicklungsaufträge mit ECC und REA

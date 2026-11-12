@@ -13,7 +13,7 @@ import { KernFehler } from "@/lib/kernApi";
  * Die Form gleicht der Antwort von GET /wamo/api/buero/status (voice-core/buero_api.py).
  */
 
-type Zeile = { id: string; name: string; gruppe: string; ampel: string; text: string; tipp: string; kennzahlen?: Record<string, number> };
+type Zeile = { id: string; name: string; gruppe: string; ampel: string; text: string; tipp: string; kennzahlen?: Record<string, number>; aktionen?: string[] };
 
 const GERAETE: Zeile[] = [
   { id: "sokrates-2", name: "Sokrates-2", gruppe: "server", ampel: "ok", text: "läuft, Last 0,4", tipp: "Sag: Wie geht es den Servern?", kennzahlen: { last: 0.4 } },
@@ -25,10 +25,11 @@ const GERAETE: Zeile[] = [
   { id: "imac", name: "iMac", gruppe: "netz", ampel: "unbekannt", text: "nicht sichtbar, vielleicht aus", tipp: "Sag: Welche Bürogeräte sind gerade erreichbar?" },
   { id: "nas-1", name: "WMC_NAS1", gruppe: "speicher", ampel: "ok", text: "erreichbar", tipp: "Sag: Suche auf dem NAS nach dem Angebot" },
   { id: "nas-testelite", name: "WMC-Testelite", gruppe: "speicher", ampel: "unbekannt", text: "erreichbar, WAMO-Zugang nicht eingerichtet", tipp: "Sag: Suche auf dem NAS nach dem Angebot" },
-  { id: "fernseher", name: "Fernseher LG OLED 83 Zoll", gruppe: "medien", ampel: "ok", text: "an, nicht gekoppelt", tipp: "Zum Steuern per Sprache muss der Fernseher erst gekoppelt werden" },
+  { id: "fernseher", name: "Fernseher LG OLED 83 Zoll", gruppe: "medien", ampel: "ok", text: "an, gekoppelt, Lautstärke 7", tipp: "Sag: Schalte den Fernseher aus", aktionen: ["aus", "lauter", "leiser", "stumm", "laut"] },
+  { id: "fernseher-2", name: "Fernseher Samsung 85 Zoll QLED", gruppe: "medien", ampel: "ok", text: "aus", tipp: "Sag: Schalte den Fernseher an", aktionen: ["an"] },
   { id: "lautsprecher", name: "Lautsprecher Beispiel", gruppe: "medien", ampel: "unbekannt", text: "keine Antwort, vielleicht aus", tipp: "Sag: Stell den Lautsprecher leiser" },
-  { id: "steckdose-1", name: "Steckdose 1 (0470)", gruppe: "steckdosen", ampel: "ok", text: "an, 12 Watt", tipp: "Sag: Schalte Steckdose 1 aus", kennzahlen: { leistung_w: 12.3 } },
-  { id: "steckdose-2", name: "Steckdose 2 (2F90)", gruppe: "steckdosen", ampel: "ok", text: "aus", tipp: "Sag: Schalte Steckdose 2 an", kennzahlen: { leistung_w: 0 } },
+  { id: "steckdose-1", name: "Steckdose 1 (0470)", gruppe: "steckdosen", ampel: "ok", text: "an, 12 Watt", tipp: "Sag: Schalte Steckdose 1 aus", kennzahlen: { leistung_w: 12.3 }, aktionen: ["aus"] },
+  { id: "steckdose-2", name: "Steckdose 2 (2F90)", gruppe: "steckdosen", ampel: "ok", text: "aus", tipp: "Sag: Schalte Steckdose 2 an", kennzahlen: { leistung_w: 0 }, aktionen: ["an"] },
   { id: "steckdose-3", name: "Steckdose 3 (75B0)", gruppe: "steckdosen", ampel: "ok", text: "aus", tipp: "Sag: Schalte Steckdose 3 an", kennzahlen: { leistung_w: 0 } },
 ];
 
