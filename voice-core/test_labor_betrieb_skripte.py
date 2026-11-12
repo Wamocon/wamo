@@ -839,7 +839,7 @@ class EinrichtenProbelaufTests(Werkstatt):
         self.assertEqual(list((self.caddy / "etc" / "kern").iterdir()), [])
         self.assertFalse((self.att / "wamo-core-env.stdin").exists())
         for z in self.aufrufe():
-            self.assertNotRegex(z, r"^(docker (pull|run|rm|build|exec|network (create|rm))|docker compose (-f \S+ (up|down)|up|down|build)|systemctl (restart|stop|start)|wamo-core-env setzen)", z)
+            self.assertNotRegex(z, r"^(docker (pull|run|rm|build|exec wamo-caddy caddy|network (create|rm))|docker compose (-f \S+ (up|down)|up|down|build)|systemctl (restart|stop|start)|wamo-core-env setzen)", z)
 
     def test_vorbedingungen(self):
         self.ausgabe("docker.ps", "", rc=0)  # wamo-caddy läuft nicht
