@@ -82,6 +82,19 @@ Je Platz eine SQLite-Datei (WAL) mit `max_page_count` (16 MB), dazu eine kleine 
 auch wenn die Datei voll ist, nie mit einem Absturz. Alle Abfragen sind parametrisiert, die Suche ist wörtlich (kein `LIKE`) und beachtet
 Groß- und Kleinschreibung nicht, auch bei Umlauten. Der Speicher für Idempotenzschlüssel ist auf 200 je Platz begrenzt (wirkt nur bei Missbrauch).
 
+**Einwilligungsversion:** `neuer-durchlauf` verlangt eine Version, die nicht kleiner ist als die höchste bisher erfasste (Vertrag Abschnitt 8, die
+Nummer wächst nur). Sie gilt für alle Plätze zusammen und steht in `zentral.sqlite3`. Eine zu kleine Version ergibt 422, und es ändert sich nichts
+(auch der Platz-Token bleibt).
+
+## Bekannte Restrisiken
+
+* `neuer-durchlauf` verlangt keine Bestätigung für einen laufenden Durchlauf: Ein versehentlicher Aufruf setzt das Board eines Besuchers zurück und
+  entzieht dessen Platz-Token. Die Betreuer-Seite sollte vorher nachfragen.
+* Für die Abnahmeplätze 15 und 16 sperrt der Dienst keinen Platz-Token (die Abnahme braucht ihn). Der Betreuer gibt für sie keinen Besucher-Token aus.
+* Der Dienst läuft als genau ein Prozess: Token-Index, Raten, Fehlerzähler und Zwischenspeicher liegen im Speicher dieses Prozesses (mehrere Prozesse
+  hinter einem Verteiler würden die Grenzen je Prozess zählen).
+* Die Frist für Kopfzeilen (10 Sekunden) und die Höchstzahl der Verbindungen (64) schützen den Dienst selbst, sie ersetzen nicht die Fristen von Caddy.
+
 ## Grenzen für Lesen, Fehlversuche und Verbindungen
 
 * **Board:** höchstens etwa 2 Abfragen je Sekunde und Platz-Token (kurzzeitig 5), alle Plätze zusammen höchstens 20 je Sekunde, darüber 429

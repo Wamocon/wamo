@@ -279,3 +279,45 @@ def test_ungueltiger_neuer_durchlauf_laesst_den_token_stehen(client):
     token = _neuer_platz_token(client)
     r = client.post(f"/api/betreuer/plaetze/{PLATZ}/neuer-durchlauf", json={"einwilligung_version": 0}, headers=betreuer_kopf())
     assert r.status_code == 422 and _board_status(client, token) == 200
+
+
+# ---------- Einwilligungsversion nur wachsend (Befund 7 des Reviews, Vertrag Abschnitt 8) ----------
+def _neuer_durchlauf(client, platz: int, version: int):
+    return client.post(f"/api/betreuer/plaetze/{platz}/neuer-durchlauf", json={"einwilligung_version": version}, headers=betreuer_kopf())
+
+
+def test_einwilligungsversion_darf_nur_wachsen(client):
+    oeffnen(client, PLATZ, version=5)
+    alt = _zustand(client)
+    token = _neuer_platz_token(client)
+    r = _neuer_durchlauf(client, PLATZ, 4)
+    assert r.status_code == 422 and r.json()["fehler"] == "eingabe_ungueltig" and "Einwilligungsversion" in r.json()["text"]
+    assert _zustand(client) == {**alt, "hat_platz_token": True} and _board_status(client, token) == 200  # nichts hat sich geändert, auch der Token nicht
+    assert _neuer_durchlauf(client, PLATZ, 5).status_code == 200  # dieselbe Version gilt für den nächsten Besucher
+    assert _neuer_durchlauf(client, PLATZ, 6).status_code == 200
+    assert _neuer_durchlauf(client, PLATZ, 5).status_code == 422
+
+
+def test_einwilligungsversion_gilt_fuer_alle_plaetze_zusammen(client):
+    oeffnen(client, 3, version=6)
+    assert _neuer_durchlauf(client, 4, 5).status_code == 422
+    assert _neuer_durchlauf(client, 4, 6).status_code == 200
+    assert _zustand(client, 4)["einwilligung_version"] == 6
+
+
+def test_hoechste_einwilligungsversion_bleibt_nach_dem_neustart(konfig, uhr):
+    from fastapi.testclient import TestClient
+
+    from wamo_labor_dienst.app import create_app
+
+    with TestClient(create_app(konfig, uhr=uhr), base_url="http://127.0.0.1") as c:
+        assert _neuer_durchlauf(c, 3, 7).status_code == 200
+    with TestClient(create_app(konfig, uhr=uhr), base_url="http://127.0.0.1") as c:
+        assert _neuer_durchlauf(c, 3, 6).status_code == 422
+        assert _neuer_durchlauf(c, 3, 8).status_code == 200
+
+
+def test_abgelehnte_einwilligung_steht_in_der_betreuer_spur_mit_status(client):
+    oeffnen(client, PLATZ, version=5)
+    _neuer_durchlauf(client, PLATZ, 4)
+    assert [e["status"] for e in _protokoll(client, "betreuer.jsonl")] == [200, 422]
