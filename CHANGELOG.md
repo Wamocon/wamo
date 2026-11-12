@@ -18,6 +18,12 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   Seeds, Token und Codes erscheinen nie in Ausgabe, Fehlertext oder Befehlszeile (einzige Ausnahme: `codes` gibt genau einen Code aus). Teile:
   `wamo_labor_faktoren_totp.py`, `wamo_labor_faktoren_api.py`, `wamo_labor_faktoren_umschlag.py`; Tests `test_wamo_labor_faktoren.py` und
   `test_wamo_labor_faktoren_lauf.py` mit einer Attrappe von GoTrue (`wamo_labor_faktoren_attrappe.py`, nur für Tests).
+  Nach der unabhängigen Prüfung: Signale (SIGINT, SIGTERM, unter Windows SIGBREAK) lösen das Aufräumen aus und werden währenddessen ignoriert
+  (`wamo_labor_faktoren_signale.py`), der Seed steht sofort nach verify in der Zwischendatei `<Datei>.neu`, die ein späterer Lauf übernimmt,
+  der Seed wird normalisiert und nur mit A bis Z, 2 bis 7 und = gespeichert, nur `labor-01` bis `labor-09` mit E-Mail `<Kennung>@wamo.test`
+  sind zulässig, Host und Port des Anmeldeservers stehen als erste Zeile (http auf Loopback aus der Umgebung wird abgelehnt), es bleiben
+  die letzten drei Sicherungen, der Zeitversatz gilt bis 300 Sekunden und Date ohne Zeitzone als UTC, kein Code wird im selben
+  30-Sekunden-Fenster zweimal gesendet, jede Anfrage hat ein Gesamtlimit von 60 Sekunden, `pruefen` belegt nur den Seed in der Datei.
 - Seitenleisten der Kommandozentrale per Ziehen in der Breite ändern (nur Oberfläche): Zwischen linker Leiste und Mitte sowie zwischen Mitte
   und rechter Leiste sitzt ein Griff (`role="separator"`), den man mit Maus, Stift oder Finger ziehen kann (Pointer Events mit Pointer
   Capture). Links gelten 200 bis 520 px, rechts 260 bis 640 px, die Mitte behält mindestens 360 px. Tastatur: Pfeil links und rechts ändert
