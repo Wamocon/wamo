@@ -707,7 +707,7 @@ class GatewayDateiTests(unittest.TestCase):
         self.assertIn('"0.0.0.0:55446:55446"', c)
         self.assertRegex(c, r"rd:\s+name: wamo-rd-netz\s+internal: true\s+driver_opts:\s+com\.docker\.network\.bridge\.inhibit_ipv4: \"true\"\s+ipam:\s+config:\s+- subnet: 172\.26\.0\.0/24")
         self.assertRegex(c, r"networks:\s+default: \{\}\s+ui: \{\}\s+rd:\s+(#[^\n]*\s+)?ipv4_address: 172\.26\.0\.2")
-        self.assertEqual(len(re.findall(r'"0\.0\.0\.0:\d+:\d+"', c)), 4)
+        self.assertEqual(len(re.findall(r'"0\.0\.0\.0:\d+:\d+"', c)), 5)  # 55443 bis 55446 und seit dem Labor-Dienst 55447 (test_labor_betrieb_skripte.py)
 
     def test_eingabe_erweiterung_wird_gebaut_und_eingehaengt(self):
         """Tastaturleiste für Handy und Laptop (Test 04.11.2026): Jar mit Manifest, nur lesend in den Webcontainer eingehängt."""

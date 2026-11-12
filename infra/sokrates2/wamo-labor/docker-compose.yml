@@ -1,0 +1,117 @@
+# Labor-Dienst auf Sokrates-2 (Test-Jira des Testlabors am 28.11.2026, Container wamo-labor-dienst, eigenes Compose-Projekt, getrennt von
+# supabase-wamo, wamo-caddy, wamo-ui und wamo-rd). Der Dienst liegt im Repo unter labor-dienst/ (Vertrag docs/labor-dienst-vertrag.md).
+# Eingerichtet durch infra/sokrates2/wamo-labor-einrichten.sh, auf dem Server in /opt/wamo-labor.
+#
+#   Browser ──HTTPS 55447──> wamo-caddy ──HTTP 8080 (Netz wamo-labor-netz)──> wamo-labor-dienst
+#   Kern    ──HTTP 127.0.0.1:18765 (Loopback, ohne TLS)─────────────────────> wamo-labor-dienst
+#
+# Besucher erreichen den Dienst nur über Caddy (Site wamo-labor.caddy), und Caddy reicht nie etwas unter /api/kern/ weiter. Der Kern geht
+# direkt über Loopback, mit dem Bearer des Kerns. Der Dienst hat keinen Weg nach außen (Vertrag D2): kein Internet, kein SMTP, kein DNS.
+#
+# Netze (feste Adressen, damit Firewall und Dienst sie kennen; die Vorprüfung gegen Überschneidungen macht das Einrichtungsskript):
+#   wamo-labor-netz    172.28.0.0/24  intern, ohne Adresse am Host: nur Caddy (172.28.0.2) und der Dienst (172.28.0.10). Legt wamo-caddy an
+#                                     (wamo-caddy/docker-compose.yml). Der Dienst vertraut allein der Adresse von Caddy als Proxy: nur von ihr
+#                                     gilt X-Forwarded-For für die Zählung der Fehlversuche (WAMO_LABOR_DIENST_PROXYS).
+#   wamo-labor-lokal   172.28.1.0/29  nur für die Veröffentlichung 127.0.0.1:18765. Docker veröffentlicht keine Ports über ein internes Netz,
+#                                     deshalb braucht der Dienst dieses zweite, nicht interne Netz. Einen Ausgang hat er dort trotzdem nicht:
+#                                     Die Kette WAMO-FW-LABAUS in wamo-firewall.sh verwirft alles, was aus diesem Netz weitergeleitet wird.
+#
+# Dateien auf dem Host (alle ohne Anlegen durch Docker: fehlt etwas, startet der Container nicht, statt mit einem leeren Ordner zu laufen):
+#   /var/lib/wamo-labor           Daten (Datenbanken und Protokoll), Besitzer 10001, Modus 0700, einziger beschreibbarer Ort
+#   /etc/wamo-labor/kern-token    Bearer des Kerns (WAMO_LABOR_TOKEN), Besitzer 10001, Modus 0400, nur lesend im Container
+#   /etc/wamo-labor/betreuer-token  Token der Betreuer-Seite, Besitzer 10001, Modus 0400, nur lesend im Container
+# Die Token erzeugt das Einrichtungsskript beim ersten Lauf. Sie stehen nie in dieser Datei, nie in der Umgebung des Containers und nie in
+# docker inspect, nur als Datei. Der Dienst liest sie beim Start und prüft Besitzer und Modus selbst.
+#
+# Aufbewahrung (D10): WAMO_LABOR_DIENST_BIS ist der 11.12.2026. Danach löscht der Dienst alle Daten, solange er läuft. Die Container-Protokolle
+# (uvicorn schreibt je 503 eine Warnzeile) sind auf 3 Dateien zu 10 MB begrenzt und verschwinden mit dem Container. Löschlauf:
+# wamo-labor-loeschlauf.sh.
+#
+# Das Image (wamo-labor-dienst) wird am Server aus labor-dienst/Dockerfile gebaut, nie gezogen. Das Basis-Image hat dort keinen Standardwert
+# und kommt mit festem Digest als Build-Argument BASIS (kein wanderndes Tag): Das Einrichtungsskript liest es aus /etc/wamo-labor/basis-image
+# (Option --basis-image beim ersten Lauf) und ruft docker build selbst auf. Die Abhängigkeiten installiert das Dockerfile mit --require-hashes.
+name: wamo-labor
+
+services:
+  dienst:
+    image: wamo-labor-dienst:${WAMO_LABOR_STAND:-1}
+    build:
+      context: ${WAMO_LABOR_QUELLE:-/home/wamocon/wamo-labor-quelle}
+      args:
+        BASIS: ${WAMO_LABOR_BASIS_IMAGE:-}
+    # Das Image baut das Skript (docker build); Compose startet nur, was schon da ist
+    pull_policy: never
+    container_name: wamo-labor-dienst
+    init: true
+    restart: unless-stopped
+    # Benutzer 10001 (im Image angelegt, auf dem Host ohne Konto), ohne Linux-Capabilities, ohne neue Rechte, Dateisystem schreibgeschützt
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Grenzen nach Vertrag D11 (Empfehlung 256 MB und 0,5 CPU). Jeder Faden zählt als Prozess: uvicorn, der Faden-Pool für die Datenbank und der
+    # Schreiber für das Protokoll bleiben weit darunter.
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    ulimits:
+      nofile: 4096
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      WAMO_LABOR_DIENST_KERN_TOKEN_DATEI: /run/wamo-labor/kern-token
+      WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI: /run/wamo-labor/betreuer-token
+      WAMO_LABOR_DIENST_BIS: "2026-12-11"
+      WAMO_LABOR_DIENST_PROXYS: 172.28.0.2
+    volumes:
+      - type: bind
+        source: ${WAMO_LABOR_DATEN:-/var/lib/wamo-labor}
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${WAMO_LABOR_ETC:-/etc/wamo-labor}/kern-token
+        target: /run/wamo-labor/kern-token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${WAMO_LABOR_ETC:-/etc/wamo-labor}/betreuer-token
+        target: /run/wamo-labor/betreuer-token
+        read_only: true
+        bind:
+          create_host_path: false
+    # Nur für den Kern: Loopback des Hosts, nie 0.0.0.0. Kein anderer Port geht nach außen (Besucher kommen über Caddy).
+    ports:
+      - "127.0.0.1:18765:8080"
+    healthcheck:
+      test: ["CMD", "python", "-m", "wamo_labor_dienst", "gesundheit"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      labor:
+        ipv4_address: 172.28.0.10
+        aliases:
+          - wamo-labor-dienst
+      lokal:
+        ipv4_address: 172.28.1.2
+
+networks:
+  labor:
+    name: wamo-labor-netz
+    external: true
+  lokal:
+    name: wamo-labor-lokal
+    ipam:
+      config:
+        - subnet: 172.28.1.0/29

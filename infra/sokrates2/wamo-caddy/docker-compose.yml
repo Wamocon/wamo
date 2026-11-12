@@ -5,6 +5,7 @@
 #   https://192.168.178.136:55444  ->  WAMO-Kern (wamo-core.service) über den Unix-Socket /run/wamo-core/core.sock
 #   https://192.168.178.136:55445  ->  WAMO-Oberfläche (Container wamo-ui über das interne Netz wamo-ui-netz)
 #   https://192.168.178.136:55446  ->  Remote-Desktop-Gateway (Container wamo-rd-web über das interne Netz wamo-rd-netz)
+#   https://192.168.178.136:55447  ->  Labor-Dienst, Test-Jira des Testlabors (Container wamo-labor-dienst über das interne Netz wamo-labor-netz)
 #
 # Der Container läuft als wamocon (1000:1000) ohne Linux-Capabilities und mit schreibgeschütztem Dateisystem.
 # Schreiben darf er nur in data/ (Serverzertifikate) und config/. Unter /ca sieht er nur Root-Zertifikat und
@@ -36,12 +37,17 @@ services:
       - "0.0.0.0:55445:55445"
       # Remote-Desktop-Gateway (wamo-rd-einrichten.sh); ohne Site-Datei lauscht Caddy hier nicht
       - "0.0.0.0:55446:55446"
+      # Labor-Dienst, Test-Jira des Testlabors (wamo-labor-einrichten.sh); ohne Site-Datei lauscht Caddy hier nicht
+      - "0.0.0.0:55447:55447"
     networks:
       default: {}
       ui: {}
       rd:
         # feste Adresse: Die Webanwendung des Gateways vertraut allein ihr als Proxy (REMOTE_IP_VALVE_INTERNAL_PROXIES)
         ipv4_address: 172.26.0.2
+      labor:
+        # feste Adresse: Der Labor-Dienst vertraut allein ihr als Proxy (WAMO_LABOR_DIENST_PROXYS)
+        ipv4_address: 172.28.0.2
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -94,3 +100,13 @@ networks:
     ipam:
       config:
         - subnet: 172.26.0.0/24
+  # Netz zum Labor-Dienst (Container wamo-labor-dienst, Compose-Projekt wamo-labor): internal, ohne Weg nach außen und ohne Adresse am Host;
+  # nur Caddy und der Dienst hängen darin (Vertrag docs/labor-dienst-vertrag.md, D2). Der Kern erreicht den Dienst über Loopback 18765.
+  labor:
+    name: wamo-labor-netz
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
