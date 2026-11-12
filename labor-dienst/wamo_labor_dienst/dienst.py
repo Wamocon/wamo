@@ -32,7 +32,8 @@ class Dienst:
         self.board_global = Begrenzer(BOARD_GLOBAL_RATE, BOARD_GLOBAL_SCHUB, uhr)
         self.fehlversuche = FehlerZaehler(FEHLVERSUCHE_GRENZE, FEHLVERSUCHE_FENSTER_SECS, uhr)
         self._tokens: dict[str, int] = {}  # Hash -> Platz: unbekannte Token werden hier erkannt, ohne Datenbank und ohne Faden
-        self._token_sperre = threading.Lock()
+        self._token_sperre = threading.Lock()  # kurz: schützt nur den Austausch des Index im Speicher (die Ereignisschleife liest ihn)
+        self._token_aenderung = threading.Lock()  # lang: ein Wechsel von Datei und Index läuft immer ganz oder gar nicht neben einem anderen
 
     def einrichten(self) -> None:
         """Legt Dateien und Tabellen an und löscht Daten, die älter sind als die Aufbewahrung. Eine Uhr vor dem Stand des Baus ist ein Konfigurationsfehler."""
@@ -53,15 +54,18 @@ class Dienst:
             return self._tokens.get(token_hash(token))
 
     def token_vergeben(self, platz: int, hash_: str) -> None:
-        """Speichert den Hash des Platz-Tokens (Datei und Index). Ein früherer Token des Platzes verliert den Zugang."""
-        self.zentral.token_setzen(platz, hash_)
-        with self._token_sperre:
-            self._tokens = {h: p for h, p in self._tokens.items() if p != platz} | {hash_: platz}
+        """Speichert den Hash des Platz-Tokens (Datei und Index). Ein früherer Token des Platzes verliert den Zugang. Datei und Index wechseln unter
+        derselben Sperre wie token_entziehen: Ein gleichzeitiger Entzug macht den neuen Token nie im Speicher allein wieder gültig."""
+        with self._token_aenderung:
+            self.zentral.token_setzen(platz, hash_)
+            with self._token_sperre:
+                self._tokens = {h: p for h, p in self._tokens.items() if p != platz} | {hash_: platz}
 
     def token_entziehen(self, platz: int) -> None:
-        self.zentral.token_loeschen(platz)
-        with self._token_sperre:
-            self._tokens = {h: p for h, p in self._tokens.items() if p != platz}
+        with self._token_aenderung:
+            self.zentral.token_loeschen(platz)
+            with self._token_sperre:
+                self._tokens = {h: p for h, p in self._tokens.items() if p != platz}
 
     def neuer_besucher(self, platz: int, einwilligung_version: int) -> None:
         """Besucherwechsel: Zuerst muss die Einwilligungsversion passen (sie darf nur wachsen, sonst 422 und nichts ändert sich). Dann verliert der alte
@@ -90,8 +94,9 @@ class Dienst:
             except NichtBereinigt:
                 vollstaendig = False
                 self.protokoll.ereignis("fehler", fehlerart="NichtBereinigt", platz=platz.platz)
-        self.zentral.tokens_loeschen()
-        with self._token_sperre:
-            self._tokens = {}
+        with self._token_aenderung:
+            self.zentral.tokens_loeschen()
+            with self._token_sperre:
+                self._tokens = {}
         self.protokoll.leeren()
         return vollstaendig
