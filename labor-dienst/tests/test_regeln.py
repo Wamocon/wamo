@@ -44,8 +44,8 @@ def test_grenzen_der_laenge(text, lo, hi, ok):
         _fehler(text_pruefen, text, "f", zeilen=True, lo=lo, hi=hi)
 
 
-@pytest.mark.parametrize("zeichen", ["\x00", "\x1f", "\x7f", "\x85", "\r", "‮", "​", " ", " ", "", "͸",
-                                      "\ud800", "﻿", "\xad", "⁦"])
+@pytest.mark.parametrize("zeichen", ["\x00", "\x1f", "\x7f", "\x85", "\r", "\u202e", "\u200b", "\u2028", "\u2029", "\ue000", "\u0378",
+                                      "\ud800", "\ufeff", "\xad", "\u2066"])
 def test_verbotene_zeichen_werden_abgelehnt_nicht_angepasst(zeichen):
     for zeilen in (False, True):
         _fehler(text_pruefen, f"ab{zeichen}c", "titel", zeilen=zeilen, lo=0, hi=50)

@@ -49,6 +49,23 @@ Alle Antworten tragen `Cache-Control: no-store`, `X-Content-Type-Options: nosnif
   ausgegeben und nur als Hash gespeichert). Jeder Aufruf steht mit Zeit, Platz und Art im Protokoll.
 * **`GET /gesundheit`** ohne Token: nur der Zustand, keine Daten.
 
+Antwortformen der Schnittstellen für die Oberfläche (sie ändern sich nicht):
+
+```text
+GET /api/browser/board  (Kopf X-Platz-Token)
+200 {"platz": 3, "durchlauf": {"offen": true, "einwilligung_version": 1},
+     "tickets": [{"nummer": "LAB-12", "titel": "...", "typ": "bug", "prioritaet": "hoch", "status": "in_arbeit", "beschreibung": "...",
+                  "version": 2, "im_durchlauf": false, "angelegt": "2026-11-28T09:30:00Z", "geaendert": "2026-11-28T09:41:12Z",
+                  "kommentare": [{"kommentar_id": 1, "text": "...", "angelegt": "2026-11-28T09:41:12Z"}]}]}   Tickets nach Nummer aufsteigend
+401 token_ungueltig (Kopf fehlt oder falsch), 422 eingabe_ungueltig (irgendeine Abfrage), 405 nicht_erlaubt (jede andere Methode)
+
+GET /api/betreuer/plaetze  (Authorization: Bearer <Betreuer-Token>)
+200 {"plaetze": [{"platz": 1, "durchlauf_id": "<UUID>", "offen": false, "einwilligung_version": null, "einwilligung_zeit": null,
+                  "tickets": 6, "kommentare": 0, "hat_platz_token": false, "reserviert": false}, ...16 Einträge, Plätze 15 und 16 reserviert]}
+POST /api/betreuer/plaetze/<n>/<aktion>   200 mit demselben Eintrag für den Platz (platz-token: {"platz": n, "platz_token": "<32 Hexzeichen>"})
+Fehler: 401 token_ungueltig, 403 zugriff_verweigert, 404 platz_unbekannt oder nicht_erlaubt, 405 nicht_erlaubt, 413 zu_gross, 422 eingabe_ungueltig
+```
+
 Die Tokens öffnen nie die Pfade der anderen: Der Bearer des Kerns nur `/api/kern/`, der Platz-Token nur `/api/browser/`, der Betreuer-Token nur
 `/api/betreuer/`. Ein neuer Platz ist geschlossen und ohne Einwilligung, bis der Betreuer `neuer-durchlauf` aufruft.
 
