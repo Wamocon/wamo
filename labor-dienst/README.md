@@ -154,9 +154,8 @@ ohne Blau, Schrift Arial Narrow mit Rückfall auf Arial):
   Daten kommen über die Schnittstellen mit Token. Die Anmeldung der Schnittstellen bleibt unverändert: Wer `/betreuer` erreicht, legt der Betrieb (Caddy) fest.
 * **Prüfen:** `python -m pytest -p no:cacheprovider -q tests/test_web.py tests/test_web_inhalt.py tests/test_javascript.py` und die reinen Funktionen mit
   `node --test tests/js` (Node, keine Pakete).
-* **Hinweis zum Abnahmeskript:** A1 prüft bei `--board-url` wörtlich `default-src 'self'`. Die Seiten tragen die strengere Richtlinie mit `default-src 'none'`
-  und `script-src 'self'`. `--board-url` deshalb auf eine Adresse der Schnittstelle richten (zum Beispiel `/gesundheit`) oder die Prüfung im Skript
-  auf die strengere Form erweitern.
+* **Abnahmeskript:** A1 akzeptiert bei `--board-url` `default-src 'self'` (Vertrag D4) und die strengere Richtlinie der Seiten mit `default-src 'none'`
+  und eigenen `script-src` und `style-src`. `--board-url` kann deshalb direkt auf `/board` zeigen.
 
 **Lokale Vorführung mit Demo-Daten** (nur Loopback, temporärer Ordner, Wegwerf-Tokens, die Adressen mit den Tokens stehen in der Ausgabe):
 

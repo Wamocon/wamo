@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 
 from wamo_labor_abnahme_basis import (
@@ -124,7 +125,9 @@ async def _board(z: Zugang, s: Sammler, url: str) -> None:
     csp = a.kopf.get("content-security-policy", "")
     s.erwarte(bool(csp), "Board-Seite: Content-Security-Policy fehlt")
     if csp:
-        s.erwarte("default-src 'self'" in csp, "Board-Seite: CSP ohne default-src 'self'")
+        # 'self' (Vertrag D4) oder die strengere Fassung 'none' mit eigenen script-src und style-src (so liefert der eigene Dienst seine Seiten aus)
+        s.erwarte(re.search(r"(?:^|;)\s*default-src\s+(?:'self'|'none')\s*(?:;|$)", csp) is not None,
+                  "Board-Seite: CSP ohne default-src 'self' oder 'none'")
         s.erwarte("'unsafe-inline'" not in csp and "'unsafe-eval'" not in csp, "Board-Seite: CSP erlaubt unsafe-inline oder unsafe-eval")
         s.erwarte("frame-ancestors 'none'" in csp, "Board-Seite: CSP ohne frame-ancestors 'none'")
     s.erwarte(a.kopf.get("x-content-type-options", "").lower() == "nosniff", "Board-Seite: X-Content-Type-Options: nosniff fehlt")

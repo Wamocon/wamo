@@ -357,6 +357,16 @@ def test_a1_prueft_die_koepfe_der_board_seite():
     inline = _a1_mit_board([(k, "default-src 'self' 'unsafe-inline'; frame-ancestors 'none'" if k == "content-security-policy" else v)
                             for k, v in GUTE_KOEPFE]).nach_nr["A1"]
     assert inline.status == basis.DURCHGEFALLEN
+    # die strengere Fassung der Seiten des Dienstes (default-src 'none' mit eigenen script-src und style-src) besteht, eine CSP ohne default-src nicht
+    streng = _a1_mit_board([(k, "default-src 'none'; script-src 'self'; style-src 'self'; frame-ancestors 'none'" if k == "content-security-policy" else v)
+                            for k, v in GUTE_KOEPFE]).nach_nr["A1"]
+    assert streng.status == basis.BESTANDEN, streng.meldung
+    ohne_default = _a1_mit_board([(k, "script-src 'self'; frame-ancestors 'none'" if k == "content-security-policy" else v)
+                                  for k, v in GUTE_KOEPFE]).nach_nr["A1"]
+    assert ohne_default.status == basis.DURCHGEFALLEN and "default-src" in ohne_default.meldung
+    offen = _a1_mit_board([(k, "default-src *; frame-ancestors 'none'" if k == "content-security-policy" else v)
+                           for k, v in GUTE_KOEPFE]).nach_nr["A1"]
+    assert offen.status == basis.DURCHGEFALLEN
     roh = _a1_mit_board(GUTE_KOEPFE, b"<html><script>alert(1)</script></html>").nach_nr["A1"]
     assert roh.status == basis.BESTANDEN and any("Rohseite" in rest for rest in roh.von_hand)  # ohne Token und Platz zeigt die Seite keine Tickets: nicht prüfbar
 
