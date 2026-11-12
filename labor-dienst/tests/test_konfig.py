@@ -8,8 +8,8 @@ import pytest
 
 from wamo_labor_dienst.konfig import KonfigFehler, Konfig, aus_umgebung, token_aus_datei
 
-KERN = "K" + "a1-_." * 8 + "kern"
-BETREUER = "B" + "z9~+=" * 8 + "betreuer"
+KERN = "kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMqA3"
+BETREUER = "Bn4Wd8Zs1Yh6Kt3Qe9Jx5Cv2Rm7Lg0Pa+Uo/Fi-Nz._~=Tq"
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -129,3 +129,57 @@ def test_einstieg_meldet_eine_falsche_uhr_mit_ausgang_2(tmp_path, monkeypatch, c
     monkeypatch.setattr(einstieg.uvicorn, "run", nicht_starten)
     assert einstieg.main([]) == 2
     assert "Uhr" in capsys.readouterr().err
+
+
+# ---------- Token-Qualität und Dateirechte (Befund 8 des Sicherheitsreviews) ----------
+@pytest.mark.parametrize("token,ok", [
+    ("kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMq", False),  # 42 Zeichen: zu kurz
+    ("kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMqA", True),  # 43 Zeichen, 43 verschiedene
+    ("abcdefghijklmno" * 3, False),  # 45 Zeichen, aber nur 15 verschiedene
+    ("abcdefghijklmnop" * 3, True),  # 48 Zeichen, genau 16 verschiedene
+    ("a" * 60, False), ("0123456789" * 6, False),
+    ("kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMqA3" * 4, True),  # 176 Zeichen
+    ("kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMqA3" * 5, False),  # 220 Zeichen: zu lang
+])
+def test_tokenqualitaet_mindestens_43_zeichen_und_16_verschiedene(tmp_path, token, ok):
+    env = _env(tmp_path)
+    Path(env["WAMO_LABOR_DIENST_KERN_TOKEN_DATEI"]).write_text(token, encoding="utf-8")
+    if ok:
+        assert aus_umgebung(env).kern_token == token
+    else:
+        with pytest.raises(KonfigFehler, match="WAMO_LABOR_DIENST_KERN_TOKEN_DATEI") as e:
+            aus_umgebung(env)
+        assert token not in str(e.value)
+
+
+def test_fehler_der_tokenqualitaet_nennen_den_grund_ohne_den_wert(tmp_path):
+    env = _env(tmp_path)
+    Path(env["WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI"]).write_text("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", encoding="utf-8")
+    with pytest.raises(KonfigFehler, match="verschiedene Zeichen"):
+        aus_umgebung(env)
+
+
+@pytest.mark.parametrize("modus,ok", [(0o100600, True), (0o100400, True), (0o100644, False), (0o100640, False), (0o100604, False), (0o100660, False), (0o100777, False)])
+def test_dateirechte_nur_der_besitzer_0600(tmp_path, monkeypatch, modus, ok):
+    from wamo_labor_dienst import konfig as modul
+
+    monkeypatch.setattr(modul, "_ist_windows", lambda: False)
+    monkeypatch.setattr(modul, "_modus", lambda pfad: modus)
+    if ok:
+        assert aus_umgebung(_env(tmp_path)).kern_token == KERN
+    else:
+        with pytest.raises(KonfigFehler, match="Besitzer") as e:
+            aus_umgebung(_env(tmp_path))
+        assert KERN not in str(e.value) and BETREUER not in str(e.value)
+
+
+def test_dateirechte_gelten_fuer_beide_dateien_und_nicht_unter_windows(tmp_path, monkeypatch):
+    from wamo_labor_dienst import konfig as modul
+
+    env = _env(tmp_path)
+    monkeypatch.setattr(modul, "_ist_windows", lambda: False)
+    monkeypatch.setattr(modul, "_modus", lambda pfad: 0o100600 if pfad == env["WAMO_LABOR_DIENST_KERN_TOKEN_DATEI"] else 0o100644)
+    with pytest.raises(KonfigFehler, match="WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI"):
+        aus_umgebung(env)
+    monkeypatch.setattr(modul, "_ist_windows", lambda: True)  # Windows kennt keine Unix-Rechte: nichts zu prüfen
+    assert aus_umgebung(env).betreuer_token == BETREUER

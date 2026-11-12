@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from wamo_labor_dienst.modell import Antwort, Aufruf, fingerabdruck
 from wamo_labor_dienst.regeln import PRUEFER
 
-KERN_TOKEN = "kern-" + "A1b2C3d4" * 6
-BETREUER_TOKEN = "betreuer-" + "Z9y8X7w6" * 6
+KERN_TOKEN = "kT9mQ2vLx7RpD4sWn8BcYfH6jGaZ1eU5oXiN0tVrMqA3"
+BETREUER_TOKEN = "Bn4Wd8Zs1Yh6Kt3Qe9Jx5Cv2Rm7Lg0Pa+Uo/Fi-Nz._~=Tq"
 ANLEGEN = {"typ": "bug", "prioritaet": "hoch", "titel": "Anmeldung schlägt fehl", "beschreibung": "Nach dem Klick passiert nichts."}
 LABORTAG = datetime(2026, 11, 28, 9, 30, tzinfo=UTC).timestamp()
 

@@ -8,12 +8,14 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/=-]{32,200}")
+TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/=-]{43,200}")  # 43 Zeichen sind 256 Bit in Base64
+TOKEN_MIN_VERSCHIEDEN = 16  # ein Token aus wenigen Zeichen ist nie zufällig
 STANDARD_BIS = date(2026, 12, 11)  # Aufbewahrung nach D10: 14 Tage nach dem Labortag
 HOECHSTES_BIS = STANDARD_BIS  # später darf die Aufbewahrung nie enden (D10), eine Einstellung darf nur früher löschen
 FRUEHESTES_DATUM = date(2026, 11, 12)  # Stand des Baus: Eine Uhr davor geht falsch (sonst würde die Aufbewahrung nie greifen)
@@ -49,16 +51,28 @@ class Konfig:
         return self.platz_mb * 1024 * 1024
 
 
+def _ist_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def _modus(pfad: str) -> int:
+    return os.stat(pfad).st_mode
+
+
 def token_aus_datei(pfad: str | None, variable: str) -> str:
-    """Der Token aus einer UTF-8-Datei (BOM und Leerraum am Rand werden abgestreift), 32 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-."""
+    """Der Token aus einer UTF-8-Datei (BOM und Leerraum am Rand werden abgestreift): 43 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-, mindestens 16
+    verschiedene Zeichen. Auf Linux darf die Datei nur dem Besitzer gehören (Rechte 0600), sonst liest der Dienst sie nicht."""
     if not pfad:
         raise KonfigFehler(f"{variable} fehlt (Pfad der Datei mit dem Token)")
     try:
+        if not _ist_windows() and _modus(pfad) & 0o077:
+            raise KonfigFehler(f"{variable}: die Datei darf nur dem Besitzer gehören (Rechte 0600), sie ist für Gruppe oder andere zugänglich")
         text = Path(pfad).read_text(encoding="utf-8-sig").strip()
     except (OSError, UnicodeError):
         raise KonfigFehler(f"{variable}: die Datei kann nicht gelesen werden") from None
-    if not TOKEN_RE.fullmatch(text):
-        raise KonfigFehler(f"{variable}: der Token ist unbrauchbar (32 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-)")
+    if not TOKEN_RE.fullmatch(text) or len(set(text)) < TOKEN_MIN_VERSCHIEDEN:
+        raise KonfigFehler(f"{variable}: der Token ist unbrauchbar (43 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-, mindestens "
+                           f"{TOKEN_MIN_VERSCHIEDEN} verschiedene Zeichen)")
     return text
 
 
