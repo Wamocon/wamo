@@ -13,6 +13,10 @@ die Tests, was ein echter Lauf tun WÜRDE und was nie. Token-Werte erscheinen in
 werden nur gelesen, nie ausgegeben.
 
 Ausführen:  python -m pytest -q test_labor_betrieb_skripte.py   (im Ordner voice-core/)
+
+Die Datei ist länger als 800 Zeilen (bewusste Ausnahme, Muster test_rd_skripte.py): Sie hält die Tests aller Betriebsteile zusammen, weil sie dieselbe
+Werkstatt (Wegwerf-Ordner, Attrappen, Protokoll) und dieselben Hilfen nutzen. Unter Windows laufen die Probeläufe mit der Git-Bash ohne Startdatei
+(Git\\usr\\bin\\bash.exe), weil die Bash in Git\\bin ihre eigenen Ordner vor den PATH stellt und dann echte Programme statt der Attrappen fände.
 """
 
 import importlib.util
