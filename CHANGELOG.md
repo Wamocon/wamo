@@ -8,6 +8,17 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Betrieb des Labor-Dienstes auf Sokrates-2 (Test-Jira des Testlabors, vorbereitet, nicht ausgerollt, Abschnitt 19 in `infra/sokrates2/README.md`): Compose-Projekt
+  `wamo-labor` mit dem Container `wamo-labor-dienst` (Benutzer 10001, `read_only`, `cap_drop ALL`, `no-new-privileges`, Grenzen, begrenzte Protokolle, Port nur auf
+  `127.0.0.1:18765` für den Kern), eigenes internes Netz `wamo-labor-netz` mit Caddy, Caddy-Site auf HTTPS 55447 mit Positivliste der Pfade (`/api/kern/` nie, Betreuer-Pfade nur
+  von den Betreuer-Adressen, `/gesundheit` nur intern, Schutzköpfe und deutscher Text für Fehler von Caddy und die rohe 503 von uvicorn), Firewall-Kette `WAMO-FW-LABOR` mit
+  austauschbarer Adressliste der Plätze (`/etc/wamo-labor/plaetze-adressen`, Frage Q13 offen, bis dahin das Büro-LAN) und `WAMO-FW-LABAUS` gegen jeden Ausgang des Dienstes.
+  Skripte `wamo-labor-einrichten.sh` (idempotent, mit `--trocken`, Sicherung vor jeder Änderung, Token nie ausgegeben, Kern-Einstellungen nur über `wamo-core-env` mit
+  Wirkung ab dem nächsten Kern-Release), `wamo-labor-rueckweg.sh` und `wamo-labor-loeschlauf.sh` (nach dem 11.12.2026, Bestätigungswort, Nachweis ohne Inhalte) sowie
+  `wamo_labor_rauchtest.py` (20 Proben, jede nennt, was sie belegt und was nicht, mit Attrappe für den Lauf ohne Server). Nach der unabhängigen Prüfung nachgezogen: Caddy wird in zwei Stufen
+  geändert (erst Site und Reload, dann Port und Neuanlegen) mit Ruheprüfung, Prüfung von 55443 bis 55446 nach jeder Änderung und Rücknahme und Ausgabe der Ausfalldauer (am Server zu messen),
+  INPUT-Kette `WAMO-FW-LABIN` und Rückkehr-Regeln über die Docker-Brücke, nur private Adressen ab /16 in der Liste der Plätze, Symlink-sicherer Löschlauf, Herkunftsschutz in allen Skripten,
+  Architekturprüfung des Images. Tests in `voice-core/test_labor_betrieb_skripte.py`.
 - Zweiter Faktor der Laborprofile automatisch einrichten (Entscheidung E15, `docs/testlabor-wamo.md`): `scripts/wamo_labor_faktoren.py` mit
   `einrichten` (`--profile`, `--neu`, `--trocken`), `pruefen` (je Profil ja oder nein, nur die Datei) und `codes --profil` (aktueller Code für
   genau ein Profil mit Ablaufsekunden). Je Profil: Anmeldung mit dem Passwort aus der Umschlag-Datei per TLS (CA-Datei, Hostname geprüft,
