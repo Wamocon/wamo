@@ -11,9 +11,12 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import io
 import json
 import os
+import re
 import secrets
+import signal
 import socket
 import sys
 import threading
@@ -38,10 +41,12 @@ STANDARD = {
     "admin_offen": False,            # Admin-Pfade antworten dem Besucher-Token mit 200
     "signup_offen": False,           # POST /auth/v1/signup legt ein Konto an
     "invite_offen": False,           # POST /auth/v1/invite legt ein Konto an
-    "rest": "dicht",                 # dicht | leer | offen
+    "rest": "dicht",                 # dicht | leer | offen | keine_route (404 ohne Kennung, wie bei einer fehlenden Route am Vorbau)
     "rest_wurzel_wamo": False,       # das Verzeichnis unter /rest/v1/ nennt WAMO-Schema und WAMO-Tabelle
-    "storage": "leer",               # leer | offen | fehler500 | fehler_mit_geheimnis | umleitung
-    "realtime": "dicht",             # dicht | privat_offen | cdc_offen | kein | stumm | abgewiesen
+    "storage": "leer",               # leer | offen | fehler500 | fehler_mit_geheimnis | umleitung | abgelehnt | keine_route
+    "realtime": "dicht",             # dicht | privat_offen | cdc_offen | kein | stumm | abgewiesen | abgewiesen_unklar | abgewiesen_token
+    "alt_login": None,               # Antwort auf die Anmeldung mit dem alten Passwort: None (400 invalid_credentials) | "429" | "400_ohne_kennung" | "500"
+    "loeschen_404_ohne_kennung": False,  # DELETE /auth/v1/admin/users/<id> antwortet 404 ohne Kennung und löscht nichts
     "passwort_wirkungslos": False,   # PUT /auth/v1/user antwortet 200, ändert aber nichts
     "signup_429": False,             # POST /auth/v1/signup antwortet mit der Ratenbegrenzung
     "user_lesen": "ok",              # ok | abgelehnt | fremd
@@ -160,6 +165,8 @@ def _handler(z: Zustand):
                     return self._nicht_admin(rolle)
                 if not o["loeschen_geht"]:
                     return self._senden(500, {"msg": "kaputt " + token})
+                if o["loeschen_404_ohne_kennung"]:
+                    return self._senden(404, {})
                 uid = pfad.rsplit("/", 1)[1]
                 if z.nutzer.pop(uid, None) is None:
                     return self._senden(404, {"error_code": "user_not_found"})
@@ -171,6 +178,12 @@ def _handler(z: Zustand):
                         z.anmeldungen.append((n["email"], 200))
                         return self._senden(200, z.neues_token(uid, "aal1"))
                 z.anmeldungen.append((str(body.get("email")), 400))
+                if o["alt_login"] == "429":
+                    return self._senden(429, {"error_code": "over_request_rate_limit"})
+                if o["alt_login"] == "400_ohne_kennung":
+                    return self._senden(400, {})
+                if o["alt_login"] == "500":
+                    return self._senden(500, {"msg": "kaputt"})
                 return self._senden(400, {"code": 400, "error_code": "invalid_credentials", "msg": "Invalid login credentials"})
             if pfad == "/auth/v1/user":
                 if rolle != "besucher":
@@ -231,6 +244,8 @@ def _handler(z: Zustand):
                 return self._nicht_admin(rolle)
             if pfad == "/auth/v1/recover" and methode == "POST":
                 return self._senden(200, {})
+            if pfad.startswith("/rest/v1") and o["rest"] == "keine_route":
+                return self._senden(404, {})
             if pfad == "/rest/v1/" and methode == "GET":
                 paths = {"/": {}}
                 if o["rest_wurzel_wamo"]:
@@ -258,6 +273,10 @@ def _handler(z: Zustand):
                 if o["storage"] == "fehler_mit_geheimnis":
                     # ein Server, der als Fehlerkennung ausgerechnet ein Geheimnis zurückgibt (hier das TOTP-Geheimnis des Wegwerf-Kontos)
                     return self._senden(500, {"error_code": next(iter(z.faktoren.values()))["secret"]})
+                if o["storage"] == "abgelehnt":
+                    return self._senden(403, {"statusCode": "403", "error": "Unauthorized", "message": "new row violates row-level security policy"})
+                if o["storage"] == "keine_route":
+                    return self._senden(404, {})
                 if o["storage"] == "offen":
                     return self._senden(200, [{"id": BUCKET_MARKE, "name": BUCKET_MARKE}])
                 if o["storage"] == "fehler500":
@@ -270,7 +289,11 @@ def _handler(z: Zustand):
             if modus == "kein":
                 return self._senden(404, {"message": "no route"})
             if modus == "abgewiesen":
+                return self._senden(403, {"error": "Unauthorized"})
+            if modus == "abgewiesen_unklar":
                 return self._senden(401, {"message": "unauthorized"})
+            if modus == "abgewiesen_token":
+                return self._senden(401, {"error_code": "bad_jwt"})
             schluessel = self.headers.get("Sec-WebSocket-Key")
             if not schluessel or self.headers.get("Upgrade", "").lower() != "websocket":
                 return self._senden(400, {})
@@ -544,7 +567,7 @@ def test_storage_offen_nennt_keine_bucket_namen(tmp_path, capsys):
 def test_realtime_nicht_erreichbar_ist_nicht_gemessen(tmp_path, capsys):
     with attrappe(realtime="kein") as (z, url):
         code, zeilen, out = laufen(z, url, tmp_path, capsys)
-    assert code == 0
+    assert code == 3  # nichts OFFEN, aber unerwartet nicht gemessen
     for k in ("Handshake", "privaten Kanal", "Änderungen"):
         assert urteil(zeilen, k) == lt.NICHT_GEMESSEN
     assert "HTTP 404" in zeile(zeilen, "Handshake").messung
@@ -554,7 +577,7 @@ def test_realtime_stumm_ist_nicht_gemessen(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(lt, "WS_WARTEZEIT_S", 0.3)
     with attrappe(realtime="stumm") as (z, url):
         code, zeilen, out = laufen(z, url, tmp_path, capsys)
-    assert code == 0
+    assert code == 3
     assert urteil(zeilen, "Handshake") == lt.DOKUMENTIERT
     assert urteil(zeilen, "privaten Kanal") == lt.NICHT_GEMESSEN
     assert urteil(zeilen, "Änderungen") == lt.NICHT_GEMESSEN
@@ -572,7 +595,7 @@ def test_realtime_beitritt_zu_aenderungen_ohne_gegenprobe_bleibt_nicht_gemessen(
 def test_server_fehler_ist_nicht_gemessen_und_das_echo_des_tokens_bleibt_unsichtbar(tmp_path, capsys):
     with attrappe(storage="fehler500") as (z, url):
         code, zeilen, out = laufen(z, url, tmp_path, capsys)
-    assert code == 0
+    assert code == 3
     r = zeile(zeilen, "GET /storage/v1/bucket")
     assert r.urteil == lt.NICHT_GEMESSEN and "HTTP 500" in r.messung
     assert "interner Fehler" not in out  # Antworttexte des Servers werden nie ausgegeben, nur Status und Kennung
@@ -593,7 +616,7 @@ def test_umleitung_wird_nicht_verfolgt(tmp_path, capsys):
     r = zeile(zeilen, "GET /storage/v1/bucket")
     assert r.urteil == lt.NICHT_GEMESSEN and "HTTP 302" in r.messung
     assert ("GET", "/storage/v1/ziel") not in z.anfragen
-    assert code == 0
+    assert code == 3
 
 
 def test_ausgabe_maskiert_bekannte_geheimnisse(capsys):
@@ -624,15 +647,26 @@ def test_passwort_200_aber_wirkungslos_ist_nicht_gemessen(tmp_path, capsys):
         code, zeilen, out = laufen(z, url, tmp_path, capsys)
     r = zeile(zeilen, "PUT /auth/v1/user")
     assert r.urteil == lt.NICHT_GEMESSEN and "alte Passwort gilt weiter" in r.messung
-    assert code == 0
+    assert code == 3  # zählt für den Exit-Code: Ohne Beleg ist der Platz nicht als sicher belegt
 
 
-def test_realtime_handshake_abgewiesen_ist_erwartet(tmp_path, capsys):
+def test_realtime_handshake_abgewiesen_mit_erkennbarem_grund_ist_erwartet(tmp_path, capsys):
     with attrappe(realtime="abgewiesen") as (z, url):
         code, zeilen, out = laufen(z, url, tmp_path, capsys)
     assert code == 0
     for k in ("Handshake", "privaten Kanal", "Änderungen"):
         assert urteil(zeilen, k) == lt.ERWARTET
+    assert "HTTP 403" in zeile(zeilen, "Handshake").messung and "Unauthorized" in zeile(zeilen, "Handshake").messung
+
+
+@pytest.mark.parametrize("modus", ["abgewiesen_unklar", "abgewiesen_token"])
+def test_realtime_handshake_abgewiesen_ohne_erkennbaren_grund_ist_nicht_gemessen(modus, tmp_path, capsys):
+    """401 ohne Kennung oder mit einer Token-Kennung sagt nichts über die Berechtigung (kann auch ein ungültiger Schlüssel oder eine falsche Route sein)."""
+    with attrappe(realtime=modus) as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)
+    assert code == 3
+    for k in ("Handshake", "privaten Kanal", "Änderungen"):
+        assert urteil(zeilen, k) == lt.NICHT_GEMESSEN
     assert "HTTP 401" in zeile(zeilen, "Handshake").messung
 
 
@@ -641,7 +675,7 @@ def test_ratenbegrenzung_ist_keine_ablehnung_durch_berechtigung(tmp_path, capsys
         code, zeilen, out = laufen(z, url, tmp_path, capsys)
     r = zeile(zeilen, "POST /auth/v1/signup")
     assert r.urteil == lt.NICHT_GEMESSEN and "HTTP 429" in r.messung
-    assert code == 0
+    assert code == 3
 
 
 def test_faktor_loeschen_abgelehnt_ist_erwartet(tmp_path, capsys):
@@ -702,7 +736,7 @@ def test_ausnahme_in_einer_pruefung_wird_nicht_gemessen_und_das_konto_trotzdem_g
         code, zeilen, out = laufen(z, url, tmp_path, capsys)
     r = zeile(zeilen, "GET /storage/v1/bucket")
     assert r.urteil == lt.NICHT_GEMESSEN and "RuntimeError" in r.messung
-    assert code == 0
+    assert code == 3
     assert len(z.geloescht) == 1
     assert urteil(zeilen, "bestätigter Faktor") == lt.DOKUMENTIERT  # die übrigen Prüfungen liefen weiter
 
@@ -801,6 +835,378 @@ def test_trocken_zeigt_nur_den_plan_und_ruft_nichts_auf(tmp_path, capsys):
 
 def test_main_gibt_den_exitcode_zurueck(tmp_path, capsys):
     assert lt.main(["--trocken"]) == 0
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Review zu 9220ee0, Punkt 1: Das Aufräumen hängt nie an der Standardausgabe
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+class KappStdout:
+    """Standardausgabe, deren Leser verschwindet (Pipe zu): Nach `erlaubt` Schreibaufrufen kommt BrokenPipeError, auch beim Leeren des Puffers."""
+
+    def __init__(self, erlaubt: int):
+        self.erlaubt, self.aufrufe = erlaubt, 0
+
+    def write(self, text: str) -> int:
+        self.aufrufe += 1
+        if self.aufrufe > self.erlaubt:
+            raise BrokenPipeError(32, "Broken pipe")
+        return len(text)
+
+    def flush(self) -> None:
+        if self.aufrufe > self.erlaubt:
+            raise BrokenPipeError(32, "Broken pipe")
+
+    def fileno(self) -> int:
+        raise io.UnsupportedOperation("fileno")
+
+
+def lauf_direkt(z: Zustand, url: str, tmp_path: Path, *extra: str):
+    env = tmp_path / "wamo.env"
+    env.write_text(f"ANON_KEY={z.anon}\nSERVICE_ROLE_KEY={z.service}\n", encoding="utf-8")
+    return lt.lauf(["--basis", url, "--env-datei", str(env), *extra])
+
+
+@pytest.mark.parametrize("erlaubt", [0, 4, 16, 60, 300])
+@pytest.mark.parametrize("opt", [{}, {"admin_offen": True, "signup_offen": True}], ids=["dicht", "fremdkonten"])
+def test_ausgabe_faellt_aus_und_alle_konten_werden_trotzdem_geloescht(erlaubt, opt, tmp_path, monkeypatch):
+    """Ein Aufrufer, der die Ausgabe schließt (head, less, ssh bricht ab), darf das Aufräumen nie abschneiden. Der Exit-Code bleibt der der Messung."""
+    with attrappe(**opt) as (z, url):
+        monkeypatch.setattr(sys, "stdout", KappStdout(erlaubt))
+        code, zeilen = lauf_direkt(z, url, tmp_path)
+        assert z.nutzer == {}
+    assert code == (1 if opt else 0)
+
+
+def test_ausgabe_nach_abgerissener_pipe_ist_im_naechsten_lauf_wieder_da(capsys, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(sys, "stdout", KappStdout(0))
+        lt.ausgabe("geht ins Leere")  # darf nicht werfen
+        lt.ausgabe("und das auch nicht")
+    code, _ = lt.lauf(["--trocken"])
+    assert code == 0 and "Trockenlauf" in capsys.readouterr().out
+
+
+def test_ausgabe_mit_unpassender_kodierung_faellt_nicht_aus(monkeypatch):
+    roh = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(roh, encoding="ascii", errors="strict", newline="\n", write_through=True))
+    lt.ausgabe("Prüfung läuft")
+    lt.ausgabe("danach geht es weiter")
+    assert roh.getvalue().decode("ascii") == "Pr?fung l?uft\ndanach geht es weiter\n"
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Punkt 2: Signale und sofortige Ausgabe von Kennung und E-Mail
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+def _wache(request, nummer: int) -> None:
+    """Ersetzt die Standardbehandlung des Signals durch eine Wache. Ohne Handler des Moduls würde raise_signal sonst den Testprozess beenden."""
+    alt = signal.getsignal(nummer)
+
+    def wache(n, frame):
+        raise RuntimeError("Signal ohne Handler des Moduls")
+    signal.signal(nummer, wache)
+    request.addfinalizer(lambda: signal.signal(nummer, alt))
+
+
+def _signal_nach(monkeypatch, request, name: str, nummer: int) -> None:
+    _wache(request, nummer)
+    original = getattr(lt, name)
+
+    def mit_signal(ml):
+        ergebnis = original(ml)
+        signal.raise_signal(nummer)
+        return ergebnis
+    monkeypatch.setattr(lt, name, mit_signal)
+
+
+SIGNALE = [pytest.param("SIGTERM", id="SIGTERM"), pytest.param("SIGINT", id="SIGINT"),
+           pytest.param("SIGHUP", id="SIGHUP", marks=pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="kein SIGHUP auf dieser Plattform"))]
+
+
+@pytest.mark.parametrize("name", SIGNALE)
+def test_signal_wird_zur_ausnahme_und_das_aufraeumen_laeuft(name, tmp_path, capsys, monkeypatch, request):
+    nummer = int(getattr(signal, name))
+    _signal_nach(monkeypatch, request, "pr_admin_anlegen", nummer)
+    vorher = signal.getsignal(nummer)
+    with attrappe(admin_offen=True) as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)  # prüft auch: kein Konto bleibt übrig, kein Geheimnis in der Ausgabe
+    assert code == 128 + nummer and zeilen == []
+    assert "Signal" in out
+    assert len(z.geloescht) == 2  # das Wegwerf-Konto und das über den offenen Admin-Pfad angelegte
+    assert signal.getsignal(nummer) == vorher  # die Handler sind nach dem Lauf wieder die alten
+
+
+def test_zweites_signal_waehrend_des_aufraeumens_schneidet_es_nicht_ab(tmp_path, capsys, monkeypatch, request):
+    _signal_nach(monkeypatch, request, "pr_admin_anlegen", signal.SIGTERM)
+    original = lt.Messlauf.konto_loeschen
+    gesendet = []
+
+    def loeschen_mit_signal(self, uid):
+        if not gesendet:
+            gesendet.append(uid)
+            signal.raise_signal(signal.SIGTERM)  # während des Aufräumens: wird ignoriert
+        return original(self, uid)
+    monkeypatch.setattr(lt.Messlauf, "konto_loeschen", loeschen_mit_signal)
+    with attrappe(admin_offen=True) as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)
+    assert gesendet and code == 128 + int(signal.SIGTERM)
+    assert len(z.geloescht) == 2
+
+
+def test_kennung_und_mail_des_wegwerf_kontos_stehen_vor_dem_anlegen_und_sofort_danach_in_der_ausgabe(tmp_path, capsys, monkeypatch, request):
+    _wache(request, int(signal.SIGTERM))
+    vorab: list[tuple[str, str]] = []
+    original = lt.Messlauf.anfrage
+
+    def spaeher(self, methode, pfad, **kw):
+        if methode == "POST" and pfad == "/auth/v1/admin/users" and not vorab:
+            vorab.append((kw["daten"]["email"], capsys.readouterr().out))  # Stand der Ausgabe, bevor die Anlage-Anfrage rausgeht
+        return original(self, methode, pfad, **kw)
+    monkeypatch.setattr(lt.Messlauf, "anfrage", spaeher)
+
+    def haengt(self, passwort=None):
+        signal.raise_signal(signal.SIGTERM)
+    monkeypatch.setattr(lt.Konto, "anmelden", haengt)
+    with attrappe() as (z, url):
+        code, zeilen = lauf_direkt(z, url, tmp_path)
+        nach = capsys.readouterr().out
+    (email, davor), (uid,) = vorab[0], z.geloescht
+    assert email in davor, "die E-Mail muss vor der Anlage-Anfrage ausgegeben sein"
+    assert uid in nach and email in nach, "Kennung und E-Mail stehen nach der Anlage sofort in der Ausgabe"
+    assert nach.index(uid) < nach.index("Wegwerf-Konto angelegt")
+    assert code == 128 + int(signal.SIGTERM)
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Punkt 3: --basis, nie Schlüssel oder Token im Klartext an einen fremden Host
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("basis, ca", [
+    ("http://localhost:55321", False), ("http://127.0.0.1:55321", False), ("http://127.0.0.1:55321/", False), ("http://[::1]:55321", False),
+    ("https://localhost:55443", False), ("https://192.168.178.136:55443", True), ("https://sokrates2:55443", True),
+])
+def test_basis_pruefen_erlaubt_loopback_und_https_mit_ca(basis, ca):
+    assert lt.basis_pruefen(basis, ca) is None
+
+
+@pytest.mark.parametrize("basis, ca", [
+    ("http://192.168.178.136:55321", False), ("http://192.168.178.136:55321", True),   # fremder Host: nie Klartext, auch nicht mit CA
+    ("https://192.168.178.136:55443", False),                                         # fremder Host: https, aber ohne CA keine Prüfung
+    ("http://localhost.evil.example:55321", False), ("http://127.0.0.1.evil.example:55321", False), ("http://0.0.0.0:55321", False),
+    ("ftp://localhost:21", False), ("localhost:55321", False), ("", False), ("http://", False), ("http://localhost:99999", False),
+    ("http://user:pw-geheim@localhost:55321", False), ("http://localhost:55321/auth", False), ("http://localhost:55321?x=1", False),
+])
+def test_basis_pruefen_lehnt_ab(basis, ca):
+    with pytest.raises(lt.Abbruch) as fehler:
+        lt.basis_pruefen(basis, ca)
+    assert "pw-geheim" not in str(fehler.value)  # Zugangsdaten in der Adresse werden nie wiedergegeben
+
+
+@pytest.mark.parametrize("basis", ["http://192.168.178.136:55321", "http://user:pw-geheim@192.168.178.136:55321", "https://192.168.178.136:55443"])
+def test_fremder_host_ohne_https_und_ca_bricht_vor_dem_ersten_aufruf_ab(basis, tmp_path, capsys, monkeypatch):
+    def verboten(*a, **k):
+        raise AssertionError("vor dem Abbruch darf nichts gelesen oder aufgerufen werden")
+    monkeypatch.setattr(lt.Messlauf, "anfrage", verboten)
+    monkeypatch.setattr(lt, "env_lesen", verboten)  # nicht einmal die Schlüssel werden geladen
+    monkeypatch.setattr(lt, "Messlauf", verboten)
+    code, zeilen = lt.lauf(["--basis", basis, "--env-datei", str(tmp_path / "gibt-es-nicht.env")])
+    out = capsys.readouterr().out
+    assert code == 1 and zeilen == []
+    assert "nicht lokal" in out and "https" in out and "--ca" in out
+    assert "pw-geheim" not in out
+
+
+def test_fremder_host_mit_https_und_ca_wird_zugelassen(tmp_path, capsys, monkeypatch):
+    """Mit https und CA kommt der Lauf bis zur Anlage des Kontos (hier ohne Netz: die Anfrage wird abgefangen)."""
+    monkeypatch.setattr(lt.Messlauf, "anfrage", lambda self, m, p, **kw: lt.Antwort(0))
+    env = tmp_path / "wamo.env"
+    env.write_text("ANON_KEY=anon-schluessel-1\nSERVICE_ROLE_KEY=dienst-schluessel-1\n", encoding="utf-8")
+    ca = Path(__file__).resolve().parent / "wamo-ca.crt"
+    code, zeilen = lt.lauf(["--basis", "https://192.168.178.136:55443", "--ca", str(ca), "--env-datei", str(env)])
+    out = capsys.readouterr().out
+    assert "nicht lokal" not in out and "Wegwerf-Konto" in out
+    assert code == 1
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Punkt 4: kein Scheingrün, eigener Exit-Code 3
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("status, kennung_, erwartet", [
+    (200, "", lt.OFFEN),
+    (404, "PGRST205", lt.ERWARTET), (406, "PGRST106", lt.ERWARTET), (401, "42501", lt.ERWARTET), (403, "42501", lt.ERWARTET),
+    (404, "", lt.NICHT_GEMESSEN), (401, "", lt.NICHT_GEMESSEN), (403, "", lt.NICHT_GEMESSEN), (404, "not_found", lt.NICHT_GEMESSEN),
+    (401, "PGRST301", lt.NICHT_GEMESSEN), (401, "PGRST302", lt.NICHT_GEMESSEN), (401, "bad_jwt", lt.NICHT_GEMESSEN), (429, "PGRST106", lt.NICHT_GEMESSEN),
+    (500, "PGRST000", lt.NICHT_GEMESSEN), (502, "", lt.NICHT_GEMESSEN), (0, "", lt.NICHT_GEMESSEN),
+])
+def test_bewerte_rest_ablehnung_nur_pgrst_oder_42501_gilt_als_ablehnung(status, kennung_, erwartet):
+    assert lt.bewerte_rest_ablehnung(status, kennung_) == erwartet
+
+
+@pytest.mark.parametrize("status, kennung_, erwartet", [
+    (200, "", lt.OFFEN),
+    (403, "Unauthorized", lt.ERWARTET), (400, "Unauthorized", lt.ERWARTET), (401, "Forbidden", lt.ERWARTET), (403, "AccessDenied", lt.ERWARTET),
+    (404, "", lt.NICHT_GEMESSEN), (403, "", lt.NICHT_GEMESSEN), (401, "", lt.NICHT_GEMESSEN), (404, "not_found", lt.NICHT_GEMESSEN),
+    (400, "InvalidJWT", lt.NICHT_GEMESSEN), (429, "Unauthorized", lt.NICHT_GEMESSEN), (500, "Unauthorized", lt.NICHT_GEMESSEN), (0, "", lt.NICHT_GEMESSEN),
+])
+def test_bewerte_storage_ablehnung_nur_bekannte_kennungen_gelten_als_ablehnung(status, kennung_, erwartet):
+    assert lt.bewerte_storage_ablehnung(status, kennung_) == erwartet
+
+
+def test_rest_404_ohne_kennung_ist_eine_fehlende_route_und_nicht_gemessen(tmp_path, capsys):
+    with attrappe(rest="keine_route") as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)
+    for k in ("Verzeichnis", "ohne Schema-Profil", "Schema-Profil wamo_dev", "Schema-Profil wamo_test", "Schema-Profil wamo_prod"):
+        r = zeile(zeilen, k)
+        assert r.urteil == lt.NICHT_GEMESSEN and "HTTP 404" in r.messung, k
+    assert code == 3
+
+
+def test_storage_mit_bekannter_kennung_ist_erwartet(tmp_path, capsys):
+    with attrappe(storage="abgelehnt") as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)
+    r = zeile(zeilen, "GET /storage/v1/bucket")
+    assert r.urteil == lt.ERWARTET and "HTTP 403 Unauthorized" in r.messung
+    assert code == 0
+
+
+def test_storage_404_ohne_kennung_ist_nicht_gemessen(tmp_path, capsys):
+    with attrappe(storage="keine_route") as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)
+    r = zeile(zeilen, "GET /storage/v1/bucket")
+    assert r.urteil == lt.NICHT_GEMESSEN and "HTTP 404" in r.messung
+    assert code == 3
+
+
+def test_nur_die_bewusst_ungemessenen_zeilen_sind_vom_exit_code_ausgenommen():
+    bewusst = {p.endpunkt for p in lt.plan() if p.bewusst_ungemessen}
+    assert len(bewusst) == 2
+    assert any("Schreiben" in e for e in bewusst) and any("Änderungen" in e for e in bewusst)
+    assert not [p for p in lt.plan() if p.bewusst_ungemessen and p.voraussetzung]
+
+
+def test_alles_dicht_und_beitritt_ohne_auslieferungsbeleg_sind_exit_0(tmp_path, capsys):
+    """Die bewusst ungemessenen Zeilen (Schreibprobe, Auslieferung) allein machen den Lauf nicht unvollständig."""
+    for opt in ({}, {"realtime": "cdc_offen"}):
+        with attrappe(**opt) as (z, url):
+            code, zeilen, out = laufen(z, url, tmp_path, capsys)
+        assert code == 0, opt
+        assert [r.endpunkt for r in zeilen if r.urteil == lt.NICHT_GEMESSEN and not r.bewusst] == []
+
+
+def test_exit_3_wird_in_der_ausgabe_erklaert_und_offen_hat_vorrang(tmp_path, capsys):
+    with attrappe(realtime="kein") as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)
+    assert code == 3 and "unerwartet nicht gemessen" in out and "Exit 3" in out
+    with attrappe(realtime="kein", passwort_ohne_reauth=True) as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)
+    assert code == 1  # OFFEN schlägt "unvollständig"
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Punkt 5 und 6: Beleg für das Passwort, offene Frage zu 24 Stunden, Vergleichslauf
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("modus, status", [("429", "HTTP 429"), ("400_ohne_kennung", "HTTP 400"), ("500", "HTTP 500")])
+def test_altes_passwort_gilt_nur_mit_400_invalid_credentials_als_ungueltig(modus, status, tmp_path, capsys):
+    with attrappe(passwort_ohne_reauth=True, alt_login=modus) as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)
+    r = zeile(zeilen, "PUT /auth/v1/user")
+    assert r.urteil == lt.NICHT_GEMESSEN
+    assert status in r.messung and "nicht eindeutig" in r.messung
+    assert "Verdacht" in r.hinweis
+    assert code == 3
+
+
+def test_hinweis_nennt_die_offene_frage_zu_den_24_stunden(tmp_path, capsys):
+    with attrappe(passwort_ohne_reauth=True) as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys)
+    r = zeile(zeilen, "PUT /auth/v1/user")
+    assert r.urteil == lt.OFFEN
+    assert "24 Stunden" in r.hinweis
+    assert "am Server mit gesetzter Einstellung und Wiederholung klären" in r.hinweis
+    assert "--nach-einstellung" in r.hinweis
+
+
+def test_nach_einstellung_kennzeichnet_den_vergleichslauf_und_aendert_sonst_nichts(tmp_path, capsys):
+    with attrappe() as (z, url):
+        code_normal, zeilen_normal, out_normal = laufen(z, url, tmp_path, capsys)
+    with attrappe() as (z, url):
+        code_vergleich, zeilen_vergleich, out_vergleich = laufen(z, url, tmp_path, capsys, "--nach-einstellung")
+    assert "Vergleichslauf" not in out_normal
+    assert out_vergleich.count("Vergleichslauf") >= 2  # in der Kopfzeile und am Ende
+    assert "24 Stunden" in out_vergleich  # die offene Frage steht auch dann da, wenn die PUT-Zeile erwartet ist
+    assert code_vergleich == code_normal == 0
+    assert [(r.endpunkt, r.urteil) for r in zeilen_vergleich] == [(r.endpunkt, r.urteil) for r in zeilen_normal]
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Punkt 7: Löschen und unklare Anlage
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+def test_404_ohne_kennung_gilt_nicht_als_geloescht(tmp_path, capsys):
+    with attrappe(loeschen_404_ohne_kennung=True) as (z, url):
+        code, zeilen, out = laufen(z, url, tmp_path, capsys, aufraeumen=False)
+        (konto,) = z.nutzer.values()
+    assert code == 1
+    assert "nicht gelöscht" in out and konto["email"] in out
+
+
+def test_404_user_not_found_gilt_als_bereits_geloescht():
+    with attrappe() as (z, url):
+        ml = lt.Messlauf(url, z.anon, z.service)
+        assert ml.konto_loeschen(str(uuid.uuid4())) is True
+    with attrappe(loeschen_404_ohne_kennung=True) as (z, url):
+        ml = lt.Messlauf(url, z.anon, z.service)
+        assert ml.konto_loeschen(str(uuid.uuid4())) is False
+
+
+def test_anlage_ohne_antwort_ist_nicht_nichts_angelegt(tmp_path, capsys, monkeypatch):
+    """Zeitlimit oder Verbindungsabbruch bei der Anlage: Das Konto kann trotzdem bestehen. Der Lauf meldet es mit der E-Mail und gilt als gescheitert."""
+    monkeypatch.setattr(lt.Messlauf, "anfrage", lambda self, m, p, **kw: lt.Antwort(0))
+    env = tmp_path / "wamo.env"
+    env.write_text("ANON_KEY=anon-schluessel-1\nSERVICE_ROLE_KEY=dienst-schluessel-1\n", encoding="utf-8")
+    code, zeilen = lt.lauf(["--basis", "http://127.0.0.1:9", "--env-datei", str(env)])
+    out = capsys.readouterr().out
+    assert code == 1 and zeilen == []
+    assert "nichts angelegt" not in out
+    email = re.search(r"labor-tokentest-[0-9a-f]{12}@example\.org", out)
+    assert email and "von Hand" in out and "Anlage" in out
+
+
+def test_anlage_mit_klarer_ablehnung_ist_nichts_angelegt(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(lt.Messlauf, "anfrage", lambda self, m, p, **kw: lt.Antwort(422, b'{"error_code": "email_exists"}'))
+    env = tmp_path / "wamo.env"
+    env.write_text("ANON_KEY=anon-schluessel-1\nSERVICE_ROLE_KEY=dienst-schluessel-1\n", encoding="utf-8")
+    code, zeilen = lt.lauf(["--basis", "http://127.0.0.1:9", "--env-datei", str(env)])
+    out = capsys.readouterr().out
+    assert code == 1 and "nichts angelegt" in out
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Punkt 9: Umgebungsdatei, Docstring, Plan
+# ---------------------------------------------------------------------------------------------------------------------------------
+
+def test_umgebungsdatei_mit_ungueltigen_bytes_gibt_exit_1_ohne_traceback(tmp_path, capsys):
+    kaputt = tmp_path / "kaputt.env"
+    kaputt.write_bytes(b"ANON_KEY=\xff\xfe\x80\nSERVICE_ROLE_KEY=\xc3\x28\n")
+    code, zeilen = lt.lauf(["--basis", "http://127.0.0.1:9", "--env-datei", str(kaputt)])
+    gesehen = capsys.readouterr()
+    assert code == 1 and zeilen == []
+    assert "Umgebungsdatei" in gesehen.out and "Traceback" not in gesehen.out + gesehen.err
+
+
+def test_docstring_begruendet_die_einzeldatei_und_nennt_exit_codes_und_basis_regel():
+    doc = lt.__doc__
+    assert "Einzeldatei" in doc and "800" in doc and "python3 -E -s" in doc
+    assert "Exit 3" in doc and "https" in doc and "--ca" in doc and "--nach-einstellung" in doc
+
+
+def test_plan_des_testlabors_nennt_den_pfad_des_tokentests():
+    plan = (Path(__file__).resolve().parents[2] / "docs" / "testlabor-wamo.md").read_text(encoding="utf-8")
+    assert "scripts/wamo_labor_tokentest.py" not in plan
+    assert plan.count("infra/sokrates2/labor_tokentest.py") >= 2
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------
