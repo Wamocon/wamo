@@ -3,10 +3,10 @@
 
   python3 wamo_labor_rauchtest.py --betrieb --ca CA     prüft den laufenden Betrieb (Container wamo-labor-dienst, wamo-caddy, Firewall,
                                                         Dateien), ändert nichts. Aufgerufen von wamo-labor-einrichten.sh, läuft als root.
-  python3 wamo_labor_rauchtest.py --attrappe            läuft ohne Server gegen eine Attrappe der Welt (alles grün)
+  python3 wamo_labor_rauchtest.py --attrappe            läuft ohne Server gegen eine Attrappe der Welt (wamo_labor_rauchtest_attrappe.py, alles grün)
   python3 wamo_labor_rauchtest.py --attrappe --fehler kern_offen,root   mit eingebauten Fehlern: Die Proben dafür müssen rot werden
 
-Es gibt 18 Proben (P01 bis P18). Am Ende steht eine Tabelle mit dem Ergebnis je Probe und, für jede Probe, was sie belegt und was sie NICHT
+Es gibt 20 Proben (P01 bis P20). Am Ende steht eine Tabelle mit dem Ergebnis je Probe und, für jede Probe, was sie belegt und was sie NICHT
 belegt. Ausgang 0, wenn keine Probe fehlschlägt (eine übersprungene Probe zählt nicht als Fehler, wird aber genannt).
 
 Was der Rauchtest anfasst: Er liest Docker-Zustand, Dateirechte, iptables und die Datei /etc/wamo/core.env, schickt einige Anfragen an 127.0.0.1
@@ -22,8 +22,8 @@ import json
 import os
 import re
 import socket
+import platform
 import ssl
-import string
 import subprocess
 import sys
 from collections.abc import Callable
@@ -39,7 +39,6 @@ IP_DIENST, IP_LOKAL, IP_CADDY_LABOR = "172.28.0.10", "172.28.1.2", "172.28.0.2"
 SITE_IP, PORT_SITE, PORT_LOOPBACK = "192.168.178.136", 55447, 18765
 ETC, DATEN, CORE_ENV = "/etc/wamo-labor", "/var/lib/wamo-labor", "/etc/wamo/core.env"
 KERN_URL = f"http://127.0.0.1:{PORT_LOOPBACK}"
-ALPHABET = string.ascii_letters + string.digits  # nur für die Attrappe: daraus entstehen die Wegwerf-Token, kein Literal
 V1_FELDER = {"durchlauf_id", "offen", "einwilligung_version", "einwilligung_zeit"}
 KERN_PFADE = ["/api/kern/durchlauf", "/api/kern/tickets", "//api/kern/durchlauf", "/API/KERN/durchlauf", "/api/%6bern/durchlauf",
               "/api/browser/../kern/durchlauf"]
@@ -236,19 +235,38 @@ class Welt:
         except OSError:
             return None
 
+    def caddy_ip(self) -> str | None:
+        i = self.inspect(CADDY)
+        return ((i or {}).get("NetworkSettings", {}).get("Networks", {}).get(NETZ_CADDY, {}) or {}).get("IPAddress")
+
+    def _container(self, netz: str, *befehl: str) -> tuple[int, str]:
+        """Ein kurzlebiger, gehärteter Container (Image des Dienstes, Python) auf dem Netz `netz`."""
+        rc, out, _ = self.sh("docker", "run", "--rm", "--network", netz, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                             "--user", "10001:10001", "--entrypoint", "python", BILD, "-I", "-c", *befehl, timeout=60)
+        return rc, out
+
+    def tcp_fremd(self, netz: str, host: str, port: int) -> str:
+        rc, out = self._container(netz, CODE_TCP, host, str(port))
+        return out.strip().splitlines()[-1] if rc == 0 and out.strip() else "fehler"
+
     def fremd(self, methode: str, pfad: str) -> Antwort | None:
         """Anfrage an Caddy aus einem kurzlebigen Container auf wamo-caddy_default: Caddy sieht eine fremde Adresse, nicht Loopback."""
-        i = self.inspect(CADDY)
-        ip = ((i or {}).get("NetworkSettings", {}).get("Networks", {}).get(NETZ_CADDY, {}) or {}).get("IPAddress")
+        ip = self.caddy_ip()
         if not ip:
             return None
-        rc, out, _ = self.sh("docker", "run", "--rm", "--network", NETZ_CADDY, "--read-only", "--cap-drop", "ALL", "--security-opt",
-                             "no-new-privileges:true", "--user", "10001:10001", "--entrypoint", "python", BILD, "-I", "-c", CODE_FREMD,
-                             ip, str(PORT_SITE), SITE_IP, methode, pfad, timeout=60)
+        rc, out = self._container(NETZ_CADDY, CODE_FREMD, ip, str(PORT_SITE), SITE_IP, methode, pfad)
         daten = json_lesen(out.strip().splitlines()[-1].encode()) if rc == 0 and out.strip() else None
         if not isinstance(daten, dict) or "status" not in daten:
             return None
         return Antwort(int(daten["status"]), daten.get("kopf", {}), str(daten.get("body", "")).encode())
+
+    def host_arch(self) -> str:
+        roh = platform.machine().lower()
+        return {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(roh, roh)
+
+    def image_arch(self) -> str:
+        rc, out, _ = self.sh("docker", "image", "inspect", "-f", "{{.Architecture}}", BILD)
+        return out.strip() if rc == 0 else ""
 
     def datei(self, pfad: str) -> bytes | None:
         try:
@@ -279,7 +297,8 @@ class Welt:
 
 # ======================================================================== die Proben
 @probe("P01", "Container läuft und ist gesund",
-       "Der Container wamo-labor-dienst läuft, sein Healthcheck (GET /gesundheit im Container) meldet gesund, er startet nicht ständig neu.",
+       "Der Container läuft mit dem Image, das auf dem Server gebaut wurde (Architektur wie der Server), sein Healthcheck (GET /gesundheit im Container) "
+       "meldet gesund, er startet nicht ständig neu: Das ist der Beleg, dass das Image gebaut und gestartet ist.",
        "Nicht, dass die Daten stimmen oder die Aufbewahrung funktioniert: gesund heißt nur, dass der Dienst auf seinem Port antwortet.")
 def p_gesund(w: Welt, p: Pruefer) -> None:
     i = w.inspect(CONTAINER)
@@ -289,6 +308,7 @@ def p_gesund(w: Welt, p: Pruefer) -> None:
     p.pruefe(st.get("Running") is True, "Container läuft")
     p.pruefe((st.get("Health") or {}).get("Status") == "healthy", "Healthcheck meldet gesund")
     p.pruefe(i.get("RestartCount", 99) <= 2, f"höchstens zwei Neustarts (bisher {i.get('RestartCount')})")
+    p.pruefe(w.image_arch() == w.host_arch(), f"Architektur des Images ({w.image_arch() or 'unbekannt'}) ist die des Servers ({w.host_arch()})")
 
 
 def status_im_dienst(w: Welt) -> str:
@@ -484,7 +504,7 @@ def sicherer_return(zeile: str) -> bool:
 
 @probe("P15", "Firewall-Regeln für 55447",
        "Die Kette WAMO-FW leitet 55447 in WAMO-FW-LABOR (Quellen nur mit -s, am Ende DROP) und das Netz wamo-labor-lokal in WAMO-FW-LABAUS "
-       "(nur DROP, nie RETURN oder ACCEPT).",
+       "(nur DROP, nie RETURN oder ACCEPT), INPUT schickt es in WAMO-FW-LABIN (nur Antworten), und 18765 wird von außerhalb Loopback verworfen.",
        "Nicht, ob die Quelladressen die richtigen Plätze sind (Frage Q13, bis dahin das Büro-LAN) und nicht, dass die Regeln einen Neustart überstehen.")
 def p_firewall(w: Welt, p: Pruefer) -> None:
     haupt = w.iptables("WAMO-FW") or []
@@ -496,6 +516,11 @@ def p_firewall(w: Welt, p: Pruefer) -> None:
     p.pruefe(bool(rueck) and all(sicherer_return(z) for z in rueck), f"{len(rueck)} Quellen, jede mit -s und nie 0.0.0.0/0")
     aus = [z for z in (w.iptables("WAMO-FW-LABAUS") or []) if z.startswith("-A ")]
     p.pruefe(bool(aus) and aus[-1].endswith("-j DROP") and not any(("RETURN" in z or "ACCEPT" in z) for z in aus), "WAMO-FW-LABAUS verwirft alles")
+    p.pruefe(any("-s 172.28.1.0/29" in z and z.endswith("-j WAMO-FW-LABIN") for z in (w.iptables("INPUT") or [])), "INPUT: das lokale Netz geht in WAMO-FW-LABIN")
+    labin = [z for z in (w.iptables("WAMO-FW-LABIN") or []) if z.startswith("-A ")]
+    p.pruefe(bool(labin) and "ESTABLISHED" in labin[0] and labin[-1].endswith("-j DROP"), "WAMO-FW-LABIN lässt nur Antworten durch und verwirft den Rest")
+    p.pruefe(any(f"ctorigdstport {PORT_LOOPBACK}" in z and "! -s 127.0.0.0/8" in z and z.endswith("-j DROP") for z in haupt),
+             "Port 18765 wird von außerhalb von Loopback verworfen")
 
 
 @probe("P16", "Roundtrip V1 des Kerns über Loopback",
@@ -542,165 +567,58 @@ def p_aufbewahrung(w: Welt, p: Pruefer) -> None:
         p.pruefe(not (token and token in blob), f"der {art}-Token steht nicht in docker inspect")
 
 
-# ======================================================================== Attrappe (Lauf ohne Server)
-def _text(status: int) -> Antwort:
-    return Antwort(status, {"content-type": "text/plain; charset=utf-8", "x-frame-options": "DENY", "cache-control": "no-store",
-                            "x-content-type-options": "nosniff", "referrer-policy": "no-referrer"}, b"Nicht gefunden.")
+@probe("P19", "Dienst aus fremdem Container nicht erreichbar (A10)",
+       "Aus einem fremden Container (kurzlebig, auf dem Netz von wamo-caddy) sind 172.28.0.10:8080 und 172.28.1.2:8080, die Adressen des Dienstes, nicht "
+       "erreichbar (A10 des Vertrags, Teil Netz); die Kontrolle (Caddy auf 55447 von derselben Stelle) ist erreichbar.",
+       "Nicht den Weg von anderen Rechnern im Büro-LAN (sie erreichen nur 55447) und nicht den ganzen A10, der von Hand mit den Kollegen am Server läuft.")
+def p_fremd_dienst(w: Welt, p: Pruefer) -> None:
+    ip = w.caddy_ip()
+    kontrolle = w.tcp_fremd(NETZ_CADDY, ip, PORT_SITE) if ip else "keine Adresse"
+    if not p.pruefe(kontrolle == "offen", f"Kontrolle: Caddy {ip}:55447 ist aus dem fremden Container erreichbar ({kontrolle})"):
+        return
+    for host in (IP_DIENST, IP_LOKAL):
+        antwort = w.tcp_fremd(NETZ_CADDY, host, 8080)
+        p.pruefe(antwort == "zu", f"{host}:8080 ist aus dem fremden Container nicht erreichbar ({antwort})")
 
 
-def _json(status: int, daten: dict) -> Antwort:
-    return Antwort(status, {"content-type": "application/json", "cache-control": "no-store"}, json.dumps(daten).encode())
+@probe("P20", "Host-Dienste nicht über die Bridge-Adresse",
+       "Aus einem Container auf wamo-labor-lokal (wie der Dienst) ist 172.28.1.1:22, die Bridge-Adresse des Hosts, nicht erreichbar (Kette WAMO-FW-LABIN); "
+       "die Kontrolle (der Dienst 172.28.1.2:8080 von derselben Stelle) ist erreichbar.",
+       "Nicht andere Ports des Hosts, nicht die Wirkung bei gestoppter Firewall (der Ausgang hängt allein an wamo-firewall) und nicht einen Neustart des Hosts.")
+def p_bridge_host(w: Welt, p: Pruefer) -> None:
+    kontrolle = w.tcp_fremd(NETZ_LOKAL, IP_LOKAL, 8080)
+    if not p.pruefe(kontrolle == "offen", f"Kontrolle: der Dienst {IP_LOKAL}:8080 ist aus dem lokalen Netz erreichbar ({kontrolle})"):
+        return
+    antwort = w.tcp_fremd(NETZ_LOKAL, "172.28.1.1", 22)
+    p.pruefe(antwort == "zu", f"172.28.1.1:22 (Bridge-Adresse des Hosts) ist aus dem lokalen Netz nicht erreichbar ({antwort})")
 
 
-def _token(a: int, b: int) -> str:
-    return "".join(ALPHABET[(i * a + b) % 62] for i in range(43))
+# ======================================================================== Attrappe, Ablauf und Ausgabe
+def attrappe_klasse():
+    """Die Attrappe liegt in einer eigenen Datei neben diesem Skript (python3 -I nimmt den Ordner des Skripts nicht in den Suchpfad)."""
+    ordner = os.path.dirname(os.path.abspath(__file__))
+    if ordner not in sys.path:
+        sys.path.insert(0, ordner)
+    import wamo_labor_rauchtest_attrappe
+
+    return wamo_labor_rauchtest_attrappe.Attrappe
 
 
-class Attrappe(Welt):
-    """Eine Welt im Speicher: im guten Zustand antwortet sie wie der fertig eingerichtete Server, mit eingebauten Fehlern wie ein kaputter."""
-
-    BEKANNTE_FEHLER = frozenset(
-        "ungesund root schreibbar caps privilegiert ohne_nnp ohne_grenzen ohne_loggrenze netz_extern falscher_proxy port_offen port_zusatz "
-        "token_modus token_besitzer daten_modus token_gleich token_kurz ca_falsch koepfe_fehlen kern_offen kern_variante_offen betreuer_offen "
-        "betreuer_gegenprobe gesundheit_offen ausgang_internet ausgang_dns ausgang_kontrolle firewall_fehlt firewall_offen roundtrip_kaputt "
-        "roundtrip_ohne_token env_url env_token token_in_env ende_falsch".split())
-
-    def __init__(self, fehler=()) -> None:
-        super().__init__(None)
-        self.fehler = set(fehler)
-        unbekannt = self.fehler - self.BEKANNTE_FEHLER
-        if unbekannt:
-            raise ValueError("unbekannter Fehler: " + ", ".join(sorted(unbekannt)))
-        self.kern, self.betreuer = _token(7, 3), _token(11, 5)
-        self.anfragen: list[dict] = []
-
-    def _dienst(self) -> dict:
-        f = self.fehler
-        env = ["WAMO_LABOR_DIENST_BIS=" + ("2027-01-01" if "ende_falsch" in f else "2026-12-11"),
-               "WAMO_LABOR_DIENST_PROXYS=" + ("172.28.0.99" if "falscher_proxy" in f else IP_CADDY_LABOR),
-               "WAMO_LABOR_DIENST_KERN_TOKEN_DATEI=/run/wamo-labor/kern-token"] + (["GEHEIM=" + self.kern] if "token_in_env" in f else [])
-        host = {"ReadonlyRootfs": "schreibbar" not in f, "CapDrop": None if "caps" in f else ["ALL"], "CapAdd": None, "Privileged": "privilegiert" in f,
-                "SecurityOpt": [] if "ohne_nnp" in f else ["no-new-privileges:true"], "Memory": 0 if "ohne_grenzen" in f else 268435456,
-                "MemorySwap": 0 if "ohne_grenzen" in f else 268435456, "NanoCpus": 500000000, "PidsLimit": 128,
-                "LogConfig": {"Type": "json-file", "Config": {} if "ohne_loggrenze" in f else {"max-size": "10m", "max-file": "3"}},
-                "PortBindings": {"8080/tcp": [{"HostIp": "0.0.0.0" if "port_offen" in f else "127.0.0.1", "HostPort": str(PORT_LOOPBACK)}]}}
-        if "port_zusatz" in f:
-            host["PortBindings"]["9999/tcp"] = [{"HostIp": "127.0.0.1", "HostPort": "9999"}]
-        netze = {NETZ_LOKAL: {"IPAddress": IP_LOKAL}} | ({} if "netz_extern" in f else {NETZ_LABOR: {"IPAddress": IP_DIENST}})
-        return {"State": {"Running": True, "Health": {"Status": "unhealthy" if "ungesund" in f else "healthy"}}, "RestartCount": 0,
-                "Config": {"User": "0:0" if "root" in f else "10001:10001", "Env": env}, "HostConfig": host, "NetworkSettings": {"Networks": netze}}
-
-    def inspect(self, name: str) -> dict | None:
-        if name == CADDY:
-            return {"NetworkSettings": {"Networks": {NETZ_CADDY: {"IPAddress": "172.24.0.2"}, NETZ_LABOR: {"IPAddress": IP_CADDY_LABOR}}}}
-        return self._dienst() if name == CONTAINER else None
-
-    def netz(self, name: str) -> dict | None:
-        return {"Internal": name == NETZ_LABOR and "netz_extern" not in self.fehler} if name in (NETZ_LABOR, NETZ_LOKAL) else None
-
-    def im_dienst(self, code: str, *args: str) -> tuple[int, str]:
-        f = self.fehler
-        if code == CODE_UID:
-            return 0, "0 0\n" if "root" in f else "10001 10001\n"
-        if code == CODE_SCHREIBEN:
-            return 0, "geschrieben\n" if "schreibbar" in f else "verweigert\n"
-        return 0, f"CapEff:\t{'00000000a80425fb' if 'caps' in f else '0000000000000000'}\nNoNewPrivs:\t{0 if 'ohne_nnp' in f else 1}\n"
-
-    def tcp_vom_dienst(self, host: str, port: int) -> str:
-        f = self.fehler
-        if host == IP_CADDY_LABOR:
-            return "zu" if "ausgang_kontrolle" in f else "offen"
-        return "offen" if "ausgang_internet" in f and host == "1.1.1.1" else "zu"
-
-    def dns_vom_dienst(self, name: str) -> str:
-        return "aufgeloest" if "ausgang_dns" in self.fehler else "nicht"
-
-    def lauscht(self) -> list[str]:
-        return [f"{'0.0.0.0' if 'port_offen' in self.fehler else '127.0.0.1'}:{PORT_LOOPBACK}", "0.0.0.0:55447", "0.0.0.0:22"]
-
-    def tls_fehler(self) -> str | None:
-        return "self-signed certificate in certificate chain" if "ca_falsch" in self.fehler else None
-
-    def _seiten_koepfe(self) -> dict[str, str]:
-        if "koepfe_fehlen" in self.fehler:
-            return {"content-type": "text/html"}
-        return {"content-type": "text/html", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store",
-                "content-security-policy": "default-src 'none'; frame-ancestors 'none'"}
-
-    def _caddy(self, methode: str, pfad: str, herkunft: str) -> Antwort:
-        f = self.fehler
-        if methode not in ("GET", "HEAD", "POST"):
-            return _text(405)
-        if re.search(r"(?i)api/+(kern|%6bern)", pfad) or "/../kern" in pfad:
-            if "kern_offen" in f or ("kern_variante_offen" in f and not pfad.startswith("/api/kern/")):
-                return _json(401, {"fehler": "token_ungueltig"})
-            return _text(404)
-        if pfad == "/betreuer" or pfad.startswith("/api/betreuer/"):
-            if (herkunft == "fremd" and "betreuer_offen" not in f) or (herkunft == "intern" and "betreuer_gegenprobe" in f):
-                return _text(403)
-            return _json(401, {"fehler": "token_ungueltig"})
-        if pfad == "/gesundheit":
-            return _text(403) if herkunft == "fremd" and "gesundheit_offen" not in f else _json(200, {"zustand": "ok"})
-        return Antwort(200, self._seiten_koepfe(), b"<html></html>") if pfad in ("/", "/board") else _text(404)
-
-    def _merke(self, ziel: str, methode: str, pfad: str, kopf: dict | None) -> None:
-        self.anfragen.append({"ziel": ziel, "methode": methode, "pfad": pfad, "bearer": "Authorization" in (kopf or {})})
-
-    def caddy(self, methode: str, pfad: str, kopf: dict[str, str] | None = None) -> Antwort | None:
-        self._merke("caddy", methode, pfad, kopf)
-        return self._caddy(methode, pfad, "intern")
-
-    def fremd(self, methode: str, pfad: str) -> Antwort | None:
-        self._merke("fremd", methode, pfad, None)
-        return self._caddy(methode, pfad, "fremd")
-
-    def loopback(self, methode: str, pfad: str, kopf: dict[str, str] | None = None) -> Antwort | None:
-        self._merke("loopback", methode, pfad, kopf)
-        f = self.fehler
-        if pfad != "/api/kern/durchlauf":
-            return _json(404, {"fehler": "nicht_erlaubt"})
-        daten = {"durchlauf_id": "5b0f0c1e-7a1d-4c61-9b52-0f6d2a8e41aa", "offen": False, "einwilligung_version": None, "einwilligung_zeit": None}
-        if "roundtrip_ohne_token" in f:
-            return _json(200, daten)
-        if (kopf or {}).get("Authorization") != "Bearer " + self.token("kern"):
-            return _json(401, {"fehler": "token_ungueltig"})
-        return _json(500, {"fehler": "dienst_fehler"}) if "roundtrip_kaputt" in f else _json(200, daten)
-
-    def stat(self, pfad: str) -> tuple[int, int] | None:
-        f = self.fehler
-        if pfad.endswith("/kern-token"):
-            return (0o644 if "token_modus" in f else 0o400), (0 if "token_besitzer" in f else 10001)
-        if pfad.endswith("/betreuer-token"):
-            return 0o400, 10001
-        return ((0o755 if "daten_modus" in f else 0o700), 10001) if pfad == DATEN else None
-
-    def token(self, art: str) -> str:
-        if art == "kern":
-            return "zukurz" if "token_kurz" in self.fehler else self.kern
-        return self.kern if "token_gleich" in self.fehler else self.betreuer
-
-    def datei(self, pfad: str) -> bytes | None:
-        if pfad != CORE_ENV:
-            return None
-        url = "http://127.0.0.1:9" if "env_url" in self.fehler else KERN_URL
-        token = _token(13, 1) if "env_token" in self.fehler else self.token("kern")
-        return f"# Attrappe\nWAMO_LABOR_URL='{url}'\nWAMO_LABOR_TOKEN='{token}'\n".encode()
-
-    def iptables(self, kette: str) -> list[str] | None:
-        f = self.fehler
-        if "firewall_fehlt" in f:
-            return None
-        if kette == "WAMO-FW":
-            return ["-N WAMO-FW", f"-A WAMO-FW -p tcp -m conntrack --ctorigdstport {PORT_SITE} --ctdir ORIGINAL -j WAMO-FW-LABOR",
-                    "-A WAMO-FW -s 172.28.1.0/29 -j WAMO-FW-LABAUS"]
-        if kette == "WAMO-FW-LABOR":
-            return ["-N WAMO-FW-LABOR", "-A WAMO-FW-LABOR -s 127.0.0.0/8 -j RETURN"] + (
-                ["-A WAMO-FW-LABOR -j RETURN"] if "firewall_offen" in f else ["-A WAMO-FW-LABOR -s 192.168.178.0/24 -j RETURN"]) + [
-                "-A WAMO-FW-LABOR -j DROP"]
-        return ["-N WAMO-FW-LABAUS", "-A WAMO-FW-LABAUS -j DROP"]
+def __getattr__(name: str):
+    if name == "Attrappe":
+        return attrappe_klasse()
+    raise AttributeError(name)
 
 
-# ======================================================================== Ablauf und Ausgabe
+HAND = [
+    "Dass Caddy echte LAN-Adressen sieht: Das lässt sich nur von einem Büro-PC prüfen. Von dort https://192.168.178.136:55447/betreuer und /gesundheit "
+    "öffnen, beide müssen 403 antworten (ein Betreuer-PC aus betreuer-adressen sieht /betreuer, ohne Token mit 401). Dieser Rauchtest behauptet das nicht: "
+    "Er sendet von Loopback und aus Containern.",
+    "Dass die Plätze 55447 durch die Firewall erreichen (Adressliste, Frage Q13) und die WAMO-CA importiert haben: von einem Platz-Laptop "
+    "https://192.168.178.136:55447/board öffnen.",
+    "A10 des Vertrags mit den Kollegen am Server: P14, P19 und P20 sind nur die Vorarbeit.",
+]
+
 def alle_proben(welt: Welt) -> list[Ergebnis]:
     ergebnisse = []
     for nr, name, fn, belegt, nicht in PROBEN:
@@ -729,6 +647,9 @@ def ausgeben(ergebnisse: list[Ergebnis]) -> int:
     n_fehler = sum(1 for e in ergebnisse if e.ergebnis == "FEHLER")
     n_skip = sum(1 for e in ergebnisse if e.ergebnis == "UEBERSPRUNGEN")
     print(f"\n{n_ok} OK, {n_fehler} FEHLER, {n_skip} übersprungen")
+    print("\nVon Hand zu prüfen (der Rauchtest behauptet es nicht):")
+    for z in HAND:
+        print(f"  - {z}")
     return 1 if n_fehler else 0
 
 
@@ -745,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.attrappe:
         fehler = [x for x in a.fehler.split(",") if x]
         print("Rauchtest gegen die Attrappe" + (f" mit eingebauten Fehlern: {', '.join(fehler)}" if fehler else ""))
-        return ausgeben(alle_proben(Attrappe(fehler)))
+        return ausgeben(alle_proben(attrappe_klasse()(fehler)))
     if not a.betrieb:
         ap.error("--betrieb oder --attrappe angeben")
     if hasattr(os, "geteuid") and os.geteuid() != 0:

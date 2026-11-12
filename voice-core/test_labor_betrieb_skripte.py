@@ -40,8 +40,9 @@ EINRICHTEN = SOKRATES2 / "wamo-labor-einrichten.sh"
 RUECKWEG = SOKRATES2 / "wamo-labor-rueckweg.sh"
 LOESCHLAUF = SOKRATES2 / "wamo-labor-loeschlauf.sh"
 RAUCHTEST = SOKRATES2 / "wamo_labor_rauchtest.py"
+RAUCHTEST_ATTRAPPE = SOKRATES2 / "wamo_labor_rauchtest_attrappe.py"
 SKRIPTE = [EINRICHTEN, RUECKWEG, LOESCHLAUF]
-ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, RUECKWEG, LOESCHLAUF, RAUCHTEST, FIREWALL, CADDY / "docker-compose.yml"]
+ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, RUECKWEG, LOESCHLAUF, RAUCHTEST, RAUCHTEST_ATTRAPPE, FIREWALL, CADDY / "docker-compose.yml"]
 VERBOTENE_WOERTER = ("nieeeki", "jarvis", "promptcontrol", "damicon")
 
 
@@ -1380,7 +1381,8 @@ class RauchtestTests(unittest.TestCase):
         "ca_falsch": "P10", "koepfe_fehlen": "P10", "kern_offen": "P11", "kern_variante_offen": "P11", "betreuer_offen": "P12",
         "betreuer_gegenprobe": "P12", "gesundheit_offen": "P13", "ausgang_internet": "P14", "ausgang_dns": "P14", "ausgang_kontrolle": "P14",
         "firewall_fehlt": "P15", "firewall_offen": "P15", "roundtrip_kaputt": "P16", "roundtrip_ohne_token": "P16", "env_url": "P17", "env_token": "P17",
-        "token_in_env": "P18", "ende_falsch": "P18",
+        "token_in_env": "P18", "ende_falsch": "P18", "arch_falsch": "P01", "labin_fehlt": "P15", "loopback_regel_fehlt": "P15",
+        "fremd_dienst_offen": "P19", "fremd_ip_offen": "P19", "fremd_kontrolle": "P19", "bridge_host_offen": "P20", "bridge_kontrolle": "P20",
     }
 
     def setUp(self):
@@ -1394,7 +1396,7 @@ class RauchtestTests(unittest.TestCase):
 
     def test_gute_attrappe_alles_gruen_und_jede_probe_sagt_was_sie_belegt(self):
         ergebnisse = self.lauf(self.m.Attrappe())
-        self.assertEqual([r.nr for r in ergebnisse], [f"P{n:02d}" for n in range(1, 19)])
+        self.assertEqual([r.nr for r in ergebnisse], [f"P{n:02d}" for n in range(1, 21)])
         for r in ergebnisse:
             self.assertEqual(r.ergebnis, "OK", f"{r.nr} {r.name}: {r.befunde}")
             self.assertGreater(len(r.belegt), 20, r.nr)
@@ -1412,7 +1414,7 @@ class RauchtestTests(unittest.TestCase):
                         self.assertEqual(r.ergebnis, "OK", f"{fehler} hat auch {andere} rot gemacht: {r.befunde}")
 
     def test_die_fehlerliste_deckt_alle_proben_ab(self):
-        self.assertEqual(sorted(set(self.FEHLER.values())), [f"P{n:02d}" for n in range(1, 19)])
+        self.assertEqual(sorted(set(self.FEHLER.values())), [f"P{n:02d}" for n in range(1, 21)])
         self.assertEqual(set(self.FEHLER), set(self.m.Attrappe.BEKANNTE_FEHLER))
 
     def test_tabelle_und_ausgang(self):
@@ -1424,7 +1426,7 @@ class RauchtestTests(unittest.TestCase):
             rc = self.m.main(["--attrappe"])
         text = puffer.getvalue()
         self.assertEqual(rc, 0)
-        for soll in ("Nr", "Probe", "Ergebnis", "belegt", "belegt nicht", "P01", "P18", "18 OK, 0 FEHLER"):
+        for soll in ("Nr", "Probe", "Ergebnis", "belegt", "belegt nicht", "P01", "P20", "20 OK, 0 FEHLER"):
             self.assertIn(soll, text)
         puffer = io.StringIO()
         with contextlib.redirect_stdout(puffer):
@@ -1471,6 +1473,39 @@ class RauchtestTests(unittest.TestCase):
         for a in welt.anfragen:
             self.assertEqual(a["methode"] if a["bearer"] else "GET", "GET")  # nur lesend (V1)
 
+    def test_hinweise_von_hand_ohne_zu_behaupten_es_geprueft_zu_haben(self):
+        import contextlib
+        import io
+
+        puffer = io.StringIO()
+        with contextlib.redirect_stdout(puffer):
+            self.m.main(["--attrappe"])
+        text = puffer.getvalue()
+        hand = text.split("Von Hand zu prüfen", 1)[1]
+        for soll in ("Büro-PC", "/betreuer", "/gesundheit", "403", "echte LAN-Adressen", "nicht"):
+            self.assertIn(soll, hand, soll)
+
+    def test_p01_nennt_image_gebaut_und_gestartet_und_die_architektur(self):
+        p01 = next(r for r in self.lauf(self.m.Attrappe()) if r.nr == "P01")
+        self.assertIn("gebaut und gestartet", p01.belegt)
+        self.assertIn("Architektur", p01.belegt)
+        self.assertTrue([text for ok, text in p01.pruefungen if "Architektur" in text and ok])
+
+    def test_p19_und_p20_beschreiben_a10_und_die_bridge_adresse(self):
+        ergebnisse = {r.nr: r for r in self.lauf(self.m.Attrappe())}
+        self.assertIn("A10", ergebnisse["P19"].belegt)
+        self.assertIn("172.28.0.10", ergebnisse["P19"].belegt)
+        self.assertIn("172.28.1.1", ergebnisse["P20"].belegt)
+        self.assertIn("172.28.1.1:22", " ".join(text for ok, text in ergebnisse["P20"].pruefungen))
+        self.assertTrue([1 for ok, text in ergebnisse["P19"].pruefungen if "Kontrolle" in text])  # jede Verbotsprobe hat eine Kontrolle
+        self.assertTrue([1 for ok, text in ergebnisse["P20"].pruefungen if "Kontrolle" in text])
+
+    def test_die_attrappe_liegt_in_einer_eigenen_datei(self):
+        self.assertLess(len(lies(RAUCHTEST).splitlines()), 800)
+        self.assertLess(len(lies(RAUCHTEST_ATTRAPPE).splitlines()), 800)
+        self.assertIn("class Attrappe(Welt)", lies(RAUCHTEST_ATTRAPPE))
+        self.assertNotIn("class Attrappe", lies(RAUCHTEST))
+
     def test_hilfen_antwort_und_env_datei(self):
         roh = b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nX-Frame-Options: DENY\r\n\r\nnicht erlaubt"
         a = self.m.antwort_lesen(roh)
@@ -1486,20 +1521,21 @@ class RauchtestTests(unittest.TestCase):
         self.assertFalse(self.m.token_gueltig("Ab cdefghijklmnopqrstuvwxyz" * 3))  # Leerzeichen
 
     def test_form_und_text(self):
-        text = lies(RAUCHTEST)
-        self.assertTrue(text.startswith("#!/usr/bin/env python3\n"))
-        self.assertLess(len(text.splitlines()), 800)
-        self.assertNotIn("import requests", text)
-        for erlaubt in re.findall(r"^(?:import|from) ([a-z_.]+)", text, flags=re.M):
-            self.assertIn(erlaubt.split(".")[0], sys.stdlib_module_names | {"__future__"}, erlaubt)  # nur die Standardbibliothek
         import ast
 
-        baum = ast.parse(text)
-        for knoten in ast.walk(baum):
-            if isinstance(knoten, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                laenge = knoten.end_lineno - knoten.lineno + 1
-                self.assertLessEqual(laenge, 50, f"{knoten.name} hat {laenge} Zeilen")
-        self.assertNotIn("print(token", text)
+        for datei in (RAUCHTEST, RAUCHTEST_ATTRAPPE):
+            text = lies(datei)
+            self.assertTrue(text.startswith("#!/usr/bin/env python3\n"), datei.name)
+            self.assertLess(len(text.splitlines()), 800, datei.name)
+            self.assertNotIn("import requests", text)
+            for erlaubt in re.findall(r"^(?:import|from) ([a-z_.]+)", text, flags=re.M):
+                # nur die Standardbibliothek (die Attrappe darf außerdem den Rauchtest selbst laden)
+                self.assertIn(erlaubt.split(".")[0], sys.stdlib_module_names | {"__future__", "wamo_labor_rauchtest"}, f"{datei.name}: {erlaubt}")
+            for knoten in ast.walk(ast.parse(text)):
+                if isinstance(knoten, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    laenge = knoten.end_lineno - knoten.lineno + 1
+                    self.assertLessEqual(laenge, 50, f"{datei.name}: {knoten.name} hat {laenge} Zeilen")
+            self.assertNotIn("print(token", text)
 
 
 # ====================================================================================== Teil 6: Namensvertrag, README, CHANGELOG
