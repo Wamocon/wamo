@@ -24,7 +24,7 @@ Meldung ohne Werte.
 
 | Variable | Bedeutung | Standard |
 | --- | --- | --- |
-| `WAMO_LABOR_DIENST_KERN_TOKEN_DATEI` | Datei mit dem Bearer des Kerns (`WAMO_LABOR_TOKEN`, 32 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-) | Pflicht |
+| `WAMO_LABOR_DIENST_KERN_TOKEN_DATEI` | Datei mit dem Bearer des Kerns (`WAMO_LABOR_TOKEN`, 43 bis 200 Zeichen aus A-Z a-z 0-9 und ._~+/=-, mindestens 16 verschiedene Zeichen). Auf Linux darf eine Tokendatei nur dem Besitzer gehören (Rechte 0600 oder 0400), sonst startet der Dienst nicht, bei Docker-Secrets also `mode: 0400` und den Benutzer des Dienstes als Besitzer setzen | Pflicht |
 | `WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI` | Datei mit dem Betreuer-Token, muss ein anderer Wert sein | Pflicht |
 | `WAMO_LABOR_DIENST_DATEN` | Ordner für Datenbanken und Protokoll (im Container `/data`) | `/data` |
 | `WAMO_LABOR_DIENST_HOST`, `WAMO_LABOR_DIENST_PORT` | Adresse zum Lauschen (im Container `0.0.0.0`) | `127.0.0.1`, `8080` |
