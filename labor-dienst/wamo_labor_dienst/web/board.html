@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>WAMOCON Test-Jira</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/web/stil.css">
+</head>
+<body class="board-seite">
+<header class="kopf">
+  <h1 class="marke">WAMOCON Test-Jira</h1>
+  <p class="platz" id="platz">Platz</p>
+  <p class="zustand" id="zustand" role="status"></p>
+</header>
+<main class="board-inhalt" id="inhalt">
+  <p class="meldung" id="meldung" role="alert" hidden></p>
+  <p class="zusammenfassung" id="zusammenfassung"></p>
+  <div class="spalten" id="spalten"></div>
+</main>
+<dialog class="detail" id="detail" aria-labelledby="detail-titel"></dialog>
+<noscript><p class="meldung">Diese Seite braucht JavaScript.</p></noscript>
+<script type="module" src="/web/board.js"></script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+/* WAMOCON Test-Jira: gemeinsamer Stil der Weboberflächen im WMC-Corporate-Design.
+   Farben: Rot, Weiß, Schwarz und drei Grautöne, kein Blau. Rot kommt nur als Fläche, Linie oder Akzent vor und nie als Textfarbe (Rot auf Weiß hat nur
+   4,27 zu 1), Text auf Rot ist schwarz (4,9 zu 1). Jedes Paar aus Schrift und Grund steht vor der Regel, die es nutzt, als Kommentar der Form
+   "Paar: Schrift auf Grund": Ein Test rechnet alle nach (mindestens 4,5 zu 1). Schrift: Arial Narrow mit Rückfall auf Arial und sans-serif.
+   Kein Inline-Stil, keine externen Schriften, keine Bilder. */
+
+:root {
+  --rot: #F40E0E;
+  --weiss: #FFFFFF;
+  --schwarz: #000000;
+  --grau-hell: #F3F3F3;
+  --grau-linie: #D9D9D9;
+  --grau-text: #6B6B6B;
+}
+
+* { box-sizing: border-box; }
+html { font-size: 100%; }
+
+/* Paar: #000000 auf #FFFFFF */
+body {
+  margin: 0;
+  font-family: "Arial Narrow", Arial, sans-serif;
+  font-size: 1.0625rem;
+  line-height: 1.4;
+  background: var(--weiss);
+  color: var(--schwarz);
+}
+
+h1, h2, h3, p, ul, ol { margin: 0; }
+ul, ol { padding: 0; list-style: none; }
+[hidden] { display: none !important; }
+
+/* Fokusring: schwarze Linie mit weißem Saum, sichtbar auf hellem und auf dunklem Grund */
+:focus-visible { outline: 3px solid var(--schwarz); outline-offset: 2px; box-shadow: 0 0 0 6px var(--weiss); }
+
+/* Kopfzeile */
+/* Paar: #FFFFFF auf #000000 */
+.kopf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  padding: 0.75rem 1.25rem;
+  background: var(--schwarz);
+  color: var(--weiss);
+  border-bottom: 6px solid var(--rot);
+}
+.marke { font-size: 1.25rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.platz { font-size: 1.5rem; font-weight: 700; }
+.zustand { margin-left: auto; }
+
+/* Zustand: offen (Rot mit schwarzer Schrift), beendet (Grau mit weißer Schrift) */
+/* Paar: #000000 auf #F40E0E */
+.zustand-offen { padding: 0.25rem 0.75rem; background: var(--rot); color: var(--schwarz); font-weight: 700; border: 2px solid var(--weiss); }
+/* Paar: #FFFFFF auf #6B6B6B */
+.zustand-beendet { padding: 0.25rem 0.75rem; background: var(--grau-text); color: var(--weiss); font-weight: 700; border: 2px solid var(--weiss); }
+
+/* Meldungen */
+/* Paar: #000000 auf #F3F3F3 */
+.meldung { padding: 0.75rem 1rem; background: var(--grau-hell); color: var(--schwarz); border: 2px solid var(--schwarz); font-weight: 700; }
+.meldung-fehler { border-left: 10px solid var(--rot); }
+
+/* Chips */
+/* Paar: #000000 auf #D9D9D9 */
+.chip { display: inline-block; padding: 0.05rem 0.5rem; background: var(--grau-linie); color: var(--schwarz); border-radius: 0.75rem; font-size: 0.9rem; white-space: nowrap; }
+.chip.prio-hoch, .chip.prio-hoechste { background: var(--rot); font-weight: 700; }
+.chip-neu { background: var(--schwarz); color: var(--weiss); font-weight: 700; }
+.zusammenfassung { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+/* Knöpfe */
+/* Paar: #FFFFFF auf #000000 */
+.knopf { padding: 0.5rem 1rem; background: var(--schwarz); color: var(--weiss); border: 2px solid var(--schwarz); font: inherit; font-weight: 700; cursor: pointer; }
+/* Paar: #FFFFFF auf #6B6B6B */
+.knopf:hover { background: var(--grau-text); border-color: var(--grau-text); }
+.knopf-primaer { background: var(--rot); color: var(--schwarz); }
+.knopf-primaer:hover { background: var(--rot); border-color: var(--schwarz); }
+.knopf-gefahr { background: var(--weiss); color: var(--schwarz); border: 3px solid var(--rot); }
+.knopf-gefahr:hover { background: var(--grau-hell); border-color: var(--rot); }
+.knopf:disabled { background: var(--grau-linie); color: var(--schwarz); border-color: var(--grau-text); border-style: dashed; cursor: not-allowed; }
+
+/* Board */
+.board-seite { height: 100vh; display: flex; flex-direction: column; }
+.board-inhalt { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem 1.25rem; }
+.spalten { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+
+/* Paar: #000000 auf #F3F3F3 */
+.spalte { display: flex; flex-direction: column; min-height: 0; background: var(--grau-hell); color: var(--schwarz); border: 1px solid var(--grau-linie); }
+.spalte-titel { padding: 0.6rem 0.75rem; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 3px solid var(--schwarz); }
+.zaehler { display: inline-block; margin-left: 0.25rem; padding: 0 0.5rem; background: var(--schwarz); color: var(--weiss); border-radius: 0.75rem; }
+.spalte-liste { flex: 1; min-height: 0; overflow-y: auto; padding: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+/* Paar: #6B6B6B auf #F3F3F3 */
+.leer { padding: 0.75rem; color: var(--grau-text); }
+
+/* Karten: weiß, graue Linie, roter Akzent bei Priorität hoch */
+/* Paar: #000000 auf #FFFFFF */
+.karte {
+  display: flex; flex-direction: column; gap: 0.35rem; width: 100%; padding: 0.6rem 0.75rem; text-align: left;
+  background: var(--weiss); color: var(--schwarz); border: 1px solid var(--grau-linie); border-left: 6px solid var(--grau-linie); border-radius: 0.25rem;
+  font: inherit; cursor: pointer;
+}
+.karte:hover { border-color: var(--schwarz); }
+.karte.prio-hoch, .karte.prio-hoechste { border-left-color: var(--rot); }
+.karte-kopf { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+/* Paar: #6B6B6B auf #FFFFFF */
+.schluessel { color: var(--grau-text); font-weight: 700; }
+.karte-titel { font-weight: 700; overflow-wrap: anywhere; }
+.karte-fuss { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+/* Detail-Fenster */
+.detail { width: min(46rem, 92vw); max-height: 88vh; padding: 0; background: var(--weiss); color: var(--schwarz); border: 3px solid var(--schwarz); }
+.detail::backdrop { background: var(--schwarz); opacity: 0.55; }
+.detail-inhalt { display: flex; flex-direction: column; gap: 0.75rem; max-height: 86vh; overflow-y: auto; padding: 1rem 1.25rem; }
+.detail-kopf { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.detail h2 { font-size: 1.4rem; overflow-wrap: anywhere; }
+.detail h3 { font-size: 1.05rem; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 2px solid var(--grau-linie); padding-bottom: 0.15rem; }
+.textblock { white-space: pre-wrap; overflow-wrap: anywhere; }
+.kommentare { display: flex; flex-direction: column; gap: 0.5rem; }
+.kommentar { padding: 0.5rem 0.75rem; background: var(--grau-hell); border-left: 4px solid var(--grau-text); }
+/* Paar: #6B6B6B auf #F3F3F3 */
+.meta { color: var(--grau-text); font-size: 0.9rem; }
+
+/* Kleine Bildschirme: die Spalten stehen untereinander */
+@media (max-width: 52rem) {
+  .board-seite { height: auto; }
+  .spalten { grid-template-columns: 1fr; }
+  .spalte-liste { max-height: 60vh; }
+  .zustand { margin-left: 0; }
+}
+
+/* Große Bildschirme: größere Schrift */
+@media (min-width: 1800px) {
+  body { font-size: 1.3rem; }
+}

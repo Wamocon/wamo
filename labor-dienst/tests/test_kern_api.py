@@ -56,7 +56,7 @@ def test_v1_mit_abfrage_ist_422(client, d):
 
 
 # ---------- Pfade und Methoden ----------
-@pytest.mark.parametrize("pfad", ["/", "/api", "/api/kern", "/api/kern/", "/api/kern/gibt-es-nicht", "/api/kern/durchlauf/1", "/api/kern/durchlauf/",
+@pytest.mark.parametrize("pfad", ["/index.html", "/api", "/api/kern", "/api/kern/", "/api/kern/gibt-es-nicht", "/api/kern/durchlauf/1", "/api/kern/durchlauf/",
                                   "/api/kern/tickets/", "/api/kern/tickets/LAB-12/loeschen", "/api/kern/tickets/LAB-12/status/x", "/docs", "/openapi.json",
                                   "/api/kern//durchlauf", "/API/KERN/durchlauf"])
 def test_unbekannter_pfad_ist_404_nicht_erlaubt_ohne_umleitung(client, pfad):
