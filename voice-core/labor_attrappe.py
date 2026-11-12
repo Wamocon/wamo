@@ -42,6 +42,8 @@ _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}
 _PLATZ = re.compile(r"[1-9][0-9]?")
 _VERBOTEN = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 _ANFRAGE_MAX = 16 * 1024
+_KOPF_MAX = 16 * 1024  # D5: Kopfgröße begrenzt (Summe aus Name, Wert und vier Byte je Kopfzeile), darüber 431
+_LISTE_MAX = 60 * 1024  # V2: wüchse die Antwort für 10 Tickets über 60 KB, liefert der Dienst weniger Tickets (den Anfang der Liste)
 _QUOTE_TICKETS, _QUOTE_KOMMENTARE, _QUOTE_BYTES, _QUOTE_RATE = 100, 300, 1024 * 1024, 30
 _IDEM_SECS = 24 * 3600
 _FENSTER_SECS = 60.0
@@ -151,10 +153,12 @@ def _ausgabe(nr: int, t: dict) -> dict:
 class Attrappe:
     """ASGI-App des Dienstes. uhr: Zeit in Sekunden (für Schreibrate und Gültigkeit der Idempotenzschlüssel, in Tests verstellbar)."""
 
-    def __init__(self, *, token: str | None = None, uhr: Callable[[], float] = time.time, verwundbar: bool = False):
+    def __init__(self, *, token: str | None = None, uhr: Callable[[], float] = time.time, verwundbar: bool = False, grenzen: bool = True):
+        """grenzen: Kürzung von V2 auf 60 KB und Grenze der Kopfgröße (431). Mit False (und bei verwundbar) lässt die Attrappe beide weg."""
         self.token = token or secrets.token_urlsafe(32)
         self._uhr = uhr
         self._verwundbar = verwundbar
+        self._grenzen = grenzen and not verwundbar
         self._plaetze = {n: _Platz(uhr) for n in _PLAETZE}
         for platz in self._plaetze.values():
             platz.einwilligung = (1, self._jetzt())
@@ -247,6 +251,8 @@ class Attrappe:
 
     async def _bearbeiten(self, scope, receive, extra) -> tuple[int, object]:
         methode, pfad = scope["method"], scope["path"]
+        if self._grenzen and sum(len(n) + len(w) + 4 for n, w in scope.get("headers", [])) > _KOPF_MAX:  # 0. Kopfgröße (D5)
+            raise _Fehler(431, "zu_gross", "Die Köpfe der Anfrage sind zu groß.")
         name, nummer = self._route(methode, pfad)  # 1. Pfad und Methode
         kopf = self._kopfzeilen(scope)
         auth = self._eins(kopf, "authorization") or ""
@@ -313,7 +319,10 @@ class Attrappe:
                    if passt(t) and (not abfrage.get("nummer") or abfrage["nummer"] == f"LAB-{n}")
                    and all(abfrage.get(f) in (None, t[f]) for f in ("typ", "prioritaet", "status"))
                    and (abfrage.get("nur_durchlauf") != "true" or t["im_durchlauf"])]
-        return {"tickets": [_ausgabe(n, t) for n, t in treffer[:int(limit)]], "gesamt": len(treffer)}
+        tickets = [_ausgabe(n, t) for n, t in treffer[:int(limit)]]
+        while self._grenzen and tickets and len(json.dumps({"tickets": tickets, "gesamt": len(treffer)}, ensure_ascii=False).encode("utf-8")) > _LISTE_MAX:
+            tickets.pop()  # weniger Tickets, den Anfang der Liste; gesamt bleibt die echte Zahl
+        return {"tickets": tickets, "gesamt": len(treffer)}
 
     def _v3(self, p: _Platz, nr: int) -> dict:
         t = p.tickets.get(nr)

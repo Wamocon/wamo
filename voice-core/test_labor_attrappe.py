@@ -57,6 +57,58 @@ def fehler(r):
     return r.json()["fehler"]
 
 
+def grosse_tickets(app, platz=3, anzahl=10, zeichen=3000):
+    """Tickets mit langer Beschreibung direkt ins Board legen (V4 selbst lässt solche Längen nicht zu): ein Zeichen "ä" sind zwei Byte."""
+    p = app._plaetze[platz]
+    p.tickets.clear()
+    for i in range(anzahl):
+        p.tickets[100 + i] = {"titel": f"Ticket {i}", "typ": "aufgabe", "prioritaet": "mittel", "status": "zu_erledigen",
+                              "beschreibung": "ä" * zeichen, "version": 1, "im_durchlauf": False, "kommentare": []}
+
+
+# ---------- Vertrag V2 (60 KB) und D5 (Kopfgröße) ----------
+async def test_v2_liefert_weniger_tickets_wenn_die_antwort_ueber_60_kb_waechst(http, app):
+    grosse_tickets(app)  # zehn Tickets zu etwa 6 KB sind zusammen über 60 KB
+    r = await http.get("/api/kern/tickets", params={"limit": "10"}, headers=kopf(app))
+    assert r.status_code == 200
+    d = r.json()
+    assert len(r.content) <= 60 * 1024
+    assert 0 < len(d["tickets"]) < 10
+    assert d["gesamt"] == 10  # gesamt bleibt die echte Zahl
+    assert [t["nummer"] for t in d["tickets"]] == [f"LAB-{n}" for n in range(109, 109 - len(d["tickets"]), -1)]  # der Anfang der Liste
+
+
+async def test_v2_mit_neun_langen_tickets_bleibt_vollstaendig(http, app):
+    grosse_tickets(app, anzahl=9)  # etwa 56 KB: unter der Grenze, nichts wird gekürzt
+    d = (await http.get("/api/kern/tickets", params={"limit": "10"}, headers=kopf(app))).json()
+    assert len(d["tickets"]) == 9 and d["gesamt"] == 9
+
+
+async def test_v2_ohne_lange_tickets_bleibt_unveraendert(http, app):
+    d = (await http.get("/api/kern/tickets", params={"limit": "10"}, headers=kopf(app))).json()
+    assert d["gesamt"] == len(d["tickets"]) == 6  # der Seed
+
+
+async def test_zu_grosse_koepfe_werden_abgelehnt(http, app):
+    r = await http.get("/api/kern/durchlauf", headers={**kopf(app), "X-Fuell": "a" * (17 * 1024)})
+    assert r.status_code == 431 and fehler(r) == "zu_gross"
+    assert r.headers["cache-control"] == "no-store"
+
+
+async def test_ohne_grenzen_kuerzt_und_lehnt_die_attrappe_nichts_ab(uhr):
+    """grenzen=False (und verwundbar=True) lässt beide Grenzen weg: Das Abnahmeskript baut sie in seiner Nachbildung selbst nach, damit es sie rot machen kann."""
+    for app in (Attrappe(uhr=uhr, grenzen=False), Attrappe(uhr=uhr, verwundbar=True)):
+        grosse_tickets(app)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ATTRAPPE_URL) as c:
+            r = await c.get("/api/kern/tickets", params={"limit": "10"}, headers={**kopf(app), "X-Fuell": "a" * (17 * 1024)})
+            assert r.status_code == 200 and len(r.json()["tickets"]) == 10 and len(r.content) > 60 * 1024
+
+
+async def test_normale_koepfe_gehen_durch(http, app):
+    r = await http.get("/api/kern/durchlauf", headers={**kopf(app), "X-Fuell": "a" * 1024})
+    assert r.status_code == 200
+
+
 # ---------- V1 ----------
 async def test_v1_durchlauf(http, app):
     r = await http.get("/api/kern/durchlauf", headers=kopf(app))

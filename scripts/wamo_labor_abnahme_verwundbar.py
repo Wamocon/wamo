@@ -280,7 +280,7 @@ def starten(*, defekte=()) -> Iterator[Ziel]:
     if gewaehlt - set(DEFEKTE):
         raise ValueError("unbekannter Defekt: " + ", ".join(sorted(gewaehlt - set(DEFEKTE))))
     takt = FalscherTakt()
-    attrappe = Attrappe(uhr=takt.jetzt)
+    attrappe = Attrappe(uhr=takt.jetzt, grenzen=False)  # Kürzung auf 60 KB und Kopfgröße baut die Vorschaltschicht selbst nach, damit sie sich abschalten lassen
     with contextlib.ExitStack() as stack:
         for patch in _patches(gewaehlt):
             stack.enter_context(patch)
