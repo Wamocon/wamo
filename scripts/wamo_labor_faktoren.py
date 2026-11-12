@@ -130,7 +130,7 @@ def profile_lesen(text: str | None) -> list[str]:
     ergebnis: list[str] = []
     for teil in (t.strip() for t in text.split(",")):
         if not um.KENNUNG_RE.fullmatch(teil):
-            raise EingabeFehler(f"Ungültiges Profil {teil!r}: erlaubt sind labor-01 bis labor-16")
+            raise EingabeFehler(f"Ungültiges Profil {teil!r}: erlaubt sind labor-01 bis labor-09")
         if teil not in ergebnis:
             ergebnis.append(teil)
     return ergebnis

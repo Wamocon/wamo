@@ -320,3 +320,35 @@ def test_umschlag_nimmt_einen_gueltigen_seed_mit_auffuellzeichen(tmp_path):
     datei = umschlag_datei(tmp_path)
     um.Umschlag(datei, rechte=Rechte()).seed_speichern("labor-01", "ABCDEFGHIJKLMNOP" + "======")
     assert seed_der_datei(datei, "labor-01") == "ABCDEFGHIJKLMNOP======"
+
+
+# ---------- Befund 4: nur labor-01 bis labor-09, E-Mail der Zeile gegen die Kennung ----------
+
+@pytest.mark.parametrize("profil", ["labor-10", "labor-16", "labor-17", "labor-00", "labor-schau"])
+def test_nur_labor_01_bis_09_sind_zulaessig(capsys, umgebung, tmp_path, profil):
+    datei = umschlag_datei(tmp_path)
+    code, out, err = lauf(capsys, ["pruefen", "--profile", profil, "--umschlag-datei", str(datei)])
+    assert code == 2 and "labor-01 bis labor-09" in err and out == ""
+    assert not um.KENNUNG_RE.fullmatch(profil)
+
+
+@pytest.mark.parametrize("zeile", [
+    "labor-03\tlabor-04@wamo.test\tPw-ababab", "labor-03\tlabor-03@example.org\tPw-ababab", "labor-03\tLABOR-03@wamo.test\tPw-ababab",
+    "labor-03\tlabor-03@wamo.test.evil\tPw-ababab", "labor-03\tx@labor-03@wamo.test\tPw-ababab", "labor-03\t labor-03@wamo.test x\tPw-ababab"])
+def test_email_der_zeile_muss_zur_kennung_passen(tmp_path, zeile):
+    datei = umschlag_datei(tmp_path, zeile + "\n")
+    u = um.Umschlag(datei, rechte=Rechte())
+    with pytest.raises(um.UmschlagFehler, match="E-Mail") as e:
+        u.zugang("labor-03")
+    assert "Pw-ababab" not in str(e.value)
+    with pytest.raises(um.UmschlagFehler, match="E-Mail"):
+        u.seed_speichern("labor-03", seed_von("a"))
+    assert datei.read_text(encoding="utf-8") == zeile + "\n"
+
+
+def test_zeile_mit_falscher_email_scheitert_ohne_aufruf_des_servers(capsys, umgebung, labor, tmp_path):
+    datei = umschlag_datei(tmp_path, umschlag_text(3).replace("labor-02@wamo.test", "labor-01@wamo.test"))
+    code, out, err = einrichten(capsys, labor, datei, "--profile", "labor-01,labor-02,labor-03")
+    assert code == 1 and "labor-02: FEHLER: Die E-Mail in der Zeile für labor-02 passt nicht" in err
+    assert "labor-01: Faktor eingerichtet" in out and "labor-03: Faktor eingerichtet" in out
+    assert [f for f in labor.faktoren_von(email("labor-02"))] == [] and len(labor.faktoren_von(email("labor-01"))) == 1

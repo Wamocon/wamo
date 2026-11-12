@@ -28,7 +28,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
-KENNUNG_RE = re.compile(r"labor-(0[1-9]|1[0-6])")
+KENNUNG_RE = re.compile(r"labor-0[1-9]")  # die neun Laborprofile des Auftrags
+MAIL_DOMAIN = "wamo.test"  # wie in scripts/wamo_labor.py
 DATEI_NAME = "umschlag-labor.txt"
 ORDNER_NAME = ".wamo-labor"
 SEED_SPALTE = 3  # Kennung, E-Mail, Passwort, Seed
@@ -158,12 +159,19 @@ class Umschlag:
             raise UmschlagFehler(f"Für {kennung} gibt es mehrere Zeilen in der Umschlag-Datei, eine davon muss entfernt werden")
         return treffer[0]
 
+    @staticmethod
+    def _zeile_pruefen(kennung: str, felder: list[str]) -> None:
+        """Die Zeile ist vollständig, und ihre E-Mail ist genau <Kennung>@wamo.test (so schreibt sie scripts/wamo_labor.py anlegen)."""
+        if len(felder) < 3 or not felder[1].strip() or not felder[2]:
+            raise UmschlagFehler(f"Die Zeile für {kennung} ist unvollständig (E-Mail oder Passwort fehlt)")
+        if felder[1].strip() != f"{kennung}@{MAIL_DOMAIN}":
+            raise UmschlagFehler(f"Die E-Mail in der Zeile für {kennung} passt nicht zu {kennung}@{MAIL_DOMAIN}")
+
     def zugang(self, kennung: str) -> Zugang:
         zeilen = self._text().split("\n")
         nummer = self._zeile_finden(zeilen, kennung)
         felder = _felder(zeilen[nummer], nummer)
-        if len(felder) < 3 or not felder[1].strip() or not felder[2]:
-            raise UmschlagFehler(f"Die Zeile für {kennung} ist unvollständig (E-Mail oder Passwort fehlt)")
+        self._zeile_pruefen(kennung, felder)
         return Zugang(kennung, felder[1].strip(), felder[2], felder[3].strip() if len(felder) > SEED_SPALTE else "")
 
     # ---- schreiben ----
@@ -177,8 +185,7 @@ class Umschlag:
     def _seed_setzen(self, kennung: str, seed: str | None) -> None:
         zeilen = self._text().split("\n")
         nummer = self._zeile_finden(zeilen, kennung)
-        if len(_felder(zeilen[nummer], nummer)) < 3:
-            raise UmschlagFehler(f"Die Zeile für {kennung} ist unvollständig (E-Mail oder Passwort fehlt)")
+        self._zeile_pruefen(kennung, _felder(zeilen[nummer], nummer))
         zeilen[nummer] = _mit_seed(zeilen[nummer], seed)
         self._sichern()
         self._atomar("\n".join(zeilen).encode("utf-8"))
