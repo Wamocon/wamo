@@ -1256,5 +1256,38 @@ class RauchtestTests(unittest.TestCase):
         self.assertNotIn("print(token", text)
 
 
+# ====================================================================================== Teil 6: Namensvertrag, README, CHANGELOG
+class DokumentationTests(unittest.TestCase):
+    def test_namensvertrag_in_claude_md(self):
+        zeile = next((z for z in lies(REPO / "CLAUDE.md").splitlines() if z.startswith("| Labor-Dienst (Betrieb) |")), None)
+        self.assertIsNotNone(zeile, "Zeile Labor-Dienst (Betrieb) fehlt in der Tabelle")
+        for soll in ("wamo-labor-dienst", "wamo-labor-netz", "wamo-labor-lokal", "55447", "127.0.0.1:18765", "/etc/wamo-labor", "/var/lib/wamo-labor", "10001",
+                     "wamo-labor-einrichten.sh", "wamo-labor-rueckweg.sh", "wamo-labor-loeschlauf.sh", "wamo_labor_rauchtest.py", "WAMO_LABOR_DIENST_*",
+                     "WAMO_LABOR_URL", "WAMO_LABOR_TOKEN", "WAMO-FW-LABOR", "WAMO-FW-LABAUS", "11.12.2026", "wamo-labor.caddy"):
+            self.assertIn(soll, zeile, soll)
+        self.assertNotIn(chr(0x2014), zeile)
+
+    def test_abschnitt_im_readme_von_sokrates2(self):
+        text = lies(SOKRATES2 / "README.md")
+        self.assertIn("## 19. Labor-Dienst", text)
+        abschnitt = text.split("## 19. Labor-Dienst", 1)[1]
+        for soll in ("wamo-labor-einrichten.sh", "wamo-labor-rueckweg.sh", "wamo-labor-loeschlauf.sh", "wamo_labor_rauchtest.py", "--trocken", "Q13",
+                     "betreuer-adressen", "plaetze-adressen", "11.12.2026", "Digest", "Offene Punkte", "Image-Bau", "echten Secrets", "LABOR-LOESCHEN",
+                     "umschalten-kern", "Aufbewahrung"):
+            self.assertIn(soll, abschnitt, soll)
+        for verboten in (chr(0x2014), chr(0x2013), *VERBOTENE_WOERTER):
+            self.assertNotIn(verboten, abschnitt.lower() if verboten in VERBOTENE_WOERTER else abschnitt)
+
+    def test_changelog_unter_hinzugefuegt(self):
+        text = lies(REPO / "CHANGELOG.md")
+        offen = text.split("## [Unveröffentlicht]", 1)[1].split("\n## [", 1)[0]
+        hinzugefuegt = offen.split("### Hinzugefügt", 1)[1]
+        eintrag = next((b for b in hinzugefuegt.split("\n- ") if b.startswith("Betrieb des Labor-Dienstes")), None)
+        self.assertIsNotNone(eintrag, "Eintrag zum Betrieb des Labor-Dienstes fehlt unter Hinzugefügt")
+        for soll in ("wamo-labor-einrichten.sh", "wamo_labor_rauchtest.py", "55447", "Q13"):
+            self.assertIn(soll, eintrag, soll)
+        self.assertNotIn(chr(0x2014), eintrag)
+
+
 if __name__ == "__main__":
     unittest.main()
