@@ -387,3 +387,15 @@ def test_datenbankfehler_ohne_volllauf_wird_zur_ausnahme_und_laesst_den_platz_un
         anlegen(db)
     monkeypatch.undo()
     assert db.suchen(Suche())["gesamt"] == 6 and anlegen(db).status == 201
+
+
+def test_schreibrate_ignoriert_eintraege_aus_der_zukunft_wenn_die_uhr_zurueckgestellt_wurde(db, uhr):
+    uhr.vor(5000)
+    for _ in range(30):
+        anlegen(db)
+    _fehler(anlegen(db), 429, "quote_erreicht")
+    uhr.vor(-5000)  # die Uhr geht wieder richtig: Die 30 Einträge liegen scheinbar in der Zukunft und sperren nicht
+    assert anlegen(db).status == 201
+    for _ in range(29):
+        anlegen(db)
+    _fehler(anlegen(db), 429, "quote_erreicht")  # die Grenze gilt weiter

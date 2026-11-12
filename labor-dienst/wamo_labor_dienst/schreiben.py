@@ -106,7 +106,7 @@ def _ausfuehren(conn: sqlite3.Connection, a: Aufruf, meta: sqlite3.Row, iso: str
 
 def _rate_pruefen(conn: sqlite3.Connection, jetzt: float) -> None:
     """7. Schreibrate: höchstens 30 Schreibaufrufe in den letzten 60 Sekunden. Der abgelehnte Aufruf zählt nicht mit (die Ausnahme rollt zurück)."""
-    conn.execute("DELETE FROM schreibzeit WHERE t <= ?", (jetzt - RATE_FENSTER_SECS,))
+    conn.execute("DELETE FROM schreibzeit WHERE t <= ? OR t > ?", (jetzt - RATE_FENSTER_SECS, jetzt))  # auch Einträge aus der Zukunft (Uhr zurückgestellt)
     if _zahl(conn, "SELECT COUNT(*) FROM schreibzeit") >= QUOTE_RATE:
         raise _quote("Zu viele Schreibaufrufe, bitte später.")
     conn.execute("INSERT INTO schreibzeit(t) VALUES (?)", (jetzt,))

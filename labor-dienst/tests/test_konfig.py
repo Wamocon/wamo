@@ -86,3 +86,46 @@ def test_repr_verraet_keinen_token(tmp_path):
     k = aus_umgebung(_env(tmp_path))
     assert KERN not in repr(k) and BETREUER not in repr(k)
     assert KERN not in str(k)
+
+
+# ---------- Aufbewahrung und Uhr (Befund 6 des Sicherheitsreviews) ----------
+def test_bis_darf_hoechstens_der_11_12_2026_sein(tmp_path):
+    assert aus_umgebung(_env(tmp_path, WAMO_LABOR_DIENST_BIS="2026-12-11")).bis == date(2026, 12, 11)
+    assert aus_umgebung(_env(tmp_path, WAMO_LABOR_DIENST_BIS="2026-11-30")).bis == date(2026, 11, 30)
+    for zu_spaet in ("2026-12-12", "2027-01-01", "2099-12-31"):
+        with pytest.raises(KonfigFehler, match="WAMO_LABOR_DIENST_BIS.*2026-12-11"):
+            aus_umgebung(_env(tmp_path, WAMO_LABOR_DIENST_BIS=zu_spaet))
+
+
+def test_uhr_vor_dem_12_11_2026_ist_ein_konfigurationsfehler(konfig):
+    from datetime import UTC, datetime
+
+    from hilfen import Uhr
+
+    from wamo_labor_dienst.app import create_app
+
+    for zu_frueh in (datetime(2026, 11, 11, 23, 59, tzinfo=UTC), datetime(1970, 1, 1, tzinfo=UTC), datetime(2025, 6, 1, tzinfo=UTC)):
+        with pytest.raises(KonfigFehler, match="Uhr"):
+            create_app(konfig, uhr=Uhr(zu_frueh.timestamp()))
+    create_app(konfig, uhr=Uhr(datetime(2026, 11, 12, 0, 0, tzinfo=UTC).timestamp()))  # genau der Stichtag ist in Ordnung
+
+
+def test_einstieg_meldet_eine_falsche_uhr_mit_ausgang_2(tmp_path, monkeypatch, capsys):
+    from datetime import UTC, datetime
+
+    from wamo_labor_dienst import __main__ as einstieg
+
+    kern, betreuer = tmp_path / "k", tmp_path / "b"
+    kern.write_text(KERN, encoding="utf-8")
+    betreuer.write_text(BETREUER, encoding="utf-8")
+    for name, wert in (("WAMO_LABOR_DIENST_KERN_TOKEN_DATEI", str(kern)), ("WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI", str(betreuer)), ("WAMO_LABOR_DIENST_DATEN", str(tmp_path / "d"))):
+        monkeypatch.setenv(name, wert)
+    echtes = einstieg.create_app
+    falsche_uhr = datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(einstieg, "create_app", lambda k: echtes(k, uhr=lambda: falsche_uhr))  # der Rechner geht vor
+    def nicht_starten(*_a, **_k):
+        raise AssertionError("Der Dienst darf mit falscher Uhr nicht starten")
+
+    monkeypatch.setattr(einstieg.uvicorn, "run", nicht_starten)
+    assert einstieg.main([]) == 2
+    assert "Uhr" in capsys.readouterr().err

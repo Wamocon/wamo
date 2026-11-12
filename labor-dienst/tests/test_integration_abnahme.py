@@ -11,7 +11,6 @@ import os
 import subprocess
 import sys
 import time
-from datetime import date
 from pathlib import Path
 
 import httpx
@@ -103,7 +102,7 @@ def test_abnahme_nach_dem_zuruecksetzen_wiederholbar(dienst):
 @pytest.mark.skipif(os.environ.get("WAMO_LABOR_ECHTZEIT") != "1", reason="läuft nur mit WAMO_LABOR_ECHTZEIT=1 (20 bis 25 Minuten)")
 def test_abnahme_in_echtzeit(tmp_path):
     takt = basis.EchterTakt()
-    konfig = Konfig(daten=tmp_path / "daten", kern_token=KERN_TOKEN, betreuer_token=BETREUER_TOKEN, bis=date(2099, 1, 1))
+    konfig = Konfig(daten=tmp_path / "daten", kern_token=KERN_TOKEN, betreuer_token=BETREUER_TOKEN)
     with laufender_dienst(create_app(konfig)) as adresse:
         platz_token = abnahmeplaetze_vorbereiten(adresse)
         start = time.monotonic()

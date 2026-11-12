@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         app = create_app(konfig)
+    except KonfigFehler as e:  # zum Beispiel eine Uhr, die vor dem Stand des Baus geht
+        print(f"Konfiguration: {e}", file=sys.stderr)
+        return 2
     except (OSError, sqlite3.Error) as e:  # Datenordner nicht beschreibbar oder Datenbank unbrauchbar: klare Meldung statt Stapelspur
         print(f"Speicher nicht nutzbar ({type(e).__name__}): WAMO_LABOR_DIENST_DATEN muss ein beschreibbarer Ordner sein.", file=sys.stderr)
         return 3

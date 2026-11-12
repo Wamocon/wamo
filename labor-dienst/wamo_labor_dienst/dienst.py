@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from .datenbank import NichtBereinigt, PlatzDB, ZentralDB
 from .grenzen import Begrenzer, FehlerZaehler
-from .konfig import Konfig
+from .konfig import FRUEHESTES_DATUM, Konfig, KonfigFehler
 from .protokoll import MAX_BYTES, Protokoll
 from .regeln import PLAETZE
 from .sicherheit import PLATZ_TOKEN_RE, digest, token_hash
@@ -35,7 +35,9 @@ class Dienst:
         self._token_sperre = threading.Lock()
 
     def einrichten(self) -> None:
-        """Legt Dateien und Tabellen an und löscht Daten, die älter sind als die Aufbewahrung."""
+        """Legt Dateien und Tabellen an und löscht Daten, die älter sind als die Aufbewahrung. Eine Uhr vor dem Stand des Baus ist ein Konfigurationsfehler."""
+        if datetime.fromtimestamp(self.uhr(), UTC).date() < FRUEHESTES_DATUM:
+            raise KonfigFehler(f"Die Uhr des Rechners geht falsch (vor dem {FRUEHESTES_DATUM.isoformat()}): Die Aufbewahrung würde nie greifen")
         self.zentral.anlegen()
         for platz in self.plaetze.values():
             platz.anlegen()

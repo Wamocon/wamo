@@ -15,6 +15,8 @@ from pathlib import Path
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/=-]{32,200}")
 STANDARD_BIS = date(2026, 12, 11)  # Aufbewahrung nach D10: 14 Tage nach dem Labortag
+HOECHSTES_BIS = STANDARD_BIS  # später darf die Aufbewahrung nie enden (D10), eine Einstellung darf nur früher löschen
+FRUEHESTES_DATUM = date(2026, 11, 12)  # Stand des Baus: Eine Uhr davor geht falsch (sonst würde die Aufbewahrung nie greifen)
 PLATZ_MB_MIN, PLATZ_MB_MAX, PLATZ_MB_STANDARD = 2, 64, 16
 
 V_DATEN = "WAMO_LABOR_DIENST_DATEN"
@@ -101,8 +103,11 @@ def aus_umgebung(env: Mapping[str, str] | None = None) -> Konfig:
     host = env.get(V_HOST, "127.0.0.1")
     if not host.strip():
         raise KonfigFehler(f"{V_HOST} darf nicht leer sein")
+    bis = _datum(env, V_BIS, STANDARD_BIS)
+    if bis > HOECHSTES_BIS:
+        raise KonfigFehler(f"{V_BIS} darf höchstens {HOECHSTES_BIS.isoformat()} sein (Aufbewahrung nach D10)")
     return Konfig(
         daten=Path(env.get(V_DATEN) or "/data"), kern_token=kern, betreuer_token=betreuer, host=host.strip(),
-        port=_ganz(env, V_PORT, 8080, 1, 65535), bis=_datum(env, V_BIS, STANDARD_BIS),
+        port=_ganz(env, V_PORT, 8080, 1, 65535), bis=bis,
         platz_mb=_ganz(env, V_PLATZ_MB, PLATZ_MB_STANDARD, PLATZ_MB_MIN, PLATZ_MB_MAX), proxys=_proxys(env),
     )
