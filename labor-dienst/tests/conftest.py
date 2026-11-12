@@ -1,6 +1,7 @@
 """Gemeinsame Fixtures. Die Integrationstests brauchen scripts/ (Abnahmeskript) und voice-core/ (Dienstclient) auf dem Suchpfad."""
 from __future__ import annotations
 
+import shutil
 import sys
 from datetime import date
 from pathlib import Path
@@ -46,9 +47,19 @@ def tokens() -> dict[str, str]:
     return {"kern": KERN_TOKEN, "betreuer": BETREUER_TOKEN}
 
 
+@pytest.fixture(scope="session")
+def datenvorlage(tmp_path_factory) -> Path:
+    """Fertig eingerichtete Datenordner (17 Datenbanken mit Seed), einmal je Sitzung angelegt: Jeder Test bekommt eine Kopie, das spart die Einrichtung."""
+    ordner = tmp_path_factory.mktemp("vorlage") / "daten"
+    create_app(Konfig(daten=ordner, kern_token=KERN_TOKEN, betreuer_token=BETREUER_TOKEN), uhr=Uhr())
+    return ordner
+
+
 @pytest.fixture
-def konfig(tmp_path) -> Konfig:
-    return Konfig(daten=tmp_path / "daten", kern_token=KERN_TOKEN, betreuer_token=BETREUER_TOKEN, host="127.0.0.1", port=0, bis=date(2026, 12, 11), platz_mb=16)
+def konfig(tmp_path, datenvorlage) -> Konfig:
+    daten = tmp_path / "daten"
+    shutil.copytree(datenvorlage, daten)
+    return Konfig(daten=daten, kern_token=KERN_TOKEN, betreuer_token=BETREUER_TOKEN, host="127.0.0.1", port=0, bis=date(2026, 12, 11), platz_mb=16)
 
 
 @pytest.fixture
