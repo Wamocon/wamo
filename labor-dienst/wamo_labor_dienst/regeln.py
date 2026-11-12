@@ -134,6 +134,9 @@ def pruefe_kommentar(daten: object) -> dict:
     return {"erwartete_version": version_pruefen(d["erwartete_version"]), "text": text_pruefen(d["text"], "text", zeilen=True, lo=1, hi=500)}
 
 
+PRUEFER = {"tickets": pruefe_anlegen, "ticket": pruefe_aendern, "status": pruefe_status, "kommentare": pruefe_kommentar}
+
+
 @dataclass(frozen=True)
 class Suche:
     """Geprüfte Abfrage von V2. Alle Filter gelten zusammen (UND)."""
