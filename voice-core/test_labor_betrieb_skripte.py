@@ -35,8 +35,8 @@ EINRICHTEN = SOKRATES2 / "wamo-labor-einrichten.sh"
 RUECKWEG = SOKRATES2 / "wamo-labor-rueckweg.sh"
 LOESCHLAUF = SOKRATES2 / "wamo-labor-loeschlauf.sh"
 RAUCHTEST = SOKRATES2 / "wamo_labor_rauchtest.py"
-SKRIPTE = [EINRICHTEN]  # wächst mit den Teilen: RUECKWEG, LOESCHLAUF
-ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN]  # wächst mit den Teilen: Rückweg, Löschlauf und Rauchtest
+SKRIPTE = [EINRICHTEN, RUECKWEG, LOESCHLAUF]
+ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, RUECKWEG, LOESCHLAUF]  # wächst mit dem Teil: Rauchtest
 VERBOTENE_WOERTER = ("nieeeki", "jarvis", "promptcontrol", "damicon")
 
 
@@ -873,6 +873,244 @@ class EinrichtenProbelaufTests(Werkstatt):
         self.assertEqual(r.returncode, 1)
         self.assertIn("sudo", r.stderr)
         self.assertEqual(self.aufrufe(), [])
+
+
+# ====================================================================================== Teil 4: Rückweg und Löschlauf
+WORT = "LABOR-LOESCHEN"
+FIREWALL_ALT = "#!/bin/sh\necho Firewall vor dem Labor-Dienst\n"
+FIREWALL_NEU = "#!/bin/sh\necho Firewall mit WAMO-FW-LABOR\n"
+INHALT = "GEHEIMTEXT-eines-Besuchers"
+
+
+class BetriebsstandWerkstatt(Werkstatt):
+    """Ein eingerichteter Betrieb in der Wurzel: Compose, Site, Token, Daten, Sicherungen und die neue Firewall."""
+
+    def setUp(self):
+        super().setUp()
+        schreibe(self.p("opt/wamo-labor/docker-compose.yml"), "name: wamo-labor\n")
+        schreibe(self.caddy / "etc" / "kern" / "wamo-labor.caddy", "# Site\n")
+        schreibe(self.p("etc/wamo-labor/kern-token"), "k" * 20 + "AbCdEfGhIjKlMnOpQrStUv123")
+        schreibe(self.p("etc/wamo-labor/betreuer-token"), "b" * 20 + "ZyXwVuTsRqPoNmLkJiHgFe987")
+        schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "# Adressen\n192.168.178.50\n")
+        schreibe(self.p("etc/wamo-labor/basis-image"), BASIS_IMAGE + "\n")
+        schreibe(self.p("var/lib/wamo-labor/platz-03.sqlite3"), INHALT)
+        schreibe(self.p("var/lib/wamo-labor/zentral.sqlite3"), INHALT)
+        schreibe(self.p("var/lib/wamo-labor/protokoll/dienst.jsonl"), INHALT + "\n")
+        schreibe(self.p("usr/local/sbin/wamo-firewall"), FIREWALL_NEU, ausfuehrbar=True)
+        schreibe(self.p("var/backups/wamo-labor/20261112-100000/wamo-firewall.vorher"), FIREWALL_ALT)
+        schreibe(self.p("var/backups/wamo-labor/20261112-110000/wamo-firewall.vorher"), FIREWALL_NEU)  # zweiter Lauf: schon neu
+        self.ausgabe("docker.images", f"wamo-labor-dienst:1\nwamo-labor-dienst:alt\nfremd:1\n")
+
+    def lauf_skript(self, skript, *args, heute: str | None = None):
+        return self.lauf(skript, *args, extra={"WAMO_LABOR_HEUTE": heute} if heute else None)
+
+    def daten_da(self) -> bool:
+        return self.p("var/lib/wamo-labor").exists()
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class RueckwegTests(BetriebsstandWerkstatt):
+    def test_entfernt_dienst_und_site_und_laesst_daten_und_token(self):
+        r = self.lauf_skript(RUECKWEG)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        aufrufe = self.aufrufe()
+        compose = posix(self.p("opt/wamo-labor/docker-compose.yml"))
+        self.assertIn(f"docker compose -f {compose} down --remove-orphans", aufrufe)
+        self.assertIn("docker rm -f wamo-labor-dienst", aufrufe)
+        self.assertIn("docker network rm wamo-labor-lokal", aufrufe)  # wamo-labor-netz gehört zu wamo-caddy und bleibt
+        self.assertNotIn("docker network rm wamo-labor-netz", aufrufe)
+        self.assertIn("docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile", aufrufe)
+        self.assertFalse((self.caddy / "etc" / "kern" / "wamo-labor.caddy").exists())
+        # Daten und Token bleiben
+        self.assertTrue(self.daten_da())
+        self.assertEqual(self.p("var/lib/wamo-labor/platz-03.sqlite3").read_text(encoding="utf-8"), INHALT)
+        self.assertTrue(self.p("etc/wamo-labor/kern-token").exists())
+        self.assertTrue(self.p("etc/wamo-labor/betreuer-token").exists())
+        for z in aufrufe:
+            self.assertNotRegex(z, r"^(shred|docker image rm|wamo-core-env|systemctl (restart|stop) )", z)
+
+    def test_firewall_zurueck_auf_die_aelteste_fassung_ohne_labor_kette(self):
+        r = self.lauf_skript(RUECKWEG)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.p("usr/local/sbin/wamo-firewall").read_text(encoding="utf-8"), FIREWALL_ALT)
+        aufrufe = self.aufrufe()
+        self.assertIn("systemctl reload wamo-firewall.service", aufrufe)
+        self.assertIn("iptables -w 5 -F WAMO-FW-LABOR", aufrufe)
+        self.assertIn("iptables -w 5 -X WAMO-FW-LABOR", aufrufe)
+        self.assertIn("iptables -w 5 -X WAMO-FW-LABAUS", aufrufe)
+        self.assertLess(aufrufe.index("systemctl reload wamo-firewall.service"), aufrufe.index("iptables -w 5 -F WAMO-FW-LABOR"))
+
+    def test_ohne_alte_firewall_in_den_sicherungen_bleibt_sie_und_es_gibt_einen_hinweis(self):
+        self.p("var/backups/wamo-labor/20261112-100000/wamo-firewall.vorher").unlink()
+        r = self.lauf_skript(RUECKWEG)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.p("usr/local/sbin/wamo-firewall").read_text(encoding="utf-8"), FIREWALL_NEU)
+        self.assertIn("wamo-firewall.sh", r.stdout)
+        self.assertNotIn("systemctl reload wamo-firewall.service", self.aufrufe())
+
+    def test_trockenlauf_aendert_nichts(self):
+        r = self.lauf_skript(RUECKWEG, "--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[trocken]", r.stdout)
+        self.assertTrue((self.caddy / "etc" / "kern" / "wamo-labor.caddy").exists())
+        self.assertEqual(self.p("usr/local/sbin/wamo-firewall").read_text(encoding="utf-8"), FIREWALL_NEU)
+        self.assertTrue(self.daten_da())
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(docker (rm|network rm|exec|compose -f \S+ down)|systemctl reload|iptables -w 5 -[FX])", z)
+
+    def test_daten_loeschen_braucht_das_bestaetigungswort(self):
+        r = self.lauf_skript(RUECKWEG, "--daten-loeschen")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(self.daten_da())
+        self.assertTrue(self.p("etc/wamo-labor/kern-token").exists())
+        r = self.lauf_skript(RUECKWEG, "--daten-loeschen", "--bestaetigung", "falsch")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(self.daten_da())
+
+    def test_daten_loeschen_mit_bestaetigung_ruft_den_loeschlauf(self):
+        r = self.lauf_skript(RUECKWEG, "--daten-loeschen", "--bestaetigung", WORT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.daten_da())
+        self.assertFalse(self.p("etc/wamo-labor/kern-token").exists())
+        self.assertFalse((self.caddy / "etc" / "kern" / "wamo-labor.caddy").exists())
+        self.assertIn("Nachweis", r.stdout)
+
+    def test_falsche_aufrufe(self):
+        for args in (["--unbekannt"], ["--bestaetigung"], ["x"]):
+            self.assertEqual(self.lauf_skript(RUECKWEG, *args).returncode, 2, args)
+        if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+            self.assertEqual(self.lauf(RUECKWEG, wurzel=False).returncode, 1)  # ohne Wurzel und ohne root
+            self.assertEqual(self.aufrufe(), [])
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class LoeschlaufTests(BetriebsstandWerkstatt):
+    NACH_FRIST = "20261212"
+
+    def loeschen(self, *args, heute=NACH_FRIST):
+        return self.lauf_skript(LOESCHLAUF, *args, heute=heute)
+
+    def test_ohne_bestaetigung_nur_der_plan(self):
+        r = self.loeschen()
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(self.daten_da())
+        self.assertIn(WORT, r.stdout)
+        for name in ("platz-03.sqlite3", "zentral.sqlite3", "dienst.jsonl", "kern-token", "betreuer-token"):
+            self.assertIn(name, r.stdout)
+        self.assertNotIn(INHALT, r.stdout + r.stderr)  # Namen und Größen, nie Inhalte
+        self.assertFalse([z for z in self.aufrufe() if z.startswith(("docker rm", "docker image rm", "wamo-core-env", "shred"))])
+
+    def test_falsches_wort(self):
+        r = self.loeschen("--bestaetigung", "loeschen")
+        self.assertEqual(r.returncode, 2)
+        self.assertTrue(self.daten_da())
+
+    def test_vor_dem_ende_der_aufbewahrung_nur_mit_ausdruecklichem_schalter(self):
+        r = self.loeschen("--bestaetigung", WORT, heute="20261211")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("11.12.2026", r.stdout + r.stderr)
+        self.assertTrue(self.daten_da())
+        r = self.loeschen("--bestaetigung", WORT, "--vor-der-frist", heute="20261211")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.daten_da())
+
+    def test_loescht_daten_token_image_und_kern_einstellung(self):
+        r = self.loeschen("--bestaetigung", WORT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.daten_da())
+        self.assertFalse(self.p("etc/wamo-labor/kern-token").exists())
+        self.assertFalse(self.p("etc/wamo-labor/betreuer-token").exists())
+        # Konfiguration ohne personenbezogene Daten bleibt
+        for bleibt in ("betreuer-adressen", "basis-image"):
+            self.assertTrue(self.p("etc/wamo-labor", bleibt).exists(), bleibt)
+        aufrufe = self.aufrufe()
+        self.assertIn("docker compose -f " + posix(self.p("opt/wamo-labor/docker-compose.yml")) + " down --remove-orphans", aufrufe)
+        self.assertIn("docker rm -f wamo-labor-dienst", aufrufe)
+        self.assertIn("docker image rm wamo-labor-dienst:1", aufrufe)
+        self.assertIn("docker image rm wamo-labor-dienst:alt", aufrufe)
+        self.assertNotIn("docker image rm fremd:1", aufrufe)  # nur die eigenen Tags
+        self.assertIn("wamo-core-env loeschen WAMO_LABOR_URL WAMO_LABOR_TOKEN", aufrufe)
+        shred = [i for i, z in enumerate(aufrufe) if z.startswith("shred")]
+        self.assertTrue(shred)  # Dateien werden vor dem Löschen überschrieben (wo das Werkzeug da ist)
+        self.assertLess(aufrufe.index("docker rm -f wamo-labor-dienst"), shred[0])  # erst den Dienst stoppen, dann löschen
+
+    def test_nachweis_mit_liste_ohne_inhalte(self):
+        r = self.loeschen("--bestaetigung", WORT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        nachweise = list(self.p("var/log/wamo-labor").glob("loeschnachweis-*.txt"))
+        self.assertEqual(len(nachweise), 1)
+        text = nachweise[0].read_text(encoding="utf-8")
+        for t in (text, r.stdout):
+            for name in ("platz-03.sqlite3", "zentral.sqlite3", "protokoll/dienst.jsonl", "kern-token", "betreuer-token", "wamo-labor-dienst:1",
+                         "WAMO_LABOR_TOKEN", "bleibt"):
+                self.assertIn(name, t)
+            self.assertNotIn(INHALT, t)
+            self.assertIsNone(re.search(r"[A-Za-z0-9_-]{40}", t.replace("/", " ")), "Token-ähnliche Zeichenfolge im Nachweis")
+        for soll in ("Größe", "Snapshots"):
+            self.assertIn(soll, text)  # der Hinweis auf Sicherungen und Snapshots außerhalb des Dienstes (D10)
+
+    def test_zweiter_lauf_hat_nichts_mehr_zu_loeschen(self):
+        self.assertEqual(self.loeschen("--bestaetigung", WORT).returncode, 0)
+        self.ausgabe("docker.images", "")  # das Image ist jetzt weg
+        r = self.loeschen("--bestaetigung", WORT)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("nichts zu löschen", r.stdout)
+
+    def test_trockenlauf_loescht_nichts(self):
+        r = self.loeschen("--bestaetigung", WORT, "--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[trocken]", r.stdout)
+        self.assertTrue(self.daten_da())
+        self.assertTrue(self.p("etc/wamo-labor/kern-token").exists())
+        self.assertFalse(list(self.p("var/log/wamo-labor").glob("loeschnachweis-*.txt")) if self.p("var/log/wamo-labor").exists() else [])
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(shred|docker (rm|image rm|compose -f \S+ down|network rm)|wamo-core-env)", z)
+
+    @unittest.skipIf(os.name == "nt", "Symbolische Links brauchen unter Windows besondere Rechte")
+    def test_ein_symbolischer_link_als_datenordner_wird_abgelehnt(self):
+        ziel = self.t / "fremd"
+        ziel.mkdir()
+        schreibe(ziel / "wichtig.txt", "bleibt")
+        shutil.rmtree(self.p("var/lib/wamo-labor"))
+        self.p("var/lib/wamo-labor").symlink_to(ziel)
+        r = self.loeschen("--bestaetigung", WORT)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue((ziel / "wichtig.txt").exists())
+
+    def test_falsche_aufrufe(self):
+        for args in (["--unbekannt"], ["--bestaetigung"], ["x"]):
+            self.assertEqual(self.loeschen(*args).returncode, 2, args)
+        if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+            self.assertEqual(self.lauf(LOESCHLAUF, "--bestaetigung", WORT, wurzel=False).returncode, 1)  # ohne Wurzel und ohne root
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class RueckwegLoeschlaufTextTests(unittest.TestCase):
+    def test_form_und_grenzen(self):
+        for skript in (RUECKWEG, LOESCHLAUF):
+            text = lies(skript)
+            r = subprocess.run([BASH, "-n", str(skript)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(text.startswith("#!/usr/bin/env bash\n"), skript.name)
+            self.assertIn("set -euo pipefail", text)
+            self.assertLess(len(text.splitlines()), 800)
+            for name, laenge in funktionen(text):
+                self.assertLessEqual(laenge, 50, f"{skript.name}: {name} hat {laenge} Zeilen")
+            c = ohne_kommentare(text)
+            self.assertIsNone(re.search(r"\beval\b", c), skript.name)
+            self.assertIsNone(re.search(r"\brm\s+-[a-z]*r[a-z]*f?\s+(/|\$\w+\s)", c), skript.name)
+            self.assertNotRegex(c, r"systemctl\s+(restart|stop|kill)\s+wamo-core")
+
+    def test_loeschlauf_loescht_nur_feste_pfade(self):
+        c = code(LOESCHLAUF)
+        self.assertIn(WORT, c)
+        self.assertIn('DATEN="$W/var/lib/wamo-labor"', c)
+        self.assertIn("pwd -P", c)  # Pfadkontrolle vor dem Löschen: physisch dort, wo der Pfad steht
+        self.assertIn('[ ! -L "$pfad" ]', c)  # kein symbolischer Link
+        self.assertNotRegex(c, r"rm\s+-[a-z]*r[a-z]*\s+\"?\$(DATEN|ETC)\b")  # kein rekursives Löschen eines Ordners per Variable
+        self.assertIn("docker image rm", c)
+        self.assertIn("wamo-core-env", c)
+        self.assertIn("loeschen WAMO_LABOR_URL WAMO_LABOR_TOKEN", c)
 
 
 if __name__ == "__main__":
