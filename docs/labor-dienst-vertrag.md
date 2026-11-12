@@ -222,6 +222,12 @@ an einer Schwelle ab. Das Skript besteht zuerst gegen eine saubere Nachbildung d
 | A10 | **Netz.** Dienst aus einem fremden Container nicht erreichbar, kein ausgehender Weg (von Hand mit euch am Server) |
 | A11 | **Vertrag.** Jeder Aufruf, jedes Feld und jeder Fehlercode von V1 bis V7 in der Reihenfolge aus Abschnitt 2.2 |
 
+### Abnahme mit dem Skript
+
+Aufruf aus dem Ordner `scripts` mit der Python-Umgebung von `voice-core`: `python wamo_labor_abnahme.py https://HOST[:PORT]`. Der Token (`WAMO_LABOR_TOKEN`) kommt aus der Umgebung oder mit `--token-datei` aus einer Datei, nie als Argument, und das Skript gibt ihn nie aus. `--trocken` zeigt nur den Plan, `--auswahl A2 A9` führt einzelne Prüfungen aus (ein Teillauf gilt nie als bestanden), `--ca-datei` nennt die WAMO-CA. Die Plätze 15 und 16 müssen vorher frisch sein (neuer Durchlauf mit Einwilligung, Seed) und werden danach vom Betreuer wieder zurückgesetzt, denn das Skript legt Tickets und Kommentare an und füllt die Plätze bis zu den Quoten. Es löscht nichts. A4 dauert wegen der Schreibrate etwa 20 bis 25 Minuten.
+
+Ergebnis lesen: Die Tabelle nennt je Anforderung `bestanden`, `durchgefallen` oder `von Hand`, dazu eine kurze Meldung mit den ersten Befunden. Unter der Tabelle steht, was von Hand bleibt (A10 Netz, der Browserlauf in A1, die Datenbankgröße in A4, Platz-Token und Betreuer-Pfade nur mit den Angaben `--platz-pfad` und `--betreuer-pfad` samt `WAMO_LABOR_PLATZ_TOKEN`). Ausgang 0 heißt, alle automatischen Prüfungen bestehen, 1 mindestens eine Prüfung ist durchgefallen, 2 Aufruf, Verbindung, Zeit oder Ausgangsstand der Plätze stimmen nicht (kein Urteil über den Dienst), 3 Teillauf ohne Fehler. Ein Fehler in A1, A2, A6 oder A7 heißt: Der Dienst geht nicht an Besucher. `--attrappe` und `--verwundbar` prüfen das Skript selbst gegen die saubere und die absichtlich fehlerhafte Nachbildung.
+
 ## 8. Termine
 
 | Was | Frist |
