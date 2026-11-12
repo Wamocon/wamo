@@ -15,8 +15,8 @@ from wamo_labor_dienst.konfig import Konfig
 WEB = Path(auslieferung.__file__).resolve().parent / "web"
 HTML, JS, CSS = "text/html; charset=utf-8", "text/javascript; charset=utf-8", "text/css; charset=utf-8"
 # Die feste Liste: Seite (Adresse) und Datei (unter /web/<Name>). Wer eine Datei hinzufügt, ändert diese Liste bewusst.
-SEITEN = {"/": "board.html", "/board": "board.html"}
-DATEIEN = {"stil.css": CSS, "dom.js": JS, "gemeinsam.js": JS, "board-logik.js": JS, "board.js": JS}
+SEITEN = {"/": "board.html", "/board": "board.html", "/betreuer": "betreuer.html"}
+DATEIEN = {"stil.css": CSS, "dom.js": JS, "gemeinsam.js": JS, "board-logik.js": JS, "board.js": JS, "betreuer-logik.js": JS, "betreuer.js": JS}
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
        "frame-ancestors 'none'")
 ALLE_ADRESSEN = [*SEITEN, *(f"/web/{n}" for n in DATEIEN)]

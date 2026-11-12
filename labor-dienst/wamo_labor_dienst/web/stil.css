@@ -119,6 +119,49 @@ ul, ol { padding: 0; list-style: none; }
 /* Paar: #6B6B6B auf #F3F3F3 */
 .meta { color: var(--grau-text); font-size: 0.9rem; }
 
+/* Betreuer-Seite */
+.betreuer-inhalt { max-width: 96rem; margin: 0 auto; padding: 1rem 1.25rem 2rem; display: flex; flex-direction: column; gap: 1rem; }
+.betreuer-inhalt h2 { font-size: 1.3rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.anmeldung { max-width: 34rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.kopf-knopf { margin-left: auto; }
+/* Paar: #000000 auf #FFFFFF */
+.knopf-hell { background: var(--weiss); color: var(--schwarz); border-color: var(--weiss); }
+.knopf-hell:hover { background: var(--grau-linie); border-color: var(--grau-linie); }
+.werkzeugleiste { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1.5rem; }
+.werkzeugleiste .knopf { margin-left: auto; }
+
+.formular { display: flex; flex-direction: column; gap: 0.75rem; }
+.feld { display: flex; flex-direction: column; gap: 0.25rem; }
+.feld label { font-weight: 700; }
+.feld-fehler { font-weight: 700; }
+input { padding: 0.5rem 0.6rem; font: inherit; background: var(--weiss); color: var(--schwarz); border: 2px solid var(--schwarz); border-radius: 0; max-width: 34rem; }
+
+.platz-raster { display: grid; grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr)); gap: 1rem; }
+/* Paar: #000000 auf #FFFFFF */
+.platz-karte { display: flex; flex-direction: column; gap: 0.6rem; padding: 0.9rem 1rem; background: var(--weiss); color: var(--schwarz); border: 1px solid var(--grau-linie); border-top: 5px solid var(--schwarz); }
+.platz-kopf { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+.platz-kopf h3 { font-size: 1.25rem; }
+.platz-karte .zustand { margin-left: 0; font-size: 0.95rem; }
+/* Paar: #000000 auf #F3F3F3 */
+.hinweis { padding: 0.25rem 0.5rem; background: var(--grau-hell); border-left: 4px solid var(--rot); font-weight: 700; }
+.daten { display: flex; flex-direction: column; gap: 0.15rem; margin: 0; }
+.zeile { display: flex; gap: 0.5rem; border-bottom: 1px solid var(--grau-linie); padding: 0.1rem 0; }
+.zeile dt { flex: 0 0 8rem; color: var(--grau-text); }
+.zeile dd { margin: 0; overflow-wrap: anywhere; }
+.knopfreihe { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.knopfreihe .knopf { font-size: 0.95rem; padding: 0.4rem 0.7rem; }
+
+/* Neuer Platz-Token: nur einmal sichtbar */
+/* Paar: #000000 auf #F3F3F3 */
+.token-feld { display: flex; flex-direction: column; gap: 0.5rem; padding: 1rem; background: var(--grau-hell); color: var(--schwarz); border: 3px solid var(--schwarz); border-left: 10px solid var(--rot); }
+.token-box { padding: 0.5rem 0.75rem; background: var(--weiss); color: var(--schwarz); border: 2px solid var(--schwarz); font-family: "Courier New", monospace; font-weight: 700; overflow-wrap: anywhere; user-select: all; }
+
+/* Fenster für Funktionen mit Bestätigung */
+.aktion { width: min(38rem, 92vw); max-height: 90vh; padding: 0; background: var(--weiss); color: var(--schwarz); border: 3px solid var(--schwarz); }
+.aktion::backdrop { background: var(--schwarz); opacity: 0.55; }
+.aktion-inhalt { padding: 1rem 1.25rem; max-height: 88vh; overflow-y: auto; }
+.aktion h2 { font-size: 1.3rem; overflow-wrap: anywhere; }
+
 /* Kleine Bildschirme: die Spalten stehen untereinander */
 @media (max-width: 52rem) {
   .board-seite { height: auto; }

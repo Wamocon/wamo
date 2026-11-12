@@ -25,9 +25,9 @@ JS = "text/javascript; charset=utf-8"
 CSS = "text/css; charset=utf-8"
 
 # Adresse der Seite -> Datei im Ordner web/. Die feste Liste: Wer eine Seite hinzufügt, ändert sie bewusst.
-SEITEN: Mapping[str, str] = {"/": "board.html", "/board": "board.html"}
+SEITEN: Mapping[str, str] = {"/": "board.html", "/board": "board.html", "/betreuer": "betreuer.html"}
 # Name unter /web/<Name> -> Inhaltstyp (der Dateiname ist der Name)
-DATEIEN: Mapping[str, str] = {"stil.css": CSS, "dom.js": JS, "gemeinsam.js": JS, "board-logik.js": JS, "board.js": JS}
+DATEIEN: Mapping[str, str] = {"stil.css": CSS, "dom.js": JS, "gemeinsam.js": JS, "board-logik.js": JS, "board.js": JS, "betreuer-logik.js": JS, "betreuer.js": JS}
 
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
        "frame-ancestors 'none'")
