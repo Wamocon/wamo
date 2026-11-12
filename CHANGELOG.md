@@ -151,6 +151,14 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Behoben
 
+- Unterbrechungen und Wiederholungen (Analyse vom 12.11.2026 aus Journal und Gedächtnis): Am Server stand `MIN_INTERRUPT_WORDS=1`, 30 von
+  41 Einwürfen in 90 Minuten waren ein einzelnes Wort, WAMO brach ständig ab. Der Standard bleibt 1, am Server gilt künftig 3. Damit ein
+  Stoppwort weiter sofort unterbricht ("Stopp", "Moment", "Nein", "Was", `STOPP_WORDS`), prüft `MeaningfulWordsUserTurnStartStrategy`
+  ein Stoppwort auch unter der Schwelle (nur beim Sprechen von WAMO, Tests `MindestwoerterTest`). Entwicklungsaufträge im Büro:
+  Hat der Kanal einen Auftrag aus einem dauerhaften Grund abgewiesen (`kanal_zu`, `notaus`, `konfig_ungueltig`, `abgelaufen`,
+  `herkunft_unklar`), stellt WAMO zwei Minuten lang keine neue Karte, sondern nennt den Grund (am 12.11.2026 kamen so in drei Minuten sechs
+  Karten desselben Auftrags, jede wurde abgewiesen). Der Klick auf eine vorhandene Karte geht weiter durch, ein gestarteter Lauf hebt die
+  Sperre auf (`WiederholsperreTests`).
 - Gerätedienst, Fernseher: Der zweite Fernseher (Samsung 85 Zoll QLED GQ85Q70DATXZG, im WLAN, Adresse in `geraete.toml`) war nur als
   auskommentierte Vorlage vorhanden, WAMO fand deshalb nur den LG. Am 11.11.2026 am Server als `fernseher-2` eingetragen, Netzfreigabe des
   Dienstes neu erzeugt (`wamo-geraete-einrichten.sh`) und beide Fernseher gekoppelt (`wamo_geraete.koppeln`). Die Vorlage `geraete.toml.example`

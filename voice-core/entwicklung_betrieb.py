@@ -312,6 +312,10 @@ GRUND_SAETZE: dict[str, str] = {
     "platz": "Auf dem Server ist zu wenig Platz frei.",
 }
 GRUND_UNBEKANNT = "Der Kanal hat den Auftrag abgewiesen."
+# Gründe, die nicht vom einzelnen Auftrag abhängen: Ein unveränderter zweiter Versuch scheitert genauso. Nach so einer Abweisung stellt
+# WAMO KANAL_SPERRE_SECS lang keine neue Karte (DevAgent._kanal_sperre_satz), statt Karte um Karte abweisen zu lassen.
+GRUENDE_DAUERHAFT = frozenset({"notaus", "konfig_ungueltig", "kanal_zu", "abgelaufen", "herkunft_unklar"})
+KANAL_SPERRE_SECS = 120.0
 SATZ_BELEGT = "Es läuft schon ein Auftrag. Bitte warte, bis er fertig ist."
 SATZ_PROBLEM = "Der Auftrag startet nicht: Die Einstellungen für Entwicklungsaufträge sind nicht in Ordnung."
 SATZ_UNBEKANNT = "Dieser Auftrag ist nicht mehr bekannt. Bitte stelle ihn neu."

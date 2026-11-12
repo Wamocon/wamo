@@ -555,6 +555,29 @@ class DevAgent:
         self._kontingent_gespeichert = float("-inf")
         self._eigener_zugang = False  # der laufende Lauf nutzt den Zugang des Profils (nur dann gilt sein Kontingent)
         self._startet = False  # ein Start (Prüfungen, Buchung in actions) läuft gerade: kein zweiter Start dazwischen
+        self._kanal_abweisung: tuple[str, float] | None = None  # letzter dauerhafter Grund des Kanals und Zeit (Wiederholsperre)
+
+    def _kanal_sperre_satz(self) -> str | None:
+        """Büro: Hat der Kanal vor weniger als KANAL_SPERRE_SECS einen Auftrag aus einem dauerhaften Grund abgewiesen (geschlossen,
+        Notaus, abgelaufen), der Satz zu diesem Grund, sonst None. Ein neuer Auftrag würde genauso abgewiesen: WAMO stellt dann keine
+        Karte, sondern nennt den Grund (am 12.11.2026 kamen in drei Minuten sechs Karten desselben Auftrags, jede wurde abgewiesen)."""
+        if not pc_host.buero() or self._kanal_abweisung is None:
+            return None
+        code, seit = self._kanal_abweisung
+        if self._jetzt() - seit >= entwicklung_betrieb.KANAL_SPERRE_SECS:
+            self._kanal_abweisung = None
+            return None
+        return entwicklung_betrieb.grund_satz(code)
+
+    def _kanal_abweisung_merken(self, job: Job) -> None:
+        """Merkt einen dauerhaften Grund der Abweisung für die Wiederholsperre. Ein gestarteter Lauf hebt sie auf. Nur ein bekannter
+        Code zählt (nie ein freier Text des Dispatchers, nie ein Wert anderen Typs)."""
+        gesperrt = job.ereignisse.get("kanal_gesperrt")
+        code = gesperrt.get("grund") if isinstance(gesperrt, dict) else None
+        if isinstance(code, str) and code in entwicklung_betrieb.GRUENDE_DAUERHAFT:
+            self._kanal_abweisung = (code, self._jetzt())
+        elif "gestartet" in job.ereignisse:
+            self._kanal_abweisung = None
 
     def attach(self, pipeline_task) -> None:
         self._task = pipeline_task
@@ -741,6 +764,12 @@ class DevAgent:
         art = str(params.arguments.get("art", "")).strip()
         if not self._buero_darf("vorbereiten"):
             await params.result_callback({"ok": False, "fehler": entwicklung_betrieb.SATZ_KEINE_ZULASSUNG})
+            return
+        if (sperre := self._kanal_sperre_satz()) is not None:  # kein neuer Auftrag, der gleich wieder abgewiesen würde
+            await params.result_callback({
+                "ok": False, "fehler": sperre,
+                "hinweis": (f"Der Server hat das vor Kurzem schon abgewiesen. Sag {self._auftraggeber} den Grund in einem Satz und "
+                            "stelle keinen neuen Auftrag. Ein neuer Versuch geht frühestens in zwei Minuten.")})
             return
         im_buero = pc_host.buero()
         try:  # im Büro entsteht der Projektname erst nach dem Repo (Namensraum kern-, entwicklung_betrieb.buero_projekt)
@@ -1304,6 +1333,7 @@ class DevAgent:
             if proc is not None and proc.returncode not in (0, None) and stderr_tail:
                 logger.warning("Sokrates-2 meldete: {}", " | ".join(stderr_tail)[-1500:])
 
+        self._kanal_abweisung_merken(job)
         if not job.quittiert:  # nie ein Lauf ohne Quittung: nicht angenommen, mit dem Grund aus Ereignis, Exit-Code oder stderr
             await self._quittung_nicht_gestartet(job, entwicklung_betrieb.ablehn_grund(ende_code, job.ereignisse,
                                                                                        " ".join(stderr_tail)))

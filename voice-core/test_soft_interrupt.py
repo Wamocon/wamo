@@ -343,6 +343,67 @@ class EchoStrategieTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ausgeloest, [True])
 
 
+class MindestwoerterTest(unittest.IsolatedAsyncioTestCase):
+    """MIN_INTERRUPT_WORDS=3 (12.11.2026): Am Server stand 1, 30 von 41 Einwürfen in 90 Minuten waren ein einzelnes Wort.
+    Ein einzelnes Wort oder zwei beliebige Wörter unterbrechen WAMO jetzt nicht, ein Stoppwort weiter sofort."""
+
+    def strategie(self, min_words=3):
+        s = MeaningfulWordsUserTurnStartStrategy(min_words=min_words, enable_interruptions=False)
+        s._bot_speaking = True
+        self.ausgeloest = []
+        self.zurueck = []
+
+        async def start():
+            self.ausgeloest.append(True)
+
+        async def reset():
+            self.zurueck.append(True)
+
+        s.trigger_user_turn_started = start
+        s.trigger_reset_aggregation = reset
+        return s
+
+    async def test_ein_beliebiges_wort_unterbricht_nicht(self):
+        s = self.strategie()
+        for text in ("Hier", "Okay", "Fertig"):
+            ergebnis = await s.process_frame(TranscriptionFrame(text, "u", "t"))
+            self.assertEqual(ergebnis.name, "CONTINUE", text)
+        self.assertEqual(self.ausgeloest, [])
+
+    async def test_zwei_beliebige_woerter_unterbrechen_nicht(self):
+        s = self.strategie()
+        await s.process_frame(TranscriptionFrame("Hier drüben", "u", "t"))
+        self.assertEqual(self.ausgeloest, [])
+
+    async def test_drei_woerter_unterbrechen(self):
+        s = self.strategie()
+        ergebnis = await s.process_frame(TranscriptionFrame("Hier drüben links", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+        self.assertEqual(ergebnis.name, "STOP")
+
+    async def test_ein_stoppwort_unterbricht_sofort_auch_im_zwischenstand(self):
+        for text in ("Stopp", "Moment", "Warte", "Nein", "Halt", "Was"):
+            s = self.strategie()
+            await s.process_frame(InterimTranscriptionFrame(text, "u", "t"))
+            self.assertEqual(self.ausgeloest, [True], text)
+
+    async def test_stoppwort_in_kurzem_satz_unterbricht(self):
+        s = self.strategie()
+        await s.process_frame(TranscriptionFrame("Warte mal", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    async def test_schweigt_wamo_startet_schon_ein_wort_den_zug(self):
+        s = self.strategie()
+        s._bot_speaking = False
+        await s.process_frame(TranscriptionFrame("Hier", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+    async def test_mit_schwelle_eins_wie_bisher(self):
+        s = self.strategie(min_words=1)
+        await s.process_frame(TranscriptionFrame("Hier", "u", "t"))
+        self.assertEqual(self.ausgeloest, [True])
+
+
 class WoerterTest(unittest.TestCase):
     def test_rueckmeldelaute_zaehlen_nicht(self):
         self.assertEqual(meaningful_word_count("mhm ja genau"), 0)
