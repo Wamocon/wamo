@@ -19,6 +19,9 @@
 --   * Sie ändert nie den Inhalt, nie den Autor, nie is_active. wamo_core bekommt kein UPDATE auf status: der Weg führt nur über diese Funktion.
 --   * SECURITY DEFINER wie die Funktionen aus 0003 (der Kern braucht keine Schreibrechte auf memories.status), search_path leer, EXECUTE nur
 --     für wamo_core. Der Kern kann damit nichts, was er nicht schon könnte: Ein Admin-Eintrag "für alle" wird schon heute sofort aktiv.
+--     Grenze der Prüfspur: reviewed_by und reviewed_at stammen vom Kern. Gegen einen übernommenen Kern sind sie kein Beweis; ein Nachweis steht
+--     nur im Protokoll des Kerns (gedaechtnis_api.py, "Gedächtnisvorschlag <id> <ergebnis> durch Profil <id>"). Neu gegenüber vorher ist nur, dass
+--     der Kern reviewed_by bei fremden Vorschlägen setzen kann und "abgelehnt" ein Endzustand ist.
 set local lock_timeout = '5s';
 
 do $$ begin
