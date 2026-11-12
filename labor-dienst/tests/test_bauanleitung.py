@@ -39,3 +39,24 @@ def test_requirements_sind_fest_gepinnt_und_alle_mit_hashes():
 def test_readme_nennt_das_bauen_mit_digest_und_die_hashes_der_abhaengigkeiten():
     text = (ORDNER / "README.md").read_text(encoding="utf-8")
     assert "--build-arg BASIS=" in text and "--generate-hashes" in text and "--require-hashes" in text
+
+
+def test_pip_installiert_nur_fertige_pakete_keine_bauskripte_aus_quellpaketen():
+    pip = [z for z in _dockerfile().splitlines() if "pip install" in z]
+    assert pip and all("--only-binary=:all:" in z and "--require-hashes" in z for z in pip), pip
+
+
+def test_readme_nennt_die_betriebshinweise_zu_503_und_log_groesse():
+    text = (ORDNER / "README.md").read_text(encoding="utf-8")
+    assert "limit_concurrency" in text and "Klartext" in text and "Caddy" in text
+    assert "max-size" in text
+
+
+def test_readme_nennt_die_restrisiken_ehrlich():
+    text = (ORDNER / "README.md").read_text(encoding="utf-8")
+    treffer = re.search(r"^## Bekannte Restrisiken(.*?)(?=^## )", text, re.S | re.M)
+    assert treffer, "Abschnitt Bekannte Restrisiken"
+    abschnitt = treffer.group(1)
+    for aussage in ("SQLite-Ebene", "Volume-Snapshots", "Hostsicherungen", "weiterlaufen", "Volume löschen", "Uhrabhängigkeit", "Generalschlüssel",
+                    "5 MB", "Neustart", "durchlauf-beenden", "zuruecksetzen", "nicht gesperrt", "entzieht den Token", "Einwilligungsmaximum", "Rücksetzweg"):
+        assert aussage in abschnitt, aussage

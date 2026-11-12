@@ -96,7 +96,7 @@ def test_aufbewahrung_meldet_nie_erfolg_wenn_die_bereinigung_scheiterte_und_wied
     dienst.plaetze[PLATZ].neuer_durchlauf(1)
     _markierte_daten(dienst.plaetze[PLATZ])
     leser = _leser(dienst.plaetze[PLATZ].pfad)
-    uhr.t = datetime(2026, 12, 12, 12, tzinfo=UTC).timestamp()
+    uhr.vor(datetime(2026, 12, 12, 12, tzinfo=UTC).timestamp() - uhr.t)
     try:
         assert dienst.aufbewahrung_pruefen() is False  # nicht vollständig bereinigt: keine Erfolgsmeldung
     finally:

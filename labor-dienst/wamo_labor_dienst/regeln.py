@@ -24,6 +24,7 @@ KOPF_MAX = 16 * 1024  # Summe aus Name, Wert und vier Byte je Kopfzeile (D5)
 LISTE_MAX = 60 * 1024  # V2: wüchse die Antwort über 60 KB, liefert der Dienst weniger Tickets
 QUOTE_TICKETS, QUOTE_KOMMENTARE, QUOTE_BYTES, QUOTE_RATE = 100, 300, 1024 * 1024, 30  # D1
 RATE_FENSTER_SECS = 60.0
+RATE_ZUKUNFT_SECS = 5.0  # Einträge der Schreibrate, die mehr als so weit in der Zukunft liegen, stammen von einer zurückgestellten Uhr und zählen nicht
 IDEM_SECS = 24 * 3600
 IDEM_MAX = 200  # Obergrenze je Platz, wirkt nur bei Missbrauch (der Kern schreibt höchstens 25 mal je Durchlauf)
 KOMMENTARE_V3 = 20

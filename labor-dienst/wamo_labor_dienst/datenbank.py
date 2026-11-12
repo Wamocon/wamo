@@ -261,9 +261,9 @@ class PlatzDB(_Basis):
     def schreiben(self, aufruf: Aufruf) -> Antwort:
         """Ein Schreibaufruf in einer Transaktion. Jede Antwort des Vertrags kommt als Antwort zurück (auch 409, 422 und 429).
         Nur ein unerwarteter Fehler wird zur Ausnahme (nach dem Rückrollen ist der Platz unverändert)."""
-        jetzt = self._uhr()
         try:
             with self._transaktion() as conn:
+                jetzt = self._uhr()  # erst nach BEGIN IMMEDIATE: Die Zeit folgt der Reihenfolge der Sperre, sonst löschte ein älterer Aufruf die Einträge der anderen
                 return schreibpfad.ausfuehren(conn, aufruf, jetzt, iso_zeit(jetzt))
         except DienstFehler as e:
             return fehler_antwort(e)
@@ -378,6 +378,21 @@ class ZentralDB(_Basis):
             if zeile is not None and version < zeile["version"]:
                 return False
             conn.execute("INSERT INTO einwilligung_max(id, version) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET version = excluded.version", (version,))
+            return True
+
+    def einwilligung_hoechste(self) -> int | None:
+        with self._lesen() as conn:
+            zeile = conn.execute("SELECT version FROM einwilligung_max").fetchone()
+        return zeile["version"] if zeile else None
+
+    def einwilligung_senken(self, version: int) -> bool:
+        """Rücksetzweg für ein falsch erfasstes Maximum (zum Beispiel ein Tippfehler): Senkt die höchste erfasste Version auf version. Nur wenn es eine gibt
+        und version kleiner ist, sonst wahr nie und nichts ändert sich."""
+        with self._transaktion() as conn:
+            zeile = conn.execute("SELECT version FROM einwilligung_max").fetchone()
+            if zeile is None or version >= zeile["version"]:
+                return False
+            conn.execute("UPDATE einwilligung_max SET version = ?", (version,))
             return True
 
     def token_loeschen(self, platz: int) -> None:

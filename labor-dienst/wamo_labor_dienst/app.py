@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
-from . import betreuer_api, browser_api, kern_api
+from . import auslieferung, betreuer_api, browser_api, kern_api
 from .dienst import Dienst
 from .konfig import Konfig
 from .protokoll import MAX_BYTES
@@ -27,7 +27,10 @@ AUFRAEUMEN_SECS = 3600
 
 async def gesundheit(request: Request):
     """Nur der Zustand, keine Daten, ohne Token (Healthcheck des Containers)."""
-    ok = await run_in_threadpool(dienst_von(request).zentral.pruefen)
+    dienst = dienst_von(request)
+    ok = dienst.gesundheit_gecacht()  # höchstens eine Sekunde alt: dann kein Faden und keine Datenbankverbindung
+    if ok is None:
+        ok = await run_in_threadpool(dienst.gesundheit_pruefen)
     return json_antwort(200 if ok else 503, {"zustand": "ok" if ok else "gestoert"})
 
 
@@ -55,9 +58,10 @@ async def _aufraeumen_schleife(dienst: Dienst) -> None:
             dienst.protokoll.ereignis("fehler", fehlerart=type(e).__name__)
 
 
-def create_app(konfig: Konfig, *, uhr: Callable[[], float] = time.time, protokoll_max_bytes: int = MAX_BYTES) -> FastAPI:
+def create_app(konfig: Konfig, *, uhr: Callable[[], float] = time.time, protokoll_max_bytes: int = MAX_BYTES,
+               monotonic: Callable[[], float] = time.monotonic) -> FastAPI:
     """Baut die Anwendung und richtet den Speicher ein (Dateien, Tabellen, Aufbewahrung). uhr ist für Tests."""
-    dienst = Dienst(konfig, uhr, protokoll_max_bytes=protokoll_max_bytes)
+    dienst = Dienst(konfig, uhr, protokoll_max_bytes=protokoll_max_bytes, monotonic=monotonic)
     dienst.einrichten()
 
     @contextlib.asynccontextmanager
@@ -79,5 +83,6 @@ def create_app(konfig: Konfig, *, uhr: Callable[[], float] = time.time, protokol
     kern_api.registrieren(app)
     browser_api.registrieren(app)
     betreuer_api.registrieren(app)
+    auslieferung.registrieren(app)  # die Seiten der Oberflächen: feste Liste, nur GET, strenge Köpfe
     app.add_api_route("/gesundheit", fehlerfrei(gesundheit), methods=["GET"], include_in_schema=False, response_model=None)
     return app

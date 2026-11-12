@@ -29,6 +29,7 @@ SICHERHEITSKOEPFE = {
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",
     "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), display-capture=(), interest-cohort=()",
 }
 # Antworten, die ein Angreifer ohne Zugang erzeugen kann: Das Protokoll tastet sie ab (je Minute wenige Zeilen, der Rest wird gezählt)
 ABGETASTET = frozenset({400, 401, 403, 404, 405, 413, 429, 431})
@@ -168,7 +169,9 @@ def fehlerfrei(funktion):
 
 # ---------- Schutzschicht ----------
 def _bereich(pfad: str) -> str:
-    for praefix, name in (("/api/kern/", "kern"), ("/api/browser/", "browser"), ("/api/betreuer/", "betreuer"), ("/gesundheit", "gesundheit")):
+    if pfad in ("/", "/board", "/betreuer"):
+        return "web"
+    for praefix, name in (("/api/kern/", "kern"), ("/web/", "web"), ("/api/browser/", "browser"), ("/api/betreuer/", "betreuer"), ("/gesundheit", "gesundheit")):
         if pfad.startswith(praefix):
             return name
     return "sonst"
@@ -211,6 +214,10 @@ class SchutzMiddleware:
         if dienst is None:
             return
         methode = scope.get("method", "")
+        bereich = _bereich(scope.get("path", ""))
+        if bereich == "gesundheit" and status == 200:  # die Gesundheitsprobe des Containers wird nur gezählt (eine Zeile je Minute)
+            dienst.protokoll.gezaehlt("anfrage", bereich=bereich, status=status)
+            return
         schreiben = dienst.protokoll.abgetastet if status in ABGETASTET else dienst.protokoll.ereignis
-        schreiben("anfrage", bereich=_bereich(scope.get("path", "")), methode=methode if methode in _METHODEN else "SONST", status=status,
+        schreiben("anfrage", bereich=bereich, methode=methode if methode in _METHODEN else "SONST", status=status,
                   platz=scope.get("state", {}).get("platz"), ms=round((time.perf_counter() - start) * 1000, 1))

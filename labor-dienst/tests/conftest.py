@@ -64,7 +64,7 @@ def konfig(tmp_path, datenvorlage) -> Konfig:
 
 @pytest.fixture
 def app(konfig, uhr):
-    return create_app(konfig, uhr=uhr)
+    return create_app(konfig, uhr=uhr, monotonic=uhr.monotonic)
 
 
 @pytest.fixture

@@ -11,7 +11,7 @@ from wamo_labor_dienst.regeln import PRUEFER
 # Aus Zeichen berechnet, kein Literal: Der Token braucht die Güte, die konfig.py verlangt (mindestens 43 Zeichen, mindestens 16 verschiedene),
 # und ein solches Literal hielte die Secret-Prüfung (gitleaks, Regel generic-api-key) für einen Schlüssel. Es ist ein Testwert, kein Geheimnis.
 KERN_TOKEN = "".join(chr(ord("a") + (i * 7) % 26) for i in range(44))
-BETREUER_TOKEN = "Bn4Wd8Zs1Yh6Kt3Qe9Jx5Cv2Rm7Lg0Pa+Uo/Fi-Nz._~=Tq"
+BETREUER_TOKEN = "".join("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[(i * 11) % 62] for i in range(47))
 ANLEGEN = {"typ": "bug", "prioritaet": "hoch", "titel": "Anmeldung schlägt fehl", "beschreibung": "Nach dem Klick passiert nichts."}
 LABORTAG = datetime(2026, 11, 28, 9, 30, tzinfo=UTC).timestamp()
 
@@ -21,12 +21,19 @@ class Uhr:
 
     def __init__(self, start: float = LABORTAG):
         self.t = start
+        self.mono = 1000.0  # die monotone Uhr zum Dienst (create_app(..., monotonic=uhr.monotonic)): läuft nur vorwärts
 
     def __call__(self) -> float:
         return self.t
 
+    def monotonic(self) -> float:
+        return self.mono
+
     def vor(self, sekunden: float) -> None:
+        """Die Zeit vergeht (wirklich: auch die monotone Uhr läuft). Negativ: Die Wanduhr wird zurückgestellt, die monotone Uhr bleibt."""
         self.t += sekunden
+        if sekunden > 0:
+            self.mono += sekunden
 
 
 def aufruf(db, name: str, daten: dict, nummer: int | None = None, *, durchlauf: str | None = None, schluessel: str | None = None) -> Aufruf:

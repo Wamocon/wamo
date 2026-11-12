@@ -31,7 +31,7 @@ Meldung ohne Werte.
 | `WAMO_LABOR_DIENST_BETREUER_TOKEN_DATEI` | Datei mit dem Betreuer-Token, muss ein anderer Wert sein | Pflicht |
 | `WAMO_LABOR_DIENST_DATEN` | Ordner für Datenbanken und Protokoll (im Container `/data`) | `/data` |
 | `WAMO_LABOR_DIENST_HOST`, `WAMO_LABOR_DIENST_PORT` | Adresse zum Lauschen (im Container `0.0.0.0`) | `127.0.0.1`, `8080` |
-| `WAMO_LABOR_DIENST_BIS` | Ende der Aufbewahrung (JJJJ-MM-TT, höchstens `2026-12-11`, ein späteres Datum ist ein Konfigurationsfehler), danach löscht der Dienst alle Daten. Geht die Uhr des Rechners vor dem 12.11.2026, startet der Dienst nicht (Ausgang 2) | `2026-12-11` |
+| `WAMO_LABOR_DIENST_BIS` | Ende der Aufbewahrung (JJJJ-MM-TT, zwischen `2026-11-28` (Labortag) und `2026-12-11`, alles andere ist ein Konfigurationsfehler), danach löscht der Dienst alle Daten. Geht die Uhr des Rechners vor dem 12.11.2026, startet der Dienst nicht (Ausgang 2) | `2026-12-11` |
 | `WAMO_LABOR_DIENST_PLATZ_MB` | harte Obergrenze der Datenbankdatei je Platz (2 bis 64) | `16` |
 | `WAMO_LABOR_DIENST_PROXYS` | Adressen vertrauter Proxys (durch Komma getrennt, zum Beispiel die von Caddy im internen Netz). Nur von ihnen zählt `X-Forwarded-For` für die Zählung der Fehlversuche, sonst zählt die Adresse der Verbindung | leer |
 
@@ -84,16 +84,88 @@ Groß- und Kleinschreibung nicht, auch bei Umlauten. Der Speicher für Idempoten
 
 **Einwilligungsversion:** `neuer-durchlauf` verlangt eine Version, die nicht kleiner ist als die höchste bisher erfasste (Vertrag Abschnitt 8, die
 Nummer wächst nur). Sie gilt für alle Plätze zusammen und steht in `zentral.sqlite3`. Eine zu kleine Version ergibt 422, und es ändert sich nichts
-(auch der Platz-Token bleibt).
+(auch der Platz-Token bleibt). Die Version liegt zwischen 1 und 1000 (eine Obergrenze, damit ein Tippfehler nicht für immer alle kleineren Versionen sperrt).
+
+Rücksetzweg für ein falsch erfasstes Maximum: `POST /api/betreuer/einwilligung-minimum-setzen` mit `{"einwilligung_version": <kleinere Zahl>, "bestaetigung": "senken"}`.
+Er senkt das Maximum nur (eine gleiche oder größere Zahl ist 422), nur wenn kein Durchlauf läuft (sonst 409 `durchlauf_laeuft`, vorher alle Durchläufe
+beenden) und steht mit Zeit, Art und Wert in der Betreuer-Spur. Befehl (der Token kommt aus der Datei, nie als Text in die Befehlszeile):
+
+```text
+curl -X POST -H "Authorization: Bearer $(cat <Datei mit dem Betreuer-Token>)" -H "Content-Type: application/json" \
+     -d '{"einwilligung_version": 3, "bestaetigung": "senken"}' https://HOST/api/betreuer/einwilligung-minimum-setzen
+```
 
 ## Bekannte Restrisiken
 
-* `neuer-durchlauf` verlangt keine Bestätigung für einen laufenden Durchlauf: Ein versehentlicher Aufruf setzt das Board eines Besuchers zurück und
-  entzieht dessen Platz-Token. Die Betreuer-Seite sollte vorher nachfragen.
-* Für die Abnahmeplätze 15 und 16 sperrt der Dienst keinen Platz-Token (die Abnahme braucht ihn). Der Betreuer gibt für sie keinen Besucher-Token aus.
-* Der Dienst läuft als genau ein Prozess: Token-Index, Raten, Fehlerzähler und Zwischenspeicher liegen im Speicher dieses Prozesses (mehrere Prozesse
-  hinter einem Verteiler würden die Grenzen je Prozess zählen).
-* Die Frist für Kopfzeilen (10 Sekunden) und die Höchstzahl der Verbindungen (64) schützen den Dienst selbst, sie ersetzen nicht die Fristen von Caddy.
+Was der Dienst bewusst nicht löst und wer es lösen muss:
+
+* **Löschen nur auf SQLite-Ebene:** `daten-loeschen`, `zuruecksetzen` und die Aufbewahrung löschen in den Datenbanken (Zeilen überschrieben, Datei verkleinert,
+  WAL-Datei zurückgeschrieben und geprüft). Dateisystemblöcke, Volume-Snapshots und Hostsicherungen liegen außerhalb des Dienstes. D10 verlangt, dass der Betrieb
+  dafür sorgt (keine Snapshots oder Sicherungen des Volumes über den 11.12.2026 hinaus, sonst löschen).
+* **Die Aufbewahrung greift nur bei laufendem Dienst:** Gelöscht wird beim Start und stündlich, solange der Dienst läuft. Nach dem 11.12.2026 den Dienst
+  weiterlaufen lassen (oder neu starten) oder das Volume löschen. Ein Dienst, der vorher abgeschaltet wird, löscht nichts mehr.
+* **Uhrabhängigkeit:** Aufbewahrung, Schreibrate, Gültigkeit der Idempotenzschlüssel, Anzeigezeit des neuen Tokens und die Zeitpunkte in den Tickets nutzen die
+  Uhr des Rechners. Der Dienst prüft sie beim Start (nicht vor dem 12.11.2026) und löscht nie nach einem Sprung der Wanduhr von mehr als einem Tag gegen die
+  monotone Uhr. Eine dauerhaft falsche Uhr, die schon beim Start nach dem 11.12.2026 steht, löscht trotzdem (es lässt sich nicht von einem Neustart danach
+  unterscheiden), und ein Rechner, der länger als einen Tag ruht (Suspend), verschiebt die Wanduhr gegen die monotone Uhr: Dann löscht die Aufbewahrung nicht,
+  bis der Dienst neu gestartet wird.
+* **Einwilligungsmaximum und Rücksetzweg:** Die Version des Datenschutzhinweises darf nur wachsen (1 bis 1000). Ein falsch erfasstes Maximum lässt sich nur mit
+  der Funktion `einwilligung-minimum-setzen` senken (nur ohne laufenden Durchlauf, mit ausdrücklicher Bestätigung, mit Eintrag in der Spur, Befehl siehe oben).
+* **Der Betreuer-Token ist ein Generalschlüssel:** Wer ihn hat, liest mit `platz-token` jeden Platz (er erzeugt sich einen Token und öffnet das Board), setzt jeden
+  Platz zurück und löscht jeden Platz. Die Betreuer-Spur (`betreuer.jsonl`) lässt sich mit gültigem Token bis 5 MB füllen, danach schreibt der Dienst still
+  keine Einträge mehr (nie überschreiben). Der Token wird nur beim Start aus der Datei gelesen, ein Wechsel geht nur per Neustart.
+* **Der Platz-Token bleibt gültig** nach `durchlauf-beenden` und `zuruecksetzen` (der Besucher sieht weiter sein Board). Ungültig wird er nur durch
+  `neuer-durchlauf`, `daten-loeschen`, ein neues `platz-token` und das Ende der Aufbewahrung.
+* **`neuer-durchlauf` verlangt in der Schnittstelle keine Bestätigung:** Ein versehentlicher Aufruf setzt das Board eines Besuchers zurück und entzieht dessen
+  Platz-Token. Die Betreuer-Seite verlangt dafür das Eintippen der Platznummer, ein Skript oder `curl` nicht.
+* **Plätze 15 und 16:** `neuer-durchlauf` entzieht den Token dort ebenso wie bei jedem Platz, `daten-loeschen` auch. Mit „nicht gesperrt“ ist nur gemeint, dass der
+  Dienst die Ausgabe eines Platz-Tokens für die Abnahmeplätze nicht verbietet (die Abnahme braucht ihn). Der Betreuer gibt für sie keinen Besucher-Token aus.
+* **Ein Prozess:** Token-Index, Raten, Fehlerzähler und Zwischenspeicher liegen im Speicher dieses einen Prozesses (mehrere Prozesse hinter einem Verteiler
+  würden die Grenzen je Prozess zählen).
+* **Fristen und Verbindungen:** Die Frist für Kopfzeilen (10 Sekunden) und die Höchstzahl der Verbindungen (64) schützen den Dienst selbst, sie ersetzen nicht
+  die Fristen von Caddy davor.
+
+## Weboberflächen
+
+Zwei statische Seiten, die der Dienst selbst ausliefert (kein Build-Schritt, keine Pakete, kein CDN, keine externen Schriften, kein Atlassian-Logo, WMC-Corporate-Design
+ohne Blau, Schrift Arial Narrow mit Rückfall auf Arial):
+
+| Adresse | Seite |
+| --- | --- |
+| `/` und `/board` | Board-Seite für Besucher (nur lesend), Link `/board#t=<Platz-Token>` |
+| `/betreuer` | Betreuer-Seite, Link `/betreuer#b=<Betreuer-Token>` oder Eingabefeld |
+| `/web/<Name>` | Dateien der Seiten aus einer festen Liste (`stil.css`, `dom.js`, `gemeinsam.js`, `board-logik.js`, `board.js`, `betreuer-logik.js`, `betreuer.js`) |
+
+* **Board-Seite:** zeigt Platznummer, Zustand des Durchlaufs, die Tickets des Platzes als Spalten nach Status (Zu erledigen, In Arbeit, Erledigt) mit Schlüssel,
+  Titel, Typ, Priorität und Zahl der Kommentare, ein Klick öffnet Beschreibung und Kommentare. Sie fragt alle 3 Sekunden (nur bei sichtbarem Tab), nimmt sich
+  bei 429 zurück (Retry-After) und beendet die Abfragen bei 401 mit „Dieser Platz-Link gilt nicht mehr, bitte beim Betreuer melden“. Einen Testbericht liefert
+  die Schnittstelle nicht, die Seite zeigt deshalb nur eine Zusammenfassung (Tickets, neue Tickets, Kommentare). Der Platz-Token kommt aus dem URL-Fragment
+  (`#t=...`, nie aus der Abfrage), bleibt nur im Speicher der Seite und wird mit `history.replaceState` aus der Adresszeile entfernt. Ein Neuladen braucht deshalb
+  den Link erneut.
+* **Betreuer-Seite:** Übersicht der 16 Plätze und die Funktionen der Betreuer-Schnittstelle. Neuer Durchlauf (Einwilligungsversion von 1 bis 1000, nur wachsend),
+  Zurücksetzen und Daten löschen verlangen in der Oberfläche das Eintippen der Platznummer (das mildert die fehlende Bestätigung der Schnittstelle).
+  Nach neuer Durchlauf und Daten löschen holt die Seite den neuen Platz-Token (der alte gilt nicht mehr) und zeigt ihn mit dem Besucher-Link nur einmal mit
+  Kopier-Knöpfen, nach 60 Sekunden wird er ausgeblendet. Der Betreuer-Token bleibt nur im Speicher der Seite, nie in einem Speicher des Browsers.
+* **Sicherheit:** Alle Texte aus dem Dienst gehen über `textContent` oder Textknoten, nie als HTML (`dom.js` lässt nur Attribute aus einer festen Liste zu). Kein
+  Inline-Skript, kein Inline-Stil, keine Ereignisattribute. Die Seiten tragen `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
+  img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, dazu `nosniff`, `no-referrer`, `Cache-Control: no-store`
+  und eine Permissions-Policy, die Kamera, Mikrofon, Standort, Zahlung und USB mit leerer Liste sperrt. Ausgeliefert wird nur per GET aus der festen Liste (kein
+  Pfad-Trick, kein Verzeichnislisting, alles andere 404), die Dateien liegen nach dem Start im Speicher. Die Seiten enthalten weder Token noch Platzdaten, alle
+  Daten kommen über die Schnittstellen mit Token. Die Anmeldung der Schnittstellen bleibt unverändert: Wer `/betreuer` erreicht, legt der Betrieb (Caddy) fest.
+* **Prüfen:** `python -m pytest -p no:cacheprovider -q tests/test_web.py tests/test_web_inhalt.py tests/test_javascript.py` und die reinen Funktionen mit
+  `node --test tests/js` (Node, keine Pakete).
+* **Abnahmeskript:** A1 akzeptiert bei `--board-url` `default-src 'self'` (Vertrag D4) und die strengere Richtlinie der Seiten mit `default-src 'none'`
+  und eigenen `script-src` und `style-src`. `--board-url` kann deshalb direkt auf `/board` zeigen.
+
+**Lokale Vorführung mit Demo-Daten** (nur Loopback, temporärer Ordner, Wegwerf-Tokens, die Adressen mit den Tokens stehen in der Ausgabe):
+
+```text
+cd labor-dienst
+python -m wamo_labor_dienst.demo --port 8765
+```
+
+Platz 1 und 2 haben einen offenen Durchlauf mit Tickets in allen Spalten und Kommentaren (auch ein Ticket mit HTML-artigem Text, der als Text erscheint),
+Platz 3 hat einen beendeten Durchlauf, alle anderen Plätze sind geschlossen. Mit Strg+C beenden, die Demo-Daten verschwinden dabei.
 
 ## Grenzen für Lesen, Fehlversuche und Verbindungen
 
@@ -105,6 +177,10 @@ Nummer wächst nur). Sie gilt für alle Plätze zusammen und steht in `zentral.s
 * **Verbindungen:** höchstens 64 gleichzeitig (darüber antwortet uvicorn 503). Eine Verbindung, deren Kopfzeilen nicht binnen 10 Sekunden vollständig
   sind (ab dem Verbindungsaufbau und nach jeder Antwort), wird geschlossen, ein Inhalt, der länger als 10 Sekunden braucht, ergibt 408. Das ersetzt nicht
   die Fristen von Caddy davor.
+* **Betrieb (Caddy und Compose):** Das 503, das uvicorn bei Überschreiten von `limit_concurrency` sendet, ist Klartext ohne die Schutzköpfe des Dienstes. Caddy
+  davor fängt Fehler des Dienstes ab und liefert eine eigene Antwort mit denselben Köpfen (kein Code im Dienst nötig). Die Warnzeilen von uvicorn (zum Beispiel
+  „Invalid HTTP request received“) gehen auf stderr: In der späteren Compose-Datei begrenzt `logging` mit `driver: json-file` und `options: max-size: 10m`,
+  `max-file: 3` ihre Größe (D10: Die Container-Protokolle zählen zur Aufbewahrung).
 
 ## Protokoll und Aufbewahrung
 
@@ -119,7 +195,9 @@ Art. Nie Pfade, Abfragen, Köpfe, Tokens oder Texte. Das Zugriffsprotokoll des W
 
 Geschrieben wird in einem eigenen Faden hinter einer begrenzten Warteschlange (die Ereignisschleife wartet nie auf die Platte, ist die Schlange
 voll, wird gezählt und verworfen). Beim Start und danach stündlich löscht der Dienst alle Daten (Tickets, Kommentare, Einwilligungen, Platz-Token,
-beide Protokolldateien), wenn das Datum nach `WAMO_LABOR_DIENST_BIS` liegt. Der Dienst legt keine Sicherungen an.
+beide Protokolldateien), wenn das Datum nach `WAMO_LABOR_DIENST_BIS` liegt und die Uhr seit dem Start plausibel läuft: Die Wanduhr darf der monotonen Uhr
+höchstens einen Tag vorauslaufen, sonst löscht der Dienst nichts und schreibt `Uhrsprung` ins Protokoll (ein Sprung der Uhr nach vorn leert keine Plätze).
+Der Dienst legt keine Sicherungen an.
 
 ## Prüfen
 

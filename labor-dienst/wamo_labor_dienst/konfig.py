@@ -18,6 +18,7 @@ TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/=-]{43,200}")  # 43 Zeichen sind 256 Bit 
 TOKEN_MIN_VERSCHIEDEN = 16  # ein Token aus wenigen Zeichen ist nie zufällig
 STANDARD_BIS = date(2026, 12, 11)  # Aufbewahrung nach D10: 14 Tage nach dem Labortag
 HOECHSTES_BIS = STANDARD_BIS  # später darf die Aufbewahrung nie enden (D10), eine Einstellung darf nur früher löschen
+FRUEHESTES_BIS = date(2026, 11, 28)  # der Labortag: davor darf die Aufbewahrung nicht enden (sonst würden die Daten des Labortags gelöscht)
 FRUEHESTES_DATUM = date(2026, 11, 12)  # Stand des Baus: Eine Uhr davor geht falsch (sonst würde die Aufbewahrung nie greifen)
 PLATZ_MB_MIN, PLATZ_MB_MAX, PLATZ_MB_STANDARD = 2, 64, 16
 
@@ -118,8 +119,8 @@ def aus_umgebung(env: Mapping[str, str] | None = None) -> Konfig:
     if not host.strip():
         raise KonfigFehler(f"{V_HOST} darf nicht leer sein")
     bis = _datum(env, V_BIS, STANDARD_BIS)
-    if bis > HOECHSTES_BIS:
-        raise KonfigFehler(f"{V_BIS} darf höchstens {HOECHSTES_BIS.isoformat()} sein (Aufbewahrung nach D10)")
+    if not FRUEHESTES_BIS <= bis <= HOECHSTES_BIS:
+        raise KonfigFehler(f"{V_BIS} muss zwischen {FRUEHESTES_BIS.isoformat()} (Labortag) und {HOECHSTES_BIS.isoformat()} liegen (Aufbewahrung nach D10)")
     return Konfig(
         daten=Path(env.get(V_DATEN) or "/data"), kern_token=kern, betreuer_token=betreuer, host=host.strip(),
         port=_ganz(env, V_PORT, 8080, 1, 65535), bis=bis,

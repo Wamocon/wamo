@@ -85,14 +85,21 @@ class Protokoll:
     def abgetastet(self, art: str, **felder: object) -> None:
         """Wie ereignis, aber je (art, bereich, status) nur die ersten Zeilen je Minute. Der Rest wird gezählt und beim Wechsel des Fensters als
         eine Zeile 'abgetastet' mit der Zahl geschrieben."""
-        schluessel = (art, felder.get("bereich"), felder.get("status"))
+        self._abtasten("abgelehnt", art, felder, self._abtast_max)
+
+    def gezaehlt(self, art: str, **felder: object) -> None:
+        """Nur zählen: keine Zeile je Ereignis, je Minute eine Zeile 'abgetastet' mit der Zahl (zum Beispiel für die Gesundheitsprobe, die der Container oft ruft)."""
+        self._abtasten("gezaehlt", art, felder, 0)
+
+    def _abtasten(self, feld: str, art: str, felder: dict[str, object], maximal: int) -> None:
+        schluessel = (feld, art, felder.get("bereich"), felder.get("status"))
         jetzt = self._uhr()
-        fertig: int = 0
+        fertig = 0
         with self._abtast_sperre:
             beginn, geschrieben, unterdrueckt = self._abtast.get(schluessel, [jetzt, 0, 0])
             if jetzt - beginn >= ABTAST_FENSTER_SECS or jetzt < beginn:  # neues Fenster (auch wenn die Uhr zurückgestellt wurde)
                 fertig, beginn, geschrieben, unterdrueckt = int(unterdrueckt), jetzt, 0, 0
-            schreiben = geschrieben < self._abtast_max
+            schreiben = geschrieben < maximal
             geschrieben, unterdrueckt = (geschrieben + 1, unterdrueckt) if schreiben else (geschrieben, unterdrueckt + 1)
             self._abtast[schluessel] = [beginn, geschrieben, unterdrueckt]
         if fertig:
@@ -101,8 +108,8 @@ class Protokoll:
             self.ereignis(art, **felder)
 
     def _zusammenfassung(self, schluessel: tuple, anzahl: int) -> None:
-        art, bereich, status = schluessel
-        self.ereignis("abgetastet", abgelehnt=art, bereich=bereich, status=status, anzahl=anzahl)
+        feld, art, bereich, status = schluessel
+        self.ereignis("abgetastet", **{feld: art}, bereich=bereich, status=status, anzahl=anzahl)
 
     # ---------- Schreiben im eigenen Faden ----------
     def _arbeiten(self) -> None:

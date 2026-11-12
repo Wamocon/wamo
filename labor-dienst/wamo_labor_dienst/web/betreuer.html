@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Betreuer, WAMOCON Test-Jira</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/web/stil.css">
+</head>
+<body class="betreuer-seite">
+<header class="kopf">
+  <h1 class="marke">WAMOCON Test-Jira</h1>
+  <p class="platz">Betreuer</p>
+  <button type="button" class="knopf knopf-hell kopf-knopf" id="abmelden" hidden>Abmelden</button>
+</header>
+<main class="betreuer-inhalt">
+  <p class="meldung" id="meldung" role="alert" hidden></p>
+  <section id="anmeldung" class="anmeldung" aria-labelledby="anmeldung-titel">
+    <h2 id="anmeldung-titel">Anmeldung</h2>
+    <form id="anmelde-formular" class="formular">
+      <p class="feld">
+        <label for="token-eingabe">Betreuer-Token</label>
+        <input id="token-eingabe" type="password" autocomplete="off" spellcheck="false" required>
+      </p>
+      <p><button type="submit" class="knopf knopf-primaer">Anmelden</button></p>
+    </form>
+    <p class="meta">Der Token bleibt nur im Speicher dieser Seite. Er wird nirgends gespeichert und nicht in der Adresszeile gehalten.</p>
+  </section>
+  <section id="uebersicht" aria-labelledby="uebersicht-titel" hidden>
+    <div class="werkzeugleiste">
+      <h2 id="uebersicht-titel">Plätze</h2>
+      <p class="meta" id="stand" role="status"></p>
+      <button type="button" class="knopf" id="aktualisieren">Aktualisieren</button>
+    </div>
+    <section class="token-feld" id="token-feld" aria-live="polite" hidden></section>
+    <div class="platz-raster" id="plaetze"></div>
+  </section>
+</main>
+<dialog class="aktion" id="aktion" aria-labelledby="aktion-titel"></dialog>
+<noscript><p class="meldung">Diese Seite braucht JavaScript.</p></noscript>
+<script type="module" src="/web/betreuer.js"></script>
+</body>
+</html>
