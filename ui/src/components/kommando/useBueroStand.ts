@@ -140,9 +140,11 @@ export function bueroStandVergessen(): void {
 /**
  * Lässt den Stand der Büro-Karte so lange gelten, wie die Hauptansicht lebt, und vergisst ihn beim Aushängen (Abmelden). Steht
  * in WamoAnsicht, die immer eingehängt ist; die Karte selbst hängt nur bei sichtbarem Reiter ein und darf ihn nicht verwerfen.
+ * aktiv = false (Laborkonten, lib/laborPlatz.ts): keine Büro-Karte, also nichts zu halten und nichts zu vergessen. Der Hook wird
+ * trotzdem in jedem Render aufgerufen (Regeln der Hooks).
  */
-export function useBueroStandHalten(): void {
-  useEffect(() => bueroStandVergessen, []);
+export function useBueroStandHalten(aktiv = true): void {
+  useEffect(() => (aktiv ? bueroStandVergessen : undefined), [aktiv]);
 }
 
 /**

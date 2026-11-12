@@ -82,8 +82,9 @@ function Eintrag({ m }: { m: Memo }) {
  * dem Kurzstatus (Rolle, Canvas, Entwicklung) und eine kleine Karte mit dem Stand des Modellzugangs und dem Link zu den
  * Einstellungen. Alles aus vorhandenen Daten; ohne Inhalt steht ein freundlicher Text. Formulare gibt es hier nicht
  * mehr: Modellzugang, Geräte, Teilen und Darstellung stehen auf der Einstellungsseite (components/einstellungen/).
+ * modellzugang = false (Laborkonten, lib/laborPlatz.ts): ohne die Zeile zum Modellzugang, denn dort wird er nicht abgefragt.
  */
-export const Hinweise = memo(function Hinweise() {
+export const Hinweise = memo(function Hinweise({ modellzugang = true }: { modellzugang?: boolean }) {
   const gemerkt = useGemerktSitzung();
   const persoenlich = gemerkt.filter((m) => m.bereich === "persoenlich");
   const gemeinsam = gemerkt.filter((m) => m.bereich === "gemeinsam");
@@ -142,12 +143,14 @@ export const Hinweise = memo(function Hinweise() {
         <h2 id="kz-h-einstellungen" className="kz-karte-titel">
           Einstellungen
         </h2>
-        <dl className="kz-daten">
-          <div>
-            <dt>Modellzugang</dt>
-            <dd>{modellzugangKurz(zugang)}</dd>
-          </div>
-        </dl>
+        {modellzugang && (
+          <dl className="kz-daten">
+            <div>
+              <dt>Modellzugang</dt>
+              <dd>{modellzugangKurz(zugang)}</dd>
+            </div>
+          </dl>
+        )}
         <EinstellungenLink className="kz-link">Einstellungen öffnen</EinstellungenLink>
       </section>
     </>

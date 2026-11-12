@@ -24,6 +24,7 @@ import { FehlerAnzeige } from "@/components/FehlerAnzeige";
 import { StillAktionen, UebernehmenHinweis } from "@/components/StillStart";
 import { Verlauf } from "@/components/Verlauf";
 import { einstellungenSchliessen, oeffnerFuerFokus, useEinstellungenZiel } from "@/lib/einstellungenHash";
+import { laborAnsicht } from "@/lib/laborPlatz";
 import { useModellzugangStandHalten } from "@/lib/modellzugangApi";
 import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
@@ -96,8 +97,11 @@ const Ansage = memo(function Ansage() {
  * eine Spalte mit Reiterleiste.
  * Der Verlauf bleibt eine Schublade. Die Einstellungen (components/einstellungen/) sind eine zweite Ansicht derselben
  * Seite, gesteuert über den Hash #einstellungen: Sie verbergen die Kommandozentrale, ohne das Gespräch zu berühren.
+ * Laborkonten (lib/laborPlatz.ts) sehen eine schlanke Platz-Ansicht: ohne Büro-Karte, Verlauf, Vorgänge, Admin-Hinweise,
+ * Geräteeinrichtung und Modellzugang. Das ist nur Darstellung, der Kern sperrt weiter selbst.
  */
 export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sitzung: Sitzung }) {
+  const ansicht = laborAnsicht(sitzung.email);
   const [verlaufOffen, setVerlaufOffen] = useState(false);
   const einstellungenOffen = useEinstellungenZiel().offen;
   // Beim Öffnen der Einstellungen geht der Verlauf zu (Zustand während des Renderns anpassen, kein Zwischenbild); danach
@@ -111,11 +115,12 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
   const schliesseVerlauf = useCallback(() => setVerlaufOffen(false), []);
   const { disconnect, connect, vergessen } = aktionen;
   // Der Stand des Modellzugangs wird einmal hier gehalten: die Seitenleiste zeigt eine Zeile daraus, die Einstellungen die Karte
-  useModellzugangStandHalten(aktionen.modellzugang);
+  // (Laborkonten: kein Abruf. Die drei Hooks stehen in jedem Render in gleicher Reihenfolge, nur ihr Parameter ändert sich.)
+  useModellzugangStandHalten(aktionen.modellzugang, ansicht.modellzugang);
   // Der Verlauf der Vorgänge (Datenbank) wird hier einmal geholt: die Tafel hängt nur bei sichtbarem Reiter ein
-  useVerlaufHalten();
+  useVerlaufHalten(ansicht.verlauf);
   // Der Stand der Büro-Karte gehört dem angemeldeten Profil: beim Abmelden (Aushängen dieser Ansicht) wird er vergessen
-  useBueroStandHalten();
+  useBueroStandHalten(ansicht.bueroKarte);
   // Nach dem Schließen der Einstellungen (Knopf, Escape oder "Zurück" des Browsers) kehrt der Fokus zu dem zurück, was
   // sie geöffnet hat (Zahnrad oder Link), sonst zum Zahnrad. Hat die Person den Fokus schon selbst gesetzt (zum Beispiel
   // auf "Verlauf"), bleibt er dort.
@@ -159,8 +164,8 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           <HinweisToast />
           <UebernehmenHinweis onUebernehmen={uebernehmen} />
           <GemerktHinweis onVergessen={vergesseEintrag} />
-          <AdminHinweise />
-          <GeraetEinrichtung />
+          {ansicht.adminHinweise && <AdminHinweise />}
+          {ansicht.geraeteEinrichtung && <GeraetEinrichtung />}
         </>
       }
       kernbereich={<Kernbereich />}
@@ -172,7 +177,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           stillStarten={aktionen.stillStarten}
           eingabeMelden={aktionen.eingabeMelden}
           verlaufOffen={verlaufOffen}
-          onVerlauf={toggleVerlauf}
+          onVerlauf={ansicht.verlauf ? toggleVerlauf : undefined}
         />
       }
       canvas={
@@ -181,7 +186,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           <CanvasBereich />
         </>
       }
-      hinweise={<Hinweise />}
+      hinweise={<Hinweise modellzugang={ansicht.modellzugang} />}
       auftraege={
         <>
           <Freigaben onDecide={aktionen.decide} />
@@ -190,17 +195,20 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
         </>
       }
       vorgaenge={
-        <>
-          <VorgaengeTafel />
-          <ActivityTimeline />
-          <VorgaengeLeer />
-        </>
+        ansicht.vorgaenge ? (
+          <>
+            <VorgaengeTafel />
+            <ActivityTimeline />
+            <VorgaengeLeer />
+          </>
+        ) : null
       }
       erledigt={<ErledigtListe />}
-      buero={<BueroKarte />}
+      buero={ansicht.bueroKarte ? <BueroKarte /> : undefined}
+      ohne={{ vorgaenge: !ansicht.vorgaenge, buero: !ansicht.bueroKarte }}
       anhang={
         <>
-          <Verlauf offen={verlaufOffen} onSchliessen={schliesseVerlauf} />
+          {ansicht.verlauf && <Verlauf offen={verlaufOffen} onSchliessen={schliesseVerlauf} />}
           <Ansage />
         </>
       }
@@ -221,8 +229,8 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
                 />
                 <HinweisToast />
                 <GemerktHinweis onVergessen={vergesseEintrag} />
-                <HinweiseZaehler onAnsehen={() => einstellungenSchliessen()} />
-                <GeraetZeile />
+                {ansicht.adminHinweise && <HinweiseZaehler onAnsehen={() => einstellungenSchliessen()} />}
+                {ansicht.geraeteEinrichtung && <GeraetZeile />}
               </>
             }
           />

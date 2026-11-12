@@ -119,14 +119,24 @@ function MikrofonEinstellung({ laden, waehlen }: { laden: () => Promise<Mikrofon
   );
 }
 
+/** nurMikrofon: Laborsicht (lib/laborPlatz.ts), nur die Mikrofonwahl; die übrigen Blöcke entfallen. */
 export const SpracheAbschnitt = memo(function SpracheAbschnitt({
   mikrofone,
   mikrofonWaehlen,
+  nurMikrofon = false,
 }: {
   mikrofone: () => Promise<Mikrofon[]>;
   mikrofonWaehlen: (id: string) => boolean;
+  nurMikrofon?: boolean;
 }) {
   const modelle = useSelect(wamo, (s) => s.betrieb?.modelle ?? null);
+  if (nurMikrofon) {
+    return (
+      <Block titel="Eingabe">
+        <MikrofonEinstellung laden={mikrofone} waehlen={mikrofonWaehlen} />
+      </Block>
+    );
+  }
   return (
     <>
       <Block titel="Eingabe">

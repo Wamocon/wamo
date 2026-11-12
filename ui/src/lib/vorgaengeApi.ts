@@ -37,10 +37,12 @@ export function verlaufLeeren(): void {
 /**
  * Hält den Verlauf für die Dauer der Hauptansicht: einmal laden beim Einhängen, beim Aushängen (Abmelden) freigeben. Steht in
  * WamoAnsicht, die immer eingehängt ist, auch wenn der Reiter "Vorgänge" gerade nicht zu sehen ist.
+ * aktiv = false (Laborkonten, lib/laborPlatz.ts): gar kein Abruf. Der Hook wird trotzdem in jedem Render aufgerufen (Regeln der Hooks).
  */
-export function useVerlaufHalten(): void {
+export function useVerlaufHalten(aktiv = true): void {
   useEffect(() => {
+    if (!aktiv) return;
     void verlaufLaden();
     return verlaufLeeren;
-  }, []);
+  }, [aktiv]);
 }

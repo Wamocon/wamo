@@ -30,6 +30,8 @@ export type RahmenInhalt = {
   anhang: ReactNode;
   /** Einstellungsseite; nur gesetzt, solange sie offen ist. Die Kommandozentrale bleibt dabei eingehängt und wird nur verborgen. */
   einstellungen?: ReactNode;
+  /** Laborsicht (lib/laborPlatz.ts): diese Tafeln samt Reiter gibt es nicht (weder Reiter noch Tafel im Dokument) */
+  ohne?: { vorgaenge?: boolean; buero?: boolean };
 };
 
 const RECHTS: readonly ReiterDef<Rechts>[] = [
@@ -111,17 +113,31 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
   }, []);
   const angebot = useMemo(() => ({ zeigeCanvas, zeigeAuftraege }), [zeigeCanvas, zeigeAuftraege]);
 
-  const rechtsReiter = useMemo(() => RECHTS.map((r) => (r.id === "auftraege" ? { ...r, zahl: offen } : r)), [offen]);
+  const ohneVorgaenge = Boolean(inhalt.ohne?.vorgaenge);
+  const ohneBuero = Boolean(inhalt.ohne?.buero);
+  const fehlt = useCallback((id: string) => (id === "vorgaenge" && ohneVorgaenge) || (id === "buero" && ohneBuero), [ohneVorgaenge, ohneBuero]);
+  const rechtsReiter = useMemo(
+    () => RECHTS.filter((r) => !fehlt(r.id)).map((r) => (r.id === "auftraege" ? { ...r, zahl: offen } : r)),
+    [offen, fehlt],
+  );
+  // Name der Leiste aus den vorhandenen Reitern: "Aufträge, Vorgänge, Erledigt und Büro", in der Laborsicht ohne die fehlenden
+  const rechtsName = useMemo(() => {
+    const namen = rechtsReiter.map((r) => r.label);
+    return namen.length > 1 ? `${namen.slice(0, -1).join(", ")} und ${namen[namen.length - 1]}` : (namen[0] ?? "");
+  }, [rechtsReiter]);
   const mobilReiter = useMemo<readonly ReiterDef<Mobil>[]>(
-    () => [
-      { id: "kern", label: "Kern", ohneTafel: true },
-      { id: "auftraege", label: "Aufträge", zahl: offen, zahlWort: "offen" },
-      { id: "vorgaenge", label: "Vorgänge" },
-      { id: "canvas", label: "Canvas" },
-      { id: "hinweise", label: "Hinweise" },
-      { id: "buero", label: "Büro" },
-    ],
-    [offen],
+    () =>
+      (
+        [
+          { id: "kern", label: "Kern", ohneTafel: true },
+          { id: "auftraege", label: "Aufträge", zahl: offen, zahlWort: "offen" },
+          { id: "vorgaenge", label: "Vorgänge" },
+          { id: "canvas", label: "Canvas" },
+          { id: "hinweise", label: "Hinweise" },
+          { id: "buero", label: "Büro" },
+        ] satisfies ReiterDef<Mobil>[]
+      ).filter((r) => !fehlt(r.id)),
+    [offen, fehlt],
   );
 
   return (
@@ -182,7 +198,7 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
 
           <div className="kz-rechts">
             <Reiterleiste
-              name="Aufträge, Vorgänge, Erledigt und Büro"
+              name={rechtsName}
               reiter={rechtsReiter}
               aktiv={rechts}
               onWahl={setRechts}
@@ -200,14 +216,16 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
               </h2>
               {inhalt.auftraege}
             </div>
-            <div
-              id="kz-p-vorgaenge"
-              className="kz-tafel"
-              data-p="vorgaenge"
-              {...tafel("Vorgänge", breit ? "kz-tab-d-vorgaenge" : "kz-tab-m-vorgaenge")}
-            >
-              {vorgaengeAktiv ? inhalt.vorgaenge : null}
-            </div>
+            {!ohneVorgaenge && (
+              <div
+                id="kz-p-vorgaenge"
+                className="kz-tafel"
+                data-p="vorgaenge"
+                {...tafel("Vorgänge", breit ? "kz-tab-d-vorgaenge" : "kz-tab-m-vorgaenge")}
+              >
+                {vorgaengeAktiv ? inhalt.vorgaenge : null}
+              </div>
+            )}
             <div
               id="kz-p-erledigt"
               className="kz-tafel"
@@ -216,9 +234,11 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
             >
               {inhalt.erledigt}
             </div>
-            <div id="kz-p-buero" className="kz-tafel" data-p="buero" {...tafel("Büro", breit ? "kz-tab-d-buero" : "kz-tab-m-buero")}>
-              {bueroAktiv ? inhalt.buero : null}
-            </div>
+            {!ohneBuero && (
+              <div id="kz-p-buero" className="kz-tafel" data-p="buero" {...tafel("Büro", breit ? "kz-tab-d-buero" : "kz-tab-m-buero")}>
+                {bueroAktiv ? inhalt.buero : null}
+              </div>
+            )}
           </div>
         </main>
         {inhalt.einstellungen}
