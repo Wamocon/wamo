@@ -98,7 +98,7 @@ async def bauen(identity, env=None, quelle=None, *, pc_waere_da=True, freigabe=N
         return b.labor
 
     beruehrt = {n: mock.Mock(side_effect=AssertionError(f"{n} darf in der Laborsitzung nie berührt werden"))
-                for n in ("host_client", "DevAgent", "Boss", "PcFreigaben")}
+                for n in ("host_client", "DevAgent", "Boss", "PcFreigaben", "Buerogeraete")}
     pc_zugang = mock.AsyncMock(return_value=object())
     pc_host_fuer = mock.Mock(return_value=True)
     b.beruehrt = {**beruehrt, "pc_zugang": pc_zugang, "pc_host_fuer": pc_host_fuer}
@@ -112,7 +112,8 @@ async def bauen(identity, env=None, quelle=None, *, pc_waere_da=True, freigabe=N
              mock.patch.object(bot, "gespraech_llm", llm_merken), mock.patch.object(bot, "LLMContextAggregatorPair", paar), \
              mock.patch.object(bot, "pc_zugang", pc_zugang), mock.patch.object(bot, "pc_host_fuer", pc_host_fuer), \
              mock.patch.object(bot, "host_client", beruehrt["host_client"]), mock.patch.object(bot, "DevAgent", beruehrt["DevAgent"]), \
-             mock.patch.object(bot, "Boss", beruehrt["Boss"]), mock.patch.object(bot, "PcFreigaben", beruehrt["PcFreigaben"]):
+             mock.patch.object(bot, "Boss", beruehrt["Boss"]), mock.patch.object(bot, "PcFreigaben", beruehrt["PcFreigaben"]), \
+             mock.patch.object(bot, "Buerogeraete", beruehrt["Buerogeraete"]):
             b.transport = smoke.FakeTransport()
             b.session = await bot.build_session(b.transport, identity)
     if freigabe is not None:

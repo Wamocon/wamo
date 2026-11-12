@@ -7,6 +7,7 @@ bot.py statisch (die Sitzung braucht Netz und Modelle) und halten die Verdrahtun
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import geraete_werkzeuge as gw
@@ -41,6 +42,18 @@ def test_nur_im_buero_und_nie_im_labor():
 def test_fremdinhalt_und_taint_kommen_aus_dem_zug():
     assert "fremdinhalt=turn.taint" in QUELLE
     assert "ist_fremd=lambda: turn.tainted" in QUELLE
+
+
+def test_die_endpruefung_der_laborsitzung_steht_nach_dem_letzten_block_der_werkzeuge_einhaengt():
+    """Die Prüfung gilt für das Endergebnis der Werkzeugliste. Stand sie vor dem Bürogeräte-Block (Befund vom 12.11.2026), schützte nur noch
+    dessen Bedingung "not labor_sitzung". Jetzt scheitert die Sitzung auch dann, wenn dort oder davor später jemand ein Werkzeug einhängt."""
+    pruefung = QUELLE.index("labor_sitzung.werkzeuge_pruefen(")
+    assert QUELLE.count("labor_sitzung.werkzeuge_pruefen(") == 1
+    letzte_ergaenzung = max(m.start() for m in re.finditer(r"standard_tools \+= ", QUELLE))
+    assert letzte_ergaenzung < pruefung
+    assert QUELLE.index("buerogeraete = Buerogeraete(") < pruefung
+    kopf = QUELLE.splitlines()[QUELLE[:pruefung].count("\n") - 3 : QUELLE[:pruefung].count("\n")]
+    assert any(z.strip() == "if labor_sitzung:" for z in kopf)  # die Prüfung läuft nur in einer Laborsitzung
 
 
 def test_klick_auf_die_karte_geht_an_entscheiden_und_nur_mit_werkzeugen():
