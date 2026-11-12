@@ -527,11 +527,11 @@ def test_keine_option_nimmt_ein_geheimnis_entgegen():
 
 # ---------- Quelltext ----------
 
-QUELLEN = ("wamo_labor_faktoren.py", "wamo_labor_faktoren_totp.py", "wamo_labor_faktoren_api.py", "wamo_labor_faktoren_umschlag.py",
-           "wamo_labor_faktoren_attrappe.py", "test_wamo_labor_faktoren.py", "test_wamo_labor_faktoren_lauf.py")
+QUELLEN = sorted(p.name for p in Path(__file__).resolve().parent.glob("*labor_faktoren*.py"))
 
 
 def test_quelltext_ohne_gedankenstriche_fremde_namen_und_lange_geheimnisse():
+    assert len(QUELLEN) >= 7, "die Quelldateien wurden nicht gefunden"
     verboten = ["\u2014", "\u2013", "nie" + "eeki", "jar" + "vis", "prompt" + "control", "dami" + "con", "WMC" + "NL"]
     for name in QUELLEN:
         text = (Path(__file__).resolve().parent / name).read_text(encoding="utf-8")
@@ -544,7 +544,7 @@ def test_quelltext_ohne_gedankenstriche_fremde_namen_und_lange_geheimnisse():
 
 def test_funktionen_unter_50_zeilen():
     import ast
-    for name in QUELLEN[:5]:
+    for name in (n for n in QUELLEN if not n.startswith("test_")):
         baum = ast.parse((Path(__file__).resolve().parent / name).read_text(encoding="utf-8"))
         for knoten in ast.walk(baum):
             if isinstance(knoten, (ast.FunctionDef, ast.AsyncFunctionDef)):

@@ -341,7 +341,7 @@ def test_nicht_lesbare_datei_ist_ein_fehler(tmp_path):
         um.Umschlag(tmp_path / "gibt-es-nicht.txt", rechte=Rechte()).zugang("labor-01")
 
 
-def _os_open_scheitert_fuer(monkeypatch, teil: str):
+def _os_open_scheitert_fuer(teil: str, ersatz):
     echt = os.open
 
     def open_(pfad, *a, **k):
@@ -349,13 +349,13 @@ def _os_open_scheitert_fuer(monkeypatch, teil: str):
             raise PermissionError("kein Zugriff " + PW[1])
         return echt(pfad, *a, **k)
 
-    monkeypatch.setattr(os, "open", open_)
+    ersatz.setattr(os, "open", open_)
 
 
 def test_sicherung_nicht_moeglich_aendert_nichts(tmp_path, monkeypatch):
     original = umschlag_text()
     datei = umschlag_datei(tmp_path, original)
-    _os_open_scheitert_fuer(monkeypatch, ".sicherung-")
+    _os_open_scheitert_fuer(".sicherung-", monkeypatch)
     with pytest.raises(um.UmschlagFehler, match="Sicherung") as e:
         um.Umschlag(datei, rechte=Rechte()).seed_speichern("labor-01", seed_von("a"))
     assert PW[1] not in str(e.value) and datei.read_text(encoding="utf-8") == original
@@ -363,7 +363,7 @@ def test_sicherung_nicht_moeglich_aendert_nichts(tmp_path, monkeypatch):
 
 def test_schreibprobe_ohne_schreibrecht_ist_ein_fehler(tmp_path, monkeypatch):
     datei = umschlag_datei(tmp_path)
-    _os_open_scheitert_fuer(monkeypatch, ".probe-")
+    _os_open_scheitert_fuer(".probe-", monkeypatch)
     with pytest.raises(um.UmschlagFehler, match="nicht geschrieben werden"):
         um.Umschlag(datei, rechte=Rechte()).schreibprobe()
 
