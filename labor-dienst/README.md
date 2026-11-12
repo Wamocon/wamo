@@ -95,6 +95,49 @@ Nummer wächst nur). Sie gilt für alle Plätze zusammen und steht in `zentral.s
   hinter einem Verteiler würden die Grenzen je Prozess zählen).
 * Die Frist für Kopfzeilen (10 Sekunden) und die Höchstzahl der Verbindungen (64) schützen den Dienst selbst, sie ersetzen nicht die Fristen von Caddy.
 
+## Weboberflächen
+
+Zwei statische Seiten, die der Dienst selbst ausliefert (kein Build-Schritt, keine Pakete, kein CDN, keine externen Schriften, kein Atlassian-Logo, WMC-Corporate-Design
+ohne Blau, Schrift Arial Narrow mit Rückfall auf Arial):
+
+| Adresse | Seite |
+| --- | --- |
+| `/` und `/board` | Board-Seite für Besucher (nur lesend), Link `/board#t=<Platz-Token>` |
+| `/betreuer` | Betreuer-Seite, Link `/betreuer#b=<Betreuer-Token>` oder Eingabefeld |
+| `/web/<Name>` | Dateien der Seiten aus einer festen Liste (`stil.css`, `dom.js`, `gemeinsam.js`, `board-logik.js`, `board.js`, `betreuer-logik.js`, `betreuer.js`) |
+
+* **Board-Seite:** zeigt Platznummer, Zustand des Durchlaufs, die Tickets des Platzes als Spalten nach Status (Zu erledigen, In Arbeit, Erledigt) mit Schlüssel,
+  Titel, Typ, Priorität und Zahl der Kommentare, ein Klick öffnet Beschreibung und Kommentare. Sie fragt alle 3 Sekunden (nur bei sichtbarem Tab), nimmt sich
+  bei 429 zurück (Retry-After) und beendet die Abfragen bei 401 mit „Dieser Platz-Link gilt nicht mehr, bitte beim Betreuer melden“. Einen Testbericht liefert
+  die Schnittstelle nicht, die Seite zeigt deshalb nur eine Zusammenfassung (Tickets, neue Tickets, Kommentare). Der Platz-Token kommt aus dem URL-Fragment
+  (`#t=...`, nie aus der Abfrage), bleibt nur im Speicher der Seite und wird mit `history.replaceState` aus der Adresszeile entfernt. Ein Neuladen braucht deshalb
+  den Link erneut.
+* **Betreuer-Seite:** Übersicht der 16 Plätze und die Funktionen der Betreuer-Schnittstelle. Neuer Durchlauf (Einwilligungsversion von 1 bis 1000, nur wachsend),
+  Zurücksetzen und Daten löschen verlangen in der Oberfläche das Eintippen der Platznummer (das mildert die fehlende Bestätigung der Schnittstelle).
+  Nach neuer Durchlauf und Daten löschen holt die Seite den neuen Platz-Token (der alte gilt nicht mehr) und zeigt ihn mit dem Besucher-Link nur einmal mit
+  Kopier-Knöpfen, nach 60 Sekunden wird er ausgeblendet. Der Betreuer-Token bleibt nur im Speicher der Seite, nie in einem Speicher des Browsers.
+* **Sicherheit:** Alle Texte aus dem Dienst gehen über `textContent` oder Textknoten, nie als HTML (`dom.js` lässt nur Attribute aus einer festen Liste zu). Kein
+  Inline-Skript, kein Inline-Stil, keine Ereignisattribute. Die Seiten tragen `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
+  img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, dazu `nosniff`, `no-referrer`, `Cache-Control: no-store`
+  und eine Permissions-Policy, die Kamera, Mikrofon, Standort, Zahlung und USB mit leerer Liste sperrt. Ausgeliefert wird nur per GET aus der festen Liste (kein
+  Pfad-Trick, kein Verzeichnislisting, alles andere 404), die Dateien liegen nach dem Start im Speicher. Die Seiten enthalten weder Token noch Platzdaten, alle
+  Daten kommen über die Schnittstellen mit Token. Die Anmeldung der Schnittstellen bleibt unverändert: Wer `/betreuer` erreicht, legt der Betrieb (Caddy) fest.
+* **Prüfen:** `python -m pytest -p no:cacheprovider -q tests/test_web.py tests/test_web_inhalt.py tests/test_javascript.py` und die reinen Funktionen mit
+  `node --test tests/js` (Node, keine Pakete).
+* **Hinweis zum Abnahmeskript:** A1 prüft bei `--board-url` wörtlich `default-src 'self'`. Die Seiten tragen die strengere Richtlinie mit `default-src 'none'`
+  und `script-src 'self'`. `--board-url` deshalb auf eine Adresse der Schnittstelle richten (zum Beispiel `/gesundheit`) oder die Prüfung im Skript
+  auf die strengere Form erweitern.
+
+**Lokale Vorführung mit Demo-Daten** (nur Loopback, temporärer Ordner, Wegwerf-Tokens, die Adressen mit den Tokens stehen in der Ausgabe):
+
+```text
+cd labor-dienst
+python -m wamo_labor_dienst.demo --port 8765
+```
+
+Platz 1 und 2 haben einen offenen Durchlauf mit Tickets in allen Spalten und Kommentaren (auch ein Ticket mit HTML-artigem Text, der als Text erscheint),
+Platz 3 hat einen beendeten Durchlauf, alle anderen Plätze sind geschlossen. Mit Strg+C beenden, die Demo-Daten verschwinden dabei.
+
 ## Grenzen für Lesen, Fehlversuche und Verbindungen
 
 * **Board:** höchstens etwa 2 Abfragen je Sekunde und Platz-Token (kurzzeitig 5), alle Plätze zusammen höchstens 20 je Sekunde, darüber 429
