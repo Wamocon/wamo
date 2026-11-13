@@ -206,13 +206,13 @@ def test_standardbefehl_nennt_node_und_den_worker_im_repo():
 
 def test_der_worker_erbt_keine_schluessel_aus_der_umgebung(treiber, monkeypatch):
     monkeypatch.setenv("WAMO_ADMIN_DATABASE_URL", "postgres://x:y@z/db")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "nie-weitergeben")
+    monkeypatch.setenv("WAMO_TEST_SCHLUESSEL", "nie-weitergeben")
     t = br.NodeTreiber(treiber.befehl, name="env")
     try:
         namen = t.anfrage("umgebung", {}, frist_s=10)["namen"]
     finally:
         t.schliessen()
-    assert "WAMO_ADMIN_DATABASE_URL" not in namen and "ANTHROPIC_API_KEY" not in namen
+    assert "WAMO_ADMIN_DATABASE_URL" not in namen and "WAMO_TEST_SCHLUESSEL" not in namen
     assert {k for k in namen if k.upper() in ("PATH", "SYSTEMROOT")}  # was Node und Chrome brauchen, bleibt
 
 
