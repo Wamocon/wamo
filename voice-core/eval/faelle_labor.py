@@ -253,7 +253,7 @@ _UNSICHER = ("nicht sicher", "unsicher", "weiss ich nicht", "weiss nicht", "ohne
 _KEIN_WISSEN = ("weiss ich nicht", "weiss nicht", "keine information", "keinen treffer", "keine treffer", "nichts gefunden",
                 "finde dazu nichts", "nicht belegt", "nichts erfinden", "kann ich nicht", "nicht bekannt", "keine angabe",
                 "keine belege", "nicht gefunden", "nicht sicher", "nicht finden")
-_VERNEINUNG = ("nicht", "nichts", "kein", "erst", "noch nicht", "sobald", "sofern")
+_VERNEINUNG = ("nicht", "nichts", r"kein\w*", "erst", "noch nicht", "sobald", "sofern")  # kein, keine, keinen, keinerlei
 
 
 def _texte(antwort: str, aufrufe) -> str:
