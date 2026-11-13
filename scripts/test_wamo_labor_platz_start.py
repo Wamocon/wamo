@@ -29,7 +29,7 @@ def _fallen(monkeypatch, tmp_path):
 @pytest.fixture
 def welt(tmp_path):
     w = tw.Welt(tmp_path / "w")
-    assert w.lauf("einrichten", "--platz", "3") == 0
+    assert w.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 0
     w.zeilen.clear()
     return w
 
@@ -154,7 +154,7 @@ def test_veraenderte_platzdatei_bekommt_nie_ein_token(welt):
 def test_ohne_einrichten_und_ohne_chrome(welt, tmp_path):
     welt.lauf("rueckweg")
     assert welt.lauf("starten") == 2 and "einrichten" in welt.text
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     welt.chrome.unlink()
     assert welt.lauf("starten") == 1 and "Chrome" in welt.text and welt.prozesse.aufrufe == []
 

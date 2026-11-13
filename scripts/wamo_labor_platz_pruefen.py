@@ -51,10 +51,6 @@ def _fehler(thema: str, text: str) -> Befund:
     return Befund("fehler", thema, text)
 
 
-def _ca_datei(umg: Umgebung, option: str | None) -> Path | None:
-    return next((p for p in ((Path(option),) if option else umg.ca_kandidaten) if p.is_file()), None)
-
-
 def pruefe_zertifikat(umg: Umgebung, sha1: str) -> Befund:
     fp = zt.gruppiert(sha1)
     if zt.im_speicher(umg.certutil, sha1):
@@ -161,26 +157,36 @@ def pruefe_mikrofon(umg: Umgebung) -> list[Befund]:
 
 # ---------- Ablauf ----------
 
-def _befunde_sammeln(umg: Umgebung, ca_option: str | None) -> list[Befund]:
-    befunde: list[Befund] = []
+def _ca_finden(umg: Umgebung, option: str | None) -> tuple[Path | None, bytes | None, str | None]:
+    """Die CA-Datei, die genau den festgelegten SHA-256 hat, oder der Grund, warum es keine gibt."""
+    try:
+        pfad, der = zt.ca_suchen((Path(option),) if option else umg.ca_kandidaten, umg.ca_sha256)
+    except zt.CaFehler as e:
+        return None, None, str(e)
+    return pfad, der, None
+
+
+def _platz_befund(umg: Umgebung) -> tuple[dict | None, Befund]:
     try:
         daten = platz_lesen(umg)
     except ZustandFehler as e:
-        daten = None
-        befunde.append(_fehler("Platz", str(e)))
-    else:
-        befunde.append(_ok("Platz", f"Platz {daten['platz']} ({umg.platz_datei})") if daten else
-                       _fehler("Platz", f"nicht eingerichtet (keine {umg.platz_datei}): `einrichten --platz N` ausführen"))
-    ca = _ca_datei(umg, ca_option)
-    sha1 = daten["ca_sha1"] if daten else (zt.sha1_hex(zt.ca_lesen(ca)) if ca else None)
-    befunde.append(pruefe_zertifikat(umg, sha1) if sha1 else _fehler("Zertifikat", "unbekannt (weder Platzdatei noch CA-Datei vorhanden)"))
+        return None, _fehler("Platz", str(e))
+    if daten is None:
+        return None, _fehler("Platz", f"nicht eingerichtet (keine {umg.platz_datei}): `einrichten --platz N` ausführen")
+    return daten, _ok("Platz", f"Platz {daten['platz']} ({umg.platz_datei})")
+
+
+def _befunde_sammeln(umg: Umgebung, ca_option: str | None) -> list[Befund]:
+    daten, platz = _platz_befund(umg)
+    ca, der, ca_fehler = _ca_finden(umg, ca_option)
+    sha1 = daten["ca_sha1"] if daten else (zt.sha1_hex(der) if der else None)
+    befunde = [platz, pruefe_zertifikat(umg, sha1) if sha1 else _fehler("Zertifikat", "unbekannt (weder Platzdatei noch gültige CA-Datei)")]
     befunde += [pruefe_richtlinien(umg), pruefe_chrome(umg)]
+    daten_uhr: list[str] = []
     if ca is None:
-        befunde.append(_fehler("Adressen", "CA-Datei nicht gefunden (--ca-datei PFAD): TLS lässt sich nicht prüfen"))
-        daten_uhr: list[str] = []
+        befunde.append(_fehler("Adressen", f"{ca_fehler}. TLS lässt sich nicht prüfen"))
     elif daten is None:
         befunde.append(_fehler("Adressen", "ohne gültige Platzdatei werden keine Adressen aufgerufen"))
-        daten_uhr = []
     else:
         adressen, daten_uhr = pruefe_adressen(umg, ca, daten["board_url"])
         befunde += adressen
@@ -189,10 +195,7 @@ def _befunde_sammeln(umg: Umgebung, ca_option: str | None) -> list[Befund]:
 
 
 def cmd_pruefen(umg: Umgebung, ca_option: str | None = None, warten: bool = False) -> int:
-    try:
-        befunde = _befunde_sammeln(umg, ca_option)
-    except zt.CaFehler as e:
-        befunde = [_fehler("Zertifikat", str(e))]
+    befunde = _befunde_sammeln(umg, ca_option)
     for b in befunde:
         umg.ausgabe(b.zeile())
     zaehler = {s: sum(b.stufe == s for b in befunde) for s in _STUFE}

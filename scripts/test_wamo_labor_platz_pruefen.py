@@ -39,7 +39,7 @@ def _datum(abweichung_s: float = 0.0) -> str:
 @pytest.fixture
 def welt(tmp_path):
     w = tw.Welt(tmp_path / "w")
-    assert w.lauf("einrichten", "--platz", "3") == 0
+    assert w.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 0
     w.umg.abruf = at.AbrufAttrappe(Abruf(200, _datum()))
     _mikrofon(w.reg, "{1}", "Mikrofon", "USB-Headset Modell A")
     w.zeilen.clear()
@@ -166,7 +166,7 @@ def test_nur_usb_mikrofon_ist_in_ordnung_und_wird_genannt(welt):
 
 def test_kein_aktives_mikrofon_ist_eine_warnung(tmp_path):
     w = tw.Welt(tmp_path / "w")
-    w.lauf("einrichten", "--platz", "3")
+    w.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     w.umg.abruf = at.AbrufAttrappe(Abruf(200, _datum()))
     w.zeilen.clear()
     assert w.lauf("pruefen") == 0

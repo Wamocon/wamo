@@ -12,6 +12,7 @@ from typing import Callable
 
 from wamo_labor_platz_adressen import WEITER_PORT
 from wamo_labor_platz_registrierung import Registrierung
+from wamo_labor_platz_zertifikat import CA_SHA1, CA_SHA256
 
 WAMO_ORDNER = "WAMO"
 PLATZ_DATEI = "platz.json"
@@ -57,6 +58,9 @@ class Umgebung:
     weiter_frist_s: float = 10.0
     chrome_wartezeit_s: float = 1.5
     taste: Callable[[], None] = lambda: None  # wartet auf Enter, damit ein Fenster einer Verknüpfung nicht sofort schließt
+    ca_sha256: str = CA_SHA256  # die einzige CA, die das Skript zulässt (Tests setzen den Wert ihrer Test-CA)
+    ca_sha1: str = CA_SHA1
+    ist_admin: Callable[[], bool] = lambda: False  # Administratorrechte des Benutzers (IsUserAnAdmin)
 
     @property
     def platz_ordner(self) -> Path:

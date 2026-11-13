@@ -29,6 +29,10 @@ class Registrierung(Protocol):
     def leeren_schluessel_loeschen(self, hive: str, pfad: str) -> bool: ...
 
 
+class NichtSicherbar(Exception):
+    """Ein vorhandener Wert lässt sich nicht verlustfrei sichern und wiederherstellen (Text für die Person)."""
+
+
 @dataclass(frozen=True)
 class Richtlinie:
     name: str
@@ -115,8 +119,28 @@ def zustand_entfernen(reg: Registrierung, name: str, typ: str) -> None:
         reg.wert_loeschen(HIVE, CHROME_PFAD, name)
 
 
+def _pruefe_sicherbar(reg: Registrierung, r: Richtlinie) -> None:
+    """Gesichert werden nur Zahlen (dword), Texte (sz) und Listen aus Texten mit den Namen 1, 2, ... Alles andere (binär, mehrzeilig,
+    erweiterbar, 64 Bit, Unterschlüssel in einer Liste) ginge beim Rückweg verloren: Dann bricht das Einrichten vor jeder Änderung ab."""
+    grund = None
+    if r.typ == "liste":
+        pfad = _pfad(r.name)
+        if reg.unterschluessel(HIVE, pfad):
+            grund = "enthält Unterschlüssel"
+        elif any(t != "sz" or not n.isdigit() for n, (t, _) in reg.werte(HIVE, pfad).items()):
+            grund = "enthält Einträge, die keine Texte mit den Namen 1, 2, ... sind"
+    else:
+        eintrag = reg.werte(HIVE, CHROME_PFAD).get(r.name)
+        if eintrag is not None and eintrag[0] not in ("dword", "sz"):
+            grund = "hat einen Typ, der nicht gesichert wird (nur Zahl und Text)"
+    if grund:
+        raise NichtSicherbar(f"Richtlinie {r.name}: Der vorhandene Wert {grund}, er lässt sich nicht verlustfrei sichern. "
+                             "Es wurde nichts geändert. Den Wert prüfen und von Hand sichern oder entfernen.")
+
+
 def zustand_sichern(reg: Registrierung, r: Richtlinie) -> dict:
     """Der Zustand vor der Änderung in einer Form, die in die Sicherungsdatei (JSON) passt."""
+    _pruefe_sicherbar(reg, r)
     jetzt = lese_zustand(reg, r)
     if jetzt is None:
         return {"da": False, "typ": r.typ}

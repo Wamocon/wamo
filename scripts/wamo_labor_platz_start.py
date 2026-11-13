@@ -1,7 +1,7 @@
 """`starten`: Chrome mit zwei Fenstern, links die WAMO-Oberfläche, rechts das Board (nur Standardbibliothek, Windows).
 
 Das Platz-Token öffnet das Board eines Platzes. Die Board-Seite liest es aus dem URL-Fragment (/board#t=...) und entfernt es sofort
-aus der Adresszeile. Es soll auf dem Weg dorthin nirgends liegen bleiben. Geprüfte Wege:
+aus der Adresszeile. Das Skript will es auf dem Weg dorthin nirgends ablegen. Geprüfte Wege:
 
   Zwischenablage  : Windows hält einen Verlauf (Win+V) und kann ihn mit dem Konto abgleichen, außerdem müsste jemand einfügen.
   Datei (Weiterleitungsseite, 10 Sekunden): Das Token läge auf der Platte (Wiederherstellung, Virenscanner, Sicherung).
@@ -10,21 +10,29 @@ aus der Adresszeile. Es soll auf dem Weg dorthin nirgends liegen bleiben. Geprü
   Gewählt: einmalige Weiterleitung auf Loopback (EinmalWeiterleitung). Das Skript nimmt das Token ohne Anzeige entgegen (getpass),
                     hält es nur im Speicher und öffnet für höchstens 10 Sekunden einen Anschluss auf 127.0.0.1. Chrome bekommt als
                     Startadresse nur http://127.0.0.1:<Port>/weiter/<Zufallspfad>, die Antwort ist eine Umleitung (302) auf
-                    /board#t=<Token>. Danach ist der Anschluss zu. Nichts davon steht auf der Platte oder in der Zwischenablage.
+                    /board#t=<Token>. Danach ist der Anschluss zu. Das Skript schreibt es nie in eine Datei, in die Zwischenablage oder
+                    eine Befehlszeile (die Aussage gilt für das Skript, nicht für Chrome, siehe Restrisiko).
 
 Schutz der Weiterleitung: nur Loopback, ausschließliche Bindung des Ports (kein Mitbenutzen durch ein anderes Programm), ein
-Zufallspfad je Start, der Host-Kopf wird geprüft (gegen DNS-Rebinding), genau eine Auslieferung, dann Ende, Frist 10 Sekunden. Die
+Zufallspfad je Start, Host-Kopf und Pfad werden zeitkonstant verglichen (gegen DNS-Rebinding und Ratetests), genau eine erfolgreiche
+Auslieferung (misslingt das Senden, bleibt der Einmalwert gültig), dann Ende, Frist 10 Sekunden. Die
 Chrome-Richtlinie URLAllowlist erlaubt genau diese feste Adresse (Port 55489, Pfad /weiter/). Die Adresse des Boards kommt aus der Platzdatei und
 wird gegen die feste Liste der Labor-Adressen geprüft, bevor das Token überhaupt erfragt wird.
 
 Restrisiko (ehrlich): Ein anderes Programm desselben Benutzers kann den Zufallspfad aus der Befehlszeile von Chrome lesen und die
-Umleitung vor Chrome abholen (derselbe Zugriff wie auf eine Datei im Benutzerordner). Das Token lebt außerdem im Speicher des
-Skripts, bis Python den Speicher freigibt, und in Chrome, bis die Seite es aus der Adresszeile entfernt hat. Der Verlauf von Chrome ist
-per Richtlinie (SavingBrowserHistoryDisabled) aus. Ein Platz-Token gilt nur für das Board dieses Platzes und wird mit `neuer-durchlauf`
-ungültig.
+Umleitung vor Chrome abholen (derselbe Zugriff wie auf eine Datei im Benutzerordner). Loopback gilt rechnerweit: Auch andere
+gleichzeitig angemeldete Konten des Rechners erreichen den Anschluss (sie brauchen den Zufallspfad, er ist höchstens 10 Sekunden
+offen). Das Token lebt außerdem im Speicher des Skripts, bis Python den Speicher freigibt, und in Chrome, bis die Seite es aus der
+Adresszeile entfernt hat. Ob /board#t=... in Sitzungsdateien oder im Verlauf des Profils landet, hat das Skript nicht in der Hand: Es
+hängt an der Wirkung der Richtlinie im Benutzerzweig (SavingBrowserHistoryDisabled) und an Chrome. Die Generalprobe durchsucht den
+Profilordner nach dem Token (ohne es auszugeben), und `rueckweg --profil-loeschen` entfernt das Profil nach dem Labortag. Die Knöpfe
+"Token kopieren" und "Link kopieren" der Betreuer-Seite legen das Token in die Zwischenablage und den Verlauf des Betreuer-Geräts:
+"nie in der Zwischenablage" gilt nur für diesen Weg. Ein Platz-Token gilt nur für das Board dieses Platzes und wird mit
+`neuer-durchlauf` ungültig.
 """
 from __future__ import annotations
 
+import hmac
 import secrets
 import socket
 import socketserver
@@ -44,10 +52,18 @@ class _Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = False  # unter Windows würde das Mitbenutzen eines belegten Ports erlauben
     daemon_threads = True
 
+    def handle_error(self, request, client_address) -> None:  # keine Ablaufverfolgung auf die Konsole (nichts davon braucht die Person)
+        pass
+
     def server_bind(self) -> None:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+
+def _gleich(a: str, b: str) -> bool:
+    """Zeitkonstanter Vergleich (als Bytes, damit Nicht-ASCII-Zeichen nie zu einem Fehler führen)."""
+    return hmac.compare_digest(a.encode("utf-8", "replace"), b.encode("utf-8"))
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -71,9 +87,15 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         weiter: EinmalWeiterleitung = self.server.weiterleitung  # type: ignore[attr-defined]
         ziel = weiter._einloesen(self.headers.get("Host", ""), self.path)
-        self._antwort(404 if ziel is None else 302, ziel)
-        if ziel is not None:
-            weiter._abgeholt.set()
+        if ziel is None:
+            self._antwort(404)
+            return
+        try:
+            self._antwort(302, ziel)
+        except OSError:
+            weiter._zurueckgeben(ziel)  # nicht angekommen: Der Einmalwert bleibt gültig, bis eine Auslieferung gelungen ist
+            raise
+        weiter._abgeholt.set()
 
 
 class EinmalWeiterleitung:
@@ -104,11 +126,16 @@ class EinmalWeiterleitung:
 
     def _einloesen(self, host: str, pfad: str) -> str | None:
         """Gibt das Ziel genau einmal heraus, nur für den richtigen Host und Pfad."""
-        if host != f"127.0.0.1:{self.port}" or pfad != self.pfad:
+        if not _gleich(host, f"127.0.0.1:{self.port}") or not _gleich(pfad, self.pfad):
             return None
         with self._sperre:
             ziel, self._ziel = self._ziel, None
         return ziel
+
+    def _zurueckgeben(self, ziel: str) -> None:
+        with self._sperre:
+            if not self._abgeholt.is_set():
+                self._ziel = ziel
 
     def abwarten(self) -> bool:
         return self._abgeholt.wait(self._frist)

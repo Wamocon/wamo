@@ -52,7 +52,7 @@ def _regmod():
 
 @pytest.mark.parametrize("url", [
     "https://192.168.178.136:55445", "https://192.168.178.136:55445/", "https://192.168.178.136:55447/board",
-    "https://192.168.178.136:55443/auth/v1/health", "HTTPS://192.168.178.136:55444",
+    "https://192.168.178.136:55443/auth/v1/health", "https://192.168.178.136:55444/",
 ])
 def test_feste_adressen_sind_zulaessig(url):
     import wamo_labor_platz_adressen as adr
@@ -63,7 +63,8 @@ def test_feste_adressen_sind_zulaessig(url):
     "http://192.168.178.136:55445", "https://192.168.178.136:55449", "https://192.168.178.136", "https://example.com:55445",
     "https://192.168.178.136.evil.test:55445", "https://user@192.168.178.136:55445", "https://192.168.178.136:55445@evil.test",
     "https://192.168.178.136:55447/board?x=1", "https://192.168.178.136:55447/board#t=abc", "https://192.168.178.136:55445\\@evil",
-    "https://192.168.178.136:55445/ x", "ftp://192.168.178.136:55445", "", "   ", None, 55445, b"https://192.168.178.136:55445",
+    "https://192.168.178.136:55445/ x", "ftp://192.168.178.136:55445", "https://192.168.178.136:55447/anderer-pfad",
+    "https://192.168.178.136:55444", "HTTPS://192.168.178.136:55445", "https://192.168.178.136:55445/x", "", "   ", None, 55445, b"https://192.168.178.136:55445",
 ])
 def test_fremde_adressen_sind_unzulaessig(url):
     import wamo_labor_platz_adressen as adr
@@ -132,13 +133,13 @@ def test_plan_warnt_vor_dem_eigenen_konto_und_fehler_zeigen_die_ursache(welt):
     def kaputt(*_a, **_k):
         raise PermissionError("Zugriff verweigert")
     welt.reg.setzen = kaputt
-    assert welt.lauf("einrichten", "--platz", "3") == 1
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 1
     assert "PermissionError" in welt.text and "Zugriff verweigert" in welt.text
 
 
 def test_einrichten_setzt_alles(welt):
     import wamo_labor_platz_registrierung as regmod
-    assert welt.lauf("einrichten", "--platz", "3") == 0
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 0
     for r in regmod.richtlinien():
         assert regmod.lese_zustand(welt.reg, r) == (r.typ, r.wert), r.name
     assert tw.SHA1 in welt.zert.speicher
@@ -156,53 +157,55 @@ def test_sicherung_liegt_vor_jeder_aenderung(welt):
     stand: list[bool] = []
     welt.reg.vor_schreiben = lambda: stand.append(welt.sicherung.exists())
     welt.zert.vor_aenderung = lambda: stand.append(welt.sicherung.exists())
-    assert welt.lauf("einrichten", "--platz", "3") == 0
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 0
     assert stand and all(stand)
 
 
 def test_einrichten_ist_idempotent(welt):
-    assert welt.lauf("einrichten", "--platz", "3") == 0
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 0
     dateien, schreib, zert, lnk = welt.dateien(), welt.reg.schreibzugriffe, welt.zert.aenderungen, len(welt.lnk.aufrufe)
     welt.zeilen.clear()
-    assert welt.lauf("einrichten", "--platz", "3") == 0
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 0
     assert welt.reg.schreibzugriffe == schreib and welt.zert.aenderungen == zert and len(welt.lnk.aufrufe) == lnk
     assert welt.dateien() == dateien
     assert "nichts zu ändern" in welt.text
 
 
 def test_platz_ist_pflicht_und_wird_geprueft(welt):
-    assert welt.lauf("einrichten") == 2 and "Platznummer" in welt.text
+    assert welt.lauf("einrichten", "--kiosk-konto") == 2 and "Platznummer" in welt.text
     for schlecht in ("0", "17", "-1", "abc", "3.5", ""):
-        assert welt.lauf("einrichten", "--platz", schlecht) == 2, schlecht
+        assert welt.lauf("einrichten", "--kiosk-konto", "--platz", schlecht) == 2, schlecht
     assert welt.reg.schreibzugriffe == 0 and not welt.lokal.exists()
 
 
 def test_platz_wird_aus_der_platzdatei_uebernommen_und_darf_wechseln(welt):
-    assert welt.lauf("einrichten", "--platz", "3") == 0
-    assert welt.lauf("einrichten") == 0
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 0
+    assert welt.lauf("einrichten", "--kiosk-konto") == 0
     assert json.loads(welt.platz_datei.read_text(encoding="utf-8"))["platz"] == 3
-    assert welt.lauf("einrichten", "--platz", "5") == 0
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "5") == 0
     assert json.loads(welt.platz_datei.read_text(encoding="utf-8"))["platz"] == 5
 
 
 def test_platzdatei_enthaelt_keinen_token(welt):
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     inhalt = welt.platz_datei.read_text(encoding="utf-8")
     assert "token" not in inhalt.lower() and "#t=" not in inhalt
 
 
 def test_ca_wird_nur_im_benutzerspeicher_importiert(welt):
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     importe = [a for a in welt.zert.aufrufe if a[1] == "-addstore"]
-    assert len(importe) == 1 and importe[0][:3] == ["-user", "-addstore", "Root"] and importe[0][3] == str(welt.ca)
+    kopie = str(welt.umg.platz_ordner / "wamo-ca.crt")
+    assert len(importe) == 1 and importe[0][:3] == ["-user", "-addstore", "Root"] and importe[0][3] == kopie
     assert all(a[0] == "-user" and "Root" in a for a in welt.zert.aufrufe)
 
 
 def test_ca_datei_ueber_option_hat_vorrang(welt):
     andere = welt.tmp / "andere.crt"
     andere.write_text(welt.ca.read_text(encoding="ascii"), encoding="ascii", newline="\n")
-    welt.lauf("einrichten", "--platz", "3", "--ca-datei", str(andere))
-    assert [a[3] for a in welt.zert.aufrufe if a[1] == "-addstore"] == [str(andere)]
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3", "--ca-datei", str(andere))
+    assert [a[3] for a in welt.zert.aufrufe if a[1] == "-addstore"] == [str(welt.umg.platz_ordner / "wamo-ca.crt")]
+    assert tw.SHA1 in welt.zert.speicher
 
 
 @pytest.mark.parametrize("inhalt", [None, "kein Zertifikat", "-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n"])
@@ -211,19 +214,19 @@ def test_ca_datei_fehlt_oder_ist_ungueltig(welt, inhalt):
         welt.ca.unlink()
     else:
         welt.ca.write_text(inhalt, encoding="ascii")
-    assert welt.lauf("einrichten", "--platz", "3") == 2 and "CA-Datei" in welt.text
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 2 and "CA-Datei" in welt.text
     assert welt.reg.schreibzugriffe == 0 and welt.zert.aenderungen == 0 and not welt.sicherung.exists()
 
 
 def test_abgelehnter_import_bricht_vor_den_richtlinien_ab(welt):
     welt.zert.ablehnen = True
-    assert welt.lauf("einrichten", "--platz", "3") == 1
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 1
     assert "Zertifikat" in welt.text and welt.reg.schreibzugriffe == 0
 
 
 def test_vorhandene_ca_wird_nicht_importiert_und_beim_rueckweg_nicht_entfernt(welt):
     welt.zert.speicher.add(tw.SHA1)
-    assert welt.lauf("einrichten", "--platz", "3") == 0
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 0
     assert welt.zert.aenderungen == 0
     assert welt.lauf("rueckweg") == 0
     assert tw.SHA1 in welt.zert.speicher and welt.zert.aenderungen == 0
@@ -233,7 +236,7 @@ def test_vorhandene_ca_wird_nicht_importiert_und_beim_rueckweg_nicht_entfernt(we
 
 def test_rueckweg_stellt_den_ausgangszustand_her(welt):
     vorher = welt.reg.momentaufnahme()
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     assert welt.lauf("rueckweg") == 0
     assert welt.reg.momentaufnahme() == vorher
     assert welt.zert.speicher == set()
@@ -246,8 +249,8 @@ def test_rueckweg_stellt_vorige_werte_wieder_her(welt):
     welt.reg.vorbelegen("HKCU", CHROME_PFAD, {"TranslateEnabled": ("dword", 1), "HardwareAccelerationModeEnabled": ("dword", 0)})
     welt.reg.vorbelegen("HKCU", CHROME_PFAD + "\\URLBlocklist", {"1": ("sz", "example.org")})
     vorher = welt.reg.momentaufnahme()
-    welt.lauf("einrichten", "--platz", "3")
-    assert welt.lauf("einrichten", "--platz", "4") == 0  # zweiter Lauf darf die erste Sicherung nicht überschreiben
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "4") == 0  # zweiter Lauf darf die erste Sicherung nicht überschreiben
     assert welt.reg.werte("HKCU", CHROME_PFAD)["TranslateEnabled"] == ("dword", 0)
     assert welt.lauf("rueckweg") == 0
     assert welt.reg.momentaufnahme() == vorher
@@ -255,21 +258,21 @@ def test_rueckweg_stellt_vorige_werte_wieder_her(welt):
 
 def test_rueckweg_zweimal_und_ohne_sicherung(welt):
     assert welt.lauf("rueckweg") == 0 and "nichts zurückzunehmen" in welt.text
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     assert welt.lauf("rueckweg") == 0
     schreib = welt.reg.schreibzugriffe
     assert welt.lauf("rueckweg") == 0 and welt.reg.schreibzugriffe == schreib
 
 
 def test_rueckweg_trocken_aendert_nichts(welt):
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     dateien, reg, zert = welt.dateien(), welt.reg.momentaufnahme(), set(welt.zert.speicher)
     assert welt.lauf("rueckweg", "--trocken") == 0 and "Trockenlauf" in welt.text
     assert welt.dateien() == dateien and welt.reg.momentaufnahme() == reg and welt.zert.speicher == zert
 
 
 def test_rueckweg_profil_loeschen_nur_mit_option(welt):
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     (welt.profil / "Default").mkdir()
     (welt.profil / "Default" / "Cookies").write_bytes(b"x")
     welt.lauf("rueckweg")
@@ -279,7 +282,7 @@ def test_rueckweg_profil_loeschen_nur_mit_option(welt):
 
 
 def test_rueckweg_alle_certutil_aufrufe_nur_benutzerspeicher(welt):
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     welt.lauf("rueckweg")
     assert any(a[1] == "-delstore" for a in welt.zert.aufrufe)
     assert all(a[0] == "-user" and "Root" in a for a in welt.zert.aufrufe)
@@ -289,14 +292,14 @@ def test_rueckweg_alle_certutil_aufrufe_nur_benutzerspeicher(welt):
 
 def test_status_vor_und_nach_dem_einrichten(welt):
     assert welt.lauf("status") == 1 and "nicht eingerichtet" in welt.text
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     welt.zeilen.clear()
     assert welt.lauf("status") == 0
     assert "Platz 3" in welt.text and "Zertifikat" in welt.text and tw.TOKEN not in welt.text
 
 
 def test_status_aendert_nichts(welt):
-    welt.lauf("einrichten", "--platz", "3")
+    welt.lauf("einrichten", "--kiosk-konto", "--platz", "3")
     dateien, schreib = welt.dateien(), welt.reg.schreibzugriffe
     welt.lauf("status")
     assert welt.dateien() == dateien and welt.reg.schreibzugriffe == schreib

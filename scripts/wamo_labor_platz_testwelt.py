@@ -16,6 +16,7 @@ from pathlib import Path
 
 DER = bytes([0x30, 0x82, 0x01, 0x0A]) + bytes((i * 7 + 3) % 256 for i in range(266))
 SHA1 = hashlib.sha1(DER).hexdigest()
+SHA256 = hashlib.sha256(DER).hexdigest()
 TOKEN = "".join("0123456789abcdef"[(i * 5 + 3) % 16] for i in range(32))  # genau 32 Hexzeichen, berechnet
 JETZT = 1_800_000_000.0
 
@@ -79,6 +80,7 @@ class Welt:
         self.lnk = at.VerknuepfungAttrappe()
         self.zeilen: list[str] = []
         self.tasten: list[int] = []
+        self.admin = False
         self.umg = umgmod.Umgebung(
             reg=self.reg, certutil=self.zert, lokal=self.lokal, desktop=self.desktop,
             skript=tmp_path / "scripts" / "wamo_labor_platz.py", python=str(tmp_path / "py" / "python.exe"),
@@ -86,7 +88,7 @@ class Welt:
             prozess_starten=self.prozesse, verknuepfung=self.lnk, abruf=_kein_abruf, jetzt=lambda: JETZT,
             token_eingabe=lambda: TOKEN, warten=lambda _s: None, arbeitsbereich=lambda: (0, 0, 1920, 1040),
             ausgabe=self.zeilen.append, weiter_port=0, weiter_frist_s=3.0, chrome_wartezeit_s=0.0,
-            taste=lambda: self.tasten.append(1))
+            taste=lambda: self.tasten.append(1), ca_sha256=SHA256, ca_sha1=SHA1, ist_admin=lambda: self.admin)
 
     @property
     def platz_datei(self) -> Path:

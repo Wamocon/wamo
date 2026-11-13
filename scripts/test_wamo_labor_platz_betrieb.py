@@ -95,7 +95,7 @@ def test_winreg_adapter_arbeitet_wie_die_attrappe_bis_zum_rueckweg(tmp_path):
     modul = FakeWinreg()
     welt.umg.reg = rg.WinRegistrierung(modul)
     vorher = {k: dict(v) for k, v in modul.daten.items()}
-    assert welt.lauf("einrichten", "--platz", "3") == 0
+    assert welt.lauf("einrichten", "--kiosk-konto", "--platz", "3") == 0
     assert welt.lauf("status") == 0
     assert modul.daten[("HKCU", "software\\policies\\google\\chrome")]["TranslateEnabled"] == (0, FakeWinreg.REG_DWORD)
     assert modul.daten[("HKCU", "software\\policies\\google\\chrome\\urlblocklist")]["1"] == ("*", FakeWinreg.REG_SZ)
@@ -153,10 +153,10 @@ def _verbindung_bauen(monkeypatch, verhalten):
 def test_abruf_prueft_gegen_die_ca_und_liefert_status_und_datum(monkeypatch):
     import wamo_labor_platz_betrieb as be
     aufrufe = _verbindung_bauen(monkeypatch, _Antwort(404, "Sat, 14 Nov 2026 10:00:00 GMT"))
-    antwort = be.abruf_https("https://192.168.178.136:55445/x", REPO_CA)
+    antwort = be.abruf_https("https://192.168.178.136:55445/", REPO_CA)
     assert (antwort.status, antwort.datum) == (404, "Sat, 14 Nov 2026 10:00:00 GMT")
     a = aufrufe[0]
-    assert (a["host"], a["port"], a["methode"], a["pfad"], a["zu"]) == ("192.168.178.136", 55445, "GET", "/x", True)
+    assert (a["host"], a["port"], a["methode"], a["pfad"], a["zu"]) == ("192.168.178.136", 55445, "GET", "/", True)
     assert a["context"].verify_mode == ssl.CERT_REQUIRED and a["context"].check_hostname is True
     assert len(a["context"].get_ca_certs()) == 1  # nur die WAMO-CA, keine Systemzertifikate
 

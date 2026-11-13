@@ -21,7 +21,7 @@ from wamo_labor_platz_adressen import WEITER_PORT, adresse_zulaessig
 from wamo_labor_platz_registrierung import WinRegistrierung
 from wamo_labor_platz_umgebung import Abruf, AbrufFehler, Umgebung
 from wamo_labor_platz_verknuepfung import desktop_ordner, verknuepfung_schreiben
-from wamo_labor_platz_zertifikat import certutil_echt
+from wamo_labor_platz_zertifikat import CA_SHA256, CaFehler, ca_lesen, certutil_echt
 
 SKRIPT = Path(__file__).resolve().parent / "wamo_labor_platz.py"
 CA_NAME = "wamo-ca.crt"
@@ -29,10 +29,14 @@ ABRUF_FRIST_S = 5.0
 SPI_GETWORKAREA = 0x0030
 
 
-def tls_kontext(ca_datei: Path) -> ssl.SSLContext:
-    """Prüft Zertifikat und Rechnername gegen genau diese CA-Datei (keine Systemzertifikate)."""
+def tls_kontext(ca_datei: Path, erwartet_sha256: str = CA_SHA256) -> ssl.SSLContext:
+    """Prüft Zertifikat und Rechnername gegen genau die festgelegte WAMO-CA (keine Systemzertifikate). Die Datei wird einmal gelesen,
+    geprüft (SHA-256) und aus den geprüften Bytes geladen."""
     try:
-        kontext = ssl.create_default_context(cafile=str(ca_datei))
+        der = ca_lesen(ca_datei, erwartet_sha256)
+        kontext = ssl.create_default_context(cadata=der)
+    except CaFehler as e:
+        raise AbrufFehler("tls", str(e)) from None
     except (OSError, ssl.SSLError):
         raise AbrufFehler("tls", "CA-Datei nicht lesbar") from None
     kontext.verify_mode = ssl.CERT_REQUIRED
@@ -70,6 +74,15 @@ def prozess_starten_echt(args: list[str]) -> None:
 
 def token_eingabe_echt() -> str:
     return getpass.getpass("Platz-Token vom Betreuer (Eingabe wird nicht angezeigt): ")
+
+
+def ist_admin_echt() -> bool:
+    """Hat der Benutzer Administratorrechte? (IsUserAnAdmin, nur lesend.) Bei Zweifel gilt: nein."""
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
 
 
 def taste_echt() -> None:
@@ -122,4 +135,4 @@ def echte_umgebung() -> Umgebung:
         chrome_kandidaten=chrome_kandidaten(), ca_kandidaten=ca_kandidaten(), prozess_starten=prozess_starten_echt,
         verknuepfung=lambda pfad, ziel, argumente, ordner: verknuepfung_schreiben(pfad, ziel, argumente, ordner), abruf=abruf_https,
         jetzt=time.time, token_eingabe=token_eingabe_echt, warten=time.sleep, arbeitsbereich=arbeitsbereich_echt, ausgabe=print,
-        weiter_port=WEITER_PORT, taste=taste_echt)
+        weiter_port=WEITER_PORT, taste=taste_echt, ist_admin=ist_admin_echt)
