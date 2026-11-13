@@ -1,4 +1,4 @@
-Gerüst des Testberichts (Canvas, Art dokument). Der Bericht umfasst die Tickets dieses Durchlaufs, eine Zeile je Karte.
+Gerüst des Testberichts (Canvas, Art dokument): die Tickets dieses Durchlaufs, eine Zeile je Karte.
 Titel: Testbericht, <Datum aus aktuelle_zeit>
 | Karte | Eingabe | erwartet | tatsächlich | bestanden | Ticket | CTFL |
 |---|---|---|---|---|---|---|
