@@ -8,6 +8,18 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Platz-Skript für die Windows-Laptops des Testlabors (Paket P8, nicht ausgerollt, Anleitung `docs/labor-platz-einrichten.md`, Konzept `docs/testlabor-wamo.md` 3.9): `scripts/wamo_labor_platz.py` mit den Befehlen
+  `einrichten` (`--trocken`, `--platz N`, `--ca-datei`), `starten` (`--ohne-board`), `pruefen`, `rueckweg` (`--trocken`, `--profil-loeschen`) und `status`. Läuft im Kiosk-Konto ohne Administratorrechte und ohne PowerShell,
+  nur Standardbibliothek. `einrichten` importiert die WAMO-CA in den Benutzerspeicher (`certutil -user`, Prüfung nach Hash), setzt 34 Chrome-Richtlinien im Benutzerzweig (Übersetzung, Passwortmanager, Anmeldung und Sync,
+  Verlauf, Kamera, Bildschirmaufnahme, Popups, Entwicklerwerkzeuge, Downloads und Inkognito aus, Mikrofon nur für die WAMO-Adresse erlaubt, nur die vier Herkünfte des Servers und die lokale Weiterleitung als Adressen),
+  legt das Profil `%LOCALAPPDATA%\wamo-chrome-labor` an, schreibt die Platzdatei `%LOCALAPPDATA%\WAMO\platz.json` (Platznummer und Adressen, nie ein Token) und legt zwei Verknüpfungen an (über COM, ohne PowerShell).
+  Alles ist idempotent, `--trocken` zeigt nur den Plan, vor jeder Änderung steht der vorige Zustand in einer Sicherung, der Rückweg stellt ihn her (die CA nur, wenn das Skript sie importiert hat).
+  `starten` öffnet Chrome mit zwei Fenstern, links WAMO, rechts das Board. Das Platz-Token wird ohne Anzeige eingegeben und gelangt nie über eine Befehlszeile, Datei oder Zwischenablage ins Board-Fenster, sondern über eine
+  einmalige Weiterleitung auf `127.0.0.1:55489` (ausschließlich gebunden, Zufallspfad, Host-Kopf geprüft, genau eine Auslieferung, Frist 10 Sekunden). Die Adresse des Boards wird vor der Eingabe gegen die festen Labor-Adressen geprüft.
+  `pruefen` meldet Zertifikat, Richtlinien, Chrome, die vier Adressen mit TLS-Prüfung gegen die CA-Datei, die Uhr (höchstens 5 Minuten Abweichung zum Kopf Date des Servers) und das Mikrofon (Warnung bei einem aktiven
+  Bluetooth-Freisprechgerät). Teile: `wamo_labor_platz_adressen.py`, `_registrierung.py`, `_zertifikat.py`, `_zustand.py`, `_start.py`, `_pruefen.py`, `_verknuepfung.py`, `_umgebung.py`, `_betrieb.py`. Tests
+  `scripts/test_wamo_labor_platz.py`, `test_wamo_labor_platz_start.py`, `test_wamo_labor_platz_pruefen.py` und `test_wamo_labor_platz_betrieb.py` mit Attrappen für Registrierung, Zertifikatsspeicher, Prozesse und Netz
+  (Fallen lösen einen Fehler aus, wenn ein Test den echten Rechner berühren würde). Nur auf einem echten Laptop prüfbar: Zertifikatsdialog, Wirkung der Richtlinien im Benutzerzweig, Fensterlage, Verknüpfungen.
 - Labor-Daten des Testlabors, erste Fassung (nicht ausgerollt, Konzept `docs/testlabor-wamo.md` 3.6 und 3.8): Der Ordner `infra/sokrates2/labor-daten/` enthält die acht Dateien, die der Lader
   `voice-core/labor_daten.py` aus `/etc/wamo-labor/daten` liest (nicht aus `/etc/wamo`: Der Benutzer `wamo-core` kann `/etc/wamo` nicht durchqueren, der Lader lehnte dort alle Dateien als `nicht_lesbar` ab). Regelteil `persona-zusatz.md` in der Standardfassung (Mail erst als Entwurf, Tickets nur über Werkzeuge, Datum per Werkzeug, kurze Antworten, nichts erfinden,
   bewusst ohne den Satz "frag bei fehlenden Angaben nach", damit die Basis gemessen wird) und die vorbereitete strenge Fassung `persona-zusatz.streng.md` mit diesem Satz und der Regel "Fehler nicht wegbessern" (Frage Q6).
