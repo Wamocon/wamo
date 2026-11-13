@@ -46,7 +46,7 @@ class _Pruefer(HTMLParser):
         for name, wert in attrs:
             if name.startswith("on") or name in ("style", "srcdoc", "formaction", "action"):
                 self.fehler.append(f"Attribut {name}")
-            if name in ("href", "src") and not re.fullmatch(r"/web/[a-z0-9-]+\.(css|js)|#[A-Za-z0-9_-]*|data:,", str(wert)):
+            if name in ("href", "src") and not re.fullmatch(r"/web/[a-z0-9-]+\.(css|js)|#[A-Za-z0-9_-]*|data:,|/datenschutz", str(wert)):
                 self.fehler.append(f"Adresse {wert}")
             if wert and re.search(r"javascript:|vbscript:|data:text|<script", str(wert), re.I):
                 self.fehler.append(f"Wert {wert}")

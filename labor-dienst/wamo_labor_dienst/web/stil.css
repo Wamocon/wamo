@@ -162,6 +162,26 @@ input { padding: 0.5rem 0.6rem; font: inherit; background: var(--weiss); color: 
 .aktion-inhalt { padding: 1rem 1.25rem; max-height: 88vh; overflow-y: auto; }
 .aktion h2 { font-size: 1.3rem; overflow-wrap: anywhere; }
 
+/* Datenschutzhinweis für den Besucher (Seite /datenschutz): große Schrift, ruhig, druckbar */
+.datenschutz-inhalt { max-width: 64rem; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+/* Paar: #000000 auf #FFFFFF */
+.datenschutz-text { font-size: 1.45rem; line-height: 1.55; }
+.datenschutz-artikel { display: flex; flex-direction: column; gap: 1.1rem; }
+.datenschutz-titel { padding-left: 0.9rem; border-left: 10px solid var(--rot); font-size: 2.2rem; line-height: 1.2; }
+.datenschutz-liste { display: flex; flex-direction: column; gap: 1rem; padding-left: 1.75rem; list-style: disc; }
+/* Paar: #000000 auf #F3F3F3 */
+.datenschutz-einwilligung { padding: 1rem 1.25rem; background: var(--grau-hell); color: var(--schwarz); border: 3px solid var(--schwarz); border-left: 10px solid var(--rot); }
+/* Paar: #000000 auf #FFFFFF */
+.verweis { color: var(--schwarz); font-weight: 700; text-decoration: underline; }
+.verweis:hover { background: var(--grau-linie); }
+
+@media print {
+  .nicht-drucken { display: none !important; }
+  .kopf { background: var(--weiss); color: var(--schwarz); border-bottom: 3px solid var(--schwarz); }
+  .datenschutz-text { font-size: 1.1rem; }
+  .datenschutz-titel { font-size: 1.6rem; }
+}
+
 /* Kleine Bildschirme: die Spalten stehen untereinander */
 @media (max-width: 52rem) {
   .board-seite { height: auto; }
