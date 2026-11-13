@@ -409,3 +409,11 @@ def test_keine_gedankenstriche_im_quelltext():
 
     text = Path(fl.__file__).read_text(encoding="utf-8")
     assert chr(0x2013) not in text and chr(0x2014) not in text
+
+
+def test_ticket_suchen_versteht_den_parameter_anfrage_wie_der_kern():
+    """Das Schema nennt den Suchtext anfrage (labor_ticket.pruefe_suche): eine Nummer darin ist eine Nummer, sonst Text in Titeln."""
+    f = fall("j2")
+    assert [t["nummer"] for t in fl.ergebnis_fuer(f, "ticket_suchen", {"anfrage": "LAB-12"})["tickets"]] == ["LAB-12"]
+    assert [t["nummer"] for t in fl.ergebnis_fuer(f, "ticket_suchen", {"anfrage": "Login"})["tickets"]] == ["LAB-12"]
+    assert fl.ergebnis_fuer(f, "ticket_suchen", {"anfrage": "gibt es nicht"})["gesamt"] == 0
