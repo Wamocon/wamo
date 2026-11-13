@@ -16,6 +16,11 @@ gemeinsamem Gedächtnis.
 
 ## Stand
 
+### Testlabor 28.11.2026 (Betriebsunterlagen, Stand 13.11.2026)
+
+Für den Labortag liegen drei Betriebsunterlagen vor: das Runbook für die Betreuer `docs/labor-runbook.md`, die Checkliste für Freitag und Samstag `docs/labor-morgencheckliste.md`
+und das Nachlauf-Skript `scripts/wamo_labor_nachlauf.py` (Sperren, Löschen, Nachweis). Konzept: `docs/testlabor-wamo.md`, Betrieb des Dienstes: `infra/sokrates2/README.md` (Abschnitt 19).
+
 ### Stand 11.11.2026
 
 Entwicklungsaufträge im Betrieb (Zweig `feat/entwicklung-im-betrieb`, Basis `2a90999`): vorbereitet, noch nicht gemergt und nicht
