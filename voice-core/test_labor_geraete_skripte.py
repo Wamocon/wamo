@@ -164,6 +164,53 @@ class BibliothekTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("16", r.stderr)
 
+    def test_namen_lesen_weich_liefert_die_guten_namen_und_meldet_die_schlechten(self):
+        datei = self.t / "namen"
+        schreibe(datei, "GUT-1\nSCHLECHT_2\nGUT-3\n")
+        r = self.bash(f'namen_lesen "{posix(datei)}" weich')
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout.split(), ["GUT-1", "GUT-3"])
+        self.assertIn("Zeile 2", r.stderr)
+        self.assertIn("angehalten", r.stderr)
+        r = self.bash(f'namen_lesen "{posix(datei)}"')  # ohne weich: Abbruch wie bisher
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Es wurde nichts geändert", r.stderr)
+        schreibe(datei, "".join(f"PC-{i}\n" for i in range(20)))
+        r = self.bash(f'namen_lesen "{posix(datei)}" weich')
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(len(r.stdout.split()), 16)  # die ersten 16 gelten, der Rest ist ein Fehler
+        self.assertIn("16", r.stderr)
+
+    def test_adressen_lesen_weich_liefert_die_guten_adressen_und_meldet_die_schlechten(self):
+        datei = self.t / "adressen"
+        schreibe(datei, "192.168.178.50\nunsinn\n192.168.178.60/32\n")
+        r = self.bash(f'adressen_lesen "{posix(datei)}" weich')
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout.strip(), "192.168.178.50 192.168.178.60/32")
+        self.assertIn("Ungültige Adresse", r.stderr)
+        self.assertEqual(self.bash(f'adressen_lesen "{posix(datei)}"').returncode, 1)  # ohne weich: Abbruch wie bisher
+
+    def test_kurz_maskiert_und_kuerzt_auf_40_zeichen(self):
+        r = self.bash("kurz \"$(printf 'A%.0s' $(seq 1 100))\"")
+        self.assertEqual(r.stdout.strip(), "A" * 40 + "...")
+        r = self.bash("kurz $'a\\x1b[31mb c'")
+        self.assertNotIn("\x1b", r.stdout)
+        self.assertIn("\\", r.stdout)
+
+    def test_stand_marke(self):
+        datei = self.t / "stand"
+        schreibe(datei, "# geschrieben: 001800000100\n# geladen: 1800000000\nX 192.168.178.5 1\n")
+        self.assertEqual(self.bash(f'stand_marke "{posix(datei)}" geschrieben').stdout.strip(), "1800000100")
+        self.assertEqual(self.bash(f'stand_marke "{posix(datei)}" geladen').stdout.strip(), "1800000000")
+        self.assertEqual(self.bash(f'stand_marke "{posix(datei)}" gewarnt').stdout.strip(), "0")
+        self.assertEqual(self.bash(f'stand_marke "{posix(self.t / "gibt-es-nicht")}" geladen').stdout.strip(), "0")
+
+    def test_geraete_adressen_begrenzt_eintraege_aus_der_zukunft_auf_jetzt(self):
+        datei = self.t / "stand"
+        jetzt = 2_000_000_000
+        schreibe(datei, f"{GERAET} 192.168.178.78 {jetzt + 500000}\n")
+        self.assertEqual(self.bash(f'geraete_adressen "{posix(datei)}" {jetzt}').stdout.strip(), "192.168.178.78")
+
     def test_stand_lesen_und_frist(self):
         datei = self.t / "stand"
         jetzt = 2_000_000_000
@@ -285,7 +332,8 @@ class EinrichtenMitStandTests(Werkstatt):
 
 
 # ====================================================================================== Werkstatt für den Aktualisierer
-IMAGE_SCHLUESSEL = "docker.inspect_{{.Config.Image}}"  # docker inspect -f {{.Config.Image}} wamo-caddy (das zweite Argument bleibt unverändert im Schlüssel)
+IMAGE_SCHLUESSEL = "docker.inspect_{{.Image}}"  # docker inspect -f {{.Image}} wamo-caddy: die ID des Images (das zweite Argument bleibt unverändert im Schlüssel)
+IMAGE_ID = "sha256:" + "cd" * 32  # berechnet: kein Literal, das die Secret-Prüfung stört
 RELOAD = "docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile"
 TOKEN_KERN, TOKEN_BETREUER = "k" * 43, "b" * 43  # keine echten Werte, nur Marken: sie dürfen nirgends auftauchen
 
@@ -308,7 +356,7 @@ class GeraeteWerkstatt(Werkstatt):
         schreibe(self.lib / "wamo-labor.caddy", lies(SITE))
         schreibe(self.site_datei, lies(SITE).replace("__BETREUER_ADRESSEN__", f"{INTERN} 192.168.178.50"))
         self.site_vorher = self.site_datei.read_bytes()
-        self.ausgabe(IMAGE_SCHLUESSEL, "caddy:2-test\n")
+        self.ausgabe(IMAGE_SCHLUESSEL, IMAGE_ID + "\n")
         self.antworten(GERAET)
 
     @property
@@ -333,6 +381,10 @@ class GeraeteWerkstatt(Werkstatt):
 
     def site(self) -> str:
         return self.site_datei.read_text(encoding="utf-8")
+
+    def schreibe_site(self, adressen: list[str]) -> None:
+        """Die Site, wie sie nach früheren Läufen war: der Server, die feste Adresse und diese Geräteadressen."""
+        schreibe(self.site_datei, lies(SITE).replace("__BETREUER_ADRESSEN__", f"{INTERN} 192.168.178.50" + "".join(f" {a}" for a in adressen)))
 
     def remote_ip(self, *adressen: str) -> str:
         return f"remote_ip {INTERN} 192.168.178.50" + "".join(f" {a}" for a in adressen) + "\n"
@@ -367,8 +419,8 @@ class AufloesungTests(GeraeteWerkstatt):
         self.assertNotIn("172.17.0.1", self.site())
         self.assertNotIn("172.20.208.1", self.site())
         aufrufe = self.aufrufe()
-        self.assertIn(f"nmblookup {GERAET}", aufrufe)
-        self.assertIn(f"avahi-resolve -4 -n {GERAET}.local", aufrufe)
+        self.assertIn(f"nmblookup -- {GERAET}", aufrufe)  # "--" vor dem Namen: nie als Option gelesen
+        self.assertIn(f"avahi-resolve -4 -n -- {GERAET}.local", aufrufe)
 
     def test_nur_eine_quelle_antwortet(self):
         self.antworten(GERAET, mdns=self.mdns("192.168.178.67"), netbios="name_query failed to find name WMC-H-04-NS\n")
@@ -376,7 +428,7 @@ class AufloesungTests(GeraeteWerkstatt):
         self.assertIn(self.remote_ip("192.168.178.67"), self.site())
         self.ausgabe(f"nmblookup.{GERAET}", self.netbios("192.168.178.78"))
         self.ausgabe(f"avahi-resolve.{GERAET}.local", "Failed to resolve host name\n", rc=1)  # avahi scheitert, nmblookup antwortet
-        self.assertEqual(self.aktualisieren(jetzt=self.JETZT + 60).returncode, 0)
+        self.assertEqual(self.aktualisieren(jetzt=self.JETZT + 200).returncode, 0)
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())
 
     def test_filter_nur_adressen_im_buero_lan(self):
@@ -399,16 +451,44 @@ class AufloesungTests(GeraeteWerkstatt):
         for nie in ("getent", "dig ", "nslookup", "host ", "resolvectl", "arp ", "ip neigh", "ping"):
             self.assertNotIn(nie, c, nie)  # das DNS der Fritz!Box liefert veraltete Adressen und gehört nicht dazu
 
-    def test_hoechstens_vier_adressen_je_name(self):
-        sechs = [f"192.168.178.{n}" for n in (90, 20, 30, 40, 50, 60)]
-        self.antworten(GERAET, self.netbios(*sechs[:3]), self.mdns(*sechs[3:]))
+    def test_genau_vier_antworten_gelten(self):
+        vier = [f"192.168.178.{n}" for n in (90, 20, 30, 40)]
+        self.antworten(GERAET, self.netbios(*vier[:2]), self.mdns(*vier[2:]))
         r = self.aktualisieren()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual([a for _, a, _ in self.stand()], ["192.168.178.20", "192.168.178.30", "192.168.178.40", "192.168.178.50"])
-        self.assertIn(self.remote_ip("192.168.178.20", "192.168.178.30", "192.168.178.40", "192.168.178.50"), self.site())
-        self.assertNotIn("192.168.178.60", self.site())
-        self.assertNotIn("192.168.178.90", self.site())
-        self.assertIn("höchstens 4", r.stdout)  # die Kürzung steht in der Meldung
+        self.assertEqual([a for _, a, _ in self.stand()], ["192.168.178.20", "192.168.178.30", "192.168.178.40", "192.168.178.90"])
+        self.assertEqual(r.stderr, "")
+
+    def test_mehr_als_vier_antworten_lassen_nichts_neues_zu_und_warnen_hoechstens_stuendlich(self):
+        """Ein Name mit mehr als 4 Antworten (verdächtig: Flut oder Täuschung) verdrängt nie die echte Adresse: Es gilt weiter der letzte Stand."""
+        sechs = [f"192.168.178.{n}" for n in (20, 30, 40, 50, 60, 78)]
+        self.antworten(GERAET, self.netbios(*sechs[:3]), self.mdns(*sechs[3:]))
+        r = self.aktualisieren()  # erster Blick: nichts im Stand, also wird auch nichts zugelassen
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertEqual(self.stand(), [])
+        self.assertIn("WARNUNG", r.stdout)
+        self.assertIn(GERAET, r.stdout)
+        self.assertIn("6 Antworten", r.stdout)
+        self.assertIn("mehr als 4", r.stdout)
+        t0 = self.JETZT
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.assertEqual(self.aktualisieren(jetzt=t0 + 400).returncode, 0)  # jetzt antwortet er mit einer Adresse: zugelassen
+        self.antworten(GERAET, self.netbios(*sechs))
+        r = self.aktualisieren(jetzt=t0 + 800)  # die erste Warnung ist erst 800 Sekunden her: nicht dieselbe Zeile noch einmal
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertIn(self.remote_ip("192.168.178.78"), self.site())  # die echte Adresse bleibt, keine der anderen kommt dazu
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 + 400)])  # der letzte Stand bleibt unverändert
+        self.assertEqual(self.reloads(), 1)
+        for z in ("192.168.178.20", "192.168.178.60"):
+            self.assertNotIn(z, self.site())
+        r = self.aktualisieren(jetzt=t0 + 4000)  # mehr als eine Stunde nach der ersten Warnung: wieder eine Warnung
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("WARNUNG", r.stdout)
+        self.assertIn(self.remote_ip("192.168.178.78"), self.site())
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 + 400)])
+        r = self.aktualisieren(jetzt=t0 + 4060)
+        self.assertEqual((r.stdout, r.stderr), ("", ""))
 
     def test_mehrere_geraete_gleichzeitig_und_namen_in_grossbuchstaben(self):
         schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "pc-eins\nPC-ZWEI  # Kommentar\r\nPC-EINS\n")
@@ -417,7 +497,7 @@ class AufloesungTests(GeraeteWerkstatt):
         r = self.aktualisieren()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.stand(), [("PC-EINS", "192.168.178.21", self.JETZT), ("PC-ZWEI", "192.168.178.22", self.JETZT)])
-        self.assertEqual(self.zaehle("nmblookup PC-EINS"), 1)  # der doppelte Name wird nur einmal gefragt
+        self.assertEqual(self.zaehle("nmblookup -- PC-EINS"), 1)  # der doppelte Name wird nur einmal gefragt
         self.assertIn(self.remote_ip("192.168.178.21", "192.168.178.22"), self.site())
 
     def test_dieselbe_adresse_bei_zwei_namen_steht_einmal_in_der_site(self):
@@ -432,17 +512,20 @@ class AufloesungTests(GeraeteWerkstatt):
 
 @unittest.skipUnless(BASH, "keine Bash vorhanden")
 class NamenListeTests(GeraeteWerkstatt):
-    def test_ungueltige_namen_brechen_ab_und_aendern_nichts(self):
+    def test_ungueltige_namen_melden_klar_und_lassen_nichts_neu_zu(self):
         for schlecht in ("WMC_H_04", "-WMC", "A" * 16, "WMC H", "WMC-H.local", "PÄ-PC", "pc;reboot", "'PC'", "PC$(reboot)", "192.168.178.78/24", "*"):
             self.log.write_text("", encoding="utf-8")
+            self.antworten(GERAET, self.netbios("192.168.178.78"))  # der gute Name antwortet: Das wäre eine Neuzulassung
             schreibe(self.p("etc/wamo-labor/betreuer-geraete"), f"# Kopf\n{GERAET}\n{schlecht}\n")
             r = self.aktualisieren()
             self.assertNotEqual(r.returncode, 0, schlecht)
             self.assertIn("Ungültiger Gerätename", r.stderr, schlecht)
             self.assertIn("Zeile 3", r.stderr, schlecht)
-            self.assertEqual(self.aufrufe(), [], schlecht)  # nichts gefragt, nichts geändert: auch der gute Name vorher wird nicht aufgelöst
-            self.assertEqual(self.site_datei.read_bytes(), self.site_vorher, schlecht)
-            self.assertFalse(self.p(STAND_REL).exists(), schlecht)
+            self.assertIn("angehalten", r.stderr, schlecht)
+            self.assertEqual(self.site_datei.read_bytes(), self.site_vorher, schlecht)  # nichts Neues gilt
+            self.assertEqual(self.stand(), [], schlecht)
+            self.assertFalse([z for z in self.aufrufe() if z.startswith(("docker run", "docker exec"))], schlecht)
+            self.assertNotIn("reboot", r.stdout)  # der Wert wird nie ausgeführt
 
     def test_gueltige_grenzfaelle(self):
         schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "# nur Kommentar\n\n  \t\n1PC\nA23456789012345\nwmc-h-04-ns\r\n")
@@ -452,12 +535,15 @@ class NamenListeTests(GeraeteWerkstatt):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(sorted({n for n, _, _ in self.stand()}), sorted(["1PC", "A23456789012345", GERAET]))
 
-    def test_mehr_als_16_namen_brechen_ab(self):
+    def test_mehr_als_16_namen_sind_ein_fehler_und_lassen_nichts_neu_zu(self):
         schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "".join(f"PC-{i}\n" for i in range(17)))
+        for i in range(17):
+            self.antworten(f"PC-{i}", self.netbios(f"192.168.178.{100 + i}", name=f"PC-{i}"))
         r = self.aktualisieren()
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("16", r.stderr)
-        self.assertEqual(self.aufrufe(), [])
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertEqual(self.stand(), [])
 
     def test_ohne_datei_oder_ohne_namen_gibt_es_keine_geraete(self):
         self.antworten(GERAET, self.netbios("192.168.178.78"))
@@ -483,13 +569,75 @@ class NamenListeTests(GeraeteWerkstatt):
         self.assertNotIn("192.168.178.22", self.site())
         self.assertIn("PC-ZWEI", r.stdout)
         self.assertIn("nicht mehr in der Liste", r.stdout)
+        self.assertEqual(self.reloads(), 2)  # ein reiner Entzug wartet nie auf die drei Minuten zwischen zwei Reloads
 
-    def test_ungueltige_feste_adresse_bricht_auch_ohne_aenderung_ab(self):
+    def test_ungueltige_feste_adresse_ist_auch_ohne_aenderung_ein_fehler(self):
         schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "192.168.178.50\n1.2.3.4;reboot\n")
         r = self.aktualisieren()
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("Ungültige Adresse", r.stderr)
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertEqual(self.reloads(), 0)
+
+    def test_tippfehler_in_zeile_5_haelt_nur_neue_zulassungen_an_und_der_entzug_laeuft_weiter(self):
+        t0 = self.JETZT
+        schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "# Kopf\nPC-ALT\nPC-GUT\n\nPC_FEHLER\n")  # Zeile 2 gut, Zeile 3 gut, Zeile 5 ein Tippfehler
+        schreibe(self.p(STAND_REL), f"PC-ALT 192.168.178.21 {t0 - FRIST - 10}\nPC-GUT 192.168.178.22 {t0 - 60}\n")  # der Eintrag aus Zeile 2 ist abgelaufen
+        self.schreibe_site(["192.168.178.21", "192.168.178.22"])
+        self.antworten("PC-GUT", self.netbios("192.168.178.22", "192.168.178.23", name="PC-GUT"))  # .23 wäre eine Neuzulassung
+        self.antworten("PC-ALT")
+        r = self.aktualisieren()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Ungültiger Gerätename", r.stderr)
+        self.assertIn("Zeile 5", r.stderr)
+        self.assertEqual(self.site().count(self.remote_ip("192.168.178.22")), 1, self.site())  # nur .22: .21 ist abgelaufen, .23 ist neu
+        self.assertNotIn("192.168.178.21", self.site())
+        self.assertNotIn("192.168.178.23", self.site())
+        self.assertEqual(self.reloads(), 1)
+        self.assertEqual(self.stand(), [("PC-GUT", "192.168.178.22", t0)])  # eine schon zugelassene Adresse bleibt, solange das Gerät antwortet
+        self.assertIn("192.168.178.21 entfernt", r.stdout)
+        self.assertIn("12 Stunden", r.stdout)
+
+    def test_entfernte_namen_verlieren_ihre_adressen_auch_bei_einem_fehler_in_der_liste(self):
+        t0 = self.JETZT
+        schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "PC-GUT\nPC_FEHLER\n")
+        schreibe(self.p(STAND_REL), f"PC-WEG 192.168.178.21 {t0 - 60}\nPC-GUT 192.168.178.22 {t0 - 60}\n")
+        self.schreibe_site(["192.168.178.21", "192.168.178.22"])
+        self.antworten("PC-GUT", self.netbios("192.168.178.22", name="PC-GUT"))
+        r = self.aktualisieren()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("192.168.178.21", self.site())
+        self.assertIn(self.remote_ip("192.168.178.22"), self.site())
+        self.assertEqual(self.stand(), [("PC-GUT", "192.168.178.22", t0)])
+        self.assertIn("nicht mehr in der Liste", r.stdout)
+
+    def test_fehler_in_betreuer_adressen_haelt_nur_neue_zulassungen_an_der_entzug_laeuft_weiter(self):
+        t0 = self.JETZT
+        schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "192.168.178.50\nunsinn\n")
+        schreibe(self.p(STAND_REL), f"{GERAET} 192.168.178.21 {t0 - FRIST - 10}\n")
+        self.schreibe_site(["192.168.178.21"])
+        self.antworten(GERAET, self.netbios("192.168.178.78"))  # Neuzulassung: angehalten
+        r = self.aktualisieren()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Ungültige Adresse", r.stderr)
+        self.assertIn(self.remote_ip(), self.site())  # Server und die gültige feste Adresse, kein Gerät
+        self.assertNotIn("192.168.178.21", self.site())
+        self.assertNotIn("192.168.178.78", self.site())
+        self.assertEqual(self.stand(), [])
+
+    def test_lange_oder_unsichtbare_eingaben_erscheinen_nur_gekuerzt_und_maskiert(self):
+        schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "A" * 100 + "\n")
+        r = self.aktualisieren()
+        self.assertIn("A" * 40, r.stderr)
+        self.assertNotIn("A" * 41, r.stderr)
+        schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "X\x1b[31mROT\n")
+        r = self.aktualisieren()
+        self.assertNotIn("\x1b", r.stderr)  # Steuerzeichen kommen nie ins Journal
+        self.assertIn("Zeile 1", r.stderr)
+        schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "7" * 100 + "\n")
+        r = self.aktualisieren()
+        self.assertIn("Ungültige Adresse", r.stderr)
+        self.assertNotIn("7" * 41, r.stderr)
 
 
 @unittest.skipUnless(BASH, "keine Bash vorhanden")
@@ -516,7 +664,7 @@ class FristUndAenderungTests(GeraeteWerkstatt):
         self.assertIn("192.168.178.78 entfernt", r.stdout)
         self.assertIn("12 Stunden", r.stdout)
 
-    def test_antwort_nach_dem_ruhezustand_laesst_das_geraet_sofort_wieder_zu(self):
+    def test_antwort_nach_dem_ruhezustand_laesst_das_geraet_wieder_zu(self):
         t0 = self.JETZT
         self.antworten(GERAET, self.netbios("192.168.178.78"))
         self.assertEqual(self.aktualisieren(jetzt=t0).returncode, 0)
@@ -524,42 +672,54 @@ class FristUndAenderungTests(GeraeteWerkstatt):
         self.assertEqual(self.aktualisieren(jetzt=t0 + FRIST + 100).returncode, 0)
         self.assertNotIn("192.168.178.78", self.site())
         self.antworten(GERAET, self.netbios("192.168.178.78"))
-        self.assertEqual(self.aktualisieren(jetzt=t0 + FRIST + 160).returncode, 0)
+        self.assertEqual(self.aktualisieren(jetzt=t0 + FRIST + 300).returncode, 0)  # mehr als drei Minuten nach dem letzten Reload
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())
 
-    def test_neue_antwort_ersetzt_die_alte_adresse_sofort(self):
+    def test_neue_antwort_ersetzt_die_alte_adresse_beim_naechsten_erlaubten_reload(self):
+        """Eine neue Zulassung wartet höchstens drei Minuten auf den Reload (Abstand zum letzten Reload), der Entzug nie."""
         t0 = self.JETZT
         self.antworten(GERAET, self.netbios("192.168.178.78"))
         self.assertEqual(self.aktualisieren(jetzt=t0).returncode, 0)
         self.antworten(GERAET, self.netbios("192.168.178.79"))  # der PC hat eine neue Adresse (DHCP)
-        r = self.aktualisieren(jetzt=t0 + 60)
+        for sekunden in (60, 179):
+            r = self.aktualisieren(jetzt=t0 + sekunden)
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), sekunden)
+            self.assertIn(self.remote_ip("192.168.178.78"), self.site())  # noch die alte Adresse: aufgeschoben
+            self.assertEqual(self.reloads(), 1)
+            self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0)])  # der Stand bleibt, was geladen ist
+        r = self.aktualisieren(jetzt=t0 + 180)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(self.remote_ip("192.168.178.79"), self.site())
         self.assertNotIn("192.168.178.78", self.site())  # nicht erst nach 12 Stunden
-        self.assertEqual(self.stand(), [(GERAET, "192.168.178.79", t0 + 60)])
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.79", t0 + 180)])
         self.assertIn("192.168.178.78 entfernt", r.stdout)
         self.assertIn("192.168.178.79 zugelassen", r.stdout)
+        self.assertEqual(self.reloads(), 2)
 
     def test_bleibt_die_menge_gleich_gibt_es_weder_pruefung_noch_reload_noch_ausgabe(self):
         self.antworten(GERAET, self.netbios("192.168.178.78"), self.mdns("192.168.178.67"))
         self.assertEqual(self.aktualisieren(jetzt=self.JETZT).returncode, 0)
         site, geladen = self.site_datei.read_bytes(), (self.reloads(), self.prueflaeufe(), self.zaehle("logger"))
         self.assertEqual(geladen[:2], (1, 1))
-        for minute in (1, 2, 3):
+        stand = self.p(STAND_REL).read_bytes()
+        for minute in (1, 2, 3, 4):
             r = self.aktualisieren(jetzt=self.JETZT + 60 * minute)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertEqual((r.stdout, r.stderr), ("", ""), "ohne Änderung bleibt das Journal leer")
+            self.assertEqual(self.p(STAND_REL).read_bytes(), stand, "der Stand wird innerhalb von 5 Minuten nicht neu geschrieben")
+        r = self.aktualisieren(jetzt=self.JETZT + 300)  # nach 5 Minuten zieht der Zeitpunkt der letzten Antwort nach
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.67", self.JETZT + 300), (GERAET, "192.168.178.78", self.JETZT + 300)])
         self.assertEqual(self.site_datei.read_bytes(), site)
         self.assertEqual((self.reloads(), self.prueflaeufe(), self.zaehle("logger")), geladen)
         self.assertEqual(self.zaehle("docker exec"), 1)
-        self.assertEqual(self.stand(), [(GERAET, "192.168.178.67", self.JETZT + 180), (GERAET, "192.168.178.78", self.JETZT + 180)])  # nur der Zeitpunkt zieht nach
 
     def test_reload_nur_bei_aenderung_der_menge(self):
         self.antworten(GERAET, self.netbios("192.168.178.78"))
         self.aktualisieren(jetzt=self.JETZT)
         self.antworten(GERAET, self.netbios("192.168.178.78", "192.168.178.80"))
-        self.aktualisieren(jetzt=self.JETZT + 60)
-        self.aktualisieren(jetzt=self.JETZT + 120)
+        self.aktualisieren(jetzt=self.JETZT + 200)
+        self.aktualisieren(jetzt=self.JETZT + 260)
         self.assertEqual(self.reloads(), 2)
         self.assertEqual(self.prueflaeufe(), 2)
         self.assertIn(self.remote_ip("192.168.178.78", "192.168.178.80"), self.site())
@@ -573,7 +733,7 @@ class FristUndAenderungTests(GeraeteWerkstatt):
         self.assertEqual(site.replace(f"{liste} 192.168.178.78", liste), self.site_vorher.decode("utf-8"))  # sonst bleibt die Site, wie sie war (auch die Kommentare nennen die Liste)
         schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "192.168.178.50\n192.168.178.60/32\n")  # eine geänderte feste Liste gilt bei der nächsten Änderung mit
         self.antworten(GERAET, self.netbios("192.168.178.79"))
-        self.aktualisieren(jetzt=self.JETZT + 60)
+        self.aktualisieren(jetzt=self.JETZT + 200)
         self.assertIn(f"remote_ip {INTERN} 192.168.178.50 192.168.178.60/32 192.168.178.79\n", self.site())
 
     def test_gepruefte_site_wird_installiert_und_der_arbeitsordner_geraeumt(self):
@@ -581,13 +741,47 @@ class FristUndAenderungTests(GeraeteWerkstatt):
         self.assertEqual(self.aktualisieren().returncode, 0)
         aufrufe = self.aufrufe()
         adapt = next(z for z in aufrufe if z.startswith("docker run"))
-        for soll in ("--rm", "--network none", "--cap-drop ALL", "--read-only", "no-new-privileges:true", "caddy:2-test", "caddy adapt"):
+        for soll in ("--rm", "--network none", "--cap-drop ALL", "--read-only", "no-new-privileges:true", IMAGE_ID, "caddy adapt", "--pull=never", "--pids-limit 64",
+                     "--memory 256m"):
             self.assertIn(soll, adapt)
+        self.assertIn("docker inspect -f {{.Image}} wamo-caddy", aufrufe)  # die ID des laufenden Images, nie ein Name, der nachgeladen würde
         self.assertLess(aufrufe.index(adapt), aufrufe.index(RELOAD))  # erst prüfen, dann installieren und laden
         for port in (55443, 55444, 55445, 55446):
             self.assertTrue([z for z in aufrufe[aufrufe.index(RELOAD):] if z.startswith("curl") and f":{port}/" in z], port)
         self.assertEqual(self.arbeitsreste(), [])
         self.assertTrue(self.site().endswith("\n"))
+
+    def test_eintraege_aus_der_zukunft_werden_auf_jetzt_begrenzt(self):
+        t0 = self.JETZT
+        schreibe(self.p(STAND_REL), f"{GERAET} 192.168.178.78 {t0 + 999999}\n")  # Zeitsprung oder Fälschung: gilt höchstens 12 Stunden ab jetzt
+        self.schreibe_site(["192.168.178.78"])
+        self.antworten(GERAET)
+        r = self.aktualisieren(jetzt=t0)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0)])
+        self.assertIn(self.remote_ip("192.168.178.78"), self.site())
+        self.assertEqual(self.aktualisieren(jetzt=t0 + FRIST).returncode, 0)
+        self.assertIn(self.remote_ip("192.168.178.78"), self.site())
+        r = self.aktualisieren(jetzt=t0 + FRIST + 1)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("192.168.178.78", self.site())
+
+    def test_zeitangabe_mit_fuehrender_null_wird_nie_oktal_gelesen(self):
+        t0 = self.JETZT
+        schreibe(self.p(STAND_REL), f"{GERAET} 192.168.178.78 {t0 - 100}\n")
+        self.schreibe_site(["192.168.178.78"])
+        r = self.aktualisieren(extra={"WAMO_LABOR_GERAETE_JETZT": "0" + str(t0)})  # 01800000000 wäre oktal ungültig
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 - 100)])
+        self.assertEqual(self.reloads(), 0)
+
+    def test_stand_zeitpunkte_mit_fuehrender_null_werden_dezimal_gelesen(self):
+        t0 = self.JETZT
+        schreibe(self.p(STAND_REL), f"{GERAET} 192.168.178.78 0{t0 - 100}\n")
+        self.schreibe_site(["192.168.178.78"])
+        r = self.aktualisieren(jetzt=t0)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 - 100)])
 
     def test_stand_wird_atomar_geschrieben_und_hat_einen_kopf(self):
         self.antworten(GERAET, self.netbios("192.168.178.78"))
@@ -596,6 +790,8 @@ class FristUndAenderungTests(GeraeteWerkstatt):
         text = datei.read_text(encoding="utf-8")
         self.assertTrue(text.startswith("# "), text)
         self.assertIn(f"{GERAET} 192.168.178.78 {self.JETZT}\n", text)
+        self.assertIn(f"# geschrieben: {self.JETZT}\n", text)  # wann zuletzt geschrieben wurde (höchstens alle 5 Minuten ohne Änderung)
+        self.assertIn(f"# geladen: {self.JETZT}\n", text)  # wann zuletzt geladen wurde (Abstand von 3 Minuten für neue Zulassungen)
         self.assertEqual([f.name for f in self.p("etc/wamo-labor").iterdir() if ".neu" in f.name], [])  # keine Reste
         if os.name != "nt":
             self.assertEqual(datei.stat().st_mode & 0o777, 0o644)
@@ -713,7 +909,7 @@ class SperreMeldungUndGrenzenTests(GeraeteWerkstatt):
         # unter systemd ist stdout das Journal (Kennung per SyslogIdentifier): dann kein zweiter Weg über logger
         self.log.write_text("", encoding="utf-8")
         self.antworten(GERAET, self.netbios("192.168.178.79"))
-        r = self.aktualisieren(jetzt=self.JETZT + 60, extra={"JOURNAL_STREAM": "8:12345"})
+        r = self.aktualisieren(jetzt=self.JETZT + 200, extra={"JOURNAL_STREAM": "8:12345"})
         self.assertIn("192.168.178.79 zugelassen", r.stdout)
         self.assertEqual([z for z in self.aufrufe() if z.startswith("logger")], [])
 
@@ -773,11 +969,53 @@ class SperreMeldungUndGrenzenTests(GeraeteWerkstatt):
 
     def test_namen_gehen_nur_geprueft_und_als_einzelnes_argument_an_die_werkzeuge(self):
         c = code(AKTUALISIERER)
-        self.assertRegex(c, r'timeout \S+ nmblookup "\$\{?\w+\}?"')
-        self.assertRegex(c, r'timeout \S+ avahi-resolve -4 -n "\$\{?\w+\}?\.local"')
+        self.assertRegex(c, r'timeout \S+ nmblookup -- "\$\{?\w+\}?"')  # "--": ein Name ist nie eine Option
+        self.assertRegex(c, r'timeout \S+ avahi-resolve -4 -n -- "\$\{?\w+\}?\.local"')
         self.assertIn('sperre_nehmen "$SPERRE" 0', c)  # nicht warten: ein laufender Lauf wird übersprungen
         self.assertIn("logger -t wamo-labor-geraete", c)
         self.assertIn("run/wamo-labor-geraete", c)
+        self.assertRegex(c, r"(?m)^export LC_ALL=C$")  # feste Zeichenordnung und Zeichensätze, egal was die Umgebung sagt
+
+    def test_lc_all_der_umgebung_ist_egal(self):
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        r = self.aktualisieren(extra={"LC_ALL": "de_DE.UTF-8", "LANG": "de_DE.UTF-8", "LC_COLLATE": "de_DE.UTF-8"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.remote_ip("192.168.178.78"), self.site())
+
+    def test_links_im_baum_von_caddy_werden_nie_befolgt(self):
+        """Als root im Baum von wamocon: Ein Link darf weder kopiert noch von chmod verfolgt werden."""
+        if os.name == "nt":
+            self.skipTest("symbolische Links sind unter Windows nicht zuverlässig anlegbar")
+        fremd = self.t / "fremd"
+        fremd.write_text("geheim", encoding="utf-8")
+        os.chmod(fremd, 0o600)
+        os.symlink(fremd, self.caddy / "etc" / "kern" / "boese.caddy")
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        r = self.aktualisieren()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(fremd.stat().st_mode & 0o777, 0o600)  # chmod hat den Link nicht verfolgt
+
+    def test_ist_die_site_ein_link_wird_nichts_geaendert(self):
+        if os.name == "nt":
+            self.skipTest("symbolische Links sind unter Windows nicht zuverlässig anlegbar")
+        fremd = self.t / "fremd"
+        fremd.write_text("geheim", encoding="utf-8")
+        self.site_datei.unlink()
+        os.symlink(fremd, self.site_datei)
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        r = self.aktualisieren()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Link", r.stderr)
+        self.assertEqual(fremd.read_text(encoding="utf-8"), "geheim")
+        self.assertEqual(self.reloads(), 0)
+
+    def test_der_arbeitsbaum_wird_ohne_links_und_nur_mit_find_behandelt(self):
+        bib = code(SITE_BIB)
+        self.assertIn('find "$ARBEIT" -type l -delete', bib)
+        self.assertIn('find "$ARBEIT" -type f -exec chmod 644 {} +', bib)
+        self.assertIn('find "$ARBEIT" -type d -exec chmod 755 {} +', bib)
+        self.assertNotRegex(bib, r'chmod [0-9]+ "\$ARBEIT/etc/kern/"\*')  # kein Glob, der Links verfolgte
+        self.assertIn('-L "$SITE_DATEI"', code(AKTUALISIERER))
 
 
 @unittest.skipUnless(BASH, "keine Bash vorhanden")

@@ -30,19 +30,35 @@ adresse_gueltig() {
     || (( BASH_REMATCH[1] == 169 && BASH_REMATCH[2] == 254 )); then return 1; fi
 }
 
+# Ein Wert aus einer Eingabedatei für Meldungen und das Journal: höchstens 40 Zeichen, Steuerzeichen und Leerzeichen maskiert (printf %q), eine Kürzung mit "..."
+kurz() {
+  local roh="${1:0:40}"
+  printf '%s' "$(printf '%q' "$roh")"
+  if [ "${#1}" -gt 40 ]; then printf '...'; fi
+  printf '\n'
+}
+
 # Die Zeilen einer Adressdatei (eine Adresse oder ein Netz je Zeile, Kommentare mit #) als eine Zeile, durch Leerzeichen getrennt. Eine ungültige Zeile
-# bricht ab (nie stillschweigend weglassen). Eine fehlende Datei ergibt eine leere Liste.
+# bricht ab (nie stillschweigend weglassen). Mit dem zweiten Argument weich meldet sie stattdessen auf stderr, lässt die Zeile weg und gibt am Ende 1 zurück:
+# Der Aufrufer behandelt das als Fehler, kann aber mit den gültigen Zeilen weiterarbeiten (Entzug). Eine fehlende Datei ergibt eine leere Liste.
 adressen_lesen() {
-  local datei="$1" liste="" zeile wert
+  local datei="$1" weich="${2:-}" liste="" zeile wert meldung rc=0
   if [ -r "$datei" ]; then
     while IFS= read -r zeile || [ -n "$zeile" ]; do
       wert="$(tr -d " \t\r\"'" <<<"${zeile%%#*}")"
       [ -n "$wert" ] || continue
-      adresse_gueltig "$wert" || fehler "Ungültige Adresse in $datei: $wert (a.b.c.d oder a.b.c.d/n mit n von 24 bis 32)."
+      if ! adresse_gueltig "$wert"; then
+        meldung="Ungültige Adresse in $datei: $(kurz "$wert") (a.b.c.d oder a.b.c.d/n mit n von 24 bis 32)."
+        [ -n "$weich" ] || fehler "$meldung"
+        echo "$meldung Neue Zulassungen sind angehalten, der Entzug läuft weiter." >&2
+        rc=1
+        continue
+      fi
       liste="$liste${liste:+ }$wert"
     done < "$datei"
   fi
   printf '%s\n' "$liste"
+  return "$rc"
 }
 
 # Die Teile zu einer Zeile verbinden, leere Teile fallen weg (nie ein doppeltes Leerzeichen in der Site)
@@ -52,11 +68,23 @@ liste_bilden() {
   printf '%s\n' "$liste"
 }
 
+# ---------- Sperre
+# Die gemeinsame Sperre auf Dateikennung 9 (Datei immer <Wurzel>/run/wamo-labor-geraete/lock, den Ort kennen alle Skripte). Wer die Site oder wamo-caddy ändert
+# (Aktualisierer, wamo-labor-einrichten.sh, Einrichten und Rückweg der Betreuer-Geräte, wamo-labor-rueckweg.sh), nimmt sie, damit sich nie zwei Läufe überschneiden
+# und keiner eine frische Site mit altem Stand überschreibt. DATEI SEKUNDEN: 0 = nicht warten, sonst höchstens so lange. Rückgabe 1, wenn ein anderer Lauf sie hält.
+sperre_nehmen() {
+  mkdir -p "$(dirname "$1")"
+  exec 9> "$1"
+  if [ "$2" = 0 ]; then flock -n 9; else flock -w "$2" 9; fi
+}
+sperre_loesen() { exec 9>&-; }
+
 # ---------- Betreuer-Geräte
 # Die Gerätenamen aus der Datei betreuer-geraete: je Zeile ein Name, Kommentare mit #, Ausgabe in Großbuchstaben ohne Doppelte, ein Name je Zeile. Ein ungültiger
-# Name bricht ab (nie stillschweigend weglassen), ebenso mehr als MAX_NAMEN Namen. Eine fehlende Datei ergibt keine Namen.
+# Name bricht ab (nie stillschweigend weglassen), ebenso mehr als MAX_NAMEN Namen. Mit dem zweiten Argument weich meldet sie stattdessen auf stderr, lässt den
+# Namen weg (mehr als MAX_NAMEN: den Rest) und gibt am Ende 1 zurück (der Aufrufer hält neue Zulassungen an, der Entzug läuft weiter). Eine fehlende Datei ergibt keine Namen.
 namen_lesen() {
-  local datei="$1" zeile wert name nr=0 n=0 gesehen=" "
+  local datei="$1" weich="${2:-}" zeile wert name nr=0 n=0 gesehen=" " meldung rc=0 zuviele=nein
   [ -r "$datei" ] || return 0
   while IFS= read -r zeile || [ -n "$zeile" ]; do
     nr=$((nr + 1))
@@ -65,19 +93,32 @@ namen_lesen() {
     wert="${wert#"${wert%%[![:space:]]*}"}"
     wert="${wert%"${wert##*[![:space:]]}"}"
     [ -n "$wert" ] || continue
-    [[ "$wert" =~ $NAME_MUSTER ]] \
-      || fehler "Ungültiger Gerätename in $datei, Zeile $nr: $(printf '%q' "$wert") (erlaubt: 1 bis 15 Zeichen aus A-Z, a-z, 0-9 und Bindestrich, am Anfang kein Bindestrich). Es wurde nichts geändert."
+    if ! [[ "$wert" =~ $NAME_MUSTER ]]; then
+      meldung="Ungültiger Gerätename in $datei, Zeile $nr: $(kurz "$wert") (erlaubt: 1 bis 15 Zeichen aus A-Z, a-z, 0-9 und Bindestrich, am Anfang kein Bindestrich)."
+      [ -n "$weich" ] || fehler "$meldung Es wurde nichts geändert."
+      echo "$meldung Neue Zulassungen sind angehalten, der Entzug (abgelaufene Einträge, entfernte Namen) läuft weiter." >&2
+      rc=1
+      continue
+    fi
     name="${wert^^}"
     case "$gesehen" in *" $name "*) continue ;; esac
     gesehen="$gesehen$name "
+    if (( n >= MAX_NAMEN )); then zuviele=ja; continue; fi
     n=$((n + 1))
     printf '%s\n' "$name"
   done < "$datei"
-  (( n <= MAX_NAMEN )) || fehler "Mehr als $MAX_NAMEN Gerätenamen in $datei (gefunden: $n). Es wurde nichts geändert."
+  if [ "$zuviele" = ja ]; then
+    meldung="Mehr als $MAX_NAMEN Gerätenamen in $datei: nur die ersten $MAX_NAMEN gelten."
+    [ -n "$weich" ] || fehler "$meldung Es wurde nichts geändert."
+    echo "$meldung Neue Zulassungen sind angehalten, der Entzug läuft weiter." >&2
+    rc=1
+  fi
+  return "$rc"
 }
 
 # Der Stand der Betreuer-Geräte (betreuer-geraete.stand): je Zeile Name, Adresse im Büro-LAN und Zeitpunkt der letzten Antwort (Sekunden seit 1970). Gültige
 # Zeilen kommen auf stdout, kaputte werden mit Hinweis auf stderr übersprungen (die Datei schreibt nur der Aktualisierer; nie wird eine kaputte Zeile eingesetzt).
+# Zeitpunkte werden dezimal gelesen (nie oktal).
 stand_lesen() {
   local datei="$1" zeile name adr zeit rest nr=0
   [ -r "$datei" ] || return 0
@@ -97,9 +138,21 @@ stand_lesen() {
   done < "$datei"
 }
 
-# Die Adressen aus dem Stand, deren letzte Antwort höchstens GERAETE_FRIST_S zurückliegt (DATEI JETZT): in einer Zeile, sortiert, ohne Doppelte
+# Ein Zeitpunkt aus dem Kopf des Standes (Zeile "# NAME: Sekunden", NAME = geschrieben, geladen oder gewarnt), 0 wenn er fehlt (DATEI NAME)
+stand_marke() {
+  local zeile
+  if [ -r "$1" ]; then
+    while IFS= read -r zeile || [ -n "$zeile" ]; do
+      if [[ "$zeile" =~ ^#\ $2:\ ([0-9]{1,12})$ ]]; then printf '%s\n' "$((10#${BASH_REMATCH[1]}))"; return 0; fi
+    done < "$1"
+  fi
+  printf '0\n'
+}
+
+# Die Adressen aus dem Stand, deren letzte Antwort höchstens GERAETE_FRIST_S zurückliegt (DATEI JETZT): in einer Zeile, sortiert, ohne Doppelte. Ein Zeitpunkt
+# in der Zukunft (Zeitsprung der Uhr, Fälschung) zählt als jetzt: Die Frist läuft dann ab jetzt, nie länger.
 geraete_adressen() {
-  stand_lesen "$1" | awk -v jetzt="$2" -v frist="$GERAETE_FRIST_S" 'jetzt - $3 <= frist { print $2 }' \
+  stand_lesen "$1" | awk -v jetzt="$2" -v frist="$GERAETE_FRIST_S" '{ z = ($3 > jetzt) ? jetzt : $3 } jetzt - z <= frist { print $2 }' \
     | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n -u | paste -sd' ' -
 }
 
@@ -111,17 +164,6 @@ betreuer_liste() {
   liste_bilden "$INTERN" "$fest" "$geraete"
 }
 
-# ---------- Sperre
-# Die gemeinsame Sperre auf Dateikennung 9 (Datei immer <Wurzel>/run/wamo-labor-geraete/lock, den Ort kennen alle Skripte). Wer die Site oder wamo-caddy ändert
-# (Aktualisierer, wamo-labor-einrichten.sh, Einrichten und Rückweg der Betreuer-Geräte, wamo-labor-rueckweg.sh), nimmt sie, damit sich nie zwei Läufe überschneiden
-# und keiner eine frische Site mit altem Stand überschreibt. DATEI SEKUNDEN: 0 = nicht warten, sonst höchstens so lange. Rückgabe 1, wenn ein anderer Lauf sie hält.
-sperre_nehmen() {
-  mkdir -p "$(dirname "$1")"
-  exec 9> "$1"
-  if [ "$2" = 0 ]; then flock -n 9; else flock -w "$2" 9; fi
-}
-sperre_loesen() { exec 9>&-; }
-
 # ---------- Site
 # Die Vorlage (VORLAGE) mit der Adressliste (LISTE) anstelle des Platzhalters auf stdout
 site_erzeugen() {
@@ -131,27 +173,30 @@ site_erzeugen() {
   printf '%s\n' "$text"
 }
 
-# Wegwerf-Ordner im Ordner von wamo-caddy (Docker bindet ihn ein) mit einer Kopie von etc/ (ARBEIT, der Aufrufer legt die neue Site nach
-# $ARBEIT/etc/kern/wamo-labor.caddy und räumt den Ordner später weg)
+# Wegwerf-Ordner mit einer Kopie von QUELLE/etc (der Ordner von wamo-caddy), angelegt in BASIS (Standard QUELLE; Docker bindet ihn ein). Setzt ARBEIT; der Aufrufer
+# legt die neue Site nach $ARBEIT/etc/kern/wamo-labor.caddy und räumt den Ordner später weg. Als root im Baum von wamocon: Links werden nie kopiert und nie verfolgt
+# (sie fallen in der Kopie weg, bevor chmod läuft).
 arbeit_anlegen() {
   umask 077
-  ARBEIT="$(mktemp -d "$1/.arbeit.XXXXXX")"
+  ARBEIT="$(mktemp -d "${2:-$1}/.arbeit.XXXXXX")"
   mkdir -p "$ARBEIT/etc/kern"
   cp -a "$1/etc/." "$ARBEIT/etc/"
+  find "$ARBEIT" -type l -delete
 }
 
-# Die ganze Konfiguration samt neuer Site in ARBEIT prüfen (caddy adapt in einem Wegwerf-Container ohne Netz), bevor etwas installiert wird. IMAGE ist das
-# Caddy-Image. NET_BIND_SERVICE: Das Image versieht caddy mit dieser Fähigkeit, ohne sie im Begrenzungssatz startet das Programm nicht.
+# Die ganze Konfiguration samt neuer Site in ARBEIT prüfen (caddy adapt in einem Wegwerf-Container ohne Netz), bevor etwas installiert wird. IMAGE ist die ID des
+# Images, mit dem wamo-caddy läuft (nie ein Name, der nachgeladen würde: --pull=never). NET_BIND_SERVICE: Das Image versieht caddy mit dieser Fähigkeit, ohne sie im
+# Begrenzungssatz startet das Programm nicht.
 arbeit_pruefen() {
-  chmod 755 "$ARBEIT" "$ARBEIT/etc" "$ARBEIT/etc/kern"
-  chmod 644 "$ARBEIT/etc/kern/"* "$ARBEIT/etc/Caddyfile"
-  docker run --rm --network none --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --security-opt no-new-privileges:true \
-    -v "$ARBEIT/etc:/etc/caddy:ro" "$1" caddy adapt --config /etc/caddy/Caddyfile >/dev/null
+  find "$ARBEIT" -type d -exec chmod 755 {} +
+  find "$ARBEIT" -type f -exec chmod 644 {} +
+  docker run --rm --pull=never --network none --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --security-opt no-new-privileges:true \
+    --pids-limit 64 --memory 256m -v "$ARBEIT/etc:/etc/caddy:ro" "$1" caddy adapt --config /etc/caddy/Caddyfile >/dev/null
 }
 
-# Das Image, mit dem wamo-caddy gerade läuft (für die Prüfung mit caddy adapt)
+# Die ID des Images, mit dem wamo-caddy gerade läuft (für die Prüfung mit caddy adapt)
 caddy_image_laufend() {
-  docker inspect -f '{{.Config.Image}}' wamo-caddy | tr -d '\r'
+  docker inspect -f '{{.Image}}' wamo-caddy | tr -d '\r'
 }
 
 caddy_neu_laden() { docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; }
