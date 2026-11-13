@@ -78,13 +78,15 @@ class Welt:
         self.prozesse = at.ProzessMitschnitt()
         self.lnk = at.VerknuepfungAttrappe()
         self.zeilen: list[str] = []
+        self.tasten: list[int] = []
         self.umg = umgmod.Umgebung(
             reg=self.reg, certutil=self.zert, lokal=self.lokal, desktop=self.desktop,
             skript=tmp_path / "scripts" / "wamo_labor_platz.py", python=str(tmp_path / "py" / "python.exe"),
             chrome_kandidaten=(self.chrome,), ca_kandidaten=(self.ca,),
             prozess_starten=self.prozesse, verknuepfung=self.lnk, abruf=_kein_abruf, jetzt=lambda: JETZT,
             token_eingabe=lambda: TOKEN, warten=lambda _s: None, arbeitsbereich=lambda: (0, 0, 1920, 1040),
-            ausgabe=self.zeilen.append, weiter_port=0, weiter_frist_s=3.0, chrome_wartezeit_s=0.0)
+            ausgabe=self.zeilen.append, weiter_port=0, weiter_frist_s=3.0, chrome_wartezeit_s=0.0,
+            taste=lambda: self.tasten.append(1))
 
     @property
     def platz_datei(self) -> Path:

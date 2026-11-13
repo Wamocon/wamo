@@ -56,6 +56,7 @@ class Umgebung:
     weiter_port: int = WEITER_PORT
     weiter_frist_s: float = 10.0
     chrome_wartezeit_s: float = 1.5
+    taste: Callable[[], None] = lambda: None  # wartet auf Enter, damit ein Fenster einer Verknüpfung nicht sofort schließt
 
     @property
     def platz_ordner(self) -> Path:

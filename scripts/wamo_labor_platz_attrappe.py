@@ -141,3 +141,19 @@ class VerknuepfungAttrappe:
         self.aufrufe.append((pfad, ziel, argumente, arbeitsordner))
         pfad.parent.mkdir(parents=True, exist_ok=True)
         pfad.write_text(f"{ziel}\n{argumente}\n{arbeitsordner}\n", encoding="utf-8")
+
+
+class AbrufAttrappe:
+    """Ersatz für den Netzabruf mit TLS-Prüfung. `antworten` ordnet einer Adresse eine Antwort oder einen Fehler zu, `standard` gilt sonst."""
+
+    def __init__(self, standard: object, antworten: dict[str, object] | None = None) -> None:
+        self.standard = standard
+        self.antworten = antworten or {}
+        self.aufrufe: list[tuple[str, str]] = []
+
+    def __call__(self, url: str, ca_datei: Path):
+        self.aufrufe.append((url, str(ca_datei)))
+        ergebnis = self.antworten.get(url, self.standard)
+        if isinstance(ergebnis, Exception):
+            raise ergebnis
+        return ergebnis

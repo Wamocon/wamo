@@ -30,6 +30,7 @@ from typing import Callable
 
 import wamo_labor_platz_registrierung as rg
 import wamo_labor_platz_zertifikat as zt
+from wamo_labor_platz_pruefen import cmd_pruefen
 from wamo_labor_platz_start import cmd_starten
 from wamo_labor_platz_umgebung import Umgebung
 from wamo_labor_platz_zustand import (PLATZ_MAX, PLATZ_MIN, ZustandFehler, datei_schreiben, json_lesen, json_text, platz_inhalt,
@@ -132,7 +133,7 @@ def _schritt_platzdatei(umg: Umgebung, text: str) -> Schritt:
 
 
 def _schritte_verknuepfungen(umg: Umgebung, platz_neu: bool) -> list[Schritt]:
-    ziele = ((umg.verknuepfungen[0], f'"{umg.skript}" starten', "wamo_labor_platz.py starten"),
+    ziele = ((umg.verknuepfungen[0], f'"{umg.skript}" starten --warten', "wamo_labor_platz.py starten"),
              (umg.verknuepfungen[1], f'"{umg.skript}" pruefen --warten', "wamo_labor_platz.py pruefen"))
     schritte = []
     for pfad, argumente, _ in ziele:
@@ -316,6 +317,10 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--profil-loeschen", action="store_true", help="auch das Chrome-Profil mit den Anmeldedaten löschen")
     st = sub.add_parser("starten", help="Chrome mit zwei Fenstern starten: WAMO links, Board rechts")
     st.add_argument("--ohne-board", action="store_true", help="nur das WAMO-Fenster, ohne Platz-Token")
+    st.add_argument("--warten", action="store_true", help="bei einem Fehler auf Enter warten (für die Verknüpfung)")
+    pr = sub.add_parser("pruefen", help="Zertifikat, Richtlinien, Chrome, Adressen, Mikrofon und Uhr prüfen, ändert nichts")
+    pr.add_argument("--ca-datei", metavar="PFAD", help="Datei der WAMO-CA für die TLS-Prüfung")
+    pr.add_argument("--warten", action="store_true", help="am Ende auf Enter warten (für die Verknüpfung)")
     sub.add_parser("status", help="Stand zeigen, ändert nichts")
     return p
 
@@ -326,7 +331,12 @@ def _verteilen(umg: Umgebung, a: argparse.Namespace) -> int:
     if a.befehl == "rueckweg":
         return cmd_rueckweg(umg, a.trocken, a.profil_loeschen)
     if a.befehl == "starten":
-        return cmd_starten(umg, a.ohne_board)
+        rc = cmd_starten(umg, a.ohne_board)
+        if a.warten and rc != EXIT_OK:
+            umg.taste()
+        return rc
+    if a.befehl == "pruefen":
+        return cmd_pruefen(umg, a.ca_datei, a.warten)
     return cmd_status(umg)
 
 

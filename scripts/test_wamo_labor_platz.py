@@ -136,7 +136,7 @@ def test_einrichten_setzt_alles(welt):
     assert welt.profil.is_dir()
     assert all(p.exists() for p in welt.verknuepfungen)
     ziel, argumente, _ = welt.verknuepfungen[0].read_text(encoding="utf-8").splitlines()
-    assert ziel.endswith("python.exe") and "wamo_labor_platz.py" in argumente and argumente.endswith("starten")
+    assert ziel.endswith("python.exe") and "wamo_labor_platz.py" in argumente and argumente.endswith("starten --warten")
     assert welt.sicherung.exists()
 
 
