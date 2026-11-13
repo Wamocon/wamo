@@ -19,7 +19,7 @@ Du testest heute den Sprachassistenten WAMO der WAMOCON GmbH. Du sprichst mit ih
 
 **Verantwortlich:** WAMOCON GmbH, Mergenthalerallee 79-81, 65760 Eschborn, Telefon +49 6196 5838311, E-Mail info@wamocon.com. Ein Datenschutzbeauftragter ist nicht bestellt. Die allgemeine Datenschutzerklärung findest du auf wamocon.com/datenschutz.
 
-**Einwilligung (Version 1):** Ich habe den Hinweis gelesen und willige ein, dass meine Eingaben wie beschrieben verarbeitet, gespeichert und zu Trainingszwecken bei WAMOCON verwendet werden. Ich bin mindestens 18 Jahre alt, oder eine Aufsichtsperson hat zugestimmt. Ich kann meine Einwilligung jederzeit widerrufen.
+**Einwilligung (Version 1):** Ich habe den Hinweis gelesen und willige ein, dass meine Eingaben wie beschrieben verarbeitet, gespeichert und zu Trainingszwecken bei WAMOCON verwendet werden. Ich bin mindestens 16 Jahre alt. Bin ich jünger, hat eine Aufsichtsperson (zum Beispiel Eltern oder Lehrkraft) zugestimmt. Ich kann meine Einwilligung jederzeit widerrufen.
 
 ## 2. Was technisch dahintersteht (für die verantwortliche Person)
 
@@ -36,6 +36,6 @@ Nicht gespeichert werden: Tonaufnahmen, Stimmprofile, Gedächtniseinträge (für
 
 1. **Auftragsverarbeitung bei Soniox und Anthropic:** Verträge (Art. 28 DSGVO), Ort der Verarbeitung und Übermittlung in Drittländer prüfen und im Hinweis bei Bedarf ergänzen. Die Datenschutzerklärung von wamocon.com beschreibt für den Chatbot der Website ein Modell auf eigener Hardware, das gilt für WAMO nicht: WAMO nutzt die genannten Dienstleister.
 2. **Trainingszwecke und Aufbewahrung:** Der Hinweis nennt die Löschfrist 11.12.2026. Sollen Gespräche darüber hinaus für Trainingszwecke bleiben, müssen Hinweis, Löschlauf (D10) und Einwilligungsversion angepasst werden (dann Version 2). Vorerst gilt: Auswertung und Training bis zum 11.12.2026, danach gelöscht.
-3. **Altersgrenze:** Als Entwurf steht "mindestens 18 Jahre alt oder Zustimmung einer Aufsichtsperson". Niko bestätigt oder ändert.
+3. **Altersangabe (entschieden von Niko am 13.11.2026):** Richtwert mindestens 16 Jahre, keine harte Grenze. Wer jünger ist, nimmt mit Zustimmung einer Aufsichtsperson teil (das entspricht Art. 8 DSGVO, in Deutschland gilt 16 für die Einwilligung). Der Text hat die Version 1 behalten, weil bis zu dieser Änderung kein Besucher eingewilligt hat (nur Probeläufe, deren Daten gelöscht sind). Ab dem ersten echten Besucher gilt: Jede inhaltliche Änderung erhöht die Versionsnummer.
 4. **Weg ohne Einwilligung:** Der Hinweis nennt "WAMO am Betreuer-Platz ansehen". Das muss am Labortag so möglich sein.
 5. **Form:** Der Betreuer zeigt den Text auf der Betreuer-Seite (Ansicht für den Besucher) oder als Aushang und erfasst die Zustimmung erst, wenn die Person sie gegeben hat.
