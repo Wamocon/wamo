@@ -10,10 +10,11 @@
 #      Einträge (12 Stunden) und entfernte Namen und setzt die Site neu (nur Entzug). Nur neue Zulassungen halten an; schon zugelassene Adressen, die weiter antworten, bleiben.
 #   2. Sperre (flock auf /run/wamo-labor-geraete/lock, dieselbe wie in wamo-labor-einrichten.sh, wamo-labor-rueckweg.sh und wamo-labor-geraete-einrichten.sh):
 #      Läuft schon ein Lauf oder ändert gerade ein Einrichten die Site, endet dieser sofort ohne Änderung.
-#   3. Jeden Namen auflösen, alle Namen gleichzeitig: NetBIOS (nmblookup -- NAME) und mDNS (avahi-resolve -4 -n -- NAME.local). Die Antworten beider Quellen gelten
-#      zusammen (Vereinigung), das DNS des Routers wird nie gefragt (es liefert veraltete Adressen). Es zählen nur IPv4-Adressen im Büro-LAN 192.168.178.0/24 (.1 bis .254);
+#   3. Jeden Namen auflösen, höchstens 4 Namen gleichzeitig: NetBIOS (nmblookup -- NAME) hat Vorrang. Nur wenn es nach dem Filter auf das Büro-LAN keine Adresse liefert,
+#      wird mDNS (avahi-resolve -4 -n -- NAME.local) gefragt und seine Antwort verwendet (für Mac- und Linux-Geräte); kein Zusammenführen, denn mDNS liefert gern eine veraltete
+#      Adresse (ein Gerät kann sie später per DHCP bekommen). Das DNS des Routers wird nie gefragt (auch es liefert veraltete Adressen). Es zählen nur IPv4-Adressen im Büro-LAN 192.168.178.0/24 (.1 bis .254);
 #      virtuelle Adressen (172.x, Docker, WSL, VPN) fallen weg. Antwortet ein Name mit mehr als 4 Adressen, ist das verdächtig (Flut oder Täuschung): Es wird nichts Neues
-#      zugelassen, der letzte Stand bleibt, und der Lauf warnt (höchstens einmal je Stunde) im Journal. Die echte Adresse wird so nie verdrängt.
+#      zugelassen, schon zugelassene Adressen, die weiter antworten, werden bestätigt, und der Lauf warnt (höchstens einmal je Stunde) im Journal. Die echte Adresse wird so nie verdrängt.
 #   4. Mit dem zuletzt eingesetzten Stand vergleichen (/var/lib/wamo-labor-geraete/betreuer-geraete.stand, root 0644: Name, Adresse, Zeitpunkt der letzten Antwort).
 #      Antwortet ein Gerät (zum Beispiel nach dem Ruhezustand), ersetzt die neue Antwort die alten Adressen dieses Namens. Antwortet es nicht, bleibt die zuletzt gute
 #      Adresse höchstens 12 Stunden nach der letzten Antwort zugelassen, danach fällt sie weg. Ein Name, der aus der Liste verschwindet, verliert seine Adressen sofort.
@@ -34,8 +35,8 @@
 #
 # Grenzen: Die Namensauflösung im LAN ist nicht kryptografisch gesichert. Ein fremdes Gerät im Büro-LAN könnte einen Namen vortäuschen und so die Seiten /betreuer und
 # /api/betreuer/ erreichen. Der Betreuer-Token bleibt die eigentliche Absicherung. Eine neue Adresse gilt frühestens mit dem nächsten Lauf und frühestens 3 Minuten nach
-# dem letzten Reload. NetBIOS und mDNS erreichen nur Geräte im selben Netz (Windows, Mac, Linux). Ein Gerät, das beides nicht beantwortet, braucht eine feste Adresse in
-# betreuer-adressen. Die 12-Stunden-Frist wird nur durchgesetzt, solange die Läufe gelingen.
+# dem letzten Versuch. NetBIOS und mDNS erreichen nur Geräte im selben Netz (Windows, Mac, Linux). mDNS gilt nur als Ersatz, dort kann eine veraltete Adresse vorkommen. Ein Gerät, das beides
+# nicht beantwortet, braucht eine feste Adresse in betreuer-adressen. Die 12-Stunden-Frist wird nur durchgesetzt, solange die Läufe gelingen.
 #
 # --trocken   löst die Namen auf und zeigt, was sich ändern würde (Auflösung, Meldungen, neue Adressliste), ohne zu sperren, zu schreiben, zu laden oder zu melden.
 # Ausgang: 0 ok (auch ohne Änderung und bei gehaltener Sperre), 1 Fehler (auch ein Fehler in den Eingaben), 2 falsche Aufrufform.
@@ -207,12 +208,16 @@ lan_filtern() {
   done | sort -t. -k4,4n -u
 }
 
-# Die Antworten eines Namens aus beiden Quellen ("--": Der Name ist nie eine Option). Eine Quelle ohne Antwort, mit Fehler oder Zeitüberschreitung ergibt einfach nichts.
+# Die Antworten eines Namens ("--": Der Name ist nie eine Option). NetBIOS hat Vorrang: Nur wenn es nach dem Filter auf das Büro-LAN keine Adresse liefert (kein Treffer,
+# Fehler, Zeitüberschreitung, nur virtuelle Adressen), wird mDNS gefragt und seine Antwort verwendet (für Mac- und Linux-Geräte). Kein Zusammenführen: mDNS liefert
+# gern eine veraltete Adresse, die später ein fremdes Gerät per DHCP bekommen könnte.
 aufloesen() {
-  {
-    timeout "$SUCHFRIST_S" nmblookup -- "$1" 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $1 }' || true
-    timeout "$SUCHFRIST_S" avahi-resolve -4 -n -- "$1.local" 2>/dev/null | awk 'NF >= 2 && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $2 }' || true
-  } | tr -d '\r' | lan_filtern
+  local antwort
+  antwort="$(timeout "$SUCHFRIST_S" nmblookup -- "$1" 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $1 }' | tr -d '\r' | lan_filtern || true)"
+  if [ -z "$antwort" ]; then
+    antwort="$(timeout "$SUCHFRIST_S" avahi-resolve -4 -n -- "$1.local" 2>/dev/null | awk 'NF >= 2 && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $2 }' | tr -d '\r' | lan_filtern || true)"
+  fi
+  if [ -n "$antwort" ]; then printf '%s\n' "$antwort"; fi
 }
 
 # Die Namen mit höchstens MAX_PARALLEL gleichzeitigen Auflösungen (eine Auflösung dauert bis zu zwei Fristen, viele Namen sollen den Takt von einer Minute nicht

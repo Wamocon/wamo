@@ -8,6 +8,11 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Betreuer-Geräte über den Namen: NetBIOS hat Vorrang vor mDNS (Korrektur nach einer Messung am Server). Der Aktualisierer fragt mDNS (`avahi-resolve`) nur, wenn NetBIOS
+  (`nmblookup`) nach dem Filter auf 192.168.178.1 bis .254 keine Adresse liefert, und führt die Antworten nicht mehr zusammen: mDNS lieferte für einen Windows-PC eine
+  veraltete Adresse (.67, antwortet nicht auf Ping), die später ein fremdes Gerät per DHCP bekommen könnte, NetBIOS dagegen die richtige (.78). Für Mac- und Linux-Geräte
+  bleibt mDNS als Ersatz (dort kann eine veraltete Adresse vorkommen, siehe README 19.1, Grenzen). Kopfkommentare, README und Tests angepasst
+  (`voice-core/test_labor_geraete_skripte.py`).
 - Betreuer-Geräte des Testlabors über den Gerätenamen zulassen, statt über feste Adressen im Router (vorbereitet, nicht ausgerollt, Abschnitt 19.1 in
   `infra/sokrates2/README.md`): Der Aktualisierer `wamo-labor-geraete-aktualisieren.sh` (am Server `/usr/local/sbin/wamo-labor-geraete-aktualisieren`, jede Minute über
   `wamo-labor-geraete.service` und `wamo-labor-geraete.timer`) liest `/etc/wamo-labor/betreuer-geraete` (ein Gerätename je Zeile, ein ungültiger Name bricht mit klarer

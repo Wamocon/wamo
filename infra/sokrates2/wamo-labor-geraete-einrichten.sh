@@ -181,9 +181,9 @@ namensliste_vorlage() {
   cat > "$NAMEN_DATEI" <<'VORLAGE'
 # Betreuer-Geräte des Testlabors, die /betreuer und /api/betreuer/ über ihren Gerätenamen erreichen (statt über feste Adressen in betreuer-adressen).
 # Ein Gerätename je Zeile (der Computername, 1 bis 15 Zeichen aus A-Z, a-z, 0-9 und Bindestrich, am Anfang kein Bindestrich). Kommentare beginnen mit #.
-# Der Aktualisierer (wamo-labor-geraete.timer) löst die Namen jede Minute über NetBIOS und mDNS auf und lässt die gefundenen Adressen im Büro-LAN
+# Der Aktualisierer (wamo-labor-geraete.timer) löst die Namen jede Minute über NetBIOS auf (nur wenn NetBIOS nichts liefert: über mDNS) und lässt die gefundenen Adressen im Büro-LAN
 # (192.168.178.0/24) zu, höchstens 4 je Name. Antwortet ein Gerät nicht (Ruhezustand), bleibt seine zuletzt bekannte Adresse höchstens 12 Stunden zugelassen.
-# Eine Änderung an dieser Datei gilt nach spätestens einer Minute. Ein ungültiger Name hält den Aktualisierer an (Meldung im Journal, Kennung wamo-labor-geraete).
+# Eine Änderung an dieser Datei gilt nach spätestens einer Minute. Ein ungültiger Name wird gemeldet (Journal, Kennung wamo-labor-geraete), neue Zulassungen halten an, der Entzug läuft weiter.
 # Beispiel (ohne # eintragen):
 # WMC-H-04-NS
 VORLAGE

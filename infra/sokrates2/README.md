@@ -1531,12 +1531,14 @@ am Anfang kein Bindestrich, höchstens 16 Namen). Ein ungültiger Wert wird klar
 weggelassen. **Der Entzug hängt aber nicht an gültigen Eingaben:** Bei einem Fehler in `betreuer-geraete` oder `betreuer-adressen` streicht der Lauf trotzdem abgelaufene Einträge (12 Stunden) und
 entfernte Namen und setzt die Site neu (nur Entzug). Nur neue Zulassungen halten an; Adressen, die schon zugelassen sind und weiter antworten, bleiben. Dann die Sperre mit `flock` (läuft schon ein
 Lauf oder ändert ein Einrichten gerade die Site, endet dieser ohne Änderung); unter der Sperre räumt der Lauf Reste früherer, abgebrochener Läufe weg (Wegwerf-Ordner `.arbeit.*` im Laufzeitordner,
-halb geschriebene `betreuer-geraete.stand.neu.*`), nie die Sperrdatei. Die Namen werden mit höchstens 4 gleichzeitigen Auflösungen über NetBIOS (`nmblookup -- NAME`) und mDNS
-(`avahi-resolve -4 -n -- NAME.local`) aufgelöst (`LC_ALL=C`, der Name nach `--`, nie als Option gelesen); beide Antworten gelten zusammen (Vereinigung), nur IPv4-Adressen im Büro-LAN
+halb geschriebene `betreuer-geraete.stand.neu.*`), nie die Sperrdatei. Die Namen werden mit höchstens 4 gleichzeitigen Auflösungen aufgelöst (`LC_ALL=C`, der Name nach `--`, nie als Option gelesen): **NetBIOS hat Vorrang** (`nmblookup -- NAME`). Nur wenn es nach dem Filter
+auf das Büro-LAN keine Adresse liefert (kein Treffer, Fehler, Zeitüberschreitung, nur virtuelle Adressen), wird mDNS (`avahi-resolve -4 -n -- NAME.local`) gefragt und seine Antwort verwendet (für Mac- und
+Linux-Geräte, die kein NetBIOS sprechen); es gibt kein Zusammenführen. Es zählen nur IPv4-Adressen im Büro-LAN
 192.168.178.0/24 (.1 bis .254) zählen, höchstens 4 je Name. Antwortet ein Name mit mehr als 4 Antworten, ist das verdächtig (Flut oder Täuschung): Es wird nichts Neues zugelassen, schon zugelassene,
 nicht abgelaufene Adressen, die weiter antworten, werden bestätigt (ihr Zeitpunkt der letzten Antwort wird erneuert, ein Fremdgerät friert das echte Gerät so nicht ein), und der Lauf warnt höchstens
-einmal je Stunde im Journal. Das DNS der Fritz!Box wird nie gefragt. Gemessen am Server für den PC `WMC-H-04-NS`: Das DNS lieferte veraltete Adressen (.67 und .123), mDNS lieferte .67,
-NetBIOS lieferte .78 und dazu virtuelle 172.x-Adressen (die der Filter verwirft); die Quellen widersprechen sich, deshalb die Vereinigung. Danach der Vergleich mit dem Stand: Antwortet ein Gerät,
+einmal je Stunde im Journal. Das DNS der Fritz!Box wird nie gefragt. Gemessen am Server für den PC `WMC-H-04-NS`: Das DNS lieferte veraltete Adressen (.67 und .123), NetBIOS lieferte die richtige Adresse (.78)
+und dazu virtuelle 172.x-Adressen (die der Filter verwirft), mDNS lieferte dagegen die veraltete .67 (antwortet nicht auf Ping, ARP-Eintrag INCOMPLETE). Eine Vereinigung ließe die tote Adresse zu, die später ein
+fremdes Gerät per DHCP bekommen könnte; deshalb gilt mDNS nur als Ersatz. Danach der Vergleich mit dem Stand: Antwortet ein Gerät,
 ersetzen seine neuen Adressen die alten. Antwortet es nicht (PC im Ruhezustand), bleibt die zuletzt gute Adresse höchstens 12 Stunden nach der letzten Antwort zugelassen, danach fällt sie weg. Ein Name,
 der aus der Liste verschwindet, verliert seine Adressen sofort. Zeitpunkte im Stand (und in seinem Kopf), die in der Zukunft liegen (Zeitsprung der Uhr, Fälschung), zählen bis 5 Minuten als jetzt, darüber als
 abgelaufen; eine führende Null wird nie oktal gelesen. **Die Site wird neu zusammengesetzt, wenn sich die Menge der Adressen ändert oder die installierte Site von dem abweicht, was aus Vorlage, festen Adressen und
@@ -1585,7 +1587,8 @@ ausführen. `betreuer-geraete`, `betreuer-adressen` und die Sicherungen unter `/
    erreichen. Der Betreuer-Token bleibt die eigentliche Absicherung: Ohne ihn hilft die Adresse nicht. Die Liste der zugelassenen Namen ist klein und gehört dem Betreiber.
 2. **Eine neue Adresse gilt frühestens mit dem nächsten Lauf**, also nach höchstens etwa einer Minute (beim Systemstart 30 Sekunden nach dem Start), und frühestens 3 Minuten nach dem letzten Versuch, eine neue
    Zulassung zu laden. Ein Entzug wartet nie (in der Zwischenzeit gilt nur die Schnittmenge aus altem und neuem Stand).
-3. **NetBIOS und mDNS erreichen nur Windows-, Mac- und Linux-Geräte im selben Netz.** Ein Tablet oder Handy, das beides nicht beantwortet, braucht eine feste Adresse in `betreuer-adressen`
+3. **NetBIOS und mDNS erreichen nur Windows-, Mac- und Linux-Geräte im selben Netz, und mDNS gilt nur als Ersatz.** Sprechen Mac- und Linux-Geräte kein NetBIOS, kommt ihre Adresse allein aus mDNS: Dort kann eine
+   veraltete Adresse vorkommen (sie bleibt dann bis zur nächsten Antwort oder bis zu 12 Stunden zugelassen, auch hier hält der Betreuer-Token). Windows-Geräte sind davon nicht betroffen, solange NetBIOS antwortet. Ein Tablet oder Handy, das beides nicht beantwortet, braucht eine feste Adresse in `betreuer-adressen`
    (ein Gerät, das nie antwortet, bekommt nie eine Adresse; der Aktualisierer meldet das nicht jede Minute, `status` zeigt den Stand).
 4. **Die Firewall kennt keine Namen.** `plaetze-adressen` (Quellen für 55447 in `wamo-firewall`) bleibt eine Adressliste: Mit Einträgen müsste ein Betreuer-PC dort mit einer Adresse oder dem Büro-/24
    stehen, ohne Einträge gilt das Büro-LAN und es gibt keine Lücke durch wechselnde Adressen. Wer keine festen Adressen will, lässt die Liste leer.
