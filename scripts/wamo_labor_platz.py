@@ -51,6 +51,11 @@ class Schritt:
     aktion: Callable[[], None] | None  # None: nichts zu tun
 
 
+def _ursache(fehler: Exception) -> str:
+    """Der Text für die Person: eigene Fehler im Klartext, Systemfehler mit Art und Meldung (nie ein Token, es kommt hier keines vor)."""
+    return str(fehler) if isinstance(fehler, (zt.CaFehler, ZustandFehler)) else f"{type(fehler).__name__}: {fehler}"
+
+
 def _melden(umg: Umgebung, schritte: list[Schritt], trocken: bool) -> None:
     for s in schritte:
         umg.ausgabe(f"  {s.thema}: {s.text}" + ("" if s.aktion else " (unverändert)"))
@@ -66,8 +71,7 @@ def _ausfuehren(umg: Umgebung, schritte: list[Schritt]) -> int:
         try:
             s.aktion()
         except FEHLER as e:
-            umg.ausgabe(f"Fehler bei {s.thema}: {e if isinstance(e, (zt.CaFehler, ZustandFehler)) else type(e).__name__}. "
-                        f"Der Rückweg stellt den vorigen Zustand her.")
+            umg.ausgabe(f"Fehler bei {s.thema}: {_ursache(e)}. Der Rückweg stellt den vorigen Zustand her.")
             return EXIT_FEHLER
         getan += 1
     umg.ausgabe(f"Fertig: {getan} Schritt(e) ausgeführt." if getan else "Fertig: nichts zu ändern.")
@@ -165,6 +169,7 @@ def cmd_einrichten(umg: Umgebung, platz_arg: str | None, ca_arg: str | None, tro
     schritte += _schritte_verknuepfungen(umg, platz_neu)
     umg.ausgabe(("Trockenlauf, " if trocken else "") + f"Plan für Platz {platz}:" + (" (Platz 15 und 16 sind für die Abnahme reserviert)"
                                                                                        if platz >= 15 else ""))
+    umg.ausgabe("Achtung: Die Richtlinien gelten für alle Chrome-Profile dieses Windows-Benutzers. Nur im Kiosk-Konto einrichten.")
     _melden(umg, schritte, trocken)
     if trocken:
         return EXIT_OK
@@ -173,7 +178,7 @@ def cmd_einrichten(umg: Umgebung, platz_arg: str | None, ca_arg: str | None, tro
             alt = json_lesen(umg.sicherung_datei)
             datei_schreiben(umg.sicherung_datei, json_text(sicherung_zusammenfuehren(alt, sicherung_erfassen(umg, soll, sha1, vorhanden))))
     except FEHLER as e:
-        umg.ausgabe(f"Fehler bei der Sicherung: {e if isinstance(e, ZustandFehler) else type(e).__name__}. Es wurde nichts geändert.")
+        umg.ausgabe(f"Fehler bei der Sicherung: {_ursache(e)}. Es wurde nichts geändert.")
         return EXIT_FEHLER
     return _ausfuehren(umg, schritte)
 

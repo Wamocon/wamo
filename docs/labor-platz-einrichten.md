@@ -4,6 +4,8 @@
 
 **Wichtig:** Die Chrome-Richtlinien stehen im Benutzerzweig (HKCU). Das ist Zusatzschutz und nicht die Grenze, denn ein Benutzer kann seinen eigenen Zweig ändern. Die Grenzen sind der Kern (Anmeldung, zweiter Faktor, Rechte) und das Netz (Segmentierung durch die Kollegen).
 
+**Nur im Kiosk-Konto einrichten:** Die Richtlinien gelten für **alle** Chrome-Profile dieses Windows-Benutzers und sperren jede Adresse außer den Labor-Adressen. Wer `einrichten` im eigenen Konto ausführt, sperrt sich den normalen Browser, bis `rueckweg` gelaufen ist.
+
 ## 1. Was das Skript ändert
 
 | Was | Wo | Rückweg |

@@ -124,6 +124,18 @@ def test_trockenlauf_zeigt_den_plan_und_aendert_nichts(welt):
         assert muster in welt.text
 
 
+def test_plan_warnt_vor_dem_eigenen_konto_und_fehler_zeigen_die_ursache(welt):
+    welt.lauf("einrichten", "--trocken", "--platz", "3")
+    assert "alle Chrome-Profile" in welt.text and "Kiosk-Konto" in welt.text
+    welt.zeilen.clear()
+
+    def kaputt(*_a, **_k):
+        raise PermissionError("Zugriff verweigert")
+    welt.reg.setzen = kaputt
+    assert welt.lauf("einrichten", "--platz", "3") == 1
+    assert "PermissionError" in welt.text and "Zugriff verweigert" in welt.text
+
+
 def test_einrichten_setzt_alles(welt):
     import wamo_labor_platz_registrierung as regmod
     assert welt.lauf("einrichten", "--platz", "3") == 0
