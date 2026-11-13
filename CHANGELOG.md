@@ -31,6 +31,9 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   gehärtet (`ProtectHome=read-only`, schreibbar nur Laufzeitordner, Zustandsordner `/var/lib/wamo-labor-geraete` und `etc/kern`, die Token-Dateien unsichtbar,
   `UMask=0077`, `RestrictNamespaces`). Scheitert beim Einrichten der Prüflauf, kommen auch Site und Stand aus der Sicherung zurück; scheitert im Rückweg die Site, geht
   nur der Timer aus und der Rückweg bleibt wiederholbar.
+- Betriebsunterlagen für das Testlabor am 28.11.2026 (Entwurf, nicht ausgerollt): das Runbook für die Betreuer `docs/labor-runbook.md` (Platz öffnen und schließen, Notaus, Störungen,
+  Rückfall mit Aufzeichnung, wer wen anruft), die ankreuzbare Checkliste `docs/labor-morgencheckliste.md` für Freitag 27.11. und Samstag 28.11. und das Skript `scripts/wamo_labor_nachlauf.py`
+  (`nachlauf`: ohne Schalter ein Trockenlauf mit Zählung, mit `--ausfuehren` Laborprofile sperren, die 16 Plätze des Dienstes und den Gesprächstext im Kern leeren, Nachweis durch Zählung danach). Tests `scripts/test_wamo_labor_nachlauf.py`.
 - Platz-Skript für die Windows-Laptops des Testlabors (Paket P8, nicht ausgerollt, Anleitung `docs/labor-platz-einrichten.md`, Konzept `docs/testlabor-wamo.md` 3.9): `scripts/wamo_labor_platz.py` mit den Befehlen
   `einrichten` (`--trocken`, `--platz N`, `--ca-datei`), `starten` (`--ohne-board`), `pruefen`, `rueckweg` (`--trocken`, `--profil-loeschen`) und `status`. Läuft im Kiosk-Konto ohne Administratorrechte und ohne PowerShell,
   nur Standardbibliothek. `einrichten` importiert die WAMO-CA in den Benutzerspeicher (`certutil -user`, Prüfung nach Hash), setzt 34 Chrome-Richtlinien im Benutzerzweig (Übersetzung, Passwortmanager, Anmeldung und Sync,
