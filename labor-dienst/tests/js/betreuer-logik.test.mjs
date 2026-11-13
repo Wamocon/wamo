@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  AKTIONEN, EINWILLIGUNG_MAX, TOKEN_ANZEIGE_SEKUNDEN, aktionAdresse, bestaetigungOk, einwilligungPruefen, fehlerText, hoechsteEinwilligung, platzLink, platzModell,
+  AKTIONEN, TOKEN_ANZEIGE_SEKUNDEN, aktionAdresse, bestaetigungOk, fehlerText, hoechsteEinwilligung, platzLink, platzModell,
   tokenRestSekunden, uebersichtOk,
 } from "../../wamo_labor_dienst/web/betreuer-logik.js";
 import { platzToken, uuid } from "./werte.mjs";
@@ -9,30 +9,6 @@ import { platzToken, uuid } from "./werte.mjs";
 const platz = (nummer, extra = {}) => ({
   platz: nummer, durchlauf_id: uuid(), offen: true, einwilligung_version: 1, einwilligung_zeit: "2026-11-28T09:30:00Z", tickets: 7, kommentare: 2,
   hat_platz_token: true, reserviert: false, ...extra,
-});
-
-test("einwilligungPruefen nimmt ganze Zahlen von 1 bis 1000 an, die nicht kleiner sind als die höchste bisherige", () => {
-  assert.deepEqual(einwilligungPruefen("1", 0), { ok: true, wert: 1, fehler: "" });
-  assert.deepEqual(einwilligungPruefen(" 5 ", 3), { ok: true, wert: 5, fehler: "" });
-  assert.equal(einwilligungPruefen("5", 5).ok, true, "dieselbe Version gilt für den nächsten Besucher");
-  assert.equal(einwilligungPruefen("1000", null).ok, true);
-  assert.equal(EINWILLIGUNG_MAX, 1000);
-});
-
-test("einwilligungPruefen lehnt eine kleinere Version ab und nennt die höchste", () => {
-  const r = einwilligungPruefen("4", 5);
-  assert.equal(r.ok, false);
-  assert.equal(r.wert, null);
-  assert.match(r.fehler, /nicht kleiner/);
-  assert.match(r.fehler, /5/);
-});
-
-test("einwilligungPruefen lehnt alles ab, was keine ganze Zahl von 1 bis 1000 ist", () => {
-  for (const kaputt of ["", " ", "0", "-1", "1.5", "1,5", "abc", "1e3", "01", "٣", "１", "99999999999", "+5", "5 5", null, undefined, 5, {}]) {
-    assert.equal(einwilligungPruefen(kaputt, 0).ok, false, String(kaputt));
-  }
-  assert.match(einwilligungPruefen("1001", 0).fehler, /höchstens 1000/);
-  assert.match(einwilligungPruefen("abc", 0).fehler, /ganze Zahl/);
 });
 
 test("hoechsteEinwilligung nimmt die größte erfasste Version über alle Plätze", () => {

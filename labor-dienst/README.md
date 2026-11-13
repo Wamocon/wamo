@@ -127,14 +127,15 @@ Was der Dienst bewusst nicht löst und wer es lösen muss:
 
 ## Weboberflächen
 
-Zwei statische Seiten, die der Dienst selbst ausliefert (kein Build-Schritt, keine Pakete, kein CDN, keine externen Schriften, kein Atlassian-Logo, WMC-Corporate-Design
+Drei statische Seiten, die der Dienst selbst ausliefert (kein Build-Schritt, keine Pakete, kein CDN, keine externen Schriften, kein Atlassian-Logo, WMC-Corporate-Design
 ohne Blau, Schrift Arial Narrow mit Rückfall auf Arial):
 
 | Adresse | Seite |
 | --- | --- |
 | `/` und `/board` | Board-Seite für Besucher (nur lesend), Link `/board#t=<Platz-Token>` |
 | `/betreuer` | Betreuer-Seite, Link `/betreuer#b=<Betreuer-Token>` oder Eingabefeld |
-| `/web/<Name>` | Dateien der Seiten aus einer festen Liste (`stil.css`, `dom.js`, `gemeinsam.js`, `board-logik.js`, `board.js`, `betreuer-logik.js`, `betreuer.js`) |
+| `/datenschutz` | Datenschutzhinweis für die Besucher (Version 1), öffentlich wie das Board, ohne Token, mit Knopf Drucken |
+| `/web/<Name>` | Dateien der Seiten aus einer festen Liste (`stil.css`, `dom.js`, `gemeinsam.js`, `board-logik.js`, `board.js`, `betreuer-logik.js`, `betreuer.js`, `datenschutz-logik.js`, `datenschutz.js`) |
 
 * **Board-Seite:** zeigt Platznummer, Zustand des Durchlaufs, die Tickets des Platzes als Spalten nach Status (Zu erledigen, In Arbeit, Erledigt) mit Schlüssel,
   Titel, Typ, Priorität und Zahl der Kommentare, ein Klick öffnet Beschreibung und Kommentare. Sie fragt alle 3 Sekunden (nur bei sichtbarem Tab), nimmt sich
@@ -142,17 +143,28 @@ ohne Blau, Schrift Arial Narrow mit Rückfall auf Arial):
   die Schnittstelle nicht, die Seite zeigt deshalb nur eine Zusammenfassung (Tickets, neue Tickets, Kommentare). Der Platz-Token kommt aus dem URL-Fragment
   (`#t=...`, nie aus der Abfrage), bleibt nur im Speicher der Seite und wird mit `history.replaceState` aus der Adresszeile entfernt. Ein Neuladen braucht deshalb
   den Link erneut.
-* **Betreuer-Seite:** Übersicht der 16 Plätze und die Funktionen der Betreuer-Schnittstelle. Neuer Durchlauf (Einwilligungsversion von 1 bis 1000, nur wachsend),
-  Zurücksetzen und Daten löschen verlangen in der Oberfläche das Eintippen der Platznummer (das mildert die fehlende Bestätigung der Schnittstelle).
+* **Betreuer-Seite:** Übersicht der 16 Plätze und die Funktionen der Betreuer-Schnittstelle. Neuer Durchlauf, Zurücksetzen und Daten löschen verlangen in der
+  Oberfläche das Eintippen der Platznummer (das mildert die fehlende Bestätigung der Schnittstelle). Neuer Durchlauf verlangt zusätzlich den Haken „Der Besucher
+  hat den Datenschutzhinweis (Version 1) gelesen und bestätigt.“: „Ausführen“ wird erst frei, wenn der Haken gesetzt UND die Platznummer getippt ist. Die Version
+  kommt aus der Konstante `DATENSCHUTZ_VERSION` in `datenschutz-logik.js`, steht im Dialog nur lesend und wird als `einwilligung_version` gesendet (kein freies Feld
+  mehr). Kennt der Dienst schon eine höhere Version, ist die Seite veraltet: „Ausführen“ bleibt gesperrt, bis sie neu geladen ist. Ein Link im Dialog und in der
+  Werkzeugleiste öffnet den Hinweis in einem neuen Tab (`rel="noopener noreferrer"`). Der Haken ist die Bestätigung des Betreuers in der Oberfläche, kein
+  technischer Nachweis: Die Schnittstelle selbst ist unverändert und nimmt jede gültige Version an (1 bis 1000, nur wachsend).
   Nach neuer Durchlauf und Daten löschen holt die Seite den neuen Platz-Token (der alte gilt nicht mehr) und zeigt ihn mit dem Besucher-Link nur einmal mit
   Kopier-Knöpfen, nach 60 Sekunden wird er ausgeblendet. Der Betreuer-Token bleibt nur im Speicher der Seite, nie in einem Speicher des Browsers.
+* **Datenschutzhinweis (`/datenschutz`):** Der Text steht nur im Dokument `docs/labor-datenschutz-entwurf.md` (Abschnitt 1, „Text für die Besucher“) und ist fest in
+  `datenschutz.html` eingesetzt (die Seite fragt keinen Dienst und kennt weder Token noch Platzdaten). `tests/test_datenschutz.py` vergleicht die Seite mit dem Dokument:
+  jeder Absatz und alle sechs Punkte in der Reihenfolge, und die Version stimmt in Seite, Dokument und Konstante überein. Ändert sich der Text inhaltlich, steigt die
+  Nummer an allen drei Stellen gemeinsam. Große Schrift (ab 1,45 rem), ruhige Gestaltung im WMC-Design, Knopf Drucken ohne Inline-Skript (`datenschutz.js`, Druckansicht
+  ohne Kopfzeilenknöpfe). Gleiche Schutzköpfe und Auslieferung wie die anderen Seiten (nur GET, feste Liste, alles andere 404). Im Betrieb erreicht sie das Büro-LAN
+  über dieselbe Pfadliste wie das Board (`infra/sokrates2/wamo-caddy/kern/wamo-labor.caddy`).
 * **Sicherheit:** Alle Texte aus dem Dienst gehen über `textContent` oder Textknoten, nie als HTML (`dom.js` lässt nur Attribute aus einer festen Liste zu). Kein
   Inline-Skript, kein Inline-Stil, keine Ereignisattribute. Die Seiten tragen `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
   img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, dazu `nosniff`, `no-referrer`, `Cache-Control: no-store`
   und eine Permissions-Policy, die Kamera, Mikrofon, Standort, Zahlung und USB mit leerer Liste sperrt. Ausgeliefert wird nur per GET aus der festen Liste (kein
   Pfad-Trick, kein Verzeichnislisting, alles andere 404), die Dateien liegen nach dem Start im Speicher. Die Seiten enthalten weder Token noch Platzdaten, alle
   Daten kommen über die Schnittstellen mit Token. Die Anmeldung der Schnittstellen bleibt unverändert: Wer `/betreuer` erreicht, legt der Betrieb (Caddy) fest.
-* **Prüfen:** `python -m pytest -p no:cacheprovider -q tests/test_web.py tests/test_web_inhalt.py tests/test_javascript.py` und die reinen Funktionen mit
+* **Prüfen:** `python -m pytest -p no:cacheprovider -q tests/test_web.py tests/test_web_inhalt.py tests/test_datenschutz.py tests/test_javascript.py` und die reinen Funktionen mit
   `node --test tests/js` (Node, keine Pakete).
 * **Abnahmeskript:** A1 akzeptiert bei `--board-url` `default-src 'self'` (Vertrag D4) und die strengere Richtlinie der Seiten mit `default-src 'none'`
   und eigenen `script-src` und `style-src`. `--board-url` kann deshalb direkt auf `/board` zeigen.
@@ -165,7 +177,8 @@ python -m wamo_labor_dienst.demo --port 8765
 ```
 
 Platz 1 und 2 haben einen offenen Durchlauf mit Tickets in allen Spalten und Kommentaren (auch ein Ticket mit HTML-artigem Text, der als Text erscheint),
-Platz 3 hat einen beendeten Durchlauf, alle anderen Plätze sind geschlossen. Mit Strg+C beenden, die Demo-Daten verschwinden dabei.
+Platz 3 hat einen beendeten Durchlauf, alle anderen Plätze sind geschlossen. Alle drei haben die Einwilligung in Version 1 erfasst, damit der Dialog Neuer Durchlauf
+bedienbar ist. Den Datenschutzhinweis zeigt `http://127.0.0.1:8765/datenschutz` (ohne Token). Mit Strg+C beenden, die Demo-Daten verschwinden dabei.
 
 ## Grenzen für Lesen, Fehlversuche und Verbindungen
 

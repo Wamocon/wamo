@@ -15,7 +15,8 @@
 # Überlast), bekommen die Schutzköpfe aus dem Schnipsel labor_koepfe und einen kurzen deutschen Text.
 #
 # Wer was erreicht (alles andere ist 404, die Liste ist eine Positivliste mit genauen Mustern ohne Punkt, Prozentzeichen und Großschreibung):
-#   /, /board, /web/<Datei>, /api/browser/<Name>   Büro-LAN (die Quellen begrenzt die Firewall: Kette WAMO-FW-LABOR in wamo-firewall.sh)
+#   /, /board, /datenschutz, /web/<Datei>,         Büro-LAN (die Quellen begrenzt die Firewall: Kette WAMO-FW-LABOR in wamo-firewall.sh);
+#   /api/browser/<Name>                            /datenschutz ist der Hinweis für die Besucher, öffentlich wie das Board, ohne Token
 #   /betreuer, /api/betreuer/...                   nur die Betreuer-Adressen (sonst 403)
 #   /gesundheit                                    nur der Server selbst (sonst 403)
 #   /api/kern/...                                  nie: Der Kern geht über Loopback 127.0.0.1:18765 direkt zum Dienst (sonst 404)
@@ -77,7 +78,7 @@ https://192.168.178.136:55447, https://sokrates2:55447, https://spark-651f.local
 		path_regexp (?i)^/+api/+kern(/|$)
 	}
 	@browser_pfad {
-		path_regexp ^/(board|api/browser/[a-z0-9_-]+|web/[a-z][a-z0-9-]*\.(css|js))?$
+		path_regexp ^/(board|datenschutz|api/browser/[a-z0-9_-]+|web/[a-z][a-z0-9-]*\.(css|js))?$
 	}
 	@betreuer_pfad {
 		path_regexp ^/(betreuer|api/betreuer/[a-z0-9_-]+(/[a-z0-9_-]+(/[a-z0-9_-]+)?)?)$
