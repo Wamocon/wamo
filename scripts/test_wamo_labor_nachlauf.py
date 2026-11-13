@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import http.client
 import http.server
 import io
 import json
@@ -55,9 +56,10 @@ def ergebnis(daten: dict) -> wl.Ergebnis:
 class Kern:
     """Attrappe für wamo_labor.run_remote: Zustand je Laborprofil, merkt sich jede Nutzlast und den gemeinsamen Ablauf."""
 
-    def __init__(self, profile: int = 9, zeilen: int = 40, fehler: dict | None = None, rest: int = 0, ablauf: list | None = None):
+    def __init__(self, profile: int = 9, zeilen: int = 40, fehler: dict | None = None, rest: int = 0, ablauf: list | None = None,
+                 verliert: bool = False, fremd: str = ""):
         self.profile = {f"labor-{n:02d}": {"frei": True, "zeilen": zeilen} for n in range(1, profile + 1)}
-        self.fehler, self.rest = fehler or {}, rest
+        self.fehler, self.rest, self.verliert, self.fremd = fehler or {}, rest, verliert, fremd
         self.aufrufe: list[dict] = []
         self.hosts: list[str] = []
         self.ablauf = ablauf if ablauf is not None else []
@@ -86,9 +88,12 @@ class Kern:
                 p["frei"] = False
             return wl.Ergebnis(0, f"{len(self.profile)} Laborprofile gesperrt (labor_aktiv = false).", "")
         if aktion == "loeschen":
+            zeilen = [f"{k}: geloescht: turns 3" for k in self.profile] + ([self.fremd] if self.fremd else [])
             for p in self.profile.values():
                 p["zeilen"] = self.rest
-            return wl.Ergebnis(0, "\n".join(f"{k}: geloescht: turns 3" for k in self.profile), "")
+            if self.verliert:
+                self.profile = {}
+            return wl.Ergebnis(0, "\n".join(zeilen), "")
         raise AssertionError(f"unerwartete Aktion {aktion}")
 
 
@@ -334,6 +339,29 @@ def test_der_trockenlauf_geht_auch_vor_dem_labortag(tmp_path):
 def test_falsche_angaben_werden_vor_dem_ersten_aufruf_abgelehnt(tmp_path, argv):
     code, _, fehl, kern, dienst = lauf(argv, tmp_path=tmp_path)
     assert code == 2 and fehl.strip() and kern.aufrufe == [] and dienst.aufrufe == []
+
+
+def test_unaufloesbare_pfade_sind_ein_aufruffehler_und_nie_ein_traceback(tmp_path):
+    for option in ("--umschlag-datei", "--protokoll"):
+        code, aus, fehl, kern, _ = lauf(["nachlauf", option, "~nutzer-gibt-es-nicht-xyz/datei.txt"], tmp_path=tmp_path)
+        assert code == 2 and "Traceback" not in aus + fehl and fehl.strip() and kern.aufrufe == []
+
+
+def test_abkuerzungen_von_schaltern_werden_abgelehnt(tmp_path):
+    code, _, fehl, kern, dienst = lauf(["nachlauf", "--aus"], tmp_path=tmp_path)
+    assert code == 2 and "usage" in fehl.lower() and kern.aufrufe == [] and dienst.aufrufe == []
+
+
+def test_zeigt_der_server_nachher_weniger_profile_ist_der_nachweis_nicht_erbracht(tmp_path):
+    code, _, fehl, _, _ = lauf(["nachlauf", "--ausfuehren"], Kern(verliert=True), tmp_path=tmp_path)
+    assert code == 1 and "Nachweis nicht erbracht" in fehl and "Laborprofile" in fehl
+
+
+def test_vom_kern_werden_nur_bekannte_zeilen_angezeigt(tmp_path):
+    kern = Kern(fremd="TEXT-DES-GESPRAECHS " + GEHEIM)
+    code, aus, fehl, _, _ = lauf(["nachlauf", "--ausfuehren"], kern, tmp_path=tmp_path)
+    assert code == 0 and "TEXT-DES-GESPRAECHS" not in aus + fehl and GEHEIM not in aus + fehl and "nicht angezeigt" in aus
+    assert "labor-01: geloescht: turns 3" in aus and "9 Laborprofile gesperrt" in aus
 
 
 def test_ohne_befehl_gibt_es_den_aufrufhinweis_von_argparse(tmp_path):
@@ -601,7 +629,7 @@ def test_server_aktion_geht_als_post_mit_leerem_objekt_an_genau_einen_pfad(tmp_p
     anfrage, _ = oeffner.anfragen[0]
     assert code == 0 and anfrage.get_method() == "POST" and anfrage.data == b"{}"
     assert anfrage.full_url == f"http://127.0.0.1:18765/api/betreuer/plaetze/5/{aktion}"
-    assert json.loads(aus) == {"status": 200, "platz": {"platz": 5, "offen": False, "tickets": 0, "kommentare": 0, "einwilligung": False, "platz_token": False}}
+    assert json.loads(aus) == {"status": 200}
 
 
 @pytest.mark.parametrize("nutzlast", [
@@ -644,6 +672,53 @@ def test_server_antwort_ohne_json_ist_nur_der_status(tmp_path):
 def test_server_unerwartete_antwortform_ist_ein_fehler(tmp_path):
     code, _, fehl = serverlauf({"aktion": "plaetze"}, tmp_path, Oeffner(Antwort(200, {"plaetze": [{"platz": 1}]})))
     assert code == 1 and "unerwartet" in fehl
+
+
+def test_server_post_antwort_wird_nicht_geparst_ein_formatfehler_bricht_den_lauf_nie(tmp_path):
+    code, aus, _ = serverlauf({"aktion": "daten-loeschen", "platz": 5}, tmp_path, Oeffner(Antwort(200, {"unsinn": [1, 2]})))
+    assert code == 0 and json.loads(aus) == {"status": 200}
+
+
+@pytest.mark.parametrize("aendern", [
+    lambda p: p.pop("hat_platz_token"), lambda p: p.pop("einwilligung_version"), lambda p: p.pop("tickets"), lambda p: p.pop("offen"),
+    lambda p: p.update(tickets="3"), lambda p: p.update(tickets=True), lambda p: p.update(offen=1), lambda p: p.update(hat_platz_token="nein"),
+])
+def test_server_zaehlung_liest_fehlende_oder_falsche_felder_nie_als_null(tmp_path, aendern):
+    daten = vollstaendige_plaetze()
+    aendern(daten["plaetze"][3])
+    code, aus, fehl = serverlauf({"aktion": "plaetze"}, tmp_path, Oeffner(Antwort(200, daten)))
+    assert code == 1 and aus == "" and "unerwartet" in fehl
+
+
+@pytest.mark.parametrize("fehler", [http.client.IncompleteRead(b"ab"), http.client.BadStatusLine("x"), ValueError(GEHEIM), RecursionError(GEHEIM)])
+def test_server_unerwartete_ausnahmen_sind_nie_ein_traceback_und_nie_ein_geheimnis(tmp_path, fehler):
+    code, aus, fehl = serverlauf({"aktion": "plaetze"}, tmp_path, Oeffner(fehler=fehler))
+    assert code == 1 and aus == "" and type(fehler).__name__ in fehl and "Traceback" not in fehl and GEHEIM not in fehl
+
+
+def test_server_antwort_ohne_liste_und_unlesbarer_token_sind_klare_fehler(tmp_path):
+    code, _, fehl = serverlauf({"aktion": "plaetze"}, tmp_path, Oeffner(Antwort(200, {"plaetze": None})))
+    assert code == 1 and "unerwartet" in fehl
+    ns = remote_namensraum()
+    datei = tmp_path / "betreuer-token"
+    datei.write_bytes(b"\xff\xfe\xfa" * 20)
+    fehl_aus = io.StringIO()
+    with redirect_stderr(fehl_aus):
+        assert ns["verarbeite"]({"aktion": "plaetze"}, str(datei), Oeffner(Antwort(200, {}))) == 1
+    assert "nicht lesbar" in fehl_aus.getvalue() and "Traceback" not in fehl_aus.getvalue()
+
+
+def test_der_echte_aufruf_mit_isoliertem_python_laeuft_durch_haupt(tmp_path):
+    """Startet das Programm genau so wie der Server (python -I -c exec(b64decode(...)), Eingabe über stdin). Die Tokendatei gibt es hier nicht,
+    das Programm muss mit einer klaren Meldung und Ausgang 1 enden. Das prüft den Zweig __main__ und den Start im isolierten Modus."""
+    programm = base64.b64encode(na.REMOTE_DIENST.encode("utf-8")).decode("ascii")
+    code_text = f"import base64;exec(base64.b64decode('{programm}').decode('utf-8'))"
+    for eingabe, teil in ((json.dumps({"aktion": "plaetze"}), "nicht lesbar"), (json.dumps({"aktion": "neuer-durchlauf", "platz": 1}), "Ungueltige Aufgabe"),
+                          ("kein json", "kein JSON-Objekt")):
+        prozess = subprocess.Popen([sys.executable, "-I", "-c", code_text], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, cwd=tmp_path)
+        aus, fehl = prozess.communicate(eingabe, timeout=60)
+        assert prozess.returncode == 1 and aus == "" and teil in fehl and "Traceback" not in fehl, (eingabe, fehl)
 
 
 def test_server_dienst_nicht_erreichbar_ohne_geheimnis(tmp_path):

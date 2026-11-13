@@ -26,6 +26,10 @@ angesprochen, und zwar von einem kleinen Programm, das per ssh und sudo -n auf d
 nur dort gelesen und nur dort benutzt: Er verlässt den Server nie, steht in keiner Befehlszeile und in keiner Ausgabe, und das Programm kennt nur die
 festen Aufgaben plaetze, durchlauf-beenden und daten-loeschen für die Plätze 1 bis 16 (nie neuer-durchlauf oder platz-token).
 
+Grenzen, ehrlich: (1) sudo -n python3 setzt voraus, dass der ssh-Benutzer am Server sudo ohne Passwort für python3 hat (das ist dann Root-Zugriff, die Beschränkung auf
+drei Aufgaben ist Disziplin des Programms und keine Grenze des Systems). (2) Der Bearer geht wie beim Kern im Klartext an 127.0.0.1:18765 des Servers, nie über ein
+Netz. (3) Der Weg zum Kern (wamo_labor.run_remote) hat kein eigenes ssh-Zeitlimit: Ein hängendes ssh lässt sich mit Strg+C beenden, der Lauf ist wiederholbar.
+
 Ausgänge: 0 alles in Ordnung (oder Trockenlauf gelungen), 1 ein Schritt oder der Nachweis ist gescheitert (der Lauf ist wiederholbar, Sperren und Löschen
 schaden nie), 2 Aufruf oder Einstellung falsch (nichts wurde am Server angefasst), 130 Abbruch mit Strg+C.
 Geheimnisse und Texte: Die Ausgabe und die Protokolldatei enthalten nur Zählungen, Plätze und Schrittnamen, nie ein Passwort, einen Token oder einen
@@ -58,6 +62,10 @@ SCHEMA_RE = re.compile(r"wamo_(dev|test|prod)")
 HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")  # kein führender Strich: ssh hielte ihn für eine Option
 STATUS_RE = re.compile(r"(labor-(?:0[1-9]|1[0-6]|schau)) \| (?:platz|schaufenster) \| (freigeschaltet|gesperrt) \| (\d{1,9}) Zeilen")
 SICHERUNG_RE = r"(\.neu|\.sicherung-\d{8}-\d{6}(-\d+)?)"
+# Das Skript zeigt vom Kern nur Zeilen dieser Formen (wie wamo_labor.py sie ausgibt), nie Text
+ZEILE_SPERREN = re.compile(r"\d{1,3} Laborprofile gesperrt \(labor_aktiv = false\)\.")
+ZEILE_LOESCHEN = re.compile(r"labor-(?:0[1-9]|1[0-6]|schau): (?:geloescht: (?:nichts|[a-z_]+ \d+(?:, [a-z_]+ \d+)*)"
+                            r"|Sperrfrist \(das Profil wurde vor kurzem geaendert\), warte \d{1,3} Sekunden, Versuch \d von \d\.)")
 DIENST_VERSUCHE = 3
 SSH_FRIST_S = 180
 MAX_AUSGABE = 70000
@@ -104,7 +112,7 @@ def token_lesen(pfad):
     try:
         with open(pfad, encoding="utf-8") as datei:
             token = datei.read().strip()
-    except OSError:
+    except (OSError, UnicodeError):
         raise Fehler("Der Betreuer-Token ist auf dem Server nicht lesbar (sudo ohne Passwort noetig)")
     if not TOKEN_RE.fullmatch(token):
         raise Fehler("Der Betreuer-Token auf dem Server hat nicht die erwartete Form")
@@ -121,10 +129,14 @@ def aufgabe(d):
 
 
 def zaehlung(p):
+    """Streng: Jedes Feld muss da sein und den richtigen Typ haben. Ein fehlendes Feld darf nie als null oder falsch gelesen werden."""
     try:
-        return {"platz": int(p["platz"]), "offen": bool(p["offen"]), "tickets": int(p["tickets"]), "kommentare": int(p["kommentare"]),
-                "einwilligung": p.get("einwilligung_version") is not None, "platz_token": bool(p.get("hat_platz_token"))}
-    except (KeyError, TypeError, ValueError, AttributeError):
+        if not (type(p["platz"]) is int and type(p["tickets"]) is int and type(p["kommentare"]) is int
+                and type(p["offen"]) is bool and type(p["hat_platz_token"]) is bool and "einwilligung_version" in p):
+            raise ValueError
+        return {"platz": p["platz"], "offen": p["offen"], "tickets": p["tickets"], "kommentare": p["kommentare"],
+                "einwilligung": p["einwilligung_version"] is not None, "platz_token": p["hat_platz_token"]}
+    except (KeyError, TypeError, ValueError):
         raise Fehler("Die Antwort des Dienstes ist unerwartet")
 
 
@@ -152,10 +164,11 @@ def ergebnis(methode, status, daten):
         if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,40}", code):
             aus["fehler"] = code
     elif methode == "GET":
-        aus["plaetze"] = [zaehlung(p) for p in daten.get("plaetze", [])]
-    else:
-        aus["platz"] = zaehlung(daten)
-    return aus
+        plaetze = daten.get("plaetze")
+        if not isinstance(plaetze, list):
+            raise Fehler("Die Antwort des Dienstes ist unerwartet")
+        aus["plaetze"] = [zaehlung(p) for p in plaetze]
+    return aus  # Antworten auf POST: nur der Status, die Zählung danach holt eine eigene Abfrage
 
 
 def verarbeite(d, token_datei=TOKEN_DATEI, oeffner=None):
@@ -169,6 +182,9 @@ def verarbeite(d, token_datei=TOKEN_DATEI, oeffner=None):
     except Fehler as e:
         text = str(e)
         print("Fehler: " + (text.replace(token, "***") if token else text), file=sys.stderr)
+        return 1
+    except Exception as e:
+        print("Fehler: Unerwarteter Fehler (" + type(e).__name__ + "), Einzelheiten werden nicht ausgegeben", file=sys.stderr)
         return 1
 
 
@@ -391,10 +407,15 @@ def _platz_schritt(z: Zugriff, p: Protokoll, platz: int, aktion: str, erfolg: st
         raise NachlaufFehler(_dienst_fehlertext(platz, aktion, status))
 
 
+def _kern_zeilen(p: Protokoll, text: str, muster: re.Pattern, grenze: int) -> None:
+    """Zeigt nur Zeilen, die genau einem bekannten Muster entsprechen (Zählungen, nie Text). Alles andere wird nicht angezeigt."""
+    for zeile in text.splitlines()[:grenze]:
+        p.zeile("  " + (zeile.strip() if muster.fullmatch(zeile.strip()) else "(Zeile nicht angezeigt)"))
+
+
 def kern_sperren(z: Zugriff, p: Protokoll) -> None:
     p.kopf(2)
-    for zeile in z.kern_aufruf("sperren", alle=True, ausfuehren=True).splitlines()[:5]:
-        p.zeile("  " + _kurz(zeile, 120))
+    _kern_zeilen(p, z.kern_aufruf("sperren", alle=True, ausfuehren=True), ZEILE_SPERREN, 5)
 
 
 def dienst_leeren(z: Zugriff, p: Protokoll) -> None:
@@ -407,12 +428,14 @@ def dienst_leeren(z: Zugriff, p: Protokoll) -> None:
 def kern_loeschen(z: Zugriff, p: Protokoll) -> None:
     p.kopf(4)
     p.zeile("  Das kann bis zu etwa 7 Minuten dauern (Sperrfrist von 3 Minuten nach dem Sperren, das Skript wartet sie selbst ab).")
-    for zeile in z.kern_aufruf("loeschen", alle=True, ausfuehren=True).splitlines()[:40]:
-        p.zeile("  " + _kurz(zeile, 120))
+    _kern_zeilen(p, z.kern_aufruf("loeschen", alle=True, ausfuehren=True), ZEILE_LOESCHEN, 40)
 
 
-def nachweis_pruefen(kern: KernStand, dienst: DienstStand) -> None:
+def nachweis_pruefen(vorher: KernStand, kern: KernStand, dienst: DienstStand) -> None:
+    """Der Nachweis gilt nur, wenn alles null ist und der Kern dieselben Laborprofile zeigt wie davor (ein falsches Schema ergäbe sonst ein leeres Null)."""
     offen = []
+    if kern.profile != vorher.profile:
+        offen.append(f"der Kern zeigt {kern.profile} statt {vorher.profile} Laborprofile")
     if kern.freigeschaltet:
         offen.append(f"{kern.freigeschaltet} Laborprofile sind noch freigeschaltet")
     if kern.zeilen:
@@ -466,8 +489,8 @@ def lauf(z: Zugriff, p: Protokoll, *, ausfuehren: bool, umschlag: Path) -> int:
     for zeile in plan_zeilen(z, ausfuehren):
         p.zeile(zeile)
     p.kopf(1)
-    kern, dienst = zaehlung(z, p, "Nachweis davor:  ")
-    if kern.profile == 0:
+    vorher, _ = zaehlung(z, p, "Nachweis davor:  ")
+    if vorher.profile == 0:
         raise NachlaufFehler(f"Es gibt keine Laborprofile im Schema {z.schema} (falsches Schema?).")
     if ausfuehren:
         kern_sperren(z, p)
@@ -475,7 +498,7 @@ def lauf(z: Zugriff, p: Protokoll, *, ausfuehren: bool, umschlag: Path) -> int:
         kern_loeschen(z, p)
         p.kopf(5)
         kern, dienst = zaehlung(z, p, "Nachweis danach: ")
-        nachweis_pruefen(kern, dienst)
+        nachweis_pruefen(vorher, kern, dienst)
         p.zeile("Ergebnis: Nachweis erbracht (im Kern und im Dienst ist alles null, kein Laborprofil ist freigeschaltet).")
     else:
         p.zeile("Trockenlauf: Die Schritte 2 bis 5 wurden nicht ausgeführt. Zum Ausführen --ausfuehren angeben.")
@@ -510,9 +533,10 @@ def vorbereiten(args: argparse.Namespace, kern: Callable, dienst: Callable, heut
 
 
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="wamo_labor_nachlauf", description="Nachlauf des Testlabors (Standard: Trockenlauf)")
+    p = argparse.ArgumentParser(prog="wamo_labor_nachlauf", description="Nachlauf des Testlabors (Standard: Trockenlauf)", allow_abbrev=False)
     sub = p.add_subparsers(dest="befehl", required=True)
-    n = sub.add_parser("nachlauf", help="Laborprofile sperren, Daten im Kern und in den 16 Plätzen des Dienstes löschen, Zählung als Nachweis")
+    n = sub.add_parser("nachlauf", allow_abbrev=False,  # keine Abkürzungen: --aus darf nie als --ausfuehren gelten
+                       help="Laborprofile sperren, Daten im Kern und in den 16 Plätzen des Dienstes löschen, Zählung als Nachweis")
     n.add_argument("--ausfuehren", action="store_true", help="wirklich ausführen (ohne dies nur Trockenlauf)")
     n.add_argument("--schema", default="wamo_dev")
     n.add_argument("--host", default=os.environ.get("WAMO_SSH_HOST", "wamo-sokrates2"))
@@ -547,6 +571,9 @@ def main(argv: list[str] | None = None, *, kern: Callable = wl.run_remote, diens
         z, p, umschlag = vorbereiten(args, kern, dienst, heute, schlafen, jetzt)
     except EingabeFehler as e:
         print(f"Fehler: {e}", file=sys.stderr)
+        return EXIT_EINGABE
+    except (OSError, RuntimeError, ValueError):  # zum Beispiel ~Benutzer ohne Konto oder ein nicht auflösbarer Pfad
+        print("Fehler: Ein Pfad ist ungültig (Benutzerordner oder Ordner nicht auflösbar).", file=sys.stderr)
         return EXIT_EINGABE
     try:
         return lauf(z, p, ausfuehren=args.ausfuehren, umschlag=umschlag)
