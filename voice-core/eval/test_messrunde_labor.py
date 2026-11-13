@@ -341,3 +341,14 @@ def test_kommandozeile_weist_falsche_eingaben_vor_jedem_netzzugriff_ab(monkeypat
     with pytest.raises(SystemExit) as e:
         mr.main()
     assert e.value.code == 2
+
+
+def test_stumm_zaehlt_nur_den_wartemarker_ohne_text_und_ohne_werkzeug():
+    stumm = zug("s2", "○")
+    sprechend = zug("s2", "● Löschen kann ich nicht.")
+    wartet_mit_werkzeug = zug("j1", "◐", [("ticket_suchen", {"nummer": "LAB-12"})])
+    aus = mr.auswerten([lauf_datei("claude", 1, [stumm]), lauf_datei("claude", 2, [sprechend]), lauf_datei("claude", 3, [wartet_mit_werkzeug])])
+    assert aus["claude"]["s2"]["stumm"] == 1 and aus["claude"]["j1"]["stumm"] == 0
+    assert aus["claude"]["s2"]["marker_fehler"] == 1  # der Wartemarker an Stelle von ● ist auch eine Markerabweichung
+    z = zellen(mr.tabellen(aus, "claude"))
+    assert z["s2"][8] == "1"  # Spalte "stumm" der Muss-Tabelle

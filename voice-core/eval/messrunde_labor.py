@@ -165,6 +165,12 @@ _ZUG_FELDER = tuple(bw.ZugErgebnis.__dataclass_fields__)
 _NACH_ID = {f.id: f for f in FAELLE_LAUF}
 
 
+def _stumm(z: dict) -> bool:
+    """WAMO schweigt: die erste Antwort ist nur der Wartemarker (○ oder ◐), ohne Text und ohne Werkzeug."""
+    erste = (z["antworten"][0] if z["antworten"] else "").strip()
+    return erste in bw.WARTEN and not z["aufrufe"]
+
+
 def _kurz(grund: str) -> str:
     """Der Grund ohne die Einzelheiten in Klammern (Argumente), damit gleiche Gründe zusammen gezählt werden, und ohne Tabellentrenner."""
     return grund.split(" (")[0].replace("|", "/")
@@ -192,7 +198,7 @@ def auswerten(laeufe: list[dict]) -> dict[str, dict[str, dict]]:
                 continue
             u = urteil(_NACH_ID[z["id"]], bw.ZugErgebnis(**{k: z[k] for k in _ZUG_FELDER}))
             r = je_fall.setdefault(z["id"], {"laeufe": 0, "bestanden": 0, "durchgefallen": 0, "ungueltig": 0, "marker_fehler": 0,
-                                             "format_fehler": 0, "sicherheit": 0, "schreibend": 0, "muss_regel": 0, "gruende": Counter(),
+                                             "format_fehler": 0, "stumm": 0, "sicherheit": 0, "schreibend": 0, "muss_regel": 0, "gruende": Counter(),
                                              "zuege": []})
             r["laeufe"] += 1
             r["zuege"].append(z)
@@ -205,6 +211,7 @@ def auswerten(laeufe: list[dict]) -> dict[str, dict[str, dict]]:
             r["durchgefallen"] += not u["bestanden"]
             r["marker_fehler"] += not u["marker_ok"]
             r["format_fehler"] += not u["format_ok"]
+            r["stumm"] += _stumm(z)
             for feld in ("sicherheit", "schreibend", "muss_regel"):
                 r[feld] += u[feld]
             r["gruende"].update(_kurz(g) for g in u["gruende"])
@@ -230,7 +237,7 @@ def _karte(fall_id: str):
 def _zeile(fall: Fall, r: dict) -> str:
     karte = _karte(fall.id)
     konzept = "Fehler erwartet (kein Befund)" if karte and karte.fehler_erwartet else ("kein Fehler erwartet" if karte else "Zusatzfall")
-    abweichend = f"{r['marker_fehler']} / {r['format_fehler']}"
+    abweichend = f"{r['marker_fehler']} / {r['format_fehler']} | {r['stumm']}"
     grund = "; ".join(f"{g} ({n}x)" for g, n in r["gruende"].most_common(2)) or "-"
     return (f"| `{fall.id}` | {fall.kategorie} | {konzept} | {r['laeufe']} | {r['bestanden']} | {r['durchgefallen']} | {r['ungueltig']} | "
             f"{abweichend} | {grund[:150]} |")
@@ -239,19 +246,19 @@ def _zeile(fall: Fall, r: dict) -> str:
 def tabellen(aus: dict[str, dict[str, dict]], anbieter: str) -> str:
     """Markdown: Tabelle je Fall (Karte oder Folgezug) und getrennt die Muss-Fälle. Fehlerkarten laut Konzept sind als solche gekennzeichnet."""
     je_fall = aus.get(anbieter, {})
-    kopf = ["| Fall | Gruppe | Konzept | Läufe | bestanden | durchgefallen | ungültig | Marker / Format abweichend | häufigste Gründe |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    kopf = ["| Fall | Gruppe | Konzept | Läufe | bestanden | durchgefallen | ungültig | Marker / Format abweichend | davon stumm (○ oder ◐) | häufigste Gründe |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     zeilen = [_zeile(f, je_fall[f.id]) for f in FAELLE_LAUF if f.id in je_fall and not f.muss]
     muss_kopf = ["", "Muss-Fälle (S1 und S2 sind Karten, i1 und i2 sind Zusatzfälle zur indirekten Injektion):", "",
-                 "| Fall | Läufe | bestanden | durchgefallen | ungültig | Muss-Verstoß (unerlaubter Schreibaufruf oder Behauptung) | davon Schreibaufruf | Regel des Repos verletzt (jeder fremde oder überzählige Aufruf) | häufigste Gründe |",
-                 "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+                 "| Fall | Läufe | bestanden | durchgefallen | ungültig | Muss-Verstoß (unerlaubter Schreibaufruf oder Behauptung) | davon Schreibaufruf | Regel des Repos verletzt (jeder fremde oder überzählige Aufruf) | stumm (○ oder ◐) | häufigste Gründe |",
+                 "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     muss = []
     for f in FAELLE_LAUF:
         if f.muss and f.id in je_fall:
             r = je_fall[f.id]
             grund = "; ".join(f"{g} ({n}x)" for g, n in r["gruende"].most_common(2)) or "-"
             muss.append(f"| `{f.id}` | {r['laeufe']} | {r['bestanden']} | {r['durchgefallen']} | {r['ungueltig']} | {r['sicherheit']} | "
-                        f"{r['schreibend']} | {r['muss_regel']} | {grund[:150]} |")
+                        f"{r['schreibend']} | {r['muss_regel']} | {r['stumm']} | {grund[:150]} |")
     return "\n".join([*kopf, *zeilen, *muss_kopf, *muss]) + "\n"
 
 
