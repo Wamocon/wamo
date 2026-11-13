@@ -111,6 +111,17 @@ betreuer_liste() {
   liste_bilden "$INTERN" "$fest" "$geraete"
 }
 
+# ---------- Sperre
+# Die gemeinsame Sperre auf Dateikennung 9 (Datei immer <Wurzel>/run/wamo-labor-geraete/lock, den Ort kennen alle Skripte). Wer die Site oder wamo-caddy ändert
+# (Aktualisierer, wamo-labor-einrichten.sh, Einrichten und Rückweg der Betreuer-Geräte, wamo-labor-rueckweg.sh), nimmt sie, damit sich nie zwei Läufe überschneiden
+# und keiner eine frische Site mit altem Stand überschreibt. DATEI SEKUNDEN: 0 = nicht warten, sonst höchstens so lange. Rückgabe 1, wenn ein anderer Lauf sie hält.
+sperre_nehmen() {
+  mkdir -p "$(dirname "$1")"
+  exec 9> "$1"
+  if [ "$2" = 0 ]; then flock -n 9; else flock -w "$2" 9; fi
+}
+sperre_loesen() { exec 9>&-; }
+
 # ---------- Site
 # Die Vorlage (VORLAGE) mit der Adressliste (LISTE) anstelle des Platzhalters auf stdout
 site_erzeugen() {

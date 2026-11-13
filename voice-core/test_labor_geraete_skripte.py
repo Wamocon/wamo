@@ -27,8 +27,8 @@ import unittest
 from pathlib import Path
 
 from test_labor_betrieb_skripte import (
-    ATTRAPPE, BASH, BASIS_IMAGE, EINRICHTEN, SITE, SOKRATES2, VERBOTENE_WOERTER, Werkstatt, code, funktionen, lies, ohne_kommentare, posix, schreibe,
-    system_pfad,
+    ATTRAPPE, BASH, BASIS_IMAGE, EINRICHTEN, RUECKWEG, SITE, SOKRATES2, VERBOTENE_WOERTER, BetriebsstandWerkstatt, Werkstatt, code, funktionen, lies, ohne_kommentare,
+    posix, schreibe, system_pfad,
 )
 
 SITE_BIB = SOKRATES2 / "wamo-labor-site.sh"
@@ -41,6 +41,7 @@ NEUE_SKRIPTE = (SITE_BIB, AKTUALISIERER, GERAETE_EINRICHTEN)
 INTERN = "127.0.0.0/8 172.24.0.1/32 192.168.178.136/32"
 FRIST = 12 * 3600
 GERAET = "WMC-H-04-NS"
+STAND_REL = "etc/wamo-labor/betreuer-geraete.stand"  # der Stand im Probelauf (relativ zur Wurzel)
 
 
 # ====================================================================================== Allgemeine Textprüfungen
@@ -62,6 +63,16 @@ class AllgemeinTests(unittest.TestCase):
             for zeile in ohne_kommentare(text).splitlines():
                 for wort in re.findall(r"[A-Za-z0-9_+/=-]{40,}", zeile):
                     self.assertTrue(re.fullmatch(r"[A-Za-z_]+[_-][A-Za-z_-]+|[a-z0-9-]+|[A-Za-z_=]+", wort) or "/" in wort or "$" in wort, f"{f.name}: {wort[:20]}")
+
+    def test_alle_skripte_die_site_oder_caddy_aendern_nehmen_dieselbe_sperre(self):
+        for skript in (AKTUALISIERER, GERAETE_EINRICHTEN, EINRICHTEN, RUECKWEG):
+            c = code(skript)
+            self.assertIn("run/wamo-labor-geraete", c, skript.name)
+            self.assertRegex(c, r"(sperre_nehmen|exec 9>)", skript.name)
+        bib = code(SITE_BIB)
+        self.assertIn("sperre_nehmen()", bib)
+        self.assertIn("flock -n 9", bib)  # nicht warten: der Aktualisierer überspringt einen Lauf
+        self.assertIn('flock -w "$2" 9', bib)
 
     def test_skripte_form_und_grenzen(self):
         for skript in NEUE_SKRIPTE:
@@ -167,6 +178,14 @@ class BibliothekTests(unittest.TestCase):
         self.assertEqual(self.bash(f'geraete_adressen "{posix(self.t / "gibt-es-nicht")}" {jetzt}').stdout.strip(), "")
 
 
+# Attrappe für flock: Beim Aufruf hat gerade ein anderer Lauf (der Aktualisierer) einen neuen Stand geschrieben
+FLOCK_SCHREIBT_STAND = r"""#!/bin/sh
+echo "flock $*" >> "$ATTRAPPE_LOG"
+printf '%s\n' "WMC-H-04-NS 192.168.178.99 $(date +%s)" > "$STAND_NEU"
+exit 0
+"""
+
+
 # ====================================================================================== Teil 2: wamo-labor-einrichten.sh mit dem Stand
 @unittest.skipUnless(BASH, "keine Bash vorhanden")
 class EinrichtenMitStandTests(Werkstatt):
@@ -184,7 +203,7 @@ class EinrichtenMitStandTests(Werkstatt):
 
     def test_gueltiger_stand_kommt_in_die_site(self):
         jetzt = int(time.time())
-        schreibe(self.p("etc/wamo-labor/betreuer-geraete.stand"),
+        schreibe(self.p(STAND_REL),
                  f"# Kopf\nWMC-H-04-NS 192.168.178.78 {jetzt - 60}\nWMC-H-04-NS 192.168.178.67 {jetzt - FRIST - 3600}\nALT-PC 192.168.178.99 {jetzt - 100000}\n"
                  f"ZWEITER 192.168.178.20 {jetzt - 10}\n")
         r = self.einrichten()
@@ -198,7 +217,7 @@ class EinrichtenMitStandTests(Werkstatt):
         self.assertIn(f"remote_ip {INTERN} 192.168.178.50\n", self.site())
 
     def test_kaputter_stand_wird_gemeldet_und_nie_eingesetzt(self):
-        schreibe(self.p("etc/wamo-labor/betreuer-geraete.stand"), f"X 10.0.0.5 {int(time.time())}\n")
+        schreibe(self.p(STAND_REL), f"X 10.0.0.5 {int(time.time())}\n")
         r = self.einrichten()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("übersprungen", r.stderr)
@@ -215,6 +234,33 @@ class EinrichtenMitStandTests(Werkstatt):
     def test_ohne_den_aktualisierer_wird_nichts_angelegt(self):
         self.assertEqual(self.einrichten().returncode, 0)
         self.assertFalse(self.p("usr/local/lib/wamo-labor-geraete").exists())
+
+    def test_caddy_schritt_nimmt_die_gemeinsame_sperre_vor_der_pruefung(self):
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        aufrufe = self.aufrufe()
+        adapt = next(i for i, z in enumerate(aufrufe) if z.startswith("docker run") and "caddy adapt" in z)
+        self.assertIn("flock -w 120 9", aufrufe)
+        self.assertLess(aufrufe.index("flock -w 120 9"), adapt)
+        self.assertTrue(self.p("run/wamo-labor-geraete").is_dir())
+
+    def test_haelt_der_aktualisierer_die_sperre_aendert_einrichten_die_site_nicht(self):
+        self.ausgabe("flock", "", rc=1)
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Aktualisierer", r.stderr)
+        self.assertFalse((self.caddy / "etc" / "kern" / "wamo-labor.caddy").exists())
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^docker (run|exec wamo-caddy caddy reload)|^docker compose up", z)
+
+    def test_der_stand_wird_erst_unter_der_sperre_gelesen(self):
+        """Ein Lauf des Aktualisierers, der zwischen Vorprüfung und Site fertig wird, darf nicht mit altem Stand überschrieben werden."""
+        schreibe(self.p(STAND_REL), f"WMC-H-04-NS 192.168.178.78 {int(time.time())}\n")
+        schreibe(self.bin / "flock", FLOCK_SCHREIBT_STAND, ausfuehrbar=True)
+        r = self.lauf(EINRICHTEN, "einrichten", "--basis-image", BASIS_IMAGE, extra={"STAND_NEU": posix(self.p(STAND_REL))})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("192.168.178.99", self.site())  # der frische Stand gilt
+        self.assertNotIn("192.168.178.78", self.site())
 
     def test_trockenlauf_zieht_nichts_nach(self):
         lib = self.p("usr/local/lib/wamo-labor-geraete")
@@ -292,7 +338,7 @@ class GeraeteWerkstatt(Werkstatt):
         return f"remote_ip {INTERN} 192.168.178.50" + "".join(f" {a}" for a in adressen) + "\n"
 
     def stand(self) -> list[tuple[str, str, int]]:
-        datei = self.p("etc/wamo-labor/betreuer-geraete.stand")
+        datei = self.p(STAND_REL)
         zeilen = [z.split() for z in datei.read_text(encoding="utf-8").splitlines() if z.strip() and not z.startswith("#")]
         return [(n, a, int(z)) for n, a, z in zeilen]
 
@@ -396,7 +442,7 @@ class NamenListeTests(GeraeteWerkstatt):
             self.assertIn("Zeile 3", r.stderr, schlecht)
             self.assertEqual(self.aufrufe(), [], schlecht)  # nichts gefragt, nichts geändert: auch der gute Name vorher wird nicht aufgelöst
             self.assertEqual(self.site_datei.read_bytes(), self.site_vorher, schlecht)
-            self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists(), schlecht)
+            self.assertFalse(self.p(STAND_REL).exists(), schlecht)
 
     def test_gueltige_grenzfaelle(self):
         schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "# nur Kommentar\n\n  \t\n1PC\nA23456789012345\nwmc-h-04-ns\r\n")
@@ -546,7 +592,7 @@ class FristUndAenderungTests(GeraeteWerkstatt):
     def test_stand_wird_atomar_geschrieben_und_hat_einen_kopf(self):
         self.antworten(GERAET, self.netbios("192.168.178.78"))
         self.assertEqual(self.aktualisieren().returncode, 0)
-        datei = self.p("etc/wamo-labor/betreuer-geraete.stand")
+        datei = self.p(STAND_REL)
         text = datei.read_text(encoding="utf-8")
         self.assertTrue(text.startswith("# "), text)
         self.assertIn(f"{GERAET} 192.168.178.78 {self.JETZT}\n", text)
@@ -555,7 +601,7 @@ class FristUndAenderungTests(GeraeteWerkstatt):
             self.assertEqual(datei.stat().st_mode & 0o777, 0o644)
 
     def test_kaputter_stand_wird_gemeldet_und_nie_eingesetzt(self):
-        schreibe(self.p("etc/wamo-labor/betreuer-geraete.stand"), f"{GERAET} 10.0.0.5 {self.JETZT}\nMUELL\n")
+        schreibe(self.p(STAND_REL), f"{GERAET} 10.0.0.5 {self.JETZT}\nMUELL\n")
         self.antworten(GERAET, self.netbios("192.168.178.78"))
         r = self.aktualisieren()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -576,7 +622,7 @@ class RueckwegBeiFehlernTests(GeraeteWerkstatt):
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(text, r.stderr)
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
-        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())  # der Stand gilt nur für das, was wirklich geladen ist
+        self.assertFalse(self.p(STAND_REL).exists())  # der Stand gilt nur für das, was wirklich geladen ist
         self.assertEqual(self.arbeitsreste(), [])
         self.assertNotIn("zugelassen", r.stdout)  # nichts melden, was nicht gilt
 
@@ -616,7 +662,7 @@ class RueckwegBeiFehlernTests(GeraeteWerkstatt):
         r = self.aktualisieren()
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("wamo-labor-einrichten.sh", r.stderr)
-        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())
+        self.assertFalse(self.p(STAND_REL).exists())
         self.assertEqual(self.reloads(), 0)
 
     def test_caddy_laeuft_nicht(self):
@@ -625,7 +671,7 @@ class RueckwegBeiFehlernTests(GeraeteWerkstatt):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("wamo-caddy läuft nicht", r.stderr)
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
-        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())
+        self.assertFalse(self.p(STAND_REL).exists())
 
     def test_ohne_vorlage_oder_bibliothek_kein_start(self):
         (self.lib / "wamo-labor.caddy").unlink()
@@ -674,7 +720,7 @@ class SperreMeldungUndGrenzenTests(GeraeteWerkstatt):
     def test_kein_token_in_ausgabe_protokoll_oder_code(self):
         self.antworten(GERAET, self.netbios("192.168.178.78"))
         r = self.aktualisieren()
-        for ort in (r.stdout, r.stderr, "\n".join(self.aufrufe()), self.site(), self.p("etc/wamo-labor/betreuer-geraete.stand").read_text(encoding="utf-8")):
+        for ort in (r.stdout, r.stderr, "\n".join(self.aufrufe()), self.site(), self.p(STAND_REL).read_text(encoding="utf-8")):
             self.assertNotIn(TOKEN_KERN, ort)
             self.assertNotIn(TOKEN_BETREUER, ort)
         for datei in NEUE_SKRIPTE:
@@ -701,7 +747,7 @@ class SperreMeldungUndGrenzenTests(GeraeteWerkstatt):
         self.assertIn("192.168.178.78", r.stdout)
         self.assertIn("192.168.178.67", r.stdout)
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
-        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())
+        self.assertFalse(self.p(STAND_REL).exists())
         for z in self.aufrufe():
             self.assertRegex(z, r"^(nmblookup|avahi-resolve) ", z)  # kein docker, kein flock, kein logger
 
@@ -729,9 +775,33 @@ class SperreMeldungUndGrenzenTests(GeraeteWerkstatt):
         c = code(AKTUALISIERER)
         self.assertRegex(c, r'timeout \S+ nmblookup "\$\{?\w+\}?"')
         self.assertRegex(c, r'timeout \S+ avahi-resolve -4 -n "\$\{?\w+\}?\.local"')
-        self.assertIn("flock -n 9", c)
+        self.assertIn('sperre_nehmen "$SPERRE" 0', c)  # nicht warten: ein laufender Lauf wird übersprungen
         self.assertIn("logger -t wamo-labor-geraete", c)
         self.assertIn("run/wamo-labor-geraete", c)
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class LaborRueckwegSperreTests(BetriebsstandWerkstatt):
+    """wamo-labor-rueckweg.sh entfernt die Site und lädt Caddy: Das geschieht unter derselben Sperre wie der Lauf des Aktualisierers."""
+
+    def test_die_sperre_kommt_vor_dem_entfernen_der_site(self):
+        r = self.lauf_skript(RUECKWEG)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        aufrufe = self.aufrufe()
+        self.assertLess(aufrufe.index("flock -w 60 9"), aufrufe.index(RELOAD))
+        self.assertFalse((self.caddy / "etc" / "kern" / "wamo-labor.caddy").exists())
+
+    def test_haelt_ein_anderer_lauf_die_sperre_bleibt_die_site(self):
+        self.ausgabe("flock", "", rc=1)
+        r = self.lauf_skript(RUECKWEG)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Aktualisierer", r.stderr)
+        self.assertTrue((self.caddy / "etc" / "kern" / "wamo-labor.caddy").exists())
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("docker exec wamo-caddy caddy reload")])
+
+    def test_trockenlauf_nimmt_keine_sperre(self):
+        self.assertEqual(self.lauf_skript(RUECKWEG, "--trocken").returncode, 0)
+        self.assertFalse([z for z in self.aufrufe() if z.startswith("flock")])
 
 
 # ====================================================================================== Teil 3: Unit und Zeitgeber
@@ -842,7 +912,7 @@ class EinrichtenTests(EinrichtungsWerkstatt):
         self.assertIn("systemctl daemon-reload", aufrufe)
         self.assertLess(aufrufe.index("systemctl daemon-reload"), aufrufe.index(ENABLE))
         # die Prüfung am Ende ließ den Aktualisierer einmal laufen: Stand und Site
-        self.assertTrue(self.p("etc/wamo-labor/betreuer-geraete.stand").is_file())
+        self.assertTrue(self.p(STAND_REL).is_file())
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())
         self.assertIn("192.168.178.78", r.stdout)  # der Status am Ende nennt Name und Adresse
 
@@ -896,7 +966,7 @@ class EinrichtenTests(EinrichtungsWerkstatt):
         self.assertEqual(self.installiert(), [])
         self.assertEqual(self.sicherungen(), [])
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
-        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())
+        self.assertFalse(self.p(STAND_REL).exists())
         for z in self.aufrufe():
             self.assertNotRegex(z, r"^(systemctl (daemon-reload|enable|disable|start|stop)|docker (run|exec)|flock|logger)", z)
 
@@ -968,6 +1038,46 @@ class EinrichtenTests(EinrichtungsWerkstatt):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertNotIn("plaetze-adressen", r.stderr)
 
+    def test_einrichten_nimmt_die_gemeinsame_sperre_fuer_die_aenderung_und_gibt_sie_vor_dem_pruefen_frei(self):
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.assertEqual(self.einrichten().returncode, 0)
+        aufrufe = self.aufrufe()
+        self.assertIn("flock -w 60 9", aufrufe)
+        self.assertLess(aufrufe.index("flock -w 60 9"), aufrufe.index("systemctl daemon-reload"))
+        self.assertLess(aufrufe.index("flock -w 60 9"), aufrufe.index("flock -n 9"))  # erst E, dann der Lauf des Aktualisierers (er bekäme die Sperre sonst nie)
+        c = code(GERAETE_EINRICHTEN)
+        self.assertLess(c.index("sperre_loesen"), c.index("    pruefen\n"))
+
+    def test_haelt_ein_anderer_lauf_die_sperre_aendert_einrichten_nichts(self):
+        self.ausgabe("flock", "", rc=1)
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Sperre", r.stderr)
+        self.assertEqual(self.installiert(), [])
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertEqual(self.sicherungen(), [])
+
+    def test_scheitert_die_pruefung_nach_dem_lauf_kommen_site_und_stand_zurueck(self):
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.ausgabe("systemctl.is-active_wamo-labor-geraete.timer", "inactive\n", rc=3)  # nach dem Lauf läuft der Timer nicht: Fehler der Prüfung
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("zurückgenommen", r.stderr)
+        self.assertEqual(self.installiert(), [])
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)  # der Lauf hatte die Site geändert: Sie ist wieder, wie sie war
+        self.assertFalse(self.p(STAND_REL).exists())  # der Lauf hatte den Stand geschrieben: Er ist wieder weg
+        self.assertGreaterEqual(self.reloads(), 2)  # der Lauf hat geladen und die Rücknahme lädt noch einmal
+
+    def test_scheitert_die_pruefung_kommt_der_vorige_stand_zurueck(self):
+        alt = f"# alt\nALT-PC 192.168.178.40 {int(time.time()) - 60}\n"
+        schreibe(self.p(STAND_REL), alt)
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.ausgabe("systemctl.is-active_wamo-labor-geraete.timer", "inactive\n", rc=3)
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.p(STAND_REL).read_text(encoding="utf-8"), alt)
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+
     def test_pruefung_scheitert_alles_wird_zurueckgenommen(self):
         self.antworten(GERAET, self.netbios("192.168.178.78"))
         self.ausgabe("docker.run", "", rc=1)  # die Prüfung der neuen Site schlägt fehl: der Aktualisierer endet mit einem Fehler
@@ -977,7 +1087,7 @@ class EinrichtenTests(EinrichtungsWerkstatt):
         self.assertEqual(self.installiert(), [])
         self.assertIn(DISABLE, self.aufrufe())
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
-        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())
+        self.assertFalse(self.p(STAND_REL).exists())
         self.assertTrue(self.p("etc/wamo-labor/betreuer-geraete").is_file())  # die Liste des Betreibers bleibt
 
     def test_scheitert_ein_zweiter_lauf_kommt_die_vorige_fassung_zurueck(self):
@@ -1061,7 +1171,7 @@ class RueckwegTests(EinrichtungsWerkstatt):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)  # Server selbst und feste Adresse, keine Gerätenamen
         self.assertEqual(self.installiert(), [])
-        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())
+        self.assertFalse(self.p(STAND_REL).exists())
         self.assertFalse(self.p("usr/local/lib/wamo-labor-geraete").exists())
         # die Listen des Betreibers bleiben
         self.assertTrue(self.p("etc/wamo-labor/betreuer-geraete").is_file())
@@ -1098,15 +1208,44 @@ class RueckwegTests(EinrichtungsWerkstatt):
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
         self.assertEqual(self.reloads(), 1)  # beim zweiten Mal gibt es nichts mehr zu laden
 
-    def test_pruefung_der_site_scheitert_die_site_bleibt_und_der_ausgang_ist_ein_fehler(self):
+    def test_scheitert_die_site_geht_nur_der_timer_aus_und_der_rueckweg_bleibt_wiederholbar(self):
         self.ausgabe("docker.run", "", rc=1)
         site_mit_geraet = self.site_datei.read_bytes()
         r = self.rueckweg()
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.site_datei.read_bytes(), site_mit_geraet)  # nichts halb geändert
         self.assertEqual(self.reloads(), 0)
-        self.assertIn("wamo-labor-einrichten.sh", r.stderr)  # der Weg, die Site später von Hand zurückzusetzen
-        self.assertEqual(self.installiert(), [])  # der Timer ist trotzdem weg: nichts ändert die Site mehr
+        self.assertIn(DISABLE, self.aufrufe())  # der Timer ist aus: nichts ändert die Site mehr
+        self.assertEqual(len(self.installiert()), 5)  # Aktualisierer, Bibliothek, Vorlage, Unit und Timer bleiben für den zweiten Versuch
+        self.assertTrue(self.p(STAND_REL).is_file())  # auch der Stand
+        self.assertNotIn("systemctl reset-failed wamo-labor-geraete.service", self.aufrufe())
+        self.assertIn("wamo-labor-geraete-einrichten.sh rueckweg", r.stderr)  # der Weg zum zweiten Versuch
+        self.assertIn("Timer", r.stderr)
+        # nach der Behebung läuft der Rückweg durch
+        self.ausgabe("docker.run", "", rc=0)
+        r = self.rueckweg()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.installiert(), [])
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertFalse(self.p(STAND_REL).exists())
+
+    def test_rueckweg_raeumt_den_laufzeitordner_auf_die_sicherungen_bleiben(self):
+        self.assertTrue(self.p("run/wamo-labor-geraete").is_dir())
+        sicherungen = len(self.sicherungen())
+        r = self.rueckweg()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.p("run/wamo-labor-geraete").exists())  # Sperre gelöst, Datei und Ordner weg
+        self.assertGreaterEqual(len(self.sicherungen()), sicherungen)
+        self.assertTrue(self.p("var/backups/wamo-labor").is_dir())
+        r = self.rueckweg()  # ein zweiter Lauf ohne Ordner geht ebenfalls durch
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.p("run/wamo-labor-geraete").exists())
+
+    def test_rueckweg_nimmt_die_sperre_vor_dem_laden_der_site(self):
+        self.assertEqual(self.rueckweg().returncode, 0)
+        aufrufe = self.aufrufe()
+        self.assertLess(aufrufe.index("flock -w 60 9"), aufrufe.index(RELOAD))
+        self.assertLess(aufrufe.index("flock -w 60 9"), aufrufe.index("systemctl daemon-reload"))
 
     def test_reload_scheitert_die_site_vor_dem_rueckweg_kommt_zurueck(self):
         self.ausgabe("docker.exec_wamo-caddy_caddy", "kaputt\n", rc=1)
@@ -1116,6 +1255,7 @@ class RueckwegTests(EinrichtungsWerkstatt):
         self.assertEqual(self.site_datei.read_bytes(), site_mit_geraet)
         self.assertGreaterEqual(self.reloads(), 2)
         self.assertEqual(self.arbeitsreste(), [])
+        self.assertEqual(len(self.installiert()), 5)  # wie bei jedem Fehler der Site: nur der Timer ist aus
 
     def test_laeuft_gerade_ein_lauf_wird_nichts_geaendert(self):
         self.ausgabe("flock", "", rc=1)

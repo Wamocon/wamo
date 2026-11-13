@@ -270,7 +270,7 @@ quelle_und_benutzer_pruefen() {
 vorpruefung() {
   echo "== Vorprüfung"
   local w
-  for w in docker curl ss journalctl; do
+  for w in docker curl ss journalctl flock; do
     command -v "$w" >/dev/null 2>&1 || muss "$w fehlt (gebraucht für die Prüfung vor und nach dem Neuanlegen von wamo-caddy)."
   done
   docker compose version >/dev/null 2>&1 || muss "docker compose fehlt."
@@ -509,9 +509,14 @@ caddy() {
     return 0
   fi
   if [ -z "$W" ]; then CADDY_OWNER="$(stat -c %U "$CADDY_DIR")"; CADDY_GROUP="$(stat -c %G "$CADDY_DIR")"; fi
+  # Die gemeinsame Sperre mit dem Aktualisierer der Betreuer-Geräte (er schriebe sonst die Site und setzte sie bei einem Fehler zurück, während wamo-caddy neu angelegt wird).
+  # Erst unter der Sperre wird der Stand gelesen: Ein Lauf, der zwischen Vorprüfung und hier fertig wurde, wird nicht mit altem Stand überschrieben.
+  sperre_nehmen "$W/run/wamo-labor-geraete/lock" 120     || fehler "Ein Lauf des Aktualisierers der Betreuer-Geräte hält die Sperre $W/run/wamo-labor-geraete/lock (nach 120 Sekunden aufgegeben): Die Site wurde nicht geändert. Bitte einrichten erneut ausführen."
+  ADRESSEN="$(betreuer_liste "$BETREUER_ADRESSEN" "$STAND_DATEI" "$(date +%s)")"
   caddy_pruefen
   caddy_anwenden "$compose_neu"
   geraete_nachziehen
+  sperre_loesen
 }
 
 # ---------- Start

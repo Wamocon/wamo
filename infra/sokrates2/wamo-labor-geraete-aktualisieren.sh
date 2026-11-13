@@ -106,9 +106,7 @@ eingaben_lesen() {
 }
 
 sperren() {
-  mkdir -p "$RUN"
-  exec 9> "$SPERRE"
-  if ! flock -n 9; then
+  if ! sperre_nehmen "$SPERRE" 0; then
     echo "Ein anderer Lauf ist aktiv, dieser Lauf ändert nichts."
     exit 0
   fi

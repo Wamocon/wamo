@@ -542,7 +542,7 @@ class FirewallLaborTests(unittest.TestCase):
 LINUX = sys.platform.startswith("linux")
 # Nur diese Befehle mit Wirkung gibt es im Probelauf, und zwar als Attrappe (sie schreiben jeden Aufruf in ein Protokoll)
 ATTRAPPEN = ("docker", "iptables", "iptables-save", "systemctl", "curl", "ss", "getent", "journalctl", "sudo", "useradd", "userdel", "shred",
-             "chown")
+             "chown", "flock")
 ARCH_SCHLUESSEL = "docker.image_inspect_" + "___Architecture__"  # docker image inspect -f {{.Architecture}} (Zeichen außer Buchstaben und Ziffern werden zu _)
 ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[platform.machine().lower()]  # wie uname -m im Skript
 BASIS_IMAGE = "python:3.11-slim@sha256:" + "ab" * 32  # berechnet: kein Literal, das die Secret-Prüfung stört

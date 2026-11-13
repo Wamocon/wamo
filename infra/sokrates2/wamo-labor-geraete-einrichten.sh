@@ -190,11 +190,30 @@ VORLAGE
   echo "  betreuer-geraete als Vorlage angelegt"
 }
 
-# Nimmt die Installation zurück: vorige Fassungen aus der Sicherung, was neu war, wird entfernt, der Timer geht aus, wenn er vorher nicht lief
+# Der Besitzer der Caddy-Ordner (wamocon) für die Dateien, die dieses Skript dort ablegt
+caddy_besitzer_setzen() {
+  if [ -z "$W" ]; then CADDY_OWNER="$(stat -c %U "$CADDY_DIR")"; CADDY_GROUP="$(stat -c %G "$CADDY_DIR")"; fi
+}
+
+# Site und Stand aus der Sicherung zurücksetzen (der Prüflauf am Ende kann beide geändert haben), unter der gemeinsamen Sperre. Fehler hier ändern den Ausgang nicht.
+undo_site_und_stand() {
+  sperre_nehmen "$SPERRE" 60 || echo "  WARNUNG: Die Sperre war nicht zu bekommen (ein Lauf des Aktualisierers ist aktiv), Site und Stand werden trotzdem zurückgesetzt." >&2
+  if [ -f "$SICHERUNG_ORDNER/wamo-labor.caddy.site.vorher" ] && [ -f "$SITE_DATEI" ] && ! cmp -s "$SICHERUNG_ORDNER/wamo-labor.caddy.site.vorher" "$SITE_DATEI"; then
+    caddy_besitzer_setzen
+    caddy_installieren 644 "$SICHERUNG_ORDNER/wamo-labor.caddy.site.vorher" "$SITE_DATEI" >&2 || true
+    caddy_neu_laden >/dev/null 2>&1 || true
+  fi
+  if [ -f "$SICHERUNG_ORDNER/betreuer-geraete.stand.vorher" ]; then cp -p "$SICHERUNG_ORDNER/betreuer-geraete.stand.vorher" "$STAND_DATEI"; else rm -f "$STAND_DATEI"; fi
+  sperre_loesen
+}
+
+# Nimmt die Installation zurück: vorige Fassungen aus der Sicherung, was neu war, wird entfernt, der Timer geht aus, wenn er vorher nicht lief.
+# Auch Site und Stand kommen aus der Sicherung zurück.
 undo_installation() {
   local z ziel name
   echo "  FEHLER: Die Installation wird zurückgenommen" >&2
   [ -f "$SICHERUNG_ORDNER/wamo-labor-geraete.timer.vorher" ] || systemctl disable --now wamo-labor-geraete.timer >&2 || true
+  undo_site_und_stand
   for z in "${ZIELE[@]}"; do
     ziel="${z%%|*}"
     name="${z##*|}"
@@ -274,11 +293,17 @@ status() {
 }
 
 # ---------- Rückweg
-# Die Sperre des Aktualisierers: Ein Lauf, der gerade läuft, wird abgewartet (höchstens 60 Sekunden), nie unterbrochen
-rueckweg_sperren() {
-  mkdir -p "$RUN"
-  exec 9> "$SPERRE"
-  flock -w 60 9 || fehler "Ein Lauf des Aktualisierers ist noch aktiv (Sperre $SPERRE): Es wurde nichts geändert, bitte in einer Minute wiederholen."
+# Die gemeinsame Sperre mit dem Aktualisierer: Ein Lauf, der gerade läuft, wird abgewartet (höchstens 60 Sekunden), nie unterbrochen
+sperren() {
+  sperre_nehmen "$SPERRE" 60 || fehler "Ein Lauf des Aktualisierers hält die Sperre $SPERRE (nach 60 Sekunden aufgegeben): Es wurde nichts geändert, bitte in einer Minute wiederholen."
+}
+
+# Sperre lösen, dann die Sperrdatei und den Laufzeitordner entfernen (die Sicherungen unter /var/backups/wamo-labor bleiben)
+laufzeit_aufraeumen() {
+  if [ "$TROCKEN" = ja ]; then echo "  [trocken] Sperre lösen, $SPERRE und $RUN entfernen"; return 0; fi
+  sperre_loesen
+  rm -f "$SPERRE"
+  rmdir "$RUN" 2>/dev/null || true
 }
 
 # Die Site aus der Vorlage mit dem Server selbst und den festen Adressen allein (ohne Betreuer-Geräte): prüfen, installieren, laden. Gibt 1 zurück, wenn das scheitert.
@@ -288,7 +313,7 @@ site_ohne_geraete() {
   [ -f "$SITE_DATEI" ] || { echo "  keine Site vorhanden"; return 0; }
   liste="$(betreuer_liste "$BETREUER_ADRESSEN")" || return 1
   if [ "$TROCKEN" = ja ]; then echo "  [trocken] Site aus $vorlage mit remote_ip $liste prüfen (caddy adapt), installieren, caddy reload"; return 0; fi
-  if [ -z "$W" ]; then CADDY_OWNER="$(stat -c %U "$CADDY_DIR")"; CADDY_GROUP="$(stat -c %G "$CADDY_DIR")"; fi
+  caddy_besitzer_setzen
   image="$(caddy_image_laufend)" || { echo "  FEHLER: Das Image von wamo-caddy ließ sich nicht lesen." >&2; return 1; }
   arbeit_anlegen "$CADDY_DIR"
   site_erzeugen "$vorlage" "$liste" > "$ARBEIT/etc/kern/wamo-labor.caddy"
@@ -320,14 +345,16 @@ rueckweg() {
   sichern
   echo "== 1. Timer abschalten und auf einen laufenden Lauf warten"
   tu systemctl disable --now wamo-labor-geraete.timer || true
-  [ "$TROCKEN" = ja ] || rueckweg_sperren
+  [ "$TROCKEN" = ja ] || sperren
   echo "== 2. Site aus betreuer-adressen allein wiederherstellen"
   site_ohne_geraete || site_ok=nein
+  if [ "$site_ok" = nein ]; then
+    fehler "Die Site wurde nicht zurückgesetzt. Nur der Timer ist abgeschaltet: Aktualisierer, Bibliothek, Vorlage, Unit und Stand bleiben, damit der Rückweg wiederholbar ist. Nach der Behebung" \
+      "wamo-labor-geraete-einrichten.sh rueckweg erneut ausführen. Bis dahin gilt die Site, wie sie ist."
+  fi
   echo "== 3. Dateien entfernen (die Listen betreuer-geraete und betreuer-adressen bleiben)"
   dateien_entfernen
-  if [ "$site_ok" = nein ]; then
-    fehler "Die Site wurde nicht zurückgesetzt. Timer, Unit und Aktualisierer sind entfernt, die Site gilt, wie sie ist. wamo-labor-einrichten.sh einrichten setzt sie aus betreuer-adressen allein neu."
-  fi
+  laufzeit_aufraeumen
 }
 
 # ---------- Aufruf
@@ -360,9 +387,11 @@ case "$BEFEHL" in
   rueckweg) rueckweg ;;
   einrichten)
     vorpruefung
+    [ "$TROCKEN" = ja ] || sperren   # Sicherung, Installation und Aktivierung laufen unter der Sperre, der Prüflauf danach nimmt sie selbst
     sichern
     installieren
     aktivieren
+    [ "$TROCKEN" = ja ] || sperre_loesen
     pruefen
     ;;
 esac
