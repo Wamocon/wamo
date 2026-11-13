@@ -39,7 +39,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 W="${WAMO_LABOR_GERAETE_WURZEL:-}"
 ETC="$W/etc/wamo-labor"
 NAMEN_DATEI="$ETC/betreuer-geraete"
-STAND_DATEI="$ETC/betreuer-geraete.stand"
+ZUSTAND="$W/var/lib/wamo-labor-geraete"   # StateDirectory der Unit (Stand), schreibbar für die Unit, nicht /etc/wamo-labor
+STAND_DATEI="$ZUSTAND/betreuer-geraete.stand"
 BETREUER_ADRESSEN="$ETC/betreuer-adressen"
 AKTUALISIERER="$W/usr/local/sbin/wamo-labor-geraete-aktualisieren"
 LIB="$W/usr/local/lib/wamo-labor-geraete"
@@ -203,7 +204,13 @@ undo_site_und_stand() {
     caddy_installieren 644 "$SICHERUNG_ORDNER/wamo-labor.caddy.site.vorher" "$SITE_DATEI" >&2 || true
     caddy_neu_laden >/dev/null 2>&1 || true
   fi
-  if [ -f "$SICHERUNG_ORDNER/betreuer-geraete.stand.vorher" ]; then cp -p "$SICHERUNG_ORDNER/betreuer-geraete.stand.vorher" "$STAND_DATEI"; else rm -f "$STAND_DATEI"; fi
+  if [ -f "$SICHERUNG_ORDNER/betreuer-geraete.stand.vorher" ]; then
+    mkdir -p "$ZUSTAND"
+    cp -p "$SICHERUNG_ORDNER/betreuer-geraete.stand.vorher" "$STAND_DATEI"
+  else
+    rm -f "$STAND_DATEI"
+    rmdir "$ZUSTAND" 2>/dev/null || true
+  fi
   sperre_loesen
 }
 
@@ -227,7 +234,7 @@ undo_installation() {
 installieren() {
   echo "== Installation"
   [ "$TROCKEN" = ja ] || UNDO+=(undo_installation)
-  tu install -d -m 0755 "$LIB" "$UNITS" "$(dirname "$AKTUALISIERER")"
+  tu install -d -m 0755 "$LIB" "$UNITS" "$ZUSTAND" "$(dirname "$AKTUALISIERER")"
   tu install -m 0755 "$HERE/wamo-labor-geraete-aktualisieren.sh" "$AKTUALISIERER"
   tu install -m 0644 "$HERE/wamo-labor-site.sh" "$LIB/wamo-labor-site.sh"
   tu install -m 0644 "$HERE/wamo-caddy/kern/wamo-labor.caddy" "$LIB/wamo-labor.caddy"
@@ -335,7 +342,7 @@ dateien_entfernen() {
   local z
   for z in "${ZIELE[@]}"; do tu rm -f "${z%%|*}"; done
   tu rm -f "$STAND_DATEI"
-  if [ "$TROCKEN" = ja ]; then echo "  [trocken] rmdir $LIB"; else rmdir "$LIB" 2>/dev/null || true; fi
+  if [ "$TROCKEN" = ja ]; then echo "  [trocken] rmdir $LIB und $ZUSTAND"; else rmdir "$LIB" "$ZUSTAND" 2>/dev/null || true; fi
   tu systemctl daemon-reload
   tu systemctl reset-failed wamo-labor-geraete.service || true
 }

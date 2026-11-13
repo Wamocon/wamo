@@ -14,7 +14,7 @@
 #      zusammen (Vereinigung), das DNS des Routers wird nie gefragt (es liefert veraltete Adressen). Es zählen nur IPv4-Adressen im Büro-LAN 192.168.178.0/24 (.1 bis .254);
 #      virtuelle Adressen (172.x, Docker, WSL, VPN) fallen weg. Antwortet ein Name mit mehr als 4 Adressen, ist das verdächtig (Flut oder Täuschung): Es wird nichts Neues
 #      zugelassen, der letzte Stand bleibt, und der Lauf warnt (höchstens einmal je Stunde) im Journal. Die echte Adresse wird so nie verdrängt.
-#   4. Mit dem zuletzt eingesetzten Stand vergleichen (/etc/wamo-labor/betreuer-geraete.stand, root 0644: Name, Adresse, Zeitpunkt der letzten Antwort).
+#   4. Mit dem zuletzt eingesetzten Stand vergleichen (/var/lib/wamo-labor-geraete/betreuer-geraete.stand, root 0644: Name, Adresse, Zeitpunkt der letzten Antwort).
 #      Antwortet ein Gerät (zum Beispiel nach dem Ruhezustand), ersetzt die neue Antwort die alten Adressen dieses Namens. Antwortet es nicht, bleibt die zuletzt gute
 #      Adresse höchstens 12 Stunden nach der letzten Antwort zugelassen, danach fällt sie weg. Ein Name, der aus der Liste verschwindet, verliert seine Adressen sofort.
 #      Zeitpunkte in der Zukunft (Zeitsprung, Fälschung) zählen als jetzt.
@@ -51,7 +51,8 @@ W="${WAMO_LABOR_GERAETE_WURZEL:-}"
 ETC="$W/etc/wamo-labor"
 NAMEN_DATEI="$ETC/betreuer-geraete"
 BETREUER_ADRESSEN="$ETC/betreuer-adressen"
-STAND_DATEI="$ETC/betreuer-geraete.stand"
+ZUSTAND="$W/var/lib/wamo-labor-geraete"   # StateDirectory der Unit: der Stand liegt nicht unter /etc/wamo-labor (dort darf die Unit nichts schreiben)
+STAND_DATEI="$ZUSTAND/betreuer-geraete.stand"
 LIB="$W/usr/local/lib/wamo-labor-geraete"
 VORLAGE="$LIB/wamo-labor.caddy"
 RUN="$W/run/wamo-labor-geraete"
@@ -305,7 +306,7 @@ site_aendern() {
   image="$(caddy_image_laufend)" || fehler "Das Image von wamo-caddy ließ sich nicht lesen, die Site bleibt unverändert."
   [ -n "$image" ] || fehler "Das Image von wamo-caddy ließ sich nicht lesen, die Site bleibt unverändert."
   if [ -z "$W" ]; then CADDY_OWNER="$(stat -c %U "$CADDY_DIR")"; CADDY_GROUP="$(stat -c %G "$CADDY_DIR")"; fi
-  arbeit_anlegen "$CADDY_DIR"
+  arbeit_anlegen "$CADDY_DIR" "$RUN"   # der Wegwerf-Ordner liegt im Laufzeitordner der Unit, nicht im Baum von wamocon
   site_erzeugen "$VORLAGE" "$liste" > "$ARBEIT/etc/kern/wamo-labor.caddy"
   arbeit_pruefen "$image" || fehler "Die Prüfung der neuen Site (caddy adapt) ist fehlgeschlagen, die vorherige Site bleibt aktiv."
   site_laden
@@ -313,6 +314,7 @@ site_aendern() {
 
 # Der Stand mit den Zeitpunkten im Kopf: wann zuletzt geschrieben, geladen und gewarnt wurde (atomar, root 0644)
 stand_schreiben() {
+  mkdir -p "$ZUSTAND"
   STAND_TMP="$STAND_DATEI.neu.$$"
   {
     echo "# WAMO Labor: zuletzt eingesetzter Stand der Betreuer-Geräte. Spalten: Gerätename, Adresse, Zeitpunkt der letzten Antwort (Sekunden seit 1970)."

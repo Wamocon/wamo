@@ -17,6 +17,7 @@ dieselbe Werkstatt (Wegwerf-Ordner, Attrappen, Protokoll, ein eingerichteter Bet
 ohne Startdatei (siehe test_labor_betrieb_skripte.py).
 """
 
+import hashlib
 import os
 import re
 import shutil
@@ -41,7 +42,7 @@ NEUE_SKRIPTE = (SITE_BIB, AKTUALISIERER, GERAETE_EINRICHTEN)
 INTERN = "127.0.0.0/8 172.24.0.1/32 192.168.178.136/32"
 FRIST = 12 * 3600
 GERAET = "WMC-H-04-NS"
-STAND_REL = "etc/wamo-labor/betreuer-geraete.stand"  # der Stand im Probelauf (relativ zur Wurzel)
+STAND_REL = "var/lib/wamo-labor-geraete/betreuer-geraete.stand"  # der Stand im Probelauf (relativ zur Wurzel): StateDirectory der Unit
 
 
 # ====================================================================================== Allgemeine Textprüfungen
@@ -404,7 +405,17 @@ class GeraeteWerkstatt(Werkstatt):
         return len([z for z in self.aufrufe() if z.startswith("docker run") and "caddy adapt" in z])
 
     def arbeitsreste(self) -> list:
-        return [d for d in self.caddy.iterdir() if d.name.startswith(".arbeit.")]
+        """Reste des Wegwerf-Ordners für caddy adapt: im Laufzeitordner (Aktualisierer) und im Ordner von wamo-caddy (Einrichten, Rückweg)."""
+        orte = [self.caddy, self.p("run/wamo-labor-geraete")]
+        return [d for ort in orte if ort.exists() for d in ort.iterdir() if d.name.startswith(".arbeit.")]
+
+    def momentaufnahme(self) -> dict[str, str]:
+        """Alle Dateien und Ordner unter der Wurzel (W:) und dem Ordner von wamo-caddy (C:) mit dem Hash des Inhalts."""
+        stand = {}
+        for basis, marke in ((self.wurzel, "W"), (self.caddy, "C")):
+            for pfad in sorted(basis.rglob("*")):
+                stand[f"{marke}:{pfad.relative_to(basis).as_posix()}"] = "dir" if pfad.is_dir() else hashlib.sha256(pfad.read_bytes()).hexdigest()
+        return stand
 
 
 @unittest.skipUnless(BASH, "keine Bash vorhanden")
@@ -935,6 +946,28 @@ class SperreMeldungUndGrenzenTests(GeraeteWerkstatt):
         self.assertFalse(self.p("var/lib/wamo-labor").exists())
         self.assertEqual((self.caddy / "docker-compose.yml").read_text(encoding="utf-8"), "name: wamo-caddy\n# alter Stand\n")
 
+    def test_der_lauf_schreibt_nur_in_die_freigegebenen_ordner(self):
+        """Die Unit macht nur drei Orte beschreibbar (Laufzeitordner, Zustandsordner, etc/kern von wamo-caddy). Ein Lauf mit Zulassung und einer mit Entzug ändern nichts anderes."""
+        freigegeben = ("W:run/wamo-labor-geraete", "W:var/lib/wamo-labor-geraete", "C:etc/kern")
+
+        def erlaubt(pfad: str) -> bool:
+            return any(pfad == f or pfad.startswith(f + "/") or f.startswith(pfad + "/") for f in freigegeben)  # auch die Ordner darüber (neu angelegt)
+
+        t0 = self.JETZT
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        for jetzt, antwortet in ((t0, True), (t0 + FRIST + 100, False)):
+            if not antwortet:
+                self.antworten(GERAET)
+            vorher = self.momentaufnahme()
+            r = self.aktualisieren(jetzt=jetzt)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            nachher = self.momentaufnahme()
+            geaendert = {k for k in vorher.keys() | nachher.keys() if vorher.get(k) != nachher.get(k)}
+            self.assertTrue(geaendert)
+            for pfad in geaendert:
+                self.assertTrue(erlaubt(pfad), pfad)
+        self.assertTrue(self.p(STAND_REL).is_file())
+
     def test_trockenlauf_zeigt_nur_an(self):
         self.antworten(GERAET, self.netbios("192.168.178.78"), self.mdns("192.168.178.67"))
         r = self.aktualisieren("--trocken")
@@ -1066,16 +1099,45 @@ class UnitTests(unittest.TestCase):
         for grenze in ("TimeoutStartSec", "MemoryMax", "TasksMax"):
             self.assertIn(grenze, o)
 
-    def test_schreibrechte_nur_auf_zwei_ordner_und_nur_drei_faehigkeiten(self):
+    def test_schreibrechte_nur_auf_den_ordner_kern_und_nur_drei_faehigkeiten(self):
         o = self.optionen(self.dienst)
-        self.assertEqual(o["ReadWritePaths"].split(), ["/etc/wamo-labor", "__CADDY_DIR__"])
+        self.assertEqual(o["ReadWritePaths"].split(), ["__CADDY_DIR__/etc/kern"])  # nur dort liegt die Site, sonst nichts im Baum von wamocon
+        self.assertEqual(o["StateDirectory"], "wamo-labor-geraete")  # /var/lib/wamo-labor-geraete: der Stand
         self.assertEqual(o["Environment"], "WAMO_LABOR_CADDY_DIR=__CADDY_DIR__")
         self.assertEqual(o["CapabilityBoundingSet"].split(), ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER"])
         familien = o["RestrictAddressFamilies"].split()
         self.assertEqual(sorted(familien), ["AF_INET", "AF_INET6", "AF_NETLINK", "AF_UNIX"])  # Netz bleibt: die Namensauflösung im LAN braucht es
         self.assertNotIn("PrivateNetwork", self.dienst)
-        self.assertNotIn("ProtectHome", self.dienst)  # ProtectSystem=strict schützt /home schon, der Ordner von wamo-caddy ist freigegeben
+        self.assertEqual(o["ProtectHome"], "read-only")  # /home nur lesbar, nur etc/kern von wamo-caddy ist freigegeben
+        self.assertEqual(o["RestrictNamespaces"], "yes")
+        self.assertEqual(o["UMask"], "0077")
         self.assertNotIn("User=", self.dienst)  # läuft als root (Besitzer wamocon setzen, Docker-Socket)
+
+    def test_die_token_dateien_sind_fuer_die_unit_unsichtbar(self):
+        o = self.optionen(self.dienst)
+        self.assertEqual(o["InaccessiblePaths"].split(), ["-/etc/wamo-labor/kern-token", "-/etc/wamo-labor/betreuer-token"])  # "-": fehlt die Datei, ist das kein Fehler
+
+    def test_die_unit_laesst_alles_zu_was_der_aktualisierer_braucht(self):
+        """Jeder Pfad, den der Aktualisierer liest oder schreibt, liegt in einem Ordner, den die Unit freigibt, und keiner in den gesperrten."""
+        o = self.optionen(self.dienst)
+        a = code(AKTUALISIERER)
+        # schreiben: Laufzeitordner (Sperre, Arbeitsordner), Zustandsordner (Stand), der Ordner etc/kern von wamo-caddy
+        self.assertIn('RUN="$W/run/wamo-labor-geraete"', a)
+        self.assertEqual(o["RuntimeDirectory"], "wamo-labor-geraete")
+        self.assertIn('ZUSTAND="$W/var/lib/wamo-labor-geraete"', a)
+        self.assertIn('STAND_DATEI="$ZUSTAND/betreuer-geraete.stand"', a)
+        self.assertIn('SITE_DATEI="$CADDY_DIR/etc/kern/wamo-labor.caddy"', a)
+        self.assertEqual(o["ReadWritePaths"], "__CADDY_DIR__/etc/kern")
+        self.assertIn('arbeit_anlegen "$CADDY_DIR" "$RUN"', a)  # der Arbeitsordner liegt im Laufzeitordner, nicht im Baum von wamocon
+        # lesen: die beiden Listen unter /etc/wamo-labor (nicht gesperrt), die Bibliothek unter /usr/local/lib, der Baum von wamo-caddy (nur lesbar)
+        self.assertIn('NAMEN_DATEI="$ETC/betreuer-geraete"', a)
+        self.assertIn('BETREUER_ADRESSEN="$ETC/betreuer-adressen"', a)
+        gesperrt = [g.lstrip("-") for g in o["InaccessiblePaths"].split()]
+        for gebraucht in ("/etc/wamo-labor/betreuer-geraete", "/etc/wamo-labor/betreuer-adressen", "/usr/local/lib/wamo-labor-geraete"):
+            self.assertNotIn(gebraucht, gesperrt)
+        # nichts schreibt nach /etc/wamo-labor: Die Unit macht den Ordner nicht beschreibbar
+        self.assertNotRegex(a, r'(>|>>|mv -f \S+|install [^\n]*|rm -f|mkdir -p) "\$ETC')
+        self.assertNotIn('STAND_DATEI="$ETC', a)
 
     def test_abhaengigkeiten_ohne_zwang(self):
         o = self.optionen(self.dienst)
@@ -1143,6 +1205,7 @@ class EinrichtenTests(EinrichtungsWerkstatt):
         self.assertEqual((lib / "wamo-labor-site.sh").read_bytes(), SITE_BIB.read_bytes())
         self.assertEqual((lib / "wamo-labor.caddy").read_bytes(), SITE.read_bytes())
         self.assertEqual(self.p(TIMER_ZIEL).read_bytes(), TIMER.read_bytes())
+        self.assertTrue(self.p("var/lib/wamo-labor-geraete").is_dir())  # der Zustandsordner (StateDirectory der Unit)
         dienst = self.p(DIENST_ZIEL).read_text(encoding="utf-8")
         self.assertEqual(dienst, lies(DIENST).replace("__CADDY_DIR__", posix(self.caddy)))  # der Ordner von wamo-caddy steht darin
         self.assertNotIn("__CADDY_DIR__", dienst)
@@ -1411,6 +1474,7 @@ class RueckwegTests(EinrichtungsWerkstatt):
         self.assertEqual(self.installiert(), [])
         self.assertFalse(self.p(STAND_REL).exists())
         self.assertFalse(self.p("usr/local/lib/wamo-labor-geraete").exists())
+        self.assertFalse(self.p("var/lib/wamo-labor-geraete").exists())  # mit dem Stand geht auch der Zustandsordner
         # die Listen des Betreibers bleiben
         self.assertTrue(self.p("etc/wamo-labor/betreuer-geraete").is_file())
         self.assertIn("192.168.178.50", self.p("etc/wamo-labor/betreuer-adressen").read_text(encoding="utf-8"))
@@ -1535,7 +1599,7 @@ class DokumentationTests(unittest.TestCase):
     def test_namensvertrag_in_claude_md(self):
         zeile = next((z for z in lies(REPO / "CLAUDE.md").splitlines() if z.startswith("| Labor-Dienst (Betrieb) |")), None)
         self.assertIsNotNone(zeile, "Zeile Labor-Dienst (Betrieb) fehlt in der Tabelle")
-        for soll in ("/etc/wamo-labor/betreuer-geraete", "betreuer-geraete.stand", "wamo-labor-geraete-aktualisieren.sh", "/usr/local/sbin/wamo-labor-geraete-aktualisieren",
+        for soll in ("/etc/wamo-labor/betreuer-geraete", "/var/lib/wamo-labor-geraete/betreuer-geraete.stand", "wamo-labor-geraete-aktualisieren.sh", "/usr/local/sbin/wamo-labor-geraete-aktualisieren",
                      "wamo-labor-geraete.service", "wamo-labor-geraete.timer", "wamo-labor-geraete-einrichten.sh", "wamo-labor-site.sh", "test_labor_geraete_skripte.py",
                      "wamo-labor-einrichten.sh", "55447"):
             self.assertIn(soll, zeile, soll)
@@ -1552,7 +1616,8 @@ class DokumentationTests(unittest.TestCase):
                      "betreuer-geraete", "betreuer-geraete.stand", "--trocken", "rueckweg", "einrichten", "status", "NetBIOS", "mDNS", "192.168.178.0/24", "Vereinigung",
                      "12 Stunden", "höchstens 4", "höchstens 16", "caddy adapt", "caddy reload", "flock", "journalctl -t wamo-labor-geraete", "Nur am Server prüfbar",
                      "Grenzen", "nicht kryptografisch", "vortäuschen", "Betreuer-Token", "eine Minute", "Windows-, Mac- und Linux-Geräte", "plaetze-adressen",
-                     "WMC-H-04-NS", "WAMO_LABOR_GERAETE_WURZEL", "ReadWritePaths", "betreuer-adressen"):
+                     "WMC-H-04-NS", "WAMO_LABOR_GERAETE_WURZEL", "ReadWritePaths", "betreuer-adressen", "/var/lib/wamo-labor-geraete", "StateDirectory", "InaccessiblePaths",
+                     "--pull=never", "mehr als 4 Antworten", "3 Minuten", "Entzug", "run/wamo-labor-geraete/lock", "symbolische Links"):
             self.assertIn(soll, text, soll)
         for verboten in (chr(0x2014), chr(0x2013)):
             self.assertNotIn(verboten, text)
@@ -1572,7 +1637,7 @@ class DokumentationTests(unittest.TestCase):
         eintrag = next((b for b in hinzugefuegt.split("\n- ") if b.lstrip("- ").startswith("Betreuer-Geräte des Testlabors über den Gerätenamen")), None)
         self.assertIsNotNone(eintrag, "Eintrag zu den Betreuer-Geräten fehlt unter Hinzugefügt")
         for soll in ("wamo-labor-geraete-aktualisieren.sh", "wamo-labor-geraete-einrichten.sh", "wamo-labor-site.sh", "NetBIOS", "mDNS", "12 Stunden", "caddy adapt",
-                     "nicht kryptografisch", "Betreuer-Token", "flock", "test_labor_geraete_skripte.py"):
+                     "nicht kryptografisch", "Betreuer-Token", "flock", "test_labor_geraete_skripte.py", "Sicherheitsprüfung"):
             self.assertIn(soll, eintrag, soll)
         self.assertNotIn(chr(0x2014), eintrag)
         self.assertNotIn(chr(0x2013), eintrag)

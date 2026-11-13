@@ -15,7 +15,7 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   (virtuelle 172.x-Adressen fallen weg) und lässt höchstens 4 Adressen je Name zu. Antwortet ein Gerät nicht (Ruhezustand), bleibt die zuletzt gute Adresse höchstens 12
   Stunden zugelassen, eine neue Antwort ersetzt die alte sofort. Nur bei geänderter Menge setzt er die Caddy-Site aus der Vorlage neu zusammen (feste Adressen aus
   `betreuer-adressen` plus die aufgelösten), prüft sie mit `caddy adapt` in einem Wegwerf-Container ohne Netz, installiert sie und lädt sie mit `caddy reload` ohne
-  Ausfall; scheitert eine Stufe, bleibt die vorherige Site aktiv. Stand in `/etc/wamo-labor/betreuer-geraete.stand`, Sperre mit `flock`, Journal-Kennung
+  Ausfall; scheitert eine Stufe, bleibt die vorherige Site aktiv. Stand in `/var/lib/wamo-labor-geraete/betreuer-geraete.stand`, Sperre mit `flock`, Journal-Kennung
   `wamo-labor-geraete` nur mit Änderungen (Name und Adresse, nie ein Token); er fasst Container des Dienstes, Firewall und Kern nicht an.
   `wamo-labor-geraete-einrichten.sh` (`einrichten`, `status`, `rueckweg`, `--trocken`, Sicherung vor jeder Änderung, Rücknahme bei einem Fehler) installiert
   Aktualisierer, gehärtete Unit und Zeitgeber; der Rückweg stellt die Site aus `betreuer-adressen` allein wieder her. Die Einsetz-Logik der Site steht jetzt in
@@ -23,6 +23,14 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   12 Stunden alt) und zieht Vorlage und Bibliothek nach. Grenzen: Die Namensauflösung im LAN ist nicht kryptografisch (ein fremdes Gerät könnte einen Namen vortäuschen,
   der Betreuer-Token bleibt die eigentliche Absicherung), eine neue Adresse gilt erst mit dem nächsten Lauf (höchstens eine Minute), NetBIOS und mDNS erreichen nur Geräte
   im selben Netz. Tests in `voice-core/test_labor_geraete_skripte.py`.
+  Nachgezogen nach der Sicherheitsprüfung: Alle Skripte, die die Site oder `wamo-caddy` ändern (Aktualisierer, `wamo-labor-einrichten.sh`, `wamo-labor-rueckweg.sh`,
+  Einrichten und Rückweg der Betreuer-Geräte), nehmen dieselbe `flock`-Sperre `/run/wamo-labor-geraete/lock`. Ein Fehler in den Eingabelisten hält nur neue Zulassungen
+  an, der Entzug (abgelaufene Einträge, entfernte Namen) läuft weiter. Mehr als 4 Antworten je Name lassen nichts Neues zu (Warnung höchstens stündlich), neue Zulassungen
+  laden Caddy frühestens 3 Minuten nach dem letzten Reload, Zeitpunkte aus der Zukunft zählen als jetzt, der Stand wird ohne Änderung höchstens alle 5 Minuten
+  geschrieben. Die Prüfung der Site nutzt die Image-ID mit `--pull=never`, `--pids-limit 64` und `--memory 256m`, im Arbeitsbaum fallen Links weg. Die Unit ist weiter
+  gehärtet (`ProtectHome=read-only`, schreibbar nur Laufzeitordner, Zustandsordner `/var/lib/wamo-labor-geraete` und `etc/kern`, die Token-Dateien unsichtbar,
+  `UMask=0077`, `RestrictNamespaces`). Scheitert beim Einrichten der Prüflauf, kommen auch Site und Stand aus der Sicherung zurück; scheitert im Rückweg die Site, geht
+  nur der Timer aus und der Rückweg bleibt wiederholbar.
 - Platz-Skript für die Windows-Laptops des Testlabors (Paket P8, nicht ausgerollt, Anleitung `docs/labor-platz-einrichten.md`, Konzept `docs/testlabor-wamo.md` 3.9): `scripts/wamo_labor_platz.py` mit den Befehlen
   `einrichten` (`--trocken`, `--platz N`, `--ca-datei`), `starten` (`--ohne-board`), `pruefen`, `rueckweg` (`--trocken`, `--profil-loeschen`) und `status`. Läuft im Kiosk-Konto ohne Administratorrechte und ohne PowerShell,
   nur Standardbibliothek. `einrichten` importiert die WAMO-CA in den Benutzerspeicher (`certutil -user`, Prüfung nach Hash), setzt 34 Chrome-Richtlinien im Benutzerzweig (Übersetzung, Passwortmanager, Anmeldung und Sync,
