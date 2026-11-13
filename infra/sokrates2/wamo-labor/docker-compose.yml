@@ -54,6 +54,10 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # Kein Weg nach außen über DNS: Der Resolver von Docker leitet Namen auf einem Netz, das nicht intern ist, sonst nach außen weiter (Probe P14 hat es am
+    # Server gemessen). Mit 127.0.0.1 als einzigem Resolver scheitert die Auflösung nach außen; der Dienst braucht keine Namen (Caddy ruft ihn über 172.28.0.10).
+    dns:
+      - 127.0.0.1
     # Grenzen nach Vertrag D11 (Empfehlung 256 MB und 0,5 CPU). Jeder Faden zählt als Prozess: uvicorn, der Faden-Pool für die Datenbank und der
     # Schreiber für das Protokoll bleiben weit darunter.
     mem_limit: 256m
