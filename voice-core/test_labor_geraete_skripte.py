@@ -11,10 +11,15 @@ Protokoll, daran prüfen die Tests, was ein echter Lauf tun WÜRDE und was nie. 
 Unit unter systemd, ein echter caddy reload, ein echtes flock), steht im README von infra/sokrates2 (Abschnitt 19.1).
 
 Ausführen:  python -m pytest -q -p no:cacheprovider test_labor_geraete_skripte.py   (im Ordner voice-core/)
+
+Die Datei ist länger als 800 Zeilen (bewusste Ausnahme, Muster test_labor_betrieb_skripte.py): Bibliothek, Aktualisierer, Einrichtung, Unit und Dokumentation teilen
+dieselbe Werkstatt (Wegwerf-Ordner, Attrappen, Protokoll, ein eingerichteter Betrieb) und dieselben Hilfen. Unter Windows laufen die Probeläufe mit der Git-Bash
+ohne Startdatei (siehe test_labor_betrieb_skripte.py).
 """
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -23,6 +28,7 @@ from pathlib import Path
 
 from test_labor_betrieb_skripte import (
     ATTRAPPE, BASH, BASIS_IMAGE, EINRICHTEN, SITE, SOKRATES2, VERBOTENE_WOERTER, Werkstatt, code, funktionen, lies, ohne_kommentare, posix, schreibe,
+    system_pfad,
 )
 
 SITE_BIB = SOKRATES2 / "wamo-labor-site.sh"
@@ -30,8 +36,8 @@ AKTUALISIERER = SOKRATES2 / "wamo-labor-geraete-aktualisieren.sh"
 GERAETE_EINRICHTEN = SOKRATES2 / "wamo-labor-geraete-einrichten.sh"
 DIENST = SOKRATES2 / "wamo-labor-geraete.service"
 TIMER = SOKRATES2 / "wamo-labor-geraete.timer"
-NEUE_DATEIEN = [SITE_BIB, AKTUALISIERER]
-NEUE_SKRIPTE = (SITE_BIB, AKTUALISIERER)
+NEUE_DATEIEN = [SITE_BIB, AKTUALISIERER, GERAETE_EINRICHTEN, DIENST, TIMER]
+NEUE_SKRIPTE = (SITE_BIB, AKTUALISIERER, GERAETE_EINRICHTEN)
 INTERN = "127.0.0.0/8 172.24.0.1/32 192.168.178.136/32"
 FRIST = 12 * 3600
 GERAET = "WMC-H-04-NS"
@@ -55,7 +61,7 @@ class AllgemeinTests(unittest.TestCase):
             self.assertIsNone(re.search(r"\b[A-Z]{2,10}-\d{3,5}\b", text), f.name)  # keine Vorgangsnummern
             for zeile in ohne_kommentare(text).splitlines():
                 for wort in re.findall(r"[A-Za-z0-9_+/=-]{40,}", zeile):
-                    self.assertTrue(re.fullmatch(r"[A-Za-z_]+[_-][A-Za-z_-]+|[a-z0-9-]+", wort) or "/" in wort or "$" in wort, f"{f.name}: {wort[:20]}")
+                    self.assertTrue(re.fullmatch(r"[A-Za-z_]+[_-][A-Za-z_-]+|[a-z0-9-]+|[A-Za-z_=]+", wort) or "/" in wort or "$" in wort, f"{f.name}: {wort[:20]}")
 
     def test_skripte_form_und_grenzen(self):
         for skript in NEUE_SKRIPTE:
@@ -726,6 +732,421 @@ class SperreMeldungUndGrenzenTests(GeraeteWerkstatt):
         self.assertIn("flock -n 9", c)
         self.assertIn("logger -t wamo-labor-geraete", c)
         self.assertIn("run/wamo-labor-geraete", c)
+
+
+# ====================================================================================== Teil 3: Unit und Zeitgeber
+class UnitTests(unittest.TestCase):
+    def setUp(self):
+        self.dienst = ohne_kommentare(lies(DIENST))
+        self.timer = ohne_kommentare(lies(TIMER))
+
+    def optionen(self, text: str) -> dict[str, str]:
+        return {m.group(1): m.group(2).strip() for m in re.finditer(r"(?m)^([A-Za-z]+)=(.*)$", text)}
+
+    def test_dienst_ist_ein_gehaerteter_oneshot_mit_der_kennung_im_journal(self):
+        o = self.optionen(self.dienst)
+        self.assertEqual(o["Type"], "oneshot")
+        self.assertEqual(o["ExecStart"], "/usr/local/sbin/wamo-labor-geraete-aktualisieren")
+        self.assertEqual(o["SyslogIdentifier"], "wamo-labor-geraete")
+        for gehaertet in ("NoNewPrivileges", "PrivateTmp", "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups",
+                          "ProtectClock", "ProtectHostname", "RestrictRealtime", "RestrictSUIDSGID", "LockPersonality"):
+            self.assertEqual(o[gehaertet], "yes", gehaertet)
+        self.assertEqual(o["ProtectSystem"], "strict")
+        self.assertEqual(o["SystemCallArchitectures"], "native")
+        self.assertEqual(o["RuntimeDirectory"], "wamo-labor-geraete")  # dort liegt die Sperre
+        self.assertEqual(o["RuntimeDirectoryPreserve"], "yes")  # die Sperrdatei bleibt zwischen zwei Läufen, sonst hielte ein Lauf von Hand sie nicht
+        for grenze in ("TimeoutStartSec", "MemoryMax", "TasksMax"):
+            self.assertIn(grenze, o)
+
+    def test_schreibrechte_nur_auf_zwei_ordner_und_nur_drei_faehigkeiten(self):
+        o = self.optionen(self.dienst)
+        self.assertEqual(o["ReadWritePaths"].split(), ["/etc/wamo-labor", "__CADDY_DIR__"])
+        self.assertEqual(o["Environment"], "WAMO_LABOR_CADDY_DIR=__CADDY_DIR__")
+        self.assertEqual(o["CapabilityBoundingSet"].split(), ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER"])
+        familien = o["RestrictAddressFamilies"].split()
+        self.assertEqual(sorted(familien), ["AF_INET", "AF_INET6", "AF_NETLINK", "AF_UNIX"])  # Netz bleibt: die Namensauflösung im LAN braucht es
+        self.assertNotIn("PrivateNetwork", self.dienst)
+        self.assertNotIn("ProtectHome", self.dienst)  # ProtectSystem=strict schützt /home schon, der Ordner von wamo-caddy ist freigegeben
+        self.assertNotIn("User=", self.dienst)  # läuft als root (Besitzer wamocon setzen, Docker-Socket)
+
+    def test_abhaengigkeiten_ohne_zwang(self):
+        o = self.optionen(self.dienst)
+        self.assertEqual(o["After"].split(), ["docker.service", "avahi-daemon.service"])
+        self.assertNotIn("Wants=", self.dienst)  # ein Lauf startet weder Docker noch avahi, er scheitert sichtbar
+        self.assertNotIn("Requires=", self.dienst)
+
+    def test_timer_jede_minute_dreissig_sekunden_nach_dem_start(self):
+        o = self.optionen(self.timer)
+        self.assertEqual(o["OnBootSec"], "30s")
+        self.assertEqual(o["OnUnitActiveSec"], "1min")
+        self.assertEqual(o["Unit"], "wamo-labor-geraete.service")
+        self.assertEqual(o["WantedBy"], "timers.target")
+        self.assertEqual(o["Persistent"], "no")
+
+    def test_kein_platzhalter_ausser_dem_ordner_von_caddy(self):
+        self.assertEqual(sorted(set(re.findall(r"__[A-Z_]+__", self.dienst + self.timer))), ["__CADDY_DIR__"])
+
+
+# ====================================================================================== Teil 4: wamo-labor-geraete-einrichten.sh
+SBIN = "usr/local/sbin/wamo-labor-geraete-aktualisieren"
+DIENST_ZIEL = "etc/systemd/system/wamo-labor-geraete.service"
+TIMER_ZIEL = "etc/systemd/system/wamo-labor-geraete.timer"
+ENABLE = "systemctl enable --now wamo-labor-geraete.timer"
+DISABLE = "systemctl disable --now wamo-labor-geraete.timer"
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class EinrichtungsWerkstatt(GeraeteWerkstatt):
+    """Der Betrieb vor der Einrichtung: Die Site gilt, die Liste der Namen und die festen Adressen sind da, der Aktualisierer ist es nicht."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.rmtree(self.lib)
+        self.ausgabe("systemctl.is-active", "")
+        self.ausgabe("systemctl.is-enabled", "enabled\n")
+
+    def lauf_geraete(self, *args: str, extra: dict | None = None, skript: Path = GERAETE_EINRICHTEN) -> subprocess.CompletedProcess:
+        env = {"WAMO_LABOR_GERAETE_WURZEL": posix(self.wurzel)}
+        env.update(extra or {})
+        return self.lauf(skript, *args, extra=env, wurzel=False)
+
+    def einrichten(self, *args: str, extra: dict | None = None) -> subprocess.CompletedProcess:
+        return self.lauf_geraete("einrichten", *args, extra=extra)
+
+    def installiert(self) -> list[str]:
+        ziele = (SBIN, DIENST_ZIEL, TIMER_ZIEL, "usr/local/lib/wamo-labor-geraete/wamo-labor-site.sh", "usr/local/lib/wamo-labor-geraete/wamo-labor.caddy")
+        return [z for z in ziele if self.p(z).exists()]
+
+    def sicherungen(self) -> list[Path]:
+        basis = self.p("var/backups/wamo-labor")
+        return sorted(basis.iterdir()) if basis.exists() else []
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class EinrichtenTests(EinrichtungsWerkstatt):
+    def test_einrichten_installiert_alles_und_prueft_am_ende(self):
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for schritt in ("== Vorprüfung", "== Sicherung", "== Installation", "== Aktivierung", "== Prüfung", "Fertig."):
+            self.assertIn(schritt, r.stdout)
+        self.assertEqual(self.p(SBIN).read_bytes(), AKTUALISIERER.read_bytes())
+        lib = self.p("usr/local/lib/wamo-labor-geraete")
+        self.assertEqual((lib / "wamo-labor-site.sh").read_bytes(), SITE_BIB.read_bytes())
+        self.assertEqual((lib / "wamo-labor.caddy").read_bytes(), SITE.read_bytes())
+        self.assertEqual(self.p(TIMER_ZIEL).read_bytes(), TIMER.read_bytes())
+        dienst = self.p(DIENST_ZIEL).read_text(encoding="utf-8")
+        self.assertEqual(dienst, lies(DIENST).replace("__CADDY_DIR__", posix(self.caddy)))  # der Ordner von wamo-caddy steht darin
+        self.assertNotIn("__CADDY_DIR__", dienst)
+        aufrufe = self.aufrufe()
+        self.assertIn("systemctl daemon-reload", aufrufe)
+        self.assertLess(aufrufe.index("systemctl daemon-reload"), aufrufe.index(ENABLE))
+        # die Prüfung am Ende ließ den Aktualisierer einmal laufen: Stand und Site
+        self.assertTrue(self.p("etc/wamo-labor/betreuer-geraete.stand").is_file())
+        self.assertIn(self.remote_ip("192.168.178.78"), self.site())
+        self.assertIn("192.168.178.78", r.stdout)  # der Status am Ende nennt Name und Adresse
+
+    def test_vorlage_der_namensliste_nur_wenn_sie_fehlt(self):
+        liste = self.p("etc/wamo-labor/betreuer-geraete")
+        eigene = liste.read_bytes()
+        self.assertEqual(self.einrichten().returncode, 0)
+        self.assertEqual(liste.read_bytes(), eigene)  # der Inhalt gehört dem Betreiber
+        liste.unlink()
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = liste.read_text(encoding="utf-8")
+        self.assertTrue(all(z.startswith("#") or not z.strip() for z in text.splitlines()), text)  # nur Kommentare, kein Gerät
+        for soll in ("Gerätename", "192.168.178.0/24", "12 Stunden", "höchstens 4", "Minute", "wamo-labor-geraete"):
+            self.assertIn(soll, text)
+        self.assertGreater(liste.stat().st_size, 0)
+
+    def test_zweiter_lauf_ist_wiederholbar_und_sichert_den_vorigen_stand(self):
+        self.assertEqual(self.einrichten().returncode, 0)
+        erste = self.sicherungen()
+        self.assertEqual(len(erste), 1)
+        self.assertRegex(erste[0].name, r"^\d{8}-\d{6}")
+        self.assertEqual((erste[0] / "betreuer-geraete.vorher").read_bytes(), self.p("etc/wamo-labor/betreuer-geraete").read_bytes())
+        self.assertEqual((erste[0] / "wamo-labor.caddy.site.vorher").read_bytes(), self.site_vorher)
+        self.assertFalse((erste[0] / "wamo-labor-geraete.service.vorher").exists())  # damals gab es noch nichts
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        zweite = self.sicherungen()
+        self.assertEqual(len(zweite), 2)
+        neu = [d for d in zweite if d not in erste][0]
+        for datei in ("wamo-labor-geraete-aktualisieren.vorher", "wamo-labor-geraete.service.vorher", "wamo-labor-geraete.timer.vorher", "wamo-labor-site.sh.vorher"):
+            self.assertTrue((neu / datei).is_file(), datei)
+        for d in zweite:  # keine Token in den Sicherungen
+            for f in d.iterdir():
+                self.assertNotIn("token", f.name)
+                self.assertNotIn(TOKEN_KERN, f.read_text(encoding="utf-8", errors="replace"))
+
+    def test_kein_token_in_ausgabe_oder_protokoll(self):
+        r = self.einrichten()
+        for ort in (r.stdout, r.stderr, "\n".join(self.aufrufe())):
+            self.assertNotIn(TOKEN_KERN, ort)
+            self.assertNotIn(TOKEN_BETREUER, ort)
+
+    def test_trockenlauf_aendert_nichts(self):
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        r = self.einrichten("--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[trocken]", r.stdout)
+        for erwartet in ("wamo-labor-geraete-aktualisieren", "wamo-labor-geraete.service", "wamo-labor-geraete.timer", "wamo-labor-site.sh", "betreuer-geraete"):
+            self.assertIn(erwartet, r.stdout)
+        self.assertEqual(self.installiert(), [])
+        self.assertEqual(self.sicherungen(), [])
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(systemctl (daemon-reload|enable|disable|start|stop)|docker (run|exec)|flock|logger)", z)
+
+    def test_vorbedingungen_vor_jeder_aenderung(self):
+        def abbruch(text, site=True):
+            r = self.einrichten()
+            self.assertNotEqual(r.returncode, 0, text)
+            self.assertEqual(self.installiert(), [], text)
+            if site:
+                self.assertEqual(self.site_datei.read_bytes(), self.site_vorher, text)
+            self.assertFalse([z for z in self.aufrufe() if z.startswith(("systemctl daemon-reload", "systemctl enable", "docker run"))], text)
+            return r
+
+        self.ausgabe("docker.ps", "", rc=0)
+        self.assertIn("wamo-caddy", abbruch("caddy aus").stderr)
+        self.ausgabe("docker.ps", "4711cafe\n")
+        self.site_datei.unlink()
+        self.assertIn("wamo-labor-einrichten.sh", abbruch("site fehlt", site=False).stderr)
+        schreibe(self.site_datei, self.site_vorher.decode("utf-8"))
+        schreibe(self.p("etc/wamo-labor/betreuer-geraete"), f"{GERAET}\nPC_UNGUELTIG\n")
+        self.assertIn("Ungültiger Gerätename", abbruch("name").stderr)
+        schreibe(self.p("etc/wamo-labor/betreuer-geraete"), f"{GERAET}\n")
+        schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "192.168.178.50\nunsinn\n")
+        self.assertIn("Ungültige Adresse", abbruch("adresse").stderr)
+        schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "192.168.178.50\n")
+        shutil.rmtree(self.p("etc/wamo-labor"))
+        self.assertIn("/etc/wamo-labor", abbruch("ordner").stderr)
+
+    def test_fehlende_werkzeuge_werden_vorab_gemeldet(self):
+        if any(shutil.which(w, path=system_pfad()) for w in ("nmblookup", "avahi-resolve", "flock")):
+            self.skipTest("das System hat nmblookup, avahi-resolve oder flock selbst")
+        for werkzeug in ("nmblookup", "avahi-resolve", "flock"):
+            ziel = self.bin / werkzeug
+            inhalt = ziel.read_bytes()
+            ziel.unlink()
+            r = self.einrichten()
+            self.assertNotEqual(r.returncode, 0, werkzeug)
+            self.assertIn(f"{werkzeug} fehlt", r.stderr)
+            self.assertEqual(self.installiert(), [])
+            schreibe(ziel, inhalt.decode("utf-8"), ausfuehrbar=True)
+
+    def test_unsauberer_ordner_von_caddy_bricht_ab(self):
+        for falsch in ("/tmp/a|b", "/tmp/a b", "/tmp/a&b", "/tmp/a;b", "relativ"):
+            r = self.einrichten(extra={"WAMO_LABOR_CADDY_DIR": falsch})
+            self.assertNotEqual(r.returncode, 0, falsch)
+            self.assertIn("WAMO_LABOR_CADDY_DIR", r.stderr)
+            self.assertEqual(self.installiert(), [])
+
+    def test_avahi_daemon_aus_ist_eine_warnung_kein_abbruch(self):
+        self.ausgabe("systemctl.is-active_avahi-daemon", "inactive\n", rc=3)
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("avahi-daemon", r.stderr)
+        self.assertIn("WARNUNG", r.stderr)
+
+    def test_gefuellte_plaetze_liste_ist_eine_warnung_weil_die_firewall_keine_namen_kennt(self):
+        schreibe(self.p("etc/wamo-labor/plaetze-adressen"), "# Plätze\n192.168.178.50\n")
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("WARNUNG", r.stderr)
+        self.assertIn("plaetze-adressen", r.stderr)
+        self.assertIn("kennt keine Namen", r.stderr)
+
+    def test_leere_oder_fehlende_plaetze_liste_ist_keine_warnung(self):
+        for inhalt in (None, "# nur Kommentare\n\n"):
+            if inhalt is not None:
+                schreibe(self.p("etc/wamo-labor/plaetze-adressen"), inhalt)
+            r = self.einrichten()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn("plaetze-adressen", r.stderr)
+
+    def test_pruefung_scheitert_alles_wird_zurueckgenommen(self):
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.ausgabe("docker.run", "", rc=1)  # die Prüfung der neuen Site schlägt fehl: der Aktualisierer endet mit einem Fehler
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("zurückgenommen", r.stderr)
+        self.assertEqual(self.installiert(), [])
+        self.assertIn(DISABLE, self.aufrufe())
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())
+        self.assertTrue(self.p("etc/wamo-labor/betreuer-geraete").is_file())  # die Liste des Betreibers bleibt
+
+    def test_scheitert_ein_zweiter_lauf_kommt_die_vorige_fassung_zurueck(self):
+        self.assertEqual(self.einrichten().returncode, 0)
+        vorher = {z: self.p(z).read_bytes() for z in self.installiert()}
+        schreibe(self.p(SBIN), "#!/bin/sh\necho alte Fassung\n", ausfuehrbar=True)
+        vorher[SBIN] = self.p(SBIN).read_bytes()
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.ausgabe("docker.run", "", rc=1)
+        self.log.write_text("", encoding="utf-8")
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual({z: self.p(z).read_bytes() for z in self.installiert()}, vorher)  # genau wie vor dem zweiten Lauf
+        self.assertNotIn(DISABLE, self.aufrufe())  # der Timer lief schon vorher und bleibt an
+
+    def test_status_nennt_nur_namen_adressen_und_zustaende(self):
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.assertEqual(self.einrichten().returncode, 0)
+        self.log.write_text("", encoding="utf-8")
+        r = self.lauf_geraete("status")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("== Status", r.stdout)
+        for soll in (GERAET, "192.168.178.78", "wamo-labor-geraete.timer", "enabled", "betreuer-geraete"):
+            self.assertIn(soll, r.stdout)
+        for wert in (TOKEN_KERN, TOKEN_BETREUER):
+            self.assertNotIn(wert, r.stdout + r.stderr)
+        self.assertFalse([z for z in self.aufrufe() if re.match(r"^(systemctl (enable|disable|start|stop|daemon-reload)|docker (run|exec))", z)])
+        self.assertEqual(len(self.sicherungen()), 1)  # status legt nichts an
+
+    def test_status_ohne_einrichtung(self):
+        r = self.lauf_geraete("status")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("fehlt", r.stdout)
+
+    def test_falsche_aufrufe_und_nur_als_root_ohne_probelauf(self):
+        for args in (["--unbekannt"], ["x"], ["einrichten", "--basis-image"], ["einrichten", "extra"]):
+            self.assertEqual(self.lauf_geraete(*args).returncode, 2, args)
+        if not (hasattr(os, "geteuid") and os.geteuid() == 0):
+            r = self.lauf(GERAETE_EINRICHTEN, "einrichten", wurzel=False)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("sudo", r.stderr)
+            self.assertEqual(self.aufrufe(), [])
+
+    @unittest.skipIf(os.name == "nt", "Rechte der Gruppe sind unter Windows nicht prüfbar")
+    def test_herkunftsschutz(self):
+        ordner = self.t / "unsicher"
+        ordner.mkdir()
+        ziel = ordner / GERAETE_EINRICHTEN.name
+        shutil.copy(GERAETE_EINRICHTEN, ziel)
+        os.chmod(ordner, 0o777)
+        for befehl in ("einrichten", "rueckweg"):
+            r = self.lauf_geraete(befehl, extra={"WAMO_LABOR_HERKUNFT": "ja"}, skript=ziel)
+            self.assertEqual(r.returncode, 1, (befehl, r.stdout, r.stderr))
+            self.assertIn("Unsicherer Ablageort", r.stderr)
+            self.assertEqual(self.aufrufe(), [])
+
+    def test_form_und_grenzen_des_einrichtungsskripts(self):
+        c = code(GERAETE_EINRICHTEN)
+        self.assertIn('. "$HERE/wamo-labor-site.sh"', c)  # dieselbe Bibliothek wie wamo-labor-einrichten.sh und der Aktualisierer
+        self.assertLess(c.index('pruefe_ordner "$HERE"'), c.index('. "$HERE/wamo-labor-site.sh"'))
+        for nie in ("docker compose", "docker rm", "docker stop", "docker restart", "iptables", "wamo-firewall", "wamo-core", "wamo-labor-dienst", "docker network"):
+            self.assertNotIn(nie, c, nie)  # Container des Dienstes, Firewall und Kern bleiben unberührt
+        self.assertNotRegex(c, r"systemctl\s+(restart|reload)\s")
+        self.assertIn("WAMO_LABOR_GERAETE_WURZEL", c)
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class RueckwegTests(EinrichtungsWerkstatt):
+    def setUp(self):
+        super().setUp()
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.assertEqual(self.einrichten().returncode, 0)
+        self.assertIn("192.168.178.78", self.site())
+        self.log.write_text("", encoding="utf-8")
+
+    def rueckweg(self, *args: str, extra: dict | None = None) -> subprocess.CompletedProcess:
+        return self.lauf_geraete("rueckweg", *args, extra=extra)
+
+    def test_rueckweg_stellt_die_site_aus_betreuer_adressen_allein_wieder_her(self):
+        r = self.rueckweg()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)  # Server selbst und feste Adresse, keine Gerätenamen
+        self.assertEqual(self.installiert(), [])
+        self.assertFalse(self.p("etc/wamo-labor/betreuer-geraete.stand").exists())
+        self.assertFalse(self.p("usr/local/lib/wamo-labor-geraete").exists())
+        # die Listen des Betreibers bleiben
+        self.assertTrue(self.p("etc/wamo-labor/betreuer-geraete").is_file())
+        self.assertIn("192.168.178.50", self.p("etc/wamo-labor/betreuer-adressen").read_text(encoding="utf-8"))
+        aufrufe = self.aufrufe()
+        self.assertIn(DISABLE, aufrufe)
+        self.assertLess(aufrufe.index(DISABLE), aufrufe.index("systemctl daemon-reload"))
+        self.assertEqual(self.reloads(), 1)
+        self.assertEqual(self.prueflaeufe(), 1)  # erst prüfen, dann laden
+        for port in (55443, 55444, 55445, 55446):
+            self.assertTrue([z for z in aufrufe[aufrufe.index(RELOAD):] if z.startswith("curl") and f":{port}/" in z], port)
+        self.assertEqual(self.arbeitsreste(), [])
+
+    def test_rueckweg_nimmt_nur_feste_adressen_aus_der_datei_und_nie_die_aus_dem_stand(self):
+        schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "192.168.178.50\n192.168.178.60/32\n")
+        r = self.rueckweg()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"remote_ip {INTERN} 192.168.178.50 192.168.178.60/32\n", self.site())
+        self.assertNotIn("192.168.178.78", self.site())
+
+    def test_rueckweg_sichert_vorher_und_ohne_token(self):
+        self.assertEqual(self.rueckweg().returncode, 0)
+        letzte = self.sicherungen()[-1]
+        self.assertIn(self.remote_ip("192.168.178.78").encode("utf-8"), (letzte / "wamo-labor.caddy.site.vorher").read_bytes())
+        self.assertTrue((letzte / "wamo-labor-geraete.service.vorher").is_file())
+        self.assertTrue((letzte / "betreuer-geraete.stand.vorher").is_file())
+        for f in letzte.iterdir():
+            self.assertNotIn(TOKEN_KERN, f.read_text(encoding="utf-8", errors="replace"))
+
+    def test_rueckweg_ist_wiederholbar(self):
+        self.assertEqual(self.rueckweg().returncode, 0)
+        r = self.rueckweg()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertEqual(self.reloads(), 1)  # beim zweiten Mal gibt es nichts mehr zu laden
+
+    def test_pruefung_der_site_scheitert_die_site_bleibt_und_der_ausgang_ist_ein_fehler(self):
+        self.ausgabe("docker.run", "", rc=1)
+        site_mit_geraet = self.site_datei.read_bytes()
+        r = self.rueckweg()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.site_datei.read_bytes(), site_mit_geraet)  # nichts halb geändert
+        self.assertEqual(self.reloads(), 0)
+        self.assertIn("wamo-labor-einrichten.sh", r.stderr)  # der Weg, die Site später von Hand zurückzusetzen
+        self.assertEqual(self.installiert(), [])  # der Timer ist trotzdem weg: nichts ändert die Site mehr
+
+    def test_reload_scheitert_die_site_vor_dem_rueckweg_kommt_zurueck(self):
+        self.ausgabe("docker.exec_wamo-caddy_caddy", "kaputt\n", rc=1)
+        site_mit_geraet = self.site_datei.read_bytes()
+        r = self.rueckweg()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.site_datei.read_bytes(), site_mit_geraet)
+        self.assertGreaterEqual(self.reloads(), 2)
+        self.assertEqual(self.arbeitsreste(), [])
+
+    def test_laeuft_gerade_ein_lauf_wird_nichts_geaendert(self):
+        self.ausgabe("flock", "", rc=1)
+        r = self.rueckweg()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Lauf", r.stderr)
+        self.assertIn("flock -w 60 9", self.aufrufe())
+        self.assertEqual(len(self.installiert()), 5)
+        self.assertIn("192.168.178.78", self.site())
+        self.assertEqual(self.reloads(), 0)
+
+    def test_trockenlauf_aendert_nichts(self):
+        r = self.rueckweg("--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[trocken]", r.stdout)
+        self.assertEqual(len(self.installiert()), 5)
+        self.assertIn("192.168.178.78", self.site())
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(systemctl (disable|stop|daemon-reload)|docker (run|exec)|flock|curl)", z)
+
+    def test_ohne_einrichtung_gibt_es_nichts_zu_tun(self):
+        self.assertEqual(self.rueckweg().returncode, 0)
+        self.log.write_text("", encoding="utf-8")
+        r = self.rueckweg()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Fertig.", r.stdout)
+
+    def test_fasst_weder_dienst_noch_firewall_noch_kern_an(self):
+        self.assertEqual(self.rueckweg().returncode, 0)
+        for z in self.aufrufe():
+            self.assertNotRegex(z, r"^(docker (rm|stop|restart|kill|compose|network|volume)|iptables|systemctl (restart|reload|stop) wamo-(core|firewall)|wamo-core-env)", z)
 
 
 if __name__ == "__main__":

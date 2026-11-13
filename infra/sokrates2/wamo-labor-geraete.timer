@@ -1,0 +1,15 @@
+# WAMO Labor: Betreuer-Geräte jede Minute über ihren Gerätenamen abgleichen (ruft wamo-labor-geraete.service auf).
+# Nach dem Systemstart 30 s Wartezeit, damit Docker, wamo-caddy und der Namensdienst (avahi-daemon) oben sind. Eine neue Adresse eines Geräts gilt
+# deshalb frühestens beim nächsten Lauf, also nach höchstens etwa einer Minute. Installiert durch wamo-labor-geraete-einrichten.sh.
+[Unit]
+Description=WAMO Labor: Betreuer-Geräte jede Minute abgleichen
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=1s
+Persistent=no
+Unit=wamo-labor-geraete.service
+
+[Install]
+WantedBy=timers.target
