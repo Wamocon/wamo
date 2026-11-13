@@ -1,9 +1,8 @@
-// Reine Funktionen der Betreuer-Seite (kein DOM, kein Netz): Prüfung der Einwilligungsversion und der Bestätigung, Modell eines Platzes, Adressen
+// Reine Funktionen der Betreuer-Seite (kein DOM, kein Netz): höchste erfasste Einwilligungsversion, Prüfung der Bestätigung, Modell eines Platzes, Adressen
 // der Betreuer-Schnittstelle, Fehlertexte, Zählung der Anzeigezeit des neuen Tokens. Mit node --test geprüft (tests/js).
 
 import { formatZeit, kurzeId, platzTokenGueltig } from "./gemeinsam.js";
 
-export const EINWILLIGUNG_MAX = 1000;
 export const TOKEN_ANZEIGE_SEKUNDEN = 60;
 const PLAETZE = 16;
 
@@ -38,17 +37,6 @@ export function aktionAdresse(platz, aktion) {
   if (!istPlatz(platz)) throw new TypeError("Platz muss eine ganze Zahl von 1 bis 16 sein");
   if (typeof aktion !== "string" || !Object.hasOwn(AKTIONEN, aktion)) throw new TypeError("unbekannte Funktion");
   return `/api/betreuer/plaetze/${platz}/${aktion}`;
-}
-
-// Die Version des Datenschutzhinweises: eine ganze Zahl von 1 bis EINWILLIGUNG_MAX, nicht kleiner als die höchste bisher erfasste (sie wächst nur).
-export function einwilligungPruefen(eingabe, hoechste) {
-  const nein = (fehler) => ({ ok: false, wert: null, fehler });
-  if (typeof eingabe !== "string" || !/^\s*[1-9][0-9]{0,9}\s*$/.test(eingabe)) return nein("Bitte eine ganze Zahl ab 1 eingeben.");
-  const wert = Number.parseInt(eingabe, 10);
-  if (wert > EINWILLIGUNG_MAX) return nein(`Die Version darf höchstens ${EINWILLIGUNG_MAX} sein.`);
-  const grenze = Number.isInteger(hoechste) && hoechste > 0 ? hoechste : 0;
-  if (wert < grenze) return nein(`Die Version darf nicht kleiner sein als die zuletzt erfasste (${grenze}).`);
-  return { ok: true, wert, fehler: "" };
 }
 
 export function hoechsteEinwilligung(plaetze) {

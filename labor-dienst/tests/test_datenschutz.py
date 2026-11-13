@@ -184,3 +184,41 @@ def test_seiten_enthalten_keine_geheimnisse_auch_die_neue_nicht(client):
     for adresse in ("/datenschutz", "/web/datenschutz.js", "/web/datenschutz-logik.js"):
         text = client.get(adresse).text
         assert KERN_TOKEN not in text and BETREUER_TOKEN not in text and not re.search(r"[0-9a-f]{32}", text)
+
+
+def _code(name: str) -> str:
+    return re.sub(r"//[^" + chr(10) + r"]*", "", (WEB / name).read_text(encoding="utf-8"))
+
+
+def _dialog() -> str:
+    js = _code("betreuer.js")
+    return js.split("function fensterOeffnen")[1].split("function start")[0]
+
+
+def test_betreuer_dialog_hat_pflicht_checkbox_und_sendet_die_version_aus_der_konstante():
+    js, dialog = _code("betreuer.js"), _dialog()
+    assert re.search(r'from "\./datenschutz-logik\.js"', js) and "einwilligungKoerper()" in dialog
+    assert 'type: "checkbox"' in dialog and "BESTAETIGUNGSTEXT" in dialog and "neuerDurchlaufFreigabe(" in dialog and "required" in dialog
+    assert 'verweis("Hinweis für den Besucher anzeigen", "/datenschutz")' in dialog
+    assert "DATENSCHUTZ_VERSION" in dialog, "die Version wird nur lesend angezeigt"
+
+
+def test_die_version_ist_im_dialog_nicht_mehr_frei_editierbar():
+    js = _code("betreuer.js")
+    assert "einwilligung-eingabe" not in js and "einwilligungPruefen" not in js and "Math.max" not in js
+    assert "einwilligung_version" not in js, "den Körper liefert allein einwilligungKoerper() aus datenschutz-logik.js"
+    assert not re.search(r"\{\s*einwilligung_version\s*:", (WEB / "betreuer-logik.js").read_text(encoding="utf-8"))
+
+
+def test_nur_der_dialog_neuer_durchlauf_zeigt_haken_und_version():
+    dialog = _dialog()
+    assert dialog.count('type: "checkbox"') == 1
+    assert 'a.braucht === "einwilligung"' in dialog, "Haken und Version nur dort, wo die Funktion eine Einwilligung braucht"
+    assert "versionVeraltet(hoechste)" in dialog, "ist beim Dienst schon eine höhere Version erfasst, bleibt der Knopf gesperrt"
+
+
+def test_der_haken_hat_ein_sichtbares_etikett_und_grosse_flaeche():
+    css = (WEB / "stil.css").read_text(encoding="utf-8")
+    regel = re.search(r"\.haken\s*\{[^}]*\}", css)
+    assert regel and "cursor" not in regel.group(0)
+    assert re.search(r"\.haken input\s*\{[^}]*width:\s*([0-9.]+)rem", css), "große Haken-Fläche"

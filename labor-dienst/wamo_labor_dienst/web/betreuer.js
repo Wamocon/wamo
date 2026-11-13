@@ -3,11 +3,10 @@
 // verwirft oder den Durchlauf wechselt, verlangt das Eintippen der Platznummer. Den neuen Platz-Token zeigt die Seite nur einmal und blendet ihn nach
 // 60 Sekunden aus. Alle Texte aus dem Dienst gehen über textContent (dom.js), nie als HTML.
 
-import { el, ersetzeKinder } from "./dom.js";
+import { el, ersetzeKinder, verweis } from "./dom.js";
 import { betreuerTokenGueltig, fragmentLesen, ruecknahmeMs } from "./gemeinsam.js";
-import {
-  AKTIONEN, aktionAdresse, bestaetigungOk, einwilligungPruefen, fehlerText, hoechsteEinwilligung, platzLink, platzModell, tokenRestSekunden, uebersichtOk,
-} from "./betreuer-logik.js";
+import { AKTIONEN, aktionAdresse, bestaetigungOk, fehlerText, hoechsteEinwilligung, platzLink, platzModell, tokenRestSekunden, uebersichtOk } from "./betreuer-logik.js";
+import { BESTAETIGUNGSTEXT, DATENSCHUTZ_VERSION, einwilligungKoerper, neuerDurchlaufFreigabe, versionVeraltet } from "./datenschutz-logik.js";
 
 const UEBERSICHT = "/api/betreuer/plaetze";
 const AUFFRISCHEN_MS = 10000;
@@ -242,26 +241,25 @@ function feldMitBeschriftung(kennung, beschriftung, eingabe, hilfe) {
 function fensterOeffnen(platz, id) {
   const a = AKTIONEN[id];
   const dialog = $("aktion");
+  const mitHinweis = a.braucht === "einwilligung"; // nur „Neuer Durchlauf“: Haken für den Datenschutzhinweis und die Version, nur lesend
   const hoechste = hoechsteEinwilligung(zustand.plaetze);
+  const veraltet = mitHinweis && versionVeraltet(hoechste);
   const fehler = el("p", { klasse: "meldung meldung-fehler", attr: { role: "alert" } });
   fehler.hidden = true;
-  const version = a.braucht === "einwilligung"
-    ? el("input", { attr: { id: "einwilligung-eingabe", type: "text", inputmode: "numeric", autocomplete: "off", maxlength: "4", value: String(Math.max(1, hoechste)) } }) : null;
-  const versionFehler = el("span", { klasse: "feld-fehler", attr: { id: "einwilligung-fehler" } });
+  const haken = mitHinweis ? el("input", { attr: { id: "datenschutz-bestaetigt", type: "checkbox", required: "" } }) : null;
   const bestaetigung = el("input", { attr: { id: "bestaetigung-eingabe", type: "text", inputmode: "numeric", autocomplete: "off", maxlength: "2", "aria-describedby": "bestaetigung-hilfe" } });
   const los = el("button", { klasse: "knopf knopf-gefahr", text: "Ausführen", attr: { type: "submit", disabled: "" } });
 
   const pruefen = () => {
-    const v = version ? einwilligungPruefen(version.value, hoechste) : { ok: true, fehler: "" };
-    versionFehler.textContent = version && version.value !== "" ? v.fehler : "";
-    los.disabled = !(v.ok && bestaetigungOk(bestaetigung.value, platz));
+    const frei = mitHinweis ? !veraltet && neuerDurchlaufFreigabe(haken.checked, bestaetigung.value, platz) : bestaetigungOk(bestaetigung.value, platz);
+    los.disabled = !frei;
   };
   const absenden = async (ereignis) => {
     ereignis.preventDefault();
+    pruefen();
     if (los.disabled) return;
     los.disabled = true;
-    const koerper = version ? { einwilligung_version: einwilligungPruefen(version.value, hoechste).wert } : undefined;
-    const ergebnis = await ausfuehren(platz, id, koerper);
+    const ergebnis = await ausfuehren(platz, id, mitHinweis ? einwilligungKoerper() : undefined);
     if (ergebnis.ok || zustand.token === null) {
       dialog.close();
       return;
@@ -270,20 +268,22 @@ function fensterOeffnen(platz, id) {
     fehler.hidden = false;
     pruefen();
   };
-  for (const feld of [version, bestaetigung]) if (feld) feld.addEventListener("input", pruefen);
+  bestaetigung.addEventListener("input", pruefen);
+  if (haken) haken.addEventListener("change", pruefen);
 
   ersetzeKinder(dialog, el("form", { klasse: "aktion-inhalt formular", ereignisse: { submit: absenden } },
     el("h2", { attr: { id: "aktion-titel" }, text: `Platz ${platz}: ${a.titel}` }),
     el("p", { text: a.beschreibung }),
-    version ? feldMitBeschriftung("einwilligung-eingabe", "Version des Datenschutzhinweises (die Einwilligung liegt vor)", version,
-      el("span", { klasse: "meta", text: hoechste > 0 ? ` Die Zahl darf nur wachsen, zuletzt erfasst: ${hoechste}.` : " Die Zahl darf nur wachsen." })) : null,
-    version ? versionFehler : null,
-    feldMitBeschriftung("bestaetigung-eingabe", `Zur Bestätigung die Platznummer ${platz} eintippen`, bestaetigung, el("span", { klasse: "meta", attr: { id: "bestaetigung-hilfe" }, text: " Erst dann wird „Ausführen“ frei." })),
+    mitHinweis ? el("p", {}, verweis("Hinweis für den Besucher anzeigen", "/datenschutz"), el("span", { klasse: "meta", text: " Öffnet sich in einem neuen Tab und lässt sich dort drucken." })) : null,
+    mitHinweis ? el("dl", { klasse: "daten" }, zeile("Version", DATENSCHUTZ_VERSION), zeile("Zuletzt erfasst", hoechste > 0 ? hoechste : "noch keine")) : null,
+    veraltet ? el("p", { klasse: "meldung meldung-fehler", attr: { role: "alert" }, text: `Der Dienst kennt schon die Version ${hoechste} des Hinweises, diese Seite nur die Version ${DATENSCHUTZ_VERSION}. Bitte die Seite neu laden, bis dahin bleibt „Ausführen“ gesperrt.` }) : null,
+    mitHinweis ? el("label", { klasse: "haken", attr: { for: "datenschutz-bestaetigt" } }, haken, BESTAETIGUNGSTEXT) : null,
+    feldMitBeschriftung("bestaetigung-eingabe", `Zur Bestätigung die Platznummer ${platz} eintippen`, bestaetigung, el("span", { klasse: "meta", attr: { id: "bestaetigung-hilfe" }, text: mitHinweis ? " Erst mit Haken und Platznummer wird „Ausführen“ frei." : " Erst dann wird „Ausführen“ frei." })),
     fehler,
     el("div", { klasse: "knopfreihe" }, los, el("button", { klasse: "knopf", text: "Abbrechen", attr: { type: "button" }, ereignisse: { click: () => dialog.close() } }))));
   pruefen();
   dialog.showModal();
-  (version ?? bestaetigung).focus();
+  (haken ?? bestaetigung).focus();
 }
 
 // ---------- Start ----------

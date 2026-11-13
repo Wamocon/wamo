@@ -98,7 +98,7 @@ def demo_bauen(ordner: Path, *, uhr: Callable[[], float] = time.time) -> tuple[F
     plaetze = {1: _platz_eins, 2: _platz_zwei, 3: _platz_drei}
     tokens: dict[int, str] = {}
     for platz, fuellen in plaetze.items():
-        dienst.neuer_besucher(platz, 1 if platz < 3 else 2)  # die Version des Hinweises darf nur wachsen: zuletzt der Platz mit Version 2
+        dienst.neuer_besucher(platz, 1)  # Version 1 ist der Hinweis der Betreuer-Seite (ein Test hält beides zusammen); eine höhere sperrte den Dialog Neuer Durchlauf
         fuellen(dienst.plaetze[platz])
         tokens[platz] = neuer_platz_token()
         dienst.token_vergeben(platz, token_hash(tokens[platz]))

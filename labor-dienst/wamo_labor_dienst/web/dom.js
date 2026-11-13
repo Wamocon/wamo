@@ -1,6 +1,6 @@
 // DOM-Helfer der Oberflächen. Text aus dem Dienst kommt nie als HTML in die Seite: el() setzt Text nur über textContent und createTextNode,
 // Attribute nur aus einer festen Liste (ERLAUBT), Ereignisse nur als Funktionen über addEventListener. Es gibt kein innerHTML, keine Ereignis-
-// attribute, keinen Inline-Stil und keine Adressen als Attribut. So gilt die strenge Content-Security-Policy ohne Ausnahme.
+// attribute, keinen Inline-Stil und keine Adressen als Attribut (bis auf den einen Verweis am Ende). So gilt die strenge Content-Security-Policy ohne Ausnahme.
 
 const ERLAUBT = /^(type|id|role|tabindex|title|for|name|value|min|max|maxlength|minlength|autocomplete|inputmode|disabled|hidden|open|required|readonly|pattern|rows|cols|placeholder|spellcheck|aria-[a-z]+|data-[a-z0-9-]+)$/;
 
@@ -39,3 +39,16 @@ export function ersetzeKinder(knoten, ...kinder) {
 }
 
 export const leeren = (knoten) => knoten.replaceChildren();
+
+// Der einzige Verweis der Oberflächen: auf den Datenschutzhinweis, in neuem Tab, ohne Opener und ohne Referrer. Jede andere Adresse wirft;
+// Adressen bleiben damit aus der Attributliste ERLAUBT heraus.
+const VERWEIS_ZIEL = "/datenschutz";
+
+export function verweis(text, pfad) {
+  if (pfad !== VERWEIS_ZIEL) throw new TypeError(`Verweis nicht erlaubt: ${String(pfad)}`);
+  const anker = el("a", { klasse: "verweis", text });
+  anker.setAttribute("href", pfad);
+  anker.setAttribute("target", "_blank");
+  anker.setAttribute("rel", "noopener noreferrer");
+  return anker;
+}

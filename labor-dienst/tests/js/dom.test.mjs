@@ -65,3 +65,20 @@ test("leeren und ersetzeKinder arbeiten ohne HTML", () => {
   leeren(n);
   assert.deepEqual(n.kinder, []);
 });
+
+const { verweis } = await import("../../wamo_labor_dienst/web/dom.js");
+
+test("verweis baut nur den Link auf den Datenschutzhinweis, in neuem Tab ohne Opener und Referrer", () => {
+  const a = verweis("Hinweis für den Besucher anzeigen", "/datenschutz");
+  assert.equal(a.tag, "a");
+  assert.equal(a.textContent, "Hinweis für den Besucher anzeigen");
+  assert.equal(a.attribute.get("href"), "/datenschutz");
+  assert.equal(a.attribute.get("target"), "_blank");
+  assert.equal(a.attribute.get("rel"), "noopener noreferrer");
+});
+
+test("verweis lehnt jede andere Adresse ab", () => {
+  for (const pfad of ["javascript:alert(1)", "https://fremd.example/", "//fremd.example", "/board", "/datenschutz/", "/Datenschutz", "datenschutz", "", null, undefined]) {
+    assert.throws(() => verweis("x", pfad), TypeError, String(pfad));
+  }
+});
