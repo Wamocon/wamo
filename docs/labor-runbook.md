@@ -60,7 +60,7 @@ Die Knöpfe heißen auf der Betreuer-Seite genau so: "Neuer Durchlauf …", "Dur
 Ein Platz ist frei, wenn seine Karte "Geschlossen, kein Durchlauf" oder "Durchlauf beendet" zeigt.
 
 1. Besucher an den Platz bitten. Das Headset ist noch nicht auf.
-2. Den Datenschutzhinweis zeigen: Aushang am Platz, oder auf der Betreuer-Seite den Link "Hinweis für den Besucher anzeigen" (öffnet einen neuen Tab). Besucher in Ruhe lesen lassen und Fragen beantworten. Die Altersregel steht im Hinweis, halte dich an den Text, der am Aushang hängt `[offen: Altersregel bestätigt Niko, Entwurf vom 13.11.]`.
+2. Den Datenschutzhinweis zeigen: Aushang am Platz, oder auf der Betreuer-Seite den Link "Hinweis für den Besucher anzeigen" (öffnet einen neuen Tab). Besucher in Ruhe lesen lassen und Fragen beantworten. Die Altersangabe steht im Hinweis: mindestens 16 Jahre, wer jünger ist, nimmt mit Zustimmung einer Aufsichtsperson (zum Beispiel Eltern oder Lehrkraft) teil. Es ist ein Richtwert, keine harte Grenze (Entscheidung von Niko am 13.11.2026). Halte dich an den Text, der am Aushang hängt.
 3. Fragen: "Hast du den Hinweis gelesen und bist du einverstanden?" (Der Hinweis duzt die Besucher.) Bei einem Nein gehe zu Abschnitt 4. Es wird dann nichts angelegt.
 4. Auf der Betreuer-Seite die Karte "Platz N" suchen und den Knopf **Neuer Durchlauf …** klicken.
 5. Im Fenster prüfen: Die Zeile "Version" zeigt die Version des Hinweises (jetzt 1). Steht dort ein Fehlerhinweis, dass der Dienst schon eine höhere Version kennt, die Seite mit F5 neu laden und bei Schritt 4 beginnen.
@@ -148,7 +148,7 @@ Der Hinweis verspricht: Auf Wunsch löschen wir deine Daten sofort.
 | Fall | Was du tust |
 | --- | --- |
 | Besucher nennt echte persönliche Daten | Um Fantasiewerte bitten. Wurde es schon gesagt oder getippt: 4.3 |
-| Besucher erfüllt die Altersregel des Hinweises nicht | Keine Einwilligung. Am Betreuer-Platz zusehen lassen (4.1) `[offen: Altersregel bestätigt Niko]` |
+| Besucher ist jünger als 16 und keine Aufsichtsperson hat zugestimmt | Keine Einwilligung am Platz. Aufsichtsperson dazuholen (dann ist die Teilnahme möglich) oder am Betreuer-Platz zusehen lassen (4.1) |
 | Besucher ist unsicher, ob er mitmachen will | Zuerst zusehen lassen (4.1). Der Haken kommt erst, wenn die Person Ja sagt |
 | Besucher fotografiert oder filmt den Bildschirm | Freundlich bitten, kein Token und keine Daten anderer Besucher zu fotografieren. Bei Zweifel L rufen |
 
@@ -421,7 +421,7 @@ Das muss Niko oder das Projektteam vor der Generalprobe am 26.11.2026 nennen:
 2. Raum und Standort des Labors, des Betreuer-Platzes und des Fernsehers.
 3. Öffnungszeiten, Pausen und die Dauer eines Besuchs.
 4. Der Weg, auf dem die Betreuer den Betreuer-Token bekommen. Das Einrichtungsskript zeigt ihn nie an, das PC-Skript dafür steht als Folgeschritt aus.
-5. Altersregel und Wortlaut des Datenschutzhinweises (Entwurf, die verantwortliche Person prüft).
+5. Wortlaut des Datenschutzhinweises (Altersangabe ist entschieden: mindestens 16, jünger mit Aufsichtsperson; die verantwortliche Person prüft den Text).
 6. Die Aufzeichnung: Dateiname, Ort, Gerät, Länge und der Erzähltext.
 7. Die Kartenliste der 17 Karten als Ausdruck.
 8. Aus der Generalprobe: Einfügen des Platz-Tokens in die verdeckte Eingabe, Nutzung des Besucher-Links im Kiosk, Bezeichnung und Ort des Eingabefelds für Text.
