@@ -363,6 +363,22 @@ def test_protokolldatei_in_einem_fehlenden_ordner_wird_abgelehnt(tmp_path):
     assert code == 2 and "Ordner" in fehl and kern.aufrufe == []
 
 
+def test_eine_nicht_beschreibbare_protokolldatei_stoppt_den_lauf_nicht_und_ist_nie_ein_traceback(tmp_path):
+    ordner = tmp_path / "ist-ein-ordner"
+    ordner.mkdir()
+    code, aus, fehl, kern, _ = lauf(["nachlauf", "--ausfuehren", "--protokoll", str(ordner)], tmp_path=tmp_path)
+    assert code == 0 and "Protokolldatei" in fehl and "Traceback" not in aus + fehl
+    assert "Nachweis erbracht" in aus and "loeschen" in kern.aktionen
+
+
+def test_ein_fehler_mit_nicht_beschreibbarer_protokolldatei_bleibt_eine_klare_meldung(tmp_path):
+    ordner = tmp_path / "ist-ein-ordner"
+    ordner.mkdir()
+    kern = Kern(fehler={"sperren": (1, "", "Datenbankfehler: abgelehnt")})
+    code, aus, fehl, _, _ = lauf(["nachlauf", "--ausfuehren", "--protokoll", str(ordner)], kern, tmp_path=tmp_path)
+    assert code == 1 and "Abbruch bei Schritt 2" in fehl and "Traceback" not in aus + fehl
+
+
 # ---------- Erinnerungen ----------
 
 def test_erinnerungen_nennen_sicherungen_der_umschlagdatei_nur_mit_namen(tmp_path):
@@ -490,7 +506,7 @@ def test_dienst_remote_startet_nur_ssh_mit_sudo_und_gibt_das_programm_als_text(m
     e = na.dienst_remote("wamo-sokrates2", {"aktion": "daten-loeschen", "platz": 5})
     cmd, kw = lauf_.aufrufe[0]
     assert cmd[:5] == ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"] and cmd[5] == "wamo-sokrates2" and len(cmd) == 7
-    assert cmd[6].startswith("sudo -n python3 -c ") and kw["input"] == json.dumps({"aktion": "daten-loeschen", "platz": 5})
+    assert cmd[6].startswith("sudo -n python3 -I -c ") and kw["input"] == json.dumps({"aktion": "daten-loeschen", "platz": 5})
     programm = base64.b64decode(re.search(r"b64decode\('([A-Za-z0-9+/=]+)'\)", cmd[6]).group(1)).decode("utf-8")
     assert programm == na.REMOTE_DIENST
     assert (e.code, json.loads(e.stdout)["status"]) == (0, 200)

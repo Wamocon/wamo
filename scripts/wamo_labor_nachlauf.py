@@ -18,7 +18,7 @@ Aufrufe (im Repo-Hauptordner, nur Standardbibliothek):
   python scripts/wamo_labor_nachlauf.py nachlauf --ausfuehren       # führt die Schritte aus, frühestens am 28.11.2026
 Optionen: --schema wamo_dev|wamo_test|wamo_prod (Standard wamo_dev, wie bei wamo_labor.py), --host (Standard WAMO_SSH_HOST oder wamo-sokrates2),
 --protokoll DATEI (hängt jede Zeile mit Zeit an, nie im Repo), --umschlag-datei (Standard %USERPROFILE%\\.wamo-labor\\umschlag-labor.txt, es werden nur
-die Namen der Dateien im Ordner genannt), --vor-dem-labortag (hebt die Sperre vor dem 28.11.2026 auf, zum Beispiel für eine Übung am Testschema).
+die Namen der Dateien im Ordner genannt), --vor-dem-labortag (hebt die Sperre vor dem 28.11.2026 auf, für Übungen und das Aufräumen nach der Generalprobe).
 
 Wege zum Server (es gibt keine neuen): Der Kern wird wie bei wamo_labor.py über ssh und die Anmeldung der Rolle wamo_admin angesprochen
 (wamo_labor.run_remote, Voraussetzung WAMO_ADMIN_DATABASE_URL). Der Dienst wird über seine Betreuer-Schnittstelle auf 127.0.0.1:18765 am Server
@@ -272,9 +272,10 @@ def dienst_text(s: DienstStand) -> str:
 
 # ---------- Wege zum Server ----------
 def dienst_remote(host: str, nutzlast: dict) -> wl.Ergebnis:
-    """Ruft das Serverprogramm über ssh und sudo -n auf. Der Betreuer-Token wird nur dort gelesen, hier gibt es keinen."""
+    """Ruft das Serverprogramm über ssh und sudo -n auf. Der Betreuer-Token wird nur dort gelesen, hier gibt es keinen.
+    python3 -I (isolierter Modus): Als root lädt der Interpreter nichts aus dem aktuellen Ordner und nichts aus der Umgebung."""
     programm = base64.b64encode(REMOTE_DIENST.encode("utf-8")).decode("ascii")
-    befehl = f"sudo -n python3 -c \"import base64;exec(base64.b64decode('{programm}').decode('utf-8'))\""
+    befehl = f"sudo -n python3 -I -c \"import base64;exec(base64.b64decode('{programm}').decode('utf-8'))\""
     try:
         r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, befehl], input=json.dumps(nutzlast),
                            capture_output=True, text=True, encoding="utf-8", timeout=SSH_FRIST_S)
@@ -329,11 +330,16 @@ class Protokoll:
         self.schritt = 0
 
     def _datei(self, zeilen: list[str]) -> None:
+        """Hängt Zeilen an die Datei an. Scheitert das, läuft der Lauf nur mit der Bildschirmausgabe weiter (nie eine Ausnahme, auch nicht in einer Fehlermeldung)."""
         if self.datei is None:
             return
         stempel = self.jetzt().isoformat(timespec="seconds")
-        with open(self.datei, "a", encoding="utf-8") as f:
-            f.writelines(f"{stempel} {z}\n" for z in zeilen)
+        try:
+            with open(self.datei, "a", encoding="utf-8") as f:
+                f.writelines(f"{stempel} {z}\n" for z in zeilen)
+        except OSError:
+            self.datei = None
+            print("Warnung: Die Protokolldatei ist nicht beschreibbar. Es wird nur noch auf dem Bildschirm protokolliert.", file=sys.stderr)
 
     def zeile(self, text: str) -> None:
         zeilen = text.splitlines() or [""]
@@ -497,7 +503,7 @@ def vorbereiten(args: argparse.Namespace, kern: Callable, dienst: Callable, heut
     if not HOST_RE.fullmatch(args.host):
         raise EingabeFehler("Der Host ist ungültig (nur Buchstaben, Ziffern, Punkt, Strich und Unterstrich, kein Strich am Anfang).")
     if args.ausfuehren and heute() < LABORTAG and not args.vor_dem_labortag:
-        raise EingabeFehler("Ausführen ist erst ab dem Labortag, dem 28.11.2026, erlaubt (zum Üben am Testschema: --vor-dem-labortag).")
+        raise EingabeFehler("Ausführen ist erst ab dem Labortag, dem 28.11.2026, erlaubt (für Übungen und das Aufräumen nach der Generalprobe: --vor-dem-labortag).")
     protokoll = Protokoll(print, _protokoll_pfad(args.protokoll), jetzt)
     umschlag = Path(args.umschlag_datei).expanduser() if args.umschlag_datei else um.standard_pfad()
     return Zugriff(args.host, args.schema, kern, dienst, schlafen), protokoll, umschlag
@@ -510,7 +516,7 @@ def _parser() -> argparse.ArgumentParser:
     n.add_argument("--ausfuehren", action="store_true", help="wirklich ausführen (ohne dies nur Trockenlauf)")
     n.add_argument("--schema", default="wamo_dev")
     n.add_argument("--host", default=os.environ.get("WAMO_SSH_HOST", "wamo-sokrates2"))
-    n.add_argument("--vor-dem-labortag", action="store_true", help="hebt die Sperre vor dem 28.11.2026 auf (zum Üben am Testschema)")
+    n.add_argument("--vor-dem-labortag", action="store_true", help="hebt die Sperre vor dem 28.11.2026 auf (für Übungen und das Aufräumen nach der Generalprobe)")
     n.add_argument("--protokoll", help="Datei, an die jede Zeile mit Zeit angehängt wird (nie im Repo)")
     n.add_argument("--umschlag-datei", help="Standard %%USERPROFILE%%\\.wamo-labor\\umschlag-labor.txt (es werden nur Dateinamen genannt)")
     return p
