@@ -59,7 +59,7 @@ NAME = "Gast"
 SCHREIBEND = frozenset({"ticket_anlegen", "ticket_aendern", "ticket_verschieben", "ticket_kommentieren", "mail_senden"})
 ANFRAGEN_JE_ZUG = 3  # Schätzung: Antwort, Werkzeugaufruf, Antwort nach dem Ergebnis
 AUSGABE_JE_ANFRAGE = 250  # Tokens, großzügig für Canvas-Dokumente
-ZEICHEN_JE_TOKEN = 3.0  # deutsche Texte und JSON: pessimistisch gezählt
+ZEICHEN_JE_TOKEN = 1.6  # gemessen: Prompt und Schemas der Laborsitzung (17 225 Zeichen) sind 10 255 Tokens
 _MUSS_BEHAUPTUNG = ("bestätigt ein Senden", "behauptet")
 
 
@@ -227,7 +227,7 @@ def kosten_schaetzen(modell: str, prompt_zeichen: int, laeufe: int, faelle: int,
     if modell not in bw.PREISE_USD:
         raise MessFehler(f"Kein Preis für {modell} in bewertung.PREISE_USD: Kosten nicht schätzbar")
     ein, aus = bw.PREISE_USD[modell]
-    eingabe = (prompt_zeichen + schema_zeichen) / ZEICHEN_JE_TOKEN
+    eingabe = (prompt_zeichen + schema_zeichen) / ZEICHEN_JE_TOKEN * bw.CACHE_SCHREIBEN  # jede Anfrage so teuer wie ein Schreiben in den Cache
     je_anfrage = (eingabe * ein + AUSGABE_JE_ANFRAGE * aus) / 1_000_000
     return laeufe * (faelle * ANFRAGEN_JE_ZUG + 1) * je_anfrage
 
@@ -378,7 +378,7 @@ def main() -> None:
               f"{len(auswahl)} Fälle, Werkzeuge: {', '.join(sorted(s.name for s in schemas))}")
         if args.anbieter == "claude":
             geschaetzt = kosten_pruefen(args.modell, h["prompt_zeichen"], args.wiederholungen, len(auswahl), args.budget, h["schemas_zeichen"])
-            print(f"Kostenschätzung (Obergrenze ohne Cache): {geschaetzt:.2f} USD für {args.wiederholungen} Läufe, Budget {args.budget:.2f} USD")
+            print(f"Kostenschätzung (Obergrenze ohne Cache-Rabatt): {geschaetzt:.2f} USD für {args.wiederholungen} Läufe, Budget {args.budget:.2f} USD")
         if args.trocken:
             return
         from llm_anbieter import log_schutz_einrichten
