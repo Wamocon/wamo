@@ -31,6 +31,13 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   gehärtet (`ProtectHome=read-only`, schreibbar nur Laufzeitordner, Zustandsordner `/var/lib/wamo-labor-geraete` und `etc/kern`, die Token-Dateien unsichtbar,
   `UMask=0077`, `RestrictNamespaces`). Scheitert beim Einrichten der Prüflauf, kommen auch Site und Stand aus der Sicherung zurück; scheitert im Rückweg die Site, geht
   nur der Timer aus und der Rückweg bleibt wiederholbar.
+  Nachprüfung der Sicherheitsprüfung: Der Aktualisierer vergleicht auch die installierte Site mit dem, was aus Vorlage und Listen entstünde, und zieht nach einem Abbruch
+  vor dem Schreiben des Standes nach. In der Sperrfrist von 3 Minuten für neue Zulassungen gilt die Schnittmenge aus altem und neuem Stand (ein Entzug wartet nie), eine
+  Marke `betreuer-geraete.versuch` zählt auch Misserfolge. Bei mehr als 4 Antworten werden schon zugelassene Adressen bestätigt, nur Neues bleibt gesperrt. Zeitpunkte
+  über 5 Minuten in der Zukunft gelten als abgelaufen. Die Auflösung läuft mit höchstens 4 Namen gleichzeitig, die Unit hat `TimeoutStartSec=300` (über der schlimmsten
+  Dauer) und `TasksMax=512`. Das Einrichten aktiviert den Timer ohne `--now` und startet ihn nach dem Prüflauf. Scheitert im Rückweg die Site, läuft der Timer wieder; ein
+  Tippfehler in `betreuer-adressen` blockiert den Rückweg nicht; die Sperrdatei in `/run` wird nie gelöscht, Reste in Lauf- und Zustandsordner schon. Bekannte Grenze:
+  `wamo-core-caddy.sh`, `wamo-core-slots.sh` und `wamo-ui-umschalten.sh` nehmen die gemeinsame Sperre nicht.
 - Betriebsunterlagen für das Testlabor am 28.11.2026 (Entwurf, nicht ausgerollt): das Runbook für die Betreuer `docs/labor-runbook.md` (Platz öffnen und schließen, Notaus, Störungen,
   Rückfall mit Aufzeichnung, wer wen anruft), die ankreuzbare Checkliste `docs/labor-morgencheckliste.md` für Freitag 27.11. und Samstag 28.11. und das Skript `scripts/wamo_labor_nachlauf.py`
   (`nachlauf`: ohne Schalter ein Trockenlauf mit Zählung, mit `--ausfuehren` Laborprofile sperren, die 16 Plätze des Dienstes und den Gesprächstext im Kern leeren, Nachweis durch Zählung danach). Tests `scripts/test_wamo_labor_nachlauf.py`.

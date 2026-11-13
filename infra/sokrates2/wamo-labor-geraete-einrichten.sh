@@ -209,8 +209,9 @@ undo_site_und_stand() {
     cp -p "$SICHERUNG_ORDNER/betreuer-geraete.stand.vorher" "$STAND_DATEI"
   else
     rm -f "$STAND_DATEI"
-    rmdir "$ZUSTAND" 2>/dev/null || true
   fi
+  rm -f "$ZUSTAND/betreuer-geraete.versuch"
+  rmdir "$ZUSTAND" 2>/dev/null || true
   sperre_loesen
 }
 
@@ -247,14 +248,14 @@ installieren() {
 aktivieren() {
   echo "== Aktivierung"
   tu systemctl daemon-reload
-  tu systemctl enable --now wamo-labor-geraete.timer
+  tu systemctl enable wamo-labor-geraete.timer   # ohne --now: Der Timer startet erst nach dem Prüflauf (sonst liefen beide gleichzeitig)
 }
 
 # ---------- Prüfung und Status
 pruefen() {
   echo "== Prüfung"
   if [ "$TROCKEN" = ja ]; then
-    echo "  [trocken] systemctl start wamo-labor-geraete.service (ein Lauf des Aktualisierers), Timer aktiv, Stand vorhanden"
+    echo "  [trocken] systemctl start wamo-labor-geraete.service (ein Lauf des Aktualisierers), dann systemctl start wamo-labor-geraete.timer, Timer aktiv, Stand vorhanden"
     return 0
   fi
   if [ -n "$W" ]; then
@@ -263,6 +264,7 @@ pruefen() {
     systemctl start wamo-labor-geraete.service \
       || { journalctl -u wamo-labor-geraete.service -n 20 --no-pager >&2 || true; fehler "Der Lauf des Aktualisierers (systemctl start wamo-labor-geraete.service) ist fehlgeschlagen."; }
   fi
+  systemctl start wamo-labor-geraete.timer || fehler "Der Timer wamo-labor-geraete.timer ließ sich nicht starten."
   systemctl is-active --quiet wamo-labor-geraete.timer || fehler "Der Timer wamo-labor-geraete.timer läuft nicht."
   [ -f "$STAND_DATEI" ] || fehler "Der Lauf hat keinen Stand geschrieben ($STAND_DATEI)."
   echo "  Aktualisierer gelaufen, Timer aktiv, Stand vorhanden"
@@ -305,12 +307,12 @@ sperren() {
   sperre_nehmen "$SPERRE" 60 || fehler "Ein Lauf des Aktualisierers hält die Sperre $SPERRE (nach 60 Sekunden aufgegeben): Es wurde nichts geändert, bitte in einer Minute wiederholen."
 }
 
-# Sperre lösen, dann die Sperrdatei und den Laufzeitordner entfernen (die Sicherungen unter /var/backups/wamo-labor bleiben)
+# Sperre lösen und die Reste im Laufzeitordner entfernen (Wegwerf-Ordner der Prüfung). Die Sperrdatei bleibt immer: Eine gelöschte Datei ließe zwei Läufe mit
+# verschiedenen Dateien sperren. Die Sicherungen unter /var/backups/wamo-labor bleiben ebenfalls.
 laufzeit_aufraeumen() {
-  if [ "$TROCKEN" = ja ]; then echo "  [trocken] Sperre lösen, $SPERRE und $RUN entfernen"; return 0; fi
+  if [ "$TROCKEN" = ja ]; then echo "  [trocken] Sperre lösen, Reste in $RUN entfernen (die Sperrdatei bleibt)"; return 0; fi
   sperre_loesen
-  rm -f "$SPERRE"
-  rmdir "$RUN" 2>/dev/null || true
+  find "$RUN" -mindepth 1 -maxdepth 1 -name '.arbeit.*' -exec rm -rf {} + 2>/dev/null || true
 }
 
 # Die Site aus der Vorlage mit dem Server selbst und den festen Adressen allein (ohne Betreuer-Geräte): prüfen, installieren, laden. Gibt 1 zurück, wenn das scheitert.
@@ -318,7 +320,7 @@ site_ohne_geraete() {
   local vorlage="$LIB/wamo-labor.caddy" liste image alt
   [ -f "$vorlage" ] || vorlage="$HERE/wamo-caddy/kern/wamo-labor.caddy"
   [ -f "$SITE_DATEI" ] || { echo "  keine Site vorhanden"; return 0; }
-  liste="$(betreuer_liste "$BETREUER_ADRESSEN")" || return 1
+  liste="$(betreuer_liste "$BETREUER_ADRESSEN" "" "" weich)" || return 1   # nur die gültigen Zeilen (enger): Ein Tippfehler blockiert den Rückweg nicht
   if [ "$TROCKEN" = ja ]; then echo "  [trocken] Site aus $vorlage mit remote_ip $liste prüfen (caddy adapt), installieren, caddy reload"; return 0; fi
   caddy_besitzer_setzen
   image="$(caddy_image_laufend)" || { echo "  FEHLER: Das Image von wamo-caddy ließ sich nicht lesen." >&2; return 1; }
@@ -341,7 +343,7 @@ site_ohne_geraete() {
 dateien_entfernen() {
   local z
   for z in "${ZIELE[@]}"; do tu rm -f "${z%%|*}"; done
-  tu rm -f "$STAND_DATEI"
+  tu rm -f "$STAND_DATEI" "$STAND_DATEI".neu.* "$ZUSTAND/betreuer-geraete.versuch"
   if [ "$TROCKEN" = ja ]; then echo "  [trocken] rmdir $LIB und $ZUSTAND"; else rmdir "$LIB" "$ZUSTAND" 2>/dev/null || true; fi
   tu systemctl daemon-reload
   tu systemctl reset-failed wamo-labor-geraete.service || true
@@ -350,13 +352,14 @@ dateien_entfernen() {
 rueckweg() {
   local site_ok=ja
   sichern
-  echo "== 1. Timer abschalten und auf einen laufenden Lauf warten"
+  echo "== 1. Auf einen laufenden Lauf warten (Sperre), dann den Timer abschalten"
+  [ "$TROCKEN" = ja ] || sperren   # erst die Sperre: Bekommt der Rückweg sie nicht, ist nichts geändert, auch der Timer läuft weiter
   tu systemctl disable --now wamo-labor-geraete.timer || true
-  [ "$TROCKEN" = ja ] || sperren
   echo "== 2. Site aus betreuer-adressen allein wiederherstellen"
   site_ohne_geraete || site_ok=nein
   if [ "$site_ok" = nein ]; then
-    fehler "Die Site wurde nicht zurückgesetzt. Nur der Timer ist abgeschaltet: Aktualisierer, Bibliothek, Vorlage, Unit und Stand bleiben, damit der Rückweg wiederholbar ist. Nach der Behebung" \
+    systemctl enable --now wamo-labor-geraete.timer >&2 || true   # der Timer läuft weiter, damit der 12-Stunden-Entzug nicht stehen bleibt (die Sperre verhindert ein Rennen)
+    fehler "Die Site wurde nicht zurückgesetzt. Alles bleibt für den zweiten Versuch (Aktualisierer, Bibliothek, Vorlage, Unit und Stand), der Timer läuft wieder. Nach der Behebung" \
       "wamo-labor-geraete-einrichten.sh rueckweg erneut ausführen. Bis dahin gilt die Site, wie sie ist."
   fi
   echo "== 3. Dateien entfernen (die Listen betreuer-geraete und betreuer-adressen bleiben)"

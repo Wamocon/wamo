@@ -43,6 +43,7 @@ INTERN = "127.0.0.0/8 172.24.0.1/32 192.168.178.136/32"
 FRIST = 12 * 3600
 GERAET = "WMC-H-04-NS"
 STAND_REL = "var/lib/wamo-labor-geraete/betreuer-geraete.stand"  # der Stand im Probelauf (relativ zur Wurzel): StateDirectory der Unit
+VERSUCH_REL = "var/lib/wamo-labor-geraete/betreuer-geraete.versuch"  # Zeitpunkt des letzten Versuchs, neue Zulassungen zu laden (auch nach Misserfolg)
 
 
 # ====================================================================================== Allgemeine Textprüfungen
@@ -206,11 +207,20 @@ class BibliothekTests(unittest.TestCase):
         self.assertEqual(self.bash(f'stand_marke "{posix(datei)}" gewarnt').stdout.strip(), "0")
         self.assertEqual(self.bash(f'stand_marke "{posix(self.t / "gibt-es-nicht")}" geladen').stdout.strip(), "0")
 
-    def test_geraete_adressen_begrenzt_eintraege_aus_der_zukunft_auf_jetzt(self):
+    def test_geraete_adressen_begrenzt_kleine_zeitspruenge_auf_jetzt_und_laesst_grosse_verfallen(self):
         datei = self.t / "stand"
         jetzt = 2_000_000_000
-        schreibe(datei, f"{GERAET} 192.168.178.78 {jetzt + 500000}\n")
+        schreibe(datei, f"{GERAET} 192.168.178.78 {jetzt + 300}\nPC2 192.168.178.79 {jetzt + 301}\n")  # bis 5 Minuten: gilt als jetzt, darüber: abgelaufen
         self.assertEqual(self.bash(f'geraete_adressen "{posix(datei)}" {jetzt}').stdout.strip(), "192.168.178.78")
+
+    def test_betreuer_liste_weich_nimmt_nur_die_gueltigen_zeilen(self):
+        datei = self.t / "adressen"
+        schreibe(datei, "192.168.178.50\nunsinn\n192.168.178.60/32\n")
+        r = self.bash(f'betreuer_liste "{posix(datei)}" "" "" weich')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), f"{INTERN} 192.168.178.50 192.168.178.60/32")
+        self.assertIn("Ungültige Adresse", r.stderr)  # gemeldet, nie stillschweigend
+        self.assertNotEqual(self.bash(f'betreuer_liste "{posix(datei)}"').returncode, 0)  # ohne weich: Abbruch wie bisher
 
     def test_stand_lesen_und_frist(self):
         datei = self.t / "stand"
@@ -471,7 +481,7 @@ class AufloesungTests(GeraeteWerkstatt):
         self.assertEqual(r.stderr, "")
 
     def test_mehr_als_vier_antworten_lassen_nichts_neues_zu_und_warnen_hoechstens_stuendlich(self):
-        """Ein Name mit mehr als 4 Antworten (verdächtig: Flut oder Täuschung) verdrängt nie die echte Adresse: Es gilt weiter der letzte Stand."""
+        """Ein Name mit mehr als 4 Antworten (verdächtig: Flut oder Täuschung) lässt nichts Neues zu, bestätigt aber die schon zugelassene Adresse, die weiter antwortet."""
         sechs = [f"192.168.178.{n}" for n in (20, 30, 40, 50, 60, 78)]
         self.antworten(GERAET, self.netbios(*sechs[:3]), self.mdns(*sechs[3:]))
         r = self.aktualisieren()  # erster Blick: nichts im Stand, also wird auch nichts zugelassen
@@ -489,7 +499,7 @@ class AufloesungTests(GeraeteWerkstatt):
         r = self.aktualisieren(jetzt=t0 + 800)  # die erste Warnung ist erst 800 Sekunden her: nicht dieselbe Zeile noch einmal
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())  # die echte Adresse bleibt, keine der anderen kommt dazu
-        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 + 400)])  # der letzte Stand bleibt unverändert
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 + 800)])  # bestätigt: der Zeitpunkt der letzten Antwort wird erneuert
         self.assertEqual(self.reloads(), 1)
         for z in ("192.168.178.20", "192.168.178.60"):
             self.assertNotIn(z, self.site())
@@ -497,9 +507,38 @@ class AufloesungTests(GeraeteWerkstatt):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("WARNUNG", r.stdout)
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())
-        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 + 400)])
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 + 4000)])
         r = self.aktualisieren(jetzt=t0 + 4060)
         self.assertEqual((r.stdout, r.stderr), ("", ""))
+
+    def test_ein_fremdgeraet_mit_vielen_antworten_friert_das_echte_geraet_nicht_ein(self):
+        """Antwortet das echte Gerät weiter mit, hält die Bestätigung seine Adresse auch über die 12 Stunden hinaus, solange die Flut dauert."""
+        t0 = self.JETZT
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.assertEqual(self.aktualisieren(jetzt=t0).returncode, 0)
+        flut = self.netbios("192.168.178.78", "192.168.178.20", "192.168.178.30", "192.168.178.40", "192.168.178.60")
+        self.antworten(GERAET, flut)
+        for sekunden in (FRIST - 100, FRIST + 500, 2 * FRIST):
+            r = self.aktualisieren(jetzt=t0 + sekunden)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn(self.remote_ip("192.168.178.78"), self.site(), sekunden)
+            self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 + sekunden)], sekunden)
+        self.assertEqual(self.reloads(), 1)
+        for fremd in ("192.168.178.20", "192.168.178.30", "192.168.178.40", "192.168.178.60"):
+            self.assertNotIn(fremd, self.site())
+
+    def test_antwortet_das_echte_geraet_in_der_flut_nicht_mit_bleibt_der_alte_stand_bis_zur_frist(self):
+        t0 = self.JETZT
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.assertEqual(self.aktualisieren(jetzt=t0).returncode, 0)
+        self.antworten(GERAET, self.netbios("192.168.178.20", "192.168.178.30", "192.168.178.40", "192.168.178.50", "192.168.178.60"))
+        r = self.aktualisieren(jetzt=t0 + 600)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0)])  # nicht erneuert, nicht ersetzt
+        self.assertIn(self.remote_ip("192.168.178.78"), self.site())
+        r = self.aktualisieren(jetzt=t0 + FRIST + 1)  # ohne Bestätigung läuft die Frist ab
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("192.168.178.78", self.site())
 
     def test_mehrere_geraete_gleichzeitig_und_namen_in_grossbuchstaben(self):
         schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "pc-eins\nPC-ZWEI  # Kommentar\r\nPC-EINS\n")
@@ -519,6 +558,106 @@ class AufloesungTests(GeraeteWerkstatt):
         zeile = re.search(r"^	remote_ip .*$", self.site(), re.M).group(0)  # die Kommentare der Vorlage nennen den Platzhalter auch und werden mit ersetzt
         self.assertEqual(zeile.count("192.168.178.21"), 1)
         self.assertEqual(len(self.stand()), 2)
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class SiteGegenStandTests(GeraeteWerkstatt):
+    """Der Vergleich gilt auch der installierten Site: Ein Abbruch nach Install und Reload, aber vor dem Schreiben des Standes, wird beim nächsten Lauf nachgezogen."""
+
+    def test_adresse_in_der_site_ohne_eintrag_im_stand_wird_entzogen(self):
+        self.schreibe_site(["192.168.178.78"])  # geladen, dann Abbruch vor dem Stand: Der Stand kennt die Adresse nicht
+        r = self.aktualisieren()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertEqual(self.reloads(), 1)
+
+    def test_adresse_schon_in_der_site_aber_nicht_im_stand_wird_nur_eingetragen_ohne_zweiten_reload(self):
+        self.schreibe_site(["192.168.178.78"])
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        r = self.aktualisieren()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.prueflaeufe(), self.reloads()), (0, 0))
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", self.JETZT)])
+        self.assertIn(f"Gerät {GERAET}: 192.168.178.78 zugelassen", r.stdout)
+
+    def test_geaenderte_feste_adressen_werden_ohne_geraetewechsel_nachgezogen(self):
+        schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "192.168.178.50\n192.168.178.60/32\n")
+        r = self.aktualisieren()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"remote_ip {INTERN} 192.168.178.50 192.168.178.60/32\n", self.site())
+        self.assertEqual(self.reloads(), 1)
+        r = self.aktualisieren(jetzt=self.JETZT + 60)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertEqual(self.reloads(), 1)
+
+    def test_fehlt_die_site_und_es_gibt_nichts_zu_aendern_bleibt_der_lauf_still(self):
+        self.site_datei.unlink()
+        r = self.aktualisieren()
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertEqual(self.reloads(), 0)
+
+    def test_trockenlauf_nennt_die_abweichung_der_site(self):
+        self.schreibe_site(["192.168.178.78"])
+        r = self.aktualisieren("--trocken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("würde neu zusammengesetzt", r.stdout)
+        self.assertEqual(self.reloads(), 0)
+
+
+@unittest.skipUnless(BASH, "keine Bash vorhanden")
+class AufraeumenUndParallelitaetTests(GeraeteWerkstatt):
+    def test_reste_im_laufzeit_und_zustandsordner_werden_beim_start_unter_der_sperre_weggeraeumt(self):
+        schreibe(self.p("run/wamo-labor-geraete/.arbeit.alt/etc/x"), "alt")
+        schreibe(self.p("run/wamo-labor-geraete/lock"), "")
+        schreibe(self.p(STAND_REL + ".neu.123"), "halb")
+        schreibe(self.p("run/wamo-labor-geraete/andere-datei"), "bleibt")
+        r = self.aktualisieren()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.arbeitsreste(), [])
+        self.assertFalse(self.p(STAND_REL + ".neu.123").exists())
+        self.assertTrue(self.p("run/wamo-labor-geraete/lock").exists())  # die Sperrdatei bleibt immer
+        self.assertTrue(self.p("run/wamo-labor-geraete/andere-datei").exists())  # nur .arbeit.* wird entfernt
+
+    def test_haelt_ein_anderer_lauf_die_sperre_wird_nichts_weggeraeumt(self):
+        schreibe(self.p("run/wamo-labor-geraete/.arbeit.laeuft/etc/x"), "eines anderen Laufs")
+        self.ausgabe("flock", "", rc=1)
+        r = self.aktualisieren()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.p("run/wamo-labor-geraete/.arbeit.laeuft/etc/x").exists())
+
+    def test_die_aufloesung_laeuft_mit_hoechstens_vier_gleichzeitigen_namen(self):
+        namen = [f"PC-{i}" for i in range(10)]
+        schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "".join(f"{n}\n" for n in namen))
+        for n in namen:
+            self.antworten(n, self.netbios(f"192.168.178.{100 + int(n[3:])}", name=n))
+        schreibe(self.bin / "nmblookup", NMB_PARALLEL, ausfuehrbar=True)
+        r = self.aktualisieren()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        gleichzeitig = [int(z) for z in (self.att / "par.max.log").read_text(encoding="utf-8").split()]
+        self.assertEqual(len(gleichzeitig), 10)
+        self.assertLessEqual(max(gleichzeitig), 4)
+        self.assertGreaterEqual(max(gleichzeitig), 2)  # sie laufen wirklich nebeneinander
+
+    def test_parallelitaet_ist_im_skript_begrenzt(self):
+        c = code(AKTUALISIERER)
+        self.assertRegex(c, r"(?m)^MAX_PARALLEL=4\b")
+        self.assertIn("wait -n", c)
+
+
+# Attrappe für nmblookup, die mitzählt, wie viele Aufrufe gleichzeitig laufen
+NMB_PARALLEL = r"""#!/bin/sh
+echo "nmblookup $*" >> "$ATTRAPPE_LOG"
+d="$ATTRAPPE_DIR/par"
+mkdir -p "$d"
+: > "$d/lauf.$$"
+ls "$d" | grep -c '^lauf\.' >> "$ATTRAPPE_DIR/par.max.log"
+sleep 0.4
+rm -f "$d/lauf.$$"
+n="$(basename "$0")"
+last="$(for a in "$@"; do last="$a"; done; echo "$last")"
+[ -f "$ATTRAPPE_DIR/nmblookup.$last.out" ] && cat "$ATTRAPPE_DIR/nmblookup.$last.out"
+exit 0
+"""
 
 
 @unittest.skipUnless(BASH, "keine Bash vorhanden")
@@ -686,25 +825,55 @@ class FristUndAenderungTests(GeraeteWerkstatt):
         self.assertEqual(self.aktualisieren(jetzt=t0 + FRIST + 300).returncode, 0)  # mehr als drei Minuten nach dem letzten Reload
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())
 
-    def test_neue_antwort_ersetzt_die_alte_adresse_beim_naechsten_erlaubten_reload(self):
-        """Eine neue Zulassung wartet höchstens drei Minuten auf den Reload (Abstand zum letzten Reload), der Entzug nie."""
+    def test_neue_antwort_entzieht_die_alte_adresse_sofort_und_laesst_die_neue_nach_drei_minuten_zu(self):
+        """Gemischte Änderung in der Sperrfrist: Es wird nur die Schnittmenge aus altem und neuem Stand geladen, der Entzug wartet nie, die neue Adresse höchstens 3 Minuten."""
         t0 = self.JETZT
         self.antworten(GERAET, self.netbios("192.168.178.78"))
         self.assertEqual(self.aktualisieren(jetzt=t0).returncode, 0)
         self.antworten(GERAET, self.netbios("192.168.178.79"))  # der PC hat eine neue Adresse (DHCP)
-        for sekunden in (60, 179):
-            r = self.aktualisieren(jetzt=t0 + sekunden)
-            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), sekunden)
-            self.assertIn(self.remote_ip("192.168.178.78"), self.site())  # noch die alte Adresse: aufgeschoben
-            self.assertEqual(self.reloads(), 1)
-            self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0)])  # der Stand bleibt, was geladen ist
+        r = self.aktualisieren(jetzt=t0 + 60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("192.168.178.78", self.site())  # der Entzug wartet nie
+        self.assertNotIn("192.168.178.79", self.site())  # die neue Zulassung wartet
+        self.assertEqual(self.reloads(), 2)
+        self.assertEqual(self.stand(), [])  # der Stand sagt, was geladen ist
+        self.assertIn("192.168.178.78 entfernt", r.stdout)
+        self.assertNotIn("zugelassen", r.stdout)
+        r = self.aktualisieren(jetzt=t0 + 179)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertEqual(self.reloads(), 2)
         r = self.aktualisieren(jetzt=t0 + 180)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(self.remote_ip("192.168.178.79"), self.site())
-        self.assertNotIn("192.168.178.78", self.site())  # nicht erst nach 12 Stunden
         self.assertEqual(self.stand(), [(GERAET, "192.168.178.79", t0 + 180)])
-        self.assertIn("192.168.178.78 entfernt", r.stdout)
         self.assertIn("192.168.178.79 zugelassen", r.stdout)
+        self.assertEqual(self.reloads(), 3)
+
+    def test_in_der_sperrfrist_bleibt_was_zugelassen_ist_und_weiter_antwortet(self):
+        t0 = self.JETZT
+        schreibe(self.p("etc/wamo-labor/betreuer-geraete"), "PC-EINS\nPC-ZWEI\nPC-DREI\n")
+        self.antworten("PC-EINS", self.netbios("192.168.178.21", name="PC-EINS"))
+        self.antworten("PC-ZWEI", self.netbios("192.168.178.40", name="PC-ZWEI"))
+        self.antworten("PC-DREI")
+        self.assertEqual(self.aktualisieren(jetzt=t0).returncode, 0)
+        self.antworten("PC-EINS", self.netbios("192.168.178.22", name="PC-EINS"))  # ersetzt: .21 weg, .22 neu
+        self.antworten("PC-DREI", self.netbios("192.168.178.50", name="PC-DREI"))  # neu
+        r = self.aktualisieren(jetzt=t0 + 60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.remote_ip("192.168.178.40"), self.site())  # nur die Schnittmenge: PC-ZWEI bleibt
+        self.assertEqual(self.stand(), [("PC-ZWEI", "192.168.178.40", t0 + 60)])
+        self.assertEqual(self.reloads(), 2)
+        r = self.aktualisieren(jetzt=t0 + 180)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.remote_ip("192.168.178.22", "192.168.178.40", "192.168.178.50"), self.site())
+
+    def test_der_entzug_wartet_auch_dann_nicht_wenn_kurz_zuvor_geladen_wurde(self):
+        t0 = self.JETZT
+        self.antworten(GERAET, self.netbios("192.168.178.78"))
+        self.assertEqual(self.aktualisieren(jetzt=t0).returncode, 0)
+        self.antworten(GERAET)
+        r = self.aktualisieren(jetzt=t0 + FRIST + 1)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.reloads(), 2)
 
     def test_bleibt_die_menge_gleich_gibt_es_weder_pruefung_noch_reload_noch_ausgabe(self):
@@ -762,20 +931,37 @@ class FristUndAenderungTests(GeraeteWerkstatt):
         self.assertEqual(self.arbeitsreste(), [])
         self.assertTrue(self.site().endswith("\n"))
 
-    def test_eintraege_aus_der_zukunft_werden_auf_jetzt_begrenzt(self):
+    def test_eintraege_bis_fuenf_minuten_aus_der_zukunft_gelten_als_jetzt_darueber_als_abgelaufen(self):
         t0 = self.JETZT
-        schreibe(self.p(STAND_REL), f"{GERAET} 192.168.178.78 {t0 + 999999}\n")  # Zeitsprung oder Fälschung: gilt höchstens 12 Stunden ab jetzt
-        self.schreibe_site(["192.168.178.78"])
+        schreibe(self.p(STAND_REL), f"{GERAET} 192.168.178.78 {t0 + 300}\nPC-ZWEI 192.168.178.79 {t0 + 301}\n")  # kleiner Zeitsprung gegen Fälschung oder großer Sprung
+        self.schreibe_site(["192.168.178.78", "192.168.178.79"])
+        schreibe(self.p("etc/wamo-labor/betreuer-geraete"), f"{GERAET}\nPC-ZWEI\n")
         self.antworten(GERAET)
+        self.antworten("PC-ZWEI")
         r = self.aktualisieren(jetzt=t0)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0)])
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0)])  # begrenzt auf jetzt
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())
+        self.assertNotIn("192.168.178.79", self.site())  # über 5 Minuten: abgelaufen
+        self.assertIn("192.168.178.79 entfernt", r.stdout)
         self.assertEqual(self.aktualisieren(jetzt=t0 + FRIST).returncode, 0)
-        self.assertIn(self.remote_ip("192.168.178.78"), self.site())
+        self.assertIn(self.remote_ip("192.168.178.78"), self.site())  # die Frist läuft ab jetzt, nicht ab der Zeit in der Zukunft
         r = self.aktualisieren(jetzt=t0 + FRIST + 1)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("192.168.178.78", self.site())
+
+    def test_zeitpunkte_im_kopf_aus_der_zukunft_sperren_nichts(self):
+        t0 = self.JETZT
+        antworten = self.netbios("192.168.178.78")
+        self.antworten(GERAET, antworten)
+        schreibe(self.p(STAND_REL), f"# geschrieben: {t0 + 99999}\n# geladen: {t0 + 99999}\n# gewarnt: {t0 + 99999}\n{GERAET} 192.168.178.78 {t0 - 10}\n")
+        self.schreibe_site(["192.168.178.78"])
+        self.assertEqual(self.aktualisieren(jetzt=t0).returncode, 0)
+        self.assertIn(f"# geschrieben: {t0}\n", self.p(STAND_REL).read_text(encoding="utf-8"))  # über 5 Minuten in der Zukunft gilt als lange her: Er wird geschrieben
+        schreibe(self.p(STAND_REL), f"# geschrieben: {t0 + 100}\n{GERAET} 192.168.178.78 {t0 - 10}\n")
+        vorher = self.p(STAND_REL).read_bytes()
+        self.assertEqual(self.aktualisieren(jetzt=t0 + 1).returncode, 0)
+        self.assertEqual(self.p(STAND_REL).read_bytes(), vorher)  # kleiner Sprung: gilt als jetzt, also nicht neu geschrieben
 
     def test_zeitangabe_mit_fuehrender_null_wird_nie_oktal_gelesen(self):
         t0 = self.JETZT
@@ -855,14 +1041,26 @@ class RueckwegBeiFehlernTests(GeraeteWerkstatt):
         letzter = max(i for i, z in enumerate(aufrufe) if z == RELOAD)
         self.assertTrue([z for z in aufrufe[letzter:] if z.startswith("curl")])  # auch nach der Rücknahme wird geprüft
 
-    def test_die_naechste_minute_versucht_es_erneut(self):
+    def test_neue_zulassungen_werden_hoechstens_alle_drei_minuten_versucht_auch_nach_misserfolg(self):
+        """Ein dauerhafter Fehler der Prüfung löst nicht jede Minute Prüfung, Installation, Reload und Rücknahme aus."""
+        t0 = self.JETZT
         self.ausgabe("docker.run", "", rc=1)
-        self.assertNotEqual(self.aktualisieren().returncode, 0)
+        self.assertNotEqual(self.aktualisieren(jetzt=t0).returncode, 0)
+        self.assertEqual(self.p(VERSUCH_REL).read_text(encoding="utf-8").strip(), str(t0))  # die Marke steht, obwohl der Versuch scheiterte
+        self.assertFalse(self.p(STAND_REL).exists())
+        self.assertEqual(self.prueflaeufe(), 1)
+        for sekunden in (60, 120, 179):
+            r = self.aktualisieren(jetzt=t0 + sekunden)
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), sekunden)
+            self.assertEqual(self.prueflaeufe(), 1, sekunden)  # kein neuer Versuch
+            self.assertEqual(self.reloads(), 0, sekunden)
         self.ausgabe("docker.run", "", rc=0)
-        r = self.aktualisieren(jetzt=self.JETZT + 60)
+        r = self.aktualisieren(jetzt=t0 + 180)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.prueflaeufe(), 2)
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())
-        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", self.JETZT + 60)])
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", t0 + 180)])
+        self.assertEqual(self.p(VERSUCH_REL).read_text(encoding="utf-8").strip(), str(t0 + 180))
 
     def test_site_fehlt(self):
         self.site_datei.unlink()
@@ -1113,6 +1311,23 @@ class UnitTests(unittest.TestCase):
         self.assertEqual(o["UMask"], "0077")
         self.assertNotIn("User=", self.dienst)  # läuft als root (Besitzer wamocon setzen, Docker-Socket)
 
+    def test_timeout_liegt_ueber_der_schlimmsten_dauer_eines_laufs_und_tasksmax_reicht(self):
+        """Ein Lauf darf nie mitten in der Rücknahme ein SIGTERM bekommen: Auflösung, Probe nach dem Laden, Probe nach der Rücknahme und die Prüfung mit caddy adapt."""
+        o = self.optionen(self.dienst)
+        a, s = lies(AKTUALISIERER), lies(SITE_BIB)
+        runden = int(re.search(r'WAMO_LABOR_WARTE_RUNDEN="\$\{WAMO_LABOR_WARTE_RUNDEN:-(\d+)\}"', a).group(1))
+        sekunden = int(re.search(r"WAMO_LABOR_WARTE_SEKUNDEN:-(\d+)", s).group(1))
+        curl = int(re.search(r"--max-time (\d+)", s).group(1))
+        ports = len(re.search(r'CADDY_PORTS="([^"]+)"', s).group(1).split())
+        suche = int(re.search(r"(?m)^SUCHFRIST_S=(\d+)", a).group(1))
+        parallel = int(re.search(r"(?m)^MAX_PARALLEL=(\d+)", a).group(1))
+        namen = int(re.search(r"(?m)^MAX_NAMEN=(\d+)", s).group(1))
+        probe = ports * runden * (curl + sekunden)
+        aufloesung = -(-namen // parallel) * 2 * suche
+        schlimmstens = aufloesung + 2 * probe + 30
+        self.assertGreater(int(o["TimeoutStartSec"]), schlimmstens)
+        self.assertEqual(o["TasksMax"], "512")
+
     def test_die_token_dateien_sind_fuer_die_unit_unsichtbar(self):
         o = self.optionen(self.dienst)
         self.assertEqual(o["InaccessiblePaths"].split(), ["-/etc/wamo-labor/kern-token", "-/etc/wamo-labor/betreuer-token"])  # "-": fehlt die Datei, ist das kein Fehler
@@ -1161,7 +1376,9 @@ class UnitTests(unittest.TestCase):
 SBIN = "usr/local/sbin/wamo-labor-geraete-aktualisieren"
 DIENST_ZIEL = "etc/systemd/system/wamo-labor-geraete.service"
 TIMER_ZIEL = "etc/systemd/system/wamo-labor-geraete.timer"
-ENABLE = "systemctl enable --now wamo-labor-geraete.timer"
+ENABLE = "systemctl enable wamo-labor-geraete.timer"  # ohne --now: Der Timer startet erst nach dem Prüflauf
+ENABLE_JETZT = "systemctl enable --now wamo-labor-geraete.timer"
+START_TIMER = "systemctl start wamo-labor-geraete.timer"
 DISABLE = "systemctl disable --now wamo-labor-geraete.timer"
 
 
@@ -1212,6 +1429,9 @@ class EinrichtenTests(EinrichtungsWerkstatt):
         aufrufe = self.aufrufe()
         self.assertIn("systemctl daemon-reload", aufrufe)
         self.assertLess(aufrufe.index("systemctl daemon-reload"), aufrufe.index(ENABLE))
+        self.assertNotIn(ENABLE_JETZT, aufrufe)  # enable ohne --now: Der Timer läuft während des Prüflaufs nicht
+        self.assertLess(aufrufe.index(ENABLE), aufrufe.index("flock -n 9"))  # erst der Prüflauf (im Probelauf der Aktualisierer selbst)
+        self.assertLess(aufrufe.index("flock -n 9"), aufrufe.index(START_TIMER))  # dann der Timer
         # die Prüfung am Ende ließ den Aktualisierer einmal laufen: Stand und Site
         self.assertTrue(self.p(STAND_REL).is_file())
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())
@@ -1510,17 +1730,19 @@ class RueckwegTests(EinrichtungsWerkstatt):
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
         self.assertEqual(self.reloads(), 1)  # beim zweiten Mal gibt es nichts mehr zu laden
 
-    def test_scheitert_die_site_geht_nur_der_timer_aus_und_der_rueckweg_bleibt_wiederholbar(self):
+    def test_scheitert_die_site_bleibt_alles_und_der_timer_laeuft_weiter_der_rueckweg_bleibt_wiederholbar(self):
         self.ausgabe("docker.run", "", rc=1)
         site_mit_geraet = self.site_datei.read_bytes()
         r = self.rueckweg()
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.site_datei.read_bytes(), site_mit_geraet)  # nichts halb geändert
         self.assertEqual(self.reloads(), 0)
-        self.assertIn(DISABLE, self.aufrufe())  # der Timer ist aus: nichts ändert die Site mehr
+        aufrufe = self.aufrufe()
+        self.assertIn(DISABLE, aufrufe)  # der Timer war für den Rückweg aus ...
+        self.assertIn(ENABLE_JETZT, aufrufe[aufrufe.index(DISABLE):])  # ... und ist vor dem Fehler wieder an: Der 12-Stunden-Entzug läuft weiter
         self.assertEqual(len(self.installiert()), 5)  # Aktualisierer, Bibliothek, Vorlage, Unit und Timer bleiben für den zweiten Versuch
         self.assertTrue(self.p(STAND_REL).is_file())  # auch der Stand
-        self.assertNotIn("systemctl reset-failed wamo-labor-geraete.service", self.aufrufe())
+        self.assertNotIn("systemctl reset-failed wamo-labor-geraete.service", aufrufe)
         self.assertIn("wamo-labor-geraete-einrichten.sh rueckweg", r.stderr)  # der Weg zum zweiten Versuch
         self.assertIn("Timer", r.stderr)
         # nach der Behebung läuft der Rückweg durch
@@ -1531,17 +1753,30 @@ class RueckwegTests(EinrichtungsWerkstatt):
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
         self.assertFalse(self.p(STAND_REL).exists())
 
-    def test_rueckweg_raeumt_den_laufzeitordner_auf_die_sicherungen_bleiben(self):
-        self.assertTrue(self.p("run/wamo-labor-geraete").is_dir())
+    def test_rueckweg_raeumt_die_reste_auf_loescht_die_sperrdatei_nie_und_laesst_die_sicherungen(self):
+        lauf = self.p("run/wamo-labor-geraete")
+        schreibe(lauf / ".arbeit.alt" / "etc" / "x", "alt")
+        schreibe(self.p(STAND_REL + ".neu.1"), "halb")
+        self.assertTrue(self.p(VERSUCH_REL).is_file())  # der Einrichtungslauf hat eine neue Zulassung versucht
         sicherungen = len(self.sicherungen())
         r = self.rueckweg()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertFalse(self.p("run/wamo-labor-geraete").exists())  # Sperre gelöst, Datei und Ordner weg
+        self.assertTrue((lauf / "lock").is_file())  # eine gelöschte Sperrdatei ließe zwei Läufe mit verschiedenen Dateien sperren
+        self.assertEqual([f.name for f in lauf.iterdir()], ["lock"])
+        self.assertFalse(self.p("var/lib/wamo-labor-geraete").exists())  # Stand, Versuchsmarke und Reste weg
         self.assertGreaterEqual(len(self.sicherungen()), sicherungen)
         self.assertTrue(self.p("var/backups/wamo-labor").is_dir())
-        r = self.rueckweg()  # ein zweiter Lauf ohne Ordner geht ebenfalls durch
+        r = self.rueckweg()  # ein zweiter Lauf geht ebenfalls durch
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertFalse(self.p("run/wamo-labor-geraete").exists())
+        self.assertTrue((lauf / "lock").is_file())
+
+    def test_tippfehler_in_betreuer_adressen_blockiert_den_rueckweg_nicht(self):
+        schreibe(self.p("etc/wamo-labor/betreuer-adressen"), "192.168.178.50\nunsinn\n192.168.178.60/32\n")
+        r = self.rueckweg()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"remote_ip {INTERN} 192.168.178.50 192.168.178.60/32\n", self.site())  # nur die gültigen Zeilen: enger, nie weiter
+        self.assertIn("Ungültige Adresse", r.stderr)
+        self.assertEqual(self.installiert(), [])
 
     def test_rueckweg_nimmt_die_sperre_vor_dem_laden_der_site(self):
         self.assertEqual(self.rueckweg().returncode, 0)
@@ -1617,7 +1852,8 @@ class DokumentationTests(unittest.TestCase):
                      "12 Stunden", "höchstens 4", "höchstens 16", "caddy adapt", "caddy reload", "flock", "journalctl -t wamo-labor-geraete", "Nur am Server prüfbar",
                      "Grenzen", "nicht kryptografisch", "vortäuschen", "Betreuer-Token", "eine Minute", "Windows-, Mac- und Linux-Geräte", "plaetze-adressen",
                      "WMC-H-04-NS", "WAMO_LABOR_GERAETE_WURZEL", "ReadWritePaths", "betreuer-adressen", "/var/lib/wamo-labor-geraete", "StateDirectory", "InaccessiblePaths",
-                     "--pull=never", "mehr als 4 Antworten", "3 Minuten", "Entzug", "run/wamo-labor-geraete/lock", "symbolische Links"):
+                     "--pull=never", "mehr als 4 Antworten", "3 Minuten", "Entzug", "run/wamo-labor-geraete/lock", "symbolische Links",
+                     "wamo-core-caddy.sh", "wamo-core-slots.sh", "wamo-ui-umschalten.sh", "betreuer-geraete.versuch", "Schnittmenge"):
             self.assertIn(soll, text, soll)
         for verboten in (chr(0x2014), chr(0x2013)):
             self.assertNotIn(verboten, text)
@@ -1637,7 +1873,7 @@ class DokumentationTests(unittest.TestCase):
         eintrag = next((b for b in hinzugefuegt.split("\n- ") if b.lstrip("- ").startswith("Betreuer-Geräte des Testlabors über den Gerätenamen")), None)
         self.assertIsNotNone(eintrag, "Eintrag zu den Betreuer-Geräten fehlt unter Hinzugefügt")
         for soll in ("wamo-labor-geraete-aktualisieren.sh", "wamo-labor-geraete-einrichten.sh", "wamo-labor-site.sh", "NetBIOS", "mDNS", "12 Stunden", "caddy adapt",
-                     "nicht kryptografisch", "Betreuer-Token", "flock", "test_labor_geraete_skripte.py", "Sicherheitsprüfung"):
+                     "nicht kryptografisch", "Betreuer-Token", "flock", "test_labor_geraete_skripte.py", "Sicherheitsprüfung", "Nachprüfung"):
             self.assertIn(soll, eintrag, soll)
         self.assertNotIn(chr(0x2014), eintrag)
         self.assertNotIn(chr(0x2013), eintrag)

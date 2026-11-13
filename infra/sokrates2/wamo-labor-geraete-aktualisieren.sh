@@ -53,6 +53,7 @@ NAMEN_DATEI="$ETC/betreuer-geraete"
 BETREUER_ADRESSEN="$ETC/betreuer-adressen"
 ZUSTAND="$W/var/lib/wamo-labor-geraete"   # StateDirectory der Unit: der Stand liegt nicht unter /etc/wamo-labor (dort darf die Unit nichts schreiben)
 STAND_DATEI="$ZUSTAND/betreuer-geraete.stand"
+VERSUCH_DATEI="$ZUSTAND/betreuer-geraete.versuch"   # Zeitpunkt des letzten Versuchs, eine neue Zulassung zu laden (auch nach einem Misserfolg)
 LIB="$W/usr/local/lib/wamo-labor-geraete"
 VORLAGE="$LIB/wamo-labor.caddy"
 RUN="$W/run/wamo-labor-geraete"
@@ -60,14 +61,18 @@ SPERRE="$RUN/lock"
 CADDY_DIR="${WAMO_LABOR_CADDY_DIR:-/home/wamocon/wamo-tls/caddy}"
 SITE_DATEI="$CADDY_DIR/etc/kern/wamo-labor.caddy"
 MAX_JE_NAME=4          # mehr Antworten je Name sind verdächtig: nichts Neues zulassen
+MAX_PARALLEL=4         # so viele Namen werden höchstens gleichzeitig aufgelöst (TasksMax der Unit und die Dauer eines Laufs hängen daran)
 SUCHFRIST_S=8          # so lange darf eine Namensauflösung (je Quelle) dauern
-RELOAD_ABSTAND_S=180   # neue Zulassungen: frühestens so lange nach dem letzten Reload (Entzug nie)
+RELOAD_ABSTAND_S=180   # neue Zulassungen: frühestens so lange nach dem letzten Versuch (auch nach einem Misserfolg), ein Entzug nie
 STAND_ABSTAND_S=300    # ohne Änderung wird der Stand höchstens alle 5 Minuten geschrieben
 WARN_ABSTAND_S=3600    # dieselbe Warnung höchstens einmal je Stunde
 TROCKEN=nein
 EINGABE_FEHLER=nein
 JETZT=""
 GELADEN=0
+VERSUCH=0
+SITE_ANDERS=nein
+SITE_HINZU=nein
 GESCHRIEBEN=0
 GEWARNT=0
 WARN_NEU=nein
@@ -126,35 +131,68 @@ eingaben_lesen() {
   FEST="$(adressen_lesen "$BETREUER_ADRESSEN" weich)" || EINGABE_FEHLER=ja
 }
 
+# Reste früherer, abgebrochener Läufe (Wegwerf-Ordner der Prüfung im Laufzeitordner, halb geschriebene Stände): erst unter der Sperre, nie die Sperrdatei selbst
+reste_wegraeumen() {
+  find "$RUN" -mindepth 1 -maxdepth 1 -name '.arbeit.*' -exec rm -rf {} + 2>/dev/null || true
+  rm -f "$STAND_DATEI".neu.* 2>/dev/null || true
+}
+
 sperren() {
   if ! sperre_nehmen "$SPERRE" 0; then
     echo "Ein anderer Lauf ist aktiv, dieser Lauf ändert nichts."
     exit 0
   fi
+  reste_wegraeumen
 }
 
-# Ein Zeitpunkt aus dem Kopf des Standes, nie in der Zukunft (ein Zeitsprung der Uhr sperrte sonst den Reload oder das Schreiben für lange Zeit)
+# Ein Zeitpunkt (aus dem Stand oder seinem Kopf) in der Zukunft: bis ZEIT_TOLERANZ_S zählt er als jetzt (ein kleiner Zeitsprung sperrte sonst den Reload oder das
+# Schreiben), darüber als lange her (0, bei einem Eintrag also abgelaufen: eine Fälschung verlängert nichts)
+zeit_begrenzen() {
+  local w="$1"
+  if (( w > JETZT + ZEIT_TOLERANZ_S )); then w=0; elif (( w > JETZT )); then w="$JETZT"; fi
+  printf '%s\n' "$w"
+}
+
+# Ein Zeitpunkt aus dem Kopf des Standes (geschrieben, geladen, gewarnt), begrenzt
 marke_lesen() {
-  local wert
-  wert="$(stand_marke "$STAND_DATEI" "$1")"
-  if (( wert > JETZT )); then wert="$JETZT"; fi
-  printf '%s\n' "$wert"
+  zeit_begrenzen "$(stand_marke "$STAND_DATEI" "$1")"
+}
+
+# Der Zeitpunkt des letzten Versuchs, eine neue Zulassung zu laden (die Datei enthält eine Zahl, sonst 0)
+versuch_lesen() {
+  local wert=0
+  if [ -r "$VERSUCH_DATEI" ]; then
+    read -r wert < "$VERSUCH_DATEI" || true
+    [[ "$wert" =~ ^[0-9]{1,12}$ ]] || wert=0
+  fi
+  zeit_begrenzen "$((10#$wert))"
+}
+
+# Der Versuch, eine neue Zulassung zu laden, wird vorher vermerkt: Auch ein Misserfolg zählt, damit ein dauerhafter Fehler nicht jede Minute Prüfung,
+# Installation, Reload und Rücknahme auslöst (neue Zulassungen höchstens alle RELOAD_ABSTAND_S Sekunden)
+versuch_schreiben() {
+  mkdir -p "$ZUSTAND"
+  printf '%s\n' "$JETZT" > "$VERSUCH_DATEI.neu.$$"
+  chmod 0644 "$VERSUCH_DATEI.neu.$$"
+  mv -f "$VERSUCH_DATEI.neu.$$" "$VERSUCH_DATEI"
+  VERSUCH="$JETZT"
 }
 
 # Der alte Stand: je Name die Einträge "Adresse:Zeitpunkt" (die Datei prüft stand_lesen, kaputte Zeilen meldet sie und überspringt sie). Zeitpunkte in der
-# Zukunft zählen als jetzt.
+# Zukunft werden wie bei zeit_begrenzen behandelt.
 stand_einlesen() {
   local name adr zeit
   ALT_ZEILEN=()
   while read -r name adr zeit; do
     name="${name^^}"
-    if (( zeit > JETZT )); then zeit="$JETZT"; fi
+    zeit="$(zeit_begrenzen "$zeit")"
     ALT_ZEILEN+=("$name $adr $zeit")
     ALT[$name]="${ALT[$name]:+${ALT[$name]} }$adr:$zeit"
   done < <(stand_lesen "$STAND_DATEI")
   GESCHRIEBEN="$(marke_lesen geschrieben)"
   GELADEN="$(marke_lesen geladen)"
   GEWARNT="$(marke_lesen gewarnt)"
+  VERSUCH="$(versuch_lesen)"
 }
 
 # ---------- Namensauflösung
@@ -177,11 +215,16 @@ aufloesen() {
   } | tr -d '\r' | lan_filtern
 }
 
-# Alle Namen gleichzeitig (eine Auflösung dauert bis zu zwei Fristen, viele Namen sollen den Takt von einer Minute nicht sprengen)
+# Die Namen mit höchstens MAX_PARALLEL gleichzeitigen Auflösungen (eine Auflösung dauert bis zu zwei Fristen, viele Namen sollen den Takt von einer Minute nicht
+# sprengen und die Unit nicht mit Prozessen fluten)
 frisch_holen() {
-  local i name gefunden
+  local i name gefunden laufend=0
   AUFLOESUNG="$(mktemp -d)"
-  for i in "${!NAMEN[@]}"; do aufloesen "${NAMEN[$i]}" > "$AUFLOESUNG/$i" & done
+  for i in "${!NAMEN[@]}"; do
+    if (( laufend >= MAX_PARALLEL )); then wait -n || true; laufend=$((laufend - 1)); fi
+    aufloesen "${NAMEN[$i]}" > "$AUFLOESUNG/$i" &
+    laufend=$((laufend + 1))
+  done
   wait
   for i in "${!NAMEN[@]}"; do
     name="${NAMEN[$i]}"
@@ -191,28 +234,36 @@ frisch_holen() {
   done
 }
 
-# Die Adressen, die im alten Stand für einen Namen stehen (NAME), durch Leerzeichen getrennt, mit einem Leerzeichen am Ende
+# Die Adressen, die im alten Stand für einen Namen stehen und noch nicht abgelaufen sind (NAME), durch Leerzeichen getrennt, mit einem Leerzeichen am Ende
 alte_adressen() {
   local e
-  for e in ${ALT[$1]:-}; do printf '%s ' "${e%%:*}"; done
+  for e in ${ALT[$1]:-}; do
+    if (( JETZT - ${e##*:} <= GERAETE_FRIST_S )); then printf '%s ' "${e%%:*}"; fi
+  done
 }
 
-# Was die Antworten neu zulassen dürfen: Mehr als MAX_JE_NAME Antworten lassen nichts Neues zu (der letzte Stand bleibt, Warnung). Bei einem Fehler in den Eingaben
-# gelten nur Adressen, die schon im alten Stand stehen (Bestätigung, nie eine neue Zulassung).
+# Von den Antworten eines Namens nur die Adressen, die schon zugelassen und nicht abgelaufen sind (NAME): Sie werden bestätigt (der Zeitpunkt der letzten Antwort
+# wird erneuert), nie neu zugelassen
+bestaetigte_antworten() {
+  local adr alt bestaetigt=""
+  alt=" $(alte_adressen "$1")"
+  for adr in ${FRISCH[$1]:-}; do
+    if [[ "$alt" == *" $adr "* ]]; then bestaetigt="$bestaetigt${bestaetigt:+ }$adr"; fi
+  done
+  printf '%s\n' "$bestaetigt"
+}
+
+# Was die Antworten neu zulassen dürfen: Mehr als MAX_JE_NAME Antworten sind verdächtig (Flut oder Täuschung): Nichts Neues, Warnung, aber schon zugelassene Adressen,
+# die weiter antworten, werden bestätigt (ein Fremdgerät friert das echte nicht ein). Bei einem Fehler in den Eingaben gilt dasselbe: nur Bestätigung.
 frisch_einschraenken() {
-  local name adr alt neu
+  local name
   WARNUNGEN=()
   for name in "${NAMEN[@]}"; do
     if [ "${ANZAHL[$name]:-0}" -gt "$MAX_JE_NAME" ]; then
-      FRISCH[$name]=""
-      WARNUNGEN+=("WARNUNG Gerät $name: ${ANZAHL[$name]} Antworten im Büro-LAN (mehr als $MAX_JE_NAME): Es wird nichts Neues zugelassen, der letzte Stand bleibt.")
+      FRISCH[$name]="$(bestaetigte_antworten "$name")"
+      WARNUNGEN+=("WARNUNG Gerät $name: ${ANZAHL[$name]} Antworten im Büro-LAN (mehr als $MAX_JE_NAME): Es wird nichts Neues zugelassen, schon zugelassene Adressen werden bestätigt.")
     elif [ "$EINGABE_FEHLER" = ja ]; then
-      alt=" $(alte_adressen "$name")"
-      neu=""
-      for adr in ${FRISCH[$name]:-}; do
-        if [[ "$alt" == *" $adr "* ]]; then neu="$neu${neu:+ }$adr"; fi
-      done
-      FRISCH[$name]="$neu"
+      FRISCH[$name]="$(bestaetigte_antworten "$name")"
     fi
   done
 }
@@ -340,12 +391,59 @@ warnungen_melden() {
   WARN_NEU=ja
 }
 
-# Anwenden: Eine neue Zulassung wartet, bis der letzte Reload mindestens RELOAD_ABSTAND_S zurückliegt (dann bleibt alles, wie es ist, der Stand auch), ein reiner Entzug
-# nie. Der Stand wird geschrieben, wenn sich die Menge ändert, eine Warnung gemeldet wurde oder der letzte Schreibzeitpunkt mehr als STAND_ABSTAND_S zurückliegt.
+# Weicht die installierte Site von dem ab, was aus Vorlage und LISTE entstünde? Nicht nur der Stand zählt: Ein Abbruch nach Install und Reload, aber vor dem Schreiben des
+# Standes (oder eine Änderung der festen Adressen) wird so beim nächsten Lauf nachgezogen. SITE_ANDERS=ja heißt: Die Site muss neu geladen werden. SITE_HINZU=ja heißt:
+# Dabei kommt eine Adresse hinzu (eine reine Rücknahme wartet nie). Fehlt die Site, ändert sich nur bei geänderter Menge etwas (dann bricht site_aendern mit klarer Meldung ab).
+site_abweichung() {
+  local installiert a
+  SITE_ANDERS=nein
+  SITE_HINZU=nein
+  if [ ! -f "$SITE_DATEI" ]; then
+    SITE_ANDERS="$GEAENDERT"
+    SITE_HINZU="$HINZU"
+    return 0
+  fi
+  if [ "$(site_erzeugen "$VORLAGE" "$LISTE")" = "$(cat "$SITE_DATEI")" ]; then return 0; fi
+  SITE_ANDERS=ja
+  installiert="$(awk '/^\tremote_ip / { sub(/^\tremote_ip /, ""); print; exit }' "$SITE_DATEI")"
+  for a in $LISTE; do
+    if [[ " $installiert " != *" $a "* ]]; then SITE_HINZU=ja; fi
+  done
+}
+
+# In der Sperrfrist für neue Zulassungen (letzter Versuch weniger als RELOAD_ABSTAND_S her) gilt nur die Schnittmenge aus altem und neuem Stand: Eine Rücknahme wartet nie,
+# nur das Neue wartet. NEU, die Mengen, GEAENDERT, die Meldungen und LISTE werden auf die Schnittmenge begrenzt (der Stand gibt wieder, was geladen ist).
+schnittmenge_begrenzen() {
+  local z a behalten=()
+  for z in "${NEU[@]}"; do
+    a="${z#* }"
+    a="${a%% *}"
+    if [[ " $ALTE_MENGE " == *" $a "* ]]; then behalten+=("$z"); fi
+  done
+  NEU=("${behalten[@]}")
+  NEUE_MENGE="$(adressmenge "${NEU[@]}")"
+  GEAENDERT=nein
+  [ "$ALTE_MENGE" = "$NEUE_MENGE" ] || GEAENDERT=ja
+  HINZU=nein
+  LISTE="$(liste_bilden "$INTERN" "$FEST" "$NEUE_MENGE")"
+  meldungen_bilden
+}
+
+# Anwenden: Eine neue Zulassung wartet, bis der letzte Versuch mindestens RELOAD_ABSTAND_S zurückliegt (auch nach einem Misserfolg; bis dahin gilt nur die Schnittmenge,
+# eine Rücknahme nie), ein reiner Entzug nie. Der Stand wird geschrieben, wenn sich die Menge ändert, eine Warnung gemeldet wurde oder der letzte Schreibzeitpunkt mehr als
+# STAND_ABSTAND_S zurückliegt.
 anwenden() {
   local m
-  if [ "$GEAENDERT" = ja ] && [ "$HINZU" = ja ] && (( JETZT - GELADEN < RELOAD_ABSTAND_S )); then return 0; fi
-  if [ "$GEAENDERT" = ja ]; then
+  site_abweichung
+  if [ "$SITE_ANDERS" = ja ] && { [ "$HINZU" = ja ] || [ "$SITE_HINZU" = ja ]; }; then
+    if (( JETZT - VERSUCH < RELOAD_ABSTAND_S )); then
+      schnittmenge_begrenzen
+      site_abweichung
+    else
+      versuch_schreiben
+    fi
+  fi
+  if [ "$SITE_ANDERS" = ja ]; then
     site_aendern "$LISTE"
     GELADEN="$JETZT"
   fi
@@ -361,7 +459,7 @@ trocken_zeigen() {
   for name in "${NAMEN[@]}"; do echo "[trocken] Gerät $name: Antworten im Büro-LAN: ${ANZAHL[$name]:-0}, es gelten: ${FRISCH[$name]:-keine}"; done
   for m in "${MELDUNGEN[@]}"; do echo "[trocken] Änderung: $m"; done
   for m in "${WARNUNGEN[@]}"; do echo "[trocken] $m"; done
-  if [ "$GEAENDERT" = ja ]; then
+  if [ "$GEAENDERT" = ja ] || [ "$SITE_ANDERS" = ja ]; then
     echo "[trocken] Die Site würde neu zusammengesetzt, geprüft und geladen (neue Zulassungen frühestens $RELOAD_ABSTAND_S Sekunden nach dem letzten Reload). remote_ip $LISTE"
   else
     echo "[trocken] Die Menge der Adressen bleibt gleich: keine Prüfung, kein Reload."
@@ -379,7 +477,7 @@ done
 umgebung_pruefen
 # shellcheck source=wamo-labor-site.sh
 . "$LIB/wamo-labor-site.sh"
-export WAMO_LABOR_WARTE_RUNDEN="${WAMO_LABOR_WARTE_RUNDEN:-5}"   # nach einem Reload ohne Ausfall genügen wenige Versuche je Port
+export WAMO_LABOR_WARTE_RUNDEN="${WAMO_LABOR_WARTE_RUNDEN:-3}"   # nach einem Reload ohne Ausfall genügen wenige Versuche je Port (die Unit rechnet mit der schlimmsten Dauer)
 
 eingaben_lesen
 [ "$TROCKEN" = ja ] || sperren
@@ -396,6 +494,7 @@ HINZU="$(hinzugekommen)"
 LISTE="$(liste_bilden "$INTERN" "$FEST" "$NEUE_MENGE")"
 
 if [ "$TROCKEN" = ja ]; then
+  site_abweichung
   trocken_zeigen
 else
   anwenden

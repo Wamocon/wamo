@@ -14,6 +14,7 @@ CADDY_PORTS="55443 55444 55445 55446"   # die Dienste hinter wamo-caddy, die ein
 LAN_PRAEFIX="192.168.178."              # nur Adressen aus dem Büro-LAN 192.168.178.0/24 gelten für Betreuer-Geräte (Namensauflösung nie darüber hinaus)
 GERAETE_FRIST_S=43200                   # so lange (12 Stunden) bleibt die zuletzt gute Adresse eines Geräts zugelassen, das nicht mehr antwortet
 MAX_NAMEN=16                            # höchstens so viele Gerätenamen in betreuer-geraete
+ZEIT_TOLERANZ_S=300                     # ein Zeitpunkt im Stand, der höchstens so weit in der Zukunft liegt, zählt als jetzt, ein weiterer als abgelaufen
 NAME_MUSTER='^[A-Za-z0-9][A-Za-z0-9-]{0,14}$'   # ein Gerätename: 1 bis 15 Zeichen (NetBIOS-Länge), am Anfang kein Bindestrich
 CADDY_OWNER="${CADDY_OWNER:-}"
 CADDY_GROUP="${CADDY_GROUP:-}"
@@ -50,7 +51,8 @@ adressen_lesen() {
       if ! adresse_gueltig "$wert"; then
         meldung="Ungültige Adresse in $datei: $(kurz "$wert") (a.b.c.d oder a.b.c.d/n mit n von 24 bis 32)."
         [ -n "$weich" ] || fehler "$meldung"
-        echo "$meldung Neue Zulassungen sind angehalten, der Entzug läuft weiter." >&2
+        if [ "$weich" = eng ]; then echo "$meldung Die Zeile wird übersprungen, es gelten nur die gültigen Zeilen." >&2
+        else echo "$meldung Neue Zulassungen sind angehalten, der Entzug läuft weiter." >&2; fi
         rc=1
         continue
       fi
@@ -150,16 +152,18 @@ stand_marke() {
 }
 
 # Die Adressen aus dem Stand, deren letzte Antwort höchstens GERAETE_FRIST_S zurückliegt (DATEI JETZT): in einer Zeile, sortiert, ohne Doppelte. Ein Zeitpunkt
-# in der Zukunft (Zeitsprung der Uhr, Fälschung) zählt als jetzt: Die Frist läuft dann ab jetzt, nie länger.
+# in der Zukunft (Zeitsprung der Uhr, Fälschung) zählt bis ZEIT_TOLERANZ_S als jetzt (die Frist läuft dann ab jetzt, nie länger), darüber als abgelaufen.
 geraete_adressen() {
-  stand_lesen "$1" | awk -v jetzt="$2" -v frist="$GERAETE_FRIST_S" '{ z = ($3 > jetzt) ? jetzt : $3 } jetzt - z <= frist { print $2 }' \
+  stand_lesen "$1" | awk -v jetzt="$2" -v frist="$GERAETE_FRIST_S" -v tol="$ZEIT_TOLERANZ_S" \
+    '$3 <= jetzt + tol { z = ($3 > jetzt) ? jetzt : $3; if (jetzt - z <= frist) print $2 }' \
     | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n -u | paste -sd' ' -
 }
 
-# Die Adressen für die Site: der Server selbst, die festen Adressen aus ADRESSDATEI und, wenn STANDDATEI und JETZT folgen, die Adressen der Betreuer-Geräte
+# Die Adressen für die Site: der Server selbst, die festen Adressen aus ADRESSDATEI und, wenn STANDDATEI und JETZT folgen, die Adressen der Betreuer-Geräte.
+# Mit dem vierten Argument weich zählen von den festen Adressen nur die gültigen Zeilen (Meldung auf stderr): Der Rückweg wird nie von einem Tippfehler blockiert.
 betreuer_liste() {
   local fest geraete=""
-  fest="$(adressen_lesen "$1")" || exit 1
+  if [ -n "${4:-}" ]; then fest="$(adressen_lesen "$1" eng)" || true; else fest="$(adressen_lesen "$1")" || exit 1; fi
   if [ -n "${2:-}" ]; then geraete="$(geraete_adressen "$2" "$3")" || exit 1; fi
   liste_bilden "$INTERN" "$fest" "$geraete"
 }
