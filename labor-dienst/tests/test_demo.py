@@ -1,10 +1,13 @@
 """Lokale Vorführung mit Demo-Daten: python -m wamo_labor_dienst.demo (nur Loopback, Wegwerf-Tokens, temporärer Ordner)."""
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
-from wamo_labor_dienst import demo
+from wamo_labor_dienst import auslieferung, demo
 
 
 @pytest.fixture
@@ -39,6 +42,15 @@ def test_demo_hat_einen_beendeten_und_geschlossene_plaetze(vorfuehrung):
     uebersicht = c.get("/api/betreuer/plaetze", headers={"Authorization": f"Bearer {zugang.betreuer_token}"}).json()["plaetze"]
     assert len(uebersicht) == 16 and sum(p["offen"] for p in uebersicht) == 2
     assert [p["hat_platz_token"] for p in uebersicht[:4]] == [True, True, True, False]
+
+
+def test_demo_erfasst_die_version_des_aktuellen_hinweises(vorfuehrung):
+    """Ist in der Vorführung schon eine höhere Version erfasst als die der Betreuer-Seite, bleibt der Knopf im Dialog Neuer Durchlauf gesperrt."""
+    c, zugang = vorfuehrung
+    quelle = (Path(auslieferung.__file__).resolve().parent / "web" / "datenschutz-logik.js").read_text(encoding="utf-8")
+    version = int(re.search(r"export const DATENSCHUTZ_VERSION\s*=\s*(\d+);", quelle).group(1))
+    uebersicht = c.get("/api/betreuer/plaetze", headers={"Authorization": f"Bearer {zugang.betreuer_token}"}).json()["plaetze"]
+    assert {p["einwilligung_version"] for p in uebersicht[:3]} == {version}
 
 
 def test_demo_tokens_haben_die_form_der_echten_und_sind_jedes_mal_neu(tmp_path):
