@@ -379,6 +379,9 @@ class GeraeteWerkstatt(Werkstatt):
         self.ausgabe(f"nmblookup.{name}", netbios, rc=rc)
         self.ausgabe(f"avahi-resolve.{name}.local", mdns, rc=rc)
 
+    def antworten_mdns_nur(self, name: str, mdns: str) -> None:
+        self.ausgabe(f"avahi-resolve.{name}.local", mdns)
+
     def netbios(self, *adressen: str, name: str = GERAET) -> str:
         return f"querying {name} on 192.168.178.255\n" + "".join(f"{a} {name}<00>\n" for a in adressen)
 
@@ -430,26 +433,54 @@ class GeraeteWerkstatt(Werkstatt):
 
 @unittest.skipUnless(BASH, "keine Bash vorhanden")
 class AufloesungTests(GeraeteWerkstatt):
-    def test_vereinigung_aus_netbios_und_mdns_gefiltert_auf_das_buero_lan(self):
-        """Gemessen am Server für Nikos PC: NetBIOS liefert .78 und virtuelle 172.x, mDNS liefert .67. Beides gilt, die virtuellen Adressen nicht."""
+    def test_netbios_hat_vorrang_mdns_wird_dann_gar_nicht_gefragt(self):
+        """Gemessen am Server für Nikos PC: NetBIOS liefert .78 (dazu virtuelle 172.x), mDNS liefert die veraltete .67 (antwortet nicht auf Ping). Es gilt nur NetBIOS."""
         self.antworten(GERAET, self.netbios("192.168.178.78", "172.17.0.1", "172.20.208.1"), self.mdns("192.168.178.67"))
         r = self.aktualisieren()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.site().count(self.remote_ip("192.168.178.67", "192.168.178.78")), 1, self.site())
-        self.assertEqual(self.stand(), [(GERAET, "192.168.178.67", self.JETZT), (GERAET, "192.168.178.78", self.JETZT)])
-        self.assertNotIn("172.17.0.1", self.site())
-        self.assertNotIn("172.20.208.1", self.site())
+        self.assertEqual(self.site().count(self.remote_ip("192.168.178.78")), 1, self.site())
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", self.JETZT)])  # kein Zusammenführen: die tote Adresse kommt nie hinein
+        for nie in ("192.168.178.67", "172.17.0.1", "172.20.208.1"):
+            self.assertNotIn(nie, self.site())
         aufrufe = self.aufrufe()
         self.assertIn(f"nmblookup -- {GERAET}", aufrufe)  # "--" vor dem Namen: nie als Option gelesen
-        self.assertIn(f"avahi-resolve -4 -n -- {GERAET}.local", aufrufe)
+        self.assertNotIn(f"avahi-resolve -4 -n -- {GERAET}.local", aufrufe)  # mDNS nur als Ersatz: Hier hat NetBIOS geantwortet
 
-    def test_nur_eine_quelle_antwortet(self):
-        self.antworten(GERAET, mdns=self.mdns("192.168.178.67"), netbios="name_query failed to find name WMC-H-04-NS\n")
+    def test_mdns_gilt_nur_wenn_netbios_nach_dem_filter_nichts_liefert(self):
+        mdns_aufruf = f"avahi-resolve -4 -n -- {GERAET}.local"
+        # NetBIOS findet den Namen nicht (Mac, Linux): mDNS ersetzt es
+        self.antworten(GERAET, "name_query failed to find name WMC-H-04-NS\n", self.mdns("192.168.178.67"))
         self.assertEqual(self.aktualisieren().returncode, 0)
         self.assertIn(self.remote_ip("192.168.178.67"), self.site())
-        self.ausgabe(f"nmblookup.{GERAET}", self.netbios("192.168.178.78"))
-        self.ausgabe(f"avahi-resolve.{GERAET}.local", "Failed to resolve host name\n", rc=1)  # avahi scheitert, nmblookup antwortet
+        self.assertIn(mdns_aufruf, self.aufrufe())
+        # NetBIOS antwortet nur mit Adressen außerhalb des Büro-LANs (virtuell): Nach dem Filter ist nichts übrig, mDNS wird gefragt
+        self.log.write_text("", encoding="utf-8")
+        self.antworten(GERAET, self.netbios("172.17.0.1", "10.0.0.5"), self.mdns("192.168.178.68"))
         self.assertEqual(self.aktualisieren(jetzt=self.JETZT + 200).returncode, 0)
+        self.assertIn(self.remote_ip("192.168.178.68"), self.site())
+        self.assertIn(mdns_aufruf, self.aufrufe())
+        # NetBIOS scheitert (Fehlercode, Zeitüberschreitung): ebenfalls mDNS
+        self.log.write_text("", encoding="utf-8")
+        self.ausgabe(f"nmblookup.{GERAET}", "", rc=1)
+        self.antworten_mdns_nur(GERAET, self.mdns("192.168.178.69"))
+        self.assertEqual(self.aktualisieren(jetzt=self.JETZT + 400).returncode, 0)
+        self.assertIn(self.remote_ip("192.168.178.69"), self.site())
+        self.assertLess(self.aufrufe().index(f"nmblookup -- {GERAET}"), self.aufrufe().index(mdns_aufruf))  # erst NetBIOS, dann mDNS
+
+    def test_antwortet_auch_mdns_nicht_oder_nur_ausserhalb_des_lans_gilt_nichts(self):
+        self.antworten(GERAET, "", self.mdns("172.17.0.1", "10.0.0.5"))
+        r = self.aktualisieren()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+        self.assertEqual(self.stand(), [])
+        self.ausgabe(f"avahi-resolve.{GERAET}.local", "Failed to resolve host name\n", rc=1)
+        self.assertEqual(self.aktualisieren(jetzt=self.JETZT + 60).returncode, 0)
+        self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
+
+    def test_antwortet_netbios_zaehlt_seine_antwort_auch_wenn_mdns_scheitert(self):
+        self.ausgabe(f"nmblookup.{GERAET}", self.netbios("192.168.178.78"))
+        self.ausgabe(f"avahi-resolve.{GERAET}.local", "Failed to resolve host name\n", rc=1)
+        self.assertEqual(self.aktualisieren().returncode, 0)
         self.assertIn(self.remote_ip("192.168.178.78"), self.site())
 
     def test_filter_nur_adressen_im_buero_lan(self):
@@ -458,6 +489,7 @@ class AufloesungTests(GeraeteWerkstatt):
         self.antworten(GERAET, self.netbios(*schlecht), self.mdns(*schlecht))
         r = self.aktualisieren()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"avahi-resolve -4 -n -- {GERAET}.local", self.aufrufe())  # nach dem Filter blieb von NetBIOS nichts: mDNS wurde gefragt, auch dessen Antwort wird gefiltert
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)  # keine Adresse gilt: nichts ändert sich
         self.assertEqual(self.reloads(), 0)
         self.assertEqual(self.stand(), [])
@@ -465,16 +497,18 @@ class AufloesungTests(GeraeteWerkstatt):
         self.assertEqual(self.aktualisieren(jetzt=self.JETZT + 60).returncode, 0)
         self.assertIn(self.remote_ip("192.168.178.1", "192.168.178.254"), self.site())  # die Grenzen .1 und .254 gelten
 
-    def test_die_namensquellen_sind_genau_netbios_und_mdns(self):
+    def test_die_namensquellen_sind_genau_netbios_und_mdns_netbios_zuerst(self):
         c = code(AKTUALISIERER)
         self.assertIn("nmblookup", c)
         self.assertIn("avahi-resolve", c)
+        self.assertLess(c.index("nmblookup --"), c.index("avahi-resolve -4"))
+        self.assertRegex(c, r'if \[ -z "\$antwort" \]')  # mDNS nur, wenn NetBIOS nach dem Filter nichts lieferte
         for nie in ("getent", "dig ", "nslookup", "host ", "resolvectl", "arp ", "ip neigh", "ping"):
             self.assertNotIn(nie, c, nie)  # das DNS der Fritz!Box liefert veraltete Adressen und gehört nicht dazu
 
     def test_genau_vier_antworten_gelten(self):
         vier = [f"192.168.178.{n}" for n in (90, 20, 30, 40)]
-        self.antworten(GERAET, self.netbios(*vier[:2]), self.mdns(*vier[2:]))
+        self.antworten(GERAET, self.netbios(*vier))
         r = self.aktualisieren()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual([a for _, a, _ in self.stand()], ["192.168.178.20", "192.168.178.30", "192.168.178.40", "192.168.178.90"])
@@ -483,7 +517,7 @@ class AufloesungTests(GeraeteWerkstatt):
     def test_mehr_als_vier_antworten_lassen_nichts_neues_zu_und_warnen_hoechstens_stuendlich(self):
         """Ein Name mit mehr als 4 Antworten (verdächtig: Flut oder Täuschung) lässt nichts Neues zu, bestätigt aber die schon zugelassene Adresse, die weiter antwortet."""
         sechs = [f"192.168.178.{n}" for n in (20, 30, 40, 50, 60, 78)]
-        self.antworten(GERAET, self.netbios(*sechs[:3]), self.mdns(*sechs[3:]))
+        self.antworten(GERAET, self.netbios(*sechs))
         r = self.aktualisieren()  # erster Blick: nichts im Stand, also wird auch nichts zugelassen
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
@@ -879,6 +913,7 @@ class FristUndAenderungTests(GeraeteWerkstatt):
     def test_bleibt_die_menge_gleich_gibt_es_weder_pruefung_noch_reload_noch_ausgabe(self):
         self.antworten(GERAET, self.netbios("192.168.178.78"), self.mdns("192.168.178.67"))
         self.assertEqual(self.aktualisieren(jetzt=self.JETZT).returncode, 0)
+        self.assertEqual([a for _, a, _ in self.stand()], ["192.168.178.78"])
         site, geladen = self.site_datei.read_bytes(), (self.reloads(), self.prueflaeufe(), self.zaehle("logger"))
         self.assertEqual(geladen[:2], (1, 1))
         stand = self.p(STAND_REL).read_bytes()
@@ -889,7 +924,7 @@ class FristUndAenderungTests(GeraeteWerkstatt):
             self.assertEqual(self.p(STAND_REL).read_bytes(), stand, "der Stand wird innerhalb von 5 Minuten nicht neu geschrieben")
         r = self.aktualisieren(jetzt=self.JETZT + 300)  # nach 5 Minuten zieht der Zeitpunkt der letzten Antwort nach
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
-        self.assertEqual(self.stand(), [(GERAET, "192.168.178.67", self.JETZT + 300), (GERAET, "192.168.178.78", self.JETZT + 300)])
+        self.assertEqual(self.stand(), [(GERAET, "192.168.178.78", self.JETZT + 300)])
         self.assertEqual(self.site_datei.read_bytes(), site)
         self.assertEqual((self.reloads(), self.prueflaeufe(), self.zaehle("logger")), geladen)
         self.assertEqual(self.zaehle("docker exec"), 1)
@@ -1172,7 +1207,7 @@ class SperreMeldungUndGrenzenTests(GeraeteWerkstatt):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("[trocken]", r.stdout)
         self.assertIn("192.168.178.78", r.stdout)
-        self.assertIn("192.168.178.67", r.stdout)
+        self.assertNotIn("192.168.178.67", r.stdout)  # NetBIOS hat Vorrang: die mDNS-Adresse wird gar nicht erst gefragt
         self.assertEqual(self.site_datei.read_bytes(), self.site_vorher)
         self.assertFalse(self.p(STAND_REL).exists())
         for z in self.aufrufe():
@@ -1848,7 +1883,7 @@ class DokumentationTests(unittest.TestCase):
     def test_unterabschnitt_im_readme_von_sokrates2(self):
         text = self.abschnitt()
         for soll in ("wamo-labor-geraete-einrichten.sh", "wamo-labor-geraete-aktualisieren", "wamo-labor-geraete.service", "wamo-labor-geraete.timer", "wamo-labor-site.sh",
-                     "betreuer-geraete", "betreuer-geraete.stand", "--trocken", "rueckweg", "einrichten", "status", "NetBIOS", "mDNS", "192.168.178.0/24", "Vereinigung",
+                     "betreuer-geraete", "betreuer-geraete.stand", "--trocken", "rueckweg", "einrichten", "status", "NetBIOS", "mDNS", "192.168.178.0/24", "Vorrang", "nur als Ersatz", "veraltete Adresse",
                      "12 Stunden", "höchstens 4", "höchstens 16", "caddy adapt", "caddy reload", "flock", "journalctl -t wamo-labor-geraete", "Nur am Server prüfbar",
                      "Grenzen", "nicht kryptografisch", "vortäuschen", "Betreuer-Token", "eine Minute", "Windows-, Mac- und Linux-Geräte", "plaetze-adressen",
                      "WMC-H-04-NS", "WAMO_LABOR_GERAETE_WURZEL", "ReadWritePaths", "betreuer-adressen", "/var/lib/wamo-labor-geraete", "StateDirectory", "InaccessiblePaths",
