@@ -1,28 +1,34 @@
 #!/usr/bin/env bash
 # Labor-Daten des Testlabors auf Sokrates-2 einrichten (Konzept docs/testlabor-wamo.md, Abschnitt 3.6 und 3.8, Dateien in infra/sokrates2/labor-daten/).
-# Der Kern liest die Dateien bei jedem Sitzungsstart (voice-core/labor_daten.py). Dieses Skript legt sie root-eigen unter /etc/wamo/labor ab. Es ändert den
-# Kern nie, startet nichts neu und kennt keine Geheimnisse. Es gibt nie Inhalte aus, nur Namen, Rechte und Prüfsummen (die ersten 16 Zeichen von SHA-256,
-# wie in der Logzeile "Labor-Daten:" des Sitzungsstarts). Nur als root (sudo). Wiederholbar: ein zweiter Lauf mit gleichem Inhalt ändert nichts.
+# Der Kern liest die Dateien bei jedem Sitzungsstart (voice-core/labor_daten.py). Dieses Skript legt sie root-eigen unter /etc/wamo-labor/daten ab, denn der
+# Benutzer wamo-core kann /etc/wamo (root:wamo 0750, dort liegen die Geheimnisse) nicht durchqueren, also auch nichts darunter lesen. /etc/wamo bleibt
+# unberührt, es gibt dort keine ACL und keine Rechteänderung. Das Skript startet nichts neu und kennt keine Geheimnisse. Es gibt nie Inhalte aus, nur Namen,
+# Rechte und Prüfsummen (die ersten 16 Zeichen von SHA-256, wie in der Logzeile "Labor-Daten:" des Sitzungsstarts). Nur als root (sudo). Wiederholbar: ein
+# zweiter Lauf mit gleichem Inhalt ändert die Dateien nicht.
 #
 #   wamo-labor-daten-einrichten.sh einrichten [--persona standard|streng] [--release NAME] [--trocken]
 #       Prüft die Lieferung mit dem echten Lader (in einem Wegwerf-Ordner), sichert den vorigen Stand, installiert die Dateien, prüft sie am Ziel noch einmal
 #       mit dem Lader und nimmt bei jeder Ablehnung alles zurück. --persona wählt, welche Fassung der Regeln als persona-zusatz.md liegt (ohne Angabe
-#       bleibt die vorhandene Fassung, sonst standard). persona-zusatz.streng.md wird immer mit abgelegt. --trocken zeigt nur den Plan.
+#       bleibt die vorhandene Fassung, sonst standard). persona-zusatz.streng.md wird immer mit abgelegt. Danach setzt es für den Kern genau eine Einstellung,
+#       WAMO_LABOR_DATEN=/etc/wamo-labor/daten, über /usr/local/sbin/wamo-core-env (stdin, auch bei unverändertem Stand, gleicher Wert). Sie gilt erst mit dem
+#       nächsten Kern-Release, der Kern wird hier nie neu gestartet. --trocken zeigt nur den Plan.
 #   wamo-labor-daten-einrichten.sh status [--release NAME]
-#       Rechte, Prüfsummen, Vergleich mit der Lieferung, gewählte Fassung, Urteil des Laders, Sicherungen.
+#       Rechte, Prüfsummen, Vergleich mit der Lieferung, gewählte Fassung, Urteil des Laders, ob WAMO_LABOR_DATEN beim Kern gesetzt ist (nur gesetzt oder nicht),
+#       Sicherungen.
 #   wamo-labor-daten-einrichten.sh rueckweg [--release NAME] [--trocken]
-#       Stellt den Stand der letzten Sicherung wieder her (Dateien, die es dort nicht gab, werden entfernt). Der Stand davor bleibt als
-#       <Zeit>.vor-rueckweg liegen.
+#       Stellt den Stand der letzten Sicherung für dieses Ziel wieder her (Dateien, die es dort nicht gab, werden entfernt). Der Stand davor bleibt als
+#       <Zeit>.vor-rueckweg liegen. Die Einstellung des Kerns bleibt unverändert.
 #
+# Voraussetzung: /etc/wamo-labor muss existieren und ein echter Ordner sein (zuerst wamo-labor-einrichten.sh, es legt ihn als root:root 0755 an).
 # Aufbau auf dem Server:
-#   /etc/wamo/labor/                                   root:root 0755 (nie /etc/wamo selbst: dort liegt die Geheimnisdatei), keine Links
-#   /etc/wamo/labor/<Datei>                            root:root 0644, die acht Dateien der Lieferung
-#   /var/backups/wamo-labor-daten/<JJJJMMTT-HHMMSS>/   root 0700, Sicherung des vorigen Stands (die Datei VORHER nennt ihn und schließt die Sicherung ab)
+#   /etc/wamo-labor/daten/                             root:root 0755, keine Links, nie /etc/wamo
+#   /etc/wamo-labor/daten/<Datei>                      root:root 0644, die acht Dateien der Lieferung
+#   /var/backups/wamo-labor-daten/<JJJJMMTT-HHMMSS>/   root 0700, Sicherung des vorigen Stands (die Datei VORHER nennt Ziel und Stand und schließt die Sicherung ab)
 #
 # Der Lader: labor_daten.py aus dem Release des Kerns (/opt/wamo-core/releases/<Name>/voice-core) mit dessen venv. Ohne --release gilt das jüngste Release,
-# das die Datei enthält; ohne venv /usr/bin/python3. Fehlt dort loguru, bricht das Skript vor jeder Änderung mit Exit 3 ab. Der Lader läuft als wamo-core,
-# damit die Probe auch zeigt, ob der Kern die Dateien lesen darf. Exit-Codes: 0 ok, 1 Fehler (bei Ablehnung ist alles zurückgenommen), 2 falsche
-# Aufrufform, 3 Vorbedingung nicht erfüllt.
+# das die Datei enthält; ohne venv /usr/bin/python3. Fehlt dort loguru, bricht das Skript vor jeder Änderung mit Exit 3 ab. Der Lader läuft als wamo-core
+# und bekommt den Ordner wie im Kern über die Umgebung (WAMO_LABOR_DATEN, labor_daten.verzeichnis_aus_env), damit die Probe auch zeigt, ob der Kern die
+# Dateien lesen darf. Exit-Codes: 0 ok, 1 Fehler (bei Ablehnung ist alles zurückgenommen), 2 falsche Aufrufform, 3 Vorbedingung nicht erfüllt.
 #
 #   scp -r infra/sokrates2 wamo-sokrates2:wamo-infra && ssh wamo-sokrates2 "chmod -R go-w ~/wamo-infra"
 #   ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-labor-daten-einrichten.sh einrichten --trocken"
@@ -36,7 +42,11 @@ umask 022
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WURZEL="${WAMO_LABOR_DATEN_WURZEL:-}"   # nur für den Probelauf; leer ist das echte System
 QUELLE="$HERE/labor-daten"
-ZIEL="$WURZEL/etc/wamo/labor"
+ELTERN="$WURZEL/etc/wamo-labor"   # legt wamo-labor-einrichten.sh an (root:root 0755), der Kern kann ihn durchqueren
+ZIEL="$ELTERN/daten"
+KERN_DATEN_PFAD=/etc/wamo-labor/daten   # der Wert für den Kern: immer der Pfad am Server, nie ein Pfad der Probewurzel
+CORE_ENV=/usr/local/sbin/wamo-core-env
+[ -z "$WURZEL" ] || CORE_ENV="$WURZEL/usr/local/sbin/wamo-core-env"
 SICHERUNG_BASIS="$WURZEL/var/backups/wamo-labor-daten"
 KERN_APP="$WURZEL/opt/wamo-core"
 KERN_BENUTZER=wamo-core
@@ -220,8 +230,8 @@ import sys
 sys.path.insert(0, sys.argv[1])
 import labor_daten as ld
 
-richtlinie = ld.Richtlinie(besitzer=None, verboten_modus=0) if sys.argv[3] == "probe" else ld.Richtlinie()
-d = ld.laden(sys.argv[2], richtlinie=richtlinie)
+richtlinie = ld.Richtlinie(besitzer=None, verboten_modus=0) if sys.argv[2] == "probe" else ld.Richtlinie()
+d = ld.laden(richtlinie=richtlinie)  # ohne Ordner: der Lader fragt WAMO_LABOR_DATEN, genau wie im Kern
 for name in ld.DATEIEN_ALLE:
     if name in d.pruefsummen:
         print("    " + name + ": gelesen, Prüfsumme " + d.pruefsummen[name])
@@ -234,27 +244,27 @@ PYTHON
   chmod 0644 "$STAGE/pruefer.py"
 }
 
-lader_pruefen() {   # $1 Ordner mit den Dateien: 0, wenn der Lader keine Datei ablehnt
+lader_pruefen() {   # $1 Ordner mit den Dateien, der Lader bekommt ihn über WAMO_LABOR_DATEN wie im Kern: 0, wenn er keine Datei ablehnt
   local modus=betrieb
   [ -z "$WURZEL" ] || modus=probe
-  als_kern "$LADER_PYTHON" "${PY_OPT[@]}" "$STAGE/pruefer.py" "$LADER_ORDNER" "$1" "$modus"
+  als_kern env "WAMO_LABOR_DATEN=$1" "$LADER_PYTHON" "${PY_OPT[@]}" "$STAGE/pruefer.py" "$LADER_ORDNER" "$modus"
 }
 
 # ---------------------------------------------------------------- Vorbereiten, Vergleichen
 staging() {   # Kopie der Lieferung in einem Wegwerf-Ordner (so wird geprüft, was danach installiert wird); die Zeilenenden werden auf LF gebracht
   local persona="$1" n
   lader_vorbereiten
-  mkdir "$STAGE/labor"
-  chmod 0755 "$STAGE/labor"
+  mkdir "$STAGE/daten"
+  chmod 0755 "$STAGE/daten"
   for n in "${ALLE[@]}"; do
-    tr -d '\r' < "$(quelle_datei "$n" "$persona")" > "$STAGE/labor/$n"
-    chmod 0644 "$STAGE/labor/$n"
+    tr -d '\r' < "$(quelle_datei "$n" "$persona")" > "$STAGE/daten/$n"
+    chmod 0644 "$STAGE/daten/$n"
   done
 }
 
 dateistand() {   # neu | geändert | unverändert
   if [ ! -f "$ZIEL/$1" ]; then echo neu
-  elif cmp -s "$STAGE/labor/$1" "$ZIEL/$1"; then echo unverändert
+  elif cmp -s "$STAGE/daten/$1" "$ZIEL/$1"; then echo unverändert
   else echo geändert; fi
 }
 
@@ -268,12 +278,13 @@ stand_gleich() {   # alle acht Dateien gleich der Lieferung, Rechte wie vorgeseh
   local n
   [ -d "$ZIEL" ] && [ ! -L "$ZIEL" ] && rechte_ok "$ZIEL" 755 || return 1
   for n in "${ALLE[@]}"; do
-    [ -f "$ZIEL/$n" ] && [ ! -L "$ZIEL/$n" ] && cmp -s "$STAGE/labor/$n" "$ZIEL/$n" && rechte_ok "$ZIEL/$n" 644 || return 1
+    [ -f "$ZIEL/$n" ] && [ ! -L "$ZIEL/$n" ] && cmp -s "$STAGE/daten/$n" "$ZIEL/$n" && rechte_ok "$ZIEL/$n" 644 || return 1
   done
 }
 
 ziel_pruefen() {   # nie in einen Link oder an die falsche Stelle schreiben
-  [ -d "$WURZEL/etc/wamo" ] && [ ! -L "$WURZEL/etc/wamo" ] || vorbedingung "$WURZEL/etc/wamo fehlt oder ist ein Link (der Kern ist hier nicht eingerichtet)."
+  [ -d "$ELTERN" ] && [ ! -L "$ELTERN" ] || vorbedingung "$ELTERN muss existieren und ein echter Ordner sein, kein Link (zuerst wamo-labor-einrichten.sh)."
+  [ -x "$CORE_ENV" ] || [ -n "$WURZEL" ] || vorbedingung "$CORE_ENV fehlt (zuerst wamo-core-einrichten.sh), ohne ihn lässt sich WAMO_LABOR_DATEN für den Kern nicht setzen."
   [ ! -L "$ZIEL" ] || vorbedingung "$ZIEL ist ein Link: nichts angefasst."
   [ ! -e "$ZIEL" ] || [ -d "$ZIEL" ] || vorbedingung "$ZIEL ist kein Ordner: nichts angefasst."
   local n
@@ -293,7 +304,8 @@ sichern() {   # $1 Endung des Ordnernamens (leer oder .vor-rueckweg): legt die S
   for n in "${ALLE[@]}"; do
     if [ -f "$ZIEL/$n" ] && [ ! -L "$ZIEL/$n" ]; then cp -p "$ZIEL/$n" "$SICHERUNG/$n"; i=$((i + 1)); fi
   done
-  printf 'Dateien vorher: %s\n' "$i" > "$SICHERUNG/VORHER"   # zuletzt: erst damit gilt die Sicherung als vollständig
+  # zuletzt: erst damit gilt die Sicherung als vollständig; die Zeile Ziel bindet sie an diesen Ort (eine Sicherung des früheren Ortes zählt nie)
+  printf 'Ziel: %s\nDateien vorher: %s\n' "$ZIEL" "$i" > "$SICHERUNG/VORHER"
   echo "  Sicherung des vorigen Stands: $SICHERUNG ($i Dateien)"
 }
 
@@ -312,11 +324,11 @@ wiederherstellen() {   # $1 Sicherungsordner: die acht Dateien wie dort, was dor
   rmdir "$ZIEL" 2>/dev/null || true   # nur, wenn nichts mehr darin liegt
 }
 
-letzte_sicherung() {   # Pfad der jüngsten vollständigen Sicherung (mit VORHER); ohne sie Exit 1
+letzte_sicherung() {   # Pfad der jüngsten vollständigen Sicherung für dieses Ziel (VORHER mit der Zeile Ziel); ohne sie Exit 1
   local d letzte=""
   [ -d "$SICHERUNG_BASIS" ] || return 1
   while IFS= read -r d; do
-    if [ -f "$SICHERUNG_BASIS/$d/VORHER" ]; then letzte="$d"; fi
+    if [ -f "$SICHERUNG_BASIS/$d/VORHER" ] && grep -qxF "Ziel: $ZIEL" "$SICHERUNG_BASIS/$d/VORHER"; then letzte="$d"; fi
   done < <(ls -1 "$SICHERUNG_BASIS" | grep -E '^[0-9]{8}-[0-9]{6}(-[0-9])?$' | sort || true)
   [ -n "$letzte" ] || return 1
   printf '%s\n' "$SICHERUNG_BASIS/$letzte"
@@ -326,9 +338,20 @@ installieren() {
   local n
   install -d -m 0755 "${OWNER[@]}" "$ZIEL"
   for n in "${ALLE[@]}"; do
-    install -m 0644 "${OWNER[@]}" "$STAGE/labor/$n" "$ZIEL/.$n.neu"
+    install -m 0644 "${OWNER[@]}" "$STAGE/daten/$n" "$ZIEL/.$n.neu"
     mv -f "$ZIEL/.$n.neu" "$ZIEL/$n"
   done
+}
+
+# ---------------------------------------------------------------- Einstellung des Kerns
+kern_einstellen() {   # genau eine Einstellung: WAMO_LABOR_DATEN, über wamo-core-env und stdin (nie über die Befehlszeile); startet nichts neu
+  echo "== Kern: WAMO_LABOR_DATEN=$KERN_DATEN_PFAD (über wamo-core-env)"
+  if [ "$TROCKEN" = ja ]; then plan "$CORE_ENV setzen: WAMO_LABOR_DATEN=$KERN_DATEN_PFAD (über stdin)"; return 0; fi
+  if [ ! -x "$CORE_ENV" ]; then echo "  Probelauf: kein wamo-core-env in der Wurzel, übersprungen."; return 0; fi
+  printf 'WAMO_LABOR_DATEN=%s\n' "$KERN_DATEN_PFAD" | "$CORE_ENV" setzen \
+    || fehler "WAMO_LABOR_DATEN ließ sich nicht setzen. Die Dateien sind eingerichtet und vom Lader geprüft, den Lauf wiederholen."
+  echo "  Die Einstellung gilt erst mit dem nächsten Kern-Release (sudo bash ~/wamo-infra/wamo-core-slots.sh umschalten-kern <release>)."
+  echo "  Der Kern wird hier nie neu gestartet. Bis dahin liest er den Standardort und läuft mit dem reinen Laborprompt."
 }
 
 # ---------------------------------------------------------------- Befehle
@@ -341,17 +364,19 @@ einrichten() {
   lader_suchen || vorbedingung "$LADER_FEHLER. Nichts wurde geändert."
   staging "$PERSONA"
   echo "== Lieferung mit dem echten Lader prüfen (Wegwerf-Ordner, nichts am Ziel geändert)"
-  lader_pruefen "$STAGE/labor" || fehler "Der Lader lehnt die Lieferung ab (siehe oben). Nichts wurde geändert."
+  lader_pruefen "$STAGE/daten" || fehler "Der Lader lehnt die Lieferung ab (siehe oben). Nichts wurde geändert."
   echo "== Ziel $ZIEL"
   for n in "${ALLE[@]}"; do echo "  $n: $(dateistand "$n")"; done
   if stand_gleich; then
     echo "  Alles unverändert, nichts zu tun."
+    kern_einstellen
     return 0
   fi
   if [ "$TROCKEN" = ja ]; then
     plan "Sicherung des vorigen Stands nach $SICHERUNG_BASIS/<Zeit>"
     plan "Ordner $ZIEL (root:root 0755) und acht Dateien (root:root 0644) schreiben, Fassung der Regeln: $PERSONA"
     plan "Lader am Ziel prüfen, bei Ablehnung alles zurücknehmen"
+    kern_einstellen
     echo "  Trockenlauf: es wurde nichts geändert."
     return 0
   fi
@@ -363,7 +388,8 @@ einrichten() {
     wiederherstellen "$SICHERUNG"
     fehler "Zurückgenommen auf den Stand vor dem Lauf (Sicherung $SICHERUNG)."
   fi
-  echo "  Eingerichtet. Der Kern liest die Dateien beim nächsten Sitzungsstart, ein Neustart ist nicht nötig."
+  echo "  Eingerichtet. Der Kern liest die Dateien bei jedem Sitzungsstart, sobald er den Ordner kennt."
+  kern_einstellen
 }
 
 zeile_status() {   # eine Datei: Name, Prüfsumme, Vergleich mit der Lieferung, Rechte
@@ -383,6 +409,10 @@ status() {
   if [ -d "$ZIEL" ]; then echo "  Ordner: $ZIEL ($(stat -c 'Rechte %a, Besitzer %U:%G' "$ZIEL"))"; else echo "  Ordner $ZIEL fehlt"; fi
   for n in "${ALLE[@]}"; do zeile_status "$n"; done
   echo "  Fassung der Regeln: $(aktive_persona)"
+  echo "== Einstellung des Kerns (nur gesetzt oder nicht, nie der Wert)"
+  if [ -x "$CORE_ENV" ]; then
+    "$CORE_ENV" liste 2>/dev/null | grep -E '^WAMO_LABOR_DATEN:' | sed 's/^/  /' || echo "  WAMO_LABOR_DATEN: nicht gesetzt"
+  else echo "  wamo-core-env nicht vorhanden"; fi
   echo "== Urteil des Laders"
   if [ ! -d "$ZIEL" ]; then echo "  nichts zu prüfen"
   elif lader_suchen; then

@@ -1,8 +1,9 @@
 # Labor-Daten des Testlabors
 
 Die Dateien in diesem Ordner sind der änderbare Inhalt des WAMO-Testlabors vom 28.11.2026: Regeln, Kontakte, Vorlagen, Fachwissen und Schlusstext.
-Sie liegen auf Sokrates-2 unter `/etc/wamo/labor/` und werden vom Kern bei jedem Sitzungsstart gelesen (`voice-core/labor_daten.py`). Eine Änderung
-gilt deshalb ab der nächsten Sitzung, ohne Release und ohne Neustart. Konzept: `docs/testlabor-wamo.md`, Abschnitte 3.6 und 3.8. Diese README wird
+Sie liegen auf Sokrates-2 unter `/etc/wamo-labor/daten/` und werden vom Kern bei jedem Sitzungsstart gelesen (`voice-core/labor_daten.py`). Eine Änderung
+gilt deshalb ab der nächsten Sitzung, ohne Release und ohne Neustart. Der Ort ist nicht `/etc/wamo`, denn der Benutzer `wamo-core` kann `/etc/wamo` (root:wamo 0750, dort liegen
+die Geheimnisse) nicht durchqueren und könnte darunter nichts lesen. Eine ACL oder Rechteänderung an `/etc/wamo` gibt es dafür nicht. Konzept: `docs/testlabor-wamo.md`, Abschnitte 3.6 und 3.8. Diese README wird
 nie auf den Server installiert und nie vom Kern gelesen.
 
 ## Dateien und Zuständigkeiten
@@ -71,7 +72,9 @@ muss die Kontakte anpassen. Die Anmelde-Adressen der Laborprofile (`@wamo.test`)
 
 ## Einrichten auf Sokrates-2
 
-Skript: `infra/sokrates2/wamo-labor-daten-einrichten.sh`, nur als root (sudo), wiederholbar, ändert nie den Kern und startet nichts neu.
+Skript: `infra/sokrates2/wamo-labor-daten-einrichten.sh`, nur als root (sudo), wiederholbar, startet nichts neu. Voraussetzung: `/etc/wamo-labor` besteht als echter Ordner
+(zuerst `wamo-labor-einrichten.sh`). Das Skript legt `/etc/wamo-labor/daten` an (root:root 0755, Dateien 0644) und setzt danach für den Kern genau eine Einstellung,
+`WAMO_LABOR_DATEN=/etc/wamo-labor/daten`, über `wamo-core-env`. Sie gilt erst mit dem nächsten Kern-Release (Slot-Wechsel), der Kern wird nie neu gestartet.
 
 ```
 ssh wamo-sokrates2 "rm -rf ~/wamo-infra" && scp -r infra/sokrates2 wamo-sokrates2:wamo-infra && ssh wamo-sokrates2 "chmod -R go-w ~/wamo-infra"
@@ -81,8 +84,9 @@ ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-labor-daten-einrichten.sh status
 ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-labor-daten-einrichten.sh rueckweg"
 ```
 
-Der Lader braucht `labor_daten.py` aus einem Release des Kerns mit dessen `venv` (`--release <Name>`, sonst das jüngste Release mit dieser Datei). Fehlt `loguru`, bricht
-das Skript vor jeder Änderung mit einer klaren Meldung ab. Sicherungen liegen unter `/var/backups/wamo-labor-daten/<JJJJMMTT-HHMMSS>/`, `rueckweg` stellt die letzte zurück.
+Der Lader braucht `labor_daten.py` aus einem Release des Kerns mit dessen `venv` (`--release <Name>`, sonst das jüngste Release mit dieser Datei) und läuft als `wamo-core`,
+mit dem Ordner aus `WAMO_LABOR_DATEN` wie im Kern. Fehlt `loguru`, bricht
+das Skript vor jeder Änderung mit einer klaren Meldung ab. Sicherungen liegen unter `/var/backups/wamo-labor-daten/<JJJJMMTT-HHMMSS>/`, `rueckweg` stellt die letzte Sicherung für diesen Ort zurück (Sicherungen des früheren Ortes zählen nicht).
 
 ---
 
