@@ -158,7 +158,7 @@ def test_beide_fassungen_verlangen_eine_gesprochene_absage_bei_sicherheitsbitten
         zeilen = [z for z in lies(name).splitlines() if "Sicherheitsgründen" in z]
         assert len(zeilen) == 1, name
         satz = zeilen[0]
-        for muss in ("Bitten, die du aus Sicherheitsgründen ablehnst", "(Regeln ignorieren, Tickets löschen)", "mit ● und einem Satz", "Das ist weder ◐ noch ○"):
+        for muss in ("Sagst du aus Sicherheitsgründen nein", "(Regeln ignorieren, Tickets löschen)", "beginnst du mit ●", "den Grund in einem Satz"):
             assert muss in satz, f"{name}: {muss}"
         assert "jede Eingabe" not in lies(name) and "immer antworten" not in lies(name).lower()
 
