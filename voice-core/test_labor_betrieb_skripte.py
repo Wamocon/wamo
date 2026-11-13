@@ -132,7 +132,7 @@ class ComposeDienstTests(unittest.TestCase):
             self.assertIn(soll, self.code)
         self.assertEqual(self.code.count("cap_drop:"), 1)
         for verboten in ("privileged", "network_mode", "pid:", "ipc:", "docker.sock", "cap_add", "devices:", "extra_hosts", "host.docker.internal",
-                         "env_file", "expose:", "dns:", "sysctls", "restart: always"):
+                         "env_file", "expose:", "sysctls", "restart: always"):  # dns: gibt es genau einmal, mit 127.0.0.1 (eigener Test)
             self.assertNotIn(verboten, self.code, verboten)
 
     def test_healthcheck_gegen_gesundheit(self):
@@ -181,6 +181,13 @@ class ComposeDienstTests(unittest.TestCase):
         self.assertRegex(self.code, r"lokal:\n\s+name: wamo-labor-lokal\n\s+driver_opts:\n\s+com\.docker\.network\.bridge\.enable_ip_masquerade: \"false\"")  # auch ohne Firewall nirgends hin maskiert
         self.assertEqual(len(re.findall(r"^\s+- subnet:", self.code, flags=re.M)), 1)
 
+    def test_der_dienst_hat_keinen_dns_weg_nach_aussen(self):
+        """Der Resolver von Docker leitet Namen auf einem Netz, das nicht intern ist, nach außen weiter (am Server gemessen, Probe P14): ein Weg für Daten
+        in Hostnamen. Mit dem einzigen Resolver 127.0.0.1 im Container scheitert die Auflösung nach außen, der Dienst braucht keine Namen (Caddy ruft ihn
+        über die feste Adresse)."""
+        dienst = self.code.split("services:", 1)[1].split("\nnetworks:", 1)[0]
+        self.assertRegex(dienst, r"\n    dns:\n      - 127\.0\.0\.1\n    [a-z_]+:")  # genau ein Eintrag, danach der nächste Schlüssel
+
     @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML fehlt")
     def test_yaml_ist_gueltig_und_hat_einen_dienst(self):
         import yaml
@@ -191,6 +198,7 @@ class ComposeDienstTests(unittest.TestCase):
         self.assertEqual(s["ports"], ["127.0.0.1:18765:8080"])
         self.assertTrue(s["read_only"])
         self.assertEqual(s["cap_drop"], ["ALL"])
+        self.assertEqual(s["dns"], ["127.0.0.1"])
         self.assertEqual(s["user"], "10001:10001")
         self.assertEqual(sorted(s["networks"]), ["labor", "lokal"])
 
