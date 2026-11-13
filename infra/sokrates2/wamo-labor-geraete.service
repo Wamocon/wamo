@@ -1,0 +1,48 @@
+# WAMO Labor: Betreuer-Geräte über ihren Gerätenamen zulassen (ein Lauf des Aktualisierers).
+# Installiert durch infra/sokrates2/wamo-labor-geraete-einrichten.sh nach /etc/systemd/system/ (der Platzhalter __CADDY_DIR__ wird dort durch den Ordner von
+# wamo-caddy ersetzt, Standard /home/wamocon/wamo-tls/caddy). Der Zeitgeber wamo-labor-geraete.timer ruft ihn jede Minute auf.
+# Läuft als root: Der Aktualisierer schreibt die Site-Datei im Ordner etc/kern von wamo-caddy (Besitzer wamocon) und spricht über den Docker-Socket mit wamo-caddy (caddy adapt
+# im Wegwerf-Container, caddy reload). Gehärtet, soweit docker, nmblookup und avahi-resolve es zulassen: Das Dateisystem ist bis auf drei Orte schreibgeschützt (der Laufzeitordner
+# /run/wamo-labor-geraete mit Sperre und Wegwerf-Ordner der Prüfung, der Zustandsordner /var/lib/wamo-labor-geraete mit dem Stand, und etc/kern von wamo-caddy mit der Site),
+# /home ist nur lesbar, /etc/wamo-labor wird nur gelesen (die Token dort sind für die Unit unsichtbar), keine neuen Rechte, nur drei Fähigkeiten (Besitzer und Rechte setzen,
+# fremde Dateien lesen und schreiben), keine neuen Namensräume, nur Unix-Sockets, IPv4, IPv6 und Netlink (die Namensauflösung im LAN braucht Netz). Das Journal trägt die
+# Kennung wamo-labor-geraete: Dort steht nur, was sich ändert (Name und Adresse), nie ein Token.
+[Unit]
+Description=WAMO Labor: Betreuer-Geräte über ihren Gerätenamen zulassen
+After=docker.service avahi-daemon.service
+
+[Service]
+Type=oneshot
+Environment=WAMO_LABOR_CADDY_DIR=__CADDY_DIR__
+ExecStart=/usr/local/sbin/wamo-labor-geraete-aktualisieren
+SyslogIdentifier=wamo-labor-geraete
+RuntimeDirectory=wamo-labor-geraete
+StateDirectory=wamo-labor-geraete
+# der Ordner bleibt zwischen zwei Läufen bestehen: Die Sperrdatei darin (flock) hält auch einen Lauf von Hand und einen Lauf der Unit auseinander
+RuntimeDirectoryPreserve=yes
+# schlimmste Dauer eines Laufs: Auflösung von 16 Namen mit höchstens 4 gleichzeitig (4 mal 16 Sekunden), zwei Proben von 55443 bis 55446 (je 4 Ports mal 3 Versuche mal 7 Sekunden:
+# nach dem Laden und nach der Rücknahme) und die Prüfung der Site: unter 300 Sekunden, damit nie ein SIGTERM mitten in der Rücknahme kommt (ein Test rechnet nach)
+TimeoutStartSec=300
+Nice=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__CADDY_DIR__/etc/kern
+InaccessiblePaths=-/etc/wamo-labor/kern-token -/etc/wamo-labor/betreuer-token
+UMask=0077
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+MemoryMax=256M
+TasksMax=512

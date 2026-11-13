@@ -31,6 +31,7 @@ CADDY_DIR="${WAMO_LABOR_CADDY_DIR:-/home/wamocon/wamo-tls/caddy}"
 SITE_DATEI="$CADDY_DIR/etc/kern/wamo-labor.caddy"
 WORT_SOLL="LABOR-LOESCHEN"
 CADDY_PORTS="55443 55444 55445 55446"   # die Dienste hinter wamo-caddy
+SPERRE="$W/run/wamo-labor-geraete/lock"  # die gemeinsame Sperre mit dem Aktualisierer der Betreuer-Geräte (wamo-labor-geraete-aktualisieren.sh)
 START=""
 
 TROCKEN=nein
@@ -172,6 +173,12 @@ daten_loeschen() {
   bash "$HERE/wamo-labor-loeschlauf.sh" --vor-der-frist --bestaetigung "$WORT" "${zusatz[@]}"
 }
 
+# Der Rückweg ändert die Site und lädt Caddy: Das geschieht unter derselben Sperre wie der Lauf des Aktualisierers (im Trockenlauf keine Sperre)
+if [ "$TROCKEN" = nein ]; then
+  mkdir -p "$(dirname "$SPERRE")"
+  exec 9> "$SPERRE"
+  flock -w 60 9 || fehler "Ein Lauf des Aktualisierers der Betreuer-Geräte hält die Sperre $SPERRE: Es wurde nichts geändert, bitte in einer Minute wiederholen."
+fi
 START="$(date +%s)"
 dienst_entfernen
 site_entfernen

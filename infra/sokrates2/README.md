@@ -1414,6 +1414,8 @@ Kern     ──HTTP 127.0.0.1:18765 (Loopback)───────────�
 | Labor-Daten des Kerns (Regeln, Kontakte, Vorlagen): Unterordner `/etc/wamo-labor/daten`, Abschnitt 20 | `wamo-labor-daten-einrichten.sh` (setzt Dateien und `WAMO_LABOR_DATEN`, fasst die Token und Adressdateien nicht an) |
 | Rauchtest (20 Proben) und seine Attrappe für den Lauf ohne Server (`--attrappe`) | `wamo_labor_rauchtest.py`, `wamo_labor_rauchtest_attrappe.py` |
 | Tests der Skripte, der Compose-Dateien, der Site und des Rauchtests (Attrappen) | `voice-core/test_labor_betrieb_skripte.py` |
+| Betreuer-Geräte über den Gerätenamen zulassen (Aktualisierer, Unit, Zeitgeber, Einrichten, Rückweg), Unterabschnitt 19.1 | `wamo-labor-geraete-einrichten.sh`, `wamo-labor-geraete-aktualisieren.sh`, `wamo-labor-geraete.service`, `wamo-labor-geraete.timer`, `wamo-labor-site.sh` (gemeinsame Einsetz-Logik der Site) |
+| Tests dazu (Attrappen für Namensauflösung, Docker, systemd) | `voice-core/test_labor_geraete_skripte.py` |
 
 **Einrichten (Handgriffe von Niko, nichts davon läuft ohne ihn).**
 
@@ -1449,7 +1451,7 @@ beschreibbar, keine Links), auch der Unterbefehl `pruefen`.
 **Adressen.** Der Server selbst (Loopback, das Gateway 172.24.0.1 von `wamo-caddy_default` unter dem Caddy Verbindungen des Hosts sieht, und 192.168.178.136)
 erreicht immer alles. Dazu zwei Listen in `/etc/wamo-labor` (nach dem ersten Lauf als Vorlage mit Kommentaren, eine Adresse oder ein Netz je Zeile):
 `betreuer-adressen` (wer `/betreuer` und `/api/betreuer/` erreicht, Netze nur von /24 bis /32, nach einer Änderung `einrichten` erneut ausführen, dann setzt das
-Skript die Adressen in die Site ein) und `plaetze-adressen` (Quellen für 55447 in der Firewall, Frage Q13: bis die Liste da ist, gilt das Büro-LAN; nach einer
+Skript die Adressen in die Site ein; Betreuer-Geräte ohne feste Adresse stehen mit ihrem Namen in `betreuer-geraete`, Unterabschnitt 19.1) und `plaetze-adressen` (Quellen für 55447 in der Firewall, Frage Q13: bis die Liste da ist, gilt das Büro-LAN; nach einer
 Änderung `sudo systemctl reload wamo-firewall`). `/api/kern/` erreicht von außen nie jemand, `/gesundheit` nur der Server selbst. Alles außerhalb der Pfadliste
 (`/`, `/board`, `/datenschutz`, `/web/<Datei>`, `/api/browser/<Name>`, Betreuer-Pfade, `/gesundheit`) beantwortet Caddy mit 404.
 
@@ -1506,6 +1508,113 @@ Sicherungen des Einrichtens (`/var/backups/wamo-labor`) enthalten weder Token no
    neu angelegt wird. Der Löschlauf tut das bewusst nicht (es legte 55443 bis 55446 lahm) und nennt es im Nachweis. Vorschlag: das nächste ohnehin nötige Neuanlegen von `wamo-caddy` nach dem Labor
    (zum Beispiel mit dem nächsten Compose-Update, in einer ruhigen Minute, frühestens nach dem 11.12.2026) dafür nutzen.
 8. **Der Ausgang hängt allein an `wamo-firewall`.** Es gibt keine zweite Schicht außer der abgeschalteten Maskierung. Bei `systemctl stop wamo-firewall` ist er offen (siehe oben): vorher den Dienst stoppen.
+
+### 19.1 Betreuer-Geräte über den Gerätenamen zulassen (vorbereitet am 13.11.2026, nicht ausgerollt)
+
+Ziel: Für die Betreuer-PCs stehen keine festen Adressen im Router. Caddy kann keine Namen prüfen (`remote_ip` kennt nur Adressen), deshalb löst ein kleiner Aktualisierer die Gerätenamen auf
+und setzt die gefundenen Adressen in die Caddy-Site ein. Die festen Adressen aus `betreuer-adressen` gelten weiter (wer ein Gerät mit fester Adresse hat, trägt es dort ein).
+
+| Baustein | Datei |
+| --- | --- |
+| Liste der Gerätenamen (eine Zeile je Name, Kommentare mit `#`), Vorlage legt das Einrichten an, falls sie fehlt | `/etc/wamo-labor/betreuer-geraete` |
+| Marke des letzten Versuchs, eine neue Zulassung zu laden (auch nach einem Misserfolg), im Zustandsordner | `/var/lib/wamo-labor-geraete/betreuer-geraete.versuch` |
+| Zuletzt eingesetzter Stand (Name, Adresse, Zeitpunkt der letzten Antwort, dazu im Kopf die Zeitpunkte des letzten Schreibens, Ladens und Warnens), root 0644, schreibt nur der Aktualisierer, liegt im Zustandsordner der Unit (`StateDirectory`), nicht unter `/etc/wamo-labor` | `/var/lib/wamo-labor-geraete/betreuer-geraete.stand` |
+| Gemeinsame Sperre (`flock`) für alle Skripte, die die Site oder `wamo-caddy` ändern: Aktualisierer, `wamo-labor-einrichten.sh`, `wamo-labor-rueckweg.sh`, Einrichten und Rückweg der Betreuer-Geräte | `/run/wamo-labor-geraete/lock` (Laufzeitordner der Unit, dort auch der Wegwerf-Ordner der Prüfung) |
+| Aktualisierer (nur root), installiert als `/usr/local/sbin/wamo-labor-geraete-aktualisieren` | `wamo-labor-geraete-aktualisieren.sh` |
+| Unit (`Type=oneshot`, gehärtet: `ProtectSystem=strict`, `ProtectHome=read-only`, schreibbar nur Laufzeitordner, Zustandsordner und `etc/kern` von `wamo-caddy`, `InaccessiblePaths` für die beiden Token, `UMask=0077`, `RestrictNamespaces`, `TimeoutStartSec=300` über der schlimmsten Dauer eines Laufs, `TasksMax=512`) und Zeitgeber (30 s nach dem Start, danach jede Minute) | `wamo-labor-geraete.service`, `wamo-labor-geraete.timer` |
+| Einrichten, `status`, `rueckweg`, `--trocken` | `wamo-labor-geraete-einrichten.sh` |
+| Gemeinsame Einsetz-Logik der Site (Adressliste, Vorlage, Prüfung mit `caddy adapt`, Reload, Prüfung der Ports), geladen von `wamo-labor-einrichten.sh`, dem Aktualisierer und dem Rückweg | `wamo-labor-site.sh` (am Server unter `/usr/local/lib/wamo-labor-geraete/`) |
+| Tests (Attrappen für `nmblookup`, `avahi-resolve`, `docker`, `curl`, `flock`, `logger`, `systemctl`) | `voice-core/test_labor_geraete_skripte.py` |
+
+**Was ein Lauf tut (jede Minute, Journal-Kennung `wamo-labor-geraete`).** Namen und feste Adressen lesen und streng prüfen (erlaubt sind 1 bis 15 Zeichen aus A-Z, a-z, 0-9 und Bindestrich,
+am Anfang kein Bindestrich, höchstens 16 Namen). Ein ungültiger Wert wird klar gemeldet (Ausgang 1, die Zeile mit Nummer, der Wert maskiert und auf 40 Zeichen gekürzt) und nie stillschweigend
+weggelassen. **Der Entzug hängt aber nicht an gültigen Eingaben:** Bei einem Fehler in `betreuer-geraete` oder `betreuer-adressen` streicht der Lauf trotzdem abgelaufene Einträge (12 Stunden) und
+entfernte Namen und setzt die Site neu (nur Entzug). Nur neue Zulassungen halten an; Adressen, die schon zugelassen sind und weiter antworten, bleiben. Dann die Sperre mit `flock` (läuft schon ein
+Lauf oder ändert ein Einrichten gerade die Site, endet dieser ohne Änderung); unter der Sperre räumt der Lauf Reste früherer, abgebrochener Läufe weg (Wegwerf-Ordner `.arbeit.*` im Laufzeitordner,
+halb geschriebene `betreuer-geraete.stand.neu.*`), nie die Sperrdatei. Die Namen werden mit höchstens 4 gleichzeitigen Auflösungen über NetBIOS (`nmblookup -- NAME`) und mDNS
+(`avahi-resolve -4 -n -- NAME.local`) aufgelöst (`LC_ALL=C`, der Name nach `--`, nie als Option gelesen); beide Antworten gelten zusammen (Vereinigung), nur IPv4-Adressen im Büro-LAN
+192.168.178.0/24 (.1 bis .254) zählen, höchstens 4 je Name. Antwortet ein Name mit mehr als 4 Antworten, ist das verdächtig (Flut oder Täuschung): Es wird nichts Neues zugelassen, schon zugelassene,
+nicht abgelaufene Adressen, die weiter antworten, werden bestätigt (ihr Zeitpunkt der letzten Antwort wird erneuert, ein Fremdgerät friert das echte Gerät so nicht ein), und der Lauf warnt höchstens
+einmal je Stunde im Journal. Das DNS der Fritz!Box wird nie gefragt. Gemessen am Server für den PC `WMC-H-04-NS`: Das DNS lieferte veraltete Adressen (.67 und .123), mDNS lieferte .67,
+NetBIOS lieferte .78 und dazu virtuelle 172.x-Adressen (die der Filter verwirft); die Quellen widersprechen sich, deshalb die Vereinigung. Danach der Vergleich mit dem Stand: Antwortet ein Gerät,
+ersetzen seine neuen Adressen die alten. Antwortet es nicht (PC im Ruhezustand), bleibt die zuletzt gute Adresse höchstens 12 Stunden nach der letzten Antwort zugelassen, danach fällt sie weg. Ein Name,
+der aus der Liste verschwindet, verliert seine Adressen sofort. Zeitpunkte im Stand (und in seinem Kopf), die in der Zukunft liegen (Zeitsprung der Uhr, Fälschung), zählen bis 5 Minuten als jetzt, darüber als
+abgelaufen; eine führende Null wird nie oktal gelesen. **Die Site wird neu zusammengesetzt, wenn sich die Menge der Adressen ändert oder die installierte Site von dem abweicht, was aus Vorlage, festen Adressen und
+Stand entstünde** (so zieht der nächste Lauf nach, wenn ein Lauf nach Install und Reload, aber vor dem Schreiben des Standes abbrach, und auch geänderte feste Adressen; Änderungen von Hand an der Site
+werden überschrieben). Sie wird mit `caddy adapt` in einem Wegwerf-Container ohne Netz geprüft (Image-ID des laufenden `wamo-caddy`, `--pull=never`, `--pids-limit 64`, `--memory 256m`,
+`--network none`), installiert und mit `caddy reload` ohne Ausfall geladen; danach müssen 55443 bis 55446 antworten. Eine neue Zulassung wartet, bis der letzte Versuch, eine neue Zulassung zu laden,
+mindestens 3 Minuten zurückliegt (Marke `betreuer-geraete.versuch`, sie zählt auch nach einem Misserfolg: ein dauerhafter Fehler der Prüfung löst nicht jede Minute Prüfung, Installation, Reload und
+Rücknahme aus). Bis dahin gilt die Schnittmenge aus altem und neuem Stand: Ein Entzug wartet nie, nur das Neue wartet. Schlägt eine Stufe fehl, bleibt die vorherige Site aktiv (nach dem Installieren kommt sie
+zurück und wird neu geladen), der Stand bleibt unverändert und der Lauf endet mit Ausgang 1. Bleibt alles gleich, gibt es weder Prüfung noch Reload noch Ausgabe; der Stand wird dann höchstens alle
+5 Minuten neu geschrieben (der Zeitpunkt der letzten Antwort zieht nach). Das Journal bekommt nur Änderungen, jeweils mit Name und Adresse (`Gerät NAME: ADRESSE zugelassen` oder `... entfernt (Grund)`),
+nie ein Token (der Aktualisierer liest keines, die Unit sperrt die beiden Token-Dateien). Er fasst weder den Container des Labor-Dienstes noch die Firewall noch den Kern an. Beim Einrichten von
+`wamo-labor-einrichten.sh` setzt dieses Skript die Adressen aus dem Stand mit ein (nur Einträge bis 12 Stunden), damit sie bei einem erneuten Einrichten nicht für eine Minute wegfallen, und es
+zieht Vorlage und Bibliothek des Aktualisierers nach, falls er eingerichtet ist (sonst setzte er bei der nächsten Änderung eine veraltete Vorlage ein). Es liest den Stand erst unter der gemeinsamen Sperre,
+damit es keine frische Site mit altem Stand überschreibt. Dasselbe gilt für `wamo-labor-rueckweg.sh` und das Einrichten und den Rückweg der Betreuer-Geräte: Alle nehmen vor jeder Änderung der Site die
+Sperre `/run/wamo-labor-geraete/lock` und geben auf, wenn sie sie nicht bekommen (Meldung, nichts geändert).
+
+**Einrichten (Handgriffe von Niko).**
+
+```bash
+# Ablage wie in Abschnitt 19 (infra/sokrates2 nach ~/wamo-infra, chmod -R go-w), dann:
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-labor-geraete-einrichten.sh einrichten --trocken"   # nur anzeigen
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-labor-geraete-einrichten.sh einrichten"
+ssh sokrates2 "sudo nano /etc/wamo-labor/betreuer-geraete"                                      # ein Gerätename je Zeile, gilt nach höchstens einer Minute
+ssh sokrates2 "sudo bash ~/wamo-infra/wamo-labor-geraete-einrichten.sh status"                  # nur Namen, Adressen und Zustände
+ssh sokrates2 "sudo /usr/local/sbin/wamo-labor-geraete-aktualisieren --trocken"                 # Auflösung und geplante Änderung ansehen, ohne etwas zu ändern
+ssh sokrates2 "journalctl -t wamo-labor-geraete --since today"                                  # die Änderungen
+```
+
+`einrichten` prüft vorab die Werkzeuge (`docker`, `flock`, `timeout`, `nmblookup`, `avahi-resolve`, `systemctl`, `logger`, `curl`), dass `wamo-caddy` läuft, die Site besteht und beide Listen
+gültig sind (`avahi-daemon` aus ist nur eine Warnung), sichert den vorigen Stand unter `/var/backups/wamo-labor/<JJJJMMTT-HHMMSS>/` (ohne Token), installiert Aktualisierer, Bibliothek, Vorlage,
+Unit und Timer (der Ordner von `wamo-caddy` steht in der Unit), legt `betreuer-geraete` als Vorlage an, falls sie fehlt, aktiviert den Timer (`enable` ohne `--now`), lässt die Unit einmal laufen
+(`systemctl start`, das prüft auch die Härtung der Unit) und startet erst danach den Timer. Sicherung, Installation und Aktivierung laufen unter der gemeinsamen Sperre, der Prüflauf nimmt sie danach selbst.
+Scheitert ein Schritt, auch der Prüflauf, nimmt es die Installation zurück (vorige Fassungen aus der Sicherung, Neues wird entfernt, der Timer geht aus, wenn er vorher nicht lief, und auch Site und Stand
+kommen aus der Sicherung zurück, mit Reload). Der Zustandsordner `/var/lib/wamo-labor-geraete` entsteht beim Einrichten (und beim ersten Lauf durch die Unit).
+**Rückweg:** `sudo bash ~/wamo-infra/wamo-labor-geraete-einrichten.sh rueckweg [--trocken]` wartet auf einen laufenden Lauf (Sperre, höchstens 60 Sekunden, nie ein Abbruch; bekommt er sie nicht, ist nichts
+geändert und der Timer läuft weiter), schaltet dann den Timer ab, stellt die Site aus `betreuer-adressen` allein wieder her (Prüfung mit `caddy adapt`, `caddy reload`, Ports; ein Tippfehler in
+`betreuer-adressen` blockiert das nicht: Es zählen nur die gültigen Zeilen, also enger, mit Meldung) und entfernt Timer, Unit, Aktualisierer, Bibliothek, Stand (samt `betreuer-geraete.stand.neu.*` und der Marke
+`betreuer-geraete.versuch`), den Zustandsordner und die Reste im Laufzeitordner. Die Sperrdatei bleibt immer (eine gelöschte Datei ließe zwei Läufe mit verschiedenen Dateien sperren). Scheitert die Site,
+bleibt alles Übrige für den zweiten Versuch, der Timer wird wieder eingeschaltet (der 12-Stunden-Entzug läuft weiter) und der Rückweg endet mit Ausgang ungleich 0; nach der Behebung den Rückweg erneut
+ausführen. `betreuer-geraete`, `betreuer-adressen` und die Sicherungen unter `/var/backups/wamo-labor` bleiben (der Inhalt gehört dem Betreiber). Probelauf ohne root in den Tests mit
+`WAMO_LABOR_GERAETE_WURZEL`.
+
+**Grenzen (ehrlich benannt).**
+
+1. **Namensauflösung im LAN ist nicht kryptografisch.** Ein fremdes Gerät im Büro-LAN könnte einen Namen vortäuschen (NetBIOS und mDNS beantwortet jeder) und so `/betreuer` und `/api/betreuer/`
+   erreichen. Der Betreuer-Token bleibt die eigentliche Absicherung: Ohne ihn hilft die Adresse nicht. Die Liste der zugelassenen Namen ist klein und gehört dem Betreiber.
+2. **Eine neue Adresse gilt frühestens mit dem nächsten Lauf**, also nach höchstens etwa einer Minute (beim Systemstart 30 Sekunden nach dem Start), und frühestens 3 Minuten nach dem letzten Versuch, eine neue
+   Zulassung zu laden. Ein Entzug wartet nie (in der Zwischenzeit gilt nur die Schnittmenge aus altem und neuem Stand).
+3. **NetBIOS und mDNS erreichen nur Windows-, Mac- und Linux-Geräte im selben Netz.** Ein Tablet oder Handy, das beides nicht beantwortet, braucht eine feste Adresse in `betreuer-adressen`
+   (ein Gerät, das nie antwortet, bekommt nie eine Adresse; der Aktualisierer meldet das nicht jede Minute, `status` zeigt den Stand).
+4. **Die Firewall kennt keine Namen.** `plaetze-adressen` (Quellen für 55447 in `wamo-firewall`) bleibt eine Adressliste: Mit Einträgen müsste ein Betreuer-PC dort mit einer Adresse oder dem Büro-/24
+   stehen, ohne Einträge gilt das Büro-LAN und es gibt keine Lücke durch wechselnde Adressen. Wer keine festen Adressen will, lässt die Liste leer.
+5. **Ein PC im Ruhezustand** bleibt bis zu 12 Stunden mit seiner zuletzt guten Adresse zugelassen. Hat in dieser Zeit ein anderes Gerät dieselbe Adresse bekommen (DHCP), gilt die Zulassung für dieses,
+   bis der Name wieder antwortet oder die Frist endet. Auch hier hält der Betreuer-Token.
+6. **Höchstens 16 Namen und 4 Adressen je Name.** Mehr als 16 Namen sind ein Fehler (die ersten 16 gelten, neue Zulassungen halten an). Antwortet ein Name mit mehr als 4 Antworten, wird nichts Neues zugelassen,
+   schon zugelassene Adressen, die weiter antworten, werden bestätigt (Warnung höchstens einmal je Stunde): So verdrängt eine Flut von Antworten die echte Adresse nie und friert sie auch nicht ein,
+   aber ein Gerät, das dauerhaft mit mehr als 4 Adressen antwortet (viele virtuelle Adapter im Büro-LAN), wird nie neu zugelassen und braucht eine feste Adresse in `betreuer-adressen`.
+7. **Die Site gehört dem Aktualisierer, sobald er eingerichtet ist.** Ändern sich die festen Adressen in `betreuer-adressen`, zieht der nächste Lauf sie nach (die Site weicht dann von der
+   Vorlage ab); eine Änderung der Site von Hand wird mit dem nächsten Lauf überschrieben. Eine geänderte Vorlage kommt über `wamo-labor-einrichten.sh einrichten` (es zieht Vorlage und Bibliothek nach).
+8. **Die 12-Stunden-Frist gilt nur, solange die Läufe gelingen.** Endet ein Lauf mit einem Fehler (ungültiger Name in `betreuer-geraete`, Caddy nicht erreichbar, Prüfung der Site gescheitert) oder
+   steht der Timer, ändert sich die Site nicht: Auch eine abgelaufene Adresse bleibt dann bis zum nächsten erfolgreichen Lauf zugelassen. Der Fehler steht im Journal, `status` zeigt `letzter Lauf: failed`,
+   `systemctl --failed` nennt die Unit. Ein ungültiger Name wird jeden Lauf gemeldet (Ausgang 1), damit nie ein Gerät stillschweigend fehlt; der Entzug läuft trotzdem weiter.
+9. **Reihenfolge beim Abbau.** Vor `wamo-labor-rueckweg.sh` zuerst den Rückweg dieses Unterabschnitts ausführen (`wamo-labor-geraete-einrichten.sh rueckweg`): Ohne die Site meldet der Aktualisierer
+   bei jeder Änderung eines Geräts, dass sie fehlt. Er legt die Site nie selbst an.
+10. **Links im Baum von `wamo-caddy` (Besitzer `wamocon`).** Der Aktualisierer läuft als root: Im Wegwerf-Ordner der Prüfung fallen symbolische Links weg (`find -type l -delete`), `chmod` läuft nur über
+    `find -type f` und `-type d`, und die Site selbst darf kein Link sein (sonst Abbruch ohne Änderung). Zwischen dem Entfernen der Links und `chmod` bleibt ein kurzes Zeitfenster, in dem `wamocon` einen Link
+    anlegen könnte (die Rechtsfolge `chmod` auf eine fremde Datei würde nur Rechte, nie Inhalt ändern); ist `etc` im Baum von `wamo-caddy` selbst ein Link, folgt `cp -a` ihm. Beides ist eine bekannte Grenze
+    (wer `wamocon` ist, hat ohnehin die Site in der Hand); die Unit macht außerhalb von `etc/kern`, dem Laufzeitordner und dem Zustandsordner nichts beschreibbar.
+
+11. **Andere Skripte nehmen die gemeinsame Sperre nicht:** `wamo-core-caddy.sh`, `wamo-core-slots.sh` und `wamo-ui-umschalten.sh` ändern ebenfalls Dateien oder den Zustand von `wamo-caddy`, ohne die
+    Sperre `/run/wamo-labor-geraete/lock` zu nehmen. Sie sind nicht Teil dieses Bausteins und bleiben unverändert. Läuft eines davon, wenn der Aktualisierer die Site lädt, überschneiden sich zwei Änderungen an
+    Caddy (der Reload ist atomar, im Zweifel gilt die zuletzt geladene Konfiguration); solche Umschaltungen also nicht in derselben Minute wie eine Änderung der Geräte ausführen.
+
+**Nur am Server prüfbar** (die Tests laufen mit Attrappen): echte Antworten von `nmblookup` und `avahi-resolve` im Büro-LAN (vor dem ersten Einrichten `nmblookup NAME` und
+`avahi-resolve -4 -n NAME.local` von Hand ausführen und mit dem Aktualisierer `--trocken` vergleichen), das Verhalten eines echten `flock`, die gehärtete Unit unter systemd (`einrichten` startet sie einmal und
+nimmt bei einem Fehler alles zurück; Verdächtige bei einem Fehler: `ReadWritePaths`, `InaccessiblePaths`, `ProtectHome`, `CapabilityBoundingSet`, `RestrictAddressFamilies`; insbesondere ob Docker den
+Wegwerf-Ordner unter `/run/wamo-labor-geraete` für `caddy adapt` einbinden kann und ob die Unit unter `ProtectHome=read-only` den Baum von `wamo-caddy` lesen kann), ein echter `caddy reload` mit der neuen Adressliste und die
+Zeit, bis ein aufgewachter PC wieder zugelassen ist (höchstens eine Minute plus die Antwortzeit des PCs).
 
 ## 20. Labor-Daten des Testlabors (vorbereitet am 13.11.2026, nicht ausgerollt)
 

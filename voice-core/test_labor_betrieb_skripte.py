@@ -39,10 +39,11 @@ FIREWALL = SOKRATES2 / "wamo-firewall.sh"
 EINRICHTEN = SOKRATES2 / "wamo-labor-einrichten.sh"
 RUECKWEG = SOKRATES2 / "wamo-labor-rueckweg.sh"
 LOESCHLAUF = SOKRATES2 / "wamo-labor-loeschlauf.sh"
+SITE_BIB = SOKRATES2 / "wamo-labor-site.sh"  # gemeinsame Bausteine der Site (Adressen, Vorlage, Prüfung, Reload), von wamo-labor-einrichten.sh geladen
 RAUCHTEST = SOKRATES2 / "wamo_labor_rauchtest.py"
 RAUCHTEST_ATTRAPPE = SOKRATES2 / "wamo_labor_rauchtest_attrappe.py"
 SKRIPTE = [EINRICHTEN, RUECKWEG, LOESCHLAUF]
-ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, RUECKWEG, LOESCHLAUF, RAUCHTEST, RAUCHTEST_ATTRAPPE, FIREWALL, CADDY / "docker-compose.yml"]
+ALLE_DATEIEN = [LABOR / "docker-compose.yml", SITE, EINRICHTEN, SITE_BIB, RUECKWEG, LOESCHLAUF, RAUCHTEST, RAUCHTEST_ATTRAPPE, FIREWALL, CADDY / "docker-compose.yml"]
 # rückwärts geschrieben, damit die Wörter selbst nirgends im Repo stehen (keine Verweise auf andere Systeme)
 VERBOTENE_WOERTER = tuple(w[::-1] for w in ("ikeeein", "sivraj", "lortnoctpmorp", "nocimad"))
 
@@ -541,7 +542,7 @@ class FirewallLaborTests(unittest.TestCase):
 LINUX = sys.platform.startswith("linux")
 # Nur diese Befehle mit Wirkung gibt es im Probelauf, und zwar als Attrappe (sie schreiben jeden Aufruf in ein Protokoll)
 ATTRAPPEN = ("docker", "iptables", "iptables-save", "systemctl", "curl", "ss", "getent", "journalctl", "sudo", "useradd", "userdel", "shred",
-             "chown")
+             "chown", "flock")
 ARCH_SCHLUESSEL = "docker.image_inspect_" + "___Architecture__"  # docker image inspect -f {{.Architecture}} (Zeichen außer Buchstaben und Ziffern werden zu _)
 ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[platform.machine().lower()]  # wie uname -m im Skript
 BASIS_IMAGE = "python:3.11-slim@sha256:" + "ab" * 32  # berechnet: kein Literal, das die Secret-Prüfung stört
@@ -722,7 +723,7 @@ class EinrichtenTextTests(unittest.TestCase):
             self.assertIn(soll, self.code, soll)
 
     def test_interne_adressen_wie_in_der_caddy_site(self):
-        m = re.search(r'^INTERN="([^"]+)"', self.code, re.M)
+        m = re.search(r'^INTERN="([^"]+)"', code(SITE_BIB), re.M)  # die Liste steht in der gemeinsamen Bibliothek
         self.assertIsNotNone(m)
         snippet = block(code(SITE), "(labor_intern_adressen)")
         self.assertEqual(snippet.strip(), f"remote_ip {m.group(1)}")
@@ -737,16 +738,18 @@ class EinrichtenTextTests(unittest.TestCase):
         self.assertRegex(c, r'\[ "\$BEFEHL" = einrichten \] \|\| \[ "\$BEFEHL" = pruefen \]')  # pruefen läuft als root und prüft die Herkunft wie einrichten
 
     def test_zwei_stufen_und_ruhe_im_text(self):
-        c = code(EINRICHTEN)
+        c = code(EINRICHTEN) + code(SITE_BIB)  # die Prüfung der Ports (Ausfalldauer) liegt in der gemeinsamen Bibliothek
         for soll in ("sport = :$port", "config -q", "--project-directory", "netstat -tn", "Ausfalldauer", "am Server zu messen", "ruhe_pruefen", "caddy_ports_pruefen",
                      "uname -m", "Architektur", "55443 55444 55445 55446"):
             self.assertIn(soll, c, soll)
 
     def test_firewall_und_caddy_werden_ueber_die_vorhandenen_skripte_gesetzt(self):
         self.assertIn("wamo-firewall-einrichten.sh", self.code)
-        self.assertIn("caddy adapt", self.code)
-        self.assertIn("--cap-drop ALL", self.code)
-        self.assertIn("--network none", self.code)
+        bib = code(SITE_BIB)  # die Prüfung der Site (caddy adapt im Wegwerf-Container) liegt in der gemeinsamen Bibliothek
+        self.assertIn("caddy adapt", bib)
+        self.assertIn("--cap-drop ALL", bib)
+        self.assertIn("--network none", bib)
+        self.assertIn("arbeit_pruefen", self.code)
         self.assertIn("kern_ruhig", self.code)  # Caddy wird nur ohne laufende Sitzung neu angelegt
         self.assertIn("up -d --no-build", self.code)
 
