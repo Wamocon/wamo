@@ -275,10 +275,13 @@ class CaddySiteTests(unittest.TestCase):
     def test_nur_diese_pfade_gehen_zum_dienst(self):
         """Weiterleitung nur nach einer Liste (alles andere ist 404), die Muster erlauben weder Punkte noch Prozentzeichen noch Großschreibung."""
         browser, betreuer, intern = self.muster("browser_pfad"), self.muster("betreuer_pfad"), self.muster("gesundheit_pfad")
-        for pfad in ("/", "/board", "/web/stil.css", "/web/dom.js", "/web/board-logik.js", "/web/betreuer-logik.js", "/api/browser/board"):
+        for pfad in ("/", "/board", "/datenschutz", "/web/stil.css", "/web/dom.js", "/web/board-logik.js", "/web/betreuer-logik.js", "/web/datenschutz.js",
+                     "/web/datenschutz-logik.js", "/api/browser/board"):
             self.assertIsNotNone(browser.fullmatch(pfad), pfad)
         for pfad in ("/api/browser/../kern/durchlauf", "/web/../x", "/web/x.html", "/api/browser/board/x", "/board/", "/BOARD", "/api/browser/%62oard",
-                     "/betreuer", "/api/betreuer/plaetze", "/gesundheit", "/api/kern/durchlauf", "", "/web/", "/web/.js"):
+                     "/betreuer", "/api/betreuer/plaetze", "/gesundheit", "/api/kern/durchlauf", "", "/web/", "/web/.js",
+                     "/datenschutz/", "/Datenschutz", "/DATENSCHUTZ", "/datenschutz.html", "/datenschutz/x", "/%64atenschutz", "/datenschutz%2f", "/datenschutz?x=1",
+                     "/web/datenschutz.html", "/web/datenschutz", "/api/datenschutz", "/api/browser/datenschutz/x", "//datenschutz", "/datenschutz ", " /datenschutz"):
             self.assertIsNone(browser.fullmatch(pfad), pfad)
         for pfad in ("/betreuer", "/api/betreuer/plaetze", "/api/betreuer/plaetze/3/neuer-durchlauf", "/api/betreuer/plaetze/16/daten-loeschen",
                      "/api/betreuer/einwilligung-minimum-setzen"):
@@ -289,6 +292,20 @@ class CaddySiteTests(unittest.TestCase):
         self.assertIsNotNone(intern.fullmatch("/gesundheit"))
         self.assertIsNone(intern.fullmatch("/gesundheit/x"))
         self.assertIsNone(intern.fullmatch("/api/kern/gesundheit"))
+
+    def test_datenschutzhinweis_ist_ein_oeffentlicher_browser_pfad_und_kein_betreuer_oder_interner_pfad(self):
+        """Die Seite /datenschutz sieht jeder im Büro-LAN (der Besucher liest sie am Platz); sie steht in der Liste der Browser-Pfade und nirgends sonst."""
+        self.assertIn("/datenschutz", self.text[: self.text.index("(labor_")], "der Kopfkommentar der Datei nennt den Pfad")
+        betreuer, intern = self.muster("betreuer_pfad"), self.muster("gesundheit_pfad")
+        for pfad in ("/datenschutz", "/web/datenschutz.js", "/web/datenschutz-logik.js"):
+            self.assertIsNone(betreuer.fullmatch(pfad), pfad)
+            self.assertIsNone(intern.fullmatch(pfad), pfad)
+            self.assertIsNone(self.muster("kern").search(pfad), pfad)
+        ok = block(self.site, "handle @browser_pfad")
+        self.assertIn("labor_weiter", ok)
+        self.assertNotIn("remote_ip", ok)  # keine eigene Quelle für den Hinweis: dieselbe Firewall-Kette wie für das Board
+        for name in ("browser_pfad", "betreuer_pfad", "gesundheit_pfad", "kern"):
+            self.assertEqual("datenschutz" in self.muster(name).pattern, name == "browser_pfad", name)
 
     def test_standard_ist_ablehnen(self):
         """Der letzte handle ohne Matcher fängt alles Übrige ab und reicht nichts weiter."""

@@ -1389,8 +1389,8 @@ und auf dem Server steht kein Zugangswert im Klartext.
 
 ## 19. Labor-Dienst (Test-Jira des Testlabors, Betrieb, vorbereitet am 12.11.2026, noch nicht ausgerollt)
 
-Der Dienst selbst liegt im Repo unter `labor-dienst/` (Vertrag `docs/labor-dienst-vertrag.md`, Umgebung `WAMO_LABOR_DIENST_*`, Weboberflächen `/board` und
-`/betreuer`, Schnittstellen `/api/kern/`, `/api/browser/`, `/api/betreuer/`, `/gesundheit`). Dieser Abschnitt beschreibt nur seinen Betrieb auf Sokrates-2
+Der Dienst selbst liegt im Repo unter `labor-dienst/` (Vertrag `docs/labor-dienst-vertrag.md`, Umgebung `WAMO_LABOR_DIENST_*`, Weboberflächen `/board`, `/betreuer` und
+`/datenschutz`, Schnittstellen `/api/kern/`, `/api/browser/`, `/api/betreuer/`, `/gesundheit`). Dieser Abschnitt beschreibt nur seinen Betrieb auf Sokrates-2
 für das Testlabor am 28.11.2026. Alles läuft als root (sudo), nach dem Muster des Remote-Desktop-Gateways (Abschnitt 16): feste Namen, feste Adressen,
 Probelauf mit `--trocken`, Sicherung vor jeder Änderung, Rückweg, Rauchtest.
 
@@ -1448,7 +1448,7 @@ erreicht immer alles. Dazu zwei Listen in `/etc/wamo-labor` (nach dem ersten Lau
 `betreuer-adressen` (wer `/betreuer` und `/api/betreuer/` erreicht, Netze nur von /24 bis /32, nach einer Änderung `einrichten` erneut ausführen, dann setzt das
 Skript die Adressen in die Site ein) und `plaetze-adressen` (Quellen für 55447 in der Firewall, Frage Q13: bis die Liste da ist, gilt das Büro-LAN; nach einer
 Änderung `sudo systemctl reload wamo-firewall`). `/api/kern/` erreicht von außen nie jemand, `/gesundheit` nur der Server selbst. Alles außerhalb der Pfadliste
-(`/`, `/board`, `/web/<Datei>`, `/api/browser/<Name>`, Betreuer-Pfade, `/gesundheit`) beantwortet Caddy mit 404.
+(`/`, `/board`, `/datenschutz`, `/web/<Datei>`, `/api/browser/<Name>`, Betreuer-Pfade, `/gesundheit`) beantwortet Caddy mit 404.
 
 **Ohne Ausgang (Vertrag D2) trotz veröffentlichtem Port, und was daran hängt.** Docker veröffentlicht keine Ports über ein internes Netz. Der Dienst hängt deshalb in zwei Netzen:
 `wamo-labor-netz` (intern, nur mit Caddy) und `wamo-labor-lokal` (nicht intern, nur für `127.0.0.1:18765`, Maskierung aus). Aus dem zweiten Netz verwirft `WAMO-FW-LABAUS` alles, was
