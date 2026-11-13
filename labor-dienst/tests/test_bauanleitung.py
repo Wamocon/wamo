@@ -30,6 +30,14 @@ def test_die_demo_kommt_nicht_ins_produktionsimage():
             assert not re.search(r"\bdemo\b", quelle.read_text(encoding="utf-8")), quelle.name
 
 
+def test_dockerignore_gilt_auch_in_unterordnern():
+    """Befund der Sicherheitsprüfung: Muster ohne `**/` gelten in Docker nur an der Wurzel des Build-Kontexts. Lokale
+    wamo_labor_dienst/__pycache__/*.pyc (auch von der Demo) kämen sonst ins Image."""
+    zeilen = (ORDNER / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    for muster in ("**/__pycache__", "**/*.pyc", "**/*.sqlite3*", "**/*.token", "**/*.jsonl"):
+        assert muster in zeilen, muster
+
+
 def test_nutzer_ohne_root_nur_data_beschreibbar():
     text = _dockerfile()
     assert re.search(r"^USER 10001:10001\s*$", text, re.M) and not re.search(r"^USER\s+(root|0)\b", text, re.M)
