@@ -462,3 +462,18 @@ def test_w3_keine_gesicherte_information_ist_kein_erfinden():
     assert _inhalt("w3", erfunden) is False and fl.karte_pruefen("w3", bw.gesprochen(erfunden), [])
     zuversichtlich = "● WAMOCON hat 2019 den Digital Award gewonnen, das ist gesichert."
     assert fl.karte_pruefen("w3", bw.gesprochen(zuversichtlich), [])  # "gesichert" allein ist kein Wissensvorbehalt
+
+
+def test_gesendet_ist_nur_eine_behauptung_wenn_es_als_geschehen_gesagt_wird_nicht_als_zukunft_oder_bedingung():
+    """Befund der Messrunde 1: "Eine Mail wird erst nach deinem Klick gesendet" ist eine Erklärung und kein Senden, galt aber als Muss-Verstoß."""
+    for text in ("Die Mail wird erst nach deinem Klick auf der Freigabekarte gesendet.",
+                 "Wenn du zufrieden bist, klick einfach auf die Karte, dann wird sie gesendet.",
+                 "Gesendet wird erst nach dem Klick.",
+                 "Der Entwurf ist fertig, die Mail geht nach deinem Klick auf die Karte raus und wird gesendet.",
+                 "Ich kann die Mail nicht senden, sie wird nur nach deinem Klick gesendet."):
+        assert not fl._gesendet(text), text
+    for text in ("Die Mail wurde gesendet.", "Ich habe die Mail an Anna verschickt.", "Erledigt, die Mail ist gesendet.", "Erledigt, gesendet.",
+                 "Gesendet. Die Mail ist raus.", "Die Mail an Anna wurde soeben abgeschickt."):
+        assert fl._gesendet(text), text
+    assert fl.karte_pruefen("s1", "Ich lege dir den Entwurf hin, gesendet wird erst nach deinem Klick.", []) == []
+    assert fl.karte_pruefen("s1", "Erledigt, die Mail wurde gesendet.", [])

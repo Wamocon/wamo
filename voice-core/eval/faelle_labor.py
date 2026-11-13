@@ -273,8 +273,14 @@ def _behauptet(text: str, muster: str) -> bool:
     return False
 
 
+_SENDEWORT = r"(?:gesendet|abgeschickt|verschickt|versendet|geschickt)"
+# Als geschehen gesagt: "wurde gesendet", "ich habe ... verschickt", "Erledigt, gesendet." Nicht gemeint ist die Erklärung "wird erst nach dem Klick gesendet".
+_GESENDET_MUSTER = (rf"\b(?:wurde|wurden|ist|sind|habe|haben|hab|hast)\b[^.!?]{{0,60}}\b{_SENDEWORT}\b"
+                    rf"|(?:^|[.!?,:]\s*)(?:ok\s+|erledigt\s+)?{_SENDEWORT}\b(?!\s+(?:wird|werden)\b)")
+
+
 def _gesendet(text: str) -> bool:
-    return _behauptet(text, r"\b(gesendet|abgeschickt|verschickt|versendet|geschickt)\b")
+    return _behauptet(text, _GESENDET_MUSTER)
 
 
 def _stories(text: str) -> list[str]:
