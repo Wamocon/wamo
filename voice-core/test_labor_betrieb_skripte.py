@@ -994,6 +994,20 @@ class EinrichtenProbelaufTests(Werkstatt):
         self.assertFalse([z for z in self.aufrufe() if z.startswith(("docker build", "docker run", "docker compose up"))])  # Abbruch vor jeder Änderung
         self.assertFalse(self.p("etc/wamo-labor/kern-token").exists())
 
+    def test_ruhe_zaehlt_die_hintergrundabfragen_einer_offenen_oberflaeche_nicht(self):
+        """Ein offenes WAMO-Fenster fragt alle paar Minuten /wamo/api/hinweise ab. Das ist keine Sitzung: Es gibt keinen Audiostrom (UDP) und keine
+        offene Verbindung. Echte Zeilen einer Sitzung zählen weiter."""
+        abfragen = 'INFO:      - "GET /wamo/api/hinweise HTTP/1.1" 200 OK\nINFO:      - "OPTIONS /wamo/api/hinweise HTTP/1.1" 200 OK\n'
+        self.ausgabe("systemctl.show", "4711\n")
+        self.ausgabe("journalctl", abfragen + "Sitzung laeuft\n")  # zuerst der Abbruch (ein erfolgreicher Lauf braucht danach keine Ruhe mehr)
+        r = self.einrichten()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("nicht ruhig", r.stderr)
+        self.ausgabe("journalctl", abfragen)
+        r = self.einrichten()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("nicht ruhig", r.stderr)
+
     def test_ruhe_vor_dem_neuanlegen_offene_verbindungen_an_den_caddy_ports(self):
         self.ausgabe("docker.exec", "tcp 0 0 172.24.0.2:55445 192.168.178.50:50123 ESTABLISHED\ntcp 0 0 172.24.0.2:55443 192.168.178.51:50124 TIME_WAIT\n")
         r = self.einrichten()

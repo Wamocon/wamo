@@ -155,8 +155,9 @@ kern_ruhig() {
     udp="$(grep -c "pid=$pid," <<<"$roh_ss" || true)"
     roh_log="$(journalctl -u "$unit" --since '-5 min' --no-pager -q 2>/dev/null)" \
       || { echo "  Kern nicht prüfbar: journalctl fehlgeschlagen" >&2; return 1; }
-    # abgewiesene Anfragen ohne Anmeldung (401) sind keine Sitzung
-    log="$(grep -vE 'Zugang abgelehnt|401 Unauthorized|^$' <<<"$roh_log" | wc -l || true)"
+    # abgewiesene Anfragen ohne Anmeldung (401) und die Hintergrundabfrage einer offenen Oberfläche (/wamo/api/hinweise, ein offenes Fenster fragt sie alle
+    # paar Minuten ab) sind keine Sitzung: Eine Sitzung hat einen Audiostrom (UDP, oben gezählt) und ihre eigenen Zeilen
+    log="$(grep -vE 'Zugang abgelehnt|401 Unauthorized|/wamo/api/hinweise|^$' <<<"$roh_log" | wc -l || true)"
     if [ "${udp:-0}" != 0 ] || [ "${log:-0}" != 0 ]; then
       echo "  Kern nicht ruhig ($unit): UDP-Sockets $udp, Journalzeilen der letzten 5 Minuten $log" >&2
       return 1
