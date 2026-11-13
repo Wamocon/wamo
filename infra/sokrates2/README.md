@@ -279,8 +279,11 @@ Windows fragt mit einer Sicherheitswarnung nach. Vor dem Bestätigen den angezei
 
 - Chrome, Edge und die Desktop-App (Electron) nutzen den Windows-Speicher. Firefox nur mit
   `security.enterprise_roots.enabled = true`.
-- Kontrolle: `certutil -user -store Root 3b46f704de363947b4cbdda4283539b9b0a80514`
-- Entfernen: `certutil -user -delstore Root 3b46f704de363947b4cbdda4283539b9b0a80514`
+- Kontrolle: `certutil -user -store Root 9f5de37f855fd083142e9e148a0954eab2817200` (SHA-1 des DER-Zertifikats, derselbe
+  Fingerabdruck wie im Windows-Dialog)
+- Entfernen: `certutil -user -delstore Root 9f5de37f855fd083142e9e148a0954eab2817200`
+- Die Seriennummer des Zertifikats (`3b46f704de363947b4cbdda4283539b9b0a80514`) ist eine andere Zahl als der Fingerabdruck
+  und nicht der Wert, den das Platz-Skript (`scripts/wamo_labor_platz.py`) und der Dialog benutzen.
 - `curl` unter Windows (Schannel) bricht ohne Sperrliste ab; dort `--ssl-revoke-best-effort` ergänzen.
 - Bis zum Import lässt sich die Oberfläche übergangsweise mit `NEXT_PUBLIC_SUPABASE_URL=http://192.168.178.136:55321`
   in `ui/.env.local` betreiben (nur in Stufe 1). Der Voice-Core bleibt dabei auf HTTPS, er vertraut der CA über
