@@ -1149,5 +1149,56 @@ class RueckwegTests(EinrichtungsWerkstatt):
             self.assertNotRegex(z, r"^(docker (rm|stop|restart|kill|compose|network|volume)|iptables|systemctl (restart|reload|stop) wamo-(core|firewall)|wamo-core-env)", z)
 
 
+# ====================================================================================== Teil 5: Namensvertrag, README, CHANGELOG
+REPO = Path(__file__).resolve().parent.parent
+
+
+class DokumentationTests(unittest.TestCase):
+    def test_namensvertrag_in_claude_md(self):
+        zeile = next((z for z in lies(REPO / "CLAUDE.md").splitlines() if z.startswith("| Labor-Dienst (Betrieb) |")), None)
+        self.assertIsNotNone(zeile, "Zeile Labor-Dienst (Betrieb) fehlt in der Tabelle")
+        for soll in ("/etc/wamo-labor/betreuer-geraete", "betreuer-geraete.stand", "wamo-labor-geraete-aktualisieren.sh", "/usr/local/sbin/wamo-labor-geraete-aktualisieren",
+                     "wamo-labor-geraete.service", "wamo-labor-geraete.timer", "wamo-labor-geraete-einrichten.sh", "wamo-labor-site.sh", "test_labor_geraete_skripte.py",
+                     "wamo-labor-einrichten.sh", "55447"):
+            self.assertIn(soll, zeile, soll)
+        self.assertNotIn(chr(0x2014), zeile)
+        self.assertNotIn(chr(0x2013), zeile)
+
+    def abschnitt(self) -> str:
+        text = lies(SOKRATES2 / "README.md")
+        return text.split("### 19.1 Betreuer-Geräte über den Gerätenamen zulassen", 1)[1].split("\n## 20.", 1)[0]
+
+    def test_unterabschnitt_im_readme_von_sokrates2(self):
+        text = self.abschnitt()
+        for soll in ("wamo-labor-geraete-einrichten.sh", "wamo-labor-geraete-aktualisieren", "wamo-labor-geraete.service", "wamo-labor-geraete.timer", "wamo-labor-site.sh",
+                     "betreuer-geraete", "betreuer-geraete.stand", "--trocken", "rueckweg", "einrichten", "status", "NetBIOS", "mDNS", "192.168.178.0/24", "Vereinigung",
+                     "12 Stunden", "höchstens 4", "höchstens 16", "caddy adapt", "caddy reload", "flock", "journalctl -t wamo-labor-geraete", "Nur am Server prüfbar",
+                     "Grenzen", "nicht kryptografisch", "vortäuschen", "Betreuer-Token", "eine Minute", "Windows-, Mac- und Linux-Geräte", "plaetze-adressen",
+                     "WMC-H-04-NS", "WAMO_LABOR_GERAETE_WURZEL", "ReadWritePaths", "betreuer-adressen"):
+            self.assertIn(soll, text, soll)
+        for verboten in (chr(0x2014), chr(0x2013)):
+            self.assertNotIn(verboten, text)
+        for wort in VERBOTENE_WOERTER:
+            self.assertNotIn(wort, text.lower())
+
+    def test_readme_verweist_aus_abschnitt_19_auf_den_unterabschnitt(self):
+        text = lies(SOKRATES2 / "README.md")
+        abschnitt19 = text.split("## 19. Labor-Dienst", 1)[1].split("### 19.1", 1)[0]
+        for soll in ("wamo-labor-geraete-einrichten.sh", "test_labor_geraete_skripte.py", "Unterabschnitt 19.1"):
+            self.assertIn(soll, abschnitt19, soll)
+
+    def test_changelog_unter_hinzugefuegt(self):
+        text = lies(REPO / "CHANGELOG.md")
+        offen = text.split("## [Unveröffentlicht]", 1)[1].split("\n## [", 1)[0]
+        hinzugefuegt = offen.split("### Hinzugefügt", 1)[1]
+        eintrag = next((b for b in hinzugefuegt.split("\n- ") if b.lstrip("- ").startswith("Betreuer-Geräte des Testlabors über den Gerätenamen")), None)
+        self.assertIsNotNone(eintrag, "Eintrag zu den Betreuer-Geräten fehlt unter Hinzugefügt")
+        for soll in ("wamo-labor-geraete-aktualisieren.sh", "wamo-labor-geraete-einrichten.sh", "wamo-labor-site.sh", "NetBIOS", "mDNS", "12 Stunden", "caddy adapt",
+                     "nicht kryptografisch", "Betreuer-Token", "flock", "test_labor_geraete_skripte.py"):
+            self.assertIn(soll, eintrag, soll)
+        self.assertNotIn(chr(0x2014), eintrag)
+        self.assertNotIn(chr(0x2013), eintrag)
+
+
 if __name__ == "__main__":
     unittest.main()

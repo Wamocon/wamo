@@ -8,6 +8,21 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Betreuer-Geräte des Testlabors über den Gerätenamen zulassen, statt über feste Adressen im Router (vorbereitet, nicht ausgerollt, Abschnitt 19.1 in
+  `infra/sokrates2/README.md`): Der Aktualisierer `wamo-labor-geraete-aktualisieren.sh` (am Server `/usr/local/sbin/wamo-labor-geraete-aktualisieren`, jede Minute über
+  `wamo-labor-geraete.service` und `wamo-labor-geraete.timer`) liest `/etc/wamo-labor/betreuer-geraete` (ein Gerätename je Zeile, ein ungültiger Name bricht mit klarer
+  Meldung ab), löst jeden Namen über NetBIOS (`nmblookup`) und mDNS (`avahi-resolve`) auf, vereinigt beide Antworten, filtert auf IPv4 im Büro-LAN 192.168.178.0/24
+  (virtuelle 172.x-Adressen fallen weg) und lässt höchstens 4 Adressen je Name zu. Antwortet ein Gerät nicht (Ruhezustand), bleibt die zuletzt gute Adresse höchstens 12
+  Stunden zugelassen, eine neue Antwort ersetzt die alte sofort. Nur bei geänderter Menge setzt er die Caddy-Site aus der Vorlage neu zusammen (feste Adressen aus
+  `betreuer-adressen` plus die aufgelösten), prüft sie mit `caddy adapt` in einem Wegwerf-Container ohne Netz, installiert sie und lädt sie mit `caddy reload` ohne
+  Ausfall; scheitert eine Stufe, bleibt die vorherige Site aktiv. Stand in `/etc/wamo-labor/betreuer-geraete.stand`, Sperre mit `flock`, Journal-Kennung
+  `wamo-labor-geraete` nur mit Änderungen (Name und Adresse, nie ein Token); er fasst Container des Dienstes, Firewall und Kern nicht an.
+  `wamo-labor-geraete-einrichten.sh` (`einrichten`, `status`, `rueckweg`, `--trocken`, Sicherung vor jeder Änderung, Rücknahme bei einem Fehler) installiert
+  Aktualisierer, gehärtete Unit und Zeitgeber; der Rückweg stellt die Site aus `betreuer-adressen` allein wieder her. Die Einsetz-Logik der Site steht jetzt in
+  `wamo-labor-site.sh`, die `wamo-labor-einrichten.sh`, der Aktualisierer und der Rückweg teilen; `wamo-labor-einrichten.sh` setzt die Adressen aus dem Stand mit ein (bis
+  12 Stunden alt) und zieht Vorlage und Bibliothek nach. Grenzen: Die Namensauflösung im LAN ist nicht kryptografisch (ein fremdes Gerät könnte einen Namen vortäuschen,
+  der Betreuer-Token bleibt die eigentliche Absicherung), eine neue Adresse gilt erst mit dem nächsten Lauf (höchstens eine Minute), NetBIOS und mDNS erreichen nur Geräte
+  im selben Netz. Tests in `voice-core/test_labor_geraete_skripte.py`.
 - Labor-Daten des Testlabors, erste Fassung (nicht ausgerollt, Konzept `docs/testlabor-wamo.md` 3.6 und 3.8): Der Ordner `infra/sokrates2/labor-daten/` enthält die acht Dateien, die der Lader
   `voice-core/labor_daten.py` aus `/etc/wamo-labor/daten` liest (nicht aus `/etc/wamo`: Der Benutzer `wamo-core` kann `/etc/wamo` nicht durchqueren, der Lader lehnte dort alle Dateien als `nicht_lesbar` ab). Regelteil `persona-zusatz.md` in der Standardfassung (Mail erst als Entwurf, Tickets nur über Werkzeuge, Datum per Werkzeug, kurze Antworten, nichts erfinden,
   bewusst ohne den Satz "frag bei fehlenden Angaben nach", damit die Basis gemessen wird) und die vorbereitete strenge Fassung `persona-zusatz.streng.md` mit diesem Satz und der Regel "Fehler nicht wegbessern" (Frage Q6).
