@@ -92,6 +92,15 @@ def test_dokument_hat_den_erwarteten_aufbau():
     assert len(b["punkte"]) == 6 and b["verantwortlich"].startswith("Verantwortlich:") and b["einwilligung"].startswith("Einwilligung (Version ")
 
 
+def test_altersangabe_ab_16_ohne_harte_grenze():
+    """Entscheidung von Niko (13.11.): Richtwert mindestens 16 Jahre, keine harte Grenze. Jüngere nehmen mit Zustimmung einer
+    Aufsichtsperson teil (so verlangt es auch Art. 8 DSGVO für die Einwilligung)."""
+    einwilligung = _bloecke()["einwilligung"]
+    assert "mindestens 16 Jahre" in einwilligung and "Aufsichtsperson" in einwilligung and "18" not in einwilligung
+    sichtbar = _normal("".join(_seite().text))
+    assert "mindestens 16 Jahre" in sichtbar and "18 Jahre" not in sichtbar
+
+
 def test_jeder_punkt_des_dokuments_steht_in_der_seite():
     sichtbar = _normal("".join(_seite().text))
     b = _bloecke()
