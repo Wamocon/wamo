@@ -30,6 +30,9 @@
 #              /etc/wamo-labor/plaetze-adressen (Quellen für 55447 in der Firewall, Frage Q13: bis dahin das Büro-LAN). Beide entstehen als Vorlage
 #              mit Kommentaren, eine Adresse oder ein Netz je Zeile. Betreuer-Adressen setzt dieses Skript in die Caddy-Site ein (nach Änderung
 #              der Datei einrichten erneut ausführen); die Plätze liest die Firewall (nach Änderung  systemctl reload wamo-firewall).
+#              Dazu die Adressen der Betreuer-Geräte, die der Aktualisierer über die Gerätenamen findet (betreuer-geraete.stand, nur Einträge, die
+#              höchstens 12 Stunden alt sind): wamo-labor-geraete-einrichten.sh, README von infra/sokrates2, Abschnitt 19.1. Die Einsetz-Logik
+#              (Liste der Adressen, Vorlage, Prüfung mit caddy adapt, Reload) steht in wamo-labor-site.sh, die dieses Skript und der Aktualisierer teilen.
 #   Image      docker build aus der Quelle (Basis über festen Digest, Abhängigkeiten mit --require-hashes im Dockerfile), Tag wamo-labor-dienst:1
 #   Firewall   wamo-firewall-einrichten.sh (Kette WAMO-FW-LABOR für 55447, Sperre des Ausgangs WAMO-FW-LABAUS), nur wenn die Regeln fehlen
 #   Caddy      Site wamo-labor.caddy aus der Vorlage (Betreuer-Adressen eingesetzt), Konfiguration vorher in einem Wegwerf-Container ohne Netz
@@ -65,6 +68,8 @@ QUELLE="${WAMO_LABOR_QUELLE:-/home/wamocon/wamo-labor-quelle}"
 KERN_TOKEN_DATEI="$ETC/kern-token"
 BETREUER_TOKEN_DATEI="$ETC/betreuer-token"
 BETREUER_ADRESSEN="$ETC/betreuer-adressen"
+STAND_DATEI="$ETC/betreuer-geraete.stand"   # zuletzt eingesetzter Stand der Betreuer-Geräte (schreibt der Aktualisierer)
+GERAETE_LIB="$W/usr/local/lib/wamo-labor-geraete"   # Vorlage und Bibliothek des Aktualisierers (nur wenn er eingerichtet ist)
 PLAETZE_ADRESSEN="$ETC/plaetze-adressen"
 BASIS_IMAGE_DATEI="$ETC/basis-image"
 SITE_DATEI="$CADDY_DIR/etc/kern/wamo-labor.caddy"
@@ -76,9 +81,7 @@ LABOR_PORT=55447
 LABOR_URL="https://192.168.178.136:$LABOR_PORT"
 BILD=wamo-labor-dienst:1
 KERN_URL="http://127.0.0.1:18765"
-INTERN="127.0.0.0/8 172.24.0.1/32 192.168.178.136/32"
 NETZE="wamo-labor-netz=172.28.0.0/24 wamo-labor-lokal=172.28.1.0/29"
-CADDY_PORTS="55443 55444 55445 55446"   # die Dienste hinter wamo-caddy, die ein Neuanlegen kurz lahmlegt
 
 TROCKEN=nein
 BEFEHL=einrichten
@@ -221,31 +224,6 @@ netze_pruefen() {
   echo "  Netzadressen frei: $NETZE"
 }
 
-# Eine Adresse für die Betreuer: a.b.c.d oder a.b.c.d/n mit n von 24 bis 32, vier Zahlen ohne führende Nullen, nie 0.x, nie Loopback (gilt
-# ohnehin), nie Multicast und Link-Local
-adresse_gueltig() {
-  local o
-  [[ "$1" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})(/([0-9]{1,2}))?$ ]] || return 1
-  for o in "${BASH_REMATCH[@]:1:4}"; do (( o <= 255 )) || return 1; done
-  (( ${BASH_REMATCH[6]:-32} >= 24 && ${BASH_REMATCH[6]:-32} <= 32 )) || return 1
-  if (( BASH_REMATCH[1] == 0 || BASH_REMATCH[1] == 127 || BASH_REMATCH[1] >= 224 )) \
-    || (( BASH_REMATCH[1] == 169 && BASH_REMATCH[2] == 254 )); then return 1; fi
-}
-
-# Die Liste für die Caddy-Site: der Server selbst und die Zeilen aus betreuer-adressen. Eine ungültige Zeile bricht ab (nie stillschweigend weglassen)
-betreuer_adressen() {
-  local liste="$INTERN" zeile wert
-  if [ -r "$BETREUER_ADRESSEN" ]; then
-    while IFS= read -r zeile || [ -n "$zeile" ]; do
-      wert="$(tr -d " \t\r\"'" <<<"${zeile%%#*}")"
-      [ -n "$wert" ] || continue
-      adresse_gueltig "$wert" || fehler "Ungültige Adresse in $BETREUER_ADRESSEN: $wert (a.b.c.d oder a.b.c.d/n mit n von 24 bis 32)."
-      liste="$liste $wert"
-    done < "$BETREUER_ADRESSEN"
-  fi
-  printf '%s\n' "$liste"
-}
-
 dateien_pruefen() {
   local f
   for f in wamo-labor/docker-compose.yml wamo-caddy/kern/wamo-labor.caddy wamo-caddy/docker-compose.yml wamo-firewall.sh \
@@ -307,7 +285,7 @@ vorpruefung() {
   port_frei "$LABOR_PORT" wamo-caddy
   port_frei 18765 wamo-labor-dienst
   compose_pruefen
-  ADRESSEN="$(betreuer_adressen)"
+  ADRESSEN="$(betreuer_liste "$BETREUER_ADRESSEN" "$STAND_DATEI" "$(date +%s)")"
   echo "  Betreuer-Adressen: $ADRESSEN"
   if ! cmp -s "$HERE/wamo-caddy/docker-compose.yml" "$CADDY_COMPOSE"; then
     ruhe_pruefen || muss "Abbruch: Gerade ist Betrieb (siehe oben). wamo-caddy wird neu angelegt, sobald niemand spricht (Skript erneut ausführen)."
@@ -446,35 +424,14 @@ firewall() {
 }
 
 # ---------- Caddy
-site_erzeugen() {
-  local text
-  text="$(cat "$HERE/wamo-caddy/kern/wamo-labor.caddy")"
-  text="${text//__BETREUER_ADRESSEN__/$ADRESSEN}"
-  printf '%s\n' "$text"
-}
-
-caddy_neu_laden() { docker exec wamo-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; }
-
-# Datei in den Ordner von wamo-caddy legen, mit dessen Besitzer (die Ordner gehören wamocon)
-caddy_installieren() {
-  if [ -n "$CADDY_OWNER" ]; then install -m "$1" -o "$CADDY_OWNER" -g "$CADDY_GROUP" "$2" "$3"; else install -m "$1" "$2" "$3"; fi
-}
-
-# Die ganze Konfiguration samt neuer Site in einem Wegwerf-Ordner prüfen (caddy adapt in einem Container ohne Netz), bevor etwas installiert wird
+# Die Bausteine (Vorlage einsetzen, Prüfung mit caddy adapt, Reload, Prüfung der Ports) stehen in wamo-labor-site.sh
 caddy_pruefen() {
   local image
   image="$(grep -E '^[[:space:]]+image: caddy:' "$HERE/wamo-caddy/docker-compose.yml" | head -n1 | sed -E 's/^[[:space:]]+image:[[:space:]]+//' | tr -d '\r')"
   [ -n "$image" ] || fehler "Das Caddy-Image steht nicht in wamo-caddy/docker-compose.yml."
-  umask 077
-  ARBEIT="$(mktemp -d "$CADDY_DIR/.arbeit.XXXXXX")"
-  mkdir -p "$ARBEIT/etc/kern"
-  cp -a "$CADDY_DIR/etc/." "$ARBEIT/etc/"
-  site_erzeugen > "$ARBEIT/etc/kern/wamo-labor.caddy"
-  chmod 755 "$ARBEIT" "$ARBEIT/etc" "$ARBEIT/etc/kern"
-  chmod 644 "$ARBEIT/etc/kern/"* "$ARBEIT/etc/Caddyfile"
-  # NET_BIND_SERVICE: Das Image versieht caddy mit dieser Fähigkeit, ohne sie im Begrenzungssatz startet das Programm nicht
-  docker run --rm --network none --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --security-opt no-new-privileges:true \
-    -v "$ARBEIT/etc:/etc/caddy:ro" "$image" caddy adapt --config /etc/caddy/Caddyfile >/dev/null
+  arbeit_anlegen "$CADDY_DIR"
+  site_erzeugen "$HERE/wamo-caddy/kern/wamo-labor.caddy" "$ADRESSEN" > "$ARBEIT/etc/kern/wamo-labor.caddy"
+  arbeit_pruefen "$image"
   echo "  Konfiguration gültig"
 }
 
@@ -493,32 +450,6 @@ undo_caddy() {
   # Nach jeder Rücknahme müssen 55443 bis 55446 wieder antworten (der Lauf endet ohnehin mit einem Fehler)
   caddy_ports_pruefen "$start" >&2 || echo "  FEHLER: Nach der Rücknahme antworten 55443 bis 55446 nicht, bitte sofort ansehen (docker logs wamo-caddy)." >&2
   echo "  Zurückgenommen. Bitte das Protokoll prüfen (docker logs wamo-caddy)." >&2
-}
-
-# 55443 (API) darf durch die Änderung nie wegfallen, und die neue Site muss antworten (ohne Dienst mit 502 von Caddy, aber mit TLS)
-# Antwortet eine Adresse mit irgendeinem HTTP-Status (nur 000 heißt keine Antwort)? Je Adresse höchstens WARTE_RUNDEN mal WARTE_SEKUNDEN.
-antwortet() {
-  local url="$1" code runde runden="${WAMO_LABOR_WARTE_RUNDEN:-60}" sek="${WAMO_LABOR_WARTE_SEKUNDEN:-2}"
-  [[ "$runden" =~ ^[0-9]+$ ]] || runden=60
-  [[ "$sek" =~ ^[0-9]+$ ]] || sek=2
-  for ((runde = 0; runde < runden; runde++)); do
-    code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)"
-    [ "$code" != 000 ] && return 0
-    sleep "$sek"
-  done
-  return 1
-}
-
-# 55443 bis 55446 müssen antworten (nach einer Änderung an Caddy und nach jeder Rücknahme). Die Dauer ab START wird genannt: Sie ist am Server
-# zu messen, vorab gibt es dafür keine Zusage.
-caddy_ports_pruefen() {
-  local start="$1" p fehlt=""
-  for p in $CADDY_PORTS; do antwortet "https://192.168.178.136:$p/" || fehlt="$fehlt $p"; done
-  if [ -n "$fehlt" ]; then
-    echo "  FEHLER: Von wamo-caddy antworten die Ports$fehlt nicht (55443 bis 55446 gehören anderen Diensten, docker logs wamo-caddy)" >&2
-    return 1
-  fi
-  echo "  Ausfalldauer: $(( $(date +%s) - start )) Sekunden (Zeit zwischen Stopp und erster Antwort aller Ports 55443 bis 55446; am Server zu messen)"
 }
 
 # Stufe 1: Site installieren und Caddy neu laden. Das prüft die Konfiguration atomar und ohne Ausfall; weil der Port 55447 im Container noch nicht
@@ -558,6 +489,14 @@ caddy_anwenden() {
   CADDY_UNDO=fertig
 }
 
+# Ist der Aktualisierer der Betreuer-Geräte eingerichtet, bekommt er die Vorlage und die Bibliothek dieses Laufs (sonst setzte er bei der nächsten Änderung der
+# Geräte eine veraltete Vorlage ein). Ohne Aktualisierer geschieht nichts.
+geraete_nachziehen() {
+  [ -d "$GERAETE_LIB" ] || return 0
+  tu install -m 0644 "$HERE/wamo-caddy/kern/wamo-labor.caddy" "$GERAETE_LIB/wamo-labor.caddy"
+  tu install -m 0644 "$HERE/wamo-labor-site.sh" "$GERAETE_LIB/wamo-labor-site.sh"
+}
+
 caddy() {
   echo "== Caddy: Site $LABOR_URL (in zwei Stufen)"
   local compose_neu=nein
@@ -566,11 +505,13 @@ caddy() {
     echo "  [trocken] Konfiguration prüfen (caddy adapt in einem Wegwerf-Container ohne Netz)"
     echo "  [trocken] Stufe 1: Site-Datei $SITE_DATEI installieren und caddy reload (ohne Ausfall)"
     [ "$compose_neu" = nein ] || echo "  [trocken] Stufe 2: Ruhe prüfen, Compose von wamo-caddy ändern (Port $LABOR_PORT, Netz wamo-labor-netz), Container neu anlegen, dann 55443 bis 55446 prüfen"
+    geraete_nachziehen
     return 0
   fi
   if [ -z "$W" ]; then CADDY_OWNER="$(stat -c %U "$CADDY_DIR")"; CADDY_GROUP="$(stat -c %G "$CADDY_DIR")"; fi
   caddy_pruefen
   caddy_anwenden "$compose_neu"
+  geraete_nachziehen
 }
 
 # ---------- Start
@@ -670,6 +611,11 @@ elif [ "$TROCKEN" = nein ] && { [ "$BEFEHL" = einrichten ] || [ "$BEFEHL" = prue
   pruefe_ordner "$HERE"
   [ "$BEFEHL" != einrichten ] || pruefe_ordner "$QUELLE"
 fi
+
+# Die gemeinsamen Bausteine der Site (nach dem Herkunftsschutz geladen: Ein Skript allein in einem unsicheren Ordner bricht vorher ab)
+[ -f "$HERE/wamo-labor-site.sh" ] || fehler "$HERE/wamo-labor-site.sh fehlt (infra/sokrates2 vollständig verteilen)."
+# shellcheck source=wamo-labor-site.sh
+. "$HERE/wamo-labor-site.sh"
 
 case "$BEFEHL" in
   status) status ;;
