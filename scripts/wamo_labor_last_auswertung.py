@@ -16,6 +16,11 @@ import wamo_labor_last_plan as pl
 from wamo_labor_last_server import JournalZaehlung, Messung
 
 BESTANDEN, DURCHGEFALLEN, OFFEN = "bestanden", "durchgefallen", "offen"
+ANTWORT_STRAFE_MS = 45000.0  # ein Schritt ohne Antwort zählt mit der Wartefrist (45 s) in die Zeiten des ersten Tons: Stumme Sitzungen schönen nie das p95
+MIN_STUFE_MINUTEN = 10  # kürzere Stufen genügen nicht für ein Bestehen
+VOLLE_STUFEN = (1, 2, 4, 8)
+EIMER_S = 10
+FENSTER_S = 60
 GIB = pl.GIB
 
 # Was die Last nicht belegt und was dieses Werkzeug nicht misst (Bericht und docs/labor-lasttest.md)
@@ -74,14 +79,19 @@ def cpu_prozente(proben: Sequence[Messung]) -> list[float]:
     return aus
 
 
+def _gleitend_max(eimer: dict[int, list[int]], index: int) -> int:
+    """Die größte Summe über 60 Sekunden (gleitend über Eimer von 10 Sekunden): so zählt auch ein Stoß, der über eine Minutengrenze reicht."""
+    return max((sum(w[index] for k2, w in eimer.items() if k <= k2 < k + FENSTER_S) for k in eimer), default=0)
+
+
 def journal_summe(proben: Sequence[Messung]) -> dict:
     """Die Journalzählung aller Messungen einer Stufe. lesbar: wahr, falsch (mindestens ein Weg scheiterte) oder None (nie gefragt)."""
     mit = [p for p in proben if p.journal_lesbar is not None]
     zaehler = [p.journal for p in mit if isinstance(p.journal, JournalZaehlung)]
-    minuten: dict[int, list[int]] = {}
+    eimer: dict[int, list[int]] = {}
     for j in zaehler:
-        for minute, (anfragen, eingabe) in j.minuten.items():
-            summe = minuten.setdefault(minute, [0, 0])
+        for beginn, (anfragen, eingabe) in j.eimer.items():
+            summe = eimer.setdefault(beginn, [0, 0])
             summe[0] += anfragen
             summe[1] += eingabe
     felder = ("r429", "soniox", "anfragen", "unterbrechungen", "pipeline_fehler", "token_zuege", "token_eingabe", "token_cache_lesen",
@@ -89,8 +99,8 @@ def journal_summe(proben: Sequence[Messung]) -> dict:
     aus = {f: sum(getattr(j, f) for j in zaehler) for f in felder}
     aus["lesbar"] = None if not mit else all(p.journal_lesbar for p in mit)
     aus["abgeschnitten"] = any(j.abgeschnitten for j in zaehler)
-    aus["anfragen_je_minute_max"] = max((m[0] for m in minuten.values()), default=0)
-    aus["tokens_je_minute_max"] = max((m[1] for m in minuten.values()), default=0)
+    aus["anfragen_je_minute_max"] = _gleitend_max(eimer, 0)
+    aus["tokens_je_minute_max"] = _gleitend_max(eimer, 1)
     return aus
 
 
@@ -99,21 +109,30 @@ def _max_oder_none(werte: Sequence[int | None]) -> int | None:
     return max(vorhanden) if vorhanden else None
 
 
+def _ton(s: SchrittErgebnis) -> float | None:
+    """Der erste Ton eines Schritts; ohne Antwort (Zeitüberschreitung) die Wartefrist als Strafwert, bei einem Abbruch keiner."""
+    if s.erster_ton_ms is None and s.zeitueberschreitung and not s.abbruch:
+        return ANTWORT_STRAFE_MS
+    return s.erster_ton_ms
+
+
 def stufe_auswerten(stufe: pl.Stufe, schritte: Sequence[SchrittErgebnis], proben: Sequence[Messung], browser_429: int, konsolenfehler: int,
-                    dauer_s: float = 0.0) -> dict:
+                    dauer_s: float = 0.0, basis_spitze: int | None = None) -> dict:
     cpu = cpu_prozente(proben)
     karten = sorted({s.karte for s in schritte})
+    spitze = _max_oder_none([p.speicher_spitze for p in proben])
+    neu_spitze = spitze if spitze is not None and basis_spitze is not None and spitze > basis_spitze else None  # memory.peak steigt nur, wenn der Lauf es treibt
     return {
         "nummer": stufe.nummer, "name": stufe.name, "sitzungen": stufe.sitzungen, "minuten": stufe.minuten, "snr_db": stufe.snr_db, "dauer_s": round(dauer_s),
         "schritte": len(schritte), "ohne_antwort": sum(1 for s in schritte if s.erster_ton_ms is None and not s.abbruch),
-        "erster_ton_ms": kennzahlen([s.erster_ton_ms for s in schritte]),
-        "erster_ton_je_karte": {k: kennzahlen([s.erster_ton_ms for s in schritte if s.karte == k]) for k in karten},
+        "erster_ton_ms": kennzahlen([_ton(s) for s in schritte]),
+        "erster_ton_je_karte": {k: kennzahlen([_ton(s) for s in schritte if s.karte == k]) for k in karten},
         "verstummen_ms": kennzahlen([s.verstummen_ms for s in schritte]), "verstummen_verpasst": sum(1 for s in schritte if s.verpasst),
         "einwuerfe": sum(1 for s in schritte if s.einwurf_ausgeloest),
         "falsche_unterbrechungen": sum(s.falsche_unterbrechungen for s in schritte), "abbrueche": sum(1 for s in schritte if s.abbruch),
         "zeitueberschreitungen": sum(1 for s in schritte if s.zeitueberschreitung),
         "cpu_prozent": {"proben": len(cpu), "mittel": sum(cpu) / len(cpu) if cpu else None, "p95": quantil(cpu, 0.95), "max": max(cpu, default=None)},
-        "speicher_max": _max_oder_none([p.speicher for p in proben]), "speicher_spitze": _max_oder_none([p.speicher_spitze for p in proben]),
+        "speicher_max": _max_oder_none([p.speicher for p in proben]), "speicher_spitze": spitze, "speicher_spitze_neu": neu_spitze,
         "aufgaben_max": _max_oder_none([p.aufgaben for p in proben]), "journal": journal_summe(proben),
         "browser_429": browser_429, "konsolenfehler": konsolenfehler,
     }
@@ -166,15 +185,31 @@ def _kriterium_cpu(stufen: Sequence[dict]) -> dict:
     if not werte:
         return _k("CPU des Kerns", OFFEN, "keine Messung", grenze, "Bezug (ein Kern oder die ganze Maschine) steht nicht in den Unterlagen, hier ein Kern")
     spitze = max(werte)
-    return _k("CPU des Kerns", BESTANDEN if spitze < pl.CPU_MAX_PROZENT else DURCHGEFALLEN, f"{spitze:.1f} Prozent", grenze)
+    urteil = BESTANDEN if spitze < pl.CPU_MAX_PROZENT else DURCHGEFALLEN
+    if urteil == BESTANDEN and _ohne_last(stufen):
+        return _k("CPU des Kerns", OFFEN, f"{spitze:.1f} Prozent", grenze, HINWEIS_OHNE_LAST)
+    return _k("CPU des Kerns", urteil, f"{spitze:.1f} Prozent", grenze)
+
+
+def _ohne_last(stufen: Sequence[dict]) -> bool:
+    """Wahr, wenn in einer Stufe mit Schritten das Journal des Kerns keine einzige Anfrage an das Modell zeigt: Dann ist nicht belegt, dass die Last den
+    gemessenen Kern erreichte (falscher Slot, falsches Schema, Journal ohne Pipeline-Zeilen)."""
+    return any(s["schritte"] > 0 and s["journal"]["lesbar"] is True and s["journal"]["anfragen"] == 0 for s in stufen)
+
+
+HINWEIS_OHNE_LAST = "im Journal des Kerns erschien in einer Stufe keine Anfrage an das Modell: Es ist nicht belegt, dass die Last diesen Kern erreichte"
 
 
 def _kriterium_speicher(stufen: Sequence[dict]) -> dict:
     werte = [s["speicher_max"] for s in stufen if s["speicher_max"] is not None]
+    werte += [s["speicher_spitze_neu"] for s in stufen if s.get("speicher_spitze_neu") is not None]  # die Spitze zwischen den Stichproben, wenn der Lauf sie trieb
     grenze = f"unter {_gib(pl.SPEICHER_MAX_BYTES)}"
     if not werte:
         return _k("Speicher des Kerns", OFFEN, "keine Messung", grenze)
-    return _k("Speicher des Kerns", BESTANDEN if max(werte) < pl.SPEICHER_MAX_BYTES else DURCHGEFALLEN, _gib(max(werte)), grenze)
+    urteil = BESTANDEN if max(werte) < pl.SPEICHER_MAX_BYTES else DURCHGEFALLEN
+    if urteil == BESTANDEN and _ohne_last(stufen):
+        return _k("Speicher des Kerns", OFFEN, _gib(max(werte)), grenze, HINWEIS_OHNE_LAST)
+    return _k("Speicher des Kerns", urteil, _gib(max(werte)), grenze)
 
 
 def _kriterium_429(stufen: Sequence[dict]) -> dict:
@@ -185,6 +220,10 @@ def _kriterium_429(stufen: Sequence[dict]) -> dict:
         return _k("Kein 429", DURCHGEFALLEN, wert, "0")
     if not stufen or any(s["journal"]["lesbar"] is not True for s in stufen):
         return _k("Kein 429", OFFEN, wert, "0", "das Journal des Kerns war nicht lesbar oder wurde nicht gefragt, ein unlesbares Journal gilt nie als kein 429")
+    if any(s["journal"].get("abgeschnitten") for s in stufen):
+        return _k("Kein 429", OFFEN, wert, "0", "das Journal wurde in einem Abschnitt abgeschnitten (mehr Zeilen als gelesen werden), ältere Zeilen fehlen")
+    if _ohne_last(stufen):
+        return _k("Kein 429", OFFEN, wert, "0", HINWEIS_OHNE_LAST)
     return _k("Kein 429", BESTANDEN, wert, "0")
 
 
@@ -193,15 +232,26 @@ def _kriterium_rate(stufen: Sequence[dict], name: str, feld: str, limit: int | N
     if limit is None:
         return _k(name, OFFEN, f"Spitze {spitze} {einheit}", "70 Prozent des Ratenlimits", "Limit des Schlüssels nicht angegeben (Konsole, --ratenlimit-...)")
     grenze = f"unter {pl.RATENLIMIT_ANTEIL * limit:.0f} {einheit} (70 Prozent von {limit})"
-    if spitze == 0 or any(s["journal"]["lesbar"] is not True for s in stufen):
+    if spitze == 0 or any(s["journal"]["lesbar"] is not True for s in stufen) or any(s["journal"].get("abgeschnitten") for s in stufen):
         return _k(name, OFFEN, f"Spitze {spitze} {einheit}", grenze, "keine Zählung im Journal (nicht lesbar oder keine passenden Zeilen)")
     return _k(name, BESTANDEN if spitze < pl.RATENLIMIT_ANTEIL * limit else DURCHGEFALLEN, f"Spitze {spitze} {einheit}", grenze)
+
+
+def _kriterium_umfang(stufen: Sequence[dict]) -> dict:
+    """Ein Bestehen gilt nur für den vollen Umfang: die Stufen mit 1, 2, 4 und 8 Sitzungen ohne Murmeln, je mindestens 10 Minuten."""
+    grenze = f"Stufen 1, 2, 4 und 8, je mindestens {MIN_STUFE_MINUTEN} Minuten"
+    fehlend = [n for n in VOLLE_STUFEN if _reine_stufe(stufen, n) is None]
+    kurz = [n for n in VOLLE_STUFEN if (s := _reine_stufe(stufen, n)) is not None and s.get("minuten", 0) < MIN_STUFE_MINUTEN]
+    if fehlend or kurz:
+        teile = ([f"Stufen fehlen: {', '.join(map(str, fehlend))}"] if fehlend else []) + ([f"zu kurz: {', '.join(map(str, kurz))}"] if kurz else [])
+        return _k("Umfang des Laufs", OFFEN, "; ".join(teile), grenze, "ein Teillauf kann Hinweise geben, aber nie das Bestehen belegen")
+    return _k("Umfang des Laufs", BESTANDEN, "alle Stufen", grenze)
 
 
 def kriterien_pruefen(stufen: Sequence[dict], abbruchgrund: str, ratenlimit_anfragen: int | None, ratenlimit_tokens: int | None) -> list[dict]:
     """Die Kriterien aus docs/testlabor-wamo.md, 3.7. Murmelstufen zählen nur für Abbrüche, CPU, Speicher und 429, nicht für den ersten Ton."""
     return [*_kriterium_erster_ton(stufen), _kriterium_abbrueche(stufen), _kriterium_cpu(stufen), _kriterium_speicher(stufen),
-            _kriterium_429(stufen),
+            _kriterium_429(stufen), _kriterium_umfang(stufen),
             _kriterium_rate(stufen, "Spitze der Anfragen je Minute", "anfragen_je_minute_max", ratenlimit_anfragen, "Anfragen je Minute"),
             _kriterium_rate(stufen, "Spitze der Tokens je Minute", "tokens_je_minute_max", ratenlimit_tokens, "Tokens je Minute")]
 

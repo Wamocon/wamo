@@ -97,7 +97,7 @@ ZEILEN = [
     "1700000061.0 sokrates2 wamo-core[1]: Pipeline: Anfrage an das Modell beginnt (von Llm)",  # nächste Minute
     "1700000003.0 sokrates2 wamo-core[1]: Pipeline: Unterbrechung (von Transport)",
     "1700000004.0 sokrates2 wamo-core[1]: Pipeline: Fehler von SonioxSTTService#0: connection closed",
-    "1700000005.0 sokrates2 wamo-core[1]: Anthropic Error code: 429 - {'error': {'type': 'rate_limit_error'}}",
+    "1700000005.0 sokrates2 wamo-core[1]: Error code: 429 - {'error': {'type': 'rate_limit_error'}}",
     "1700000006.0 sokrates2 wamo-core[1]: Werkzeug fehlgeschlagen: Too Many Requests",
     "1700000007.0 sokrates2 wamo-core[1]: status_code=429 bei der Anfrage",
     "1700000008.0 sokrates2 wamo-core[1]: Soniox Stream konnte nicht geöffnet werden",
@@ -126,12 +126,11 @@ def test_journal_wird_im_fenster_gezaehlt(ns, tmp_path):
     assert j["token_cache_lesen"] == 31000 and j["token_cache_schreiben"] == 100
 
 
-def test_anfragen_und_tokens_je_minute(ns, tmp_path):
-    minuten = zaehlen(ns, tmp_path)["journal"]["minuten"]
-    erste = str(1700000000 // 60 * 60)
-    zweite = str(1700000061 // 60 * 60)
-    assert minuten[erste] == {"anfragen": 2, "eingabe": 35000}
-    assert minuten[zweite] == {"anfragen": 1, "eingabe": 0}
+def test_anfragen_und_tokens_je_eimer_von_10_sekunden(ns, tmp_path):
+    eimer = zaehlen(ns, tmp_path)["journal"]["eimer"]
+    assert eimer[str(1700000000)] == {"anfragen": 2, "eingabe": 0}  # Sekunde 1 und 2
+    assert eimer[str(1700000010)] == {"anfragen": 0, "eingabe": 35000}  # die Tokenzeilen bei Sekunde 11 und 12
+    assert eimer[str(1700000060)] == {"anfragen": 1, "eingabe": 0}
 
 
 def test_ein_nicht_lesbares_journal_zaehlt_nie_als_null(ns, tmp_path):
@@ -206,7 +205,7 @@ def test_fehlendes_journalctl_ist_nicht_lesbar(ns):
 def test_journal_befehle_enthalten_nur_feste_schlueter_und_keinen_schreibzugriff(ns):
     starten, aufrufe = starter([Prozess([], "insufficient permissions"), Prozess([])])
     ns["journal_holen"]("b", 1.0, 2.0, starten)
-    erlaubt = {"journalctl", "-u", "wamo-core@b.service", "--since=@1", "--until=@3", "-o", "short-unix", "--no-pager", "sudo", "-n", "200000"}
+    erlaubt = {"journalctl", "-u", "wamo-core@b.service", "--since=@1", "--until=@3", "-o", "short-unix", "--no-pager", "sudo", "-n", "200001"}
     for cmd in aufrufe:
         assert set(cmd) <= erlaubt
 
@@ -242,7 +241,7 @@ def antwort_messung(**uebersteuert) -> dict:
              "aufgaben": 30, "journal_lesbar": True,
              "journal": {"zeilen": 10, "r429": 0, "soniox": 0, "anfragen": 4, "unterbrechungen": 1, "pipeline_fehler": 0, "token_zuege": 2,
                          "token_eingabe": 34000, "token_cache_lesen": 30000, "token_cache_schreiben": 0, "abgeschnitten": False,
-                         "minuten": {"960": {"anfragen": 4, "eingabe": 34000}}}}
+                         "eimer": {"960": {"anfragen": 4, "eingabe": 34000}}}}
     basis.update(uebersteuert)
     return basis
 
@@ -266,7 +265,7 @@ def test_server_messen_liest_und_prueft_die_antwort():
     m = server.messen(seit=900.0)
     assert m.zeit == 1000.0 and m.aktiv and m.kerne == 20 and m.cpu_usec == 5_000_000 and m.speicher == 1_000_000_000
     assert m.versatz_s == pytest.approx(0.0)
-    assert m.journal.anfragen == 4 and m.journal.minuten[960] == (4, 34000) and m.journal_lesbar
+    assert m.journal.anfragen == 4 and m.journal.eimer[960] == (4, 34000) and m.journal_lesbar
     host, befehl, eingabe, frist = ssh.aufrufe[0]
     assert host == "wamo-sokrates2" and befehl.startswith("python3 -I -c") and "sudo" not in befehl
     assert json.loads(eingabe) == {"slot": "b", "seit": 900.0} and frist <= 60
@@ -285,7 +284,7 @@ def test_nicht_lesbares_journal_bleibt_ohne_zaehlung():
 
 @pytest.mark.parametrize("kaputt", [
     {"zeit": "x"}, {"aktiv": "ja"}, {"kerne": 0}, {"cpu_usec": -5}, {"speicher": 1.5}, {"aufgaben": "30"}, {"journal_lesbar": 1},
-    {"journal": {"r429": "0"}}, {"journal": {**antwort_messung()["journal"], "minuten": {"x": {"anfragen": 1, "eingabe": 0}}}},
+    {"journal": {"r429": "0"}}, {"journal": {**antwort_messung()["journal"], "eimer": {"x": {"anfragen": 1, "eingabe": 0}}}},
     {"journal": {**antwort_messung()["journal"], "anfragen": -1}},
 ])
 def test_unerwartete_antworten_werden_abgelehnt(kaputt):
@@ -311,6 +310,39 @@ def test_ungueltiger_slot_und_host_werden_vor_dem_ersten_aufruf_abgelehnt():
     for host in ("-oProxyCommand=x", "a b", "", "a;b"):
         with pytest.raises(sv.ServerFehler, match="Host"):
             sv.Server(host, Ssh({}))
+
+
+# ---------- Weg zum Kern (Verwaltung der Laborprofile) mit Frist ----------
+
+def test_kern_remote_laeuft_mit_frist_und_lebenszeichen_und_schwaerzt_das_passwort(monkeypatch):
+    gesehen = {}
+
+    def run(cmd, **kw):
+        gesehen["cmd"], gesehen["kw"] = cmd, kw
+        return subprocess.CompletedProcess(cmd, 0, "ok mit Admin-Geheimnis-1234", "Fehler Admin-Geheimnis-1234")
+
+    monkeypatch.setattr(sv.subprocess, "run", run)
+    monkeypatch.setattr(sv.wl, "admin_passwort", lambda: "Admin-Geheimnis-1234")
+    e = sv.kern_remote("wamo-sokrates2", {"aktion": "status", "schema": "wamo_dev"})
+    assert "Admin-Geheimnis" not in e.stdout + e.stderr and "***" in e.stdout
+    assert gesehen["kw"]["timeout"] == sv.KERN_FRIST_S and "ServerAliveInterval=15" in gesehen["cmd"]
+    assert "Admin-Geheimnis" not in " ".join(gesehen["cmd"]) and "Admin-Geheimnis-1234" in gesehen["kw"]["input"]  # nur über stdin
+
+
+def test_kern_remote_meldet_zeitueberschreitung_und_fehlendes_ssh(monkeypatch):
+    monkeypatch.setattr(sv.wl, "admin_passwort", lambda: "x1234567")
+
+    def zeit(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 5)
+
+    monkeypatch.setattr(sv.subprocess, "run", zeit)
+    assert "Zeitüberschreitung" in sv.kern_remote("h", {}, frist_s=5).stderr
+
+    def weg(cmd, **kw):
+        raise FileNotFoundError("ssh")
+
+    monkeypatch.setattr(sv.subprocess, "run", weg)
+    assert sv.kern_remote("h", {}).code == 1
 
 
 # ---------- ssh_ausfuehren ----------

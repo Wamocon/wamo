@@ -192,7 +192,9 @@ class ServerAttrappe:
         journal = None
         if seit is not None and self.e.lesbar:
             felder = {"zeilen": 0, "r429": 0, "soniox": 0, "anfragen": 0, "unterbrechungen": 0, "pipeline_fehler": 0, "token_zuege": 0,
-                      "token_eingabe": 0, "token_cache_lesen": 0, "token_cache_schreiben": 0, "abgeschnitten": False, "minuten": {}}
+                      "token_eingabe": 0, "token_cache_lesen": 0, "token_cache_schreiben": 0, "abgeschnitten": False, "eimer": {}}
+            gesund = int((t - seit) / 10)  # eine Anfrage je 10 Sekunden: Das Journal zeigt Last
+            felder.update({"anfragen": gesund, "eimer": {int(seit // 10 * 10): (gesund, 0)} if gesund else {}})
             felder.update(self.e.journal(seit, t) if self.e.journal else {})
             journal = sv.JournalZaehlung(**felder)
         return sv.Messung(t + self.e.versatz_s, self.e.aktiv, self.e.kerne, cpu, self.e.speicher(t), self.e.speicher(t), 40,
@@ -265,6 +267,9 @@ class KernAttrappe:
         if aktion == "sperren":
             self.aktiv.discard(kennung)
             return wl.Ergebnis(0, f"Laborprofil {kennung} gesperrt (labor_aktiv = false).", "")
+        if aktion == "loeschen":
+            self.geloescht = getattr(self, "geloescht", []) + [(kennung, nutzlast.get("ab"))]
+            return wl.Ergebnis(0, f"{kennung}: geloescht: nichts", "")
         return wl.Ergebnis(1, "", f"unbekannte Aktion {aktion}")
 
 

@@ -48,6 +48,9 @@ WORKER = textwrap.dedent('''
             sys.stdout.write(json.dumps({"id": 99999, "ok": True}) + "\\n")
             sys.stdout.flush()
             antworten({"id": a["id"], "ok": True, "daten": {"empfangen": sorted(a)}})
+        elif cmd == "umgebung":
+            import os
+            antworten({"id": a["id"], "ok": True, "daten": {"namen": sorted(os.environ)}})
         elif cmd == "schliessen":
             antworten({"id": a["id"], "ok": True, "daten": {}})
             sys.stdout.flush()
@@ -199,6 +202,25 @@ def test_jede_andere_adresse_wird_vor_dem_start_abgelehnt(url, worker):
 def test_standardbefehl_nennt_node_und_den_worker_im_repo():
     befehl = br.standard_befehl()
     assert befehl[0] == "node" and befehl[1].endswith("wamo-last-browser.cjs") and Path(befehl[1]).is_file()
+
+
+def test_der_worker_erbt_keine_schluessel_aus_der_umgebung(treiber, monkeypatch):
+    monkeypatch.setenv("WAMO_ADMIN_DATABASE_URL", "postgres://x:y@z/db")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "nie-weitergeben")
+    t = br.NodeTreiber(treiber.befehl, name="env")
+    try:
+        namen = t.anfrage("umgebung", {}, frist_s=10)["namen"]
+    finally:
+        t.schliessen()
+    assert "WAMO_ADMIN_DATABASE_URL" not in namen and "ANTHROPIC_API_KEY" not in namen
+    assert {k for k in namen if k.upper() in ("PATH", "SYSTEMROOT")}  # was Node und Chrome brauchen, bleibt
+
+
+def test_worker_umgebung_enthaelt_nur_die_erlaubten_namen(monkeypatch):
+    monkeypatch.setenv("WAMO_ADMIN_DATABASE_URL", "x")
+    monkeypatch.setenv("PLAYWRIGHT_MODUL", "pfad")
+    env = br.worker_umgebung()
+    assert "WAMO_ADMIN_DATABASE_URL" not in env and env["PLAYWRIGHT_MODUL"] == "pfad" and set(env) <= set(br.ENV_ERLAUBT)
 
 
 def test_json_aus_der_antwort_enthaelt_nie_die_anfrage_zurueck(treiber):

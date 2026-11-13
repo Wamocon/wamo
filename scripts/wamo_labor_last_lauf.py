@@ -33,6 +33,7 @@ STUFEN_PAUSE_S = 15.0
 GESPRAECH_VERSUCHE = 3
 GESPRAECH_PAUSE_S = 20.0  # nach einem Fehlversuch (der Kern kennt ein Profil bis zu 2 Minuten aus dem Zwischenspeicher)
 MESSFEHLER_MAX = 3
+AB_RESERVE_S = 60.0  # Reserve für die Uhrabweichung beim Löschen der Gesprächstexte im Kern
 
 
 @dataclass
@@ -64,6 +65,7 @@ class Lauf:
         self.abbrueche = 0
         self.messfehler = 0
         self.seit: float | None = None
+        self.basis_spitze: int | None = None
         self.murmeln: dict = {}
         self.stufen: list[dict] = []
         self.schritte: dict[str, list] = {}
@@ -94,6 +96,8 @@ class Lauf:
     def _lauf(self) -> None:
         basis = vb.vorpruefen(self.ein, self.umg)
         self.seit = basis.zeit
+        self.basis_spitze = basis.speicher_spitze
+        self.z.ab = basis.zeit - AB_RESERVE_S
         self._aus(f"Vorprüfung bestanden: {self.ein.sitzungen_max} Profile, Kern wamo-core@{self.ein.slot} aktiv")
         self.murmeln = vb.vorbereiten(self.ein, self.umg, self.z, basis.versatz_s)
         self._aus(f"Vorbereitung fertig: {self.ein.sitzungen_max} Browser angemeldet")
@@ -105,9 +109,9 @@ class Lauf:
                 self.uhr.schlafen(STUFEN_PAUSE_S)
 
     def _beenden(self) -> None:
-        self._stoppen()
-        alt = sg.ignorieren()  # während des Aufräumens zählt kein Signal, ein zweites Strg+C schneidet nichts ab
+        alt = sg.ignorieren()  # ab hier zählt kein Signal mehr, ein zweites Strg+C schneidet weder das Anhalten noch das Aufräumen ab
         try:
+            self._stoppen()
             if self.z.angefasst():
                 self._aus("Aufräumen ...")
                 self.aufraeumen_liste = vb.aufraeumen(self.ein, self.umg, self.z)
@@ -164,8 +168,15 @@ class Lauf:
             if self.messfehler >= MESSFEHLER_MAX:
                 self._abbrechen(f"Messung am Server ausgefallen ({MESSFEHLER_MAX} Fehler in Folge)")
             return
-        self.messfehler = 0
         self.seit = m.zeit
+        fehlt = vb.messung_vollstaendig(m)
+        if fehlt:
+            self.messfehler += 1
+            self._aus(f"Messung unvollständig ({self.messfehler}): {', '.join(fehlt)}")
+            if self.messfehler >= MESSFEHLER_MAX:
+                self._abbrechen(f"Messung unvollständig ({MESSFEHLER_MAX} Mal in Folge), die Schutzgrenzen wirken nicht")
+        else:
+            self.messfehler = 0
         st.proben.append(m)
         self._grenzen(m)
 
@@ -208,7 +219,7 @@ class Lauf:
         self._murmeln(st, aktive, False)
         self._gespraeche_beenden(aktive)
         dauer = self.uhr.jetzt() - st.start if st.start else 0.0
-        self.stufen.append(aw.stufe_auswerten(st.stufe, st.schritte, st.proben, st.browser_429, st.konsole, dauer))
+        self.stufen.append(aw.stufe_auswerten(st.stufe, st.schritte, st.proben, st.browser_429, st.konsole, dauer, self.basis_spitze))
         key = str(st.stufe.nummer)
         self.schritte[key] = [asdict(s) for s in st.schritte]
         self.proben[key] = [_probe_dict(p) for p in st.proben]

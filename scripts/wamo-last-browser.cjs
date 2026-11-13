@@ -7,6 +7,9 @@
 // Meldungen gehen nach stderr und nie mit Zugangsdaten. Passwort und Code stehen nur im Speicher, in keiner Datei, keinem Argument und keiner Ausgabe.
 //
 // Umgebung: PLAYWRIGHT_MODUL  Pfad oder Name von playwright(-core) (wie beim Messskript); der Browser ist das installierte Chrome.
+//
+// Begründete Ausnahme zur Funktionslänge: seite() ist eine einzige lange Funktion, weil Playwright sie als Ganzes in die Seite schickt (addInitScript serialisiert
+// sie, sie darf nichts aus Node verwenden). Ihre inneren Funktionen sind kurz. Die Datei ist unter 800 Zeilen.
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -265,7 +268,7 @@ class Sitzung {
       args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--autoplay-policy=no-user-gesture-required"],
     });
     // Das Zertifikat wird geprüft (die WAMO-CA muss im Benutzerspeicher stehen): kein ignoreHTTPSErrors
-    this.ctx = await this.browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ["microphone"] });
+    this.ctx = await this.browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ["microphone"], serviceWorkers: "block" });
     await this.ctx.addInitScript(seite);
     await this.ctx.route("**/*", (route) => {
       if (herkunftErlaubt(route.request().url())) return route.continue();

@@ -340,6 +340,59 @@ def test_abbruch_von_aussen_raeumt_auf_und_meldet_es(tmp_path, clips):
     assert w.treiber[0].geschlossen and "daten_loeschen" in w.protokoll.namen("dienst") and w.kern.aktiv == set()
 
 
+def test_vorpruefung_verlangt_ein_lesbares_journal_speicher_und_cpu(tmp_path, clips):
+    w = Welt(tmp_path, clips)
+    w.server_einstellung.lesbar = False
+    e = w.lauf()
+    assert "unvollständig" in e["abbruchgrund"] and "Journal" in e["abbruchgrund"]
+    assert "aktivieren" not in w.protokoll.namen("kern") and e["aufraeumen"] == []
+
+
+def test_waehrend_des_laufs_unvollstaendige_messungen_beenden_den_lauf(tmp_path, clips):
+    import wamo_labor_last_server as sv
+    w = Welt(tmp_path, clips, sitzungen=(2, 4))
+    echt = w.server.messen
+    zaehler = {"n": 0}
+
+    def messen(seit):
+        m = echt(seit)
+        zaehler["n"] += 1
+        if zaehler["n"] > 3 and seit is not None:
+            return sv.Messung(m.zeit, m.aktiv, m.kerne, m.cpu_usec, m.speicher, m.speicher_spitze, m.aufgaben, False, None, m.versatz_s)
+        return m
+
+    w.server.messen = messen
+    e = w.lauf()
+    assert "unvollständig" in e["abbruchgrund"] and all(a["ok"] for a in e["aufraeumen"])
+
+
+def test_gespraechstexte_im_kern_werden_ab_dem_beginn_des_laufs_nach_dem_sperren_geloescht(tmp_path, clips):
+    w = Welt(tmp_path, clips, sitzungen=(2,))
+    e = w.lauf()
+    geloescht = w.kern.geloescht
+    assert [k for k, _ in geloescht] == ["labor-01", "labor-02"]
+    ab = geloescht[0][1]
+    assert ab.endswith("+00:00") and ab == geloescht[1][1]
+    assert w.protokoll.index("kern", "sperren") < w.protokoll.index("kern", "loeschen")
+    assert any(a["schritt"].startswith("Gesprächstexte im Kern") and a["ok"] for a in e["aufraeumen"])
+
+
+def test_kerndaten_behalten_loescht_im_kern_nichts(tmp_path, clips):
+    w = Welt(tmp_path, clips, sitzungen=(1,), kerndaten_loeschen=False)
+    w.lauf()
+    assert "loeschen" not in w.protokoll.namen("kern")
+
+
+def test_scheitert_das_loeschen_im_kern_laufen_die_anderen_schritte_weiter(tmp_path, clips):
+    w = Welt(tmp_path, clips, sitzungen=(1,))
+    w.kern.fehler = {"loeschen": "Sperrfrist laeuft noch"}
+    e = w.lauf()
+    schritte = {a["schritt"]: a for a in e["aufraeumen"]}
+    kern = next(a for k, a in schritte.items() if k.startswith("Gesprächstexte im Kern"))
+    assert kern["ok"] is False and "labor-01" in kern["text"]
+    assert schritte["Temp-Dateien gelöscht"]["ok"] and schritte["Plätze geleert"]["ok"]
+
+
 # ---------- Fehler in der Vorbereitung und beim Aufräumen ----------
 
 def test_scheitert_ein_browser_wird_alles_zurueckgenommen(tmp_path, clips):

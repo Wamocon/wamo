@@ -40,6 +40,7 @@ import json, os, re, subprocess, sys, time
 CGROUP_WURZEL = "/sys/fs/cgroup/system.slice"
 SLOTS = ("a", "b")
 MAX_ZEILEN = 200000
+EIMER_S = 10  # Anfragen und Tokens werden in Eimern von 10 Sekunden gezählt, die Auswertung bildet daraus gleitende Minuten
 JOURNAL_FRIST_S = 40
 R429 = re.compile(r"(?i)error code: 429|rate_limit_error|ratelimiterror|too many requests|status(?:_code)?\W{1,3}429\b|http/\d(?:\.\d)? 429\b")
 SONIOX = re.compile(r"(?i)soniox")
@@ -79,7 +80,7 @@ def cgroup_lesen(ordner):
 
 def journal_befehl(slot, seit, bis, sudo):
     cmd = ["journalctl", "-u", "wamo-core@%s.service" % slot, "--since=@%d" % int(seit), "--until=@%d" % (int(bis) + 1),
-           "-o", "short-unix", "--no-pager", "-n", str(MAX_ZEILEN)]
+           "-o", "short-unix", "--no-pager", "-n", str(MAX_ZEILEN + 1)]
     return ["sudo", "-n"] + cmd if sudo else cmd
 
 
@@ -100,7 +101,7 @@ def journal_holen(slot, seit, bis, starten=subprocess.Popen):
     return False, iter(())
 
 
-def token_zaehlen(z, minute, text):
+def token_zaehlen(z, eimer, text):
     try:
         daten = json.loads(text.split("LATENZ_TOKEN ", 1)[1])
     except ValueError:
@@ -112,15 +113,15 @@ def token_zaehlen(z, minute, text):
     z["token_eingabe"] += daten["eingabe"]
     z["token_cache_lesen"] += daten["cache_lesen"]
     z["token_cache_schreiben"] += daten["cache_schreiben"]
-    minute()["eingabe"] += daten["eingabe"]
+    eimer()["eingabe"] += daten["eingabe"]
 
 
 def zeile_zaehlen(z, ts, text):
-    def minute():
-        return z["minuten"].setdefault(str(int(ts // 60) * 60), {"anfragen": 0, "eingabe": 0})
+    def eimer():
+        return z["eimer"].setdefault(str(int(ts // EIMER_S) * EIMER_S), {"anfragen": 0, "eingabe": 0})
     if "Pipeline: Anfrage an das Modell beginnt" in text:
         z["anfragen"] += 1
-        minute()["anfragen"] += 1
+        eimer()["anfragen"] += 1
     if "Pipeline: Unterbrechung" in text:
         z["unterbrechungen"] += 1
     if "Pipeline: Fehler von" in text:
@@ -130,12 +131,12 @@ def zeile_zaehlen(z, ts, text):
     if SONIOX.search(text) and SONIOX_FEHLER.search(text):
         z["soniox"] += 1
     if "LATENZ_TOKEN " in text:
-        token_zaehlen(z, minute, text)
+        token_zaehlen(z, eimer, text)
 
 
 def zaehlen(zeilen, seit, bis):
     z = {"zeilen": 0, "r429": 0, "soniox": 0, "anfragen": 0, "unterbrechungen": 0, "pipeline_fehler": 0, "token_zuege": 0,
-         "token_eingabe": 0, "token_cache_lesen": 0, "token_cache_schreiben": 0, "abgeschnitten": False, "minuten": {}}
+         "token_eingabe": 0, "token_cache_lesen": 0, "token_cache_schreiben": 0, "abgeschnitten": False, "eimer": {}}
     for zeile in zeilen:
         if z["zeilen"] >= MAX_ZEILEN:
             z["abgeschnitten"] = True
@@ -326,6 +327,29 @@ if __name__ == "__main__":
 '''
 
 
+KERN_FRIST_S = 120
+KERN_LOESCH_FRIST_S = 900  # das Löschen im Kern wartet am Server selbst die Sperrfrist von 3 Minuten ab (höchstens dreimal)
+
+
+def kern_remote(host: str, nutzlast: dict, frist_s: float | None = None) -> wl.Ergebnis:
+    """Wie wamo_labor.run_remote (Verwaltung der Laborprofile über die Rolle wamo_admin), aber mit Frist und Lebenszeichen: Ein hängender ssh-Aufruf
+    bleibt nie stehen, sodass auch das Aufräumen am Ende kommt. Das Passwort der Rolle geht nur über stdin und wird aus jeder Ausgabe geschwärzt."""
+    frist_s = frist_s or (KERN_LOESCH_FRIST_S if nutzlast.get("aktion") == "loeschen" else KERN_FRIST_S)
+    db_passwort = wl.admin_passwort()
+    programm = base64.b64encode(wl.remote_programm().encode("utf-8")).decode("ascii")
+    befehl = f"python3 -c \"import base64;exec(base64.b64decode('{programm}').decode('utf-8'))\""
+    eingabe = json.dumps({**nutzlast, "db_passwort": db_passwort}, ensure_ascii=False)
+    try:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", host, befehl],
+                           input=eingabe, capture_output=True, text=True, encoding="utf-8", timeout=frist_s)
+    except subprocess.TimeoutExpired:
+        return wl.Ergebnis(1, "", f"Zeitüberschreitung: Der Weg zum Kern antwortete nicht binnen {int(frist_s)} Sekunden.")
+    except OSError as e:
+        return wl.Ergebnis(1, "", f"ssh ließ sich nicht starten ({type(e).__name__}).")
+    geheim = (db_passwort, nutzlast.get("password"))
+    return wl.Ergebnis(r.returncode, wl._unkenntlich(r.stdout[:MAX_AUSGABE], *geheim), wl._unkenntlich(r.stderr[:MAX_AUSGABE], *geheim))
+
+
 class ServerFehler(Exception):
     """Ein Weg zum Server ist gescheitert. Der Text ist für die Person gedacht und enthält nie ein Geheimnis oder einen Gesprächstext."""
 
@@ -343,7 +367,7 @@ class JournalZaehlung:
     token_cache_lesen: int
     token_cache_schreiben: int
     abgeschnitten: bool
-    minuten: dict  # Minute (Sekunden seit 1970, auf die Minute abgerundet) -> (Anfragen, Eingabe-Tokens)
+    eimer: dict  # Eimer von 10 Sekunden (Sekunden seit 1970, abgerundet) -> (Anfragen, Eingabe-Tokens)
 
 
 @dataclass(frozen=True)
@@ -439,7 +463,7 @@ def _flag(d: dict, name: str, leer_ok: bool = False) -> bool | None:
     return wert
 
 
-def _minuten(roh: object) -> dict:
+def _eimer(roh: object) -> dict:
     if not isinstance(roh, dict):
         raise ServerFehler(UNERWARTET)
     aus = {}
@@ -457,7 +481,7 @@ def _journal(roh: object) -> JournalZaehlung | None:
         raise ServerFehler(UNERWARTET)
     zahlen = {n: _ganz(roh, n) for n in ("zeilen", "r429", "soniox", "anfragen", "unterbrechungen", "pipeline_fehler", "token_zuege",
                                           "token_eingabe", "token_cache_lesen", "token_cache_schreiben")}
-    return JournalZaehlung(**zahlen, abgeschnitten=_flag(roh, "abgeschnitten"), minuten=_minuten(roh.get("minuten")))
+    return JournalZaehlung(**zahlen, abgeschnitten=_flag(roh, "abgeschnitten"), eimer=_eimer(roh.get("eimer")))
 
 
 def messung_lesen(daten: dict, versatz_s: float) -> Messung:

@@ -148,6 +148,21 @@ def test_falsches_bestaetigungswort_wird_abgelehnt(tmp_path, clips, wort):
     assert cli.main(basis(tmp_path, clips, "--ausfuehren", "--bestaetigung", wort), umgebung_bauen=fabrik) == 2 and fabrik.aufrufe == 0
 
 
+@pytest.mark.parametrize("abkuerzung", [("--ausf", "--bestaetigung", "LASTTEST"), ("--ausfuehren", "--best", "LASTTEST")])
+def test_abgekuerzte_schalter_gelten_nie(tmp_path, clips, abkuerzung, capsys):
+    fabrik = Fabrik(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        cli.main(basis(tmp_path, clips, *abkuerzung), umgebung_bauen=fabrik)
+    assert e.value.code == 2 and fabrik.aufrufe == 0
+
+
+def test_kerndaten_behalten_steht_im_plan(tmp_path, clips, capsys):
+    cli.main(basis(tmp_path, clips), umgebung_bauen=Fabrik(tmp_path))
+    assert "Gesprächstexte im Kern ab Beginn des Laufs löschen" in capsys.readouterr().out
+    cli.main(basis(tmp_path, clips, "--kerndaten-behalten"), umgebung_bauen=Fabrik(tmp_path))
+    assert "BLEIBEN" in capsys.readouterr().out
+
+
 def test_bestaetigung_allein_bleibt_ein_trockenlauf(tmp_path, clips, capsys):
     fabrik = Fabrik(tmp_path)
     assert cli.main(basis(tmp_path, clips, "--bestaetigung", "LASTTEST"), umgebung_bauen=fabrik) == 0

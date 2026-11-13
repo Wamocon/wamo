@@ -46,6 +46,15 @@ def standard_befehl() -> list[str]:
     return ["node", str(WORKER)]
 
 
+ENV_ERLAUBT = ("PATH", "PATHEXT", "SystemRoot", "SYSTEMROOT", "windir", "ComSpec", "USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+               "TEMP", "TMP", "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "PLAYWRIGHT_MODUL", "NODE_PATH", "LANG", "LC_ALL", "DISPLAY", "XDG_RUNTIME_DIR")
+
+
+def worker_umgebung() -> dict[str, str]:
+    """Nur die Umgebung, die Node und Chrome brauchen. Der Worker erbt nie die Anmeldung der Datenbankrolle (WAMO_ADMIN_DATABASE_URL) oder andere Schlüssel."""
+    return {k: v for k, v in os.environ.items() if k in ENV_ERLAUBT}
+
+
 def _system32(name: str) -> str:
     return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", name)
 
@@ -100,7 +109,7 @@ class NodeTreiber:
     def _schwaerzen(self, text: str) -> str:
         for g in sorted(self._geheim, key=len, reverse=True):
             text = text.replace(g, "***")
-        return "".join(c if c.isprintable() else " " for c in text).strip()[:300]
+        return "".join(c if c.isprintable() else " " for c in text).strip()[:300]  # erst schwärzen, dann kürzen: Ein Wert wird nie angeschnitten gezeigt
 
     # ---- Prozess ----
 
@@ -110,7 +119,7 @@ class NodeTreiber:
                 return
             try:
                 self._prozess = subprocess.Popen(
-                    self.befehl, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                    self.befehl, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=worker_umgebung(),
                     errors="replace", bufsize=1, start_new_session=os.name != "nt", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             except OSError as e:
                 raise TreiberFehler(f"Der Browser-Worker ist nicht gestartet ({type(e).__name__}, ist Node installiert?)") from None

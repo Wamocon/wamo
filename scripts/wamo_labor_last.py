@@ -11,6 +11,7 @@ Aufrufe (im Repo-Hauptordner, nur Standardbibliothek plus Node mit Playwright f�
   python scripts/wamo_labor_last.py clips                                 # fehlende Sprechproben mit der Windows-Stimme erzeugen
 Optionen: --sitzungen 1,2,4,8  --minuten 15 (höchstens 20)  --murmeln 20,10,5 (Stufen mit 8 Sitzungen und Signal-Rausch-Abstand in dB)  --murmeln-datei WAV
 --seed 1  --lauf NAME  --schema wamo_dev  --host wamo-sokrates2  --slot b  --einwilligung 1  --freigabe ablehnen|freigeben|keine  --kopflos
+--kerndaten-behalten (die Gesprächstexte im Kern am Ende nicht löschen)
 --ratenlimit-anfragen N  --ratenlimit-tokens N  --preis-eingabe USD  --preis-ausgabe USD  (Dollar je Million Tokens)  --kosten-obergrenze USD
 --clips-ordner, --ausgabe-ordner, --umschlag-datei (Standard unter %USERPROFILE%\\.wamo-labor, nie im Repo).
 
@@ -82,9 +83,9 @@ def _ausserhalb_des_repos(pfad: Path, was: str) -> Path:
 
 
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="wamo_labor_last", description="Lasttest für das WAMO-Testlabor (Standard: Trockenlauf)")
+    p = argparse.ArgumentParser(prog="wamo_labor_last", description="Lasttest für das WAMO-Testlabor (Standard: Trockenlauf)", allow_abbrev=False)
     sub = p.add_subparsers(dest="befehl", required=True)
-    lauf = sub.add_parser("lauf", help="Plan zeigen (Standard) oder mit --ausfuehren und --bestaetigung LASTTEST wirklich laufen")
+    lauf = sub.add_parser("lauf", help="Plan zeigen (Standard) oder mit --ausfuehren und --bestaetigung LASTTEST wirklich laufen", allow_abbrev=False)
     lauf.add_argument("--sitzungen", default="1,2,4,8")
     lauf.add_argument("--minuten", type=int, default=pl.STANDARD_STUFE_MINUTEN)
     lauf.add_argument("--murmeln", default="")
@@ -96,6 +97,7 @@ def _parser() -> argparse.ArgumentParser:
     lauf.add_argument("--slot", default="b", choices=("a", "b"))
     lauf.add_argument("--einwilligung", type=int, default=1)
     lauf.add_argument("--freigabe", default="ablehnen", choices=FREIGABEN)
+    lauf.add_argument("--kerndaten-behalten", action="store_true", help="die Gesprächstexte im Kern am Ende nicht löschen")
     lauf.add_argument("--kopflos", action="store_true", help="Chrome ohne Fenster (nicht erprobt)")
     lauf.add_argument("--ratenlimit-anfragen", type=int)
     lauf.add_argument("--ratenlimit-tokens", type=int)
@@ -127,7 +129,7 @@ def einstellungen_bauen(args: argparse.Namespace) -> Einstellungen:
     return Einstellungen(
         lauf=lauf, seed=args.seed, stufen=stufen, clips_ordner=Path(args.clips_ordner or orte["clips"]).expanduser().resolve(),
         ausgabe_ordner=_ausserhalb_des_repos(Path(args.ausgabe_ordner or orte["ausgabe"]), "Der Ausgabeordner"), schema=args.schema, host=args.host,
-        slot=args.slot, einwilligung=args.einwilligung, murmeln_datei=murmeln, freigabe=args.freigabe, kopflos=args.kopflos,
+        slot=args.slot, einwilligung=args.einwilligung, murmeln_datei=murmeln, freigabe=args.freigabe, kopflos=args.kopflos, kerndaten_loeschen=not args.kerndaten_behalten,
         ratenlimit_anfragen=args.ratenlimit_anfragen, ratenlimit_tokens=args.ratenlimit_tokens, kosten=kosten)
 
 
@@ -164,7 +166,9 @@ def plan_text(ein: Einstellungen, echt: bool = False) -> list[str]:
         f"Abbruch bei: einem 429, mehr als {pl.MAX_ABBRUECHE} Abbrüchen, Speicher des Kerns über {pl.ABBRUCH_SPEICHER_BYTES // pl.GIB} GiB, "
         "dreimal ausgefallener Messung",
         f"Höchstgrenzen im Code: höchstens {pl.MAX_SITZUNGEN} Sitzungen, höchstens {pl.MAX_STUFE_MINUTEN} Minuten je Stufe",
-        "Aufräumen (immer): Gespräche beenden, Browser schließen, Profile sperren, Durchläufe beenden, Plätze leeren, Nachweis, Temp-Dateien löschen",
+        "Aufräumen (immer): Gespräche beenden, Browser schließen, Profile sperren, Durchläufe beenden, Plätze leeren, "
+        + ("Gesprächstexte im Kern ab Beginn des Laufs löschen, " if ein.kerndaten_loeschen else "Gesprächstexte im Kern BLEIBEN (--kerndaten-behalten), ")
+        + "Nachweis, Temp-Dateien löschen",
     ]
     return zeilen
 
@@ -201,7 +205,7 @@ def echte_umgebung(ein: Einstellungen, args: argparse.Namespace) -> Umgebung:
         raise pl.EingabeFehler(str(e)) from None
     return Umgebung(
         uhr=Echtzeit(), treiber_fabrik=lambda i: br.NodeTreiber(br.standard_befehl(), name=f"s{i + 1}"), server=sv.Server(ein.host, slot=ein.slot),
-        dienst=sv.Dienst(ein.host), kern=wl.run_remote, umschlag=ufm.Umschlag(umschlag_pfad),
+        dienst=sv.Dienst(ein.host), kern=sv.kern_remote, umschlag=ufm.Umschlag(umschlag_pfad),
         tempordner_fabrik=lambda: Path(tempfile.mkdtemp(prefix="wamo-last-")), ausgabe=lambda t: print(t, flush=True),
         speichern=lambda e: ergebnis_schreiben(ein.ausgabe_ordner, ein.lauf, e))
 

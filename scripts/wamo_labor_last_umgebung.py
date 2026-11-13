@@ -38,6 +38,7 @@ class Einstellungen:
     ratenlimit_tokens: int | None = None
     annahmen: Annahmen = field(default_factory=Annahmen)
     kosten: Kosten | None = None
+    kerndaten_loeschen: bool = True  # am Ende die Gesprächstexte der Profile im Zeitfenster des Laufs im Kern löschen (wamo_labor.py loeschen --ab)
 
     @property
     def sitzungen_max(self) -> int:
@@ -73,6 +74,7 @@ class Zustand:
     plaetze: list[int] = field(default_factory=list)
     treiber: dict[int, object] = field(default_factory=dict)
     gespraeche: set[int] = field(default_factory=set)
+    ab: float | None = None  # Zeitpunkt auf der Uhr des Servers, ab dem im Kern gelöscht wird (Beginn des Laufs, mit Reserve)
 
     def angefasst(self) -> bool:
         return bool(self.tempordner or self.profile or self.plaetze or self.treiber)

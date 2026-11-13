@@ -4,12 +4,13 @@ Vorprüfung   nur lesen: Adresse, Sprechproben, Zugangsdaten (nur ob ein Seed da
              (läuft, Speicher). Scheitert eine Prüfung, wurde nichts verändert.
 Vorbereitung Profile freischalten (wamo_labor.py aktivieren), Durchläufe öffnen (Betreuer-Schnittstelle, Einwilligung Version 1), Browser starten und
              anmelden (Passwort und Code gehen nur an den Browser-Treiber, nie in eine Ausgabe).
-Aufräumen    Gespräche beenden, Browser schließen, Profile sperren, Durchläufe beenden, Plätze leeren, Nachweis, Temp-Dateien löschen. Jeder Schritt läuft
+Aufräumen    Gespräche beenden, Browser schließen, Profile sperren, Durchläufe beenden, Plätze leeren, Gesprächstexte der Profile im Kern löschen (ab Beginn des Laufs), Nachweis, Temp-Dateien löschen. Jeder Schritt läuft
              für sich: Scheitert einer, laufen die übrigen weiter, und der Bericht nennt ihn. Es wird nur zurückgenommen, was der Lauf angefasst hat.
 """
 from __future__ import annotations
 
 import shutil
+from datetime import datetime, timezone
 from functools import partial
 from typing import Callable
 
@@ -81,14 +82,31 @@ def _umschlag_pruefen(ein: Einstellungen, umg: Umgebung) -> None:
             raise VorpruefFehler(f"Für {kennung} fehlt der Seed in der Umschlag-Datei (scripts/wamo_labor_faktoren.py einrichten)")
 
 
+def messung_vollstaendig(m: sv.Messung) -> list[str]:
+    """Was an einer Messung fehlt. Ohne Journal, Speicher und CPU-Zeit wirken die Schutzgrenzen (429, Speicher) nicht."""
+    fehlt = []
+    if m.journal_lesbar is not True:
+        fehlt.append("Journal (journalctl ohne Leserecht, auch mit sudo -n nicht)")
+    if m.speicher is None:
+        fehlt.append("Speicher (memory.current)")
+    if m.cpu_usec is None:
+        fehlt.append("CPU-Zeit (cpu.stat)")
+    return fehlt
+
+
 def _kern_pruefen(ein: Einstellungen, umg: Umgebung) -> sv.Messung:
+    """Zwei Messungen: die erste liefert Serveruhr und Zustand, die zweite fragt das Journal ab (die Schutzgrenzen brauchen es)."""
     try:
-        m = umg.server.messen(None)
+        erste = umg.server.messen(None)
+        m = umg.server.messen(erste.zeit - 5)
     except sv.ServerFehler as e:
         raise VorpruefFehler(f"Messung am Kern: {kurz(e)}") from None
     if not m.aktiv:
         raise VorpruefFehler(f"Der Kern wamo-core@{ein.slot} läuft nicht (keine cgroup)")
-    if m.speicher is not None and m.speicher >= pl.ABBRUCH_SPEICHER_BYTES:
+    fehlt = messung_vollstaendig(m)
+    if fehlt:
+        raise VorpruefFehler("Die Messung am Kern ist unvollständig, die Schutzgrenzen wirkten nicht: " + ", ".join(fehlt))
+    if m.speicher >= pl.ABBRUCH_SPEICHER_BYTES:
         raise VorpruefFehler(f"Der Speicher des Kerns liegt schon über {pl.ABBRUCH_SPEICHER_BYTES / GIB:.0f} GiB")
     return m
 
@@ -216,6 +234,23 @@ def _nachweis(ein: Einstellungen, umg: Umgebung, z: Zustand) -> None:
         raise RuntimeError("; ".join(probleme))
 
 
+def _iso_utc(zeit: float) -> str:
+    return datetime.fromtimestamp(zeit, timezone.utc).isoformat(timespec="seconds")
+
+
+def _kern_daten_loeschen(ein: Einstellungen, umg: Umgebung, z: Zustand) -> None:
+    """Löscht die Gesprächstexte der Profile im Kern ab dem Beginn des Laufs (wamo_labor.py loeschen --ab). Das Skript am Server wartet die Sperrfrist selbst ab."""
+    if z.ab is None:
+        raise RuntimeError("kein Zeitpunkt für das Löschen bekannt")
+    schlecht = []
+    for kennung in z.profile:
+        code = wl.main(["loeschen", "--kennung", kennung, "--ab", _iso_utc(z.ab), "--schema", ein.schema, "--host", ein.host, "--ausfuehren"], remote=umg.kern)
+        if code != 0:
+            schlecht.append(kennung)
+    if schlecht:
+        raise RuntimeError("Gesprächstexte im Kern nicht gelöscht für " + ", ".join(schlecht))
+
+
 def _temp_loeschen(z: Zustand) -> None:
     if z.tempordner is not None and z.tempordner.exists():
         shutil.rmtree(z.tempordner)
@@ -229,6 +264,7 @@ def aufraeumen(ein: Einstellungen, umg: Umgebung, z: Zustand) -> list[dict]:
         ("Profile gesperrt", bool(z.profile), lambda: _profile_sperren(ein, umg, z)),
         ("Durchläufe beendet", bool(z.plaetze), lambda: _je_platz(z, umg.dienst.durchlauf_beenden, "nicht beendet")),
         ("Plätze geleert", bool(z.plaetze), lambda: _je_platz(z, umg.dienst.daten_loeschen, "nicht geleert")),
+        ("Gesprächstexte im Kern gelöscht (ab Beginn des Laufs)", bool(z.profile) and ein.kerndaten_loeschen, lambda: _kern_daten_loeschen(ein, umg, z)),
         ("Nachweis: Profile gesperrt, Plätze leer", bool(z.profile or z.plaetze), lambda: _nachweis(ein, umg, z)),
         ("Temp-Dateien gelöscht", z.tempordner is not None, lambda: _temp_loeschen(z)),
     ]

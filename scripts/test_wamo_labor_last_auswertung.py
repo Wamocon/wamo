@@ -30,7 +30,7 @@ def schritt(karte="G3", ton=1000.0, sitzung=0, **kw) -> aw.SchrittErgebnis:
 
 def journal(**kw) -> sv.JournalZaehlung:
     basis = dict(zeilen=10, r429=0, soniox=0, anfragen=4, unterbrechungen=0, pipeline_fehler=0, token_zuege=0, token_eingabe=0,
-                 token_cache_lesen=0, token_cache_schreiben=0, abgeschnitten=False, minuten={})
+                 token_cache_lesen=0, token_cache_schreiben=0, abgeschnitten=False, eimer={})
     basis.update(kw)
     return sv.JournalZaehlung(**basis)
 
@@ -67,13 +67,20 @@ def test_cpu_ueberspringt_luecken_ruecksetzer_und_stillstand_der_uhr():
 # ---------- Journal ----------
 
 def test_journal_wird_ueber_die_proben_summiert_und_je_minute_zusammengefuehrt():
-    proben = [probe(1, jr=journal(r429=0, soniox=1, anfragen=2, minuten={60: (2, 100)}, token_zuege=1, token_eingabe=100)),
-              probe(2, jr=journal(r429=2, soniox=0, anfragen=3, minuten={60: (1, 50), 120: (2, 70)}, token_zuege=2, token_eingabe=150)),
+    proben = [probe(1, jr=journal(r429=0, soniox=1, anfragen=2, eimer={60: (2, 100)}, token_zuege=1, token_eingabe=100)),
+              probe(2, jr=journal(r429=2, soniox=0, anfragen=3, eimer={60: (1, 50), 120: (2, 70)}, token_zuege=2, token_eingabe=150)),
               probe(3)]  # ohne Journal: zählt nicht mit
     j = aw.journal_summe(proben)
     assert j["lesbar"] is True and j["r429"] == 2 and j["soniox"] == 1 and j["anfragen"] == 5
     assert j["anfragen_je_minute_max"] == 3 and j["tokens_je_minute_max"] == 150 and j["token_zuege"] == 3
     assert j["token_eingabe"] == 250
+
+
+def test_spitze_je_minute_ist_ein_gleitendes_fenster_ueber_eimer_von_10_sekunden():
+    # ein Stoß über die Minutengrenze (Sekunde 50 bis 70) darf nicht halbiert werden
+    j = journal(eimer={40: (1, 10), 50: (4, 40), 60: (4, 40), 70: (1, 10), 200: (2, 20)})
+    s = aw.journal_summe([probe(1, jr=j)])
+    assert s["anfragen_je_minute_max"] == 10 and s["tokens_je_minute_max"] == 100  # Fenster ab 40: 1 + 4 + 4 + 1
 
 
 def test_ein_unlesbares_journal_macht_die_zaehlung_unvollstaendig():
@@ -122,12 +129,13 @@ def test_stufe_ohne_daten_hat_leere_kennzahlen_und_keine_zahlen_aus_dem_nichts()
 # ---------- Kriterien ----------
 
 def stufen_dict(sitzungen=1, snr=None, p95=1500.0, cpu=40.0, speicher=int(1.5 * GIB), r429=0, br429=0, abbrueche=0, lesbar=True,
-                anfragen_min=10, tokens_min=100000, proben=3, n=10):
-    return {"sitzungen": sitzungen, "snr_db": snr, "name": f"{sitzungen} Sitzungen",
+                anfragen_min=10, tokens_min=100000, proben=3, n=10, minuten=15, anfragen=20, abgeschnitten=False, spitze_neu=None, schritte=10):
+    return {"sitzungen": sitzungen, "snr_db": snr, "name": f"{sitzungen} Sitzungen", "minuten": minuten, "schritte": schritte, "speicher_spitze_neu": spitze_neu,
             "erster_ton_ms": {"n": n, "p50": p95 / 2, "p95": p95, "max": p95},
             "abbrueche": abbrueche, "cpu_prozent": {"proben": proben, "mittel": cpu / 2, "p95": cpu, "max": cpu},
             "speicher_max": speicher, "browser_429": br429,
-            "journal": {"lesbar": lesbar, "r429": r429, "anfragen_je_minute_max": anfragen_min, "tokens_je_minute_max": tokens_min}}
+            "journal": {"lesbar": lesbar, "r429": r429, "anfragen": anfragen, "abgeschnitten": abgeschnitten, "anfragen_je_minute_max": anfragen_min,
+                "tokens_je_minute_max": tokens_min}}
 
 
 def status(kriterien, name_teil):
@@ -137,12 +145,12 @@ def status(kriterien, name_teil):
 
 
 def alle_bestehen():
-    return [stufen_dict(1, p95=1500.0), stufen_dict(8, p95=2200.0, cpu=55.0)]
+    return [stufen_dict(1, p95=1500.0), stufen_dict(2, p95=1700.0), stufen_dict(4, p95=1900.0), stufen_dict(8, p95=2200.0, cpu=55.0)]
 
 
 def test_alles_im_gruenen_bereich_besteht_ausser_dem_ratenlimit_ohne_angabe():
     k = aw.kriterien_pruefen(alle_bestehen(), abbruchgrund="", ratenlimit_anfragen=None, ratenlimit_tokens=None)
-    for teil in ("p95 des ersten Tons bei 8", "1,5-fache", "Abbrüche", "CPU", "Speicher", "429"):
+    for teil in ("p95 des ersten Tons bei 8", "1,5-fache", "Abbrüche", "CPU", "Speicher", "429", "Umfang"):
         assert status(k, teil) == "bestanden", teil
     assert status(k, "Anfragen je Minute") == "offen" and status(k, "Tokens je Minute") == "offen"
     assert aw.gesamturteil(k, "") == "offen"
@@ -220,6 +228,49 @@ def test_gesamturteil_durchgefallen_schlaegt_offen():
 def test_vorzeitiges_ende_ohne_durchfall_ist_nur_offen():
     k = aw.kriterien_pruefen(alle_bestehen(), "", 50, 200000)
     assert aw.gesamturteil(k, "Abbruch mit Strg+C") == "offen"
+
+
+def test_unbeantwortete_schritte_zaehlen_mit_der_wartefrist_in_den_ersten_ton():
+    schritte = [schritt(ton=1000.0) for _ in range(18)] + [schritt(ton=None, zeitueberschreitung=True), schritt(ton=None, zeitueberschreitung=True)]
+    d = aw.stufe_auswerten(pl.stufen_bauen([8], 15, [])[0], schritte, [], 0, 0)
+    assert d["erster_ton_ms"]["n"] == 20 and d["erster_ton_ms"]["p95"] == aw.ANTWORT_STRAFE_MS and d["ohne_antwort"] == 2
+    # ein Abbruch ist keine Antwortzeit
+    abbruch = aw.stufe_auswerten(pl.stufen_bauen([8], 15, [])[0], [schritt(ton=None, abbruch="Gespräch beendet")], [], 0, 0)
+    assert abbruch["erster_ton_ms"]["n"] == 0
+
+
+def test_stumme_sitzungen_machen_das_p95_zum_durchfall():
+    k = aw.kriterien_pruefen([stufen_dict(8, p95=aw.ANTWORT_STRAFE_MS)], "", None, None)
+    assert status(k, "bei 8") == "durchgefallen"
+
+
+def test_neue_speicherspitze_zaehlt_mit_auch_wenn_die_stichproben_niedrig_waren():
+    d = aw.stufe_auswerten(pl.stufen_bauen([8], 15, [])[0], [], [probe(1, speicher=1 * GIB, spitze=3 * GIB)], 0, 0, basis_spitze=2 * GIB)
+    assert d["speicher_spitze_neu"] == 3 * GIB
+    assert aw.stufe_auswerten(pl.stufen_bauen([8], 15, [])[0], [], [probe(1, spitze=3 * GIB)], 0, 0, basis_spitze=3 * GIB)["speicher_spitze_neu"] is None
+    assert status(aw.kriterien_pruefen([stufen_dict(8, spitze_neu=3 * GIB)], "", None, None), "Speicher") == "durchgefallen"
+
+
+def test_ohne_anfragen_im_journal_ist_die_last_am_kern_nicht_belegt():
+    k = aw.kriterien_pruefen([stufen_dict(8, anfragen=0)], "", None, None)
+    for teil in ("CPU", "Speicher", "429"):
+        assert status(k, teil) == "offen", teil
+    assert status(aw.kriterien_pruefen([stufen_dict(8, anfragen=0, cpu=99.0)], "", None, None), "CPU") == "durchgefallen"  # ein Durchfall bleibt einer
+
+
+def test_abgeschnittenes_journal_macht_429_und_raten_offen():
+    k = aw.kriterien_pruefen([stufen_dict(8, abgeschnitten=True)], "", 50, 200000)
+    assert status(k, "429") == "offen" and status(k, "Anfragen je Minute") == "offen"
+
+
+def test_bestanden_gilt_nur_fuer_den_vollen_umfang():
+    k = aw.kriterien_pruefen([stufen_dict(1), stufen_dict(8)], "", 50, 200000)
+    assert status(k, "Umfang") == "offen" and "2, 4" in next(x for x in k if "Umfang" in x["name"])["wert"]
+    assert aw.gesamturteil(k, "") == "offen"
+    kurz = [stufen_dict(n, minuten=5) for n in (1, 2, 4, 8)]
+    assert status(aw.kriterien_pruefen(kurz, "", 50, 200000), "Umfang") == "offen"
+    mit_murmeln = alle_bestehen() + [stufen_dict(8, snr=5, minuten=15)]
+    assert status(aw.kriterien_pruefen(mit_murmeln, "", 50, 200000), "Umfang") == "bestanden"
 
 
 # ---------- Bericht ----------
