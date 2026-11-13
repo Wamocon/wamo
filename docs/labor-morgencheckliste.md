@@ -16,7 +16,7 @@
 | --- | --- | --- | --- |
 | A1.1 | [ ] | Liste der Datenänderungen seit dem 20.11. (Datum und Prüfsumme je Änderung) durchgehen | Die Liste ist vollständig. Zu jeder Änderung gab es 3 Läufe der betroffenen Karten |
 | A1.2 | [ ] | `ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-labor-daten-einrichten.sh status"` | Alle acht Dateien entsprechen der Lieferung oder der Änderungsliste. Der Lader nimmt sie an. Die gewählte Fassung der Regeln ist die entschiedene (`standard` oder `streng`). `WAMO_LABOR_DATEN` ist beim Kern gesetzt |
-| A1.3 | [ ] | `ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh status"` | Der aktive Slot läuft mit dem Release des Freeze-Etiketts `labor-freeze` `[offen: Release-Name nach dem Lab-Release]`. Kein weiterer Release ist unterwegs |
+| A1.3 | [ ] | `ssh wamo-sokrates2 "sudo bash ~/wamo-infra/wamo-core-slots.sh status"` | Der aktive Slot läuft mit dem Release des Freeze-Etiketts `labor-freeze`. Stand 13.11.2026 am Server: Slot b `v0.1.0-c751d04` aktiv, Slot a inaktiv (kommt ein späterer Release, den Namen hier nachtragen). Kein weiterer Release ist unterwegs |
 | A1.4 | [ ] | Befunde der Generalprobe vom 26.11. durchgehen | Jeder Befund ist behoben oder bewusst als Abweichung eingetragen |
 | A1.5 | [ ] | `python scripts/wamo_labor.py status` | Neun Laborprofile (`labor-01` bis `labor-09`), alle "gesperrt". Kein Profil ist über Nacht freigeschaltet |
 | A1.6 | [ ] | Daten der Generalprobe löschen. `python scripts/wamo_labor.py status` zeigt je Profil die Zeilen. Stehen dort noch welche: `python scripts/wamo_labor_nachlauf.py nachlauf --ausfuehren --vor-dem-labortag` (sperrt alle Profile, leert die 16 Plätze im Dienst und den Gesprächstext im Kern, mit Zählung davor und danach) | `status` zeigt für jedes Profil "gesperrt" und "0 Zeilen". Der Nachlauf meldet "Nachweis erbracht" |
@@ -63,7 +63,7 @@ Ziel: Die Zeit bis zum Rückweg messen und die Befehle festhalten, die im Runboo
 | --- | --- | --- | --- |
 | A5.1 | [ ] | Datenschutzhinweis Version 1 von `https://192.168.178.136:55447/datenschutz` ausdrucken (Knopf Drucken), ein Aushang je Platz und einer am Betreuer-Platz | Der Ausdruck trägt "Version 1" und hat denselben Text wie die Seite |
 | A5.2 | [ ] | Die Aufzeichnung (Rückfall) läuft am Fernseher | Bild und Ton gehen, die Länge ist bekannt `[offen: Dateiname, Ort, Gerät]` |
-| A5.3 | [ ] | Kartenliste der 17 Karten ausgedruckt | Je Platz ein Exemplar `[offen: Kartenliste]` |
+| A5.3 | [ ] | Kartensatz der 17 Karten ausgedruckt (`docs/labor-kartensatz.html`, im Browser drucken, A4, ohne Kopf- und Fußzeile des Browsers) | Je Platz ein Exemplar, Erwartungswerte zu W1 und W2 vom Trainer eingetragen `[offen: Ablageort am Platz]` |
 | A5.4 | [ ] | Reserve-Laptop eingerichtet und geprüft | Das Platz-Skript `pruefen` zeigt keine Zeile mit `[FEHLER]` `[offen: Reserve-Laptop gehört zu Platz 9]` |
 | A5.5 | [ ] | Zettel "Defekt" und "Notaus" liegen bereit | Je Betreuer-Platz ein Zettel mit der Stufe 1 des Notaus |
 
