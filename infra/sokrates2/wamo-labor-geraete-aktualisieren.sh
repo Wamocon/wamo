@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# Betreuer-Geräte des Testlabors über ihren Gerätenamen zulassen, statt über feste Adressen im Router. Installiert nach /usr/local/sbin/wamo-labor-geraete-aktualisieren
+# (nur root) durch wamo-labor-geraete-einrichten.sh und von wamo-labor-geraete.timer jede Minute aufgerufen:
+#   sudo /usr/local/sbin/wamo-labor-geraete-aktualisieren [--trocken]
+#
+# Was ein Lauf tut:
+#   1. Namen und feste Adressen lesen und prüfen: /etc/wamo-labor/betreuer-geraete (ein Gerätename je Zeile, Kommentare mit #, nur 1 bis 15 Zeichen aus
+#      A-Z, a-z, 0-9 und Bindestrich, am Anfang kein Bindestrich) und /etc/wamo-labor/betreuer-adressen. Ein ungültiger Wert bricht den Lauf ab (Ausgang 1, klare Meldung,
+#      nichts geändert). Namen werden nie stillschweigend weggelassen.
+#   2. Sperre (flock auf /run/wamo-labor-geraete/lock): Läuft schon ein Lauf, endet dieser sofort ohne Änderung.
+#   3. Jeden Namen auflösen, alle Namen gleichzeitig: NetBIOS (nmblookup NAME) und mDNS (avahi-resolve -4 -n NAME.local). Die Antworten beider Quellen gelten zusammen
+#      (Vereinigung), das DNS des Routers wird nie gefragt (es liefert veraltete Adressen). Es zählen nur IPv4-Adressen im Büro-LAN 192.168.178.0/24 (.1 bis .254); virtuelle
+#      Adressen (172.x, Docker, WSL, VPN) fallen weg. Höchstens 4 Adressen je Name (die niedrigsten).
+#   4. Mit dem zuletzt eingesetzten Stand vergleichen (/etc/wamo-labor/betreuer-geraete.stand, root 0644: Name, Adresse, Zeitpunkt der letzten Antwort). Antwortet ein
+#      Gerät (zum Beispiel nach dem Ruhezustand), ersetzt die neue Antwort die alten Adressen dieses Namens sofort. Antwortet es nicht, bleibt die zuletzt gute Adresse
+#      höchstens 12 Stunden nach der letzten Antwort zugelassen, danach fällt sie weg. Ein Name, der aus der Liste verschwindet, verliert seine Adressen sofort.
+#   5. Ändert sich die Menge der Adressen, wird die Caddy-Site neu zusammengesetzt (Vorlage /usr/local/lib/wamo-labor-geraete/wamo-labor.caddy, der Server selbst, feste
+#      Adressen aus betreuer-adressen, die Adressen der Geräte: dieselbe Logik wie wamo-labor-einrichten.sh, geteilt in wamo-labor-site.sh), mit caddy adapt in einem
+#      Wegwerf-Container ohne Netz geprüft, installiert und mit caddy reload ohne Ausfall geladen. Danach müssen 55443 bis 55446 antworten.
+#      Schlägt eine Stufe fehl, bleibt die vorherige Site-Datei aktiv (bei einem Fehler nach dem Installieren kommt sie zurück und wird neu geladen), der Stand bleibt
+#      unverändert, der Lauf endet mit Ausgang 1. Die nächste Minute versucht es erneut. Bleibt die Menge gleich, gibt es weder Prüfung noch Reload noch Ausgabe.
+#   6. Den Stand schreiben (atomar) und die Änderungen melden: je Zeile "Gerät NAME: ADRESSE zugelassen" oder "... entfernt (Grund)". Ohne Änderung bleibt es still.
+#      Die Meldungen gehen auf stdout (unter systemd ins Journal, Kennung wamo-labor-geraete) und bei einem Aufruf von Hand zusätzlich mit logger -t wamo-labor-geraete.
+#
+# Was dieser Lauf nie anfasst: den Container des Labor-Dienstes, die Firewall, den Kern, Token (er liest und nennt keine) und das Compose von wamo-caddy.
+# Er fragt keinen Namen außerhalb der Liste, nimmt nie einen Namen als Teil eines Befehls (nur als ein geprüftes Argument) und setzt nie eine Adresse außerhalb des Büro-LANs ein.
+#
+# Grenzen: Die Namensauflösung im LAN ist nicht kryptografisch gesichert. Ein fremdes Gerät im Büro-LAN könnte einen Namen vortäuschen und so die Seiten /betreuer und
+# /api/betreuer/ erreichen. Der Betreuer-Token bleibt die eigentliche Absicherung. Eine neue Adresse gilt frühestens mit dem nächsten Lauf (höchstens eine Minute). NetBIOS und
+# mDNS erreichen nur Geräte im selben Netz (Windows, Mac, Linux). Ein Gerät, das beides nicht beantwortet, braucht eine feste Adresse in betreuer-adressen.
+#
+# --trocken   löst die Namen auf und zeigt, was sich ändern würde (Auflösung, Meldungen, neue Adressliste), ohne zu sperren, zu schreiben, zu laden oder zu melden.
+# Ausgang: 0 ok (auch ohne Änderung und bei gehaltener Sperre), 1 Fehler, 2 falsche Aufrufform.
+#
+# Probelauf ohne root (nur für Tests): WAMO_LABOR_GERAETE_WURZEL=/pfad/zu/einem/wegwerf/ordner stellt allen Pfaden unter /etc, /usr und /run diesen Ordner voran,
+# WAMO_LABOR_GERAETE_JETZT=<Sekunden> ersetzt die Uhrzeit (Prüfung der 12-Stunden-Frist), WAMO_LABOR_CADDY_DIR den Ordner von wamo-caddy
+# (Standard /home/wamocon/wamo-tls/caddy). nmblookup, avahi-resolve, docker, curl, flock und logger stammen dann aus dem PATH (Attrappen).
+set -euo pipefail
+umask 077
+
+W="${WAMO_LABOR_GERAETE_WURZEL:-}"
+ETC="$W/etc/wamo-labor"
+NAMEN_DATEI="$ETC/betreuer-geraete"
+STAND_DATEI="$ETC/betreuer-geraete.stand"
+BETREUER_ADRESSEN="$ETC/betreuer-adressen"
+LIB="$W/usr/local/lib/wamo-labor-geraete"
+VORLAGE="$LIB/wamo-labor.caddy"
+RUN="$W/run/wamo-labor-geraete"
+SPERRE="$RUN/lock"
+CADDY_DIR="${WAMO_LABOR_CADDY_DIR:-/home/wamocon/wamo-tls/caddy}"
+SITE_DATEI="$CADDY_DIR/etc/kern/wamo-labor.caddy"
+MAX_JE_NAME=4     # höchstens so viele Adressen je Name
+SUCHFRIST_S=8     # so lange darf eine Namensauflösung (je Quelle) dauern
+TROCKEN=nein
+JETZT=""
+AUFLOESUNG=""
+STAND_TMP=""
+ARBEIT=""
+NAMEN=()
+FEST=""
+ALT_ZEILEN=()
+NEU=()
+MELDUNGEN=()
+declare -A ALT=() FRISCH=() ANZAHL=()
+
+fehler() { echo "wamo-labor-geraete: $*" >&2; exit 1; }
+usage() { echo "Aufruf: $0 [--trocken]" >&2; exit 2; }
+# Eine Änderung: auf stdout (unter systemd ist das das Journal) und bei einem Aufruf von Hand zusätzlich ins Journal
+melde() {
+  echo "$*"
+  [ -n "${JOURNAL_STREAM:-}" ] || logger -t wamo-labor-geraete -- "$*" 2>/dev/null || true
+}
+
+aufraeumen() {
+  local rc=$?
+  trap - EXIT
+  case "$ARBEIT" in */.arbeit.*) rm -rf "$ARBEIT" ;; esac
+  [ -z "$AUFLOESUNG" ] || rm -rf "$AUFLOESUNG"
+  [ -z "$STAND_TMP" ] || rm -f "$STAND_TMP"
+  exit "$rc"
+}
+trap aufraeumen EXIT
+
+# ---------- Aufruf und Umgebung
+umgebung_pruefen() {
+  if [ -n "$W" ]; then
+    [[ "$W" =~ ^/[A-Za-z0-9/_.:~-]+$ ]] || fehler "WAMO_LABOR_GERAETE_WURZEL muss ein absoluter Ordner aus A-Z, a-z, 0-9 und / _ . : ~ - sein."
+  elif [ "$TROCKEN" = nein ] && [ "$(id -u)" -ne 0 ]; then
+    echo "Bitte mit sudo ausführen." >&2
+    exit 1
+  fi
+  JETZT="${WAMO_LABOR_GERAETE_JETZT:-$(date +%s)}"
+  [[ "$JETZT" =~ ^[0-9]{1,12}$ ]] || fehler "WAMO_LABOR_GERAETE_JETZT muss eine Zahl (Sekunden seit 1970) sein."
+  [ -d "$ETC" ] || fehler "$ETC fehlt (zuerst wamo-labor-einrichten.sh einrichten)."
+  [ -f "$LIB/wamo-labor-site.sh" ] || fehler "$LIB/wamo-labor-site.sh fehlt (wamo-labor-geraete-einrichten.sh einrichten)."
+  [ -f "$VORLAGE" ] || fehler "$VORLAGE fehlt (wamo-labor-geraete-einrichten.sh einrichten)."
+}
+
+# ---------- Eingaben
+eingaben_lesen() {
+  local roh
+  roh="$(namen_lesen "$NAMEN_DATEI")"
+  NAMEN=()
+  [ -z "$roh" ] || mapfile -t NAMEN <<<"$roh"
+  FEST="$(adressen_lesen "$BETREUER_ADRESSEN")"
+}
+
+sperren() {
+  mkdir -p "$RUN"
+  exec 9> "$SPERRE"
+  if ! flock -n 9; then
+    echo "Ein anderer Lauf ist aktiv, dieser Lauf ändert nichts."
+    exit 0
+  fi
+}
+
+# Der alte Stand: je Name die Einträge "Adresse:Zeitpunkt" (die Datei prüft stand_lesen, kaputte Zeilen meldet sie und überspringt sie)
+stand_einlesen() {
+  local name adr zeit
+  ALT_ZEILEN=()
+  while read -r name adr zeit; do
+    name="${name^^}"
+    ALT_ZEILEN+=("$name $adr $zeit")
+    ALT[$name]="${ALT[$name]:+${ALT[$name]} }$adr:$zeit"
+  done < <(stand_lesen "$STAND_DATEI")
+}
+
+# ---------- Namensauflösung
+# Aus den Antworten (stdin, eine Adresse je Zeile) nur Adressen im Büro-LAN, .1 bis .254, sortiert, ohne Doppelte
+lan_filtern() {
+  local ip letzte
+  while IFS= read -r ip; do
+    [[ "$ip" == "$LAN_PRAEFIX"* ]] && [[ "$ip" != */* ]] && adresse_gueltig "$ip" || continue
+    letzte="${ip##*.}"
+    (( letzte >= 1 && letzte <= 254 )) || continue
+    printf '%s\n' "$ip"
+  done | sort -t. -k4,4n -u
+}
+
+# Die Antworten eines Namens aus beiden Quellen. Eine Quelle ohne Antwort, mit Fehler oder Zeitüberschreitung ergibt einfach nichts.
+aufloesen() {
+  {
+    timeout "$SUCHFRIST_S" nmblookup "$1" 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $1 }' || true
+    timeout "$SUCHFRIST_S" avahi-resolve -4 -n "$1.local" 2>/dev/null | awk 'NF >= 2 && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print $2 }' || true
+  } | tr -d '\r' | lan_filtern
+}
+
+# Alle Namen gleichzeitig (eine Auflösung dauert bis zu zwei Fristen, viele Namen sollen den Takt von einer Minute nicht sprengen)
+frisch_holen() {
+  local i name gefunden
+  AUFLOESUNG="$(mktemp -d)"
+  for i in "${!NAMEN[@]}"; do aufloesen "${NAMEN[$i]}" > "$AUFLOESUNG/$i" & done
+  wait
+  for i in "${!NAMEN[@]}"; do
+    name="${NAMEN[$i]}"
+    mapfile -t gefunden < "$AUFLOESUNG/$i"
+    ANZAHL[$name]="${#gefunden[@]}"
+    FRISCH[$name]="${gefunden[*]:0:$MAX_JE_NAME}"
+  done
+}
+
+# ---------- Vergleich
+# Der neue Stand: Antwortet ein Name, gelten genau seine neuen Adressen. Antwortet er nicht, bleiben seine alten Adressen höchstens GERAETE_FRIST_S nach der
+# letzten Antwort (der Zeitpunkt der letzten Antwort bleibt dabei unverändert).
+stand_berechnen() {
+  local name adr zeit eintrag
+  NEU=()
+  for name in "${NAMEN[@]}"; do
+    if [ -n "${FRISCH[$name]:-}" ]; then
+      for adr in ${FRISCH[$name]}; do NEU+=("$name $adr $JETZT"); done
+    else
+      for eintrag in ${ALT[$name]:-}; do
+        adr="${eintrag%%:*}"
+        zeit="${eintrag##*:}"
+        if (( JETZT - zeit <= GERAETE_FRIST_S )); then NEU+=("$name $adr $zeit"); fi
+      done
+    fi
+  done
+}
+
+# Die Adressen aus Zeilen "NAME ADRESSE ZEIT" (als Argumente), sortiert, ohne Doppelte, in einer Zeile
+adressmenge() {
+  [ "$#" -gt 0 ] || return 0
+  printf '%s\n' "$@" | awk '{ print $2 }' | sort -t. -k4,4n -u | paste -sd' ' -
+}
+
+# Die Adressen eines Namens aus Zeilen "NAME ADRESSE ZEIT" (NAME, dann die Zeilen)
+adressen_von() {
+  local name="$1"
+  shift
+  [ "$#" -gt 0 ] || return 0
+  printf '%s\n' "$@" | awk -v n="$name" '$1 == n { print $2 }' | sort -t. -k4,4n -u | paste -sd' ' -
+}
+
+# Je Name die Unterschiede zwischen altem und neuem Stand als Meldungen (nur Name und Adresse, nie etwas anderes)
+meldungen_bilden() {
+  local name a alt neu grund zusatz alle=("${NAMEN[@]}")
+  MELDUNGEN=()
+  for name in "${!ALT[@]}"; do case " ${alle[*]} " in *" $name "*) ;; *) alle+=("$name") ;; esac; done
+  for name in "${alle[@]}"; do
+    alt="$(adressen_von "$name" "${ALT_ZEILEN[@]}")"
+    neu="$(adressen_von "$name" "${NEU[@]}")"
+    if [[ " ${NAMEN[*]} " != *" $name "* ]]; then grund="Gerät nicht mehr in der Liste"
+    elif [ -n "${FRISCH[$name]:-}" ]; then grund="ersetzt durch die neue Antwort"
+    else grund="keine Antwort seit mehr als 12 Stunden"; fi
+    zusatz=""
+    if [ "${ANZAHL[$name]:-0}" -gt "$MAX_JE_NAME" ]; then zusatz=" (es antworten ${ANZAHL[$name]} Adressen, höchstens $MAX_JE_NAME gelten)"; fi
+    for a in $alt; do [[ " $neu " == *" $a "* ]] || MELDUNGEN+=("Gerät $name: $a entfernt ($grund)"); done
+    for a in $neu; do [[ " $alt " == *" $a "* ]] || MELDUNGEN+=("Gerät $name: $a zugelassen$zusatz"); done
+  done
+}
+
+# ---------- Site
+# Die alte Site wieder einsetzen und neu laden. Fehler hier ändern den Ausgang nicht (der Lauf endet ohnehin mit einem Fehler), eine
+# Probe der Ports sagt aber, ob die Rücknahme gegriffen hat.
+site_zurueck() {
+  caddy_installieren 644 "$1" "$SITE_DATEI" || echo "  FEHLER: Die alte Site ließ sich nicht wieder einsetzen ($SITE_DATEI)." >&2
+  caddy_neu_laden >/dev/null 2>&1 || true
+  caddy_ports_pruefen "$(date +%s)" >/dev/null \
+    || echo "  FEHLER: Nach der Rücknahme antworten 55443 bis 55446 nicht, bitte sofort ansehen (docker logs wamo-caddy)." >&2
+}
+
+# Die neue Site installieren, laden und prüfen (ARBEIT liegt vor, die neue Site darin ist schon geprüft)
+site_laden() {
+  local alt="$ARBEIT/site.vorher" ausgabe
+  cp -a "$SITE_DATEI" "$alt"
+  if caddy_installieren 644 "$ARBEIT/etc/kern/wamo-labor.caddy" "$SITE_DATEI" && ausgabe="$(caddy_neu_laden 2>&1)" && caddy_ports_pruefen "$(date +%s)" >/dev/null; then
+    return 0
+  fi
+  [ -z "${ausgabe:-}" ] || echo "$ausgabe" >&2
+  site_zurueck "$alt"
+  fehler "Die neue Site ließ sich nicht laden oder die Ports antworteten danach nicht: zurückgenommen, die vorherige Site ist wieder aktiv."
+}
+
+# LISTE: Adressen für remote_ip. Jede Stufe, die scheitert, lässt die vorherige Site aktiv.
+site_aendern() {
+  local liste="$1" image
+  [ -f "$SITE_DATEI" ] || fehler "Die Site $SITE_DATEI fehlt (zuerst wamo-labor-einrichten.sh einrichten). Es wurde nichts geändert."
+  [ -n "$(docker ps -q -f name=^wamo-caddy$ 2>/dev/null || true)" ] || fehler "wamo-caddy läuft nicht, die Site bleibt unverändert."
+  image="$(caddy_image_laufend)" || fehler "Das Image von wamo-caddy ließ sich nicht lesen, die Site bleibt unverändert."
+  [ -n "$image" ] || fehler "Das Image von wamo-caddy ließ sich nicht lesen, die Site bleibt unverändert."
+  if [ -z "$W" ]; then CADDY_OWNER="$(stat -c %U "$CADDY_DIR")"; CADDY_GROUP="$(stat -c %G "$CADDY_DIR")"; fi
+  arbeit_anlegen "$CADDY_DIR"
+  site_erzeugen "$VORLAGE" "$liste" > "$ARBEIT/etc/kern/wamo-labor.caddy"
+  arbeit_pruefen "$image" || fehler "Die Prüfung der neuen Site (caddy adapt) ist fehlgeschlagen, die vorherige Site bleibt aktiv."
+  site_laden
+}
+
+stand_schreiben() {
+  STAND_TMP="$STAND_DATEI.neu.$$"
+  {
+    echo "# WAMO Labor: zuletzt eingesetzter Stand der Betreuer-Geräte. Spalten: Gerätename, Adresse, Zeitpunkt der letzten Antwort (Sekunden seit 1970)."
+    echo "# Diese Datei schreibt nur wamo-labor-geraete-aktualisieren, bitte nicht von Hand ändern (zuletzt gute Adressen bleiben höchstens 12 Stunden)."
+    [ "${#NEU[@]}" -eq 0 ] || printf '%s\n' "${NEU[@]}"
+  } > "$STAND_TMP"
+  if [ -f "$STAND_DATEI" ] && cmp -s "$STAND_TMP" "$STAND_DATEI"; then return 0; fi
+  chmod 0644 "$STAND_TMP"
+  mv -f "$STAND_TMP" "$STAND_DATEI"
+  STAND_TMP=""
+}
+
+trocken_zeigen() {
+  local name liste="$1" m
+  for name in "${NAMEN[@]}"; do echo "[trocken] Gerät $name: Antworten im Büro-LAN: ${FRISCH[$name]:-keine}"; done
+  for m in "${MELDUNGEN[@]}"; do echo "[trocken] Änderung: $m"; done
+  if [ "$2" = ja ]; then
+    echo "[trocken] Die Site würde neu zusammengesetzt, geprüft und geladen. remote_ip $liste"
+  else
+    echo "[trocken] Die Menge der Adressen bleibt gleich: keine Prüfung, kein Reload."
+  fi
+}
+
+# ---------- Aufruf
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trocken) TROCKEN=ja ;;
+    *) usage ;;
+  esac
+  shift
+done
+umgebung_pruefen
+# shellcheck source=wamo-labor-site.sh
+. "$LIB/wamo-labor-site.sh"
+export WAMO_LABOR_WARTE_RUNDEN="${WAMO_LABOR_WARTE_RUNDEN:-5}"   # nach einem Reload ohne Ausfall genügen wenige Versuche je Port
+
+eingaben_lesen
+[ "$TROCKEN" = ja ] || sperren
+stand_einlesen
+frisch_holen
+stand_berechnen
+meldungen_bilden
+ALTE_MENGE="$(adressmenge "${ALT_ZEILEN[@]}")"
+NEUE_MENGE="$(adressmenge "${NEU[@]}")"
+GEAENDERT=nein
+[ "$ALTE_MENGE" = "$NEUE_MENGE" ] || GEAENDERT=ja
+LISTE="$(liste_bilden "$INTERN" "$FEST" "$NEUE_MENGE")"
+
+if [ "$TROCKEN" = ja ]; then
+  trocken_zeigen "$LISTE" "$GEAENDERT"
+  exit 0
+fi
+[ "$GEAENDERT" = nein ] || site_aendern "$LISTE"
+stand_schreiben
+for MELDUNG in "${MELDUNGEN[@]}"; do melde "$MELDUNG"; done
+exit 0
