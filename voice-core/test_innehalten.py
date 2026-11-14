@@ -372,11 +372,21 @@ class StrategieInnehaltenTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.angesetzt, self.ausgeloest), ([], [True]))
 
     async def test_ohne_innehalten_aendert_sich_nichts_fuer_ein_einzelnes_wort(self):
-        for text in ("Hier", "Abbrechen", "Nee", "Ruhe"):  # nur mit Innehalten sind die beiden letzten Stoppwörter
+        for text in ("Hier", "Fertig"):  # kein Stoppwort: bei min_words=2 unterbricht ein einzelnes Wort nicht
             with self.subTest(text=text):
                 s = self.strategie(mit_ansatz=False)
                 await s.process_frame(interim(text))
                 self.assertEqual((self.angesetzt, self.ausgeloest, self.zurueck), ([], [], [True]))
+
+    async def test_ohne_innehalten_brechen_abbrechen_nee_und_ruhe_ab(self):
+        """Ohne Halt (WAMO_INNEHALTEN=aus, Haus-Sprachausgabe, Ausgang ohne write_audio_frame) ist MIN_INTERRUPT_WORDS
+        seit 14.11.2026 2: Die Zusatz-Stoppwörter müssen dann genauso einzeln unterbrechen wie mit Halt."""
+        for text in ("Abbrechen", "Nee", "Ruhe", "Abbruch", "Wart"):
+            for frame in (interim(text), TranscriptionFrame(text, "u", "t")):
+                with self.subTest(text=text, art=type(frame).__name__):
+                    s = self.strategie(mit_ansatz=False)
+                    await s.process_frame(frame)
+                    self.assertEqual((self.angesetzt, self.ausgeloest), ([], [True]))
 
     async def test_mit_innehalten_brechen_auch_abbrechen_nee_und_ruhe_ab(self):
         for text in ("Abbrechen", "Nee", "Ruhe", "Abbruch"):

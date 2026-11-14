@@ -219,15 +219,16 @@ def rueckmeldung_werkzeug_an(wert: str | None = None) -> bool:
 # Wörter aus STOPP_WORDS, die für sich allein nur zum Innehalten führen, wenn das Innehalten an ist (WAMO_INNEHALTEN): ein
 # "Danke" mitten in der Antwort ist eher ein Ansetzen als ein Abbruch. Ohne Innehalten bleibt es ein Stoppwort wie immer.
 WEICHE_STOPPWOERTER = frozenset({"danke"})
-# Wörter, die ein einzelnes Wort zum Abbruch machen, aber nicht in STOPP_WORDS stehen, weil ohne Innehalten ein einzelnes Wort nie
-# unterbricht. Mit Innehalten würde so ein Wort sonst nur innehalten lassen ("Abbrechen", "Nee", "Ruhe").
+# Wörter, die ein einzelnes Wort zum Abbruch machen, aber nicht in STOPP_WORDS stehen ("Abbrechen", "Nee", "Ruhe"). Sie gelten mit
+# und ohne Innehalten: Mit Innehalten würden sie sonst nur innehalten lassen, ohne Innehalten (WAMO_INNEHALTEN=aus, Haus-Sprachausgabe,
+# Ausgang ohne write_audio_frame) wären sie bei MIN_INTERRUPT_WORDS=2 als einzelnes Wort wirkungslos.
 ZUSATZ_STOPPWOERTER = frozenset({"abbrechen", "abbruch", "nee", "ruhe", "wart", "aufhoeren"})
 
 
 def hat_stoppwort(text: str, ohne: frozenset[str] = frozenset(), zusaetzlich: frozenset[str] = frozenset()) -> bool:
     """Enthält der Text ein Wort, mit dem man WAMO anhält oder etwas wissen will ("Stopp", "Moment", "Was", "Nein")?
-    ohne: Wörter, die hier nicht zählen (WEICHE_STOPPWOERTER), zusaetzlich: weitere Stoppwörter (ZUSATZ_STOPPWOERTER),
-    beides nur bei eingeschaltetem Innehalten."""
+    ohne: Wörter, die hier nicht zählen (WEICHE_STOPPWOERTER, nur bei eingeschaltetem Innehalten), zusaetzlich: weitere
+    Stoppwörter (ZUSATZ_STOPPWOERTER, immer)."""
     woerter = STOPP_WORDS | zusaetzlich if zusaetzlich else STOPP_WORDS
     return any(w in woerter and w not in ohne for w in (_wort(x) for x in text.split()))
 
@@ -430,7 +431,7 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         # Ein Stoppwort ("Stopp", "Moment", "Nein", "Was") unterbricht auch unter der Schwelle sofort (12.11.2026).
         # Mit Innehalten (on_partial) führt ein Wort wie "Danke" allein nur zum Innehalten.
         halten = self._on_partial is not None and self._bot_speaking
-        weich, zusatz = (WEICHE_STOPPWOERTER, ZUSATZ_STOPPWOERTER) if halten else (frozenset(), frozenset())
+        weich, zusatz = (WEICHE_STOPPWOERTER if halten else frozenset()), ZUSATZ_STOPPWOERTER
         stoppwort = self._bot_speaking and count >= 1 and hat_stoppwort(frame.text, weich, zusatz)
         if count >= (self._min_words if self._bot_speaking else 1) or stoppwort:
             urteil = self._urteil(frame.text)
