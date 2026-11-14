@@ -71,7 +71,7 @@ Ein Platz ist frei, wenn seine Karte "Geschlossen, kein Durchlauf" oder "Durchla
 10. Am Platz-Laptop beide Chrome-Fenster schließen, falls offen. Die Verknüpfung **WAMO Labor starten** doppelklicken.
 11. Das Skript fragt den Platz-Token ab. Auf der Betreuer-Seite **Token kopieren** klicken und im Skriptfenster einfügen, dann Enter. Die Eingabe bleibt unsichtbar, das ist gewollt `[offen: Einfügen in die verdeckte Eingabe in der Generalprobe prüfen, sonst die 32 Zeichen abtippen]`.
 12. Erwartet: links WAMO, rechts das Board mit "Platz N" und den drei Spalten "Zu erledigen", "In Arbeit" und "Erledigt" mit den Startkarten (sechs Tickets, darunter LAB-11, LAB-12 und LAB-20).
-13. Headset aufsetzen lassen. Der Besucher tippt auf "Gespräch starten". Die erste Aufgabe kommt aus der Kartenliste `[offen: Kartenliste der 17 Karten, Ort und Ausdruck]`.
+13. Headset aufsetzen lassen. Der Besucher tippt auf "Gespräch starten". Die erste Aufgabe kommt aus dem gedruckten Kartensatz (`docs/labor-kartensatz.html`, 17 Karten) `[offen: Ablageort des Ausdrucks am Platz]`.
 14. Kontrolle auf der Betreuer-Seite: Die Karte zeigt "Durchlauf offen" und eine Einwilligung "Version 1 vom …".
 
 **Weg B, der Besucher-Link.** Der Link zeigt das Board dieses Platzes, ohne das Platz-Skript. Nutze ihn nur, wenn das Board-Fenster fehlt und das Skript nicht hilft. Den Link nie weitergeben `[offen: In der Generalprobe klären, wo der Link im Kiosk-Fenster eingegeben wird]`.
@@ -423,7 +423,7 @@ Das muss Niko oder das Projektteam vor der Generalprobe am 26.11.2026 nennen:
 4. Der Weg, auf dem die Betreuer den Betreuer-Token bekommen. Das Einrichtungsskript zeigt ihn nie an, das PC-Skript dafür steht als Folgeschritt aus.
 5. Wortlaut des Datenschutzhinweises (Altersangabe ist entschieden: mindestens 16, jünger mit Aufsichtsperson; die verantwortliche Person prüft den Text).
 6. Die Aufzeichnung: Dateiname, Ort, Gerät, Länge und der Erzähltext.
-7. Die Kartenliste der 17 Karten als Ausdruck.
+7. Der Ausdruck des Kartensatzes (`docs/labor-kartensatz.html`, Entwurf liegt vor, A4 mit WMC-Kopf) und sein Ablageort am Platz. Der Trainer trägt die Erwartungswerte zu W1 und W2 vor dem Ausdruck ein.
 8. Aus der Generalprobe: Einfügen des Platz-Tokens in die verdeckte Eingabe, Nutzung des Besucher-Links im Kiosk, Bezeichnung und Ort des Eingabefelds für Text.
 9. Reserve: ob der Reserve-Laptop Platz 9 ist und welche Profile am Labortag freigeschaltet sind.
 10. Aus der Rückwegübung am 27.11.: Dauer der Stufen 3 und 4 des Notaus, Befehl zum Neustart des Dienstes, Wiederherstellen des Dienstes nach Stufe 3, Befehlszeile des Schlüsseltauschs.
