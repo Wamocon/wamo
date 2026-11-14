@@ -4,7 +4,7 @@ Ablauf
   * Die Start-Strategie meldet den Turn der Person OHNE sofortige Unterbrechung
     (MinWordsUserTurnStartStrategy(enable_interruptions=False)).
   * SoftInterruptGate (zwischen user_agg und llm) merkt: die Person redet, während WAMO spricht.
-  * PlaybackTracker (nach transport.output) meldet jedes Wort, sobald es laut Zeitstempel beginnt.
+  * PlaybackTracker (nach transport.output, Modul wiedergabe_tracker.py) meldet jedes Wort, sobald es laut Zeitstempel beginnt.
   * Unterbrochen wird an der nächsten Satzgrenze, spätestens aber nach dem laufenden Wort plus
     max_words weiteren Wörtern, also immer an einer Wortgrenze.
   * Die Wort-Zeitstempel laufen dem hörbaren Ton voraus (Puffer im WebRTC-Pfad). Deshalb wird
@@ -69,10 +69,6 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     InterimTranscriptionFrame,
     LLMContextFrame,
-    OutputAudioRawFrame,
-    SystemFrame,
-    TTSStartedFrame,
-    TTSTextFrame,
     UserStartedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -84,10 +80,11 @@ from pipecat.turns.user_start.min_words_user_turn_start_strategy import (
     MinWordsUserTurnStartStrategy,
 )
 
-SENTENCE_END = (".", "!", "?", "…", ":")
+# Der Tracker und die Antworten des Gates auf ein Wort liegen in wiedergabe_tracker.py; PlaybackTracker bleibt von hier
+# importierbar (bot.py und die Tests).
+from wiedergabe_tracker import HALTEN, SCHNEIDEN, SPIELEN, PlaybackTracker  # noqa: F401
 
-# Was mit einem Wort geschieht, wenn sein Ton hinausgehen soll (SoftInterruptGate.wort_beginnt)
-SPIELEN, HALTEN, SCHNEIDEN = "spielen", "halten", "schneiden"
+SENTENCE_END = (".", "!", "?", "…", ":")
 
 # Rueckmeldelaute: zeigen Zuhoeren, sind kein Einwurf. Alles andere zaehlt ("Doch", "Nein", "Stopp").
 BACKCHANNEL_WORDS = frozenset(
@@ -219,15 +216,16 @@ def rueckmeldung_werkzeug_an(wert: str | None = None) -> bool:
 # Wörter aus STOPP_WORDS, die für sich allein nur zum Innehalten führen, wenn das Innehalten an ist (WAMO_INNEHALTEN): ein
 # "Danke" mitten in der Antwort ist eher ein Ansetzen als ein Abbruch. Ohne Innehalten bleibt es ein Stoppwort wie immer.
 WEICHE_STOPPWOERTER = frozenset({"danke"})
-# Wörter, die ein einzelnes Wort zum Abbruch machen, aber nicht in STOPP_WORDS stehen, weil ohne Innehalten ein einzelnes Wort nie
-# unterbricht. Mit Innehalten würde so ein Wort sonst nur innehalten lassen ("Abbrechen", "Nee", "Ruhe").
+# Wörter, die ein einzelnes Wort zum Abbruch machen, aber nicht in STOPP_WORDS stehen ("Abbrechen", "Nee", "Ruhe"). Sie gelten mit
+# und ohne Innehalten: Mit Innehalten würden sie sonst nur innehalten lassen, ohne Innehalten (WAMO_INNEHALTEN=aus, Haus-Sprachausgabe,
+# Ausgang ohne write_audio_frame) wären sie bei MIN_INTERRUPT_WORDS=2 als einzelnes Wort wirkungslos.
 ZUSATZ_STOPPWOERTER = frozenset({"abbrechen", "abbruch", "nee", "ruhe", "wart", "aufhoeren"})
 
 
 def hat_stoppwort(text: str, ohne: frozenset[str] = frozenset(), zusaetzlich: frozenset[str] = frozenset()) -> bool:
     """Enthält der Text ein Wort, mit dem man WAMO anhält oder etwas wissen will ("Stopp", "Moment", "Was", "Nein")?
-    ohne: Wörter, die hier nicht zählen (WEICHE_STOPPWOERTER), zusaetzlich: weitere Stoppwörter (ZUSATZ_STOPPWOERTER),
-    beides nur bei eingeschaltetem Innehalten."""
+    ohne: Wörter, die hier nicht zählen (WEICHE_STOPPWOERTER, nur bei eingeschaltetem Innehalten), zusaetzlich: weitere
+    Stoppwörter (ZUSATZ_STOPPWOERTER, immer)."""
     woerter = STOPP_WORDS | zusaetzlich if zusaetzlich else STOPP_WORDS
     return any(w in woerter and w not in ohne for w in (_wort(x) for x in text.split()))
 
@@ -347,10 +345,34 @@ FRAGE_BEGINN = re.compile(
 )
 
 
+SOLL_ICH = re.compile(r"\bsoll\s+ich\b", re.IGNORECASE)  # als ganze Wörter: "Tagessoll ich ..." ist keine Frage
+
+# Gängige Abkürzungen mit Punkt beenden keinen Satz: "Soll ich z. B. den Ordner öffnen?" bleibt bis zum Fragezeichen eine Frage.
+# Die Sprachausgabe liefert zweiteilige wie "z. B." auch als zwei Wörter. Der erste Teil beendet nie einen Satz, der zweite nur
+# ohne den passenden ersten davor ("Wir nehmen Plan B." endet).
+ABKUERZUNGEN = frozenset({
+    "z.b.", "d.h.", "u.a.", "dr.", "prof.", "bzw.", "ca.", "usw.", "etc.", "ggf.", "evtl.", "vgl.", "inkl.", "bspw.", "nr.",
+})
+ABKUERZUNG_TEILE = {"z.": "b.", "d.": "h.", "u.": "a."}  # erster Teil, zweiter Teil
+_SATZZEICHEN_DANACH = "\"'”»)"  # Anführungszeichen und Klammer hinter dem Satzende
+_ZEICHEN_DAVOR = "\"'„“‚‘»«("  # Anführungszeichen und Klammer vor einem Wort
+
+
+def satz_endet(wort: str, davor: str = "") -> bool:
+    """Endet mit diesem Wort ein Satz? Satzzeichen am Ende (auch vor Anführungszeichen oder Klammer), aber keine gängige Abkürzung
+    mit Punkt. davor: das Wort davor, für Abkürzungen aus zwei Wörtern ("z." und "B.")."""
+    w = wort.strip().rstrip(_SATZZEICHEN_DANACH)
+    if not w.endswith(SENTENCE_END):
+        return False
+    klein = w.lstrip(_ZEICHEN_DAVOR).lower()
+    erster_teil = davor.strip().lstrip(_ZEICHEN_DAVOR).lower()
+    return not (klein in ABKUERZUNGEN or klein in ABKUERZUNG_TEILE or ABKUERZUNG_TEILE.get(erster_teil) == klein)
+
+
 def ist_frage(satz: str) -> bool:
     """Ein zu Ende gesprochener Satz ist eine Frage: Fragezeichen am Ende (auch hinter Anführungszeichen) oder "soll ich"."""
     t = satz.strip().rstrip(" .")
-    return bool(re.search(r"\?[!\"'”»)]*$", t)) or "soll ich" in t.lower()
+    return bool(re.search(r"\?[!\"'”»)]*$", t)) or bool(SOLL_ICH.search(t))
 
 
 def fragt_bisher(satz: str) -> bool:
@@ -445,7 +467,7 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         # Ein Stoppwort ("Stopp", "Moment", "Nein", "Was") unterbricht auch unter der Schwelle sofort (12.11.2026).
         # Mit Innehalten (on_partial) führt ein Wort wie "Danke" allein nur zum Innehalten.
         halten = self._on_partial is not None and self._bot_speaking
-        weich, zusatz = (WEICHE_STOPPWOERTER, ZUSATZ_STOPPWOERTER) if halten else (frozenset(), frozenset())
+        weich, zusatz = (WEICHE_STOPPWOERTER if halten else frozenset()), ZUSATZ_STOPPWOERTER
         stoppwort = self._bot_speaking and count >= 1 and hat_stoppwort(frame.text, weich, zusatz)
         if count >= (self._min_words if self._bot_speaking else 1) or stoppwort:
             urteil = self._urteil(frame.text)
@@ -520,8 +542,10 @@ DUCK_BEURTEILT_SECS = 0.3  # Rückmeldung oder Echo erkannt: so lange warten, ob
 DUCK_MAX_SECS = 3.0  # spätestens nach dieser Zeit ohne bestätigten Einwurf wieder normal (Echo hält die Sprachaktivität an)
 # Innehalten (WAMO_INNEHALTEN)
 WATCH_SECS = 0.05  # so oft prüft das Gate Innehalten, Weitersprechen und Abbruch ohne Wortgrenze
-POLL_SECS = 0.02  # so oft schaut der Tracker höchstens nach, ob ein Wort an der Reihe ist
-TOLERANZ_NS = 30_000_000  # ein Wort gilt als erreicht, wenn der Ton bis auf 30 ms dort ist
+# So lange steht der Ton mindestens, gerechnet ab dem Anhalten (nicht ab dem Ansatz): Die Stille zählt ab dem Ansatz, das Anhalten
+# folgt aber erst an der nächsten Wortgrenze. Im Log lagen Anhalten und Weitersprechen so nur 0,12 s auseinander, ein Stolpern statt
+# einer Pause. Der Wert ist geschätzt und per Hörprobe nachzustellen; die Höchstpause (max_pause_secs) geht ihm immer vor.
+MIN_HALT_SECS = 0.6
 
 
 def stopp_grenze_an(wert: str | None = None) -> bool:
@@ -867,8 +891,10 @@ class SoftInterruptGate(FrameProcessor):
         """Merkt sich, ob der Satz, den WAMO gerade spricht oder zuletzt beendet hat, eine Frage ist (nur was erklungen ist)."""
         if not text.strip():
             return
+        woerter = text.split()  # Soniox liefert einzelne Wörter, die Sprachausgabe im Haus ganze Sätze
+        davor = woerter[-2] if len(woerter) > 1 else (self._satz[-1].split()[-1] if self._satz else "")
         self._satz.append(text.strip())
-        if text.rstrip().rstrip("\"'”»)").endswith(SENTENCE_END):
+        if satz_endet(woerter[-1], davor):  # "z. B." und andere Abkürzungen beenden den Satz nicht
             self._frage_fertig = ist_frage(" ".join(self._satz))
             self._satz = []
 
@@ -944,7 +970,8 @@ class SoftInterruptGate(FrameProcessor):
                 self._fortsetzen("Höchstdauer")
                 return False
             still_seit = max(self._letzter_ansatz, self._user_quiet_since)
-            if not self._vad_spricht and jetzt - still_seit >= self._weiter_secs:
+            weiter_ab = max(still_seit + self._weiter_secs, self._haelt_seit + MIN_HALT_SECS)  # die Höchstpause oben geht vor
+            if not self._vad_spricht and jetzt >= weiter_ab:
                 self._fortsetzen("kein weiteres Wort")
                 return False
             return True
@@ -1159,134 +1186,3 @@ def kuerze_auf_gehoertes(context, n: int) -> bool:
     else:
         context.set_messages(nachrichten[:-1])
     return True
-
-
-class PlaybackTracker(FrameProcessor):
-    """Sitzt hinter transport.output() und meldet dem Gate jedes abgespielte Wort.
-
-    Ohne Halt gilt der Zeitstempel: Pipecat schickt das Wort, wenn seine Uhrzeit erreicht ist, und das Gate rechnet den Vorsprung
-    vor dem hörbaren Ton ein (playback_lag_secs). Mit Halt (AusgabeHalt, Innehalten) wartet ein Wort, bis der geschriebene Ton
-    seine Stelle erreicht hat, und alles danach wartet mit (die Reihenfolge für den Verlauf bleibt). Hält WAMO inne, warten die
-    Wörter mit; ein abgeschnittenes Wort und alles Wartende gelten nach einem Abbruch als nicht gesprochen.
-    """
-
-    def __init__(
-        self,
-        gate: SoftInterruptGate,
-        halt=None,
-        *,
-        max_wait_secs: float = 3.0,
-        uhr: Callable[[], float] = time.monotonic,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self._gate = gate
-        self._halt = halt
-        self._max_wait = max_wait_secs  # Sicherung, falls nie Ton kommt
-        self._uhr = uhr
-        self._queue: deque[tuple[float, Frame]] = deque()
-        self._task: asyncio.Task | None = None
-        self._sperre = asyncio.Lock()  # eine Zustellung nach der anderen: ein neues Wort überholt kein wartendes
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        if self._halt is not None:
-            await self._mit_halt(frame, direction)
-            return
-        if isinstance(frame, TTSStartedFrame) and direction == FrameDirection.DOWNSTREAM:
-            if getattr(frame, "append_to_context", True):
-                self._gate.antwort_beginnt()
-        elif isinstance(frame, TTSTextFrame) and direction == FrameDirection.DOWNSTREAM:
-            if self._gate.on_word_played(frame.text, getattr(frame, "append_to_context", True)):
-                return  # abgeschnitten -> nicht in den Gespraechsverlauf
-        await self.push_frame(frame, direction)
-
-    async def _mit_halt(self, frame: Frame, direction: FrameDirection):
-        if direction != FrameDirection.DOWNSTREAM:
-            await self.push_frame(frame, direction)
-            return
-        if isinstance(frame, InterruptionFrame):
-            self._queue.clear()  # nicht mehr gespielt -> nicht in den Verlauf
-            self._halt.abschneiden()
-            await self.push_frame(frame, direction)
-            return
-        if isinstance(frame, BotStoppedSpeakingFrame):
-            await self._leeren()  # der Ton ist durch, alles Wartende auch
-            await self.push_frame(frame, direction)
-            return
-        if isinstance(frame, TTSStartedFrame) and getattr(frame, "append_to_context", True):
-            self._gate.antwort_beginnt()  # zählt, wenn der Abschnitt ankommt, auch wenn Wörter davor noch warten
-        if isinstance(frame, (SystemFrame, OutputAudioRawFrame)):
-            await self.push_frame(frame, direction)
-            return
-        async with self._sperre:
-            if self._queue or self._muss_warten(frame):
-                self._queue.append((self._uhr(), frame))
-                self._task_sichern()
-                return
-            if not await self._zustellen(frame):
-                self._queue.appendleft((self._uhr(), frame))
-                self._task_sichern()
-
-    def _muss_warten(self, frame: Frame) -> bool:
-        if not isinstance(frame, TTSTextFrame) or not frame.pts:
-            return False
-        if self._halt.haelt:
-            return True
-        gespielt = self._halt.gespielt_bis_ns()
-        return gespielt is None or gespielt + TOLERANZ_NS < frame.pts
-
-    async def _zustellen(self, frame: Frame) -> bool:
-        """False: das Wort wartet, weil WAMO davor innehält."""
-        if isinstance(frame, TTSTextFrame):
-            entscheidung = self._gate.wort_beginnt(frame.text, getattr(frame, "append_to_context", True))
-            if entscheidung == HALTEN:
-                return False
-            if entscheidung == SCHNEIDEN:
-                return True  # abgeschnitten -> nicht in den Gespraechsverlauf
-        await self.push_frame(frame)
-        return True
-
-    def _task_sichern(self):
-        if self._task is None or self._task.done():
-            self._task = self.create_task(self._leeren_nach_ton(), name="playback_tracker")
-
-    async def _warten(self):
-        await self._halt.warte_auf_fortschritt(POLL_SECS)
-
-    async def _leeren_nach_ton(self):
-        try:
-            while self._queue:
-                seit, frame = self._queue[0]
-                haelt = self._halt.haelt
-                ueberfaellig = self._uhr() - seit > self._max_wait and not haelt
-                if self._muss_warten(frame) and not ueberfaellig:
-                    await self._warten()
-                    continue
-                async with self._sperre:
-                    if not self._queue or self._queue[0][1] is not frame:
-                        continue  # inzwischen geleert (Abbruch, Ende der Antwort)
-                    self._queue.popleft()
-                    zugestellt = await self._zustellen(frame)
-                    if not zugestellt:
-                        self._queue.appendleft((seit, frame))
-                if not zugestellt:
-                    await self._warten()
-        finally:
-            self._task = None
-
-    async def _leeren(self):
-        if self._task:
-            await self.cancel_task(self._task)
-            self._task = None
-        while self._queue:
-            _, frame = self._queue.popleft()
-            if isinstance(frame, TTSTextFrame) and self._gate.wort_beginnt(frame.text, getattr(frame, "append_to_context", True)) == SCHNEIDEN:
-                continue
-            await self.push_frame(frame)
-
-    async def cleanup(self):
-        await super().cleanup()
-        if self._task:
-            await self.cancel_task(self._task)
-            self._task = None

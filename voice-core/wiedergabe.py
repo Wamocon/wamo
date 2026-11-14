@@ -5,7 +5,8 @@ bis die Spur den Happen abgeholt hat; alles Weitere wartet in der Warteschlange 
 AusgabeHalt:
   * anhalten(): der nächste Happen wartet, die Spur sendet Stille. Nichts geht verloren.
   * fortsetzen(): es geht an derselben Stelle weiter (falscher Alarm: die Person hat nur kurz etwas gesagt).
-  * abschneiden(): nach einer echten Unterbrechung. Happen, die bis zum Abbruch noch durchrutschen, verwirft es.
+  * abschneiden(): nach einer echten Unterbrechung. Happen der alten Antwort, die danach noch durchrutschen, verwirft es; Ton, der
+    erst nach dem Abbruch entsteht (ein Füllwort, eine Ansage), geht hinaus.
   * gespielt_bis_ns(): bis zu welcher Uhrzeit der Pipeline-Uhr (gleiche Skala wie TTSTextFrame.pts) der Ton dieser Antwort
     hinausgegangen ist.
 
@@ -39,9 +40,11 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.utils.utils import obj_id
 
-# Nach einem Abbruch noch so lange Happen verwerfen, bis Pipecat die alte Warteschlange geleert hat. Neuer Ton kommt frühestens
-# nach der Rede der Person und der Antwort des Modells, also weit später.
+# Nach einem Abbruch noch so lange Happen der alten Antwort verwerfen, bis Pipecat die alte Warteschlange geleert hat. Alt heißt:
+# vor dem Abbruch entstanden. Pipecat nummeriert jedes Frame fortlaufend (Frame.id), und der Ausgang schneidet den Ton beim Einreihen
+# in neue Happen; ein Füllwort oder eine Ansage direkt nach dem Abbruch hat also eine höhere Nummer und geht hinaus.
 ABBRUCH_NACHLAUF_SECS = 0.15
 # Sicherung: Pipecat hält ein Schreiben, das länger als 10 s dauert (TransportParams.audio_out_write_timeout_secs), für eine tote
 # Verbindung und beendet die Sitzung. Länger als das hier bleibt keine Pause stehen.
@@ -93,6 +96,7 @@ class AusgabeHalt:
         self._beginn_ns: int | None = None  # Uhrzeit, zu der der erste Ton dieser Antwort ankam
         self._gespielt_ns = 0  # so viel Sprachton dieser Antwort ist hinausgegangen
         self._verwerfen_bis = 0.0
+        self._neu_ab_id = 0  # Frames mit kleinerer Nummer entstanden vor dem letzten Abbruch
         self._fortschritt = asyncio.Event()
 
     @property
@@ -121,7 +125,7 @@ class AusgabeHalt:
             except asyncio.TimeoutError:
                 logger.warning("AusgabeHalt: Pause zu lang, der Ton läuft weiter")
                 self.fortsetzen()
-        if self._uhr() < self._verwerfen_bis:
+        if self._uhr() < self._verwerfen_bis and frame.id < self._neu_ab_id:
             return False  # Rest einer abgebrochenen Antwort
         if isinstance(frame, TTSAudioRawFrame):
             if self._beginn_ns is None:
@@ -148,8 +152,9 @@ class AusgabeHalt:
         self._fortschritt.set()
 
     def abschneiden(self) -> None:
-        """Echte Unterbrechung: Rest verwerfen, danach offen für die nächste Antwort."""
+        """Echte Unterbrechung: Rest verwerfen (nur was vor dem Abbruch entstand), danach offen für die nächste Antwort."""
         self._verwerfen_bis = self._uhr() + ABBRUCH_NACHLAUF_SECS
+        self._neu_ab_id = obj_id()
         self.neue_antwort()
         self.fortsetzen()
 

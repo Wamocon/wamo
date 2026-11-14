@@ -237,6 +237,54 @@ class SpielerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.spieler.gespielt), 2)  # "Moment." und einmal "Dauert noch ..."
         await self.senden(werkzeug_ende())
 
+    async def test_zweites_werkzeug_im_selben_zug_bekommt_einen_neuen_beobachter(self):
+        """Das Ergebnis des letzten offenen Werkzeugs setzt _werkzeug_seit zurück: Sonst blieb ein zweites Werkzeug im selben Zug
+        (ohne neuen Satz der Person) ohne Beobachter und damit ohne "Dauert noch"."""
+        await self.senden(UserStartedSpeakingFrame(), werkzeug_start("1"))
+        await asyncio.sleep(0.08)
+        self.assertEqual(len(self.spieler.gespielt), 1)  # "Moment."
+        await self.senden(werkzeug_ende("1"))
+        self.assertIsNone(self.spieler._werkzeug_seit, "kein Werkzeug mehr offen")
+        for _ in range(200):  # der erste Beobachter endet beim nächsten Blick auf die offenen Werkzeuge
+            if self.spieler._waechter is None:
+                break
+            await asyncio.sleep(0.01)
+        self.assertIsNone(self.spieler._waechter)
+        await self.senden(werkzeug_start("2"))  # derselbe Zug: kein Satz der Person dazwischen
+        self.assertIsNotNone(self.spieler._waechter, "neuer Beobachter für das zweite Werkzeug")
+        for _ in range(200):
+            if len(self.spieler.gespielt) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(len(self.spieler.gespielt), 2, "das zweite Werkzeug dauert: einmal Dauert noch")
+        await self.senden(werkzeug_ende("2"))
+
+    async def test_folgt_das_zweite_werkzeug_sofort_bleibt_es_bei_einem_beobachter(self):
+        """Startet das zweite Werkzeug, bevor der erste Beobachter das Ende des ersten bemerkt hat, übernimmt er das zweite: kein
+        zweiter Beobachter, also auch kein doppeltes Füllwort."""
+        await self.senden(UserStartedSpeakingFrame(), werkzeug_start("1"))
+        await asyncio.sleep(0.05)
+        erster = self.spieler._waechter
+        self.assertIsNotNone(erster)
+        await self.senden(werkzeug_ende("1"), werkzeug_start("2"))
+        self.assertIs(self.spieler._waechter, erster, "der laufende Beobachter sieht das zweite Werkzeug selbst")
+        for _ in range(200):
+            if len(self.spieler.gespielt) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(self.spieler.gespielt), 2, "einmal Moment, einmal Dauert noch")
+        await self.senden(werkzeug_ende("2"))
+
+    async def test_solange_ein_werkzeug_offen_ist_bleibt_der_beginn_stehen(self):
+        await self.senden(UserStartedSpeakingFrame(), werkzeug_start("1"))
+        seit = self.spieler._werkzeug_seit
+        self.assertIsNotNone(seit)
+        await self.senden(werkzeug_start("2"), werkzeug_ende("1"))
+        self.assertEqual(self.spieler._werkzeug_seit, seit, "Werkzeug 2 läuft noch: keine neue Zählung, kein zweiter Beobachter")
+        await self.senden(werkzeug_ende("2"))
+        self.assertIsNone(self.spieler._werkzeug_seit)
+
     async def test_ohne_schalter_kein_werkzeug_fuellwort(self):
         spieler = self.bauen(werkzeug=False)
         await self.senden(UserStartedSpeakingFrame(), werkzeug_start(), spieler=spieler)

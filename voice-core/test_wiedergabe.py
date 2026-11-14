@@ -96,6 +96,23 @@ class AusgabeHaltTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.ausgang.write_audio_frame(sprache()))
         self.assertEqual(len(self.ausgang.geschrieben), 2)
 
+    async def test_nach_abbruch_geht_neuer_ton_sofort_hinaus(self):
+        """Verworfen wird nur der Rest der alten Antwort. Ein Füllwort oder eine Ansage, die direkt nach dem Abbruch entsteht, ist
+        zu hören, auch innerhalb von ABBRUCH_NACHLAUF_SECS."""
+        alt_wartend, alt_dahinter = sprache(), sprache()  # beide entstanden vor dem Abbruch (Pipecat zählt Frames fortlaufend)
+        self.halt.anhalten()
+        schreiben = asyncio.create_task(self.ausgang.write_audio_frame(alt_wartend))
+        await asyncio.sleep(0)
+        self.halt.abschneiden()
+        self.assertFalse(await schreiben)
+        self.assertFalse(await self.ausgang.write_audio_frame(alt_dahinter), "auch ein alter Happen aus der Warteschlange")
+        fuellwort = OutputAudioRawFrame(audio=HAPPEN, sample_rate=24000, num_channels=1)
+        ansage = sprache()
+        self.assertTrue(await self.ausgang.write_audio_frame(fuellwort))
+        self.assertTrue(await self.ausgang.write_audio_frame(ansage))
+        self.assertEqual(self.ausgang.geschrieben, [fuellwort, ansage])
+        self.assertEqual(self.halt.gespielt_bis_ns(), 5_000_000_000 + 40_000_000, "die neue Antwort zählt ab ihrem ersten Ton")
+
     async def test_eine_pause_ueber_die_hoechstdauer_laeuft_weiter(self):
         """Pipecat hält ein Schreiben von über 10 s für eine tote Verbindung: nie länger als MAX_PAUSE_SECS stehen bleiben."""
         with mock.patch.object(wiedergabe, "MAX_PAUSE_SECS", 0.05):
