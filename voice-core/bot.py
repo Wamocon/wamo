@@ -228,10 +228,9 @@ LEARN_OVERLAP = 4  # so viele frühere Zeilen als Kontext mitgeben
 SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS") or 60000)
 SUMMARY_TARGET_TOKENS = int(os.getenv("SUMMARY_TARGET_TOKENS") or 25000)
 DEFAULT_GREETING = "Hallo {name}, WAMO ist bereit."
-# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält (Standard von Pipecat 0,2 s).
-# 0,15 s spart 50 ms bis zum Transkript (gemessen am 21.10.2026: 308 gegen 356 ms) und trennt Sätze mit Pausen nicht
-# häufiger; Pipecat meldet einmal je Sitzung, dass der Wert vom Standard abweicht (Warnung im Log, harmlos).
-VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.15)
+# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält. Seit 14.11.2026 wieder der Standard
+# von Pipecat (0,2 s): 0,15 s sparte rund 50 ms bis zum Transkript, schnitt Sätze mit kurzen Denkpausen aber eher in Stücke.
+VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.2)
 # Was als Lebenszeichen einer Sitzung zählt: der Pipecat-Standard (Sprache) plus Text, Antworten des Modells und Werkzeuge. Ohne den Zusatz
 # bekam eine Sitzung ohne Sprache (stiller Start beim Tippen, nur Text) nie ein Lebenszeichen und wurde 300 Sekunden nach dem Start beendet, auch mitten
 # im Schreiben (Journal 12.11.2026: 08:49:34 und 08:55:08, jeweils trotz Antworten des Modells kurz davor). Test: test_bot_leerlauf.py
