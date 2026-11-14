@@ -286,21 +286,6 @@
 
 /* ---------- Canvas ---------- */
 .kz-canvas { min-width: 0; display: flex; flex-direction: column; scroll-margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--rule); }
-.kz .canvas-empty { margin: 0 auto; width: 100%; max-width: 720px; padding: 12px 0 0; }
-.kz .canvas-empty h2 { font-size: 28px; }
-.kz .canvas-item { background: color-mix(in srgb, var(--kz-karte) 85%, transparent); border-radius: 12px; border-top-width: 3px; }
-
-/* ---------- Verlauf bleibt Schublade (auch ab 1600 px) ---------- */
-@media (min-width: 1600px) {
-  .kz .verlauf {
-    position: fixed; z-index: 25; top: var(--top); right: 0; bottom: 0; height: auto; width: min(360px, 100vw);
-    transform: translateX(100%); transition: transform var(--dur-exit) var(--ease-in);
-    border-left: 1px solid var(--rule-strong);
-  }
-  .kz .verlauf[data-offen] { transform: none; transition: transform var(--dur-enter) var(--ease-out); }
-  .kz .verlauf-close, .kz .verlauf-btn { display: inline-flex; }
-}
-.kz .verlauf { box-shadow: -16px 0 40px -28px rgb(0 0 0 / 0.6); }
 
 /* ---------- Darstellung Fokus und Zentrale: nur die Mitte ---------- */
 .kz[data-ansicht="fokus"] .kz-main, .kz[data-ansicht="zentrale"] .kz-main { grid-template-columns: minmax(0, 1fr); }

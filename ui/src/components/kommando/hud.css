@@ -76,7 +76,7 @@
 .btn-decide:disabled { color: var(--ink-soft); border-color: var(--kontur); cursor: not-allowed; }
 
 /* Felder: dunkler Grund, Rand mit 3:1, beim Fokus rote Kante mit Schimmer */
-.gate-form input, .ez-feld select, .mic-wahl select, .geteilt-recht select, .teilen-form select, .teilen-form input[type="text"],
+.gate-form input:not([type="checkbox"]), .ez-feld select, .mic-wahl select, .geteilt-recht select, .teilen-form select, .teilen-form input[type="text"],
 .geteilt-editor input, .geteilt-editor textarea, .hud-feld {
   min-height: 44px; max-width: 100%; padding: 0 12px;
   background: var(--code-grund); color: var(--ink);
@@ -85,8 +85,8 @@
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .geteilt-editor textarea { padding: 10px 12px; }
-.gate-form input:hover:not(:disabled), .ez-feld select:hover:not(:disabled), .hud-feld:hover:not(:disabled) { border-color: var(--ink-soft); }
-.gate-form input:focus-visible, .ez-feld select:focus-visible, .mic-wahl select:focus-visible, .geteilt-recht select:focus-visible,
+.gate-form input:not([type="checkbox"]):hover:not(:disabled), .ez-feld select:hover:not(:disabled), .hud-feld:hover:not(:disabled) { border-color: var(--ink-soft); }
+.gate-form input:not([type="checkbox"]):focus-visible, .ez-feld select:focus-visible, .mic-wahl select:focus-visible, .geteilt-recht select:focus-visible,
 .teilen-form select:focus-visible, .teilen-form input[type="text"]:focus-visible, .geteilt-editor input:focus-visible,
 .geteilt-editor textarea:focus-visible, .hud-feld:focus-visible {
   border-color: var(--core); outline: 2px solid var(--focus); outline-offset: 1px;
@@ -230,8 +230,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 .kz .timeline time { font: 500 10.5px/1 var(--hud); color: var(--ink-faint); }
 .kz .timeline .eyebrow { letter-spacing: 0.2em; }
-.kz .canvas-item { background: var(--panel); border: 1px solid var(--kante); border-radius: 10px; box-shadow: 0 30px 70px -45px var(--core); }
-.kz .canvas-empty h2 { font: 700 22px/1.2 var(--display); letter-spacing: 0.02em; }
 
 /* Untertitel: zwei Zeilen in der Fließtextschrift */
 .kz .caption-bot { max-height: 3.1em; }

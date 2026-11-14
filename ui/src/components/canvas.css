@@ -1,0 +1,81 @@
+/* =====================================================================
+   Canvas (components/Canvas.tsx): Tabelle, Code, Dokument, Mermaid-Diagramm, leere Fläche und Reiter. Regeln mit Präfix .canvas und .kinds.
+   Eingebunden über globals.css. Aufbau der Spalte (.kz-canvas) steht in kommando/kommando.css, Glas und Kante der Karte hier.
+   Farben nur aus den Rollenvariablen, deshalb gelten sie in beiden Themen.
+   ===================================================================== */
+.canvas-empty { margin: 0 auto; width: 100%; max-width: 720px; padding: 12px 0 0; display: grid; gap: 8px; }
+.canvas-empty h2 { margin: 0; font: 700 22px/1.2 var(--display); letter-spacing: 0.02em; }
+.canvas-empty > p:not(.eyebrow) { margin: 0 0 16px; color: var(--ink-soft); }
+.kinds { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.kinds li {
+  display: flex; flex-direction: column; gap: 2px; padding: 12px 14px;
+  border: 1px solid var(--rule); border-left: 2px solid var(--core-deep); border-radius: 8px; background: var(--glas-leicht);
+}
+.kinds strong { font: 600 11px/1.3 var(--hud); letter-spacing: 0.16em; text-transform: uppercase; }
+.kinds span { color: var(--ink-soft); font-size: 14px; }
+
+.canvas-board { width: 100%; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.canvas-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.canvas-tab {
+  min-height: 36px; max-width: 30ch; padding: 0 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: transparent; color: var(--ink-soft); border: 1px solid var(--steuer-rand); border-radius: 6px;
+  font: 500 11px/1 var(--hud); letter-spacing: 0.08em; cursor: pointer;
+  transition-property: color, border-color; transition-duration: var(--dur-fast);
+}
+.canvas-tab:hover { color: var(--ink); }
+.canvas-tab[aria-current="true"] { border-color: var(--core); color: var(--ink); background: var(--glas-stark); }
+
+.canvas-item {
+  min-width: 0; padding: 24px;
+  background: var(--panel); border: 1px solid var(--kante); border-radius: 10px;
+  box-shadow: 0 30px 70px -45px var(--core);
+  animation: hud-auf 0.45s var(--ease-out) both;
+}
+.canvas-item-head { margin-bottom: 16px; display: grid; gap: 4px; }
+.canvas-item-head h2 { margin: 0; font: 700 20px/1.25 var(--display); letter-spacing: 0.01em; }
+
+.canvas-table-wrap { overflow-x: auto; }
+.canvas-table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+.canvas-table th {
+  padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--kante);
+  font: 600 10.5px/1.2 var(--hud); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-soft);
+}
+.canvas-table td { padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; font-variant-numeric: tabular-nums; }
+.canvas-table tbody tr:hover { background: color-mix(in srgb, var(--core) 6%, transparent); }
+
+.canvas-code { border: 1px solid var(--kante); border-radius: 8px; overflow: hidden; background: var(--code-grund); }
+.canvas-code-bar {
+  display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 4px 14px;
+  font: 11px/1.2 var(--hud); letter-spacing: 0.06em; color: var(--ink-soft); border-bottom: 1px solid var(--rule);
+}
+.canvas-code-bar button {
+  min-height: 36px; padding: 0 8px; background: transparent; border: 0; cursor: pointer; color: var(--ink);
+  font: 600 11px/1 var(--hud); letter-spacing: 0.1em; text-transform: uppercase;
+  text-decoration: underline; text-decoration-color: var(--core); text-decoration-thickness: 2px; text-underline-offset: 4px;
+}
+.canvas-code-aktion { display: inline-flex; align-items: center; gap: 8px; }
+/* Bestätigung nach dem Kopieren: Live-Region, die auch leer im DOM bleibt (sonst fehlt die Ansage) */
+.canvas-chip {
+  padding: 3px 10px; border-radius: 999px; background: var(--ink); color: var(--bg);
+  font: 600 11px/1.2 var(--hud); letter-spacing: 0.08em; white-space: nowrap;
+}
+.canvas-chip[data-art="fehler"] { background: var(--accent); color: var(--on-accent); }
+.canvas-chip:empty { padding: 0; margin-right: -8px; } /* leer ohne Breite, der Abstand zum Knopf fällt mit weg */
+.canvas-code pre { margin: 0; padding: 16px; overflow-x: auto; font-size: 13.5px; line-height: 1.6; }
+.canvas-code code, .canvas-doc code { font-family: var(--hud); }
+
+.canvas-doc { max-width: 72ch; }
+.canvas-doc h3, .canvas-doc h4, .canvas-doc h5 { margin: 20px 0 8px; font-family: var(--display); letter-spacing: 0.01em; }
+.canvas-doc h3 { font-size: 22px; }
+.canvas-doc h4 { font-size: 18px; }
+.canvas-doc h5 { font-size: 15px; }
+.canvas-doc p { margin: 0 0 12px; }
+.canvas-doc ul { margin: 0 0 12px; padding-left: 22px; }
+.canvas-doc li::marker { color: var(--core); }
+.canvas-doc code { background: var(--code-grund); padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
+
+.canvas-mermaid { overflow-x: auto; }
+.canvas-mermaid svg { max-width: 100%; height: auto; }
+.canvas-mermaid img { display: block; height: auto; }
+.canvas-mermaid-wartet { display: grid; gap: 8px; justify-items: start; }

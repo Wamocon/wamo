@@ -2,6 +2,10 @@
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
 @import "../components/kommando/hud.css"; /* HUD-Gestaltung der Kommandozentrale: Schriften, Glasflächen, Formen */
 @import "../components/kommando/kopfzeile.css"; /* Kopfzeile mit Statusmodulen, Profil, Schaltern und Popovern */
+@import "../components/canvas.css"; /* Canvas: Tabelle, Code, Dokument, Diagramm */
+@import "../components/verlauf.css"; /* Verlauf-Schublade */
+@import "../components/anmeldung.css"; /* Anmeldung */
+@import "../components/geteilt.css"; /* Geteilte Arbeit, Teilen, Hinweise */
 @import "../components/freigaben.css"; /* Freigabe- und Auftragskarten, Fehler, Toast und Hinweiskasten */
 @import "../components/kommando/kernRinge.css"; /* Kern: Lichtkugel in HUD-Ringen, Regeln mit Präfix .kr- */
 @import "../components/kommando/gespraech.css"; /* Block Gespräch (linke Spalte): Stimmlinie, Legende, Zeilen */
@@ -276,169 +280,7 @@ p, li { text-wrap: pretty; }
 }
 .actions .wake { flex: 1; }
 
-/* ---------- Canvas ---------- */
-.canvas { display: flex; min-width: 0; min-height: calc(100dvh - var(--top)); padding: 28px 36px 40px; }
-.canvas-empty { margin: auto; max-width: 640px; display: grid; gap: 8px; }
-.canvas-empty h2 { margin: 0; font: 700 34px/1.15 var(--font-wmc); color: var(--accent); }
-.canvas-empty > p:not(.eyebrow) { margin: 0 0 16px; color: var(--ink-soft); }
-.kinds { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; }
-.kinds li { display: flex; flex-direction: column; gap: 2px; padding: 12px 0 12px 14px; border-left: 3px solid var(--rule); }
-.kinds strong { font-weight: 700; }
-.kinds span { color: var(--ink-soft); font-size: 16px; }
-
-.canvas-board { width: 100%; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.canvas-tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); }
-.canvas-tab {
-  min-height: 40px; max-width: 30ch; padding: 0 14px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  background: transparent; color: var(--ink-soft);
-  border: 0; border-bottom: 3px solid transparent; margin-bottom: -1px;
-  font: 700 15px/1 var(--font-wmc); cursor: pointer;
-  transition-property: color, border-color; transition-duration: var(--dur-fast);
-}
-.canvas-tab:hover { color: var(--ink); }
-.canvas-tab[aria-current="true"] { color: var(--ink); border-bottom-color: var(--accent); }
-
-.canvas-item {
-  min-width: 0;
-  padding: 22px 26px 26px;
-  background: var(--bg);
-  border: 1px solid var(--rule); border-top: 4px solid var(--accent); border-radius: 4px;
-  animation: enter var(--dur-enter) var(--ease-out) both;
-}
-.canvas-item-head { margin-bottom: 16px; display: grid; gap: 4px; }
-.canvas-item-head h2 { margin: 0; font: 700 28px/1.15 var(--font-wmc); color: var(--accent); }
-
-.canvas-table-wrap { overflow-x: auto; }
-.canvas-table { border-collapse: collapse; width: 100%; font-size: 17px; }
-.canvas-table th {
-  background: var(--accent); color: var(--on-accent);
-  font: 700 19px/1.2 var(--font-wmc);
-  text-align: left; padding: 10px 14px;
-}
-.canvas-table td { border-bottom: 1px solid var(--rule); padding: 10px 14px; vertical-align: top; font-variant-numeric: tabular-nums; }
-.canvas-table tbody tr:nth-child(even) { background: var(--surface); }
-
-.canvas-code { border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
-.canvas-code-bar {
-  display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 4px 14px;
-  font-size: 14px; color: var(--ink-soft); background: var(--surface); border-bottom: 1px solid var(--rule);
-}
-.canvas-code-bar button {
-  min-height: 36px; padding: 0 8px; background: transparent; border: 0; cursor: pointer;
-  color: var(--ink); font: 700 15px/1 var(--font-wmc);
-  text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px;
-}
-.canvas-code-aktion { display: inline-flex; align-items: center; gap: 8px; }
-/* Bestätigung nach dem Kopieren: Live-Region, die auch leer im DOM bleibt (sonst fehlt die Ansage); Fehler Schwarz auf Rot */
-.canvas-chip {
-  padding: 3px 10px; border-radius: 999px; background: var(--ink); color: var(--bg);
-  font: 700 13px/1.2 var(--font-wmc); letter-spacing: 0.04em; white-space: nowrap;
-}
-.canvas-chip[data-art="fehler"] { background: var(--accent); color: var(--wmc-black); }
-.canvas-chip:empty { padding: 0; margin-right: -8px; } /* leer ohne Breite, der Abstand zum Knopf fällt mit weg */
-.canvas-code pre { margin: 0; padding: 16px; overflow-x: auto; font-size: 14px; line-height: 1.6; }
-.canvas-code code, .canvas-doc code { font-family: var(--font-code); }
-
-.canvas-doc { max-width: 72ch; }
-.canvas-doc h3, .canvas-doc h4 { margin: 20px 0 8px; font-weight: 700; color: var(--accent); }
-.canvas-doc h3 { font-size: 26px; }
-.canvas-doc h4 { font-size: 22px; }
-.canvas-doc h5 { margin: 16px 0 6px; font-size: 18px; }
-.canvas-doc p { margin: 0 0 12px; }
-.canvas-doc ul { margin: 0 0 12px; padding-left: 22px; list-style: square; }
-.canvas-doc li::marker { color: var(--accent); }
-.canvas-doc code { background: var(--surface); padding: 0 5px; border-radius: 3px; font-size: 0.85em; }
-
-.canvas-mermaid { overflow-x: auto; }
-.canvas-mermaid svg { max-width: 100%; height: auto; }
-
-/* ---------- Verlauf (role="log") ---------- */
-.verlauf {
-  position: fixed; z-index: 25; top: var(--top); right: 0; bottom: 0;
-  width: min(360px, 100vw);
-  display: flex; flex-direction: column;
-  background: var(--bg);
-  border-left: 1px solid var(--rule-strong);
-  transform: translateX(100%);
-  transition: transform var(--dur-exit) var(--ease-in);
-}
-.verlauf[data-offen] { transform: none; transition: transform var(--dur-enter) var(--ease-out); }
-.verlauf-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 10px 18px; border-bottom: 1px solid var(--rule); }
-.verlauf-close {
-  min-height: 40px; padding: 0 12px; background: transparent; cursor: pointer;
-  border: 1px solid var(--steuer-rand); border-radius: 4px; font: 700 15px/1 var(--font-wmc);
-}
-.verlauf-list { list-style: none; margin: 0; padding: 12px 18px 24px; overflow-y: auto; flex: 1; display: grid; align-content: start; gap: 14px; }
-.verlauf-leer { color: var(--ink-soft); }
-.verlauf-eintrag { padding-left: 12px; border-left: 3px solid var(--rule-strong); }
-.verlauf-eintrag[data-wer="wamo"] { border-left-color: var(--accent); }
-.verlauf-meta { margin: 0 0 2px; font-size: 14px; color: var(--ink-soft); }
-.verlauf-meta b { color: var(--ink); }
-.verlauf-cut { font-style: italic; }
-.verlauf-text { margin: 0; font-size: 16px; }
-.verlauf-tools { list-style: none; margin: 4px 0 0; padding: 0 0 0 12px; font-size: 14px; color: var(--ink-soft); }
-.verlauf-tools li::before { content: "› "; color: var(--accent); }
-
 @keyframes enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-
-/* ---------- Anmeldung: Kopfzeile wie die Word-Vorlage, Karte mit roter Kante ---------- */
-.gate { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto auto; background: var(--bg); }
-.brandbar {
-  display: flex; justify-content: space-between; align-items: center; gap: 16px;
-  padding: 12px 24px; border-bottom: 1px solid var(--rule); font-size: 15px;
-}
-.brandbar p { margin: 0; }
-.brandbar .logo-plate img { height: 45px; }
-.gate-main { display: grid; place-items: center; padding: 32px 16px; background: var(--surface); }
-.gate-card {
-  width: min(100%, 420px);
-  display: grid; gap: 16px;
-  padding: 30px 28px;
-  background: var(--bg);
-  border: 1px solid var(--rule); border-top: 4px solid var(--accent); border-radius: 6px;
-  animation: enter var(--dur-enter) var(--ease-out) both;
-}
-.gate-head { display: grid; gap: 4px; }
-.gate-title { margin: 0; font: 700 44px/1 var(--font-wmc); letter-spacing: 0.04em; color: var(--accent); }
-.gate-sub { margin: 0; font-size: 17px; color: var(--ink-soft); }
-.gate-hint { margin: 0; }
-.gate-form { display: grid; gap: 14px; }
-.gate-form label { display: grid; gap: 5px; font-size: 16px; font-weight: 700; }
-.gate-form input {
-  min-height: 44px; padding: 0 12px;
-  border: 1px solid var(--steuer-rand); border-radius: 4px;
-  font: 400 17px var(--font-wmc); background: var(--bg); color: var(--ink);
-}
-.gate-form input:hover { border-color: var(--ink); }
-.gate-form input[name="code"] { font: 600 24px var(--font-code); letter-spacing: 0.3em; text-align: center; }
-.gate-form .btn-primary { margin-top: 4px; }
-.gate-form .gate-check { display: flex; align-items: center; gap: 10px; min-height: 44px; font-weight: 400; cursor: pointer; }
-.gate-form .gate-check input { width: 22px; min-height: 22px; height: 22px; padding: 0; accent-color: var(--accent); cursor: pointer; }
-.gate-hint-klein { margin-top: -8px; font-size: 14px; color: var(--ink-soft); }
-.gate-qr { justify-self: center; background: #ffffff; padding: 10px; border: 1px solid var(--rule); }
-.gate-secret { font-size: 15px; color: var(--ink-soft); }
-.gate-secret code { display: block; margin-top: 6px; font: 13px var(--font-code); word-break: break-all; }
-.gate-link {
-  justify-self: center; min-height: 40px; padding: 0 8px;
-  background: none; border: 0; cursor: pointer; font-size: 16px;
-  text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px;
-}
-.notice {
-  margin: 0; padding: 10px 14px;
-  background: var(--surface); border-left: 4px solid var(--accent); border-radius: 0 4px 4px 0;
-}
-.gate-dev { margin: 0; font-size: 14px; color: var(--ink-soft); }
-.gate-dev a { color: var(--ink); text-decoration-color: var(--accent); text-underline-offset: 3px; }
-.gate-unsicher {
-  margin: 0; padding: 8px 24px; text-align: center; font-size: 14px;
-  background: var(--surface); border-top: 1px solid var(--rule);
-}
-.gate-foot {
-  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-  padding: 12px 24px; border-top: 1px solid var(--rule);
-  color: var(--ink-soft); font-size: 13px;
-}
 
 /* ---------- Breitenstufen ---------- */
 /* unter 1024 px: niedrigere Kopfzeile, Canvas in einer Spalte */
@@ -449,95 +291,7 @@ p, li { text-wrap: pretty; }
   .kinds { grid-template-columns: 1fr; }
 }
 
-@media (max-width: 520px) {
-  .brandbar { padding: 10px 14px; }
-  .brandbar p { font-size: 13px; }
-  .brandbar .logo-plate img { height: 34px; }
-  .gate-card { padding: 24px 18px; }
-}
 
-/* ---------- Geteilte Arbeit und Hinweise (components/Geteilt.tsx, Teilen.tsx, Hinweise.tsx) ---------- */
-.hinweise { display: grid; gap: 8px; }
-.hinweis-karte {
-  display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: start;
-  padding: 10px 12px 10px 14px;
-  background: var(--bg); border: 1px solid var(--rule-strong); border-left: 4px solid var(--accent); border-radius: 0 4px 4px 0;
-  animation: enter var(--dur-enter) var(--ease-out) both;
-}
-.hinweis-karte .eyebrow { grid-column: 1; margin: 0; }
-.hinweis-karte .error-close { grid-column: 2; grid-row: 1 / span 3; min-height: 32px; }
-.hinweis-titel { grid-column: 1; margin: 0; font: 700 17px/1.3 var(--font-wmc); overflow-wrap: anywhere; }
-.hinweis-text { grid-column: 1; margin: 0; font-size: 15px; color: var(--ink-soft); overflow-wrap: anywhere; }
-
-.geteilt { border-top: 1px solid var(--rule); padding-top: 8px; }
-.geteilt > summary {
-  min-height: 40px; display: flex; align-items: center; cursor: pointer;
-  font: 700 17px/1 var(--font-wmc);
-}
-.geteilt > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.geteilt-reiter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 10px; }
-.geteilt-reiter button[aria-pressed] {
-  min-height: 36px; padding: 0 10px;
-  background: transparent; color: var(--ink); border: 2px solid var(--steuer-rand); border-radius: 4px;
-  font: 700 15px/1 var(--font-wmc); cursor: pointer;
-}
-/* aktiv wie topbar-btn[aria-expanded]: Tinte statt Rot (Rot auf Weiß reicht für 15 px nicht), roter Streifen unten */
-.geteilt-reiter button[aria-pressed="true"] {
-  background: var(--ink); border-color: var(--ink); color: var(--bg); box-shadow: inset 0 -4px 0 var(--accent);
-}
-.geteilt-reiter button:focus-visible, .geteilt-neu:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.geteilt-neu {
-  margin-left: auto; min-height: 36px; padding: 0 6px;
-  background: none; border: 0; color: var(--ink); cursor: pointer;
-  font: 700 15px/1 var(--font-wmc); text-decoration: underline; text-underline-offset: 3px;
-}
-.geteilt-panel { display: grid; gap: 10px; }
-.geteilt-leer { margin: 0; color: var(--ink-soft); }
-.geteilt-liste { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.geteilt-eintrag { padding: 8px 0 8px 12px; border-left: 3px solid var(--rule-strong); }
-.geteilt-titel { margin: 0; font: 700 17px/1.3 var(--font-wmc); overflow-wrap: anywhere; }
-.geteilt-meta { margin: 2px 0 6px; font-size: 14px; color: var(--ink-soft); }
-.geteilt-hinweis { margin: 0 0 6px; font-size: 15px; font-style: italic; overflow-wrap: anywhere; }
-.geteilt-aktionen { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.geteilt-gefahr[data-fragt] { border-color: var(--accent); }
-.geteilt-recht { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; }
-.geteilt-editor textarea { min-height: 220px; font-family: var(--font-code); font-size: 14px; resize: vertical; }
-.geteilt-protokoll { margin: 8px 0 0; padding-left: 20px; font-size: 14px; color: var(--ink-soft); }
-.geteilt-upload { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
-.geteilt-editor {
-  display: grid; gap: 6px; padding: 12px 14px;
-  background: var(--surface); border-left: 4px solid var(--accent); border-radius: 0 4px 4px 0;
-}
-.geteilt-editor h5 { margin: 0 0 4px; font: 700 19px/1.25 var(--font-wmc); }
-.geteilt-editor label, .teilen-form > label { font-size: 15px; font-weight: 700; }
-
-.teilen { display: grid; gap: 8px; justify-items: start; }
-.canvas-item-head .teilen { margin-top: 6px; }
-.teilen-form {
-  display: grid; gap: 6px; width: min(100%, 420px); padding: 12px 14px;
-  background: var(--surface); border-left: 4px solid var(--accent); border-radius: 0 4px 4px 0;
-}
-.teilen-recht { margin: 4px 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
-.teilen-recht legend { padding: 0; font-size: 15px; font-weight: 700; }
-.teilen-recht label, .teilen-check { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; font-size: 15px; cursor: pointer; }
-.teilen-recht input, .teilen-check input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
-.teilen-recht:disabled label { color: var(--ink-soft); cursor: not-allowed; }
-.teilen-aktionen { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.teilen-status { margin: 0; font-size: 15px; font-weight: 700; }
-.teilen-status[data-fehler] { text-decoration: underline; text-decoration-color: var(--accent); }
-.canvas-geteilt { margin: 0; font-size: 15px; color: var(--ink-soft); }
-.teilen-hinweis { margin: 0; font-size: 14px; color: var(--ink-soft); }
-.teilen-fehler { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 15px; }
-.hinweise-fuss { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
-.hinweise-fuss:empty { display: none; }
-.hinweise-weitere { font-size: 14px; color: var(--ink-soft); }
-.canvas-mermaid img { display: block; height: auto; }
-.canvas-mermaid-wartet { display: grid; gap: 8px; justify-items: start; }
-
-@media (max-width: 1023px) {
-  .hinweise { order: 2; }
-  .geteilt { order: 8; }
-}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition-duration: 0ms !important; }
@@ -547,16 +301,6 @@ p, li { text-wrap: pretty; }
    Steht am Ende, damit die Regeln die Abstände der Breitenstufen oben übersteuern. Auf dem PC sind alle --sa-* gleich 0,
    die Werte fallen dann auf die ursprünglichen Abstände zurück (max). Die Höhe der Kopfzeile (--top) enthält den Abstand
    oben schon, deshalb verschieben sich alle darunter verankerten Teile (Reiterleiste, Verlauf, Popover) von selbst. */
-.verlauf { padding-right: var(--sa-r); padding-bottom: var(--sa-b); }
-
-/* Anmeldung */
-.brandbar { padding-top: calc(12px + var(--sa-t)); padding-right: max(var(--sa-r), 24px); padding-left: max(var(--sa-l), 24px); }
-.gate-main { padding-right: max(var(--sa-r), 16px); padding-left: max(var(--sa-l), 16px); }
-.gate-unsicher { padding-right: max(var(--sa-r), 24px); padding-left: max(var(--sa-l), 24px); }
-.gate-foot { padding-bottom: calc(12px + var(--sa-b)); padding-right: max(var(--sa-r), 24px); padding-left: max(var(--sa-l), 24px); }
-@media (max-width: 520px) {
-  .brandbar { padding-top: calc(10px + var(--sa-t)); padding-right: max(var(--sa-r), 14px); padding-left: max(var(--sa-l), 14px); }
-}
 
 /* Kommandozentrale: Handy und Tablet, eine Spalte mit fester Aktionsleiste unten */
 @media (max-width: 1099px) {
