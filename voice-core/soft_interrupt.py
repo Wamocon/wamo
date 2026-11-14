@@ -227,7 +227,8 @@ def hat_stoppwort(text: str, ohne: frozenset[str] = frozenset(), zusaetzlich: fr
     """Enthält der Text ein Wort, mit dem man WAMO anhält oder etwas wissen will ("Stopp", "Moment", "Was", "Nein")?
     ohne: Wörter, die hier nicht zählen (WEICHE_STOPPWOERTER), zusaetzlich: weitere Stoppwörter (ZUSATZ_STOPPWOERTER),
     beides nur bei eingeschaltetem Innehalten."""
-    return any(w in (STOPP_WORDS | zusaetzlich) and w not in ohne for w in (_wort(x) for x in text.split()))
+    woerter = STOPP_WORDS | zusaetzlich if zusaetzlich else STOPP_WORDS
+    return any(w in woerter and w not in ohne for w in (_wort(x) for x in text.split()))
 
 
 def _wort(w: str) -> str:
@@ -422,7 +423,7 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
             return ProcessFrameResult.STOP
         if halten and count >= 1 and self._urteil(frame.text) == "einwurf" and not self.echo_modus_aktiv():
             # Ein einzelnes echtes Wort: kein Einwurf, aber WAMO hält inne und wartet ab, ob mehr kommt. Echo (ein Wort, das
-            # WAMO gerade selbst gesprochen hat, oder erkanntes Echo) hält sie nie an.
+            # WAMO gerade selbst gesprochen hat, oder erkanntes Echo) hält WAMO nie an.
             self._on_partial(frame.text)
         elif ist_rueckmeldung(frame.text):
             self.rueckmeldungen += 1
