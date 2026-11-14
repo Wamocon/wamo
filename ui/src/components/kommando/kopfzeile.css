@@ -131,7 +131,7 @@
 }
 .thema-btn, .einstellungen-btn, .menu-btn { width: 44px; padding: 0; }
 .thema-btn svg, .einstellungen-btn svg, .menu-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.thema-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.thema-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .menu-btn { display: none; }
 
 /* ---------- Popover von Profil und Status (HTML-Popover-API) ---------- */

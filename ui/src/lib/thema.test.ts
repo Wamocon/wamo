@@ -61,14 +61,16 @@ test("das Attribut data-theme heißt light oder dark und wird zurückgelesen", (
   assert.equal(themaAusAttribut("irgendwas"), "dunkel");
 });
 
-/** Das Skript im Kopf der Seite in einer Attrappe der Seite laufen lassen. */
+/** Das Skript im Kopf der Seite in einer Attrappe der Seite laufen lassen (mit zwei Leisten-Metas, wie nach einer Hydration). */
 function skriptLaufen(wert: string | null | "wirft") {
   const gesetzt: Record<string, string> = {};
-  const meta: Record<string, string> = {};
+  const metas: Record<string, string>[] = [{}, {}];
+  const meta = metas[0];
   runInNewContext(INIT_SKRIPT, {
     document: {
       documentElement: { setAttribute: (k: string, v: string) => void (gesetzt[k] = v) },
-      querySelector: () => ({ setAttribute: (k: string, v: string) => void (meta[k] = v) }),
+      querySelectorAll: (sel: string) =>
+        sel === 'meta[name="theme-color"]' ? metas.map((m) => ({ setAttribute: (k: string, v: string) => void (m[k] = v) })) : [],
     },
     localStorage: {
       getItem: () => {
@@ -77,7 +79,7 @@ function skriptLaufen(wert: string | null | "wirft") {
       },
     },
   });
-  return { gesetzt, meta };
+  return { gesetzt, meta, metas };
 }
 
 test("das Kopf-Skript setzt vor dem ersten Zeichnen light bei gespeichertem hell, sonst dark", () => {
@@ -94,4 +96,9 @@ test("das Kopf-Skript bricht bei gesperrtem Speicher nicht ab und bleibt dunkel"
 test("das Kopf-Skript stellt auch die Farbe der Browserleiste ein", () => {
   assert.equal(skriptLaufen("hell").meta.content, LEISTENFARBE.hell);
   assert.equal(skriptLaufen(null).meta.content, LEISTENFARBE.dunkel);
+});
+
+test("das Kopf-Skript stellt jedes meta theme-color ein, nicht nur das erste", () => {
+  assert.deepEqual(skriptLaufen("hell").metas.map((m) => m.content), [LEISTENFARBE.hell, LEISTENFARBE.hell]);
+  assert.deepEqual(skriptLaufen("dunkel").metas.map((m) => m.content), [LEISTENFARBE.dunkel, LEISTENFARBE.dunkel]);
 });

@@ -159,8 +159,12 @@ export type WamoState = {
   stimme: StimmeStand;
   /** Einlernen des Stimmabdrucks: null, solange die Ansicht zu ist; sonst die Phase von der Einwilligung bis zum Ergebnis */
   abdruck: Abdruck | null;
+  /** Die Person hat die Einlernansicht selbst geschlossen oder abgebrochen: bis zur nächsten Startmeldung öffnet keine Meldung sie wieder */
+  abdruckLokalZu: boolean;
   /** Einwilligungstext vom Kern, null bis er ihn schickt (ohne ihn startet die Oberfläche das Einlernen nicht) */
   einwilligung: Einwilligung | null;
+  /** Der zuletzt geschickte Einwilligungstext war ungültig (zum Beispiel zu lang): die Einlernansicht sagt es, statt weiter zu warten */
+  einwilligungAbgelehnt: boolean;
   /** Text für role="status": nur bedeutsame Wechsel (verbunden, getrennt, Mikro, PC) */
   ansage: string;
   /** kurzer sichtbarer Hinweis (z. B. "PC-Steuerung automatisch eingeschaltet"), verschwindet selbst */
@@ -202,7 +206,9 @@ export const initialState: WamoState = {
   stillStart: STILL_AUS,
   stimme: STIMME_LEER,
   abdruck: null,
+  abdruckLokalZu: false,
   einwilligung: null,
+  einwilligungAbgelehnt: false,
   ansage: "",
   toast: null,
 };
@@ -436,13 +442,22 @@ export function resetWamo(state: WamoState = initialState) {
 export function abdruckAnsichtOeffnen(): boolean {
   const s = wamo.get();
   if (!kannEinlernen(s.stimme, istOnline(s))) return false;
-  wamo.set((x) => ({ ...x, abdruck: abdruckOeffnen() }));
+  wamo.set((x) => ({ ...x, abdruck: abdruckOeffnen(), abdruckLokalZu: false }));
   return true;
 }
 
-/** Die Einlernansicht zumachen (das Abbrechen eines laufenden Einlernens schickt useWamo). */
+/** Die Einlernansicht zumachen (das Abbrechen eines laufenden Einlernens schickt useWamo). Späte Meldungen öffnen sie nicht wieder. */
 export function abdruckAnsichtSchliessen() {
-  wamo.set((s) => ({ ...s, abdruck: null }));
+  wamo.set((s) => ({ ...s, abdruck: null, abdruckLokalZu: true }));
+}
+
+/**
+ * Eine Nachricht, die parseServerMessage abgelehnt hat (useWamo). Zählt nur bei einem Einwilligungstext: Der alte Text gilt dann
+ * nicht mehr, und die Einlernansicht zeigt einen Hinweis statt endlos "wird vom Kern geladen". Alles andere bleibt unbeachtet.
+ */
+export function nachrichtAbgelehnt(roh: unknown) {
+  if (typeof roh !== "object" || roh === null || (roh as { type?: unknown }).type !== "stimmabdruck_einwilligung") return;
+  wamo.set((s) => ({ ...s, einwilligung: null, einwilligungAbgelehnt: true }));
 }
 
 // ---------- Servernachrichten in den Store übernehmen ----------
@@ -659,10 +674,14 @@ export function applyServerMessage(msg: ServerMessage) {
       wamo.set((s) => ({ ...s, stimme: stimmeErgebnisAnwenden(s.stimme, msg) }));
       return;
     case "stimmabdruck_einwilligung":
-      wamo.set((s) => ({ ...s, einwilligung: { version: msg.version, text: msg.text } }));
+      wamo.set((s) => ({ ...s, einwilligung: { version: msg.version, text: msg.text }, einwilligungAbgelehnt: false }));
       return;
     case "stimmabdruck":
-      wamo.set((s) => ({ ...s, abdruck: abdruckAnwenden(s.abdruck, msg), ansage: abdruckAnsage(msg.status) ?? s.ansage }));
+      wamo.set((s) => {
+        const abdruck = abdruckAnwenden(s.abdruck, msg, s.abdruckLokalZu);
+        // eine offene Ansicht (auch die von einer neuen Startmeldung geöffnete) hebt das lokale Schließen auf
+        return { ...s, abdruck, abdruckLokalZu: abdruck ? false : s.abdruckLokalZu, ansage: abdruckAnsage(msg.status) ?? s.ansage };
+      });
       return;
     case "leiser_stopp":
     case "stimme_leiser":

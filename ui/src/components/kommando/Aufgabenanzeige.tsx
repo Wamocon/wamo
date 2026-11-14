@@ -1,8 +1,9 @@
 "use client";
 
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { LABEL } from "@/components/ActivityFeed";
 import {
+  aufgabeBeenden,
   aufgabeDauer,
   aufgabeZustand,
   istOffen,
@@ -11,7 +12,7 @@ import {
 } from "@/lib/aufgabenanzeige";
 import type { ActivityStatus } from "@/lib/nachrichten";
 import { useSelect } from "@/lib/store";
-import { wamo } from "@/lib/wamo";
+import { istOnline, wamo } from "@/lib/wamo";
 
 /**
  * Aufgabenanzeige neben dem Kern: Schrittnummer groß, Dauer als laufende Uhr, jeder Werkzeugschritt als Balken
@@ -54,7 +55,7 @@ function zwei(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-/** Laufende Dauer: zählt nur, solange ein Schritt offen ist (eigener Takt, die Seite rendert nicht mit). */
+/** Laufende Dauer: zählt nur, solange ein Schritt offen ist, also nur mit laufender Sitzung (eigener Takt, die Seite rendert nicht mit). */
 function Dauer({ aufgabe }: { aufgabe: Aufgabe }) {
   // Startwert 0 statt der Uhr: gleich beim ersten Rendern auf dem Server und im Browser
   const [jetzt, setJetzt] = useState(0);
@@ -77,7 +78,10 @@ function Dauer({ aufgabe }: { aufgabe: Aufgabe }) {
 }
 
 export const Aufgabenanzeige = memo(function Aufgabenanzeige() {
-  const aufgabe = useSelect(wamo, (s) => s.aufgabe);
+  const roh = useSelect(wamo, (s) => s.aufgabe);
+  const online = useSelect(wamo, istOnline);
+  // Ohne laufende Sitzung läuft nichts: offene Schritte gelten als abgebrochen, die Uhr steht (useWamo schließt sie beim Trennen ohnehin)
+  const aufgabe = useMemo(() => (online ? roh : aufgabeBeenden(roh)), [roh, online]);
   const schritte = aufgabe.schritte;
   if (!schritte.length) return null;
   const zustand = aufgabeZustand(aufgabe);
@@ -101,13 +105,18 @@ export const Aufgabenanzeige = memo(function Aufgabenanzeige() {
         </div>
       </header>
 
-      <p
-        className="az-schritt"
-        aria-label={`Schritt ${aktuell} von ${schritte.length}`}
-      >
-        <span className="az-schritt-wort">Schritt</span>
-        <span className="az-schritt-zahl">{zwei(aktuell)}</span>
-        <span className="az-schritt-von">/ {zwei(schritte.length)}</span>
+      {/* Kein aria-label auf einem Absatz (wird nicht zuverlässig vorgelesen): die sichtbare Zahl ist verborgen, daneben steht der Satz */}
+      <p className="az-schritt">
+        <span className="az-schritt-wort" aria-hidden="true">
+          Schritt
+        </span>
+        <span className="az-schritt-zahl" aria-hidden="true">
+          {zwei(aktuell)}
+        </span>
+        <span className="az-schritt-von" aria-hidden="true">
+          / {zwei(schritte.length)}
+        </span>
+        <span className="sr-only">{`Schritt ${aktuell} von ${schritte.length}`}</span>
       </p>
 
       <ol className="az-schritte">

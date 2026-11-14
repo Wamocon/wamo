@@ -2,7 +2,8 @@
 // "Nicht eingelernt", unsichtbar ohne Stand oder bei ausgeschalteter Stimmerkennung und für Laborkonten (Prop stimme).
 // Ausführen im Ordner ui/:  npm run test:komponenten
 import { act, render } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { Profiler } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Kopfzeile } from "@/components/Kopfzeile";
 import { StatusDetails } from "@/components/Statusleiste";
 import { applyServerMessage, resetWamo, wamo } from "@/lib/wamo";
@@ -76,6 +77,28 @@ describe("Modul Stimme in der Kopfzeile", () => {
     const { container } = render(<StatusDetails kompakt={false} />);
     status("bereit");
     expect(modul(container)).toBeNull();
+  });
+
+  it("ohne das Modul rendert eine Meldung der Stimmerkennung die Statusliste nicht neu, mit dem Modul schon", () => {
+    const renderOhne = vi.fn();
+    const renderMit = vi.fn();
+    render(
+      <>
+        <Profiler id="ohne" onRender={renderOhne}>
+          <StatusDetails kompakt={false} />
+        </Profiler>
+        <Profiler id="mit" onRender={renderMit}>
+          <StatusDetails kompakt stimme />
+        </Profiler>
+      </>,
+    );
+    renderOhne.mockClear();
+    renderMit.mockClear();
+    status("bereit");
+    ergebnis("eigen", 0.78);
+    ergebnis("fremd", 0.2);
+    expect(renderOhne).not.toHaveBeenCalled();
+    expect(renderMit).toHaveBeenCalled();
   });
 
   it("im ausführlichen Menü heißt die Zeile Stimmerkennung (Stimme ist dort schon die Sprachausgabe)", () => {

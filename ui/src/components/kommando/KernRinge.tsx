@@ -13,12 +13,17 @@ import { istOnline, laeuftWerkzeug, wamo, wartetAufEntscheidung, type LevelSampl
  * - handelt: ein roter Strichring und zwei Umlaufbahnen (in der Zentrale drei)
  * - Freigabe wartet: der Strichring pulsiert, ohne zu drehen
  * Farben stehen nur im CSS (Variablen), deshalb folgen die Ringe dem Wechsel hell und dunkel von selbst.
- * Der Pegel kommt pro Bild aus einem Ref, nur der Bogen schreibt ins DOM (kein React-Render). Die Schleife ruht, solange
- * WAMO schläft und der Bogen leer ist, und mit verborgener Seite. prefers-reduced-motion: der Bogen springt in drei Stufen,
- * höchstens 12 Bilder je Sekunde (die Drehungen schaltet das CSS ab).
+ * Der Pegel kommt pro Bild aus einem Ref, nur der Bogen schreibt ins DOM (kein React-Render). Die Schleife ruht, solange der
+ * Bogen leer ist und kein Ton kommt (auch mit laufender Sitzung; ein leichter Takt weckt sie bei Ton), mit verborgener Seite und
+ * solange die Ringe nicht zu sehen sind. prefers-reduced-motion: der Bogen springt in drei Stufen, höchstens 12 Bilder je Sekunde
+ * (die Drehungen schaltet das CSS ab).
  */
 
 const SKALA = skalaPfad(); // fest, einmal beim Laden
+/** Darunter gilt der Bogen als leer und der Pegel als still */
+const RUHE = 0.002;
+/** So oft prüft der Pegelwecker, ob Ton kommt, solange die Schleife ruht */
+const PEGEL_TAKT_MS = 100;
 
 export const KernRinge = memo(function KernRinge({
   levels,
@@ -41,10 +46,13 @@ export const KernRinge = memo(function KernRinge({
     let strich = "";
     let wer = "";
     let letzte = -1e9;
+    let sichtbar = true; // die Ringe sind im Bild (IntersectionObserver, wo vorhanden)
+    const ruht = () => document.hidden || !sichtbar;
+    const tonDa = () => pegelAuswahl(levels.current, false).ziel >= RUHE;
 
     const bild = (jetzt: number) => {
       raf = 0;
-      if (document.hidden) return; // verborgen: nichts zeichnen, visibilitychange weckt
+      if (ruht()) return; // verborgen oder nicht zu sehen: nichts zeichnen, visibilitychange und der Beobachter wecken
       const red = reduziert.matches;
       if (red && jetzt - letzte < 1000 / 12) {
         raf = requestAnimationFrame(bild);
@@ -53,7 +61,7 @@ export const KernRinge = memo(function KernRinge({
       letzte = jetzt;
       const { ziel, wer: neu } = pegelAuswahl(levels.current, red);
       gezeigt = red ? ziel : glaetten(gezeigt, ziel);
-      if (gezeigt < 0.002) gezeigt = 0;
+      if (gezeigt < RUHE) gezeigt = 0;
       const s = bogenStrich(gezeigt);
       if (s !== strich) {
         strich = s;
@@ -63,20 +71,35 @@ export const KernRinge = memo(function KernRinge({
         wer = neu;
         bogen.dataset.wer = neu;
       }
-      if (gezeigt > 0 || wamo.get().presence !== "offline") raf = requestAnimationFrame(bild);
+      // weiter nur, solange der Bogen etwas zeigt oder Ton kommt; sonst ruht die Schleife, auch mit laufender Sitzung
+      if (gezeigt > 0 || ziel >= RUHE) raf = requestAnimationFrame(bild);
     };
     const wecke = () => {
-      if (!raf && !document.hidden) raf = requestAnimationFrame(bild);
+      if (!raf && !ruht()) raf = requestAnimationFrame(bild);
     };
 
     wecke();
     const abmelden = wamo.subscribe(wecke);
     document.addEventListener("visibilitychange", wecke);
     reduziert.addEventListener("change", wecke);
+    // Pegel ändern sich ohne Store: ein leichter Takt stößt die ruhende Schleife an, sobald Ton kommt
+    const pegelWecker = setInterval(() => {
+      if (!raf && tonDa()) wecke();
+    }, PEGEL_TAKT_MS);
+    const sicht =
+      typeof IntersectionObserver === "undefined"
+        ? null
+        : new IntersectionObserver((eintraege) => {
+            sichtbar = eintraege.some((e) => e.isIntersecting);
+            wecke();
+          });
+    sicht?.observe(bogen);
     return () => {
       cancelAnimationFrame(raf);
       raf = 0;
       abmelden();
+      clearInterval(pegelWecker);
+      sicht?.disconnect();
       document.removeEventListener("visibilitychange", wecke);
       reduziert.removeEventListener("change", wecke);
     };

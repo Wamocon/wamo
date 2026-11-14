@@ -137,17 +137,23 @@ export const abdruckGestartet = (a: Abdruck | null): Abdruck => ({ phase: "start
 /** Läuft die Aufnahme oder die Berechnung, die sich mit Abbrechen beenden lässt? */
 export const abdruckLaeuft = (a: Abdruck | null): boolean => a?.phase === "start" || a?.phase === "aufnahme" || a?.phase === "rechnet";
 
+/** Diese Meldungen dürfen eine geschlossene Ansicht öffnen (ein Einlernen läuft, die Person soll Fortschritt und Abbrechen sehen). */
+const OEFFNET: readonly AbdruckStatus[] = ["start", "aufnahme", "rechnet"];
+
 /**
- * Meldung des Kerns einarbeiten. abgebrochen und geloescht schließen die Ansicht. Ohne geöffnete Ansicht öffnet eine Meldung
- * sie (der Kern führt, die Person soll Fortschritt und Abbrechen sehen). In der Einwilligung gilt keine Meldung außer dem
- * Schließen: ohne Einwilligung geht es nicht weiter.
+ * Meldung des Kerns einarbeiten. abgebrochen und geloescht schließen die Ansicht. Eine geschlossene Ansicht öffnen nur start,
+ * aufnahme und rechnet; ein Ergebnis (fertig, fehler) öffnet sie nie. Hat die Person die Ansicht selbst geschlossen oder
+ * abgebrochen (lokalZu), öffnet sie nur eine neue Startmeldung: späte Meldungen des alten Durchlaufs bleiben draußen.
+ * In der Einwilligung gilt keine Meldung außer dem Schließen: ohne Einwilligung geht es nicht weiter.
  */
 export function abdruckAnwenden(
   a: Abdruck | null,
   m: { status: AbdruckStatus; sekunden?: number; ziel?: number; text?: string },
+  lokalZu = false,
 ): Abdruck | null {
   if (m.status === "abgebrochen" || m.status === "geloescht") return null;
   if (a?.phase === "einwilligung") return a;
+  if (!a && (lokalZu ? m.status !== "start" : !OEFFNET.includes(m.status))) return null;
   return {
     phase: m.status,
     sekunden: m.sekunden ?? a?.sekunden ?? 0,

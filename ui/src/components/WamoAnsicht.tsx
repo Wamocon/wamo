@@ -190,7 +190,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
       }
       hinweise={
         <>
-          <Gespraech />
+          <Gespraech mitVerlauf={ansicht.verlauf} />
           <Hinweise modellzugang={ansicht.modellzugang} />
         </>
       }

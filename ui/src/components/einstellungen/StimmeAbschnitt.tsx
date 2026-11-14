@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useEffect, useId, useRef, useState } from "react";
+import { einlernOeffnerMerken } from "@/components/kommando/einlernFokus";
 import { einstellungenSchliessen } from "@/lib/einstellungenHash";
 import {
   ergebnisText,
@@ -26,17 +27,27 @@ export const StimmeAbschnitt = memo(function StimmeAbschnitt({ aktionen }: { akt
   const [frage, setFrage] = useState(false);
   const [nachricht, setNachricht] = useState<{ art: "status" | "alert"; text: string } | null>(null);
   const frageId = useId();
+  const rueckfrageId = useId();
   const behalten = useRef<HTMLButtonElement>(null);
   const loeschKnopf = useRef<HTMLButtonElement>(null);
   const einlernKnopf = useRef<HTMLButtonElement>(null);
+  const meldung = useRef<HTMLParagraphElement>(null);
+  /** Nach dem Löschen war das Einlernen gesperrt: der Fokus geht auf die Meldung, sobald sie steht */
+  const fokusAufMeldung = useRef(false);
   useEffect(() => {
     if (frage) behalten.current?.focus();
   }, [frage]);
+  useEffect(() => {
+    if (!nachricht || !fokusAufMeldung.current) return;
+    fokusAufMeldung.current = false;
+    meldung.current?.focus();
+  }, [nachricht]);
 
   const einlernenOk = kannEinlernen(stand, online);
   const loeschenOk = kannLoeschen(stand, online) && aktionen !== undefined;
 
   const einlernen = () => {
+    einlernOeffnerMerken(einlernKnopf.current); // Ziel für den Fokus, wenn die Einlernansicht wieder zugeht
     if (!abdruckAnsichtOeffnen()) return;
     einstellungenSchliessen();
   };
@@ -46,7 +57,11 @@ export const StimmeAbschnitt = memo(function StimmeAbschnitt({ aktionen }: { akt
   };
   const loeschen = () => {
     setFrage(false);
-    einlernKnopf.current?.focus(); // der Abdruck-löschen-Knopf verschwindet gleich, wenn der Kern bestätigt
+    // Der Abdruck-löschen-Knopf verschwindet gleich, wenn der Kern bestätigt: Fokus auf das Einlernen, solange es bedienbar ist,
+    // sonst (zum Beispiel ohne Sitzung) auf die Meldung, damit er nicht auf der Seite verloren geht
+    const knopf = einlernKnopf.current;
+    if (knopf && !knopf.disabled) knopf.focus();
+    else fokusAufMeldung.current = true;
     const ging = aktionen?.loeschen() ?? false;
     setNachricht(
       ging
@@ -85,6 +100,7 @@ export const StimmeAbschnitt = memo(function StimmeAbschnitt({ aktionen }: { akt
             ref={loeschKnopf}
             className="btn-secondary"
             aria-expanded={frage}
+            aria-controls={frage ? rueckfrageId : undefined}
             onClick={() => {
               setNachricht(null);
               setFrage(true);
@@ -95,7 +111,7 @@ export const StimmeAbschnitt = memo(function StimmeAbschnitt({ aktionen }: { akt
         )}
       </div>
       {frage && (
-        <div className="ez-rueckfrage" role="group" aria-labelledby={frageId}>
+        <div className="ez-rueckfrage" id={rueckfrageId} role="group" aria-labelledby={frageId}>
           <p id={frageId}>Abdruck wirklich löschen? Danach erkennt W.A.I.S. deine Stimme nicht mehr, bis du sie neu einlernst.</p>
           <div className="ez-tasten">
             <button type="button" ref={behalten} className="btn-secondary" onClick={frageSchliessen}>
@@ -108,7 +124,7 @@ export const StimmeAbschnitt = memo(function StimmeAbschnitt({ aktionen }: { akt
         </div>
       )}
       {nachricht && (
-        <p className="ez-klein" role={nachricht.art === "alert" ? "alert" : "status"}>
+        <p ref={meldung} tabIndex={-1} className="ez-klein" role={nachricht.art === "alert" ? "alert" : "status"}>
           {nachricht.text}
         </p>
       )}

@@ -33,6 +33,7 @@ import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
 import { abdruckGestartet, abdruckLaeuft, kannEinlernen, kannLoeschen, STIMME_LEER } from "@/lib/stimme";
 import { HAENGT_HINWEIS, HAENGT_NACH_MS, textAbschicken, unterstuetztText } from "@/lib/textEingabe";
 import { vorgaengeBeenden } from "@/lib/vorgaenge";
+import { aufgabeBeenden } from "@/lib/aufgabenanzeige";
 import { erstelleFrist, fristMeldung, sollVerlaengern } from "@/lib/verbindungsfrist";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
 import {
@@ -88,6 +89,7 @@ import {
   leereCaption,
   levelsRef,
   logEintrag,
+  nachrichtAbgelehnt,
   nimmeTextAuf,
   overlayZustand,
   reduceBotOutput,
@@ -508,8 +510,11 @@ export function useWamo(): WamoAktionen {
         modellzugang: null, // wird beim nächsten Verbinden neu abgefragt
         stimme: STIMME_LEER, // Stand, Einlernansicht und Einwilligungstext gelten nur für eine laufende Sitzung
         abdruck: null,
+        abdruckLokalZu: false,
         einwilligung: null,
+        einwilligungAbgelehnt: false,
         vorgaenge: vorgaengeBeenden(s.vorgaenge, Date.now()), // der Kern bricht seine Vorgänge mit der Sitzung ab
+        aufgabe: aufgabeBeenden(s.aufgabe, performance.now()), // die letzte Aufgabe bleibt stehen, aber nie als laufend
         approvals: [],
         auftraege: [],
         micOn: true,
@@ -944,7 +949,10 @@ export function useWamo(): WamoAktionen {
           onServerMessage: (data) => {
             if (!aktuell()) return;
             const msg = parseServerMessage(data);
-            if (!msg) return; // unbekannte oder unvollständige Nachricht: ignorieren
+            if (!msg) {
+              nachrichtAbgelehnt(data); // unbekannt oder unvollständig: ignorieren, nur ein abgelehnter Einwilligungstext wird vermerkt
+              return;
+            }
             if (msg.type === "leiser_stopp") {
               softStop.current.armedAt = performance.now();
               // sofort: der Kern hat die Grenze schon gewählt, die Stimme verstummt jetzt (keine Wortpause abwarten)

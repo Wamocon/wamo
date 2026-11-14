@@ -12,13 +12,14 @@ import { historyRef, istOnline, wamo } from "@/lib/wamo";
  * Live-Region: Ton und Verlauf (role="log") tragen den Inhalt, ein Vorlesen im Worttakt gäbe es doppelt.
  * Der Block abonniert nur Zeichenketten und Wahrheitswerte, die Stimmlinie zeichnet sich selbst aus historyRef.
  */
-export const Gespraech = memo(function Gespraech() {
+export const Gespraech = memo(function Gespraech({ mitVerlauf = true }: { mitVerlauf?: boolean }) {
   const online = useSelect(wamo, istOnline);
   const mensch = useSelect(wamo, (s) => menschZeile(s.caption, s.log));
   const wamoText = useSelect(wamo, (s) => wamoZeile(s.caption, s.log));
 
   return (
-    <section className="kz-gespraech" aria-labelledby="kz-h-gespraech">
+    // data-verlauf: nur mit Verlauf kürzt gespraech.css lange Antworten (der volle Text steht dort); Laborkonten haben keinen
+    <section className="kz-gespraech" aria-labelledby="kz-h-gespraech" data-verlauf={mitVerlauf ? "true" : undefined}>
       <h2 className="kz-gespraech-kopf">
         <span id="kz-h-gespraech">Gespräch</span>
         <span className="hud-badge" data-state={online ? "an" : "aus"}>

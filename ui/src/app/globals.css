@@ -178,6 +178,9 @@ body {
 }
 button, input, select, textarea { font-family: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* Ziele, die nur das Programm fokussiert (tabIndex -1: Überschriften, Meldungen): nach Maus oder Skript kein Rahmen, auch nicht
+   aus der Vorgabe des Browsers; mit der Tastatur bleibt er über :focus-visible (lib/fokusRahmen.test.ts) */
+[tabindex="-1"]:focus:not(:focus-visible) { outline: none; }
 h1, h2, h3 { text-wrap: balance; }
 p, li { text-wrap: pretty; }
 .num, time, .latency { font-variant-numeric: tabular-nums; }
