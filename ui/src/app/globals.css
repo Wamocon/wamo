@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
 @import "../components/kommando/hud.css"; /* HUD-Gestaltung der Kommandozentrale: Schriften, Glasflächen, Formen */
+@import "../components/kommando/kopfzeile.css"; /* Kopfzeile mit Statusmodulen, Profil, Schaltern und Popovern */
 @import "../components/kommando/kernRinge.css"; /* Kern: Lichtkugel in HUD-Ringen, Regeln mit Präfix .kr- */
 @import "../components/kommando/gespraech.css"; /* Block Gespräch (linke Spalte): Stimmlinie, Legende, Zeilen */
 @import "../components/kommando/stimme.css"; /* Stimmerkennung: Modul in der Kopfzeile, Einlernansicht, Rückfrage in den Einstellungen */
@@ -233,103 +234,6 @@ p, li { text-wrap: pretty; }
 
 /* ---------- Rahmen der Hauptansicht ---------- */
 .shell { min-height: 100dvh; display: flex; flex-direction: column; }
-
-/* Kopfzeile = Statusleiste (48 px): WAMO, Profil, Status, Verlauf, WMC-Logo */
-.topbar {
-  position: sticky; top: 0; z-index: 30;
-  height: var(--top);
-  display: flex; align-items: center; gap: 16px;
-  padding: 0 16px 0 20px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--rule);
-  font-size: 15px;
-}
-.wordmark-sm { margin: 0; font: 700 26px/1 var(--font-wmc); letter-spacing: 0.05em; color: var(--accent); }
-.topbar-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.topbar .logo-plate { margin-left: 6px; padding: 3px 6px; }
-.topbar .logo-plate img { height: 34px; }
-.topbar-btn {
-  min-height: 40px; padding: 0 12px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: transparent; color: var(--ink);
-  border: 1px solid var(--steuer-rand); border-radius: 4px;
-  font: 700 15px/1 var(--font-wmc); cursor: pointer;
-  transition-property: background-color, color; transition-duration: var(--dur-fast);
-}
-.topbar-btn:hover { background: var(--surface); }
-.topbar-btn[aria-expanded="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
-.menu-btn { display: none; width: 44px; padding: 0; }
-.menu-btn svg { width: 20px; height: 20px; stroke: currentColor; stroke-width: 1.8; fill: none; }
-
-/* Profil-Chip */
-.profile { display: flex; min-width: 0; }
-.profile-chip {
-  min-height: 44px; min-width: 0;
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 0 10px 0 4px;
-  background: transparent; border: 1px solid transparent; border-radius: 4px;
-  font: 700 16px/1 var(--font-wmc); cursor: pointer;
-  transition-property: background-color, border-color; transition-duration: var(--dur-fast);
-}
-.profile-chip:hover { background: var(--surface); border-color: var(--rule); }
-.initials {
-  flex: none; width: 28px; height: 28px; border-radius: 50%;
-  display: inline-grid; place-items: center;
-  background: var(--ink); color: var(--bg);
-  font-size: 12px; letter-spacing: 0.04em;
-}
-.profile-first { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14ch; }
-.role-tag {
-  flex: none; display: inline-block;
-  padding: 2px 6px; border: 1px solid var(--rule-strong); border-radius: 3px;
-  font-size: 11px; font-weight: 700; line-height: 1.2; letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--ink);
-}
-.role-tag[data-rolle="admin"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); padding-left: 8px; }
-
-/* Popover (HTML-Popover-API) */
-.popover {
-  margin: 0; inset: auto;
-  position: fixed; top: calc(var(--top) + 6px);
-  width: min(320px, calc(100vw - 24px));
-  padding: 14px 16px 16px;
-  background: var(--bg); color: var(--ink);
-  border: 1px solid var(--rule-strong); border-radius: 6px;
-  box-shadow: 0 16px 40px -24px rgb(0 0 0 / 0.5);
-}
-.popover:popover-open { display: grid; gap: 10px; }
-.profile-pop { left: 12px; }
-.status-pop { right: 12px; }
-.pop-name { margin: 0; font-size: 20px; font-weight: 700; }
-.pop-mail { margin: -6px 0 0; color: var(--ink-soft); font-size: 15px; word-break: break-all; }
-.pop-role { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 15px; }
-.pop-hint { margin: 0; font-size: 14px; color: var(--ink-soft); }
-
-/* Statusangaben (kompakt in der Kopfzeile, ausführlich im Menü) */
-.status-items {
-  flex: 1 1 auto; min-width: 0; margin: 0;
-  display: flex; align-items: center; gap: 0;
-  overflow: hidden; white-space: nowrap;
-}
-.status-items > div { display: flex; align-items: center; padding: 0 14px; border-left: 1px solid var(--rule); min-width: 0; }
-.status-items > div:first-child { border-left: 0; padding-left: 4px; }
-.status-items dd, .status-list dd { margin: 0; display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.status-items [data-feld="modelle"] dd { overflow: hidden; text-overflow: ellipsis; display: block; }
-.status-list { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; font-size: 16px; }
-.status-list > div { display: contents; }
-.status-list dt { color: var(--ink-soft); }
-.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--steuer-rand); }
-.dot[data-on] { background: var(--ink); box-shadow: none; }
-.tag {
-  display: inline-block; margin-left: 6px; padding: 1px 5px;
-  border: 1px solid var(--rule-strong); border-radius: 3px;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; vertical-align: 1px;
-}
-.tag-warn { margin-left: 0; border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); padding-left: 7px; }
-.sym { flex: none; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
-.sym-warn rect { fill: var(--accent); stroke: none; }
-.sym-warn path { stroke: #ffffff; stroke-width: 2; stroke-linecap: round; }
-.latency { color: var(--ink-soft); }
 
 /* ---------- Arbeitsfläche ---------- */
 .workspace {
@@ -753,33 +657,18 @@ p, li { text-wrap: pretty; }
     position: sticky; top: var(--top); height: calc(100dvh - var(--top)); width: auto;
     transform: none; transition: none; border-left: 1px solid var(--rule);
   }
-  .verlauf-close, .verlauf-btn { display: none; }
+  .verlauf-close { display: none; }
 }
 
 /* 1024 bis 1279 px: schmalere Präsenzspalte, kleinerer Kern */
 @media (max-width: 1279px) {
   .workspace { grid-template-columns: 360px minmax(0, 1fr); }
   .kern-wrap { width: 220px; margin: 0 auto -4px; }
-  .status-items [data-feld="mikro"], .status-items [data-feld="netz"] { display: none; }
 }
 
 /* unter 1024 px: eine Spalte, klebende Präsenzleiste, Schaltflächen unten fixiert */
 @media (max-width: 1023px) {
   :root { --top-basis: 44px; }
-  .topbar { gap: 8px; padding: 0 8px 0 12px; }
-  .wordmark-sm { font-size: 22px; }
-  .profile-chip { padding: 0 4px; }
-  .profile-first, .profile-chip .role-tag { display: none; }
-  .status-items [data-feld="modelle"], .status-items [data-feld="mikro"], .status-items [data-feld="netz"],
-  .status-items [data-feld="entwicklung"], .status-items [data-feld="stimme"], .verlauf-btn { display: none; }
-  .status-items > div { padding: 0 8px; }
-  .status-items .status-label {
-    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
-  } /* nur Punkte und Kurzformen; der Text bleibt für Screenreader */
-  .menu-btn { display: inline-flex; }
-  .topbar .logo-plate { margin-left: 2px; padding: 2px 4px; }
-  .topbar .logo-plate img { height: 26px; }
-
   .workspace { display: flex; flex-direction: column; align-items: stretch; padding-bottom: 72px; }
   .col-main { display: contents; }
   .col-main > * { margin: 12px 12px 0; }
@@ -803,8 +692,6 @@ p, li { text-wrap: pretty; }
   .pc-steuerung { order: 7; }
   .betriebsart { order: 8; }
   .hinweis-toast { order: 4; }
-  /* PC-Steuerung an: wichtiger als die Betriebsart (die steht weiter im Menü) */
-  .status-items:has([data-feld="pcsteuerung"]) [data-feld="betriebsart"] { display: none; }
   .timeline > ol > li:nth-child(n + 4) { display: none; } /* eingeklappt: 3 */
   .actions {
     order: 9; position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; margin: 0;
@@ -821,7 +708,6 @@ p, li { text-wrap: pretty; }
   .brandbar p { font-size: 13px; }
   .brandbar .logo-plate img { height: 34px; }
   .gate-card { padding: 24px 18px; }
-  .status-items [data-feld="betriebsart"] dd { font-size: 14px; }
 }
 
 /* ---------- Geteilte Arbeit und Hinweise (components/Geteilt.tsx, Teilen.tsx, Hinweise.tsx) ---------- */
@@ -923,12 +809,6 @@ p, li { text-wrap: pretty; }
    Steht am Ende, damit die Regeln die Abstände der Breitenstufen oben übersteuern. Auf dem PC sind alle --sa-* gleich 0,
    die Werte fallen dann auf die ursprünglichen Abstände zurück (max). Die Höhe der Kopfzeile (--top) enthält den Abstand
    oben schon, deshalb verschieben sich alle darunter verankerten Teile (Reiterleiste, Verlauf, Popover) von selbst. */
-.topbar { padding-top: var(--sa-t); padding-right: max(var(--sa-r), 16px); padding-left: max(var(--sa-l), 20px); }
-@media (max-width: 1023px) {
-  .topbar { padding-right: max(var(--sa-r), 8px); padding-left: max(var(--sa-l), 12px); }
-}
-.profile-pop { left: max(12px, var(--sa-l)); }
-.status-pop { right: max(12px, var(--sa-r)); }
 .verlauf { padding-right: var(--sa-r); padding-bottom: var(--sa-b); }
 
 /* Anmeldung */

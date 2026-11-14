@@ -13,7 +13,8 @@ import { laborAnsicht } from "@/lib/laborPlatz";
 /**
  * Kopfzeile und Statusleiste in einem (48 px): links die Wortmarke WAMO und der Profil-Chip,
  * daneben Verbindung, Betriebsart, Modelle, PC-Host und Mikrofon, rechts das WMC-Logo wie in der
- * WMC-Vorlage. Unter 1024 px bleiben nur Punkte und Kurzformen, die Details liegen im Menü.
+ * WMC-Vorlage. Die Module stehen nach Rangfolge in einer Zeile, was nicht passt, fällt als ganzes Modul weg (kommando/kopfzeile.css);
+ * unter 1600 px zeigt das Menü (Knopf mit drei Strichen) alle Module. Unter 1024 px bleiben nur Punkte und Kurzformen.
  * Rechts davor die Statusanzeige der Kommandozentrale: Sitzungsfortschritt, ONLINE-Abzeichen, Uhrzeit, dann das
  * Zahnrad zu den Einstellungen (ein Link auf #einstellungen, auch mit der Tastatur erreichbar).
  * Laborkonten (lib/laborPlatz.ts): Überschrift "WAMO Testlabor, Platz N", kein Verlauf, und "Abmelden" fragt erst nach

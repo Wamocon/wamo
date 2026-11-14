@@ -1,21 +1,8 @@
 /* =====================================================================
-   Stimmerkennung: Modul in der Kopfzeile, Einlernansicht in der Mitte (StimmeEinlernen.tsx) und die Knöpfe im Abschnitt Stimme der
-   Einstellungen (StimmeAbschnitt.tsx). Eingebunden über globals.css. Regeln mit Präfix .kz-einlernen und .ez- (Rückfrage), Farben nur aus
+   Stimmerkennung: Einlernansicht in der Mitte (StimmeEinlernen.tsx) und die Knöpfe im Abschnitt Stimme der
+   Einstellungen (StimmeAbschnitt.tsx). Eingebunden über globals.css. Das Modul in der Kopfzeile steht in kopfzeile.css. Regeln mit Präfix .kz-einlernen und .ez- (Rückfrage), Farben nur aus
    den Variablen, deshalb gelten sie in beiden Themen.
    ===================================================================== */
-
-/* ---------- Modul "Stimme" in der Kopfzeile: Beschriftung sichtbar, Wert nach Ergebnis gefärbt ---------- */
-.kz .status-items [data-feld="stimme"] { gap: 8px; }
-.kz .status-items [data-feld="stimme"] dt { color: var(--ink-soft); }
-.kz .status-items [data-feld="stimme"] dd { font-weight: 700; color: var(--ink-faint); }
-.kz .status-items [data-feld="stimme"][data-an="ja"] { border-color: color-mix(in srgb, var(--core) 45%, var(--rule)); }
-.kz .status-items [data-feld="stimme"][data-an="ja"] dd { color: var(--core-schrift); }
-.kz .status-items [data-feld="stimme"][data-an="ja"] dd::before {
-  content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor;
-}
-.kz .status-items [data-feld="stimme"][data-an="warn"] { border-color: color-mix(in srgb, var(--warn) 55%, var(--rule)); }
-.kz .status-items [data-feld="stimme"][data-an="warn"] dd { color: var(--warn-schrift); }
-.kz .status-list [data-feld="stimme"] dd { font-weight: 700; }
 
 /* ---------- Einlernansicht: steht in der Mitte statt des Kerns ---------- */
 .kz-einlernen {

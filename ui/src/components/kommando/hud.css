@@ -8,15 +8,15 @@
 
 /* ---------- Gemeinsame Bausteine ---------- */
 .hud-label { font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); }
-.hud-badge {
+.hud-badge, .kz-badge {
   display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 5px;
   font: 600 10.5px/1.2 var(--hud); letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--core-schrift); border: 1px solid currentColor;
   background: color-mix(in srgb, currentColor 10%, transparent);
   box-shadow: 0 0 14px -4px currentColor;
 }
-.hud-badge[data-state="aus"] { color: var(--ink-faint); box-shadow: none; }
-.hud-badge[data-state="wartet"] { color: var(--warn-schrift); }
+.hud-badge[data-state="aus"], .kz-badge[data-zustand="getrennt"] { color: var(--ink-faint); box-shadow: none; }
+.hud-badge[data-state="wartet"], .kz-badge[data-zustand="verbindet"] { color: var(--warn-schrift); }
 .hud-badge[data-state="fehler"] { color: var(--fehler-schrift); }
 @keyframes hud-puls { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @keyframes hud-auf { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -32,58 +32,6 @@
 }
 .kz-main::after { background: repeating-linear-gradient(0deg, var(--raster) 0 1px, transparent 1px 4px); }
 .kz[data-ansicht="nacht"] .kz-main::before { opacity: 0.45; }
-
-/* ---------- Kopfzeile ---------- */
-.kz .topbar {
-  gap: 18px; padding: 0 16px 0 22px; font-size: 13px;
-  background: var(--kopf-grund);
-  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
-}
-.kz .wordmark-sm {
-  display: inline-flex; align-items: center; gap: 10px;
-  font: 700 19px/1 var(--display); letter-spacing: 0.22em; text-transform: uppercase; color: var(--ink);
-}
-.kz .wordmark-sm::before {
-  content: ""; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--core);
-  box-shadow: 0 0 12px var(--core), 0 0 3px var(--core-hot);
-}
-.kz .wordmark-sm[data-labor] { font-size: 12px; letter-spacing: 0.12em; }
-.kz .profile-chip { font: 700 13px/1 var(--body); }
-.kz .initials { width: 26px; height: 26px; background: var(--ink); color: var(--bg); font: 700 11px/1 var(--hud); letter-spacing: 0; }
-.kz .role-tag { border-radius: 5px; font: 600 10px/1.2 var(--hud); letter-spacing: 0.14em; }
-.kz .role-tag[data-rolle="admin"] { border-color: var(--core); color: var(--core-schrift); box-shadow: 0 0 14px -4px var(--core); padding-left: 6px; }
-/* Statusangaben als Module: Beschriftung in Versalien, Wert hell */
-.kz .status-items { gap: 8px; font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-soft); }
-.kz .status-items > div, .kz .status-items > div:first-child, .kz .status-items > div:nth-child(2) {
-  padding: 5px 10px; border: 1px solid var(--rule); border-radius: 6px;
-}
-.kz .status-items dd { color: var(--ink); }
-.kz .dot[data-on] { background: var(--core); box-shadow: 0 0 8px var(--core); }
-.kz .latency { color: var(--ink-faint); }
-.kz-meter-text { font: 500 10.5px/1 var(--hud); letter-spacing: 0.2em; }
-.kz-meter-text b { font: 700 10.5px/1 var(--hud); }
-.kz-meter-bahn span { box-shadow: 0 0 10px var(--core); }
-.kz-badge {
-  gap: 6px; padding: 4px 9px; border-radius: 5px; border-color: currentColor; color: var(--core-schrift);
-  font: 600 10.5px/1.2 var(--hud); letter-spacing: 0.14em;
-  background: color-mix(in srgb, currentColor 10%, transparent); box-shadow: 0 0 14px -4px currentColor;
-}
-.kz-badge svg { stroke: currentColor; }
-.kz-badge[data-zustand="getrennt"] { border-color: currentColor; color: var(--ink-faint); box-shadow: none; }
-.kz-badge[data-zustand="verbindet"] { border-color: currentColor; color: var(--warn-schrift); }
-.kz-kernort { font: 500 10.5px/1 var(--hud); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
-.kz-uhr { font: 700 22px/1 var(--hud); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
-.kz .topbar-btn {
-  min-height: 34px; padding: 0 12px; border-color: var(--steuer-rand); border-radius: 6px;
-  font: 600 11px/1 var(--hud); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-soft);
-}
-.kz .topbar-btn:hover { background: var(--glas-hover); color: var(--ink); }
-.kz .topbar-btn[aria-expanded="true"], .kz .topbar-btn[aria-pressed="true"] { background: var(--glas-stark); color: var(--ink); border-color: var(--core); }
-/* Umschalter Hell und Dunkel (ThemaSchalter.tsx): Symbol wie das Zahnrad, gedrückt heißt Hellmodus an */
-.thema-btn { width: 44px; padding: 0; }
-.thema-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.thema-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-@media (max-width: 1023px) { .kz .topbar-btn.thema-btn { width: 40px; } }
 
 /* ---------- Seitenspalten als Glasflächen, Karten ---------- */
 .kz-links, .kz-rechts {
@@ -182,8 +130,5 @@
 .kz .canvas-item { background: var(--panel); border: 1px solid var(--kante); border-radius: 10px; box-shadow: 0 30px 70px -45px var(--core); }
 .kz .canvas-empty h2 { font: 700 22px/1.2 var(--display); letter-spacing: 0.02em; }
 
-/* Kopfzeile: Module behalten ihre Breite, nur die Modellangabe kürzt sich; was nicht passt, schneidet die Zeile ab */
-.kz .status-items > div { flex: 0 0 auto; }
-.kz .status-items [data-feld="modelle"] { flex: 0 1 auto; min-width: 16ch; }
 /* Untertitel: zwei Zeilen in der Fließtextschrift */
 .kz .caption-bot { max-height: 3.1em; }

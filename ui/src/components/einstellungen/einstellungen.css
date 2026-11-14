@@ -10,18 +10,7 @@
 /* Die Kommandozentrale ist bei offenen Einstellungen nur verborgen, nicht ausgehängt */
 .kz-main[hidden] { display: none; }
 
-/* ---------- Zahnrad in der Kopfzeile, Link in der Seitenleiste ---------- */
-a.topbar-btn { text-decoration: none; color: var(--ink); }
-.einstellungen-btn { width: 44px; padding: 0; }
-.einstellungen-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
-.topbar-btn.einstellungen-btn[aria-current="page"] {
-  background: var(--ink); color: var(--bg); border-color: var(--ink); box-shadow: inset 0 -3px 0 var(--accent);
-}
-/* schmales Handy: das Zahnrad nimmt der Statuszeile so wenig Platz wie möglich */
-@media (max-width: 520px) {
-  .topbar-end { gap: 4px; }
-  .topbar-btn.einstellungen-btn, .kz .menu-btn { width: 40px; }
-}
+/* ---------- Link in der Seitenleiste ---------- */
 .kz-link {
   align-self: flex-start; min-height: 40px; display: inline-flex; align-items: center;
   color: var(--ink); font: 700 16px/1 var(--font-wmc);

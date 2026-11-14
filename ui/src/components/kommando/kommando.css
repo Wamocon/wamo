@@ -29,58 +29,6 @@
 
 .kz { background: var(--bg); }
 
-/* ---------- Kopfzeile: Statusanzeige ---------- */
-.kz .topbar { gap: 14px; }
-@media (max-width: 1023px) { .kz .topbar { gap: 8px; } }
-.kz .wordmark-sm { letter-spacing: 0.14em; }
-/* Laborkonten (lib/laborPlatz.ts): "WAMO Testlabor, Platz N" ist länger als die Wortmarke, also kleiner gesetzt; zuerst kürzt sie sich */
-.kz .wordmark-sm[data-labor] { font-size: 19px; letter-spacing: 0.06em; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-@media (max-width: 1023px) { .kz .wordmark-sm[data-labor] { font-size: 16px; } }
-.kz .topbar-end, .kz .topbar-btn, .kz .profile { flex: none; } /* die Statuszeile gibt nach, nicht die Schaltflächen */
-.kz-status { display: flex; align-items: center; gap: 14px; margin-right: 4px; }
-.kz-meter { display: flex; flex-direction: column; gap: 4px; width: 118px; }
-.kz-meter-text {
-  display: flex; justify-content: space-between;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; line-height: 1;
-  color: var(--ink-soft);
-}
-.kz-meter-text b { color: var(--ink); font-family: var(--font-code); letter-spacing: 0.02em; }
-.kz-meter-bahn { display: block; height: 3px; border-radius: 2px; background: var(--rule); overflow: hidden; }
-.kz-meter-bahn span { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width 600ms var(--ease-out); }
-.kz-badge {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 11px 5px 9px;
-  border: 1px solid var(--accent); border-radius: 999px;
-  font-size: 12px; font-weight: 700; line-height: 1; letter-spacing: 0.16em;
-  color: var(--ink);
-}
-.kz-badge svg { width: 13px; height: 13px; fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
-.kz-badge-punkt { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--kz-rand); }
-.kz-badge[data-zustand="getrennt"] { border-color: var(--kz-rand); color: var(--ink-soft); }
-.kz-badge[data-zustand="verbindet"] { border-color: var(--kz-rand); }
-.kz-badge[data-zustand="verbindet"] .kz-badge-punkt { background: var(--accent); box-shadow: none; }
-.kz-kernort { font-size: 12px; letter-spacing: 0.04em; color: var(--ink-soft); white-space: nowrap; }
-.kz-uhr { font: 700 15px/1 var(--font-code); letter-spacing: 0.04em; }
-/* "Verbindung" steht jetzt im Abzeichen ONLINE */
-@media (min-width: 1100px) {
-  .kz .status-items [data-feld="verbindung"] { display: none; }
-  .kz .status-items > div:nth-child(2) { border-left: 0; padding-left: 4px; }
-}
-@media (max-width: 1599px) { .kz-kernort { display: none; } } /* der Kernort steht schon im Modul Betriebsart; den Platz braucht das Modul Stimme */
-@media (max-width: 1179px) { .kz-meter { display: none; } }
-@media (max-width: 639px) {
-  .kz-uhr { display: none; }
-  .kz-badge { padding: 4px 8px 4px 6px; font-size: 11px; letter-spacing: 0.1em; }
-  .kz-status { gap: 8px; margin-right: 0; }
-}
-@media (max-width: 459px) { .kz-badge { display: none; } }
-/* schmales Handy: die Statuszeile bekommt mehr Platz (der Zustand steht auch im Namensschild) */
-@media (max-width: 520px) {
-  .kz .status-items [data-feld="verbindung"] { display: none; }
-  .kz .status-items > div { padding: 0 6px; }
-  .kz .status-items > div:nth-child(2) { border-left: 0; }
-}
-
 /* ---------- Rahmen: drei Spalten ---------- */
 .kz-main {
   position: relative; flex: none; min-height: 0;

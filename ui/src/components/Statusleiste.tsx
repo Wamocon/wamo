@@ -2,6 +2,7 @@
 
 import { memo } from "react";
 import { KERN, useBetriebsart, type Betriebsart } from "@/lib/betriebsart";
+import { modellKurzname } from "@/lib/modellKurz";
 import { modusKurz } from "@/lib/modellwahl";
 import type { Betrieb } from "@/lib/nachrichten";
 import { useSelect } from "@/lib/store";
@@ -59,8 +60,8 @@ function PcText({ betrieb }: { betrieb: Betrieb | null }) {
           PC
           <span className="status-label">
             {betrieb.pcName && <span className="num"> {betrieb.pcName}</span>} verbunden
-            {betrieb.pcLatenzMs !== undefined && <span className="num latency"> {betrieb.pcLatenzMs} ms</span>}
           </span>
+          {betrieb.pcLatenzMs !== undefined && <span className="num latency"> {betrieb.pcLatenzMs} ms</span>}
         </>
       );
     case "getrennt":
@@ -111,7 +112,8 @@ export const StatusDetails = memo(function StatusDetails({ kompakt, stimme = fal
   const art = betrieb ? MODUS_ART[betrieb.modus] : gewaehlt;
   const kernText = `Kern: ${KERN[art].ort}`;
   const m = betrieb?.modelle;
-  const modelleKurz = (m && [m.llm, m.stt].filter(Boolean).join(" · ")) || "Modelle unbekannt";
+  // Kopfzeile: nur das Gesprächsmodell, gekürzt auf ganze Wörter (Hören und Stimme stehen im title und im Menü)
+  const modelleKurz = modellKurzname(m?.llm) || "Modelle unbekannt";
   const modus = modusKurz(betrieb); // Automatisch oder Nur Hausmodelle (WAMO Boss), null bei einem Kern ohne Meldung
   const stimmeStand = useSelect(wamo, (s) => s.stimme);
   const stimmeAnzeige = stimme && online ? stimmeModul(stimmeStand) : null;
