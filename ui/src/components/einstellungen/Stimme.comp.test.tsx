@@ -122,6 +122,45 @@ describe("Abschnitt Stimme: Abdruck löschen", () => {
     expect(screen.queryByRole("group", { name: /Abdruck wirklich löschen/ })).toBeNull();
   });
 
+  it("der Knopf Abdruck löschen nennt die Rückfrage, die er öffnet (aria-controls zu aria-expanded)", () => {
+    render(<StimmeAbschnitt aktionen={aktionen()} />);
+    online();
+    status("bereit");
+    const knopf = screen.getByRole("button", { name: "Abdruck löschen" });
+    expect(knopf.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(knopf);
+    const frage = screen.getByRole("group", { name: /Abdruck wirklich löschen/ });
+    expect(knopf.getAttribute("aria-expanded")).toBe("true");
+    expect(frage.id).not.toBe("");
+    expect(knopf.getAttribute("aria-controls")).toBe(frage.id);
+    fireEvent.click(screen.getByRole("button", { name: "Behalten" }));
+    expect(knopf.getAttribute("aria-expanded")).toBe("false");
+    expect(knopf.hasAttribute("aria-controls")).toBe(false);
+  });
+
+  it("nach dem Löschen steht der Fokus auf dem Einlernen, solange es bedienbar ist", () => {
+    render(<StimmeAbschnitt aktionen={aktionen()} />);
+    online();
+    status("bereit");
+    fireEvent.click(screen.getByRole("button", { name: "Abdruck löschen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ja, Abdruck löschen" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Neu einlernen" }));
+  });
+
+  it("ist das Einlernen gesperrt (Sitzung weg), geht der Fokus nach dem Löschen auf die Meldung statt verloren", () => {
+    const a = { ...aktionen(), loeschen: vi.fn(() => false) };
+    render(<StimmeAbschnitt aktionen={a} />);
+    online();
+    status("bereit");
+    fireEvent.click(screen.getByRole("button", { name: "Abdruck löschen" }));
+    act(() => wamo.set((s) => ({ ...s, presence: "offline" })));
+    expect((screen.getByRole("button", { name: "Neu einlernen" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Ja, Abdruck löschen" }));
+    const meldung = screen.getByRole("alert");
+    expect(document.activeElement).toBe(meldung);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
   it("sagt, wenn das Löschen nicht hinausging", () => {
     const a = { ...aktionen(), loeschen: vi.fn(() => false) };
     render(<StimmeAbschnitt aktionen={a} />);
