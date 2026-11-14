@@ -8,6 +8,18 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Stimmabdruck: Jedes Profil im Büro kann seine Stimme einlernen, damit WAMO nur noch diese Stimme hört (`voice-core/stimme_*.py`, README Abschnitt "Stimmabdruck"). Einlernen nur per Klick
+  in der Oberfläche und nur mit der Einwilligung `stimme-1` (Text beim Verbinden vom Kern an die Oberfläche, gespeichert mit Zeitpunkt und Version in `speakers`), 20 Sekunden reine
+  Sprache in Stücken von 3 Sekunden mit Mittelwert und Streuungsprüfung, Löschen jederzeit (entfernt die Zeile vollständig). Prüfung je Äußerung aus einem Ringpuffer beim Sprechende
+  (NeMo TitaNet-Large als ONNX über `sherpa-onnx` 2.0.1, 192 Werte, einmal je Prozess, Prüfsumme der Modelldatei, Ablage im Cache-Ordner des Dienstes oder über `WAMO_STIMME_MODELL`).
+  Modus `WAMO_STIMME_PRUEFUNG` (`aus`, `beobachten`, Standard `streng`, wirkt nur mit Abdruck): Im Modus streng erreicht eine sicher fremde Äußerung (genug Sprache, Wert unter
+  `WAMO_STIMME_FREMD_MAX`, WAMO sprach nicht gleichzeitig) das Sprachmodell nicht, kein Zug, kein Eintrag im Verlauf und im Gedächtnis, Meldung an die Oberfläche. Der Wächter hält nur das
+  endgültige Transkript bis zum Urteil an (höchstens 1,5 Sekunden, Zeitüberschreitung gilt als unklar), Zwischenstände laufen ungebremst. Unklare und kurze Äußerungen gehen durch, aber
+  Werkzeuge außer Uhrzeit, Websuche und Canvas bleiben gesperrt, solange die Stimme nicht sicher die eigene war; getippter Text zählt wie die eigene Stimme. Ohne Abdruck wird nichts geprüft
+  und nichts gesperrt. Laborprofile bekommen nie Prüfung oder Einlernen. Schwellen `WAMO_STIMME_EIGEN_MIN`, `WAMO_STIMME_FREMD_MAX`, `WAMO_STIMME_MIN_SECS`,
+  `WAMO_STIMME_VERTRAUEN_SECS` in den Listen des Servers und des PC-Skripts. Datenschutz: neuer Abschnitt 4 in `docs/labor-datenschutz-entwurf.md` (Entwurf, Einwilligungstext Version
+  `stimme-1`), ein Test hält Text und Konstante gleich. Die Seite der Besucher im Testlabor bleibt unverändert. Die Stimmprüfung ersetzt keine Freigabe und schützt nicht gegen Aufnahmen oder
+  geklonte Stimmen. Offen: Datenschutz-Folgenabschätzung, Modelldatei am Server ablegen (README), Lauf auf dem Server. Keine Migration (die Tabelle `speakers` gibt es seit `0001`). 194 Tests (192 in `test_stimme_*.py`, 2 in `test_env_schalter.py`).
 - Füllwörter im Gespräch (`voice-core/fuellwoerter.py`, Schalter `WAMO_FUELLWOERTER`, Standard an): Startet das Modell ein Werkzeug, ohne vorher etwas zu sagen, spielt WAMO nach
   0,4 Sekunden (`WAMO_FUELLWORT_SECS`) ein vorab aufgenommenes "Moment." und bei langem Warten einmal "Dauert noch einen Moment.". Der Ton geht als einfacher Ausgangston hinaus,
   nichts davon landet im Verlauf, Unterbrechungen wirken wie immer. Eine Bank je Stimme und Einstellung für alle Sitzungen, ein Spieler je Sitzung, Aufnahmen erst beim Start der

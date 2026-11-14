@@ -958,6 +958,97 @@ Sprachmodell sieht. Der Host liest die Ausgabe weiterhin vollständig (bis zu se
 Lesen (Speicher und Laufzeit im Host) bleibt zurückgestellt. Ungeprüft sind der Lauf gegen echte Sitzungen und das Verhalten des
 Modells beim Nachladen; die Stichwortliste für Problemzeilen ist eine Annahme und lässt sich an echten Ausgaben schärfen.
 
+### Stimmabdruck (nur deine Stimme zählt)
+
+Jede Person kann WAMO ihre Stimme einlernen, damit WAMO nur noch diese Stimme hört und alle anderen Stimmen ignoriert. Es gilt je Profil
+und nur im Büro, nie im Testlabor (Laborprofile bekommen weder Einlernen noch Prüfung, die Nachricht `stimmabdruck` wird für sie von der
+Laborsperre abgewiesen). Code: `voice-core/stimme_*.py`, Tests: `voice-core/test_stimme_*.py`.
+
+**Bedienung.** Der Kern schickt beim Verbinden den Text der Einwilligung (Version `stimme-1`). In den Einstellungen der Oberfläche liest die
+Person ihn, bestätigt ihn und startet das Einlernen (Klick, nie per Sprache). WAMO sagt kurz, worum es geht, dann liest die Person den Text
+vor oder erzählt frei, bis der Balken voll ist (20 Sekunden reine Sprache). Währenddessen hört die Spracherkennung nur Stille, WAMO antwortet
+also nicht auf den Vorlesetext. Danach steht der Abdruck im Profil. **Löschen** geht jederzeit in den Einstellungen und entfernt den Abdruck
+vollständig (DSGVO Art. 17, zugleich Widerruf der Einwilligung). Wer nicht einlernt, hat keinen Nachteil: Ohne Abdruck prüft WAMO nichts und
+sperrt nichts. Ein vorhandener Abdruck wird im Modus streng nur ersetzt, wenn die Person gerade an der Stimme erkannt wurde.
+
+**Modi** (`WAMO_STIMME_PRUEFUNG`, wirkt nur für Profile mit Abdruck):
+
+| Modus | Wirkung |
+| --- | --- |
+| `streng` (Standard) | Eine **sicher fremde** Äußerung erreicht das Sprachmodell nicht: kein Zug, kein Eintrag im Verlauf und im Gedächtnis, eine Meldung an die Oberfläche (`ignoriert`). Unklare oder kurze Äußerungen gehen durch, aber alle Werkzeuge außer Uhrzeit, Websuche und Canvas sind gesperrt, solange die Stimme nicht sicher die eigene war (oder die Person nicht getippt hat). |
+| `beobachten` | Misst, zeigt das Ergebnis in der Oberfläche und schreibt es ins Log, sperrt und verwirft nichts. Geeignet zum Einstellen der Schwellen. |
+| `aus` | Keine Prüfung, kein Einlernen. Löschen eines vorhandenen Abdrucks geht trotzdem. Ohne Datenbank ist die Prüfung ebenfalls aus. |
+
+**Schwellen** (alle in `voice-core/.env.example`, am Server über `wamo-core-env`; leer heißt Standard, Unbrauchbares auch):
+
+| Schalter | Standard | Bedeutung |
+| --- | --- | --- |
+| `WAMO_STIMME_EIGEN_MIN` | 0,5 | Ab diesem Wert (Kosinus der Abdrücke, 0,2 bis 0,95) gilt eine Äußerung als die eigene Stimme |
+| `WAMO_STIMME_FREMD_MAX` | 0,3 | Bis zu diesem Wert (0 bis 0,8) gilt sie als sicher fremd; muss unter `EIGEN_MIN` liegen, sonst gelten beide Standardwerte |
+| `WAMO_STIMME_MIN_SECS` | 1 | So viel reine Sprache braucht eine Äußerung für ein Urteil (0,3 bis 10); kürzere ("Ja", "mach") gelten nach einer sicheren Erkennung mit |
+| `WAMO_STIMME_VERTRAUEN_SECS` | 120 | So lange gilt "eigen" für kurze Folgesätze und Werkzeuge (10 bis 3600) |
+| `WAMO_STIMME_MODELL` | Cache-Ordner | Pfad der Modelldatei, Standard `XDG_CACHE_HOME/wamo/sprecher/nemo_en_titanet_large.onnx`, sonst `voice-core/.cache/sprecher/` |
+
+**Wie geprüft wird.** Das Modell (NeMo TitaNet-Large als ONNX über `sherpa-onnx`, 192 Werte je Stimme) läuft im Kern auf der CPU, einmal je
+Prozess für alle Sitzungen. Abdruck und Prüfzustand gehören je Sitzung zum Profil, einen Abdruck-Zwischenspeicher über Profile hinweg gibt
+es nicht. Der Ton der letzten 10 Sekunden liegt nur im Arbeitsspeicher; beim Sprechende (VAD) wird die Äußerung (höchstens die letzten 8
+Sekunden) berechnet und mit dem Abdruck verglichen. Das Ergebnis steht im Log (`Stimme: 0.78 bei 2.3 s -> eigen`, nie Inhalte). Zum Einlernen
+teilt der Kern die Sprache in Stücke von 3 Sekunden, nimmt den Mittelwert und verwirft die Aufnahme, wenn die Stücke zu unterschiedlich
+klingen (zu unruhig oder mehrere Stimmen). Gespeichert werden nur 192 Zahlen, nie eine Aufnahme.
+
+**Antwortzeit.** Die Prüfung beginnt beim Sprechende und läuft parallel zur Spracherkennung. Der Wächter hält nur das **endgültige** Transkript
+einer Äußerung an, bis das Urteil da ist, höchstens 1,5 Sekunden; die Zwischenstände laufen ungebremst durch, Unterbrechen bleibt so schnell
+wie vorher. Die Antwort für die eigene Stimme wird also höchstens um den Teil der Prüfzeit später, der über die Wartezeit der Spracherkennung
+hinausgeht (rund 250 ms für 8 Sekunden Sprache auf einem PC, am Server nicht gemessen). Läuft die Frist ab, gilt die Äußerung als unklar und
+geht durch. Der Wächter ersetzt das Transkript einer fremden Stimme durch ein Leerzeichen, der Zug endet dann leer (`on_user_turn_stopped`
+in `bot.py` kehrt zurück).
+
+**Meldungen an die Oberfläche** (Servernachrichten, Details in der Kopfzeile von `voice-core/bot.py`):
+
+- `{"type": "stimme", "status": "aus"|"fehlt"|"laedt"|"kaputt"|"bereit", "modus": "..."}` Stand beim Verbinden und nach jeder Änderung. `fehlt`: nichts eingelernt (nichts wird geprüft oder gesperrt), `kaputt`: Modell oder Datenbank nicht verfügbar (streng sperrt dann Werkzeuge, Tippen geht).
+- `{"type": "stimme", "ergebnis": "eigen"|"fremd"|"unklar", "wert": 0.78, "modus": "..."}` je Äußerung; zusätzlich `"ignoriert": true`, wenn eine sicher fremde Äußerung nicht ans Modell ging.
+- `{"type": "stimmabdruck", "status": "start"|"aufnahme"|"rechnet"|"fertig"|"fehler"|"abgebrochen"|"geloescht", "sekunden": 8.4, "ziel": 20, "text": "..."}` beim Einlernen und Löschen.
+- `{"type": "stimmabdruck_einwilligung", "version": "stimme-1", "text": "..."}` beim Verbinden (nicht im Modus aus, nie im Labor; im Labor kommt nur `{"type": "stimme", "status": "aus", "modus": "aus"}`).
+- Von der Oberfläche: Client-Nachricht `stimmabdruck` mit `{"aktion": "start", "einwilligung": "stimme-1"}`, `{"aktion": "abbrechen"}` oder `{"aktion": "loeschen"}`. Der Start gilt nur mit genau der aktuellen Version der Einwilligung.
+
+**Datenschutz.** Gespeichert werden nur der Abdruck (192 Zahlen) sowie Zeitpunkt und Version der Einwilligung in `speakers` (Spalte
+`voiceprint`, Migration `0001`, Rolle `wamo_core`, für die Oberfläche nicht lesbar), nie eine Aufnahme. Berechnung und Vergleich laufen im
+Kern auf dem eigenen Server, nichts davon geht an Soniox oder Anthropic. Zweck, Rechtsgrundlage (ausdrückliche Einwilligung, Art. 9 Abs. 2
+lit. a DSGVO), Löschung und den Wortlaut der Einwilligung nennt der Abschnitt 4 in `docs/labor-datenschutz-entwurf.md` (Entwurf, eine
+verantwortliche Person prüft ihn). Offen vor dem Echtbetrieb: die Datenschutz-Folgenabschätzung nach Art. 35 DSGVO und die Aufbewahrung der
+Sicherungen.
+
+**Modelldatei.** Die Datei (`nemo_en_titanet_large.onnx`, rund 100 MB, SHA-256 `d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77`)
+lädt der Kern beim ersten Bedarf von GitHub (Release `speaker-recongition-models` von sherpa-onnx) nach, prüft die Summe und prüft sie bei jedem
+Prozessstart erneut; eine falsche Datei wird gelöscht und nach 60 Sekunden neu versucht. Ohne Datei (und ohne Netz) gibt es kein Einlernen und
+keine Prüfung, das Gespräch läuft weiter. Am Server ist das ausgehende Netz begrenzt, deshalb vorab ablegen (Pfade nach der Unit
+`wamo-core@.service`, `CacheDirectory=wamo-core`, `XDG_CACHE_HOME=/var/cache/wamo-core`, am Server nicht ausgeführt):
+
+```bash
+# auf einem Rechner mit Netz
+curl -L -o nemo_en_titanet_large.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx
+sha256sum nemo_en_titanet_large.onnx        # muss die oben genannte Summe zeigen
+scp nemo_en_titanet_large.onnx wamo-sokrates2:/tmp/
+# auf Sokrates-2
+sudo install -d -o wamo-core -g wamo-core -m 0700 /var/cache/wamo-core/wamo /var/cache/wamo-core/wamo/sprecher
+sudo install -o wamo-core -g wamo-core -m 0600 /tmp/nemo_en_titanet_large.onnx /var/cache/wamo-core/wamo/sprecher/
+rm /tmp/nemo_en_titanet_large.onnx
+sudo -u wamo-core sha256sum /var/cache/wamo-core/wamo/sprecher/nemo_en_titanet_large.onnx
+```
+
+Liegt die Datei woanders, nennt `WAMO_STIMME_MODELL` (über `wamo-core-env`) den Pfad; er steht bewusst nicht in der Liste der Schalter, die
+`scripts/wamo_kern_sokrates2.py` aus der `.env` des PCs übernimmt, weil der Pfad je Rechner gilt. Die Bibliothek `sherpa-onnx` 2.0.1 steht in
+`voice-core/pyproject.toml` und `uv.lock`; für Linux aarch64 und Python 3.12 gibt es beide Wheels (`sherpa-onnx` und `sherpa-onnx-core`,
+laut PyPI am 14.11.2026). Ein echter Lauf auf dem Server steht aus.
+
+**Grenzen.** Die Stimmprüfung ersetzt keine Freigabe: Aktionen mit Risiko brauchen weiter die Freigabe per Klick. Sie schützt nicht gegen
+Aufnahmen oder geklonte Stimmen. Sie kann sich irren (Erkältung, Lärm, Mikrofon): Eine eigene Äußerung, die als sicher fremd gilt, wird im Modus
+streng ignoriert, getippter Text geht immer; bei häufigen Fehlurteilen `WAMO_STIMME_FREMD_MAX` senken, `beobachten` einschalten oder
+neu einlernen. Spricht jemand Fremdes, während WAMO redet, ist das Urteil unklar (Echo): der Satz geht durch, nur die Werkzeuge bleiben
+gesperrt. Die Untertitel der Oberfläche können einen ignorierten Satz noch zeigen. Die Schwellen 0,5 und 0,3 sind Richtwerte aus Beispielaufnahmen
+des Modells, mit den Mikrofonen im Büro noch nicht gemessen: vor dem Einsatz einige Gespräche im Modus `beobachten` laufen lassen, die Werte im Log
+ansehen, die Schwellen bei Bedarf anpassen und danach wieder `streng` (Standard) einstellen.
+
 ## Nutzer und Gedächtnis
 
 | Befehl | Zweck |
@@ -1358,6 +1449,9 @@ Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGua
   gesperrt); der Host entfernt den Freigabe-Schlüssel aus seiner Umgebung, Kindprozesse erben ihn nicht.
 - Anmeldung und Datenbank im LAN nur verschlüsselt und geprüft gegen die eigene CA (`WAMO_CA_FILE`); die WAMO-Ports
   auf Sokrates-2 nehmen nur Verbindungen aus Loopback und dem Büro-LAN an (HTTP 55321 zusätzlich aus dem Caddy-Netz).
+- Stimmabdruck (nur Büro-Profile, nur mit ausdrücklicher Einwilligung, Abschnitt "Stimmabdruck"): Im Modus streng erreicht eine sicher fremde
+  Stimme das Sprachmodell nicht, und Werkzeuge außer Uhrzeit, Websuche und Canvas verlangen die eingelernte Stimme oder getippten Text. Das ist keine
+  Freigabe und kein Schutz gegen Aufnahmen oder geklonte Stimmen. Der Abdruck (192 Zahlen) liegt nur in `speakers`, nie eine Aufnahme.
 
 ---
 
