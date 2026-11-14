@@ -1047,7 +1047,7 @@ Sicherungen.
 
 **Modelldatei.** Die Datei (`nemo_en_titanet_large.onnx`, rund 100 MB, SHA-256 `d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77`)
 lädt der Kern beim ersten Bedarf von GitHub (Release `speaker-recongition-models` von sherpa-onnx) nach, prüft die Summe und prüft sie bei jedem
-Prozessstart erneut; eine falsche Datei wird gelöscht und nach 60 Sekunden neu versucht. Ohne Datei (und ohne Netz) gibt es kein Einlernen und
+Prozessstart erneut; eine falsche Datei im Cache-Ordner wird gelöscht (ein Pfad aus `WAMO_STIMME_MODELL` nie), nach einem Fehlschlag wartet der Kern 60 Sekunden, 5 Minuten, danach 30 Minuten bis zum nächsten Versuch. Der Download ist auf 150 MB und 10 Minuten begrenzt. Ohne Datei (und ohne Netz) gibt es kein Einlernen und
 keine Prüfung, das Gespräch läuft weiter. Am Server ist das ausgehende Netz begrenzt, deshalb vorab ablegen (Pfade nach der Unit
 `wamo-core@.service`, `CacheDirectory=wamo-core`, `XDG_CACHE_HOME=/var/cache/wamo-core`, am Server nicht ausgeführt):
 

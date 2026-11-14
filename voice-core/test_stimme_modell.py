@@ -7,6 +7,7 @@ Der letzte Block braucht das echte Modell (Ordner .cache/sprecher/ oder WAMO_STI
 
 import asyncio
 import hashlib
+import os
 import tempfile
 import threading
 import time
@@ -166,7 +167,8 @@ class LadeTests(unittest.IsolatedAsyncioTestCase):
             pfad.write_bytes(b"ausgetauscht")
             jetzt = [100.0]
             modell = StimmModell(pfad, sha256="0" * 64, uhr=lambda: jetzt[0])
-            self.assertIsNone(await modell.get())
+            with mock.patch("stimme_modell.cache_ordner", return_value=Path(tmp)):  # die Datei liegt im Cache-Ordner des Dienstes
+                self.assertIsNone(await modell.get())
             self.assertFalse(pfad.exists())
             self.assertFalse(modell.bereit)
             with mock.patch("stimme_modell.herunterladen", mock.AsyncMock()) as laden:
@@ -175,6 +177,39 @@ class LadeTests(unittest.IsolatedAsyncioTestCase):
                 jetzt[0] += NEUER_VERSUCH_SECS + 1
                 await modell.get()
                 laden.assert_awaited_once()
+
+    async def test_eine_falsche_datei_ausserhalb_des_cache_ordners_wird_nie_geloescht(self):
+        """Ein Pfad aus WAMO_STIMME_MODELL gehört dem Betreiber: die falsche Summe ist ein Fehler, aber die Datei bleibt liegen."""
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cache:
+            pfad = Path(tmp) / "eigenes.onnx"
+            pfad.write_bytes(b"andere Datei")
+            modell = StimmModell(pfad, sha256="0" * 64)
+            with mock.patch("stimme_modell.cache_ordner", return_value=Path(cache)):
+                self.assertIsNone(await modell.get())
+            self.assertTrue(pfad.exists())
+            self.assertTrue(modell.gescheitert)
+
+    async def test_die_wartezeit_nach_fehlschlaegen_waechst(self):
+        jetzt = [0.0]
+        modell = StimmModell(Path("gibt-es-nicht/m.onnx"), uhr=lambda: jetzt[0])
+        with mock.patch("stimme_modell.herunterladen", mock.AsyncMock(side_effect=httpx.ConnectError("kein Netz"))) as laden:
+            await modell.get()
+            self.assertEqual(laden.await_count, 1)
+            for warten, versuche in ((59, 1), (61, 2), (299, 2), (301, 3), (1799, 3), (1801, 4), (1801, 5)):
+                jetzt[0] += warten
+                await modell.get()
+                self.assertEqual(laden.await_count, versuche, (warten, versuche))
+
+    async def test_nach_erfolg_beginnt_die_wartezeit_wieder_bei_60_sekunden(self):
+        jetzt = [0.0]
+        modell = StimmModell(Path("gibt-es-nicht/m.onnx"), uhr=lambda: jetzt[0])
+        modell._fehlversuche = 3
+        modell._gescheitert_um = 0.0
+        jetzt[0] = 1801.0
+        with mock.patch("stimme_modell.herunterladen", mock.AsyncMock()), mock.patch.object(Path, "is_file", return_value=False), \
+                mock.patch("stimme_modell.Embedder", return_value="rechner"):
+            self.assertEqual(await modell.get(), "rechner")
+        self.assertEqual(modell._fehlversuche, 0)
 
     async def test_gute_datei_wird_einmal_geladen_und_dann_wiederverwendet(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -229,6 +264,58 @@ class DownloadTests(unittest.IsolatedAsyncioTestCase):
                 await sm.herunterladen(ziel, url="https://example.invalid/m.onnx", sha256="0" * 64, transport=transport)
             self.assertFalse(ziel.exists())
             self.assertFalse(ziel.with_name("m.onnx.part").exists())
+
+    async def test_zu_grosse_datei_bricht_ab_und_hinterlaesst_nichts(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sm, "MODELL_MAX_BYTES", 1000):
+            ziel = Path(tmp) / "m.onnx"
+            transport = httpx.MockTransport(lambda anfrage: httpx.Response(200, content=b"x" * 5000))
+            with self.assertRaises(ValueError):
+                await sm.herunterladen(ziel, url="https://example.invalid/m.onnx", sha256="0" * 64, transport=transport)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    async def test_angekuendigte_groesse_ueber_der_grenze_bricht_vor_dem_lesen_ab(self):
+        gelesen = []
+
+        class Strom(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                gelesen.append(1)
+                yield b"x"
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sm, "MODELL_MAX_BYTES", 1000):
+            transport = httpx.MockTransport(lambda anfrage: httpx.Response(200, headers={"content-length": "999999"}, stream=Strom()))
+            with self.assertRaises(ValueError):
+                await sm.herunterladen(Path(tmp) / "m.onnx", url="https://example.invalid/m.onnx", sha256="0" * 64, transport=transport)
+        self.assertEqual(gelesen, [])
+
+    async def test_gesamtfrist_bricht_einen_zaehen_download_ab(self):
+        class Langsam(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b"x"
+                await asyncio.sleep(5)
+                yield b"y"
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sm, "GESAMT_FRIST_SECS", 0.1):
+            transport = httpx.MockTransport(lambda anfrage: httpx.Response(200, stream=Langsam()))
+            with self.assertRaises(asyncio.TimeoutError):
+                await sm.herunterladen(Path(tmp) / "m.onnx", url="https://example.invalid/m.onnx", sha256="0" * 64, transport=transport)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    async def test_teildatei_traegt_die_prozessnummer(self):
+        namen = []
+
+        class Strom(httpx.AsyncByteStream):
+            def __init__(self, ordner):
+                self.ordner = ordner
+
+            async def __aiter__(self):
+                yield b"x" * 100
+                namen.extend(p.name for p in self.ordner.iterdir())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            transport = httpx.MockTransport(lambda anfrage: httpx.Response(200, stream=Strom(Path(tmp))))
+            with self.assertRaises(ValueError):
+                await sm.herunterladen(Path(tmp) / "m.onnx", url="https://example.invalid/m.onnx", sha256="0" * 64, transport=transport)
+        self.assertEqual(namen, [f"m.onnx.{os.getpid()}.part"])
 
     async def test_fehlerantwort_wirft(self):
         with tempfile.TemporaryDirectory() as tmp:
