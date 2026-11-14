@@ -183,7 +183,7 @@ function nachrichtBinden({ nonce, userId, hostname }) {
 
 function pruefeHostname(name) {
   if (typeof name !== "string" || !RE_HOSTNAME.test(name)) {
-    throw new GeraetFehler("Der Rechnername dieses Laptops enthält Zeichen, die WAMO nicht annimmt (erlaubt: Buchstaben, Ziffern, Bindestrich).");
+    throw new GeraetFehler("Der Rechnername dieses Laptops enthält Zeichen, die W.A.I.S. nicht annimmt (erlaubt: Buchstaben, Ziffern, Bindestrich).");
   }
   return name;
 }
@@ -227,7 +227,7 @@ function pruefeKernAntwort(antwort, besitzer, erwartet = { host: SSH_HOST_STANDA
   const { benutzer, host, socket, hostschluessel } = ziel;
   if (typeof benutzer !== "string" || !RE_BENUTZER.test(benutzer)) throw schlecht();
   if (typeof host !== "string" || !RE_IPV4.test(host)) throw schlecht();
-  if (host !== erwartet.host) throw new GeraetFehler("Die Antwort nennt ein anderes Tunnelziel als dieses WAMO erwartet.");
+  if (host !== erwartet.host) throw new GeraetFehler("Die Antwort nennt ein anderes Tunnelziel als dieses W.A.I.S. erwartet.");
   const nummer = /^wamo-t-(\d{2})$/.exec(benutzer)[1];
   if (typeof socket !== "string" || !RE_SOCKET.test(socket) || socket !== `/run/wamo-pc/t${nummer}/pc.sock`) {
     throw schlecht();
@@ -520,7 +520,7 @@ function erzeugeGeraet(opt = {}) {
       if (err instanceof GeraetFehler) throw err; // Vorbereitung gescheitert, Text steht schon fest
       log(`Einrichtungsskript fehlgeschlagen (${err?.killed ? "Zeitüberschreitung" : `Code ${err?.code ?? "?"}`})`);
       throw new GeraetFehler(
-        err?.killed ? "Die Einrichtung des Tunnels dauert zu lange." : "Der Tunnel zu WAMO konnte nicht eingerichtet werden.",
+        err?.killed ? "Die Einrichtung des Tunnels dauert zu lange." : "Der Tunnel zu W.A.I.S. konnte nicht eingerichtet werden.",
       );
     } finally {
       skriptLaeuft = false;

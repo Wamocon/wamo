@@ -30,15 +30,15 @@ const RE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /** Text der Einwilligung (Dialog am Laptop): Inhalt, Zweck, Dauer, Datenschutz. Ohne Gedankenstriche, echte Umlaute. */
 const EINWILLIGUNG = {
-  titel: "WAMO Live-Bild",
+  titel: "W.A.I.S. Live-Bild",
   frage: "Live-Bild dieses Laptops einschalten?",
   detail: [
     "Inhalt: Das Live-Bild überträgt als einzelne Bilder, was auf dem Bildschirm dieses Laptops zu sehen ist. Dabei können Kundendaten, E-Mails und Chats anderer Personen sichtbar sein.",
-    "Zweck: Du siehst deinen eigenen Laptop von unterwegs oder von einem anderen Gerät aus in deiner WAMO-Ansicht.",
+    "Zweck: Du siehst deinen eigenen Laptop von unterwegs oder von einem anderen Gerät aus in deiner W.A.I.S.-Ansicht.",
     "Fernstart: Mit dieser Einwilligung kannst du das Live-Bild auch von deinem Handy oder einem anderen Gerät aus einschalten, ohne dass du am Laptop sitzt. Dafür gibst du dort einen frischen Code deiner Authenticator-App ein. Dieser Laptop zeigt dann den roten Rahmen und eine Meldung.",
     `Dauer: Das Live-Bild läuft höchstens ${DAUER_MS / 60000} Minuten. Es endet früher bei Sperre, Abmelden, Trennen oder wenn niemand mehr zusieht. Danach schaltest du es hier oder per Fernstart neu ein.`,
     "Datenschutz: Nichts wird aufgezeichnet oder gespeichert. Die Bilder gehen nur an deine eigene Sitzung, nie an ein Sprachmodell. Solange das Bild läuft, zeigt dieser Laptop einen roten Rahmen. Passwortfelder lassen sich nicht automatisch ausblenden: Schließe vorher Fenster, die niemand sehen soll.",
-    "Du kannst das Live-Bild jederzeit im Tray-Menü von WAMO ausschalten.",
+    "Du kannst das Live-Bild jederzeit im Tray-Menü von W.A.I.S. ausschalten.",
   ].join("\n\n"),
   zustimmen: "Einwilligen und einschalten",
   ablehnen: "Abbrechen",
@@ -305,10 +305,10 @@ function erzeugeLiveBild(opt) {
     const r = await einschalten({ anfrage: true });
     if (r.ok && !r.schonAn) {
       log("Live-Bild auf Anfrage vom Handy eingeschaltet");
-      opt.melden?.("WAMO Live-Bild", "Das Live-Bild wurde von deinem Handy angefordert und läuft. Du erkennst es am roten Rahmen. Im Tray-Menü schaltest du es aus.");
+      opt.melden?.("W.A.I.S. Live-Bild", "Das Live-Bild wurde von deinem Handy angefordert und läuft. Du erkennst es am roten Rahmen. Im Tray-Menü schaltest du es aus.");
     } else if (!r.ok) {
       log(`Fernanfrage nicht ausgeführt (${r.grund ?? "unbekannt"})`);
-      opt.melden?.("WAMO Live-Bild", r.grund ?? "Die Anfrage vom Handy konnte nicht ausgeführt werden.");
+      opt.melden?.("W.A.I.S. Live-Bild", r.grund ?? "Die Anfrage vom Handy konnte nicht ausgeführt werden.");
     }
     return r;
   }

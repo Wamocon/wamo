@@ -14,7 +14,7 @@
 
 const FRAGE = Object.freeze({
   type: "question",
-  title: "WAMO",
+  title: "W.A.I.S.",
   message: "Ein Entwicklungsauftrag läuft noch. Trotzdem beenden?",
   detail: "Ein Auftrag endet mit dem Gespräch.",
   buttons: Object.freeze(["Abbrechen", "Beenden"]),

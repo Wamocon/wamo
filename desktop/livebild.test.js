@@ -217,7 +217,7 @@ test("Text der Einwilligung nennt Inhalt, Zweck, Dauer, Datenschutz und Kundenda
     assert.ok(t.includes(wort), wort);
   }
   assert.ok(!/[–—]/.test(t), "kein Gedankenstrich");
-  assert.ok(EINWILLIGUNG.titel.startsWith("WAMO "), "Titel beginnt mit WAMO: der Host bedient solche Fenster nie");
+  assert.ok(EINWILLIGUNG.titel.startsWith("W.A.I.S. "), "Titel beginnt mit W.A.I.S.: der Host bedient solche Fenster nie (windows_control.WAMO_UI_TITLE)");
 });
 
 test("nur das Tray-Menü schaltet ein: die Brücke zur Oberfläche kennt das Live-Bild nicht", () => {
