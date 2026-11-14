@@ -232,6 +232,12 @@ def hat_stoppwort(text: str, ohne: frozenset[str] = frozenset(), zusaetzlich: fr
     return any(w in woerter and w not in ohne for w in (_wort(x) for x in text.split()))
 
 
+def _woerter_text(text: str) -> str:
+    """Nur die Zahl der Wörter für das Log (INFO enthält keine Gesprächsinhalte): "1 Wort", "2 Wörter"."""
+    n = len(text.split())
+    return f"{n} Wort" if n == 1 else f"{n} Wörter"
+
+
 def _wort(w: str) -> str:
     return w.strip(SATZZEICHEN).lower()
 
@@ -887,13 +893,15 @@ class SoftInterruptGate(FrameProcessor):
         self._ansatz_seit = None
         self._haelt_seit = self._uhr()
         self._halt.anhalten()
-        logger.info(f"{self}: WAMO hält inne ({grund}, Ansatz {self._ansatz_text!r})")
+        logger.info(f"{self}: WAMO hält inne ({grund}, Ansatz {_woerter_text(self._ansatz_text)})")  # gesprochener Text nur auf DEBUG
+        logger.debug(f"{self}: Ansatz beim Innehalten: {self._ansatz_text!r}")
 
     def _fortsetzen(self, grund: str):
         self._haelt_seit = None
         self._fortgesetzt_text = self._ansatz_text
         self._halt.fortsetzen()
-        logger.info(f"{self}: WAMO spricht weiter ({grund}, Ansatz {self._ansatz_text!r})")
+        logger.info(f"{self}: WAMO spricht weiter ({grund}, Ansatz {_woerter_text(self._ansatz_text)})")
+        logger.debug(f"{self}: Ansatz beim Weitersprechen: {self._ansatz_text!r}")
         if self._duckt:
             # Eine Dämpfung aus der Zeit vor dem Halt: wie nach jeder Entwarnung zurücknehmen und eine Weile nicht erneut dämpfen
             self._duck_gesperrt_bis = max(self._duck_gesperrt_bis, self._uhr() + DUCK_SPERRE_SECS)
