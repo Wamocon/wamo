@@ -327,6 +327,13 @@ def ist_echo(text: str, kurz: list[str], lang: list[str] | None = None) -> bool:
     return echo_urteil(text, kurz, lang) == "echo"
 
 
+def selbst_gesprochen(text: str, gespielt: list[str]) -> bool:
+    """Besteht der Text nur aus Wörtern, die WAMO in den letzten Sekunden selbst gespielt hat? Dann ist es sein Echo und kein Wort
+    der Person, auch wenn es ein Rückmeldelaut wie "Ja" ist (echo_urteil zählt Rückmeldelaute nicht mit)."""
+    erkannt = [w for w in (_wort(x) for x in text.split()) if len(w) >= 2]
+    return bool(erkannt) and bool(gespielt) and all(any(_passt(w, g, letztes=False) for g in gespielt) for w in erkannt)
+
+
 # Fragebeginn mitten im Satz, bevor das Fragezeichen erklingt: "Soll ich ...", "Möchtest du ...", "Darf ich ..."
 FRAGE_BEGINN = re.compile(
     r"^\W*(soll|sollen|darf|dürfen|kann|können|will|willst|wollen|möchte|möchtest|möchten|magst|mag)\w*\s+(ich|du|wir|er|sie)\b",
@@ -407,6 +414,10 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
             return "einwurf"
         return echo_urteil(text, self._gesprochen(ECHO_FENSTER_KURZ_SECS), self._gesprochen(ECHO_FENSTER_SECS))
 
+    def _selbst_gesagt(self, text: str) -> bool:
+        """Hat WAMO die Wörter dieses Textes in den letzten Sekunden selbst gespielt? Ohne Echo-Filter weiß der Kern es nicht."""
+        return self._gesprochen is not None and selbst_gesprochen(text, self._gesprochen(ECHO_FENSTER_KURZ_SECS))
+
     def _werkzeug_aktiv(self) -> bool:
         return self._werkzeug_laeuft is not None and not self._bot_speaking and bool(self._werkzeug_laeuft())
 
@@ -451,8 +462,9 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
             await self.trigger_user_turn_started()
             return ProcessFrameResult.STOP
         if (self._bot_speaking and self._fragt is not None and self._fragt() and ist_antwort(frame.text)
-                and self._urteil(frame.text) != "echo"):
+                and self._urteil(frame.text) != "echo" and not self.echo_modus_aktiv() and not self._selbst_gesagt(frame.text)):
             # Ein "Ja" mitten in der Frage von WAMO ist die Antwort: es startet den Zug, statt als Zuhören verworfen zu werden.
+            # Nicht, wenn das Mikrofon WAMO gerade hört (Echo-Modus) oder WAMO das Wort eben selbst gesagt hat: dann ist es sein Echo.
             logger.info(f"{self}: Antwort auf die Frage von WAMO")
             await self.trigger_user_turn_started()
             return ProcessFrameResult.STOP

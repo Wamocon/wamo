@@ -3,6 +3,7 @@
 Ausführen:  uv run python -m pytest -q test_frage_antwort.py   (im Ordner voice-core/)
 """
 
+import time
 import unittest
 from unittest import mock
 
@@ -50,6 +51,33 @@ class StrategieTests(unittest.IsolatedAsyncioTestCase):
                 gestartet, verworfen = await self.ausloesen(text, fragt=True)
                 self.assertTrue(gestartet)
                 self.assertFalse(verworfen)  # das Transkript bleibt erhalten
+
+    async def ausloesen_mit_echo_schutz(self, text, gespielt, *, echo_modus=False):
+        s = MeaningfulWordsUserTurnStartStrategy(min_words=2, enable_interruptions=False, fragt=lambda: True,
+                                                 gesprochen=lambda sekunden: gespielt, echo_modus=True)
+        if echo_modus:
+            s._echo_zeiten.extend([time.monotonic(), time.monotonic()])  # zwei Einwürfe der letzten Sekunden waren Echo
+        await s.process_frame(BotStartedSpeakingFrame())
+        with mock.patch.object(s, "trigger_user_turn_started") as gestartet, \
+             mock.patch.object(s, "trigger_reset_aggregation") as verworfen:
+            await s.process_frame(zwischenstand(text))
+        return gestartet.await_count > 0, verworfen.await_count > 0
+
+    async def test_ja_das_wamo_gerade_selbst_gesprochen_hat_ist_keine_antwort(self):
+        """Hört das Mikrofon WAMO selbst, ist sein eigenes "Ja" kein Ja der Person: es startet keinen Zug."""
+        gespielt = ["ja", "das", "geht", "soll", "ich", "es", "tun"]
+        for text in ["Ja", "ja."]:
+            with self.subTest(text=text):
+                self.assertEqual(await self.ausloesen_mit_echo_schutz(text, gespielt), (False, True))
+
+    async def test_ja_nach_einer_frage_ohne_dieses_wort_bleibt_die_antwort(self):
+        gespielt = ["soll", "ich", "das", "tun"]
+        self.assertEqual(await self.ausloesen_mit_echo_schutz("Ja", gespielt), (True, False))
+        self.assertEqual(await self.ausloesen_mit_echo_schutz("Ja genau", ["genau", "so", "geht", "es", "soll", "ich", "weiter"]), (True, False))
+
+    async def test_im_echo_modus_ist_ein_ja_keine_antwort(self):
+        gespielt = ["soll", "ich", "das", "tun"]
+        self.assertEqual(await self.ausloesen_mit_echo_schutz("Ja", gespielt, echo_modus=True), (False, True))
 
     async def test_ohne_frage_bleibt_ja_ein_rueckmeldelaut(self):
         for text in ["Ja", "ja genau", "Okay"]:
