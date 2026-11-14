@@ -154,12 +154,15 @@ class Einlernen:
         if beim_rechnen:
             await self.warten()
 
-    def aufraeumen(self) -> None:
-        """Die Sitzung endet: Aufnahme verwerfen, ein laufendes Rechnen abbrechen. Danach wird nichts mehr gespeichert."""
+    async def aufraeumen(self) -> None:
+        """Die Sitzung endet: Aufnahme verwerfen, ein laufendes Rechnen abbrechen und abwarten. Danach läuft nichts mehr weiter und es wird
+        nichts mehr gespeichert (ein Rechnen im Thread läuft noch zu Ende, sein Ergebnis kommt aber nirgends mehr an)."""
         self._gen += 1
         self._lauf = None
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         self._rechnet = False
 
     def bot_spricht(self, spricht: bool) -> None:

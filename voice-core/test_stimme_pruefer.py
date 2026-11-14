@@ -342,6 +342,16 @@ class EinlernenImPrueferTests(PrueferBasis):
         await self.v.cleanup()
         self.assertFalse(self.v.einlernen_aktiv)
 
+    async def test_cleanup_wartet_bis_laufende_pruefungen_beendet_sind(self):
+        """Nach dem Aufräumen läuft keine Prüfung mehr weiter: abgebrochen und abgewartet, ohne Fehler nach außen."""
+        self.modell.rechner.dauer = 0.3
+        await self.sprechen(8000, 2.0, warten=False)
+        laufend = list(self.v._tasks)
+        self.assertTrue(laufend)
+        await self.v.cleanup()
+        self.assertTrue(all(t.done() for t in laufend))
+        self.assertIsNone(await self.v.urteil_abwarten(0.05))  # wer danach fragt, bekommt kein Urteil
+
     async def test_status_melden(self):
         await self.v.status_melden()
         self.assertEqual(self.meldungen("stimme")[-1], {"type": "stimme", "status": "bereit", "modus": "streng"})

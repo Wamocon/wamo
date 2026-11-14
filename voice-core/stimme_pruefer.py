@@ -297,14 +297,18 @@ class Stimmpruefer(FrameProcessor):
         self._tasks.discard(task)
         self._fertig = max(self._fertig, nr)
         self._melden()
+        if not task.cancelled() and (fehler := task.exception()) is not None:  # abgeholt: kein "never retrieved" im Log
+            logger.warning("Stimmprüfung: Aufgabe mit Fehler beendet ({})", type(fehler).__name__)
 
     async def cleanup(self):
         await super().cleanup()
-        self._einlernen.aufraeumen()
-        for task in list(self._tasks):
+        await self._einlernen.aufraeumen()
+        laufend = list(self._tasks)
+        for task in laufend:
             task.cancel()
         self._aufgeraeumt = True  # wer noch wartet, bekommt kein Urteil statt ewig zu warten
         self._melden()
+        await asyncio.gather(*laufend, return_exceptions=True)  # abgebrochen und abgewartet: danach läuft keine Prüfung mehr
 
 
 def _secs(pcm: bytes, rate: int) -> float:
