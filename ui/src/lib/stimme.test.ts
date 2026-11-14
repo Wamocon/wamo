@@ -147,9 +147,25 @@ test("ein Fehler trägt den Satz des Kerns, abgebrochen und gelöscht schließen
   assert.equal(abdruckAnwenden(null, { status: "geloescht" }), null);
 });
 
-test("eine Meldung ohne geöffnete Einlernansicht öffnet sie, nur in der Einwilligung wird sie ignoriert", () => {
+test("eine geschlossene Einlernansicht öffnen nur start, aufnahme und rechnet; fertig, fehler und abgebrochen öffnen nie", () => {
+  assert.equal(abdruckAnwenden(null, { status: "start" })?.phase, "start");
   assert.equal(abdruckAnwenden(null, { status: "aufnahme", sekunden: 3, ziel: 20 })?.phase, "aufnahme");
-  assert.equal(abdruckAnwenden(null, { status: "fehler", text: "x" })?.phase, "fehler");
+  assert.equal(abdruckAnwenden(null, { status: "rechnet" })?.phase, "rechnet");
+  for (const status of ["fertig", "fehler", "abgebrochen", "geloescht"] as const) {
+    assert.equal(abdruckAnwenden(null, { status, text: "x" }), null, status);
+  }
+});
+
+test("nach lokalem Abbrechen oder Schließen öffnet nur eine neue Startmeldung die Einlernansicht wieder", () => {
+  for (const status of ["aufnahme", "rechnet", "fertig", "fehler", "abgebrochen"] as const) {
+    assert.equal(abdruckAnwenden(null, { status, sekunden: 5 }, true), null, status);
+  }
+  assert.equal(abdruckAnwenden(null, { status: "start" }, true)?.phase, "start");
+  // eine offene Ansicht führt der Kern wie bisher weiter
+  assert.equal(abdruckAnwenden(abdruckGestartet(null), { status: "aufnahme", sekunden: 2 }, true)?.phase, "aufnahme");
+});
+
+test("eine Meldung in der Einwilligung wird ignoriert, nur Abbrechen schließt", () => {
   const einwilligung = abdruckOeffnen();
   assert.equal(abdruckAnwenden(einwilligung, { status: "aufnahme", sekunden: 3 }), einwilligung, "ohne Einwilligung geht nichts weiter");
   assert.equal(abdruckAnwenden(einwilligung, { status: "abgebrochen" }), null, "Abbrechen schließt auch hier");

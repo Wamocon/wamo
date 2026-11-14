@@ -509,6 +509,7 @@ export function useWamo(): WamoAktionen {
         modellzugang: null, // wird beim nächsten Verbinden neu abgefragt
         stimme: STIMME_LEER, // Stand, Einlernansicht und Einwilligungstext gelten nur für eine laufende Sitzung
         abdruck: null,
+        abdruckLokalZu: false,
         einwilligung: null,
         vorgaenge: vorgaengeBeenden(s.vorgaenge, Date.now()), // der Kern bricht seine Vorgänge mit der Sitzung ab
         aufgabe: aufgabeBeenden(s.aufgabe, performance.now()), // die letzte Aufgabe bleibt stehen, aber nie als laufend

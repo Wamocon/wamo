@@ -159,6 +159,8 @@ export type WamoState = {
   stimme: StimmeStand;
   /** Einlernen des Stimmabdrucks: null, solange die Ansicht zu ist; sonst die Phase von der Einwilligung bis zum Ergebnis */
   abdruck: Abdruck | null;
+  /** Die Person hat die Einlernansicht selbst geschlossen oder abgebrochen: bis zur nächsten Startmeldung öffnet keine Meldung sie wieder */
+  abdruckLokalZu: boolean;
   /** Einwilligungstext vom Kern, null bis er ihn schickt (ohne ihn startet die Oberfläche das Einlernen nicht) */
   einwilligung: Einwilligung | null;
   /** Text für role="status": nur bedeutsame Wechsel (verbunden, getrennt, Mikro, PC) */
@@ -202,6 +204,7 @@ export const initialState: WamoState = {
   stillStart: STILL_AUS,
   stimme: STIMME_LEER,
   abdruck: null,
+  abdruckLokalZu: false,
   einwilligung: null,
   ansage: "",
   toast: null,
@@ -436,13 +439,13 @@ export function resetWamo(state: WamoState = initialState) {
 export function abdruckAnsichtOeffnen(): boolean {
   const s = wamo.get();
   if (!kannEinlernen(s.stimme, istOnline(s))) return false;
-  wamo.set((x) => ({ ...x, abdruck: abdruckOeffnen() }));
+  wamo.set((x) => ({ ...x, abdruck: abdruckOeffnen(), abdruckLokalZu: false }));
   return true;
 }
 
-/** Die Einlernansicht zumachen (das Abbrechen eines laufenden Einlernens schickt useWamo). */
+/** Die Einlernansicht zumachen (das Abbrechen eines laufenden Einlernens schickt useWamo). Späte Meldungen öffnen sie nicht wieder. */
 export function abdruckAnsichtSchliessen() {
-  wamo.set((s) => ({ ...s, abdruck: null }));
+  wamo.set((s) => ({ ...s, abdruck: null, abdruckLokalZu: true }));
 }
 
 // ---------- Servernachrichten in den Store übernehmen ----------
@@ -662,7 +665,11 @@ export function applyServerMessage(msg: ServerMessage) {
       wamo.set((s) => ({ ...s, einwilligung: { version: msg.version, text: msg.text } }));
       return;
     case "stimmabdruck":
-      wamo.set((s) => ({ ...s, abdruck: abdruckAnwenden(s.abdruck, msg), ansage: abdruckAnsage(msg.status) ?? s.ansage }));
+      wamo.set((s) => {
+        const abdruck = abdruckAnwenden(s.abdruck, msg, s.abdruckLokalZu);
+        // eine offene Ansicht (auch die von einer neuen Startmeldung geöffnete) hebt das lokale Schließen auf
+        return { ...s, abdruck, abdruckLokalZu: abdruck ? false : s.abdruckLokalZu, ansage: abdruckAnsage(msg.status) ?? s.ansage };
+      });
       return;
     case "leiser_stopp":
     case "stimme_leiser":

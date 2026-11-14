@@ -107,6 +107,32 @@ test("abgebrochen und gelöscht schließen die Einlernansicht und werden angesag
   assert.equal(stand().ansage, "Stimmabdruck gelöscht");
 });
 
+test("nach dem Schließen öffnet eine späte Meldung des Kerns die Einlernansicht nicht wieder, eine neue Startmeldung schon", () => {
+  online();
+  applyServerMessage(status("fehlt"));
+  abdruckAnsichtOeffnen();
+  wamo.set((s) => ({ ...s, abdruck: { phase: "aufnahme", sekunden: 3, ziel: 20 } }));
+  abdruckAnsichtSchliessen(); // Abbrechen oder Schließen in der Oberfläche
+  applyServerMessage({ type: "stimmabdruck", status: "aufnahme", sekunden: 6, ziel: 20 });
+  assert.equal(stand().abdruck, null, "späte Aufnahme");
+  applyServerMessage({ type: "stimmabdruck", status: "rechnet" });
+  assert.equal(stand().abdruck, null, "spätes Rechnen");
+  applyServerMessage({ type: "stimmabdruck", status: "fehler", text: "abgebrochen" });
+  assert.equal(stand().abdruck, null, "später Fehler");
+  applyServerMessage({ type: "stimmabdruck", status: "start" });
+  assert.equal(stand().abdruck?.phase, "start", "ein neuer Durchlauf öffnet die Ansicht");
+  applyServerMessage({ type: "stimmabdruck", status: "aufnahme", sekunden: 1, ziel: 20 });
+  assert.equal(stand().abdruck?.phase, "aufnahme");
+});
+
+test("ohne geöffnete Ansicht und ohne lokales Schließen öffnet eine Aufnahme sie, ein Ergebnis nie", () => {
+  online();
+  applyServerMessage({ type: "stimmabdruck", status: "fertig", sekunden: 20 });
+  assert.equal(stand().abdruck, null);
+  applyServerMessage({ type: "stimmabdruck", status: "aufnahme", sekunden: 2, ziel: 20 });
+  assert.equal(stand().abdruck?.phase, "aufnahme");
+});
+
 test("ohne Einwilligung der Person geht eine Meldung des Kerns nicht an der Einwilligung vorbei", () => {
   online();
   applyServerMessage(status("fehlt"));
