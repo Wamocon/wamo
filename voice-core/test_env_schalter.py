@@ -146,12 +146,11 @@ class ErlaubnislisteTest(unittest.TestCase):
 
     def test_stimme_steht_in_beiden_listen_und_in_der_beschreibung(self):
         wurzel = Path(__file__).resolve().parent.parent
-        for datei in ("infra/sokrates2/wamo_core_env.py", "scripts/wamo_kern_sokrates2.py"):
-            text = (wurzel / datei).read_text(encoding="utf-8")
-            for name in STIMME_UEBERTRAGEN:
-                self.assertIn(f'"{name}"', text, f"{name} fehlt in {datei}")
-        self.assertIn(f'"{STIMME_MODELL}"', (wurzel / "infra/sokrates2/wamo_core_env.py").read_text(encoding="utf-8"))
-        self.assertNotIn(f'"{STIMME_MODELL}"', (wurzel / "scripts/wamo_kern_sokrates2.py").read_text(encoding="utf-8"))
+        server = (wurzel / "infra/sokrates2/wamo_core_env.py").read_text(encoding="utf-8")
+        pc = (wurzel / "scripts/wamo_kern_sokrates2.py").read_text(encoding="utf-8")
+        for name in STIMME:
+            self.assertIn(f'"{name}"', server, f"{name} fehlt in der Liste des Servers")
+            self.assertNotIn(f'"{name}"', pc, f"{name} darf nicht vom PC auf den Server kopiert werden")  # Sicherheitseinstellung des Servers
         for name in STIMME:
             self.assertIn(name, env_schalter.__doc__)
 

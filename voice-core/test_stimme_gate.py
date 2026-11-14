@@ -406,6 +406,12 @@ class SchalterTests(unittest.TestCase):
             s = schwellen_aus_env()
         self.assertEqual((s.eigen_min, s.fremd_max, s.kurz_vertrauen_secs), (0.5, 0.3, 30.0))
 
+    def test_eigen_min_hat_die_untergrenze_0_35(self):
+        with mock.patch.dict("os.environ", {"WAMO_STIMME_EIGEN_MIN": "0.3", "WAMO_STIMME_FREMD_MAX": "0.1"}, clear=True):
+            self.assertEqual(schwellen_aus_env().eigen_min, 0.5)  # zu niedrig: Standard
+        with mock.patch.dict("os.environ", {"WAMO_STIMME_EIGEN_MIN": "0.35", "WAMO_STIMME_FREMD_MAX": "0.2"}, clear=True):
+            self.assertEqual(schwellen_aus_env().eigen_min, 0.35)
+
     def test_vertrauen_hat_eine_grenze_nach_unten(self):
         with mock.patch.dict("os.environ", {"WAMO_STIMME_VERTRAUEN_SECS": "0"}, clear=True):
             self.assertEqual(schwellen_aus_env().vertrauen_secs, 120.0)
@@ -521,6 +527,24 @@ class GetipptTests(unittest.IsolatedAsyncioTestCase):
 
     def test_fehlender_haken_wird_gemeldet(self):
         self.assertFalse(tippen_beobachten(object(), bereites_gate()))
+
+
+class StandNachrichtTests(unittest.TestCase):
+    """Die Stand-Nachricht {"type": "stimme", "status", "modus"} entsteht an einer Stelle (Gate), nicht in Prüfer, Sitzung und Einlernen."""
+
+    def test_stand_des_gates(self):
+        gate = StimmGate(modus="streng")
+        self.assertEqual(gate.stand(), {"type": "stimme", "status": "laedt", "modus": "streng"})
+        self.assertEqual(bereites_gate().stand(), {"type": "stimme", "status": "bereit", "modus": "streng"})
+        self.assertEqual(gate.stand("kaputt"), {"type": "stimme", "status": "kaputt", "modus": "streng"})
+        self.assertEqual(stimme_gate.stand_nachricht("aus", "aus"), {"type": "stimme", "status": "aus", "modus": "aus"})
+
+    def test_keine_zweite_stelle_baut_sie(self):
+        from pathlib import Path
+
+        ordner = Path(stimme_gate.__file__).parent
+        for datei in ("stimme_pruefer.py", "stimme_sitzung.py", "stimme_einlernen.py", "stimme_waechter.py"):
+            self.assertNotIn('"type": "stimme", "status"', (ordner / datei).read_text(encoding="utf-8").split('"""', 2)[-1], datei)
 
 
 if __name__ == "__main__":

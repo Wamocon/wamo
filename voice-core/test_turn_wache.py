@@ -104,6 +104,57 @@ class TurnWacheProzessorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(isinstance(f, LLMContextFrame) for f in unten), 2)
 
 
+class ModellBeschaeftigtTest(unittest.IsolatedAsyncioTestCase):
+    """Für die Stimmprüfung (stimme_waechter.nur_endgueltig): Arbeitet das Modell an einer Antwort, die noch nicht zu hören ist?"""
+
+    def test_anfrage_macht_beschaeftigt_unterbrechung_und_alter_beenden_es(self):
+        import turn_wache
+
+        jetzt = [100.0]
+        w = TurnWache(uhr=lambda: jetzt[0])
+        self.assertFalse(w.modell_beschaeftigt())
+        self.assertTrue(w.durchlassen(LLMContextFrame(context=kontext())))
+        self.assertTrue(w.modell_beschaeftigt())
+        w.unterbrochen()
+        self.assertFalse(w.modell_beschaeftigt())
+        ctx = kontext()
+        ctx.add_message({"role": "user", "content": "Und morgen?"})
+        w.durchlassen(LLMContextFrame(context=ctx))
+        jetzt[0] += turn_wache.MODELL_MAX_SECS + 1  # eine Antwort, die nie kam, hält den Zustand nicht fest
+        self.assertFalse(w.modell_beschaeftigt())
+
+    def test_verworfene_anfrage_macht_nicht_beschaeftigt(self):
+        w, ctx = TurnWache(), kontext()
+        w.durchlassen(LLMContextFrame(context=ctx))
+        w.unterbrochen()
+        ctx.add_message({"role": "assistant", "content": "Windows."})
+        self.assertFalse(w.durchlassen(LLMContextFrame(context=ctx)))
+        self.assertFalse(w.modell_beschaeftigt())
+
+    async def lauf(self, frames) -> TurnWache:
+        w = TurnWache()
+        await run_test(Pipeline([w.vorne(), w.hinten()]), frames_to_send=[LLMContextFrame(context=kontext()), *frames])
+        return w
+
+    async def test_antwort_mit_text_bleibt_beschaeftigt_bis_wamo_spricht(self):
+        frames = [LLMFullResponseStartFrame(), LLMTextFrame("Gern."), LLMFullResponseEndFrame()]
+        self.assertTrue((await self.lauf(frames)).modell_beschaeftigt())  # die Sprachausgabe hat noch zu tun
+        self.assertFalse((await self.lauf([*frames, SleepFrame(0.05), BotStartedSpeakingFrame()])).modell_beschaeftigt())
+
+    async def test_ein_wartesatz_vor_der_antwort_beendet_das_denken_nicht(self):
+        """Ein langsames Modell: WAMO sagt vorher einen Wartesatz (wartesatz.py). Das Modell arbeitet danach weiter; erst die Rede nach dem
+        Text der Antwort beendet das Denken, auch wenn sie ohne neuen Beginn an den Wartesatz anschließt."""
+        wartesatz = [SleepFrame(0.05), BotStartedSpeakingFrame(), SleepFrame(0.05), BotStoppedSpeakingFrame()]
+        self.assertTrue((await self.lauf(wartesatz)).modell_beschaeftigt())
+        anschluss = [SleepFrame(0.05), BotStartedSpeakingFrame(), LLMFullResponseStartFrame(), LLMTextFrame("Gern."),
+                     LLMFullResponseEndFrame(), SleepFrame(0.05), BotStoppedSpeakingFrame()]
+        self.assertFalse((await self.lauf(anschluss)).modell_beschaeftigt())
+
+    async def test_antwort_ohne_text_beendet_das_denken(self):
+        """Zum Beispiel hält das Modell den Zug für unfertig (Marke statt Antwort): dann wartet WAMO, ohne zu arbeiten."""
+        self.assertFalse((await self.lauf([LLMFullResponseStartFrame(), LLMFullResponseEndFrame()])).modell_beschaeftigt())
+
+
 def werkzeug_frames(ctx: LLMContext) -> list:
     aufruf = FunctionCallFromLLM(function_name="system_info", tool_call_id="t1", arguments={}, context=ctx)
     return [

@@ -193,6 +193,16 @@ class PruefenTests(PrueferBasis):
         self.assertEqual(self.gate.grund_der_stimme(), "Stimme nicht sicher erkannt")
         self.assertNotIn("wert", self.meldungen("stimme")[-1])
 
+    async def test_nan_aus_dem_modell_gilt_als_unklar(self):
+        await self.sprechen(8000, 2.0)
+        self.v.on_turn_end()
+        self.modell.rechner.festes_ergebnis = np.full(DIM, np.nan, dtype=np.float32)
+        urteil = await self.sprechen(8000, 2.0)
+        self.assertEqual(urteil.urteil, UNKLAR)
+        self.assertIsNone(urteil.wert)
+        self.assertEqual(self.gate.grund_der_stimme(), "Stimme nicht sicher erkannt")
+        self.assertNotIn("wert", self.meldungen("stimme")[-1])
+
     async def test_ohne_abdruck_oder_im_modus_aus_wird_nicht_gerechnet(self):
         self.gate.setze_abdruck(None)
         self.assertIsNone(await self.sprechen(8000, 2.0))
@@ -268,6 +278,43 @@ class UrteilAbwartenTests(PrueferBasis):
         self.uhr.t += URTEIL_MAX_ALTER_SECS + 1
         self.assertIsNone(await self.v.urteil_abwarten(0.05))
 
+    async def test_transkript_gehoert_zur_beendeten_aeusserung_nicht_zur_naechsten(self):
+        """Kommt das Transkript einer beendeten Äußerung erst, während die nächste läuft, gilt das Urteil der beendeten. Es wartet nicht auf
+        das Ende der nächsten und bekommt nicht deren Urteil."""
+        self.modell.rechner.dauer = 0.1
+        await self.sprechen(-8000, 2.0, warten=False)  # ein Gast, die Prüfung läuft
+        self.v.on_speech_start(self.uhr.t + 0.2, 0.2)  # die Person spricht schon wieder
+        nr = self.v.aeusserung_zuordnen()
+        urteil = await self.v.urteil_abwarten(1.0, nr)
+        self.assertIsNotNone(urteil)
+        self.assertEqual((urteil.nr, urteil.urteil), (nr, FREMD))
+
+    async def test_transkript_mitten_in_der_rede_gehoert_zur_laufenden_aeusserung(self):
+        """Schließt die Erkennung mitten in der Rede ab, gehört das Transkript zur laufenden Äußerung: es wartet auf deren Urteil."""
+        await self.sprechen(8000, 2.0)
+        self.v.on_turn_end()
+        self.v.on_speech_start(self.uhr.t + 0.2, 0.2)
+        wartend = asyncio.create_task(self.v.urteil_abwarten(2.0, self.v.aeusserung_zuordnen()))
+        for _ in range(100):
+            self.uhr.t += 0.02
+            await self.v.on_audio(audio(-8000))
+        self.v.on_speech_stop(self.uhr.t, 0.2)
+        self.assertEqual((await wartend).urteil, FREMD)
+
+    async def test_ein_vad_ende_ohne_beginn_beendet_keine_laufende_pruefung(self):
+        self.modell.rechner.dauer = 0.1
+        await self.sprechen(-8000, 2.0, warten=False)
+        nr = self.v.aeusserung_zuordnen()
+        self.v.on_speech_stop(self.uhr.t + 0.5, 0.2)  # ein zweites Ende ohne neuen Beginn
+        urteil = await self.v.urteil_abwarten(1.0, nr)
+        self.assertIsNotNone(urteil)
+        self.assertEqual(urteil.urteil, FREMD)
+
+    async def test_ein_zweites_transkript_derselben_aeusserung_bekommt_dasselbe_urteil(self):
+        a = await self.sprechen(-8000, 2.0)
+        b = await self.v.urteil_abwarten(0.05, self.v.aeusserung_zuordnen())
+        self.assertEqual(a, b)
+
     async def test_urteile_sind_durchnummeriert(self):
         a = await self.sprechen(8000, 2.0)
         self.v.on_turn_end()
@@ -279,7 +326,7 @@ class EinlernenImPrueferTests(PrueferBasis):
     async def test_waehrend_des_einlernens_hoert_die_spracherkennung_stille(self):
         self.gate.setze_abdruck(None)
         await self.v.einlernen_starten("stimme-1", mock.sentinel.am)
-        self.assertTrue(self.v.einlernen_aktiv)
+        self.assertTrue(self.v._einlernen.beschaeftigt)
         self.sagen.assert_awaited_once()
         frame = audio(8000)
         await self.v.on_audio(frame)
@@ -300,13 +347,25 @@ class EinlernenImPrueferTests(PrueferBasis):
     async def test_cleanup_beendet_das_einlernen(self):
         self.gate.setze_abdruck(None)
         await self.v.einlernen_starten("stimme-1", mock.sentinel.am)
-        self.assertTrue(self.v.einlernen_aktiv)
+        self.assertTrue(self.v._einlernen.beschaeftigt)
         await self.v.cleanup()
-        self.assertFalse(self.v.einlernen_aktiv)
+        self.assertFalse(self.v._einlernen.beschaeftigt)
 
-    async def test_status_melden(self):
-        await self.v.status_melden()
-        self.assertEqual(self.meldungen("stimme")[-1], {"type": "stimme", "status": "bereit", "modus": "streng"})
+    async def test_cleanup_wartet_bis_laufende_pruefungen_beendet_sind(self):
+        """Nach dem Aufräumen läuft keine Prüfung mehr weiter: abgebrochen und abgewartet, ohne Fehler nach außen."""
+        self.modell.rechner.dauer = 0.3
+        await self.sprechen(8000, 2.0, warten=False)
+        laufend = list(self.v._tasks)
+        self.assertTrue(laufend)
+        await self.v.cleanup()
+        self.assertTrue(all(t.done() for t in laufend))
+        self.assertIsNone(await self.v.urteil_abwarten(0.05))  # wer danach fragt, bekommt kein Urteil
+
+    def test_keine_wege_nur_fuer_tests(self):
+        """status_melden und einlernen_aktiv benutzten nur Tests: den Stand meldet die Sitzung (StimmGate.stand), ob das Einlernen läuft,
+        weiß das Einlernen selbst."""
+        self.assertFalse(hasattr(Stimmpruefer, "status_melden"))
+        self.assertFalse(hasattr(Stimmpruefer, "einlernen_aktiv"))
 
 
 class FrameTests(PrueferBasis):

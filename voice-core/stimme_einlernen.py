@@ -10,7 +10,7 @@ Streuung) -> speichern -> Abdruck und Vertrauen im Gate setzen. Abbrechen geht j
 gespeichert). Der Rohton liegt nur im Arbeitsspeicher und wird nach dem Rechnen verworfen.
 
 Meldungen an die Oberfläche (über senden): {"type": "stimmabdruck", "status": start | aufnahme | rechnet | fertig | fehler | abgebrochen,
-"sekunden", "ziel", "text"} und {"type": "stimme", "status", "modus"} beim Laden des Modells und nach dem Einlernen.
+"sekunden", "ziel", "text"} und den Stand (StimmGate.stand) beim Laden des Modells und nach dem Einlernen.
 """
 
 from __future__ import annotations
@@ -26,10 +26,12 @@ import numpy as np
 from loguru import logger
 
 from stimme_gate import EIGEN, StimmGate
-from stimme_modell import MIN_STUECKE, SPRACHE_DBFS, dbfs, einlern_stuecke, mittelpunkt, sprachbloecke
+from stimme_modell import MIN_STUECKE, SPRACHE_DBFS, ModellQuelle, dbfs, einlern_stuecke, mittelpunkt, sprachbloecke
 
 ZIEL_SECS = 20.0  # so viel reine Sprache für den Abdruck
 MAX_SECS = 90.0
+MIN_RATE, MAX_RATE = 8000, 48000  # Abtastraten, die das Einlernen annimmt (alles andere ist kein Mikrofon)
+MAX_BYTES = int(MAX_SECS * MAX_RATE) * 2  # Obergrenze des Aufnahmepuffers im Arbeitsspeicher
 WARTE_SECS = 8.0  # spricht WAMO die Anleitung nicht, beginnt die Aufnahme trotzdem
 MIN_STREUUNG = 0.55  # die Stücke liegen im Schnitt so nah am Mittel, sonst war die Aufnahme zu unruhig
 MELDE_SECS = 0.5
@@ -42,6 +44,7 @@ FERTIG_TEXT = "Danke, jetzt kenne ich deine Stimme."
 ZU_WENIG = "Ich habe zu wenig von dir gehört. Versuch es bitte noch einmal."
 ZU_UNRUHIG = "Die Aufnahme war zu unruhig. Bitte noch einmal, am besten ohne andere Stimmen im Raum."
 KEIN_MODELL = "Das Modell für die Stimmerkennung ist gerade nicht verfügbar. Bitte versuch es später noch einmal."
+KEINE_ABTASTRATE = "Das Mikrofon liefert eine unbekannte Abtastrate. Ich kann deine Stimme so nicht einlernen."
 NICHT_GESPEICHERT = "Ich konnte den Stimmabdruck nicht speichern. Bitte versuch es später noch einmal."
 NICHT_GEKLAPPT = "Das Einlernen hat nicht geklappt. Bitte versuch es später noch einmal."
 ERST_ERKENNEN = (
@@ -70,7 +73,7 @@ class Einlernen:
     def __init__(
         self,
         gate: StimmGate,
-        modell,
+        modell: ModellQuelle,
         *,
         senden: Callable[[dict], Awaitable[None]],
         sagen: Callable[[str], Awaitable[None]],
@@ -88,7 +91,6 @@ class Einlernen:
         self._lauf: _Lauf | None = None
         self._rechnet = False
         self._laedt = False
-        self._abgebrochen = False
         self._bot_spricht = False
         self._gen = 0  # zählt Abbrüche: ein Start, der noch auf das Modell wartet, merkt so, dass er abgebrochen wurde
         self._task: asyncio.Task | None = None
@@ -123,7 +125,7 @@ class Einlernen:
         self._laedt = True
         try:
             if not self._modell.bereit:
-                await self._senden({"type": "stimme", "status": "laedt", "modus": self._gate.modus})
+                await self._senden(self._gate.stand("laedt"))
             rechner = await self._modell.get()
         finally:
             self._laedt = False
@@ -144,22 +146,23 @@ class Einlernen:
     async def abbrechen(self) -> None:
         if not self.beschaeftigt:
             return
-        self._gen += 1
+        self._gen += 1  # ein Lauf, der schon rechnet oder speichert, merkt es am Zähler
         beim_rechnen = self._rechnet
         self._lauf = None
-        self._abgebrochen = beim_rechnen  # rechnet schon: nicht mehr speichern
         logger.info("Stimmabdruck: Einlernen abgebrochen")
         await self._senden({"type": "stimmabdruck", "status": "abgebrochen"})
         if beim_rechnen:
             await self.warten()
 
-    def aufraeumen(self) -> None:
-        """Die Sitzung endet: Aufnahme verwerfen, ein laufendes Rechnen abbrechen. Danach wird nichts mehr gespeichert."""
+    async def aufraeumen(self) -> None:
+        """Die Sitzung endet: Aufnahme verwerfen, ein laufendes Rechnen abbrechen und abwarten. Danach läuft nichts mehr weiter und es wird
+        nichts mehr gespeichert (ein Rechnen im Thread läuft noch zu Ende, sein Ergebnis kommt aber nirgends mehr an)."""
         self._gen += 1
         self._lauf = None
-        self._abgebrochen = True
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         self._rechnet = False
 
     def bot_spricht(self, spricht: bool) -> None:
@@ -179,6 +182,10 @@ class Einlernen:
         lauf = self._lauf
         if lauf is None:
             return False
+        if not MIN_RATE <= rate <= MAX_RATE:
+            self._lauf = None
+            await self._fehler(KEINE_ABTASTRATE)
+            return True
         jetzt = self._uhr()
         if jetzt - lauf.gestartet > MAX_SECS:  # zuerst: auch wenn das Ende der Anleitung nie gemeldet wurde
             self._lauf = None
@@ -189,6 +196,10 @@ class Einlernen:
             if jetzt - lauf.gestartet < WARTE_SECS or self._bot_spricht:
                 return True
             lauf.wartet = False
+        if len(lauf.audio) + len(pcm) > MAX_BYTES:  # der Puffer wächst nie über die Obergrenze, auch nicht bei vielen kleinen Paketen
+            self._lauf = None
+            await self._fehler(ZU_WENIG)
+            return True
         lauf.audio.extend(pcm)
         if dbfs(np.frombuffer(pcm[: len(pcm) - len(pcm) % 2], dtype=np.int16)) > SPRACHE_DBFS:
             lauf.sprache_secs += len(pcm) / 2 / rate if rate else 0.0
@@ -203,20 +214,20 @@ class Einlernen:
         self._lauf = None
         self._rechnet = True
         await self._senden({"type": "stimmabdruck", "status": "rechnet", "sekunden": ZIEL_SECS, "ziel": ZIEL_SECS})
-        self._task = asyncio.create_task(self._fertig(bytes(lauf.audio), rate, lauf.version, lauf.am))
+        self._task = asyncio.create_task(self._fertig(bytes(lauf.audio), rate, lauf.version, lauf.am, self._gen))
 
     # ---------- Rechnen und Speichern ----------
 
-    async def _fertig(self, pcm: bytes, rate: int, version: str, am: datetime) -> None:
+    async def _fertig(self, pcm: bytes, rate: int, version: str, am: datetime, gen: int) -> None:
         try:
-            await self._rechnen_und_speichern(pcm, rate, version, am)
+            await self._rechnen_und_speichern(pcm, rate, version, am, gen)
         except Exception as e:
             logger.exception("Stimmabdruck: Einlernen fehlgeschlagen: {}", e)
             await self._fehler(NICHT_GEKLAPPT)
         finally:
-            self._rechnet = self._abgebrochen = False
+            self._rechnet = False
 
-    async def _rechnen_und_speichern(self, pcm: bytes, rate: int, version: str, am: datetime) -> None:
+    async def _rechnen_und_speichern(self, pcm: bytes, rate: int, version: str, am: datetime, gen: int) -> None:
         rechner = await self._modell.get()
         if rechner is None:
             await self._fehler(KEIN_MODELL)
@@ -231,7 +242,7 @@ class Einlernen:
         if streuung < MIN_STREUUNG:
             await self._fehler(ZU_UNRUHIG)
             return
-        if self._abgebrochen:
+        if gen != self._gen:  # direkt vor dem Speichern: abgebrochen oder gelöscht, dann wird nichts gespeichert
             logger.info("Stimmabdruck: abgebrochen, nichts gespeichert")
             return
         if not await self._speichern(abdruck, version, am):
@@ -239,13 +250,19 @@ class Einlernen:
             return
         self._gate.setze_abdruck(abdruck)
         self._gate.modell_ok = True
+        if gen != self._gen:
+            # Abbruch oder Löschen, während gespeichert wurde: der Abdruck steht schon in der Datenbank. Das Gate gibt den Stand wieder
+            # (ein Löschen entfernt ihn danach von außen, siehe stimme_sitzung.py), aber nichts wird als fertig gemeldet.
+            logger.info("Stimmabdruck: Abbruch während des Speicherns, der Abdruck ist gespeichert, aber nicht gemeldet")
+            await self._status_melden()
+            return
         self._gate.eintragen(EIGEN)  # die Person hat gerade per Klick eingelernt und gesprochen
         await self._senden({"type": "stimmabdruck", "status": "fertig", "sekunden": ZIEL_SECS, "ziel": ZIEL_SECS})
         await self._status_melden()
         await self._sagen(FERTIG_TEXT)
 
     async def _status_melden(self) -> None:
-        await self._senden({"type": "stimme", "status": self._gate.status, "modus": self._gate.modus})
+        await self._senden(self._gate.stand())
 
     async def _fehler(self, text: str) -> None:
         logger.warning("Stimmabdruck: {}", text)

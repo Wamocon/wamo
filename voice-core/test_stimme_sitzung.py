@@ -194,6 +194,62 @@ class VorbereitenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(b.gate.grund_der_stimme(), "Stimme noch nicht erkannt")
 
 
+class NachladenTests(unittest.IsolatedAsyncioTestCase):
+    """Scheiterte das Laden beim Start, blieb der Stand bis zum Sitzungsende unbekannt (kaputt), und der Modus streng sperrte Werkzeuge per
+    Sprache, auch für ein Profil ohne Abdruck. laden_bis_bekannt liest den Stand deshalb mit wachsender Pause neu, bis er bekannt ist."""
+
+    async def lauf(self, db, *, heil_nach: int, modell=None):
+        s, gesendet, _, _ = neu(db, modell=modell)
+        pausen: list[float] = []
+
+        async def schlafen(secs):
+            if secs >= ss.NACHLADEN_SECS[0]:  # die kurzen Pausen zwischen den drei Versuchen eines Ladens zählen nicht
+                pausen.append(secs)
+                if len(pausen) == heil_nach:
+                    db.fehler = None  # die Datenbank ist wieder da
+
+        with mock.patch.object(ss.asyncio, "sleep", schlafen):
+            await asyncio.wait_for(s.laden_bis_bekannt(), 5.0)
+        return s, gesendet, pausen
+
+    async def test_ohne_abdruck_erholt_sich_der_stand_und_nichts_bleibt_gesperrt(self):
+        s, gesendet, pausen = await self.lauf(FakeDb(fehler=asyncpg.PostgresError("weg")), heil_nach=3)
+        self.assertEqual(s.gate.status, "fehlt")
+        self.assertIsNone(await s.gate.pruefen("programm_oeffnen"))
+        self.assertEqual([x["status"] for x in arten(gesendet, "stimme")][-2:], ["kaputt", "fehlt"])
+        self.assertEqual(pausen, list(ss.NACHLADEN_SECS[:3]))
+        self.assertEqual(ss.NACHLADEN_SECS[0], 30.0)
+        self.assertTrue(all(a < b for a, b in zip(ss.NACHLADEN_SECS, ss.NACHLADEN_SECS[1:])))  # die Pause wächst
+
+    async def test_mit_abdruck_wird_die_pruefung_bereit(self):
+        s, _, _ = await self.lauf(FakeDb({USER_A: als_vektor(EIGENER)}, fehler=asyncpg.PostgresError("weg")), heil_nach=1)
+        self.assertEqual(s.gate.status, "bereit")
+
+    async def test_die_pause_bleibt_nach_der_letzten_stufe_gleich(self):
+        n = len(ss.NACHLADEN_SECS) + 2
+        _, _, pausen = await self.lauf(FakeDb(fehler=asyncpg.PostgresError("weg")), heil_nach=n)
+        self.assertEqual(pausen[-3:], [ss.NACHLADEN_SECS[-1]] * 3)
+
+    async def test_bekannter_stand_laedt_nicht_neu(self):
+        db = FakeDb()
+        s, _, pausen = await self.lauf(db, heil_nach=99)
+        self.assertEqual((s.gate.status, pausen, len(db.calls)), ("fehlt", [], 1))
+
+    async def test_geloescht_waehrend_der_pause_wird_nicht_ueberschrieben(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)}, fehler=asyncpg.PostgresError("weg"))
+        s, _, _, _ = neu(db)
+
+        async def schlafen(secs):
+            if secs >= ss.NACHLADEN_SECS[0]:
+                s.gate.setze_abdruck(None, geloescht=True)  # die Person löscht ihren Abdruck (mit Nachweis)
+                db.fehler = None
+
+        with mock.patch.object(ss.asyncio, "sleep", schlafen):
+            await asyncio.wait_for(s.laden_bis_bekannt(), 5.0)
+        self.assertEqual(s.gate.status, "fehlt")
+        self.assertIsNone(s.gate.abdruck)
+
+
 class ClientBereitTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_und_einwilligung_gehen_an_die_oberflaeche(self):
         s, gesendet, _, _ = neu(FakeDb())
@@ -222,7 +278,7 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         for daten in ({"aktion": "start"}, {"aktion": "start", "einwilligung": ""}, {"aktion": "start", "einwilligung": "stimme-0"},
                       {"aktion": "start", "einwilligung": True}, {"aktion": "start", "einwilligung": ["stimme-1"]}):
             await s.nachricht(daten)
-            self.assertFalse(s.pruefer.einlernen_aktiv, daten)
+            self.assertFalse(s.pruefer._einlernen.beschaeftigt, daten)
         self.assertEqual({x["status"] for x in arten(gesendet, "stimmabdruck")}, {"fehler"})
         self.assertIn("text", arten(gesendet, "stimmabdruck")[0])
         sagen.assert_not_awaited()
@@ -231,18 +287,18 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         s, gesendet, uhr, sagen = await self.bereit()
         vorher = datetime.now(timezone.utc)
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[0]["status"], "start")
         sagen.assert_awaited_once()
         await s.nachricht({"aktion": "abbrechen"})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "abgebrochen")
         self.assertGreaterEqual(datetime.now(timezone.utc), vorher)
 
     async def test_start_im_modus_aus_wird_abgelehnt(self):
         s, gesendet, _, _ = await self.bereit(modus="aus")
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
 
     async def test_start_solange_der_stand_nicht_lesbar_ist_wird_abgelehnt(self):
@@ -252,7 +308,7 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
             await s.vorbereiten()
         gesendet.clear()
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
 
     async def test_unbekannte_oder_kaputte_nachrichten_sind_ohne_wirkung(self):
@@ -260,7 +316,7 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         for daten in ({"aktion": "fliegen"}, {}, {"aktion": None}, {"aktion": ["start"]}, "start", None, 5, [1]):
             await s.nachricht(daten)
         self.assertEqual(gesendet, [])
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
 
     async def aufnehmen(self, s, uhr, secs=ZIEL_SECS + 0.1):
         s.pruefer.on_bot_speaking(True)
@@ -335,12 +391,12 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         db = FakeDb({USER_A: als_vektor(EIGENER)})
         s, gesendet, _, _ = await self.bereit(db)
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
         s.gate.eintragen(EIGEN)
         gesendet.clear()
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
 
     # ---------- Löschen und Ersetzen brauchen einen Nachweis (M3) ----------
 
@@ -399,7 +455,7 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "geloescht")
         gesendet.clear()
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
         self.assertIn("anmelden", arten(gesendet, "stimmabdruck")[-1]["text"])
 
@@ -409,28 +465,28 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         await s.nachricht({"aktion": "loeschen"})
         gesendet.clear()
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
 
     async def test_ersetzen_mit_frischer_anmeldung_geht_auch_ohne_erkannte_stimme(self):
         db = FakeDb({USER_A: als_vektor(EIGENER)})
         s, gesendet, _, _ = await self.bereit(db, identity=self.angemeldet(30))
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
 
     async def test_erstes_einlernen_und_loeschen_ohne_abdruck_brauchen_keinen_nachweis(self):
         s, gesendet, _, _ = await self.bereit(identity=self.angemeldet(None))
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
         await s.nachricht({"aktion": "abbrechen"})
         await s.nachricht({"aktion": "loeschen"})
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "geloescht")
 
-    async def test_zug_verworfen_reicht_an_den_waechter_durch(self):
-        s, _, _, _ = await self.bereit()
-        self.assertFalse(s.zug_verworfen())
-        s.waechter._verworfen = True
-        self.assertTrue(s.zug_verworfen())
-        self.assertFalse(s.zug_verworfen())
+    def test_keine_markierung_fuer_verworfene_zuege(self):
+        """Die Markierung hing an keinem Zug (on_user_turn_stopped läuft als eigene Aufgabe); bot.py prüft nur noch auf leeren Inhalt."""
+        from stimme_waechter import StimmWaechter
+
+        self.assertFalse(hasattr(ss.StimmSitzung, "zug_verworfen"))
+        self.assertFalse(hasattr(StimmWaechter, "zug_verworfen"))
 
 
 class ZeitTests(unittest.TestCase):

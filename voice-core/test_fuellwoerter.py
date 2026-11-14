@@ -36,6 +36,7 @@ from fuellwoerter import (
     ablage,
     auf_happen,
     bank_fuer,
+    soniox_sprechen,
     stille_abschneiden,
 )
 
@@ -78,6 +79,68 @@ class AufnahmeTests(unittest.IsolatedAsyncioTestCase):
             # Andere Stimme: eigene Aufnahmen
             andere = FuellwortBank("Jonas", ordner=Path(tmp), saetze=WERKZEUG_SAETZE)
             self.assertEqual(len(andere.aus_ablage_laden()), len(WERKZEUG_SAETZE))
+
+    async def test_ablage_wird_atomar_geschrieben(self):
+        async def sprechen(text):
+            return ton()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = FuellwortBank("Lena", ordner=Path(tmp), saetze=("Moment.",))
+            with mock.patch("fuellwoerter.os.replace", side_effect=OSError("Platte voll")):
+                await bank.vorbereiten(sprechen)
+            self.assertTrue(bank.bereit)  # im Speicher da, das Gespräch läuft weiter
+            self.assertEqual(list(Path(tmp).iterdir()), [], "weder eine halbe Datei noch ein Rest der temporären Datei")
+            await FuellwortBank("Lena", ordner=Path(tmp), saetze=("Moment.",)).vorbereiten(sprechen)
+            self.assertEqual([p.suffix for p in Path(tmp).iterdir()], [".pcm"])
+
+    def test_ungueltige_dateien_in_der_ablage_werden_nicht_geladen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = FuellwortBank("Lena", ordner=Path(tmp), saetze=("Moment.", "Einen Moment.", "Sekunde.", "Gleich."))
+            gut, ungerade, zu_kurz, zu_lang = bytes(HAPPEN_BYTES * 5), bytes(HAPPEN_BYTES * 5 + 1), bytes(HAPPEN_BYTES - 2), bytes(24000 * 2 * 6)
+            for text, inhalt in zip(bank._saetze, (gut, ungerade, zu_kurz, zu_lang)):
+                bank._pfad(text).write_bytes(inhalt)
+            fehlt = bank.aus_ablage_laden()
+            self.assertEqual(list(bank._ton), ["Moment."])
+            self.assertEqual(sorted(fehlt), sorted(["Einen Moment.", "Sekunde.", "Gleich."]))
+
+    async def test_zu_lange_aufnahme_wird_nicht_gespeichert(self):
+        async def sprechen(text):
+            return ton(ms_laut=6000)  # länger als die Obergrenze für ein Füllwort
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bank = FuellwortBank("Lena", ordner=Path(tmp), saetze=("Moment.",))
+            await bank.vorbereiten(sprechen)
+            self.assertFalse(bank.bereit)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    async def test_websocket_hat_eine_obergrenze_fuer_nachrichten_und_ton(self):
+        import base64
+        import json
+
+        class Ws:
+            async def send(self, daten):
+                pass
+
+            async def __aiter__(self):
+                yield json.dumps({"audio": base64.b64encode(bytes(200000)).decode()})
+                yield json.dumps({"audio": base64.b64encode(bytes(200000)).decode(), "terminated": True})
+
+        class Verbindung:
+            kwargs: dict = {}
+
+            def __init__(self, url, **kwargs):
+                Verbindung.kwargs = kwargs
+
+            async def __aenter__(self):
+                return Ws()
+
+            async def __aexit__(self, *args):
+                return False
+
+        with mock.patch("websockets.connect", Verbindung):
+            with self.assertRaises(ValueError):  # 400000 Bytes sind mehr als die 5 Sekunden eines Füllworts
+                await soniox_sprechen("k", "wss://example.invalid", "Lena", {}, "Moment.")
+        self.assertEqual(Verbindung.kwargs["max_size"], 2 * 1024 * 1024)
 
     def test_nicht_zweimal_hintereinander_dasselbe(self):
         bank = FuellwortBank("Lena", saetze=WERKZEUG_SAETZE)

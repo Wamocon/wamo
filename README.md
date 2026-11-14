@@ -1051,7 +1051,7 @@ außer `aus` nur mit Nachweis: Die Person wurde gerade sicher an der Stimme erka
 
 | Schalter | Standard | Bedeutung |
 | --- | --- | --- |
-| `WAMO_STIMME_EIGEN_MIN` | 0,5 | Ab diesem Wert (Kosinus der Abdrücke, 0,2 bis 0,95) gilt eine Äußerung als die eigene Stimme |
+| `WAMO_STIMME_EIGEN_MIN` | 0,5 | Ab diesem Wert (Kosinus der Abdrücke, 0,35 bis 0,95) gilt eine Äußerung als die eigene Stimme |
 | `WAMO_STIMME_FREMD_MAX` | 0,3 | Bis zu diesem Wert (0 bis 0,8) gilt sie als sicher fremd; muss unter `EIGEN_MIN` liegen, sonst gelten beide Standardwerte |
 | `WAMO_STIMME_MIN_SECS` | 1 | So viel reine Sprache braucht eine Äußerung für ein Urteil (0,3 bis 10); kürzere ("Ja", "mach") erben das Vertrauen nur, wenn sie nach der eigenen Stimme klingen (Wert ab `EIGEN_MIN`), sonst gilt die Stimme als nicht sicher erkannt |
 | `WAMO_STIMME_KURZ_VERTRAUEN_SECS` | 15 | So lange läuft das Vertrauen höchstens weiter, wenn seit der letzten sicheren Erkennung nur kurze Äußerungen kamen (1 bis 120); eine sichere Erkennung oder getippter Text beginnt neu |
@@ -1074,7 +1074,7 @@ in `bot.py` kehrt zurück).
 
 **Meldungen an die Oberfläche** (Servernachrichten, Details in der Kopfzeile von `voice-core/bot.py`):
 
-- `{"type": "stimme", "status": "aus"|"fehlt"|"laedt"|"kaputt"|"bereit", "modus": "..."}` Stand beim Verbinden und nach jeder Änderung. `fehlt`: nichts eingelernt (nichts wird geprüft oder gesperrt), `kaputt`: Modell oder Datenbank nicht verfügbar (streng sperrt dann Werkzeuge, Tippen geht).
+- `{"type": "stimme", "status": "aus"|"fehlt"|"laedt"|"kaputt"|"bereit", "modus": "..."}` Stand beim Verbinden und nach jeder Änderung. `fehlt`: nichts eingelernt (nichts wird geprüft oder gesperrt), `kaputt`: Modell oder Datenbank nicht verfügbar (streng sperrt dann Werkzeuge, Tippen geht; war die Datenbank nicht lesbar, liest der Kern den Stand nach 30 s, 1, 2 und dann alle 5 Minuten neu, bis er bekannt ist).
 - `{"type": "stimme", "ergebnis": "eigen"|"fremd"|"unklar", "wert": 0.78, "modus": "..."}` je Äußerung; zusätzlich `"ignoriert": true`, wenn eine sicher fremde Äußerung nicht ans Modell ging.
 - `{"type": "stimmabdruck", "status": "start"|"aufnahme"|"rechnet"|"fertig"|"fehler"|"abgebrochen"|"geloescht", "sekunden": 8.4, "ziel": 20, "text": "..."}` beim Einlernen und Löschen.
 - `{"type": "stimmabdruck_einwilligung", "version": "stimme-1", "text": "..."}` beim Verbinden (nicht im Modus aus, nie im Labor; im Labor kommt nur `{"type": "stimme", "status": "aus", "modus": "aus"}`).
@@ -1089,7 +1089,7 @@ Sicherungen.
 
 **Modelldatei.** Die Datei (`nemo_en_titanet_large.onnx`, rund 100 MB, SHA-256 `d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77`)
 lädt der Kern beim ersten Bedarf von GitHub (Release `speaker-recongition-models` von sherpa-onnx) nach, prüft die Summe und prüft sie bei jedem
-Prozessstart erneut; eine falsche Datei wird gelöscht und nach 60 Sekunden neu versucht. Ohne Datei (und ohne Netz) gibt es kein Einlernen und
+Prozessstart erneut; eine falsche Datei im Cache-Ordner wird gelöscht (ein Pfad aus `WAMO_STIMME_MODELL` nie), nach einem Fehlschlag wartet der Kern 60 Sekunden, 5 Minuten, danach 30 Minuten bis zum nächsten Versuch. Der Download ist auf 150 MB und 10 Minuten begrenzt. Ohne Datei (und ohne Netz) gibt es kein Einlernen und
 keine Prüfung, das Gespräch läuft weiter. Am Server ist das ausgehende Netz begrenzt, deshalb vorab ablegen (Pfade nach der Unit
 `wamo-core@.service`, `CacheDirectory=wamo-core`, `XDG_CACHE_HOME=/var/cache/wamo-core`, am Server nicht ausgeführt):
 
@@ -1105,8 +1105,9 @@ rm /tmp/nemo_en_titanet_large.onnx
 sudo -u wamo-core sha256sum /var/cache/wamo-core/wamo/sprecher/nemo_en_titanet_large.onnx
 ```
 
-Liegt die Datei woanders, nennt `WAMO_STIMME_MODELL` (über `wamo-core-env`) den Pfad; er steht bewusst nicht in der Liste der Schalter, die
-`scripts/wamo_kern_sokrates2.py` aus der `.env` des PCs übernimmt, weil der Pfad je Rechner gilt. Die Bibliothek `sherpa-onnx` 2.0.1 steht in
+Liegt die Datei woanders, nennt `WAMO_STIMME_MODELL` (über `wamo-core-env`) den Pfad; kein `WAMO_STIMME_*` steht in der Liste der Schalter, die
+`scripts/wamo_kern_sokrates2.py` aus der `.env` des PCs übernimmt: Modus und Schwellen sind Sicherheitseinstellungen des Servers (nur über
+`wamo-core-env`), und der Pfad gilt je Rechner. Die Bibliothek `sherpa-onnx` 2.0.1 steht in
 `voice-core/pyproject.toml` und `uv.lock`; für Linux aarch64 und Python 3.12 gibt es beide Wheels (`sherpa-onnx` und `sherpa-onnx-core`,
 laut PyPI am 14.11.2026). Ein echter Lauf auf dem Server steht aus.
 

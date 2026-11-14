@@ -23,6 +23,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import httpx
 import numpy as np
@@ -33,7 +34,10 @@ MODELL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-re
 MODELL_SHA256 = "d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77"
 DIM = 192
 THREADS = 2
-NEUER_VERSUCH_SECS = 60.0  # nach einem Fehler (Datei fehlt, Netz weg, Summe falsch) erst dann wieder versuchen
+NEUER_VERSUCH_SECS = 60.0  # nach dem ersten Fehler (Datei fehlt, Netz weg, Summe falsch) erst dann wieder versuchen
+WARTEZEITEN = (NEUER_VERSUCH_SECS, 300.0, 1800.0)  # nach jedem weiteren Fehlschlag länger, danach bleibt es bei 30 Minuten
+MODELL_MAX_BYTES = 150 * 1024 * 1024  # das Modell ist rund 100 MB groß; mehr wird nicht geladen
+GESAMT_FRIST_SECS = 600.0  # ein Download dauert höchstens 10 Minuten
 # Einlernen: die Sprache in Stücke dieser Länge teilen, jedes Stück ergibt einen Abdruck. Der Mittelwert ist der Stimmabdruck,
 # die Streuung zeigt, ob die Aufnahme sauber war.
 STUECK_SECS = 3.0
@@ -45,15 +49,37 @@ VERBINDUNG_SECS = 10.0
 LESEN_SECS = 60.0
 
 
+def cache_ordner(umgebung: Mapping[str, str] | None = None) -> Path:
+    """Der Cache-Ordner des Dienstes für das Modell: XDG_CACHE_HOME/wamo/sprecher/, sonst neben dem Code (ohne WAMO_STIMME_MODELL)."""
+    env = os.environ if umgebung is None else umgebung
+    cache = (env.get("XDG_CACHE_HOME") or "").strip()
+    return Path(cache) / "wamo" / "sprecher" if cache else Path(__file__).resolve().parent / ".cache" / "sprecher"
+
+
 def modell_pfad(umgebung: Mapping[str, str] | None = None) -> Path:
     """Ort der Modelldatei: WAMO_STIMME_MODELL, sonst der Cache-Ordner des Dienstes, sonst neben dem Code."""
     env = os.environ if umgebung is None else umgebung
     eigener = (env.get("WAMO_STIMME_MODELL") or "").strip()
     if eigener:
         return Path(eigener)
-    cache = (env.get("XDG_CACHE_HOME") or "").strip()
-    ordner = Path(cache) / "wamo" / "sprecher" if cache else Path(__file__).resolve().parent / ".cache" / "sprecher"
-    return ordner / MODELL_NAME
+    return cache_ordner(env) / MODELL_NAME
+
+
+@runtime_checkable
+class Rechner(Protocol):
+    """Was Prüfer und Einlernen vom Rechner brauchen (Embedder, in Tests ein Ersatz): aus PCM einen normierten Abdruck, blockierend."""
+
+    def embed(self, pcm: bytes, sample_rate: int) -> np.ndarray: ...
+
+
+@runtime_checkable
+class ModellQuelle(Protocol):
+    """Was Prüfer, Einlernen und Sitzung vom Modell brauchen (StimmModell, in Tests ein Ersatz): ob es geladen ist und den Rechner."""
+
+    @property
+    def bereit(self) -> bool: ...
+
+    async def get(self) -> Rechner | None: ...
 
 
 class Embedder:
@@ -75,7 +101,10 @@ class Embedder:
             strom = self._extraktor.create_stream()
             strom.accept_waveform(sample_rate=sample_rate, waveform=pcm_in_float(pcm))
             strom.input_finished()
-            return normalisieren(np.array(self._extraktor.compute(strom), dtype=np.float32))
+            roh = np.array(self._extraktor.compute(strom), dtype=np.float32)
+        if roh.shape != (DIM,) or not np.all(np.isfinite(roh)) or not float(np.linalg.norm(roh)) > 0:
+            raise ValueError("Das Modell lieferte keinen gültigen Abdruck (NaN, unendlich, Nullvektor oder falsche Länge)")
+        return normalisieren(roh)
 
 
 class StimmModell:
@@ -88,6 +117,7 @@ class StimmModell:
         self._uhr = uhr
         self._embedder: Embedder | None = None
         self._gescheitert_um: float | None = None
+        self._fehlversuche = 0
         self._sperre = asyncio.Lock()
 
     @property
@@ -104,7 +134,10 @@ class StimmModell:
         return self._embedder is None and self._gescheitert_um is not None
 
     def _wartet(self) -> bool:
-        return self._gescheitert_um is not None and self._uhr() - self._gescheitert_um < NEUER_VERSUCH_SECS
+        if self._gescheitert_um is None:
+            return False
+        warte = WARTEZEITEN[min(max(self._fehlversuche, 1), len(WARTEZEITEN)) - 1]
+        return self._uhr() - self._gescheitert_um < warte
 
     async def get(self) -> Embedder | None:
         if self._embedder or self._wartet():
@@ -120,14 +153,26 @@ class StimmModell:
             if not pfad.is_file():
                 await herunterladen(pfad, sha256=self._sha256)
             elif await asyncio.to_thread(datei_sha256, pfad) != self._sha256:
-                pfad.unlink()  # beschädigt oder ausgetauscht: beim nächsten Versuch neu laden
+                if _im_cache_ordner(pfad):
+                    pfad.unlink()  # beschädigt oder ausgetauscht: beim nächsten Versuch neu laden
+                # Ein Pfad aus WAMO_STIMME_MODELL gehört dem Betreiber: nie löschen
                 raise ValueError("Prüfsumme der Modelldatei stimmt nicht")
             self._embedder = await asyncio.to_thread(Embedder, pfad)
             self._gescheitert_um = None
+            self._fehlversuche = 0
             logger.info("Stimmabdruck: Modell {} geladen", pfad.name)
         except Exception as e:  # die Stimmprüfung ist dann nicht bereit, das Gespräch läuft weiter
             self._gescheitert_um = self._uhr()
+            self._fehlversuche += 1
             logger.warning("Stimmabdruck: Modell nicht verfügbar ({}: {})", type(e).__name__, e)
+
+
+def _im_cache_ordner(pfad: Path) -> bool:
+    """Liegt die Datei im Cache-Ordner des Dienstes? Nur dort darf der Kern sie löschen."""
+    try:
+        return pfad.resolve().parent == cache_ordner().resolve()
+    except OSError:
+        return False
 
 
 def datei_sha256(pfad: Path) -> str:
@@ -141,24 +186,36 @@ def datei_sha256(pfad: Path) -> str:
 async def herunterladen(
     pfad: Path, url: str = MODELL_URL, sha256: str = MODELL_SHA256, transport: httpx.AsyncBaseTransport | None = None
 ) -> None:
-    """Lädt nach <pfad>.part, prüft die Summe und benennt erst dann um. Bei falscher Summe bleibt nichts liegen."""
+    """Lädt nach <pfad>.<Prozessnummer>.part, prüft die Summe und benennt erst dann um. Höchstens MODELL_MAX_BYTES und GESAMT_FRIST_SECS
+    (sonst ValueError oder TimeoutError). Bei jedem Fehler bleibt nichts liegen, gelöscht wird nur die eigene Teildatei."""
     pfad.parent.mkdir(parents=True, exist_ok=True)
-    teil = pfad.with_name(pfad.name + ".part")
-    summe = hashlib.sha256()
+    teil = pfad.with_name(f"{pfad.name}.{os.getpid()}.part")
     logger.info("Stimmabdruck: lade Modell von {}", url)
-    zeit = httpx.Timeout(LESEN_SECS, connect=VERBINDUNG_SECS)
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=zeit, transport=transport) as client, client.stream("GET", url) as r:
-            r.raise_for_status()
-            with teil.open("wb") as f:
-                async for block in r.aiter_bytes(1 << 20):
-                    summe.update(block)
-                    f.write(block)
-        if summe.hexdigest() != sha256:
-            raise ValueError("Prüfsumme des heruntergeladenen Modells stimmt nicht")
+        await asyncio.wait_for(_laden_in_teildatei(teil, url, sha256, transport), GESAMT_FRIST_SECS)
         teil.replace(pfad)
     finally:
         teil.unlink(missing_ok=True)
+
+
+async def _laden_in_teildatei(teil: Path, url: str, sha256: str, transport: httpx.AsyncBaseTransport | None) -> None:
+    summe = hashlib.sha256()
+    gesamt = 0
+    zeit = httpx.Timeout(LESEN_SECS, connect=VERBINDUNG_SECS)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=zeit, transport=transport) as client, client.stream("GET", url) as r:
+        r.raise_for_status()
+        angekuendigt = r.headers.get("content-length", "")
+        if angekuendigt.isdigit() and int(angekuendigt) > MODELL_MAX_BYTES:
+            raise ValueError("Das Modell ist größer als erlaubt")
+        with teil.open("wb") as f:
+            async for block in r.aiter_bytes(1 << 20):
+                gesamt += len(block)
+                if gesamt > MODELL_MAX_BYTES:
+                    raise ValueError("Das Modell ist größer als erlaubt")
+                summe.update(block)
+                f.write(block)
+    if summe.hexdigest() != sha256:
+        raise ValueError("Prüfsumme des heruntergeladenen Modells stimmt nicht")
 
 
 def pcm_in_float(pcm: bytes) -> np.ndarray:

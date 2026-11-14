@@ -67,6 +67,10 @@ ABTASTRATE = 24000  # wie der Ausgang (PipelineParams.audio_out_sample_rate): ke
 HAPPEN_BYTES = ABTASTRATE * 40 // 1000 * 2  # Pipecat schreibt Happen von 40 ms (audio_out_10ms_chunks=4)
 MODELL = "tts-rt-v2"  # wie der Soniox-Dienst von Pipecat
 AUFNAHME_FRIST_SECS = 15.0
+MAX_SECS = 5.0  # länger ist ein Füllwort nie: eine längere Aufnahme (oder Datei in der Ablage) ist kaputt oder untergeschoben
+MAX_BYTES = int(ABTASTRATE * MAX_SECS) * 2
+MIN_BYTES = HAPPEN_BYTES
+WS_MAX_BYTES = 2 * 1024 * 1024  # größte Nachricht der Sprachausgabe (Ton kommt als Base64 in Stücken)
 NACH_SECS_STANDARD = 0.4
 LANG_SECS_STANDARD = 6.0
 
@@ -104,6 +108,11 @@ def stille_abschneiden(pcm: bytes, abtastrate: int = ABTASTRATE, *, schwelle: in
     return werte[start:ende].tobytes()
 
 
+def laenge_gueltig(pcm: bytes) -> bool:
+    """Ein Füllwort hat 16-Bit-Samples (gerade Bytezahl), mindestens einen Happen und höchstens MAX_SECS."""
+    return len(pcm) % 2 == 0 and MIN_BYTES <= len(pcm) <= MAX_BYTES
+
+
 def auf_happen(pcm: bytes, happen_bytes: int = HAPPEN_BYTES) -> bytes:
     """Mit Stille auf ganze Happen von 40 ms auffüllen. Ein angefangener Happen bliebe sonst im Ausgang liegen, bis der
     nächste Ton kommt, und klebte dann vor der Antwort."""
@@ -127,7 +136,7 @@ async def soniox_sprechen(api_key: str, url: str, stimme: str, einstellung: dict
         **einstellung,
     }
     ton = bytearray()
-    async with websockets.connect(url, max_size=None) as ws:
+    async with websockets.connect(url, max_size=WS_MAX_BYTES) as ws:
         await ws.send(json.dumps(konfig))
         # Geht an der Pipeline vorbei, darum hier selbst: Namen so, wie die Stimme sie richtig spricht (aussprache.py)
         await ws.send(json.dumps({"text": fuer_sprachausgabe(text) + " ", "text_end": False, "stream_id": kennung}))
@@ -138,9 +147,32 @@ async def soniox_sprechen(api_key: str, url: str, stimme: str, einstellung: dict
                 raise RuntimeError(f"Soniox {nachricht.get('error_code')}: {nachricht.get('error_message')}")
             if nachricht.get("audio"):
                 ton += base64.b64decode(nachricht["audio"])
+                if len(ton) > MAX_BYTES:
+                    raise ValueError("Die Sprachausgabe lieferte mehr Ton als für ein Füllwort möglich")
             if nachricht.get("terminated"):
                 break
     return bytes(ton)
+
+
+def _lesen(pfad: Path) -> bytes | None:
+    """Eine Aufnahme aus der Ablage, oder None, wenn es sie nicht gibt oder sie nicht wie ein Füllwort aussieht (Länge)."""
+    try:
+        if not pfad.is_file() or pfad.stat().st_size > MAX_BYTES:
+            return None
+        inhalt = pfad.read_bytes()
+    except OSError:
+        return None
+    return inhalt if laenge_gueltig(inhalt) else None
+
+
+def _atomar_schreiben(pfad: Path, inhalt: bytes) -> None:
+    """In eine temporäre Datei im selben Ordner schreiben und dann umbenennen: nie eine halbe Aufnahme unter dem endgültigen Namen."""
+    temp = pfad.with_name(f"{pfad.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_bytes(inhalt)
+        os.replace(temp, pfad)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 class FuellwortBank:
@@ -175,8 +207,9 @@ class FuellwortBank:
         fehlt = []
         for text in self._saetze:
             pfad = self._pfad(text)
-            if pfad.is_file() and pfad.stat().st_size > 0:
-                self._ton[text] = pfad.read_bytes()
+            inhalt = _lesen(pfad)
+            if inhalt is not None:
+                self._ton[text] = inhalt
             else:
                 fehlt.append(text)
         return fehlt
@@ -196,10 +229,13 @@ class FuellwortBank:
             if not pcm:
                 logger.warning("Füllwort {!r}: die Sprachausgabe lieferte nur Stille", text)
                 return
+            if not laenge_gueltig(pcm):
+                logger.warning("Füllwort {!r}: Aufnahme mit unzulässiger Länge ({} Bytes), verworfen", text, len(pcm))
+                return
             self._ton[text] = pcm
             try:
                 self._ordner.mkdir(parents=True, exist_ok=True)
-                self._pfad(text).write_bytes(pcm)
+                _atomar_schreiben(self._pfad(text), pcm)
             except OSError as e:
                 logger.warning("Füllwort {!r} nicht gespeichert: {}", text, type(e).__name__)
 

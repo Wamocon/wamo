@@ -230,6 +230,12 @@ def hat_stoppwort(text: str, ohne: frozenset[str] = frozenset(), zusaetzlich: fr
     return any(w in woerter and w not in ohne for w in (_wort(x) for x in text.split()))
 
 
+def _woerter_text(text: str) -> str:
+    """Nur die Zahl der Wörter für das Log (INFO enthält keine Gesprächsinhalte): "1 Wort", "2 Wörter"."""
+    n = len(text.split())
+    return f"{n} Wort" if n == 1 else f"{n} Wörter"
+
+
 def _wort(w: str) -> str:
     return w.strip(SATZZEICHEN).lower()
 
@@ -400,6 +406,7 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         werkzeug_laeuft: Callable[[], bool] | None = None,
         on_partial: Callable[[str], None] | None = None,
         fragt: Callable[[], bool] | None = None,
+        nur_endgueltig: Callable[[], bool] | None = None,
         **kwargs,
     ):
         """beurteilt: wird mit "rueckmeldung" oder "echo" gerufen, wenn der erkannte Text kein Einwurf ist (das Gate
@@ -408,8 +415,11 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         on_partial: Innehalten (SoftInterruptGate.ansatz). Ein einzelnes echtes Wort, während WAMO spricht, wird dort gemeldet
         statt ignoriert; ein "Danke" allein unterbricht dann nicht mehr (WEICHE_STOPPWOERTER). None: wie bisher.
         fragt: sagt, ob WAMO gerade eine Frage stellt (SoftInterruptGate.fragt). Dann ist ein "Ja", "genau" oder "okay" die
-        Antwort und kein Rückmeldelaut (ist_antwort): es startet den Zug und bleibt im Transkript. None: wie bisher."""
+        Antwort und kein Rückmeldelaut (ist_antwort): es startet den Zug und bleibt im Transkript. None: wie bisher.
+        nur_endgueltig: Stimmprüfung (stimme_waechter.nur_endgueltig). Sagt sie ja, während WAMO nicht spricht, startet kein Zwischenstand
+        den Zug, erst das endgültige Transkript nach dem Urteil des Wächters. None: wie bisher."""
         super().__init__(**kwargs)
+        self._nur_endgueltig = nur_endgueltig
         self._fragt = fragt
         self._on_partial = on_partial
         self._werkzeug_laeuft = werkzeug_laeuft
@@ -444,6 +454,11 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         return self._werkzeug_laeuft is not None and not self._bot_speaking and bool(self._werkzeug_laeuft())
 
     async def _handle_transcription(self, frame) -> ProcessFrameResult:
+        if (isinstance(frame, InterimTranscriptionFrame) and not self._bot_speaking and self._nur_endgueltig is not None
+                and self._nur_endgueltig()):
+            # Ein Zwischenstand kommt am Stimmwächter vorbei. Startete er den Zug, bräche das Gate Antwort oder Werkzeug sofort ab, auch für
+            # eine fremde Stimme, deren Transkript der Wächter danach verwirft. Beim Sprechen bleibt der schnelle Weg (stimme_waechter.py).
+            return ProcessFrameResult.CONTINUE
         werkzeug = self._werkzeug_aktiv()
         if not self._bot_speaking and not werkzeug:
             return await super()._handle_transcription(frame)
@@ -913,13 +928,15 @@ class SoftInterruptGate(FrameProcessor):
         self._ansatz_seit = None
         self._haelt_seit = self._uhr()
         self._halt.anhalten()
-        logger.info(f"{self}: WAMO hält inne ({grund}, Ansatz {self._ansatz_text!r})")
+        logger.info(f"{self}: WAMO hält inne ({grund}, Ansatz {_woerter_text(self._ansatz_text)})")  # gesprochener Text nur auf DEBUG
+        logger.debug(f"{self}: Ansatz beim Innehalten: {self._ansatz_text!r}")
 
     def _fortsetzen(self, grund: str):
         self._haelt_seit = None
         self._fortgesetzt_text = self._ansatz_text
         self._halt.fortsetzen()
-        logger.info(f"{self}: WAMO spricht weiter ({grund}, Ansatz {self._ansatz_text!r})")
+        logger.info(f"{self}: WAMO spricht weiter ({grund}, Ansatz {_woerter_text(self._ansatz_text)})")
+        logger.debug(f"{self}: Ansatz beim Weitersprechen: {self._ansatz_text!r}")
         if self._duckt:
             # Eine Dämpfung aus der Zeit vor dem Halt: wie nach jeder Entwarnung zurücknehmen und eine Weile nicht erneut dämpfen
             self._duck_gesperrt_bis = max(self._duck_gesperrt_bis, self._uhr() + DUCK_SPERRE_SECS)

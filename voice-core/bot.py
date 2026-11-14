@@ -188,6 +188,7 @@ from soft_interrupt import (
 from soniox_tts import LazySonioxTTSService, stimme_einstellung
 from stimme_gate import schemas_absichern, tippen_beobachten, werkzeuge_absichern
 from stimme_sitzung import SPRECHER_UNSICHER, StimmSitzung, nachricht_aus
+from stimme_waechter import nur_endgueltig
 from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
 from wiedergabe import WiedergabeStart, halt_fuer, innehalten_max_secs, innehalten_weiter_secs
 
@@ -628,7 +629,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
                    "client_ready": False, "live": True, "cleaned": False, "guard": None,
                    "pc_weg": False, "pc_tools": False, "pc_waechter": None, "geraet_wache": None, "labor_wache": None,  # pc_weg: Hinweis im Prompt
-                   "stimme_laden": None,  # Hintergrundaufgabe: Abdruck laden (stimme_sitzung.vorbereiten)
+                   "stimme_laden": None,  # Hintergrundaufgabe: Abdruck laden (stimme_sitzung.laden_bis_bekannt)
                    "geraet_ok": geraet_zugang is None, "geraet_entzogen": False,  # Tunnel je Gerät: erst nach dem Namensabgleich, nie nach einem Entzug
                    "pc_name": None, "pc_belegt": False,
                    "pc_gesperrt": False, "sperr_probe": None}  # Bildschirm am PC gesperrt (Host: status=locked)
@@ -768,6 +769,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # kommt nichts nach, spricht WAMO dort weiter. Der Halt hängt am Tonausgang dieser Sitzung (je Sitzung einer). Die Sprachausgabe im
     # Haus liefert ganze Sätze ohne Wortzeiten: dort gibt es keinen Halt, es gilt die Zeitgrenze des Gates wie bisher.
     halt = halt_fuer(transport.output(), haus=sprache.tts.anbieter == "haus")
+    # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
+    wache = TurnWache()
     soft_gate = SoftInterruptGate(
         max_words=SOFT_INTERRUPT_MAX_WORDS,
         playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
@@ -811,6 +814,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                         werkzeug_laeuft=soft_gate.werkzeug_laeuft if rueckmeldung_werkzeug_an() else None,
                         on_partial=soft_gate.ansatz if halt else None,  # ein Wort: innehalten statt ignorieren (WAMO_INNEHALTEN)
                         fragt=soft_gate.fragt,  # "Ja" während einer Frage von WAMO ist die Antwort, kein Zuhören
+                        # Stimmprüfung streng: arbeiten Werkzeug oder Modell, startet erst das endgültige Transkript den Zug (stimme_waechter.py)
+                        nur_endgueltig=nur_endgueltig(stimme.waechter, soft_gate.werkzeug_laeuft, wache.modell_beschaeftigt)
+                        if stimme else None,
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.
@@ -839,8 +845,6 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     )
 
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
-    # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
-    wache = TurnWache()
     # Doppelte Aufrufe im selben Zug und abgebrochene Werkzeuge (werkzeug_wache.py)
     doppel = DoppelWache(turn_nr=lambda: turn.turn_nr) if werkzeug_doppelt_an() else None
 
@@ -1285,8 +1289,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     @user_agg.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(_agg, _strategy, message):
-        if stimme is not None and stimme.zug_verworfen() and not message.content.strip():
-            return  # eine sicher fremde Stimme: kein Zug, kein Eintrag im Verlauf und im Gedächtnis (stimme_waechter.py)
+        if not message.content.strip():
+            return  # leer, etwa eine sicher fremde Stimme (stimme_waechter.py): kein Zug, kein Eintrag im Verlauf und im Gedächtnis
         # Eine Äußerung, die nicht sicher von der Person stammt (Profil mit Abdruck, Stimme nicht sicher erkannt), färbt den Zug wie
         # Fremdinhalte: kein Lernen daraus, kein Hinweis des Ja-Wächters, im Protokoll mit Markierung (stimme_gate.nicht_sicher_eigen).
         unsicher = stimme is not None and stimme.nicht_sicher_eigen()
@@ -1342,7 +1346,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             await task.queue_frames([TTSSpeakFrame(greeting)])
         _keep(asyncio.create_task(cache_vorwaermen()))  # die erste Frage soll einen warmen Prompt-Cache finden
         if stimme is not None and state["stimme_laden"] is None and state["live"]:
-            state["stimme_laden"] = _keep(asyncio.create_task(stimme.vorbereiten()))  # Abdruck laden: das Gespräch wartet nicht
+            # Abdruck laden, bei unbekanntem Stand mit wachsender Pause erneut: das Gespräch wartet nicht
+            state["stimme_laden"] = _keep(asyncio.create_task(stimme.laden_bis_bekannt()))
         # Sitzung erst nach der Begrüßung anlegen (der Insert kostete vor dem ersten Ton Zeit)
         await memory.start_session(channel=os.getenv("WAMO_CHANNEL") or "web")
         # Profil regelmäßig neu prüfen und Höchstdauer einhalten (M5)

@@ -163,6 +163,61 @@ async def test_werkzeuge_des_modells_laufen_durch_das_gate_ausser_den_offenen():
     await session.cleanup()
 
 
+BUERO_ENV = {  # Büro-Kern mit Entwicklungsaufträgen für dieses Profil (wie test_entwicklung_betrieb.py)
+    "WAMO_BETRIEB": "buero", "WAMO_ENTWICKLUNG_BUERO": "an", "WAMO_ENTWICKLUNG_ORT": "sokrates2", "WAMO_ENTWICKLUNG_PROFILE": USER,
+    "WAMO_ENTWICKLUNG_KOSTEN_AUFTRAG_USD": "3", "WAMO_ENTWICKLUNG_KOSTEN_TAG_USD": "10",
+}
+
+
+async def test_jedes_werkzeug_einer_voll_gebauten_sitzung_fragt_das_gate(monkeypatch):
+    """Admin im Büro mit PC, Bildschirm, Bürogeräten, Entwicklung, Boss und Fernzugriff: jeder Eintrag in llm._functions und jeder Handler
+    im Schema trägt die Marke des Gates dieser Sitzung oder steht in OFFENE_WERKZEUGE. Ein neues Werkzeug, das am Gate vorbei registriert
+    wird, fällt hier auf."""
+    import geraete_werkzeuge
+    import rd_api
+    from pipecat.adapters.schemas.function_schema import FunctionSchema
+    from pipecat.adapters.schemas.tools_schema import ToolsSchema
+    from stimme_gate import OFFENE_WERKZEUGE
+
+    for name, wert in BUERO_ENV.items():
+        monkeypatch.setenv(name, wert)
+
+    async def host_handler(params):
+        await params.result_callback({"status": "success"})
+
+    pc_werkzeuge = ToolsSchema(standard_tools=[FunctionSchema(n, "PC", {}, [], handler=host_handler)
+                                               for n in ("programm_oeffnen", "fenster_auflisten", "datei_schreiben")])
+
+    class Client:
+        async def close(self):
+            pass
+
+    async def geraete(self, timeout=1.5):
+        alles = ["steuern", "drucken", "scannen", "nas_suchen", "router_geraete", "unbekannte_geraete"]
+        self._geraete = {"buero-1": {"kennung": "buero-1", "name": "Alles", "klasse": "drucker", "faehigkeiten": alles}}
+        return self._baue_schemas()
+
+    store = m.MemoryStore(USER, BotDb())
+    with mock.patch.object(bot, "pc_host_fuer", return_value=True), mock.patch.object(bot, "host_client", return_value=Client()), \
+            mock.patch.object(bot, "host_tools", mock.AsyncMock(return_value=pc_werkzeuge)), \
+            mock.patch.object(bot, "entwicklung_problem", return_value=None), \
+            mock.patch.object(bot, "entwicklung_quelle", return_value="api"), \
+            mock.patch.object(geraete_werkzeuge.Buerogeraete, "schemas", geraete), mock.patch.object(rd_api, "aktiv", return_value=True):
+        session, stufen, llm = await bauen(Identity(USER, "Erika", "admin", "sie"), store=store)
+        await abwarten()  # die PC-Werkzeuge kommen im Hintergrund dazu (start_pc)
+        gate = session.stimme.gate
+        nutzer = next(p for p in stufen if isinstance(p, LLMUserAggregator))
+        schemas = [s for s in nutzer.context.tools.standard_tools if isinstance(s, FunctionSchema) and s.handler is not None]
+        namen = set(llm._functions) | {s.name for s in schemas}
+        erwartet = {"merken", "fernzugriff_oeffnen", "aufgabe_verteilen", "entwicklung_vorbereiten", "bildschirm_ansehen",
+                    "buerogeraet_status", "programm_oeffnen", "datei_schreiben"}
+        assert erwartet <= namen, erwartet - namen  # die Sitzung ist wirklich voll gebaut
+        offen = [n for n, f in llm._functions.items() if n not in OFFENE_WERKZEUGE and getattr(f.handler, MARKE, None) is not gate]
+        offen += [s.name for s in schemas if s.name not in OFFENE_WERKZEUGE and getattr(s.handler, MARKE, None) is not gate]
+        assert offen == []
+        await session.cleanup()
+
+
 def test_host_und_geraete_werkzeuge_mit_handler_im_schema_werden_eingepackt():
     """Pipecat registriert Handler aus dem Schema selbst: Host- und Bürogeräte-Werkzeuge müssen vor dem Kontext durch das Gate."""
     assert "schemas_absichern(pc_schemas, stimme.gate)" in BOT_QUELLE
@@ -203,33 +258,19 @@ async def test_ohne_datenbank_ist_die_stimmpruefung_aus_und_es_gibt_keine_einwil
     await session.cleanup()
 
 
-async def test_verworfener_zug_kommt_nicht_in_verlauf_und_gedaechtnis():
+async def test_leerer_zug_kommt_nicht_in_verlauf_und_gedaechtnis():
+    """Der Wächter hat das Transkript einer fremden Stimme durch ein Leerzeichen ersetzt: der Zug endet leer. Die Prüfung auf den leeren
+    Inhalt reicht, eine Markierung des Wächters braucht es nicht (sie hing an keinem Zug, on_user_turn_stopped läuft als eigene Aufgabe)."""
     store = m.MemoryStore(USER, BotDb())
     session, stufen, _llm = await bauen(Identity(USER, "Erika", "mitglied", "sie"), store=store)
     nutzer = next(p for p in stufen if isinstance(p, LLMUserAggregator))
     with mock.patch.object(m.MemoryStore, "log_turn", mock.AsyncMock()) as log_turn:
-        session.stimme.waechter._verworfen = True  # der Wächter hat das Transkript einer fremden Stimme ersetzt
         await nutzer._call_event_handler("on_user_turn_stopped", None, types.SimpleNamespace(content=" "))
         await abwarten()  # Pipecat führt Ereignisbehandler als eigene Aufgaben aus
         log_turn.assert_not_awaited()
-        assert session.stimme.zug_verworfen() is False  # die Markierung ist verbraucht
         await nutzer._call_event_handler("on_user_turn_stopped", None, types.SimpleNamespace(content="Hallo WAMO"))
         await abwarten()
         log_turn.assert_awaited_once_with(role="user", content="Hallo WAMO")
-    await session.cleanup()
-
-
-async def test_ein_zug_mit_text_trotz_markierung_wird_normal_behandelt():
-    """Fremde und eigene Stimme im selben Zug: der Satz der Person bleibt erhalten, die Markierung wird verbraucht."""
-    store = m.MemoryStore(USER, BotDb())
-    session, stufen, _llm = await bauen(Identity(USER, "Erika", "mitglied", "sie"), store=store)
-    nutzer = next(p for p in stufen if isinstance(p, LLMUserAggregator))
-    with mock.patch.object(m.MemoryStore, "log_turn", mock.AsyncMock()) as log_turn:
-        session.stimme.waechter._verworfen = True
-        await nutzer._call_event_handler("on_user_turn_stopped", None, types.SimpleNamespace(content="Mach das Licht an"))
-        await abwarten()
-        log_turn.assert_awaited_once_with(role="user", content="Mach das Licht an")
-        assert session.stimme.zug_verworfen() is False
     await session.cleanup()
 
 
@@ -296,6 +337,36 @@ async def test_getippter_text_zaehlt_wie_die_eigene_stimme():
         original.assert_awaited_once()
         assert gate.grund_der_stimme() is None
     await session.cleanup()
+
+
+async def test_startstrategie_fragt_bei_laufender_arbeit_den_waechter():
+    """Werkzeug läuft oder Modell denkt, Modus streng mit Abdruck: erst das endgültige Transkript startet den Zug (stimme_waechter.nur_endgueltig)."""
+    from pipecat.frames.frames import FunctionCallInProgressFrame, InterruptionFrame, LLMContextFrame
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from soft_interrupt import SoftInterruptGate
+
+    store = m.MemoryStore(USER, BotDb())
+    session, stufen, _llm = await bauen(Identity(USER, "Erika", "mitglied", "sie"), store=store)
+    nutzer = next(p for p in stufen if isinstance(p, LLMUserAggregator))
+    abfrage = nutzer._params.user_turn_strategies.start[0]._nur_endgueltig
+    weiche = next(p for p in stufen if isinstance(p, SoftInterruptGate))
+    wache = next(p for p in stufen if type(p).__name__ == "_WachTeil")._wache
+    weiche._werkzeug_verfolgen(FunctionCallInProgressFrame(function_name="merken", tool_call_id="m1", arguments={},
+                                                           cancel_on_interruption=True))
+    assert abfrage is not None and abfrage() is False  # Abdruck noch nicht geladen: der Wächter verwirft nichts
+    bereit_machen(session)
+    assert abfrage() is True
+    weiche._werkzeug_verfolgen(InterruptionFrame())
+    assert abfrage() is False  # nichts läuft: der schnelle Weg über Zwischenstände bleibt
+    assert wache.durchlassen(LLMContextFrame(context=LLMContext(messages=[{"role": "user", "content": "Wetter?"}])))
+    assert abfrage() is True
+    await session.cleanup()
+
+
+def test_bot_laedt_den_abdruck_bis_der_stand_bekannt_ist():
+    """Ein Fehler beim ersten Laden darf Werkzeuge nicht bis zum Sitzungsende sperren (stimme_sitzung.laden_bis_bekannt)."""
+    assert "asyncio.create_task(stimme.laden_bis_bekannt())" in BOT_QUELLE
+    assert "stimme.vorbereiten()" not in BOT_QUELLE
 
 
 def test_bot_nennt_die_neuen_nachrichten_in_der_kopfzeile():

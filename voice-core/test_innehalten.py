@@ -101,6 +101,24 @@ class InnehaltenGateTest(_HaltTest):
         self.assertEqual(g.wort_beginnt("lege"), HALTEN, "das Wort wartet, solange WAMO innehält")
         self.assertTrue(g.haelt_inne)
 
+    def test_info_log_nennt_nur_die_wortzahl_der_text_steht_auf_debug(self):
+        mitschnitt = []
+        kennung = soft_interrupt.logger.add(lambda m: mitschnitt.append((m.record["level"].name, m.record["message"])), level="DEBUG")
+        try:
+            g = self.gate()
+            self.anhalten_auf_ansatz(g, " Geheimwort bitte")
+            self.t = 0.5
+            g.check_timers()
+            self.t = 0.8
+            g.check_timers()
+        finally:
+            soft_interrupt.logger.remove(kennung)
+        info = [m for name, m in mitschnitt if name == "INFO"]
+        self.assertTrue(any("hält inne" in m and "2 Wörter" in m for m in info), info)
+        self.assertTrue(any("spricht weiter" in m and "2 Wörter" in m for m in info), info)
+        self.assertFalse([m for m in info if "geheimwort" in m.lower()], "kein gesprochener Text auf INFO")
+        self.assertTrue(any("geheimwort" in m.lower() for name, m in mitschnitt if name == "DEBUG"), "auf DEBUG steht der Text")
+
     def test_kommt_nichts_nach_spricht_wamo_dort_weiter(self):
         g = self.gate()
         self.anhalten_auf_ansatz(g)

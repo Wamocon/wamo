@@ -177,8 +177,8 @@ class KernLogTest(unittest.TestCase):
 
     def test_innehalten_ereignisse(self):
         text = (
-            "2026-11-14 10:00:00.100 | INFO | g - SoftInterruptGate#3: WAMO hält inne (Wortgrenze, Ansatz 'danke')\n"
-            "2026-11-14 10:00:01.900 | INFO | g - SoftInterruptGate#3: WAMO spricht weiter (kein weiteres Wort, Ansatz 'danke')\n"
+            "2026-11-14 10:00:00.100 | INFO | g - SoftInterruptGate#3: WAMO hält inne (Wortgrenze, Ansatz 1 Wort)\n"
+            "2026-11-14 10:00:01.900 | INFO | g - SoftInterruptGate#3: WAMO spricht weiter (kein weiteres Wort, Ansatz 1 Wort)\n"
         )
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "k.log"
