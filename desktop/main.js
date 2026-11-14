@@ -73,6 +73,7 @@ const { entladenBehandeln } = require("./entladen");
 const { erzeugeHostUmgebung } = require("./host-umgebung");
 const { adressen, loeseAuf, wirksameBetriebsart } = require("./installation");
 const { erzeugePruefer, ladeCa, pruefeSocket } = require("./zertifikat");
+const { taskleisteAbsichern } = require("./taskleiste");
 const { powershellPfad, starteVollbildWaechter } = require("./vollbild");
 const {
   installieren,
@@ -557,6 +558,16 @@ function createMainWindow() {
     },
   });
   const wc = mainWin.webContents;
+  // Taskleistenknopf nach ready-to-show und 3 s später neu belegen (taskleiste.js): Startet der Installer die App, während Windows
+  // die neue EXE noch prüft, bleibt sonst mitunter ein leeres Datei-Symbol auf dem Knopf
+  taskleisteAbsichern(mainWin, {
+    plattform: process.platform,
+    istPaketiert: app.isPackaged,
+    execPath: process.execPath,
+    appDir: __dirname,
+    symbolDatei: iconPath(),
+    log: (text) => console.warn(`[Taskleiste] ${text}`),
+  });
 
   // Fremde Seiten nie im WAMO-Fenster: externe Links gehen in den normalen Browser
   wc.setWindowOpenHandler(({ url }) => {
