@@ -33,7 +33,7 @@ describe("Freigabekarte für Labor-Aktionen", () => {
     zeige(LABOR);
     expect(screen.getByText("Aktion freigeben", { selector: ".eyebrow" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Ticket anlegen" })).toBeTruthy();
-    expect(screen.getByText("Du entscheidest, nicht WAMO.")).toBeTruthy();
+    expect(screen.getByText("Du entscheidest, nicht W.A.I.S.")).toBeTruthy();
     expect(screen.getByText("Ziel:")).toBeTruthy();
     expect(screen.getByText(/Test-Jira, Platz 3/, { selector: ".approval-ziel" })).toBeTruthy();
     expect(screen.getByText(/angefordert von Gast/)).toBeTruthy();
@@ -72,7 +72,7 @@ describe("Freigabekarte für Labor-Aktionen", () => {
     zeige(PC);
     expect(screen.getByText(/^PC-Aktion freigeben/, { selector: ".eyebrow" })).toBeTruthy();
     expect(screen.getByText("Ziel (Fenster und Programm):")).toBeTruthy();
-    expect(screen.queryByText("Du entscheidest, nicht WAMO.")).toBeNull();
+    expect(screen.queryByText("Du entscheidest, nicht W.A.I.S.")).toBeNull();
   });
 
   it("Karten beider Jobs mit gleicher Kennung bleiben getrennt", () => {

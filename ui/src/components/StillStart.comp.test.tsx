@@ -91,7 +91,7 @@ describe("Einstellung 'Still starten beim Tippen'", () => {
   });
 });
 
-describe("Hinweis 'WAMO läuft in einem anderen Fenster'", () => {
+describe("Hinweis 'W.A.I.S. läuft in einem anderen Fenster'", () => {
   beforeEach(() => {
     resetWamo();
     localStorage.clear();

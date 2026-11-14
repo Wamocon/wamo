@@ -54,7 +54,7 @@ function sitzungMitStimme() {
   wamo.set((s) => ({ ...s, presence: "idle" }));
   applyServerMessage({ type: "stimme_status", status: "bereit", modus: "streng" });
   applyServerMessage({ type: "stimme_ergebnis", ergebnis: "eigen", wert: 0.78, modus: "streng" });
-  applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-1", text: "WAMO speichert einen Abdruck." });
+  applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-1", text: "W.A.I.S. speichert einen Abdruck." });
 }
 
 function zeige(email: string, hash = "") {

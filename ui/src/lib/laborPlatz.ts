@@ -64,7 +64,7 @@ export function laborAnsicht(email: string | null | undefined): LaborAnsicht {
   return Object.freeze({
     labor: true,
     platz,
-    kopfTitel: platz === null ? "WAMO Testlabor" : `WAMO Testlabor, Platz ${platz}`,
+    kopfTitel: platz === null ? "W.A.I.S. Testlabor" : `W.A.I.S. Testlabor, Platz ${platz}`,
     bueroKarte: false,
     verlauf: false,
     vorgaenge: false,

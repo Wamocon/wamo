@@ -247,7 +247,7 @@ test("Ringe: ein Ring je belegter Gruppe, von innen nach außen, mit begrenztem 
   assert.equal(zwei[1].radius - zwei[0].radius, KARTE.ringAbstandMax);
 });
 
-test("Anordnung: jedes Gerät genau einmal, im Rahmen, nicht auf WAMO in der Mitte", () => {
+test("Anordnung: jedes Gerät genau einmal, im Rahmen, nicht auf W.A.I.S. in der Mitte", () => {
   const g = buero();
   const p = anordnung(g);
   assert.deepEqual(p.map((x) => x.id), g.map((x) => x.id));

@@ -103,7 +103,7 @@ export const VoiceLine = memo(function VoiceLine({ history }: { history: { curre
       ref={ref}
       className="voice-line"
       role="img"
-      aria-label="Stimmlinie: oben deine Stimme, unten WAMO"
+      aria-label="Stimmlinie: oben deine Stimme, unten W.A.I.S."
     />
   );
 });

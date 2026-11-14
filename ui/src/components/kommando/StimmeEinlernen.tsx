@@ -69,7 +69,7 @@ function Einwilligung({ aktionen }: { aktionen: StimmabdruckAktionen }) {
   return (
     <>
       <p className="kz-einlernen-hinweis">
-        Bevor WAMO deine Stimme einlernt, braucht es dein Einverständnis. Gespeichert wird nur der Abdruck, keine Aufnahme.
+        Bevor W.A.I.S. deine Stimme einlernt, braucht es dein Einverständnis. Gespeichert wird nur der Abdruck, keine Aufnahme.
       </p>
       {einwilligung ? (
         <div className="kz-einlernen-text kz-einlernen-einwilligung" id={textId}>

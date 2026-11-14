@@ -119,7 +119,7 @@ export function alsGeraete(roh: unknown): Geraet[] {
 // ---------- Sortierung und Anzeige ----------
 export const STATUS_INFO: Record<GeraeteStatus, { wort: string; form: "raute" | "kreis" | "quadrat" | "kreuz"; erklaerung: string }> = {
   beantragt: { wort: "Wartet auf Freigabe", form: "raute", erklaerung: "Das Gerät hat sich gemeldet und hat noch keinen Zugang." },
-  aktiv: { wort: "Aktiv", form: "kreis", erklaerung: "Das Gerät hat Zugang zu WAMO." },
+  aktiv: { wort: "Aktiv", form: "kreis", erklaerung: "Das Gerät hat Zugang zu W.A.I.S." },
   gesperrt: { wort: "Gesperrt", form: "quadrat", erklaerung: "Der Zugang ruht. Ein Admin kann ihn wieder freigeben." },
   widerrufen: { wort: "Widerrufen", form: "kreuz", erklaerung: "Endgültig entzogen. Der Schlüssel dieses Geräts wird nicht mehr angenommen." },
 };
@@ -243,7 +243,7 @@ export function bestaetigungFuer(g: Geraet, aktion: Aktion, opts: { dieserLaptop
     );
   }
   if (aendert && opts.dieserLaptop) {
-    warnungen.push("Das ist der Laptop, an dem du gerade arbeitest. Danach verliert WAMO die Verbindung zu diesem PC.");
+    warnungen.push("Das ist der Laptop, an dem du gerade arbeitest. Danach verliert W.A.I.S. die Verbindung zu diesem PC.");
   } else if (aendert && g.eigen) {
     warnungen.push("Das ist eines deiner eigenen Geräte.");
   }
@@ -258,7 +258,7 @@ export function bestaetigungFuer(g: Geraet, aktion: Aktion, opts: { dieserLaptop
         ...basis,
         titel: "Gerät freigeben",
         knopf: "Freigeben",
-        beschreibung: `${besitzer(g)} bekommt mit ${g.name} (${g.kennung}) Zugang zu WAMO. ${VERGLEICH_HINWEIS}`,
+        beschreibung: `${besitzer(g)} bekommt mit ${g.name} (${g.kennung}) Zugang zu W.A.I.S. ${VERGLEICH_HINWEIS}`,
         endgueltig: false,
       };
     case "entsperren":

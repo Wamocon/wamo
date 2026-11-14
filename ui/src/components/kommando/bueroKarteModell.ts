@@ -346,7 +346,7 @@ export function leerFehler(status: number | null): Leer {
   if (status === 503 || status === 0 || status === null) {
     return {
       titel: "Gerätedienst nicht erreichbar",
-      text: "Die Büro-Karte erscheint wieder, sobald WAMO im Büro Verbindung zu den Geräten hat.",
+      text: "Die Büro-Karte erscheint wieder, sobald W.A.I.S. im Büro Verbindung zu den Geräten hat.",
     };
   }
   if (status === 401 || status === 403) {
@@ -363,7 +363,7 @@ export function leerFehler(status: number | null): Leer {
 
 export const LEER_OHNE_GERAETE: Leer = {
   titel: "Noch keine Geräte eingerichtet",
-  text: "Sobald im Büro Geräte für WAMO eingerichtet sind, erscheinen sie hier.",
+  text: "Sobald im Büro Geräte für W.A.I.S. eingerichtet sind, erscheinen sie hier.",
 };
 
 /**

@@ -464,7 +464,7 @@ export const ModellZugang = memo(function ModellZugang({
         <h4 id="modellzugang-modus" className="mz-ueberschrift">
           Modus
         </h4>
-        <p className="mz-zweck">Welche Modelle WAMO benutzen darf, unabhängig davon, welche Schlüssel hinterlegt sind.</p>
+        <p className="mz-zweck">Welche Modelle W.A.I.S. benutzen darf, unabhängig davon, welche Schlüssel hinterlegt sind.</p>
         <p className="mz-statuszeile">
           <span className="mz-art" data-art={zugang?.art}>
             {kopfzeile(zugang)}

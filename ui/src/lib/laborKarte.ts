@@ -18,9 +18,9 @@ export type KarteTexte = {
 };
 
 export function karteTexte(job: string): KarteTexte {
-  if (job === LABOR_JOB) return { ueberschrift: "Aktion freigeben", hinweis: "Du entscheidest, nicht WAMO.", zielLabel: "Ziel:" };
+  if (job === LABOR_JOB) return { ueberschrift: "Aktion freigeben", hinweis: "Du entscheidest, nicht W.A.I.S.", zielLabel: "Ziel:" };
   if (job === PC_JOB) return { ueberschrift: "PC-Aktion freigeben", zielLabel: "Ziel (Fenster und Programm):" };
-  if (job === GERAET_JOB) return { ueberschrift: "Bürogerät freigeben", hinweis: "Du entscheidest, nicht WAMO.", zielLabel: "Gerät:" };
+  if (job === GERAET_JOB) return { ueberschrift: "Bürogerät freigeben", hinweis: "Du entscheidest, nicht W.A.I.S.", zielLabel: "Gerät:" };
   return { ueberschrift: "Freigabe nötig", zielLabel: "Ziel (Fenster und Programm):" };
 }
 

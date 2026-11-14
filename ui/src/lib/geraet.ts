@@ -266,7 +266,7 @@ export function hinweisZeile(zustand: EinrichtungsZustand, text: string | undefi
   if (zustand === "wartet") return "Dein Laptop wartet auf die Freigabe durch einen Admin.";
   if (zustand === "fehler") return text || TEXT_ALLGEMEIN;
   if (zustand === "eingerichtet" && tunnel !== null && tunnel !== "verbunden") {
-    return "Die Verbindung deines Laptops zu WAMO wird aufgebaut.";
+    return "Die Verbindung deines Laptops zu W.A.I.S. wird aufgebaut.";
   }
   return null;
 }

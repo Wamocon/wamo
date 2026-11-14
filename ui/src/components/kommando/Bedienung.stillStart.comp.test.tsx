@@ -43,7 +43,7 @@ function zeichne(opt: { startet?: boolean } = {}) {
   return a;
 }
 
-const feld = () => screen.getByRole("textbox", { name: "Nachricht an WAMO" }) as HTMLInputElement;
+const feld = () => screen.getByRole("textbox", { name: "Nachricht an W.A.I.S." }) as HTMLInputElement;
 
 /** Der Kern ist bereit und nimmt Text an (wie nach onBotReady). */
 const verbunden = () =>
@@ -63,10 +63,10 @@ describe("Eingabepille, Start beim Tippen", () => {
       schalter(false);
       zeichne();
       expect(feld().disabled).toBe(true);
-      expect(feld().placeholder).toBe("Sprich einfach mit WAMO");
+      expect(feld().placeholder).toBe("Sprich einfach mit W.A.I.S.");
     });
 
-    it("Schalter an: das Feld ist ohne Sitzung aktiv und sagt, dass Tippen WAMO startet", () => {
+    it("Schalter an: das Feld ist ohne Sitzung aktiv und sagt, dass Tippen W.A.I.S. startet", () => {
       schalter(true);
       zeichne();
       expect(feld().disabled).toBe(false);
@@ -84,9 +84,9 @@ describe("Eingabepille, Start beim Tippen", () => {
     it("startet genau einmal, nicht bei jedem Zeichen", async () => {
       schalter(true);
       const a = zeichne();
-      await userEvent.type(feld(), "Hallo WAMO");
+      await userEvent.type(feld(), "Hallo W.A.I.S.");
       expect(a.stillStarten).toHaveBeenCalledTimes(1);
-      expect(feld().value).toBe("Hallo WAMO");
+      expect(feld().value).toBe("Hallo W.A.I.S.");
       expect(a.eingabeMelden).toHaveBeenCalled();
     });
 

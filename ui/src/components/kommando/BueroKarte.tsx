@@ -212,14 +212,14 @@ export function BueroKarte() {
 
       {geraete.length > 0 && (
         <>
-          <div className="bk-karte" role="group" aria-label="Büro-Karte: Geräte in Ringen um WAMO">
+          <div className="bk-karte" role="group" aria-label="Büro-Karte: Geräte in Ringen um W.A.I.S.">
             <svg className="bk-svg" viewBox={`0 0 ${KARTE.groesse} ${KARTE.groesse}`} aria-hidden="true" focusable="false">
               {kreise.map((r) => (
                 <circle key={r.id} className="bk-ring" cx={KARTE.mitte} cy={KARTE.mitte} r={r.radius} />
               ))}
               <circle className="bk-mitte" cx={KARTE.mitte} cy={KARTE.mitte} r={KARTE.mitteRadius} />
               <text className="bk-mitte-text" x={KARTE.mitte} y={KARTE.mitte} textAnchor="middle" dominantBaseline="central">
-                WAMO
+                W.A.I.S.
               </text>
             </svg>
             {punkte.map((p) => {
@@ -259,7 +259,7 @@ export function BueroKarte() {
 
           <Legende />
           <p className="bk-hinweis">
-            Mitte: WAMO auf Sokrates-2. Ringe von innen nach außen: {kreise.map((r) => r.label).join(", ")}.
+            Mitte: W.A.I.S. auf Sokrates-2. Ringe von innen nach außen: {kreise.map((r) => r.label).join(", ")}.
           </p>
           <UnbekanntHinweis anzahl={stand?.unbekannt ?? null} istAdmin={istAdmin} />
 

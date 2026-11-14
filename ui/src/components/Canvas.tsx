@@ -50,7 +50,7 @@ export const CanvasBereich = memo(function CanvasBereich() {
   return (
     <div className="canvas-empty">
       <p className="eyebrow">Canvas</p>
-      <h2>Was WAMO dir hier zeigt</h2>
+      <h2>Was W.A.I.S. dir hier zeigt</h2>
       <p>Ergebnisse, die man sehen muss, landen auf dieser Fläche statt in der Sprache.</p>
       <ul className="kinds">
         {BEISPIELE.filter((k) => !k.nurAdmin || !mitglied).map((k) => (

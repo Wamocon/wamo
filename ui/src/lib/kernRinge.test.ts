@@ -46,13 +46,13 @@ test("der Pegel wächst schnell und fällt langsam", () => {
   assert.ok(1 - runter > 0.05 && 1 - runter < 0.1, `Abfall ${1 - runter}`);
 });
 
-test("der lautere Sprecher bestimmt den Bogen: WAMO, Mensch oder eine weitere Stimme", () => {
+test("der lautere Sprecher bestimmt den Bogen: W.A.I.S., Mensch oder eine weitere Stimme", () => {
   const botLaut = pegelAuswahl({ user: 0, bot: 0.1, speaker: 0 }, false);
   assert.equal(botLaut.wer, "bot");
   assert.ok(Math.abs(botLaut.ziel - 0.32) < 1e-9);
   assert.equal(pegelAuswahl({ user: 0.2, bot: 0.05, speaker: 0 }, false).wer, "user");
   assert.equal(pegelAuswahl({ user: 0.2, bot: 0.05, speaker: 1 }, false).wer, "fremd");
-  assert.equal(pegelAuswahl({ user: 0.1, bot: 0.1, speaker: 1 }, false).wer, "bot", "bei Gleichstand gewinnt WAMO");
+  assert.equal(pegelAuswahl({ user: 0.1, bot: 0.1, speaker: 1 }, false).wer, "bot", "bei Gleichstand gewinnt W.A.I.S.");
 });
 
 test("der Pegel wird auf 1 gekappt und rechnet mit dem Faktor 3,2", () => {

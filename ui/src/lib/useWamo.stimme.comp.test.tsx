@@ -89,7 +89,7 @@ const vomKern = (c: AttrappenClient, nachricht: Record<string, unknown>) =>
     c.opts.callbacks.onServerMessage(nachricht);
   });
 
-const EINWILLIGUNG = { type: "stimmabdruck_einwilligung", version: "stimme-1", text: "WAMO speichert aus deiner Stimme einen Abdruck." };
+const EINWILLIGUNG = { type: "stimmabdruck_einwilligung", version: "stimme-1", text: "W.A.I.S. speichert aus deiner Stimme einen Abdruck." };
 const stimmabdruckGesendet = (c: AttrappenClient) => c.sendClientMessage.mock.calls.filter((a) => a[0] === "stimmabdruck");
 
 describe("useWamo, Stimmabdruck", () => {

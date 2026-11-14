@@ -105,8 +105,8 @@ export function zeitKurz(iso: string, zone?: string): string {
 
 export const TEXT_LEER = "Es gibt keine offenen Vorschläge.";
 export const TEXT_ERKLAERUNG =
-  "Diese Einträge hat WAMO oder ein Mitglied für alle vorgeschlagen. Freigegeben gelten sie für alle Profile in neuen Gesprächen, bis sie jemand " +
-  "vergessen lässt. Lies jeden Eintrag genau: Was WAMO etwas befiehlt oder nach einer Anweisung klingt, gehört abgelehnt.";
+  "Diese Einträge hat W.A.I.S. oder ein Mitglied für alle vorgeschlagen. Freigegeben gelten sie für alle Profile in neuen Gesprächen, bis sie jemand " +
+  "vergessen lässt. Lies jeden Eintrag genau: Was W.A.I.S. etwas befiehlt oder nach einer Anweisung klingt, gehört abgelehnt.";
 
 /** Zusammenfassung für Kopf und Bildschirmleser, zum Beispiel "3 Vorschläge warten". */
 export function zusammenfassung(anzahl: number): string {

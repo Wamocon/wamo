@@ -20,7 +20,7 @@ export const SCHLUESSEL_MARKE = "[Schlüssel entfernt]";
 
 /** So lange darf WAMO nach einer getippten Nachricht "denken", bevor die Oberfläche einen Hinweis zeigt (12.11.2026: Der Puls drehte sich, nichts kam). */
 export const HAENGT_NACH_MS = 45_000;
-export const HAENGT_HINWEIS = "WAMO antwortet ungewöhnlich lange. Wenn nichts passiert, beende das Gespräch und schreibe noch einmal.";
+export const HAENGT_HINWEIS = "W.A.I.S. antwortet ungewöhnlich lange. Wenn nichts passiert, beende das Gespräch und schreibe noch einmal.";
 
 // Gleiche Erkennung wie der Kern (voice-core/schluessel_filter.py): genaue Form und gesprochene Form
 const GENAU = /sk-ant-[A-Za-z0-9_-]{6,}/gi;
@@ -76,7 +76,7 @@ export function bereiteText(roh: string): VorbereiteterText | null {
 /** Meldung, wenn ein Schlüssel ersetzt wurde (nennt nie den Wert). */
 export function schluesselHinweis(senden: boolean): string {
   return senden
-    ? "In deiner Nachricht stand ein Schlüssel. Er wurde entfernt und nicht gesendet, der Rest ging an WAMO. Schlüssel gehören in die Einstellungen unter Modellzugang."
+    ? "In deiner Nachricht stand ein Schlüssel. Er wurde entfernt und nicht gesendet, der Rest ging an W.A.I.S. Schlüssel gehören in die Einstellungen unter Modellzugang."
     : "Das war ein Schlüssel. Er wurde nicht gesendet. Schlüssel gehören in die Einstellungen unter Modellzugang.";
 }
 
@@ -111,7 +111,7 @@ export function textAbschicken(roh: string, w: TextWege): boolean {
     return false;
   }
   if (bereit === "kein_text") {
-    w.fehler("dienst", "Dieser Kern nimmt keinen getippten Text an. Bitte sprich mit WAMO.");
+    w.fehler("dienst", "Dieser Kern nimmt keinen getippten Text an. Bitte sprich mit W.A.I.S.");
     return false;
   }
   if (w.besetzt()) return false; // die vorige Nachricht ist noch unterwegs: das Feld behält den Text
@@ -164,9 +164,9 @@ export function eingabeHinweis(l: EingabeLage): string | null {
   if (l.entscheidungen > 0) {
     return "Freigaben gibst du nur mit Klick auf die Karte. Ein getipptes Ja ersetzt sie nicht.";
   }
-  if (l.kernOhneText) return "Dieser Kern nimmt keinen getippten Text an. Bitte sprich mit WAMO.";
+  if (l.kernOhneText) return "Dieser Kern nimmt keinen getippten Text an. Bitte sprich mit W.A.I.S.";
   if (l.stillWartet) return TEXT_VERBINDET;
-  if (l.werkzeugLaeuft) return "WAMO arbeitet gerade. Eine neue Nachricht unterbricht die Arbeit.";
+  if (l.werkzeugLaeuft) return "W.A.I.S. arbeitet gerade. Eine neue Nachricht unterbricht die Arbeit.";
   if (l.stillBereit) return TEXT_STILL_BEREIT;
   return null;
 }

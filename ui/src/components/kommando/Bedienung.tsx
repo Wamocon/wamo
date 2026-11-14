@@ -56,14 +56,14 @@ const Eingabepille = memo(function Eingabepille({
   const bereit = Boolean(senden) && online && textMoeglich;
   const aktiv = bereit || (Boolean(senden) && stillOffen);
   const platzhalter = bereit
-    ? "Frag WAMO etwas …"
+    ? "Frag W.A.I.S. etwas …"
     : stillOffen
       ? presence === "connecting"
         ? "Verbinde …"
-        : "Tippe, um WAMO still zu starten"
+        : "Tippe, um W.A.I.S. still zu starten"
       : online && senden
-        ? "Kein Text möglich, sprich mit WAMO"
-        : "Sprich einfach mit WAMO";
+        ? "Kein Text möglich, sprich mit W.A.I.S."
+        : "Sprich einfach mit W.A.I.S.";
 
   // Die erste Zeile wartet, bis die Sitzung steht, und geht genau einmal hinaus (ZeilenHalter). Sie bleibt bis dahin im Feld:
   // Scheitert die Verbindung, ist nichts verloren und nichts wird nachträglich gesendet.
@@ -128,7 +128,7 @@ const Eingabepille = memo(function Eingabepille({
           ref={feld}
           type="text"
           className="kz-pille-feld"
-          aria-label="Nachricht an WAMO"
+          aria-label="Nachricht an W.A.I.S."
           placeholder={platzhalter}
           value={text}
           maxLength={MAX_TEXT}

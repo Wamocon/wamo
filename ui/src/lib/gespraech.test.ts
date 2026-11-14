@@ -24,19 +24,19 @@ test("die Person: ohne laufenden Beitrag gilt der letzte fertige Beitrag aus dem
   assert.equal(menschZeile(leer, []), "");
 });
 
-test("WAMO: der laufende Zug zuerst, sonst die letzte Antwort aus dem Verlauf", () => {
+test("W.A.I.S.: der laufende Zug zuerst, sonst die letzte Antwort aus dem Verlauf", () => {
   const log = [{ wer: "wamo" as const, text: "alte Antwort" }];
   assert.equal(wamoZeile({ text: "Hier ist die Übersicht.", spoken: 2, interrupted: false }, log), "Hier ist die Übersicht.");
   assert.equal(wamoZeile(kein, log), "alte Antwort");
   assert.equal(wamoZeile(kein, []), "");
 });
 
-test("WAMO: nach einer Unterbrechung zählen nur die gesprochenen Wörter", () => {
+test("W.A.I.S.: nach einer Unterbrechung zählen nur die gesprochenen Wörter", () => {
   const c = { text: "Vier Testfälle sind offen und einer davon ist kritisch.", spoken: 4, interrupted: true };
   assert.equal(wamoZeile(c, []), "Vier Testfälle sind offen");
 });
 
-test("WAMO: eine Unterbrechung vor dem ersten Wort fällt auf den Verlauf zurück", () => {
+test("W.A.I.S.: eine Unterbrechung vor dem ersten Wort fällt auf den Verlauf zurück", () => {
   const log = [{ wer: "wamo" as const, text: "vorige Antwort" }];
   assert.equal(wamoZeile({ text: "Noch nichts gesagt", spoken: 0, interrupted: true }, log), "vorige Antwort");
 });

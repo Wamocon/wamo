@@ -125,7 +125,7 @@ export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props)
   // Browserleiste und Screenreader: wo bin ich?
   useEffect(() => {
     const vorher = document.title;
-    document.title = `${titel ? `${titel}, ` : ""}Einstellungen | WAMO`;
+    document.title = `${titel ? `${titel}, ` : ""}Einstellungen | W.A.I.S.`;
     return () => {
       document.title = vorher;
     };

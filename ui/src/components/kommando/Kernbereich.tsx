@@ -60,7 +60,7 @@ function Namensschild({
 }) {
   return (
     <p className="kz-schild" data-presence={presence} data-zustand={kennung}>
-      <span className="kz-schild-name">WAMO</span>
+      <span className="kz-schild-name">W.A.I.S.</span>
       <span className="kz-schild-status">{text}</span>
     </p>
   );

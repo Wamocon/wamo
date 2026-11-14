@@ -59,7 +59,7 @@ export const ABSCHNITTE: readonly Abschnitt[] = [
   {
     id: "aenderungen",
     titel: "Änderungen",
-    kurz: "Stand der Selbstüberarbeitung von WAMO",
+    kurz: "Stand der Selbstüberarbeitung von W.A.I.S.",
     nurAdmin: true,
   },
   { id: "teilen", titel: "Teilen", kurz: "Geteilte Dokumente und Dateien" },
@@ -163,7 +163,7 @@ export type GeraeteStand = {
 };
 
 const TUNNEL_TEXT: Record<TunnelZustand, string> = {
-  verbunden: "Tunnel zu WAMO verbunden",
+  verbunden: "Tunnel zu W.A.I.S. verbunden",
   host: "Dieser PC ist selbst der Host, kein Tunnel nötig",
   aus: "Tunnel aus",
   unbekannt: "Tunnel unbekannt",

@@ -50,7 +50,7 @@ export const Verlauf = memo(function Verlauf({ offen, onSchliessen }: { offen: b
         {log.map((e) => (
           <li key={e.id} className="verlauf-eintrag" data-wer={e.wer}>
             <p className="verlauf-meta">
-              <b>{e.wer === "wamo" ? "WAMO" : who}</b>{" "}
+              <b>{e.wer === "wamo" ? "W.A.I.S." : who}</b>{" "}
               <time className="num" dateTime={new Date(e.zeit).toISOString()}>
                 {uhr.format(e.zeit)}
               </time>

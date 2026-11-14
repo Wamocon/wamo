@@ -82,7 +82,7 @@ function leeresFenster(): Window | null {
   try {
     const w = window.open("", "_blank");
     if (w) {
-      w.document.title = "WAMO Fernzugriff";
+      w.document.title = "W.A.I.S. Fernzugriff";
       w.document.body.textContent = "Die Verbindung wird aufgebaut.";
     }
     return w;

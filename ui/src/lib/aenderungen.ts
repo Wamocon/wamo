@@ -308,7 +308,7 @@ const SPERRE_TEXT: Record<SperreZustand, string> = {
 };
 const DATENBANK_TEXT = { angeschlossen: "angeschlossen", fehlt: "fehlt", nicht_erreichbar: "nicht erreichbar", unbekannt: "unbekannt" } as const;
 const ARBEITER_TEXT = { frei: "frei", beschaeftigt: "beschäftigt", haengt: "hängt", unbekannt: "unbekannt" } as const;
-const QUELLE_TEXT: Record<Quelle, string> = { selbst: "WAMO selbst (Auftrag an den Agenten)", main: "main (von Hand gemergte Änderung)" };
+const QUELLE_TEXT: Record<Quelle, string> = { selbst: "W.A.I.S. selbst (Auftrag an den Agenten)", main: "main (von Hand gemergte Änderung)" };
 
 export function ansicht(status: Status | null, fehler: string | null = null): Ansicht {
   const leer = { zeilen: [], anfrage: null, wartetAufFreigabe: false, hinweise: [] as string[] };

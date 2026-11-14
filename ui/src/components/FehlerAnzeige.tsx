@@ -7,7 +7,7 @@ import { useSelect } from "@/lib/store";
 import { wamo } from "@/lib/wamo";
 
 const OHNE_MIKROFON_HILFE =
-  "Schließt die Warnung und lässt sie für dieses Mikrofon aus, bis es wieder Ton liefert. Du kannst WAMO weiter tippen.";
+  "Schließt die Warnung und lässt sie für dieses Mikrofon aus, bis es wieder Ton liefert. Du kannst W.A.I.S. weiter tippen.";
 
 /** Fehler in Tinte mit rotem Symbol und sicherer nächster Aktion. */
 export const FehlerAnzeige = memo(function FehlerAnzeige({

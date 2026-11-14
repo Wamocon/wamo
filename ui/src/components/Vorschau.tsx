@@ -360,7 +360,7 @@ function beispielStimme(online: boolean): Pick<WamoState, "stimme" | "abdruck" |
   const art = param("stimme");
   const keine = { stimme: STIMME_LEER, abdruck: null, einwilligung: null };
   if (!art || !online) return keine;
-  const einwilligung = { version: "stimme-1", text: "WAMO legt aus deiner Stimme einen Abdruck an, damit es dich von anderen Stimmen unterscheiden kann.\nGespeichert wird nur der Abdruck, keine Aufnahme. Du kannst ihn jederzeit in den Einstellungen löschen." };
+  const einwilligung = { version: "stimme-1", text: "W.A.I.S. legt aus deiner Stimme einen Abdruck an, damit es dich von anderen Stimmen unterscheiden kann.\nGespeichert wird nur der Abdruck, keine Aufnahme. Du kannst ihn jederzeit in den Einstellungen löschen." };
   const fehlt = { ...STIMME_LEER, status: "fehlt" as const, modus: "streng" as const };
   const ergebnis = (e: "eigen" | "fremd" | "unklar", wert: number) => ({ ...STIMME_LEER, status: "bereit" as const, modus: "streng" as const, ergebnis: e, wert });
   switch (art) {

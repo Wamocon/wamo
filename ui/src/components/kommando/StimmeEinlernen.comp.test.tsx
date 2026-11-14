@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StimmeEinlernen } from "@/components/kommando/StimmeEinlernen";
 import { abdruckAnsichtOeffnen, applyServerMessage, resetWamo, wamo } from "@/lib/wamo";
 
-const EINWILLIGUNG = "WAMO speichert aus deiner Stimme einen Abdruck.\nDu kannst ihn jederzeit löschen.";
+const EINWILLIGUNG = "W.A.I.S. speichert aus deiner Stimme einen Abdruck.\nDu kannst ihn jederzeit löschen.";
 
 function aktionen() {
   return { start: vi.fn(() => true), abbrechen: vi.fn(() => true), loeschen: vi.fn(() => true) };

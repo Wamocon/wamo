@@ -28,7 +28,7 @@ export const Gespraech = memo(function Gespraech() {
       <VoiceLine history={historyRef} />
       <p className="legend" aria-hidden="true">
         <span className="legend-user">Du</span>
-        <span className="legend-bot">WAMO</span>
+        <span className="legend-bot">W.A.I.S.</span>
       </p>
       <div className="kz-zeilen">
         <p className="kz-zeile-mensch" data-leer={mensch ? undefined : "true"}>
@@ -37,7 +37,7 @@ export const Gespraech = memo(function Gespraech() {
         </p>
         {wamoText && (
           <p className="kz-zeile-wamo">
-            <span className="kz-wer">WAMO</span>
+            <span className="kz-wer">W.A.I.S.</span>
             <span className="kz-text">{wamoText}</span>
           </p>
         )}

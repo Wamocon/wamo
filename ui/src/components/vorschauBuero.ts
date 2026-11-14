@@ -24,7 +24,7 @@ const GERAETE: Zeile[] = [
   { id: "router", name: "FRITZ!Box 7590", gruppe: "netz", ampel: "ok", text: "Internet verbunden, 86 Mbit runter", tipp: "Sag: Ist das Internet in Ordnung?", kennzahlen: { runter_mbit: 86, hoch_mbit: 20 } },
   { id: "imac", name: "iMac", gruppe: "netz", ampel: "unbekannt", text: "nicht sichtbar, vielleicht aus", tipp: "Sag: Welche Bürogeräte sind gerade erreichbar?" },
   { id: "nas-1", name: "WMC_NAS1", gruppe: "speicher", ampel: "ok", text: "erreichbar", tipp: "Sag: Suche auf dem NAS nach dem Angebot" },
-  { id: "nas-testelite", name: "WMC-Testelite", gruppe: "speicher", ampel: "unbekannt", text: "erreichbar, WAMO-Zugang nicht eingerichtet", tipp: "Sag: Suche auf dem NAS nach dem Angebot" },
+  { id: "nas-testelite", name: "WMC-Testelite", gruppe: "speicher", ampel: "unbekannt", text: "erreichbar, W.A.I.S.-Zugang nicht eingerichtet", tipp: "Sag: Suche auf dem NAS nach dem Angebot" },
   { id: "fernseher", name: "Fernseher LG OLED 83 Zoll", gruppe: "medien", ampel: "ok", text: "an, gekoppelt, Lautstärke 7", tipp: "Sag: Schalte den Fernseher aus", aktionen: ["aus", "lauter", "leiser", "stumm", "laut"] },
   { id: "fernseher-2", name: "Fernseher Samsung 85 Zoll QLED", gruppe: "medien", ampel: "ok", text: "aus", tipp: "Sag: Schalte den Fernseher an", aktionen: ["an"] },
   { id: "lautsprecher", name: "Lautsprecher Beispiel", gruppe: "medien", ampel: "unbekannt", text: "keine Antwort, vielleicht aus", tipp: "Sag: Stell den Lautsprecher leiser" },

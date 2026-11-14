@@ -43,9 +43,9 @@ const abmeldenKnopf = () => screen.getByText("Abmelden", { selector: "button" })
 const chip = () => document.querySelector<HTMLElement>(".profile-chip");
 
 describe("Kopfzeile eines normalen Kontos", () => {
-  it("zeigt die Wortmarke WAMO und den Verlauf, wie bisher", () => {
+  it("zeigt die Wortmarke W.A.I.S. und den Verlauf, wie bisher", () => {
     const { onVerlauf } = zeige(NORMAL);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("WAMO");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("W.A.I.S.");
     expect(screen.getByRole("heading", { level: 1 }).hasAttribute("title")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Verlauf" }));
     expect(onVerlauf).toHaveBeenCalledTimes(1);
@@ -61,7 +61,7 @@ describe("Kopfzeile eines normalen Kontos", () => {
 
   it("ohne E-Mail (noch nicht bekannt) gilt dasselbe", () => {
     const { onAbmelden } = zeige(null);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("WAMO");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("W.A.I.S.");
     fireEvent.click(abmeldenKnopf());
     expect(onAbmelden).toHaveBeenCalledTimes(1);
   });
@@ -70,22 +70,22 @@ describe("Kopfzeile eines normalen Kontos", () => {
 describe("Kopfzeile eines Laborkontos", () => {
   it("nennt den Platz in der Überschrift", () => {
     zeige(PLATZ);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("WAMO Testlabor, Platz 3");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("W.A.I.S. Testlabor, Platz 3");
   });
 
   it("nennt beim Schaufenster nur das Testlabor", () => {
     zeige(SCHAU);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("WAMO Testlabor");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("W.A.I.S. Testlabor");
   });
 
   it("trägt den vollen Titel zusätzlich als title, damit er beim Kürzen lesbar bleibt", () => {
     zeige(PLATZ);
-    expect(screen.getByRole("heading", { level: 1 }).getAttribute("title")).toBe("WAMO Testlabor, Platz 3");
+    expect(screen.getByRole("heading", { level: 1 }).getAttribute("title")).toBe("W.A.I.S. Testlabor, Platz 3");
   });
 
   it("das Schaufenster trägt ebenfalls den vollen Titel", () => {
     zeige(SCHAU);
-    expect(screen.getByRole("heading", { level: 1 }).getAttribute("title")).toBe("WAMO Testlabor");
+    expect(screen.getByRole("heading", { level: 1 }).getAttribute("title")).toBe("W.A.I.S. Testlabor");
   });
 
   it("hat keinen Verlauf, weder als Knopf noch im Menü", () => {

@@ -146,7 +146,7 @@ test("Stand der Geräteeinrichtung als Satz", () => {
   const t = geraeteStandText(stand, buero);
   assert.equal(t.art, "bereit");
   assert.match(t.text, /Kennung pc-niko/);
-  assert.match(t.text, /Tunnel zu WAMO verbunden/);
+  assert.match(t.text, /Tunnel zu W.A.I.S. verbunden/);
   assert.equal(geraeteStandText({ ...stand, tunnel: "aus" }, buero).art, "offen");
   assert.equal(geraeteStandText({ zustand: "wartet", tunnel: null, kennung: null }, buero).art, "wartet");
   const f = geraeteStandText({ zustand: "fehler", text: "Der Kern ist nicht erreichbar.", tunnel: null, kennung: null }, buero);

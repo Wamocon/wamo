@@ -35,6 +35,8 @@
   margin: 0 -0.28em 0 0; font: 700 30px/1 var(--display); letter-spacing: 0.28em; text-transform: uppercase; color: var(--ink);
 }
 .gate-sub { margin: 0; font: 500 10.5px/1.4 var(--hud); letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); }
+/* Langform des Namens: Schreibung "WAMOCON’s" bleibt, deshalb keine Großschreibung und weniger Sperrung */
+.gate-sub-lang { text-transform: none; letter-spacing: 0.06em; font-size: 13px; color: var(--ink); }
 .gate-hint { margin: 0; font-size: 14px; color: var(--ink-soft); }
 .gate-hint-klein { margin-top: -8px; font-size: 13px; }
 .gate-form { display: grid; gap: 14px; }

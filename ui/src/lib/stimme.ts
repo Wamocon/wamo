@@ -181,10 +181,10 @@ export function abdruckBadge(a: Abdruck): { an: "ja" | "wartet" | "fehler"; text
 }
 
 const PHASE_TEXT: Record<Exclude<AbdruckPhase, "einwilligung">, string> = {
-  start: "WAMO sagt kurz, worum es geht. Danach einfach loslesen.",
+  start: "W.A.I.S. sagt kurz, worum es geht. Danach einfach loslesen.",
   aufnahme: "Ich höre zu. Lies einfach weiter, Pausen sind kein Problem.",
   rechnet: "Fast fertig, ich rechne den Abdruck aus.",
-  fertig: "Fertig. WAMO erkennt jetzt deine Stimme.",
+  fertig: "Fertig. W.A.I.S. erkennt jetzt deine Stimme.",
   fehler: "Das hat nicht geklappt.",
 };
 

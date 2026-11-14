@@ -334,7 +334,7 @@ function fehlerText(
     case 401:
       return { art: "anmeldung", text: mitGrund("Der Voice-Core hat die Anmeldung abgelehnt. Bitte ab- und wieder anmelden.") };
     case 403:
-      return { art: "anmeldung", text: mitGrund("Kein Zugang: kein aktives WAMO-Profil oder zweiter Faktor fehlt.") };
+      return { art: "anmeldung", text: mitGrund("Kein Zugang: kein aktives W.A.I.S.-Profil oder zweiter Faktor fehlt.") };
     case 503:
       return { art: "dienst", text: mitGrund("Profilprüfung nicht möglich, Datenbank nicht erreichbar.") };
     default:
@@ -750,7 +750,7 @@ export function useWamo(): WamoAktionen {
         caption: leereCaption,
         micOn: !still,
         stillStart: { still, perTippen: still, uebernommen: false },
-        ansage: still ? "Verbinde, WAMO startet still" : s.ansage,
+        ansage: still ? "Verbinde, W.A.I.S. startet still" : s.ansage,
       }));
       // Welcher Kern: Betriebsart dieses Geräts direkt vor dem Verbinden (Desktop: aus dem Hauptprogramm)
       const art = await betriebsartFuerStart();
@@ -1317,7 +1317,7 @@ export function useWamo(): WamoAktionen {
       return;
     }
     if (audioRef.current) audioRef.current.muted = false;
-    wamo.set((x) => ({ ...x, micOn: true, stillStart: { ...x.stillStart, still: false, perTippen: false }, ansage: "Mikrofon an, WAMO spricht jetzt" }));
+    wamo.set((x) => ({ ...x, micOn: true, stillStart: { ...x.stillStart, still: false, perTippen: false }, ansage: "Mikrofon an, W.A.I.S. spricht jetzt" }));
     // Kommt keine eigene Spur an (Berechtigung verweigert, kein Gerät), sagt es die Oberfläche wie nach dem Verbinden
     setTimeout(() => {
       const st = wamo.get();

@@ -37,7 +37,7 @@ test("Platznummer: null, undefined und Nicht-Texte geben null, ohne zu werfen", 
   assert.equal(laborPlatzNummer({} as unknown as string), null);
 });
 
-test("laborAnsicht: ein normales Konto sieht alles, die Kopfzeile bleibt WAMO, Abmelden ohne Rückfrage", () => {
+test("laborAnsicht: ein normales Konto sieht alles, die Kopfzeile bleibt W.A.I.S., Abmelden ohne Rückfrage", () => {
   for (const mail of [...NORMAL, null, undefined, ""]) {
     const a = laborAnsicht(mail);
     assert.deepEqual(
@@ -77,12 +77,12 @@ test("laborAnsicht: ein Platzkonto schaltet Büro-Karte, Verlauf, Vorgänge, Adm
 });
 
 test("laborAnsicht: Titel der Kopfzeile mit Platz, ohne Nummer nur Testlabor", () => {
-  assert.equal(laborAnsicht("labor-03@wamo.test").kopfTitel, "WAMO Testlabor, Platz 3");
-  assert.equal(laborAnsicht("labor-16@wamo.test").kopfTitel, "WAMO Testlabor, Platz 16");
+  assert.equal(laborAnsicht("labor-03@wamo.test").kopfTitel, "W.A.I.S. Testlabor, Platz 3");
+  assert.equal(laborAnsicht("labor-16@wamo.test").kopfTitel, "W.A.I.S. Testlabor, Platz 16");
   const schau = laborAnsicht("labor-schau@wamo.test");
   assert.equal(schau.labor, true);
   assert.equal(schau.platz, null);
-  assert.equal(schau.kopfTitel, "WAMO Testlabor");
+  assert.equal(schau.kopfTitel, "W.A.I.S. Testlabor");
   assert.ok(!/[–—]|\s-\s/.test(`${laborAnsicht("labor-03@wamo.test").kopfTitel}`), "kein Gedankenstrich");
 });
 

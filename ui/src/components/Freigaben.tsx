@@ -71,7 +71,7 @@ function ApprovalCard({ a, onDecide }: { a: Approval; onDecide: (a: Approval, ja
       <pre className="approval-detail" tabIndex={0} role="region" aria-label="Was genau ausgeführt wird">
         <code>{a.detail}</code>
       </pre>
-      {a.anlass && <p className="approval-anlass">Anlass laut WAMO (nur Hinweis): {a.anlass}</p>}
+      {a.anlass && <p className="approval-anlass">Anlass laut W.A.I.S. (nur Hinweis): {a.anlass}</p>}
       {a.ablauf !== undefined && (
         <p className="approval-frist">
           Gilt bis{" "}
@@ -187,7 +187,7 @@ function AuftragCard({
         <section className="auftrag-abnahme" aria-labelledby={`${id}-abnahme`}>
           <h4 id={`${id}-abnahme`}>Abnahme</h4>
           <p className="auftrag-abnahme-hinweis">
-            WAMO prüft nach jeder Runde.
+            W.A.I.S. prüft nach jeder Runde.
             {abnahme.some((k) => k.art === "befehl") && " Mit Starten bestätigst du auch die Befehle."}
           </p>
           <ul>

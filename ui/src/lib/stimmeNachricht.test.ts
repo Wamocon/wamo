@@ -124,7 +124,7 @@ test("stimmabdruck: der Text wird von Steuerzeichen befreit, auf eine Zeile gebr
 const EINWILLIGUNG = {
   type: "stimmabdruck_einwilligung",
   version: "stimme-1",
-  text: "WAMO speichert aus deiner Stimme einen Abdruck.\nDu kannst ihn jederzeit löschen.",
+  text: "W.A.I.S. speichert aus deiner Stimme einen Abdruck.\nDu kannst ihn jederzeit löschen.",
 };
 
 test("stimmabdruck_einwilligung: Version und Text vom Kern, Zeilenumbrüche bleiben", () => {

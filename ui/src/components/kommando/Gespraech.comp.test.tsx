@@ -17,19 +17,19 @@ describe("Gespräch: Kopf und Stimmlinie", () => {
     expect(within(block()).getByText("Offline")).toBeTruthy();
   });
 
-  it("zeigt online, sobald WAMO bei der Person ist", () => {
+  it("zeigt online, sobald W.A.I.S. bei der Person ist", () => {
     render(<Gespraech />);
     act(() => wamo.set((s) => ({ ...s, presence: "idle" })));
     expect(within(block()).getByText("Online")).toBeTruthy();
     expect(within(block()).queryByText("Offline")).toBeNull();
   });
 
-  it("enthält die Stimmlinie und die Legende Du und WAMO (die Legende nur zum Sehen)", () => {
+  it("enthält die Stimmlinie und die Legende Du und W.A.I.S. (die Legende nur zum Sehen)", () => {
     render(<Gespraech />);
     expect(screen.getByRole("img", { name: /Stimmlinie/ })).toBeTruthy();
     const legende = block().querySelector(".legend") as HTMLElement;
     expect(legende.getAttribute("aria-hidden")).toBe("true");
-    expect(legende.textContent).toBe("DuWAMO");
+    expect(legende.textContent).toBe("DuW.A.I.S.");
   });
 });
 
@@ -39,7 +39,7 @@ describe("Gespräch: letzte Zeilen", () => {
     expect(within(block()).getByText("Noch nichts gesagt.")).toBeTruthy();
   });
 
-  it("zeigt den laufenden Beitrag der Person und den Zug von WAMO", () => {
+  it("zeigt den laufenden Beitrag der Person und den Zug von W.A.I.S.", () => {
     render(<Gespraech />);
     act(() =>
       wamo.set((s) => ({
@@ -51,7 +51,7 @@ describe("Gespräch: letzte Zeilen", () => {
     const person = block().querySelector(".kz-zeile-mensch") as HTMLElement;
     const wamoZeile = block().querySelector(".kz-zeile-wamo") as HTMLElement;
     expect(person.textContent).toBe("DuZeig mir die Testfälle");
-    expect(wamoZeile.textContent).toBe("WAMOVier Testfälle sind offen.");
+    expect(wamoZeile.textContent).toBe("W.A.I.S.Vier Testfälle sind offen.");
   });
 
   it("behält die Zeilen nach dem Zugende aus dem Verlauf", () => {
@@ -64,7 +64,7 @@ describe("Gespräch: letzte Zeilen", () => {
       })),
     );
     expect(block().querySelector(".kz-zeile-mensch")?.textContent).toBe("DuWas ist offen?");
-    expect(block().querySelector(".kz-zeile-wamo")?.textContent).toBe("WAMOZwei Aufträge.");
+    expect(block().querySelector(".kz-zeile-wamo")?.textContent).toBe("W.A.I.S.Zwei Aufträge.");
   });
 
   it("zeigt nach einer Unterbrechung nur, was gesprochen wurde", () => {
@@ -75,7 +75,7 @@ describe("Gespräch: letzte Zeilen", () => {
         caption: { ...leereCaption, text: "Eins zwei drei vier", spoken: 2, interrupted: true },
       })),
     );
-    expect(block().querySelector(".kz-zeile-wamo")?.textContent).toBe("WAMOEins zwei");
+    expect(block().querySelector(".kz-zeile-wamo")?.textContent).toBe("W.A.I.S.Eins zwei");
   });
 
   it("liest nicht bei jedem Wort vor: die Zeilen sind keine Live-Region", () => {

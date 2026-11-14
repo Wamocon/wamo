@@ -25,7 +25,7 @@ export const API_ANLEITUNG: Anleitung = {
   ueberschrift: "So erzeugst du einen API-Schlüssel",
   schritte: [
     { text: "Öffne die Anthropic-Konsole und melde dich mit deinem Konto an.", link: { wort: "console.anthropic.com", url: CONSOLE_URL } },
-    { text: "Lege unter API-Schlüssel einen neuen Schlüssel an, Name zum Beispiel WAMO." },
+    { text: "Lege unter API-Schlüssel einen neuen Schlüssel an, Name zum Beispiel W.A.I.S." },
     { text: "Setze unter Limits ein monatliches Ausgabenlimit, damit nichts unbemerkt Kosten verursacht (empfohlen: 100 US-Dollar)." },
     { text: "Kopiere den Schlüssel. Er beginnt mit sk-ant-api und wird nur einmal angezeigt." },
   ],
@@ -41,7 +41,7 @@ export const TOKEN_ANLEITUNG: Anleitung = {
   ],
   zweck:
     "Der Token gilt nur für Entwicklungsaufträge mit Claude Code und läuft über das Kontingent deines Tarifs, nicht für das Gespräch. " +
-    "WAMO prüft nur das Format, damit dein Kontingent nicht verbraucht wird.",
+    "W.A.I.S. prüft nur das Format, damit dein Kontingent nicht verbraucht wird.",
 };
 
 export type SchluesselArt = "api" | "code";
@@ -76,4 +76,4 @@ export function falschesFeld(feld: SchluesselArt, wert: string): { richtig: Schl
 
 /** Satz, der ausdrücklich sagt, dass WAMO nichts selbst erzeugt. */
 export const NICHT_AUTOMATISCH =
-  "WAMO kann das nicht für dich erledigen: Schlüssel und Token entstehen nur mit deiner eigenen Anmeldung.";
+  "W.A.I.S. kann das nicht für dich erledigen: Schlüssel und Token entstehen nur mit deiner eigenen Anmeldung.";

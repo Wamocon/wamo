@@ -297,9 +297,9 @@ test("Hinweiszeile: nur bei wartet, Fehler und nicht verbundenem Tunnel", () => 
   assert.equal(hinweisZeile("wartet", undefined, null), "Dein Laptop wartet auf die Freigabe durch einen Admin.");
   assert.equal(hinweisZeile("fehler", "Text des Kerns", null), "Text des Kerns");
   assert.ok(hinweisZeile("fehler", undefined, null));
-  assert.equal(hinweisZeile("eingerichtet", undefined, "aus"), "Die Verbindung deines Laptops zu WAMO wird aufgebaut.");
-  assert.equal(hinweisZeile("eingerichtet", undefined, "host"), "Die Verbindung deines Laptops zu WAMO wird aufgebaut.");
-  assert.equal(hinweisZeile("eingerichtet", undefined, "unbekannt"), "Die Verbindung deines Laptops zu WAMO wird aufgebaut.");
+  assert.equal(hinweisZeile("eingerichtet", undefined, "aus"), "Die Verbindung deines Laptops zu W.A.I.S. wird aufgebaut.");
+  assert.equal(hinweisZeile("eingerichtet", undefined, "host"), "Die Verbindung deines Laptops zu W.A.I.S. wird aufgebaut.");
+  assert.equal(hinweisZeile("eingerichtet", undefined, "unbekannt"), "Die Verbindung deines Laptops zu W.A.I.S. wird aufgebaut.");
   assert.equal(hinweisZeile("eingerichtet", undefined, "verbunden"), null);
   assert.equal(hinweisZeile("eingerichtet", undefined, null), null);
   assert.equal(hinweisZeile("nicht_noetig", undefined, "aus"), null);

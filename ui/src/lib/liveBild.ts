@@ -75,7 +75,7 @@ export const GRUND_TEXT: Record<string, string> = {
   hinweis_fehlt: "Der rote Hinweis am Laptop ist nicht sichtbar. Ohne ihn gibt es kein Bild.",
   abgelaufen: "Die Zeit des Live-Bilds am Laptop ist abgelaufen. Die Person am Laptop schaltet es erneut ein.",
   nicht_erlaubt: "Das Live-Bild gibt es nur für Admins an ihrem eigenen Laptop, wenn die PC-Steuerung an ist.",
-  schalter_aus: "Am Laptop ist das Live-Bild aus. Du kannst den Laptop hier um das Live-Bild bitten oder es dort im Tray-Menü von WAMO einschalten.",
+  schalter_aus: "Am Laptop ist das Live-Bild aus. Du kannst den Laptop hier um das Live-Bild bitten oder es dort im Tray-Menü von W.A.I.S. einschalten.",
   angefordert: "Die Anfrage ging an den Laptop. Ich warte, bis er das Live-Bild einschaltet.",
   fern_abgelehnt: "Die Anfrage ist nicht möglich.",
   keine_einwilligung: "Die Person am Laptop muss dem Live-Bild dort erst zustimmen.",

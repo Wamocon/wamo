@@ -12,7 +12,7 @@ vi.mock("@/lib/gedaechtnisApi", () => ({ vorschlaegeLaden: vi.fn(), vorschlagEnt
 
 const ID1 = "5b3f1c2d-8e7a-4b6c-9d0e-1f2a3b4c5d6e";
 const ID2 = "9d8c7b6a-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
-const eins: Vorschlag = { id: ID1, art: "lesson", text: "WAMO kann Fernseher schalten.", autor: "Anna", angelegt: "2026-11-12T06:58:48Z" };
+const eins: Vorschlag = { id: ID1, art: "lesson", text: "W.A.I.S. kann Fernseher schalten.", autor: "Anna", angelegt: "2026-11-12T06:58:48Z" };
 const zwei: Vorschlag = { id: ID2, art: "fact", text: "Die Sparks heißen Sokrates 1, Sokrates 2 und Caesar.", autor: "Niko", angelegt: "" };
 
 function lade(liste: Vorschlag[]) {
@@ -45,7 +45,7 @@ describe("GedaechtnisAbschnitt", () => {
     render(<GedaechtnisAbschnitt />);
     expect(screen.getByText("Lade die Vorschläge ...")).toBeTruthy();
     await act(async () => fertig({ ok: true, vorschlaege: [eins, zwei] }));
-    expect(await screen.findByText("WAMO kann Fernseher schalten.")).toBeTruthy();
+    expect(await screen.findByText("W.A.I.S. kann Fernseher schalten.")).toBeTruthy();
     expect(screen.getByText("Lektion")).toBeTruthy();
     expect(screen.getByText("von Anna")).toBeTruthy();
     expect(screen.getByText("2 Vorschläge warten auf dich.")).toBeTruthy();
@@ -54,7 +54,7 @@ describe("GedaechtnisAbschnitt", () => {
 
   it("jeder Vorschlag hat zwei gleich gewichtete Knöpfe", async () => {
     await zeige();
-    for (const t of ["WAMO kann Fernseher schalten.", "Die Sparks heißen Sokrates 1, Sokrates 2 und Caesar."]) {
+    for (const t of ["W.A.I.S. kann Fernseher schalten.", "Die Sparks heißen Sokrates 1, Sokrates 2 und Caesar."]) {
       const k = karte(t).getAllByRole("button");
       expect(k.map((b) => b.textContent)).toEqual(["Für alle freigeben", "Ablehnen"]);
       expect(k[0].className).toBe(k[1].className);
@@ -84,11 +84,11 @@ describe("GedaechtnisAbschnitt", () => {
 
   it("Freigeben: Aufruf mit Kennung und Entscheidung, der Vorschlag verschwindet, die Meldung steht im Statusbereich", async () => {
     const user = await zeige();
-    await user.click(karte("WAMO kann Fernseher schalten.").getByRole("button", { name: "Für alle freigeben" }));
+    await user.click(karte("W.A.I.S. kann Fernseher schalten.").getByRole("button", { name: "Für alle freigeben" }));
     expect(vorschlagEntscheiden).toHaveBeenCalledWith(ID1, "freigeben");
     const meldung = await screen.findByText("Freigegeben. Der Eintrag gilt für alle Profile in neuen Gesprächen.");
     expect(meldung.getAttribute("role")).toBe("status");
-    expect(screen.queryByText("WAMO kann Fernseher schalten.")).toBeNull();
+    expect(screen.queryByText("W.A.I.S. kann Fernseher schalten.")).toBeNull();
     expect(screen.getByText("1 Vorschlag wartet auf dich.")).toBeTruthy();
   });
 
@@ -105,7 +105,7 @@ describe("GedaechtnisAbschnitt", () => {
     vi.mocked(vorschlagEntscheiden).mockResolvedValue({ ok: true, ergebnis: "nicht_offen" });
     const user = await zeige();
     lade([zwei]);
-    await user.click(karte("WAMO kann Fernseher schalten.").getByRole("button", { name: "Für alle freigeben" }));
+    await user.click(karte("W.A.I.S. kann Fernseher schalten.").getByRole("button", { name: "Für alle freigeben" }));
     expect(await screen.findByText("Dieser Vorschlag war schon entschieden. Die Liste ist neu geladen.")).toBeTruthy();
     expect(vorschlaegeLaden).toHaveBeenCalledTimes(2);
   });
@@ -113,9 +113,9 @@ describe("GedaechtnisAbschnitt", () => {
   it("ein Fehler beim Entscheiden lässt den Vorschlag stehen, nennt den Grund und gibt die Knöpfe wieder frei", async () => {
     vi.mocked(vorschlagEntscheiden).mockResolvedValue({ ok: false, text: "Vorschläge prüfen dürfen nur Admins." });
     const user = await zeige();
-    await user.click(karte("WAMO kann Fernseher schalten.").getByRole("button", { name: "Ablehnen" }));
+    await user.click(karte("W.A.I.S. kann Fernseher schalten.").getByRole("button", { name: "Ablehnen" }));
     expect(await screen.findByText("Vorschläge prüfen dürfen nur Admins.")).toBeTruthy();
-    expect(screen.getByText("WAMO kann Fernseher schalten.")).toBeTruthy();
+    expect(screen.getByText("W.A.I.S. kann Fernseher schalten.")).toBeTruthy();
     for (const b of screen.getAllByRole("button", { name: /freigeben|Ablehnen/ })) expect(b.getAttribute("aria-disabled")).toBeNull();
   });
 
@@ -127,7 +127,7 @@ describe("GedaechtnisAbschnitt", () => {
       }),
     );
     const user = await zeige();
-    await user.dblClick(karte("WAMO kann Fernseher schalten.").getByRole("button", { name: "Für alle freigeben" }));
+    await user.dblClick(karte("W.A.I.S. kann Fernseher schalten.").getByRole("button", { name: "Für alle freigeben" }));
     expect(vorschlagEntscheiden).toHaveBeenCalledTimes(1);
     expect(screen.getByText("Wird gespeichert ...")).toBeTruthy();
     for (const b of screen.getAllByRole("button", { name: /freigeben|Ablehnen|Wird gespeichert/ })) expect(b.getAttribute("aria-disabled")).toBe("true");
@@ -139,7 +139,7 @@ describe("GedaechtnisAbschnitt", () => {
 
   it("nach dem Entscheiden geht der Fokus an den nächsten Vorschlag, beim letzten an Neu laden", async () => {
     const user = await zeige();
-    await user.click(karte("WAMO kann Fernseher schalten.").getByRole("button", { name: "Für alle freigeben" }));
+    await user.click(karte("W.A.I.S. kann Fernseher schalten.").getByRole("button", { name: "Für alle freigeben" }));
     await screen.findByText(/^Freigegeben\./);
     expect(document.activeElement).toBe(karte("Die Sparks heißen Sokrates 1, Sokrates 2 und Caesar.").getAllByRole("button")[0]);
     vi.mocked(vorschlagEntscheiden).mockResolvedValue({ ok: true, ergebnis: "abgelehnt" });

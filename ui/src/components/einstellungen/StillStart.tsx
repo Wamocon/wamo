@@ -35,7 +35,7 @@ export const StillStartEinstellung = memo(function StillStartEinstellung() {
         ) : (
           <>
             <p className="ez-klein">
-              Der erste Tastendruck im Eingabefeld startet WAMO ohne Mikrofon. Die Antworten kommen als Text, das Mikrofon öffnet sich erst, wenn du
+              Der erste Tastendruck im Eingabefeld startet W.A.I.S. ohne Mikrofon. Die Antworten kommen als Text, das Mikrofon öffnet sich erst, wenn du
               es einschaltest. Nach {MINUTEN} Minuten ohne Eingabe endet die Sitzung wieder; solange die PC-Steuerung an ist oder etwas auf deine
               Entscheidung wartet, bleibt sie offen.
             </p>

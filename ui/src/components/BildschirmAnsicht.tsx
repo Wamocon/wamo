@@ -170,7 +170,7 @@ function Geschlossen({ aktionen }: { aktionen: LiveBildAktionen }) {
   return (
     <>
       <p className="lb-text">
-        Du siehst den Bildschirm deines eigenen Laptops, solange das Live-Bild dort eingeschaltet ist: im Tray-Menü von WAMO am Laptop
+        Du siehst den Bildschirm deines eigenen Laptops, solange das Live-Bild dort eingeschaltet ist: im Tray-Menü von W.A.I.S. am Laptop
         oder von hier aus mit einem Code der Authenticator-App. Am Laptop leuchtet dann ein roter Rahmen. Es wird nichts aufgezeichnet
         oder gespeichert.
       </p>

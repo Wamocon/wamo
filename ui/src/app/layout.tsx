@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import localFont from "next/font/local";
+import { LANGFORM } from "@/lib/anzeigename";
 import { INIT_SKRIPT, LEISTENFARBE } from "@/lib/thema";
 import "./globals.css";
 
@@ -38,13 +39,13 @@ const body = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "WAMO",
-  description: "Sprachassistent der WAMOCON GmbH",
-  applicationName: "WAMO",
+  title: "W.A.I.S.",
+  description: `${LANGFORM}, Sprachassistent der WAMOCON GmbH`,
+  applicationName: "W.A.I.S.",
   // iPhone: Zum Home-Bildschirm startet die Oberfläche als App ohne Browserleiste. Das Symbol (apple-icon.png) und das
   // Manifest (manifest.ts) erzeugen Next.js aus den Dateien im Ordner app. "black-translucent": die Statusleiste liegt
   // über dem dunklen Hintergrund, die Kopfzeile reicht mit env(safe-area-inset-top) darunter (globals.css).
-  appleWebApp: { capable: true, title: "WAMO", statusBarStyle: "black-translucent" },
+  appleWebApp: { capable: true, title: "W.A.I.S.", statusBarStyle: "black-translucent" },
   formatDetection: { telephone: false },
 };
 

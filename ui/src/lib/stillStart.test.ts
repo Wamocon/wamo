@@ -217,8 +217,8 @@ test("L1: nie trennen bei PC-Steuerung, offener Freigabekarte, laufendem Auftrag
     ["Entwicklungsauftrag", { auftragLaeuft: true }],
     ["Vorgang", { vorgangLaeuft: true }],
     ["Live-Bild", { liveBild: true }],
-    ["WAMO spricht", { presence: "speaking" }],
-    ["WAMO denkt", { presence: "thinking" }],
+    ["W.A.I.S. spricht", { presence: "speaking" }],
+    ["W.A.I.S. denkt", { presence: "thinking" }],
     ["Person spricht", { presence: "listening" }],
     ["Werkzeug läuft", { werkzeugLaeuft: true }],
   ];

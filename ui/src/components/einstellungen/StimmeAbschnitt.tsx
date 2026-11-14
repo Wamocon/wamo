@@ -65,7 +65,7 @@ export const StimmeAbschnitt = memo(function StimmeAbschnitt({ aktionen }: { akt
         ]}
       />
       <p className="ez-text">
-        WAMO erkennt an deinem Stimmabdruck, ob du sprichst. Dafür liest du einmal einen kurzen Text vor. Gespeichert wird nur der Abdruck,
+        W.A.I.S. erkennt an deinem Stimmabdruck, ob du sprichst. Dafür liest du einmal einen kurzen Text vor. Gespeichert wird nur der Abdruck,
         keine Aufnahme, und du kannst ihn jederzeit löschen.
       </p>
       {!online ? (
@@ -96,7 +96,7 @@ export const StimmeAbschnitt = memo(function StimmeAbschnitt({ aktionen }: { akt
       </div>
       {frage && (
         <div className="ez-rueckfrage" role="group" aria-labelledby={frageId}>
-          <p id={frageId}>Abdruck wirklich löschen? Danach erkennt WAMO deine Stimme nicht mehr, bis du sie neu einlernst.</p>
+          <p id={frageId}>Abdruck wirklich löschen? Danach erkennt W.A.I.S. deine Stimme nicht mehr, bis du sie neu einlernst.</p>
           <div className="ez-tasten">
             <button type="button" ref={behalten} className="btn-secondary" onClick={frageSchliessen}>
               Behalten

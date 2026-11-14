@@ -65,7 +65,7 @@ describe("KernRinge: Zustände aus dem Store", () => {
 });
 
 describe("KernRinge: Pegelbogen", () => {
-  it("bleibt ohne Ton leer und wächst mit der Stimme von WAMO", () => {
+  it("bleibt ohne Ton leer und wächst mit der Stimme von W.A.I.S.", () => {
     act(() => wamo.set((s) => ({ ...s, presence: "speaking" })));
     render(<KernRinge levels={levelsRef} />);
     bild();
@@ -77,7 +77,7 @@ describe("KernRinge: Pegelbogen", () => {
     expect(bogen().getAttribute("data-wer")).toBe("bot");
   });
 
-  it("färbt den Bogen nach dem Sprecher: Mensch, weitere Stimme, WAMO", () => {
+  it("färbt den Bogen nach dem Sprecher: Mensch, weitere Stimme, W.A.I.S.", () => {
     act(() => wamo.set((s) => ({ ...s, presence: "listening" })));
     render(<KernRinge levels={levelsRef} />);
     levelsRef.current = { user: 0.3, bot: 0, cut: false, speaker: 0 };

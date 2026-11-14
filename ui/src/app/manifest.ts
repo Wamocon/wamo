@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { LANGFORM } from "@/lib/anzeigename";
 
 /**
  * Web-App-Manifest: macht die Oberfläche als App installierbar (iPhone: Teilen, Zum Home-Bildschirm; Android und
@@ -10,9 +11,9 @@ import type { MetadataRoute } from "next";
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: "/",
-    name: "WAMO",
-    short_name: "WAMO",
-    description: "Sprachassistent der WAMOCON GmbH",
+    name: "W.A.I.S.",
+    short_name: "W.A.I.S.",
+    description: `${LANGFORM}, Sprachassistent der WAMOCON GmbH`,
     lang: "de",
     start_url: "/",
     scope: "/",

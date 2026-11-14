@@ -50,8 +50,8 @@ test("stimme_status und stimme_ergebnis füllen den Stand", () => {
 });
 
 test("die Einwilligung vom Kern wird mit Version und Text abgelegt", () => {
-  applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-1", text: "WAMO speichert einen Abdruck." });
-  assert.deepEqual(stand().einwilligung, { version: "stimme-1", text: "WAMO speichert einen Abdruck." });
+  applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-1", text: "W.A.I.S. speichert einen Abdruck." });
+  assert.deepEqual(stand().einwilligung, { version: "stimme-1", text: "W.A.I.S. speichert einen Abdruck." });
 });
 
 test("die Einlernansicht öffnet nur mit laufender Sitzung und eingeschalteter Stimmerkennung, zuerst mit der Einwilligung", () => {
