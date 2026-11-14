@@ -13,7 +13,7 @@ im selben Prozess teilen nur den Rechner. Gerechnet wird nur für ein Profil mit
 
 Einlernen (stimme_einlernen.py) hängt am Prüfer, weil es den Ton braucht: Solange es läuft, sammelt es den Ton und der Prüfer ersetzt ihn
 für Spracherkennung und VAD durch Stille. Meldungen an die Oberfläche: {"type": "stimme", "ergebnis": eigen | fremd | unklar, "wert",
-"modus"} je Äußerung und {"type": "stimme", "status", "modus"} beim Stand (kurz zählt als unklar).
+"modus"} je Äußerung (kurz zählt als unklar); den Stand (StimmGate.stand) melden Sitzung und Einlernen.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 
 from stimme_einlernen import Einlernen
 from stimme_gate import KURZ, UNKLAR, StimmGate
-from stimme_modell import kosinus
+from stimme_modell import ModellQuelle, kosinus
 
 RING_SECS = 10.0
 MAX_PRUEF_SECS = 8.0
@@ -73,7 +73,7 @@ class Stimmpruefer(FrameProcessor):
     def __init__(
         self,
         gate: StimmGate,
-        modell,
+        modell: ModellQuelle,
         *,
         speichern: Callable[[np.ndarray, str, datetime], Awaitable[bool]],
         sagen: Callable[[str], Awaitable[None]],
@@ -109,15 +109,8 @@ class Stimmpruefer(FrameProcessor):
 
     # ---------- Stand und Einlernen ----------
 
-    async def status_melden(self) -> None:
-        await self._senden({"type": "stimme", "status": self._gate.status, "modus": self._gate.modus})
-
     async def _senden(self, daten: dict) -> None:
         await self.push_frame(RTVIServerMessageFrame(data=daten))
-
-    @property
-    def einlernen_aktiv(self) -> bool:
-        return self._einlernen.beschaeftigt
 
     async def einlernen_starten(self, version: str, einwilligung_am: datetime) -> None:
         await self._einlernen.starten(version, einwilligung_am)

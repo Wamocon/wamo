@@ -278,7 +278,7 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         for daten in ({"aktion": "start"}, {"aktion": "start", "einwilligung": ""}, {"aktion": "start", "einwilligung": "stimme-0"},
                       {"aktion": "start", "einwilligung": True}, {"aktion": "start", "einwilligung": ["stimme-1"]}):
             await s.nachricht(daten)
-            self.assertFalse(s.pruefer.einlernen_aktiv, daten)
+            self.assertFalse(s.pruefer._einlernen.beschaeftigt, daten)
         self.assertEqual({x["status"] for x in arten(gesendet, "stimmabdruck")}, {"fehler"})
         self.assertIn("text", arten(gesendet, "stimmabdruck")[0])
         sagen.assert_not_awaited()
@@ -287,18 +287,18 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         s, gesendet, uhr, sagen = await self.bereit()
         vorher = datetime.now(timezone.utc)
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[0]["status"], "start")
         sagen.assert_awaited_once()
         await s.nachricht({"aktion": "abbrechen"})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "abgebrochen")
         self.assertGreaterEqual(datetime.now(timezone.utc), vorher)
 
     async def test_start_im_modus_aus_wird_abgelehnt(self):
         s, gesendet, _, _ = await self.bereit(modus="aus")
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
 
     async def test_start_solange_der_stand_nicht_lesbar_ist_wird_abgelehnt(self):
@@ -308,7 +308,7 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
             await s.vorbereiten()
         gesendet.clear()
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
 
     async def test_unbekannte_oder_kaputte_nachrichten_sind_ohne_wirkung(self):
@@ -316,7 +316,7 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         for daten in ({"aktion": "fliegen"}, {}, {"aktion": None}, {"aktion": ["start"]}, "start", None, 5, [1]):
             await s.nachricht(daten)
         self.assertEqual(gesendet, [])
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
 
     async def aufnehmen(self, s, uhr, secs=ZIEL_SECS + 0.1):
         s.pruefer.on_bot_speaking(True)
@@ -391,12 +391,12 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         db = FakeDb({USER_A: als_vektor(EIGENER)})
         s, gesendet, _, _ = await self.bereit(db)
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
         s.gate.eintragen(EIGEN)
         gesendet.clear()
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
 
     # ---------- Löschen und Ersetzen brauchen einen Nachweis (M3) ----------
 
@@ -455,7 +455,7 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "geloescht")
         gesendet.clear()
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertFalse(s.pruefer._einlernen.beschaeftigt)
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
         self.assertIn("anmelden", arten(gesendet, "stimmabdruck")[-1]["text"])
 
@@ -465,28 +465,28 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         await s.nachricht({"aktion": "loeschen"})
         gesendet.clear()
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
 
     async def test_ersetzen_mit_frischer_anmeldung_geht_auch_ohne_erkannte_stimme(self):
         db = FakeDb({USER_A: als_vektor(EIGENER)})
         s, gesendet, _, _ = await self.bereit(db, identity=self.angemeldet(30))
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
 
     async def test_erstes_einlernen_und_loeschen_ohne_abdruck_brauchen_keinen_nachweis(self):
         s, gesendet, _, _ = await self.bereit(identity=self.angemeldet(None))
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
-        self.assertTrue(s.pruefer.einlernen_aktiv)
+        self.assertTrue(s.pruefer._einlernen.beschaeftigt)
         await s.nachricht({"aktion": "abbrechen"})
         await s.nachricht({"aktion": "loeschen"})
         self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "geloescht")
 
-    async def test_zug_verworfen_reicht_an_den_waechter_durch(self):
-        s, _, _, _ = await self.bereit()
-        self.assertFalse(s.zug_verworfen())
-        s.waechter._verworfen = True
-        self.assertTrue(s.zug_verworfen())
-        self.assertFalse(s.zug_verworfen())
+    def test_keine_markierung_fuer_verworfene_zuege(self):
+        """Die Markierung hing an keinem Zug (on_user_turn_stopped läuft als eigene Aufgabe); bot.py prüft nur noch auf leeren Inhalt."""
+        from stimme_waechter import StimmWaechter
+
+        self.assertFalse(hasattr(ss.StimmSitzung, "zug_verworfen"))
+        self.assertFalse(hasattr(StimmWaechter, "zug_verworfen"))
 
 
 class ZeitTests(unittest.TestCase):

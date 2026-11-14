@@ -59,6 +59,11 @@ class Schwellen:
     kurz_vertrauen_secs: float = 15.0
 
 
+def stand_nachricht(modus: str, status: str) -> dict:
+    """Stand der Stimmprüfung für die Oberfläche, an einer Stelle für alle Absender (Sitzung, Einlernen, Labor)."""
+    return {"type": "stimme", "status": status, "modus": modus}
+
+
 def pruefmodus(wert: str | None = None) -> str:
     """Modus aus WAMO_STIMME_PRUEFUNG (oder wert). Leer oder unbekannt heißt streng, ein unbekannter Wert wird einmal gewarnt."""
     roh = ((os.getenv("WAMO_STIMME_PRUEFUNG") if wert is None else wert) or "").strip().lower()
@@ -127,6 +132,10 @@ class StimmGate:
         if self.zustand == "laedt" or self.modell_ok is None:
             return "laedt"
         return "bereit"
+
+    def stand(self, status: str | None = None) -> dict:
+        """Nachricht an die Oberfläche mit dem Stand dieses Gates (oder einem vorgegebenen, zum Beispiel laedt beim Modellstart)."""
+        return stand_nachricht(self.modus, status or self.status)
 
     def setze_abdruck(self, abdruck: np.ndarray | None, ok: bool = True, geloescht: bool = False) -> None:
         """Stand des Abdrucks nach dem Laden, Einlernen oder Löschen. ok False: nicht lesbar, es ist unbekannt, ob es einen gibt.

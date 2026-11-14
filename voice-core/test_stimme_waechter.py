@@ -101,8 +101,6 @@ class VerwerfenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(texte[0].text.strip(), "")  # der Zug endet leer, das Modell sieht keinen Satz
         self.assertTrue(texte[0].finalized)  # ... damit der Zug normal endet
         self.assertEqual(meldungen, [{"type": "stimme", "ergebnis": "fremd", "wert": 0.12, "modus": "streng", "ignoriert": True}])
-        self.assertTrue(waechter.zug_verworfen())
-        self.assertFalse(waechter.zug_verworfen())  # nur einmal je Zug
 
     async def test_eigen_unklar_und_kurz_gehen_unveraendert_durch(self):
         for art in (EIGEN, UNKLAR, KURZ):
@@ -110,7 +108,6 @@ class VerwerfenTests(unittest.IsolatedAsyncioTestCase):
             texte, meldungen = await durchlassen(waechter, [final("Hallo WAMO")])
             self.assertEqual([t.text for t in texte], ["Hallo WAMO"], art)
             self.assertEqual(meldungen, [], art)
-            self.assertFalse(waechter.zug_verworfen(), art)
 
     async def test_endgueltiges_transkript_mit_satzzeichen_meldet_das_satzende(self):
         for text, erwartet in (("Mach die Heizung an.", 1), ("Wie spät ist es?", 1), ("Stopp!", 1), ("Mach die Heizung", 0),
@@ -262,7 +259,6 @@ class MitEchtemPrueferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meldungen[0]["ergebnis"], "fremd")
         self.assertTrue(meldungen[0]["ignoriert"])
         self.pruefer.on_turn_end()
-        self.waechter.zug_verworfen()
         await self.sprechen(8000, 2.0)  # danach die Person
         texte, meldungen = await durchlassen(self.waechter, [final("Mach die Heizung an")])
         self.assertEqual([t.text for t in texte], ["Mach die Heizung an"])
@@ -327,17 +323,15 @@ class MitEchtemAggregatorTests(unittest.IsolatedAsyncioTestCase):
         return zuege, [f for f in unten if isinstance(f, LLMContextFrame)], kontext, waechter
 
     async def test_eigene_aeusserung_ruft_das_modell_auf(self):
-        zuege, kontextframes, kontext, waechter = await self.lauf(urteil(EIGEN), "Mach die Heizung an")
+        zuege, kontextframes, kontext, _ = await self.lauf(urteil(EIGEN), "Mach die Heizung an")
         self.assertEqual(zuege, ["Mach die Heizung an"])
         self.assertEqual(len(kontextframes), 1)
-        self.assertFalse(waechter.zug_verworfen())
 
     async def test_fremde_aeusserung_beendet_den_zug_leer_ohne_modellaufruf(self):
-        zuege, kontextframes, kontext, waechter = await self.lauf(urteil(FREMD), "Schließ die Tür")
-        self.assertEqual([z.strip() for z in zuege], [""])  # genau ein Zug, ohne Satz
+        zuege, kontextframes, kontext, _ = await self.lauf(urteil(FREMD), "Schließ die Tür")
+        self.assertEqual([z.strip() for z in zuege], [""])  # genau ein Zug, ohne Satz: bot.py kehrt bei leerem Inhalt zurück
         self.assertEqual(kontextframes, [])
         self.assertEqual(kontext.messages, [])  # nichts im Verlauf
-        self.assertTrue(waechter.zug_verworfen())
 
 
 class FesteMarke:

@@ -23,6 +23,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import httpx
 import numpy as np
@@ -62,6 +63,23 @@ def modell_pfad(umgebung: Mapping[str, str] | None = None) -> Path:
     if eigener:
         return Path(eigener)
     return cache_ordner(env) / MODELL_NAME
+
+
+@runtime_checkable
+class Rechner(Protocol):
+    """Was Prüfer und Einlernen vom Rechner brauchen (Embedder, in Tests ein Ersatz): aus PCM einen normierten Abdruck, blockierend."""
+
+    def embed(self, pcm: bytes, sample_rate: int) -> np.ndarray: ...
+
+
+@runtime_checkable
+class ModellQuelle(Protocol):
+    """Was Prüfer, Einlernen und Sitzung vom Modell brauchen (StimmModell, in Tests ein Ersatz): ob es geladen ist und den Rechner."""
+
+    @property
+    def bereit(self) -> bool: ...
+
+    async def get(self) -> Rechner | None: ...
 
 
 class Embedder:

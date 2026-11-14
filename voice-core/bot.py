@@ -1284,8 +1284,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     @user_agg.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(_agg, _strategy, message):
-        if stimme is not None and stimme.zug_verworfen() and not message.content.strip():
-            return  # eine sicher fremde Stimme: kein Zug, kein Eintrag im Verlauf und im Gedächtnis (stimme_waechter.py)
+        if not message.content.strip():
+            return  # leer, etwa eine sicher fremde Stimme (stimme_waechter.py): kein Zug, kein Eintrag im Verlauf und im Gedächtnis
         # Eine Äußerung, die nicht sicher von der Person stammt (Profil mit Abdruck, Stimme nicht sicher erkannt), färbt den Zug wie
         # Fremdinhalte: kein Lernen daraus, kein Hinweis des Ja-Wächters, im Protokoll mit Markierung (stimme_gate.nicht_sicher_eigen).
         unsicher = stimme is not None and stimme.nicht_sicher_eigen()

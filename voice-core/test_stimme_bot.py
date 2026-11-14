@@ -258,33 +258,19 @@ async def test_ohne_datenbank_ist_die_stimmpruefung_aus_und_es_gibt_keine_einwil
     await session.cleanup()
 
 
-async def test_verworfener_zug_kommt_nicht_in_verlauf_und_gedaechtnis():
+async def test_leerer_zug_kommt_nicht_in_verlauf_und_gedaechtnis():
+    """Der Wächter hat das Transkript einer fremden Stimme durch ein Leerzeichen ersetzt: der Zug endet leer. Die Prüfung auf den leeren
+    Inhalt reicht, eine Markierung des Wächters braucht es nicht (sie hing an keinem Zug, on_user_turn_stopped läuft als eigene Aufgabe)."""
     store = m.MemoryStore(USER, BotDb())
     session, stufen, _llm = await bauen(Identity(USER, "Erika", "mitglied", "sie"), store=store)
     nutzer = next(p for p in stufen if isinstance(p, LLMUserAggregator))
     with mock.patch.object(m.MemoryStore, "log_turn", mock.AsyncMock()) as log_turn:
-        session.stimme.waechter._verworfen = True  # der Wächter hat das Transkript einer fremden Stimme ersetzt
         await nutzer._call_event_handler("on_user_turn_stopped", None, types.SimpleNamespace(content=" "))
         await abwarten()  # Pipecat führt Ereignisbehandler als eigene Aufgaben aus
         log_turn.assert_not_awaited()
-        assert session.stimme.zug_verworfen() is False  # die Markierung ist verbraucht
         await nutzer._call_event_handler("on_user_turn_stopped", None, types.SimpleNamespace(content="Hallo WAMO"))
         await abwarten()
         log_turn.assert_awaited_once_with(role="user", content="Hallo WAMO")
-    await session.cleanup()
-
-
-async def test_ein_zug_mit_text_trotz_markierung_wird_normal_behandelt():
-    """Fremde und eigene Stimme im selben Zug: der Satz der Person bleibt erhalten, die Markierung wird verbraucht."""
-    store = m.MemoryStore(USER, BotDb())
-    session, stufen, _llm = await bauen(Identity(USER, "Erika", "mitglied", "sie"), store=store)
-    nutzer = next(p for p in stufen if isinstance(p, LLMUserAggregator))
-    with mock.patch.object(m.MemoryStore, "log_turn", mock.AsyncMock()) as log_turn:
-        session.stimme.waechter._verworfen = True
-        await nutzer._call_event_handler("on_user_turn_stopped", None, types.SimpleNamespace(content="Mach das Licht an"))
-        await abwarten()
-        log_turn.assert_awaited_once_with(role="user", content="Mach das Licht an")
-        assert session.stimme.zug_verworfen() is False
     await session.cleanup()
 
 

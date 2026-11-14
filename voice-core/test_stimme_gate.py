@@ -529,5 +529,23 @@ class GetipptTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(tippen_beobachten(object(), bereites_gate()))
 
 
+class StandNachrichtTests(unittest.TestCase):
+    """Die Stand-Nachricht {"type": "stimme", "status", "modus"} entsteht an einer Stelle (Gate), nicht in Prüfer, Sitzung und Einlernen."""
+
+    def test_stand_des_gates(self):
+        gate = StimmGate(modus="streng")
+        self.assertEqual(gate.stand(), {"type": "stimme", "status": "laedt", "modus": "streng"})
+        self.assertEqual(bereites_gate().stand(), {"type": "stimme", "status": "bereit", "modus": "streng"})
+        self.assertEqual(gate.stand("kaputt"), {"type": "stimme", "status": "kaputt", "modus": "streng"})
+        self.assertEqual(stimme_gate.stand_nachricht("aus", "aus"), {"type": "stimme", "status": "aus", "modus": "aus"})
+
+    def test_keine_zweite_stelle_baut_sie(self):
+        from pathlib import Path
+
+        ordner = Path(stimme_gate.__file__).parent
+        for datei in ("stimme_pruefer.py", "stimme_sitzung.py", "stimme_einlernen.py", "stimme_waechter.py"):
+            self.assertNotIn('"type": "stimme", "status"', (ordner / datei).read_text(encoding="utf-8").split('"""', 2)[-1], datei)
+
+
 if __name__ == "__main__":
     unittest.main()

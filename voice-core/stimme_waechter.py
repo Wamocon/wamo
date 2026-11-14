@@ -21,7 +21,8 @@ Eine Äußerung, die so durchgeht, aber nicht sicher die Stimme der Person war, 
 (StimmGate.nicht_sicher_eigen): kein Lernen, kein Hinweis des Ja-Wächters, Markierung im Protokoll.
 
 Verwerfen heißt: Das Transkript wird durch ein Leerzeichen ersetzt. Der Zug des Nutzers endet dann leer: kein Satz im Verlauf, nichts für
-das Gedächtnis, kein Aufruf des Modells. bot.py kehrt in on_user_turn_stopped für einen solchen Zug zurück (zug_verworfen). Dazu geht
+das Gedächtnis, kein Aufruf des Modells. bot.py kehrt in on_user_turn_stopped bei leerem Inhalt zurück (eine Markierung des Wächters
+bräuchte es dafür nicht, sie hinge auch an keinem Zug, denn der Behandler läuft als eigene Aufgabe). Dazu geht
 eine Meldung an die Oberfläche: {"type": "stimme", "ergebnis": "fremd", "wert", "modus", "ignoriert": true}, einmal je Urteil.
 
 Grenzen: Die Untertitel der Oberfläche können den Satz noch zeigen (sie entstehen schon bei der Spracherkennung). Spricht jemand Fremdes
@@ -70,13 +71,7 @@ class StimmWaechter(FrameProcessor):
         self._gate = gate
         self._pruefer = pruefer
         self._warten = warten
-        self._verworfen = False
         self._gemeldet_nr = 0
-
-    def zug_verworfen(self) -> bool:
-        """Wurde seit dem letzten Aufruf ein Transkript verworfen? Setzt zurück. Für on_user_turn_stopped in bot.py."""
-        verworfen, self._verworfen = self._verworfen, False
-        return verworfen
 
     def aktiv(self) -> bool:
         """Kann der Wächter verwerfen (Modus streng, Abdruck und Modell bereit)?"""
@@ -112,5 +107,4 @@ class StimmWaechter(FrameProcessor):
                 "type": "stimme", "ergebnis": FREMD, "wert": round(float(urteil.wert), 2), "modus": self._gate.modus,
                 "ignoriert": True,
             }))
-        self._verworfen = True
         return replace(frame, text=" ", result=None)  # ein neues Frame: Beobachter der Pipeline halten das Original

@@ -10,7 +10,7 @@ Streuung) -> speichern -> Abdruck und Vertrauen im Gate setzen. Abbrechen geht j
 gespeichert). Der Rohton liegt nur im Arbeitsspeicher und wird nach dem Rechnen verworfen.
 
 Meldungen an die Oberfläche (über senden): {"type": "stimmabdruck", "status": start | aufnahme | rechnet | fertig | fehler | abgebrochen,
-"sekunden", "ziel", "text"} und {"type": "stimme", "status", "modus"} beim Laden des Modells und nach dem Einlernen.
+"sekunden", "ziel", "text"} und den Stand (StimmGate.stand) beim Laden des Modells und nach dem Einlernen.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import numpy as np
 from loguru import logger
 
 from stimme_gate import EIGEN, StimmGate
-from stimme_modell import MIN_STUECKE, SPRACHE_DBFS, dbfs, einlern_stuecke, mittelpunkt, sprachbloecke
+from stimme_modell import MIN_STUECKE, SPRACHE_DBFS, ModellQuelle, dbfs, einlern_stuecke, mittelpunkt, sprachbloecke
 
 ZIEL_SECS = 20.0  # so viel reine Sprache für den Abdruck
 MAX_SECS = 90.0
@@ -73,7 +73,7 @@ class Einlernen:
     def __init__(
         self,
         gate: StimmGate,
-        modell,
+        modell: ModellQuelle,
         *,
         senden: Callable[[dict], Awaitable[None]],
         sagen: Callable[[str], Awaitable[None]],
@@ -125,7 +125,7 @@ class Einlernen:
         self._laedt = True
         try:
             if not self._modell.bereit:
-                await self._senden({"type": "stimme", "status": "laedt", "modus": self._gate.modus})
+                await self._senden(self._gate.stand("laedt"))
             rechner = await self._modell.get()
         finally:
             self._laedt = False
@@ -262,7 +262,7 @@ class Einlernen:
         await self._sagen(FERTIG_TEXT)
 
     async def _status_melden(self) -> None:
-        await self._senden({"type": "stimme", "status": self._gate.status, "modus": self._gate.modus})
+        await self._senden(self._gate.stand())
 
     async def _fehler(self, text: str) -> None:
         logger.warning("Stimmabdruck: {}", text)

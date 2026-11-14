@@ -317,7 +317,7 @@ class EinlernenImPrueferTests(PrueferBasis):
     async def test_waehrend_des_einlernens_hoert_die_spracherkennung_stille(self):
         self.gate.setze_abdruck(None)
         await self.v.einlernen_starten("stimme-1", mock.sentinel.am)
-        self.assertTrue(self.v.einlernen_aktiv)
+        self.assertTrue(self.v._einlernen.beschaeftigt)
         self.sagen.assert_awaited_once()
         frame = audio(8000)
         await self.v.on_audio(frame)
@@ -338,9 +338,9 @@ class EinlernenImPrueferTests(PrueferBasis):
     async def test_cleanup_beendet_das_einlernen(self):
         self.gate.setze_abdruck(None)
         await self.v.einlernen_starten("stimme-1", mock.sentinel.am)
-        self.assertTrue(self.v.einlernen_aktiv)
+        self.assertTrue(self.v._einlernen.beschaeftigt)
         await self.v.cleanup()
-        self.assertFalse(self.v.einlernen_aktiv)
+        self.assertFalse(self.v._einlernen.beschaeftigt)
 
     async def test_cleanup_wartet_bis_laufende_pruefungen_beendet_sind(self):
         """Nach dem Aufräumen läuft keine Prüfung mehr weiter: abgebrochen und abgewartet, ohne Fehler nach außen."""
@@ -352,9 +352,11 @@ class EinlernenImPrueferTests(PrueferBasis):
         self.assertTrue(all(t.done() for t in laufend))
         self.assertIsNone(await self.v.urteil_abwarten(0.05))  # wer danach fragt, bekommt kein Urteil
 
-    async def test_status_melden(self):
-        await self.v.status_melden()
-        self.assertEqual(self.meldungen("stimme")[-1], {"type": "stimme", "status": "bereit", "modus": "streng"})
+    def test_keine_wege_nur_fuer_tests(self):
+        """status_melden und einlernen_aktiv benutzten nur Tests: den Stand meldet die Sitzung (StimmGate.stand), ob das Einlernen läuft,
+        weiß das Einlernen selbst."""
+        self.assertFalse(hasattr(Stimmpruefer, "status_melden"))
+        self.assertFalse(hasattr(Stimmpruefer, "einlernen_aktiv"))
 
 
 class FrameTests(PrueferBasis):

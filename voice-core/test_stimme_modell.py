@@ -338,5 +338,26 @@ class EchtesModellTests(unittest.TestCase):
         self.assertAlmostEqual(kosinus(a, b), 1.0, places=4)
 
 
+class SchnittstelleTests(unittest.TestCase):
+    """Prüfer, Einlernen und Sitzung kennen das Modell nur über eine Schnittstelle (Protocol), Ersatzmodelle in Tests erfüllen dieselbe."""
+
+    def test_das_modell_des_prozesses_erfuellt_die_schnittstelle(self):
+        from stimme_modell import ModellQuelle, Rechner
+
+        self.assertIsInstance(sm.MODELL, ModellQuelle)
+        self.assertTrue(issubclass(sm.Embedder, Rechner))
+
+    def test_pruefer_einlernen_und_sitzung_nennen_die_schnittstelle(self):
+        import typing
+
+        from stimme_einlernen import Einlernen
+        from stimme_modell import ModellQuelle
+        from stimme_pruefer import Stimmpruefer
+        from stimme_sitzung import StimmSitzung
+
+        for klasse in (Stimmpruefer, Einlernen, StimmSitzung):
+            self.assertIs(typing.get_type_hints(klasse.__init__)["modell"], ModellQuelle, klasse.__name__)
+
+
 if __name__ == "__main__":
     unittest.main()

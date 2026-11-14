@@ -8,7 +8,7 @@ von der Laborsperre abgewiesen (labor_rtvi.py, labor.client_nachricht_erlaubt).
 Ablauf in bot.py: fuer (beim Aufbau der Sitzung) -> werkzeuge_absichern und tippen_beobachten (stimme_gate.py) -> pruefer vor die Spracherkennung,
 waechter vor den Aggregator des Nutzers -> laden_bis_bekannt (im Hintergrund nach dem Verbinden: vorbereiten, bei unbekanntem Stand mit
 wachsender Pause erneut) -> client_bereit (Status und Einwilligung an die Oberfläche) -> nachricht (Client-Nachricht stimmabdruck) ->
-zug_verworfen (in on_user_turn_stopped).
+nicht_sicher_eigen (in on_user_turn_stopped; einen vom Wächter verworfenen, also leeren Zug übergeht bot.py schon vorher).
 
 Nachricht der Oberfläche: {"aktion": "start", "einwilligung": "stimme-1"} | {"aktion": "abbrechen"} | {"aktion": "loeschen"}. Start nur mit genau der
 aktuellen Version der Einwilligung (stimme_einwilligung.py), nur auf Klick, nie per Sprache. Löschen entfernt den Abdruck vollständig (DSGVO
@@ -32,8 +32,8 @@ from loguru import logger
 import labor
 from memory import MemoryStore
 from stimme_einwilligung import einwilligung_gilt, einwilligung_nachricht
-from stimme_gate import StimmGate
-from stimme_modell import MODELL
+from stimme_gate import StimmGate, stand_nachricht
+from stimme_modell import MODELL, ModellQuelle
 from stimme_pruefer import Stimmpruefer
 from stimme_speicher import abdruck_laden, abdruck_loeschen, abdruck_speichern
 from stimme_waechter import StimmWaechter
@@ -55,7 +55,7 @@ SPRECHER_UNSICHER = "stimme-unsicher"  # Markierung (Spalte speaker_label) im Ge
 
 def nachricht_aus() -> dict:
     """Stand für die Oberfläche, wo es keine Stimmprüfung gibt (Laborprofile): die Bedienelemente bleiben weg."""
-    return {"type": "stimme", "status": "aus", "modus": "aus"}
+    return stand_nachricht("aus", "aus")
 
 
 def jetzt_utc() -> datetime:
@@ -68,7 +68,7 @@ class StimmSitzung:
         identity,
         memory: MemoryStore,
         gate: StimmGate,
-        modell,
+        modell: ModellQuelle,
         *,
         senden: Callable[[dict], Awaitable[None]],
         sagen: Callable[[str], Awaitable[None]],
@@ -96,7 +96,7 @@ class StimmSitzung:
         *,
         senden: Callable[[dict], Awaitable[None]],
         sagen: Callable[[str], Awaitable[None]],
-        modell=MODELL,
+        modell: ModellQuelle = MODELL,
         gate: StimmGate | None = None,
         uhr: Callable[[], float] | None = None,
     ) -> StimmSitzung | None:
@@ -149,16 +149,13 @@ class StimmSitzung:
             self.gate.modell_ok = await self._modell.get() is not None
 
     async def status_melden(self) -> None:
-        await self._senden({"type": "stimme", "status": self.gate.status, "modus": self.gate.modus})
+        await self._senden(self.gate.stand())
 
     async def client_bereit(self) -> None:
         """Die Oberfläche ist verbunden: Stand der Stimmprüfung und der Text der Einwilligung."""
         await self.status_melden()
         if self.gate.modus != "aus":
             await self._senden(einwilligung_nachricht())
-
-    def zug_verworfen(self) -> bool:
-        return self.waechter.zug_verworfen()
 
     def anmeldung_frisch(self) -> bool:
         """Ist die Anmeldung mit zweitem Faktor jünger als ANMELDUNG_FRISCH_SECS? Der Zeitpunkt kommt aus dem Token (auth_gate.anmeldezeit,
