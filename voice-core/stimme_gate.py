@@ -103,6 +103,7 @@ class StimmGate:
     _wer: str | None = None
     _um: float = 0.0  # Zeitpunkt der letzten sicheren Erkennung (oder des letzten Tippens)
     _nur_kurz: bool = False  # seither kamen nur kurze Äußerungen, die nach der Person klangen
+    _geloescht: bool = False  # die Person hat ihren Abdruck in dieser Sitzung gelöscht (setze_abdruck mit geloescht)
     _getippt_um: float = -math.inf
     _ausstehend: asyncio.Task | None = field(default=None, repr=False)
 
@@ -127,13 +128,22 @@ class StimmGate:
             return "laedt"
         return "bereit"
 
-    def setze_abdruck(self, abdruck: np.ndarray | None, ok: bool = True) -> None:
-        """Stand des Abdrucks nach dem Laden, Einlernen oder Löschen. ok False: nicht lesbar, es ist unbekannt, ob es einen gibt."""
+    def setze_abdruck(self, abdruck: np.ndarray | None, ok: bool = True, geloescht: bool = False) -> None:
+        """Stand des Abdrucks nach dem Laden, Einlernen oder Löschen. ok False: nicht lesbar, es ist unbekannt, ob es einen gibt.
+        geloescht: die Person hat ihn gerade gelöscht, das neue Einlernen in dieser Sitzung braucht dann denselben Nachweis wie ein Ersetzen."""
         self.abdruck = abdruck if ok else None
+        if geloescht and self.abdruck is None:
+            self._geloescht = True
         self.zustand = "kaputt" if not ok else "da" if abdruck is not None else "fehlt"
         if abdruck is None:
             self._wer = None  # ein gelöschter Abdruck lässt kein Vertrauen zurück
             self._nur_kurz = False
+
+    @property
+    def abdruck_geschuetzt(self) -> bool:
+        """Es gibt einen Abdruck oder er wurde in dieser Sitzung gelöscht: Ersetzen, Löschen und neu Einlernen brauchen einen Nachweis (die erkannte
+        Stimme oder eine frische Anmeldung, siehe stimme_sitzung.py), sonst könnte jemand an der angemeldeten Oberfläche den Schutz aushebeln."""
+        return self.abdruck is not None or self._geloescht
 
     def einstufen(self, wert: float, secs: float, ueberlappung: bool) -> str:
         """eigen: sicher die Person. fremd: sicher nicht. unklar: nicht sicher (entzieht das Vertrauen), auch eine kurze Äußerung, die nicht

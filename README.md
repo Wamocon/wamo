@@ -991,9 +991,11 @@ Laborsperre abgewiesen). Code: `voice-core/stimme_*.py`, Tests: `voice-core/test
 **Bedienung.** Der Kern schickt beim Verbinden den Text der Einwilligung (Version `stimme-1`). In den Einstellungen der Oberfläche liest die
 Person ihn, bestätigt ihn und startet das Einlernen (Klick, nie per Sprache). WAMO sagt kurz, worum es geht, dann liest die Person den Text
 vor oder erzählt frei, bis der Balken voll ist (20 Sekunden reine Sprache). Währenddessen hört die Spracherkennung nur Stille, WAMO antwortet
-also nicht auf den Vorlesetext. Danach steht der Abdruck im Profil. **Löschen** geht jederzeit in den Einstellungen und entfernt den Abdruck
+also nicht auf den Vorlesetext. Danach steht der Abdruck im Profil. **Löschen** in den Einstellungen entfernt den Abdruck
 vollständig (DSGVO Art. 17, zugleich Widerruf der Einwilligung). Wer nicht einlernt, hat keinen Nachteil: Ohne Abdruck prüft WAMO nichts und
-sperrt nichts. Ein vorhandener Abdruck wird im Modus streng nur ersetzt, wenn die Person gerade an der Stimme erkannt wurde.
+sperrt nichts. Einen vorhandenen Abdruck zu **ersetzen oder zu löschen** (und danach in derselben Sitzung neu einzulernen) geht in jedem Modus
+außer `aus` nur mit Nachweis: Die Person wurde gerade sicher an der Stimme erkannt, oder die Anmeldung mit zweitem Faktor ist jünger als
+10 Minuten (Zeitpunkt aus dem Token, `amr`). Sonst meldet die Oberfläche einen Fehler und bittet, sich neu anzumelden. Im Modus `aus` geht Löschen weiter immer.
 
 **Modi** (`WAMO_STIMME_PRUEFUNG`, wirkt nur für Profile mit Abdruck):
 

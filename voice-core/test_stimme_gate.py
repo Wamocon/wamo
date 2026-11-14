@@ -187,6 +187,27 @@ class VertrauenTests(unittest.TestCase):
         self.assertEqual(b.grund_der_stimme(), "Stimme noch nicht erkannt")
 
 
+class AbdruckGeschuetztTests(unittest.TestCase):
+    def test_ein_abdruck_schuetzt_auch_nach_dem_loeschen_in_derselben_sitzung(self):
+        gate = StimmGate(modus="streng", uhr=Uhr())
+        self.assertFalse(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(None)  # erster Stand: nichts eingelernt
+        self.assertFalse(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(ABDRUCK)
+        self.assertTrue(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(None, geloescht=True)  # gelöscht: der Schutz bleibt, sonst könnte jemand Fremdes danach neu einlernen
+        self.assertTrue(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(ABDRUCK)  # neu eingelernt
+        self.assertTrue(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(None)  # ein späterer leerer Stand hebt den Schutz nicht auf
+        self.assertTrue(gate.abdruck_geschuetzt)
+
+    def test_ein_nicht_lesbarer_stand_ist_kein_abdruck(self):
+        gate = StimmGate(modus="streng", uhr=Uhr())
+        gate.setze_abdruck(None, ok=False)
+        self.assertFalse(gate.abdruck_geschuetzt)  # der Stand ist unbekannt, das prüft die Sitzung über den Zustand
+
+
 class NichtSicherEigenTests(unittest.IsolatedAsyncioTestCase):
     """Ein Zug, der nicht sicher von der Person stammt (Abdruck da, Prüfung bereit, Modus streng), gilt als gefärbt."""
 

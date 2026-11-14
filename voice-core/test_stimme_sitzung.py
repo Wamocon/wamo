@@ -7,6 +7,7 @@ Datenbank und Modell sind Ersatz (FakeDb aus test_stimme_speicher.py, Rechner wi
 
 import asyncio
 import os
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -340,6 +341,89 @@ class NachrichtTests(unittest.IsolatedAsyncioTestCase):
         gesendet.clear()
         await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
         self.assertTrue(s.pruefer.einlernen_aktiv)
+
+    # ---------- Löschen und Ersetzen brauchen einen Nachweis (M3) ----------
+
+    @staticmethod
+    def angemeldet(vor_secs: float | None) -> Identity:
+        return Identity(USER_A, "Erika", "mitglied", "du", anmeldung=None if vor_secs is None else time.time() - vor_secs)
+
+    async def test_loeschen_ohne_nachweis_wird_abgelehnt_und_nennt_die_neue_anmeldung(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)})
+        s, gesendet, _, _ = await self.bereit(db, identity=self.angemeldet(None))
+        await s.nachricht({"aktion": "loeschen"})
+        letzte = arten(gesendet, "stimmabdruck")[-1]
+        self.assertEqual(letzte["status"], "fehler")
+        self.assertIn("anmelden", letzte["text"])
+        self.assertIn(USER_A, db.zeilen)  # nichts gelöscht
+        self.assertTrue(s.gate.hat_abdruck)
+        self.assertEqual([x for x in arten(gesendet, "stimmabdruck") if x["status"] == "geloescht"], [])
+
+    async def test_loeschen_mit_alter_anmeldung_ohne_stimme_wird_abgelehnt(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)})
+        s, gesendet, _, _ = await self.bereit(db, identity=self.angemeldet(ss.ANMELDUNG_FRISCH_SECS + 5))
+        await s.nachricht({"aktion": "loeschen"})
+        self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
+        self.assertIn(USER_A, db.zeilen)
+
+    async def test_loeschen_mit_frischer_anmeldung_geht_auch_ohne_erkannte_stimme(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)})
+        s, gesendet, _, _ = await self.bereit(db, identity=self.angemeldet(ss.ANMELDUNG_FRISCH_SECS - 60))
+        await s.nachricht({"aktion": "loeschen"})
+        self.assertNotIn(USER_A, db.zeilen)
+        self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "geloescht")
+
+    async def test_loeschen_gilt_auch_im_modus_beobachten(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)})
+        s, gesendet, _, _ = await self.bereit(db, modus="beobachten", identity=self.angemeldet(None))
+        await s.nachricht({"aktion": "loeschen"})
+        self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
+        self.assertIn(USER_A, db.zeilen)
+
+    async def test_loeschen_bei_unlesbarem_stand_braucht_den_nachweis(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)}, fehler=asyncpg.PostgresError("kaputt"))
+        s, gesendet, _, _ = neu(db, identity=self.angemeldet(None))
+        with mock.patch.object(ss.asyncio, "sleep", mock.AsyncMock()):
+            await s.vorbereiten()
+        db.fehler = None
+        gesendet.clear()
+        await s.nachricht({"aktion": "loeschen"})  # vielleicht gibt es einen Abdruck: nicht ohne Nachweis löschen
+        self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
+        self.assertIn(USER_A, db.zeilen)
+
+    async def test_nach_dem_loeschen_braucht_das_neue_einlernen_denselben_nachweis(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)})
+        s, gesendet, _, _ = await self.bereit(db, identity=self.angemeldet(None))
+        s.gate.eintragen(EIGEN)  # mit der erkannten Stimme gelöscht
+        await s.nachricht({"aktion": "loeschen"})
+        self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "geloescht")
+        gesendet.clear()
+        await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
+        self.assertFalse(s.pruefer.einlernen_aktiv)
+        self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "fehler")
+        self.assertIn("anmelden", arten(gesendet, "stimmabdruck")[-1]["text"])
+
+    async def test_nach_dem_loeschen_geht_neues_einlernen_mit_frischer_anmeldung(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)})
+        s, gesendet, _, _ = await self.bereit(db, identity=self.angemeldet(30))
+        await s.nachricht({"aktion": "loeschen"})
+        gesendet.clear()
+        await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
+        self.assertTrue(s.pruefer.einlernen_aktiv)
+
+    async def test_ersetzen_mit_frischer_anmeldung_geht_auch_ohne_erkannte_stimme(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)})
+        s, gesendet, _, _ = await self.bereit(db, identity=self.angemeldet(30))
+        await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
+        self.assertTrue(s.pruefer.einlernen_aktiv)
+
+    async def test_erstes_einlernen_und_loeschen_ohne_abdruck_brauchen_keinen_nachweis(self):
+        s, gesendet, _, _ = await self.bereit(identity=self.angemeldet(None))
+        await s.nachricht({"aktion": "start", "einwilligung": EINWILLIGUNG_VERSION})
+        self.assertTrue(s.pruefer.einlernen_aktiv)
+        await s.nachricht({"aktion": "abbrechen"})
+        await s.nachricht({"aktion": "loeschen"})
+        self.assertEqual(arten(gesendet, "stimmabdruck")[-1]["status"], "geloescht")
 
     async def test_zug_verworfen_reicht_an_den_waechter_durch(self):
         s, _, _, _ = await self.bereit()

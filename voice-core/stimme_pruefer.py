@@ -74,13 +74,14 @@ class Stimmpruefer(FrameProcessor):
         speichern: Callable[[np.ndarray, str, datetime], Awaitable[bool]],
         sagen: Callable[[str], Awaitable[None]],
         uhr: Callable[[], float] = time.time,
+        nachweis: Callable[[], bool] | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._gate = gate
         self._modell = modell
         self._uhr = uhr  # Wanduhr wie VADUser...SpeakingFrame.timestamp
-        self._einlernen = Einlernen(gate, modell, senden=self._senden, sagen=sagen, speichern=speichern, uhr=uhr)
+        self._einlernen = Einlernen(gate, modell, senden=self._senden, sagen=sagen, speichern=speichern, uhr=uhr, nachweis=nachweis)
         self._ring: deque[tuple[float, bytes]] = deque()
         self._ring_secs = 0.0
         self._rate = 16000
