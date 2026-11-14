@@ -83,7 +83,7 @@
   --kern-heiss: #ff8a80; /* helle Glut der Lichtkugel (Kern liest den Wert) */
   --kern-mensch: #fff1ee; /* Glut hellt auf, wenn die Person spricht */
   --kern-fremd: #cfcdd8; /* dasselbe bei einer weiteren Stimme */
-  --logo-plate: #ffffff;
+  --logo-plate: transparent; /* dunkel: Logo in Weiß und Rot ohne Platte (wmc-logo-dunkel.png) */
 
   /* Stimmen-Rand der Desktop-App (liegt über beliebigen Programmen) */
   --overlay-wamo: #f40e0e;
@@ -120,6 +120,7 @@
    Kontraste (Test lib/knopfKontrast.test.ts): Schrift mindestens 4,5:1, Rand von Bedienelementen mindestens 3:1.
    ===================================================================== */
 :root[data-theme="light"] {
+  --logo-plate: #ffffff;
   --bg: #f3f3f3;
   --panel: rgba(255, 255, 255, 0.82);
   --panel-solid: #ffffff;
@@ -199,6 +200,9 @@ p, li { text-wrap: pretty; }
   background: var(--logo-plate); padding: 4px 8px; border-radius: 4px;
 }
 .logo-plate img { display: block; width: auto; }
+/* Je Thema genau eine Fassung des Logos: hell schwarz und rot auf weißer Platte, dunkel weiß und rot ohne Platte */
+:root[data-theme="light"] .logo-dunkel { display: none; }
+:root:not([data-theme="light"]) .logo-hell { display: none; }
 
 /* ---------- Rahmen der Hauptansicht ---------- */
 .shell { min-height: 100dvh; display: flex; flex-direction: column; }
