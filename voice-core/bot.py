@@ -142,6 +142,7 @@ from turn_wache import TurnWache
 from vorgaenge import Vorgaenge, datenbank_ablage
 from werkzeug_wache import AbbruchHinweis, DoppelWache, abbruch_hinweis_an, umhuellen, werkzeug_doppelt_an
 from wartesatz import Wartesatz, wartesatz_an, wartesatz_modell_an, wartesatz_modell_secs, wartesatz_secs
+from fuellwoerter import FuellwortSpieler, bank_fuer, fuellwoerter_an, fuellwort_secs, mhm_an, soniox_sprechen
 from pc_host import (
     buero,
     call_host_tool,
@@ -823,6 +824,20 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             logger.warning("Ja-Wächter: Freigabe-Zustand nicht lesbar, es gilt als offen")
             return True
 
+    # Füllwörter (fuellwoerter.py): nur mit der Soniox-Stimme, denn die Aufnahmen müssen klingen wie die Antwort.
+    # Eine Bank je Stimme und Einstellung für alle Sitzungen des Kerns, ein Spieler je Sitzung.
+    fuellwoerter: list = []
+    if (fuellwoerter_an() or mhm_an()) and sprache.tts.anbieter != "haus":
+        fuellwort_bank = bank_fuer(SONIOX_VOICE, stimme_einstellung())
+
+        async def fuellwort_sprechen(text: str) -> bytes:
+            return await soniox_sprechen(os.environ["SONIOX_API_KEY"], SONIOX_TTS_URL, SONIOX_VOICE, stimme_einstellung(), text)
+
+        fuellwoerter = [
+            FuellwortSpieler(fuellwort_bank, werkzeug=fuellwoerter_an(), nach_secs=fuellwort_secs(), mhm=mhm_an(),
+                             sprechen=fuellwort_sprechen)
+        ]
+
     pipeline = Pipeline(
         [
             transport.input(),
@@ -843,6 +858,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
               if (wartesatz_an() or wartesatz_modell_an()) else []),  # langer Werkzeugaufruf oder langsames Modell: kurzer Satz
             aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
             *([AusgabenKuerzer(ausgaben)] if ausgaben.schwelle > 0 else []),  # lange Ergebnisse kürzen, hinter der Zeitleiste (sie sieht das Original)
+            *fuellwoerter,  # "Moment." statt Stille, wenn ein Werkzeug läuft (fuellwoerter.py, WAMO_FUELLWOERTER)
             tts,
             transport.output(),
             PlaybackTracker(soft_gate),

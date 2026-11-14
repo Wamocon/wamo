@@ -8,6 +8,10 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Füllwörter im Gespräch (`voice-core/fuellwoerter.py`, Schalter `WAMO_FUELLWOERTER`, Standard an): Startet das Modell ein Werkzeug, ohne vorher etwas zu sagen, spielt WAMO nach
+  0,4 Sekunden (`WAMO_FUELLWORT_SECS`) ein vorab aufgenommenes "Moment." und bei langem Warten einmal "Dauert noch einen Moment.". Der Ton geht als einfacher Ausgangston hinaus,
+  nichts davon landet im Verlauf, Unterbrechungen wirken wie immer. Eine Bank je Stimme und Einstellung für alle Sitzungen, ein Spieler je Sitzung, Aufnahmen erst beim Start der
+  Pipeline (der Aufbau einer Sitzung greift nicht ins Netz), Ablage im Cache-Ordner des Dienstes. Optionaler Rückmeldelaut "Mhm" (`WAMO_MHM`, Standard aus). 14 Tests.
 - Betreuer-Geräte über den Namen: NetBIOS hat Vorrang vor mDNS (Korrektur nach einer Messung am Server). Der Aktualisierer fragt mDNS (`avahi-resolve`) nur, wenn NetBIOS
   (`nmblookup`) nach dem Filter auf 192.168.178.1 bis .254 keine Adresse liefert, und führt die Antworten nicht mehr zusammen: mDNS lieferte für einen Windows-PC eine
   veraltete Adresse (.67, antwortet nicht auf Ping), die später ein fremdes Gerät per DHCP bekommen könnte, NetBIOS dagegen die richtige (.78). Für Mac- und Linux-Geräte

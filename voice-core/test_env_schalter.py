@@ -83,7 +83,7 @@ class StandardwerteTest(unittest.TestCase):
     ERWARTET = {
         "WAMO_TTS_SATZLEERZEICHEN": False, "WAMO_PERSONA_RUECKFRAGEN": True, "WAMO_PERSONA_PC_ORDNER": False,
         "WAMO_PAUSEN_PROMPT": True, "WAMO_RUECKMELDUNG_WERKZEUG": True, "WAMO_JA_WAECHTER": False,
-        "WAMO_PERSONA_GESPRAECH": False, "WAMO_WARTESATZ_MODELL": False,
+        "WAMO_PERSONA_GESPRAECH": False, "WAMO_WARTESATZ_MODELL": False, "WAMO_MHM": False,
     }
 
     def test_standardwerte_nach_der_messung(self):
@@ -106,6 +106,8 @@ class StandardwerteTest(unittest.TestCase):
 NEUE_NAMEN = (
     "SONIOX_SPEED", "SONIOX_REDUCE_SILENCE", "WAMO_TTS_SATZLEERZEICHEN", "WAMO_PERSONA_RUECKFRAGEN", "WAMO_PERSONA_PC_ORDNER",
     "WAMO_PAUSEN_PROMPT", "WAMO_LERNEN_OHNE_MOMENT", "WAMO_RUECKMELDUNG_WERKZEUG", "WAMO_JA_WAECHTER", "WAMO_ECHO_MODUS",
+    # Füllwörter (fuellwoerter.py), seit 14.11.2026
+    "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM",
 )
 
 

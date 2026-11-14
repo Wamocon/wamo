@@ -17,6 +17,10 @@ Gesprächsoptimierung (docs/gespraech-optimierung.md, beide Standard aus bis zur
   WAMO_PERSONA_GESPRAECH       Persona: Gesprächsführung (Selbstkorrektur, Rückbezug, nicht wiederholen, eine Frage)
   WAMO_WARTESATZ_MODELL        ein kurzer Satz, wenn das Modell nach einer Anfrage zu lange kein Zeichen liefert (wartesatz.py);
                                WAMO_WARTESATZ_MODELL_SECS: Zahl, Standard 2,5
+Füllwörter (fuellwoerter.py, Entscheidung vom 14.11.2026, Messung steht aus):
+  WAMO_FUELLWOERTER            vorab aufgenommenes "Moment.", wenn ein Werkzeug startet und WAMO sonst schweigt (Standard an);
+                               WAMO_FUELLWORT_SECS: Zahl, Standard 0,4
+  WAMO_MHM                     Rückmeldelaut "Mhm", wenn das Modell den Satz der Person für unfertig hält (Standard aus)
 Fehlerbehebungen aus der Sitzung vom 31.10.2026 (Standard an, sie ändern kein Sprachverhalten, nur Fehlerfälle):
   WAMO_ABBRUCH_HINWEIS         abgebrochenes Werkzeug im Verlauf als "ohne Ergebnis, Auftrag offen" erklären (werkzeug_wache.py)
   WAMO_WERKZEUG_DOPPELT        dieselbe Öffnen-Aktion im selben Zug nicht wiederholen, weitere Seite mit Hinweis (werkzeug_wache.py)
@@ -70,6 +74,8 @@ STANDARDWERTE: dict[str, bool] = {
     # AUS: Gesprächsoptimierung, noch nicht gemessen (Messplan in docs/gespraech-optimierung.md, Abschnitt 5).
     "WAMO_PERSONA_GESPRAECH": False,
     "WAMO_WARTESATZ_MODELL": False,
+    # AUS: der Rückmeldelaut ist für sich allein noch nicht gehört und gemessen (er klingt wie ein Einwurf).
+    "WAMO_MHM": False,
 }
 
 

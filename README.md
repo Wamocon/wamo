@@ -885,6 +885,8 @@ Standard aus, bis gemessen) und eine Kennzahl:
 | --- | --- | --- |
 | `WAMO_PERSONA_GESPRAECH` | aus | Prompt-Block "Gesprächsführung": bei Selbstkorrektur gilt nur die letzte Fassung, Rückbezug statt Neufragen, nichts wiederholen, nur eine Frage, knappe Bestätigung. Eine Freigabe ersetzt das nie |
 | `WAMO_WARTESATZ_MODELL` | aus | Liefert das Modell nach einer Anfrage `WAMO_WARTESATZ_MODELL_SECS` (Standard 2,5) lang weder Zeichen noch Marker noch Werkzeugaufruf, sagt WAMO einmal "Einen Moment." (nicht im Verlauf). Ein unvollständiger Satz der Person (Marker ◐ und ○) löst nichts aus |
+| `WAMO_FUELLWOERTER` | an | Startet das Modell ein Werkzeug, ohne vorher etwas zu sagen, und ist nach `WAMO_FUELLWORT_SECS` (Standard 0,4) noch kein Ton da, spielt WAMO ein vorab aufgenommenes "Moment." (`voice-core/fuellwoerter.py`). Läuft das Werkzeug weitere 6 Sekunden still, einmal "Dauert noch einen Moment.". Die Aufnahmen entstehen einmal je Stimme und Einstellung beim ersten Gesprächsstart und liegen danach im Cache-Ordner des Dienstes. Nur mit der Soniox-Stimme, Messung steht aus |
+| `WAMO_MHM` | aus | Hält das Modell den Satz der Person für unfertig, sagt WAMO selten ein kurzes "Mhm" (Ruhezeit 20 Sekunden, nie wenn die Person weiterspricht) |
 
 Neue Kennzahl `folge_ton_ms` (Szenario `einwurf`): Zeit vom Ende des Einwurfs bis zum ersten Ton der Folgeantwort. Zu messen
 (Testprofil gesperrt, Messplan im Dokument, Abschnitt 5): Basis mit beiden Schaltern aus, je ein Lauf mit nur einem an, dazu

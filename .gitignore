@@ -32,3 +32,5 @@ konto.json
 # Installer-Bau (desktop/package.json, Skript dist): Ergebnis und Zwischenspeicher nie committen
 desktop/dist/
 desktop/build-cache/
+# Aufnahmen der Füllwörter in der Entwicklung (am Server liegt die Ablage unter XDG_CACHE_HOME)
+voice-core/.cache/
