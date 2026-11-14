@@ -26,7 +26,7 @@
 /* =====================================================================
    WAMO Kommandozentrale im WMC-Corporate-Design (WAMOCON GmbH)
    Nachtschwarz mit Sternenstaub, in der Mitte ein glühender Kern in WMC-Rot. Zwei Stimmen, zwei Farben:
-   der Mensch warmes Weiß, WAMO Rot. Die Oberfläche ist bewusst nur dunkel.
+   der Mensch warmes Weiß, WAMO Rot. Dunkel ist der Standard, Hell wählbar (Block data-theme="light" weiter unten).
    Schriften: Unbounded für Marke, Überschriften und große Zahlen, JetBrains Mono für Beschriftungen und
    Zähler, Atkinson Hyperlegible für Fließtext (app/fonts).
    Kontrast: #F40E0E auf dem Hintergrund 4,7:1. Schrift auf roten Flächen fast schwarz (#140202, 4,9:1).
@@ -36,11 +36,8 @@
    ===================================================================== */
 :root {
   /* WMC-Grundpalette (verbindlich) */
-  --wmc-red: #f40e0e;
   --wmc-black: #000000;
   --wmc-white: #ffffff;
-  --wmc-gray-light: #f3f3f3;
-  --wmc-gray-line: #d9d9d9;
   --wmc-gray: #6b6b6b;
 
   /* Rollen */
