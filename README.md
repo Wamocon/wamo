@@ -1009,7 +1009,8 @@ sperrt nichts. Ein vorhandener Abdruck wird im Modus streng nur ersetzt, wenn di
 | --- | --- | --- |
 | `WAMO_STIMME_EIGEN_MIN` | 0,5 | Ab diesem Wert (Kosinus der Abdrücke, 0,2 bis 0,95) gilt eine Äußerung als die eigene Stimme |
 | `WAMO_STIMME_FREMD_MAX` | 0,3 | Bis zu diesem Wert (0 bis 0,8) gilt sie als sicher fremd; muss unter `EIGEN_MIN` liegen, sonst gelten beide Standardwerte |
-| `WAMO_STIMME_MIN_SECS` | 1 | So viel reine Sprache braucht eine Äußerung für ein Urteil (0,3 bis 10); kürzere ("Ja", "mach") gelten nach einer sicheren Erkennung mit |
+| `WAMO_STIMME_MIN_SECS` | 1 | So viel reine Sprache braucht eine Äußerung für ein Urteil (0,3 bis 10); kürzere ("Ja", "mach") erben das Vertrauen nur, wenn sie nach der eigenen Stimme klingen (Wert ab `EIGEN_MIN`), sonst gilt die Stimme als nicht sicher erkannt |
+| `WAMO_STIMME_KURZ_VERTRAUEN_SECS` | 15 | So lange läuft das Vertrauen höchstens weiter, wenn seit der letzten sicheren Erkennung nur kurze Äußerungen kamen (1 bis 120); eine sichere Erkennung oder getippter Text beginnt neu |
 | `WAMO_STIMME_VERTRAUEN_SECS` | 120 | So lange gilt "eigen" für kurze Folgesätze und Werkzeuge (10 bis 3600) |
 | `WAMO_STIMME_MODELL` | Cache-Ordner | Pfad der Modelldatei, Standard `XDG_CACHE_HOME/wamo/sprecher/nemo_en_titanet_large.onnx`, sonst `voice-core/.cache/sprecher/` |
 
@@ -1069,7 +1070,11 @@ laut PyPI am 14.11.2026). Ein echter Lauf auf dem Server steht aus.
 Aufnahmen oder geklonte Stimmen. Sie kann sich irren (Erkältung, Lärm, Mikrofon): Eine eigene Äußerung, die als sicher fremd gilt, wird im Modus
 streng ignoriert, getippter Text geht immer; bei häufigen Fehlurteilen `WAMO_STIMME_FREMD_MAX` senken, `beobachten` einschalten oder
 neu einlernen. Spricht jemand Fremdes, während WAMO redet, ist das Urteil unklar (Echo): der Satz geht durch, nur die Werkzeuge bleiben
-gesperrt. Die Untertitel der Oberfläche können einen ignorierten Satz noch zeigen. Die Schwellen 0,5 und 0,3 sind Richtwerte aus Beispielaufnahmen
+gesperrt. Kurze Äußerungen (unter einer Sekunde Sprache, etwa "Ja") tragen das Vertrauen nur weiter, wenn sie nach der eigenen Stimme klingen, und höchstens
+15 Sekunden nach der letzten sicheren Erkennung; klingen sie anders, ist die Stimme nicht sicher erkannt (Werkzeuge gesperrt, die Äußerung geht ans Modell).
+Ein neues Stück Sprache nach einem fertigen Satz (Satzzeichen im Transkript), nach Ende des Zuges oder nach Rede von WAMO wird für sich geprüft; mitten in
+einem unfertigen Satz bleibt es beim Zug, deshalb kann ein Einwurf einer fremden Stimme innerhalb eines Satzes der Person noch am Urteil des Satzes hängen.
+Die Untertitel der Oberfläche können einen ignorierten Satz noch zeigen. Die Schwellen 0,5 und 0,3 sind Richtwerte aus Beispielaufnahmen
 des Modells, mit den Mikrofonen im Büro noch nicht gemessen: vor dem Einsatz einige Gespräche im Modus `beobachten` laufen lassen, die Werte im Log
 ansehen, die Schwellen bei Bedarf anpassen und danach wieder `streng` (Standard) einstellen.
 

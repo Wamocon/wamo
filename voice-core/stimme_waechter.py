@@ -32,6 +32,11 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from stimme_gate import FREMD, StimmGate
 
 WARTEN_SECS = 1.5  # so lange hält das endgültige Transkript höchstens auf das Urteil
+SATZZEICHEN = (".", "!", "?", "…")  # so endet ein fertiger Satz im Transkript
+
+
+def _satz_fertig(text: str) -> bool:
+    return text.rstrip().endswith(SATZZEICHEN)
 
 
 class StimmWaechter(FrameProcessor):
@@ -53,8 +58,11 @@ class StimmWaechter(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TranscriptionFrame) and self._aktiv():
-            frame = await self._pruefen(frame)
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TranscriptionFrame):
+            if _satz_fertig(frame.text):
+                self._pruefer.satz_ende()  # was danach gesprochen wird, gehört nicht mehr zu diesem Satz (auch wenn er verworfen wird)
+            if self._aktiv():
+                frame = await self._pruefen(frame)
         await self.push_frame(frame, direction)
 
     async def _pruefen(self, frame: TranscriptionFrame) -> TranscriptionFrame:

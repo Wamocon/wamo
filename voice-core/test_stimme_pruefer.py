@@ -40,15 +40,21 @@ class Uhr:
         return self.t
 
 
+HALB = np.array([0.4, np.sqrt(1 - 0.16)] + [0.0] * (DIM - 2), dtype=np.float32)  # Kosinus 0,4 zum eigenen Abdruck
+
+
 class Rechner:
     def __init__(self):
         self.aufrufe = 0
         self.dauer = 0.0
+        self.festes_ergebnis = None  # ersetzt die Unterscheidung nach dem Vorzeichen des Tons
 
     def embed(self, pcm: bytes, rate: int):
         self.aufrufe += 1
         if self.dauer:
             time.sleep(self.dauer)
+        if self.festes_ergebnis is not None:
+            return self.festes_ergebnis
         return EIGENER if np.frombuffer(pcm, dtype=np.int16).astype(np.int64).sum() > 0 else FREMDER
 
 
@@ -137,6 +143,35 @@ class PruefenTests(PrueferBasis):
         await self.sprechen(8000, 0.5)
         self.assertIsNone(self.gate.grund_der_stimme())
         self.assertEqual(self.meldungen("stimme")[-1]["ergebnis"], UNKLAR)  # die Oberfläche zeigt "unklar"
+
+    async def test_kurze_aeusserung_die_nicht_nach_der_person_klingt_entzieht_das_vertrauen(self):
+        await self.sprechen(8000, 2.0)
+        self.v.on_turn_end()
+        self.modell.rechner.festes_ergebnis = HALB
+        urteil = await self.sprechen(8000, 0.5)
+        self.assertEqual(urteil.urteil, UNKLAR)
+        self.assertEqual(self.gate.grund_der_stimme(), "Stimme nicht sicher erkannt")
+
+    async def test_satzende_beginnt_einen_eigenen_zug(self):
+        """Ein fremder Einwurf nach einem fertigen Satz erbt nicht das Urteil des Satzes davor."""
+        await self.sprechen(8000, 2.0)
+        self.v.satz_ende()  # der Satz der Person ist zu Ende (endgültiges Transkript mit Satzzeichen), der Zug aber noch offen
+        urteil = await self.sprechen(-8000, 0.5)
+        self.assertEqual(urteil.urteil, FREMD)
+        self.assertEqual(self.gate.grund_der_stimme(), "fremde Stimme")
+
+    async def test_ohne_satzende_gehoert_der_kurze_einwurf_zum_selben_zug(self):
+        """Ein unfertiger Satz der Person bleibt ein Zug: die Pause mitten im Satz trennt nicht."""
+        await self.sprechen(8000, 2.0)
+        urteil = await self.sprechen(-8000, 0.5)
+        self.assertEqual(urteil.urteil, EIGEN)
+
+    async def test_nach_rede_von_wamo_beginnt_ein_eigener_zug(self):
+        self.v.on_bot_speaking(True)
+        await self.sprechen(8000, 2.0)  # die Person fällt WAMO ins Wort
+        self.v.on_bot_speaking(False)
+        urteil = await self.sprechen(-8000, 0.5)
+        self.assertEqual(urteil.urteil, FREMD)
 
     async def test_lange_pause_trennt_die_aeusserungen(self):
         await self.sprechen(8000, 2.0)
