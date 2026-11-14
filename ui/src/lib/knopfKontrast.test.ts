@@ -1,5 +1,6 @@
 // Test für die Farben der Entscheidungs-Schaltflächen (app/globals.css, .btn-decide): Der gesperrte Zustand ("Wird gestartet …") bleibt
 // lesbar (WCAG 2.1 AA, 4,5:1 für Text) und ändert nichts mit Transparenz, und der Hover-Wechsel gilt nur für aktive Knöpfe.
+// Dazu die Grundfarbe der Oberfläche: das Marken-Rot muss als Schrift und als Fläche lesbar bleiben.
 // Ausführen im Ordner ui/:  npm test
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -13,14 +14,13 @@ function regel(selektor: string): string {
   return css.slice(i, css.indexOf("}", i));
 }
 
-/** Variable eines Themas aus dem ersten Block des Selektors. */
-function variable(thema: "hell" | "dunkel", name: string): string {
-  const kopf = thema === "hell" ? ":root {" : ':root[data-theme="dark"] {';
-  const i = css.indexOf(kopf);
-  assert.ok(i >= 0, kopf);
-  const block = css.slice(i, css.indexOf("}", i));
+/** Variable aus dem Block :root (die Oberfläche hat nur ein Thema: dunkel). */
+function variable(name: string): string {
+  const i = css.indexOf(":root {");
+  assert.ok(i >= 0, ":root");
+  const block = css.slice(i, css.indexOf("\n}", i));
   const treffer = new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`).exec(block);
-  assert.ok(treffer, `${name} im Thema ${thema}`);
+  assert.ok(treffer, name);
   return treffer[1];
 }
 
@@ -36,21 +36,23 @@ function kontrast(a: string, b: string): number {
   return (hell + 0.05) / (dunkel + 0.05);
 }
 
-test("gesperrte Schaltfläche: keine Transparenz, sondern eine Textfarbe mit mindestens 4,5:1 in beiden Themen", () => {
+test("gesperrte Schaltfläche: keine Transparenz, sondern eine Textfarbe mit mindestens 4,5:1", () => {
   const gesperrt = regel(".btn-decide:disabled");
   assert.doesNotMatch(gesperrt, /opacity/, "Transparenz drückt den Kontrast unter 4,5:1");
   assert.match(gesperrt, /color:\s*var\(--ink-soft\)/);
-  for (const thema of ["hell", "dunkel"] as const) {
-    const verhaeltnis = kontrast(variable(thema, "--ink-soft"), variable(thema, "--bg"));
-    assert.ok(verhaeltnis >= 4.5, `${thema}: ${verhaeltnis.toFixed(2)}:1`);
-  }
+  const verhaeltnis = kontrast(variable("--ink-soft"), variable("--bg"));
+  assert.ok(verhaeltnis >= 4.5, `${verhaeltnis.toFixed(2)}:1`);
 });
 
 test("der Rand der gesperrten Schaltfläche bleibt erkennbar (3:1 für Bedienelemente)", () => {
-  assert.match(regel(".btn-decide:disabled"), /border-color:\s*var\(--rule-strong\)/);
-  for (const thema of ["hell", "dunkel"] as const) {
-    assert.ok(kontrast(variable(thema, "--rule-strong"), variable(thema, "--bg")) >= 3, thema);
-  }
+  assert.match(regel(".btn-decide:disabled"), /border-color:\s*var\(--kontur\)/);
+  assert.ok(kontrast(variable("--kontur"), variable("--bg")) >= 3);
+});
+
+test("das Marken-Rot trägt Schrift: Rot auf dem Hintergrund und dunkle Schrift auf Rot je mindestens 4,5:1", () => {
+  assert.equal(variable("--core").toLowerCase(), "#f40e0e");
+  assert.ok(kontrast(variable("--core"), variable("--bg")) >= 4.5);
+  assert.ok(kontrast(variable("--on-accent"), variable("--core")) >= 4.5);
 });
 
 test("Hover kehrt die Farben nur bei einer aktiven Schaltfläche um", () => {

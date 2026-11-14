@@ -8,6 +8,7 @@ import { istDarstellung, darstellungSetzen } from "@/components/kommando/darstel
 import { LoginGate } from "@/components/LoginGate";
 import { bueroBeispiel } from "@/components/vorschauBuero";
 import { WamoAnsicht } from "@/components/WamoAnsicht";
+import { aufgabeAus } from "@/lib/aufgabenanzeige";
 import { bueroAttrappeSetzen } from "@/lib/bueroApi";
 import { bildAnzeigen, liveBildLoeschen } from "@/lib/liveBild";
 import { stilleText } from "@/lib/mikrofon";
@@ -448,7 +449,8 @@ function beispiel(): { state: WamoState; presence: Presence } {
         },
     micOn: true,
   };
-  return { state, presence };
+  // Aufgabenanzeige: aus den Beispiel-Aktivitäten abgeleitet (im Betrieb schreibt sie der Store mit jeder Meldung fort)
+  return { state: { ...state, aufgabe: aufgabeAus(state.activities) }, presence };
 }
 
 function Hauptvorschau() {

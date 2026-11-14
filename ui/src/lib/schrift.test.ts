@@ -10,9 +10,22 @@ import { test } from "node:test";
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FONTS = join(SRC, "app", "fonts");
 const SUMMEN: Record<string, string> = {
-  "roboto-condensed-latin-400-normal.woff2": "543c03fff71d1b39590af102e0852c2dbce46f4dbe4faaebafbef6edc82e78f5",
-  "roboto-condensed-latin-700-normal.woff2": "ab74f0c2d7ec37e44e017b9586675dd00c519591207dc3bbc8e003c5628dc9b7",
+  "unbounded-latin-500-normal.woff2": "be65bb9b1a340d1647024392fe3fbf3c21e595eda0395da3138932a01e6a183a",
+  "unbounded-latin-700-normal.woff2": "477fa23002517a32f232316d859e7b672a044f20073babec8ed3dbcfdb8e041a",
+  "unbounded-latin-800-normal.woff2": "fe6d4ea7ed9647abf1e100a703786338d7898d56d0bedcdfdbc325e8fb02c834",
+  "jetbrains-mono-latin-400-normal.woff2": "14425ba9c695763c1547f48a206b7aa60350a33ae23de09f0407877f3fcd89eb",
+  "jetbrains-mono-latin-500-normal.woff2": "cb182feeed4d798ff6961d3c79f7026279448fca0676438aaecb21f3fc39553a",
+  "jetbrains-mono-latin-600-normal.woff2": "400c6bfda18d5d14acad1c15d6dcb9f8e13c015e7286317e0b9a482539bef147",
+  "jetbrains-mono-latin-700-normal.woff2": "d0d4e818808f2a0ba39b2b09d1989366f63494e295f003c7ef436697378507e8",
+  "atkinson-hyperlegible-latin-400-normal.woff2": "d64ba838ef5472bba248620ec4fd8b5aa7cf0db2908e0bb230600caf279ba7bc",
+  "atkinson-hyperlegible-latin-700-normal.woff2": "140e2bd25a7315c8a062508391426b0d8c3297400c947b8d847be28f73a199f0",
 };
+// Je Schriftfamilie: Lizenzdatei, npm-Paket der Herkunft und die CSS-Variable aus layout.tsx
+const FAMILIEN = [
+  { lizenz: "LICENSE-Unbounded-OFL.txt", paket: "@fontsource/unbounded", variable: "--font-display" },
+  { lizenz: "LICENSE-JetBrainsMono-OFL.txt", paket: "@fontsource/jetbrains-mono", variable: "--font-hud" },
+  { lizenz: "LICENSE-AtkinsonHyperlegible-OFL.txt", paket: "@fontsource/atkinson-hyperlegible", variable: "--font-body" },
+] as const;
 
 function quelldateien(ordner: string): string[] {
   const aus: string[] = [];
@@ -35,23 +48,26 @@ test("die Schriftdateien sind echte WOFF2-Dateien mit der festgehaltenen Prüfsu
 });
 
 test("Lizenz und Herkunft liegen bei den Dateien und nennen dieselben Prüfsummen", () => {
-  const lizenz = readFileSync(join(FONTS, "LICENSE-RobotoCondensed-OFL.txt"), "utf8");
-  assert.match(lizenz, /SIL Open Font License, Version 1\.1/);
   const herkunft = readFileSync(join(FONTS, "HERKUNFT.md"), "utf8");
+  for (const f of FAMILIEN) {
+    assert.match(readFileSync(join(FONTS, f.lizenz), "utf8"), /SIL Open Font License, Version 1\.1/, f.lizenz);
+    assert.ok(herkunft.includes(f.paket) && herkunft.includes(f.lizenz), f.paket);
+  }
   for (const [name, summe] of Object.entries(SUMMEN)) {
     assert.ok(herkunft.includes(name) && herkunft.includes(summe), name);
   }
-  assert.match(herkunft, /@fontsource\/roboto-condensed/);
 });
 
-test("layout.tsx nutzt next/font/local mit genau diesen Dateien und behält die Variable", () => {
+test("layout.tsx nutzt next/font/local mit genau diesen Dateien und setzt die drei Schriftvariablen", () => {
   const layout = readFileSync(join(SRC, "app", "layout.tsx"), "utf8");
   assert.match(layout, /from "next\/font\/local"/);
   assert.doesNotMatch(layout, /next\/font\/google/);
-  assert.match(layout, /variable: "--font-condensed"/);
   for (const name of Object.keys(SUMMEN)) assert.ok(layout.includes(`./fonts/${name}`), name);
   const css = readFileSync(join(SRC, "app", "globals.css"), "utf8");
-  assert.match(css, /var\(--font-condensed/);   // die Schriftreihenfolge der Oberfläche bleibt: Arial Narrow, Liberation Sans Narrow, Roboto Condensed
+  for (const f of FAMILIEN) {
+    assert.ok(layout.includes(`variable: "${f.variable}"`), f.variable);
+    assert.ok(css.includes(`var(${f.variable}`), `globals.css nutzt ${f.variable}`);   // Marke und Zahlen, HUD-Beschriftungen, Fließtext
+  }
 });
 
 test("im Quelltext der Oberfläche verweist nichts auf Google-Schriften", () => {

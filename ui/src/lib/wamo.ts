@@ -14,6 +14,7 @@ import type {
   Vorgang,
 } from "@/lib/nachrichten";
 import { fristLoeschen } from "./auftragFrist.ts"; // relativ aus demselben Grund
+import { AUFGABE_LEER, naechsteAufgabe, type Aufgabe } from "./aufgabenanzeige.ts"; // relativ aus demselben Grund
 import { auftraegeNachQuittung } from "./auftragStart.ts"; // relativ aus demselben Grund
 import { liveBildLoeschen } from "./liveBild.ts"; // relativ aus demselben Grund
 import { STILL_AUS, type StillStand } from "./stillStart.ts"; // relativ aus demselben Grund
@@ -113,6 +114,8 @@ export type WamoState = {
   caption: Caption;
   log: LogEintrag[];
   activities: Activity[];
+  /** Aufgabenanzeige: die Werkzeugschritte der laufenden Bitte als eine Aufgabe (lib/aufgabenanzeige.ts) */
+  aufgabe: Aufgabe;
   /** Vorgänge der Sitzung (Aufgaben und Aufträge mit Fortschritt, voice-core/vorgaenge.py), in der Reihenfolge des Eingangs */
   vorgaenge: Vorgang[];
   turn: number;
@@ -160,6 +163,7 @@ export const initialState: WamoState = {
   caption: leereCaption,
   log: [],
   activities: [],
+  aufgabe: AUFGABE_LEER,
   vorgaenge: [],
   turn: 0,
   approvals: [],
@@ -452,7 +456,11 @@ export function applyServerMessage(msg: ServerMessage) {
           endedAt: fertig ? (alt?.endedAt ?? jetzt) : undefined,
         };
         // gleiche id = Statuswechsel; neueste oben, Platz für den aktuellen Zug und frühere Schritte
-        return { ...s, activities: [a, ...s.activities.filter((x) => x.id !== a.id)].slice(0, 12) };
+        return {
+          ...s,
+          activities: [a, ...s.activities.filter((x) => x.id !== a.id)].slice(0, 12),
+          aufgabe: naechsteAufgabe(s.aufgabe, a, jetzt),
+        };
       });
       return;
     }

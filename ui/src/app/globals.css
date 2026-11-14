@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
+@import "../components/kommando/hud.css"; /* HUD-Gestaltung der Kommandozentrale: Schriften, Glasflächen, Formen */
+@import "../components/kommando/aufgabenanzeige.css"; /* Aufgabenanzeige neben dem Kern: Regeln mit Präfix .az */
 @import "../components/kommando/seitengriff.css"; /* Griffe der Seitenleisten (Breite ziehen): Regeln mit Präfix .kz-griff */
 @import "../components/kommando/vorgaenge.css"; /* Tafel "Vorgänge" (Karten, Balken, Schritte): Regeln mit Präfix .vg- */
 @import "../components/einstellungen/einstellungen.css"; /* Einstellungsseite: Regeln unter .ez */
@@ -13,11 +15,13 @@
 @import "../components/abmeldenRueckfrage.css"; /* Rückfrage vor dem Abmelden (Laborkonten): Regeln mit Präfix .ab- */
 
 /* =====================================================================
-   WAMO im WMC-Corporate-Design (WAMOCON GmbH)
-   Regel: Rot steht für WAMO, Tinte (Schwarz oder Weiß) für den Menschen, Grau für alles andere.
-   Wiedererkennung: die rote Kante (abgeleitet von der roten Unterzeile im Logo).
-   Kein Blau, keine weiteren Buntfarben, keine Aurora, kein Glas. Schrift Arial Narrow.
-   Kontrast: #F40E0E auf Weiß 4,27:1, rote Schrift nur ab 24 px oder ab 18,7 px fett.
+   WAMO Kommandozentrale im WMC-Corporate-Design (WAMOCON GmbH)
+   Nachtschwarz mit Sternenstaub, in der Mitte ein glühender Kern in WMC-Rot. Zwei Stimmen, zwei Farben:
+   der Mensch warmes Weiß, WAMO Rot. Die Oberfläche ist bewusst nur dunkel.
+   Schriften: Unbounded für Marke, Überschriften und große Zahlen, JetBrains Mono für Beschriftungen und
+   Zähler, Atkinson Hyperlegible für Fließtext (app/fonts).
+   Kontrast: #F40E0E auf dem Hintergrund 4,7:1. Schrift auf roten Flächen fast schwarz (#140202, 4,9:1).
+   Kein Blau. Neben Rot gibt es Bernstein für "wartet" und Pink für Fehler, damit sich beides vom Marken-Rot abhebt.
    Farbwerte als Hex lassen: Kern (WebGL) und Stimmlinie lesen sie per getComputedStyle,
    der Stimmen-Rand der Desktop-App bekommt --overlay-* über die Desktop-Brücke.
    ===================================================================== */
@@ -30,30 +34,43 @@
   --wmc-gray-line: #d9d9d9;
   --wmc-gray: #6b6b6b;
 
-  /* Rollen, hell */
-  --bg: #ffffff;
-  --surface: #f3f3f3;
-  --ink: #000000;
-  --ink-soft: #6b6b6b;
-  --rule: #d9d9d9; /* nur Trennlinien */
-  --rule-strong: #6b6b6b; /* Ränder von Bedienelementen, 5,3:1 */
+  /* Rollen */
+  --bg: #07070a;
+  --panel: rgba(15, 15, 21, 0.78); /* Glasflächen der Seitenspalten und Karten */
+  --panel-solid: #111117;
+  --surface: #111117;
+  --ink: #f1ede6;
+  --ink-soft: #9b99a5;
+  --ink-faint: #62616d; /* nur für Beiwerk (Zeitstempel, Zähler), nie für Pflichttext */
+  --rule: #23232c; /* nur Trennlinien */
+  --rule-strong: #3a3a47; /* Ränder von Karten und Feldern */
+  --kontur: #7a7986; /* Rand von Bedienelementen, die auch gesperrt erkennbar bleiben müssen (4,8:1) */
+  --core: #f40e0e; /* Hauptton: WMC-Rot */
+  --core-hot: #ff5648; /* heller Ton für Glanz, Verläufe und Fokus */
+  --core-deep: #8f0707; /* tiefer Ton für Verläufe und Kanten */
   --accent: #f40e0e; /* Flächen, Linien, große Schrift */
-  --on-accent: #ffffff;
+  --on-accent: #140202;
   --voice-wamo: #f40e0e;
-  --voice-user: #000000;
-  --voice-other: #6b6b6b;
-  --cut: #000000;
-  --focus: #000000;
-  --kern-rim: #00000000; /* Rand des Kerns, hell unsichtbar */
-  --logo-plate: transparent;
+  --voice-user: #f1ede6;
+  --voice-other: #9b99a5;
+  --cut: #ffffff; /* Unterbrechungsmarke in der Stimmlinie (hebt sich von der roten Stimme ab) */
+  --warn: #ffb020; /* wartet auf Freigabe */
+  --fehler: #ff2e63; /* Fehler und Abgelehntes */
+  --focus: #ff5648;
+  --kern-rim: #3a3a47b3; /* Rand des Kerns */
+  --logo-plate: #ffffff;
 
-  /* Stimmen-Rand der Desktop-App (liegt über beliebigen Programmen, daher themenunabhängig) */
+  /* Stimmen-Rand der Desktop-App (liegt über beliebigen Programmen) */
   --overlay-wamo: #f40e0e;
   --overlay-user: #f3f3f3;
   --overlay-other: #8c8c8c;
 
-  --font-wmc: "Arial Narrow", "Liberation Sans Narrow", var(--font-condensed, "Roboto Condensed"), Arial, sans-serif;
-  --font-code: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --display: var(--font-display), "Segoe UI", system-ui, sans-serif;
+  --hud: var(--font-hud), ui-monospace, "Cascadia Code", Consolas, monospace;
+  --body: var(--font-body), "Segoe UI", system-ui, sans-serif;
+  /* ältere Namen, weiter in vielen Regeln benutzt: Fließtext und Festbreite */
+  --font-wmc: var(--body);
+  --font-code: var(--hud);
   --dur-press: 100ms;
   --dur-fast: 160ms;
   --dur-enter: 240ms;
@@ -68,47 +85,7 @@
   --sa-l: env(safe-area-inset-left, 0px);
   --top-basis: 48px; /* Höhe der Kopfzeile ohne Safe-Area */
   --top: calc(var(--top-basis) + var(--sa-t)); /* Höhe der Kopfzeile samt Abstand oben: alle Anker darunter nutzen --top */
-  color-scheme: light;
-}
-
-/* Dunkel: derselbe Block zweimal (erzwungen und System), weil Canvas und WebGL rohe Hex-Werte brauchen */
-:root[data-theme="dark"] {
-  --bg: #0e0e0e;
-  --surface: #1a1a1a;
-  --ink: #f3f3f3;
-  --ink-soft: #a3a3a3;
-  --rule: #2e2e2e;
-  --rule-strong: #8c8c8c;
-  --accent: #f40e0e;
-  --on-accent: #ffffff;
-  --voice-wamo: #f40e0e;
-  --voice-user: #f3f3f3;
-  --voice-other: #8c8c8c;
-  --cut: #ffffff;
-  --focus: #ffffff;
-  --kern-rim: #3a3a3ab3;
-  --logo-plate: #ffffff;
   color-scheme: dark;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0e0e0e;
-    --surface: #1a1a1a;
-    --ink: #f3f3f3;
-    --ink-soft: #a3a3a3;
-    --rule: #2e2e2e;
-    --rule-strong: #8c8c8c;
-    --accent: #f40e0e;
-    --on-accent: #ffffff;
-    --voice-wamo: #f40e0e;
-    --voice-user: #f3f3f3;
-    --voice-other: #8c8c8c;
-    --cut: #ffffff;
-    --focus: #ffffff;
-    --kern-rim: #3a3a3ab3;
-    --logo-plate: #ffffff;
-    color-scheme: dark;
-  }
 }
 
 @theme inline {
@@ -119,8 +96,8 @@
   --color-ink-soft: var(--ink-soft);
   --color-rule: var(--rule);
   --color-accent: var(--accent);
-  --font-sans: var(--font-wmc);
-  --font-mono: var(--font-code);
+  --font-sans: var(--body);
+  --font-mono: var(--hud);
 }
 
 * { box-sizing: border-box; }
@@ -129,7 +106,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font: 400 17px/1.45 var(--font-wmc);
+  font: 400 16px/1.5 var(--body);
   overflow-x: clip;
 }
 button, input, select, textarea { font-family: inherit; color: inherit; }
@@ -143,8 +120,8 @@ p, li { text-wrap: pretty; }
 }
 .eyebrow {
   margin: 0;
-  font-size: 13px; font-weight: 700; line-height: 1.3;
-  letter-spacing: 0.08em; text-transform: uppercase;
+  font: 500 10.5px/1.3 var(--hud);
+  letter-spacing: 0.2em; text-transform: uppercase;
   color: var(--ink-soft);
 }
 .logo-plate {
@@ -156,21 +133,24 @@ p, li { text-wrap: pretty; }
 /* ---------- Schaltflächen ---------- */
 .btn-primary, .btn-secondary {
   min-height: 44px; padding: 0 20px;
-  border-radius: 4px;
-  font: 700 19px/1 var(--font-wmc);
+  border-radius: 8px;
+  font: 700 12px/1 var(--hud); letter-spacing: 0.2em; text-transform: uppercase;
   cursor: pointer;
   transition-property: transform, background-color, border-color, color;
   transition-duration: var(--dur-press);
   transition-timing-function: var(--ease-out);
 }
-.btn-primary { background: var(--accent); color: var(--on-accent); border: 2px solid var(--accent); }
-.btn-primary:hover:not(:disabled) { background: var(--ink); border-color: var(--ink); color: var(--bg); }
-.btn-secondary { background: transparent; color: var(--ink); border: 2px solid var(--ink); }
-.btn-secondary:hover:not(:disabled) { background: var(--ink); color: var(--bg); }
+.btn-primary {
+  background: linear-gradient(180deg, var(--core-hot), var(--core)); color: var(--on-accent); border: 0;
+  box-shadow: 0 10px 30px -12px var(--core);
+}
+.btn-primary:hover:not(:disabled) { background: linear-gradient(180deg, #ff7a6e, var(--core-hot)); }
+.btn-secondary { background: transparent; color: var(--ink-soft); border: 1px solid var(--rule-strong); }
+.btn-secondary:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-soft); }
 .btn-primary:active:not(:disabled), .btn-secondary:active:not(:disabled), .btn-mic:active:not(:disabled) { transform: scale(0.96); }
 .btn-primary:disabled, .btn-secondary:disabled { opacity: 0.55; cursor: progress; }
 .btn-block { width: 100%; }
-.btn-small { min-height: 40px; padding: 0 14px; font-size: 17px; }
+.btn-small { min-height: 40px; padding: 0 14px; font-size: 11px; }
 
 .btn-mic {
   min-height: 44px; padding: 0 14px;
@@ -425,8 +405,8 @@ p, li { text-wrap: pretty; }
 }
 .btn-decide:hover:not(:disabled) { background: var(--ink); color: var(--bg); }
 .btn-decide:active:not(:disabled) { transform: scale(0.96); }
-/* Gesperrt: Grautöne statt Transparenz, damit die Beschriftung lesbar bleibt (5,3:1 hell, 7,6:1 dunkel, WCAG AA verlangt 4,5:1) */
-.btn-decide:disabled { color: var(--ink-soft); border-color: var(--rule-strong); cursor: not-allowed; }
+/* Gesperrt: Grautöne statt Transparenz, damit die Beschriftung lesbar bleibt (WCAG AA verlangt 4,5:1 für Text, 3:1 für den Rand) */
+.btn-decide:disabled { color: var(--ink-soft); border-color: var(--kontur); cursor: not-allowed; }
 
 /* Entwicklungsauftrag: Projekt, Art und vollständiger Auftragstext */
 .auftrag-meta { margin: 0 0 10px; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 15px; }

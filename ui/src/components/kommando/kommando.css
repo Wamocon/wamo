@@ -10,30 +10,14 @@
    ===================================================================== */
 
 .kz {
-  --kz-linie: #000000; /* Ringe und feine Linien des Kerns (Canvas liest den Wert) */
-  --kz-grund-innen: #ffffff;
-  --kz-grund-aussen: #f3f3f3;
-  --kz-karte: #ffffff;
-  --kz-rand: #6b6b6b; /* Rand von Bedienelementen, 3:1 gegen den Grund */
+  --kz-linie: #f1ede6; /* Ringe und feine Linien des Kerns (Canvas liest den Wert) */
+  --kz-grund-innen: #0d0d13;
+  --kz-grund-aussen: #07070a;
+  --kz-karte: #111117;
+  --kz-rand: #3a3a47; /* Rand von Bedienelementen */
   --kz-akzent-rand: rgb(244 14 14 / 0.6);
   --kz-akzent-weich: rgb(244 14 14 / 0.1);
-  --kz-sterne: 0;
-}
-:root[data-theme="dark"] .kz {
-  --kz-linie: #f3f3f3;
-  --kz-grund-innen: #151515;
-  --kz-grund-aussen: #050505;
-  --kz-karte: #111111;
   --kz-sterne: 1;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .kz {
-    --kz-linie: #f3f3f3;
-    --kz-grund-innen: #151515;
-    --kz-grund-aussen: #050505;
-    --kz-karte: #111111;
-    --kz-sterne: 1;
-  }
 }
 
 .kz { background: var(--bg); }
