@@ -612,6 +612,63 @@ class TrackerHaltTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.15)
         self.assertEqual(self.weitergegeben, [erstes])
 
+    async def test_cleanup_beendet_die_wartende_aufgabe_des_trackers(self):
+        await self.senden(wort("noch", 2_000_000_000))  # halt.gespielt bleibt None: das Wort wartet auf seinen Ton
+        aufgabe = self.tracker._task
+        self.assertIsNotNone(aufgabe)
+        self.assertFalse(aufgabe.done())
+        await self.tracker.cleanup()
+        self.assertTrue(aufgabe.done(), "die Aufgabe läuft nach dem Abbau nicht weiter")
+        self.assertIsNone(self.tracker._task)
+        self.assertEqual(self.weitergegeben, [], "nichts Wartendes geht beim Abbau noch hinaus")
+
+
+class AufraeumenTest(unittest.IsolatedAsyncioTestCase):
+    """SoftInterruptGate.cleanup beendet die eigenen Aufgaben und lässt nie einen angehaltenen Ausgang zurück."""
+
+    async def asyncSetUp(self):
+        async def abbrechen(task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        self.halt = AusgabeHalt()
+        self.gate = SoftInterruptGate(halt=self.halt, max_wait_secs=0, grenze=True)
+        self.gate._bot_speaking = True
+        self.gate.push_frame = mock.AsyncMock()
+        self.gate.create_task = lambda coro, name=None: asyncio.get_running_loop().create_task(coro)  # echte Aufgaben
+        self.gate.cancel_task = abbrechen
+
+    async def test_cleanup_oeffnet_den_gehaltenen_ausgang_und_beendet_die_beobachtung(self):
+        g = self.gate
+        self.assertEqual(g.wort_beginnt("Ich"), SPIELEN)
+        g.ansatz(" Danke")
+        beobachtung = g._watch_task
+        self.assertIsNotNone(beobachtung, "der Ansatz startet die Beobachtung von Innehalten und Weitersprechen")
+        self.assertFalse(beobachtung.done())
+        self.assertEqual(g.wort_beginnt("lege"), HALTEN)
+        self.assertTrue(self.halt.haelt)
+        await g.cleanup()
+        self.assertFalse(self.halt.haelt, "nie einen angehaltenen Ausgang zurücklassen")
+        self.assertTrue(beobachtung.done())
+        self.assertIsNone(g._watch_task)
+
+    async def test_cleanup_beendet_auch_die_laufende_unterbrechung(self):
+        g = self.gate
+        g.wort_beginnt("Ich")
+        g.ansatz(" Danke")
+        g.wort_beginnt("lege")
+        g._tts_offen = True  # der Abbruch wartet danach, bis die Antwort im Verlauf steht (bis zu einer Sekunde)
+        g._arm()  # bestätigter Einwurf bei stehendem Ton: der Abbruch läuft als eigene Aufgabe
+        aufgabe = g._fire_task
+        self.assertIsNotNone(aufgabe)
+        await asyncio.sleep(0.02)
+        self.assertFalse(aufgabe.done(), "der Abbruch wartet noch auf den Verlauf")
+        await g.cleanup()
+        self.assertTrue(aufgabe.done(), "der Abbruch läuft nach dem Abbau nicht weiter")
+        self.assertIsNone(g._fire_task)
+        self.assertFalse(self.halt.haelt)
+
 
 if __name__ == "__main__":
     unittest.main()
