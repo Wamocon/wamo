@@ -22,7 +22,14 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   „WAIS“, „Weis“ und der frühere Name „WAMO“. Ein Test hält feste Ansagen frei von „W.A.I.S.“ und „WAMO“.
   Der Host erkennt die eigene Oberfläche am Titel `WAMO` oder `W.A.I.S.` (`WAMO_UI_TITLE`), damit er nie in die Freigabekarten klickt.
   Nur der Anzeigename ändert sich: Umgebungsvariablen `WAMO_*`, Bezeichner, Pakete, Pfade, Schemas, Rollen, Dienste, Ports, Dateinamen,
-  Log-Meldungen, der Fenstertitel `WAMO Stimmen-Rand`, der TOTP-Aussteller, der Installer-Produktname und der Repo-Name bleiben.
+  Log-Meldungen, der Fenstertitel `WAMO Stimmen-Rand`, der TOTP-Aussteller und der Repo-Name bleiben.
+- Installer der Desktop-App mit dem Namen **W.A.I.S.** (Zweig `feat/desktop-name-wais`): Eintrag im Startmenü und in „Apps“,
+  Dateibeschreibung und Produktname der `WAMO.exe` und Beschreibung des Installers heißen W.A.I.S., die Setup-Datei
+  `WAIS-Setup-<Version>.exe`. Technisch bleibt alles wie in 0.1.0, damit der neue Installer eine vorhandene Installation ersetzt:
+  Programmordner `%LOCALAPPDATA%\Programs\wamo-desktop` (aus dem Paketnamen), Programm `WAMO.exe` (Autostart-Eintrag, Erkennung
+  der eigenen Oberfläche im Host, Suche des Installers nach der laufenden App), Kennung `de.wamocon.wamo`, GUID, Daten unter
+  `%APPDATA%\WAMO` und `%LOCALAPPDATA%\WAMO`. Die Verknüpfung „WAMO“ im Startmenü wird beim Update zu „W.A.I.S.“. Tests in
+  `desktop/dist.test.js` halten die Namen, Datei- und Ordnernamen ohne Schlusspunkt und den Abgleich mit `WAMO_UI_EXES` fest.
 - Oberfläche als Kommandozentrale im HUD-Design (Zweig `feat/hud-design`): Kern als Lichtkugel in Ringen, Block „Gespräch“ links,
   Aufgabenanzeige neben dem Kern, Schriften Unbounded, JetBrains Mono und Atkinson Hyperlegible (lokal), WMC-Rot als Hauptfarbe,
   dazu ein Hellmodus (Umschalter in Kopfzeile und Einstellungen, Rollenvariablen für beide Themen). Alle übrigen Ansichten sind im

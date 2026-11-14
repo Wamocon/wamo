@@ -304,8 +304,8 @@ python scripts\wamo_ui_sokrates2.py status           # Zustand; bauen = nur Imag
 
 #### Windows-Installer (Desktop-App ohne Repository)
 
-Ein Laptop bekommt WAMO ohne Klonen und ohne `npm install`: `WAMO-Setup-<Version>.exe` (NSIS, pro Benutzer nach
-`%LOCALAPPDATA%\Programs\WAMO`, ohne Adminrechte, Kennung `de.wamocon.wamo`, Symbol `desktop/assets/wamo.ico`). Gebaut wird nur lokal:
+Ein Laptop bekommt W.A.I.S. ohne Klonen und ohne `npm install`: `WAIS-Setup-<Version>.exe` (NSIS, pro Benutzer nach
+`%LOCALAPPDATA%\Programs\wamo-desktop`, ohne Adminrechte, Kennung `de.wamocon.wamo`, Symbol `desktop/assets/wamo.ico`). Gebaut wird nur lokal:
 
 ```powershell
 cd desktop
@@ -319,6 +319,14 @@ Was der Installer enthält (Größe etwa 117 MB, entpackt 340 MB): die App in `a
 (`scripts\wamo-tunnel*.ps1`), die WAMO-CA (`wamo-ca.crt`) und `uv.exe` mit Lizenztext. Kein Voice-Core, kein Oberflächen-Build,
 keine `.env`.
 
+- **Namen** (`desktop/package.json`, Test `desktop/dist.test.js`): Sichtbar heißt die App **W.A.I.S.**: Eintrag im Startmenü
+  (`shortcutName`), Eintrag in „Apps“ (`uninstallDisplayName`), Dateibeschreibung und Produktname der EXE (electron-builder
+  schreibt `productName` in `FileDescription` und `ProductName`) und Beschreibung des Installers. Die Setup-Datei heißt
+  `WAIS-Setup-<Version>.exe` (ohne Punkte im Namen). Technisch bleibt alles wie in 0.1.0: Programmordner `wamo-desktop` (bei
+  oneClick pro Benutzer nimmt electron-builder den Paketnamen, nicht den Anzeigenamen), Programm `WAMO.exe` mit Deinstaller
+  `Uninstall WAMO.exe`, Kennung `de.wamocon.wamo` und GUID. Datei- und Ordnernamen enden nie mit Punkt, weil Windows ihn
+  abschneidet. `WAMO.exe` bleibt, weil der Autostart-Eintrag, die Erkennung der eigenen Oberfläche im Host (`WAMO_UI_EXES` in
+  `host/windows_control.py`) und die Suche des Installers nach der laufenden App an diesem Dateinamen hängen.
 - **Form der Installation** (`desktop/installation.js`): Nicht paketiert (Entwickler) gilt alles wie bisher aus dem Repository.
   Installiert gibt es nur die Betriebsart **Büro**: Die App lädt `https://192.168.178.136:55445`, die Adressen sind fest und nicht
   über die Umgebung änderbar, „Unterwegs“ steht im Tray ausgegraut („in dieser Installation nicht verfügbar“) und der Befehl der
@@ -346,7 +354,9 @@ keine `.env`.
   `EnableNodeCliInspectArguments` aus, `EnableCookieEncryption` an, `EnableEmbeddedAsarIntegrityValidation` an,
   `OnlyLoadAppFromAsar` an. `GrantFileProtocolExtraPrivileges` bleibt an, weil `start.html` und `overlay.html` per `file://` aus der
   asar geladen werden (mit „aus“ scheitert das am gebauten Programm mit `ERR_FILE_NOT_FOUND`).
-- **Autostart**: wie bisher nur über „Mit Windows starten“ im Tray, der Installer legt keinen Autostart an. Die Deinstallation
+- **Autostart**: wie bisher nur über „Mit Windows starten“ im Tray, der Installer legt keinen Autostart an. Electron schreibt den
+  Eintrag unter `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` mit dem Namen `de.wamocon.wamo` (AppUserModelId) und dem
+  Pfad der `WAMO.exe`; er bleibt gültig, solange Ordner und Programmname gleich bleiben. Die Deinstallation
   beendet und entfernt die geplante Aufgabe „WAMO Tunnel“ (`wamo-tunnel-entfernen.ps1`); Schlüssel und Token unter
   `%LOCALAPPDATA%\WAMO` und `%USERPROFILE%\.ssh` bleiben stehen, ein Admin widerruft das Gerät im Register.
 - **Signierung (offen)**: Es gibt noch kein Codesignatur-Zertifikat. Der Installer und `WAMO.exe` sind unsigniert, Windows
@@ -356,7 +366,12 @@ keine `.env`.
   die Signierwerte von electron-builder) nur in der Umgebung des Baus setzen, nie committen; `npm run dist` signiert dann
   `WAMO.exe`, `uv.exe` und den Installer von selbst. Bis dahin die SHA-256 des Installers getrennt weitergeben.
 - **Aktualisierung (offen)**: Die Version steht in `desktop/package.json`; ein neuer Installer über die alte Installation
-  aktualisiert (feste GUID). Einen automatischen Updater gibt es in diesem Paket nicht (`publish` ist `null`). Das Audit-Protokoll
+  aktualisiert (feste GUID). Er liest den bisherigen Ordner aus `HKCU\Software\<GUID>` (`InstallLocation`), ruft den alten
+  Deinstaller mit `--updated` und `--keep-shortcuts` auf und benennt die Verknüpfung im Startmenü um (aus „WAMO“ wird
+  „W.A.I.S.“). `%APPDATA%\WAMO` (Anmeldung, Sitzung, Einstellungen, Logs), `%LOCALAPPDATA%\WAMO` (Gerätedaten, Tunnel) und
+  `%USERPROFILE%\.ssh` fasst er nicht an, das Löschen der App-Daten ist aus (`deleteAppDataOnUninstall: false`). Eine an die
+  Taskleiste angeheftete Verknüpfung behält ihren alten Namen, bis sie neu angeheftet wird. Einen automatischen Updater gibt es
+  in diesem Paket nicht (`publish` ist `null`). Das Audit-Protokoll
   des Hosts (`host\wamo_audit.jsonl`) liegt im Installationsordner und geht bei Update oder Deinstallation verloren; ein fester
   Ort per `WAMO_AUDIT_LOG` braucht eine Änderung in `scripts/wamo-tunnel.ps1`.
 - **Electron 44.10.1** (exakt gepinnt, vorher 44.5.1): schließt den Hinweis von `npm audit` zu den Zwischenzertifikaten der
