@@ -384,6 +384,7 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         werkzeug_laeuft: Callable[[], bool] | None = None,
         on_partial: Callable[[str], None] | None = None,
         fragt: Callable[[], bool] | None = None,
+        nur_endgueltig: Callable[[], bool] | None = None,
         **kwargs,
     ):
         """beurteilt: wird mit "rueckmeldung" oder "echo" gerufen, wenn der erkannte Text kein Einwurf ist (das Gate
@@ -392,8 +393,11 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         on_partial: Innehalten (SoftInterruptGate.ansatz). Ein einzelnes echtes Wort, während WAMO spricht, wird dort gemeldet
         statt ignoriert; ein "Danke" allein unterbricht dann nicht mehr (WEICHE_STOPPWOERTER). None: wie bisher.
         fragt: sagt, ob WAMO gerade eine Frage stellt (SoftInterruptGate.fragt). Dann ist ein "Ja", "genau" oder "okay" die
-        Antwort und kein Rückmeldelaut (ist_antwort): es startet den Zug und bleibt im Transkript. None: wie bisher."""
+        Antwort und kein Rückmeldelaut (ist_antwort): es startet den Zug und bleibt im Transkript. None: wie bisher.
+        nur_endgueltig: Stimmprüfung (stimme_waechter.nur_endgueltig). Sagt sie ja, während WAMO nicht spricht, startet kein Zwischenstand
+        den Zug, erst das endgültige Transkript nach dem Urteil des Wächters. None: wie bisher."""
         super().__init__(**kwargs)
+        self._nur_endgueltig = nur_endgueltig
         self._fragt = fragt
         self._on_partial = on_partial
         self._werkzeug_laeuft = werkzeug_laeuft
@@ -428,6 +432,11 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         return self._werkzeug_laeuft is not None and not self._bot_speaking and bool(self._werkzeug_laeuft())
 
     async def _handle_transcription(self, frame) -> ProcessFrameResult:
+        if (isinstance(frame, InterimTranscriptionFrame) and not self._bot_speaking and self._nur_endgueltig is not None
+                and self._nur_endgueltig()):
+            # Ein Zwischenstand kommt am Stimmwächter vorbei. Startete er den Zug, bräche das Gate Antwort oder Werkzeug sofort ab, auch für
+            # eine fremde Stimme, deren Transkript der Wächter danach verwirft. Beim Sprechen bleibt der schnelle Weg (stimme_waechter.py).
+            return ProcessFrameResult.CONTINUE
         werkzeug = self._werkzeug_aktiv()
         if not self._bot_speaking and not werkzeug:
             return await super()._handle_transcription(frame)

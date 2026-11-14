@@ -298,6 +298,30 @@ async def test_getippter_text_zaehlt_wie_die_eigene_stimme():
     await session.cleanup()
 
 
+async def test_startstrategie_fragt_bei_laufender_arbeit_den_waechter():
+    """Werkzeug läuft oder Modell denkt, Modus streng mit Abdruck: erst das endgültige Transkript startet den Zug (stimme_waechter.nur_endgueltig)."""
+    from pipecat.frames.frames import FunctionCallInProgressFrame, InterruptionFrame, LLMContextFrame
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from soft_interrupt import SoftInterruptGate
+
+    store = m.MemoryStore(USER, BotDb())
+    session, stufen, _llm = await bauen(Identity(USER, "Erika", "mitglied", "sie"), store=store)
+    nutzer = next(p for p in stufen if isinstance(p, LLMUserAggregator))
+    abfrage = nutzer._params.user_turn_strategies.start[0]._nur_endgueltig
+    weiche = next(p for p in stufen if isinstance(p, SoftInterruptGate))
+    wache = next(p for p in stufen if type(p).__name__ == "_WachTeil")._wache
+    weiche._werkzeug_verfolgen(FunctionCallInProgressFrame(function_name="merken", tool_call_id="m1", arguments={},
+                                                           cancel_on_interruption=True))
+    assert abfrage is not None and abfrage() is False  # Abdruck noch nicht geladen: der Wächter verwirft nichts
+    bereit_machen(session)
+    assert abfrage() is True
+    weiche._werkzeug_verfolgen(InterruptionFrame())
+    assert abfrage() is False  # nichts läuft: der schnelle Weg über Zwischenstände bleibt
+    assert wache.durchlassen(LLMContextFrame(context=LLMContext(messages=[{"role": "user", "content": "Wetter?"}])))
+    assert abfrage() is True
+    await session.cleanup()
+
+
 def test_bot_nennt_die_neuen_nachrichten_in_der_kopfzeile():
     for text in ("stimmabdruck_einwilligung", '"type": "stimme"', '"type": "stimmabdruck"'):
         assert text in BOT_QUELLE.split("Start lokal:")[0], text

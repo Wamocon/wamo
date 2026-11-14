@@ -316,5 +316,106 @@ class MitEchtemAggregatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(waechter.zug_verworfen())
 
 
+class NurEndgueltigTests(unittest.IsolatedAsyncioTestCase):
+    """Befund: Ein Zwischenstand einer fremden Stimme startete den Zug, das SoftInterruptGate brach sofort hart ab (Antwort oder Werkzeug
+    weg), danach verwarf der Wächter das endgültige Transkript und WAMO schwieg. Im Modus streng mit Abdruck zählt deshalb, solange WAMO
+    nicht spricht, aber Modell oder Werkzeug arbeiten, erst das endgültige Transkript nach dem Urteil des Wächters."""
+
+    async def lauf(self, ergebnis: Urteil | None, *, werkzeug: bool = False, denkt: bool = False, gate: StimmGate | None = None,
+                   text: str = "Schließ mal die Tür"):
+        from pipecat.frames.frames import (FunctionCallInProgressFrame, InterruptionFrame, LLMContextFrame, VADUserStartedSpeakingFrame,
+                                           VADUserStoppedSpeakingFrame)
+        from pipecat.pipeline.pipeline import Pipeline
+        from pipecat.processors.aggregators.llm_context import LLMContext
+        from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
+        from pipecat.tests.utils import SleepFrame
+        from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import SpeechTimeoutUserTurnStopStrategy
+        from pipecat.turns.user_turn_strategies import UserTurnStrategies
+        from soft_interrupt import MeaningfulWordsUserTurnStartStrategy, SoftInterruptGate
+        from stimme_waechter import nur_endgueltig
+        from turn_wache import TurnWache
+
+        waechter = StimmWaechter(gate or bereites_gate(), AttrappePruefer(ergebnis))
+        weiche = SoftInterruptGate()
+        wache = TurnWache()
+        if denkt:  # eine Anfrage ist beim Modell, die Antwort ist noch nicht zu hören
+            self.assertTrue(wache.durchlassen(LLMContextFrame(context=LLMContext(messages=[{"role": "user", "content": "Wetter?"}]))))
+        nutzer, _ = LLMContextAggregatorPair(LLMContext(), user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                start=[MeaningfulWordsUserTurnStartStrategy(
+                    min_words=2, enable_interruptions=False, werkzeug_laeuft=weiche.werkzeug_laeuft,
+                    nur_endgueltig=nur_endgueltig(waechter, weiche.werkzeug_laeuft, wache.modell_beschaeftigt))],
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.05)])))
+        frames = [FunctionCallInProgressFrame(function_name="websuche", tool_call_id="w1", arguments={}, cancel_on_interruption=True),
+                  SleepFrame(0.05)] if werkzeug else []  # das Werkzeug läuft schon, bevor jemand spricht
+        frames += [VADUserStartedSpeakingFrame(start_secs=0.2, timestamp=time.time()), zwischenstand(text), SleepFrame(0.05),
+                   VADUserStoppedSpeakingFrame(stop_secs=0.2, timestamp=time.time()), final(text), SleepFrame(0.6)]
+        unten, _ = await run_test(Pipeline([waechter, nutzer, weiche]), frames_to_send=frames)
+        abbrueche = sum(isinstance(f, InterruptionFrame) for f in unten)
+        kontexte = [f for f in unten if isinstance(f, LLMContextFrame)]
+        return abbrueche, kontexte, weiche, wache
+
+    async def test_fremde_stimme_bricht_ein_laufendes_werkzeug_nicht_ab(self):
+        abbrueche, kontexte, weiche, _ = await self.lauf(urteil(FREMD), werkzeug=True)
+        self.assertEqual(abbrueche, 0)
+        self.assertEqual(kontexte, [])
+        self.assertTrue(weiche.werkzeug_laeuft())  # das Werkzeug läuft weiter
+
+    async def test_fremde_stimme_bricht_das_denkende_modell_nicht_ab(self):
+        abbrueche, kontexte, _, wache = await self.lauf(urteil(FREMD), denkt=True)
+        self.assertEqual((abbrueche, kontexte), (0, []))
+        self.assertTrue(wache.modell_beschaeftigt())
+
+    async def test_eigene_stimme_bricht_nach_dem_endgueltigen_transkript_ab(self):
+        abbrueche, kontexte, _, _ = await self.lauf(urteil(EIGEN), werkzeug=True)
+        self.assertEqual(abbrueche, 1)
+        self.assertEqual(len(kontexte), 1)
+        self.assertEqual(kontexte[0].context.messages[-1]["content"], "Schließ mal die Tür")
+
+    async def test_ohne_laufende_arbeit_bleibt_der_schnelle_weg(self):
+        """Nichts läuft: der Zwischenstand startet den Zug wie bisher (ein Abbruch schadet dort nicht, die Erkennung des Satzendes bleibt)."""
+        abbrueche, kontexte, _, _ = await self.lauf(urteil(FREMD))
+        self.assertEqual((abbrueche, kontexte), (1, []))
+
+    async def test_ohne_abdruck_bleibt_alles_wie_bisher(self):
+        gate = bereites_gate()
+        gate.setze_abdruck(None)
+        abbrueche, kontexte, _, _ = await self.lauf(None, werkzeug=True, gate=gate)
+        self.assertEqual((abbrueche, len(kontexte)), (1, 1))
+
+    def strategie(self, *, endgueltig: bool, spricht: bool):
+        from soft_interrupt import MeaningfulWordsUserTurnStartStrategy
+
+        s = MeaningfulWordsUserTurnStartStrategy(min_words=2, enable_interruptions=False, nur_endgueltig=lambda: endgueltig)
+        s._bot_speaking = spricht
+        self.ausgeloest, self.zurueck = [], []
+
+        async def start():
+            self.ausgeloest.append(True)
+
+        async def reset():
+            self.zurueck.append(True)
+
+        s.trigger_user_turn_started, s.trigger_reset_aggregation = start, reset
+        return s
+
+    async def test_zwischenstand_startet_keinen_zug_das_endgueltige_transkript_schon(self):
+        s = self.strategie(endgueltig=True, spricht=False)
+        ergebnis = await s.process_frame(zwischenstand("Schließ mal die Tür"))
+        self.assertEqual((ergebnis.name, self.ausgeloest, self.zurueck), ("CONTINUE", [], []))
+        ergebnis = await s.process_frame(final("Schließ mal die Tür"))
+        self.assertEqual((ergebnis.name, self.ausgeloest), ("STOP", [True]))
+
+    async def test_beim_sprechen_bleibt_der_schnelle_weg_ueber_zwischenstaende(self):
+        s = self.strategie(endgueltig=True, spricht=True)
+        ergebnis = await s.process_frame(zwischenstand("Stopp, warte mal"))
+        self.assertEqual((ergebnis.name, self.ausgeloest), ("STOP", [True]))
+
+    async def test_ohne_abfrage_zaehlt_der_zwischenstand_wie_bisher(self):
+        s = self.strategie(endgueltig=False, spricht=False)
+        ergebnis = await s.process_frame(zwischenstand("Schließ"))
+        self.assertEqual((ergebnis.name, self.ausgeloest), ("STOP", [True]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,17 +20,32 @@ von hinten, vom Assistent-Aggregator). Verworfen wird
     Antwort wurde ja abgebrochen.
   * eine Anfrage, deren Verlauf mit WAMOs eigener Antwort endet: Steht die Antwort auf den neuen Zug schon im
     Verlauf, wenn das verspätete Anschieben kommt, gäbe es sonst eine Fortsetzung ohne neuen Anlass.
+
+Weil alle Anfragen hier vorbeikommen, weiß die Wache auch, ob das Modell an einer Antwort arbeitet, die noch nicht zu hören ist
+(modell_beschaeftigt, für die Stimmprüfung in stimme_waechter.py): ab einer durchgelassenen Anfrage, bis WAMO zu sprechen beginnt, eine
+Unterbrechung kommt oder die Antwort ohne Text endet (das Modell hält den Zug für unfertig), höchstens MODELL_MAX_SECS.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import time
+from collections.abc import Callable
 
 from loguru import logger
 
-from pipecat.frames.frames import Frame, InterruptionFrame, LLMContextFrame
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    Frame,
+    InterruptionFrame,
+    LLMContextFrame,
+    LLMFullResponseEndFrame,
+    LLMTextFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+MODELL_MAX_SECS = 30.0  # eine Antwort, die nie zu hören war, hält "Modell beschäftigt" nicht länger fest
 
 
 def verlauf_stand(context) -> tuple[int, int, str] | None:
@@ -49,9 +64,12 @@ def verlauf_stand(context) -> tuple[int, int, str] | None:
 class TurnWache:
     """Gemeinsamer Zustand; vorne() vor das Modell, hinten() direkt dahinter in die Pipeline."""
 
-    def __init__(self):
+    def __init__(self, uhr: Callable[[], float] = time.monotonic):
         self._zuletzt: tuple[int, int, str] | None = None
         self.verworfen = 0
+        self._uhr = uhr
+        self._anfrage_um: float | None = None  # Zeit der letzten durchgelassenen Anfrage, deren Antwort noch nicht zu hören ist
+        self._antwort_text = False  # die laufende Antwort hat schon Text für die Sprachausgabe
         self._vorne = _WachTeil(self, FrameDirection.DOWNSTREAM, name="TurnWacheVorne")
         self._hinten = _WachTeil(self, FrameDirection.UPSTREAM, name="TurnWacheHinten")
 
@@ -78,10 +96,25 @@ class TurnWache:
                            stand[0])
             return False
         self._zuletzt = stand
+        self._anfrage_um, self._antwort_text = self._uhr(), False
         return True
 
     def unterbrochen(self) -> None:
         self._zuletzt = None
+        self._anfrage_um = None
+
+    def modell_beschaeftigt(self) -> bool:
+        """Arbeitet das Modell an einer Antwort, die noch nicht zu hören ist (siehe oben)?"""
+        return self._anfrage_um is not None and self._uhr() - self._anfrage_um < MODELL_MAX_SECS
+
+    def _ausgabe(self, frame: Frame) -> None:
+        """Was hinter dem Modell vorbeikommt: Text für die Sprachausgabe, Ende der Antwort, Beginn der Rede."""
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._anfrage_um = None
+        elif isinstance(frame, LLMTextFrame):
+            self._antwort_text = True
+        elif isinstance(frame, LLMFullResponseEndFrame) and not self._antwort_text:
+            self._anfrage_um = None  # nichts zu sagen (zum Beispiel ein unfertiger Zug): das Modell wartet, statt zu arbeiten
 
 
 class _WachTeil(FrameProcessor):
@@ -97,4 +130,6 @@ class _WachTeil(FrameProcessor):
         elif isinstance(frame, LLMContextFrame) and direction == self._richtung:
             if not self._wache.durchlassen(frame):
                 return
+        elif isinstance(frame, BotStartedSpeakingFrame) or (self._richtung == FrameDirection.UPSTREAM and direction == FrameDirection.DOWNSTREAM):
+            self._wache._ausgabe(frame)  # hinter dem Modell: seine Ausgabe; der Beginn der Rede kommt von hinten an beiden Teilen vorbei
         await self.push_frame(frame, direction)

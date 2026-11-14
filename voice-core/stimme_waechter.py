@@ -19,10 +19,21 @@ eine Meldung an die Oberfläche: {"type": "stimme", "ergebnis": "fremd", "wert",
 
 Grenzen: Die Untertitel der Oberfläche können den Satz noch zeigen (sie entstehen schon bei der Spracherkennung). Spricht jemand Fremdes
 dazwischen, während WAMO redet, ist das Urteil unklar und der Satz geht durch (nur Werkzeuge bleiben gesperrt).
+
+Abbruch durch Zwischenstände (nur_endgueltig): Schon ein Zwischenstand startet in der Startstrategie den Zug, und spricht WAMO nicht,
+bricht das SoftInterruptGate sofort hart ab, bevor ein Urteil da ist. Eine fremde Stimme hätte so eine laufende Antwort oder ein Werkzeug
+abgebrochen, danach verwarf der Wächter ihr Transkript und WAMO schwieg. Deshalb startet im Modus streng mit bereitem Abdruck, solange WAMO
+nicht spricht, aber das Modell an einer Antwort arbeitet oder ein Werkzeug läuft, erst das endgültige Transkript nach dem Urteil den Zug
+(soft_interrupt.MeaningfulWordsUserTurnStartStrategy, nur_endgueltig). Abwägung: Die eigene Stimme bricht dort etwas später ab (nach
+Sprechende, Erkennung und Urteil), und weil der Zug erst dann beginnt, entscheidet die Stop-Strategie das Satzende ohne Smart-Turn. Beim
+Sprechen bleibt der schnelle Weg über Zwischenstände, denn dort muss WAMO auf "Stopp" sofort hören; eine fremde Stimme ist dann meist
+unklar (Echo, Überlappung) und kostet höchstens den Rest des Satzes. Läuft nichts, bleibt ebenfalls alles wie bisher: Ein Abbruch schadet
+dort nicht, und die Erkennung des Satzendes braucht den Zug ab dem ersten Wort.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from loguru import logger
@@ -41,6 +52,11 @@ def _satz_fertig(text: str) -> bool:
     return text.rstrip().endswith(SATZZEICHEN)
 
 
+def nur_endgueltig(waechter: StimmWaechter, *beschaeftigt: Callable[[], bool]) -> Callable[[], bool]:
+    """Abfrage für die Startstrategie (siehe oben): ja, wenn der Wächter verwerfen kann und eine der Arbeiten läuft (Werkzeug, Modell)."""
+    return lambda: waechter.aktiv() and any(laeuft() for laeuft in beschaeftigt)
+
+
 class StimmWaechter(FrameProcessor):
     def __init__(self, gate: StimmGate, pruefer, *, warten: float = WARTEN_SECS, **kwargs):
         super().__init__(**kwargs)
@@ -55,7 +71,8 @@ class StimmWaechter(FrameProcessor):
         verworfen, self._verworfen = self._verworfen, False
         return verworfen
 
-    def _aktiv(self) -> bool:
+    def aktiv(self) -> bool:
+        """Kann der Wächter verwerfen (Modus streng, Abdruck und Modell bereit)?"""
         return self._gate.modus == "streng" and self._gate.status == "bereit"
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -63,7 +80,7 @@ class StimmWaechter(FrameProcessor):
         if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TranscriptionFrame):
             if _satz_fertig(frame.text):
                 self._pruefer.satz_ende()  # was danach gesprochen wird, gehört nicht mehr zu diesem Satz (auch wenn er verworfen wird)
-            if self._aktiv():
+            if self.aktiv():
                 frame = await self._pruefen(frame)
         await self.push_frame(frame, direction)
 

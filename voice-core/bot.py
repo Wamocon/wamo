@@ -187,6 +187,7 @@ from soft_interrupt import (
 from soniox_tts import LazySonioxTTSService, stimme_einstellung
 from stimme_gate import schemas_absichern, tippen_beobachten, werkzeuge_absichern
 from stimme_sitzung import SPRECHER_UNSICHER, StimmSitzung, nachricht_aus
+from stimme_waechter import nur_endgueltig
 from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
 from wiedergabe import WiedergabeStart, halt_fuer, innehalten_max_secs, innehalten_weiter_secs
 
@@ -764,6 +765,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # kommt nichts nach, spricht WAMO dort weiter. Der Halt hängt am Tonausgang dieser Sitzung (je Sitzung einer). Die Sprachausgabe im
     # Haus liefert ganze Sätze ohne Wortzeiten: dort gibt es keinen Halt, es gilt die Zeitgrenze des Gates wie bisher.
     halt = halt_fuer(transport.output(), haus=sprache.tts.anbieter == "haus")
+    # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
+    wache = TurnWache()
     soft_gate = SoftInterruptGate(
         max_words=SOFT_INTERRUPT_MAX_WORDS,
         playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
@@ -807,6 +810,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                         werkzeug_laeuft=soft_gate.werkzeug_laeuft if rueckmeldung_werkzeug_an() else None,
                         on_partial=soft_gate.ansatz if halt else None,  # ein Wort: innehalten statt ignorieren (WAMO_INNEHALTEN)
                         fragt=soft_gate.fragt,  # "Ja" während einer Frage von WAMO ist die Antwort, kein Zuhören
+                        # Stimmprüfung streng: arbeiten Werkzeug oder Modell, startet erst das endgültige Transkript den Zug (stimme_waechter.py)
+                        nur_endgueltig=nur_endgueltig(stimme.waechter, soft_gate.werkzeug_laeuft, wache.modell_beschaeftigt)
+                        if stimme else None,
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.
@@ -835,8 +841,6 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     )
 
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
-    # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
-    wache = TurnWache()
     # Doppelte Aufrufe im selben Zug und abgebrochene Werkzeuge (werkzeug_wache.py)
     doppel = DoppelWache(turn_nr=lambda: turn.turn_nr) if werkzeug_doppelt_an() else None
 
