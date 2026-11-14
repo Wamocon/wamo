@@ -8,9 +8,10 @@ gemeinsamem Gedächtnis.
 Antworten, Ansagen und im Verlauf heißt er kurz „Wais“; so verlangt es die Persona, denn „W.A.I.S.“ läse die Stimme als einzelne
 Buchstaben. Die deutsche Stimme liest „Wais“ allerdings wie „weiß“. Deshalb schreibt `voice-core/aussprache.py` den Namen nur für
 die Sprachausgabe um: „Wais“ und „W.A.I.S.“ werden „Ways“ (so trifft die Stimme die Aussprache, Hörprobe vom 14.11.2026),
-„WAMOCON’s“ wird „Wamokons“; buchstabiert („W, A, I, S“, Konstante `NAME_BUCHSTABIERT`) bleibt alles, wie es ist. Das hängt als Text-Transform am TTS-Dienst,
+„WAMOCON’s“ wird „Wamokons“, und den buchstabierten Namen („W, A, I, S“, auch „W-A-I-S“, „W. A. I. S.“ und „W A I S“)
+spricht die Stimme als „Weh Ej, Ei Es“ (gemischt deutsch und englisch, `NAME_BUCHSTABIERT_TTS`). Das hängt als Text-Transform am TTS-Dienst,
 Verlauf und Untertitel behalten „Wais“. Alle Schreibweisen stehen als Konstanten in `voice-core/persona.py` (`NAME_ANZEIGE`,
-`NAME_KURZ`, `NAME_LANG`, `NAME_LANG_DE`, `NAME_TTS`, `NAME_BUCHSTABIERT`), die der Oberfläche in `ui/src/lib/anzeigename.ts`. Die Spracherkennung
+`NAME_KURZ`, `NAME_LANG`, `NAME_LANG_DE`, `NAME_TTS`, `NAME_BUCHSTABIERT`, `NAME_BUCHSTABIERT_TTS`), die der Oberfläche in `ui/src/lib/anzeigename.ts`. Die Spracherkennung
 kennt „Wais“ und „W.A.I.S.“ als Begriffe; als Anrede zählen auch „Waze“, „Ways“, „WAIS“, „Weis“ und der frühere Name „WAMO“.
 Der interne Name bleibt WAMO: Ordner, Pakete, Umgebungsvariablen `WAMO_*`, Dienste, Datenbankschemas, Dateinamen, Log-Meldungen
 und der Repo-Name heißen weiter `wamo`. In den technischen Abschnitten dieser Datei steht deshalb „WAMO“ für W.A.I.S.
