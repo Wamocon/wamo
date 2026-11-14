@@ -259,7 +259,9 @@
 .kz-karte .status-list { font-size: 15px; gap: 6px 12px; }
 .kz-karte .pc-steuerung, .kz-karte .betriebsart { margin-top: 4px; }
 
-.kz-reiterleiste { display: flex; gap: 2px; }
+/* flex: none: Die Leiste ist ab 1100 px ein Scrollbereich (seitengriff.css) und hätte als Flex-Element der rechten Spalte sonst keine
+   Mindesthöhe; eine Tafel, die höher als die Spalte ist (Büro-Karte), drückte sie auf 2 px zusammen (Test reiterleisteCss.test.ts) */
+.kz-reiterleiste { display: flex; gap: 2px; flex: none; }
 .kz-reiter-seite { border-bottom: 1px solid var(--rule); margin-bottom: 4px; }
 .kz-reiter {
   min-height: 44px; padding: 0 12px;
@@ -305,6 +307,14 @@
   .kz[data-rechts="erledigt"] .kz-tafel[data-p="erledigt"],
   .kz[data-rechts="buero"] .kz-tafel[data-p="buero"] { display: flex; }
   .kz-reiter-seite .kz-reiter { padding: 0 9px; letter-spacing: 0.03em; } /* vier Reiter in 320 px Breite */
+  /* Die Reiter bleiben beim Scrollen der Spalte oben stehen. Der Abstand oben gehört dafür zur Leiste statt zur Spalte (sonst scrollt
+     die Tafel darüber sichtbar durch), der Grund ist der der Spalte (Glas über dem Seitengrund), deckend. z-index 3 liegt über den
+     Punkten der Büro-Karte (z-index 2). scroll-padding: Was Tastatur oder Skript ins Bild holen, landet unter der Leiste, nicht dahinter. */
+  .kz .kz-rechts { padding-top: 0; scroll-padding-top: 64px; }
+  .kz-reiter-seite {
+    position: sticky; top: 0; z-index: 3; padding-top: 14px;
+    background: linear-gradient(var(--panel), var(--panel)), var(--bg);
+  }
 }
 @media (min-width: 1100px) and (max-width: 1279px) {
   .kz-main { grid-template-columns: 240px minmax(0, 1fr) 320px; }
@@ -339,6 +349,8 @@
   .kz-links { display: none; }
   .kz-tafel { padding-top: 6px; }
   .kz-kopf, .kz-kernbereich, .kz-bedienung, .kz-canvas { display: none; }
+  /* auch mit laufender Aufgabe: aufgabenanzeige.css zeigt .kz-kernbereich[data-aufgabe] mit mehr Gewicht, das gilt nur im Reiter Kern */
+  .kz:not([data-mobil="kern"]) .kz-kernbereich { display: none; }
   .kz[data-mobil="kern"] .kz-kopf { display: grid; }
   .kz[data-mobil="kern"] .kz-kernbereich { display: flex; }
   .kz[data-mobil="kern"] .kz-bedienung { display: flex; }
