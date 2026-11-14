@@ -8,6 +8,20 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Geändert
 
+- Neuer Anzeigename **W.A.I.S.** (WAMOCON’s Artificial Intelligence System, deutsch „WAMOCONs künstliches intelligentes System“; Zweig
+  `feat/wais-name`). Geschrieben wird er überall, wo Menschen ihn lesen, mit Schlusspunkt: Oberfläche (Texte, `aria-label`, Seitentitel,
+  Manifest, Laborkopf, Anmeldeseite mit Langform), Persona und alle Prompts des Kerns, Einwilligungstext der Stimmprüfung (Version
+  `stimme-1` bleibt, es hat noch niemand eingewilligt), Meldungen des Hosts und der Desktop-App (Fenster, Tray, Dialoge), Labor-Dienst,
+  Labor-Unterlagen und Doku. Kurz heißt er „Wais“, gesprochen wie das englische „ways“: Begrüßung, gesprochene Sätze und die Antworten
+  des Modells schreiben „Wais“ (die Persona verlangt es, „W.A.I.S.“ läse die Stimme als Buchstaben), auf Nachfrage buchstabiert er
+  („W, A, I, S“) und sagt die Langform. Für die Stimme schreibt `voice-core/aussprache.py` (`fuer_sprachausgabe`, Transform am
+  TTS-Dienst, auch für die vorab aufgenommenen Füllwörter) „Wais“ und „W.A.I.S.“ als „Ways“ und „WAMOCON’s“ als „Wamokons“ (Hörprobe);
+  Verlauf und Untertitel behalten „Wais“. Konstanten `NAME_ANZEIGE`, `NAME_KURZ`, `NAME_LANG`, `NAME_LANG_DE`, `NAME_TTS` und
+  `NAME_BUCHSTABIERT` in `voice-core/persona.py`. Die Spracherkennung kennt „Wais“ und „W.A.I.S.“ als Begriffe; als Anrede zählen dazu „Waze“, „Ways“,
+  „WAIS“, „Weis“ und der frühere Name „WAMO“. Ein Test hält feste Ansagen frei von „W.A.I.S.“ und „WAMO“.
+  Der Host erkennt die eigene Oberfläche am Titel `WAMO` oder `W.A.I.S.` (`WAMO_UI_TITLE`), damit er nie in die Freigabekarten klickt.
+  Nur der Anzeigename ändert sich: Umgebungsvariablen `WAMO_*`, Bezeichner, Pakete, Pfade, Schemas, Rollen, Dienste, Ports, Dateinamen,
+  Log-Meldungen, der Fenstertitel `WAMO Stimmen-Rand`, der TOTP-Aussteller, der Installer-Produktname und der Repo-Name bleiben.
 - Oberfläche als Kommandozentrale im HUD-Design (Zweig `feat/hud-design`): Kern als Lichtkugel in Ringen, Block „Gespräch“ links,
   Aufgabenanzeige neben dem Kern, Schriften Unbounded, JetBrains Mono und Atkinson Hyperlegible (lokal), WMC-Rot als Hauptfarbe,
   dazu ein Hellmodus (Umschalter in Kopfzeile und Einstellungen, Rollenvariablen für beide Themen). Alle übrigen Ansichten sind im

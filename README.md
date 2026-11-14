@@ -1,8 +1,19 @@
-# WAMO
+# W.A.I.S.
 
-Sprachassistent der WAMOCON GmbH: Livegespräch mit natürlichen Unterbrechungen, Oberfläche im WMC-Design,
+W.A.I.S. (WAMOCON’s Artificial Intelligence System, deutsch „WAMOCONs künstliches intelligentes System“, kurz „Wais“, gesprochen wie das englische „ways“) ist der Sprachassistent der WAMOCON GmbH: Livegespräch mit natürlichen Unterbrechungen, Oberfläche im WMC-Design,
 Werkzeuge für den Windows-PC, Entwicklungsaufträge mit ECC und REA, mehrere Nutzerprofile mit persönlichem und
 gemeinsamem Gedächtnis.
+
+**Name.** Geschrieben wird der Assistent überall, wo Menschen ihn lesen, als „W.A.I.S.“ (mit Schlusspunkt). In gesprochenen
+Antworten, Ansagen und im Verlauf heißt er kurz „Wais“; so verlangt es die Persona, denn „W.A.I.S.“ läse die Stimme als einzelne
+Buchstaben. Die deutsche Stimme liest „Wais“ allerdings wie „weiß“. Deshalb schreibt `voice-core/aussprache.py` den Namen nur für
+die Sprachausgabe um: „Wais“ und „W.A.I.S.“ werden „Ways“ (so trifft die Stimme die Aussprache, Hörprobe vom 14.11.2026),
+„WAMOCON’s“ wird „Wamokons“; buchstabiert („W, A, I, S“, Konstante `NAME_BUCHSTABIERT`) bleibt alles, wie es ist. Das hängt als Text-Transform am TTS-Dienst,
+Verlauf und Untertitel behalten „Wais“. Alle Schreibweisen stehen als Konstanten in `voice-core/persona.py` (`NAME_ANZEIGE`,
+`NAME_KURZ`, `NAME_LANG`, `NAME_LANG_DE`, `NAME_TTS`, `NAME_BUCHSTABIERT`), die der Oberfläche in `ui/src/lib/anzeigename.ts`. Die Spracherkennung
+kennt „Wais“ und „W.A.I.S.“ als Begriffe; als Anrede zählen auch „Waze“, „Ways“, „WAIS“, „Weis“ und der frühere Name „WAMO“.
+Der interne Name bleibt WAMO: Ordner, Pakete, Umgebungsvariablen `WAMO_*`, Dienste, Datenbankschemas, Dateinamen, Log-Meldungen
+und der Repo-Name heißen weiter `wamo`. In den technischen Abschnitten dieser Datei steht deshalb „WAMO“ für W.A.I.S.
 
 | Ordner | Was | Läuft auf |
 | --- | --- | --- |
@@ -191,9 +202,9 @@ Beim ersten Anmelden richtet die Oberfläche die Authenticator-App ein (QR-Code)
 ### Oberfläche: Kommandozentrale, Darstellungen, Hellmodus und Schriften
 
 Die Hauptansicht ist eine Kommandozentrale im WMC-Corporate-Design (`ui/src/components/kommando/`). Links steht der Block „Gespräch“
-(Stimmlinie, Legende, letzte Zeilen von Person und WAMO) mit den Karten Gedächtnis, geteilte Arbeit und Einstellungen, in der Mitte der
+(Stimmlinie, Legende, letzte Zeilen von Person und W.A.I.S.) mit den Karten Gedächtnis, geteilte Arbeit und Einstellungen, in der Mitte der
 Kern als Lichtkugel in HUD-Ringen mit Zustandsschild, Untertiteln und Eingabepille, rechts die Reiter Aufträge, Vorgänge, Erledigt und
-Büro. Neben dem Kern zeigt die Aufgabenanzeige den laufenden Auftrag mit Schritten und Fortschritt, solange WAMO handelt. Der Verlauf ist
+Büro. Neben dem Kern zeigt die Aufgabenanzeige den laufenden Auftrag mit Schritten und Fortschritt, solange W.A.I.S. handelt. Der Verlauf ist
 eine Schublade, die Einstellungen sind eine zweite Ansicht derselben Seite (Hash `#einstellungen`).
 
 - **Darstellungen:** Normal, Fokus, Zentrale und Nacht (Umschalter über dem Kern, auch in den Einstellungen). Nacht erzwingt dunkel.
@@ -811,7 +822,7 @@ Sitzung in derselben Sitzung ein Gespräch mit Stimme. Die Logik steht in `ui/sr
 - **Verdrängung (Grenze):** Der Kern führt je Profil eine Sitzung, eine neue löst die laufende ab (`WAMO_SITZUNG_EINZELN`). Die
   Oberfläche erfährt vor dem Start nichts von einer Sitzung auf einem anderen Gerät, das Tippen kann sie deshalb dort verdrängen. Der
   Schalter gehört nur auf ein Gerät je Person (Hinweis in der Einstellung). Erkennbar ist nur der umgekehrte Fall: Hat eine neuere Sitzung
-  die hier abgelöst, startet das Tippen nicht von selbst neu, sondern zeigt „WAMO läuft in einem anderen Fenster“ mit „Hier übernehmen“.
+  die hier abgelöst, startet das Tippen nicht von selbst neu, sondern zeigt „W.A.I.S. läuft in einem anderen Fenster“ mit „Hier übernehmen“.
   Eine Abfrage im Kern, die das vorher zeigt, gehört in KP-1C.
 - **Hinweis für Betreiber:** Eine still gestartete Sitzung ist für den Server eine ganz normale Sitzung. Bis zu ihrem Ende (spätestens 20
   Minuten nach der letzten Eingabe, bei PC-Steuerung oder offener Karte länger) zählt sie für die Ruheprüfung und für `ausleiten` in
@@ -1014,15 +1025,15 @@ Modells beim Nachladen; die Stichwortliste für Problemzeilen ist eine Annahme u
 
 ### Stimmabdruck (nur deine Stimme zählt)
 
-Jede Person kann WAMO ihre Stimme einlernen, damit WAMO nur noch diese Stimme hört und alle anderen Stimmen ignoriert. Es gilt je Profil
+Jede Person kann W.A.I.S. ihre Stimme einlernen, damit W.A.I.S. nur noch diese Stimme hört und alle anderen Stimmen ignoriert. Es gilt je Profil
 und nur im Büro, nie im Testlabor (Laborprofile bekommen weder Einlernen noch Prüfung, die Nachricht `stimmabdruck` wird für sie von der
 Laborsperre abgewiesen). Code: `voice-core/stimme_*.py`, Tests: `voice-core/test_stimme_*.py`.
 
 **Bedienung.** Der Kern schickt beim Verbinden den Text der Einwilligung (Version `stimme-1`). In den Einstellungen der Oberfläche liest die
-Person ihn, bestätigt ihn und startet das Einlernen (Klick, nie per Sprache). WAMO sagt kurz, worum es geht, dann liest die Person den Text
-vor oder erzählt frei, bis der Balken voll ist (20 Sekunden reine Sprache). Währenddessen hört die Spracherkennung nur Stille, WAMO antwortet
+Person ihn, bestätigt ihn und startet das Einlernen (Klick, nie per Sprache). W.A.I.S. sagt kurz, worum es geht, dann liest die Person den Text
+vor oder erzählt frei, bis der Balken voll ist (20 Sekunden reine Sprache). Währenddessen hört die Spracherkennung nur Stille, W.A.I.S. antwortet
 also nicht auf den Vorlesetext. Danach steht der Abdruck im Profil. **Löschen** geht jederzeit in den Einstellungen und entfernt den Abdruck
-vollständig (DSGVO Art. 17, zugleich Widerruf der Einwilligung). Wer nicht einlernt, hat keinen Nachteil: Ohne Abdruck prüft WAMO nichts und
+vollständig (DSGVO Art. 17, zugleich Widerruf der Einwilligung). Wer nicht einlernt, hat keinen Nachteil: Ohne Abdruck prüft W.A.I.S. nichts und
 sperrt nichts. Ein vorhandener Abdruck wird im Modus streng nur ersetzt, wenn die Person gerade an der Stimme erkannt wurde.
 
 **Modi** (`WAMO_STIMME_PRUEFUNG`, wirkt nur für Profile mit Abdruck):

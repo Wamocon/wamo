@@ -12,7 +12,7 @@ die Labor-Daten dazu liegen unter `infra/sokrates2/labor-daten/`, auf dem Server
 
 | Bereich | Wert |
 | --- | --- |
-| Anzeigename | `WAMO` (in Texten „WAMO“, grammatisch „der Assistent“) |
+| Anzeigename | `W.A.I.S.` (mit Schlusspunkt, überall, wo Menschen den Namen lesen), Langform „WAMOCON’s Artificial Intelligence System“, deutsch „WAMOCONs künstliches intelligentes System“, grammatisch „der Assistent“. Gesprochen kurz „Wais“ wie das englische „ways“ (nicht wie „weiß“); so schreibt das Modell den Namen in gesprochenen Antworten, Ansagen und Verlauf. Die Stimme bekommt dafür „Ways“ und für „WAMOCON’s“ „Wamokons“ (`voice-core/aussprache.py`, Transform am TTS-Dienst). Konstanten `NAME_ANZEIGE`, `NAME_KURZ`, `NAME_LANG`, `NAME_LANG_DE`, `NAME_TTS`, `NAME_BUCHSTABIERT` in `voice-core/persona.py`, Oberfläche `ui/src/lib/anzeigename.ts`. Nur der Anzeigename ist neu: Kennungen, Umgebung, Pakete, Pfade, Schemas, Rollen und Dienste bleiben `wamo` bzw. `WAMO_*`, ebenso TOTP-Aussteller, Weckwort-Wert und Overlay-Titel (der Host erkennt die Oberfläche an `WAMO` und `W.A.I.S.` im Titel) |
 | Kennung, Paketpräfix | `wamo` (`wamo-voice-core`, `wamo-host`, `wamo-desktop`, `wamo-ui`) |
 | Env-Präfix | `WAMO_`, Next.js öffentlich `NEXT_PUBLIC_WAMO_*` nur wenn nötig |
 | DB-Schemas | `wamo_dev`, `wamo_test`, `wamo_prod` |

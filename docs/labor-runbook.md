@@ -34,7 +34,7 @@ Namen und Telefonnummern trägt Niko vor dem 26.11. ein (Abschnitt 8). Hier steh
 
 Ein Platz ist ein Laptop mit zwei Fenstern. Links läuft W.A.I.S. (Gespräch mit Stimme), rechts das Board mit den Tickets dieses Platzes (nur lesend). Die Betreuer bedienen alles über die Betreuer-Seite auf ihrem eigenen Gerät.
 
-**Der Name.** W.A.I.S. steht für „WAMOCON’s Artificial Intelligence System“, auf Deutsch „WAMOCONs künstliches intelligentes System“. Gesprochen heißt er kurz „Wais“, mit einem amerikanischen „ai“ (nicht wie „weiß“). Besucher sprechen ihn mit „Wais“ an. Fragt jemand, wie er heißt, sagt er den Namen, buchstabiert ihn auf Wunsch und nennt die Langform.
+**Der Name.** W.A.I.S. steht für „WAMOCON’s Artificial Intelligence System“, auf Deutsch „WAMOCONs künstliches intelligentes System“. Kurz heißt er „Wais“, gesprochen wie das englische „ways“ (nicht wie „weiß“). Besucher sprechen ihn mit „Wais“ an. Fragt jemand, wie er heißt, sagt er den Namen, buchstabiert ihn auf Wunsch und nennt die Langform.
 
 | Plätze | Verwendung |
 | --- | --- |

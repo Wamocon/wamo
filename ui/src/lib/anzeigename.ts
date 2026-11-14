@@ -1,6 +1,7 @@
 /**
  * Anzeigename des Assistenten. Technische Namen (wamo-*, WAMO_*, Bezeichner, Pfade) bleiben unverändert,
- * hier steht nur, was Menschen lesen. Gesprochen wird der Name kurz als "Wais" (amerikanisches "ai").
+ * hier steht nur, was Menschen lesen. Kurz heißt er "Wais", gesprochen wie das englische "ways" (die Sprachausgabe
+ * bekommt dafür eine eigene Schreibweise, voice-core/aussprache.py).
  */
 export const ANZEIGENAME = "W.A.I.S.";
 
