@@ -177,8 +177,9 @@ class Stimmpruefer(FrameProcessor):
     def on_speech_stop(self, zeit: float, stop_secs: float) -> None:
         self._sprechend = False
         if self._einlernen.aktiv or self._segment_start is None:
-            self._fertig = max(self._fertig, self._begonnen)  # nichts geprüft: zu dieser Äußerung gibt es kein Urteil
-            self._melden()
+            if self._begonnen > self._beendet:  # die laufende Äußerung endet ungeprüft (Einlernen begann): zu ihr gibt es kein Urteil
+                self._beendet = self._fertig = self._begonnen
+                self._melden()
             return
         nr = self._beendet = self._begonnen
         sprache_ende = zeit - stop_secs

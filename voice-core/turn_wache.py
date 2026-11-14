@@ -22,8 +22,9 @@ von hinten, vom Assistent-Aggregator). Verworfen wird
     Verlauf, wenn das verspätete Anschieben kommt, gäbe es sonst eine Fortsetzung ohne neuen Anlass.
 
 Weil alle Anfragen hier vorbeikommen, weiß die Wache auch, ob das Modell an einer Antwort arbeitet, die noch nicht zu hören ist
-(modell_beschaeftigt, für die Stimmprüfung in stimme_waechter.py): ab einer durchgelassenen Anfrage, bis WAMO zu sprechen beginnt, eine
-Unterbrechung kommt oder die Antwort ohne Text endet (das Modell hält den Zug für unfertig), höchstens MODELL_MAX_SECS.
+(modell_beschaeftigt, für die Stimmprüfung in stimme_waechter.py): ab einer durchgelassenen Anfrage, bis die Antwort zu hören ist (Beginn
+oder Ende der Rede nach ihrem Text; ein Wartesatz davor zählt nicht), eine Unterbrechung kommt oder die Antwort ohne Text endet (das Modell
+hält den Zug für unfertig), höchstens MODELL_MAX_SECS.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from loguru import logger
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     Frame,
     InterruptionFrame,
     LLMContextFrame,
@@ -108,9 +110,10 @@ class TurnWache:
         return self._anfrage_um is not None and self._uhr() - self._anfrage_um < MODELL_MAX_SECS
 
     def _ausgabe(self, frame: Frame) -> None:
-        """Was hinter dem Modell vorbeikommt: Text für die Sprachausgabe, Ende der Antwort, Beginn der Rede."""
-        if isinstance(frame, BotStartedSpeakingFrame):
-            self._anfrage_um = None
+        """Was hinter dem Modell vorbeikommt: Text für die Sprachausgabe, Ende der Antwort, Beginn und Ende der Rede."""
+        if isinstance(frame, (BotStartedSpeakingFrame, BotStoppedSpeakingFrame)):
+            if self._antwort_text:
+                self._anfrage_um = None  # die Antwort ist zu hören; ein Wartesatz vorher (wartesatz.py) beendet das Denken nicht
         elif isinstance(frame, LLMTextFrame):
             self._antwort_text = True
         elif isinstance(frame, LLMFullResponseEndFrame) and not self._antwort_text:
@@ -130,6 +133,7 @@ class _WachTeil(FrameProcessor):
         elif isinstance(frame, LLMContextFrame) and direction == self._richtung:
             if not self._wache.durchlassen(frame):
                 return
-        elif isinstance(frame, BotStartedSpeakingFrame) or (self._richtung == FrameDirection.UPSTREAM and direction == FrameDirection.DOWNSTREAM):
+        elif isinstance(frame, (BotStartedSpeakingFrame, BotStoppedSpeakingFrame)) or (
+                self._richtung == FrameDirection.UPSTREAM and direction == FrameDirection.DOWNSTREAM):
             self._wache._ausgabe(frame)  # hinter dem Modell: seine Ausgabe; der Beginn der Rede kommt von hinten an beiden Teilen vorbei
         await self.push_frame(frame, direction)

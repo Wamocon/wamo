@@ -141,6 +141,15 @@ class ModellBeschaeftigtTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await self.lauf(frames)).modell_beschaeftigt())  # die Sprachausgabe hat noch zu tun
         self.assertFalse((await self.lauf([*frames, SleepFrame(0.05), BotStartedSpeakingFrame()])).modell_beschaeftigt())
 
+    async def test_ein_wartesatz_vor_der_antwort_beendet_das_denken_nicht(self):
+        """Ein langsames Modell: WAMO sagt vorher einen Wartesatz (wartesatz.py). Das Modell arbeitet danach weiter; erst die Rede nach dem
+        Text der Antwort beendet das Denken, auch wenn sie ohne neuen Beginn an den Wartesatz anschließt."""
+        wartesatz = [SleepFrame(0.05), BotStartedSpeakingFrame(), SleepFrame(0.05), BotStoppedSpeakingFrame()]
+        self.assertTrue((await self.lauf(wartesatz)).modell_beschaeftigt())
+        anschluss = [SleepFrame(0.05), BotStartedSpeakingFrame(), LLMFullResponseStartFrame(), LLMTextFrame("Gern."),
+                     LLMFullResponseEndFrame(), SleepFrame(0.05), BotStoppedSpeakingFrame()]
+        self.assertFalse((await self.lauf(anschluss)).modell_beschaeftigt())
+
     async def test_antwort_ohne_text_beendet_das_denken(self):
         """Zum Beispiel hält das Modell den Zug für unfertig (Marke statt Antwort): dann wartet WAMO, ohne zu arbeiten."""
         self.assertFalse((await self.lauf([LLMFullResponseStartFrame(), LLMFullResponseEndFrame()])).modell_beschaeftigt())

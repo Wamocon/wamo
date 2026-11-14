@@ -301,6 +301,15 @@ class UrteilAbwartenTests(PrueferBasis):
         self.v.on_speech_stop(self.uhr.t, 0.2)
         self.assertEqual((await wartend).urteil, FREMD)
 
+    async def test_ein_vad_ende_ohne_beginn_beendet_keine_laufende_pruefung(self):
+        self.modell.rechner.dauer = 0.1
+        await self.sprechen(-8000, 2.0, warten=False)
+        nr = self.v.aeusserung_zuordnen()
+        self.v.on_speech_stop(self.uhr.t + 0.5, 0.2)  # ein zweites Ende ohne neuen Beginn
+        urteil = await self.v.urteil_abwarten(1.0, nr)
+        self.assertIsNotNone(urteil)
+        self.assertEqual(urteil.urteil, FREMD)
+
     async def test_ein_zweites_transkript_derselben_aeusserung_bekommt_dasselbe_urteil(self):
         a = await self.sprechen(-8000, 2.0)
         b = await self.v.urteil_abwarten(0.05, self.v.aeusserung_zuordnen())

@@ -33,7 +33,8 @@ bricht das SoftInterruptGate sofort hart ab, bevor ein Urteil da ist. Eine fremd
 abgebrochen, danach verwarf der Wächter ihr Transkript und WAMO schwieg. Deshalb startet im Modus streng mit bereitem Abdruck, solange WAMO
 nicht spricht, aber das Modell an einer Antwort arbeitet oder ein Werkzeug läuft, erst das endgültige Transkript nach dem Urteil den Zug
 (soft_interrupt.MeaningfulWordsUserTurnStartStrategy, nur_endgueltig). Abwägung: Die eigene Stimme bricht dort etwas später ab (nach
-Sprechende, Erkennung und Urteil), und weil der Zug erst dann beginnt, entscheidet die Stop-Strategie das Satzende ohne Smart-Turn. Beim
+Sprechende, Erkennung und Urteil), und weil der Zug erst dann beginnt, entscheidet die Stop-Strategie das Satzende ohne Smart-Turn (sie
+wartet ihre Frist ab, mit der Haltezeit bei Soniox rund 1,2 s; ein Werkzeug oder eine Antwort ist da schon abgebrochen). Beim
 Sprechen bleibt der schnelle Weg über Zwischenstände, denn dort muss WAMO auf "Stopp" sofort hören; eine fremde Stimme ist dann meist
 unklar (Echo, Überlappung) und kostet höchstens den Rest des Satzes. Läuft nichts, bleibt ebenfalls alles wie bisher: Ein Abbruch schadet
 dort nicht, und die Erkennung des Satzendes braucht den Zug ab dem ersten Wort.
