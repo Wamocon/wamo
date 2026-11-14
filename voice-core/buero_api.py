@@ -261,7 +261,7 @@ def _nas(d: dict, erreichbar: bool) -> Befund:
         return "stoerung", "nicht erreichbar", {}
     if d.get("eingerichtet") is True:
         return "ok", "erreichbar", {}
-    return "unbekannt", "erreichbar, WAMO-Zugang nicht eingerichtet", {}
+    return "unbekannt", "erreichbar, W.A.I.S.-Zugang nicht eingerichtet", {}
 
 
 def _lautstaerke(d: dict) -> tuple[str | None, dict]:
@@ -520,5 +520,5 @@ async def steuern(request: Request, response: Response) -> dict:
     if status == "rejected":
         raise HTTPException(409, "Das geht mit diesem Gerät nicht")
     if status == "nicht_eingerichtet":
-        raise HTTPException(409, "Dieses Gerät ist noch nicht für WAMO eingerichtet")
+        raise HTTPException(409, "Dieses Gerät ist noch nicht für W.A.I.S. eingerichtet")
     raise HTTPException(502, "Das Gerät hat nicht geantwortet. Ist es erreichbar?")

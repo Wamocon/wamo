@@ -13,11 +13,11 @@ from __future__ import annotations
 
 EINWILLIGUNG_VERSION = "stimme-1"
 EINWILLIGUNG_TEXT = (
-    "Ich willige ausdrücklich ein, dass WAMO aus einer kurzen Aufnahme meiner Stimme einen Stimmabdruck berechnet und in meinem Profil "
-    "speichert. Der Stimmabdruck besteht nur aus 192 Zahlen, es wird keine Aufnahme gespeichert. Die Berechnung läuft im Kern von WAMO "
-    "auf dem eigenen Server der WAMOCON GmbH. WAMO nutzt den Stimmabdruck allein, um meine Stimme von anderen Stimmen zu unterscheiden: "
-    "Stimmen, die WAMO sicher als fremd erkennt, werden nicht verarbeitet und lösen nichts aus. Der Stimmabdruck ist ein biometrisches "
-    "Datum nach Artikel 9 DSGVO, deshalb brauche ich diese ausdrückliche Einwilligung. Sie ist freiwillig: Ohne sie nutze ich WAMO ohne "
+    "Ich willige ausdrücklich ein, dass W.A.I.S. aus einer kurzen Aufnahme meiner Stimme einen Stimmabdruck berechnet und in meinem Profil "
+    "speichert. Der Stimmabdruck besteht nur aus 192 Zahlen, es wird keine Aufnahme gespeichert. Die Berechnung läuft im Kern von W.A.I.S. "
+    "auf dem eigenen Server der WAMOCON GmbH. W.A.I.S. nutzt den Stimmabdruck allein, um meine Stimme von anderen Stimmen zu unterscheiden: "
+    "Stimmen, die W.A.I.S. sicher als fremd erkennt, werden nicht verarbeitet und lösen nichts aus. Der Stimmabdruck ist ein biometrisches "
+    "Datum nach Artikel 9 DSGVO, deshalb brauche ich diese ausdrückliche Einwilligung. Sie ist freiwillig: Ohne sie nutze ich W.A.I.S. ohne "
     "Nachteil weiter. Ich kann den Stimmabdruck jederzeit in den Einstellungen löschen. Das gilt zugleich als Widerruf meiner "
     "Einwilligung, er wirkt für die Zukunft."
 )

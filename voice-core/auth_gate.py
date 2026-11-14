@@ -381,7 +381,7 @@ class AccessGate:
             logger.exception("Zugangskontrolle: Profilprüfung fehlgeschlagen")
             return Decision(None, 503, "Profilprüfung nicht möglich")
         if profile is None:
-            return Decision(None, 403, "Für dieses Konto gibt es kein WAMO-Profil.")
+            return Decision(None, 403, "Für dieses Konto gibt es kein W.A.I.S.-Profil.")
         # Laborprofil: wirksam aktiv nur über labor_aktiv und mit stimmigen Feldern (Rolle mitglied, Platz); alle anderen über aktiv
         if labor.art_von(profile) is not None and (problem := labor.profil_problem(profile)) is not None:
             logger.warning("Zugangskontrolle: Laborprofil unstimmig ({})", problem)

@@ -195,7 +195,7 @@ async def _click(pc_client, ziel: str, arguments: dict, zugang: Zugang) -> dict:
 
 PC_OFF = {"status": "rejected", "summary": "Die PC-Steuerung ist aus. Sie lässt sich in der Oberfläche einschalten."}
 # Eigener, fester Text statt der Antwort vom PC (die Meldung des Hosts ist gleichbedeutend)
-GESPERRT_TEXT = "Der Bildschirm ist gesperrt. Entsperren kann nur die Person selbst, WAMO kann das nicht."
+GESPERRT_TEXT = "Der Bildschirm ist gesperrt. Entsperren kann nur die Person selbst, W.A.I.S. kann das nicht."
 
 
 def register_screen_tools(

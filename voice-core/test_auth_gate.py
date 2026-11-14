@@ -305,7 +305,7 @@ class GateTests(unittest.IsolatedAsyncioTestCase):
         d = await gate(FakeProfiles({})).authorize(token())
         self.assertIsNone(d.identity)
         self.assertEqual(d.status, 403)
-        self.assertIn("kein WAMO-Profil", d.reason)
+        self.assertIn("kein W.A.I.S.-Profil", d.reason)
 
     async def test_inaktives_profil_403(self):
         d = await gate(FakeProfiles({USER: profile(aktiv=False)})).authorize(token())
@@ -465,7 +465,7 @@ class MiddlewareTests(unittest.IsolatedAsyncioTestCase):
         called, sent, _ = await self.run_mw(self.http(auth=f"Bearer {token()}"), b"{}", profiles=FakeProfiles({}))
         self.assertEqual(called, [])
         self.assertEqual(sent[0]["status"], 403)
-        self.assertIn("kein WAMO-Profil", json.loads(sent[1]["body"])["detail"])
+        self.assertIn("kein W.A.I.S.-Profil", json.loads(sent[1]["body"])["detail"])
 
     async def test_inaktiv_403(self):
         p = FakeProfiles({USER: profile(aktiv=False)})

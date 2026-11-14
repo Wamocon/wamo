@@ -151,7 +151,7 @@ ERGEBNIS_SCHON_ERLEDIGT = {
 }
 ERGEBNIS_ZU_VIELE = {
     "status": "blocked",
-    "summary": "In diesem Zug sind auf derselben Webseite schon mehrere Seiten geöffnet worden, eine weitere öffnet WAMO nicht. "
+    "summary": "In diesem Zug sind auf derselben Webseite schon mehrere Seiten geöffnet worden, eine weitere öffnet W.A.I.S. nicht. "
                "Sag der Person, was offen ist, und frag, ob sie noch etwas Bestimmtes meint.",
 }
 
