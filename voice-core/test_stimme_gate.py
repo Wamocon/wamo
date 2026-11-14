@@ -406,6 +406,12 @@ class SchalterTests(unittest.TestCase):
             s = schwellen_aus_env()
         self.assertEqual((s.eigen_min, s.fremd_max, s.kurz_vertrauen_secs), (0.5, 0.3, 30.0))
 
+    def test_eigen_min_hat_die_untergrenze_0_35(self):
+        with mock.patch.dict("os.environ", {"WAMO_STIMME_EIGEN_MIN": "0.3", "WAMO_STIMME_FREMD_MAX": "0.1"}, clear=True):
+            self.assertEqual(schwellen_aus_env().eigen_min, 0.5)  # zu niedrig: Standard
+        with mock.patch.dict("os.environ", {"WAMO_STIMME_EIGEN_MIN": "0.35", "WAMO_STIMME_FREMD_MAX": "0.2"}, clear=True):
+            self.assertEqual(schwellen_aus_env().eigen_min, 0.35)
+
     def test_vertrauen_hat_eine_grenze_nach_unten(self):
         with mock.patch.dict("os.environ", {"WAMO_STIMME_VERTRAUEN_SECS": "0"}, clear=True):
             self.assertEqual(schwellen_aus_env().vertrauen_secs, 120.0)

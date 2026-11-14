@@ -76,7 +76,7 @@ def schwellen_aus_env() -> Schwellen:
     """Schwellen aus der Umgebung. Unbrauchbares (keine Zahl, außerhalb der Grenzen) heißt Standard, und fremd_max muss unter eigen_min
     liegen, sonst gelten beide Standardwerte."""
     standard = Schwellen()
-    eigen = zahl_im_bereich("WAMO_STIMME_EIGEN_MIN", 0.2, 0.95)
+    eigen = zahl_im_bereich("WAMO_STIMME_EIGEN_MIN", 0.35, 0.95)
     fremd = zahl_im_bereich("WAMO_STIMME_FREMD_MAX", 0.0, 0.8)
     s = Schwellen(
         eigen_min=standard.eigen_min if eigen is None else eigen,

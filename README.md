@@ -1009,7 +1009,7 @@ außer `aus` nur mit Nachweis: Die Person wurde gerade sicher an der Stimme erka
 
 | Schalter | Standard | Bedeutung |
 | --- | --- | --- |
-| `WAMO_STIMME_EIGEN_MIN` | 0,5 | Ab diesem Wert (Kosinus der Abdrücke, 0,2 bis 0,95) gilt eine Äußerung als die eigene Stimme |
+| `WAMO_STIMME_EIGEN_MIN` | 0,5 | Ab diesem Wert (Kosinus der Abdrücke, 0,35 bis 0,95) gilt eine Äußerung als die eigene Stimme |
 | `WAMO_STIMME_FREMD_MAX` | 0,3 | Bis zu diesem Wert (0 bis 0,8) gilt sie als sicher fremd; muss unter `EIGEN_MIN` liegen, sonst gelten beide Standardwerte |
 | `WAMO_STIMME_MIN_SECS` | 1 | So viel reine Sprache braucht eine Äußerung für ein Urteil (0,3 bis 10); kürzere ("Ja", "mach") erben das Vertrauen nur, wenn sie nach der eigenen Stimme klingen (Wert ab `EIGEN_MIN`), sonst gilt die Stimme als nicht sicher erkannt |
 | `WAMO_STIMME_KURZ_VERTRAUEN_SECS` | 15 | So lange läuft das Vertrauen höchstens weiter, wenn seit der letzten sicheren Erkennung nur kurze Äußerungen kamen (1 bis 120); eine sichere Erkennung oder getippter Text beginnt neu |
@@ -1063,8 +1063,9 @@ rm /tmp/nemo_en_titanet_large.onnx
 sudo -u wamo-core sha256sum /var/cache/wamo-core/wamo/sprecher/nemo_en_titanet_large.onnx
 ```
 
-Liegt die Datei woanders, nennt `WAMO_STIMME_MODELL` (über `wamo-core-env`) den Pfad; er steht bewusst nicht in der Liste der Schalter, die
-`scripts/wamo_kern_sokrates2.py` aus der `.env` des PCs übernimmt, weil der Pfad je Rechner gilt. Die Bibliothek `sherpa-onnx` 2.0.1 steht in
+Liegt die Datei woanders, nennt `WAMO_STIMME_MODELL` (über `wamo-core-env`) den Pfad; kein `WAMO_STIMME_*` steht in der Liste der Schalter, die
+`scripts/wamo_kern_sokrates2.py` aus der `.env` des PCs übernimmt: Modus und Schwellen sind Sicherheitseinstellungen des Servers (nur über
+`wamo-core-env`), und der Pfad gilt je Rechner. Die Bibliothek `sherpa-onnx` 2.0.1 steht in
 `voice-core/pyproject.toml` und `uv.lock`; für Linux aarch64 und Python 3.12 gibt es beide Wheels (`sherpa-onnx` und `sherpa-onnx-core`,
 laut PyPI am 14.11.2026). Ein echter Lauf auf dem Server steht aus.
 

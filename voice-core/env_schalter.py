@@ -26,7 +26,7 @@ Füllwörter und Sprechweise (fuellwoerter.py, persona.py, Entscheidung vom 14.1
 Stimmabdruck (stimme_gate.py, stimme_modell.py, seit 14.11.2026; wirkt nur für Profile mit eingelerntem Abdruck, nie für Laborprofile):
   WAMO_STIMME_PRUEFUNG         aus | beobachten | streng (Standard streng): beobachten misst und meldet nur, streng lässt eine sicher fremde
                                Äußerung nicht ans Modell und sperrt Werkzeuge außer Uhrzeit, Websuche und Canvas
-  WAMO_STIMME_EIGEN_MIN        Zahl, Standard 0,5: ab diesem Wert (Kosinus, 0,2 bis 0,95) gilt die Äußerung als die eigene Stimme
+  WAMO_STIMME_EIGEN_MIN        Zahl, Standard 0,5: ab diesem Wert (Kosinus, 0,35 bis 0,95) gilt die Äußerung als die eigene Stimme
   WAMO_STIMME_FREMD_MAX        Zahl, Standard 0,3: bis zu diesem Wert (0 bis 0,8) gilt sie als fremd; muss unter EIGEN_MIN liegen
   WAMO_STIMME_MIN_SECS         Zahl, Standard 1: so viel reine Sprache braucht eine Äußerung, damit sie als eigen oder fremd zählt (0,3 bis 10)
   WAMO_STIMME_VERTRAUEN_SECS   Zahl, Standard 120: so lange gilt "eigen" für kurze Folgesätze und Werkzeuge (10 bis 3600)
