@@ -111,8 +111,9 @@ class HinweisTest(unittest.TestCase):
         self.assertFalse(hinweis_noetig([{"role": "assistant", "content": "Soll ich?"}, {"role": "user", "content": ["Ja"]}]))
 
     def test_schalter(self):
-        self.assertFalse(ja_waechter_an(""))
+        self.assertTrue(ja_waechter_an(""))  # seit 14.11.2026 Standard an
         self.assertTrue(ja_waechter_an("an"))
+        self.assertFalse(ja_waechter_an("aus"))
 
 
 class PipelineTest(unittest.IsolatedAsyncioTestCase):

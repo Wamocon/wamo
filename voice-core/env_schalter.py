@@ -77,8 +77,9 @@ STANDARDWERTE: dict[str, bool] = {
     # laufendem Werkzeug. Stoppwörter und echte Einwürfe wirken weiter,
     # eine Freigabe entscheidet nie die Sprache (test_werkzeug_rueckmeldung.py).
     "WAMO_RUECKMELDUNG_WERKZEUG": True,
-    # AUS: nicht gemessen (der Lauf kam nicht mehr zustande); der Wächter braucht Messung UND die Freigabe-Prüfung.
-    "WAMO_JA_WAECHTER": False,
+    # AN seit 14.11.2026 (Entscheidung Niko: Gesprächsverhalten wie das Vorbild, "Ja" auf eine Rückfrage führt aus). Freigaben
+    # bleiben unberührt: der Wächter gibt keinen Hinweis bei Freigabe-Rückfragen und nie, wenn im Verlauf eine Freigabe wartet.
+    "WAMO_JA_WAECHTER": True,
     # AUS: Gesprächsoptimierung, noch nicht gemessen (Messplan in docs/gespraech-optimierung.md, Abschnitt 5).
     "WAMO_PERSONA_GESPRAECH": False,
     "WAMO_WARTESATZ_MODELL": False,

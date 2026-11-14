@@ -784,6 +784,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                         # Rückmeldelaut bei laufendem Werkzeug startet keinen Zug (WAMO_RUECKMELDUNG_WERKZEUG)
                         werkzeug_laeuft=soft_gate.werkzeug_laeuft if rueckmeldung_werkzeug_an() else None,
                         on_partial=soft_gate.ansatz if halt else None,  # ein Wort: innehalten statt ignorieren (WAMO_INNEHALTEN)
+                        fragt=soft_gate.fragt,  # "Ja" während einer Frage von WAMO ist die Antwort, kein Zuhören
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.

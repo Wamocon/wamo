@@ -863,7 +863,7 @@ abschaltbar mit `aus`, `0`, `nein`, einschaltbar mit `an`, `1`, `ja`):
 | `WAMO_TTS_SATZLEERZEICHEN` | aus | Lauf brach beim Echo-Szenario ab (Browser geschlossen), Echo und Pause nicht gemessen; die übrigen Kennzahlen in der Streuung. Nutzen (Satzzeichen nicht vorlesen) nur in der Hörprobe prüfbar |
 | `WAMO_PERSONA_RUECKFRAGEN` | an seit 04.11.2026 (Entscheidung Niko, zu viele Rückfragen im Test; die frühere Messung war unvollständig) | Lauf unvollständig (Datenbankausfall, Einwurf, Backchannel, Echo, Pause fehlen); erster Ton nach Faktenfrage 2840 ms gegen 2316 bis 2617 ms in den anderen Läufen, bei 6 Fragen nicht entscheidbar |
 | `WAMO_PERSONA_PC_ORDNER` | aus | Sitzung mit den Faktenfragen fiel auf ein Hausmodell (Datenbank nicht erreichbar), nicht gemessen; erster Ton bei Websuche p95 5852 ms gegen 2441 bis 2791 ms (ein Ausreißer bei 4 Antworten) |
-| `WAMO_JA_WAECHTER` | aus | Lauf nicht mehr zustande gekommen, nicht gemessen. Außerdem erfasst kein Szenario das „Ja“ auf eine Rückfrage, nötig wäre ein eigenes Szenario samt Freigabe-Testfällen im Messweg |
+| `WAMO_JA_WAECHTER` | an | Seit 14.11.2026 an: Ein kurzes Ja auf eine echte Rückfrage führt den Auftrag aus, statt erneut zu fragen (`voice-core/ja_waechter.py`). Freigaben bleiben unberührt. Messung steht aus |
 
 Nicht gemessen und offen: `WAMO_JA_WAECHTER` (kein Lauf), Echo und Pause für `WAMO_TTS_SATZLEERZEICHEN`, Einwurf,
 Backchannel, Echo, Pause für `WAMO_PERSONA_RUECKFRAGEN`, Faktenfragen für `WAMO_PERSONA_PC_ORDNER`, die Kombination aller

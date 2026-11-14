@@ -57,6 +57,7 @@ from collections.abc import Callable
 from loguru import logger
 
 from env_schalter import schalter_an
+from ja_waechter import ist_kurzes_ja
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -326,6 +327,30 @@ def ist_echo(text: str, kurz: list[str], lang: list[str] | None = None) -> bool:
     return echo_urteil(text, kurz, lang) == "echo"
 
 
+# Fragebeginn mitten im Satz, bevor das Fragezeichen erklingt: "Soll ich ...", "Möchtest du ...", "Darf ich ..."
+FRAGE_BEGINN = re.compile(
+    r"^\W*(soll|sollen|darf|dürfen|kann|können|will|willst|wollen|möchte|möchtest|möchten|magst|mag)\w*\s+(ich|du|wir|er|sie)\b",
+    re.IGNORECASE,
+)
+
+
+def ist_frage(satz: str) -> bool:
+    """Ein zu Ende gesprochener Satz ist eine Frage: Fragezeichen am Ende (auch hinter Anführungszeichen) oder "soll ich"."""
+    t = satz.strip().rstrip(" .")
+    return bool(re.search(r"\?[!\"'”»)]*$", t)) or "soll ich" in t.lower()
+
+
+def fragt_bisher(satz: str) -> bool:
+    """Ist der Satz, so weit er erklungen ist, eine Frage? Das Fragezeichen fehlt mitten im Satz noch, also zählt der Beginn."""
+    return bool(satz.strip()) and (ist_frage(satz) or bool(FRAGE_BEGINN.match(satz)))
+
+
+def ist_antwort(text: str) -> bool:
+    """Eine Antwort auf die Frage von WAMO ("Ja", "genau", "okay", "mach"), kein Zuhören ("mhm") und keine Nachfrage ("Ja?",
+    "Ja, aber ...")."""
+    return ist_kurzes_ja(text)
+
+
 class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
     """Wie MinWords, aber während WAMO spricht, zählen Rückmeldelaute nicht mit.
 
@@ -345,14 +370,18 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         echo_modus: bool = False,
         werkzeug_laeuft: Callable[[], bool] | None = None,
         on_partial: Callable[[str], None] | None = None,
+        fragt: Callable[[], bool] | None = None,
         **kwargs,
     ):
         """beurteilt: wird mit "rueckmeldung" oder "echo" gerufen, wenn der erkannte Text kein Einwurf ist (das Gate
         nimmt dann die vorsorglich gedämpfte Stimme wieder zurück). werkzeug_laeuft: sagt, ob gerade ein Werkzeug läuft
         (SoftInterruptGate.werkzeug_laeuft); dann gelten dieselben Regeln wie beim Sprechen, None lässt alles wie bisher.
         on_partial: Innehalten (SoftInterruptGate.ansatz). Ein einzelnes echtes Wort, während WAMO spricht, wird dort gemeldet
-        statt ignoriert; ein "Danke" allein unterbricht dann nicht mehr (WEICHE_STOPPWOERTER). None: wie bisher."""
+        statt ignoriert; ein "Danke" allein unterbricht dann nicht mehr (WEICHE_STOPPWOERTER). None: wie bisher.
+        fragt: sagt, ob WAMO gerade eine Frage stellt (SoftInterruptGate.fragt). Dann ist ein "Ja", "genau" oder "okay" die
+        Antwort und kein Rückmeldelaut (ist_antwort): es startet den Zug und bleibt im Transkript. None: wie bisher."""
         super().__init__(**kwargs)
+        self._fragt = fragt
         self._on_partial = on_partial
         self._werkzeug_laeuft = werkzeug_laeuft
         self.werkzeug_rueckmeldungen = 0  # Rückmeldelaute, die bei laufendem Werkzeug keinen Zug starteten
@@ -419,6 +448,12 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
                 return ProcessFrameResult.CONTINUE  # erst der endgültige Text entscheidet (Echo wächst zu einer Folge)
             logger.info(f"{self}: Einwurf erkannt ({count} Wörter)")
             logger.debug(f"{self}: Einwurf erkannt ({frame.text!r})")
+            await self.trigger_user_turn_started()
+            return ProcessFrameResult.STOP
+        if (self._bot_speaking and self._fragt is not None and self._fragt() and ist_antwort(frame.text)
+                and self._urteil(frame.text) != "echo"):
+            # Ein "Ja" mitten in der Frage von WAMO ist die Antwort: es startet den Zug, statt als Zuhören verworfen zu werden.
+            logger.info(f"{self}: Antwort auf die Frage von WAMO")
             await self.trigger_user_turn_started()
             return ProcessFrameResult.STOP
         if halten and count >= 1 and self._urteil(frame.text) == "einwurf" and not self.echo_modus_aktiv():
@@ -545,6 +580,8 @@ class SoftInterruptGate(FrameProcessor):
         self._pending = False  # die Person spricht, Unterbrechung steht aus
         self._firing = False  # Grenze gefunden, Unterbrechung laeuft
         self._last_word_ended_sentence = False
+        self._satz: list[str] = []  # Wörter des Satzes, den WAMO gerade spricht (nur was erklungen ist)
+        self._frage_fertig = False  # der zuletzt zu Ende gesprochene Satz war eine Frage
         self._last_word_ended_phrase = False  # Satz- oder Kommaende
         self._words_left = 0  # so viele Wörter darf WAMO nach dem Einwurf noch sprechen
         self._held: list[Frame] = []
@@ -679,6 +716,7 @@ class SoftInterruptGate(FrameProcessor):
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
             self._last_word_ended_sentence = False
+            self._satz, self._frage_fertig = [], False
             self._fortgesetzt_text = ""
             self._clear_ansatz(fortsetzen=True)  # nie in eine neue Antwort hinein stumm bleiben
         elif isinstance(frame, VADUserStartedSpeakingFrame) and direction == FrameDirection.DOWNSTREAM:
@@ -774,6 +812,7 @@ class SoftInterruptGate(FrameProcessor):
                 return SCHNEIDEN
             self._words_left -= 1
         self._last_word_ended_sentence = text.rstrip().endswith(SENTENCE_END)
+        self._satz_verfolgen(text)
         self._last_word_ended_phrase = text.rstrip().endswith(SENTENCE_END + (",", ";"))
         for w in text.split():  # das Haus-TTS liefert ganze Sätze, Soniox einzelne Wörter
             if wort := _wort(w):
@@ -796,6 +835,21 @@ class SoftInterruptGate(FrameProcessor):
     def haelt_inne(self) -> bool:
         """Hat die Person angesetzt (ein Wort gemeldet), oder steht der Ton schon? Dann gibt es kein Dämpfen."""
         return self._ansatz_seit is not None or self._haelt_seit is not None
+
+    def _satz_verfolgen(self, text: str) -> None:
+        """Merkt sich, ob der Satz, den WAMO gerade spricht oder zuletzt beendet hat, eine Frage ist (nur was erklungen ist)."""
+        if not text.strip():
+            return
+        self._satz.append(text.strip())
+        if text.rstrip().rstrip("\"'”»)").endswith(SENTENCE_END):
+            self._frage_fertig = ist_frage(" ".join(self._satz))
+            self._satz = []
+
+    def fragt(self) -> bool:
+        """Stellt WAMO gerade eine Frage? Mitten im Satz zählt der Fragebeginn ("Soll ich"), nach dem Satz das Fragezeichen.
+        Folgt nach der Frage eine Aussage, ist die Frage vorbei."""
+        teil = " ".join(self._satz)
+        return fragt_bisher(teil) if teil else self._frage_fertig
 
     def ansatz(self, text: str):
         """Von der Start-Strategie (on_partial): ein einzelnes echtes Wort der Person, während WAMO spricht.
