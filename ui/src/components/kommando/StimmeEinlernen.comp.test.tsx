@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StimmeAbschnitt } from "@/components/einstellungen/StimmeAbschnitt";
 import { KernOderEinlernen } from "@/components/kommando/KernOderEinlernen";
 import { StimmeEinlernen } from "@/components/kommando/StimmeEinlernen";
-import { abdruckAnsichtOeffnen, abdruckAnsichtSchliessen, applyServerMessage, resetWamo, wamo } from "@/lib/wamo";
+import { abdruckAnsichtOeffnen, abdruckAnsichtSchliessen, applyServerMessage, nachrichtAbgelehnt, resetWamo, wamo } from "@/lib/wamo";
 
 const EINWILLIGUNG = "WAMO speichert aus deiner Stimme einen Abdruck.\nDu kannst ihn jederzeit löschen.";
 
@@ -72,6 +72,33 @@ describe("StimmeEinlernen: Einwilligung", () => {
     oeffnen(false);
     render(<StimmeEinlernen aktionen={aktionen()} />);
     expect(screen.getByText(/Einwilligungstext/)).toBeTruthy();
+    expect((screen.getByRole("checkbox") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Einlernen starten" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("ein neuer Einwilligungstext (neue Version) nimmt den Haken zurück, der Start gilt dann dem neuen Text", () => {
+    oeffnen();
+    const a = aktionen();
+    render(<StimmeEinlernen aktionen={a} />);
+    const haken = screen.getByRole("checkbox") as HTMLInputElement;
+    fireEvent.click(haken);
+    expect(haken.checked).toBe(true);
+    act(() => applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-2", text: "Neuer Text." }));
+    expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
+    const start = screen.getByRole("button", { name: "Einlernen starten" }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(start);
+    expect(a.start).toHaveBeenCalledExactlyOnceWith("stimme-2");
+  });
+
+  it("lehnt die Oberfläche den Einwilligungstext ab, steht ein Hinweis statt 'wird vom Kern geladen'", () => {
+    oeffnen(false);
+    render(<StimmeEinlernen aktionen={aktionen()} />);
+    expect(screen.getByText(/wird vom Kern geladen/)).toBeTruthy();
+    act(() => nachrichtAbgelehnt({ type: "stimmabdruck_einwilligung", version: "stimme-1", text: "x".repeat(5000) }));
+    expect(screen.queryByText(/wird vom Kern geladen/)).toBeNull();
+    expect(screen.getByRole("alert").textContent).toMatch(/Einwilligungstext .*ungültig/);
     expect((screen.getByRole("checkbox") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Einlernen starten" }) as HTMLButtonElement).disabled).toBe(true);
   });

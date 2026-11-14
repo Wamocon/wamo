@@ -16,7 +16,8 @@ import { abdruckAnsichtOeffnen, wamo } from "@/lib/wamo";
 /**
  * Stimme einlernen: steht in der Mitte statt des Kerns, solange die Ansicht offen ist (kommando/KernOderEinlernen.tsx).
  * Zuerst die Einwilligung: der Text kommt vom Kern, ohne ihn gibt es weder Haken noch Start, und der Start geht mit der Version dieses Textes
- * hinaus (lib/useWamo.ts prüft sie noch einmal). Danach führt der Kern: Vorlesetext, Balken mit den aufgenommenen Sekunden reiner Sprache
+ * hinaus (lib/useWamo.ts prüft sie noch einmal). Der Haken gilt nur für diese Version; einen ungültigen Text meldet die Ansicht, statt
+ * weiter auf ihn zu warten. Danach führt der Kern: Vorlesetext, Balken mit den aufgenommenen Sekunden reiner Sprache
  * (Pausen füllen ihn nicht), Statuszeile und bis zum Ergebnis Abbrechen, danach Schließen. Gespeichert wird nur der Abdruck, keine Aufnahme.
  * Der Fokus geht auf die Überschrift, sobald die Ansicht zu sehen ist (nach dem Schließen der Einstellungen) und nach dem Start (die Knöpfe der
  * Einwilligung verschwinden); die Statuszeile ist eine höfliche Live-Region (nur Phasenwechsel, nicht jede Sekunde).
@@ -56,9 +57,13 @@ export const StimmeEinlernen = memo(function StimmeEinlernen({ aktionen }: { akt
 
 function Einwilligung({ aktionen }: { aktionen: StimmabdruckAktionen }) {
   const einwilligung = useSelect(wamo, (s) => s.einwilligung);
-  const [ok, setOk] = useState(false);
+  const abgelehnt = useSelect(wamo, (s) => s.einwilligungAbgelehnt);
+  // Der Haken gilt nur für die Version, der er gegeben wurde: schickt der Kern einen neuen Text, ist er wieder leer.
+  // (Gebunden über den Wert statt über key, damit der Fokus beim Wechsel nicht verloren geht.)
+  const [okFuer, setOkFuer] = useState<string | null>(null);
   const [gescheitert, setGescheitert] = useState(false);
   const textId = useId();
+  const ok = einwilligung !== null && okFuer === einwilligung.version;
   const bereit = ok && einwilligung !== null;
 
   const starten = () => {
@@ -75,6 +80,11 @@ function Einwilligung({ aktionen }: { aktionen: StimmabdruckAktionen }) {
         <div className="kz-einlernen-text kz-einlernen-einwilligung" id={textId}>
           {einwilligung.text}
         </div>
+      ) : abgelehnt ? (
+        <p className="kz-einlernen-fehler" role="alert">
+          Der Einwilligungstext vom Kern ist ungültig und wird nicht angezeigt. Ohne ihn lässt sich das Einlernen nicht starten.
+          Versuche es in einem neuen Gespräch noch einmal.
+        </p>
       ) : (
         <p className="kz-einlernen-hinweis" role="status">
           Der Einwilligungstext wird vom Kern geladen. Ohne ihn lässt sich das Einlernen nicht starten.
@@ -86,7 +96,7 @@ function Einwilligung({ aktionen }: { aktionen: StimmabdruckAktionen }) {
           checked={ok}
           disabled={!einwilligung}
           aria-describedby={einwilligung ? textId : undefined}
-          onChange={(e) => setOk(e.target.checked)}
+          onChange={(e) => setOkFuer(e.target.checked && einwilligung ? einwilligung.version : null)}
         />
         <span>Ich habe den Text gelesen und willige ein.</span>
       </label>

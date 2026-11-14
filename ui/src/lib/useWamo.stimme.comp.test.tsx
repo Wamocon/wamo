@@ -204,6 +204,13 @@ describe("useWamo, Stimmabdruck", () => {
     });
   });
 
+  it("ein Einwilligungstext, den die Oberfläche ablehnt (zu lang), wird vermerkt statt still verworfen", async () => {
+    const s = await sitzung();
+    await vomKern(s.c, { type: "stimmabdruck_einwilligung", version: "stimme-1", text: "x".repeat(5000) });
+    expect(aktuell().einwilligung).toBeNull();
+    expect(aktuell().einwilligungAbgelehnt).toBe(true);
+  });
+
   it("mit dem Ende der Sitzung verschwinden Stand, Einlernansicht und Einwilligung", async () => {
     const { result } = await bereitZumEinlernen();
     expect(aktuell().stimme.status).toBe("fehlt");

@@ -89,6 +89,7 @@ import {
   leereCaption,
   levelsRef,
   logEintrag,
+  nachrichtAbgelehnt,
   nimmeTextAuf,
   overlayZustand,
   reduceBotOutput,
@@ -511,6 +512,7 @@ export function useWamo(): WamoAktionen {
         abdruck: null,
         abdruckLokalZu: false,
         einwilligung: null,
+        einwilligungAbgelehnt: false,
         vorgaenge: vorgaengeBeenden(s.vorgaenge, Date.now()), // der Kern bricht seine Vorgänge mit der Sitzung ab
         aufgabe: aufgabeBeenden(s.aufgabe, performance.now()), // die letzte Aufgabe bleibt stehen, aber nie als laufend
         approvals: [],
@@ -947,7 +949,10 @@ export function useWamo(): WamoAktionen {
           onServerMessage: (data) => {
             if (!aktuell()) return;
             const msg = parseServerMessage(data);
-            if (!msg) return; // unbekannte oder unvollständige Nachricht: ignorieren
+            if (!msg) {
+              nachrichtAbgelehnt(data); // unbekannt oder unvollständig: ignorieren, nur ein abgelehnter Einwilligungstext wird vermerkt
+              return;
+            }
             if (msg.type === "leiser_stopp") {
               softStop.current.armedAt = performance.now();
               // sofort: der Kern hat die Grenze schon gewählt, die Stimme verstummt jetzt (keine Wortpause abwarten)

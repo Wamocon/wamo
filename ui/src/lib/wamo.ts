@@ -163,6 +163,8 @@ export type WamoState = {
   abdruckLokalZu: boolean;
   /** Einwilligungstext vom Kern, null bis er ihn schickt (ohne ihn startet die Oberfläche das Einlernen nicht) */
   einwilligung: Einwilligung | null;
+  /** Der zuletzt geschickte Einwilligungstext war ungültig (zum Beispiel zu lang): die Einlernansicht sagt es, statt weiter zu warten */
+  einwilligungAbgelehnt: boolean;
   /** Text für role="status": nur bedeutsame Wechsel (verbunden, getrennt, Mikro, PC) */
   ansage: string;
   /** kurzer sichtbarer Hinweis (z. B. "PC-Steuerung automatisch eingeschaltet"), verschwindet selbst */
@@ -206,6 +208,7 @@ export const initialState: WamoState = {
   abdruck: null,
   abdruckLokalZu: false,
   einwilligung: null,
+  einwilligungAbgelehnt: false,
   ansage: "",
   toast: null,
 };
@@ -448,6 +451,15 @@ export function abdruckAnsichtSchliessen() {
   wamo.set((s) => ({ ...s, abdruck: null, abdruckLokalZu: true }));
 }
 
+/**
+ * Eine Nachricht, die parseServerMessage abgelehnt hat (useWamo). Zählt nur bei einem Einwilligungstext: Der alte Text gilt dann
+ * nicht mehr, und die Einlernansicht zeigt einen Hinweis statt endlos "wird vom Kern geladen". Alles andere bleibt unbeachtet.
+ */
+export function nachrichtAbgelehnt(roh: unknown) {
+  if (typeof roh !== "object" || roh === null || (roh as { type?: unknown }).type !== "stimmabdruck_einwilligung") return;
+  wamo.set((s) => ({ ...s, einwilligung: null, einwilligungAbgelehnt: true }));
+}
+
 // ---------- Servernachrichten in den Store übernehmen ----------
 const PC_ANSAGE: Record<Betrieb["pc"], string> = {
   verbindet: "PC wird verbunden",
@@ -662,7 +674,7 @@ export function applyServerMessage(msg: ServerMessage) {
       wamo.set((s) => ({ ...s, stimme: stimmeErgebnisAnwenden(s.stimme, msg) }));
       return;
     case "stimmabdruck_einwilligung":
-      wamo.set((s) => ({ ...s, einwilligung: { version: msg.version, text: msg.text } }));
+      wamo.set((s) => ({ ...s, einwilligung: { version: msg.version, text: msg.text }, einwilligungAbgelehnt: false }));
       return;
     case "stimmabdruck":
       wamo.set((s) => {

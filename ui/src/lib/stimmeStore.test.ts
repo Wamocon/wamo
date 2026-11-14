@@ -9,6 +9,7 @@ import {
   abdruckAnsichtSchliessen,
   applyServerMessage,
   initialState,
+  nachrichtAbgelehnt,
   resetWamo,
   wamo,
 } from "./wamo.ts";
@@ -52,6 +53,24 @@ test("stimme_status und stimme_ergebnis füllen den Stand", () => {
 test("die Einwilligung vom Kern wird mit Version und Text abgelegt", () => {
   applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-1", text: "WAMO speichert einen Abdruck." });
   assert.deepEqual(stand().einwilligung, { version: "stimme-1", text: "WAMO speichert einen Abdruck." });
+  assert.equal(stand().einwilligungAbgelehnt, false);
+});
+
+test("ein abgelehnter Einwilligungstext wird vermerkt und nimmt den alten Text weg, ein gültiger hebt den Vermerk auf", () => {
+  applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-1", text: "Alt." });
+  nachrichtAbgelehnt({ type: "stimmabdruck_einwilligung", version: "stimme-2", text: "x".repeat(5000) });
+  assert.equal(stand().einwilligung, null);
+  assert.equal(stand().einwilligungAbgelehnt, true);
+  applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-2", text: "Neu." });
+  assert.equal(stand().einwilligungAbgelehnt, false);
+  assert.equal(stand().einwilligung?.version, "stimme-2");
+});
+
+test("andere abgelehnte Nachrichten ändern nichts an der Einwilligung", () => {
+  applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-1", text: "Text." });
+  const vorher = stand();
+  for (const roh of [null, "text", 42, { type: "stimme_status", status: "kaputt?" }, { typ: "stimmabdruck_einwilligung" }]) nachrichtAbgelehnt(roh);
+  assert.equal(stand(), vorher);
 });
 
 test("die Einlernansicht öffnet nur mit laufender Sitzung und eingeschalteter Stimmerkennung, zuerst mit der Einwilligung", () => {
