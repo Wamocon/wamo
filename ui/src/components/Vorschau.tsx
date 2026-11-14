@@ -80,6 +80,7 @@ import {
  *
  * Büro-Karte (Reiter "Büro", Beispieldaten statt Gerätedienst, siehe components/vorschauBuero.ts):
  *   &buero=beispiel                 vierzehn Geräte; auch stoerung, alles, leer, offline (Gerätedienst nicht erreichbar), fehler
+ *   &buerozeit=1500                 jede Antwort des Gerätedienstes kommt so viele Millisekunden später (echte Ladezeit nachstellen)
  */
 
 /** ISO-Zeitpunkt in UTC (YYYY-MM-DDTHH:MM:SSZ) relativ zu jetzt, wie ihn der Kern schickt. */
@@ -609,8 +610,13 @@ function Hauptvorschau() {
       if (h.samples.length > HISTORY) h.samples.shift();
       h.seq++;
     }, 50);
-    // Büro-Karte: Beispieldaten statt Kern (&buero=beispiel, stoerung, alles, leer, offline, fehler)
-    bueroAttrappeSetzen(bueroBeispiel(param("buero")));
+    // Büro-Karte: Beispieldaten statt Kern (&buero=beispiel, stoerung, alles, leer, offline, fehler); &buerozeit=ms verzögert jede Antwort
+    // wie ein langsamer Gerätedienst (höchstens 10 s)
+    const bueroHoler = bueroBeispiel(param("buero"));
+    const bueroZeit = Math.min(10_000, Math.max(0, Number(param("buerozeit")) || 0));
+    bueroAttrappeSetzen(
+      bueroHoler && bueroZeit > 0 ? () => new Promise((fertig) => setTimeout(() => fertig(bueroHoler()), bueroZeit)) : bueroHoler,
+    );
     return () => {
       clearInterval(id);
       if (autoTimer) clearTimeout(autoTimer);
