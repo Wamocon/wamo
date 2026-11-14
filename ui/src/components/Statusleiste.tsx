@@ -2,9 +2,11 @@
 
 import { memo } from "react";
 import { KERN, useBetriebsart, type Betriebsart } from "@/lib/betriebsart";
+import { modellKurzname } from "@/lib/modellKurz";
 import { modusKurz } from "@/lib/modellwahl";
 import type { Betrieb } from "@/lib/nachrichten";
 import { useSelect } from "@/lib/store";
+import { stimmeModul } from "@/lib/stimme";
 import { unverschluesselteDienste } from "@/lib/umgebung";
 import { istOnline, wamo } from "@/lib/wamo";
 
@@ -58,8 +60,8 @@ function PcText({ betrieb }: { betrieb: Betrieb | null }) {
           PC
           <span className="status-label">
             {betrieb.pcName && <span className="num"> {betrieb.pcName}</span>} verbunden
-            {betrieb.pcLatenzMs !== undefined && <span className="num latency"> {betrieb.pcLatenzMs} ms</span>}
           </span>
+          {betrieb.pcLatenzMs !== undefined && <span className="num latency"> {betrieb.pcLatenzMs} ms</span>}
         </>
       );
     case "getrennt":
@@ -92,8 +94,10 @@ function PcText({ betrieb }: { betrieb: Betrieb | null }) {
  * Status als Beschreibungsliste: Verbindung, Betriebsart, Modelle, PC-Host, Mikrofon.
  * "kompakt" für die Kopfzeile (Bezeichnungen nur für Screenreader), sonst ausführlich (Menü).
  * Ohne Meldung "betrieb" vom Kern steht "unbekannt".
+ * stimme: das Modul der Stimmerkennung (Eigen 0,78, Fremd, Unklar, Nicht eingelernt, lib/stimme.ts); nur die Kopfzeile schaltet es ein,
+ * und nie für Laborkonten (lib/laborPlatz.ts). Es erscheint erst, wenn der Kern einen Stand meldet, und nicht bei ausgeschalteter Erkennung.
  */
-export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt: boolean }) {
+export const StatusDetails = memo(function StatusDetails({ kompakt, stimme = false }: { kompakt: boolean; stimme?: boolean }) {
   const presence = useSelect(wamo, (s) => s.presence);
   const online = useSelect(wamo, istOnline);
   const betrieb = useSelect(wamo, (s) => s.betrieb);
@@ -108,8 +112,11 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
   const art = betrieb ? MODUS_ART[betrieb.modus] : gewaehlt;
   const kernText = `Kern: ${KERN[art].ort}`;
   const m = betrieb?.modelle;
-  const modelleKurz = (m && [m.llm, m.stt].filter(Boolean).join(" · ")) || "Modelle unbekannt";
+  // Kopfzeile: nur das Gesprächsmodell, gekürzt auf ganze Wörter (Hören und Stimme stehen im title und im Menü)
+  const modelleKurz = modellKurzname(m?.llm) || "Modelle unbekannt";
   const modus = modusKurz(betrieb); // Automatisch oder Nur Hausmodelle (WAMO Boss), null bei einem Kern ohne Meldung
+  const stimmeStand = useSelect(wamo, (s) => s.stimme);
+  const stimmeAnzeige = stimme && online ? stimmeModul(stimmeStand) : null;
 
   return (
     <dl className={kompakt ? "status-items" : "status-list"}>
@@ -207,6 +214,13 @@ export const StatusDetails = memo(function StatusDetails({ kompakt }: { kompakt:
                 im ausführlichen Menü sichtbar */}
             {entwicklungGrund && <span className={kompakt ? "sr-only" : "status-label"}> ({entwicklungGrund})</span>}
           </dd>
+        </div>
+      )}
+      {stimmeAnzeige && (
+        <div data-feld="stimme" data-an={stimmeAnzeige.an}>
+          {/* Beschriftung sichtbar, auch in der Kopfzeile: "Stimme Eigen 0,78". Im Menü heißt sie Stimmerkennung, denn "Stimme" ist dort die Sprachausgabe */}
+          <dt>{kompakt ? "Stimme" : "Stimmerkennung"}</dt>
+          <dd title={stimmeAnzeige.titel}>{stimmeAnzeige.text}</dd>
         </div>
       )}
       <div data-feld="pc" data-pc={betrieb?.pc}>

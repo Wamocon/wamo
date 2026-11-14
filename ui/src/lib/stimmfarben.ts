@@ -2,7 +2,8 @@
  * Stimmfarben lesen statt sie doppelt zu definieren.
  *
  * Einzige Quelle sind die CSS-Variablen in app/globals.css (hell und dunkel):
- *   --voice-wamo, --voice-user, --voice-other, --kern-rim  für Kern (Orb.tsx) und Stimmlinie
+ *   --voice-wamo, --voice-user, --voice-other                für Kern (Orb.tsx, KernRinge) und Stimmlinie
+ *   --kern-heiss, --kern-mensch, --kern-fremd                 für die Glut der Lichtkugel (Orb.tsx)
  *   --overlay-wamo, --overlay-user, --overlay-other         für den Stimmen-Rand der Desktop-App
  * Kern und Stimmlinie lesen sie per getComputedStyle. Der Rand (desktop/overlay.js) bekommt sie
  * einmalig über window.wamoDesktop.farben; desktop/main.js prüft die Werte.

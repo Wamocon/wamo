@@ -12,7 +12,9 @@ import { Bedienung } from "@/components/kommando/Bedienung";
 import { BueroKarte } from "@/components/kommando/BueroKarte";
 import { useBueroStandHalten } from "@/components/kommando/useBueroStand";
 import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
-import { Kernbereich } from "@/components/kommando/Kernbereich";
+import { Gespraech } from "@/components/kommando/Gespraech";
+import { KernOderEinlernen } from "@/components/kommando/KernOderEinlernen";
+import { StimmeIgnoriertHinweis } from "@/components/kommando/StimmeIgnoriert";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
 import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
 import { VorgaengeTafel } from "@/components/kommando/Vorgaenge";
@@ -168,7 +170,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           {ansicht.geraeteEinrichtung && <GeraetEinrichtung />}
         </>
       }
-      kernbereich={<Kernbereich />}
+      kernbereich={<KernOderEinlernen stimmabdruck={ansicht.stimme ? aktionen.stimmabdruck : undefined} />}
       aktionen={<Aktionen aktionen={aktionen} />}
       bedienung={
         <Bedienung
@@ -186,7 +188,12 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           <CanvasBereich />
         </>
       }
-      hinweise={<Hinweise modellzugang={ansicht.modellzugang} />}
+      hinweise={
+        <>
+          <Gespraech />
+          <Hinweise modellzugang={ansicht.modellzugang} />
+        </>
+      }
       auftraege={
         <>
           <Freigaben onDecide={aktionen.decide} />
@@ -210,6 +217,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
         <>
           {ansicht.verlauf && <Verlauf offen={verlaufOffen} onSchliessen={schliesseVerlauf} />}
           <Ansage />
+          {ansicht.stimme && <StimmeIgnoriertHinweis />}
         </>
       }
       einstellungen={

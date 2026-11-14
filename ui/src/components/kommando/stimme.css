@@ -1,0 +1,55 @@
+/* =====================================================================
+   Stimmerkennung: Einlernansicht in der Mitte (StimmeEinlernen.tsx) und die Knöpfe im Abschnitt Stimme der
+   Einstellungen (StimmeAbschnitt.tsx). Eingebunden über globals.css. Das Modul in der Kopfzeile steht in kopfzeile.css. Regeln mit Präfix .kz-einlernen und .ez- (Rückfrage), Farben nur aus
+   den Variablen, deshalb gelten sie in beiden Themen.
+   ===================================================================== */
+
+/* ---------- Einlernansicht: steht in der Mitte statt des Kerns ---------- */
+.kz-einlernen {
+  width: min(100%, 720px); margin: 0 auto; display: grid; align-items: start; justify-items: stretch; gap: 14px; padding: 22px 24px;
+  border-radius: 10px; border: 1px solid var(--kante);
+  background:
+    repeating-linear-gradient(0deg, var(--raster) 0 1px, transparent 1px 5px),
+    linear-gradient(180deg, rgba(244, 14, 14, 0.07), color-mix(in srgb, var(--panel-solid) 92%, transparent) 60%);
+  box-shadow: 0 24px 60px -36px var(--core);
+  animation: hud-auf 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.kz-einlernen-kopf { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.kz-einlernen h2 { margin: 0; font: 700 22px/1.2 var(--display); letter-spacing: 0.02em; }
+.kz-einlernen h2:focus-visible { outline: none; } /* die Überschrift nimmt nur den Fokus auf, bedienbar ist sie nicht */
+.kz-einlernen-hinweis { margin: 0; color: var(--ink-soft); font-size: 14px; line-height: 1.5; }
+.kz-einlernen-text {
+  margin: 0; padding: 16px 18px; border-left: 2px solid var(--core); border-radius: 0 8px 8px 0;
+  background: var(--code-grund); font-size: 18px; line-height: 1.65; color: var(--ink);
+}
+.kz-einlernen-einwilligung { white-space: pre-line; font-size: 16px; line-height: 1.55; }
+.kz-einlernen-haken { display: flex; align-items: flex-start; gap: 12px; padding: 4px 0; font-size: 16px; line-height: 1.4; cursor: pointer; }
+.kz-einlernen-haken input { flex: none; width: 22px; height: 22px; margin: 1px 0 0; accent-color: var(--core); cursor: pointer; }
+.kz-einlernen-haken input:disabled { cursor: not-allowed; }
+.kz-einlernen-balken { height: 8px; border-radius: 999px; background: var(--glas-stark); overflow: hidden; }
+.kz-einlernen-balken span {
+  display: block; height: 100%; border-radius: inherit; transition: width 0.4s ease;
+  background: linear-gradient(90deg, var(--core-deep), var(--core), var(--core-hot)); box-shadow: 0 0 12px var(--core);
+}
+.kz-einlernen-status { margin: 0; font: 500 12px/1.4 var(--hud); letter-spacing: 0.08em; color: var(--ink-soft); }
+.kz-einlernen-status[data-phase="fehler"] { color: var(--fehler-schrift); }
+.kz-einlernen-status[data-phase="fertig"] { color: var(--core-schrift); }
+.kz-einlernen-fehler { margin: 0; font-size: 14px; line-height: 1.4; color: var(--fehler-schrift); }
+.kz-einlernen-tasten { display: flex; flex-wrap: wrap; gap: 10px; }
+.kz-einlernen-tasten button { min-height: 44px; padding: 0 20px; border-radius: 8px; }
+@media (max-width: 639px) {
+  .kz-einlernen { padding: 18px 16px; }
+  .kz-einlernen-text { font-size: 16px; }
+  .kz-einlernen-tasten button { flex: 1 1 auto; }
+}
+
+/* ---------- Abschnitt Stimme in den Einstellungen: Knöpfe und Rückfrage ---------- */
+.ez-tasten { display: flex; flex-wrap: wrap; gap: 10px; }
+.ez-tasten button { min-height: 44px; padding: 0 18px; }
+.ez-rueckfrage {
+  display: grid; gap: 12px; padding: 14px 16px; border: 1px solid var(--rule-strong); border-left: 4px solid var(--warn);
+  border-radius: 0 8px 8px 0; background: var(--glas);
+}
+.ez-rueckfrage p { margin: 0; font-size: 16px; line-height: 1.45; }
+.ez-gefahr { border-color: var(--fehler); color: var(--fehler-schrift); }
+.ez-gefahr:hover:not(:disabled) { border-color: var(--fehler); background: color-mix(in srgb, var(--fehler) 12%, transparent); color: var(--fehler-schrift); }

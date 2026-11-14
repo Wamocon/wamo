@@ -1,0 +1,32 @@
+/* =====================================================================
+   Verlauf (components/Verlauf.tsx): Schublade von rechts über der ganzen Seite, role="log". Regeln mit Präfix .verlauf.
+   Eingebunden über globals.css. Glasfläche wie die Seitenspalten, Einträge mit zarter Kante, WAMO mit roter Kante.
+   ===================================================================== */
+.verlauf {
+  position: fixed; z-index: 25; top: var(--top); right: 0; bottom: 0;
+  width: min(360px, 100vw); padding-right: var(--sa-r); padding-bottom: var(--sa-b);
+  display: flex; flex-direction: column;
+  background: color-mix(in srgb, var(--panel-solid) 94%, transparent);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  border-left: 1px solid var(--kante); box-shadow: -16px 0 40px -28px rgb(0 0 0 / 0.6);
+  transform: translateX(100%);
+  transition: transform var(--dur-exit) var(--ease-in);
+}
+.verlauf[data-offen] { transform: none; transition: transform var(--dur-enter) var(--ease-out); }
+.verlauf-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 10px 18px; border-bottom: 1px solid var(--rule); }
+.verlauf-close {
+  min-height: 40px; padding: 0 12px; background: transparent; cursor: pointer; color: var(--ink-soft);
+  border: 1px solid var(--steuer-rand); border-radius: 6px;
+  font: 600 11px/1 var(--hud); letter-spacing: 0.12em; text-transform: uppercase;
+}
+.verlauf-close:hover { color: var(--ink); background: var(--glas-hover); }
+.verlauf-list { list-style: none; margin: 0; padding: 12px 18px 24px; overflow-y: auto; flex: 1; display: grid; align-content: start; gap: 10px; }
+.verlauf-leer { color: var(--ink-soft); }
+.verlauf-eintrag { padding: 8px 10px 8px 12px; border-left: 2px solid var(--kante); border-radius: 6px; background: var(--glas-leicht); }
+.verlauf-eintrag[data-wer="wamo"] { border-left-color: var(--core); }
+.verlauf-meta { margin: 0 0 2px; font: 500 10.5px/1.3 var(--hud); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); }
+.verlauf-meta b { font-weight: 700; color: var(--ink); }
+.verlauf-cut { font-style: italic; }
+.verlauf-text { margin: 0; font-size: 15px; }
+.verlauf-tools { list-style: none; margin: 4px 0 0; padding: 0 0 0 12px; font-size: 13px; color: var(--ink-soft); }
+.verlauf-tools li::before { content: "› "; color: var(--core); }

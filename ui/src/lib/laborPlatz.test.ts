@@ -52,6 +52,7 @@ test("laborAnsicht: ein normales Konto sieht alles, die Kopfzeile bleibt WAMO, A
         adminHinweise: true,
         geraeteEinrichtung: true,
         modellzugang: true,
+        stimme: true,
         einstellungen: "alle",
         abmeldenFragen: false,
       },
@@ -70,6 +71,7 @@ test("laborAnsicht: ein Platzkonto schaltet Büro-Karte, Verlauf, Vorgänge, Adm
   assert.equal(a.adminHinweise, false);
   assert.equal(a.geraeteEinrichtung, false);
   assert.equal(a.modellzugang, false);
+  assert.equal(a.stimme, false, "keine Stimmerkennung im Labor");
   assert.equal(a.einstellungen, "mikrofon");
   assert.equal(a.abmeldenFragen, true);
 });

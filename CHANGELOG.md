@@ -6,6 +6,21 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ## [Unveröffentlicht]
 
+### Geändert
+
+- Oberfläche als Kommandozentrale im HUD-Design (Zweig `feat/hud-design`): Kern als Lichtkugel in Ringen, Block „Gespräch“ links,
+  Aufgabenanzeige neben dem Kern, Schriften Unbounded, JetBrains Mono und Atkinson Hyperlegible (lokal), WMC-Rot als Hauptfarbe,
+  dazu ein Hellmodus (Umschalter in Kopfzeile und Einstellungen, Rollenvariablen für beide Themen). Alle übrigen Ansichten sind im
+  neuen Design: Freigabe- und Auftragskarten, Meldungen, Canvas, Verlauf, Anmeldung, Teilen, Einstellungen mit allen Abschnitten,
+  Vorgänge, Live-Bild und die Dialoge. Die Bausteine (Beschriftung, Abzeichen, Karte, Meldung, Knöpfe, Felder, Schalter) stehen in
+  `kommando/hud.css`.
+- Kontrast der Bedienelemente: Der Rand von Feldern, Knöpfen, Schaltern und Chips kommt aus der eigenen Rolle `--steuer-rand` mit
+  mindestens 3:1 in beiden Themen (Test `knopfKontrast.test.ts` prüft die Rolle und durchsucht alle Stylesheets).
+- Kopfzeile bei 1440 px: Statusmodule nach Rangfolge in einer Zeile, ganze Module statt abgeschnittener Wörter, Modelle gekürzt
+  (`lib/modellKurz.ts`), Menüknopf mit allen Modulen unter 1600 px.
+- Aufgeräumt: `globals.css` von 969 auf rund 330 Zeilen, die Regeln liegen in Teil-Stylesheets, ungenutzte Regeln und Variablen
+  der früheren Präsenzspalte entfallen.
+
 ### Hinzugefügt
 
 - Innehalten statt Abbrechen (`voice-core/wiedergabe.py`, Schalter `WAMO_INNEHALTEN`, `WAMO_INNEHALTEN_WEITER_SECS` und `WAMO_INNEHALTEN_MAX_SECS`, Standard an): Ein einzelnes echtes
@@ -37,6 +52,9 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
   0,4 Sekunden (`WAMO_FUELLWORT_SECS`) ein vorab aufgenommenes "Moment." und bei langem Warten einmal "Dauert noch einen Moment.". Der Ton geht als einfacher Ausgangston hinaus,
   nichts davon landet im Verlauf, Unterbrechungen wirken wie immer. Eine Bank je Stimme und Einstellung für alle Sitzungen, ein Spieler je Sitzung, Aufnahmen erst beim Start der
   Pipeline (der Aufbau einer Sitzung greift nicht ins Netz), Ablage im Cache-Ordner des Dienstes. Optionaler Rückmeldelaut "Mhm" (`WAMO_MHM`, Standard aus). 14 Tests.
+- Stimme in der Oberfläche: Einlernen des Stimmabdrucks mit Einwilligung, Modul „Stimme“ in der Kopfzeile (Eigen, Fremd, Unklar, Nicht
+  eingelernt), Abschnitt Stimme in den Einstellungen und, im strengen Modus, der Hinweis „Fremde Stimme ignoriert“ (Modul „Fremd ·
+  ignoriert“), nicht für Laborkonten.
 - Betreuer-Geräte über den Namen: NetBIOS hat Vorrang vor mDNS (Korrektur nach einer Messung am Server). Der Aktualisierer fragt mDNS (`avahi-resolve`) nur, wenn NetBIOS
   (`nmblookup`) nach dem Filter auf 192.168.178.1 bis .254 keine Adresse liefert, und führt die Antworten nicht mehr zusammen: mDNS lieferte für einen Windows-PC eine
   veraltete Adresse (.67, antwortet nicht auf Ping), die später ein fremdes Gerät per DHCP bekommen könnte, NetBIOS dagegen die richtige (.78). Für Mac- und Linux-Geräte

@@ -1,0 +1,58 @@
+/* =====================================================================
+   Freigabe- und Auftragskarten (components/Freigaben.tsx): Regeln mit Präfix .approval und .auftrag
+   Eingebunden über globals.css. Die Karte selbst (Glasfläche, Kante) und die Entscheidungsknöpfe .btn-decide stehen als Baustein in
+   kommando/hud.css; hier steht nur, was zu diesen Karten gehört. Eine Freigabe wartet auf einen Menschen, deshalb trägt die Karte
+   einen roten Schimmer. Freigeben und Ablehnen sind gleichgewichtig und neutral (Sicherheitsregel, siehe Freigaben.tsx).
+   ===================================================================== */
+.approvals { display: grid; gap: 12px; }
+.approval {
+  padding: 14px 16px 16px;
+  border-color: color-mix(in srgb, var(--core) 45%, var(--kante));
+  box-shadow: 0 0 30px -16px var(--core);
+  animation: hud-auf 0.35s ease-out both;
+}
+.approval .eyebrow { margin-bottom: 8px; letter-spacing: 0.12em; color: var(--core-schrift); }
+.approval h3 { margin: 2px 0 8px; font: 400 15px/1.4 var(--body); }
+.approval h3:focus-visible { outline-offset: 4px; }
+.approval-hinweis { margin: -4px 0 8px; font-size: 14px; font-weight: 700; color: var(--ink); }
+.approval-von { margin: -4px 0 8px; font-size: 13px; color: var(--ink-soft); }
+.approval-ziel { margin: 0 0 8px; font-size: 14px; color: var(--ink); overflow-wrap: anywhere; }
+.approval-ziel-label { font-weight: 700; }
+.approval-frist { margin: -4px 0 12px; font-size: 13px; color: var(--ink-soft); }
+.approval-anlass { margin: -4px 0 10px; font-size: 13px; color: var(--ink-soft); overflow-wrap: anywhere; }
+.approval-detail, .auftrag-text {
+  margin: 0 0 12px; padding: 8px 10px; border-radius: 6px; background: var(--code-grund); color: var(--ink-soft);
+  white-space: pre-wrap; word-break: break-word;
+}
+.approval-detail { font: 12px/1.5 var(--hud); }
+.approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Entwicklungsauftrag: Projekt, Art und vollständiger Auftragstext */
+.auftrag-meta { margin: 0 0 10px; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 14px; }
+.auftrag-meta > div { display: contents; }
+.auftrag-meta dt { color: var(--ink-soft); }
+.auftrag-meta dd { margin: 0; font-weight: 700; }
+.auftrag-text { padding: 10px 12px; font-size: 15px; color: var(--ink); overflow-wrap: anywhere; }
+.auftrag .notice { margin-bottom: 12px; }
+/* Abnahmekriterien der Startkarte: Befehle in Festbreite, alles als Text */
+.auftrag-abnahme { margin: 0 0 12px; }
+.auftrag-abnahme h4 { margin: 0 0 2px; font: 600 12px/1.3 var(--display); letter-spacing: 0.12em; text-transform: uppercase; }
+.auftrag-abnahme-hinweis { margin: 0 0 6px; font-size: 13px; color: var(--ink-soft); }
+.auftrag-abnahme ul { margin: 0; padding-left: 20px; font-size: 14px; overflow-wrap: anywhere; }
+.auftrag-abnahme li { margin: 2px 0; }
+.abnahme-art { font-weight: 700; }
+.auftrag-abnahme code {
+  padding: 1px 5px; background: var(--code-grund); border-radius: 4px;
+  font: 12px/1.5 var(--hud); color: var(--ink); white-space: pre-wrap; word-break: break-word;
+}
+
+/* Meldungen: Fehler mit Symbol, Toast, Gemerktes, Hinweiskasten (Glas und Kante stehen in hud.css) */
+.error { display: grid; grid-template-columns: 16px 1fr; gap: 10px; align-items: start; padding: 12px 14px; }
+.error .sym { margin-top: 3px; }
+.error-body p { margin: 0; }
+.error-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.error-actions .error-close { margin-left: auto; }
+.error[data-art="hinweis"] .sym-warn rect { fill: var(--ink-soft); }
+.mic-wahl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+.hinweis-toast { margin: 0; padding: 8px 12px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; }
+.notice { margin: 0; padding: 10px 14px; font-size: 14px; }

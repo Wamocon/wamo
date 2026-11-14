@@ -2,6 +2,7 @@
 
 import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { useSelect } from "@/lib/store";
+import { themaNacht } from "@/lib/thema";
 import { wamo } from "@/lib/wamo";
 import { offeneEntscheidungen, useBreit, useEffektiveDarstellung } from "./ansicht";
 import { DarstellungsWahl } from "./DarstellungsWahl";
@@ -56,8 +57,8 @@ const tafel = (name: string, reiter: string | null) =>
  * Neue Freigaben oder Aufträge (eine Kennung, die vorher fehlte) schalten beide Reiterleisten sofort auf
  * "Aufträge", noch im selben Render, damit die Karte sichtbar entsteht und ihre Fokusführung greift.
  * Rollen: Tafeln sind nur dort role="tabpanel", wo die zugehörige Reiterleiste sichtbar ist (useBreit);
- * sonst Bereiche (region) mit Namen. Nacht erzwingt dunkel über data-theme auf html (das Theme-Gerüst
- * in globals.css kennt es bereits) und stellt den vorigen Wert wieder her.
+ * sonst Bereiche (region) mit Namen. Nacht erzwingt dunkel über data-theme auf html (lib/thema.ts) und stellt danach die
+ * gespeicherte Wahl Hell oder Dunkel wieder her.
  *
  * Breite der Seitenleisten: Zwei Griffe (Seitengriff.tsx) zwischen den Spalten ändern --kz-links und --kz-rechts am Hauptbereich
  * (useSeitenbreiten.ts, seitenbreite.ts). Es gibt sie nur in den Ansichten mit drei Spalten; ab 1280 px zeigt sie das CSS
@@ -94,15 +95,11 @@ export function KommandoRahmen(inhalt: RahmenInhalt) {
   const bueroAktiv = tafelSichtbar(lage, "buero");
   const vorgaengeAktiv = tafelSichtbar(lage, "vorgaenge");
 
+  // Nacht erzwingt dunkel; danach gilt wieder die gespeicherte Wahl (lib/thema.ts), auch wenn sie sich unterdessen geändert hat
   useLayoutEffect(() => {
     if (effektiv !== "nacht") return;
-    const el = document.documentElement;
-    const vorher = el.getAttribute("data-theme");
-    el.setAttribute("data-theme", "dark");
-    return () => {
-      if (vorher === null) el.removeAttribute("data-theme");
-      else el.setAttribute("data-theme", vorher);
-    };
+    themaNacht(true);
+    return () => themaNacht(false);
   }, [effektiv]);
 
   const zeigeCanvas = useCallback(() => {

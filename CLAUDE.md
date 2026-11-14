@@ -64,8 +64,9 @@ die Labor-Daten dazu liegen unter `infra/sokrates2/labor-daten/`, auf dem Server
 4. **PC-Steuerung** jetzt lokal über stdio; ab Phase P3 über SSH-Rücktunnel vom PC zu Sokrates-2.
 5. **Modelle.** Start mit Claude und Soniox. Anbieter je Baustein umschaltbar (P4, P5). Modelle auf den Sparks
    nur über LiteLLM (`http://192.168.178.75:4000/v1`), nie direkt an Knoten-IPs.
-6. **Oberfläche** im WMC-Corporate-Design: Rot `#F40E0E`, Weiß, Schwarz, Grautöne `#F3F3F3`, `#D9D9D9`,
-   `#6B6B6B`, kein Blau; Schrift Arial Narrow; WMC-Logo.
+6. **Oberfläche als Kommandozentrale** im WMC-Corporate-Design: dunkel als Standard, hell wählbar, WMC-Rot `#F40E0E` als
+   Hauptfarbe (kleine rote Schrift mit den Schriftrollen), Grautöne, kein Blau; Schriften Unbounded, JetBrains Mono, Atkinson
+   Hyperlegible (lokal, OFL); WMC-Logo.
 
 ## ECC-Skills und Agenten
 

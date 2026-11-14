@@ -187,6 +187,35 @@ scripts\wamo-desktop.cmd                  # startet Voice-Core, Oberfläche und 
 
 Beim ersten Anmelden richtet die Oberfläche die Authenticator-App ein (QR-Code). Ohne zweiten Faktor kein Zugang.
 
+### Oberfläche: Kommandozentrale, Darstellungen, Hellmodus und Schriften
+
+Die Hauptansicht ist eine Kommandozentrale im WMC-Corporate-Design (`ui/src/components/kommando/`). Links steht der Block „Gespräch“
+(Stimmlinie, Legende, letzte Zeilen von Person und WAMO) mit den Karten Gedächtnis, geteilte Arbeit und Einstellungen, in der Mitte der
+Kern als Lichtkugel in HUD-Ringen mit Zustandsschild, Untertiteln und Eingabepille, rechts die Reiter Aufträge, Vorgänge, Erledigt und
+Büro. Neben dem Kern zeigt die Aufgabenanzeige den laufenden Auftrag mit Schritten und Fortschritt, solange WAMO handelt. Der Verlauf ist
+eine Schublade, die Einstellungen sind eine zweite Ansicht derselben Seite (Hash `#einstellungen`).
+
+- **Darstellungen:** Normal, Fokus, Zentrale und Nacht (Umschalter über dem Kern, auch in den Einstellungen). Nacht erzwingt dunkel.
+- **Hellmodus:** Dunkel ist der Standard, Hell wählbar (Sonne und Mond in der Kopfzeile und Block „Helligkeit“ in den Einstellungen,
+  Wahl je Gerät im `localStorage`). Beide Themen sind Rollenvariablen in `ui/src/app/globals.css` (`:root` und
+  `:root[data-theme="light"]`), nirgends stehen feste Farben in Komponenten.
+- **Farben:** WMC-Rot `#F40E0E` als Hauptfarbe für Flächen, Linien, Glut und große Schrift; kleine rote Schrift nimmt `--core-schrift`
+  (im Hellmodus dunkler). Dazu Grautöne, kein Blau. Bedienelemente (Knöpfe, Felder, Schalter, Chips) haben mit `--steuer-rand` einen
+  Rand mit mindestens 3:1, Glas- und Kartenkanten (`--kante`) bleiben zart. Der Test `ui/src/lib/knopfKontrast.test.ts` prüft die
+  Kontraste beider Themen und durchsucht alle Stylesheets.
+- **Schriften** (lokal, OFL, `ui/src/app/fonts`): Unbounded für Wortmarke, Titel und große Zahlen, JetBrains Mono für Beschriftungen in
+  Versalien und Zähler, Atkinson Hyperlegible für Fließtext.
+- **Kopfzeile:** Die Statusmodule stehen nach Rangfolge in einer Zeile (Büro, Modelle, PC, Mikro, Stimme, dann PC-Steuerung,
+  Entwicklung, Netz). Was nicht passt, fällt als ganzes Modul weg, nie ein Wort; unter 1600 px zeigt der Menüknopf alle Module
+  (`kommando/kopfzeile.css`, `lib/modellKurz.ts`).
+- **Stimme:** Das Modul „Stimme“ zeigt Eigen, Fremd, Fremd · ignoriert (strenger Modus), Unklar oder Nicht eingelernt. Einlernen,
+  Neu einlernen und Löschen des Stimmabdrucks gibt es in den Einstellungen (Abschnitt Stimme) und in der Einlernansicht in der Mitte
+  (zuerst die Einwilligung). Für Laborkonten ist das alles unsichtbar.
+- **Stylesheets:** `globals.css` hält Variablen und Grundregeln, `kommando.css` den Aufbau der Kommandozentrale, `hud.css` das Aussehen
+  und die gemeinsamen Bausteine (Beschriftung, Abzeichen, Karte, Meldung, Knöpfe, Felder, Schalter), dazu je ein Teil-Stylesheet für
+  Kopfzeile, Freigaben, Canvas, Verlauf, Anmeldung, Teilen, Einstellungen und weitere.
+- **Vorschau ohne Server:** `NEXT_PUBLIC_WAMO_VORSCHAU=1 npx next dev` und die Modi im Kopf von `ui/src/components/Vorschau.tsx`.
+
 ### Komponententests (Oberfläche)
 
 Neben den Logiktests der Oberfläche (`npm test`, `node --test`, nur reine Logik ohne DOM und ohne JSX) gibt es ein getrenntes System
