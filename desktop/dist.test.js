@@ -88,10 +88,9 @@ test("Textprüfung: Geheimnisse und verbotene Wörter werden gefunden, der Forma
   assert.equal(pruefeText("harmlos", ["fremdprojekt"]).length, 0);
 });
 
-test("Bau-Konfiguration: Kennung, Name, pro Benutzer ohne Admin, Fuses, Host ohne Tests, kein Updater", () => {
+test("Bau-Konfiguration: Kennung, pro Benutzer ohne Admin, Fuses, Host ohne Tests, kein Updater", () => {
   const b = paket.build;
   assert.equal(b.appId, "de.wamocon.wamo");
-  assert.equal(b.productName, "WAMO");
   assert.equal(b.win.requestedExecutionLevel, "asInvoker");
   assert.equal(b.nsis.perMachine, false);
   assert.equal(b.nsis.allowElevation, false);
@@ -111,6 +110,61 @@ test("Bau-Konfiguration: Kennung, Name, pro Benutzer ohne Admin, Fuses, Host ohn
   const skripte = b.extraResources.find((e) => e.to === "scripts");
   assert.deepEqual([...skripte.filter].sort(), ["wamo-tunnel-einrichten.ps1", "wamo-tunnel-entfernen.ps1", "wamo-tunnel.ps1"]);
   assert.ok(b.files.includes("!**/*.test.js") && b.files.includes("!testdaten/**"));
+});
+
+// Namen der Installation. Sichtbar heißt die App W.A.I.S.: Startmenü (shortcutName), Liste "Apps" (uninstallDisplayName), Dateibeschreibung
+// und Produktname der EXE (electron-builder schreibt productName in FileDescription und ProductName) und Beschreibung des Installers
+// (description). Technisch bleibt alles wie in 0.1.0, damit der neue Installer eine vorhandene Installation ersetzt, ohne Daten,
+// Anmeldung oder Autostart zu verlieren:
+//   * appId und nsis.guid: derselbe Eintrag in der Registrierung, der alte Stand wird deinstalliert, kein zweiter Eintrag in "Apps".
+//   * Programmordner: Bei oneClick pro Benutzer nimmt electron-builder den Paketnamen (%LOCALAPPDATA%\Programs\wamo-desktop, Funktion
+//     getWindowsInstallationDirName), beim Update den gespeicherten InstallLocation. productName ändert ihn nicht.
+//   * executableName WAMO: Der Autostart-Eintrag (HKCU\...\Run, Name de.wamocon.wamo) zeigt auf ...\wamo-desktop\WAMO.exe, der Host
+//     erkennt die eigene Oberfläche an wamo.exe, und der Installer findet die laufende App über diesen Dateinamen.
+test("Namen der Installation: sichtbar W.A.I.S., technisch wie in 0.1.0", () => {
+  const b = paket.build;
+  assert.equal(b.productName, "W.A.I.S.");
+  assert.equal(b.nsis.shortcutName, "W.A.I.S.");
+  assert.equal(b.nsis.uninstallDisplayName, "W.A.I.S.");
+  assert.match(paket.description, /^W\.A\.I\.S\. /);
+  assert.doesNotMatch(paket.description, /WAMO/);
+  assert.equal(b.artifactName, "WAIS-Setup-${version}.${ext}");
+  assert.equal(b.executableName, "WAMO");
+  assert.equal(paket.name, "wamo-desktop");
+  assert.equal(b.nsis.guid, "c59011d4-a64c-41af-9964-07f5c67d84f4");
+  assert.equal(b.nsis.oneClick, true);
+  assert.equal(b.nsis.deleteAppDataOnUninstall, false);
+});
+
+test("Datei- und Ordnernamen der Installation enden nie mit Punkt oder Leerzeichen (Windows schneidet beides ab)", () => {
+  const b = paket.build;
+  const setup = b.artifactName.replace("${version}", paket.version).replace("${ext}", "exe");
+  const namen = [paket.name, `${b.executableName}.exe`, `Uninstall ${b.executableName}.exe`, setup, `${b.nsis.shortcutName}.lnk`];
+  for (const name of namen) {
+    assert.doesNotMatch(name, /[. ]$/, name);
+    assert.doesNotMatch(name, /[<>:"/\\|?*]/, name);
+  }
+  assert.equal(setup, `WAIS-Setup-${paket.version}.exe`);
+});
+
+test("Die EXE heißt so, wie der Host die eigene Oberfläche erkennt (WAMO_UI_EXES in host/windows_control.py)", () => {
+  const quelle = fs.readFileSync(path.join(__dirname, "..", "host", "windows_control.py"), "utf8");
+  const zeile = quelle.match(/^WAMO_UI_EXES = \{([^}]*)\}/m);
+  assert.ok(zeile, "WAMO_UI_EXES nicht gefunden");
+  const exes = [...zeile[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(exes.includes(`${paket.build.executableName.toLowerCase()}.exe`), exes.join(", "));
+});
+
+test("Die installierte App behält Daten und Autostart unabhängig vom Anzeigenamen", () => {
+  const main = fs.readFileSync(path.join(__dirname, "main.js"), "utf8");
+  // userData fest auf %APPDATA%\WAMO (Einstellungen, Sitzung, Cookies, Logs), vor der Einzelinstanz-Sperre, die dort liegt
+  const userData = 'if (app.isPackaged) app.setPath("userData", path.join(app.getPath("appData"), "WAMO"));';
+  assert.ok(main.includes(userData));
+  assert.ok(main.indexOf(userData) < main.indexOf("app.requestSingleInstanceLock()"));
+  // Autostart und Verknüpfung hängen an der AppUserModelId: Sie ist die appId (der Installer setzt sie an der Verknüpfung)
+  assert.ok(main.includes(`app.setAppUserModelId("${paket.build.appId}")`));
+  // Daten des Geräts bleiben unter %LOCALAPPDATA%\WAMO
+  assert.match(main, /const datenOrdnerWamo = path\.join\([^\n]*"WAMO"\);/);
 });
 
 test("Versionen: electron und electron-builder sind exakt gepinnt", () => {

@@ -6,12 +6,14 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { BUERO_UI_URL, LOKALE_UI_URL, adressen, loeseAuf, wirksameBetriebsart } = require("./installation");
 
+// Wirkliche Pfade der installierten App: Programmordner aus dem Paketnamen (electron-builder, oneClick pro Benutzer), userData fest
+// auf %APPDATA%\WAMO (main.js), beides unabhängig vom Anzeigenamen W.A.I.S.
 const installiert = () =>
   loeseAuf({
     istPaketiert: true,
-    resourcesPath: "C:\\Users\\x\\AppData\\Local\\Programs\\WAMO\\resources",
-    verzeichnis: "C:\\Users\\x\\AppData\\Local\\Programs\\WAMO\\resources\\app.asar",
-    userData: "C:\\Users\\x\\AppData\\Roaming\\wamo-desktop",
+    resourcesPath: "C:\\Users\\x\\AppData\\Local\\Programs\\wamo-desktop\\resources",
+    verzeichnis: "C:\\Users\\x\\AppData\\Local\\Programs\\wamo-desktop\\resources\\app.asar",
+    userData: "C:\\Users\\x\\AppData\\Roaming\\WAMO",
   });
 
 const entwickler = (existiert = () => true) =>
@@ -39,11 +41,11 @@ test("Installiert: Host, Skripte und CA unter dem Ressourcenordner, Logs in user
   const p = installiert();
   assert.equal(p.modus, "installiert");
   assert.equal(p.repo, null);
-  assert.equal(p.ressourcen, "C:\\Users\\x\\AppData\\Local\\Programs\\WAMO\\resources");
+  assert.equal(p.ressourcen, "C:\\Users\\x\\AppData\\Local\\Programs\\wamo-desktop\\resources");
   assert.equal(p.hostDir, path.join(p.ressourcen, "host"));
   assert.equal(p.caDatei, path.join(p.ressourcen, "wamo-ca.crt"));
   assert.equal(p.uvDatei, path.join(p.ressourcen, "uv", "uv.exe"));
-  assert.equal(p.logDir, path.join("C:\\Users\\x\\AppData\\Roaming\\wamo-desktop", "logs"));
+  assert.equal(p.logDir, path.join("C:\\Users\\x\\AppData\\Roaming\\WAMO", "logs"));
   assert.equal(p.uiDir, null);
   assert.equal(p.voiceCoreDir, null);
   assert.equal(p.lokalerKernMoeglich, false);
