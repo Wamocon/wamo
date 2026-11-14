@@ -83,3 +83,15 @@ describe("Gespräch: letzte Zeilen", () => {
     expect(block().querySelector("[aria-live]")).toBeNull();
   });
 });
+
+describe("Gespräch: lange Antworten", () => {
+  it("mit Verlauf darf die Spalte kürzen (data-verlauf, der volle Text steht im Verlauf)", () => {
+    render(<Gespraech />);
+    expect(block().getAttribute("data-verlauf")).toBe("true");
+  });
+
+  it("ohne Verlauf (Laborkonto) kürzt sie nie, denn der Rest stünde nirgends", () => {
+    render(<Gespraech mitVerlauf={false} />);
+    expect(block().hasAttribute("data-verlauf")).toBe(false);
+  });
+});

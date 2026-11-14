@@ -2,8 +2,16 @@
 // jeweils zuerst aus dem laufenden Zug, sonst aus dem Verlauf, und eine unterbrochene Antwort nur mit den gesprochenen Wörtern.
 // Ausführen im Ordner ui/:  npm test
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { menschZeile, wamoZeile } from "./gespraech.ts";
+
+test("lange Antworten kürzt die Spalte nur mit Verlauf (gespraech.css): ohne ihn (Laborkonto) stünde der Rest nirgends", () => {
+  const css = readFileSync(new URL("../components/kommando/gespraech.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const regeln = [...css.matchAll(/([^{}]+)\{([^{}]*line-clamp[^{}]*)\}/g)];
+  assert.ok(regeln.length > 0, "die Kürzung fehlt ganz");
+  for (const [, selektor] of regeln) assert.match(selektor.trim(), /^\.kz-gespraech\[data-verlauf\] /);
+});
 
 const leer = { userDone: "", userLive: "" };
 const kein = { text: "", spoken: 0, interrupted: false };

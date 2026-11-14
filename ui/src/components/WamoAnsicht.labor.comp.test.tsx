@@ -112,6 +112,8 @@ describe("Hauptansicht eines Laborkontos: was fehlt", () => {
     expect(document.getElementById("verlauf")).toBeNull();
     expect(verlaufKnoepfe()).toHaveLength(0);
     expect(screen.queryByText(/Noch keine Vorgänge/)).toBeNull();
+    // ohne Verlauf kürzt der Block Gespräch lange Antworten nicht
+    expect(document.querySelector(".kz-gespraech")?.hasAttribute("data-verlauf")).toBe(false);
   });
 
   it("nennt in der Reiterleiste nur die Reiter, die es gibt", async () => {
@@ -294,6 +296,7 @@ describe("Hauptansicht eines normalen Admin-Kontos: unverändert alles", () => {
     expect(screen.getAllByRole("button", { name: "Verlauf" })).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Verlauf öffnen", hidden: true })).toBeTruthy();
     expect(screen.getByText("Modellzugang", { selector: "dt" })).toBeTruthy();
+    expect(document.querySelector(".kz-gespraech")?.getAttribute("data-verlauf")).toBe("true");
   });
 
   it("ruft Verlauf, Modellzugang und Hinweise ab", async () => {
