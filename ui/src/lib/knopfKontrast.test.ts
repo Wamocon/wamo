@@ -10,15 +10,18 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+// Die Knöpfe (.btn-decide) sind Bausteine in kommando/hud.css, die Farbrollen stehen in globals.css
+const baustein = readFileSync(new URL("../components/kommando/hud.css", import.meta.url), "utf8");
 
 type Thema = "dunkel" | "hell";
 const THEMEN: readonly Thema[] = ["dunkel", "hell"];
 const KOPF: Record<Thema, string> = { dunkel: ":root {", hell: ':root[data-theme="light"] {' };
 
 function regel(selektor: string): string {
-  const i = css.indexOf(`${selektor} {`);
-  assert.ok(i >= 0, `${selektor} fehlt in globals.css`);
-  return css.slice(i, css.indexOf("}", i));
+  const quelle = css.includes(`${selektor} {`) ? css : baustein;
+  const i = quelle.indexOf(`${selektor} {`);
+  assert.ok(i >= 0, `${selektor} fehlt in globals.css und hud.css`);
+  return quelle.slice(i, quelle.indexOf("}", i));
 }
 
 /** Inhalt des Blocks eines Themas (bis zur schließenden Klammer in der ersten Spalte). */
@@ -162,6 +165,6 @@ test("dunkel: die kleine rote Schrift ist nur einen Hauch heller als das Marken-
 });
 
 test("Hover kehrt die Farben nur bei einer aktiven Schaltfläche um", () => {
-  assert.ok(css.includes(".btn-decide:hover:not(:disabled) {"), "hover braucht :not(:disabled)");
-  assert.doesNotMatch(css, /\.btn-decide:hover \{/, "kein Hover-Wechsel mehr auf gesperrten Knöpfen");
+  assert.ok(baustein.includes(".btn-decide:hover:not(:disabled) {"), "hover braucht :not(:disabled)");
+  assert.doesNotMatch(baustein, /\.btn-decide:hover \{/, "kein Hover-Wechsel mehr auf gesperrten Knöpfen");
 });

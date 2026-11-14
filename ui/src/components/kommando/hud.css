@@ -6,8 +6,12 @@
    Beschriftungen in Versalien und Zähler, --body für Fließtext.
    ===================================================================== */
 
-/* ---------- Gemeinsame Bausteine ---------- */
-.hud-label { font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); }
+/* ---------- Gemeinsame Bausteine (gelten überall, auch außerhalb der Kommandozentrale) ---------- */
+
+/* Beschriftung in Versalien */
+.hud-label, .eyebrow { margin: 0; font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); }
+
+/* Abzeichen: Farbe über currentColor, Zustand immer auch als Wort */
 .hud-badge, .kz-badge {
   display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 5px;
   font: 600 10.5px/1.2 var(--hud); letter-spacing: 0.14em; text-transform: uppercase;
@@ -20,6 +24,115 @@
 .hud-badge[data-state="fehler"] { color: var(--fehler-schrift); }
 @keyframes hud-puls { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @keyframes hud-auf { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes hud-dreh { to { transform: rotate(1turn); } }
+
+/* Karte: Glasfläche mit zarter Kante (die Kante darf zart bleiben, anders als der Rand von Bedienelementen) */
+.hud-karte, .kz-karte, .approval {
+  border: 1px solid var(--kante); border-radius: 10px; background: var(--glas);
+}
+
+/* Meldung: Karte mit roter Kante links (Fehler, Hinweise, Gemerktes, Toasts, Hinweiskästen) */
+.error, .hinweis-toast, .memo, .hinweis-karte, .notice {
+  border: 1px solid var(--kante); border-left: 2px solid var(--core); border-radius: 10px; background: var(--panel);
+  animation: hud-auf 0.35s ease-out both;
+}
+.error[data-art="hinweis"] { border-left-color: var(--rule-strong); }
+
+/* Textknopf: Rückgängig, Schließen, Neu, Zurück (rote Linie darunter, wie die Marke) */
+.error-close, .memo-undo, .geteilt-neu, .gate-link, .kz-link, .ez-zurueck {
+  min-height: 40px; padding: 0 6px; display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: 0; cursor: pointer; color: var(--ink);
+  font: 600 13px/1 var(--body);
+  text-decoration: underline; text-decoration-color: var(--core); text-decoration-thickness: 2px; text-underline-offset: 4px;
+}
+.error-close:hover, .memo-undo:hover, .geteilt-neu:hover, .gate-link:hover, .kz-link:hover, .ez-zurueck:hover { color: var(--core-schrift); }
+
+/* Knöpfe: Haupt, Neben und Entscheidung (Freigeben und Ablehnen sind gleichgewichtig, nichts verleitet zum schnellen Bestätigen) */
+.btn-primary, .btn-secondary {
+  min-height: 44px; padding: 0 20px; border-radius: 8px;
+  font: 700 12px/1 var(--hud); letter-spacing: 0.2em; text-transform: uppercase; cursor: pointer;
+  transition-property: transform, background-color, border-color, color;
+  transition-duration: var(--dur-press); transition-timing-function: var(--ease-out);
+}
+.btn-primary {
+  background: linear-gradient(180deg, var(--core-hot), var(--core)); color: var(--on-accent); border: 0;
+  box-shadow: 0 10px 30px -12px var(--core);
+}
+.btn-primary:hover:not(:disabled) { background: linear-gradient(180deg, #ff7a6e, var(--core-hot)); }
+.btn-secondary { background: transparent; color: var(--ink-soft); border: 1px solid var(--steuer-rand); }
+.btn-secondary:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-soft); background: var(--glas-hover); }
+.btn-primary:active:not(:disabled), .btn-secondary:active:not(:disabled), .btn-decide:active:not(:disabled) { transform: scale(0.96); }
+.btn-primary:disabled, .btn-secondary:disabled { opacity: 0.55; cursor: progress; }
+.btn-block { width: 100%; }
+.btn-small { min-height: 40px; padding: 0 14px; font-size: 11px; }
+.btn-decide {
+  flex: 1; min-height: 40px; padding: 0 16px;
+  background: transparent; color: var(--ink); border: 1px solid var(--steuer-rand); border-radius: 8px;
+  font: 700 13px/1 var(--body); cursor: pointer;
+  transition-property: transform, background-color, color, border-color; transition-duration: var(--dur-press);
+}
+.btn-decide:hover:not(:disabled) { background: var(--glas-stark); color: var(--ink); border-color: var(--ink-soft); }
+/* Gesperrt: Grautöne statt Transparenz, damit die Beschriftung lesbar bleibt (WCAG AA verlangt 4,5:1 für Text, 3:1 für den Rand) */
+.btn-decide:disabled { color: var(--ink-soft); border-color: var(--kontur); cursor: not-allowed; }
+
+/* Felder: dunkler Grund, Rand mit 3:1, beim Fokus rote Kante mit Schimmer */
+.gate-form input, .ez-feld select, .mic-wahl select, .geteilt-recht select, .teilen-form select, .teilen-form input[type="text"],
+.geteilt-editor input, .geteilt-editor textarea, .hud-feld {
+  min-height: 44px; max-width: 100%; padding: 0 12px;
+  background: var(--code-grund); color: var(--ink);
+  border: 1px solid var(--steuer-rand); border-radius: 8px;
+  font: 400 15px/1.3 var(--body);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.geteilt-editor textarea { padding: 10px 12px; }
+.gate-form input:hover:not(:disabled), .ez-feld select:hover:not(:disabled), .hud-feld:hover:not(:disabled) { border-color: var(--ink-soft); }
+.gate-form input:focus-visible, .ez-feld select:focus-visible, .mic-wahl select:focus-visible, .geteilt-recht select:focus-visible,
+.teilen-form select:focus-visible, .teilen-form input[type="text"]:focus-visible, .geteilt-editor input:focus-visible,
+.geteilt-editor textarea:focus-visible, .hud-feld:focus-visible {
+  border-color: var(--core); outline: 2px solid var(--focus); outline-offset: 1px;
+  box-shadow: 0 0 0 3px rgba(244, 14, 14, 0.15), 0 0 24px -10px var(--core);
+}
+.ez-feld select:disabled { opacity: 0.6; cursor: not-allowed; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+/* Schalter: Ein und Aus (PC-Steuerung) und Umschalter mit zwei Stellungen (Betriebsart, Modus) */
+.pc-switch {
+  min-height: 44px; padding: 0 14px 0 8px;
+  display: inline-flex; align-items: center; gap: 10px;
+  background: var(--glas); color: var(--ink); border: 1px solid var(--steuer-rand); border-radius: 10px;
+  font: 600 12px/1 var(--hud); letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
+  transition-property: border-color, background-color, box-shadow; transition-duration: var(--dur-fast);
+}
+.pc-switch[data-an] { border-color: var(--core); box-shadow: 0 0 18px -8px var(--core); }
+.pc-switch:disabled { cursor: progress; opacity: 0.7; }
+.pc-switch-bahn {
+  position: relative; width: 36px; height: 20px; flex: none; border-radius: 10px; background: var(--steuer-rand);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.pc-switch[data-an] .pc-switch-bahn { background: var(--core); }
+.pc-switch-knopf {
+  position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%;
+  background: #ffffff; transition: transform var(--dur-fast) var(--ease-out);
+}
+.pc-switch[data-an] .pc-switch-knopf { transform: translateX(16px); }
+.pc-switch-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pc-switch-hint { font-size: 13px; color: var(--ink-soft); }
+.pc-steuerung { display: grid; gap: 8px; }
+.pc-auto { display: flex; align-items: flex-start; gap: 8px; min-height: 32px; font-size: 14px; cursor: pointer; }
+.pc-auto input { width: 18px; height: 18px; margin: 2px 0 0; flex: none; cursor: pointer; }
+.pc-auto-hint { margin: -4px 0 0 26px; font-size: 13px; color: var(--ink-soft); }
+.betriebsart { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.betriebsart-wahl { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--steuer-rand); border-radius: 10px; background: var(--glas-leicht); }
+.betriebsart-wahl button {
+  min-height: 36px; padding: 0 14px; background: transparent; color: var(--ink-soft); border: 0; border-radius: 7px;
+  font: 600 11px/1 var(--hud); letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer;
+  transition-property: background-color, color; transition-duration: var(--dur-fast);
+}
+.betriebsart-wahl button:hover:not(:disabled):not([data-an]) { color: var(--ink); }
+.betriebsart-wahl button[data-an] { background: var(--glas-stark); color: var(--ink); box-shadow: inset 0 -2px 0 var(--core); }
+.betriebsart-wahl button:disabled { cursor: not-allowed; }
+.betriebsart-wahl button:disabled:not([data-an]) { color: var(--ink-faint); }
+.betriebsart-wahl button:focus-visible { outline-offset: -3px; }
 
 /* ---------- Hintergrund: Glut hinter dem Kern, feine Rasterlinien (die Sterne zeichnet .kz-sterne) ---------- */
 .kz-main { background: var(--bg); isolation: isolate; }
@@ -111,16 +224,6 @@
 .kz-reiter-mobil { gap: 16px; padding: 0 14px; }
 .kz-reiter-mobil .kz-reiter { min-height: 44px; padding: 0 2px; }
 .kz-zahl { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; color: var(--on-accent); font: 700 10px/1 var(--hud); }
-.kz .approval {
-  padding: 14px; border: 1px solid var(--kante); border-radius: 10px; background: var(--glas);
-  box-shadow: none; animation: hud-auf 0.35s ease-out both;
-}
-.kz .approval .eyebrow { margin-bottom: 8px; font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.12em; color: var(--core-schrift); }
-.kz .approval h3 { font: 400 15px/1.4 var(--body); }
-.kz .approval-detail, .kz .auftrag-text { background: var(--code-grund); border-radius: 6px; }
-.kz .approval-detail { font: 12px/1.5 var(--hud); color: var(--ink-soft); }
-.kz .btn-decide { min-height: 40px; border: 1px solid var(--steuer-rand); border-radius: 8px; background: transparent; font: 700 13px/1 var(--body); }
-.kz .btn-decide:hover:not(:disabled) { background: var(--glas-stark); color: var(--ink); border-color: var(--ink-soft); }
 .kz .timeline li {
   padding: 8px 10px; border-radius: 6px; border-left: 2px solid var(--kante);
   background: var(--glas-leicht); font-size: 13.5px;

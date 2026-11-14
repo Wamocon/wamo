@@ -56,7 +56,6 @@
   }
 }
 .ez-meldungen .memos:empty { display: none; }
-.ez-meldungen .error, .ez-meldungen .hinweis-toast, .ez-meldungen .memo { background: var(--kz-karte); border-radius: 12px; }
 .ez-meldungen .hinweis-toast .error-close { margin-left: auto; }
 
 /* ---------- Gliederung (links) ---------- */
