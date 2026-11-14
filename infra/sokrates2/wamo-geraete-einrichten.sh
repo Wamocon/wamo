@@ -6,7 +6,8 @@
 # Vom PC aus (Repo-Wurzel); Ablage nur im Home von wamocon, nie in /tmp:
 #   scp infra/sokrates2/wamo-geraete-einrichten.sh infra/sokrates2/wamo-geraete-rueckweg.sh \
 #       infra/sokrates2/wamo-geraete.service infra/sokrates2/wamo-geraete-egress.service \
-#       infra/sokrates2/wamo_geraete_env.py infra/sokrates2/geraete.toml.example infra/sokrates2/bekannt.toml.example #       sokrates2:wamo-infra/
+#       infra/sokrates2/wamo_geraete_env.py infra/sokrates2/geraete.toml.example infra/sokrates2/bekannt.toml.example \
+#       sokrates2:wamo-infra/
 #   ssh sokrates2 "rm -rf ~/wamo-infra/geraete && mkdir -p ~/wamo-infra/geraete"
 #   scp -r geraete/wamo_geraete geraete/pyproject.toml geraete/uv.lock sokrates2:wamo-infra/geraete/
 #   ssh sokrates2 "chmod -R go-w ~/wamo-infra && sudo bash ~/wamo-infra/wamo-geraete-einrichten.sh"
