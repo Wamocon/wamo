@@ -1,6 +1,6 @@
 # Labor-Daten des Testlabors
 
-Die Dateien in diesem Ordner sind der änderbare Inhalt des WAMO-Testlabors vom 28.11.2026: Regeln, Kontakte, Vorlagen, Fachwissen und Schlusstext.
+Die Dateien in diesem Ordner sind der änderbare Inhalt des W.A.I.S. Testlabors vom 28.11.2026: Regeln, Kontakte, Vorlagen, Fachwissen und Schlusstext.
 Sie liegen auf Sokrates-2 unter `/etc/wamo-labor/daten/` und werden vom Kern bei jedem Sitzungsstart gelesen (`voice-core/labor_daten.py`). Eine Änderung
 gilt deshalb ab der nächsten Sitzung, ohne Release und ohne Neustart. Der Ort ist nicht `/etc/wamo`, denn der Benutzer `wamo-core` kann `/etc/wamo` (root:wamo 0750, dort liegen
 die Geheimnisse) nicht durchqueren und könnte darunter nichts lesen. Eine ACL oder Rechteänderung an `/etc/wamo` gibt es dafür nicht. Konzept: `docs/testlabor-wamo.md`, Abschnitte 3.6 und 3.8. Diese README wird
@@ -10,17 +10,17 @@ nie auf den Server installiert und nie vom Kern gelesen.
 
 | Datei | Art | Inhalt | Liefert | Prüft und gibt frei |
 | --- | --- | --- | --- | --- |
-| `persona-zusatz.md` | Regelteil | Anweisungen an WAMO: Mail erst als Entwurf, Tickets nur über Werkzeuge, Datum per Werkzeug, kurze Antworten, nichts erfinden | WAMO-Team | Kollegen (Review) |
-| `persona-zusatz.streng.md` | Regelteil, Variante | wie oben, dazu "frag bei fehlenden Angaben nach" und "Fehler nicht wegbessern" (nur bei Sicherheit eingreifen) | WAMO-Team | Trainer nach Messrunde 1 (Frage Q6) |
-| `kontakte.md` | Daten | erfundene Kontakte, Adressen nur `@labor.test` | WAMO-Team | WAMO-Team |
-| `anforderung-vorlage.md` | Daten | Gerüst eines Anforderungsdokuments (3 bis 7 Stories, je mindestens 2 Kriterien Gegeben, Wenn, Dann) | WAMO-Team | WAMO-Team |
-| `wissen-istqb.md` | Daten | Glossar-Auszug in eigenen Worten, Entwurf | Format: WAMO-Team, Fachlichkeit: Trainer | Trainer (bis 19.11.) |
-| `bericht-vorlage.md` | Daten | Gerüst des Testberichts mit Spalten Karte, Eingabe, erwartet, tatsächlich, bestanden, Ticket, CTFL | WAMO-Team | Kollegen |
+| `persona-zusatz.md` | Regelteil | Anweisungen an W.A.I.S.: Mail erst als Entwurf, Tickets nur über Werkzeuge, Datum per Werkzeug, kurze Antworten, nichts erfinden | W.A.I.S.-Team | Kollegen (Review) |
+| `persona-zusatz.streng.md` | Regelteil, Variante | wie oben, dazu "frag bei fehlenden Angaben nach" und "Fehler nicht wegbessern" (nur bei Sicherheit eingreifen) | W.A.I.S.-Team | Trainer nach Messrunde 1 (Frage Q6) |
+| `kontakte.md` | Daten | erfundene Kontakte, Adressen nur `@labor.test` | W.A.I.S.-Team | W.A.I.S.-Team |
+| `anforderung-vorlage.md` | Daten | Gerüst eines Anforderungsdokuments (3 bis 7 Stories, je mindestens 2 Kriterien Gegeben, Wenn, Dann) | W.A.I.S.-Team | W.A.I.S.-Team |
+| `wissen-istqb.md` | Daten | Glossar-Auszug in eigenen Worten, Entwurf | Format: W.A.I.S.-Team, Fachlichkeit: Trainer | Trainer (bis 19.11.) |
+| `bericht-vorlage.md` | Daten | Gerüst des Testberichts mit Spalten Karte, Eingabe, erwartet, tatsächlich, bestanden, Ticket, CTFL | W.A.I.S.-Team | Kollegen |
 | `ausgang.md` | Daten | Schlusstext des Berichts, höchstens 400 Zeichen | Kollegen (bis 20.11.) | Kollegen und Niko |
 | `ctfl-zuordnung.json` | Daten | je Karte (alle 17) Thema und Lernziel, Entwurf | Trainer (bis 19.11.) | Trainer |
 
 Aufbau der JSON-Datei: `{"hinweis": ..., "karten": {"W1": {"thema": ..., "lernziel": ...}, ...}}`. Die Kennung ist der Schlüssel (`W1` bis `G3`, wie in
-`voice-core/eval/faelle_labor.py`). Der Bericht übernimmt Thema und Lernziel in die Spalte CTFL, WAMO ergänzt nichts.
+`voice-core/eval/faelle_labor.py`). Der Bericht übernimmt Thema und Lernziel in die Spalte CTFL, W.A.I.S. ergänzt nichts.
 
 ## Was die Dateien dürfen
 

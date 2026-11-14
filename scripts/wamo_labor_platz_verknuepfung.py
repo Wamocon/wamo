@@ -56,7 +56,7 @@ def verknuepfung_schreiben(pfad: Path, ziel: str, argumente: str, arbeitsordner:
         _methode(link, SET_PATH, c_wchar_p)(link, ziel)
         _methode(link, SET_ARGUMENTS, c_wchar_p)(link, argumente)
         _methode(link, SET_WORKING_DIRECTORY, c_wchar_p)(link, arbeitsordner)
-        _methode(link, SET_DESCRIPTION, c_wchar_p)(link, "WAMO Testlabor")
+        _methode(link, SET_DESCRIPTION, c_wchar_p)(link, "W.A.I.S. Testlabor")
         _methode(link, SET_SHOW_CMD, c_int)(link, SW_SHOWNORMAL)
         _methode(link, QUERY_INTERFACE, POINTER(_GUID), POINTER(c_void_p))(link, byref(_guid(IID_PERSIST_FILE)), byref(datei))
         _methode(datei, PERSIST_SAVE, c_wchar_p, c_int)(datei, str(pfad), 1)

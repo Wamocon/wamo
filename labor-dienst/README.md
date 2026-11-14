@@ -1,6 +1,6 @@
-# WAMO Labor-Dienst
+# W.A.I.S. Labor-Dienst
 
-Das Test-Jira des Testlabors am 28.11.2026. Bis zu acht Besucher legen an je einem Platz mit dem Assistenten WAMO Fehler als Ticket an, ändern,
+Das Test-Jira des Testlabors am 28.11.2026. Bis zu acht Besucher legen an je einem Platz mit dem Assistenten W.A.I.S. Fehler als Ticket an, ändern,
 verschieben und kommentieren Tickets. Der Dienst setzt den Vertrag Version 1 um (`docs/labor-dienst-vertrag.md`, Quelle der Wahrheit) und
 ist ein eigener Teil des Monorepos: Paket `wamo-labor-dienst`, Python 3.11 oder neuer, FastAPI, uvicorn und SQLite aus der Standardbibliothek.
 Dieser Stand ist der API-Teil mit Speicher und Betreuer-Funktionen. Die Webseiten (Board und Betreuer-Seite) kommen als zweiter Schritt.
@@ -219,7 +219,7 @@ cd labor-dienst
 python -m pytest -p no:cacheprovider -q tests
 ```
 
-Die Tests laufen ohne Netz und Server, außer den Integrationstests: Sie starten den Dienst auf Loopback und lassen das Abnahmeskript von WAMO
+Die Tests laufen ohne Netz und Server, außer den Integrationstests: Sie starten den Dienst auf Loopback und lassen das Abnahmeskript von W.A.I.S.
 (`scripts/wamo_labor_abnahme.py`) und den Dienstclient des Kerns (`voice-core/labor_client.py`) gegen ihn laufen. Mit gemeinsamer falscher Uhr
 dauert auch A4 nur Sekunden. Mit `WAMO_LABOR_ECHTZEIT=1` läuft die Abnahme zusätzlich mit echter Schreibrate (20 bis 25 Minuten).
 

@@ -14,17 +14,17 @@ Namen und Telefonnummern trägt Niko vor dem 26.11. ein (Abschnitt 8). Hier steh
 | --- | --- | --- |
 | B | Betreuer am Platz | Besucher begrüßen, Hinweis zeigen, Haken setzen, Platz öffnen und schließen, bei Störungen die ersten Schritte |
 | L | Leitung der Betreuer vor Ort | entscheidet, ob ein Platz zubleibt oder der Notaus ausgelöst wird, ruft Technik und Datenschutz |
-| T | Technik-Bereitschaft WAMO | alles am Server und mit den Verwaltungsskripten (Abschnitte 5 und 9) |
+| T | Technik-Bereitschaft W.A.I.S. | alles am Server und mit den Verwaltungsskripten (Abschnitte 5 und 9) |
 | N | Netz und Geräte (Kollegen) | WLAN, Kabel, Laptops, Headsets |
 | D | Datenschutz-Ansprechperson | Löschwünsche, Beschwerden, Zweifel zum Hinweis |
 | F | Trainer | Fachfragen zu den Karten und zum Lernziel |
-| P | Projektverantwortung WAMO | entscheidet nach einem Notaus über das Weitermachen, Konsole des Sprachmodells (Ausgabenlimit, Guthaben) |
+| P | Projektverantwortung W.A.I.S. | entscheidet nach einem Notaus über das Weitermachen, Konsole des Sprachmodells (Ausgabenlimit, Guthaben) |
 
 ### 1.2 Sieben Regeln
 
 1. **Ohne Haken kein Durchlauf.** Der Haken heißt: Der Besucher hat den Datenschutzhinweis gelesen und bestätigt. Nie vorab setzen, nie für jemand anderen.
 2. **Kein Token zeigen.** Platz-Token und Betreuer-Token nicht vorlesen, nicht fotografieren, nicht in Chat oder Mail schreiben. Sie wandern nur von der Betreuer-Seite in das Platz-Skript.
-3. **Besucher klicken Freigaben selbst.** Eine Freigabekarte zeigt, was WAMO tun will. Nur der Besucher klickt "Freigeben" oder "Ablehnen". Betreuer klicken nie für ihn.
+3. **Besucher klicken Freigaben selbst.** Eine Freigabekarte zeigt, was W.A.I.S. tun will. Nur der Besucher klickt "Freigeben" oder "Ablehnen". Betreuer klicken nie für ihn.
 4. **Erfundene Namen.** Besucher nennen keine echten persönlichen Daten. Bitte freundlich um Fantasienamen.
 5. **Im Zweifel beenden.** "Durchlauf beenden" und die Leitung rufen ist immer richtig.
 6. **Server nur Technik.** Betreuer arbeiten an den Plätzen und auf der Betreuer-Seite, sonst nirgends.
@@ -32,7 +32,9 @@ Namen und Telefonnummern trägt Niko vor dem 26.11. ein (Abschnitt 8). Hier steh
 
 ## 2. Der Aufbau in Kürze
 
-Ein Platz ist ein Laptop mit zwei Fenstern. Links läuft WAMO (Gespräch mit Stimme), rechts das Board mit den Tickets dieses Platzes (nur lesend). Die Betreuer bedienen alles über die Betreuer-Seite auf ihrem eigenen Gerät.
+Ein Platz ist ein Laptop mit zwei Fenstern. Links läuft W.A.I.S. (Gespräch mit Stimme), rechts das Board mit den Tickets dieses Platzes (nur lesend). Die Betreuer bedienen alles über die Betreuer-Seite auf ihrem eigenen Gerät.
+
+**Der Name.** W.A.I.S. steht für „WAMOCON’s Artificial Intelligence System“, auf Deutsch „WAMOCONs künstliches intelligentes System“. Gesprochen heißt er kurz „Wais“, mit einem amerikanischen „ai“ (nicht wie „weiß“). Besucher sprechen ihn mit „Wais“ an. Fragt jemand, wie er heißt, sagt er den Namen, buchstabiert ihn auf Wunsch und nennt die Langform.
 
 | Plätze | Verwendung |
 | --- | --- |
@@ -47,7 +49,7 @@ Platz N gehört zum Profil `labor-NN` (Platz 3 zu `labor-03`). Das brauchst du n
 | --- | --- |
 | Betreuer-Seite (nur von den Betreuer-PCs) | `https://192.168.178.136:55447/betreuer` |
 | Datenschutzhinweis für Besucher (mit Knopf Drucken) | `https://192.168.178.136:55447/datenschutz` |
-| WAMO-Oberfläche | öffnet das Platz-Skript selbst (`https://192.168.178.136:55445`) |
+| W.A.I.S.-Oberfläche | öffnet das Platz-Skript selbst (`https://192.168.178.136:55445`) |
 
 Auf dem Desktop jedes Platz-Laptops liegen zwei Verknüpfungen: **WAMO Labor starten** und **WAMO Labor pruefen**.
 
@@ -70,7 +72,7 @@ Ein Platz ist frei, wenn seine Karte "Geschlossen, kein Durchlauf" oder "Durchla
 9. Der Kasten zeigt den **Besucher-Link** (`…/board#t=…`) und den **Platz-Token** und blendet sich nach 60 Sekunden aus ("Wird in … Sekunden ausgeblendet"). Verpasst? Dann auf der Karte **Platz-Token erzeugen** klicken. Der alte Token ist damit ungültig.
 10. Am Platz-Laptop beide Chrome-Fenster schließen, falls offen. Die Verknüpfung **WAMO Labor starten** doppelklicken.
 11. Das Skript fragt den Platz-Token ab. Auf der Betreuer-Seite **Token kopieren** klicken und im Skriptfenster einfügen, dann Enter. Die Eingabe bleibt unsichtbar, das ist gewollt `[offen: Einfügen in die verdeckte Eingabe in der Generalprobe prüfen, sonst die 32 Zeichen abtippen]`.
-12. Erwartet: links WAMO, rechts das Board mit "Platz N" und den drei Spalten "Zu erledigen", "In Arbeit" und "Erledigt" mit den Startkarten (sechs Tickets, darunter LAB-11, LAB-12 und LAB-20).
+12. Erwartet: links W.A.I.S., rechts das Board mit "Platz N" und den drei Spalten "Zu erledigen", "In Arbeit" und "Erledigt" mit den Startkarten (sechs Tickets, darunter LAB-11, LAB-12 und LAB-20).
 13. Headset aufsetzen lassen. Der Besucher tippt auf "Gespräch starten". Die erste Aufgabe kommt aus dem gedruckten Kartensatz (`docs/labor-kartensatz.html`, 17 Karten) `[offen: Ablageort des Ausdrucks am Platz]`.
 14. Kontrolle auf der Betreuer-Seite: Die Karte zeigt "Durchlauf offen" und eine Einwilligung "Version 1 vom …".
 
@@ -78,8 +80,8 @@ Ein Platz ist frei, wenn seine Karte "Geschlossen, kein Durchlauf" oder "Durchla
 
 ### 3.2 Während des Gesprächs
 
-1. Zuhören, nicht eingreifen, solange es läuft. WAMO darf Fehler machen. Fehler zu finden und als Ticket anzulegen ist das Ziel der Veranstaltung.
-2. Erscheint eine Freigabekarte, liest der Besucher sie und klickt selbst **Freigeben** oder **Ablehnen**. Nie für ihn klicken. Eine Karte gilt etwa zwei Minuten, danach fragt der Besucher WAMO neu.
+1. Zuhören, nicht eingreifen, solange es läuft. W.A.I.S. darf Fehler machen. Fehler zu finden und als Ticket anzulegen ist das Ziel der Veranstaltung.
+2. Erscheint eine Freigabekarte, liest der Besucher sie und klickt selbst **Freigeben** oder **Ablehnen**. Nie für ihn klicken. Eine Karte gilt etwa zwei Minuten, danach fragt der Besucher W.A.I.S. neu.
 3. Nennt der Besucher echte persönliche Daten, bitte um Fantasiewerte. Wurde schon etwas gesagt oder getippt, gehe zu Abschnitt 4.3.
 4. Eine Sitzung endet technisch nach höchstens 120 Minuten. Die geplante Besuchsdauer legt die Leitung fest `[offen: Dauer eines Besuchs, Generalprobe nutzt 10 Minuten]`.
 
@@ -97,7 +99,7 @@ Wann: Der Besucher möchte dieselbe Aufgabe noch einmal, oder das Board ist durc
 Wann: Der Besucher ist fertig oder geht.
 
 1. Auf der Betreuer-Seite bei Platz N **Durchlauf beenden** klicken. Es kommt keine Rückfrage.
-2. Erwartet: Die Karte zeigt "Durchlauf beendet". Innerhalb von 5 Sekunden endet das Gespräch, das WAMO-Fenster lädt sich neu und ist leer. Das Board bleibt sichtbar, der Platz-Token bleibt gültig.
+2. Erwartet: Die Karte zeigt "Durchlauf beendet". Innerhalb von 5 Sekunden endet das Gespräch, das W.A.I.S.-Fenster lädt sich neu und ist leer. Das Board bleibt sichtbar, der Platz-Token bleibt gültig.
 3. Besucher verabschieden. Für den nächsten Besucher weiter mit 3.1, sonst mit 3.5.
 
 ### 3.5 Daten löschen
@@ -123,7 +125,7 @@ Wann: Der Token fehlt, ging verloren, oder das Board zeigt "Dieser Platz-Link gi
 ### 4.1 Besucher möchte nicht zustimmen
 
 1. Kein Haken, kein neuer Durchlauf, kein Platz-Token. Für diese Person wird nichts gespeichert.
-2. Sag: "Kein Problem. Die Teilnahme ist freiwillig. Du kannst dir WAMO gern am Betreuer-Platz ansehen." (So steht es im Hinweis.)
+2. Sag: "Kein Problem. Die Teilnahme ist freiwillig. Du kannst dir W.A.I.S. gern am Betreuer-Platz ansehen." (So steht es im Hinweis.)
 3. Führe die Person zum Betreuer-Platz `[offen: Standort und Gerät des Betreuer-Platzes]`. Dort führt ein Betreuer vor (7.3) oder zeigt die Aufzeichnung (7.2).
 4. Frage nicht nach Gründen und notiere keinen Namen.
 
@@ -198,10 +200,10 @@ Merke dir zuerst: Ein Platz betroffen heißt meist Laptop, Netz am Platz oder To
 
 ### 6.1 Claude fällt aus
 
-Du merkst es: WAMO antwortet nicht mehr, sehr langsam, oder meldet, dass ein anderes Modell antwortet. Bei leerem Guthaben oder erreichtem Limit sieht es genauso aus.
+Du merkst es: W.A.I.S. antwortet nicht mehr, sehr langsam, oder meldet, dass ein anderes Modell antwortet. Bei leerem Guthaben oder erreichtem Limit sieht es genauso aus.
 
 Sofort (B):
-1. Zum Besucher: "Einen Moment, WAMO hat gerade eine Störung." Nichts neu starten.
+1. Zum Besucher: "Einen Moment, W.A.I.S. hat gerade eine Störung." Nichts neu starten.
 2. Keine neuen Besucher öffnen.
 3. L rufen, L ruft T.
 
@@ -214,7 +216,7 @@ Danach (T, rund 5 Minuten):
 
 ### 6.2 Dienst ist aus
 
-Du merkst es: Betreuer-Seite meldet "Keine Verbindung zum Dienst.", das Board lädt nicht, ein neuer Durchlauf geht nicht, Ticket-Aktionen scheitern mit einem festen Satz von WAMO.
+Du merkst es: Betreuer-Seite meldet "Keine Verbindung zum Dienst.", das Board lädt nicht, ein neuer Durchlauf geht nicht, Ticket-Aktionen scheitern mit einem festen Satz von W.A.I.S.
 
 Wirkung: Ohne Dienst nimmt der Kern keine neue Sitzung an (Absicht). Laufende Gespräche laufen weiter, schreibende Ticket-Aktionen scheitern.
 
@@ -271,7 +273,7 @@ Sofort (B):
 4. **WAMO Labor starten**, neuen Token einfügen.
 5. Der Besucher tippt auf "Gespräch starten". Das Gespräch beginnt von vorn, das Board bleibt.
 6. Hilft das nicht nach `[offen: Frist, zum Beispiel 3 Minuten, L legt sie fest]`: Wechsel an den Reserveplatz.
-7. Zeigt WAMO die Anmeldung mit Passwort und Code, ist die Anmeldung des Geräts weg. L oder T meldet das Gerät neu an. Die Betreuer kennen das Passwort nicht und geben es nicht weiter (9.3).
+7. Zeigt W.A.I.S. die Anmeldung mit Passwort und Code, ist die Anmeldung des Geräts weg. L oder T meldet das Gerät neu an. Die Betreuer kennen das Passwort nicht und geben es nicht weiter (9.3).
 
 Wechsel an den Reserveplatz 9:
 1. Platz N: **Durchlauf beenden** und **Daten löschen** (3.4, 3.5).
@@ -289,7 +291,7 @@ Wechsel an den Reserveplatz 9:
 | Betreuer-Seite | "Zu viele Anfragen, bitte kurz warten." | 30 Sekunden warten, nicht mehrfach klicken |
 | Fenster "Neuer Durchlauf" | Fehlerhinweis, der Dienst kenne schon eine höhere Version | Seite mit F5 neu laden, von vorn beginnen |
 | Betreuer-Seite | "Das Löschen ist noch nicht abgeschlossen, die Datei ist nicht bereinigt. Bitte wiederholen." | **Daten löschen** wiederholen, nach drei Versuchen T rufen |
-| Freigabekarte | die Karte ist weg | Sie gilt etwa zwei Minuten. Der Besucher fragt WAMO neu |
+| Freigabekarte | die Karte ist weg | Sie gilt etwa zwei Minuten. Der Besucher fragt W.A.I.S. neu |
 | Platz | "Gespräch starten" tut nichts | Zeigt die Karte "Durchlauf offen"? Wenn nein: 3.1. Wenn ja: L rufen, T prüft, ob das Profil freigeschaltet ist |
 
 ## 7. Rückfall mit Aufzeichnung
@@ -300,12 +302,12 @@ L entscheidet. Typische Anlässe: Claude und Hausmodelle fallen aus, die Sprache
 
 ### 7.2 Schaufenster, die Aufzeichnung am Fernseher
 
-Die Aufzeichnung zeigt einen Entwicklungsauftrag, den WAMO vorab erledigt hat. Sie liegt vorbereitet bereit `[offen: Dateiname, Ort, Gerät, Länge]`.
+Die Aufzeichnung zeigt einen Entwicklungsauftrag, den W.A.I.S. vorab erledigt hat. Sie liegt vorbereitet bereit `[offen: Dateiname, Ort, Gerät, Länge]`.
 
 1. L gibt das Zeichen "Rückfall Aufzeichnung".
 2. Aufzeichnung auf dem großen Fernseher starten `[offen: Ort des Fernsehers]`.
 3. Besucher an den Fernseher bitten. Die Plätze bleiben frei oder werden geschlossen (3.4).
-4. Drei Sätze sagen: "Das ist eine Aufzeichnung, kein Live-Gespräch. WAMO bekam diesen Auftrag und hat ihn so erledigt. Beim Test später kannst du das selbst ausprobieren." `[offen: Erzähltext liefert das Projektteam]`
+4. Drei Sätze sagen: "Das ist eine Aufzeichnung, kein Live-Gespräch. W.A.I.S. bekam diesen Auftrag und hat ihn so erledigt. Beim Test später kannst du das selbst ausprobieren." `[offen: Erzähltext liefert das Projektteam]`
 5. Fragen beantworten. Fachfragen gehen an F.
 6. Dabei entsteht nichts Gespeichertes. Es braucht weder Durchlauf noch Haken noch Platz-Token `[offen: D bestätigt]`.
 
@@ -314,7 +316,7 @@ Die Aufzeichnung zeigt einen Entwicklungsauftrag, den WAMO vorab erledigt hat. S
 Wann: Der Dienst und die Sprachmodelle laufen, aber Besucher sollen nicht selbst sprechen, oder jemand hat nicht zugestimmt (4.1).
 
 1. Der Betreuer-Platz wird wie in 3.1 geöffnet. Der Betreuer ist dabei selbst die Person, die den Hinweis bestätigt `[offen: welcher Platz und welches Profil, zum Beispiel Reserve 9]`.
-2. Der Betreuer spricht mit WAMO. Die Zuschauer sehen den Bildschirm und die Untertitel.
+2. Der Betreuer spricht mit W.A.I.S. Die Zuschauer sehen den Bildschirm und die Untertitel.
 3. Die Zuschauer sprechen nicht in das Mikrofon. Raumgeräusche gehen an die Spracherkennung `[offen: D klärt, ob Zuschauer einen Hinweis brauchen]`.
 4. Danach 3.4 und 3.5.
 
@@ -330,11 +332,11 @@ Namen und Telefonnummern fehlen noch. Niko trägt sie ein und druckt diese Seite
 | Rolle | Name | Telefon oder Kanal |
 | --- | --- | --- |
 | L, Leitung der Betreuer vor Ort | `[Name offen]` | `[Telefon offen]` |
-| T, Technik-Bereitschaft WAMO | `[Name offen]` | `[Telefon offen]` |
+| T, Technik-Bereitschaft W.A.I.S. | `[Name offen]` | `[Telefon offen]` |
 | N, Netz und Geräte (Kollegen) | `[Name offen]` | `[Telefon offen]` |
 | D, Datenschutz-Ansprechperson | `[Name offen]` | `[Telefon offen]` |
 | F, Trainer | `[Name offen]` | `[Telefon offen]` |
-| P, Projektverantwortung WAMO | `[Name offen]` | `[Telefon offen]` |
+| P, Projektverantwortung W.A.I.S. | `[Name offen]` | `[Telefon offen]` |
 | Raum und Standort des Labors, des Betreuer-Platzes und des Fernsehers | `[offen]` | |
 
 | Anlass | Zuerst | Dann |
@@ -342,7 +344,7 @@ Namen und Telefonnummern fehlen noch. Niko trägt sie ein und druckt diese Seite
 | Frage eines Besuchers zu Karte, Aufgabe, Lernziel | F | |
 | ein Laptop, Headset, Kabel oder WLAN am Platz | L | N |
 | mehrere Plätze ohne Verbindung | L | N und T |
-| WAMO antwortet nicht, keine Stimme, Board oder Betreuer-Seite meldet einen Fehler | L | T |
+| W.A.I.S. antwortet nicht, keine Stimme, Board oder Betreuer-Seite meldet einen Fehler | L | T |
 | Löschwunsch, Beschwerde, echte persönliche Daten, Zweifel am Hinweis | L | D, bei Löschung zusätzlich T |
 | Notaus | L und T sofort | danach P und D |
 | Guthaben, Limit, Konsole des Sprachmodells | T | P |

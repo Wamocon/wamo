@@ -1,6 +1,6 @@
 # Testlabor 28.11.2026: Restplan ab Freitag, 13.11.2026
 
-**Stand:** 13.11.2026, Abend. Dieser Plan ersetzt die Kalenderfolge in `docs/testlabor-wamo.md` (Abschnitt 4.2), die noch den Freeze am 20.11. und den Dienst der Kollegen kennt. Maßgeblich sind die Entscheidungen E13 bis E16 (WAMO baut den Dienst selbst, Entwicklung fertig am Sonntag 15.11.). Was belegt ist, steht mit Quelle im Text. Was nur ein Mensch klären oder ein echter Lauf zeigen kann, steht in Abschnitt 4 und 5.
+**Stand:** 13.11.2026, Abend. Dieser Plan ersetzt die Kalenderfolge in `docs/testlabor-wamo.md` (Abschnitt 4.2), die noch den Freeze am 20.11. und den Dienst der Kollegen kennt. Maßgeblich sind die Entscheidungen E13 bis E16 (W.A.I.S. baut den Dienst selbst, Entwicklung fertig am Sonntag 15.11.). Was belegt ist, steht mit Quelle im Text. Was nur ein Mensch klären oder ein echter Lauf zeigen kann, steht in Abschnitt 4 und 5.
 
 ## 1. Stand am Freitagabend (am 13.11. gemessen)
 
@@ -31,21 +31,21 @@ Frage: Was sieht und erreicht ein Besucher, der nur die Adresse `https://192.168
 
 | Wann | Was | Wer | Bedingung |
 | --- | --- | --- | --- |
-| Fr 13.11. | Prüfstand, Besuchersicht mit REA, Kartensatz, Vorbereitung des Lasttests, Jira-Stand | WAMO | erledigt, der Jira-Stand wird am selben Abend nachgezogen |
+| Fr 13.11. | Prüfstand, Besuchersicht mit REA, Kartensatz, Vorbereitung des Lasttests, Jira-Stand | W.A.I.S. | erledigt, der Jira-Stand wird am selben Abend nachgezogen |
 | Sa 14.11. | Ruhe am Server. Konsole des Sprachmodells prüfen: Ausgabenlimit, Ratenlimit, Guthaben, Preise (nur damit rechnet der Trockenlauf Dollar). Soniox: mindestens 9 gleichzeitige Sitzungen bestätigen | Niko | Handarbeit in den Konsolen |
-| So 15.11. | **Freeze** (E14). Ein Kern-Release ist nicht nötig, weil der Laufzeitcode seit `c751d04` unverändert ist. Das Etikett `labor-freeze` auf den Stand von main setzen | WAMO | Ja von Niko für das Etikett. Ab hier nur noch Sicherheitsfehler |
-| Mo 16.11. | **Lasttest, Probelauf mit 1 Sitzung und 3 Minuten** (`--sitzungen 1 --minuten 3`). Er prüft zum ersten Mal Anmeldung, Browser mit virtuellem Mikrofon, Messung und Aufräumen. Läuft das Werkzeug erst am 24.11. zum ersten Mal, bleibt keine Zeit mehr für Korrekturen | WAMO, Niko | Ja von Niko. Das Werkzeug liegt nicht im Freeze, nur der Kern. Vorher `PLAYWRIGHT_MODUL` auf `D:\tmp\wamo-mikro\harness\node_modules\playwright-core` setzen (dort liegt Playwright 1.56.1, auf diesem PC ist die Variable nicht gesetzt) |
+| So 15.11. | **Freeze** (E14). Ein Kern-Release ist nicht nötig, weil der Laufzeitcode seit `c751d04` unverändert ist. Das Etikett `labor-freeze` auf den Stand von main setzen | W.A.I.S. | Ja von Niko für das Etikett. Ab hier nur noch Sicherheitsfehler |
+| Mo 16.11. | **Lasttest, Probelauf mit 1 Sitzung und 3 Minuten** (`--sitzungen 1 --minuten 3`). Er prüft zum ersten Mal Anmeldung, Browser mit virtuellem Mikrofon, Messung und Aufräumen. Läuft das Werkzeug erst am 24.11. zum ersten Mal, bleibt keine Zeit mehr für Korrekturen | W.A.I.S., Niko | Ja von Niko. Das Werkzeug liegt nicht im Freeze, nur der Kern. Vorher `PLAYWRIGHT_MODUL` auf `D:\tmp\wamo-mikro\harness\node_modules\playwright-core` setzen (dort liegt Playwright 1.56.1, auf diesem PC ist die Variable nicht gesetzt) |
 | Di 17.11. bis Mi 18.11. | Entscheidungen Q6 (Fassung der Regeln, Standard empfohlen und am Server), Q13 (Büro-Adressen für 55446, 55322 und 56543), Weg des Betreuer-Tokens, Namen und Telefonnummern (Runbook Abschnitt 8) | Niko | Abschnitt 4 |
 | Do 19.11. | Erwartungswerte des Trainers zu W1 und W2 | Niko, Trainer | Pflicht vor dem Ausdruck |
 | Fr 20.11. | Seminar-Angaben. Aufzeichnung des Schaufensters (zwei Stunden, Jira WMCNL-3158) | Niko | Kanal `recherche` ist für sein Profil bis 11.12. offen |
 | Mo 23.11. | **Platz-Skript auf einem echten Platz-Laptop**: `einrichten`, CA, Kiosk-Konto, `pruefen`, `https://192.168.178.136:55447/board` öffnen. Das belegt, was der Rauchtest am Server nicht belegen kann | Niko, Kollegen (Geräte) | ein Laptop im Kiosk-Konto |
-| Di 24.11. | **Lasttest voll**: Stufen 1, 2, 4, 8 mit je 15 Minuten, danach Murmelstufen (`--murmeln 20,10,5`), mit Preisen und `--kosten-obergrenze` | WAMO, Niko | Ja von Niko, Konsole geprüft (Sa 14.11.) |
-| Mi 25.11. | Zweite Faktoren der Betreuer-Geräte neu einrichten (`wamo_labor_faktoren.py einrichten --profile ... --neu`), damit die Seeds des Mess-PCs ungültig werden. Betreuer-Token übergeben | WAMO, Betreuer | Weg aus Abschnitt 4 |
+| Di 24.11. | **Lasttest voll**: Stufen 1, 2, 4, 8 mit je 15 Minuten, danach Murmelstufen (`--murmeln 20,10,5`), mit Preisen und `--kosten-obergrenze` | W.A.I.S., Niko | Ja von Niko, Konsole geprüft (Sa 14.11.) |
+| Mi 25.11. | Zweite Faktoren der Betreuer-Geräte neu einrichten (`wamo_labor_faktoren.py einrichten --profile ... --neu`), damit die Seeds des Mess-PCs ungültig werden. Betreuer-Token übergeben | W.A.I.S., Betreuer | Weg aus Abschnitt 4 |
 | Do 26.11. | Generalprobe, drei Stunden, vier Kollegen als Besucher, zwei Betreuer, acht Geräte | alle | Kartensatz gedruckt |
-| Fr 27.11. | Daten-Freeze 12:00, Rückwegübung (Zeiten ins Runbook eintragen), Einweisung der Betreuer | WAMO, Betreuer | Morgencheckliste Teil A |
+| Fr 27.11. | Daten-Freeze 12:00, Rückwegübung (Zeiten ins Runbook eintragen), Einweisung der Betreuer | W.A.I.S., Betreuer | Morgencheckliste Teil A |
 | Sa 28.11. | Labortag | alle | Morgencheckliste Teil B |
-| Mo 30.11. | Nachlauf: `wamo_labor_nachlauf.py nachlauf --ausfuehren` | WAMO | Runbook Abschnitt 10 |
-| bis Fr 11.12. | Laborkonten löschen und Sitzungen widerrufen, Umschlag-Datei und Sicherungen löschen. Ab 12.12.: Löschlauf des Dienstes | WAMO, Niko | Lücke 1 in Abschnitt 5 |
+| Mo 30.11. | Nachlauf: `wamo_labor_nachlauf.py nachlauf --ausfuehren` | W.A.I.S. | Runbook Abschnitt 10 |
+| bis Fr 11.12. | Laborkonten löschen und Sitzungen widerrufen, Umschlag-Datei und Sicherungen löschen. Ab 12.12.: Löschlauf des Dienstes | W.A.I.S., Niko | Lücke 1 in Abschnitt 5 |
 
 ## 4. Was Niko entscheiden oder liefern muss
 

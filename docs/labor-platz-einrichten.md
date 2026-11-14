@@ -1,6 +1,6 @@
 # Platz-Skript: Laptops des Testlabors einrichten
 
-**Stand:** 13.11.2026. Gehört zum Paket P8 (`docs/testlabor-wamo.md`, Abschnitt 3.9). Das Skript richtet einen Windows-Laptop als Platz des WAMO-Testlabors ein, startet die beiden Fenster (WAMO links, Board rechts), prüft den Platz und nimmt alles wieder zurück. Es läuft im Kiosk-Konto **ohne Administratorrechte**, braucht nur Python (Standardbibliothek) und nutzt weder PowerShell noch Zusatzpakete.
+**Stand:** 13.11.2026. Gehört zum Paket P8 (`docs/testlabor-wamo.md`, Abschnitt 3.9). Das Skript richtet einen Windows-Laptop als Platz des W.A.I.S. Testlabors ein, startet die beiden Fenster (W.A.I.S. links, Board rechts), prüft den Platz und nimmt alles wieder zurück. Es läuft im Kiosk-Konto **ohne Administratorrechte**, braucht nur Python (Standardbibliothek) und nutzt weder PowerShell noch Zusatzpakete.
 
 **Wichtig:** Die Chrome-Richtlinien stehen im Benutzerzweig (HKCU). Das ist Zusatzschutz und nicht die Grenze, denn ein Benutzer kann seinen eigenen Zweig ändern. Die Grenzen sind der Kern (Anmeldung, zweiter Faktor, Rechte) und das Netz (Segmentierung durch die Kollegen).
 
@@ -19,7 +19,7 @@
 | Sicherung | `%LOCALAPPDATA%\WAMO\platz-sicherung.json`: Zustand vor der ersten Änderung | wird nach dem Rückweg entfernt |
 | Verknüpfungen auf dem Desktop | `WAMO Labor starten.lnk` und `WAMO Labor pruefen.lnk` | werden entfernt |
 
-Die Richtlinien: Übersetzung, Passwortmanager, Adress- und Zahlungsdaten, Anmeldung und Sync aus, kein Verlauf, Startseite und Startadresse sind die WAMO-Oberfläche, Mikrofon nur für `https://192.168.178.136:55445` ohne Rückfrage erlaubt, Kamera und Bildschirmaufnahme aus, Popups aus, Entwicklerwerkzeuge aus, Downloads aus, Inkognito und Gastmodus aus, Erweiterungen gesperrt, und nur diese Adressen dürfen geöffnet werden: `https://192.168.178.136` auf den Ports 55443, 55444, 55445 und 55447 sowie die lokale Weiterleitung `http://127.0.0.1:55489/weiter/` (siehe Abschnitt 5).
+Die Richtlinien: Übersetzung, Passwortmanager, Adress- und Zahlungsdaten, Anmeldung und Sync aus, kein Verlauf, Startseite und Startadresse sind die W.A.I.S.-Oberfläche, Mikrofon nur für `https://192.168.178.136:55445` ohne Rückfrage erlaubt, Kamera und Bildschirmaufnahme aus, Popups aus, Entwicklerwerkzeuge aus, Downloads aus, Inkognito und Gastmodus aus, Erweiterungen gesperrt, und nur diese Adressen dürfen geöffnet werden: `https://192.168.178.136` auf den Ports 55443, 55444, 55445 und 55447 sowie die lokale Weiterleitung `http://127.0.0.1:55489/weiter/` (siehe Abschnitt 5).
 
 ## 2. Voraussetzungen (Kollegen)
 
@@ -120,7 +120,7 @@ Die Tests laufen mit Attrappen für Registrierung, Zertifikatsspeicher, Prozesse
 - ob Chrome die Richtlinien aus dem **Benutzerzweig** übernimmt und ob `URLBlocklist` mit `*` die Seiten `chrome://...` und `about:blank` mitsperrt (Kontrolle: `chrome://policy` im Testkonto, bevor die Adressen gesperrt sind),
 - **ob das Token auf der Platte landet:** Nach einem echten Start Chrome schließen und den Profilordner `%LOCALAPPDATA%\wamo-chrome-labor` mit einem Suchwerkzeug nach den 32 Zeichen des Tokens durchsuchen (auch als Teil von `#t=`), **ohne das Token oder einen Treffer auszugeben**: Das Werkzeug meldet nur Dateinamen und die Zahl der Treffer. Bei einem Treffer das Profil löschen und Niko melden (Wirkung von `SavingBrowserHistoryDisabled` und der Sitzungsdateien),
 - ob die Filter der Adressliste mit IP-Adresse und Port wie vorgesehen greifen, insbesondere die Zeile ohne Port und mit Pfad für `127.0.0.1:55489/weiter/`,
-- dass das Mikrofon für die WAMO-Adresse ohne Rückfrage freigegeben ist,
+- dass das Mikrofon für die W.A.I.S.-Adresse ohne Rückfrage freigegeben ist,
 - die Fensterlage (zwei Hälften des Arbeitsbereichs, auch bei skalierter Anzeige) und dass das zweite Fenster im selben Chrome-Prozess mit eigener Größe öffnet,
 - der Weg des Tokens: Umleitung, Entfernen aus der Adresszeile durch die Seite, die Kopfzeile des Fensters bei einer Umleitung in einem App-Fenster, und dass `chrome://version` und der Task-Manager nur die Weiterleitungsadresse mit dem Zufallspfad zeigen, nie das Token,
 - die Mikrofon-Prüfung (Heuristik auf die Namen der Geräte in `MMDevices`) mit einem echten Bluetooth-Headset,
