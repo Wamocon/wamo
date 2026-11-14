@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
 @import "../components/kommando/hud.css"; /* HUD-Gestaltung der Kommandozentrale: Schriften, Glasflächen, Formen */
+@import "../components/kommando/kernRinge.css"; /* Kern: Lichtkugel in HUD-Ringen, Regeln mit Präfix .kr- */
 @import "../components/kommando/aufgabenanzeige.css"; /* Aufgabenanzeige neben dem Kern: Regeln mit Präfix .az */
 @import "../components/kommando/seitengriff.css"; /* Griffe der Seitenleisten (Breite ziehen): Regeln mit Präfix .kz-griff */
 @import "../components/kommando/vorgaenge.css"; /* Tafel "Vorgänge" (Karten, Balken, Schritte): Regeln mit Präfix .vg- */
@@ -57,7 +58,9 @@
   --warn: #ffb020; /* wartet auf Freigabe */
   --fehler: #ff2e63; /* Fehler und Abgelehntes */
   --focus: #ff5648;
-  --kern-rim: #3a3a47b3; /* Rand des Kerns */
+  --kern-heiss: #ff8a80; /* helle Glut der Lichtkugel (Kern liest den Wert) */
+  --kern-mensch: #fff1ee; /* Glut hellt auf, wenn die Person spricht */
+  --kern-fremd: #cfcdd8; /* dasselbe bei einer weiteren Stimme */
   --logo-plate: #ffffff;
 
   /* Stimmen-Rand der Desktop-App (liegt über beliebigen Programmen) */
