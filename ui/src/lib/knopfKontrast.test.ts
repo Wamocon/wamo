@@ -5,7 +5,8 @@
 // Transparenz, und der Hover-Wechsel gilt nur für aktive Knöpfe.
 // Ausführen im Ordner ui/:  npm test
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
@@ -101,12 +102,48 @@ for (const thema of THEMEN) {
   });
 }
 
-test("hell: der Rand von Feldern und Schaltflächen (--rule-strong, dazu --steuer-rand) hat mindestens 3:1, auch auf Weiß", () => {
-  for (const grund of ["--bg", "--surface"]) {
-    mindestens(kontrast(variable("hell", "--rule-strong"), variable("hell", grund)), 3, `--rule-strong auf ${grund}`);
+for (const thema of THEMEN) {
+  test(`${thema}: der Rand der Bedienelemente (--steuer-rand, also --kontur) hat mindestens 3:1 auf allen Gründen`, () => {
+    for (const grund of ["--bg", "--surface", "--panel-solid"]) {
+      mindestens(kontrast(variable(thema, "--kontur"), variable(thema, grund)), 3, `--kontur auf ${grund}`);
+    }
+  });
+}
+
+test("Bedienelemente nehmen die eigene Rolle --steuer-rand (= --kontur), der Hellmodus erbt sie und setzt keine eigene", () => {
+  assert.match(block("dunkel"), /--steuer-rand:\s*var\(--kontur\)/, "Bedienelemente nehmen --kontur");
+  assert.doesNotMatch(block("hell"), /--steuer-rand:/, "der Hellmodus erbt sie und setzt keine eigene");
+  // --rule-strong bleibt den kräftigeren Trennlinien und Marken, nie ein Rand von Bedienelementen (heute 1,9:1 im Dunkelmodus)
+  assert.notEqual(variable("dunkel", "--rule-strong"), variable("dunkel", "--kontur"));
+});
+
+/** Alle Stylesheets unter src/ (rekursiv), samt Pfad. */
+function stylesheets(ordner: URL = new URL("../", import.meta.url)): { pfad: string; text: string }[] {
+  const treffer: { pfad: string; text: string }[] = [];
+  for (const eintrag of readdirSync(ordner, { withFileTypes: true })) {
+    const unter = new URL(eintrag.name + (eintrag.isDirectory() ? "/" : ""), ordner);
+    if (eintrag.isDirectory()) treffer.push(...stylesheets(unter));
+    else if (eintrag.name.endsWith(".css")) treffer.push({ pfad: fileURLToPath(unter), text: readFileSync(unter, "utf8") });
   }
-  assert.match(block("dunkel"), /--steuer-rand:\s*var\(--rule-strong\)/, "Bedienelemente nehmen den Rand der Felder");
-  assert.doesNotMatch(block("hell"), /--steuer-rand:/, "der Hellmodus erbt ihn und setzt keinen eigenen");
+  return treffer;
+}
+
+/** Selektoren, die ein Bedienelement meinen: Knöpfe, Eingabefelder, Auswahllisten, Schalter, Chips, Umschalter. */
+const BEDIENELEMENT =
+  /(^|[\s>+~(])(button|input|select|textarea)|\.btn-|\.topbar-btn|\.kz-chip|\.kz-pille(?![-\w])|\.kz-wahl(?![-\w])|\.pc-switch(?![-\w])|\.betriebsart-wahl|\.lb-code-feld|\.ez-feld select|\.hud-knopf|\.hud-feld/;
+const SCHWACHER_RAND = /border(?:-[a-z]+)?\s*:[^;]*var\(--(?:rule|rule-strong|kante)\)/;
+
+test("kein Bedienelement in irgendeinem Stylesheet zieht seinen Rand aus --rule, --rule-strong oder --kante", () => {
+  const verstoesse: string[] = [];
+  for (const { pfad, text } of stylesheets()) {
+    const ohneKommentare = text.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const m of ohneKommentare.matchAll(/([^{}@;]+)\{([^{}]*)\}/g)) {
+      const selektoren = m[1].split(",").map((x) => x.trim());
+      if (!selektoren.some((x) => BEDIENELEMENT.test(x))) continue;
+      if (SCHWACHER_RAND.test(m[2])) verstoesse.push(`${pfad.split("src")[1]}: ${m[1].trim().slice(0, 70)}`);
+    }
+  }
+  assert.deepEqual(verstoesse, [], "Bedienelemente brauchen --steuer-rand (3:1), Glas- und Kartenkanten dürfen --kante nehmen");
 });
 
 test("hell: das Rot für kleine Schrift ist dunkler als das Marken-Rot, bleibt aber rot", () => {

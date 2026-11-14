@@ -70,7 +70,7 @@
 .gv-feld label { font-size: 15px; font-weight: 700; }
 .gv-feld input[type="text"], .gv-feld textarea {
   min-height: 44px; padding: 8px 10px; background: var(--bg); color: var(--ink);
-  border: 1px solid var(--rule-strong); border-radius: 4px; font: 400 17px var(--font-wmc);
+  border: 1px solid var(--steuer-rand); border-radius: 4px; font: 400 17px var(--font-wmc);
 }
 .gv-feld textarea { resize: vertical; min-height: 72px; }
 .gv-feld input[type="text"]:focus-visible, .gv-feld textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

@@ -66,7 +66,7 @@
 .fz-feld label { font-size: 15px; font-weight: 700; }
 .fz-feld input[type="text"] {
   min-height: 48px; padding: 8px 10px; background: var(--bg); color: var(--ink);
-  border: 1px solid var(--rule-strong); border-radius: 4px; font: 400 17px var(--font-wmc);
+  border: 1px solid var(--steuer-rand); border-radius: 4px; font: 400 17px var(--font-wmc);
 }
 .fz-feld input[type="text"]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .fz-feld .fz-code { font: 700 24px/1 var(--font-code); letter-spacing: 0.3em; max-width: 12ch; }

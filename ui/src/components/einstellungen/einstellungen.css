@@ -147,7 +147,7 @@ a.topbar-btn { text-decoration: none; color: var(--ink); }
 .ez-feld label { font-size: 15px; font-weight: 700; }
 .ez-feld select {
   min-height: 44px; max-width: 100%; padding: 0 10px;
-  background: var(--bg); color: var(--ink); border: 1px solid var(--rule-strong); border-radius: 4px;
+  background: var(--bg); color: var(--ink); border: 1px solid var(--steuer-rand); border-radius: 4px;
   font: 400 17px var(--font-wmc);
 }
 .ez-feld select:hover:not(:disabled) { border-color: var(--ink); }
@@ -160,7 +160,7 @@ a.topbar-btn { text-decoration: none; color: var(--ink); }
   display: flex; align-items: flex-start; gap: 12px;
   padding: 12px 14px; border: 1px solid var(--rule); border-radius: 10px; cursor: pointer;
 }
-.ez-radio:hover { border-color: var(--rule-strong); }
+.ez-radio:hover { border-color: var(--steuer-rand); }
 .ez-radio[data-an] { border-color: var(--kz-akzent-rand); box-shadow: inset 4px 0 0 var(--accent); }
 .ez-radio:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .ez-radio input { flex: none; width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--accent); cursor: pointer; }

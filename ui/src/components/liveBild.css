@@ -20,7 +20,7 @@
 .lb-code label { font: 700 14px/1.3 var(--font-wmc); }
 .lb-code-zeile { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .lb-code-feld {
-  width: 9ch; min-height: 44px; padding: 0 10px; border: 1px solid var(--rule-strong); border-radius: 8px;
+  width: 9ch; min-height: 44px; padding: 0 10px; border: 1px solid var(--steuer-rand); border-radius: 8px;
   background: var(--surface); color: var(--ink); font: 700 20px/1 var(--font-wmc); letter-spacing: 0.2em; text-align: center;
 }
 .lb-code-feld:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -29,7 +29,7 @@
 .lb-zustand { margin: 0; display: flex; align-items: center; gap: 8px; font: 700 16px/1.3 var(--font-wmc); }
 .lb-rest { margin: 0; font-size: 15px; color: var(--ink-soft); }
 /* Zustand nie nur als Farbe: das Wort steht daneben. Läuft = roter Punkt, wartet und pausiert = Ring */
-.lb-punkt { flex: none; width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--rule-strong); }
+.lb-punkt { flex: none; width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 2px var(--steuer-rand); }
 .lb-punkt[data-zustand="laeuft"] { background: var(--accent); box-shadow: none; }
 
 .lb-werkzeuge { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
