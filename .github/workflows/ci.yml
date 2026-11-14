@@ -1,0 +1,677 @@
+# Prüfungen des Monorepos: Syntax, Lint, Typen, Tests und Build je Teil
+#
+# Läuft bei jedem Push auf einen Zweig, bei jedem Pull Request und manuell (Reiter Actions, Workflow "Prüfungen",
+# "Run workflow"; dort lässt sich ein einzelner Teil wählen, Standard ist "alle").
+#
+# Aufbau:
+#   aenderungen   bestimmt, welche Teile laufen. Kern, Python, Skripte, Version und Abhängigkeiten laufen immer, weil ihre
+#                 Tests Dateien aus vielen Ordnern lesen. Oberfläche, Desktop, Host, Labor-Dienst, Gerätedienst, Infra und
+#                 Migrationen laufen nur, wenn ihre Pfade (oder diese Datei) geändert sind. Ein neuer Zweig und der manuelle
+#                 Start prüfen immer alles.
+#   ergebnis      fasst alle Jobs zusammen. Diesen einen Check als Pflicht für main eintragen: übersprungene Teile zählen
+#                 als in Ordnung, fehlgeschlagene oder abgebrochene nicht.
+#
+# Sicherheit (das Repository ist öffentlich): nur Leserechte, keine Geheimnisse, kein pull_request_target, nur von GitHub
+# gehostete Runner, Checkout ohne gespeicherte Zugangsdaten. Fremde Actions sind auf volle Commit-SHAs festgenagelt
+# (Version im Kommentar, Dependabot hält sie aktuell). Werkzeuge außerhalb der Paketverwaltung (ruff, shellcheck) kommen
+# als Programm mit fester Prüfsumme wie im Secret Scan. Neue Version: Nummer und Prüfsumme unten gemeinsam ändern, die
+# Prüfsumme steht auf der Release-Seite neben der Datei.
+
+name: Prüfungen
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      teil:
+        description: "Welcher Teil geprüft wird"
+        type: choice
+        default: alle
+        options:
+          - alle
+          - oberflaeche
+          - kern
+          - python
+          - labor
+          - geraete
+          - skripte
+          - desktop
+          - host
+          - infra
+          - migrationen
+          - version
+          - abhaengigkeiten
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pruefungen-${{ github.event_name }}-${{ github.ref }}
+  # auf main läuft jeder Stand zu Ende, auf Zweigen bricht ein neuer Push den älteren Lauf ab
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  NODE_VERSION: "22"
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.13.1"
+  RUFF_VERSION: "0.17.5"
+  RUFF_SHA256: "7d261fc981a784668e19e9fa6ad437bfd95b67f2dc263fc1eab87d54d72fcc90"
+  SHELLCHECK_VERSION: "0.11.0"
+  SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+  NEXT_TELEMETRY_DISABLED: "1"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_AUDIT: "false"
+
+jobs:
+  aenderungen:
+    name: Änderungen erkennen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      oberflaeche: ${{ steps.teile.outputs.oberflaeche }}
+      kern: ${{ steps.teile.outputs.kern }}
+      python: ${{ steps.teile.outputs.python }}
+      labor: ${{ steps.teile.outputs.labor }}
+      geraete: ${{ steps.teile.outputs.geraete }}
+      skripte: ${{ steps.teile.outputs.skripte }}
+      desktop: ${{ steps.teile.outputs.desktop }}
+      host: ${{ steps.teile.outputs.host }}
+      infra: ${{ steps.teile.outputs.infra }}
+      migrationen: ${{ steps.teile.outputs.migrationen }}
+      version: ${{ steps.teile.outputs.version }}
+      abhaengigkeiten: ${{ steps.teile.outputs.abhaengigkeiten }}
+    steps:
+      - name: Repository auschecken, volle Historie
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Teile bestimmen
+        id: teile
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TEIL: ${{ inputs.teil }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          teile=(oberflaeche kern python labor geraete skripte desktop host infra migrationen version abhaengigkeiten)
+          declare -A an=()
+          for t in "${teile[@]}"; do an[$t]=false; done
+          alle() { for t in "${teile[@]}"; do an[$t]=true; done; }
+          zero="0000000000000000000000000000000000000000"
+          liste=""
+          mit_liste=false
+          case "${EVENT_NAME}" in
+            workflow_dispatch)
+              if [ -z "${TEIL}" ] || [ "${TEIL}" = "alle" ]; then
+                alle
+                grund="Manueller Start: alle Teile"
+              elif [ -n "${an[$TEIL]+x}" ]; then
+                an[$TEIL]=true
+                grund="Manueller Start: nur ${TEIL}"
+              else
+                echo "::error::Unbekannter Teil: ${TEIL}"
+                exit 1
+              fi
+              ;;
+            pull_request)
+              liste="$(git diff --name-only "${PR_BASE}" HEAD)"
+              mit_liste=true
+              grund="Pull Request: Änderungen gegenüber ${PR_BASE:0:12}"
+              ;;
+            push)
+              if [ "${PUSH_BEFORE}" != "${zero}" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+                liste="$(git diff --name-only "${PUSH_BEFORE}" HEAD)"
+                mit_liste=true
+                grund="Push: Änderungen seit ${PUSH_BEFORE:0:12}"
+              else
+                alle
+                grund="Push ohne bekannten Vorgänger (neuer Zweig): alle Teile"
+              fi
+              ;;
+            *)
+              alle
+              grund="Ereignis ${EVENT_NAME}: alle Teile"
+              ;;
+          esac
+          if [ "${mit_liste}" = true ]; then
+            passt() { grep -qE "$1" <<<"${liste}"; }
+            # Querschnitt: diese Tests lesen Dateien aus vielen Ordnern (Skripte, Infra, Migrationen, Doku)
+            for t in kern python skripte version abhaengigkeiten; do an[$t]=true; done
+            if passt '^\.github/workflows/ci\.yml$'; then alle; fi
+            if passt '^ui/'; then an[oberflaeche]=true; fi
+            # die Desktop-App packt Host, Tunnelskripte und die CA ein, ihre Tests lesen die Bauskripte
+            if passt '^(desktop/|host/|scripts/wamo-dist-|scripts/wamo-tunnel|infra/sokrates2/wamo-ca\.crt$)'; then an[desktop]=true; fi
+            if passt '^(host/|voice-core/pc_host\.py$)'; then an[host]=true; fi
+            # die Integrationstests des Labor-Dienstes nutzen den Dienstclient aus voice-core und das Abnahmeskript aus scripts
+            if passt '^(labor-dienst/|voice-core/labor_|voice-core/wamo_tls\.py$|scripts/wamo_labor|docs/labor-)'; then an[labor]=true; fi
+            if passt '^(geraete/|infra/sokrates2/[^/]*\.toml\.example$)'; then an[geraete]=true; fi
+            if passt '(\.sh$|\.ps1$|^infra/)'; then an[infra]=true; fi
+            if passt '^(supabase/|infra/sokrates2/release/pruefer/(migration_lint|pruefer_scans)\.py$|scripts/wamo_migrationen_pruefen\.py$)'; then an[migrationen]=true; fi
+          fi
+          for t in "${teile[@]}"; do echo "${t}=${an[$t]}" >> "${GITHUB_OUTPUT}"; done
+          {
+            echo "### Geprüfte Teile"
+            echo
+            echo "${grund}"
+            echo
+            echo "| Teil | läuft |"
+            echo "| --- | --- |"
+            for t in "${teile[@]}"; do echo "| ${t} | ${an[$t]} |"; done
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  oberflaeche:
+    name: Oberfläche (ESLint, Typen, Tests, Build)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.oberflaeche == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Node einrichten
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Pakete installieren (npm ci)
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Typen (tsc)
+        run: npx --no-install tsc --noEmit
+
+      - name: Logiktests (node --test)
+        run: npm test
+
+      - name: Komponententests (vitest)
+        run: npm run test:komponenten
+
+      - name: Build (next build)
+        run: npm run build
+
+  kern:
+    name: Kern (Tests, Teil ${{ matrix.teil }} von 4)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.kern == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        teil: [1, 2, 3, 4]
+    defaults:
+      run:
+        working-directory: voice-core
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: uv und Python einrichten
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: voice-core/uv.lock
+
+      - name: Umgebung aus uv.lock (uv sync --frozen)
+        run: uv sync --frozen
+
+      - name: Tests (pytest)
+        env:
+          TEIL: ${{ matrix.teil }}
+          TEILE: "4"
+        run: |
+          set -euo pipefail
+          # Die Testdateien werden nach Namen sortiert und reihum auf die vier Teile verteilt
+          mapfile -t dateien < <(git ls-files -- 'test_*.py' 'eval/test_*.py' | sort | awk -v n="${TEILE}" -v t="${TEIL}" '(NR - 1) % n == t - 1')
+          echo "Teil ${TEIL} von ${TEILE}: ${#dateien[@]} Testdateien"
+          uv run --frozen python -m pytest -q -p no:cacheprovider --durations=15 "${dateien[@]}"
+
+  python:
+    name: Python (Syntax und Lint, ganzes Repo)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Python einrichten
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Syntax aller Python-Dateien (compileall)
+        run: python -m compileall -q -j 0 .
+
+      - name: ruff installieren, Prüfsumme kontrollieren
+        run: |
+          set -euo pipefail
+          datei="ruff-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL -o "${RUNNER_TEMP}/${datei}" \
+            "https://github.com/astral-sh/ruff/releases/download/${RUFF_VERSION}/${datei}"
+          echo "${RUFF_SHA256}  ${RUNNER_TEMP}/${datei}" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/${datei}" -C "${RUNNER_TEMP}"
+          mkdir -p "${RUNNER_TEMP}/bin"
+          install -m 0755 "${RUNNER_TEMP}/ruff-x86_64-unknown-linux-gnu/ruff" "${RUNNER_TEMP}/bin/ruff"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/bin/ruff" --version
+
+      - name: Lint (ruff, nur Syntaxfehler und echte Fehler)
+        # Im Projekt gibt es keine ruff-Konfiguration. Deshalb nur die vorsichtigen Grundregeln: E9 (Syntax), F63 (falsche
+        # Vergleiche), F7 (Anweisung am falschen Ort), F82 (undefinierte Namen). --isolated: keine Konfiguration aus dem Repo.
+        run: ruff check --no-cache --isolated --select E9,F63,F7,F82 --output-format github .
+
+  labor:
+    name: Labor-Dienst (Tests mit den Versionen des Images)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.labor == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # Python wie im Image (labor-dienst/Dockerfile); Testwerkzeuge in den Versionen aus voice-core/uv.lock,
+      # loguru braucht der Dienstclient aus voice-core für die Integrationstests
+      LABOR_PYTHON: "3.11"
+      LABOR_TESTPAKETE: "pytest==9.1.1 httpx==0.28.1 loguru==0.7.3"
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: uv einrichten
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+
+      - name: Node einrichten (für die Tests der Oberflächenlogik)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Umgebung aus requirements.txt (nur mit Prüfsummen)
+        run: |
+          set -euo pipefail
+          uv venv --python "${LABOR_PYTHON}" "${RUNNER_TEMP}/labor-venv"
+          uv pip install --python "${RUNNER_TEMP}/labor-venv" --require-hashes -r labor-dienst/requirements.txt
+          # shellcheck disable=SC2086
+          uv pip install --python "${RUNNER_TEMP}/labor-venv" ${LABOR_TESTPAKETE}
+
+      - name: Tests (pytest)
+        working-directory: labor-dienst
+        run: '"${RUNNER_TEMP}/labor-venv/bin/python" -m pytest -q -p no:cacheprovider'
+
+  geraete:
+    name: Gerätedienst (Tests)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.geraete == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: geraete
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: uv und Python einrichten
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: geraete/uv.lock
+
+      - name: Umgebung aus uv.lock (uv sync --frozen)
+        run: uv sync --frozen
+
+      - name: Tests (pytest)
+        run: uv run --frozen python -m pytest -q -p no:cacheprovider
+
+  skripte:
+    name: Skripte (Python- und Node-Tests)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.skripte == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: uv und Python einrichten
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: voice-core/uv.lock
+
+      - name: Node einrichten
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      # Die Skripte nutzen die Python-Umgebung von voice-core (so steht es in den Testdateien)
+      - name: Umgebung aus voice-core/uv.lock (uv sync --frozen)
+        run: uv sync --frozen --project voice-core
+
+      - name: Tests in scripts (pytest)
+        run: uv run --frozen --project voice-core python -m pytest -q -p no:cacheprovider --durations=10 scripts
+
+      - name: Tests in infra/sokrates2 (pytest)
+        run: uv run --frozen --project voice-core python -m pytest -q -p no:cacheprovider infra/sokrates2/test_labor_tokentest.py
+
+      - name: Node-Tests (Lastbrowser, Eingabe-Erweiterung des Gateways)
+        run: node --test scripts/wamo-last-browser.test.cjs infra/sokrates2/wamo-rd/erweiterung/wamo-eingabe.test.js
+
+  desktop:
+    name: Desktop (Tests unter Windows)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.desktop == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Node einrichten
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Pakete installieren (npm ci)
+        run: npm ci
+
+      - name: Tests (node --test)
+        run: npm test
+
+  host:
+    name: Host (Tests unter Windows)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.host == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: host
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: uv und Python einrichten
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: host/uv.lock
+
+      - name: Umgebung aus uv.lock (uv sync --frozen)
+        run: uv sync --frozen
+
+      - name: Tests (pytest)
+        run: uv run --frozen python -m pytest -q -p no:cacheprovider
+
+  infra:
+    name: Infra (bash -n, shellcheck, PowerShell-Syntax)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.infra == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Syntax aller Shell-Skripte (bash -n)
+        run: |
+          set -euo pipefail
+          fehler=0
+          anzahl=0
+          while IFS= read -r -d '' datei; do
+            anzahl=$((anzahl + 1))
+            if ! bash -n "${datei}"; then
+              echo "::error file=${datei}::Syntaxfehler (bash -n)"
+              fehler=1
+            fi
+          done < <(git ls-files -z -- '*.sh')
+          echo "${anzahl} Skripte geprüft"
+          exit "${fehler}"
+
+      - name: shellcheck installieren, Prüfsumme kontrollieren
+        run: |
+          set -euo pipefail
+          datei="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL -o "${RUNNER_TEMP}/${datei}" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${datei}"
+          echo "${SHELLCHECK_SHA256}  ${RUNNER_TEMP}/${datei}" | sha256sum --check --strict
+          tar -xJf "${RUNNER_TEMP}/${datei}" -C "${RUNNER_TEMP}"
+          mkdir -p "${RUNNER_TEMP}/bin"
+          install -m 0755 "${RUNNER_TEMP}/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "${RUNNER_TEMP}/bin/shellcheck"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/bin/shellcheck" --version
+
+      - name: shellcheck, Fehler (blockierend)
+        run: git ls-files -z -- '*.sh' | xargs -0 shellcheck --severity=error --external-sources
+
+      - name: shellcheck, Warnungen (nur Hinweis)
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          funde="$(git ls-files -z -- '*.sh' | xargs -0 shellcheck --severity=warning --format=gcc || true)"
+          anzahl="$(grep -c ': warning: ' <<<"${funde}" || true)"
+          echo "${funde}"
+          {
+            echo "### shellcheck, Warnungen"
+            echo
+            echo "${anzahl} Warnungen (blockieren nicht, nur Fehler blockieren). Einzelheiten im Protokoll dieses Schritts."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Syntax aller PowerShell-Skripte
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fehler = 0
+          $dateien = git ls-files -- '*.ps1'
+          foreach ($datei in $dateien) {
+            $tokens = $null
+            $funde = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $datei), [ref]$tokens, [ref]$funde) | Out-Null
+            foreach ($fund in $funde) {
+              Write-Output "::error file=$datei,line=$($fund.Extent.StartLineNumber)::$($fund.Message)"
+              $fehler = 1
+            }
+          }
+          Write-Output "$(@($dateien).Count) Skripte geprüft"
+          exit $fehler
+
+  migrationen:
+    name: Migrationen (Lint)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.migrationen == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Repository auschecken, volle Historie
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Python einrichten
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Migrations-Lint auf die Änderungen
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          zero="0000000000000000000000000000000000000000"
+          basis="origin/main"
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            basis="${PR_BASE}"
+          elif [ "${EVENT_NAME}" = "push" ] && [ "${PUSH_BEFORE}" != "${zero}" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            basis="${PUSH_BEFORE}"
+          fi
+          echo "Basis: ${basis}"
+          python scripts/wamo_migrationen_pruefen.py --basis "${basis}"
+
+  version:
+    name: Version (wamo_version.py pruefen)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.version == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Repository auschecken, mit Tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Python einrichten
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Versionsdateien, letztes Tag und CHANGELOG.md
+        run: python scripts/wamo_version.py pruefen
+
+  abhaengigkeiten:
+    name: Abhängigkeiten (Audit, nur Hinweis)
+    needs: aenderungen
+    if: needs.aenderungen.outputs.abhaengigkeiten == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PIP_AUDIT_VERSION: "2.10.1"
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: uv und Python einrichten
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: false
+
+      - name: Node einrichten
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Lockdateien passen zu pyproject.toml (uv lock --check)
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          for teil in voice-core host geraete; do
+            if ! uv lock --check --project "${teil}"; then
+              echo "::warning title=Lockdatei veraltet::${teil}/uv.lock passt nicht mehr zu ${teil}/pyproject.toml (uv lock ausführen)"
+            fi
+          done
+
+      - name: pip-audit (Python-Pakete)
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          fund=0
+          for teil in voice-core host geraete; do
+            uv export --project "${teil}" --frozen --no-emit-project --format requirements-txt -o "${RUNNER_TEMP}/${teil}.txt" >/dev/null
+          done
+          cp labor-dienst/requirements.txt "${RUNNER_TEMP}/labor-dienst.txt"
+          for teil in voice-core host geraete labor-dienst; do
+            echo "== ${teil}"
+            if ! uvx --from "pip-audit==${PIP_AUDIT_VERSION}" pip-audit --progress-spinner off --disable-pip --no-deps -r "${RUNNER_TEMP}/${teil}.txt"; then
+              echo "::warning title=pip-audit::Bekannte Schwachstellen oder Fehler beim Prüfen in ${teil} (Einzelheiten im Protokoll)"
+              fund=1
+            fi
+          done
+          echo "### pip-audit" >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${fund}" = 0 ]; then echo "Keine bekannten Schwachstellen." >> "${GITHUB_STEP_SUMMARY}"; else echo "Funde, siehe Warnungen und Protokoll." >> "${GITHUB_STEP_SUMMARY}"; fi
+
+      - name: npm audit (Node-Pakete)
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          fund=0
+          for teil in ui desktop; do
+            echo "== ${teil}"
+            if ! (cd "${teil}" && npm audit --audit-level=moderate); then
+              echo "::warning title=npm audit::Bekannte Schwachstellen in ${teil} (Einzelheiten im Protokoll)"
+              fund=1
+            fi
+          done
+          echo "### npm audit" >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${fund}" = 0 ]; then echo "Keine bekannten Schwachstellen ab moderate." >> "${GITHUB_STEP_SUMMARY}"; else echo "Funde, siehe Warnungen und Protokoll." >> "${GITHUB_STEP_SUMMARY}"; fi
+
+  ergebnis:
+    name: Ergebnis
+    if: always()
+    needs: [aenderungen, oberflaeche, kern, python, labor, geraete, skripte, desktop, host, infra, migrationen, version]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Ergebnisse der Jobs auswerten
+        env:
+          ERGEBNISSE: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Ergebnis"
+            echo
+            echo "| Job | Ergebnis |"
+            echo "| --- | --- |"
+            jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<<"${ERGEBNISSE}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"${ERGEBNISSE}"
+          if jq -e 'to_entries | any(.value.result == "failure" or .value.result == "cancelled")' <<<"${ERGEBNISSE}" >/dev/null; then
+            echo "::error::Mindestens eine Prüfung ist fehlgeschlagen oder wurde abgebrochen."
+            exit 1
+          fi
+          echo "Alle gelaufenen Prüfungen sind grün, übersprungene Teile waren nicht betroffen."

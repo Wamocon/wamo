@@ -1,0 +1,55 @@
+# CodeQL: statische Sicherheitsanalyse für JavaScript/TypeScript, Python und die Workflows selbst
+#
+# Für öffentliche Repositories kostenlos. Funde erscheinen unter Security, Code scanning, im Pull Request als Anmerkung.
+# Läuft bei jedem Push auf einen Zweig, bei jedem Pull Request, einmal pro Woche (neue Abfragen finden auch in altem Code
+# etwas) und manuell (Reiter Actions, Workflow "CodeQL", "Run workflow").
+#
+# Ohne Build (build-mode none): CodeQL liest den Quelltext direkt, es wird nichts installiert oder ausgeführt.
+# Nur dieser Job darf Ergebnisse hochladen (security-events: write), alles andere bleibt bei Leserechten.
+# Fremde Actions sind auf volle Commit-SHAs festgenagelt (Version im Kommentar, Dependabot hält sie aktuell).
+
+name: CodeQL
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "41 4 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  analyse:
+    name: CodeQL (${{ matrix.sprache }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        sprache: [actions, javascript-typescript, python]
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: CodeQL vorbereiten
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.sprache }}
+          build-mode: none
+
+      - name: Analysieren und Ergebnisse hochladen
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: "/language:${{ matrix.sprache }}"
