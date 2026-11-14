@@ -187,6 +187,52 @@ class VertrauenTests(unittest.TestCase):
         self.assertEqual(b.grund_der_stimme(), "Stimme noch nicht erkannt")
 
 
+class NichtSicherEigenTests(unittest.IsolatedAsyncioTestCase):
+    """Ein Zug, der nicht sicher von der Person stammt (Abdruck da, Prüfung bereit, Modus streng), gilt als gefärbt."""
+
+    def test_vor_dem_ersten_urteil_und_nach_unklar_oder_fremd(self):
+        gate = bereites_gate()
+        self.assertTrue(gate.nicht_sicher_eigen())  # noch nichts erkannt
+        gate.eintragen(EIGEN)
+        self.assertFalse(gate.nicht_sicher_eigen())
+        for urteil in (UNKLAR, FREMD):
+            gate.eintragen(urteil)
+            self.assertTrue(gate.nicht_sicher_eigen(), urteil)
+
+    def test_kurz_nach_eigen_und_getippter_text_sind_sicher_aber_nur_begrenzt(self):
+        uhr = Uhr()
+        gate = bereites_gate(uhr=uhr)
+        gate.eintragen(EIGEN)
+        gate.eintragen(KURZ)
+        self.assertFalse(gate.nicht_sicher_eigen())
+        uhr.t += 16
+        self.assertTrue(gate.nicht_sicher_eigen())
+        gate.getippt()
+        self.assertFalse(gate.nicht_sicher_eigen())
+
+    async def test_eine_laufende_pruefung_gilt_als_nicht_sicher(self):
+        gate = bereites_gate()
+        gate.eintragen(EIGEN)
+        offen = asyncio.create_task(asyncio.sleep(1))
+        gate.verfolgen(offen)
+        self.assertTrue(gate.nicht_sicher_eigen())
+        offen.cancel()
+        await asyncio.gather(offen, return_exceptions=True)
+        self.assertFalse(gate.nicht_sicher_eigen())
+
+    def test_ohne_abdruck_ohne_bereite_pruefung_und_ausser_streng_aendert_sich_nichts(self):
+        ohne = StimmGate(modus="streng", uhr=Uhr())
+        ohne.setze_abdruck(None)
+        self.assertFalse(ohne.nicht_sicher_eigen())
+        laedt = StimmGate(modus="streng", uhr=Uhr())
+        laedt.setze_abdruck(ABDRUCK)  # Modell noch nicht geladen
+        self.assertFalse(laedt.nicht_sicher_eigen())
+        for modus in ("beobachten", "aus"):
+            gate = bereites_gate(modus)
+            gate.eintragen(FREMD)
+            self.assertFalse(gate.nicht_sicher_eigen(), modus)
+
+
 class StatusTests(unittest.TestCase):
     def test_status_je_zustand(self):
         gate = StimmGate(modus="streng")

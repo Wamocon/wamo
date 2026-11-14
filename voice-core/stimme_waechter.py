@@ -10,6 +10,8 @@ Verworfen wird nur, wenn alles zutrifft: Modus streng, Abdruck und Modell bereit
 Äußerung hatte genug Sprache (min_secs) und WAMO sprach nicht gleichzeitig (sonst ist das Urteil unklar, siehe StimmGate.einstufen). Alles
 andere geht durch: unklar, kurz, kein Urteil in der Frist (Zeitüberschreitung gilt als unklar), beobachten, aus, kein Abdruck. Werkzeuge bleiben
 dann trotzdem gesperrt, wenn die Stimme nicht sicher erkannt ist (StimmGate.pruefen).
+Eine Äußerung, die so durchgeht, aber nicht sicher die Stimme der Person war, färbt in bot.py den Zug wie Fremdinhalte
+(StimmGate.nicht_sicher_eigen): kein Lernen, kein Hinweis des Ja-Wächters, Markierung im Protokoll.
 
 Verwerfen heißt: Das Transkript wird durch ein Leerzeichen ersetzt. Der Zug des Nutzers endet dann leer: kein Satz im Verlauf, nichts für
 das Gedächtnis, kein Aufruf des Modells. bot.py kehrt in on_user_turn_stopped für einen solchen Zug zurück (zug_verworfen). Dazu geht

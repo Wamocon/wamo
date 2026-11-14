@@ -39,6 +39,7 @@ EINWILLIGUNG_FEHLT = "Die Einwilligung fehlt oder gehört zu einem älteren Text
 ABGESCHALTET = "Die Stimmerkennung ist abgeschaltet."
 STAND_UNKLAR = "Ich kann gerade nicht lesen, ob schon ein Stimmabdruck gespeichert ist. Bitte versuch es gleich noch einmal."
 NICHT_GELOESCHT = "Ich konnte den Stimmabdruck nicht löschen. Bitte versuch es später noch einmal."
+SPRECHER_UNSICHER = "stimme-unsicher"  # Markierung (Spalte speaker_label) im Gesprächsprotokoll: nicht sicher die Stimme des Profils
 
 
 def nachricht_aus() -> dict:
@@ -127,6 +128,10 @@ class StimmSitzung:
 
     def zug_verworfen(self) -> bool:
         return self.waechter.zug_verworfen()
+
+    def nicht_sicher_eigen(self) -> bool:
+        """Der Zug stammt nicht sicher von der Person (stimme_gate.StimmGate.nicht_sicher_eigen): bot.py färbt ihn wie Fremdinhalte."""
+        return self.gate.nicht_sicher_eigen()
 
     # ---------- Client-Nachricht stimmabdruck ----------
 

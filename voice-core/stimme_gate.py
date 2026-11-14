@@ -176,6 +176,15 @@ class StimmGate:
             return "Stimme nur kurz gehört, nicht sicher erkannt"
         return None
 
+    def nicht_sicher_eigen(self) -> bool:
+        """Stammt der Zug nicht sicher von der Person? Nur im Modus streng bei bereiter Prüfung (Profil mit Abdruck, Modell geladen):
+        die Stimme gilt nicht als sicher erkannt (grund_der_stimme) oder die Prüfung läuft noch. Dann färbt bot.py den Zug wie
+        Fremdinhalte (kein Lernen, kein Hinweis des Ja-Wächters, Markierung im Protokoll). Ohne Abdruck oder im Modus beobachten
+        ändert sich nichts."""
+        if self.modus != "streng" or self.status != "bereit":
+            return False
+        return (self._ausstehend is not None and not self._ausstehend.done()) or self.grund_der_stimme() is not None
+
     def stimme_vertraut(self) -> bool:
         """Zuletzt sicher an der Stimme erkannt (nicht nur getippt)."""
         return self._wer == EIGEN and self.grund_der_stimme() is None

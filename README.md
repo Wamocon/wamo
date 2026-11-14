@@ -1074,6 +1074,9 @@ gesperrt. Kurze Äußerungen (unter einer Sekunde Sprache, etwa "Ja") tragen das
 15 Sekunden nach der letzten sicheren Erkennung; klingen sie anders, ist die Stimme nicht sicher erkannt (Werkzeuge gesperrt, die Äußerung geht ans Modell).
 Ein neues Stück Sprache nach einem fertigen Satz (Satzzeichen im Transkript), nach Ende des Zuges oder nach Rede von WAMO wird für sich geprüft; mitten in
 einem unfertigen Satz bleibt es beim Zug, deshalb kann ein Einwurf einer fremden Stimme innerhalb eines Satzes der Person noch am Urteil des Satzes hängen.
+Eine Äußerung, die nicht sicher die Stimme der Person war (Profil mit Abdruck, Modus `streng`), färbt den Zug wie Fremdinhalte:
+WAMO lernt nichts daraus, der Ja-Wächter hängt keinen Hinweis an, und im Gesprächsprotokoll (`turns.speaker_label`) steht `stimme-unsicher`.
+Ohne Abdruck oder im Modus `beobachten` ändert sich nichts.
 Die Untertitel der Oberfläche können einen ignorierten Satz noch zeigen. Die Schwellen 0,5 und 0,3 sind Richtwerte aus Beispielaufnahmen
 des Modells, mit den Mikrofonen im Büro noch nicht gemessen: vor dem Einsatz einige Gespräche im Modus `beobachten` laufen lassen, die Werte im Log
 ansehen, die Schwellen bei Bedarf anpassen und danach wieder `streng` (Standard) einstellen.

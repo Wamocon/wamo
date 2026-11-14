@@ -186,7 +186,7 @@ from soft_interrupt import (
 )
 from soniox_tts import LazySonioxTTSService, stimme_einstellung
 from stimme_gate import schemas_absichern, tippen_beobachten, werkzeuge_absichern
-from stimme_sitzung import StimmSitzung, nachricht_aus
+from stimme_sitzung import SPRECHER_UNSICHER, StimmSitzung, nachricht_aus
 from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
 from wiedergabe import WiedergabeStart, halt_fuer, innehalten_max_secs, innehalten_weiter_secs
 
@@ -539,6 +539,7 @@ class Session:
     task: PipelineTask
     cleanup: Callable[[], Awaitable[None]]
     stimme: StimmSitzung | None = None  # Stimmprüfung dieser Sitzung (stimme_sitzung.py); None für Laborprofile
+    turn: TurnState | None = None  # Zustand des laufenden Zuges (Färbung durch Fremdinhalte); für Tests
 
 
 def pausen_prompt_an(wert: str | None = None) -> bool:
@@ -881,7 +882,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             *([stimme.waechter] if stimme else []),  # sicher fremde Äußerungen gehen nicht ans Modell (stimme_waechter.py)
             user_agg,
             soft_gate,
-            *([JaWaechter(offen=freigabe_offen, gefaerbt=lambda: turn.tainted)] if ja_waechter_an() else []),  # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER)
+            # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER); gefärbt auch, wenn das Ja nicht sicher die Stimme der Person war
+            *([JaWaechter(offen=freigabe_offen, gefaerbt=lambda: turn.tainted or (stimme is not None and stimme.nicht_sicher_eigen()))]
+              if ja_waechter_an() else []),
             *([AbbruchHinweis(name="AbbruchHinweisVorne")] if abbruch_hinweis_an() else []),  # CANCELLED im Verlauf erklären (WAMO_ABBRUCH_HINWEIS)
             wache.vorne(),
             llm,
@@ -1279,12 +1282,20 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def on_user_turn_stopped(_agg, _strategy, message):
         if stimme is not None and stimme.zug_verworfen() and not message.content.strip():
             return  # eine sicher fremde Stimme: kein Zug, kein Eintrag im Verlauf und im Gedächtnis (stimme_waechter.py)
+        # Eine Äußerung, die nicht sicher von der Person stammt (Profil mit Abdruck, Stimme nicht sicher erkannt), färbt den Zug wie
+        # Fremdinhalte: kein Lernen daraus, kein Hinweis des Ja-Wächters, im Protokoll mit Markierung (stimme_gate.nicht_sicher_eigen).
+        unsicher = stimme is not None and stimme.nicht_sicher_eigen()
         transcript.append(("user", message.content))
         turn.new_user_turn(message.content)
+        if unsicher:
+            turn.taint()
         new_user_turns = sum(1 for role, _ in transcript[learned_upto:] if role == "user")
         if new_user_turns >= LEARN_EVERY_USER_TURNS and not (learn_task and not learn_task.done()):
             start_learning(live=True)
-        await memory.log_turn(role="user", content=message.content)
+        if unsicher:
+            await memory.log_turn(role="user", content=message.content, speaker_label=SPRECHER_UNSICHER)
+        else:
+            await memory.log_turn(role="user", content=message.content)
 
     async def announce(saved: list[Gemerkt]) -> None:
         for entry in saved:
@@ -1441,7 +1452,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def on_pipeline_finished(_task, _frame):
         await cleanup()
 
-    return Session(task=task, cleanup=cleanup, stimme=stimme)
+    return Session(task=task, cleanup=cleanup, stimme=stimme, turn=turn)
 
 
 async def run_bot(
