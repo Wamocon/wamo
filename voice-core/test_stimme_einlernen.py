@@ -203,6 +203,80 @@ class EinlernenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.letzter_status(), "abgebrochen")
         self.assertFalse(self.gate.hat_abdruck)
 
+    async def test_abtastrate_nur_von_8000_bis_48000(self):
+        for rate in (7999, 48001, 0, 1, 1000000):
+            self.gesendet.clear()
+            e = self.e = self.neu(self.modell)
+            await e.starten("stimme-1", EINWILLIGUNG_AM)
+            await self.anleitung_vorbei()
+            self.assertTrue(await e.sammeln(audio(8000), rate), rate)  # der Ton wird trotzdem durch Stille ersetzt
+            self.assertEqual(self.letzter_status(), "fehler", rate)
+            self.assertFalse(e.aktiv, rate)
+        for rate in (8000, 48000):
+            e = self.e = self.neu(self.modell)
+            await e.starten("stimme-1", EINWILLIGUNG_AM)
+            await self.anleitung_vorbei()
+            await e.sammeln(audio(8000), rate)
+            self.assertTrue(e.aktiv, rate)
+            await e.abbrechen()
+
+    async def test_der_puffer_hat_eine_obergrenze_in_bytes(self):
+        await self.e.starten("stimme-1", EINWILLIGUNG_AM)
+        await self.anleitung_vorbei()
+        with mock.patch.object(se, "MAX_BYTES", 10000):
+            for _ in range(20):  # 20 mal 640 Bytes Stille: mehr als 10000, aber weit unter MAX_SECS
+                self.uhr.t += 0.02
+                await self.e.sammeln(audio(0), RATE)
+        self.assertEqual(self.letzter_status(), "fehler")
+        self.assertFalse(self.e.aktiv)
+        self.speichern.assert_not_awaited()
+
+    async def test_abbrechen_waehrend_des_speicherns_meldet_nicht_fertig(self):
+        freigabe = asyncio.Event()
+        speichert = asyncio.Event()
+
+        async def langsam(abdruck, version, am):
+            speichert.set()
+            await freigabe.wait()
+            return True
+
+        self.speichern.side_effect = langsam
+        await self.e.starten("stimme-1", EINWILLIGUNG_AM)
+        await self.anleitung_vorbei()
+        await self.aufnehmen(ZIEL_SECS + 0.1)
+        await asyncio.wait_for(speichert.wait(), 5)
+        abbruch = asyncio.create_task(self.e.abbrechen())
+        await asyncio.sleep(0.01)
+        freigabe.set()
+        await abbruch
+        await self.e.warten()
+        self.assertNotIn("fertig", [m["status"] for m in self.meldungen()])
+        self.assertNotIn(mock.call(FERTIG_TEXT), self.sagen.await_args_list)
+        self.assertTrue(self.gate.hat_abdruck)  # die Datenbank hat ihn: das Gate gibt den Stand wieder, das Löschen kommt danach von außen
+        self.assertFalse(self.e.beschaeftigt)
+
+    async def test_abbrechen_vor_dem_speichern_speichert_nicht_und_meldet_nicht_fertig(self):
+        loslassen = asyncio.Event()
+        rechner = Rechner()
+        embed = rechner.embed
+
+        def gebremst(pcm, rate):
+            import time
+
+            time.sleep(0.2)
+            return embed(pcm, rate)
+
+        rechner.embed = gebremst
+        e = self.e = self.neu(Modell(rechner))
+        await e.starten("stimme-1", EINWILLIGUNG_AM)
+        await self.anleitung_vorbei()
+        await self.aufnehmen(ZIEL_SECS + 0.1)
+        await asyncio.sleep(0.02)  # es rechnet noch
+        await e.abbrechen()
+        self.speichern.assert_not_awaited()
+        self.assertNotIn("fertig", [m["status"] for m in self.meldungen()])
+        self.assertFalse(self.gate.hat_abdruck)
+
     async def test_abbrechen_ohne_einlernen_tut_nichts(self):
         await self.e.abbrechen()
         self.assertEqual(self.gesendet, [])
