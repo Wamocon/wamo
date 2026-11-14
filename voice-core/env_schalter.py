@@ -23,6 +23,12 @@ Füllwörter und Sprechweise (fuellwoerter.py, persona.py, Entscheidung vom 14.1
   WAMO_FUELLWOERTER            vorab aufgenommenes "Moment.", wenn ein Werkzeug startet und WAMO sonst schweigt (Standard an);
                                WAMO_FUELLWORT_SECS: Zahl, Standard 0,4
   WAMO_MHM                     Rückmeldelaut "Mhm", wenn das Modell den Satz der Person für unfertig hält (Standard aus)
+Innehalten statt Abbrechen (wiedergabe.py, soft_interrupt.py, Entscheidung vom 14.11.2026, Messung steht aus):
+  WAMO_INNEHALTEN              ein einzelnes echtes Wort der Person ("Danke", "Du"), während WAMO spricht, lässt WAMO an der nächsten
+                               Wortgrenze innehalten; kommt nichts nach, spricht WAMO dort weiter (Standard an; aus = einzelne Wörter
+                               ändern nichts, Stopp wie bisher am hörbaren Wortende mit Ausblenden in der Oberfläche)
+  WAMO_INNEHALTEN_WEITER_SECS  Zahl: so viel Stille nach dem letzten Wort, dann geht es weiter (Standard 0,7)
+  WAMO_INNEHALTEN_MAX_SECS     Zahl: so lange hält WAMO höchstens inne (Standard 2,5; höchstens 3,5)
 Fehlerbehebungen aus der Sitzung vom 31.10.2026 (Standard an, sie ändern kein Sprachverhalten, nur Fehlerfälle):
   WAMO_ABBRUCH_HINWEIS         abgebrochenes Werkzeug im Verlauf als "ohne Ergebnis, Auftrag offen" erklären (werkzeug_wache.py)
   WAMO_WERKZEUG_DOPPELT        dieselbe Öffnen-Aktion im selben Zug nicht wiederholen, weitere Seite mit Hinweis (werkzeug_wache.py)

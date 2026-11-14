@@ -110,6 +110,8 @@ NEUE_NAMEN = (
     "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM",
     # Natürliche Sprechweise der Persona (persona.py), seit 14.11.2026
     "WAMO_PERSONA_NATUERLICH",
+    # Innehalten statt Abbrechen (wiedergabe.py), seit 14.11.2026
+    "WAMO_INNEHALTEN", "WAMO_INNEHALTEN_WEITER_SECS", "WAMO_INNEHALTEN_MAX_SECS",
 )
 
 
