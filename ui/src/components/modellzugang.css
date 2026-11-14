@@ -22,12 +22,9 @@
 .mz-abschnitt {
   display: grid; gap: 10px; min-width: 0;
   padding: 16px 18px 18px;
-  border: 1px solid var(--rule); border-radius: 12px;
-  background: color-mix(in srgb, var(--kz-karte, var(--bg)) 78%, transparent);
 }
 .mz-ueberschrift {
   margin: 0; display: flex; align-items: center; gap: 8px;
-  font: 700 12px/1.2 var(--font-wmc); letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft);
 }
 .mz-ueberschrift::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
 .mz-zweck { margin: 0; font-size: 16px; line-height: 1.4; }

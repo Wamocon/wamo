@@ -1,11 +1,11 @@
 /* Rückfrage vor dem Abmelden (components/AbmeldenRueckfrage.tsx, Laborkonten): kleines modales Fenster im Stil der Dialoge der Seite. Präfix .ab- */
 .ab-dialog {
   width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 0;
-  background: var(--bg); color: var(--ink); border: 2px solid var(--ink); border-radius: 12px;
+  background: var(--panel-solid); color: var(--ink); border: 1px solid var(--kante); border-radius: 14px; box-shadow: 0 40px 90px -50px var(--core);
 }
-.ab-dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+.ab-dialog::backdrop { background: rgb(0 0 0 / 0.6); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
 .ab-form { display: grid; gap: 14px; padding: 20px 22px 22px; }
-.ab-titel { margin: 0; position: relative; padding-top: 14px; font: 700 24px/1.15 var(--font-wmc); }
+.ab-titel { margin: 0; position: relative; padding-top: 14px; font: 700 18px/1.2 var(--display); letter-spacing: 0.04em; }
 .ab-titel::before { content: ""; position: absolute; top: 0; left: 0; width: 36px; height: 4px; border-radius: 2px; background: var(--accent); }
 .ab-text { margin: 0; font-size: 16px; line-height: 1.45; }
 .ab-knoepfe { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }

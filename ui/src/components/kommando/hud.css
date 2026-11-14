@@ -27,7 +27,7 @@
 @keyframes hud-dreh { to { transform: rotate(1turn); } }
 
 /* Karte: Glasfläche mit zarter Kante (die Kante darf zart bleiben, anders als der Rand von Bedienelementen) */
-.hud-karte, .kz-karte, .approval {
+.hud-karte, .kz-karte, .approval, .ez-block, .mz-abschnitt, .lb, .gv-karte, .gv-eintrag, .fz-karte, .fz-sitzung, .vg-karte, .vg-ende {
   border: 1px solid var(--kante); border-radius: 10px; background: var(--glas);
 }
 
@@ -153,8 +153,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 .kz-rechts { padding-top: 14px; }
 .kz-karte { border-color: var(--kante); border-radius: 10px; background: var(--glas); }
-.kz-karte-titel { font: 600 12px/1.2 var(--display); letter-spacing: 0.2em; color: var(--ink); }
-.kz-karte-titel::before { box-shadow: 0 0 8px var(--core); }
+.kz-karte-titel, .ez-block-titel, .mz-ueberschrift, .lb-titel { font: 600 12px/1.2 var(--display); letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink); }
+.kz-karte-titel::before, .ez-block-titel::before, .mz-ueberschrift::before, .lb-titel::before { box-shadow: 0 0 8px var(--core); }
 .kz-leer { font-size: 14px; }
 .kz-eintrag { font-size: 14px; border-left-width: 2px; border-left-color: var(--kante); }
 .kz-eintrag[data-scope="gemeinsam"] { border-left-color: var(--core); }
