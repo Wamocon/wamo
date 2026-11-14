@@ -55,6 +55,8 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 - Stimme in der Oberfläche: Einlernen des Stimmabdrucks mit Einwilligung, Modul „Stimme“ in der Kopfzeile (Eigen, Fremd, Unklar, Nicht
   eingelernt), Abschnitt Stimme in den Einstellungen und, im strengen Modus, der Hinweis „Fremde Stimme ignoriert“ (Modul „Fremd ·
   ignoriert“), nicht für Laborkonten.
+- Restplan für das Testlabor ab 13.11.2026 `docs/labor-restplan.md` (Stand am Server, Besuchersicht mit REA ohne Befunde, Fahrplan bis 11.12., Entscheidungen von Niko, Lücken ohne Werkzeug) und der
+  Kartensatz zum Ausdrucken `docs/labor-kartensatz.html` (17 Karten, WAMO statt Arbeitsname, ohne internen Reifegrad). Runbook und Morgencheckliste verweisen darauf und nennen den Release-Stand `v0.1.0-c751d04`.
 - Betreuer-Geräte über den Namen: NetBIOS hat Vorrang vor mDNS (Korrektur nach einer Messung am Server). Der Aktualisierer fragt mDNS (`avahi-resolve`) nur, wenn NetBIOS
   (`nmblookup`) nach dem Filter auf 192.168.178.1 bis .254 keine Adresse liefert, und führt die Antworten nicht mehr zusammen: mDNS lieferte für einen Windows-PC eine
   veraltete Adresse (.67, antwortet nicht auf Ping), die später ein fremdes Gerät per DHCP bekommen könnte, NetBIOS dagegen die richtige (.78). Für Mac- und Linux-Geräte
