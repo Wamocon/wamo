@@ -1,12 +1,13 @@
 // Komponententest des Hell-Dunkel-Umschalters (components/ThemaSchalter.tsx, lib/thema.ts): aria-pressed, Wirkung auf data-theme,
-// Speichern je Gerät, Verhalten in der Darstellung Nacht und der Platz in der Kopfzeile.
+// Speichern je Gerät, Verhalten in der Darstellung Nacht, die Farbe der Browserleiste (auch mit zwei Metas nach der Hydration)
+// und der Platz in der Kopfzeile.
 // Ausführen im Ordner ui/:  npm run test:komponenten
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { darstellungSetzen } from "@/components/kommando/darstellung";
 import { Kopfzeile } from "@/components/Kopfzeile";
 import { ThemaSchalter } from "@/components/ThemaSchalter";
-import { THEMA_SCHLUESSEL, themaAnwenden, themaNacht } from "@/lib/thema";
+import { LEISTENFARBE, THEMA_SCHLUESSEL, themaAnwenden, themaNacht } from "@/lib/thema";
 import { resetWamo } from "@/lib/wamo";
 
 const wurzel = document.documentElement;
@@ -76,6 +77,39 @@ describe("ThemaSchalter", () => {
     });
     expect(wurzel.getAttribute("data-theme")).toBe("light");
     expect((schalter() as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe("Farbe der Browserleiste (meta theme-color)", () => {
+  const leisten = () => [...document.querySelectorAll('meta[name="theme-color"]')].map((m) => m.getAttribute("content"));
+  /** Zustand nach der Hydration im Hellmodus: das Skript im Kopf hat das erste Meta umgestellt, React hat ein zweites angelegt. */
+  function nachHydration() {
+    for (const farbe of [LEISTENFARBE.hell, LEISTENFARBE.dunkel]) {
+      const m = document.createElement("meta");
+      m.setAttribute("name", "theme-color");
+      m.setAttribute("content", farbe);
+      document.head.appendChild(m);
+    }
+    wurzel.setAttribute("data-theme", "light");
+  }
+  afterEach(() => {
+    document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.remove());
+  });
+
+  it("nach dem Einhängen gleicht useThema jedes Meta an das wirksame Thema an", () => {
+    nachHydration();
+    expect(leisten()).toEqual([LEISTENFARBE.hell, LEISTENFARBE.dunkel]);
+    render(<ThemaSchalter />);
+    expect(leisten()).toEqual([LEISTENFARBE.hell, LEISTENFARBE.hell]);
+  });
+
+  it("ein Wechsel des Themas stellt jedes Meta um", () => {
+    nachHydration();
+    render(<ThemaSchalter />);
+    fireEvent.click(schalter());
+    expect(leisten()).toEqual([LEISTENFARBE.dunkel, LEISTENFARBE.dunkel]);
+    act(() => themaAnwenden("hell"));
+    expect(leisten()).toEqual([LEISTENFARBE.hell, LEISTENFARBE.hell]);
   });
 });
 

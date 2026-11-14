@@ -52,16 +52,33 @@ export function themaSpeichern(t: Thema, speicher?: Pick<Storage, "setItem"> | n
   }
 }
 
+const LEISTE = 'meta[name="theme-color"]';
+
 /**
  * Skript für den Kopf der Seite: liest die Wahl und setzt data-theme und die Farbe der Browserleiste, noch bevor etwas
  * gezeichnet wird. Bewusst ohne Abhängigkeiten und mit eigenem try/catch (es läuft vor jedem anderen Code).
+ * Es stellt jedes meta theme-color um, nicht nur das erste.
  */
 export const INIT_SKRIPT =
   `(function(){var d=document.documentElement,t="dunkel";` +
   `try{t=localStorage.getItem(${JSON.stringify(THEMA_SCHLUESSEL)})}catch(e){}` +
   `var h=t==="hell";d.setAttribute("data-theme",h?"light":"dark");` +
-  `var m=document.querySelector('meta[name="theme-color"]');` +
-  `if(m)m.setAttribute("content",h?${JSON.stringify(LEISTENFARBE.hell)}:${JSON.stringify(LEISTENFARBE.dunkel)})})();`;
+  `var m=document.querySelectorAll(${JSON.stringify(LEISTE)});` +
+  `for(var i=0;i<m.length;i++)m[i].setAttribute("content",h?${JSON.stringify(LEISTENFARBE.hell)}:${JSON.stringify(LEISTENFARBE.dunkel)})})();`;
+
+/**
+ * Farbe der Browserleiste in jedem meta theme-color. Nach der Hydration können es zwei sein: React erkennt das vom Kopfskript
+ * umgestellte Meta nicht mehr als seines und legt ein zweites mit der Farbe des Standards an.
+ */
+function leisteFaerben(t: Thema): void {
+  document.querySelectorAll(LEISTE).forEach((m) => m.setAttribute("content", LEISTENFARBE[t]));
+}
+
+/** Nach der Hydration einmal abgleichen: jedes Meta bekommt die Farbe des wirksamen Themas (useThema ruft das beim Einhängen). */
+export function leisteAbgleichen(): void {
+  if (typeof document === "undefined") return;
+  leisteFaerben(themaWirksam());
+}
 
 const hoerer = new Set<() => void>();
 
@@ -69,7 +86,7 @@ const hoerer = new Set<() => void>();
 export function themaAnwenden(t: Thema): void {
   if (typeof document === "undefined") return;
   document.documentElement.setAttribute("data-theme", attributWert(t));
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", LEISTENFARBE[t]);
+  leisteFaerben(t);
   hoerer.forEach((h) => h());
 }
 
