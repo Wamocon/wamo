@@ -90,6 +90,22 @@ describe("Aufgabenanzeige", () => {
     expect(container.innerHTML).toBe("");
   });
 
+  it("nennt die Schrittzahl für Screenreader als Satz, die sichtbare Zahl ist verborgen und der Absatz trägt kein aria-label", async () => {
+    wamo.set((s) => ({ ...s, presence: "thinking", turn: 1 }));
+    render(<Aufgabenanzeige />);
+    await aktivitaet("a", "fertig");
+    await aktivitaet("b", "laeuft");
+    await aktivitaet("c", "laeuft");
+    const satz = screen.getByText("Schritt 2 von 3");
+    expect(satz.className).toBe("sr-only");
+    const absatz = satz.closest("p") as HTMLParagraphElement;
+    expect(absatz.hasAttribute("aria-label")).toBe(false);
+    for (const sichtbar of absatz.querySelectorAll(".az-schritt-wort, .az-schritt-zahl, .az-schritt-von")) {
+      expect(sichtbar.getAttribute("aria-hidden")).toBe("true");
+    }
+    expect(absatz.querySelector(".az-schritt-zahl")?.textContent).toBe("02");
+  });
+
   describe("Takt der Uhr", () => {
     it("läuft, solange ein Schritt offen ist, und endet mit dem letzten Schritt", async () => {
       wamo.set((s) => ({ ...s, presence: "thinking", turn: 1 }));

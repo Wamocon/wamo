@@ -105,13 +105,18 @@ export const Aufgabenanzeige = memo(function Aufgabenanzeige() {
         </div>
       </header>
 
-      <p
-        className="az-schritt"
-        aria-label={`Schritt ${aktuell} von ${schritte.length}`}
-      >
-        <span className="az-schritt-wort">Schritt</span>
-        <span className="az-schritt-zahl">{zwei(aktuell)}</span>
-        <span className="az-schritt-von">/ {zwei(schritte.length)}</span>
+      {/* Kein aria-label auf einem Absatz (wird nicht zuverlässig vorgelesen): die sichtbare Zahl ist verborgen, daneben steht der Satz */}
+      <p className="az-schritt">
+        <span className="az-schritt-wort" aria-hidden="true">
+          Schritt
+        </span>
+        <span className="az-schritt-zahl" aria-hidden="true">
+          {zwei(aktuell)}
+        </span>
+        <span className="az-schritt-von" aria-hidden="true">
+          / {zwei(schritte.length)}
+        </span>
+        <span className="sr-only">{`Schritt ${aktuell} von ${schritte.length}`}</span>
       </p>
 
       <ol className="az-schritte">
