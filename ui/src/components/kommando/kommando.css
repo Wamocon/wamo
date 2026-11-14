@@ -66,7 +66,7 @@
   .kz .status-items [data-feld="verbindung"] { display: none; }
   .kz .status-items > div:nth-child(2) { border-left: 0; padding-left: 4px; }
 }
-@media (max-width: 1399px) { .kz-kernort { display: none; } }
+@media (max-width: 1599px) { .kz-kernort { display: none; } } /* der Kernort steht schon im Modul Betriebsart; den Platz braucht das Modul Stimme */
 @media (max-width: 1179px) { .kz-meter { display: none; } }
 @media (max-width: 639px) {
   .kz-uhr { display: none; }

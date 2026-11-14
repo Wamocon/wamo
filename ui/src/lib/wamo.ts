@@ -18,6 +18,17 @@ import { AUFGABE_LEER, naechsteAufgabe, type Aufgabe } from "./aufgabenanzeige.t
 import { auftraegeNachQuittung } from "./auftragStart.ts"; // relativ aus demselben Grund
 import { liveBildLoeschen } from "./liveBild.ts"; // relativ aus demselben Grund
 import { STILL_AUS, type StillStand } from "./stillStart.ts"; // relativ aus demselben Grund
+import {
+  abdruckAnsage,
+  abdruckAnwenden,
+  abdruckOeffnen,
+  kannEinlernen,
+  STIMME_LEER,
+  stimmeErgebnisAnwenden,
+  stimmeStatusAnwenden,
+  type Abdruck,
+  type StimmeStand,
+} from "./stimme.ts"; // relativ aus demselben Grund
 import { createStore } from "./store.ts"; // relativ, damit node:test diese Datei laden kann (textEingabe.test.ts)
 import { vorgangAnsage, vorgangEinordnen } from "./vorgaenge.ts";
 
@@ -88,6 +99,9 @@ export type LogEintrag = {
 
 export type Memo = Gemerkt & { key: number; paused: boolean };
 
+/** Einwilligungstext zum Stimmabdruck: kommt vom Kern, version geht beim Start in der Antwort zurück (lib/stimme.ts). */
+export type Einwilligung = { version: string; text: string };
+
 /** Meldung in der Präsenzspalte. art steuert die sichere nächste Aktion (Erneut verbinden, Abmelden). */
 export type Fehler = {
   text: string;
@@ -141,6 +155,12 @@ export type WamoState = {
   /** Start beim Tippen (lib/stillStart.ts): still = Sitzung ohne Mikrofon und Stimme, perTippen = von selbst gestartet (nur dann gilt die
    *  Leerlaufregel), uebernommen = eine neuere Sitzung dieses Profils hat die letzte hier abgelöst */
   stillStart: StillStand;
+  /** Stimmerkennung des Kerns (Stand, Modus, Ergebnis der letzten Äußerung), leer bis der Kern etwas meldet (lib/stimme.ts) */
+  stimme: StimmeStand;
+  /** Einlernen des Stimmabdrucks: null, solange die Ansicht zu ist; sonst die Phase von der Einwilligung bis zum Ergebnis */
+  abdruck: Abdruck | null;
+  /** Einwilligungstext vom Kern, null bis er ihn schickt (ohne ihn startet die Oberfläche das Einlernen nicht) */
+  einwilligung: Einwilligung | null;
   /** Text für role="status": nur bedeutsame Wechsel (verbunden, getrennt, Mikro, PC) */
   ansage: string;
   /** kurzer sichtbarer Hinweis (z. B. "PC-Steuerung automatisch eingeschaltet"), verschwindet selbst */
@@ -180,6 +200,9 @@ export const initialState: WamoState = {
   textMoeglich: false,
   mikrofon: null,
   stillStart: STILL_AUS,
+  stimme: STIMME_LEER,
+  abdruck: null,
+  einwilligung: null,
   ansage: "",
   toast: null,
 };
@@ -407,6 +430,21 @@ export function resetWamo(state: WamoState = initialState) {
   wamo.set(() => state);
 }
 
+// ---------- Stimme einlernen: Ansicht öffnen und schließen ----------
+
+/** Die Einlernansicht öffnen (zuerst die Einwilligung); false ohne laufende Sitzung oder bei ausgeschalteter Stimmerkennung. */
+export function abdruckAnsichtOeffnen(): boolean {
+  const s = wamo.get();
+  if (!kannEinlernen(s.stimme, istOnline(s))) return false;
+  wamo.set((x) => ({ ...x, abdruck: abdruckOeffnen() }));
+  return true;
+}
+
+/** Die Einlernansicht zumachen (das Abbrechen eines laufenden Einlernens schickt useWamo). */
+export function abdruckAnsichtSchliessen() {
+  wamo.set((s) => ({ ...s, abdruck: null }));
+}
+
 // ---------- Servernachrichten in den Store übernehmen ----------
 const PC_ANSAGE: Record<Betrieb["pc"], string> = {
   verbindet: "PC wird verbunden",
@@ -614,6 +652,18 @@ export function applyServerMessage(msg: ServerMessage) {
       return;
     case "bild":
       return; // behandelt useWamo (zeichnen und bestätigen, lib/liveBild.ts); das Bild kommt nie in den Store
+    case "stimme_status":
+      wamo.set((s) => ({ ...s, stimme: stimmeStatusAnwenden(s.stimme, msg) }));
+      return;
+    case "stimme_ergebnis":
+      wamo.set((s) => ({ ...s, stimme: stimmeErgebnisAnwenden(s.stimme, msg) }));
+      return;
+    case "stimmabdruck_einwilligung":
+      wamo.set((s) => ({ ...s, einwilligung: { version: msg.version, text: msg.text } }));
+      return;
+    case "stimmabdruck":
+      wamo.set((s) => ({ ...s, abdruck: abdruckAnwenden(s.abdruck, msg), ansage: abdruckAnsage(msg.status) ?? s.ansage }));
+      return;
     case "leiser_stopp":
     case "stimme_leiser":
     case "mikrofon":

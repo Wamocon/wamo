@@ -65,7 +65,7 @@ export const Kopfzeile = memo(function Kopfzeile({
         {ansicht.kopfTitel ?? "WAMO"}
       </h1>
       <ProfilChip email={email} onAbmelden={ansicht.abmeldenFragen ? abmeldenAnfragen : onAbmelden} />
-      <StatusDetails kompakt />
+      <StatusDetails kompakt stimme={ansicht.stimme} />
       <div className="topbar-end">
         <Statusanzeige />
         <ThemaSchalter />
@@ -88,7 +88,7 @@ export const Kopfzeile = memo(function Kopfzeile({
         </button>
         <div id="status-menue" popover="auto" className="popover status-pop">
           <p className="eyebrow">Status</p>
-          <StatusDetails kompakt={false} />
+          <StatusDetails kompakt={false} stimme={ansicht.stimme} />
           {ansicht.verlauf && (
             <button type="button" className="btn-secondary btn-block" onClick={onVerlauf}>
               {verlaufOffen ? "Verlauf schließen" : "Verlauf öffnen"}

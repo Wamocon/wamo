@@ -3,6 +3,7 @@
 @import "../components/kommando/hud.css"; /* HUD-Gestaltung der Kommandozentrale: Schriften, Glasflächen, Formen */
 @import "../components/kommando/kernRinge.css"; /* Kern: Lichtkugel in HUD-Ringen, Regeln mit Präfix .kr- */
 @import "../components/kommando/gespraech.css"; /* Block Gespräch (linke Spalte): Stimmlinie, Legende, Zeilen */
+@import "../components/kommando/stimme.css"; /* Stimmerkennung: Modul in der Kopfzeile, Einlernansicht, Rückfrage in den Einstellungen */
 @import "../components/kommando/aufgabenanzeige.css"; /* Aufgabenanzeige neben dem Kern: Regeln mit Präfix .az */
 @import "../components/kommando/seitengriff.css"; /* Griffe der Seitenleisten (Breite ziehen): Regeln mit Präfix .kz-griff */
 @import "../components/kommando/vorgaenge.css"; /* Tafel "Vorgänge" (Karten, Balken, Schritte): Regeln mit Präfix .vg- */
@@ -50,7 +51,7 @@
   --glut-oben: rgba(255, 86, 72, 0.1);
   --raster: rgba(255, 255, 255, 0.018); /* feine Zeilen über dem Grund */
   --sterne: 1; /* Sterne im Hintergrund, im Hellmodus aus */
-  --steuer-rand: #3a3a47; /* Rand von Bedienelementen (Knöpfe, Eingabe, Chips) */
+  --steuer-rand: var(--rule-strong); /* Rand von Bedienelementen (Knöpfe, Eingabe, Chips) */
   --text-glut: rgba(244, 14, 14, 0.45); /* Leuchten hinter großen Zahlen */
   --panel-solid: #111117;
   --surface: #111117;
@@ -58,7 +59,8 @@
   --ink-soft: #9b99a5;
   --ink-faint: #848391; /* Beiwerk (Zeitstempel, Zähler, Hinweise): schwächer als --ink-soft, aber mit 4,5:1 noch lesbar */
   --rule: #23232c; /* nur Trennlinien */
-  --rule-strong: #3a3a47; /* Ränder von Karten und Feldern */
+  --rule-strong: #3a3a47; /* Ränder von Feldern und Schaltflächen (im Hellmodus mit 3:1) */
+  --kante: #3a3a47; /* Kanten von Glasflächen und Karten in der Kommandozentrale (zarter als die Ränder von Bedienelementen) */
   --kontur: #7a7986; /* Rand von Bedienelementen, die auch gesperrt erkennbar bleiben müssen (4,8:1) */
   --core: #f40e0e; /* Hauptton: WMC-Rot (Flächen, Linien, Glühen, große Schrift) */
   --core-schrift: #f82e2e; /* Rot für kleine Schrift: auf Dunkel ein Hauch heller als das Marken-Rot (4,9:1 auf Karten), im Hellmodus dunkler (4,5:1) */
@@ -123,9 +125,9 @@
   --ink-soft: #4b4a55;
   --ink-faint: #6a6975;
   --rule: #dcdce2;
-  --rule-strong: #c3c3cc;
+  --rule-strong: #878694;
+  --kante: #cfcfd8;
   --kontur: #6d6c78;
-  --steuer-rand: #878694;
   --core-schrift: #c20b0b;
   --warn: #b36b00;
   --warn-schrift: #8a5a00;
@@ -769,7 +771,7 @@ p, li { text-wrap: pretty; }
   .profile-chip { padding: 0 4px; }
   .profile-first, .profile-chip .role-tag { display: none; }
   .status-items [data-feld="modelle"], .status-items [data-feld="mikro"], .status-items [data-feld="netz"],
-  .status-items [data-feld="entwicklung"], .verlauf-btn { display: none; }
+  .status-items [data-feld="entwicklung"], .status-items [data-feld="stimme"], .verlauf-btn { display: none; }
   .status-items > div { padding: 0 8px; }
   .status-items .status-label {
     position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;

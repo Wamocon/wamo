@@ -101,10 +101,12 @@ for (const thema of THEMEN) {
   });
 }
 
-test("hell: der Rand von Bedienelementen (--steuer-rand) hat mindestens 3:1, auch auf Weiß", () => {
+test("hell: der Rand von Feldern und Schaltflächen (--rule-strong, dazu --steuer-rand) hat mindestens 3:1, auch auf Weiß", () => {
   for (const grund of ["--bg", "--surface"]) {
-    mindestens(kontrast(variable("hell", "--steuer-rand"), variable("hell", grund)), 3, `--steuer-rand auf ${grund}`);
+    mindestens(kontrast(variable("hell", "--rule-strong"), variable("hell", grund)), 3, `--rule-strong auf ${grund}`);
   }
+  assert.match(block("dunkel"), /--steuer-rand:\s*var\(--rule-strong\)/, "Bedienelemente nehmen den Rand der Felder");
+  assert.doesNotMatch(block("hell"), /--steuer-rand:/, "der Hellmodus erbt ihn und setzt keinen eigenen");
 });
 
 test("hell: das Rot für kleine Schrift ist dunkler als das Marken-Rot, bleibt aber rot", () => {

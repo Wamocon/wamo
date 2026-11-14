@@ -13,7 +13,7 @@ import { BueroKarte } from "@/components/kommando/BueroKarte";
 import { useBueroStandHalten } from "@/components/kommando/useBueroStand";
 import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
 import { Gespraech } from "@/components/kommando/Gespraech";
-import { Kernbereich } from "@/components/kommando/Kernbereich";
+import { KernOderEinlernen } from "@/components/kommando/KernOderEinlernen";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
 import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
 import { VorgaengeTafel } from "@/components/kommando/Vorgaenge";
@@ -169,7 +169,7 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           {ansicht.geraeteEinrichtung && <GeraetEinrichtung />}
         </>
       }
-      kernbereich={<Kernbereich />}
+      kernbereich={<KernOderEinlernen stimmabdruck={ansicht.stimme ? aktionen.stimmabdruck : undefined} />}
       aktionen={<Aktionen aktionen={aktionen} />}
       bedienung={
         <Bedienung

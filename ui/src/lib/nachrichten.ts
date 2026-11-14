@@ -268,7 +268,27 @@ export type ServerMessage =
   | ({ type: "modellzugang" } & Modellzugang)
   | ({ type: "kontingent" } & Kontingent)
   /** Kern: still = seit `sekunden` nur digitale Stille vom Mikrofon, ok = wieder Ton (voice-core/audio_monitor.py) */
-  | { type: "mikrofon"; zustand: "still" | "fehlt" | "ok"; sekunden: number };
+  | { type: "mikrofon"; zustand: "still" | "fehlt" | "ok"; sekunden: number }
+  /** Stimmerkennung, Stand (auf dem Draht {type:"stimme", status, modus}); modus fehlt bei einem Kern, der ihn nicht mitschickt */
+  | { type: "stimme_status"; status: StimmeStatus; modus: StimmeModus | null }
+  /** Stimmerkennung, Ergebnis der letzten Äußerung (auf dem Draht {type:"stimme", ergebnis, wert, modus}); wert 0 bis 1 oder leer */
+  | { type: "stimme_ergebnis"; ergebnis: StimmeErgebnis; wert: number | null; modus: StimmeModus | null }
+  /** Einlernen des Stimmabdrucks: Zustand, aufgenommene Sekunden reiner Sprache, Ziel in Sekunden, bei fehler ein Satz dazu */
+  | { type: "stimmabdruck"; status: AbdruckStatus; sekunden?: number; ziel?: number; text?: string }
+  /** Einwilligungstext zum Stimmabdruck, kommt vom Kern; version geht beim Start in der Antwort mit zurück */
+  | { type: "stimmabdruck_einwilligung"; version: string; text: string };
+
+/** Stimmerkennung des Kerns (voice-core): Stand, Betriebsart und Ergebnis der letzten Äußerung, dazu das Einlernen des Stimmabdrucks. */
+export const STIMME_STATUS = ["aus", "fehlt", "laedt", "kaputt", "bereit"] as const;
+export type StimmeStatus = (typeof STIMME_STATUS)[number];
+export const STIMME_MODI = ["aus", "beobachten", "streng"] as const;
+export type StimmeModus = (typeof STIMME_MODI)[number];
+export const STIMME_ERGEBNISSE = ["eigen", "fremd", "unklar"] as const;
+export type StimmeErgebnis = (typeof STIMME_ERGEBNISSE)[number];
+export const ABDRUCK_STATUS = ["start", "aufnahme", "rechnet", "fertig", "fehler", "abgebrochen", "geloescht"] as const;
+export type AbdruckStatus = (typeof ABDRUCK_STATUS)[number];
+/** Obergrenze des Einwilligungstextes (Zeichen): ein längerer Text wird abgelehnt, nie gekürzt */
+export const EINWILLIGUNG_MAX = 4000;
 
 type Roh = Record<string, unknown>;
 
@@ -295,6 +315,7 @@ export const MARK_POS_MAX = 32767;
 export const MARK_GROESSE_MAX = 32768;
 const ganz = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v);
 const pos = (v: unknown): v is number => ganz(v) && v >= MARK_POS_MIN && v <= MARK_POS_MAX;
+const EINWILLIGUNG_VERSION = /^[A-Za-z0-9._-]{1,40}$/;
 const GERAET_KENNUNG = /^pc-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const RECHNERNAME = /^[A-Za-z0-9._-]{1,63}$/;
 
@@ -695,6 +716,37 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
       if (!oneOf(m.zustand, ["still", "fehlt", "ok"] as const)) return null;
       const s = typeof m.sekunden === "number" && Number.isFinite(m.sekunden) ? Math.round(m.sekunden) : 10;
       return { type: "mikrofon", zustand: m.zustand, sekunden: Math.max(1, Math.min(3600, s)) };
+    }
+    case "stimme": {
+      // Zwei Formen unter einem Typ: Stand (status) oder Ergebnis der letzten Äußerung (ergebnis), nie beides
+      if ("status" in m === "ergebnis" in m) return null;
+      const modus = m.modus === undefined || m.modus === null ? null : oneOf(m.modus, STIMME_MODI) ? m.modus : undefined;
+      if (modus === undefined) return null;
+      if ("status" in m) return oneOf(m.status, STIMME_STATUS) ? { type: "stimme_status", status: m.status, modus } : null;
+      if (!oneOf(m.ergebnis, STIMME_ERGEBNISSE)) return null;
+      if (m.wert !== undefined && m.wert !== null && (typeof m.wert !== "number" || !Number.isFinite(m.wert))) return null;
+      const wert = typeof m.wert === "number" ? Math.min(1, Math.max(0, m.wert)) : null;
+      return { type: "stimme_ergebnis", ergebnis: m.ergebnis, wert, modus };
+    }
+    case "stimmabdruck": {
+      if (!oneOf(m.status, ABDRUCK_STATUS)) return null;
+      // sekunden, ziel und text sind freiwillig (null zählt wie nicht gesendet); ein falscher Typ lehnt die ganze Nachricht ab
+      const fehlt = (v: unknown) => v === undefined || v === null;
+      const zahlOk = (v: unknown) => fehlt(v) || (typeof v === "number" && Number.isFinite(v));
+      if (!zahlOk(m.sekunden) || !zahlOk(m.ziel) || !(fehlt(m.text) || isStr(m.text))) return null;
+      const aus: ServerMessage = { type: "stimmabdruck", status: m.status };
+      if (typeof m.sekunden === "number") aus.sekunden = Math.min(3600, Math.max(0, m.sekunden));
+      if (typeof m.ziel === "number") aus.ziel = Math.min(600, Math.max(1, m.ziel));
+      const text = isStr(m.text) ? sauber(m.text, 400, false).trim() : "";
+      if (text) aus.text = text;
+      return aus;
+    }
+    case "stimmabdruck_einwilligung": {
+      // Der Text ist Teil einer Einwilligung: bereinigt, aber nie gekürzt (zu lang heißt abgelehnt)
+      if (!isStr(m.version) || !EINWILLIGUNG_VERSION.test(m.version) || !isStr(m.text)) return null;
+      const text = m.text.replace(STEUER, "").trim();
+      if (!text || text.length > EINWILLIGUNG_MAX) return null;
+      return { type: "stimmabdruck_einwilligung", version: m.version, text };
     }
     default:
       return null;

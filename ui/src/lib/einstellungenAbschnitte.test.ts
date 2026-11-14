@@ -29,7 +29,7 @@ test("Admin sieht alle Abschnitte, Mitglied und unbekannte Rolle nicht den Verbr
   assert.ok(ids("admin").includes("verbrauch"));
   for (const rolle of ["mitglied", null] as const) {
     assert.ok(!ids(rolle).includes("verbrauch"), `Rolle ${rolle}`);
-    assert.deepEqual(ids(rolle), ["konto", "modellzugang", "sprache", "darstellung", "geraete", "teilen", "info"]);
+    assert.deepEqual(ids(rolle), ["konto", "modellzugang", "sprache", "stimme", "darstellung", "geraete", "teilen", "info"]);
   }
 });
 
@@ -231,4 +231,13 @@ test("Laborsicht: der Abschnitt hat eine eigene Kurzzeile, die Gliederung der an
 
 test("Texte der Laborsicht ohne Gedankenstrich, nur an der Laborsicht zu erkennen", () => {
   for (const a of abschnitteFuer({ rolle: null, labor: true })) assert.ok(!/[–—]|\s-\s/.test(`${a.titel} ${a.kurz}`), a.id);
+});
+
+test("Abschnitt Stimme: für jede Rolle da, in der Laborsicht nicht, mit eigenem Hash", () => {
+  for (const rolle of ["admin", "mitglied", null] as const) {
+    assert.ok(abschnitteFuer({ rolle }).some((a) => a.id === "stimme"), `Rolle ${rolle}`);
+  }
+  assert.equal(abschnitteFuer({ rolle: "admin", labor: true }).some((a) => a.id === "stimme"), false, "Laborkonten sehen keine Stimmerkennung");
+  assert.deepEqual(parseHash("#einstellungen/stimme"), { offen: true, abschnitt: "stimme" });
+  assert.equal(ABSCHNITTE.find((a) => a.id === "stimme")?.titel, "Stimme");
 });

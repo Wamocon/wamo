@@ -349,6 +349,7 @@ describe("Hauptansicht eines normalen Admin-Kontos: unverändert alles", () => {
       "Modellzugang",
       "Verbrauch",
       "Sprache und Ton",
+      "Stimme",
       "Gedächtnis",
       "Darstellung",
       "Geräte und PC",
