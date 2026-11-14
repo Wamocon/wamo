@@ -6,7 +6,7 @@ import { modellKurzname } from "@/lib/modellKurz";
 import { modusKurz } from "@/lib/modellwahl";
 import type { Betrieb } from "@/lib/nachrichten";
 import { useSelect } from "@/lib/store";
-import { stimmeModul } from "@/lib/stimme";
+import { STIMME_LEER, stimmeModul } from "@/lib/stimme";
 import { unverschluesselteDienste } from "@/lib/umgebung";
 import { istOnline, wamo } from "@/lib/wamo";
 
@@ -115,7 +115,8 @@ export const StatusDetails = memo(function StatusDetails({ kompakt, stimme = fal
   // Kopfzeile: nur das Gesprächsmodell, gekürzt auf ganze Wörter (Hören und Stimme stehen im title und im Menü)
   const modelleKurz = modellKurzname(m?.llm) || "Modelle unbekannt";
   const modus = modusKurz(betrieb); // Automatisch oder Nur Hausmodelle (WAMO Boss), null bei einem Kern ohne Meldung
-  const stimmeStand = useSelect(wamo, (s) => s.stimme);
+  // Den Stand der Stimmerkennung nur abonnieren, wenn das Modul hier steht; sonst liefert der Selektor eine Konstante (kein Neuzeichnen je Äußerung)
+  const stimmeStand = useSelect(wamo, (s) => (stimme ? s.stimme : STIMME_LEER));
   const stimmeAnzeige = stimme && online ? stimmeModul(stimmeStand) : null;
 
   return (
