@@ -361,6 +361,11 @@ def test_abgelehnte_abrufe_zaehlen_mit(client, dienst):
     (roh("s", "server", erreichbar=True, dienste={"a": "failed", "b": "active"}), "stoerung", "läuft, 1 Dienst nicht aktiv"),
     (roh("s", "server", erreichbar=True, dienste={"a": "failed", "b": "inactive"}), "stoerung", "läuft, 2 Dienste nicht aktiv"),
     (roh("s", "server", erreichbar=True, dienste={"a": "unbekannt"}), "ok", "läuft"),
+    # Kern-Slots: der Gerätedienst meldet wamo-core@*.service als active, sobald eine Instanz läuft
+    (roh("s", "server", erreichbar=True, dienste={"wamo-core@*.service": "active", "docker.service": "active"}), "ok",
+     "läuft"),
+    (roh("s", "server", erreichbar=True, dienste={"wamo-core@*.service": "inactive", "docker.service": "active"}),
+     "stoerung", "läuft, 1 Dienst nicht aktiv"),
     (roh("s", "server", erreichbar=False), "stoerung", "nicht erreichbar"),
     (roh("s", "server", status="error", summary="x"), "stoerung", "nicht erreichbar"),
     (roh("s", "server", status="nicht_eingerichtet"), "unbekannt", "nicht eingerichtet"),
