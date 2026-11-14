@@ -7,6 +7,7 @@ Pipecat und Soniox: Ton schneller als Echtzeit, Wörter mit pts = erster Ton plu
 import asyncio
 import time
 import unittest
+from unittest import mock
 
 from pipecat.frames.frames import (
     EndFrame,
@@ -27,6 +28,7 @@ from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import TransportParams
 
 import soft_interrupt
+import wiedergabe
 from soft_interrupt import PlaybackTracker, SoftInterruptGate
 from wiedergabe import AusgabeHalt, WiedergabeStart
 
@@ -288,13 +290,19 @@ class PipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.ohne_leiser_stopp())
 
     async def test_nach_dem_abbruch_spricht_die_naechste_antwort_normal(self):
+        # Das Zeitfenster des Verwerfens ist hier länger als im Betrieb, damit die nächste Antwort auch auf einem belasteten Rechner
+        # sicher hineinfällt
+        verwerfen = mock.patch.object(wiedergabe, "ABBRUCH_NACHLAUF_SECS", 3.0)
+        verwerfen.start()
+        self.addCleanup(verwerfen.stop)
         sprechen = asyncio.create_task(self.tts.sprechen(["Ich", "lege", "das", "an."]))
         await self.warte_auf_happen(6)
         vorher = await self.einwerfen()
         await sprechen
         await self.warte_auf_unterbrechung(vorher)
-        # Nach dem Abbruch verwirft der Halt noch eine Weile jeden Happen (ABBRUCH_NACHLAUF_SECS); erst danach beginnt die nächste Antwort
-        await self.warte_bis(lambda: time.monotonic() >= self.halt._verwerfen_bis)
+        # Die nächste Antwort beginnt sofort, noch während der Halt Reste der alten verwirft: wie ein Füllwort oder eine Ansage direkt
+        # nach dem Abbruch. Sie muss trotzdem ganz zu hören sein.
+        self.assertLess(time.monotonic(), self.halt._verwerfen_bis, "die Probe liegt im Zeitfenster des Verwerfens")
         vorher, ton_vorher = len(self.sammler.woerter), len(self.ausgang.log)
         await self.tts.sprechen(["Alles", "klar."])
         await self.warte_bis(lambda: len(self.sammler.woerter) >= vorher + 2 and len(self.ausgang.log) >= ton_vorher + 2 * HAPPEN_JE_WORT)
