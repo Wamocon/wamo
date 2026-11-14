@@ -50,11 +50,13 @@ MESSAGING_TITLE = re.compile(
     r"inbox|nachricht verfassen|neue nachricht|google chat|mattermost|messenger|rocket\.chat|threema)",
     re.IGNORECASE,
 )
-# Die eigene Oberfläche (Electron-App "WAMO", Browser-Tab "WAMO - ...") bedient WAMO nie: dort liegen die
-# Freigabekarten. Groß geschrieben und allein stehend, damit "wamo - Visual Studio Code" oder "WAMO-Konzept.docx"
-# weiter gehen.
+# Die eigene Oberfläche (Electron-App, Browser-Tab "W.A.I.S. - ..." oder früher "WAMO - ...") bedient WAMO nie: dort liegen die
+# Freigabekarten. Groß geschrieben und allein stehend, damit "wamo - Visual Studio Code", "WAMO-Konzept.docx" oder
+# "W.A.I.S.-Konzept.docx" weiter gehen. Beide Schreibweisen gelten, solange noch nicht jede Oberfläche den neuen Titel trägt
+# (Anzeigename seit der Umbenennung W.A.I.S., interner Name WAMO).
 WAMO_UI_EXES = {"electron.exe", "wamo.exe"}  # Entwicklermodus und installierte App (executableName WAMO)
-WAMO_UI_TITLE = re.compile(r"(^|[|,]\s*)WAMO(?![-.\w])")  # auch "Einstellungen | WAMO" (Titel der Unterseiten)
+# auch "Einstellungen | W.A.I.S." (Titel der Unterseiten); hinter WAMO darf kein Bindestrich, Punkt oder Buchstabe folgen, hinter W.A.I.S. kein Bindestrich oder Buchstabe
+WAMO_UI_TITLE = re.compile(r"(^|[|,]\s*)(WAMO(?![-.\w])|W\.A\.I\.S\.(?![-\w]))")
 # Adressleiste von Browsern und Explorer: Strg+L, Alt+D, F6
 ADDRESS_BAR_COMBOS = {frozenset({0x11, ord("L")}), frozenset({0x12, ord("D")}), frozenset({0x75})}
 # Senden in Mail- und Messenger-Fenstern: Enter, Strg+Enter, Strg+Umschalt+Enter, Alt+S, Leertaste (auf "Senden")
@@ -69,7 +71,7 @@ def is_messaging(exe: str, title: str) -> bool:
 def check_not_wamo_ui(exe: str, title: str) -> None:
     """Wirft ValueError für die eigene Oberfläche (Freigabekarten): dort gibt nur ein Mensch frei."""
     if (exe or "").lower() in WAMO_UI_EXES or WAMO_UI_TITLE.search(title or ""):
-        raise ValueError("In der eigenen Oberfläche tippt und klickt WAMO nicht (Freigaben gibt nur ein Mensch)")
+        raise ValueError("In der eigenen Oberfläche tippt und klickt W.A.I.S. nicht (Freigaben gibt nur ein Mensch)")
 
 
 def check_input_target(exe: str, title: str) -> None:
@@ -82,7 +84,7 @@ def check_typing_target(exe: str, title: str) -> None:
     """Wie check_input_target, zusätzlich ohne Explorer (Adressleiste führt Befehle aus)."""
     check_input_target(exe, title)
     if (exe or "").lower() in TYPE_BLOCKED_EXES:
-        raise ValueError("Im Explorer tippt WAMO nicht (die Adressleiste führt Befehle aus)")
+        raise ValueError("Im Explorer tippt W.A.I.S. nicht (die Adressleiste führt Befehle aus)")
 
 
 BLOCKED_TARGET_TITLE = re.compile(
@@ -133,16 +135,16 @@ def check_target(exe: str, title: str) -> None:
     """Wirft ValueError, wenn in dieses Fenster nicht getippt werden darf."""
     if not (exe or "").strip():
         # Programm nicht ermittelbar (z. B. Fenster mit Admin-Rechten): lieber nicht tippen
-        raise ValueError("Zielprogramm unbekannt, WAMO tippt dort nicht")
+        raise ValueError("Zielprogramm unbekannt, W.A.I.S. tippt dort nicht")
     if (exe or "").lower() in BLOCKED_TARGET_EXES:
-        raise ValueError(f"In {exe} tippt WAMO nicht (Konsole/Systemwerkzeug)")
+        raise ValueError(f"In {exe} tippt W.A.I.S. nicht (Konsole/Systemwerkzeug)")
     if BLOCKED_TARGET_TITLE.search(title or ""):
-        raise ValueError("In Anmelde-, Admin- oder Passwortfenster tippt WAMO nicht")
+        raise ValueError("In Anmelde-, Admin- oder Passwortfenster tippt W.A.I.S. nicht")
 
 
 def check_app_name(name: str) -> None:
     if BLOCKED_APP_NAMES.search(name):
-        raise ValueError(f"{name} startet WAMO nicht (Systemwerkzeug)")
+        raise ValueError(f"{name} startet W.A.I.S. nicht (Systemwerkzeug)")
 
 
 # ---------- Windows-API ----------

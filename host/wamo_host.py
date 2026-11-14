@@ -490,9 +490,9 @@ def _browser_fenster_nutzbar(w: dict, browser: str) -> None:
     wc.check_not_wamo_ui(w["programm"], w["titel"])
     wc.check_input_target(w["programm"], w["titel"])
     if SEITE_GESPERRT_TITEL.search(w["titel"] or ""):
-        raise ValueError("Passwort-, Zugangsdaten- und Zahlungsseiten bedient WAMO nicht")
+        raise ValueError("Passwort-, Zugangsdaten- und Zahlungsseiten bedient W.A.I.S. nicht")
     if wc.is_messaging(w["programm"], w["titel"]):  # ein Entwurf im Webmail oder Messenger darf nicht überschrieben werden
-        raise ValueError("Mail- und Messenger-Seiten bedient WAMO hier nicht")
+        raise ValueError("Mail- und Messenger-Seiten bedient W.A.I.S. hier nicht")
 
 
 def _browser_ziel(browser: str) -> dict | None:
@@ -670,7 +670,7 @@ def webseite_oeffnen(url: str, browser: str = "chrome", neuer_tab: bool = False)
 def programm_oeffnen(name: str) -> dict:
     """Startet ein installiertes Programm (change), z. B. Outlook, Teams, VS Code, Claude, Chrome.
     Gesucht wird im Startmenue. Ist es schon offen, besser fenster_fokussieren nutzen.
-    Shells, Registry und Admin-Werkzeuge startet WAMO nicht."""
+    Shells, Registry und Admin-Werkzeuge startet W.A.I.S. nicht."""
     if locked := _gesperrt("programm_oeffnen"):
         return locked
     try:
@@ -710,7 +710,7 @@ def check_open_type(path: Path, app_name: str) -> None:
     suffix = path.suffix.lower()
     allowed = OPEN_SAFE_SUFFIXES if app_name == "explorer" else EDITOR_SAFE_SUFFIXES
     if suffix not in allowed and not (app_name != "explorer" and suffix == ""):
-        raise ValueError(f"Dateityp {suffix or '(ohne Endung)'} öffnet WAMO mit {app_name} nicht")
+        raise ValueError(f"Dateityp {suffix or '(ohne Endung)'} öffnet W.A.I.S. mit {app_name} nicht")
 
 
 def validate_local_path(pfad: object) -> Path:
@@ -724,7 +724,7 @@ def validate_local_path(pfad: object) -> Path:
     if not path.is_relative_to(HOME):
         raise ValueError(f"Nur Pfade unter {HOME}")
     if any(part.lower() in SENSITIVE_PARTS for part in path.parts):
-        raise ValueError("Ordner mit Zugangsdaten öffnet WAMO nicht")
+        raise ValueError("Ordner mit Zugangsdaten öffnet W.A.I.S. nicht")
     if not path.exists():
         raise ValueError(f"{path} gibt es nicht")
     return path
@@ -759,10 +759,10 @@ def validate_new_folder(pfad: object) -> Path:
     if any(t not in ("", ".", "..") and t.endswith((" ", ".")) for t in re.split(r"[\\/]", roh)):
         raise ValueError("Ordnernamen enden nicht auf Punkt oder Leerzeichen")
     if roh.startswith(("\\\\", "//")):
-        raise ValueError("Netzwerkpfade legt WAMO nicht an")  # vor resolve(): sonst baut Windows eine SMB-Verbindung auf
+        raise ValueError("Netzwerkpfade legt W.A.I.S. nicht an")  # vor resolve(): sonst baut Windows eine SMB-Verbindung auf
     path = Path(roh).expanduser()
     if path.is_absolute() and path.drive.lower() != HOME.drive.lower():
-        raise ValueError("Ordner legt WAMO nur auf dem Laufwerk des Benutzerordners an")
+        raise ValueError("Ordner legt W.A.I.S. nur auf dem Laufwerk des Benutzerordners an")
     if not path.is_absolute():
         raise ValueError(f"Bitte den vollen Pfad, z. B. {PROJEKTE_DIR / 'radar'} (system_info nennt die Ordner)")
     try:
@@ -771,13 +771,13 @@ def validate_new_folder(pfad: object) -> Path:
         raise ValueError("Pfad lässt sich nicht auflösen") from e
     wurzel = next((w for w in ORDNER_WURZELN if _unter(path, w.resolve())), None)
     if wurzel is None:
-        raise ValueError("Ordner legt WAMO nur unter " + ", ".join(w.name for w in ORDNER_WURZELN) + " an")
+        raise ValueError("Ordner legt W.A.I.S. nur unter " + ", ".join(w.name for w in ORDNER_WURZELN) + " an")
     relativ = path.relative_to(wurzel.resolve()).parts
     if len(relativ) > ORDNER_MAX_TIEFE:
         raise ValueError(f"Höchstens {ORDNER_MAX_TIEFE} Ebenen unter {wurzel.name}")
     for teil in path.relative_to(HOME.resolve()).parts:
         if teil.startswith(".") or teil.lower() in SENSITIVE_PARTS or teil.lower() == "appdata":
-            raise ValueError("Dort legt WAMO keine Ordner an (versteckt, Zugangsdaten oder WAMO-Ordner)")
+            raise ValueError("Dort legt W.A.I.S. keine Ordner an (versteckt, Zugangsdaten oder WAMO-Ordner)")
     for teil in relativ:
         if (_ORDNER_UNGUELTIG.search(teil) or teil.endswith((" ", ".")) or len(teil) > ORDNER_NAME_MAX
                 or _RESERVIERT.fullmatch(teil)):
@@ -867,12 +867,12 @@ def _monitor_nummer(hwnd: object) -> tuple[int | None, int]:
 GESPERRT = {
     "status": "locked",
     "summary": "Der Bildschirm ist gesperrt (oder der Bildschirmschoner läuft). Tippen, Klicken, Ansehen und Öffnen "
-    "gehen erst wieder, wenn die Person ihn selbst entsperrt; WAMO kann das nicht.",
+    "gehen erst wieder, wenn die Person ihn selbst entsperrt; W.A.I.S. kann das nicht.",
 }
 WARTET = {
     "status": "wartet",
     "summary": "Eine Freigabe in der Oberfläche ist noch offen. Bis sie entschieden ist (höchstens 5 Minuten), tippt, "
-    "klickt und scrollt WAMO nicht.",
+    "klickt und scrollt W.A.I.S. nicht.",
 }
 
 
@@ -925,7 +925,7 @@ def fenster_fokussieren(fenster: str) -> dict:
 
 
 FOKUS_VERWEIGERT = ("Windows hat {titel!r} nicht nach vorne gelassen (zum Beispiel weil das Fenster mit höheren "
-                    "Rechten läuft). WAMO tippt und klickt dort nicht; die Person holt das Fenster selbst vor.")
+                    "Rechten läuft). W.A.I.S. tippt und klickt dort nicht; die Person holt das Fenster selbst vor.")
 
 
 def _prepare_input(fenster: str | None) -> dict:
@@ -1074,7 +1074,7 @@ _ZEILENTRENNER = re.compile(r"\r\n?|[\x0b\x0c\x85\u2028\u2029]")
 def tastatur_tippen(text: str, fenster: str = "") -> dict:
     """Tippt Text ins Fenster vorne oder vorher ins genannte Fenster (change), z. B. eine Nachricht in
     Teams oder einen Prompt in den Claude-Chat in VS Code. Zeilenumbruch = Enter. Nur tippen, was
-    die Person so gewollt hat. In Konsolen, Admin- und Passwortfenster tippt WAMO nie."""
+    die Person so gewollt hat. In Konsolen, Admin- und Passwortfenster tippt W.A.I.S. nie."""
     if not isinstance(text, str) or not text or len(text) > wc.MAX_TYPE_CHARS:
         return {"status": "rejected", "summary": f"Text fehlt oder ist laenger als {wc.MAX_TYPE_CHARS} Zeichen"}
     text = _ZEILENTRENNER.sub("\n", text)
@@ -1089,7 +1089,7 @@ def tastatur_tippen(text: str, fenster: str = "") -> dict:
     if messenger and "\t" in text:
         # Tab kann in Mail- und Messenger-Fenstern den Fokus auf "Senden" legen
         _audit({"tool": "tastatur_tippen", "ziel": target["titel"][:120], "risk": "rejected", "grund": "Tab"})
-        return {"status": "rejected", "summary": "Tabulatoren tippt WAMO in Mail- und Messenger-Fenstern nicht."}
+        return {"status": "rejected", "summary": "Tabulatoren tippt W.A.I.S. in Mail- und Messenger-Fenstern nicht."}
     if "\n" in text and messenger:
         # Zeilenumbruch = Enter = Senden: nur nach Freigabe, dann genau in dieses Fenster
         return _senden_anfrage("tastatur_tippen", "tippen", target, text=text)
@@ -1142,7 +1142,7 @@ def powershell_lesen(command: str, reason: str) -> dict:
         return locked
     _audit({"tool": "powershell_lesen", "command": str(command)[:MAX_COMMAND_LEN], "reason": reason, "risk": risk})
     if risk == "blocked":
-        return {"status": "blocked", "summary": "Dieser Befehl ist für WAMO gesperrt."}
+        return {"status": "blocked", "summary": "Dieser Befehl ist für W.A.I.S. gesperrt."}
     if risk == "critical":
         # Überschrift fest; der Anlass kommt vom Modell und steht nur klein unter dem genauen Befehl
         anlass = " ".join(str(reason).split())[:200]
@@ -1584,9 +1584,9 @@ def _browser_fenster(fenster: object) -> dict:
             continue
         wc.check_input_target(w["programm"], w["titel"])
         if SEITE_GESPERRT_TITEL.search(w["titel"] or ""):
-            raise ValueError("Passwort-, Zugangsdaten- und Zahlungsseiten liest WAMO nicht")
+            raise ValueError("Passwort-, Zugangsdaten- und Zahlungsseiten liest W.A.I.S. nicht")
         return w
-    raise ValueError("Es ist nur die eigene Oberfläche als Browserfenster offen: die liest WAMO nicht")
+    raise ValueError("Es ist nur die eigene Oberfläche als Browserfenster offen: die liest W.A.I.S. nicht")
 
 
 @mcp.tool()
@@ -1641,7 +1641,7 @@ def element_klicken(element: int, fenster: str = "", beschreibung: str = "") -> 
         ziel = _uia_fenster(fenster)
         liste, knoten = UIA.holen(ziel["hwnd"], ziel["programm"], element)
         if knoten.geschuetzt:
-            raise uia_control.UiaFehler("Passwortfelder bedient WAMO nicht.")
+            raise uia_control.UiaFehler("Passwortfelder bedient W.A.I.S. nicht.")
     except (ValueError, TypeError) as e:
         return _uia_abgelehnt("element_klicken", fenster, e, nummer=str(element)[:10])
     ziel_audit = {"ziel": ziel["titel"][:120], "programm": ziel["programm"], "nummer": element,
@@ -1784,7 +1784,7 @@ def parse_repo(repo: object) -> tuple[str, str]:
     if not GITHUB_OWNER_RE.fullmatch(besitzer):
         raise ValueError("Ungültiger GitHub-Besitzer")
     if besitzer.lower() not in github_klonen_von():
-        raise ValueError(f"Aus dem Konto {besitzer} klont WAMO nicht (erlaubt: {', '.join(sorted(github_klonen_von()))})")
+        raise ValueError(f"Aus dem Konto {besitzer} klont W.A.I.S. nicht (erlaubt: {', '.join(sorted(github_klonen_von()))})")
     return besitzer, validate_repo_name(name)
 
 
@@ -1955,7 +1955,7 @@ def _klonen_gesperrt(besitzer: str, name: str, voll: str, ziel: Path) -> dict:
                         "vorhanden": True}
             _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "anderes Remote oder unvollständig"})
             return {"status": "error", "summary": f"Im Ordner {ziel.name} liegt ein anderes oder unvollständiges Repository. "
-                    "Dorthin klont WAMO nicht; die Person räumt den Ordner selbst auf."}
+                    "Dorthin klont W.A.I.S. nicht; die Person räumt den Ordner selbst auf."}
         if vorhanden and (not ziel.is_dir() or any(ziel.iterdir())):
             _audit({"tool": "git_klonen", "repo": voll, "risk": "rejected", "grund": "Ordner belegt"})
             return {"status": "error", "summary": f"Den Ordner {ziel.name} gibt es schon und er ist kein Git-Repository."}

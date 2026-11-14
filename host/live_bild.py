@@ -54,7 +54,7 @@ BILD_BYTES_MAX = 110_000
 GRUENDE = {
     "nicht_eingerichtet": "Dieser Laptop ist nicht für das Live-Bild eingerichtet.",
     "stufe": "Dieser Laptop gehört keinem Admin. Ein Live-Bild gibt es hier nie.",
-    "schalter_aus": "Am Laptop ist das Live-Bild aus. Die Person am Laptop schaltet es im Tray-Menü von WAMO ein.",
+    "schalter_aus": "Am Laptop ist das Live-Bild aus. Die Person am Laptop schaltet es im Tray-Menü von W.A.I.S. ein.",
     "keine_einwilligung": "Die Einwilligung am Laptop fehlt noch. Die Person am Laptop muss sie erst geben.",
     "abgelaufen": "Die Zeit des Live-Bilds am Laptop ist abgelaufen. Die Person am Laptop schaltet es erneut ein.",
     "hinweis_fehlt": "Der Hinweis am Laptop ist nicht sichtbar. Ohne ihn gibt es kein Bild.",
