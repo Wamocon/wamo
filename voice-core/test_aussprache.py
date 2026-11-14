@@ -22,7 +22,7 @@ from pipecat.utils.text.base_text_aggregator import AggregationType
 
 import aussprache
 from aussprache import FIRMA_TTS, fuer_sprachausgabe
-from persona import NAME_ANZEIGE, NAME_BUCHSTABIERT, NAME_BUCHSTABIERT_TTS, NAME_KURZ, NAME_LANG, NAME_TTS
+from persona import NAME_ANZEIGE, NAME_BUCHSTABIERT, NAME_BUCHSTABIERT_TTS, NAME_KURZ, NAME_LANG, NAME_LANG_DE, NAME_TTS
 
 HIER = Path(__file__).resolve().parent
 ALTER_NAME = re.compile(r"\bWAMO\b(?![_-])")
@@ -83,9 +83,15 @@ class FuerSprachausgabeTests(unittest.TestCase):
         self.assertEqual(fuer_sprachausgabe(NAME_LANG), "Wamokons Artificial Intelligence System")
         self.assertEqual(fuer_sprachausgabe("WAMOCON's Artificial Intelligence System"), "Wamokons Artificial Intelligence System")
         self.assertEqual(FIRMA_TTS, "Wamokons")
-        for text in ("Die WAMOCON GmbH in Eschborn.", "bei der WAMOCON", "WAMOCONs künstliches intelligentes System"):
+        for text in ("Die WAMOCON GmbH in Eschborn.", "bei der WAMOCON", "WAMOCON-Projekte"):
             with self.subTest(text=text):
                 self.assertEqual(fuer_sprachausgabe(text), text)
+
+    def test_deutscher_genitiv_der_firma(self):
+        # Hörprobe: die deutsche Langform klang mit "Wamokons" richtig
+        self.assertEqual(fuer_sprachausgabe(NAME_LANG_DE), "Wamokons künstliches intelligentes System")
+        self.assertEqual(fuer_sprachausgabe("Ich bin WAMOCONs System."), "Ich bin Wamokons System.")
+        self.assertEqual(fuer_sprachausgabe("WAMOCONSULT"), "WAMOCONSULT")
 
     def test_langform_komplett(self):
         satz = f"Ich bin {NAME_KURZ}, ausgeschrieben {NAME_LANG}, kurz {NAME_ANZEIGE}"

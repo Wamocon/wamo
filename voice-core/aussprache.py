@@ -3,7 +3,8 @@
 Der Assistent heißt geschrieben W.A.I.S., kurz Wais, gesprochen wie das englische "ways". Die deutsche Stimme liest "Wais"
 wie "weiß" und "W.A.I.S." als einzelne Buchstaben; das englische "ways" trifft sie nur mit der Schreibweise NAME_TTS
 (persona.py, Hörprobe vom 14.11.2026). In der englischen Langform liest sie "WAMOCON’s" als "Waymo Cons", "Wamokons" klingt
-wie die Firma. "WAMOCON GmbH" liest sie schon richtig, das bleibt. Buchstabiert schreibt das Modell "W, A, I, S"
+wie die Firma; die deutsche Langform "WAMOCONs" bekommt dieselbe Schreibweise. "WAMOCON GmbH" liest sie schon richtig, das
+bleibt. Buchstabiert schreibt das Modell "W, A, I, S"
 (NAME_BUCHSTABIERT); die Stimme soll die Buchstaben gemischt deutsch und englisch sprechen und bekommt dafür
 NAME_BUCHSTABIERT_TTS, ebenso für die Varianten "W-A-I-S", "W. A. I. S." und "W A I S".
 
@@ -24,7 +25,7 @@ import re
 
 from persona import NAME_BUCHSTABIERT, NAME_BUCHSTABIERT_TTS, NAME_TTS
 
-FIRMA_TTS = "Wamokons"  # "WAMOCON’s" (englische Langform) für die Stimme
+FIRMA_TTS = "Wamokons"  # "WAMOCON’s" (englische Langform) und "WAMOCONs" (deutsche Langform) für die Stimme
 
 # Die Buchstaben des Namens (aus NAME_BUCHSTABIERT) mit immer demselben Trenner: "W, A, I, S", "W-A-I-S", "W. A. I. S." oder
 # "W A I S". Nur genau diese Folge als eigenes Wort; der Punkt hinter dem letzten Buchstaben gehört zur Form "W. A. I. S.".
@@ -39,7 +40,7 @@ _ANZEIGE = re.compile(r"(?<![\w.])W\.A\.I\.S\b(\.?)")
 # Die Kurzform als ganzes Wort, gleich in welcher Schreibung ("Wais", "wais", "WAIS"); "Waise" und "weiß" bleiben
 _KURZ = re.compile(r"\bwais\b", re.IGNORECASE)
 # Englischer Genitiv der Firma mit geradem oder typografischem Apostroph
-_FIRMA_GENITIV = re.compile(r"\bWAMOCON['’]s\b", re.IGNORECASE)
+_FIRMA_GENITIV = re.compile(r"\bWAMOCON(?:['’]s|s)\b", re.IGNORECASE)
 
 
 def _am_ende(treffer: re.Match[str]) -> bool:
@@ -61,7 +62,7 @@ def _buchstabiert(treffer: re.Match[str]) -> str:
 
 def fuer_sprachausgabe(text: str) -> str:
     """Der Text, wie ihn die Stimme bekommt: W.A.I.S. und Wais werden NAME_TTS, der buchstabierte Name
-    NAME_BUCHSTABIERT_TTS, "WAMOCON’s" wird "Wamokons"."""
+    NAME_BUCHSTABIERT_TTS, "WAMOCON’s" und "WAMOCONs" werden "Wamokons"."""
     if not text:
         return text
     text = _BUCHSTABIERT.sub(_buchstabiert, text)
