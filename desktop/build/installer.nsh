@@ -10,9 +10,13 @@
 ; Rechte (S-1-15-2-...), aber nicht "ALLE ANWENDUNGSPAKETE". Dann verweigert Windows dem Sandbox-Prozess von Electron das
 ; Lesen, und die App bricht beim Start mit einem Fatal-Fehler ab (install_dir_access.cc). Der Benutzer ist Besitzer seines
 ; Ordners, deshalb braucht das keine Adminrechte. Nur dieser Ordner, nur Lesen und Ausführen.
+; Danach der Shell melden, dass sich Symbole geändert haben (SHCNE_ASSOCCHANGED): Sonst zeigen Startmenü und Taskleiste aus
+; dem Zwischenspeicher von Windows ein leeres Datei-Symbol statt des neuen App-Symbols. electron-builder meldet das nur beim
+; Anlegen einer Desktop-Verknüpfung, die es hier nicht gibt (createDesktopShortcut: false).
 !macro customInstall
   nsExec::Exec '"$SYSDIR\icacls.exe" "$INSTDIR" /grant *S-1-15-2-1:(OI)(CI)(RX)'
   Pop $0
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0x0000, p 0, p 0)'
 !macroend
 
 !macro customUnInstall

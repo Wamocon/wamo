@@ -183,3 +183,12 @@ test("Der Installer gibt ALLE ANWENDUNGSPAKETE Lesezugriff auf den Installations
   assert.match(nsh, /icacls\.exe" "\$INSTDIR" \/grant \*S-1-15-2-1:\(OI\)\(CI\)\(RX\)/);
   assert.doesNotMatch(nsh, /\/grant[^\n]*(F|M|W)\)/, "nur Lesen und Ausführen");
 });
+
+test("Der Installer meldet der Shell neue Symbole (SHCNE_ASSOCCHANGED), sonst zeigt Windows ein leeres Datei-Symbol", () => {
+  const nsh = fs.readFileSync(path.join(__dirname, "build", "installer.nsh"), "utf8");
+  const install = nsh.match(/!macro customInstall\r?\n([\s\S]*?)!macroend/);
+  assert.ok(install, "customInstall fehlt");
+  assert.match(install[1], /System::Call 'shell32::SHChangeNotify\(i 0x08000000, i 0x0000, p 0, p 0\)'/);
+  // electron-builder meldet es nur beim Anlegen einer Desktop-Verknüpfung, und die gibt es hier nicht
+  assert.equal(paket.build.nsis.createDesktopShortcut, false);
+});
