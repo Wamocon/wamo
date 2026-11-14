@@ -39,8 +39,11 @@ NAME_KURZ = "Wais"
 NAME_LANG = "WAMOCON’s Artificial Intelligence System"
 NAME_LANG_DE = "WAMOCONs künstliches intelligentes System"
 NAME_TTS = "Ways"
-# So buchstabiert der Assistent seinen Namen (die Persona nutzt es); kann sich nach einer weiteren Hörprobe noch ändern.
+# So schreibt der Assistent seinen Namen beim Buchstabieren (die Persona nutzt es, so steht er im Verlauf). Die Stimme bekommt
+# dafür NAME_BUCHSTABIERT_TTS (aussprache.py): die Buchstaben gemischt deutsch und englisch in zwei Paaren mit nur einem Komma,
+# das klingt schneller (Hörprobe, rund 35 % kürzer; die Spracherkennung hört weiter W-A-I-S).
 NAME_BUCHSTABIERT = "W, A, I, S"
+NAME_BUCHSTABIERT_TTS = "Weh Ej, Ei Es"
 NAME_FRUEHER = "WAMO"
 # So schreibt die Spracherkennung den Namen, wenn jemand ihn wie das englische "ways" ausspricht; jede Form ist eine Anrede,
 # der frühere Name auch. Es gibt keine Prüfung im Code, ob der Assistent angesprochen wurde: das entscheidet das Modell.

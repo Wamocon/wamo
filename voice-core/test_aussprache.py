@@ -22,7 +22,7 @@ from pipecat.utils.text.base_text_aggregator import AggregationType
 
 import aussprache
 from aussprache import FIRMA_TTS, fuer_sprachausgabe
-from persona import NAME_ANZEIGE, NAME_BUCHSTABIERT, NAME_KURZ, NAME_LANG, NAME_TTS
+from persona import NAME_ANZEIGE, NAME_BUCHSTABIERT, NAME_BUCHSTABIERT_TTS, NAME_KURZ, NAME_LANG, NAME_TTS
 
 HIER = Path(__file__).resolve().parent
 ALTER_NAME = re.compile(r"\bWAMO\b(?![_-])")
@@ -56,11 +56,28 @@ class FuerSprachausgabeTests(unittest.TestCase):
         self.assertEqual(fuer_sprachausgabe("Ich bin W.A.I.S. "), "Ich bin Ways. ")
         self.assertEqual(fuer_sprachausgabe("Das W.A.I.S.-Profil ist aktiv."), "Das Ways-Profil ist aktiv.")
         self.assertEqual(fuer_sprachausgabe("W.A.I.S, kurz"), "Ways, kurz")
-        self.assertEqual(fuer_sprachausgabe("W. A. I. S."), "W. A. I. S.")  # mit Leerzeichen kein Name
 
-    def test_buchstabieren_bleibt(self):
-        text = f"Man schreibt mich {NAME_BUCHSTABIERT}."
-        self.assertEqual(fuer_sprachausgabe(text), text)
+    def test_buchstabiert_bekommt_die_stimme_den_eigenen_wert(self):
+        self.assertEqual(NAME_BUCHSTABIERT, "W, A, I, S")
+        self.assertEqual(NAME_BUCHSTABIERT_TTS, "Weh Ej, Ei Es")
+        self.assertEqual(fuer_sprachausgabe(f"Man schreibt mich {NAME_BUCHSTABIERT}."), "Man schreibt mich Weh Ej, Ei Es.")
+        self.assertEqual(fuer_sprachausgabe("„W, A, I, S“, also Wais."), "„Weh Ej, Ei Es“, also Ways.")
+        self.assertEqual(fuer_sprachausgabe("Das ist W. A. I. S. Das war es."), "Das ist Weh Ej, Ei Es. Das war es.")
+        self.assertEqual(fuer_sprachausgabe("Erst W. A. I. S. und dann"), "Erst Weh Ej, Ei Es und dann")
+        for variante in ("W-A-I-S", "W. A. I. S.", "W A I S"):
+            with self.subTest(variante=variante):
+                self.assertEqual(fuer_sprachausgabe(f"Buchstabiert {variante} und fertig"), "Buchstabiert Weh Ej, Ei Es und fertig")
+                self.assertEqual(fuer_sprachausgabe(f"Buchstabiert {variante}"),
+                                 "Buchstabiert Weh Ej, Ei Es" + ("." if variante.endswith(".") else ""))
+
+    def test_buchstabiert_nur_genau_diese_folge(self):
+        for text in ("W, A, I, T", "W, A, I, S, T", "W-A-I", "W, A-I S", "AW A I S", "W A I Sonne", "W-A-I-S-Profil"):
+            with self.subTest(text=text):
+                self.assertEqual(fuer_sprachausgabe(text), text)
+
+    def test_buchstabiert_wert_kommt_aus_der_konstante(self):
+        with mock.patch.object(aussprache, "NAME_BUCHSTABIERT_TTS", "W-Ey-Ai-S"):
+            self.assertEqual(fuer_sprachausgabe("W, A, I, S"), "W-Ey-Ai-S")
 
     def test_englischer_genitiv_der_firma(self):
         self.assertEqual(fuer_sprachausgabe(NAME_LANG), "Wamokons Artificial Intelligence System")
@@ -98,26 +115,30 @@ class VerlaufBehaeltKurzformTests(unittest.IsolatedAsyncioTestCase):
                                    schluessel="k", client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
                                    sample_rate=24000)
         aussprache.anhaengen(dienst)
-        unten, _ = await run_test(dienst, frames_to_send=[TTSSpeakFrame("Hallo Erika, Wais ist bereit.")])
-        self.assertEqual([a["input"].strip() for a in anfragen], ["Hallo Erika, Ways ist bereit."])
+        saetze = ["Hallo Erika, Wais ist bereit.", "Man schreibt mich W, A, I, S."]
+        unten, _ = await run_test(dienst, frames_to_send=[TTSSpeakFrame(s) for s in saetze])
+        self.assertEqual([a["input"].strip() for a in anfragen],
+                         ["Hallo Erika, Ways ist bereit.", "Man schreibt mich Weh Ej, Ei Es."])
         texte = [f.text for f in unten if isinstance(f, TTSTextFrame)]
-        self.assertEqual(texte, ["Hallo Erika, Wais ist bereit."])
+        self.assertEqual(texte, saetze)  # angezeigt und im Verlauf bleibt Wais und W, A, I, S
 
     async def test_sprachausgabe_mit_wortzeitstempeln(self):
         """Soniox: Pipecat ordnet das gesprochene Wort NAME_TTS der Kurzform zu. Der Verlauf nimmt raw_text, die Untertitel
         (bot-output) den Fortschritt im angezeigten Text."""
-        original = f"Hallo Erika, {NAME_KURZ} ist bereit."
-        seq = AggregatedFrameSequencer()
-        quelle = AggregatedTextFrame(original, AggregationType.SENTENCE, raw_text=original)
-        await seq.register_spoken(quelle, "k1", fuer_sprachausgabe(original), append_to_context=True)
-        frames = []
-        for wort in fuer_sprachausgabe(original).split():
-            frames += seq.process_word(wort, 1000, "k1")
-        verlauf = "".join(f.raw_text if f.raw_text else f.text for f in frames if isinstance(f, TTSTextFrame))
-        self.assertEqual(verlauf.replace(" ", ""), original.replace(" ", ""))
-        fortschritt = [f for f in frames if isinstance(f, AggregatedTextProgressFrame)]
-        self.assertEqual(fortschritt[-1].accumulated_text, original)
-        self.assertTrue(all(NAME_TTS not in f.accumulated_text for f in fortschritt))
+        for original in (f"Hallo Erika, {NAME_KURZ} ist bereit.", f"Man schreibt mich {NAME_BUCHSTABIERT}."):
+            with self.subTest(original=original):
+                seq = AggregatedFrameSequencer()
+                quelle = AggregatedTextFrame(original, AggregationType.SENTENCE, raw_text=original)
+                await seq.register_spoken(quelle, "k1", fuer_sprachausgabe(original), append_to_context=True)
+                frames = []
+                for wort in fuer_sprachausgabe(original).split():
+                    frames += seq.process_word(wort, 1000, "k1")
+                verlauf = "".join(f.raw_text if f.raw_text else f.text for f in frames if isinstance(f, TTSTextFrame))
+                self.assertEqual(verlauf.replace(" ", ""), original.replace(" ", ""))
+                fortschritt = [f for f in frames if isinstance(f, AggregatedTextProgressFrame)]
+                self.assertEqual(fortschritt[-1].accumulated_text, original)
+                for tts_wert in (NAME_TTS, NAME_BUCHSTABIERT_TTS):
+                    self.assertTrue(all(tts_wert not in f.accumulated_text for f in fortschritt))
 
 
 class GesprocheneTexteTests(unittest.TestCase):
