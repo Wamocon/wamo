@@ -1,8 +1,8 @@
 """Stimmabdruck einlernen: 20 Sekunden reine Sprache aufnehmen, in Stücke von 3 s teilen, den Mittelwert als Abdruck speichern.
 
 Das Einlernen beginnt nur auf Klick in der angemeldeten Oberfläche (Client-Nachricht stimmabdruck mit aktion start und gültiger Einwilligung,
-siehe stimme_sitzung.py), nie per Sprache: sonst könnte eine fremde Stimme den Abdruck ersetzen. Gibt es schon einen Abdruck, muss die Person
-im Modus streng vorher an der Stimme erkannt sein. Während der Aufnahme hört die Spracherkennung nur Stille (der Aufrufer ersetzt den Ton,
+siehe stimme_sitzung.py), nie per Sprache: sonst könnte eine fremde Stimme den Abdruck ersetzen. Gibt es schon einen Abdruck (oder gab es in
+dieser Sitzung einen), braucht es außer im Modus aus einen Nachweis: die Person ist gerade an der Stimme erkannt oder frisch angemeldet. Während der Aufnahme hört die Spracherkennung nur Stille (der Aufrufer ersetzt den Ton,
 wenn sammeln True meldet), WAMO antwortet also nicht auf den Vorlesetext.
 
 Ablauf: starten (Modell laden, Anleitung sprechen) -> sammeln je Tonpaket bis ZIEL_SECS reine Sprache -> rechnen (Stücke, Mittelwert,
@@ -44,7 +44,10 @@ ZU_UNRUHIG = "Die Aufnahme war zu unruhig. Bitte noch einmal, am besten ohne and
 KEIN_MODELL = "Das Modell für die Stimmerkennung ist gerade nicht verfügbar. Bitte versuch es später noch einmal."
 NICHT_GESPEICHERT = "Ich konnte den Stimmabdruck nicht speichern. Bitte versuch es später noch einmal."
 NICHT_GEKLAPPT = "Das Einlernen hat nicht geklappt. Bitte versuch es später noch einmal."
-ERST_ERKENNEN = "Sag erst kurz etwas in einem ganzen Satz, damit ich dich erkenne. Dann lerne ich deine Stimme neu ein."
+ERST_ERKENNEN = (
+    "Zum Ersetzen deines Stimmabdrucks muss ich dich erst an der Stimme erkennen: Sag kurz etwas in einem ganzen Satz. "
+    "Oder bitte neu anmelden, mit zweitem Faktor, dann geht es auch."
+)
 
 Speichern = Callable[[np.ndarray, str, datetime], Awaitable[bool]]
 
@@ -73,8 +76,10 @@ class Einlernen:
         sagen: Callable[[str], Awaitable[None]],
         speichern: Speichern,
         uhr: Callable[[], float] = time.time,
+        nachweis: Callable[[], bool] | None = None,
     ):
         self._gate = gate
+        self._nachweis = nachweis or gate.stimme_vertraut  # wer einen Abdruck ersetzt, muss das nachweisen (stimme_sitzung.py)
         self._modell = modell
         self._senden = senden
         self._sagen = sagen
@@ -109,9 +114,9 @@ class Einlernen:
     async def starten(self, version: str, einwilligung_am: datetime) -> None:
         if self.beschaeftigt:
             return
-        if self._gate.hat_abdruck and self._gate.modus == "streng" and not self._gate.stimme_vertraut():
-            # Ersetzen nur, wenn die Person gerade an der Stimme erkannt ist: wer nur an der angemeldeten Oberfläche sitzt,
-            # soll den Abdruck nicht dauerhaft auf sich umschreiben können.
+        if self._gate.abdruck_geschuetzt and self._gate.modus != "aus" and not self._nachweis():
+            # Ersetzen (auch nach dem Löschen in dieser Sitzung) nur mit Nachweis: die Person ist gerade an der Stimme erkannt oder
+            # frisch mit zweitem Faktor angemeldet. Wer nur an der angemeldeten Oberfläche sitzt, soll den Abdruck nicht umschreiben können.
             await self._fehler(ERST_ERKENNEN)
             return
         gen = self._gen

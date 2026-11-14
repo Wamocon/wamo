@@ -61,6 +61,7 @@ ERLAUBT = set(PFLICHT) | {
     # Stimmabdruck (voice-core/stimme_gate.py, stimme_modell.py): Modus (aus, beobachten, streng), Schwellen und Pfad der Modelldatei
     # (Standard /var/cache/wamo-core/wamo/sprecher/nemo_en_titanet_large.onnx). Keine Geheimnisse.
     "WAMO_STIMME_PRUEFUNG", "WAMO_STIMME_EIGEN_MIN", "WAMO_STIMME_FREMD_MAX", "WAMO_STIMME_MIN_SECS", "WAMO_STIMME_VERTRAUEN_SECS",
+    "WAMO_STIMME_KURZ_VERTRAUEN_SECS",
     "WAMO_STIMME_MODELL",
     # Sprachpakete A und B (voice-core/soniox_tts.py, persona.py, bot.py, learning.py, soft_interrupt.py, ja_waechter.py):
     # Tempo und Pausen der Stimme, Leerzeichen am Satzende, Persona, Pausen-Texte, Lernen, Rückmeldelaut bei Werkzeug, Ja-Wächter

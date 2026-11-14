@@ -10,6 +10,8 @@ Verworfen wird nur, wenn alles zutrifft: Modus streng, Abdruck und Modell bereit
 Äußerung hatte genug Sprache (min_secs) und WAMO sprach nicht gleichzeitig (sonst ist das Urteil unklar, siehe StimmGate.einstufen). Alles
 andere geht durch: unklar, kurz, kein Urteil in der Frist (Zeitüberschreitung gilt als unklar), beobachten, aus, kein Abdruck. Werkzeuge bleiben
 dann trotzdem gesperrt, wenn die Stimme nicht sicher erkannt ist (StimmGate.pruefen).
+Eine Äußerung, die so durchgeht, aber nicht sicher die Stimme der Person war, färbt in bot.py den Zug wie Fremdinhalte
+(StimmGate.nicht_sicher_eigen): kein Lernen, kein Hinweis des Ja-Wächters, Markierung im Protokoll.
 
 Verwerfen heißt: Das Transkript wird durch ein Leerzeichen ersetzt. Der Zug des Nutzers endet dann leer: kein Satz im Verlauf, nichts für
 das Gedächtnis, kein Aufruf des Modells. bot.py kehrt in on_user_turn_stopped für einen solchen Zug zurück (zug_verworfen). Dazu geht
@@ -32,6 +34,11 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from stimme_gate import FREMD, StimmGate
 
 WARTEN_SECS = 1.5  # so lange hält das endgültige Transkript höchstens auf das Urteil
+SATZZEICHEN = (".", "!", "?", "…")  # so endet ein fertiger Satz im Transkript
+
+
+def _satz_fertig(text: str) -> bool:
+    return text.rstrip().endswith(SATZZEICHEN)
 
 
 class StimmWaechter(FrameProcessor):
@@ -53,8 +60,11 @@ class StimmWaechter(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TranscriptionFrame) and self._aktiv():
-            frame = await self._pruefen(frame)
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TranscriptionFrame):
+            if _satz_fertig(frame.text):
+                self._pruefer.satz_ende()  # was danach gesprochen wird, gehört nicht mehr zu diesem Satz (auch wenn er verworfen wird)
+            if self._aktiv():
+                frame = await self._pruefen(frame)
         await self.push_frame(frame, direction)
 
     async def _pruefen(self, frame: TranscriptionFrame) -> TranscriptionFrame:

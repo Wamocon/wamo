@@ -307,7 +307,7 @@ class FuellwortSpieler(FrameProcessor):
             elif isinstance(frame, FunctionCallInProgressFrame):
                 self._werkzeuge_gestartet([frame.tool_call_id])
             elif isinstance(frame, (FunctionCallResultFrame, FunctionCallCancelFrame)):
-                self._werkzeuge.discard(frame.tool_call_id)
+                self._werkzeug_beendet(frame.tool_call_id)
             elif isinstance(frame, LLMMarkerFrame) and frame.marker == MARKER_UNFERTIG_KURZ:
                 await self.vielleicht_mhm()
 
@@ -326,7 +326,16 @@ class FuellwortSpieler(FrameProcessor):
         self._werkzeuge.update(k for k in kennungen if k)
         if self._werkzeug and self._werkzeug_seit is None:
             self._werkzeug_seit = self._uhr()
-            self._waechter = self.create_task(self._werkzeuge_beobachten(), name="fuellwort")
+            if self._waechter is None or self._waechter.done():  # ein noch laufender Beobachter sieht das neue Werkzeug selbst
+                self._waechter = self.create_task(self._werkzeuge_beobachten(), name="fuellwort")
+
+    def _werkzeug_beendet(self, kennung: str) -> None:
+        """Ergebnis oder Abbruch eines Werkzeugs. Ist keines mehr offen, zählt ein nächstes Werkzeug im selben Zug (ohne neuen Satz
+        der Person) wieder ab seinem eigenen Beginn und wird beobachtet: vom alten Beobachter, wenn der noch läuft, sonst von einem
+        neuen."""
+        self._werkzeuge.discard(kennung)
+        if not self._werkzeuge:
+            self._werkzeug_seit = None
 
     def soll_fuellen(self) -> bool:
         """Erstes Füllwort: noch nichts gesagt, nichts unterwegs, niemand spricht."""

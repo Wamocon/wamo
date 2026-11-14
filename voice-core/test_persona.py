@@ -414,6 +414,27 @@ class PersonaNatuerlichTests(unittest.TestCase):
             self.assertIn("Sprechen mehrere Personen", text)
             self.assertIn("Dein Name", text)
 
+    def test_beide_sprechweisen_schuetzen_die_sprachausgabe(self):
+        """Klammern, Gedankenstriche und Aufzählungen klingen in der Sprachausgabe falsch: die Regel gilt auch natürlich."""
+        regel = "Keine Klammern, keine Gedankenstriche, kein „erstens, zweitens“: reih mit „und“ und „dann“ auf."
+        for natuerlich in (True, False):
+            with self.subTest(natuerlich=natuerlich):
+                self.assertIn(regel, build_system_prompt("Max", "du", natuerlich=natuerlich))
+
+    def test_gemeinsame_teile_stehen_einmal_und_gelten_fuer_beide(self):
+        import persona
+
+        teile = [persona.KOPF, persona.OHNE_KLAMMERN, persona.SPRACHE_UND_ERKENNUNG, persona.ANPASSEN, persona.GESPRAECH]
+        for teil in teile:
+            with self.subTest(teil=teil[:40]):
+                self.assertTrue(teil.strip())
+                self.assertEqual(persona.BASE_VOR.count(teil), 1)
+                self.assertEqual(persona.BASE_VOR_NATUERLICH.count(teil), 1)
+        self.assertTrue(persona.BASE_VOR.startswith(persona.KOPF))
+        self.assertTrue(persona.BASE_VOR_NATUERLICH.startswith(persona.KOPF))
+        self.assertTrue(persona.BASE_VOR.endswith(persona.GESPRAECH))
+        self.assertTrue(persona.BASE_VOR_NATUERLICH.endswith(persona.GESPRAECH))
+
     def test_ohne_gedankenstriche_und_markdown(self):
         from persona import BASE_VOR_NATUERLICH
 

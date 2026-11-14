@@ -58,8 +58,9 @@ class EinstufungTests(unittest.TestCase):
     def test_einstufung(self):
         gate = StimmGate()
         self.assertEqual(gate.einstufen(0.7, 2.0, False), EIGEN)
-        self.assertEqual(gate.einstufen(0.9, 0.5, False), KURZ)  # zu kurz für "eigen"
-        self.assertEqual(gate.einstufen(0.4, 0.5, False), KURZ)
+        self.assertEqual(gate.einstufen(0.9, 0.5, False), KURZ)  # zu kurz für "eigen", klingt aber nach der Person
+        self.assertEqual(gate.einstufen(0.4, 0.5, False), UNKLAR)  # kurz und nicht nach der Person: das Vertrauen geht
+        self.assertEqual(gate.einstufen(0.4, 0.5, True), UNKLAR)
         self.assertEqual(gate.einstufen(0.1, 0.5, False), FREMD)  # auch kurz klar fremd
         self.assertEqual(gate.einstufen(0.1, 2.0, False), FREMD)
         self.assertEqual(gate.einstufen(0.1, 2.0, True), UNKLAR)  # WAMO sprach gleichzeitig, es kann Echo sein
@@ -87,6 +88,62 @@ class VertrauenTests(unittest.TestCase):
         self.assertIsNone(gate.grund_der_stimme())
         uhr.t += gate.schwellen.vertrauen_secs + 1
         self.assertIsNotNone(gate.grund_der_stimme())
+
+    def test_vertrauen_aus_kurzen_aeusserungen_gilt_hoechstens_15_sekunden(self):
+        uhr = Uhr()
+        gate = bereites_gate(uhr=uhr)
+        gate.eintragen(EIGEN)
+        uhr.t += 10
+        gate.eintragen(KURZ)
+        self.assertIsNone(gate.grund_der_stimme())
+        uhr.t += 4  # 14 s nach der sicheren Erkennung
+        gate.eintragen(KURZ)  # eine weitere kurze Äußerung verlängert nichts
+        self.assertIsNone(gate.grund_der_stimme())
+        uhr.t += 2  # 16 s
+        self.assertEqual(gate.grund_der_stimme(), "Stimme nur kurz gehört, nicht sicher erkannt")
+        gate.eintragen(EIGEN)  # eine sichere Erkennung erneuert das Vertrauen
+        self.assertIsNone(gate.grund_der_stimme())
+
+    def test_ohne_kurze_aeusserung_gilt_das_vertrauen_bis_zur_langen_frist(self):
+        uhr = Uhr()
+        gate = bereites_gate(uhr=uhr)
+        gate.eintragen(EIGEN)
+        uhr.t += 60
+        self.assertIsNone(gate.grund_der_stimme())
+
+    def test_kurze_aeusserung_nach_getipptem_text_gilt_ebenfalls_hoechstens_15_sekunden(self):
+        uhr = Uhr()
+        gate = bereites_gate(uhr=uhr)
+        gate.getippt()
+        gate.eintragen(KURZ)
+        uhr.t += 16
+        self.assertIsNotNone(gate.grund_der_stimme())
+
+    def test_kurz_ohne_vorheriges_vertrauen_gibt_keines(self):
+        gate = bereites_gate()
+        gate.eintragen(KURZ)
+        self.assertEqual(gate.grund_der_stimme(), "Stimme noch nicht erkannt")
+
+    def test_getippt_erneuert_das_kurz_vertrauen(self):
+        uhr = Uhr()
+        gate = bereites_gate(uhr=uhr)
+        gate.eintragen(EIGEN)
+        gate.eintragen(KURZ)
+        uhr.t += 20
+        self.assertIsNotNone(gate.grund_der_stimme())
+        gate.getippt()
+        self.assertIsNone(gate.grund_der_stimme())
+
+    def test_loeschen_des_abdrucks_loescht_auch_den_kurz_zustand(self):
+        uhr = Uhr()
+        gate = bereites_gate(uhr=uhr)
+        gate.eintragen(EIGEN)
+        gate.eintragen(KURZ)
+        gate.setze_abdruck(None)
+        gate.setze_abdruck(ABDRUCK)
+        gate.eintragen(EIGEN)
+        uhr.t += 20
+        self.assertIsNone(gate.grund_der_stimme())  # ein neuer Abdruck beginnt ohne Rest des alten Zustands
 
     def test_unklar_mit_genug_sprache_entzieht_das_vertrauen(self):
         gate = bereites_gate()
@@ -128,6 +185,73 @@ class VertrauenTests(unittest.TestCase):
         a.eintragen(FREMD)
         self.assertEqual(a.grund_der_stimme(), "fremde Stimme")
         self.assertEqual(b.grund_der_stimme(), "Stimme noch nicht erkannt")
+
+
+class AbdruckGeschuetztTests(unittest.TestCase):
+    def test_ein_abdruck_schuetzt_auch_nach_dem_loeschen_in_derselben_sitzung(self):
+        gate = StimmGate(modus="streng", uhr=Uhr())
+        self.assertFalse(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(None)  # erster Stand: nichts eingelernt
+        self.assertFalse(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(ABDRUCK)
+        self.assertTrue(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(None, geloescht=True)  # gelöscht: der Schutz bleibt, sonst könnte jemand Fremdes danach neu einlernen
+        self.assertTrue(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(ABDRUCK)  # neu eingelernt
+        self.assertTrue(gate.abdruck_geschuetzt)
+        gate.setze_abdruck(None)  # ein späterer leerer Stand hebt den Schutz nicht auf
+        self.assertTrue(gate.abdruck_geschuetzt)
+
+    def test_ein_nicht_lesbarer_stand_ist_kein_abdruck(self):
+        gate = StimmGate(modus="streng", uhr=Uhr())
+        gate.setze_abdruck(None, ok=False)
+        self.assertFalse(gate.abdruck_geschuetzt)  # der Stand ist unbekannt, das prüft die Sitzung über den Zustand
+
+
+class NichtSicherEigenTests(unittest.IsolatedAsyncioTestCase):
+    """Ein Zug, der nicht sicher von der Person stammt (Abdruck da, Prüfung bereit, Modus streng), gilt als gefärbt."""
+
+    def test_vor_dem_ersten_urteil_und_nach_unklar_oder_fremd(self):
+        gate = bereites_gate()
+        self.assertTrue(gate.nicht_sicher_eigen())  # noch nichts erkannt
+        gate.eintragen(EIGEN)
+        self.assertFalse(gate.nicht_sicher_eigen())
+        for urteil in (UNKLAR, FREMD):
+            gate.eintragen(urteil)
+            self.assertTrue(gate.nicht_sicher_eigen(), urteil)
+
+    def test_kurz_nach_eigen_und_getippter_text_sind_sicher_aber_nur_begrenzt(self):
+        uhr = Uhr()
+        gate = bereites_gate(uhr=uhr)
+        gate.eintragen(EIGEN)
+        gate.eintragen(KURZ)
+        self.assertFalse(gate.nicht_sicher_eigen())
+        uhr.t += 16
+        self.assertTrue(gate.nicht_sicher_eigen())
+        gate.getippt()
+        self.assertFalse(gate.nicht_sicher_eigen())
+
+    async def test_eine_laufende_pruefung_gilt_als_nicht_sicher(self):
+        gate = bereites_gate()
+        gate.eintragen(EIGEN)
+        offen = asyncio.create_task(asyncio.sleep(1))
+        gate.verfolgen(offen)
+        self.assertTrue(gate.nicht_sicher_eigen())
+        offen.cancel()
+        await asyncio.gather(offen, return_exceptions=True)
+        self.assertFalse(gate.nicht_sicher_eigen())
+
+    def test_ohne_abdruck_ohne_bereite_pruefung_und_ausser_streng_aendert_sich_nichts(self):
+        ohne = StimmGate(modus="streng", uhr=Uhr())
+        ohne.setze_abdruck(None)
+        self.assertFalse(ohne.nicht_sicher_eigen())
+        laedt = StimmGate(modus="streng", uhr=Uhr())
+        laedt.setze_abdruck(ABDRUCK)  # Modell noch nicht geladen
+        self.assertFalse(laedt.nicht_sicher_eigen())
+        for modus in ("beobachten", "aus"):
+            gate = bereites_gate(modus)
+            gate.eintragen(FREMD)
+            self.assertFalse(gate.nicht_sicher_eigen(), modus)
 
 
 class StatusTests(unittest.TestCase):
@@ -266,6 +390,21 @@ class SchalterTests(unittest.TestCase):
     def test_fremd_muss_unter_eigen_liegen_sonst_gelten_beide_standardwerte(self):
         with mock.patch.dict("os.environ", {"WAMO_STIMME_EIGEN_MIN": "0.4", "WAMO_STIMME_FREMD_MAX": "0.45"}, clear=True):
             self.assertEqual(schwellen_aus_env(), Schwellen())
+
+    def test_kurz_vertrauen_standard_und_schalter(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(schwellen_aus_env().kurz_vertrauen_secs, 15.0)
+        with mock.patch.dict("os.environ", {"WAMO_STIMME_KURZ_VERTRAUEN_SECS": "30"}, clear=True):
+            self.assertEqual(schwellen_aus_env().kurz_vertrauen_secs, 30.0)
+        for roh in ("0", "-5", "x", "nan", "9999"):
+            with mock.patch.dict("os.environ", {"WAMO_STIMME_KURZ_VERTRAUEN_SECS": roh}, clear=True):
+                self.assertEqual(schwellen_aus_env().kurz_vertrauen_secs, 15.0, roh)
+
+    def test_kurz_vertrauen_bleibt_wenn_fremd_und_eigen_nicht_zusammenpassen(self):
+        umgebung = {"WAMO_STIMME_EIGEN_MIN": "0.4", "WAMO_STIMME_FREMD_MAX": "0.45", "WAMO_STIMME_KURZ_VERTRAUEN_SECS": "30"}
+        with mock.patch.dict("os.environ", umgebung, clear=True):
+            s = schwellen_aus_env()
+        self.assertEqual((s.eigen_min, s.fremd_max, s.kurz_vertrauen_secs), (0.5, 0.3, 30.0))
 
     def test_vertrauen_hat_eine_grenze_nach_unten(self):
         with mock.patch.dict("os.environ", {"WAMO_STIMME_VERTRAUEN_SECS": "0"}, clear=True):

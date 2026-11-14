@@ -151,6 +151,32 @@ class EinlernenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.letzter_status(), "start")
         self.assertTrue(self.e.aktiv)
 
+    async def test_neu_einlernen_geht_auch_mit_einem_anderen_nachweis(self):
+        """Die Sitzung kann statt der erkannten Stimme eine frische Anmeldung mit zweitem Faktor gelten lassen."""
+        self.gate.setze_abdruck(EIGENER)
+        self.gate.modell_ok = True
+        e = Einlernen(self.gate, self.modell, senden=self.e._senden, sagen=self.sagen, speichern=self.speichern, uhr=self.uhr,
+                      nachweis=lambda: True)
+        await e.starten("stimme-1", EINWILLIGUNG_AM)
+        self.assertEqual(self.letzter_status(), "start")
+
+    async def test_neu_einlernen_nach_dem_loeschen_braucht_denselben_nachweis(self):
+        self.gate.setze_abdruck(EIGENER)
+        self.gate.modell_ok = True
+        self.gate.eintragen(EIGEN)
+        self.gate.setze_abdruck(None, geloescht=True)  # gelöscht: die erkannte Stimme gilt danach nicht mehr
+        await self.e.starten("stimme-1", EINWILLIGUNG_AM)
+        self.assertEqual(self.letzter_status(), "fehler")
+        self.assertIn("anmelden", self.meldungen()[-1]["text"])
+        self.assertFalse(self.e.aktiv)
+
+    async def test_neu_einlernen_braucht_den_nachweis_in_jedem_modus_ausser_aus(self):
+        self.gate.setze_abdruck(EIGENER)
+        self.gate.modell_ok = True
+        self.gate.modus = "beobachten"
+        await self.e.starten("stimme-1", EINWILLIGUNG_AM)
+        self.assertEqual(self.letzter_status(), "fehler")
+
     async def test_beim_ersten_einlernen_ist_keine_erkennung_noetig(self):
         await self.e.starten("stimme-1", EINWILLIGUNG_AM)
         self.assertEqual(self.letzter_status(), "start")

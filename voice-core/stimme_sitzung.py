@@ -10,14 +10,18 @@ waechter vor den Aggregator des Nutzers -> vorbereiten (im Hintergrund nach dem 
 Oberfläche) -> nachricht (Client-Nachricht stimmabdruck) -> zug_verworfen (in on_user_turn_stopped).
 
 Nachricht der Oberfläche: {"aktion": "start", "einwilligung": "stimme-1"} | {"aktion": "abbrechen"} | {"aktion": "loeschen"}. Start nur mit genau der
-aktuellen Version der Einwilligung (stimme_einwilligung.py), nur auf Klick, nie per Sprache. Löschen geht immer (auch im Modus aus) und entfernt
-den Abdruck vollständig (DSGVO Art. 17); ein laufendes Einlernen wird vorher beendet, damit danach nichts mehr gespeichert wird.
+aktuellen Version der Einwilligung (stimme_einwilligung.py), nur auf Klick, nie per Sprache. Löschen entfernt den Abdruck vollständig (DSGVO
+Art. 17); ein laufendes Einlernen wird vorher beendet, damit danach nichts mehr gespeichert wird. Löschen, Ersetzen und das neue Einlernen
+nach einem Löschen in derselben Sitzung brauchen (außer im Modus aus, dort geht Löschen immer) einen Nachweis: die Person ist gerade sicher
+an der Stimme erkannt oder die Anmeldung mit zweitem Faktor ist jünger als 10 Minuten (nachweis_ok). Sonst meldet die Sitzung einen Fehler
+und nennt die neue Anmeldung. Ohne Abdruck (nie einer da gewesen) braucht es keinen Nachweis.
 Ohne Datenbank oder im Modus aus ist die Stimmprüfung aus (Status aus); ohne Abdruck wird nie geprüft oder gesperrt.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
@@ -39,6 +43,12 @@ EINWILLIGUNG_FEHLT = "Die Einwilligung fehlt oder gehört zu einem älteren Text
 ABGESCHALTET = "Die Stimmerkennung ist abgeschaltet."
 STAND_UNKLAR = "Ich kann gerade nicht lesen, ob schon ein Stimmabdruck gespeichert ist. Bitte versuch es gleich noch einmal."
 NICHT_GELOESCHT = "Ich konnte den Stimmabdruck nicht löschen. Bitte versuch es später noch einmal."
+ANMELDUNG_FRISCH_SECS = 600.0  # so jung muss die Anmeldung mit zweitem Faktor sein, wenn die Stimme nicht als Nachweis dient
+LOESCHEN_NACHWEIS = (
+    "Zum Löschen deines Stimmabdrucks muss ich dich erst an der Stimme erkennen: Sag kurz etwas in einem ganzen Satz. "
+    "Oder bitte neu anmelden, mit zweitem Faktor, dann geht es auch."
+)
+SPRECHER_UNSICHER = "stimme-unsicher"  # Markierung (Spalte speaker_label) im Gesprächsprotokoll: nicht sicher die Stimme des Profils
 
 
 def nachricht_aus() -> dict:
@@ -61,8 +71,10 @@ class StimmSitzung:
         senden: Callable[[dict], Awaitable[None]],
         sagen: Callable[[str], Awaitable[None]],
         uhr: Callable[[], float] | None = None,
+        wanduhr: Callable[[], float] = time.time,
     ):
         self._identity = identity
+        self._wanduhr = wanduhr  # Unix-Zeit wie der Zeitstempel der Anmeldung im Token (Identity.anmeldung)
         self._memory = memory
         self._modell = modell
         self._senden = senden
@@ -71,7 +83,7 @@ class StimmSitzung:
             logger.info("Stimmprüfung aus: keine Datenbank für das Profil")
             gate.modus = "aus"  # ohne Datenbank gibt es keinen Abdruck, nichts zu prüfen und nichts einzulernen
         kwargs = {"uhr": uhr} if uhr is not None else {}
-        self.pruefer = Stimmpruefer(gate, modell, speichern=self._speichern, sagen=sagen, **kwargs)
+        self.pruefer = Stimmpruefer(gate, modell, speichern=self._speichern, sagen=sagen, nachweis=self.nachweis_ok, **kwargs)
         self.waechter = StimmWaechter(gate, self.pruefer)
 
     @classmethod
@@ -128,6 +140,20 @@ class StimmSitzung:
     def zug_verworfen(self) -> bool:
         return self.waechter.zug_verworfen()
 
+    def anmeldung_frisch(self) -> bool:
+        """Ist die Anmeldung mit zweitem Faktor jünger als ANMELDUNG_FRISCH_SECS? Der Zeitpunkt kommt aus dem Token (auth_gate.anmeldezeit,
+        frühester Eintrag in amr, also Passwort und Code zusammen). Ohne Zeitpunkt gilt sie nicht als frisch."""
+        anmeldung = getattr(self._identity, "anmeldung", None)
+        return anmeldung is not None and 0 <= self._wanduhr() - anmeldung <= ANMELDUNG_FRISCH_SECS
+
+    def nachweis_ok(self) -> bool:
+        """Darf die Person ihren Abdruck ersetzen oder löschen? Wenn sie gerade sicher an der Stimme erkannt ist oder frisch angemeldet."""
+        return self.gate.stimme_vertraut() or self.anmeldung_frisch()
+
+    def nicht_sicher_eigen(self) -> bool:
+        """Der Zug stammt nicht sicher von der Person (stimme_gate.StimmGate.nicht_sicher_eigen): bot.py färbt ihn wie Fremdinhalte."""
+        return self.gate.nicht_sicher_eigen()
+
     # ---------- Client-Nachricht stimmabdruck ----------
 
     async def nachricht(self, daten: object) -> None:
@@ -162,12 +188,16 @@ class StimmSitzung:
         )
 
     async def _loeschen(self) -> None:
+        gate = self.gate
+        if gate.modus != "aus" and (gate.abdruck_geschuetzt or gate.zustand in ("laedt", "kaputt")) and not self.nachweis_ok():
+            await self._fehler(LOESCHEN_NACHWEIS)  # vielleicht gibt es einen Abdruck: nicht ohne Nachweis löschen
+            return
         # Erst das Einlernen beenden und ein schon laufendes Speichern abwarten, sonst käme der Abdruck nach dem Löschen wieder
         await self.pruefer.einlernen_abbrechen()
         await self.pruefer.einlernen_warten()
         if not await abdruck_loeschen(self._memory):
             await self._fehler(NICHT_GELOESCHT)
             return
-        self.gate.setze_abdruck(None)
+        self.gate.setze_abdruck(None, geloescht=True)
         await self._senden({"type": "stimmabdruck", "status": "geloescht"})
         await self.status_melden()

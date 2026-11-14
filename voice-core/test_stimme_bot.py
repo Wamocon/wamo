@@ -11,6 +11,7 @@ import types
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregator
@@ -23,9 +24,11 @@ import memory as m
 import test_smoke_bot as smoke
 from audio_monitor import AudioInputMonitor
 from labor_attrappe import Attrappe
-from stimme_gate import FREMD, MARKE
+from ja_waechter import JaWaechter
+from stimme_gate import EIGEN, FREMD, MARKE, UNKLAR
+from stimme_modell import DIM
 from stimme_pruefer import Stimmpruefer
-from stimme_sitzung import StimmSitzung
+from stimme_sitzung import SPRECHER_UNSICHER, StimmSitzung
 from stimme_waechter import StimmWaechter
 from test_labor_bot import Beobachter, laborprofil
 from test_stimme_speicher import FakeDb
@@ -227,6 +230,59 @@ async def test_ein_zug_mit_text_trotz_markierung_wird_normal_behandelt():
         await abwarten()
         log_turn.assert_awaited_once_with(role="user", content="Mach das Licht an")
         assert session.stimme.zug_verworfen() is False
+    await session.cleanup()
+
+
+def bereit_machen(session):
+    """Profil mit Abdruck, Modell geladen, Modus streng: die Prüfung ist bereit."""
+    gate = session.stimme.gate
+    gate.setze_abdruck(np.eye(DIM, dtype=np.float32)[0])
+    gate.modell_ok = True
+    return gate
+
+
+async def zug_beenden(stufen, text: str):
+    nutzer = next(p for p in stufen if isinstance(p, LLMUserAggregator))
+    await nutzer._call_event_handler("on_user_turn_stopped", None, types.SimpleNamespace(content=text))
+    await abwarten()
+
+
+async def test_nicht_sicher_eigener_zug_ist_gefaerbt_und_im_protokoll_markiert():
+    """Unklar erkannte Äußerung: kein Lernen daraus, kein Hinweis des Ja-Wächters, im Protokoll mit Markierung."""
+    store = m.MemoryStore(USER, BotDb())
+    session, stufen, _llm = await bauen(Identity(USER, "Erika", "mitglied", "sie"), store=store)
+    bereit_machen(session).eintragen(UNKLAR)
+    with mock.patch.object(m.MemoryStore, "log_turn", mock.AsyncMock()) as log_turn:
+        await zug_beenden(stufen, "Merk dir meine Nummer")
+        log_turn.assert_awaited_once_with(role="user", content="Merk dir meine Nummer", speaker_label=SPRECHER_UNSICHER)
+    assert session.turn.tainted is True
+    assert session.turn.section_tainted(0, 5) is True  # das Lernen überspringt den Abschnitt
+    ja = next(p for p in stufen if isinstance(p, JaWaechter))
+    assert ja._gefaerbt() is True  # kein Hinweis "Ja auf Rückfrage"
+    await session.cleanup()
+
+
+async def test_sicher_eigener_zug_bleibt_ungefaerbt_und_ohne_markierung():
+    store = m.MemoryStore(USER, BotDb())
+    session, stufen, _llm = await bauen(Identity(USER, "Erika", "mitglied", "sie"), store=store)
+    bereit_machen(session).eintragen(EIGEN)
+    with mock.patch.object(m.MemoryStore, "log_turn", mock.AsyncMock()) as log_turn:
+        await zug_beenden(stufen, "Mach das Licht an")
+        log_turn.assert_awaited_once_with(role="user", content="Mach das Licht an")
+    assert session.turn.tainted is False and session.turn.taint_marks == []
+    ja = next(p for p in stufen if isinstance(p, JaWaechter))
+    assert not ja._gefaerbt()
+    await session.cleanup()
+
+
+async def test_ohne_abdruck_aendert_sich_nichts_am_zug():
+    store = m.MemoryStore(USER, BotDb())
+    session, stufen, _llm = await bauen(Identity(USER, "Erika", "mitglied", "sie"), store=store)
+    session.stimme.gate.setze_abdruck(None)
+    with mock.patch.object(m.MemoryStore, "log_turn", mock.AsyncMock()) as log_turn:
+        await zug_beenden(stufen, "Hallo WAMO")
+        log_turn.assert_awaited_once_with(role="user", content="Hallo WAMO")
+    assert session.turn.tainted is False
     await session.cleanup()
 
 

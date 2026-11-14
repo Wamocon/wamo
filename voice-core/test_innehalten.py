@@ -115,6 +115,36 @@ class InnehaltenGateTest(_HaltTest):
         self.assertEqual(g.wort_beginnt("das"), SPIELEN)
         self.assertFalse(self.halt.haelt)
 
+    def test_weitersprechen_fruehestens_nach_der_mindestpause_ab_dem_anhalten(self):
+        """Der Ansatz liegt vor dem Anhalten (WAMO wartet auf die Wortgrenze): die Stille zählt ab dem Ansatz, die Mindestpause
+        ab dem Anhalten. Im Log lagen sonst Anhalten und Weitersprechen 0,12 s auseinander."""
+        g = self.gate()
+        g.ansatz(" Danke")  # t=0, keine Wortgrenze in Sicht
+        self.t = 0.45
+        self.assertTrue(g.check_timers())
+        self.assertTrue(self.halt.haelt, "nach grenzwarte_secs hält WAMO ohne Wortgrenze inne")
+        mindest = soft_interrupt.MIN_HALT_SECS
+        self.t = 0.75  # 0,7 s Stille seit dem Ansatz sind um, der Halt dauert erst 0,3 s
+        self.assertTrue(g.check_timers(), "zu früh: erst die Mindestpause abwarten")
+        self.assertTrue(self.halt.haelt)
+        self.t = 0.45 + mindest - 0.01
+        self.assertTrue(g.check_timers())
+        self.assertTrue(self.halt.haelt)
+        self.t = 0.45 + mindest + 0.01
+        self.assertFalse(g.check_timers(), "Mindestpause um und Stille lang genug: weiter")
+        self.assertFalse(self.halt.haelt)
+
+    def test_die_mindestpause_geht_nie_ueber_die_hoechstpause_hinaus(self):
+        with mock.patch.object(soft_interrupt, "MIN_HALT_SECS", 5.0):
+            g = self.gate()  # max_pause_secs=2.5
+            self.anhalten_auf_ansatz(g)
+            self.t = 2.4
+            self.assertTrue(g.check_timers())
+            self.assertTrue(self.halt.haelt)
+            self.t = 2.6
+            self.assertFalse(g.check_timers())
+            self.assertFalse(self.halt.haelt, "die Höchstpause gilt zuerst")
+
     def test_spricht_die_person_noch_wartet_wamo_hoechstens_die_maximale_pause(self):
         g = self.gate()
         self.anhalten_auf_ansatz(g)
@@ -372,11 +402,21 @@ class StrategieInnehaltenTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.angesetzt, self.ausgeloest), ([], [True]))
 
     async def test_ohne_innehalten_aendert_sich_nichts_fuer_ein_einzelnes_wort(self):
-        for text in ("Hier", "Abbrechen", "Nee", "Ruhe"):  # nur mit Innehalten sind die beiden letzten Stoppwörter
+        for text in ("Hier", "Fertig"):  # kein Stoppwort: bei min_words=2 unterbricht ein einzelnes Wort nicht
             with self.subTest(text=text):
                 s = self.strategie(mit_ansatz=False)
                 await s.process_frame(interim(text))
                 self.assertEqual((self.angesetzt, self.ausgeloest, self.zurueck), ([], [], [True]))
+
+    async def test_ohne_innehalten_brechen_abbrechen_nee_und_ruhe_ab(self):
+        """Ohne Halt (WAMO_INNEHALTEN=aus, Haus-Sprachausgabe, Ausgang ohne write_audio_frame) ist MIN_INTERRUPT_WORDS
+        seit 14.11.2026 2: Die Zusatz-Stoppwörter müssen dann genauso einzeln unterbrechen wie mit Halt."""
+        for text in ("Abbrechen", "Nee", "Ruhe", "Abbruch", "Wart"):
+            for frame in (interim(text), TranscriptionFrame(text, "u", "t")):
+                with self.subTest(text=text, art=type(frame).__name__):
+                    s = self.strategie(mit_ansatz=False)
+                    await s.process_frame(frame)
+                    self.assertEqual((self.angesetzt, self.ausgeloest), ([], [True]))
 
     async def test_mit_innehalten_brechen_auch_abbrechen_nee_und_ruhe_ab(self):
         for text in ("Abbrechen", "Nee", "Ruhe", "Abbruch"):
@@ -571,6 +611,63 @@ class TrackerHaltTest(unittest.IsolatedAsyncioTestCase):
         await tracker.process_frame(erstes, FrameDirection.DOWNSTREAM)  # halt.gespielt bleibt None
         await asyncio.sleep(0.15)
         self.assertEqual(self.weitergegeben, [erstes])
+
+    async def test_cleanup_beendet_die_wartende_aufgabe_des_trackers(self):
+        await self.senden(wort("noch", 2_000_000_000))  # halt.gespielt bleibt None: das Wort wartet auf seinen Ton
+        aufgabe = self.tracker._task
+        self.assertIsNotNone(aufgabe)
+        self.assertFalse(aufgabe.done())
+        await self.tracker.cleanup()
+        self.assertTrue(aufgabe.done(), "die Aufgabe läuft nach dem Abbau nicht weiter")
+        self.assertIsNone(self.tracker._task)
+        self.assertEqual(self.weitergegeben, [], "nichts Wartendes geht beim Abbau noch hinaus")
+
+
+class AufraeumenTest(unittest.IsolatedAsyncioTestCase):
+    """SoftInterruptGate.cleanup beendet die eigenen Aufgaben und lässt nie einen angehaltenen Ausgang zurück."""
+
+    async def asyncSetUp(self):
+        async def abbrechen(task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        self.halt = AusgabeHalt()
+        self.gate = SoftInterruptGate(halt=self.halt, max_wait_secs=0, grenze=True)
+        self.gate._bot_speaking = True
+        self.gate.push_frame = mock.AsyncMock()
+        self.gate.create_task = lambda coro, name=None: asyncio.get_running_loop().create_task(coro)  # echte Aufgaben
+        self.gate.cancel_task = abbrechen
+
+    async def test_cleanup_oeffnet_den_gehaltenen_ausgang_und_beendet_die_beobachtung(self):
+        g = self.gate
+        self.assertEqual(g.wort_beginnt("Ich"), SPIELEN)
+        g.ansatz(" Danke")
+        beobachtung = g._watch_task
+        self.assertIsNotNone(beobachtung, "der Ansatz startet die Beobachtung von Innehalten und Weitersprechen")
+        self.assertFalse(beobachtung.done())
+        self.assertEqual(g.wort_beginnt("lege"), HALTEN)
+        self.assertTrue(self.halt.haelt)
+        await g.cleanup()
+        self.assertFalse(self.halt.haelt, "nie einen angehaltenen Ausgang zurücklassen")
+        self.assertTrue(beobachtung.done())
+        self.assertIsNone(g._watch_task)
+
+    async def test_cleanup_beendet_auch_die_laufende_unterbrechung(self):
+        g = self.gate
+        g.wort_beginnt("Ich")
+        g.ansatz(" Danke")
+        g.wort_beginnt("lege")
+        g._tts_offen = True  # der Abbruch wartet danach, bis die Antwort im Verlauf steht (bis zu einer Sekunde)
+        g._arm()  # bestätigter Einwurf bei stehendem Ton: der Abbruch läuft als eigene Aufgabe
+        aufgabe = g._fire_task
+        self.assertIsNotNone(aufgabe)
+        await asyncio.sleep(0.02)
+        self.assertFalse(aufgabe.done(), "der Abbruch wartet noch auf den Verlauf")
+        await g.cleanup()
+        self.assertTrue(aufgabe.done(), "der Abbruch läuft nach dem Abbau nicht weiter")
+        self.assertIsNone(g._fire_task)
+        self.assertFalse(self.halt.haelt)
 
 
 if __name__ == "__main__":

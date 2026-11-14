@@ -53,6 +53,10 @@ class AttrappePruefer:
         self.ergebnis = ergebnis
         self.dauer = dauer
         self.fragen: list[float] = []
+        self.satzenden = 0
+
+    def satz_ende(self) -> None:
+        self.satzenden += 1
 
     async def urteil_abwarten(self, frist: float):
         self.fragen.append(frist)
@@ -97,6 +101,21 @@ class VerwerfenTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([t.text for t in texte], ["Hallo WAMO"], art)
             self.assertEqual(meldungen, [], art)
             self.assertFalse(waechter.zug_verworfen(), art)
+
+    async def test_endgueltiges_transkript_mit_satzzeichen_meldet_das_satzende(self):
+        for text, erwartet in (("Mach die Heizung an.", 1), ("Wie spät ist es?", 1), ("Stopp!", 1), ("Mach die Heizung", 0),
+                               ("  ", 0), ("Mach die Heizung an. Und dann", 0)):
+            pruefer = AttrappePruefer(urteil(EIGEN))
+            await durchlassen(StimmWaechter(bereites_gate(), pruefer), [final(text)])
+            self.assertEqual(pruefer.satzenden, erwartet, text)
+
+    async def test_zwischenstaende_und_verworfene_saetze_melden_das_satzende_richtig(self):
+        pruefer = AttrappePruefer(urteil(EIGEN))
+        await durchlassen(StimmWaechter(bereites_gate(), pruefer), [zwischenstand("Mach die Heizung an.")])
+        self.assertEqual(pruefer.satzenden, 0)  # nur das endgültige Transkript zählt
+        pruefer = AttrappePruefer(urteil(FREMD))
+        await durchlassen(StimmWaechter(bereites_gate(), pruefer), [final("Mach die Heizung an.")])
+        self.assertEqual(pruefer.satzenden, 1)  # auch ein verworfener Satz ist zu Ende
 
     async def test_fremd_aber_zu_wenig_sprache_geht_durch(self):
         waechter = StimmWaechter(bereites_gate(), AttrappePruefer(urteil(FREMD, secs=0.6)))

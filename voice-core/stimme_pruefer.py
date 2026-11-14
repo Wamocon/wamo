@@ -74,13 +74,14 @@ class Stimmpruefer(FrameProcessor):
         speichern: Callable[[np.ndarray, str, datetime], Awaitable[bool]],
         sagen: Callable[[str], Awaitable[None]],
         uhr: Callable[[], float] = time.time,
+        nachweis: Callable[[], bool] | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._gate = gate
         self._modell = modell
         self._uhr = uhr  # Wanduhr wie VADUser...SpeakingFrame.timestamp
-        self._einlernen = Einlernen(gate, modell, senden=self._senden, sagen=sagen, speichern=speichern, uhr=uhr)
+        self._einlernen = Einlernen(gate, modell, senden=self._senden, sagen=sagen, speichern=speichern, uhr=uhr, nachweis=nachweis)
         self._ring: deque[tuple[float, bytes]] = deque()
         self._ring_secs = 0.0
         self._rate = 16000
@@ -143,10 +144,15 @@ class Stimmpruefer(FrameProcessor):
     def on_turn_end(self) -> None:
         self._zug_zu = True  # die nächste Äußerung wird für sich geprüft
 
+    def satz_ende(self) -> None:
+        """Das endgültige Transkript endete mit einem Satzzeichen (stimme_waechter.py): der Satz ist zu Ende, auch wenn der Zug noch
+        offen ist. Ein neues Segment danach wird für sich geprüft, damit ein fremder Einwurf das Urteil des Satzes davor nicht erbt.
+        Mitten im Satz (ohne Satzzeichen) bleibt der Zug zusammen."""
+        self._zug_zu = True
+
     def on_bot_speaking(self, spricht: bool) -> None:
         self._bot_spricht = spricht
-        if spricht:
-            self._zug_zu = True  # was danach kommt, ist eine neue Äußerung
+        self._zug_zu = True  # was vor oder nach der Rede von WAMO kommt, ist eine neue Äußerung
         self._einlernen.bot_spricht(spricht)
 
     async def on_audio(self, frame: InputAudioRawFrame) -> None:

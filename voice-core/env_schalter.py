@@ -30,6 +30,8 @@ Stimmabdruck (stimme_gate.py, stimme_modell.py, seit 14.11.2026; wirkt nur für 
   WAMO_STIMME_FREMD_MAX        Zahl, Standard 0,3: bis zu diesem Wert (0 bis 0,8) gilt sie als fremd; muss unter EIGEN_MIN liegen
   WAMO_STIMME_MIN_SECS         Zahl, Standard 1: so viel reine Sprache braucht eine Äußerung, damit sie als eigen oder fremd zählt (0,3 bis 10)
   WAMO_STIMME_VERTRAUEN_SECS   Zahl, Standard 120: so lange gilt "eigen" für kurze Folgesätze und Werkzeuge (10 bis 3600)
+  WAMO_STIMME_KURZ_VERTRAUEN_SECS  Zahl, Standard 15: so lange läuft das Vertrauen höchstens weiter, wenn seit der letzten sicheren
+                               Erkennung nur kurze Äußerungen kamen (1 bis 120)
   WAMO_STIMME_MODELL           Pfad der Modelldatei (Standard: Cache-Ordner des Dienstes XDG_CACHE_HOME/wamo/sprecher/, sonst voice-core/.cache/sprecher/)
 Innehalten statt Abbrechen (wiedergabe.py, soft_interrupt.py, Entscheidung vom 14.11.2026, Messung steht aus):
   WAMO_INNEHALTEN              ein einzelnes echtes Wort der Person ("Danke", "Du"), während WAMO spricht, lässt WAMO an der nächsten
