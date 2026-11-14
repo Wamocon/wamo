@@ -679,8 +679,8 @@ Der Router bleibt ausschließlich lesbar. Mögliche Schreibaktionen stehen nur a
 - **Innehalten statt Abbrechen** (14.11.2026, `voice-core/wiedergabe.py` und `voice-core/soft_interrupt.py`, Schalter `WAMO_INNEHALTEN`,
   Standard an, Messung steht aus). Ein einzelnes echtes Wort der Person, während WAMO spricht („Danke“, „Du“), lässt WAMO an der
   nächsten Wortgrenze innehalten, wie ein Mensch, der merkt, dass der andere ansetzt. Kommt nach `WAMO_INNEHALTEN_WEITER_SECS`
-  (Standard 0,7) Sekunden Stille nichts nach, spricht WAMO genau dort weiter; höchstens `WAMO_INNEHALTEN_MAX_SECS` (Standard 2,5)
-  Sekunden lang hält es inne. Zwei echte Wörter oder ein Stoppwort („Stopp“, „Warte“, „Moment“, „Nein“, „Abbrechen“) brechen ab
+  (Standard 0,7) Sekunden Stille nichts nach, spricht WAMO genau dort weiter (frühestens 0,6 Sekunden nach dem Anhalten,
+  `MIN_HALT_SECS`); höchstens `WAMO_INNEHALTEN_MAX_SECS` (Standard 2,5) Sekunden lang hält es inne. Zwei echte Wörter oder ein Stoppwort („Stopp“, „Warte“, „Moment“, „Nein“, „Abbrechen“) brechen ab
   wie bisher, Rückmeldelaute („mhm“, „ja genau“) halten WAMO nicht an, ein „Danke“ allein lässt nur innehalten. Ein einzelnes Wort,
   das WAMO eben selbst gesprochen hat, und erkanntes Echo lassen WAMO nie innehalten. Technik: Je Sitzung hängt ein `AusgabeHalt`
   in `write_audio_frame` des Tonausgangs (Pipecat 1.12 schreibt den Ton in Happen von 40 ms und wartet jeweils, bis die
