@@ -14,7 +14,8 @@ import { istOnline, laeuftWerkzeug, wamo, type LevelSample, type Presence } from
  *
  * Leistung: Pegel kommen pro Bild aus einem Ref, Zustände direkt aus dem Store (kein React-Render).
  * Bildrate 60 fps bei hört zu und spricht, 30 sonst, offline ein Standbild, nichts bei verborgener
- * Seite. DPR höchstens 2, adaptiv 1 bei langsamen Bildern. Kontextverlust wird behandelt.
+ * Seite. DPR höchstens 2, adaptiv 1 bei langsamen Bildern. Kontextverlust wird behandelt; beim Aushängen gibt die Kugel
+ * Programm, Puffer und Kontext frei.
  * Farben aus den CSS-Variablen (lib/stimmfarben.ts), auch beim Wechsel hell/dunkel.
  */
 
@@ -95,7 +96,22 @@ const UNIFORMS = [
 ] as const;
 type Uniform = (typeof UNIFORMS)[number];
 
-type Gpu = { gl: WebGLRenderingContext; u: Record<Uniform, WebGLUniformLocation | null> };
+type Gpu = {
+  gl: WebGLRenderingContext;
+  u: Record<Uniform, WebGLUniformLocation | null>;
+  programm: WebGLProgram;
+  puffer: WebGLBuffer | null;
+};
+
+/**
+ * GPU-Mittel freigeben. Den Kontext selbst nur beim echten Aushängen (die Leinwand ist dann schon aus dem Dokument): Im
+ * Entwicklungsbetrieb hängt React dieselbe Leinwand zur Probe aus und wieder ein, ein verlorener Kontext käme dort nicht wieder.
+ */
+function gpuFreigeben(gpu: Gpu, canvas: HTMLCanvasElement) {
+  gpu.gl.deleteBuffer(gpu.puffer);
+  gpu.gl.deleteProgram(gpu.programm);
+  if (!canvas.isConnected) gpu.gl.getExtension("WEBGL_lose_context")?.loseContext();
+}
 
 function createGpu(canvas: HTMLCanvasElement): Gpu | null {
   const gl = canvas.getContext("webgl", {
@@ -121,14 +137,15 @@ function createGpu(canvas: HTMLCanvasElement): Gpu | null {
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
   gl.useProgram(prog);
-  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  const puffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, puffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
   const aPos = gl.getAttribLocation(prog, "aPos");
   gl.enableVertexAttribArray(aPos);
   gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
   const u = {} as Gpu["u"];
   for (const name of UNIFORMS) u[name] = gl.getUniformLocation(prog, name);
-  return { gl, u };
+  return { gl, u, programm: prog, puffer };
 }
 
 export const Orb = memo(function Orb({ levels }: { levels: { current: LevelSample } }) {
@@ -319,6 +336,8 @@ export const Orb = memo(function Orb({ levels }: { levels: { current: LevelSampl
       document.removeEventListener("visibilitychange", wake);
       canvas.removeEventListener("webglcontextlost", onLost);
       canvas.removeEventListener("webglcontextrestored", onRestored);
+      if (gpu) gpuFreigeben(gpu, canvas); // nach dem Abmelden der Ereignisse: ein loseContext meldet sich nicht mehr hier
+      gpu = null;
     };
   }, [levels]);
 

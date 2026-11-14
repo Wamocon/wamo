@@ -3,6 +3,7 @@
 // Beobachter und Ereignisse. Bilder laufen von Hand (requestAnimationFrame ist ersetzt).
 // Ausführen im Ordner ui/:  npm run test:komponenten
 import { act, render } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Orb } from "@/components/Orb";
 import { levelsRef, resetWamo, wamo } from "@/lib/wamo";
@@ -138,5 +139,27 @@ describe("Orb mit WebGL", () => {
     // ein verlorener Kontext nach dem Aushängen ändert nichts mehr an der Leinwand
     canvas.dispatchEvent(new Event("webglcontextlost"));
     expect(canvas.dataset.gpu).toBe("an");
+  });
+
+  it("gibt beim Aushängen Programm, Puffer und den Kontext frei", () => {
+    const { unmount, aufrufe } = zeigen();
+    expect(aufrufe).not.toContain("deleteProgram");
+    unmount();
+    expect(aufrufe).toContain("deleteProgram");
+    expect(aufrufe).toContain("deleteBuffer");
+    expect(aufrufe).toContain("loseContext");
+  });
+
+  it("behält den Kontext, wenn React dieselbe Leinwand aus- und wieder einhängt (strenger Modus)", () => {
+    const a = attrappeGl();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(a.gl as unknown as RenderingContext);
+    render(
+      <StrictMode>
+        <Orb levels={levelsRef} />
+      </StrictMode>,
+    );
+    expect(a.aufrufe).toContain("deleteProgram"); // das erste Programm ist wieder frei
+    expect(a.aufrufe).not.toContain("loseContext");
+    expect(leinwand().dataset.gpu).toBe("an");
   });
 });
