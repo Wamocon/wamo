@@ -12,6 +12,7 @@ import {
   abdruckOeffnen,
   abdruckProzent,
   abdruckStatusText,
+  ergebnisText,
   kannEinlernen,
   kannLoeschen,
   modusText,
@@ -26,13 +27,13 @@ import {
 const bereit = stimmeStatusAnwenden(STIMME_LEER, { status: "bereit", modus: "streng" });
 
 test("der Stand beginnt leer und übernimmt Status und Modus", () => {
-  assert.deepEqual(STIMME_LEER, { status: null, modus: null, ergebnis: null, wert: null });
-  assert.deepEqual(bereit, { status: "bereit", modus: "streng", ergebnis: null, wert: null });
+  assert.deepEqual(STIMME_LEER, { status: null, modus: null, ergebnis: null, wert: null, ignoriert: false, ignoriertZaehler: 0 });
+  assert.deepEqual(bereit, { status: "bereit", modus: "streng", ergebnis: null, wert: null, ignoriert: false, ignoriertZaehler: 0 });
 });
 
 test("ein Ergebnis kommt zum Stand, ein neuer Status ohne Modus behält den bisherigen Modus", () => {
   const eigen = stimmeErgebnisAnwenden(bereit, { ergebnis: "eigen", wert: 0.78, modus: "streng" });
-  assert.deepEqual(eigen, { status: "bereit", modus: "streng", ergebnis: "eigen", wert: 0.78 });
+  assert.deepEqual(eigen, { status: "bereit", modus: "streng", ergebnis: "eigen", wert: 0.78, ignoriert: false, ignoriertZaehler: 0 });
   assert.equal(stimmeStatusAnwenden(eigen, { status: "bereit", modus: null }).modus, "streng");
   assert.equal(stimmeStatusAnwenden(eigen, { status: "bereit", modus: "beobachten" }).modus, "beobachten");
 });
@@ -180,4 +181,45 @@ test("der Vorlesetext ist Der Nordwind und die Sonne mit echten Umlauten", () =>
   assert.match(VORLESETEXT, /Stärkere/);
   assert.match(VORLESETEXT, /für den Stärkeren gelten sollte/);
   assert.ok(VORLESETEXT.length > 500);
+});
+
+// ---------- fremde Stimme ignoriert (strenger Modus) ----------
+
+const fremdIgnoriert = (s = bereit, wert: number | null = 0.12) =>
+  stimmeErgebnisAnwenden(s, { ergebnis: "fremd", wert, modus: "streng", ignoriert: true });
+
+test("ignoriert gilt nur für ein fremdes Ergebnis und zählt jede verworfene Äußerung", () => {
+  const eins = fremdIgnoriert();
+  assert.equal(eins.ignoriert, true);
+  assert.equal(eins.ignoriertZaehler, 1);
+  const zwei = fremdIgnoriert(eins);
+  assert.equal(zwei.ignoriertZaehler, 2, "jede verworfene Äußerung zählt, auch zwei hintereinander");
+  const unsinn = stimmeErgebnisAnwenden(bereit, { ergebnis: "eigen", wert: 0.9, modus: "streng", ignoriert: true });
+  assert.equal(unsinn.ignoriert, false, "eine eigene Stimme wird nie ignoriert");
+  assert.equal(unsinn.ignoriertZaehler, 0);
+});
+
+test("die nächste Äußerung und ein Statuswechsel nehmen das Ignoriert wieder zurück, der Zähler bleibt", () => {
+  const eins = fremdIgnoriert();
+  const danach = stimmeErgebnisAnwenden(eins, { ergebnis: "eigen", wert: 0.8, modus: "streng" });
+  assert.equal(danach.ignoriert, false);
+  assert.equal(danach.ignoriertZaehler, 1);
+  const weg = stimmeStatusAnwenden(eins, { status: "fehlt", modus: "streng" });
+  assert.equal(weg.ignoriert, false);
+  assert.equal(weg.ignoriertZaehler, 1);
+  assert.equal(stimmeStatusAnwenden(eins, { status: "bereit", modus: "streng" }).ignoriert, true, "bereit nach bereit behält es");
+});
+
+test("Modul in der Kopfzeile: Fremd · ignoriert, gelb, der title nennt den Wert und dass das Sprachmodell nichts bekam", () => {
+  const modul = stimmeModul(fremdIgnoriert());
+  assert.equal(modul?.text, "Fremd · ignoriert");
+  assert.equal(modul?.an, "warn");
+  assert.match(modul?.titel ?? "", /ignoriert/);
+  assert.match(modul?.titel ?? "", /0,12/);
+  assert.equal(stimmeModul(fremdIgnoriert(bereit, null))?.text, "Fremd · ignoriert", "auch ohne Wert");
+  assert.equal(stimmeModul(stimmeErgebnisAnwenden(bereit, { ergebnis: "fremd", wert: 0.31, modus: "beobachten" }))?.text, "Fremd 0,31");
+});
+
+test("Zeile Letzte Äußerung in den Einstellungen nennt das Ignorieren", () => {
+  assert.equal(ergebnisText(fremdIgnoriert()), "Fremde Stimme 0,12, ignoriert");
 });

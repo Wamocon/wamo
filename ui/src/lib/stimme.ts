@@ -15,20 +15,41 @@ export type StimmeStand = {
   ergebnis: StimmeErgebnis | null;
   /** Ähnlichkeit mit dem Abdruck, 0 bis 1 */
   wert: number | null;
+  /** Die letzte Äußerung war sicher fremd und der Kern hat sie verworfen (strenger Modus): sie erreichte das Sprachmodell nicht. */
+  ignoriert: boolean;
+  /** Wie oft der Kern seit dem Laden eine Äußerung verworfen hat: jede neue verworfene Äußerung zählt, auch zwei gleiche hintereinander
+   *  (der kurze Hinweis in der Oberfläche hängt daran, components/kommando/StimmeIgnoriert.tsx). */
+  ignoriertZaehler: number;
 };
 
-export const STIMME_LEER: StimmeStand = { status: null, modus: null, ergebnis: null, wert: null };
+export const STIMME_LEER: StimmeStand = { status: null, modus: null, ergebnis: null, wert: null, ignoriert: false, ignoriertZaehler: 0 };
 
 export function stimmeStatusAnwenden(s: StimmeStand, m: { status: StimmeStatus; modus: StimmeModus | null }): StimmeStand {
   const bleibt = m.status === "bereit";
-  return { status: m.status, modus: m.modus ?? s.modus, ergebnis: bleibt ? s.ergebnis : null, wert: bleibt ? s.wert : null };
+  return {
+    status: m.status,
+    modus: m.modus ?? s.modus,
+    ergebnis: bleibt ? s.ergebnis : null,
+    wert: bleibt ? s.wert : null,
+    ignoriert: bleibt ? s.ignoriert : false,
+    ignoriertZaehler: s.ignoriertZaehler,
+  };
 }
 
 export function stimmeErgebnisAnwenden(
   s: StimmeStand,
-  m: { ergebnis: StimmeErgebnis; wert: number | null; modus: StimmeModus | null },
+  m: { ergebnis: StimmeErgebnis; wert: number | null; modus: StimmeModus | null; ignoriert?: boolean },
 ): StimmeStand {
-  return { ...s, ergebnis: m.ergebnis, wert: m.wert, modus: m.modus ?? s.modus };
+  // verworfen werden kann nur eine sicher fremde Äußerung; ein ignoriert bei einem anderen Ergebnis ist Unsinn und zählt nicht
+  const ignoriert = m.ignoriert === true && m.ergebnis === "fremd";
+  return {
+    ...s,
+    ergebnis: m.ergebnis,
+    wert: m.wert,
+    modus: m.modus ?? s.modus,
+    ignoriert,
+    ignoriertZaehler: s.ignoriertZaehler + (ignoriert ? 1 : 0),
+  };
 }
 
 /** Wert mit deutschem Komma und führendem Leerzeichen, leer ohne Wert: " 0,78". */
@@ -56,6 +77,9 @@ export function stimmeModul(s: StimmeStand): StimmeModul | null {
   if (s.status === "laedt") return { an: "aus", text: "Lädt", titel };
   const wert = wertText(s.wert);
   if (s.ergebnis === "eigen") return { an: "ja", text: `Eigen${wert}`, titel };
+  if (s.ergebnis === "fremd" && s.ignoriert) {
+    return { an: "warn", text: "Fremd · ignoriert", titel: `Fremde Stimme${wert}: ignoriert, die Äußerung hat das Sprachmodell nicht erreicht` };
+  }
   if (s.ergebnis === "fremd") return { an: "warn", text: `Fremd${wert}`, titel };
   if (s.ergebnis === "unklar") return { an: "aus", text: `Unklar${wert}`, titel };
   return { an: "aus", text: "Bereit", titel };
@@ -85,7 +109,7 @@ export const modusText = (m: StimmeModus | null): string => (m ? MODUS_ZEILE[m] 
 export function ergebnisText(s: StimmeStand): string {
   if (s.status !== "bereit" || !s.ergebnis) return "noch keine Äußerung gemessen";
   const name = s.ergebnis === "eigen" ? "Deine Stimme" : s.ergebnis === "fremd" ? "Fremde Stimme" : "Unklar";
-  return `${name}${wertText(s.wert)}`;
+  return `${name}${wertText(s.wert)}${s.ignoriert ? ", ignoriert" : ""}`;
 }
 
 /** Einlernen braucht eine laufende Sitzung und eine eingeschaltete Stimmerkennung, die nicht gerade lädt. */

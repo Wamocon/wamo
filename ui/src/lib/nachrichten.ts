@@ -271,8 +271,9 @@ export type ServerMessage =
   | { type: "mikrofon"; zustand: "still" | "fehlt" | "ok"; sekunden: number }
   /** Stimmerkennung, Stand (auf dem Draht {type:"stimme", status, modus}); modus fehlt bei einem Kern, der ihn nicht mitschickt */
   | { type: "stimme_status"; status: StimmeStatus; modus: StimmeModus | null }
-  /** Stimmerkennung, Ergebnis der letzten Äußerung (auf dem Draht {type:"stimme", ergebnis, wert, modus}); wert 0 bis 1 oder leer */
-  | { type: "stimme_ergebnis"; ergebnis: StimmeErgebnis; wert: number | null; modus: StimmeModus | null }
+  /** Stimmerkennung, Ergebnis der letzten Äußerung (auf dem Draht {type:"stimme", ergebnis, wert, modus}); wert 0 bis 1 oder leer.
+   *  ignoriert (freiwillig): im strengen Modus hat der Kern eine sicher fremde Äußerung verworfen, sie erreicht das Sprachmodell nicht. */
+  | { type: "stimme_ergebnis"; ergebnis: StimmeErgebnis; wert: number | null; modus: StimmeModus | null; ignoriert?: boolean }
   /** Einlernen des Stimmabdrucks: Zustand, aufgenommene Sekunden reiner Sprache, Ziel in Sekunden, bei fehler ein Satz dazu */
   | { type: "stimmabdruck"; status: AbdruckStatus; sekunden?: number; ziel?: number; text?: string }
   /** Einwilligungstext zum Stimmabdruck, kommt vom Kern; version geht beim Start in der Antwort mit zurück */
@@ -726,7 +727,15 @@ export function parseServerMessage(data: unknown): ServerMessage | null {
       if (!oneOf(m.ergebnis, STIMME_ERGEBNISSE)) return null;
       if (m.wert !== undefined && m.wert !== null && (typeof m.wert !== "number" || !Number.isFinite(m.wert))) return null;
       const wert = typeof m.wert === "number" ? Math.min(1, Math.max(0, m.wert)) : null;
-      return { type: "stimme_ergebnis", ergebnis: m.ergebnis, wert, modus };
+      // ignoriert: freiwillig, null zählt wie fehlend, alles andere als ein Wahrheitswert lehnt die Nachricht ab
+      if (m.ignoriert !== undefined && m.ignoriert !== null && typeof m.ignoriert !== "boolean") return null;
+      return {
+        type: "stimme_ergebnis",
+        ergebnis: m.ergebnis,
+        wert,
+        modus,
+        ...(typeof m.ignoriert === "boolean" ? { ignoriert: m.ignoriert } : {}),
+      };
     }
     case "stimmabdruck": {
       if (!oneOf(m.status, ABDRUCK_STATUS)) return null;

@@ -30,10 +30,21 @@ test("der Anfangszustand: keine Stimmerkennung gemeldet, keine Einlernansicht, k
   assert.equal(initialState.einwilligung, null);
 });
 
+test("ein verworfenes fremdes Ergebnis (ignoriert) steht im Stand, die nächste Äußerung nimmt es zurück", () => {
+  applyServerMessage(status("bereit"));
+  applyServerMessage({ type: "stimme_ergebnis", ergebnis: "fremd", wert: 0.12, modus: "streng", ignoriert: true });
+  assert.equal(stand().stimme.ignoriert, true);
+  assert.equal(stand().stimme.ignoriertZaehler, 1);
+  applyServerMessage({ type: "stimme_ergebnis", ergebnis: "eigen", wert: 0.8, modus: "streng" });
+  assert.equal(stand().stimme.ignoriert, false);
+  assert.equal(stand().stimme.ignoriertZaehler, 1);
+  assert.equal(stand().toast, null, "der Store zeigt selbst nichts an: Laborkonten bekommen keinen Hinweis");
+});
+
 test("stimme_status und stimme_ergebnis füllen den Stand", () => {
   applyServerMessage(status("bereit"));
   applyServerMessage({ type: "stimme_ergebnis", ergebnis: "eigen", wert: 0.78, modus: "streng" });
-  assert.deepEqual(stand().stimme, { status: "bereit", modus: "streng", ergebnis: "eigen", wert: 0.78 });
+  assert.deepEqual(stand().stimme, { status: "bereit", modus: "streng", ergebnis: "eigen", wert: 0.78, ignoriert: false, ignoriertZaehler: 0 });
   applyServerMessage(status("fehlt"));
   assert.equal(stand().stimme.ergebnis, null, "ohne Abdruck gilt kein Ergebnis mehr");
 });

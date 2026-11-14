@@ -98,6 +98,53 @@ describe("Hauptansicht eines normalen Kontos", () => {
   });
 });
 
+const ignoriert = () =>
+  act(() => applyServerMessage({ type: "stimme_ergebnis", ergebnis: "fremd", wert: 0.12, modus: "streng", ignoriert: true }));
+
+describe("Fremde Stimme ignoriert (strenger Modus)", () => {
+  it("zeigt einem normalen Konto kurz 'Fremde Stimme ignoriert' und sagt es per role=status an", async () => {
+    const { container } = zeige(ADMIN);
+    sitzungMitStimme();
+    await ruhe();
+    ignoriert();
+    const toast = container.querySelector(".hinweis-toast");
+    expect(toast?.textContent).toBe("Fremde Stimme ignoriert");
+    expect(screen.getAllByRole("status").some((e) => e.textContent === "Fremde Stimme ignoriert")).toBe(true);
+    expect(container.querySelector('.topbar .status-items [data-feld="stimme"] dd')?.textContent).toBe("Fremd · ignoriert");
+  });
+
+  it("meldet jede verworfene Äußerung neu, auch zwei gleiche hintereinander", async () => {
+    const { container } = zeige(ADMIN);
+    sitzungMitStimme();
+    await ruhe();
+    ignoriert();
+    const erster = container.querySelector(".hinweis-toast");
+    act(() => wamo.set((s) => ({ ...s, toast: null })));
+    expect(container.querySelector(".hinweis-toast")).toBeNull();
+    ignoriert();
+    expect(container.querySelector(".hinweis-toast")?.textContent).toBe("Fremde Stimme ignoriert");
+    expect(erster).not.toBeNull();
+  });
+
+  it("zeigt einer Äußerung, die nicht ignoriert wurde, keinen Hinweis", async () => {
+    const { container } = zeige(ADMIN);
+    sitzungMitStimme();
+    await ruhe();
+    act(() => applyServerMessage({ type: "stimme_ergebnis", ergebnis: "fremd", wert: 0.31, modus: "beobachten" }));
+    expect(container.querySelector(".hinweis-toast")).toBeNull();
+  });
+
+  it("ein Laborkonto bekommt weder Modul noch Hinweis", async () => {
+    const { container } = zeige(PLATZ);
+    sitzungMitStimme();
+    await ruhe();
+    ignoriert();
+    expect(container.querySelector(".hinweis-toast")).toBeNull();
+    expect(container.querySelector('[data-feld="stimme"]')).toBeNull();
+    expect(screen.queryAllByRole("status").some((e) => /ignoriert/.test(e.textContent ?? ""))).toBe(false);
+  });
+});
+
 describe("Hauptansicht eines Laborkontos", () => {
   it("zeigt weder Modul noch Einlernansicht, auch wenn der Kern meldet und die Ansicht offen wäre", async () => {
     const { container } = zeige(PLATZ);

@@ -49,6 +49,27 @@ test("stimme mit ergebnis: der Wert wird auf 0 bis 1 begrenzt, fehlt er, bleibt 
   assert.equal(parseServerMessage({ type: "stimme", ergebnis: "eigen", wert: 0.7, modus: "locker" }), null);
 });
 
+test("stimme mit ergebnis: das freiwillige Feld ignoriert (strenger Modus, sicher fremde Äußerung verworfen) wird übernommen", () => {
+  assert.deepEqual(parseServerMessage({ type: "stimme", ergebnis: "fremd", wert: 0.12, modus: "streng", ignoriert: true }), {
+    type: "stimme_ergebnis",
+    ergebnis: "fremd",
+    wert: 0.12,
+    modus: "streng",
+    ignoriert: true,
+  });
+  const m = parseServerMessage({ type: "stimme", ergebnis: "fremd", wert: 0.3, modus: "streng", ignoriert: false });
+  assert.equal(m?.type === "stimme_ergebnis" ? m.ignoriert : "abgelehnt", false);
+  // ohne das Feld bleibt die Nachricht, wie sie war (kein erfundenes ignoriert)
+  const ohne = parseServerMessage({ type: "stimme", ergebnis: "fremd", wert: 0.3, modus: "streng" });
+  assert.ok(ohne && ohne.type === "stimme_ergebnis" && !("ignoriert" in ohne));
+  // null zählt wie fehlend, alles andere als ein Wahrheitswert lehnt die Nachricht ab
+  const leer = parseServerMessage({ type: "stimme", ergebnis: "fremd", wert: 0.3, modus: "streng", ignoriert: null });
+  assert.ok(leer && leer.type === "stimme_ergebnis" && !("ignoriert" in leer));
+  for (const unsinn of ["ja", 1, 0, {}, []]) {
+    assert.equal(parseServerMessage({ type: "stimme", ergebnis: "fremd", wert: 0.3, modus: "streng", ignoriert: unsinn }), null);
+  }
+});
+
 test("stimme: genau eine der beiden Formen, sonst wird die Nachricht abgelehnt", () => {
   assert.equal(parseServerMessage({ type: "stimme", modus: "streng" }), null);
   assert.equal(parseServerMessage({ type: "stimme", status: "bereit", ergebnis: "eigen", wert: 0.7, modus: "streng" }), null);

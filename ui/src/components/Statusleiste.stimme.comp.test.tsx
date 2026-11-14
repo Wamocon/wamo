@@ -52,6 +52,18 @@ describe("Modul Stimme in der Kopfzeile", () => {
     expect(modul(container)!.getAttribute("data-an")).toBe("warn");
   });
 
+  it("zeigt Fremd · ignoriert, wenn der Kern eine sicher fremde Äußerung verworfen hat, und danach wieder das nächste Ergebnis", () => {
+    const { container } = render(<StatusDetails kompakt stimme />);
+    status("bereit");
+    act(() => applyServerMessage({ type: "stimme_ergebnis", ergebnis: "fremd", wert: 0.12, modus: "streng", ignoriert: true }));
+    const m = modul(container)!;
+    expect(m.querySelector("dd")?.textContent).toBe("Fremd · ignoriert");
+    expect(m.getAttribute("data-an")).toBe("warn");
+    expect(m.querySelector("dd")?.getAttribute("title")).toMatch(/ignoriert/);
+    ergebnis("eigen", 0.8);
+    expect(modul(container)!.querySelector("dd")?.textContent).toBe("Eigen 0,80");
+  });
+
   it("ist für Laborkonten unsichtbar (Prop stimme aus), auch wenn der Kern etwas meldet", () => {
     const { container } = render(<StatusDetails kompakt stimme={false} />);
     status("bereit");
