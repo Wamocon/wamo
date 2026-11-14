@@ -206,7 +206,7 @@ class DevAgentHelperTests(unittest.TestCase):
     def test_rules_neutral(self):
         rules = dev_agent.rules_for("Erika")
         self.assertIn("Erika (WAMOCON GmbH)", rules)
-        self.assertIn("Assistenten WAMO", rules)
+        self.assertIn("Assistenten W.A.I.S.", rules)
 
 
 class DevAgentFlowTests(unittest.IsolatedAsyncioTestCase):

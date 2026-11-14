@@ -124,6 +124,6 @@ async def test_beschreibung_nennt_die_grenze_bei_der_projektion(mit_liste):
     b = buero()
     schemas = await b.schemas()
     beschreibung = next(s for s in schemas if s.name == "buerogeraet_steuern").description
-    for wort in ("spiegeln", "projizieren", "Miracast", "kann WAMO noch nicht", "Windows-Taste", "versprich es nie"):
+    for wort in ("spiegeln", "projizieren", "Miracast", "kann W.A.I.S. noch nicht", "Windows-Taste", "versprich es nie"):
         assert wort in beschreibung, wort
     assert "–" not in beschreibung and "—" not in beschreibung  # kein Gedankenstrich

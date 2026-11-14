@@ -74,6 +74,11 @@ async def _transform(text: str, _art: object) -> str:
     return fuer_sprachausgabe(text)
 
 
-def anhaengen(tts) -> None:
-    """Hängt fuer_sprachausgabe als Transform an einen Pipecat-TTS-Dienst (für jede Art von Text)."""
-    tts.add_text_transformer(_transform, "*")
+def anhaengen(tts) -> bool:
+    """Hängt fuer_sprachausgabe als Transform an einen Pipecat-TTS-Dienst (für jede Art von Text). False, wenn der Dienst
+    keine Transforms kennt (Attrappen in Tests); jeder TTS-Dienst von Pipecat kennt sie."""
+    hinzufuegen = getattr(tts, "add_text_transformer", None)
+    if hinzufuegen is None:
+        return False
+    hinzufuegen(_transform, "*")
+    return True
