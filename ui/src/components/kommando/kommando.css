@@ -13,10 +13,18 @@
   --kz-grund-innen: #0d0d13;
   --kz-grund-aussen: #07070a;
   --kz-karte: #111117;
-  --kz-rand: #3a3a47; /* Rand von Bedienelementen */
+  --kz-rand: var(--steuer-rand); /* Rand von Bedienelementen */
   --kz-akzent-rand: rgb(244 14 14 / 0.6);
   --kz-akzent-weich: rgb(244 14 14 / 0.1);
-  --kz-sterne: 1;
+  --kz-sterne: var(--sterne);
+}
+/* Hellmodus (Variablen in globals.css): hellere Karten und Gründe */
+:root[data-theme="light"] .kz {
+  --kz-grund-innen: #ffffff;
+  --kz-grund-aussen: #f3f3f3;
+  --kz-karte: #ffffff;
+  --kz-akzent-rand: rgb(194 11 11 / 0.55);
+  --kz-akzent-weich: rgb(244 14 14 / 0.08);
 }
 
 .kz { background: var(--bg); }

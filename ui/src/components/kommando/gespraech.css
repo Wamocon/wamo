@@ -25,6 +25,6 @@
 .kz-zeile-mensch .kz-wer { color: var(--ink-soft); }
 .kz-zeile-mensch[data-leer] { font-size: 14px; }
 .kz-zeile-wamo { color: var(--ink); font-size: 17px; line-height: 1.5; }
-.kz-zeile-wamo .kz-wer { color: var(--core); }
+.kz-zeile-wamo .kz-wer { color: var(--core-schrift); }
 /* lange Antworten: die Spalte bleibt ruhig, der volle Text steht im Verlauf */
 .kz-zeile-wamo .kz-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 9; line-clamp: 9; overflow: hidden; }

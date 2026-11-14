@@ -11,13 +11,13 @@
 .hud-badge {
   display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 5px;
   font: 600 10.5px/1.2 var(--hud); letter-spacing: 0.14em; text-transform: uppercase;
-  color: var(--core); border: 1px solid currentColor;
+  color: var(--core-schrift); border: 1px solid currentColor;
   background: color-mix(in srgb, currentColor 10%, transparent);
   box-shadow: 0 0 14px -4px currentColor;
 }
 .hud-badge[data-state="aus"] { color: var(--ink-faint); box-shadow: none; }
-.hud-badge[data-state="wartet"] { color: var(--warn); }
-.hud-badge[data-state="fehler"] { color: var(--fehler); }
+.hud-badge[data-state="wartet"] { color: var(--warn-schrift); }
+.hud-badge[data-state="fehler"] { color: var(--fehler-schrift); }
 @keyframes hud-puls { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @keyframes hud-auf { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
@@ -26,17 +26,17 @@
 .kz-main::before, .kz-main::after { content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none; }
 .kz-main::before {
   background:
-    radial-gradient(34vmax 34vmax at 50% 42%, rgba(244, 14, 14, 0.2), transparent 70%),
-    radial-gradient(38vmax 38vmax at 0% 100%, rgba(143, 7, 7, 0.34), transparent 70%),
-    radial-gradient(28vmax 28vmax at 100% 0%, rgba(255, 86, 72, 0.1), transparent 70%);
+    radial-gradient(34vmax 34vmax at 50% 42%, var(--glut-mitte), transparent 70%),
+    radial-gradient(38vmax 38vmax at 0% 100%, var(--glut-unten), transparent 70%),
+    radial-gradient(28vmax 28vmax at 100% 0%, var(--glut-oben), transparent 70%);
 }
-.kz-main::after { background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 4px); }
+.kz-main::after { background: repeating-linear-gradient(0deg, var(--raster) 0 1px, transparent 1px 4px); }
 .kz[data-ansicht="nacht"] .kz-main::before { opacity: 0.45; }
 
 /* ---------- Kopfzeile ---------- */
 .kz .topbar {
   gap: 18px; padding: 0 16px 0 22px; font-size: 13px;
-  background: linear-gradient(180deg, rgba(7, 7, 10, 0.92), rgba(7, 7, 10, 0.6));
+  background: var(--kopf-grund);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
 }
 .kz .wordmark-sm {
@@ -51,7 +51,7 @@
 .kz .profile-chip { font: 700 13px/1 var(--body); }
 .kz .initials { width: 26px; height: 26px; background: var(--ink); color: var(--bg); font: 700 11px/1 var(--hud); letter-spacing: 0; }
 .kz .role-tag { border-radius: 5px; font: 600 10px/1.2 var(--hud); letter-spacing: 0.14em; }
-.kz .role-tag[data-rolle="admin"] { border-color: var(--core); color: var(--core); box-shadow: 0 0 14px -4px var(--core); padding-left: 6px; }
+.kz .role-tag[data-rolle="admin"] { border-color: var(--core); color: var(--core-schrift); box-shadow: 0 0 14px -4px var(--core); padding-left: 6px; }
 /* Statusangaben als Module: Beschriftung in Versalien, Wert hell */
 .kz .status-items { gap: 8px; font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-soft); }
 .kz .status-items > div, .kz .status-items > div:first-child, .kz .status-items > div:nth-child(2) {
@@ -64,21 +64,26 @@
 .kz-meter-text b { font: 700 10.5px/1 var(--hud); }
 .kz-meter-bahn span { box-shadow: 0 0 10px var(--core); }
 .kz-badge {
-  gap: 6px; padding: 4px 9px; border-radius: 5px; border-color: currentColor; color: var(--core);
+  gap: 6px; padding: 4px 9px; border-radius: 5px; border-color: currentColor; color: var(--core-schrift);
   font: 600 10.5px/1.2 var(--hud); letter-spacing: 0.14em;
   background: color-mix(in srgb, currentColor 10%, transparent); box-shadow: 0 0 14px -4px currentColor;
 }
 .kz-badge svg { stroke: currentColor; }
 .kz-badge[data-zustand="getrennt"] { border-color: currentColor; color: var(--ink-faint); box-shadow: none; }
-.kz-badge[data-zustand="verbindet"] { border-color: currentColor; color: var(--warn); }
+.kz-badge[data-zustand="verbindet"] { border-color: currentColor; color: var(--warn-schrift); }
 .kz-kernort { font: 500 10.5px/1 var(--hud); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
 .kz-uhr { font: 700 22px/1 var(--hud); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
 .kz .topbar-btn {
-  min-height: 34px; padding: 0 12px; border-color: var(--rule-strong); border-radius: 6px;
+  min-height: 34px; padding: 0 12px; border-color: var(--steuer-rand); border-radius: 6px;
   font: 600 11px/1 var(--hud); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-soft);
 }
-.kz .topbar-btn:hover { background: rgba(255, 255, 255, 0.05); color: var(--ink); }
-.kz .topbar-btn[aria-expanded="true"] { background: rgba(241, 237, 230, 0.1); color: var(--ink); border-color: var(--core); }
+.kz .topbar-btn:hover { background: var(--glas-hover); color: var(--ink); }
+.kz .topbar-btn[aria-expanded="true"], .kz .topbar-btn[aria-pressed="true"] { background: var(--glas-stark); color: var(--ink); border-color: var(--core); }
+/* Umschalter Hell und Dunkel (ThemaSchalter.tsx): Symbol wie das Zahnrad, gedrückt heißt Hellmodus an */
+.thema-btn { width: 44px; padding: 0; }
+.thema-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.thema-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+@media (max-width: 1023px) { .kz .topbar-btn.thema-btn { width: 40px; } }
 
 /* ---------- Seitenspalten als Glasflächen, Karten ---------- */
 .kz-links, .kz-rechts {
@@ -86,7 +91,7 @@
   background: var(--panel); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
 }
 .kz-rechts { padding-top: 14px; }
-.kz-karte { border-color: var(--rule-strong); border-radius: 10px; background: rgba(255, 255, 255, 0.03); }
+.kz-karte { border-color: var(--rule-strong); border-radius: 10px; background: var(--glas); }
 .kz-karte-titel { font: 600 12px/1.2 var(--display); letter-spacing: 0.2em; color: var(--ink); }
 .kz-karte-titel::before { box-shadow: 0 0 8px var(--core); }
 .kz-leer { font-size: 14px; }
@@ -98,17 +103,17 @@
 
 /* ---------- Mitte: Umschalter, Zustandsschild, Untertitel ---------- */
 .kz-titel { font: 600 12px/1 var(--display); letter-spacing: 0.3em; }
-.kz-wahl { gap: 2px; padding: 4px; border-color: var(--rule); background: rgba(255, 255, 255, 0.025); }
+.kz-wahl { gap: 2px; padding: 4px; border-color: var(--steuer-rand); background: var(--glas-leicht); }
 .kz-wahl button { min-height: 30px; padding: 0 16px; font: 500 11px/1 var(--hud); letter-spacing: 0.16em; text-transform: uppercase; }
-.kz-wahl button[aria-checked="true"] { background: rgba(241, 237, 230, 0.1); color: var(--ink); box-shadow: none; }
+.kz-wahl button[aria-checked="true"] { background: var(--glas-stark); color: var(--ink); box-shadow: none; }
 .kz-wahl-hinweis { font-size: 12px; }
-.kz-schild { padding: 7px 16px; gap: 4px; border-color: var(--rule-strong); border-radius: 8px; background: rgba(255, 255, 255, 0.035); }
+.kz-schild { padding: 7px 16px; gap: 4px; border-color: var(--rule-strong); border-radius: 8px; background: var(--glas); }
 .kz-schild-name { font: 700 13px/1 var(--display); letter-spacing: 0.32em; margin-right: -0.32em; text-transform: uppercase; }
-.kz-schild-status { gap: 0; font: 600 10px/1 var(--hud); letter-spacing: 0.2em; color: var(--core); }
+.kz-schild-status { gap: 0; font: 600 10px/1 var(--hud); letter-spacing: 0.2em; color: var(--core-schrift); }
 .kz-schild-status::before { display: none; }
 .kz-schild[data-presence="offline"] .kz-schild-status { color: var(--ink-faint); }
 .kz-schild[data-zustand="freigabe"] { border-color: var(--warn); }
-.kz-schild[data-zustand="freigabe"] .kz-schild-status { color: var(--warn); }
+.kz-schild[data-zustand="freigabe"] .kz-schild-status { color: var(--warn-schrift); }
 .kz-schild[data-zustand="thinking"] .kz-schild-status, .kz-schild[data-zustand="handelt"] .kz-schild-status { animation: hud-puls 1.6s ease-in-out infinite; }
 .kz .caption-hint { font-size: 13px; }
 .kz .caption-user { font-size: 15px; color: var(--ink-soft); }
@@ -118,14 +123,14 @@
 .kz-haken li { font: 500 11.5px/1.2 var(--hud); letter-spacing: 0.14em; }
 .kz-zaehler-label { font: 500 10.5px/1 var(--hud); letter-spacing: 0.2em; }
 .kz-zaehler { font: 700 clamp(34px, 4.4vw, 52px)/1 var(--hud); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.kz-zaehler[data-aktiv] { color: var(--ink); text-shadow: 0 0 18px rgba(244, 14, 14, 0.45); }
+.kz-zaehler[data-aktiv] { color: var(--ink); text-shadow: 0 0 18px var(--text-glut); }
 
 /* ---------- Mitte: Gespräch starten, Eingabe, Schnellaktionen ---------- */
 .kz .actions .wake, .kz .actions .btn-secondary:not(.wake) { min-width: 230px; min-height: 44px; border-radius: 8px; }
 .kz-eingabe { width: min(100%, 640px); gap: 10px; }
 .kz-pille {
-  min-height: 52px; padding: 6px; gap: 8px; border-color: var(--rule-strong); border-radius: 14px;
-  background: rgba(255, 255, 255, 0.035);
+  min-height: 52px; padding: 6px; gap: 8px; border-color: var(--steuer-rand); border-radius: 14px;
+  background: var(--glas);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .kz-pille:has(.kz-pille-feld:focus-visible) {
@@ -133,7 +138,7 @@
   box-shadow: 0 0 0 3px rgba(244, 14, 14, 0.15), 0 0 30px -10px var(--core);
 }
 .kz-pille-mikro, .kz-pille-senden { width: 38px; height: 38px; border-radius: 10px; }
-.kz-pille-mikro { border: 1px solid var(--rule-strong); }
+.kz-pille-mikro { border: 1px solid var(--steuer-rand); }
 .kz-pille-mikro[aria-pressed="true"] { background: var(--core); border-color: var(--core); color: var(--on-accent); box-shadow: 0 0 18px -4px var(--core); }
 .kz-pille-mikro[aria-pressed="true"] .mic-off { stroke: var(--on-accent); }
 .kz-pille-senden { background: linear-gradient(180deg, var(--core-hot), var(--core)); color: var(--on-accent); }
@@ -143,11 +148,11 @@
 .kz-pille-feld::placeholder { color: var(--ink-faint); }
 .kz-pille-hinweis { font: 400 10px/1.4 var(--hud); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); }
 .kz-chip {
-  min-height: 30px; padding: 0 12px; border-color: var(--rule-strong); border-radius: 8px; background: rgba(255, 255, 255, 0.03);
+  min-height: 30px; padding: 0 12px; border-color: var(--steuer-rand); border-radius: 8px; background: var(--glas);
   font: 500 11.5px/1 var(--hud); letter-spacing: 0.04em; color: var(--ink-soft);
 }
 .kz-chip:hover:not(:disabled) { border-color: var(--core); color: var(--ink); }
-.kz-chip[aria-pressed="true"], .kz-chip[aria-expanded="true"] { background: transparent; border-color: var(--core); color: var(--core); }
+.kz-chip[aria-pressed="true"], .kz-chip[aria-expanded="true"] { background: transparent; border-color: var(--core); color: var(--core-schrift); }
 
 /* ---------- Rechts: Reiter, Freigaben, Zeitleiste ---------- */
 .kz-reiter-seite { gap: 18px; }
@@ -159,18 +164,18 @@
 .kz-reiter-mobil .kz-reiter { min-height: 44px; padding: 0 2px; }
 .kz-zahl { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; color: var(--on-accent); font: 700 10px/1 var(--hud); }
 .kz .approval {
-  padding: 14px; border: 1px solid var(--rule-strong); border-radius: 10px; background: rgba(255, 255, 255, 0.03);
+  padding: 14px; border: 1px solid var(--rule-strong); border-radius: 10px; background: var(--glas);
   box-shadow: none; animation: hud-auf 0.35s ease-out both;
 }
-.kz .approval .eyebrow { margin-bottom: 8px; font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.12em; color: var(--core); }
+.kz .approval .eyebrow { margin-bottom: 8px; font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.12em; color: var(--core-schrift); }
 .kz .approval h3 { font: 400 15px/1.4 var(--body); }
-.kz .approval-detail, .kz .auftrag-text { background: rgba(0, 0, 0, 0.4); border-radius: 6px; }
+.kz .approval-detail, .kz .auftrag-text { background: var(--code-grund); border-radius: 6px; }
 .kz .approval-detail { font: 12px/1.5 var(--hud); color: var(--ink-soft); }
-.kz .btn-decide { min-height: 40px; border: 1px solid var(--rule-strong); border-radius: 8px; background: transparent; font: 700 13px/1 var(--body); }
-.kz .btn-decide:hover:not(:disabled) { background: rgba(241, 237, 230, 0.1); color: var(--ink); border-color: var(--ink-soft); }
+.kz .btn-decide { min-height: 40px; border: 1px solid var(--steuer-rand); border-radius: 8px; background: transparent; font: 700 13px/1 var(--body); }
+.kz .btn-decide:hover:not(:disabled) { background: var(--glas-stark); color: var(--ink); border-color: var(--ink-soft); }
 .kz .timeline li {
   padding: 8px 10px; border-radius: 6px; border-left: 2px solid var(--rule-strong);
-  background: rgba(255, 255, 255, 0.025); font-size: 13.5px;
+  background: var(--glas-leicht); font-size: 13.5px;
 }
 .kz .timeline time { font: 500 10.5px/1 var(--hud); color: var(--ink-faint); }
 .kz .timeline .eyebrow { letter-spacing: 0.2em; }

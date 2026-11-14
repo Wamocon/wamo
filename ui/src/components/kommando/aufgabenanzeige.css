@@ -13,11 +13,14 @@
 .kz-kernbereich[data-aufgabe="true"] .caption { grid-column: 1 / -1; justify-self: center; }
 
 .az {
+  --az-fuellung: linear-gradient(90deg, rgba(143, 7, 7, 0.95), rgba(244, 14, 14, 0.85)); /* erledigter Schritt */
+  --az-fertig-text: var(--ink);
+  --az-fertig-detail: color-mix(in srgb, var(--ink) 75%, transparent);
   width: 100%; display: grid; gap: 14px; padding: 18px 20px; border-radius: 10px;
   border: 1px solid var(--rule-strong);
   background:
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.02) 0 1px, transparent 1px 5px),
-    linear-gradient(180deg, rgba(244, 14, 14, 0.07), rgba(15, 15, 21, 0.9) 60%);
+    repeating-linear-gradient(0deg, var(--raster) 0 1px, transparent 1px 5px),
+    linear-gradient(180deg, rgba(244, 14, 14, 0.07), color-mix(in srgb, var(--panel-solid) 92%, transparent) 60%);
   box-shadow: 0 24px 60px -36px var(--core);
   animation: hud-auf 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
@@ -26,10 +29,10 @@
 .az-uhr { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .az-uhr-wert {
   font: 700 34px/1 var(--hud); font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
-  text-shadow: 0 0 18px rgba(244, 14, 14, 0.45);
+  text-shadow: 0 0 18px var(--text-glut);
 }
 .az-schritt { margin: 0; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.az-schritt-wort { font: 600 11px/1 var(--hud); letter-spacing: 0.24em; text-transform: uppercase; color: var(--core); }
+.az-schritt-wort { font: 600 11px/1 var(--hud); letter-spacing: 0.24em; text-transform: uppercase; color: var(--core-schrift); }
 .az-schritt-zahl { font: 800 60px/0.9 var(--display); letter-spacing: -0.02em; }
 .az-schritt-von { font: 700 20px/1 var(--display); color: var(--ink-faint); }
 .az-schritte { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
@@ -37,11 +40,11 @@
 .az-idx { font: 500 11px/1 var(--hud); color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .az-balken {
   position: relative; display: flex; align-items: center; height: 30px; padding: 0 12px; overflow: hidden;
-  border: 1px solid var(--rule); border-radius: 4px; background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--rule); border-radius: 4px; background: var(--glas-leicht);
 }
 .az-fuellung {
   position: absolute; inset: 0; transform-origin: left center; transform: scaleX(0);
-  background: linear-gradient(90deg, rgba(143, 7, 7, 0.95), rgba(244, 14, 14, 0.85));
+  background: var(--az-fuellung);
   transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .az-text {
@@ -52,7 +55,8 @@
 .az-marke { font: 700 13px/1 var(--hud); text-align: center; color: var(--ink-faint); }
 .az-zeile[data-status="fertig"] .az-balken { border-color: rgba(244, 14, 14, 0.6); }
 .az-zeile[data-status="fertig"] .az-fuellung { transform: scaleX(1); }
-.az-zeile[data-status="fertig"] .az-detail { color: rgba(241, 237, 230, 0.75); }
+.az-zeile[data-status="fertig"] .az-text { color: var(--az-fertig-text); }
+.az-zeile[data-status="fertig"] .az-detail { color: var(--az-fertig-detail); }
 .az-zeile[data-status="fertig"] .az-marke { color: var(--ink); }
 .az-zeile[data-status="laeuft"] .az-balken { border-color: var(--core); }
 .az-zeile[data-status="laeuft"] .az-fuellung {
@@ -61,13 +65,19 @@
   background-size: 28px 28px; animation: az-lauflicht 0.8s linear infinite;
 }
 .az-zeile[data-status="wartet"] .az-balken { border: 1px dashed var(--warn); animation: hud-puls 1.4s ease-in-out infinite; }
-.az-zeile[data-status="wartet"] .az-marke { color: var(--warn); }
+.az-zeile[data-status="wartet"] .az-marke { color: var(--warn-schrift); }
 .az-zeile[data-status="fehler"] .az-fuellung,
 .az-zeile[data-status="abgelehnt"] .az-fuellung { transform: scaleX(1); background: rgba(255, 46, 99, 0.14); }
 .az-zeile[data-status="fehler"] .az-text,
 .az-zeile[data-status="abgelehnt"] .az-text { color: var(--ink-soft); text-decoration: line-through; }
 .az-zeile[data-status="fehler"] .az-marke,
-.az-zeile[data-status="abgelehnt"] .az-marke { color: var(--fehler); }
+.az-zeile[data-status="abgelehnt"] .az-marke { color: var(--fehler-schrift); }
+/* Hellmodus: erledigte Schritte als helles Rot mit dunkler Schrift (4,7:1 auf #F40E0E) */
+:root[data-theme="light"] .az {
+  --az-fuellung: linear-gradient(90deg, var(--core), var(--core-hot));
+  --az-fertig-text: var(--on-accent);
+  --az-fertig-detail: var(--on-accent);
+}
 @keyframes az-lauflicht { to { background-position: 28px 0; } }
 .az-fortschritt { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px 12px; }
 .az-fortschritt-wert { justify-self: end; font: 700 16px/1 var(--hud); font-variant-numeric: tabular-nums; }

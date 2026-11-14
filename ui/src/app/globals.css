@@ -39,16 +39,31 @@
   /* Rollen */
   --bg: #07070a;
   --panel: rgba(15, 15, 21, 0.78); /* Glasflächen der Seitenspalten und Karten */
+  --glas: rgba(255, 255, 255, 0.035); /* Glasfläche von Karten, Schild, Eingabe und Chips */
   --glas-leicht: rgba(255, 255, 255, 0.025); /* zarte Fläche, zum Beispiel hinter der Stimmlinie */
+  --glas-hover: rgba(255, 255, 255, 0.05); /* Fläche unter dem Zeiger */
+  --glas-stark: rgba(241, 237, 230, 0.1); /* gewählter Schalter, gedrückter Knopf */
+  --code-grund: rgba(0, 0, 0, 0.4); /* Grund für Detailtexte und Code in Karten */
+  --kopf-grund: linear-gradient(180deg, rgba(7, 7, 10, 0.92), rgba(7, 7, 10, 0.6));
+  --glut-mitte: rgba(244, 14, 14, 0.2); /* Glut hinter dem Kern und in den Ecken */
+  --glut-unten: rgba(143, 7, 7, 0.34);
+  --glut-oben: rgba(255, 86, 72, 0.1);
+  --raster: rgba(255, 255, 255, 0.018); /* feine Zeilen über dem Grund */
+  --sterne: 1; /* Sterne im Hintergrund, im Hellmodus aus */
+  --steuer-rand: #3a3a47; /* Rand von Bedienelementen (Knöpfe, Eingabe, Chips) */
+  --text-glut: rgba(244, 14, 14, 0.45); /* Leuchten hinter großen Zahlen */
   --panel-solid: #111117;
   --surface: #111117;
   --ink: #f1ede6;
   --ink-soft: #9b99a5;
-  --ink-faint: #62616d; /* nur für Beiwerk (Zeitstempel, Zähler), nie für Pflichttext */
+  --ink-faint: #848391; /* Beiwerk (Zeitstempel, Zähler, Hinweise): schwächer als --ink-soft, aber mit 4,5:1 noch lesbar */
   --rule: #23232c; /* nur Trennlinien */
   --rule-strong: #3a3a47; /* Ränder von Karten und Feldern */
   --kontur: #7a7986; /* Rand von Bedienelementen, die auch gesperrt erkennbar bleiben müssen (4,8:1) */
-  --core: #f40e0e; /* Hauptton: WMC-Rot */
+  --core: #f40e0e; /* Hauptton: WMC-Rot (Flächen, Linien, Glühen, große Schrift) */
+  --core-schrift: #f82e2e; /* Rot für kleine Schrift: auf Dunkel ein Hauch heller als das Marken-Rot (4,9:1 auf Karten), im Hellmodus dunkler (4,5:1) */
+  --warn-schrift: #ffb020; /* Warnton für kleine Schrift */
+  --fehler-schrift: #ff2e63; /* Fehlerton für kleine Schrift */
   --core-hot: #ff5648; /* heller Ton für Glanz, Verläufe und Fokus */
   --core-deep: #8f0707; /* tiefer Ton für Verläufe und Kanten */
   --accent: #f40e0e; /* Flächen, Linien, große Schrift */
@@ -91,6 +106,48 @@
   --top-basis: 48px; /* Höhe der Kopfzeile ohne Safe-Area */
   --top: calc(var(--top-basis) + var(--sa-t)); /* Höhe der Kopfzeile samt Abstand oben: alle Anker darunter nutzen --top */
   color-scheme: dark;
+}
+
+/* =====================================================================
+   Hellmodus: dieselbe Gestaltung auf hellem Grund (WMC-Grautöne). Wirksam bei data-theme="light" am Element html
+   (lib/thema.ts, Skript im Kopf der Seite). Glasflächen hell, Glut schwächer, keine Sterne. Marken-Rot #F40E0E bleibt für
+   Flächen, Linien und große Schrift; kleine rote Schrift nimmt --core-schrift (Rot auf Weiß hat nur 4,27:1).
+   Kontraste (Test lib/knopfKontrast.test.ts): Schrift mindestens 4,5:1, Rand von Bedienelementen mindestens 3:1.
+   ===================================================================== */
+:root[data-theme="light"] {
+  --bg: #f3f3f3;
+  --panel: rgba(255, 255, 255, 0.82);
+  --panel-solid: #ffffff;
+  --surface: #ffffff;
+  --ink: #101014;
+  --ink-soft: #4b4a55;
+  --ink-faint: #6a6975;
+  --rule: #dcdce2;
+  --rule-strong: #c3c3cc;
+  --kontur: #6d6c78;
+  --steuer-rand: #878694;
+  --core-schrift: #c20b0b;
+  --warn: #b36b00;
+  --warn-schrift: #8a5a00;
+  --fehler: #d6154a;
+  --fehler-schrift: #c2123f;
+  --focus: #b80909;
+  --voice-user: #1a1a20;
+  --voice-other: #6b6b6b;
+  --cut: #101014;
+  --glas: rgba(0, 0, 0, 0.035);
+  --glas-leicht: rgba(0, 0, 0, 0.025);
+  --glas-hover: rgba(0, 0, 0, 0.05);
+  --glas-stark: rgba(0, 0, 0, 0.07);
+  --code-grund: rgba(0, 0, 0, 0.06);
+  --kopf-grund: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.72));
+  --glut-mitte: rgba(244, 14, 14, 0.07);
+  --glut-unten: rgba(244, 14, 14, 0.05);
+  --glut-oben: rgba(255, 86, 72, 0.05);
+  --raster: transparent;
+  --sterne: 0;
+  --text-glut: transparent;
+  color-scheme: light;
 }
 
 @theme inline {

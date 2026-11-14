@@ -6,6 +6,7 @@ import { EinstellungenKnopf } from "@/components/einstellungen/EinstellungenLink
 import { Statusanzeige } from "@/components/kommando/Statusanzeige";
 import { ProfilChip } from "@/components/ProfilChip";
 import { StatusDetails } from "@/components/Statusleiste";
+import { ThemaSchalter } from "@/components/ThemaSchalter";
 import { WmcLogo } from "@/components/WmcLogo";
 import { laborAnsicht } from "@/lib/laborPlatz";
 
@@ -67,6 +68,7 @@ export const Kopfzeile = memo(function Kopfzeile({
       <StatusDetails kompakt />
       <div className="topbar-end">
         <Statusanzeige />
+        <ThemaSchalter />
         <EinstellungenKnopf />
         {ansicht.verlauf && (
           <button

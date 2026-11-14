@@ -16,6 +16,8 @@ import { useDesktopApp, useServerBrowser } from "@/lib/geraet";
 import { gewaehltesMikrofon, merkeMikrofon, type Mikrofon } from "@/lib/mikrofon";
 import { zurGeraeteverwaltung } from "@/lib/einstellungenHash";
 import { useSelect } from "@/lib/store";
+import { THEMEN, themaWaehlen, type Thema } from "@/lib/thema";
+import { useThema } from "@/lib/useThema";
 import { istOnline, wamo, zeigeToast } from "@/lib/wamo";
 import { Block, Daten } from "./Block";
 import { StillStartEinstellung } from "./StillStart";
@@ -165,40 +167,88 @@ export const SpracheAbschnitt = memo(function SpracheAbschnitt({
 });
 
 // ---------- Darstellung ----------
-export const DarstellungAbschnitt = memo(function DarstellungAbschnitt() {
+const THEMA_TEXT: Record<Thema, string> = { dunkel: "Dunkel", hell: "Hell" };
+const THEMA_BESCHREIBUNG: Record<Thema, string> = {
+  dunkel: "Dunkler Grund mit rotem Licht. Das ist der Standard.",
+  hell: "Heller Grund mit denselben Farben, gut für helle Räume.",
+};
+
+/** Hell oder Dunkel, je Gerät gespeichert (lib/thema.ts). In der Darstellung Nacht bleibt es dunkel, die Auswahl ist dann gesperrt. */
+function HelligkeitBlock() {
   const id = useId();
-  const { gewaehlt, pausiert } = useEffektiveDarstellung();
+  const thema = useThema();
+  const nacht = useEffektiveDarstellung().effektiv === "nacht";
   return (
-    <Block titel="Ansicht">
-      <fieldset className="ez-radios">
-        <legend className="sr-only">Darstellung</legend>
-        {DARSTELLUNGEN.map((d) => (
-          <label key={d} className="ez-radio" data-an={gewaehlt === d || undefined}>
+    <Block titel="Helligkeit">
+      <fieldset className="ez-radios" disabled={nacht}>
+        <legend className="sr-only">Helligkeit</legend>
+        {THEMEN.map((t) => (
+          <label key={t} className="ez-radio" data-an={thema === t || undefined}>
             <input
               type="radio"
-              name={`${id}-darstellung`}
-              value={d}
-              checked={gewaehlt === d}
-              onChange={() => darstellungSetzen(d)}
-              aria-labelledby={`${id}-${d}-n`}
-              aria-describedby={`${id}-${d}-b`}
+              name={`${id}-thema`}
+              value={t}
+              checked={thema === t}
+              onChange={() => themaWaehlen(t)}
+              aria-labelledby={`${id}-${t}-n`}
+              aria-describedby={`${id}-${t}-b`}
             />
             <span className="ez-radio-text">
-              <span id={`${id}-${d}-n`} className="ez-radio-name">
-                {DARSTELLUNG_TEXT[d]}
+              <span id={`${id}-${t}-n`} className="ez-radio-name">
+                {THEMA_TEXT[t]}
               </span>
-              <span id={`${id}-${d}-b`} className="ez-radio-beschr">
-                {DARSTELLUNG_BESCHREIBUNG[d]}
+              <span id={`${id}-${t}-b`} className="ez-radio-beschr">
+                {THEMA_BESCHREIBUNG[t]}
               </span>
             </span>
           </label>
         ))}
       </fieldset>
       <p className="ez-klein" role="status">
-        {pausiert ? `${DARSTELLUNG_TEXT[gewaehlt]} pausiert, solange etwas auf deine Entscheidung wartet.` : ""}
+        {nacht ? "In der Darstellung Nacht bleibt die Oberfläche dunkel." : ""}
       </p>
-      <p className="ez-klein">Die Wahl gilt für dieses Gerät und bleibt erhalten. Im Gespräch wechselst du oben in der Mitte.</p>
+      <p className="ez-klein">Die Wahl gilt für dieses Gerät und bleibt erhalten.</p>
     </Block>
+  );
+}
+
+export const DarstellungAbschnitt = memo(function DarstellungAbschnitt() {
+  const id = useId();
+  const { gewaehlt, pausiert } = useEffektiveDarstellung();
+  return (
+    <>
+      <HelligkeitBlock />
+      <Block titel="Ansicht">
+        <fieldset className="ez-radios">
+          <legend className="sr-only">Darstellung</legend>
+          {DARSTELLUNGEN.map((d) => (
+            <label key={d} className="ez-radio" data-an={gewaehlt === d || undefined}>
+              <input
+                type="radio"
+                name={`${id}-darstellung`}
+                value={d}
+                checked={gewaehlt === d}
+                onChange={() => darstellungSetzen(d)}
+                aria-labelledby={`${id}-${d}-n`}
+                aria-describedby={`${id}-${d}-b`}
+              />
+              <span className="ez-radio-text">
+                <span id={`${id}-${d}-n`} className="ez-radio-name">
+                  {DARSTELLUNG_TEXT[d]}
+                </span>
+                <span id={`${id}-${d}-b`} className="ez-radio-beschr">
+                  {DARSTELLUNG_BESCHREIBUNG[d]}
+                </span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+        <p className="ez-klein" role="status">
+          {pausiert ? `${DARSTELLUNG_TEXT[gewaehlt]} pausiert, solange etwas auf deine Entscheidung wartet.` : ""}
+        </p>
+        <p className="ez-klein">Die Wahl gilt für dieses Gerät und bleibt erhalten. Im Gespräch wechselst du oben in der Mitte.</p>
+      </Block>
+    </>
   );
 });
 

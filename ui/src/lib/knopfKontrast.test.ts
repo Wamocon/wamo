@@ -1,6 +1,8 @@
-// Test für die Farben der Entscheidungs-Schaltflächen (app/globals.css, .btn-decide): Der gesperrte Zustand ("Wird gestartet …") bleibt
-// lesbar (WCAG 2.1 AA, 4,5:1 für Text) und ändert nichts mit Transparenz, und der Hover-Wechsel gilt nur für aktive Knöpfe.
-// Dazu die Grundfarbe der Oberfläche: das Marken-Rot muss als Schrift und als Fläche lesbar bleiben.
+// Test für die Farben der Oberfläche (app/globals.css) in beiden Themen, Dunkel (Standard, Block :root) und Hell (Block
+// :root[data-theme="light"]): Schrift mindestens 4,5:1 (WCAG 2.1 AA), Ränder und Symbole von Bedienelementen mindestens 3:1,
+// das Marken-Rot #F40E0E bleibt in beiden Themen gleich und kleine rote Schrift nimmt den eigenen Ton --core-schrift (Rot auf
+// Weiß hat nur 4,27:1). Dazu der gesperrte Zustand der Entscheidungs-Schaltflächen (.btn-decide:disabled): lesbar, ohne
+// Transparenz, und der Hover-Wechsel gilt nur für aktive Knöpfe.
 // Ausführen im Ordner ui/:  npm test
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -8,20 +10,30 @@ import { test } from "node:test";
 
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 
+type Thema = "dunkel" | "hell";
+const THEMEN: readonly Thema[] = ["dunkel", "hell"];
+const KOPF: Record<Thema, string> = { dunkel: ":root {", hell: ':root[data-theme="light"] {' };
+
 function regel(selektor: string): string {
   const i = css.indexOf(`${selektor} {`);
   assert.ok(i >= 0, `${selektor} fehlt in globals.css`);
   return css.slice(i, css.indexOf("}", i));
 }
 
-/** Variable aus dem Block :root (die Oberfläche hat nur ein Thema: dunkel). */
-function variable(name: string): string {
-  const i = css.indexOf(":root {");
-  assert.ok(i >= 0, ":root");
-  const block = css.slice(i, css.indexOf("\n}", i));
-  const treffer = new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`).exec(block);
-  assert.ok(treffer, name);
-  return treffer[1];
+/** Inhalt des Blocks eines Themas (bis zur schließenden Klammer in der ersten Spalte). */
+function block(thema: Thema): string {
+  const i = css.indexOf(`\n${KOPF[thema]}`);
+  assert.ok(i >= 0, `Block ${KOPF[thema]} fehlt in globals.css`);
+  return css.slice(i, css.indexOf("\n}", i));
+}
+
+/** Farbwert (#RRGGBB) einer Variablen im Thema; was der Hellmodus nicht ändert, gilt aus dem dunklen Block. */
+function variable(thema: Thema, name: string): string {
+  for (const t of thema === "hell" ? (["hell", "dunkel"] as const) : (["dunkel"] as const)) {
+    const treffer = new RegExp(`\\n\\s*${name}:\\s*(#[0-9a-fA-F]{6})\\b`).exec(block(t));
+    if (treffer) return treffer[1].toLowerCase();
+  }
+  assert.fail(`${name} ist im Thema ${thema} nicht als #RRGGBB gesetzt`);
 }
 
 function leuchtdichte(hex: string): number {
@@ -36,23 +48,78 @@ function kontrast(a: string, b: string): number {
   return (hell + 0.05) / (dunkel + 0.05);
 }
 
-test("gesperrte Schaltfläche: keine Transparenz, sondern eine Textfarbe mit mindestens 4,5:1", () => {
-  const gesperrt = regel(".btn-decide:disabled");
-  assert.doesNotMatch(gesperrt, /opacity/, "Transparenz drückt den Kontrast unter 4,5:1");
-  assert.match(gesperrt, /color:\s*var\(--ink-soft\)/);
-  const verhaeltnis = kontrast(variable("--ink-soft"), variable("--bg"));
-  assert.ok(verhaeltnis >= 4.5, `${verhaeltnis.toFixed(2)}:1`);
+const mindestens = (wert: number, grenze: number, was: string) =>
+  assert.ok(wert >= grenze, `${was}: ${wert.toFixed(2)}:1, verlangt ${grenze}:1`);
+
+test("beide Themen sind da: Dunkel als Standard in :root, Hell im Block data-theme=light, je mit color-scheme", () => {
+  assert.match(block("dunkel"), /color-scheme:\s*dark/);
+  assert.match(block("hell"), /color-scheme:\s*light/);
+  assert.match(block("hell"), /--sterne:\s*0/, "im Hellmodus gibt es keine Sterne");
+  assert.ok(css.indexOf(KOPF.dunkel) < css.indexOf(KOPF.hell), "der Hellmodus kommt nach :root und übersteuert es");
 });
 
-test("der Rand der gesperrten Schaltfläche bleibt erkennbar (3:1 für Bedienelemente)", () => {
-  assert.match(regel(".btn-decide:disabled"), /border-color:\s*var\(--kontur\)/);
-  assert.ok(kontrast(variable("--kontur"), variable("--bg")) >= 3);
+for (const thema of THEMEN) {
+  test(`${thema}: gesperrte Schaltfläche ohne Transparenz, Schrift --ink-soft mit mindestens 4,5:1`, () => {
+    const gesperrt = regel(".btn-decide:disabled");
+    assert.doesNotMatch(gesperrt, /opacity/, "Transparenz drückt den Kontrast unter 4,5:1");
+    assert.match(gesperrt, /color:\s*var\(--ink-soft\)/);
+    for (const grund of ["--bg", "--surface"]) {
+      mindestens(kontrast(variable(thema, "--ink-soft"), variable(thema, grund)), 4.5, `--ink-soft auf ${grund}`);
+    }
+  });
+
+  test(`${thema}: --ink mindestens 7:1, --ink-faint mindestens 4,5:1, der Rand gesperrter Bedienelemente (--kontur) mindestens 3:1`, () => {
+    assert.match(regel(".btn-decide:disabled"), /border-color:\s*var\(--kontur\)/);
+    for (const grund of ["--bg", "--surface"]) {
+      mindestens(kontrast(variable(thema, "--ink"), variable(thema, grund)), 7, `--ink auf ${grund}`);
+      mindestens(kontrast(variable(thema, "--kontur"), variable(thema, grund)), 3, `--kontur auf ${grund}`);
+      mindestens(kontrast(variable(thema, "--ink-faint"), variable(thema, grund)), 4.5, `--ink-faint auf ${grund} (Beiwerk, auch Hinweise)`);
+    }
+  });
+
+  test(`${thema}: das Marken-Rot bleibt #F40E0E, trägt Flächen und große Schrift, dunkle Schrift darauf mindestens 4,5:1`, () => {
+    assert.equal(variable(thema, "--core"), "#f40e0e");
+    assert.equal(variable(thema, "--accent"), "#f40e0e");
+    mindestens(kontrast(variable(thema, "--on-accent"), variable(thema, "--core")), 4.5, "--on-accent auf Rot");
+    for (const grund of ["--bg", "--surface"]) {
+      mindestens(kontrast(variable(thema, "--core"), variable(thema, grund)), 3, `Rot als Fläche oder große Schrift auf ${grund}`);
+    }
+  });
+
+  test(`${thema}: kleine rote, gelbe und rosa Schrift (--core-schrift, --warn-schrift, --fehler-schrift) mindestens 4,5:1`, () => {
+    for (const name of ["--core-schrift", "--warn-schrift", "--fehler-schrift"]) {
+      for (const grund of ["--bg", "--surface"]) {
+        mindestens(kontrast(variable(thema, name), variable(thema, grund)), 4.5, `${name} auf ${grund}`);
+      }
+    }
+  });
+
+  test(`${thema}: Fokusring und die Stimmfarben (Balken, Legende) mindestens 3:1 auf dem Grund`, () => {
+    for (const name of ["--focus", "--voice-wamo", "--voice-user", "--voice-other"]) {
+      mindestens(kontrast(variable(thema, name), variable(thema, "--bg")), 3, `${name} auf --bg`);
+    }
+  });
+}
+
+test("hell: der Rand von Bedienelementen (--steuer-rand) hat mindestens 3:1, auch auf Weiß", () => {
+  for (const grund of ["--bg", "--surface"]) {
+    mindestens(kontrast(variable("hell", "--steuer-rand"), variable("hell", grund)), 3, `--steuer-rand auf ${grund}`);
+  }
 });
 
-test("das Marken-Rot trägt Schrift: Rot auf dem Hintergrund und dunkle Schrift auf Rot je mindestens 4,5:1", () => {
-  assert.equal(variable("--core").toLowerCase(), "#f40e0e");
-  assert.ok(kontrast(variable("--core"), variable("--bg")) >= 4.5);
-  assert.ok(kontrast(variable("--on-accent"), variable("--core")) >= 4.5);
+test("hell: das Rot für kleine Schrift ist dunkler als das Marken-Rot, bleibt aber rot", () => {
+  const rot = variable("hell", "--core-schrift");
+  assert.notEqual(rot, "#f40e0e");
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(rot.slice(i, i + 2), 16));
+  assert.ok(r > 150 && g < 40 && b < 40, `${rot} ist kein Rot mehr`);
+  assert.ok(leuchtdichte(rot) < leuchtdichte("#f40e0e"));
+});
+
+test("dunkel: die kleine rote Schrift ist nur einen Hauch heller als das Marken-Rot (das Marken-Rot selbst hat auf Karten 4,4:1)", () => {
+  const rot = variable("dunkel", "--core-schrift");
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(rot.slice(i, i + 2), 16));
+  assert.ok(r >= 0xf4 && g < 80 && b < 80, `${rot} ist kein Marken-Rot mehr`);
+  mindestens(kontrast(rot, variable("dunkel", "--surface")), 4.5, "Rot auf --surface");
 });
 
 test("Hover kehrt die Farben nur bei einer aktiven Schaltfläche um", () => {

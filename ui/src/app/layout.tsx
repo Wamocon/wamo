@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import localFont from "next/font/local";
+import { INIT_SKRIPT, LEISTENFARBE } from "@/lib/thema";
 import "./globals.css";
 
 // Drei Schriften, je eine Aufgabe (globals.css): Unbounded für Marke, Überschriften und große Zahlen, JetBrains Mono für
@@ -53,14 +54,20 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  // Die Oberfläche ist immer dunkel (Kommandozentrale): Farbe des Hintergrunds (--bg in globals.css)
-  themeColor: "#07070a",
-  colorScheme: "dark",
+  // Dunkel ist der Standard, Hell ein Schalter je Gerät (lib/thema.ts). Die Farbe der Browserleiste gilt für den Standard,
+  // das Skript im Kopf der Seite und lib/thema.ts stellen sie auf die gewählte Seite um. Beide Schemata sind vorgesehen,
+  // die Wahl trifft das CSS (color-scheme in globals.css).
+  themeColor: LEISTENFARBE.dunkel,
+  colorScheme: "dark light",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="de" className={`${display.variable} ${hud.variable} ${body.variable}`}>
+    // suppressHydrationWarning: das Skript im Kopf setzt data-theme vor dem ersten Zeichnen, der Server kennt die Wahl nicht
+    <html lang="de" className={`${display.variable} ${hud.variable} ${body.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: INIT_SKRIPT }} />
+      </head>
       <body>{children}</body>
     </html>
   );
