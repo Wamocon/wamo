@@ -79,7 +79,7 @@ _STEUER = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\
 
 PC_NICHT_ERREICHBAR = {
     "status": "error",
-    "summary": "PC nicht erreichbar. Die Verbindung zum PC ist gerade unterbrochen, dort kann WAMO nichts tun.",
+    "summary": "PC nicht erreichbar. Die Verbindung zum PC ist gerade unterbrochen, dort kann W.A.I.S. nichts tun.",
 }
 
 

@@ -82,8 +82,8 @@ class StandardwerteTest(unittest.TestCase):
 
     ERWARTET = {
         "WAMO_TTS_SATZLEERZEICHEN": False, "WAMO_PERSONA_RUECKFRAGEN": True, "WAMO_PERSONA_PC_ORDNER": False,
-        "WAMO_PAUSEN_PROMPT": True, "WAMO_RUECKMELDUNG_WERKZEUG": True, "WAMO_JA_WAECHTER": False,
-        "WAMO_PERSONA_GESPRAECH": False, "WAMO_WARTESATZ_MODELL": False,
+        "WAMO_PAUSEN_PROMPT": True, "WAMO_RUECKMELDUNG_WERKZEUG": True, "WAMO_JA_WAECHTER": True,
+        "WAMO_PERSONA_GESPRAECH": False, "WAMO_WARTESATZ_MODELL": False, "WAMO_MHM": False,
     }
 
     def test_standardwerte_nach_der_messung(self):
@@ -106,7 +106,22 @@ class StandardwerteTest(unittest.TestCase):
 NEUE_NAMEN = (
     "SONIOX_SPEED", "SONIOX_REDUCE_SILENCE", "WAMO_TTS_SATZLEERZEICHEN", "WAMO_PERSONA_RUECKFRAGEN", "WAMO_PERSONA_PC_ORDNER",
     "WAMO_PAUSEN_PROMPT", "WAMO_LERNEN_OHNE_MOMENT", "WAMO_RUECKMELDUNG_WERKZEUG", "WAMO_JA_WAECHTER", "WAMO_ECHO_MODUS",
+    # Füllwörter (fuellwoerter.py), seit 14.11.2026
+    "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM",
+    # Natürliche Sprechweise der Persona (persona.py), seit 14.11.2026
+    "WAMO_PERSONA_NATUERLICH",
+    # Innehalten statt Abbrechen (wiedergabe.py), seit 14.11.2026
+    "WAMO_INNEHALTEN", "WAMO_INNEHALTEN_WEITER_SECS", "WAMO_INNEHALTEN_MAX_SECS",
 )
+
+# Stimmabdruck (stimme_gate.py, stimme_modell.py): Modus, Schwellen und Modellpfad, alle seit 14.11.2026
+STIMME_UEBERTRAGEN = (
+    "WAMO_STIMME_PRUEFUNG", "WAMO_STIMME_EIGEN_MIN", "WAMO_STIMME_FREMD_MAX", "WAMO_STIMME_MIN_SECS", "WAMO_STIMME_VERTRAUEN_SECS",
+    "WAMO_STIMME_KURZ_VERTRAUEN_SECS",
+)
+# Der Modellpfad gilt je Rechner: er steht in der Liste des Servers (dort setzbar), aber nie in der Liste, die der PC aus seiner .env übernimmt
+STIMME_MODELL = "WAMO_STIMME_MODELL"
+STIMME = (*STIMME_UEBERTRAGEN, STIMME_MODELL)
 
 
 # Prüfbares Ziel für Entwicklungsaufträge (Standard an), Befehlskriterien (Standard aus) und Schwelle zum Kürzen langer
@@ -128,6 +143,22 @@ class ErlaubnislisteTest(unittest.TestCase):
         for name in NEUE_NAMEN:
             if name != "WAMO_ECHO_MODUS":
                 self.assertIn(name, env_schalter.__doc__)
+
+    def test_stimme_steht_in_beiden_listen_und_in_der_beschreibung(self):
+        wurzel = Path(__file__).resolve().parent.parent
+        server = (wurzel / "infra/sokrates2/wamo_core_env.py").read_text(encoding="utf-8")
+        pc = (wurzel / "scripts/wamo_kern_sokrates2.py").read_text(encoding="utf-8")
+        for name in STIMME:
+            self.assertIn(f'"{name}"', server, f"{name} fehlt in der Liste des Servers")
+            self.assertNotIn(f'"{name}"', pc, f"{name} darf nicht vom PC auf den Server kopiert werden")  # Sicherheitseinstellung des Servers
+        for name in STIMME:
+            self.assertIn(name, env_schalter.__doc__)
+
+    def test_stimme_steht_leer_in_den_vorlagen(self):
+        """Leer heißt Standard: Modus streng (wirkt nur mit Abdruck), Schwellen 0,5 und 0,3, eine Sekunde, 120 Sekunden."""
+        text = (Path(__file__).resolve().parent / ".env.example").read_text(encoding="utf-8")
+        for name in STIMME:
+            self.assertRegex(text, rf"(?m)^{name}=$", f"{name} fehlt oder hat einen Wert in voice-core/.env.example")
 
     def test_abnahme_und_ausgaben_stehen_in_beiden_listen(self):
         """Der Hilfsdienst auf Sokrates-2 lehnt unbekannte Schlüssel ab (nichts wird übernommen): beide Listen müssen gleich sein."""

@@ -54,6 +54,15 @@ ERLAUBT = set(PFLICHT) | {
     "WAMO_LATENZ_LOG", "WAMO_VAD_STOP_SECS", "WAMO_TTS_START_ZEICHEN", "WAMO_ECHO_FILTER", "WAMO_CACHE_VORWAERMEN",
     # Sprachverhalten (voice-core/soft_interrupt.py, wartesatz.py): Stopp an der Wortgrenze, Dämpfen, Rückmeldelaute, Wartesatz
     "WAMO_STOPP_GRENZE", "WAMO_DUCKEN", "WAMO_RUECKMELDUNG", "WAMO_WARTESATZ", "WAMO_WARTESATZ_SECS",
+    # Füllwörter (voice-core/fuellwoerter.py): vorab aufgenommenes "Moment." bei Werkzeugen, Rückmeldelaut "Mhm"
+    "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM", "WAMO_PERSONA_NATUERLICH",
+    # Innehalten statt Abbrechen (voice-core/wiedergabe.py, soft_interrupt.py): ein einzelnes Wort lässt WAMO innehalten
+    "WAMO_INNEHALTEN", "WAMO_INNEHALTEN_WEITER_SECS", "WAMO_INNEHALTEN_MAX_SECS",
+    # Stimmabdruck (voice-core/stimme_gate.py, stimme_modell.py): Modus (aus, beobachten, streng), Schwellen und Pfad der Modelldatei
+    # (Standard /var/cache/wamo-core/wamo/sprecher/nemo_en_titanet_large.onnx). Keine Geheimnisse.
+    "WAMO_STIMME_PRUEFUNG", "WAMO_STIMME_EIGEN_MIN", "WAMO_STIMME_FREMD_MAX", "WAMO_STIMME_MIN_SECS", "WAMO_STIMME_VERTRAUEN_SECS",
+    "WAMO_STIMME_KURZ_VERTRAUEN_SECS",
+    "WAMO_STIMME_MODELL",
     # Sprachpakete A und B (voice-core/soniox_tts.py, persona.py, bot.py, learning.py, soft_interrupt.py, ja_waechter.py):
     # Tempo und Pausen der Stimme, Leerzeichen am Satzende, Persona, Pausen-Texte, Lernen, Rückmeldelaut bei Werkzeug, Ja-Wächter
     "SONIOX_SPEED", "SONIOX_REDUCE_SILENCE", "WAMO_TTS_SATZLEERZEICHEN", "WAMO_PERSONA_RUECKFRAGEN", "WAMO_PERSONA_BROWSER", "WAMO_PERSONA_TAB", "WAMO_PERSONA_PC_ORDNER", "WAMO_PERSONA_GESPRAECH", "WAMO_WARTESATZ_MODELL", "WAMO_RD_AKTIV", "WAMO_WARTESATZ_MODELL_SECS",

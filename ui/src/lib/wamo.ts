@@ -14,9 +14,21 @@ import type {
   Vorgang,
 } from "@/lib/nachrichten";
 import { fristLoeschen } from "./auftragFrist.ts"; // relativ aus demselben Grund
+import { AUFGABE_LEER, naechsteAufgabe, type Aufgabe } from "./aufgabenanzeige.ts"; // relativ aus demselben Grund
 import { auftraegeNachQuittung } from "./auftragStart.ts"; // relativ aus demselben Grund
 import { liveBildLoeschen } from "./liveBild.ts"; // relativ aus demselben Grund
 import { STILL_AUS, type StillStand } from "./stillStart.ts"; // relativ aus demselben Grund
+import {
+  abdruckAnsage,
+  abdruckAnwenden,
+  abdruckOeffnen,
+  kannEinlernen,
+  STIMME_LEER,
+  stimmeErgebnisAnwenden,
+  stimmeStatusAnwenden,
+  type Abdruck,
+  type StimmeStand,
+} from "./stimme.ts"; // relativ aus demselben Grund
 import { createStore } from "./store.ts"; // relativ, damit node:test diese Datei laden kann (textEingabe.test.ts)
 import { vorgangAnsage, vorgangEinordnen } from "./vorgaenge.ts";
 
@@ -87,6 +99,9 @@ export type LogEintrag = {
 
 export type Memo = Gemerkt & { key: number; paused: boolean };
 
+/** Einwilligungstext zum Stimmabdruck: kommt vom Kern, version geht beim Start in der Antwort zurück (lib/stimme.ts). */
+export type Einwilligung = { version: string; text: string };
+
 /** Meldung in der Präsenzspalte. art steuert die sichere nächste Aktion (Erneut verbinden, Abmelden). */
 export type Fehler = {
   text: string;
@@ -113,6 +128,8 @@ export type WamoState = {
   caption: Caption;
   log: LogEintrag[];
   activities: Activity[];
+  /** Aufgabenanzeige: die Werkzeugschritte der laufenden Bitte als eine Aufgabe (lib/aufgabenanzeige.ts) */
+  aufgabe: Aufgabe;
   /** Vorgänge der Sitzung (Aufgaben und Aufträge mit Fortschritt, voice-core/vorgaenge.py), in der Reihenfolge des Eingangs */
   vorgaenge: Vorgang[];
   turn: number;
@@ -138,6 +155,16 @@ export type WamoState = {
   /** Start beim Tippen (lib/stillStart.ts): still = Sitzung ohne Mikrofon und Stimme, perTippen = von selbst gestartet (nur dann gilt die
    *  Leerlaufregel), uebernommen = eine neuere Sitzung dieses Profils hat die letzte hier abgelöst */
   stillStart: StillStand;
+  /** Stimmerkennung des Kerns (Stand, Modus, Ergebnis der letzten Äußerung), leer bis der Kern etwas meldet (lib/stimme.ts) */
+  stimme: StimmeStand;
+  /** Einlernen des Stimmabdrucks: null, solange die Ansicht zu ist; sonst die Phase von der Einwilligung bis zum Ergebnis */
+  abdruck: Abdruck | null;
+  /** Die Person hat die Einlernansicht selbst geschlossen oder abgebrochen: bis zur nächsten Startmeldung öffnet keine Meldung sie wieder */
+  abdruckLokalZu: boolean;
+  /** Einwilligungstext vom Kern, null bis er ihn schickt (ohne ihn startet die Oberfläche das Einlernen nicht) */
+  einwilligung: Einwilligung | null;
+  /** Der zuletzt geschickte Einwilligungstext war ungültig (zum Beispiel zu lang): die Einlernansicht sagt es, statt weiter zu warten */
+  einwilligungAbgelehnt: boolean;
   /** Text für role="status": nur bedeutsame Wechsel (verbunden, getrennt, Mikro, PC) */
   ansage: string;
   /** kurzer sichtbarer Hinweis (z. B. "PC-Steuerung automatisch eingeschaltet"), verschwindet selbst */
@@ -160,6 +187,7 @@ export const initialState: WamoState = {
   caption: leereCaption,
   log: [],
   activities: [],
+  aufgabe: AUFGABE_LEER,
   vorgaenge: [],
   turn: 0,
   approvals: [],
@@ -176,6 +204,11 @@ export const initialState: WamoState = {
   textMoeglich: false,
   mikrofon: null,
   stillStart: STILL_AUS,
+  stimme: STIMME_LEER,
+  abdruck: null,
+  abdruckLokalZu: false,
+  einwilligung: null,
+  einwilligungAbgelehnt: false,
   ansage: "",
   toast: null,
 };
@@ -274,7 +307,7 @@ export function reduceBotTranscript(c: Caption, text: string): Caption {
 }
 
 /** Nur die gesprochenen Wörter eines Zugs (nach einer Unterbrechung). */
-export const gesprochen = (c: Caption) =>
+export const gesprochen = (c: Pick<Caption, "text" | "spoken">) =>
   c.text.trim() ? c.text.trim().split(/\s+/).slice(0, c.spoken).join(" ") : "";
 
 let logId = 0;
@@ -403,6 +436,30 @@ export function resetWamo(state: WamoState = initialState) {
   wamo.set(() => state);
 }
 
+// ---------- Stimme einlernen: Ansicht öffnen und schließen ----------
+
+/** Die Einlernansicht öffnen (zuerst die Einwilligung); false ohne laufende Sitzung oder bei ausgeschalteter Stimmerkennung. */
+export function abdruckAnsichtOeffnen(): boolean {
+  const s = wamo.get();
+  if (!kannEinlernen(s.stimme, istOnline(s))) return false;
+  wamo.set((x) => ({ ...x, abdruck: abdruckOeffnen(), abdruckLokalZu: false }));
+  return true;
+}
+
+/** Die Einlernansicht zumachen (das Abbrechen eines laufenden Einlernens schickt useWamo). Späte Meldungen öffnen sie nicht wieder. */
+export function abdruckAnsichtSchliessen() {
+  wamo.set((s) => ({ ...s, abdruck: null, abdruckLokalZu: true }));
+}
+
+/**
+ * Eine Nachricht, die parseServerMessage abgelehnt hat (useWamo). Zählt nur bei einem Einwilligungstext: Der alte Text gilt dann
+ * nicht mehr, und die Einlernansicht zeigt einen Hinweis statt endlos "wird vom Kern geladen". Alles andere bleibt unbeachtet.
+ */
+export function nachrichtAbgelehnt(roh: unknown) {
+  if (typeof roh !== "object" || roh === null || (roh as { type?: unknown }).type !== "stimmabdruck_einwilligung") return;
+  wamo.set((s) => ({ ...s, einwilligung: null, einwilligungAbgelehnt: true }));
+}
+
 // ---------- Servernachrichten in den Store übernehmen ----------
 const PC_ANSAGE: Record<Betrieb["pc"], string> = {
   verbindet: "PC wird verbunden",
@@ -452,7 +509,11 @@ export function applyServerMessage(msg: ServerMessage) {
           endedAt: fertig ? (alt?.endedAt ?? jetzt) : undefined,
         };
         // gleiche id = Statuswechsel; neueste oben, Platz für den aktuellen Zug und frühere Schritte
-        return { ...s, activities: [a, ...s.activities.filter((x) => x.id !== a.id)].slice(0, 12) };
+        return {
+          ...s,
+          activities: [a, ...s.activities.filter((x) => x.id !== a.id)].slice(0, 12),
+          aufgabe: naechsteAufgabe(s.aufgabe, a, jetzt),
+        };
       });
       return;
     }
@@ -606,6 +667,22 @@ export function applyServerMessage(msg: ServerMessage) {
       return;
     case "bild":
       return; // behandelt useWamo (zeichnen und bestätigen, lib/liveBild.ts); das Bild kommt nie in den Store
+    case "stimme_status":
+      wamo.set((s) => ({ ...s, stimme: stimmeStatusAnwenden(s.stimme, msg) }));
+      return;
+    case "stimme_ergebnis":
+      wamo.set((s) => ({ ...s, stimme: stimmeErgebnisAnwenden(s.stimme, msg) }));
+      return;
+    case "stimmabdruck_einwilligung":
+      wamo.set((s) => ({ ...s, einwilligung: { version: msg.version, text: msg.text }, einwilligungAbgelehnt: false }));
+      return;
+    case "stimmabdruck":
+      wamo.set((s) => {
+        const abdruck = abdruckAnwenden(s.abdruck, msg, s.abdruckLokalZu);
+        // eine offene Ansicht (auch die von einer neuen Startmeldung geöffnete) hebt das lokale Schließen auf
+        return { ...s, abdruck, abdruckLokalZu: abdruck ? false : s.abdruckLokalZu, ansage: abdruckAnsage(msg.status) ?? s.ansage };
+      });
+      return;
     case "leiser_stopp":
     case "stimme_leiser":
     case "mikrofon":

@@ -309,7 +309,7 @@ test("der Text erscheint als Nutzerzeile der Untertitel, die Anzeige enthält ni
   assert.ok(ohneGeheimnis(JSON.stringify(nachher)));
 });
 
-test("ein neuer Beitrag beendet den alten Zug; spricht WAMO, gilt der Rest als unterbrochen", () => {
+test("ein neuer Beitrag beendet den alten Zug; spricht W.A.I.S., gilt der Rest als unterbrochen", () => {
   const spricht: WamoState = { ...mitKarten(), presence: "speaking", caption: { ...leereCaption, text: "Ich lösche", spoken: 1 } };
   const n = beginneNutzerZug(spricht);
   assert.equal(n.caption.interrupted, true);

@@ -6,8 +6,70 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ## [Unveröffentlicht]
 
+### Geändert
+
+- Neuer Anzeigename **W.A.I.S.** (WAMOCON’s Artificial Intelligence System, deutsch „WAMOCONs künstliches intelligentes System“; Zweig
+  `feat/wais-name`). Geschrieben wird er überall, wo Menschen ihn lesen, mit Schlusspunkt: Oberfläche (Texte, `aria-label`, Seitentitel,
+  Manifest, Laborkopf, Anmeldeseite mit Langform), Persona und alle Prompts des Kerns, Einwilligungstext der Stimmprüfung (Version
+  `stimme-1` bleibt, es hat noch niemand eingewilligt), Meldungen des Hosts und der Desktop-App (Fenster, Tray, Dialoge), Labor-Dienst,
+  Labor-Unterlagen und Doku. Kurz heißt er „Wais“, gesprochen wie das englische „ways“: Begrüßung, gesprochene Sätze und die Antworten
+  des Modells schreiben „Wais“ (die Persona verlangt es, „W.A.I.S.“ läse die Stimme als Buchstaben), auf Nachfrage buchstabiert er
+  („W, A, I, S“) und sagt die Langform. Für die Stimme schreibt `voice-core/aussprache.py` (`fuer_sprachausgabe`, Transform am
+  TTS-Dienst, auch für die vorab aufgenommenen Füllwörter) „Wais“ und „W.A.I.S.“ als „Ways“, „WAMOCON’s“ als „Wamokons“ und den
+  buchstabierten Namen („W, A, I, S“ und Varianten) als „Weh Ej, Ei Es“ (Hörproben); Verlauf und Untertitel behalten „Wais“ und
+  „W, A, I, S“. Konstanten `NAME_ANZEIGE`, `NAME_KURZ`, `NAME_LANG`, `NAME_LANG_DE`, `NAME_TTS`, `NAME_BUCHSTABIERT` und
+  `NAME_BUCHSTABIERT_TTS` in `voice-core/persona.py`. Die Spracherkennung kennt „Wais“ und „W.A.I.S.“ als Begriffe; als Anrede zählen dazu „Waze“, „Ways“,
+  „WAIS“, „Weis“ und der frühere Name „WAMO“. Ein Test hält feste Ansagen frei von „W.A.I.S.“ und „WAMO“.
+  Der Host erkennt die eigene Oberfläche am Titel `WAMO` oder `W.A.I.S.` (`WAMO_UI_TITLE`), damit er nie in die Freigabekarten klickt.
+  Nur der Anzeigename ändert sich: Umgebungsvariablen `WAMO_*`, Bezeichner, Pakete, Pfade, Schemas, Rollen, Dienste, Ports, Dateinamen,
+  Log-Meldungen, der Fenstertitel `WAMO Stimmen-Rand`, der TOTP-Aussteller, der Installer-Produktname und der Repo-Name bleiben.
+- Oberfläche als Kommandozentrale im HUD-Design (Zweig `feat/hud-design`): Kern als Lichtkugel in Ringen, Block „Gespräch“ links,
+  Aufgabenanzeige neben dem Kern, Schriften Unbounded, JetBrains Mono und Atkinson Hyperlegible (lokal), WMC-Rot als Hauptfarbe,
+  dazu ein Hellmodus (Umschalter in Kopfzeile und Einstellungen, Rollenvariablen für beide Themen). Alle übrigen Ansichten sind im
+  neuen Design: Freigabe- und Auftragskarten, Meldungen, Canvas, Verlauf, Anmeldung, Teilen, Einstellungen mit allen Abschnitten,
+  Vorgänge, Live-Bild und die Dialoge. Die Bausteine (Beschriftung, Abzeichen, Karte, Meldung, Knöpfe, Felder, Schalter) stehen in
+  `kommando/hud.css`.
+- Kontrast der Bedienelemente: Der Rand von Feldern, Knöpfen, Schaltern und Chips kommt aus der eigenen Rolle `--steuer-rand` mit
+  mindestens 3:1 in beiden Themen (Test `knopfKontrast.test.ts` prüft die Rolle und durchsucht alle Stylesheets).
+- Kopfzeile bei 1440 px: Statusmodule nach Rangfolge in einer Zeile, ganze Module statt abgeschnittener Wörter, Modelle gekürzt
+  (`lib/modellKurz.ts`), Menüknopf mit allen Modulen unter 1600 px.
+- Aufgeräumt: `globals.css` von 969 auf rund 330 Zeilen, die Regeln liegen in Teil-Stylesheets, ungenutzte Regeln und Variablen
+  der früheren Präsenzspalte entfallen.
+
 ### Hinzugefügt
 
+- Innehalten statt Abbrechen (`voice-core/wiedergabe.py`, Schalter `WAMO_INNEHALTEN`, `WAMO_INNEHALTEN_WEITER_SECS` und `WAMO_INNEHALTEN_MAX_SECS`, Standard an): Ein einzelnes echtes
+  Wort der Person, während WAMO spricht ("Danke", "Du"), lässt WAMO an der nächsten Wortgrenze innehalten (der Tonausgang pausiert in `write_audio_frame`, je Sitzung ein eigener
+  `AusgabeHalt`). Kommt nach 0,7 Sekunden Stille nichts nach (höchstens 2,5 Sekunden Pause, nie über 4 Sekunden), spricht WAMO genau dort weiter. Zwei Wörter oder ein Stoppwort
+  ("Stopp", "Warte", "Nein", "Moment", "Abbrechen") brechen wie bisher ab, Rückmeldelaute nie; "Danke" allein lässt nur innehalten. Der `PlaybackTracker` meldet Wörter erst, wenn ihr Ton
+  hinausgeht. Während eines Halts gibt es kein `leiser_stopp` und kein Dämpfen, beim Weitersprechen wird eine schon gedämpfte Stimme zurückgenommen; ein bestätigter Einwurf stoppt mit
+  Halt exakt an der Wortgrenze (ohne Ausblenden und ohne Wartezeit). Ohne Halt (Schalter aus, Sprachausgabe im Haus) gilt alles wie vorher. Messszenario `ein_wort` im Messweg
+  (`scripts/wamo_stimme.py`, `scripts/wamo-stimme-messen.cjs`), Tests `voice-core/test_wiedergabe.py`, `test_innehalten.py`, `test_innehalten_pipeline.py`, `test_bot_innehalten.py`.
+- "Ja" während einer Frage von WAMO ist die Antwort und kein Rückmeldelaut: es startet den Zug und bleibt im Transkript (`soft_interrupt.py`, `SoftInterruptGate.fragt`,
+  `ist_antwort`), "mhm", "Ja, aber" und "Ja?" bleiben Zuhören. Der Ja-Wächter (`WAMO_JA_WAECHTER`) ist jetzt standardmäßig an: ein Ja auf eine Rückfrage führt aus.
+- Natürliche Sprechweise der Persona (`WAMO_PERSONA_NATUERLICH`, Standard an): sofort hörbare Reaktion als eigener kurzer Satz, zusammenhängende Sätze,
+  ab und zu "ähm" oder "also", Abrunden ohne Anschlussfrage nach erledigten Aufträgen. Gilt auch für Laborprofile (`labor_prompt.py` nutzt `persona.base_vor`).
+  Mit `aus` gilt die frühere ruhige Sprechweise. Unterbrechen erst ab zwei Wörtern (`MIN_INTERRUPT_WORDS`, Standard jetzt 2, Stoppwörter weiter sofort),
+  Smart-Turn wartet 0,6 statt 0,5 Sekunden, die Sprachaktivitätserkennung wieder 0,2 statt 0,15 Sekunden (`WAMO_VAD_STOP_SECS`, Standard von Pipecat).
+- Stimmabdruck: Jedes Profil im Büro kann seine Stimme einlernen, damit WAMO nur noch diese Stimme hört (`voice-core/stimme_*.py`, README Abschnitt "Stimmabdruck"). Einlernen nur per Klick
+  in der Oberfläche und nur mit der Einwilligung `stimme-1` (Text beim Verbinden vom Kern an die Oberfläche, gespeichert mit Zeitpunkt und Version in `speakers`), 20 Sekunden reine
+  Sprache in Stücken von 3 Sekunden mit Mittelwert und Streuungsprüfung, Löschen jederzeit (entfernt die Zeile vollständig). Prüfung je Äußerung aus einem Ringpuffer beim Sprechende
+  (NeMo TitaNet-Large als ONNX über `sherpa-onnx` 2.0.1, 192 Werte, einmal je Prozess, Prüfsumme der Modelldatei, Ablage im Cache-Ordner des Dienstes oder über `WAMO_STIMME_MODELL`).
+  Modus `WAMO_STIMME_PRUEFUNG` (`aus`, `beobachten`, Standard `streng`, wirkt nur mit Abdruck): Im Modus streng erreicht eine sicher fremde Äußerung (genug Sprache, Wert unter
+  `WAMO_STIMME_FREMD_MAX`, WAMO sprach nicht gleichzeitig) das Sprachmodell nicht, kein Zug, kein Eintrag im Verlauf und im Gedächtnis, Meldung an die Oberfläche. Der Wächter hält nur das
+  endgültige Transkript bis zum Urteil an (höchstens 1,5 Sekunden, Zeitüberschreitung gilt als unklar), Zwischenstände laufen ungebremst. Unklare und kurze Äußerungen gehen durch, aber
+  Werkzeuge außer Uhrzeit, Websuche und Canvas bleiben gesperrt, solange die Stimme nicht sicher die eigene war; getippter Text zählt wie die eigene Stimme. Ohne Abdruck wird nichts geprüft
+  und nichts gesperrt. Laborprofile bekommen nie Prüfung oder Einlernen. Schwellen `WAMO_STIMME_EIGEN_MIN`, `WAMO_STIMME_FREMD_MAX`, `WAMO_STIMME_MIN_SECS`,
+  `WAMO_STIMME_VERTRAUEN_SECS` in den Listen des Servers und des PC-Skripts. Datenschutz: neuer Abschnitt 4 in `docs/labor-datenschutz-entwurf.md` (Entwurf, Einwilligungstext Version
+  `stimme-1`), ein Test hält Text und Konstante gleich. Die Seite der Besucher im Testlabor bleibt unverändert. Die Stimmprüfung ersetzt keine Freigabe und schützt nicht gegen Aufnahmen oder
+  geklonte Stimmen. Offen: Datenschutz-Folgenabschätzung, Modelldatei am Server ablegen (README), Lauf auf dem Server. Keine Migration (die Tabelle `speakers` gibt es seit `0001`). 194 Tests (192 in `test_stimme_*.py`, 2 in `test_env_schalter.py`).
+- Füllwörter im Gespräch (`voice-core/fuellwoerter.py`, Schalter `WAMO_FUELLWOERTER`, Standard an): Startet das Modell ein Werkzeug, ohne vorher etwas zu sagen, spielt WAMO nach
+  0,4 Sekunden (`WAMO_FUELLWORT_SECS`) ein vorab aufgenommenes "Moment." und bei langem Warten einmal "Dauert noch einen Moment.". Der Ton geht als einfacher Ausgangston hinaus,
+  nichts davon landet im Verlauf, Unterbrechungen wirken wie immer. Eine Bank je Stimme und Einstellung für alle Sitzungen, ein Spieler je Sitzung, Aufnahmen erst beim Start der
+  Pipeline (der Aufbau einer Sitzung greift nicht ins Netz), Ablage im Cache-Ordner des Dienstes. Optionaler Rückmeldelaut "Mhm" (`WAMO_MHM`, Standard aus). 14 Tests.
+- Stimme in der Oberfläche: Einlernen des Stimmabdrucks mit Einwilligung, Modul „Stimme“ in der Kopfzeile (Eigen, Fremd, Unklar, Nicht
+  eingelernt), Abschnitt Stimme in den Einstellungen und, im strengen Modus, der Hinweis „Fremde Stimme ignoriert“ (Modul „Fremd ·
+  ignoriert“), nicht für Laborkonten.
 - Restplan für das Testlabor ab 13.11.2026 `docs/labor-restplan.md` (Stand am Server, Besuchersicht mit REA ohne Befunde, Fahrplan bis 11.12., Entscheidungen von Niko, Lücken ohne Werkzeug) und der
   Kartensatz zum Ausdrucken `docs/labor-kartensatz.html` (17 Karten, WAMO statt Arbeitsname, ohne internen Reifegrad). Runbook und Morgencheckliste verweisen darauf und nennen den Release-Stand `v0.1.0-c751d04`.
 - Betreuer-Geräte über den Namen: NetBIOS hat Vorrang vor mDNS (Korrektur nach einer Messung am Server). Der Aktualisierer fragt mDNS (`avahi-resolve`) nur, wenn NetBIOS

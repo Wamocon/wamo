@@ -10,7 +10,7 @@ test("Job labor hat eigene Texte, die PC-Karte und die Entwicklungskarte behalte
   assert.equal(LABOR_JOB, "labor");
   const labor = karteTexte("labor");
   assert.equal(labor.ueberschrift, "Aktion freigeben");
-  assert.equal(labor.hinweis, "Du entscheidest, nicht WAMO.");
+  assert.equal(labor.hinweis, "Du entscheidest, nicht W.A.I.S.");
   assert.equal(labor.zielLabel, "Ziel:");
   const pc = karteTexte("pc");
   assert.equal(pc.ueberschrift, "PC-Aktion freigeben");
@@ -31,7 +31,7 @@ test("Job geraet (Bürogeräte) hat eigene Texte und sagt nach Ablauf, dass nich
   assert.equal(GERAET_JOB, "geraet");
   const g = karteTexte("geraet");
   assert.equal(g.ueberschrift, "Bürogerät freigeben");
-  assert.equal(g.hinweis, "Du entscheidest, nicht WAMO.");
+  assert.equal(g.hinweis, "Du entscheidest, nicht W.A.I.S.");
   assert.equal(g.zielLabel, "Gerät:");
   assert.equal(abgelaufenHinweis("geraet"), "Die Freigabe ist abgelaufen; es ist nichts passiert.");
   assert.doesNotMatch(abgelaufenHinweis("geraet"), /PC/);

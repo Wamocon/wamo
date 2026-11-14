@@ -24,7 +24,7 @@
   },
   {
     "name": "programm_oeffnen",
-    "description": "Startet ein installiertes Programm (change), z. B. Outlook, Teams, VS Code, Claude, Chrome.\n    Gesucht wird im Startmenue. Ist es schon offen, besser fenster_fokussieren nutzen.\n    Shells, Registry und Admin-Werkzeuge startet WAMO nicht.",
+    "description": "Startet ein installiertes Programm (change), z. B. Outlook, Teams, VS Code, Claude, Chrome.\n    Gesucht wird im Startmenue. Ist es schon offen, besser fenster_fokussieren nutzen.\n    Shells, Registry und Admin-Werkzeuge startet W.A.I.S. nicht.",
     "properties": {
       "name": {
         "title": "Name",
@@ -93,7 +93,7 @@
   },
   {
     "name": "tastatur_tippen",
-    "description": "Tippt Text ins Fenster vorne oder vorher ins genannte Fenster (change), z. B. eine Nachricht in\n    Teams oder einen Prompt in den Claude-Chat in VS Code. Zeilenumbruch = Enter. Nur tippen, was\n    die Person so gewollt hat. In Konsolen, Admin- und Passwortfenster tippt WAMO nie.",
+    "description": "Tippt Text ins Fenster vorne oder vorher ins genannte Fenster (change), z. B. eine Nachricht in\n    Teams oder einen Prompt in den Claude-Chat in VS Code. Zeilenumbruch = Enter. Nur tippen, was\n    die Person so gewollt hat. In Konsolen, Admin- und Passwortfenster tippt W.A.I.S. nie.",
     "properties": {
       "text": {
         "title": "Text",

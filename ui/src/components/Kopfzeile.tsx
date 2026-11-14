@@ -6,13 +6,15 @@ import { EinstellungenKnopf } from "@/components/einstellungen/EinstellungenLink
 import { Statusanzeige } from "@/components/kommando/Statusanzeige";
 import { ProfilChip } from "@/components/ProfilChip";
 import { StatusDetails } from "@/components/Statusleiste";
+import { ThemaSchalter } from "@/components/ThemaSchalter";
 import { WmcLogo } from "@/components/WmcLogo";
 import { laborAnsicht } from "@/lib/laborPlatz";
 
 /**
  * Kopfzeile und Statusleiste in einem (48 px): links die Wortmarke WAMO und der Profil-Chip,
  * daneben Verbindung, Betriebsart, Modelle, PC-Host und Mikrofon, rechts das WMC-Logo wie in der
- * WMC-Vorlage. Unter 1024 px bleiben nur Punkte und Kurzformen, die Details liegen im Menü.
+ * WMC-Vorlage. Die Module stehen nach Rangfolge in einer Zeile, was nicht passt, fällt als ganzes Modul weg (kommando/kopfzeile.css);
+ * unter 1600 px zeigt das Menü (Knopf mit drei Strichen) alle Module. Unter 1024 px bleiben nur Punkte und Kurzformen.
  * Rechts davor die Statusanzeige der Kommandozentrale: Sitzungsfortschritt, ONLINE-Abzeichen, Uhrzeit, dann das
  * Zahnrad zu den Einstellungen (ein Link auf #einstellungen, auch mit der Tastatur erreichbar).
  * Laborkonten (lib/laborPlatz.ts): Überschrift "WAMO Testlabor, Platz N", kein Verlauf, und "Abmelden" fragt erst nach
@@ -61,12 +63,13 @@ export const Kopfzeile = memo(function Kopfzeile({
   return (
     <header className="topbar" ref={kopf}>
       <h1 className="wordmark-sm" data-labor={ansicht.kopfTitel ? "" : undefined} title={ansicht.kopfTitel ?? undefined}>
-        {ansicht.kopfTitel ?? "WAMO"}
+        {ansicht.kopfTitel ?? "W.A.I.S."}
       </h1>
       <ProfilChip email={email} onAbmelden={ansicht.abmeldenFragen ? abmeldenAnfragen : onAbmelden} />
-      <StatusDetails kompakt />
+      <StatusDetails kompakt stimme={ansicht.stimme} />
       <div className="topbar-end">
         <Statusanzeige />
+        <ThemaSchalter />
         <EinstellungenKnopf />
         {ansicht.verlauf && (
           <button
@@ -86,7 +89,7 @@ export const Kopfzeile = memo(function Kopfzeile({
         </button>
         <div id="status-menue" popover="auto" className="popover status-pop">
           <p className="eyebrow">Status</p>
-          <StatusDetails kompakt={false} />
+          <StatusDetails kompakt={false} stimme={ansicht.stimme} />
           {ansicht.verlauf && (
             <button type="button" className="btn-secondary btn-block" onClick={onVerlauf}>
               {verlaufOffen ? "Verlauf schließen" : "Verlauf öffnen"}

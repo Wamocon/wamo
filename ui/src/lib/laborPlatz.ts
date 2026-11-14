@@ -3,7 +3,7 @@ import { istLaborKonto } from "./stillStart.ts";
 /**
  * Platz-Ansicht der Laborkonten (Testlabor): Besucher bedienen WAMO an einem Platz mit einem Laborkonto (labor-NN, dazu das Schaufenster
  * labor-schau, scripts/wamo_labor.py). Sie sehen eine schlanke Oberfläche: keine Büro-Karte, kein Verlauf, keine Vorgänge, keine
- * Admin-Hinweise, keine Geräteeinrichtung, keinen Modellzugang, von den Einstellungen nur das Mikrofon, und "Abmelden" erst nach einer
+ * Admin-Hinweise, keine Geräteeinrichtung, keinen Modellzugang, keine Stimmerkennung (kein Modul, kein Einlernen), von den Einstellungen nur das Mikrofon, und "Abmelden" erst nach einer
  * Rückfrage. Das ist reine Darstellung: Der Kern sperrt weiter selbst (Büro-Karte, Werkzeuge, Verlauf), die Oberfläche entscheidet nichts,
  * was Sicherheit wäre. Ob eine Mail ein Laborkonto ist, sagt allein istLaborKonto (lib/stillStart.ts); hier steht keine zweite Regel dafür.
  * Ohne React und ohne Browser, damit sich die Logik mit node:test prüfen lässt (laborPlatz.test.ts).
@@ -27,6 +27,8 @@ export type LaborAnsicht = Readonly<{
   geraeteEinrichtung: boolean;
   /** Stand und Abruf des Modellzugangs */
   modellzugang: boolean;
+  /** Stimmerkennung: Modul in der Kopfzeile, Einlernansicht und Abschnitt Stimme in den Einstellungen */
+  stimme: boolean;
   /** alle Abschnitte oder nur der mit der Mikrofonwahl */
   einstellungen: "alle" | "mikrofon";
   /** "Abmelden" fragt erst nach */
@@ -43,6 +45,7 @@ const VOLL: LaborAnsicht = Object.freeze({
   adminHinweise: true,
   geraeteEinrichtung: true,
   modellzugang: true,
+  stimme: true,
   einstellungen: "alle",
   abmeldenFragen: false,
 });
@@ -61,13 +64,14 @@ export function laborAnsicht(email: string | null | undefined): LaborAnsicht {
   return Object.freeze({
     labor: true,
     platz,
-    kopfTitel: platz === null ? "WAMO Testlabor" : `WAMO Testlabor, Platz ${platz}`,
+    kopfTitel: platz === null ? "W.A.I.S. Testlabor" : `W.A.I.S. Testlabor, Platz ${platz}`,
     bueroKarte: false,
     verlauf: false,
     vorgaenge: false,
     adminHinweise: false,
     geraeteEinrichtung: false,
     modellzugang: false,
+    stimme: false,
     einstellungen: "mikrofon",
     abmeldenFragen: true,
   });

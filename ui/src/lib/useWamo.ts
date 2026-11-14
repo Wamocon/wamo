@@ -30,8 +30,10 @@ import {
 import { parseServerMessage, type Auftrag, type Markierung, type ModellModus } from "@/lib/nachrichten";
 import type { SchluesselArt } from "@/lib/schluesselhilfe";
 import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
+import { abdruckGestartet, abdruckLaeuft, kannEinlernen, kannLoeschen, STIMME_LEER } from "@/lib/stimme";
 import { HAENGT_HINWEIS, HAENGT_NACH_MS, textAbschicken, unterstuetztText } from "@/lib/textEingabe";
 import { vorgaengeBeenden } from "@/lib/vorgaenge";
+import { aufgabeBeenden } from "@/lib/aufgabenanzeige";
 import { erstelleFrist, fristMeldung, sollVerlaengern } from "@/lib/verbindungsfrist";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
 import {
@@ -75,6 +77,7 @@ import {
 import {
   HISTORY,
   LIVE_BILD_AUS,
+  abdruckAnsichtSchliessen,
   applyServerMessage,
   beginneNutzerZug,
   entferneAblauf,
@@ -86,6 +89,7 @@ import {
   leereCaption,
   levelsRef,
   logEintrag,
+  nachrichtAbgelehnt,
   nimmeTextAuf,
   overlayZustand,
   reduceBotOutput,
@@ -164,6 +168,18 @@ export type WamoAktionen = {
   /** Modellzugang des Profils abfragen, eigenen Claude-Schlüssel hinterlegen oder löschen; true, wenn gesendet.
    *  Optional, damit die Vorschau ohne Kern auskommt. */
   modellzugang?: (anfrage: ModellzugangAnfrage) => boolean;
+  /** Stimmabdruck einlernen und löschen (lib/stimme.ts). Optional, damit die Vorschau ohne Kern auskommt. */
+  stimmabdruck?: StimmabdruckAktionen;
+};
+
+/** Die drei Aktionen am Stimmabdruck; der Kern prüft sie und antwortet mit stimmabdruck-Nachrichten. true, wenn gesendet. */
+export type StimmabdruckAktionen = {
+  /** Einlernen starten, nur aus der Einwilligung heraus und nur mit der Version des Einwilligungstextes, den die Person gesehen hat */
+  start: (version: string) => boolean;
+  /** Ein laufendes Einlernen abbrechen und die Ansicht schließen (in der Einwilligung ohne Nachricht, es lief ja nichts) */
+  abbrechen: () => boolean;
+  /** Den gespeicherten Abdruck löschen (nur mit Sitzung und vorhandenem Abdruck) */
+  loeschen: () => boolean;
 };
 
 export type LiveBildAktionen = {
@@ -193,6 +209,7 @@ type ClientMessage =
   | { type: "pc_steuerung"; data: { an: boolean } }
   | { type: "bildstrom"; data: { aktion: "an" | "aus" | "monitor" | "ack" | "anfordern"; monitor?: number; seq?: number; token?: string } }
   | { type: "modellzugang"; data: ModellzugangAnfrage }
+  | { type: "stimmabdruck"; data: { aktion: "start"; einwilligung: string } | { aktion: "abbrechen" } | { aktion: "loeschen" } }
   | { type: "kontingent"; data: Record<string, never> };
 
 function senden(client: PipecatClient, msg: ClientMessage) {
@@ -319,7 +336,7 @@ function fehlerText(
     case 401:
       return { art: "anmeldung", text: mitGrund("Der Voice-Core hat die Anmeldung abgelehnt. Bitte ab- und wieder anmelden.") };
     case 403:
-      return { art: "anmeldung", text: mitGrund("Kein Zugang: kein aktives WAMO-Profil oder zweiter Faktor fehlt.") };
+      return { art: "anmeldung", text: mitGrund("Kein Zugang: kein aktives W.A.I.S.-Profil oder zweiter Faktor fehlt.") };
     case 503:
       return { art: "dienst", text: mitGrund("Profilprüfung nicht möglich, Datenbank nicht erreichbar.") };
     default:
@@ -491,7 +508,13 @@ export function useWamo(): WamoAktionen {
         betrieb: null, // Betriebsdaten gelten nur für eine laufende Verbindung
         liveBild: LIVE_BILD_AUS,
         modellzugang: null, // wird beim nächsten Verbinden neu abgefragt
+        stimme: STIMME_LEER, // Stand, Einlernansicht und Einwilligungstext gelten nur für eine laufende Sitzung
+        abdruck: null,
+        abdruckLokalZu: false,
+        einwilligung: null,
+        einwilligungAbgelehnt: false,
         vorgaenge: vorgaengeBeenden(s.vorgaenge, Date.now()), // der Kern bricht seine Vorgänge mit der Sitzung ab
+        aufgabe: aufgabeBeenden(s.aufgabe, performance.now()), // die letzte Aufgabe bleibt stehen, aber nie als laufend
         approvals: [],
         auftraege: [],
         micOn: true,
@@ -732,7 +755,7 @@ export function useWamo(): WamoAktionen {
         caption: leereCaption,
         micOn: !still,
         stillStart: { still, perTippen: still, uebernommen: false },
-        ansage: still ? "Verbinde, WAMO startet still" : s.ansage,
+        ansage: still ? "Verbinde, W.A.I.S. startet still" : s.ansage,
       }));
       // Welcher Kern: Betriebsart dieses Geräts direkt vor dem Verbinden (Desktop: aus dem Hauptprogramm)
       const art = await betriebsartFuerStart();
@@ -926,7 +949,10 @@ export function useWamo(): WamoAktionen {
           onServerMessage: (data) => {
             if (!aktuell()) return;
             const msg = parseServerMessage(data);
-            if (!msg) return; // unbekannte oder unvollständige Nachricht: ignorieren
+            if (!msg) {
+              nachrichtAbgelehnt(data); // unbekannt oder unvollständig: ignorieren, nur ein abgelehnter Einwilligungstext wird vermerkt
+              return;
+            }
             if (msg.type === "leiser_stopp") {
               softStop.current.armedAt = performance.now();
               // sofort: der Kern hat die Grenze schon gewählt, die Stimme verstummt jetzt (keine Wortpause abwarten)
@@ -1220,6 +1246,41 @@ export function useWamo(): WamoAktionen {
     return true;
   }, []);
 
+  // Stimmabdruck: nur senden und die eigene Ansicht führen; Zustand und Ergebnis meldet der Kern (applyServerMessage)
+  const stimmabdruck = useMemo<StimmabdruckAktionen>(() => {
+    const schicken = (data: Extract<ClientMessage, { type: "stimmabdruck" }>["data"]): boolean => {
+      const client = clientRef.current;
+      if (!client || !istOnline(wamo.get())) return false;
+      try {
+        senden(client, { type: "stimmabdruck", data });
+      } catch {
+        setFehler({ art: "sonst", text: "Der Stimmabdruck konnte nicht angefragt werden." });
+        return false;
+      }
+      return true;
+    };
+    return {
+      start: (version) => {
+        const s = wamo.get();
+        // nur aus der Einwilligung, nur mit dem Text, den die Person gesehen hat (er kommt vom Kern, die Version gehört dazu)
+        if (s.abdruck?.phase !== "einwilligung" || !s.einwilligung || s.einwilligung.version !== version) return false;
+        if (!kannEinlernen(s.stimme, istOnline(s))) return false;
+        if (!schicken({ aktion: "start", einwilligung: version })) return false;
+        wamo.set((x) => ({ ...x, abdruck: abdruckGestartet(x.abdruck) }));
+        return true;
+      },
+      abbrechen: () => {
+        const gesendet = abdruckLaeuft(wamo.get().abdruck) ? schicken({ aktion: "abbrechen" }) : true;
+        abdruckAnsichtSchliessen();
+        return gesendet;
+      },
+      loeschen: () => {
+        const s = wamo.get();
+        return kannLoeschen(s.stimme, istOnline(s)) && schicken({ aktion: "loeschen" });
+      },
+    };
+  }, []);
+
   // Die Person hat getippt: die Ruhezeit der Leerlaufregel (lib/stillStart.ts) beginnt neu
   const eingabeMelden = useCallback(() => {
     letzteEingabe.current = Date.now();
@@ -1264,7 +1325,7 @@ export function useWamo(): WamoAktionen {
       return;
     }
     if (audioRef.current) audioRef.current.muted = false;
-    wamo.set((x) => ({ ...x, micOn: true, stillStart: { ...x.stillStart, still: false, perTippen: false }, ansage: "Mikrofon an, WAMO spricht jetzt" }));
+    wamo.set((x) => ({ ...x, micOn: true, stillStart: { ...x.stillStart, still: false, perTippen: false }, ansage: "Mikrofon an, W.A.I.S. spricht jetzt" }));
     // Kommt keine eigene Spur an (Berechtigung verweigert, kein Gerät), sagt es die Oberfläche wie nach dem Verbinden
     setTimeout(() => {
       const st = wamo.get();
@@ -1484,6 +1545,7 @@ export function useWamo(): WamoAktionen {
       mikrofone,
       mikrofonWaehlen,
       modellzugang,
+      stimmabdruck,
       liveBild,
       textSenden,
       stillStarten,
@@ -1502,6 +1564,7 @@ export function useWamo(): WamoAktionen {
       mikrofone,
       mikrofonWaehlen,
       modellzugang,
+      stimmabdruck,
       liveBild,
       textSenden,
       stillStarten,

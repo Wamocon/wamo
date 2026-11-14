@@ -26,7 +26,7 @@ export const VorgaengeLeer = memo(function VorgaengeLeer() {
   const anzahl = useSelect(wamo, (s) => s.activities.length + s.vorgaenge.length);
   const verlauf = useSelect(vorgangVerlauf, (v) => v.length);
   if (anzahl || verlauf) return null;
-  return <Leer>Noch keine Vorgänge. Sobald WAMO eine Aufgabe übernimmt oder ein Werkzeug nutzt, siehst du es hier.</Leer>;
+  return <Leer>Noch keine Vorgänge. Sobald W.A.I.S. eine Aufgabe übernimmt oder ein Werkzeug nutzt, siehst du es hier.</Leer>;
 });
 
 const sekunden = (ms: number) => `${(ms / 1000).toFixed(1).replace(".", ",")} s`;

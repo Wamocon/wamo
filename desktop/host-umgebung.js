@@ -99,7 +99,7 @@ function erzeugeHostUmgebung(opt) {
   async function einrichten() {
     const hash = lockHash();
     if (istAktuell(hash)) return;
-    if (!dsys.existsSync(opt.uvDatei)) throw new HostUmgebungFehler("Das Programm uv fehlt in der Installation. Bitte WAMO neu installieren.");
+    if (!dsys.existsSync(opt.uvDatei)) throw new HostUmgebungFehler("Das Programm uv fehlt in der Installation. Bitte W.A.I.S. neu installieren.");
     log("Python-Umgebung des Hosts wird eingerichtet (einmalig, braucht Netz)");
     dsys.mkdirSync(opt.cacheDir, { recursive: true });
     dsys.mkdirSync(opt.pythonDir, { recursive: true });
@@ -120,7 +120,7 @@ function erzeugeHostUmgebung(opt) {
       throw new HostUmgebungFehler(
         err?.killed
           ? "Die Einrichtung der Python-Umgebung des Hosts dauert zu lange."
-          : "Die Python-Umgebung des Hosts konnte nicht eingerichtet werden. Bitte die Netzverbindung prüfen und WAMO neu starten.",
+          : "Die Python-Umgebung des Hosts konnte nicht eingerichtet werden. Bitte die Netzverbindung prüfen und W.A.I.S. neu starten.",
       );
     }
     if (!dsys.existsSync(pythonDatei)) throw new HostUmgebungFehler("Die Python-Umgebung des Hosts ist nach der Einrichtung unvollständig.");

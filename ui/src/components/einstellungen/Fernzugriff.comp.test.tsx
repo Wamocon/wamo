@@ -127,7 +127,7 @@ describe("Fernzugriff: Fenster öffnen in der Desktop-App und im Browser", () =>
 });
 
 describe("Fernzugriff: Verbinden ohne Code", () => {
-  it("die Karte zeigen startet nie eine Sitzung und öffnet keinen Dialog (so öffnet WAMO sie mit fernzugriff_oeffnen)", async () => {
+  it("die Karte zeigen startet nie eine Sitzung und öffnet keinen Dialog (so öffnet W.A.I.S. sie mit fernzugriff_oeffnen)", async () => {
     render(<Fernzugriff />);
     expect(await screen.findByRole("button", { name: "Verbinden: Sokrates-2" })).toBeTruthy();
     await new Promise((r) => setTimeout(r, 50));

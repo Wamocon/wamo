@@ -38,6 +38,11 @@ export const VoiceLine = memo(function VoiceLine({ history }: { history: { curre
     observer.observe(canvas);
     resize();
     const css = getComputedStyle(canvas); // live: folgt auch dem Wechsel hell/dunkel
+    // Gezeichnet wird nur bei neuen Abtastwerten: nach einem Wechsel von Hell und Dunkel einmal neu zeichnen
+    const beiTheme = new MutationObserver(() => {
+      drawn = -1;
+    });
+    beiTheme.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     const draw = () => {
       raf = requestAnimationFrame(draw);
@@ -89,6 +94,7 @@ export const VoiceLine = memo(function VoiceLine({ history }: { history: { curre
     return () => {
       cancelAnimationFrame(raf);
       observer.disconnect();
+      beiTheme.disconnect();
     };
   }, [history]);
 
@@ -97,7 +103,7 @@ export const VoiceLine = memo(function VoiceLine({ history }: { history: { curre
       ref={ref}
       className="voice-line"
       role="img"
-      aria-label="Stimmlinie: oben deine Stimme, unten WAMO"
+      aria-label="Stimmlinie: oben deine Stimme, unten W.A.I.S."
     />
   );
 });

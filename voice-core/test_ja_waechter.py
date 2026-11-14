@@ -38,7 +38,7 @@ class KurzesJaTest(unittest.TestCase):
             self.assertFalse(ist_kurzes_ja(t), t)
 
     def test_nachrichten_von_wamo_selbst_sind_kein_ja(self):
-        for t in ("[PC-Freigabe: ja]", "[Hinweis für WAMO: ja]", "[ja]"):
+        for t in ("[PC-Freigabe: ja]", "[Hinweis für W.A.I.S.: ja]", "[ja]"):
             self.assertFalse(ist_kurzes_ja(t), t)
 
 
@@ -60,6 +60,18 @@ class RueckfrageTest(unittest.TestCase):
                   "Soll ich die Datei löschen?", "Soll ich das bestellen?", "Soll ich die Nachricht abschicken?",
                   "Darf ich das genehmigen?", "Soll ich das veröffentlichen?", "Soll ich das mit sudo ausführen?"):
             self.assertFalse(ist_rueckfrage(t), t)
+
+    def test_handlungen_mit_folgen_sind_keine_rueckfrage(self):
+        """Überschreiben, Verschieben, Herunterfahren, Beenden, Neustart, Zurücksetzen, Kündigen und Formatieren bleiben bei der Persona."""
+        for t in ("Soll ich die Datei überschreiben?", "Soll ich den Ordner verschieben?", "Soll ich den Rechner herunterfahren?",
+                  "Soll ich das Programm beenden?", "Soll ich den Dienst neu starten?", "Soll ich den Rechner neustarten?",
+                  "Soll ich die Einstellungen zurücksetzen?", "Soll ich den Vertrag kündigen?", "Soll ich den Stick formatieren?",
+                  "Möchtest du, dass ich alles zurücksetze", "● Fertig. Soll ich ihn jetzt herunterfahren?"):
+            self.assertFalse(ist_rueckfrage(t), t)
+
+    def test_harmlose_rueckfragen_bleiben_rueckfragen(self):
+        for t in ("Soll ich die Datei öffnen?", "Soll ich weitersuchen?", "Soll ich die Liste vorlesen?", "Soll ich das Licht anmachen?"):
+            self.assertTrue(ist_rueckfrage(t), t)
 
 
 class HinweisTest(unittest.TestCase):
@@ -111,8 +123,9 @@ class HinweisTest(unittest.TestCase):
         self.assertFalse(hinweis_noetig([{"role": "assistant", "content": "Soll ich?"}, {"role": "user", "content": ["Ja"]}]))
 
     def test_schalter(self):
-        self.assertFalse(ja_waechter_an(""))
+        self.assertTrue(ja_waechter_an(""))  # seit 14.11.2026 Standard an
         self.assertTrue(ja_waechter_an("an"))
+        self.assertFalse(ja_waechter_an("aus"))
 
 
 class PipelineTest(unittest.IsolatedAsyncioTestCase):

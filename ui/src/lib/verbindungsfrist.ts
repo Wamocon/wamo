@@ -95,6 +95,6 @@ export function fristMeldung(kern: "buero" | "unterwegs" | null): { art: "verbin
       ? `Keine Antwort vom Büro-Kern nach ${sekunden} Sekunden. Bist du im Büro-LAN oder per WireGuard verbunden? Dann bitte erneut verbinden.`
       : kern === "unterwegs"
         ? `Keine Antwort vom Voice-Core auf diesem PC nach ${sekunden} Sekunden. Läuft die Desktop-App? Dann bitte erneut verbinden.`
-        : `Keine Antwort von WAMO nach ${sekunden} Sekunden. Bitte Verbindung prüfen und erneut verbinden.`;
+        : `Keine Antwort von W.A.I.S. nach ${sekunden} Sekunden. Bitte Verbindung prüfen und erneut verbinden.`;
   return { art: "verbindung", text };
 }

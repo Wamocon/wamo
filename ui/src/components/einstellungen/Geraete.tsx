@@ -64,7 +64,7 @@ const PcSteuerungSchalter = memo(function PcSteuerungSchalter({ onSchalten }: { 
         <input type="checkbox" checked={auto} onChange={(e) => pcAutoSetzen(e.target.checked)} />
         <span>PC-Steuerung beim Start automatisch einschalten (dieses Gerät)</span>
       </label>
-      {auto && <p className="pc-auto-hint">Ohne Sprecherprüfung reagiert WAMO dann auf jede Stimme im Raum.</p>}
+      {auto && <p className="pc-auto-hint">Ohne Sprecherprüfung reagiert W.A.I.S. dann auf jede Stimme im Raum.</p>}
     </div>
   );
 });

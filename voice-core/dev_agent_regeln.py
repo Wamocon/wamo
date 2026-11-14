@@ -37,7 +37,7 @@ DENY_RULES = [
 ]
 
 RULES_TEMPLATE = """Du arbeitest im Auftrag von {name} (WAMOCON GmbH), der Auftrag kam per Sprache über den
-Assistenten WAMO. Er stammt aus einer Spracherkennung und kann ungenaue Wörter enthalten.
+Assistenten W.A.I.S. Er stammt aus einer Spracherkennung und kann ungenaue Wörter enthalten.
 - Arbeite nur im aktuellen Projektordner. Neue Projekte: sinnvolle Grundstruktur, README, .gitignore,
   Tests wo es passt, kleine Commits mit klaren Nachrichten.
 - GitHub-Repos privat anlegen, wenn nicht anders gesagt. Vercel: Preview-Deploys über die CLI ok.

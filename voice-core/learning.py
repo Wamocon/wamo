@@ -50,14 +50,14 @@ SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM_TEMPLATE = """Du wertest ein Gespräch zwischen {name} und dem Sprachassistenten WAMO der WAMOCON GmbH aus.
+SYSTEM_TEMPLATE = """Du wertest ein Gespräch zwischen {name} und dem Sprachassistenten W.A.I.S. der WAMOCON GmbH aus.
 Was {name} sagt, stammt aus einer Spracherkennung und kann falsch erkannte Wörter enthalten.
 
-Halte höchstens {max_entries} NEUE Einträge fest, die WAMO in künftigen Gesprächen helfen:
-- behavior: Sprechweise von {name}, damit WAMO natürlicher redet. Zum Beispiel typische Wörter
+Halte höchstens {max_entries} NEUE Einträge fest, die W.A.I.S. in künftigen Gesprächen helfen:
+- behavior: Sprechweise von {name}, damit W.A.I.S. natürlicher redet. Zum Beispiel typische Wörter
   und Fachbegriffe, Füllwörter, wie knapp oder ausführlich {name} redet, Ton, wie Fragen
   gestellt werden, wie lang Antworten sein sollen.
-- preference: Vorlieben und Abneigungen, auch zu WAMOs Antworten.
+- preference: Vorlieben und Abneigungen, auch zu den Antworten von W.A.I.S.
 - fact: Fakten über {name} oder über die Arbeit: Projekte, Kunden, Werkzeuge, Abläufe.
 
 Bereich jedes Eintrags:
@@ -117,7 +117,7 @@ def system_prompt(name: str, ohne_moment: bool | None = None) -> str:
 def transcript_text(transcript: list[tuple[str, str]], name: str) -> str:
     speaker = clean_inline(name, 60) or "Person"
     return "\n".join(
-        f"{speaker if role == 'user' else 'WAMO'}: {text}" for role, text in transcript if text
+        f"{speaker if role == 'user' else 'W.A.I.S.'}: {text}" for role, text in transcript if text
     )
 
 

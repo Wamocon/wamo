@@ -220,12 +220,12 @@ def cmd_starten(umg: Umgebung, ohne_board: bool = False) -> int:
     geometrie = fenster_geometrie(umg.arbeitsbereich())
     if ohne_board:
         _wamo_fenster(umg, chrome, daten, geometrie[0])
-        umg.ausgabe(f"Platz {daten['platz']}: WAMO-Fenster gestartet (ohne Board).")
+        umg.ausgabe(f"Platz {daten['platz']}: W.A.I.S.-Fenster gestartet (ohne Board).")
         return EXIT_OK
     token = _token_holen(umg)
     if token is None:
         return EXIT_EINGABE
     rc = _board_fenster(umg, chrome, daten, token, geometrie)
     if rc == EXIT_OK:
-        umg.ausgabe(f"Platz {daten['platz']}: WAMO links, Board rechts gestartet.")
+        umg.ausgabe(f"Platz {daten['platz']}: W.A.I.S. links, Board rechts gestartet.")
     return rc

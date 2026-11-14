@@ -2,7 +2,7 @@
 
 **Stand:** 13.11.2026, Entwurf. Gehört zum Konzept `docs/testlabor-wamo.md` (3.9, 5.3) und zum Runbook `docs/labor-runbook.md`. Die Checkliste ist zum Ausdrucken und Abhaken gedacht. In jeder Zeile steht, was zu tun ist und was dabei herauskommen muss ("Erwartet"). Weicht ein Ergebnis ab, wird nicht abgehakt, sondern in die Tabelle "Abweichungen" am Ende eingetragen. Alles, was in den Unterlagen noch fehlt, steht als `[offen: ...]` im Text.
 
-**Wer.** Server und Skripte prüft T (Technik-Bereitschaft WAMO). Die Konsole des Sprachmodells prüft Niko. Plätze prüfen B, N und T gemeinsam. Rollen: siehe Runbook, Abschnitt 1.1.
+**Wer.** Server und Skripte prüft T (Technik-Bereitschaft W.A.I.S.). Die Konsole des Sprachmodells prüft Niko. Plätze prüfen B, N und T gemeinsam. Rollen: siehe Runbook, Abschnitt 1.1.
 
 **Befehle.** Alle Befehle laufen im Repo-Hauptordner auf dem PC der Technik. Ein Server-Befehl `ssh wamo-sokrates2 "..."` braucht den ssh-Alias und am Server `sudo` ohne Passwort. Die Skripte `wamo_labor.py` und `wamo_labor_faktoren.py` brauchen `WAMO_ADMIN_DATABASE_URL` in der Umgebung, die Faktoren zusätzlich die Umschlag-Datei unter `%USERPROFILE%\.wamo-labor\umschlag-labor.txt`.
 
@@ -90,7 +90,7 @@ Beginn: 90 Minuten vor der Öffnung `[offen: Uhrzeit der Öffnung]`. Am Labortag
 | B1.6 | [ ] | Ports von Caddy: `for p in 55443 55444 55445 55446 55447; do echo $p $(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 https://192.168.178.136:$p/); done` | Jeder Port nennt einen HTTP-Status. Keiner nennt 000 |
 | B1.7 | [ ] | Firewall: `ssh wamo-sokrates2 "sudo systemctl is-active wamo-firewall"` | `active`. Die Ketten für 55447 und gegen den Ausgang des Dienstes prüft der Rauchtest (B1.5) |
 | B1.8 | [ ] | Dienst von einer fremden Adresse nicht erreichbar | Vom Rauchtest geprüft. Von einem Gäste-Laptop aus `/gesundheit` und `/api/kern/` öffnen: beide ohne Inhalt (403 oder 404) |
-| B1.9 | [ ] | Kein anderer Betrieb auf dem Kern | Niemand sonst nutzt WAMO. Keine geplante Wartung am Server |
+| B1.9 | [ ] | Kein anderer Betrieb auf dem Kern | Niemand sonst nutzt W.A.I.S. Keine geplante Wartung am Server |
 
 ### B2 Profile (T)
 
@@ -100,7 +100,7 @@ Beginn: 90 Minuten vor der Öffnung `[offen: Uhrzeit der Öffnung]`. Am Labortag
 | B2.2 | [ ] | Freischalten, wie geplant: `python scripts/wamo_labor.py aktivieren --kennung labor-01 labor-02 labor-03 labor-04 labor-05 labor-06 labor-07 labor-08 --ausfuehren` | Acht Meldungen "freigeschaltet (labor_aktiv = true)". Das Reserveprofil `labor-09` bleibt gesperrt `[offen: ob die Reserve schon am Morgen freigeschaltet wird]` |
 | B2.3 | [ ] | `python scripts/wamo_labor.py status` | Genau die geplanten Profile sind "freigeschaltet" (acht Plätze), die Reserve und alle anderen "gesperrt" |
 | B2.4 | [ ] | Faktor prüfen: `python scripts/wamo_labor_faktoren.py codes --profil labor-03` und den Code mit der Authenticator-App des Betreuer-Geräts vergleichen | Beide Codes sind gleich. Weichen sie ab, geht eine Uhr falsch (NTP) |
-| B2.5 | [ ] | Anmeldung an jedem Platz-Laptop mit Passwort und Code ("Angemeldet bleiben") | Das WAMO-Fenster zeigt "Gespräch starten". Passwörter bleiben bei T und L |
+| B2.5 | [ ] | Anmeldung an jedem Platz-Laptop mit Passwort und Code ("Angemeldet bleiben") | Das W.A.I.S.-Fenster zeigt "Gespräch starten". Passwörter bleiben bei T und L |
 
 ### B3 Plätze (B, N, T je Laptop, Plätze 1 bis 8 und Reserve)
 
@@ -112,7 +112,7 @@ Beginn: 90 Minuten vor der Öffnung `[offen: Uhrzeit der Öffnung]`. Am Labortag
 | B3.4 | [ ] | Uhr: Zeile "Uhr" von `pruefen` | Abweichung zum Server höchstens 5 Minuten, besser unter 1 Minute |
 | B3.5 | [ ] | Mikrofon: Zeile "Mikrofon" von `pruefen`, dann Pegel in den Windows-Einstellungen ansehen und sprechen | Ein aktives Eingabegerät, der Pegel bewegt sich |
 | B3.6 | [ ] | Netz: Von einem Platz-Laptop aus sind nur 55443 bis 55445 und 55447 des Servers erreichbar | Stichprobe der Netz-Prüfliste vom 25.11. `[N]` |
-| B3.7 | [ ] | Kurzprobe je Platz (2 Minuten): Betreuer öffnet den Platz (Runbook 3.1, der Betreuer bestätigt für sich), das Board erscheint rechts, "Gespräch starten", einen Satz sprechen, Antwort hören | Links WAMO und rechts das Board mit dem Startstand (sechs Tickets). WAMO antwortet mit Stimme `[offen: ob die Kurzprobe gewünscht ist, ihr Text wird gespeichert und beim Nachlauf gelöscht]` |
+| B3.7 | [ ] | Kurzprobe je Platz (2 Minuten): Betreuer öffnet den Platz (Runbook 3.1, der Betreuer bestätigt für sich), das Board erscheint rechts, "Gespräch starten", einen Satz sprechen, Antwort hören | Links W.A.I.S. und rechts das Board mit dem Startstand (sechs Tickets). W.A.I.S. antwortet mit Stimme `[offen: ob die Kurzprobe gewünscht ist, ihr Text wird gespeichert und beim Nachlauf gelöscht]` |
 | B3.8 | [ ] | Nach der Kurzprobe an jedem Platz **Durchlauf beenden** und **Daten löschen** | Jede Karte zeigt "Geschlossen, kein Durchlauf", 0 Tickets. Beide Chrome-Fenster sind zu |
 | B3.9 | [ ] | Betreuer-Seite: Übersicht der 16 Plätze | Alle 16 Karten sind da. Platz 15 und 16 zeigen "Reserviert für die Abnahme, kein Besucher". Kein Platz zeigt "Durchlauf offen" |
 | B3.10 | [ ] | Reserve-Laptop: Schritte B3.2 bis B3.5 | Wie bei den Plätzen. Er bleibt aus, bis er gebraucht wird |

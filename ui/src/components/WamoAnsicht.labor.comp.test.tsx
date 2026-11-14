@@ -112,6 +112,8 @@ describe("Hauptansicht eines Laborkontos: was fehlt", () => {
     expect(document.getElementById("verlauf")).toBeNull();
     expect(verlaufKnoepfe()).toHaveLength(0);
     expect(screen.queryByText(/Noch keine Vorgänge/)).toBeNull();
+    // ohne Verlauf kürzt der Block Gespräch lange Antworten nicht
+    expect(document.querySelector(".kz-gespraech")?.hasAttribute("data-verlauf")).toBe(false);
   });
 
   it("nennt in der Reiterleiste nur die Reiter, die es gibt", async () => {
@@ -172,15 +174,15 @@ describe("Hauptansicht eines Laborkontos: was bleibt", () => {
   it("zeigt Kopfzeile mit Platz, die Eingabe und die Reiter Kern, Aufträge, Canvas und Hinweise", async () => {
     zeige(PLATZ);
     await ruhe();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("WAMO Testlabor, Platz 3");
-    expect(screen.getByRole("textbox", { name: "Nachricht an WAMO" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("W.A.I.S. Testlabor, Platz 3");
+    expect(screen.getByRole("textbox", { name: "Nachricht an W.A.I.S." })).toBeTruthy();
     for (const name of ["Kern", "Aufträge", "Canvas", "Hinweise"]) expect(tab(name).length, name).toBeGreaterThan(0);
   });
 
   it("das Schaufenster heißt nur Testlabor und hat dieselbe schlanke Ansicht", async () => {
     zeige(SCHAU);
     await ruhe();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("WAMO Testlabor");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("W.A.I.S. Testlabor");
     expect(tab("Vorgänge")).toHaveLength(0);
     expect(verlaufKnoepfe()).toHaveLength(0);
   });
@@ -283,7 +285,7 @@ describe("Hauptansicht eines normalen Admin-Kontos: unverändert alles", () => {
   it("zeigt Wortmarke, Reiter Vorgänge und Büro, Verlauf und die Zeile zum Modellzugang", async () => {
     zeige(ADMIN);
     await ruhe();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("WAMO");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("W.A.I.S.");
     expect(tab("Vorgänge")).toHaveLength(2);
     expect(tab("Büro")).toHaveLength(2);
     expect(screen.getByRole("tablist", { name: "Aufträge, Vorgänge, Erledigt und Büro", hidden: true })).toBeTruthy();
@@ -294,6 +296,7 @@ describe("Hauptansicht eines normalen Admin-Kontos: unverändert alles", () => {
     expect(screen.getAllByRole("button", { name: "Verlauf" })).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Verlauf öffnen", hidden: true })).toBeTruthy();
     expect(screen.getByText("Modellzugang", { selector: "dt" })).toBeTruthy();
+    expect(document.querySelector(".kz-gespraech")?.getAttribute("data-verlauf")).toBe("true");
   });
 
   it("ruft Verlauf, Modellzugang und Hinweise ab", async () => {
@@ -349,6 +352,7 @@ describe("Hauptansicht eines normalen Admin-Kontos: unverändert alles", () => {
       "Modellzugang",
       "Verbrauch",
       "Sprache und Ton",
+      "Stimme",
       "Gedächtnis",
       "Darstellung",
       "Geräte und PC",

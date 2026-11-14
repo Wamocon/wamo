@@ -15,6 +15,7 @@ import {
   nimmAbmeldeGrund,
   setzeAngemeldetBleiben,
 } from "@/lib/anmeldung";
+import { LANGFORM, LANGFORM_DEUTSCH } from "@/lib/anzeigename";
 import { getSupabase } from "@/lib/supabase";
 import { unverschluesselteDienste } from "@/lib/umgebung";
 
@@ -272,8 +273,11 @@ export function LoginGate({
         <section className="gate-card" aria-labelledby="gate-title">
           <header className="gate-head">
             <h1 className="gate-title" id="gate-title">
-              WAMO
+              W.A.I.S.
             </h1>
+            <p className="gate-sub gate-sub-lang" title={LANGFORM_DEUTSCH}>
+              {LANGFORM}
+            </p>
             <p className="gate-sub">Sprachassistent der WAMOCON GmbH</p>
           </header>
 
@@ -297,7 +301,7 @@ export function LoginGate({
           {step.kind === "anmelden" && (
             <form className="gate-form" onSubmit={signIn}>
               <p className="gate-hint">
-                Melde dich mit deinem WAMO-Profil an. Danach fragt WAMO den Code aus deiner
+                Melde dich mit deinem W.A.I.S.-Profil an. Danach fragt W.A.I.S. den Code aus deiner
                 Authenticator-App ab.
               </p>
               <label>
@@ -321,7 +325,7 @@ export function LoginGate({
               </label>
               <p className="gate-hint gate-hint-klein" id="gate-bleiben-hinweis">
                 Ohne Haken endet die Anmeldung, wenn du {desktop ? "die App" : "den Tab"} schließt. Spätestens nach{" "}
-                {dauerText(maxStunden)} meldet WAMO ab.
+                {dauerText(maxStunden)} meldet W.A.I.S. ab.
               </p>
               <button className="btn-primary btn-block" disabled={busy}>
                 {busy ? "Prüfe …" : "Anmelden"}
@@ -387,8 +391,8 @@ export function LoginGate({
         </p>
       )}
       <footer className="gate-foot">
-        <span className="num">WAMO Version {VERSION}</span>
-        <span>Zugang nur mit aktivem WAMO-Profil und zweitem Faktor</span>
+        <span className="num">W.A.I.S. Version {VERSION}</span>
+        <span>Zugang nur mit aktivem W.A.I.S.-Profil und zweitem Faktor</span>
       </footer>
     </div>
   );

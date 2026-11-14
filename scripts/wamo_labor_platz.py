@@ -336,7 +336,7 @@ def cmd_status(umg: Umgebung) -> int:
     ok_richtlinien = sum(rg.lese_zustand(umg.reg, r) == (r.typ, r.wert) for r in soll)
     ca_da = zt.im_speicher(umg.certutil, daten["ca_sha1"])
     lnk = sum(p.exists() for p in umg.verknuepfungen)
-    umg.ausgabe(f"Platz {daten['platz']} (WAMO {daten['wamo_url']}, Board {daten['board_url']})")
+    umg.ausgabe(f"Platz {daten['platz']} (W.A.I.S. {daten['wamo_url']}, Board {daten['board_url']})")
     umg.ausgabe(f"Zertifikat der WAMO-CA im Benutzerspeicher: {'ja' if ca_da else 'nein'} (SHA-1 {zt.gruppiert(daten['ca_sha1'])})")
     umg.ausgabe(f"Richtlinien: {ok_richtlinien} von {len(soll)} wie vorgesehen")
     umg.ausgabe(f"Chrome-Profil: {'vorhanden' if umg.profil.is_dir() else 'fehlt'}, Verknüpfungen: {lnk} von 2")
@@ -347,7 +347,7 @@ def cmd_status(umg: Umgebung) -> int:
 # ---------- Aufruf ----------
 
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="wamo_labor_platz.py", description="Platz-Skript für die Laptops des WAMO-Testlabors")
+    p = argparse.ArgumentParser(prog="wamo_labor_platz.py", description="Platz-Skript für die Laptops des W.A.I.S. Testlabors")
     sub = p.add_subparsers(dest="befehl", required=True)
     e = sub.add_parser("einrichten", help="CA, Chrome-Richtlinien, Profil, Platzdatei und Verknüpfungen einrichten")
     e.add_argument("--platz", metavar="N", help="Platznummer 1 bis 16 (beim ersten Mal nötig)")
@@ -357,8 +357,8 @@ def _parser() -> argparse.ArgumentParser:
     r = sub.add_parser("rueckweg", help="alles zurücknehmen")
     r.add_argument("--trocken", action="store_true", help="nur den Plan zeigen")
     r.add_argument("--profil-loeschen", action="store_true", help="auch das Chrome-Profil mit den Anmeldedaten löschen")
-    st = sub.add_parser("starten", help="Chrome mit zwei Fenstern starten: WAMO links, Board rechts")
-    st.add_argument("--ohne-board", action="store_true", help="nur das WAMO-Fenster, ohne Platz-Token")
+    st = sub.add_parser("starten", help="Chrome mit zwei Fenstern starten: W.A.I.S. links, Board rechts")
+    st.add_argument("--ohne-board", action="store_true", help="nur das W.A.I.S.-Fenster, ohne Platz-Token")
     st.add_argument("--warten", action="store_true", help="bei einem Fehler auf Enter warten (für die Verknüpfung)")
     pr = sub.add_parser("pruefen", help="Zertifikat, Richtlinien, Chrome, Adressen, Mikrofon und Uhr prüfen, ändert nichts")
     pr.add_argument("--ca-datei", metavar="PFAD", help="Datei der WAMO-CA für die TLS-Prüfung")

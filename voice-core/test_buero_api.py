@@ -404,7 +404,7 @@ def test_abgelehnte_abrufe_zaehlen_mit(client, dienst):
     (roh("r", "router", status="error", summary="x"), "stoerung", "nicht erreichbar"),
     # NAS
     (roh("n", "nas", erreichbar=True, eingerichtet=True), "ok", "erreichbar"),
-    (roh("n", "nas", erreichbar=True, eingerichtet=False), "unbekannt", "erreichbar, WAMO-Zugang nicht eingerichtet"),
+    (roh("n", "nas", erreichbar=True, eingerichtet=False), "unbekannt", "erreichbar, W.A.I.S.-Zugang nicht eingerichtet"),
     (roh("n", "nas", erreichbar=False, eingerichtet=True), "stoerung", "nicht erreichbar"),
     # Fernseher
     (roh("f", "fernseher", erreichbar=True, an=True, gekoppelt=False), "ok", "an, nicht gekoppelt"),

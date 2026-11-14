@@ -84,6 +84,19 @@ class SmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(session.task, PipelineTask)
         await session.cleanup()
 
+    async def test_sprachausgabe_bekommt_die_aussprache(self):
+        """Die Stimme spricht den Namen über aussprache.py (Transform am TTS-Dienst der Sitzung)."""
+        import aussprache
+
+        with mock.patch.object(aussprache, "anhaengen", wraps=aussprache.anhaengen) as anhaengen:
+            session = await self.build("mitglied")
+        try:
+            anhaengen.assert_called_once()
+            tts = anhaengen.call_args.args[0]
+            self.assertIn(("*", aussprache._transform), list(tts._text_transforms))
+        finally:
+            await session.cleanup()
+
     async def test_session_ohne_eigenen_schluessel_nur_hausmodelle(self):
         """Ein Profil ohne eigenen Schlüssel bekommt das Hausmodell, nie den Schlüssel des Kerns."""
         import llm_anbieter
@@ -150,10 +163,19 @@ class SmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot.lesbarer_modellname("claude-opus-5"), "Claude Opus 5")
         self.assertEqual(bot.lesbarer_modellname("gpt-x"), "gpt-x")
 
+    def test_stt_begriffe_kennen_den_neuen_namen(self):
+        """Seit der Umbenennung kennt die Spracherkennung Wais und W.A.I.S. (WAMO bleibt als früherer Name)."""
+        for begriff in ("Wais", "W.A.I.S.", "WAMO", "WAMOCON"):
+            self.assertIn(begriff, bot.DEFAULT_STT_TERMS.split(", "))
+        from persona import NAME_TTS
+
+        # nur die Schreibweise für die Stimme, nie ein Begriff der Erkennung
+        self.assertNotIn(NAME_TTS, bot.DEFAULT_STT_TERMS.split(", "))
+
     def test_greeting(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("WAMO_GREETING", None)
-            self.assertEqual(bot.greeting_text("Erika"), "Hallo Erika, WAMO ist bereit.")
+            self.assertEqual(bot.greeting_text("Erika"), "Hallo Erika, Wais ist bereit.")
         with mock.patch.dict(os.environ, {"WAMO_GREETING": ""}):
             self.assertEqual(bot.greeting_text("Erika"), "")
         with mock.patch.dict(os.environ, {"WAMO_GREETING": "Moin {name}!"}):

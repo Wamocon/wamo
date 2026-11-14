@@ -1,5 +1,5 @@
 """System-Prompt der Laborsitzung (Testlabor 3.1 und 3.6): ohne PC-, Fernzugriff-, Entwicklungs-, Zugang- und Gedächtnisteile, ohne Namen
-interner Systeme. Die Sprechweise übernimmt der Prompt von persona.BASE_VOR. Alles Inhaltliche des Labors (Regeln, Kontakte, Vorlagen,
+interner Systeme. Die Sprechweise übernimmt der Prompt von persona.base_vor (Schalter WAMO_PERSONA_NATUERLICH). Alles Inhaltliche des Labors (Regeln, Kontakte, Vorlagen,
 Wissen) kommt als Daten aus labor_daten.py: der Regelteil als eigener Block mit Anweisungston, alles andere als Daten ohne Anweisungston.
 Fehlt der Zusatz, bleibt es beim Laborprompt, nie beim normalen Prompt.
 """
@@ -10,7 +10,7 @@ import re
 from collections.abc import Sequence
 
 import labor
-from persona import ANREDE, BASE_VOR, MAX_NAME_CHARS, _fill, clean_inline
+from persona import ANREDE, MAX_NAME_CHARS, _fill, base_vor, clean_inline
 
 # Was über das Speichern gesagt wird, hängt davon ab, ob der Speicher der Sitzung wirklich schreibt (WAMO_LABOR_TEXT_SPEICHERN, Einwilligung und
 # Datenbank, LaborSpeicher.enabled): der Prompt darf dem Datenschutzhinweis am Platz nie widersprechen.
@@ -56,7 +56,7 @@ def _daten_text(text: str) -> str:
 
 
 def build_labor_prompt(name: str, anrede: str, art: str = "platz", regeln: str = "", daten: Sequence[tuple[str, str]] = (),
-                       text_speichern: bool = False) -> str:
+                       text_speichern: bool = False, natuerlich: bool | None = None) -> str:
     """Der Prompt einer Laborsitzung. regeln: Regelteil (persona-zusatz.md), kommt als eigener Block. daten: (Dateiname, Text) als Daten.
     text_speichern: der Speicher dieser Sitzung schreibt den Gesprächstext wirklich (dann sagt der Prompt es ehrlich). Ohne Zusatz ist es der
     reine Laborprompt."""
@@ -64,7 +64,7 @@ def build_labor_prompt(name: str, anrede: str, art: str = "platz", regeln: str =
         raise labor.LaborPolitikFehler("Laborprompt für ein Profil ohne Labor")
     values = {"name": clean_inline(name, MAX_NAME_CHARS) or "Gast", "anrede": ANREDE.get(anrede, "du")}
     labor_prompt = LABOR_PROMPT_VOR + (SPEICHERN_AN if text_speichern else SPEICHERN_AUS) + LABOR_PROMPT_NACH
-    teile = [_fill(BASE_VOR, values), _fill(labor_prompt, values), _fill(LABOR_WERKZEUGE_PROMPT, values)]
+    teile = [_fill(base_vor(natuerlich), values), _fill(labor_prompt, values), _fill(LABOR_WERKZEUGE_PROMPT, values)]
     if regeln.strip():
         teile.append(REGELN_KOPF + _fill(regeln.strip(), values) + "\n")
     eintraege = [(n, _daten_text(t)) for n, t in daten if t.strip()]

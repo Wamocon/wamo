@@ -15,7 +15,7 @@ test("in der nächsten Wortpause wird ausgeblendet", () => {
   assert.equal(sollAusblenden(scharf(1000), LEISE_PEGEL / 2, 1010), true);
 });
 
-test("solange WAMO laut spricht, wird bis zur Frist gewartet", () => {
+test("solange W.A.I.S. laut spricht, wird bis zur Frist gewartet", () => {
   assert.equal(sollAusblenden(scharf(1000), 0.2, 1000 + SPAETESTENS_MS), false);
   assert.equal(sollAusblenden(scharf(1000), 0.2, 1000 + SPAETESTENS_MS + 1), true);
 });

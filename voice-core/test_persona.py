@@ -26,7 +26,7 @@ class PersonaTests(unittest.TestCase):
                 self.assertNotIn("{anrede}", p)
                 self.assertIn("Erika Muster", p)
                 self.assertIn(wort, p)
-                self.assertIn("WAMO, der Sprachassistent der WAMOCON GmbH in Eschborn", p)
+                self.assertIn("W.A.I.S., der Sprachassistent der WAMOCON GmbH in Eschborn", p)
                 self.assertIsNone(FORBIDDEN.search(p))
 
     def test_data_sections_marked(self):
@@ -101,14 +101,17 @@ class PersonaPaketATests(unittest.TestCase):
         # Der neue Standard (mit Tab-Regel) steht in PersonaTabTests.
         with mock.patch.dict(os.environ, {"WAMO_PERSONA_RUECKFRAGEN": "aus", "WAMO_PERSONA_PC_ORDNER": "",
                                           "WAMO_PERSONA_BROWSER": "aus", "WAMO_PERSONA_TAB": "aus",
-                                          "WAMO_PERSONA_ABNAHME": "aus"}):
+                                          "WAMO_PERSONA_ABNAHME": "aus", "WAMO_PERSONA_NATUERLICH": "aus"}):
             voll = build_system_prompt("Max", "du", ["x"], ["y"], pc_werkzeuge=True, entwicklung=True, pc_erreichbar=False)
             kurz = build_system_prompt("Max", "sie", pc_werkzeuge=False)
-        # SHA-256 der Prompts vor Paket A (Stand a3e86b6)
+        # SHA-256 der Prompts vor Paket A (Stand a3e86b6), neu berechnet am 14.11.2026 mit dem neuen Namen: Der Prompt beginnt
+        # mit "Du bist W.A.I.S.", die Namensregel (persona.NAMENSREGEL) ersetzt die alte Zeile zum Namen, die Anrede bei
+        # mehreren Personen und das PC-Beispiel nennen die Kurzform, die PC-Meldungen W.A.I.S. Sonst ist der Prompt unverändert
+        # (Abschnitte, Reihenfolge, Schalter).
         self.assertEqual(hashlib.sha256(voll.encode()).hexdigest(),
-                         "a7efa1f0b93acad1e2cb45484c7e78a6c1d6bc2046675d58797725928b0ba1ad")
+                         "068dbb6c89a069643471a16ea0ea990d0753f5397cd81cb4c3ecfa261af53316")
         self.assertEqual(hashlib.sha256(kurz.encode()).hexdigest(),
-                         "1ccb24f540620477ad33f68c6b05d8c80adb8f290a9cb2494ea108e6755fa7ff")
+                         "4778123d39a554e61fddbb4523e0c76c71b54adc82403a1403a1a105a8d09a9c")
 
     def test_schalter_aus_der_umgebung(self):
         from persona import persona_pc_ordner_an, persona_rueckfragen_an
@@ -168,7 +171,7 @@ class PersonaPaketATests(unittest.TestCase):
 class LearningPromptTests(unittest.TestCase):
     def test_labels_and_scope(self):
         t = transcript_text([("user", "Hallo"), ("assistant", "Hi")], "Erika")
-        self.assertEqual(t, "Erika: Hallo\nWAMO: Hi")
+        self.assertEqual(t, "Erika: Hallo\nW.A.I.S.: Hi")
         s = learning_prompt("Erika")
         self.assertIn("persoenlich", s)
         self.assertIn("gemeinsam", s)
@@ -373,3 +376,147 @@ class PersonaRepoPflichtTests(unittest.TestCase):
         p = self.bauen(abnahme=True, repo_pflicht=True)
         self.assertNotIn(" – ", p)
         self.assertNotIn(" - ", p.replace("\n- ", "\n"))
+
+
+class PersonaNatuerlichTests(unittest.TestCase):
+    """Natürliche Sprechweise (WAMO_PERSONA_NATUERLICH, Standard an seit 14.11.2026): sofort hörbare Reaktion als eigener kurzer
+    Satz, zusammenhängende Sätze, Abrunden ohne Anschlussfrage. Mit "aus" gilt die frühere ruhige Sprechweise."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+
+        p = mock.patch.dict(os.environ, {"WAMO_PERSONA_NATUERLICH": ""})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_standard_ist_die_natuerliche_sprechweise(self):
+        text = build_system_prompt("Max", "du")
+        self.assertIn("Reagiere sofort hörbar", text)
+        self.assertIn("zusammenhängende Sätze", text)
+        self.assertIn("Nach erledigten Aufträgen hängst du keine Frage", text)
+        self.assertNotIn("höchstens etwa fünfzehn", text)
+        self.assertNotIn("Floskel", text)
+
+    def test_aus_bringt_die_fruehere_sprechweise(self):
+        from persona import persona_natuerlich_an
+
+        self.assertTrue(persona_natuerlich_an(""))
+        self.assertFalse(persona_natuerlich_an("aus"))
+        text = build_system_prompt("Max", "du", natuerlich=False)
+        self.assertIn("höchstens etwa fünfzehn", text)
+        self.assertNotIn("Reagiere sofort hörbar", text)
+
+    def test_marker_und_mehrere_personen_bleiben(self):
+        for natuerlich in (True, False):
+            text = build_system_prompt("Max", "du", natuerlich=natuerlich)
+            self.assertIn("Satzende-Marker", text)
+            self.assertIn("Sprechen mehrere Personen", text)
+            self.assertIn("Dein Name", text)
+
+    def test_beide_sprechweisen_schuetzen_die_sprachausgabe(self):
+        """Klammern, Gedankenstriche und Aufzählungen klingen in der Sprachausgabe falsch: die Regel gilt auch natürlich."""
+        regel = "Keine Klammern, keine Gedankenstriche, kein „erstens, zweitens“: reih mit „und“ und „dann“ auf."
+        for natuerlich in (True, False):
+            with self.subTest(natuerlich=natuerlich):
+                self.assertIn(regel, build_system_prompt("Max", "du", natuerlich=natuerlich))
+
+    def test_gemeinsame_teile_stehen_einmal_und_gelten_fuer_beide(self):
+        import persona
+
+        teile = [persona.KOPF, persona.OHNE_KLAMMERN, persona.SPRACHE_UND_ERKENNUNG, persona.ANPASSEN, persona.GESPRAECH]
+        for teil in teile:
+            with self.subTest(teil=teil[:40]):
+                self.assertTrue(teil.strip())
+                self.assertEqual(persona.BASE_VOR.count(teil), 1)
+                self.assertEqual(persona.BASE_VOR_NATUERLICH.count(teil), 1)
+        self.assertTrue(persona.BASE_VOR.startswith(persona.KOPF))
+        self.assertTrue(persona.BASE_VOR_NATUERLICH.startswith(persona.KOPF))
+        self.assertTrue(persona.BASE_VOR.endswith(persona.GESPRAECH))
+        self.assertTrue(persona.BASE_VOR_NATUERLICH.endswith(persona.GESPRAECH))
+
+    def test_ohne_gedankenstriche_und_markdown(self):
+        from persona import BASE_VOR_NATUERLICH
+
+        self.assertNotRegex(BASE_VOR_NATUERLICH, "[–—]| - ")
+        self.assertNotIn("**", BASE_VOR_NATUERLICH)
+        self.assertIsNone(FORBIDDEN.search(BASE_VOR_NATUERLICH))
+
+    def test_labor_folgt_demselben_schalter(self):
+        from labor_prompt import build_labor_prompt
+
+        an = build_labor_prompt("Gast", "du", natuerlich=True)
+        aus = build_labor_prompt("Gast", "du", natuerlich=False)
+        self.assertIn("Reagiere sofort hörbar", an)
+        self.assertIn("höchstens etwa fünfzehn", aus)
+
+
+class NamensregelTests(unittest.TestCase):
+    """Name seit 14.11.2026: geschrieben W.A.I.S., kurz Wais (so schreibt das Modell ihn in gesprochenen Antworten), Langform."""
+
+    def _prompt(self, natuerlich, **kwargs):
+        return " ".join(build_system_prompt("Erika", "du", natuerlich=natuerlich, **kwargs).split())
+
+    def test_konstanten(self):
+        import persona
+
+        self.assertEqual(persona.NAME_ANZEIGE, "W.A.I.S.")
+        self.assertEqual(persona.NAME_KURZ, "Wais")
+        self.assertEqual(persona.NAME_LANG, "WAMOCON’s Artificial Intelligence System")
+        self.assertEqual(persona.NAME_LANG_DE, "WAMOCONs künstliches intelligentes System")
+        self.assertEqual(persona.NAME_TTS, "Ways")
+        self.assertEqual(persona.NAME_BUCHSTABIERT, "W, A, I, S")
+
+    def test_keine_platzhalter_fuer_den_namen_uebrig(self):
+        import persona
+
+        for natuerlich in (False, True):
+            with self.subTest(natuerlich=natuerlich):
+                p = self._prompt(natuerlich, pc_werkzeuge=True, entwicklung=True)
+                self.assertNotIn("{name_", p)
+                self.assertNotIn("{namensregel}", p)
+        for name in ("BASE_VOR", "BASE_VOR_NATUERLICH", "PC_PROMPT", "NAMENSREGEL"):
+            self.assertNotIn("{name_", getattr(persona, name), name)
+
+    def test_rolle_traegt_den_neuen_namen(self):
+        for natuerlich in (False, True):
+            with self.subTest(natuerlich=natuerlich):
+                p = self._prompt(natuerlich)
+                self.assertIn("Du bist W.A.I.S., der Sprachassistent der WAMOCON GmbH in Eschborn", p)
+                self.assertNotIn("Du bist WAMO", p)
+
+    def test_gesprochen_als_kurzform_nie_mit_punkten(self):
+        for natuerlich in (False, True):
+            with self.subTest(natuerlich=natuerlich):
+                p = self._prompt(natuerlich)
+                self.assertIn("Was du sagst, liest eine Stimme vor. Schreib deinen Namen dabei immer als Wais, nie als W.A.I.S. "
+                              "mit Punkten und nie in Großbuchstaben", p)
+                self.assertIn("Fragt jemand, wie du heißt oder was du bist: Wais, ausgeschrieben WAMOCON’s Artificial "
+                              "Intelligence System, auf Deutsch WAMOCONs künstliches intelligentes System", p)
+                self.assertIn("Buchstabieren darfst du ihn auch: „W, A, I, S“", p)
+
+    def test_anrede_formen_der_spracherkennung(self):
+        for natuerlich in (False, True):
+            with self.subTest(natuerlich=natuerlich):
+                p = self._prompt(natuerlich)
+                self.assertIn('Als Anrede zählen "Wais", "Waze", "Ways", "W.A.I.S.", "WAIS", "Weis" oder "WAMO"', p)
+                self.assertIn("dein früherer Name war WAMO", p)
+                self.assertNotIn("Wammo", p)
+                self.assertNotIn('"Weiß"', p)  # das gewöhnliche Wort ist keine Anrede
+
+    def test_anrede_bei_mehreren_personen_ist_die_kurzform(self):
+        for natuerlich in (False, True):
+            with self.subTest(natuerlich=natuerlich):
+                self.assertIn('auf wen dich mit "Wais" anspricht', self._prompt(natuerlich))
+
+    def test_pc_beispiel_nutzt_die_kurzform(self):
+        p = build_system_prompt("Erika", "du", pc_werkzeuge=True)
+        self.assertIn("(z. B. „Wais, öffne ...“)", p)
+        self.assertIn('beginnen, schreibt W.A.I.S. selbst', p)
+
+    def test_labor_prompt_kennt_den_namen(self):
+        from labor_prompt import build_labor_prompt
+
+        p = " ".join(build_labor_prompt("Gast", "du").split())
+        self.assertIn("Du bist W.A.I.S.", p)
+        self.assertIn("Schreib deinen Namen dabei immer als Wais", p)

@@ -10,85 +10,24 @@
    ===================================================================== */
 
 .kz {
-  --kz-linie: #000000; /* Ringe und feine Linien des Kerns (Canvas liest den Wert) */
+  --kz-grund-innen: #0d0d13;
+  --kz-grund-aussen: #07070a;
+  --kz-karte: #111117;
+  --kz-rand: var(--steuer-rand); /* Rand von Bedienelementen */
+  --kz-akzent-rand: rgb(244 14 14 / 0.6);
+  --kz-akzent-weich: rgb(244 14 14 / 0.1);
+  --kz-sterne: var(--sterne);
+}
+/* Hellmodus (Variablen in globals.css): hellere Karten und Gründe */
+:root[data-theme="light"] .kz {
   --kz-grund-innen: #ffffff;
   --kz-grund-aussen: #f3f3f3;
   --kz-karte: #ffffff;
-  --kz-rand: #6b6b6b; /* Rand von Bedienelementen, 3:1 gegen den Grund */
-  --kz-akzent-rand: rgb(244 14 14 / 0.6);
-  --kz-akzent-weich: rgb(244 14 14 / 0.1);
-  --kz-sterne: 0;
-}
-:root[data-theme="dark"] .kz {
-  --kz-linie: #f3f3f3;
-  --kz-grund-innen: #151515;
-  --kz-grund-aussen: #050505;
-  --kz-karte: #111111;
-  --kz-sterne: 1;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .kz {
-    --kz-linie: #f3f3f3;
-    --kz-grund-innen: #151515;
-    --kz-grund-aussen: #050505;
-    --kz-karte: #111111;
-    --kz-sterne: 1;
-  }
+  --kz-akzent-rand: rgb(194 11 11 / 0.55);
+  --kz-akzent-weich: rgb(244 14 14 / 0.08);
 }
 
 .kz { background: var(--bg); }
-
-/* ---------- Kopfzeile: Statusanzeige ---------- */
-.kz .topbar { gap: 14px; }
-@media (max-width: 1023px) { .kz .topbar { gap: 8px; } }
-.kz .wordmark-sm { letter-spacing: 0.14em; }
-/* Laborkonten (lib/laborPlatz.ts): "WAMO Testlabor, Platz N" ist länger als die Wortmarke, also kleiner gesetzt; zuerst kürzt sie sich */
-.kz .wordmark-sm[data-labor] { font-size: 19px; letter-spacing: 0.06em; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-@media (max-width: 1023px) { .kz .wordmark-sm[data-labor] { font-size: 16px; } }
-.kz .topbar-end, .kz .topbar-btn, .kz .profile { flex: none; } /* die Statuszeile gibt nach, nicht die Schaltflächen */
-.kz-status { display: flex; align-items: center; gap: 14px; margin-right: 4px; }
-.kz-meter { display: flex; flex-direction: column; gap: 4px; width: 118px; }
-.kz-meter-text {
-  display: flex; justify-content: space-between;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; line-height: 1;
-  color: var(--ink-soft);
-}
-.kz-meter-text b { color: var(--ink); font-family: var(--font-code); letter-spacing: 0.02em; }
-.kz-meter-bahn { display: block; height: 3px; border-radius: 2px; background: var(--rule); overflow: hidden; }
-.kz-meter-bahn span { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width 600ms var(--ease-out); }
-.kz-badge {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 11px 5px 9px;
-  border: 1px solid var(--accent); border-radius: 999px;
-  font-size: 12px; font-weight: 700; line-height: 1; letter-spacing: 0.16em;
-  color: var(--ink);
-}
-.kz-badge svg { width: 13px; height: 13px; fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
-.kz-badge-punkt { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--kz-rand); }
-.kz-badge[data-zustand="getrennt"] { border-color: var(--kz-rand); color: var(--ink-soft); }
-.kz-badge[data-zustand="verbindet"] { border-color: var(--kz-rand); }
-.kz-badge[data-zustand="verbindet"] .kz-badge-punkt { background: var(--accent); box-shadow: none; }
-.kz-kernort { font-size: 12px; letter-spacing: 0.04em; color: var(--ink-soft); white-space: nowrap; }
-.kz-uhr { font: 700 15px/1 var(--font-code); letter-spacing: 0.04em; }
-/* "Verbindung" steht jetzt im Abzeichen ONLINE */
-@media (min-width: 1100px) {
-  .kz .status-items [data-feld="verbindung"] { display: none; }
-  .kz .status-items > div:nth-child(2) { border-left: 0; padding-left: 4px; }
-}
-@media (max-width: 1399px) { .kz-kernort { display: none; } }
-@media (max-width: 1179px) { .kz-meter { display: none; } }
-@media (max-width: 639px) {
-  .kz-uhr { display: none; }
-  .kz-badge { padding: 4px 8px 4px 6px; font-size: 11px; letter-spacing: 0.1em; }
-  .kz-status { gap: 8px; margin-right: 0; }
-}
-@media (max-width: 459px) { .kz-badge { display: none; } }
-/* schmales Handy: die Statuszeile bekommt mehr Platz (der Zustand steht auch im Namensschild) */
-@media (max-width: 520px) {
-  .kz .status-items [data-feld="verbindung"] { display: none; }
-  .kz .status-items > div { padding: 0 6px; }
-  .kz .status-items > div:nth-child(2) { border-left: 0; }
-}
 
 /* ---------- Rahmen: drei Spalten ---------- */
 .kz-main {
@@ -185,15 +124,13 @@
 
 .kz-meldungen { display: flex; flex-direction: column; gap: 8px; max-width: 640px; }
 .kz-meldungen:empty { display: none; }
-.kz-meldungen .error, .kz-meldungen .hinweis-toast, .kz-meldungen .memo { background: var(--kz-karte); border-radius: 12px; }
 .kz-meldungen .memos { display: grid; gap: 8px; }
 
 /* ---------- Mitte: Kern, Namensschild, Untertitel ---------- */
 .kz-kernbereich { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .kz-kernwrap { width: min(100%, 400px, 36dvh); aspect-ratio: 1; margin: 0 auto -6px; }
 .kz[data-ansicht="zentrale"] .kz-kernwrap { width: min(100%, 460px, 40dvh); }
-.kz-kern { width: 100%; height: 100%; display: block; }
-.kz[data-ansicht="nacht"] .kz-kern { filter: saturate(0.9) brightness(0.82); }
+.kz[data-ansicht="nacht"] .kr { filter: saturate(0.9) brightness(0.82); }
 
 .kz-schild {
   margin: 0; padding: 8px 30px 9px;
@@ -275,8 +212,6 @@
 .kz-chip[aria-pressed="true"], .kz-chip[aria-expanded="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .kz-chip:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.kz .voice { width: min(100%, 580px); }
-.kz .voice-line { height: 44px; border-radius: 10px; background: color-mix(in srgb, var(--surface) 60%, transparent); }
 
 /* ---------- Zentrale ---------- */
 .kz-zentrale { display: flex; flex-direction: column; align-items: center; gap: 12px; }
@@ -344,22 +279,6 @@
 
 .kz-tafel { display: none; flex-direction: column; gap: 12px; padding-top: 6px; }
 
-/* Freigabekarten und Auftragskarten: feine Akzent-Umrandung, runde Ecken, rote Kante */
-.kz .approvals { gap: 12px; }
-.kz .approval {
-  background: color-mix(in srgb, var(--kz-karte) 85%, transparent);
-  border: 1px solid var(--kz-akzent-rand); border-radius: 12px;
-  box-shadow: inset 4px 0 0 var(--accent);
-  padding: 14px 16px 16px 20px;
-}
-.kz .approval .eyebrow { letter-spacing: 0.16em; font-size: 12px; margin-bottom: 8px; }
-.kz .approval h3 { font-size: 18px; }
-.kz .approval-detail { background: color-mix(in srgb, var(--ink) 7%, transparent); border-radius: 8px; }
-.kz .auftrag-text { background: color-mix(in srgb, var(--ink) 7%, transparent); border-radius: 8px; }
-.kz .auftrag-abnahme code { background: color-mix(in srgb, var(--ink) 7%, transparent); }
-/* Freigeben und Ablehnen bleiben gleichgewichtig (Sicherheitsregel, siehe Freigaben.tsx) */
-.kz .btn-decide { border-radius: 999px; font-size: 17px; }
-
 .kz .timeline { gap: 8px; }
 .kz .timeline li { min-height: 36px; }
 .kz .timeline > ol > li:nth-child(n + 4) { display: grid; }
@@ -367,21 +286,6 @@
 
 /* ---------- Canvas ---------- */
 .kz-canvas { min-width: 0; display: flex; flex-direction: column; scroll-margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--rule); }
-.kz .canvas-empty { margin: 0 auto; width: 100%; max-width: 720px; padding: 12px 0 0; }
-.kz .canvas-empty h2 { font-size: 28px; }
-.kz .canvas-item { background: color-mix(in srgb, var(--kz-karte) 85%, transparent); border-radius: 12px; border-top-width: 3px; }
-
-/* ---------- Verlauf bleibt Schublade (auch ab 1600 px) ---------- */
-@media (min-width: 1600px) {
-  .kz .verlauf {
-    position: fixed; z-index: 25; top: var(--top); right: 0; bottom: 0; height: auto; width: min(360px, 100vw);
-    transform: translateX(100%); transition: transform var(--dur-exit) var(--ease-in);
-    border-left: 1px solid var(--rule-strong);
-  }
-  .kz .verlauf[data-offen] { transform: none; transition: transform var(--dur-enter) var(--ease-out); }
-  .kz .verlauf-close, .kz .verlauf-btn { display: inline-flex; }
-}
-.kz .verlauf { box-shadow: -16px 0 40px -28px rgb(0 0 0 / 0.6); }
 
 /* ---------- Darstellung Fokus und Zentrale: nur die Mitte ---------- */
 .kz[data-ansicht="fokus"] .kz-main, .kz[data-ansicht="zentrale"] .kz-main { grid-template-columns: minmax(0, 1fr); }
@@ -450,7 +354,6 @@
   .kz-kopf { grid-template-columns: 1fr; justify-items: center; }
   .kz-titel, .kz-wahl-wrap { grid-column: 1; }
   .kz-titel { justify-self: center; align-items: center; }
-  .kz .voice { display: none; }
   .kz-chip, .kz-wahl button { min-height: 44px; }
   .kz-pille-mikro, .kz-pille-senden { width: 44px; height: 44px; }
   .kz-pille-feld { height: 44px; }

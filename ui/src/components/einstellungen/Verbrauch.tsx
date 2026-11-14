@@ -72,7 +72,7 @@ export const VerbrauchAbschnitt = memo(function VerbrauchAbschnitt() {
   return (
     <Block titel="Kontingent des Claude-Abos">
       <p className="ez-text">
-        So viel von deinem Abo haben Entwicklungsaufträge mit deinem Claude-Code-Token schon verbraucht. WAMO liest die Werte
+        So viel von deinem Abo haben Entwicklungsaufträge mit deinem Claude-Code-Token schon verbraucht. W.A.I.S. liest die Werte
         aus den Antworten von Claude Code und fragt dafür nichts zusätzlich an.
       </p>
       {anzeige.leer ? (

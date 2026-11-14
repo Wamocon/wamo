@@ -485,7 +485,7 @@ def ziel_text(kriterien: Sequence[Kriterium], max_runden: int) -> str:
     """Das Ziel für den ersten Prompt von Claude Code: genau das soll erreicht sein, WAMO prüft es danach selbst."""
     zeilen = [f"{i}. {k.text}" + (" (der Befehl muss mit Exit 0 enden)" if k.art == "befehl" else "")
               for i, k in enumerate(kriterien, start=1)]
-    return ("Prüfbares Ziel: WAMO prüft nach jeder Runde selbst, ob dies erreicht ist. Erreiche genau das:\n"
+    return ("Prüfbares Ziel: W.A.I.S. prüft nach jeder Runde selbst, ob dies erreicht ist. Erreiche genau das:\n"
             + "\n".join(zeilen)
             + f"\nDu hast höchstens {_runden(max_runden)}. Nach jeder Runde bekommst du nur die noch offenen Punkte.")
 

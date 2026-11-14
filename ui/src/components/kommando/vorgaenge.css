@@ -19,13 +19,11 @@
 .vg-karte {
   display: flex; flex-direction: column; gap: 12px; min-width: 0;
   padding: 14px 16px 16px 20px;
-  border: 1px solid var(--rule); border-radius: 12px;
-  background: color-mix(in srgb, var(--kz-karte) 85%, transparent);
-  box-shadow: inset 4px 0 0 var(--vg-kante);
+  box-shadow: inset 2px 0 0 var(--vg-kante);
 }
 .vg-kopf { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
-.vg-art { font: 700 12px/1.2 var(--font-wmc); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-soft); }
-.vg-name { margin: 0; font: 700 19px/1.25 var(--font-wmc); overflow-wrap: anywhere; }
+.vg-art { font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-soft); }
+.vg-name { margin: 0; font: 600 16px/1.3 var(--body); overflow-wrap: anywhere; }
 
 /* Status als Wort mit Marke */
 .vg-status {
@@ -104,9 +102,7 @@
 }
 .vg-alt[open] > summary { color: var(--ink); }
 .vg-ende {
-  min-width: 0; border: 1px solid var(--rule); border-radius: 12px;
-  background: color-mix(in srgb, var(--kz-karte) 70%, transparent);
-  box-shadow: inset 4px 0 0 var(--vg-kante);
+  min-width: 0; box-shadow: inset 2px 0 0 var(--vg-kante);
 }
 .vg-ende > summary {
   list-style: none; min-height: 48px; padding: 8px 12px 8px 16px;

@@ -1,0 +1,219 @@
+/* =====================================================================
+   WAMO Kopfzeile (components/Kopfzeile.tsx): Aufbau und Aussehen an einer Stelle
+   Eingebunden über globals.css. Von links nach rechts: Wortmarke, Profil, Statusmodule, Sitzung, ONLINE, Uhr, Schalter, Logo.
+   Die Statusmodule (.status-items) stehen in einer Zeile. Was nicht ganz hineinpasst, bricht in eine zweite Zeile um, die
+   abgeschnitten bleibt: Es fällt immer ein ganzes Modul weg, nie ein Wort. Die Reihenfolge (order) ist die Rangfolge, das
+   Unwichtigste steht hinten und fällt zuerst heraus. Bei 1440 px sind Büro, Modelle, PC, Mikro und Stimme ganz da, Entwicklung und
+   Netz fallen ab etwa 1280 px weg. Das Menü (Knopf mit den drei Strichen, unter 1600 px) zeigt immer alle Module.
+   Reihenfolge der Rangfolge: Test lib/kopfzeile.test.ts.
+   ===================================================================== */
+
+/* ---------- Rahmen ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 30;
+  height: var(--top);
+  display: flex; align-items: center; gap: 14px;
+  padding: var(--sa-t) max(var(--sa-r), 16px) 0 max(var(--sa-l), 22px);
+  background: var(--kopf-grund);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--rule);
+  font-size: 13px;
+}
+.topbar-end { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
+.topbar .logo-plate { margin-left: 4px; padding: 3px 6px; }
+.topbar .logo-plate img { height: 30px; }
+
+.wordmark-sm {
+  margin: 0; flex: none; display: inline-flex; align-items: center; gap: 10px;
+  font: 700 19px/1 var(--display); letter-spacing: 0.22em; text-transform: uppercase; color: var(--ink);
+}
+.wordmark-sm::before {
+  content: ""; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--core);
+  box-shadow: 0 0 12px var(--core), 0 0 3px var(--core-hot);
+}
+/* Laborkonten (lib/laborPlatz.ts): "WAMO Testlabor, Platz N" ist länger als die Wortmarke, also kleiner gesetzt; zuerst kürzt sie sich */
+.wordmark-sm[data-labor] { flex: 0 1 auto; min-width: 0; font-size: 12px; letter-spacing: 0.12em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- Profil ---------- */
+.profile { flex: none; display: flex; min-width: 0; }
+.profile-chip {
+  min-height: 44px; min-width: 0;
+  display: inline-flex; align-items: center; gap: 8px; padding: 0 10px 0 4px;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  font: 700 13px/1 var(--body); cursor: pointer;
+  transition-property: background-color, border-color; transition-duration: var(--dur-fast);
+}
+.profile-chip:hover { background: var(--glas-hover); border-color: var(--kante); }
+.initials {
+  flex: none; width: 26px; height: 26px; border-radius: 50%;
+  display: inline-grid; place-items: center;
+  background: var(--ink); color: var(--bg); font: 700 11px/1 var(--hud); letter-spacing: 0;
+}
+.profile-first { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14ch; }
+
+/* ---------- Statusmodule ---------- */
+.status-items {
+  flex: 1 1 auto; min-width: 0; margin: 0;
+  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 12px 8px;
+  height: 30px; overflow: hidden; white-space: nowrap; /* eine Zeile hoch: die zweite Zeile mit den Modulen ohne Platz bleibt unsichtbar */
+  font: 500 10.5px/1.2 var(--hud); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-soft);
+}
+.status-items > div {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 5px 10px; border: 1px solid var(--rule); border-radius: 6px;
+}
+.status-items dd, .status-list dd { margin: 0; display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.status-items dd { color: var(--ink); }
+.status-items dt { color: var(--ink-soft); }
+.status-items [data-feld="betriebsart"] { order: 1; }
+.status-items [data-feld="modelle"] { order: 2; }
+.status-items [data-feld="pc"] { order: 3; }
+.status-items [data-feld="mikro"] { order: 4; }
+.status-items [data-feld="stimme"] { order: 5; }
+.status-items [data-feld="pcsteuerung"] { order: 6; }
+.status-items [data-feld="entwicklung"] { order: 7; }
+.status-items [data-feld="netz"] { order: 8; }
+/* Verbindung steht schon im Abzeichen ONLINE (ab 1100 px) */
+@media (min-width: 1100px) { .status-items [data-feld="verbindung"] { display: none; } }
+/* Modul Stimme: Beschriftung sichtbar, Wert nach Ergebnis gefärbt */
+.status-items [data-feld="stimme"] dd { font-weight: 700; color: var(--ink-faint); }
+.status-items [data-feld="stimme"][data-an="ja"] { border-color: color-mix(in srgb, var(--core) 45%, var(--rule)); }
+.status-items [data-feld="stimme"][data-an="ja"] dd { color: var(--core-schrift); }
+.status-items [data-feld="stimme"][data-an="ja"] dd::before {
+  content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor;
+}
+.status-items [data-feld="stimme"][data-an="warn"] { border-color: color-mix(in srgb, var(--warn) 55%, var(--rule)); }
+.status-items [data-feld="stimme"][data-an="warn"] dd { color: var(--warn-schrift); }
+.status-list [data-feld="stimme"] dd { font-weight: 700; }
+.latency { color: var(--ink-faint); }
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--steuer-rand); }
+.dot[data-on], .dot-rot { background: var(--core); box-shadow: 0 0 8px var(--core); }
+.tag {
+  display: inline-block; margin-left: 6px; padding: 1px 5px;
+  border: 1px solid var(--kante); border-radius: 4px;
+  font: 600 9.5px/1.3 var(--hud); letter-spacing: 0.1em; text-transform: uppercase; vertical-align: 1px;
+}
+.tag-warn { margin-left: 0; border-color: var(--warn); color: var(--warn-schrift); }
+.sym { flex: none; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linejoin: round; }
+.sym-warn rect { fill: var(--fehler); stroke: none; }
+.sym-warn path { stroke: #ffffff; stroke-width: 2; stroke-linecap: round; }
+
+/* Menüansicht (Popover) */
+.status-list { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; font-size: 14px; }
+.status-list > div { display: contents; }
+.status-list dt { color: var(--ink-soft); }
+
+/* ---------- Sitzung, ONLINE, Uhr ---------- */
+.kz-status { display: flex; align-items: center; gap: 14px; margin-right: 4px; }
+.kz-meter { display: flex; flex-direction: column; gap: 4px; width: 118px; }
+.kz-meter-text { display: flex; justify-content: space-between; font: 500 10.5px/1 var(--hud); letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink-soft); }
+.kz-meter-text b { font: 700 10.5px/1 var(--hud); letter-spacing: 0.02em; color: var(--ink); }
+.kz-meter-bahn { display: block; height: 3px; border-radius: 2px; background: var(--rule); overflow: hidden; }
+.kz-meter-bahn span { display: block; height: 100%; border-radius: 2px; background: var(--accent); box-shadow: 0 0 10px var(--core); transition: width 600ms var(--ease-out); }
+.kz-badge-punkt { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px currentColor; }
+.kz-badge[data-zustand="verbindet"] .kz-badge-punkt { background: currentColor; box-shadow: none; }
+.kz-badge svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.kz-kernort { font: 500 10.5px/1 var(--hud); letter-spacing: 0.14em; text-transform: uppercase; white-space: nowrap; color: var(--ink-faint); }
+.kz-uhr { font: 700 22px/1 var(--hud); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+
+/* ---------- Schalter rechts ---------- */
+.topbar-btn {
+  flex: none; min-height: 34px; padding: 0 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--ink-soft);
+  border: 1px solid var(--steuer-rand); border-radius: 6px;
+  font: 600 11px/1 var(--hud); letter-spacing: 0.12em; text-transform: uppercase; text-decoration: none; cursor: pointer;
+  transition-property: background-color, color, border-color; transition-duration: var(--dur-fast);
+}
+.topbar-btn:hover { background: var(--glas-hover); color: var(--ink); }
+.topbar-btn[aria-expanded="true"], .topbar-btn[aria-pressed="true"], .topbar-btn[aria-current="page"] {
+  background: var(--glas-stark); color: var(--ink); border-color: var(--core);
+}
+.thema-btn, .einstellungen-btn, .menu-btn { width: 44px; padding: 0; }
+.thema-btn svg, .einstellungen-btn svg, .menu-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.thema-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+.menu-btn { display: none; }
+
+/* ---------- Popover von Profil und Status (HTML-Popover-API) ---------- */
+.popover {
+  margin: 0; inset: auto;
+  position: fixed; top: calc(var(--top) + 6px);
+  width: min(320px, calc(100vw - 24px));
+  padding: 14px 16px 16px;
+  background: var(--panel); color: var(--ink);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  border: 1px solid var(--kante); border-radius: 10px;
+  box-shadow: 0 16px 40px -20px rgb(0 0 0 / 0.55), 0 0 36px -22px var(--core);
+}
+.popover:popover-open { display: grid; gap: 10px; }
+.popover::backdrop { background: transparent; }
+.profile-pop { left: max(12px, var(--sa-l)); }
+.status-pop { right: max(12px, var(--sa-r)); }
+.pop-name { margin: 0; font: 700 15px/1.3 var(--display); letter-spacing: 0.04em; }
+.pop-mail { margin: -6px 0 0; color: var(--ink-soft); font-size: 14px; word-break: break-all; }
+.pop-role { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.pop-hint { margin: 0; font-size: 13px; color: var(--ink-soft); }
+
+/* ---------- Breitenstufen ---------- */
+@media (max-width: 1599px) {
+  .kz-kernort { display: none; } /* der Kernort steht schon im Modul Betriebsart */
+  .profile-chip .role-tag { display: none; } /* die Rolle steht im Popover und im Namen des Knopfs */
+  .kz-meter { width: 96px; }
+  .kz-status { gap: 12px; }
+  .status-items { gap: 12px 6px; letter-spacing: 0.08em; }
+  .status-items > div { padding: 5px 8px; gap: 6px; }
+  .status-items [data-feld="modelle"] .tag { display: none; } /* Cloud oder im Haus und der Modus stehen im title und im Menü */
+  /* PC verbunden: Punkt und Latenz genügen, Name und "verbunden" bleiben für Screenreader im Text */
+  .status-items [data-feld="pc"][data-pc="verbunden"] .status-label {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  .topbar-btn { padding: 0 10px; }
+  .topbar { gap: 12px; }
+}
+@media (max-width: 1179px) {
+  .kz-meter { display: none; }
+}
+
+/* unter 1600 px: das Menü zeigt alle Module, auch die, die nicht mehr in die Zeile passen */
+@media (max-width: 1599px) {
+  .menu-btn { display: inline-flex; }
+}
+
+/* unter 1024 px: Kopfzeile in Kurzform, die Einzelheiten stehen im Menü */
+@media (max-width: 1023px) {
+  .topbar { gap: 8px; padding-right: max(var(--sa-r), 8px); padding-left: max(var(--sa-l), 12px); }
+  .wordmark-sm { font-size: 19px; }
+  .wordmark-sm[data-labor] { font-size: 12px; }
+  .profile-chip { padding: 0 4px; }
+  .profile-first { display: none; }
+  .status-items [data-feld="modelle"], .status-items [data-feld="mikro"], .status-items [data-feld="netz"],
+  .status-items [data-feld="entwicklung"], .status-items [data-feld="stimme"], .verlauf-btn { display: none; }
+  .status-items > div { padding: 0 8px; }
+  .status-items .status-label {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  } /* nur Punkte und Kurzformen; der Text bleibt für Screenreader */
+  /* PC-Steuerung an: wichtiger als die Betriebsart (die steht weiter im Menü) */
+  .status-items:has([data-feld="pcsteuerung"]) [data-feld="betriebsart"] { display: none; }
+  .topbar .logo-plate { margin-left: 2px; padding: 2px 4px; }
+  .topbar .logo-plate img { height: 26px; }
+  .topbar-btn.thema-btn { width: 40px; }
+  .kz-status { gap: 8px; }
+}
+@media (max-width: 639px) {
+  .kz-uhr { display: none; }
+  .kz-badge { padding: 4px 8px 4px 6px; font-size: 11px; letter-spacing: 0.1em; }
+  .kz-status { gap: 8px; margin-right: 0; }
+}
+@media (max-width: 459px) { .kz-badge { display: none; } }
+/* schmales Handy: die Statuszeile bekommt mehr Platz (der Zustand steht auch im Namensschild), das Zahnrad nimmt so wenig wie möglich */
+@media (max-width: 520px) {
+  .status-items [data-feld="verbindung"] { display: none; }
+  .status-items > div { padding: 0 6px; }
+  .status-items [data-feld="betriebsart"] dd { font-size: 14px; }
+  .topbar-end { gap: 4px; }
+  .topbar-btn.einstellungen-btn, .menu-btn { width: 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kz-meter-bahn span { transition: none; }
+}

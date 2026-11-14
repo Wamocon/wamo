@@ -331,7 +331,7 @@ function isUp(url, pruefe) {
   });
 }
 
-const uiIstDa = () => isUp(UI_URL, (status, body) => status >= 200 && status < 400 && body.includes("WAMO"));
+const uiIstDa = () => isUp(UI_URL, (status, body) => status >= 200 && status < 400 && (body.includes("W.A.I.S.") || body.includes("WAMO")));
 // Der Voice-Core lehnt Anfragen ohne Token mit 401 und "nicht berechtigt" ab: das ist seine Kennung
 const coreIstDa = () =>
   isUp(VOICE_CORE_URL, (status, body) => (status >= 200 && status < 400) || (status === 401 && body.includes("nicht berechtigt")));
@@ -543,7 +543,7 @@ function createMainWindow() {
   mainWin = new BrowserWindow({
     width: 1400,
     height: 900,
-    title: "WAMO",
+    title: "W.A.I.S.",
     icon: iconPath(),
     autoHideMenuBar: true,
     backgroundColor: "#FFFFFF",
@@ -835,12 +835,12 @@ function aktualisiereTray() {
   tray.setImage(live.an ? liveSymbol() : nativeImage.createFromPath(iconPath()));
   tray.setToolTip(
     live.an
-      ? "WAMO: Live-Bild läuft, dieser Bildschirm wird übertragen"
-      : betriebsart === "buero" ? "WAMO (Büro, Kern auf Sokrates-2)" : "WAMO (Unterwegs, Kern auf diesem PC)",
+      ? "W.A.I.S.: Live-Bild läuft, dieser Bildschirm wird übertragen"
+      : betriebsart === "buero" ? "W.A.I.S. (Büro, Kern auf Sokrates-2)" : "W.A.I.S. (Unterwegs, Kern auf diesem PC)",
   );
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "WAMO öffnen", click: showMain },
+      { label: "W.A.I.S. öffnen", click: showMain },
       {
         label: "Betriebsart",
         submenu: [
@@ -891,7 +891,7 @@ function aktualisiereTray() {
           mainWin?.reload();
         },
       },
-      { label: "WAMO beenden", click: () => { quitting = true; app.quit(); } },
+      { label: "W.A.I.S. beenden", click: () => { quitting = true; app.quit(); } },
     ]),
   );
 }

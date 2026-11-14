@@ -231,7 +231,7 @@ describe("useWamo, stiller Start beim Tippen", () => {
       expect(letzter().sendText).toHaveBeenCalledWith("Wie spät ist es?", { run_immediately: true, audio_response: false });
     });
 
-    it("antwortet WAMO auf eine getippte Nachricht 45 Sekunden nicht (Puls dreht sich), erscheint ein Hinweis", async () => {
+    it("antwortet W.A.I.S. auf eine getippte Nachricht 45 Sekunden nicht (Puls dreht sich), erscheint ein Hinweis", async () => {
       einschalten();
       const { result } = renderHook(() => useWamo());
       result.current.stillStarten?.();
@@ -246,7 +246,7 @@ describe("useWamo, stiller Start beim Tippen", () => {
       expect(aktuell().error).toEqual({ art: "hinweis", text: HAENGT_HINWEIS });
     });
 
-    it("antwortet WAMO rechtzeitig (Präsenz wechselt), bleibt der Hinweis aus", async () => {
+    it("antwortet W.A.I.S. rechtzeitig (Präsenz wechselt), bleibt der Hinweis aus", async () => {
       einschalten();
       const { result } = renderHook(() => useWamo());
       result.current.stillStarten?.();

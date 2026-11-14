@@ -64,6 +64,12 @@ AUS_ENV = (
     "WAMO_LATENZ_LOG", "WAMO_VAD_STOP_SECS", "WAMO_TTS_START_ZEICHEN", "WAMO_ECHO_FILTER", "WAMO_CACHE_VORWAERMEN",
     # Sprachverhalten (voice-core/soft_interrupt.py, wartesatz.py): Stopp an der Wortgrenze, Dämpfen, Rückmeldelaute, Wartesatz
     "WAMO_STOPP_GRENZE", "WAMO_DUCKEN", "WAMO_RUECKMELDUNG", "WAMO_WARTESATZ", "WAMO_WARTESATZ_SECS",
+    "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM",  # Füllwörter (voice-core/fuellwoerter.py)
+    "WAMO_PERSONA_NATUERLICH",  # natürliche Sprechweise (voice-core/persona.py)
+    "WAMO_INNEHALTEN", "WAMO_INNEHALTEN_WEITER_SECS", "WAMO_INNEHALTEN_MAX_SECS",  # Innehalten statt Abbrechen (voice-core/wiedergabe.py)
+    # Stimmabdruck (voice-core/stimme_gate.py): Nicht dabei sind alle WAMO_STIMME_* (Modus, Schwellen, Modellpfad). Der Modus und die
+    # Schwellen sind Sicherheitseinstellungen des Servers: eine .env des PCs soll sie dort weder lockern noch abschalten; sie stehen nur in
+    # der Liste des Servers (wamo-core-env). Der Pfad der Modelldatei gilt außerdem je Rechner.
     # Sprachpakete A und B (voice-core/soniox_tts.py, persona.py, bot.py, learning.py, soft_interrupt.py, ja_waechter.py):
     # Tempo und Pausen der Stimme, Leerzeichen am Satzende, Persona, Pausen-Texte, Lernen, Rückmeldelaut bei Werkzeug, Ja-Wächter
     "SONIOX_SPEED", "SONIOX_REDUCE_SILENCE", "WAMO_TTS_SATZLEERZEICHEN", "WAMO_PERSONA_RUECKFRAGEN", "WAMO_PERSONA_BROWSER", "WAMO_PERSONA_TAB", "WAMO_PERSONA_PC_ORDNER", "WAMO_PERSONA_GESPRAECH", "WAMO_WARTESATZ_MODELL", "WAMO_RD_AKTIV", "WAMO_WARTESATZ_MODELL_SECS",

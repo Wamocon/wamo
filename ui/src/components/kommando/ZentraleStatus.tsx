@@ -68,9 +68,9 @@ export const ZentraleStatus = memo(function ZentraleStatus({ presence, zustand }
     if (gehoert || antwort) zeilen.push({ text: "Stimme erkannt", art: "fertig" });
     if (abgeschlossen || antwort) zeilen.push({ text: "Anfrage empfangen", art: "fertig" });
     if (freigabe) zeilen.push({ text: "Freigabe wartet auf dich", art: "wartet" });
-    else if (werkzeug) zeilen.push({ text: `WAMO ${LABEL[werkzeug] ?? werkzeug}`, art: "laeuft" });
-    else if (presence === "thinking") zeilen.push({ text: "WAMO denkt nach", art: "laeuft" });
-    else if (presence === "speaking") zeilen.push({ text: "WAMO antwortet", art: "laeuft" });
+    else if (werkzeug) zeilen.push({ text: `W.A.I.S. ${LABEL[werkzeug] ?? werkzeug}`, art: "laeuft" });
+    else if (presence === "thinking") zeilen.push({ text: "W.A.I.S. denkt nach", art: "laeuft" });
+    else if (presence === "speaking") zeilen.push({ text: "W.A.I.S. antwortet", art: "laeuft" });
     if (!zeilen.length) zeilen.push({ text: "Bereit für deine Anfrage", art: "ruhig" });
   }
 
@@ -80,8 +80,8 @@ export const ZentraleStatus = memo(function ZentraleStatus({ presence, zustand }
   const beschriftung = entwicklungSeit !== null ? "Dauer Entwicklungsauftrag" : online ? "Gesprächsdauer" : "Bereit";
 
   return (
-    <div className="kz-zentrale" data-presence={presence} aria-label={`WAMO ${zustand}`} role="group">
-      <p className="kz-gross">WAMO</p>
+    <div className="kz-zentrale" data-presence={presence} aria-label={`W.A.I.S. ${zustand}`} role="group">
+      <p className="kz-gross">W.A.I.S.</p>
       <ul className="kz-haken" aria-label="Status">
         {zeilen.map((z) => (
           <li key={z.text} data-art={z.art}>

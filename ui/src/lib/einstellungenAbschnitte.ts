@@ -17,6 +17,7 @@ export const ABSCHNITT_IDS = [
   "modellzugang",
   "verbrauch",
   "sprache",
+  "stimme",
   "gedaechtnis",
   "darstellung",
   "geraete",
@@ -45,6 +46,7 @@ export const ABSCHNITTE: readonly Abschnitt[] = [
   { id: "modellzugang", titel: "Modellzugang", kurz: "API-Schlüssel, Token und Modus" },
   { id: "verbrauch", titel: "Verbrauch", kurz: "Kontingent deines Claude-Abos", nurAdmin: true },
   { id: "sprache", titel: "Sprache und Ton", kurz: "Mikrofon, Hören und Stimme", laborSicht: true, laborKurz: "Mikrofon wählen" },
+  { id: "stimme", titel: "Stimme", kurz: "Eigene Stimme erkennen und einlernen" },
   { id: "gedaechtnis", titel: "Gedächtnis", kurz: "Vorschläge für alle prüfen", nurAdmin: true },
   { id: "darstellung", titel: "Darstellung", kurz: "Normal, Fokus, Zentrale und Nacht" },
   { id: "geraete", titel: "Geräte und PC", kurz: "Verbindungen, Geräteverwaltung, PC-Steuerung und Betriebsart" },
@@ -57,7 +59,7 @@ export const ABSCHNITTE: readonly Abschnitt[] = [
   {
     id: "aenderungen",
     titel: "Änderungen",
-    kurz: "Stand der Selbstüberarbeitung von WAMO",
+    kurz: "Stand der Selbstüberarbeitung von W.A.I.S.",
     nurAdmin: true,
   },
   { id: "teilen", titel: "Teilen", kurz: "Geteilte Dokumente und Dateien" },
@@ -161,7 +163,7 @@ export type GeraeteStand = {
 };
 
 const TUNNEL_TEXT: Record<TunnelZustand, string> = {
-  verbunden: "Tunnel zu WAMO verbunden",
+  verbunden: "Tunnel zu W.A.I.S. verbunden",
   host: "Dieser PC ist selbst der Host, kein Tunnel nötig",
   aus: "Tunnel aus",
   unbekannt: "Tunnel unbekannt",

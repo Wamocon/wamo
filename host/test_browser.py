@@ -282,10 +282,13 @@ class ReviewFundeTests(unittest.TestCase):
         self.assertEqual(r["tabs_anzahl"], 34)
 
     def test_wamo_oberflaeche_auch_mit_titelsuffix(self):
-        for titel in ("WAMO", "WAMO - Google Chrome", "Einstellungen | WAMO", "Verlauf, Einstellungen | WAMO"):
+        for titel in ("WAMO", "WAMO - Google Chrome", "Einstellungen | WAMO", "Verlauf, Einstellungen | WAMO",
+                      "W.A.I.S.", "W.A.I.S. - Google Chrome", "Einstellungen | W.A.I.S.", "Verlauf, Einstellungen | W.A.I.S.",
+                      "W.A.I.S. Fernzugriff"):
             with self.assertRaises(ValueError, msg=titel):
                 wc.check_not_wamo_ui("chrome.exe", titel)
-        for titel in ("WAMO-Konzept.docx", "wamo - Visual Studio Code", "Die WAMO.md"):
+        for titel in ("WAMO-Konzept.docx", "wamo - Visual Studio Code", "Die WAMO.md", "W.A.I.S.-Konzept.docx",
+                      "Die W.A.I.S.md", "w.a.i.s. - Visual Studio Code"):
             wc.check_not_wamo_ui("code.exe", titel)
 
     def test_audit_nennt_bei_browsern_keinen_seitentitel(self):

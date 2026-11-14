@@ -67,7 +67,7 @@ const WINDOWS_EINGABE = "in Windows unter Einstellungen > System > Sound > Einga
 export function stilleText(geraet?: string | null): string {
   const welches = geraet ? ` („${geraet}“)` : "";
   return (
-    `Das Mikrofon${welches} liefert keinen Ton, WAMO hört dich nicht. Prüfe die Stummschaltung am Gerät oder ` +
+    `Das Mikrofon${welches} liefert keinen Ton, W.A.I.S. hört dich nicht. Prüfe die Stummschaltung am Gerät oder ` +
     `Headset, wähle unten ein anderes Mikrofon oder stelle ${WINDOWS_EINGABE} das richtige Gerät ein. ` +
     (istBluetoothGeraet(geraet) ? BLUETOOTH_HINWEIS : "Am Dock mit zugeklapptem Laptop ist das eingebaute Mikrofon meist aus.")
   );
@@ -106,7 +106,7 @@ export function kernFehltText(sekunden: number): string {
 export function spurEndeText(geraet?: string | null): string {
   const welches = geraet ? ` („${geraet}“)` : "";
   return (
-    `Das Mikrofon${welches} wurde getrennt oder von Windows entzogen, WAMO hört dich nicht mehr. Schließe es wieder ` +
+    `Das Mikrofon${welches} wurde getrennt oder von Windows entzogen, W.A.I.S. hört dich nicht mehr. Schließe es wieder ` +
     "an oder wähle unten ein anderes Mikrofon."
   );
 }
@@ -114,7 +114,7 @@ export function spurEndeText(geraet?: string | null): string {
 /** Nach dem Verbinden kam nie eine Mikrofonspur an. */
 export function keineSpurText(): string {
   return (
-    "Es kommt keine Mikrofonspur an, WAMO hört dich nicht. Wähle unten ein Mikrofon aus, prüfe " +
+    "Es kommt keine Mikrofonspur an, W.A.I.S. hört dich nicht. Wähle unten ein Mikrofon aus, prüfe " +
     `${WINDOWS_EINGABE} das Gerät oder beende das Gespräch und starte es neu.`
   );
 }
@@ -145,7 +145,7 @@ export function mikrofonFehlerText(name?: string): string {
     case "NotAllowedError":
     case "SecurityError":
       return (
-        "Mikrofon gesperrt: WAMO darf das Mikrofon nicht nutzen. In Windows unter Einstellungen > Datenschutz und " +
+        "Mikrofon gesperrt: W.A.I.S. darf das Mikrofon nicht nutzen. In Windows unter Einstellungen > Datenschutz und " +
         "Sicherheit > Mikrofon den Zugriff für Desktop-Apps erlauben (im Browser das Mikrofon für diese Seite " +
         "freigeben), dann das Gespräch neu starten."
       );

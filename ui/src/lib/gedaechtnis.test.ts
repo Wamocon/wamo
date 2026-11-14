@@ -20,13 +20,13 @@ import {
 
 const ID1 = "5b3f1c2d-8e7a-4b6c-9d0e-1f2a3b4c5d6e";
 const ID2 = "9d8c7b6a-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
-const roh = (ueber: Record<string, unknown> = {}) => ({ id: ID1, art: "fact", text: "WAMO kann Fernseher schalten.", autor: "Anna", angelegt: "2026-11-12T06:58:48Z", ...ueber });
+const roh = (ueber: Record<string, unknown> = {}) => ({ id: ID1, art: "fact", text: "W.A.I.S. kann Fernseher schalten.", autor: "Anna", angelegt: "2026-11-12T06:58:48Z", ...ueber });
 
 test("gültige Antwort wird übernommen", () => {
   const liste = pruefeVorschlaege({ vorschlaege: [roh(), roh({ id: ID2, art: "lesson", autor: "Niko" })], anzahl: 2 });
   assert.deepEqual(liste, [
-    { id: ID1, art: "fact", text: "WAMO kann Fernseher schalten.", autor: "Anna", angelegt: "2026-11-12T06:58:48Z" },
-    { id: ID2, art: "lesson", text: "WAMO kann Fernseher schalten.", autor: "Niko", angelegt: "2026-11-12T06:58:48Z" },
+    { id: ID1, art: "fact", text: "W.A.I.S. kann Fernseher schalten.", autor: "Anna", angelegt: "2026-11-12T06:58:48Z" },
+    { id: ID2, art: "lesson", text: "W.A.I.S. kann Fernseher schalten.", autor: "Niko", angelegt: "2026-11-12T06:58:48Z" },
   ]);
 });
 

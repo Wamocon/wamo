@@ -162,7 +162,7 @@ function TeilenFormular({ ziel, onFertig }: { ziel: TeilZiel; onFertig: () => vo
         disabled={laeuft}
       />
       <p className="teilen-hinweis">
-        Die Person sieht Titel und Inhalt. Fragt sie WAMO danach, gehen Auszüge in ihrem Gespräch an das Sprachmodell.
+        Die Person sieht Titel und Inhalt. Fragt sie W.A.I.S. danach, gehen Auszüge in ihrem Gespräch an das Sprachmodell.
       </p>
       <div className="teilen-aktionen">
         <button type="submit" className="btn-secondary btn-small" disabled={!empfaenger || laeuft || !profile}>

@@ -6,6 +6,7 @@ import { canvasIndex, canvasWunsch } from "@/lib/canvasWahl";
 import { KOPIERT_MS, kopierChipText, type KopierStatus } from "@/lib/kopieren";
 import { istUuid } from "@/lib/teilenHilfe";
 import { useSelect } from "@/lib/store";
+import { useThema } from "@/lib/useThema";
 import { wamo } from "@/lib/wamo";
 
 /** Was der Voice-Core per canvas_zeigen schickt (siehe voice-core/tools.py). */
@@ -49,7 +50,7 @@ export const CanvasBereich = memo(function CanvasBereich() {
   return (
     <div className="canvas-empty">
       <p className="eyebrow">Canvas</p>
-      <h2>Was WAMO dir hier zeigt</h2>
+      <h2>Was W.A.I.S. dir hier zeigt</h2>
       <p>Ergebnisse, die man sehen muss, landen auf dieser Fläche statt in der Sprache.</p>
       <ul className="kinds">
         {BEISPIELE.filter((k) => !k.nurAdmin || !mitglied).map((k) => (
@@ -243,6 +244,7 @@ const MERMAID_DUNKEL = {
  */
 function MermaidView({ source, title, geteiltVon }: { source: string; title: string; geteiltVon?: string | null }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, "");
+  const thema = useThema(); // ein Wechsel Hell oder Dunkel zeichnet das Diagramm mit den passenden Farben neu
   const [error, setError] = useState<string | null>(null);
   const [freigegeben, setFreigegeben] = useState(geteiltVon === undefined);
   const [bild, setBild] = useState<{ url: string; breite: number | null } | null>(null);
@@ -254,8 +256,7 @@ function MermaidView({ source, title, geteiltVon }: { source: string; title: str
     (async () => {
       try {
         const mermaid = (await import("mermaid")).default;
-        const theme = document.documentElement.dataset.theme;
-        const dark = theme ? theme === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+        const dark = thema === "dunkel";
         // strict: Mermaid säubert das SVG selbst (kein HTML/Script aus dem Diagrammtext).
         mermaid.initialize({
           startOnLoad: false,
@@ -281,7 +282,7 @@ function MermaidView({ source, title, geteiltVon }: { source: string; title: str
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [source, id, freigegeben]);
+  }, [source, id, freigegeben, thema]);
 
   if (!freigegeben) {
     return (

@@ -25,6 +25,7 @@ import { useSelect } from "@/lib/store";
 import type { WamoAktionen } from "@/lib/useWamo";
 import { wamo } from "@/lib/wamo";
 import { DarstellungAbschnitt, InfoAbschnitt, KontoAbschnitt, SpracheAbschnitt } from "./Abschnitte";
+import { StimmeAbschnitt } from "./StimmeAbschnitt";
 import { Block } from "./Block";
 import { Fernzugriff } from "./Fernzugriff";
 import { GeraeteAbschnitt } from "./Geraete";
@@ -124,7 +125,7 @@ export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props)
   // Browserleiste und Screenreader: wo bin ich?
   useEffect(() => {
     const vorher = document.title;
-    document.title = `${titel ? `${titel}, ` : ""}Einstellungen | WAMO`;
+    document.title = `${titel ? `${titel}, ` : ""}Einstellungen | W.A.I.S.`;
     return () => {
       document.title = vorher;
     };
@@ -222,6 +223,7 @@ export function Einstellungen({ aktionen, email, onAbmelden, meldungen }: Props)
                 {wirksam === "sprache" && (
                   <SpracheAbschnitt mikrofone={aktionen.mikrofone} mikrofonWaehlen={aktionen.mikrofonWaehlen} nurMikrofon={labor} />
                 )}
+                {wirksam === "stimme" && <StimmeAbschnitt aktionen={aktionen.stimmabdruck} />}
                 {wirksam === "gedaechtnis" && <GedaechtnisAbschnitt />}
                 {wirksam === "darstellung" && <DarstellungAbschnitt />}
                 {wirksam === "geraete" && <GeraeteAbschnitt onPcSteuerung={aktionen.pcSteuerung} />}

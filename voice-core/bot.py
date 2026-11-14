@@ -26,7 +26,17 @@ Nachrichten an die Oberfläche (RTVI-Servernachrichten, zusätzlich zu canvas, a
   {"type": "mikrofon", "zustand": "still"|"fehlt"|"ok", "sekunden"}
                                                                    10 s nur digitale Stille vom Mikrofon, "fehlt": 5 s gar
                                                                    keine Audiopakete, "ok": wieder Ton (audio_monitor.py)
+  {"type": "stimme", "status": "aus"|"fehlt"|"laedt"|"kaputt"|"bereit", "modus"}
+  {"type": "stimme", "ergebnis": "eigen"|"fremd"|"unklar", "wert", "modus", "ignoriert"?}
+                                                                   Stimmprüfung (stimme_*.py): Stand und Ergebnis je Äußerung;
+                                                                   "ignoriert": eine sicher fremde Äußerung ging nicht ans Modell
+  {"type": "stimmabdruck", "status": "start"|"aufnahme"|"rechnet"|"fertig"|"fehler"|"abgebrochen"|"geloescht",
+   "sekunden"?, "ziel"?, "text"?}                                  Einlernen des Stimmabdrucks (nie in Laborsitzungen)
+  {"type": "stimmabdruck_einwilligung", "version", "text"}         Text der Einwilligung beim Verbinden (stimme_einwilligung.py)
 Nachrichten von der Oberfläche:
+  {"type": "stimmabdruck", "data": {"aktion": "start", "einwilligung": "stimme-1"} | {"aktion": "abbrechen"} | {"aktion": "loeschen"}}
+                                          Stimmabdruck einlernen (nur mit der aktuellen Version der Einwilligung), abbrechen oder
+                                          löschen (stimme_sitzung.py; nie für Laborprofile)
   {"type": "vergessen", "data": {"id"}}   eigenen Eintrag deaktivieren (memory.forget)
   {"type": "freigabe", "data": {"job": "pc", "id", "entscheidung"}}
                                           Freigabe einer kritischen PC-Aktion (pc_freigaben.py; nur admin, PC-Steuerung
@@ -113,6 +123,7 @@ from abnahme import llm_beurteiler
 from activity import ActivityReporter
 from ausgaben_kuerzen import Ausgaben, AusgabenKuerzer, register_nachladen
 from audio_monitor import AudioInputMonitor, SpeakerTracker
+import aussprache
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
 import entwicklung_betrieb
 from dev_agent import DevAgent, abnahme_befehle_im_betrieb, entwicklung_enabled, entwicklung_problem
@@ -142,6 +153,7 @@ from turn_wache import TurnWache
 from vorgaenge import Vorgaenge, datenbank_ablage
 from werkzeug_wache import AbbruchHinweis, DoppelWache, abbruch_hinweis_an, umhuellen, werkzeug_doppelt_an
 from wartesatz import Wartesatz, wartesatz_an, wartesatz_modell_an, wartesatz_modell_secs, wartesatz_secs
+from fuellwoerter import FuellwortSpieler, bank_fuer, fuellwoerter_an, fuellwort_secs, mhm_an, soniox_sprechen
 from pc_host import (
     buero,
     call_host_tool,
@@ -158,7 +170,7 @@ import bild_fern
 from bildstrom import NICHT_ERLAUBT as BILD_NICHT_ERLAUBT, Bildstrom
 import labor_werkzeuge
 from pc_freigaben import PcFreigaben
-from persona import build_system_prompt
+from persona import NAME_ANZEIGE, NAME_FRUEHER, NAME_KURZ, build_system_prompt
 from screen import PC_OFF, foto as screen_foto, register_screen_tools
 from sitzungen import Sitzung, Sitzungen
 from soft_interrupt import (
@@ -174,7 +186,11 @@ from soft_interrupt import (
     stopp_grenze_an,
 )
 from soniox_tts import LazySonioxTTSService, stimme_einstellung
+from stimme_gate import schemas_absichern, tippen_beobachten, werkzeuge_absichern
+from stimme_sitzung import SPRECHER_UNSICHER, StimmSitzung, nachricht_aus
+from stimme_waechter import nur_endgueltig
 from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
+from wiedergabe import WiedergabeStart, halt_fuer, innehalten_max_secs, innehalten_weiter_secs
 
 load_dotenv(override=True)
 
@@ -208,26 +224,29 @@ SONIOX_TTS_URL = os.getenv("SONIOX_TTS_URL") or "wss://tts-rt.eu.soniox.com/tts-
 SONIOX_DEFAULT_VOICE = "Bryce"  # Standardstimme von Pipecat 1.12 (SonioxTTSService)
 SONIOX_VOICE = os.getenv("SONIOX_VOICE") or SONIOX_DEFAULT_VOICE
 # Fachbegriffe für die Spracherkennung. Bewusst nur "terms", kein "general": ein allgemeiner
-# Kontext drückte seine Wörter in fremde Sätze. .env: SONIOX_TERMS (kommagetrennt), leer = aus.
+# Kontext drückte seine Wörter in fremde Sätze. .env: SONIOX_TERMS (kommagetrennt), leer = aus. Der Name steht in beiden
+# Schreibweisen darin (persona.py), der frühere Name bleibt, solange ihn noch jemand sagt.
 DEFAULT_STT_TERMS = (
-    "WAMO, WAMOCON, Eschborn, öffne mal, VS Code, Visual Studio Code, Claude Code, Chrome, Explorer, "
-    "Canvas, Dark Mode, SQL-Statement, Supabase, Vercel, GitHub"
+    f"{NAME_KURZ}, {NAME_ANZEIGE}, {NAME_FRUEHER}, WAMOCON, Eschborn, öffne mal, VS Code, Visual Studio Code, Claude Code, "
+    "Chrome, Explorer, Canvas, Dark Mode, SQL-Statement, Supabase, Vercel, GitHub"
 )
 STT_TERMS = [t.strip() for t in os.getenv("SONIOX_TERMS", DEFAULT_STT_TERMS).split(",") if t.strip()]
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL_FAST") or "claude-haiku-5-5"
-# Wörter ohne Rückmeldelaute, ab denen WAMO unterbrochen wird ("Doch" reicht, "mhm" nicht)
-MIN_INTERRUPT_WORDS = int(os.getenv("MIN_INTERRUPT_WORDS") or 1)
+# Wörter ohne Rückmeldelaute, ab denen WAMO unterbrochen wird ("mhm" nie). 2 seit 14.11.2026: Bruchstücke der Live-Erkennung
+# (" Al", " Du") brachen sonst an der falschen Stelle ab; Stoppwörter wie "stopp" oder "warte" unterbrechen weiter sofort. Ein einzelnes
+# echtes Wort lässt WAMO nur innehalten und danach weitersprechen (WAMO_INNEHALTEN, wiedergabe.py).
+MIN_INTERRUPT_WORDS = int(os.getenv("MIN_INTERRUPT_WORDS") or 2)
 # Lernen im laufenden Gespräch: nach so vielen neuen Sätzen der Person wertet Haiku den Abschnitt
 # aus; Neues landet sofort im System-Prompt.
 LEARN_EVERY_USER_TURNS = int(os.getenv("LEARN_EVERY_USER_TURNS") or 4)
 LEARN_OVERLAP = 4  # so viele frühere Zeilen als Kontext mitgeben
 SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS") or 60000)
 SUMMARY_TARGET_TOKENS = int(os.getenv("SUMMARY_TARGET_TOKENS") or 25000)
-DEFAULT_GREETING = "Hallo {name}, WAMO ist bereit."
-# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält (Standard von Pipecat 0,2 s).
-# 0,15 s spart 50 ms bis zum Transkript (gemessen am 21.10.2026: 308 gegen 356 ms) und trennt Sätze mit Pausen nicht
-# häufiger; Pipecat meldet einmal je Sitzung, dass der Wert vom Standard abweicht (Warnung im Log, harmlos).
-VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.15)
+# Geschrieben mit der Kurzform (so steht sie im Verlauf); die Stimme spricht sie über aussprache.py richtig aus
+DEFAULT_GREETING = f"Hallo {{name}}, {NAME_KURZ} ist bereit."
+# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält. Seit 14.11.2026 wieder der Standard
+# von Pipecat (0,2 s): 0,15 s sparte rund 50 ms bis zum Transkript, schnitt Sätze mit kurzen Denkpausen aber eher in Stücke.
+VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.2)
 # Was als Lebenszeichen einer Sitzung zählt: der Pipecat-Standard (Sprache) plus Text, Antworten des Modells und Werkzeuge. Ohne den Zusatz
 # bekam eine Sitzung ohne Sprache (stiller Start beim Tippen, nur Text) nie ein Lebenszeichen und wurde 300 Sekunden nach dem Start beendet, auch mitten
 # im Schreiben (Journal 12.11.2026: 08:49:34 und 08:55:08, jeweils trotz Antworten des Modells kurz davor). Test: test_bot_leerlauf.py
@@ -245,8 +264,8 @@ IDLE_FRAMES = (
     FunctionCallResultFrame,
 )
 # Hält Smart-Turn einen Satz für unvollständig, wartet WAMO so lange (Sekunden Stille) auf den Rest; danach entscheidet
-# Claude mit dem Satzende-Marker. Jeder unvollständige Befund kostete bis zu 0,85 s (früher 1,0 s).
-SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.5)
+# Claude mit dem Satzende-Marker. 0,6 s seit 14.11.2026 (vorher 0,5 s): etwas mehr Geduld bei Denkpausen mitten im Satz.
+SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.6)
 TURN_INCOMPLETE_SHORT_SECS = float(os.getenv("TURN_INCOMPLETE_SHORT_SECS") or 1.5)
 TURN_INCOMPLETE_LONG_SECS = float(os.getenv("TURN_INCOMPLETE_LONG_SECS") or 3.0)  # 8 s wirkten wie ein Hänger
 # Weiche Unterbrechung: nach einem Einwurf spricht WAMO den Satz zu Ende, höchstens aber das
@@ -268,7 +287,7 @@ MAX_SITZUNG_MIN = float(os.getenv("WAMO_MAX_SITZUNG_MIN") or 120)
 SPERR_PROBE_SECS = 10.0  # lokal: so oft fragt eine Sitzung bei gesperrtem Bildschirm nach dem Entsperren
 
 INTERRUPTED_NOTE = (
-    "[Hinweis für WAMO: Du wurdest gerade unterbrochen. Deine letzte Antwort endet dort, wo du "
+    "[Hinweis für W.A.I.S.: Du wurdest gerade unterbrochen. Deine letzte Antwort endet dort, wo du "
     "aufgehört hast. War der Einwurf nur ein Laut oder eine kurze Zustimmung ohne neue Frage, mach "
     "ohne Entschuldigung genau dort weiter. Sonst reagiere natürlich auf den Einwurf und knüpfe dann, "
     "falls noch relevant, an deinem letzten Gedanken an, statt von vorn zu beginnen.]"
@@ -501,7 +520,7 @@ class SessionGuard:
             return "Das Profil lässt sich nicht mehr prüfen." if self._failures >= self.max_failures else None
         self._failures = 0
         if profile is None or not labor.profil_aktiv(profile):  # Laborprofil: nur über labor_aktiv (labor.py)
-            return "Das WAMO-Profil ist nicht mehr aktiv."
+            return "Das W.A.I.S.-Profil ist nicht mehr aktiv."
         if grund := labor.aenderung(self.identity, profile):  # Art, Freischaltung oder Platz eines Laborprofils geändert
             return grund
         if profile.rolle != self.identity.rolle:
@@ -523,6 +542,8 @@ class Session:
 
     task: PipelineTask
     cleanup: Callable[[], Awaitable[None]]
+    stimme: StimmSitzung | None = None  # Stimmprüfung dieser Sitzung (stimme_sitzung.py); None für Laborprofile
+    turn: TurnState | None = None  # Zustand des laufenden Zuges (Färbung durch Fremdinhalte); für Tests
 
 
 def pausen_prompt_an(wert: str | None = None) -> bool:
@@ -570,8 +591,8 @@ def pause_prompts(name: str, neu: bool | None = None) -> tuple[str, str]:
 
 def summary_prompt(name: str) -> str:
     return (
-        f"Fasse das bisherige Gespräch zwischen {name} und WAMO auf Deutsch knapp zusammen: Themen, "
-        "Entscheidungen, offene Aufträge, Namen, Zahlen, Links und was WAMO am PC getan hat. "
+        f"Fasse das bisherige Gespräch zwischen {name} und W.A.I.S. auf Deutsch knapp zusammen: Themen, "
+        "Entscheidungen, offene Aufträge, Namen, Zahlen, Links und was W.A.I.S. am PC getan hat. "
         "Nichts erfinden, keine Wertungen."
     )
 
@@ -608,6 +629,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
                    "client_ready": False, "live": True, "cleaned": False, "guard": None,
                    "pc_weg": False, "pc_tools": False, "pc_waechter": None, "geraet_wache": None, "labor_wache": None,  # pc_weg: Hinweis im Prompt
+                   "stimme_laden": None,  # Hintergrundaufgabe: Abdruck laden (stimme_sitzung.laden_bis_bekannt)
                    "geraet_ok": geraet_zugang is None, "geraet_entzogen": False,  # Tunnel je Gerät: erst nach dem Namensabgleich, nie nach einem Entzug
                    "pc_name": None, "pc_belegt": False,
                    "pc_gesperrt": False, "sperr_probe": None}  # Bildschirm am PC gesperrt (Host: status=locked)
@@ -656,12 +678,20 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         await zugang.schliessen()  # ein bei der Prüfung gebauter Client darf nicht offen bleiben
         raise
 
+    # Stimmprüfung (stimme_sitzung.py): Abdruck, Prüfzustand, Prüfer und Wächter gehören dieser Sitzung, der Rechner dem Prozess. Laborprofile
+    # bekommen nie eine (None). Ab hier fragt jedes Werkzeug außer Uhrzeit, Websuche und Canvas vorher, ob zuletzt die eingelernte Stimme sprach
+    # oder die Person tippte; ohne Abdruck wird nichts geprüft und nichts gesperrt. Muss vor allen register_function stehen.
+    stimme = None if labor_sitzung else StimmSitzung.fuer(identity, memory, senden=lambda d: send(d), sagen=lambda t: stimme_sagen(t))
+    if stimme is not None:
+        werkzeuge_absichern(llm, stimme.gate)
+
     # Spracherkennung und Sprachausgabe je Profil (Zugang.stt/tts) oder für alle (WAMO_STT_ANBIETER/WAMO_TTS_ANBIETER):
     # Soniox oder im Haus über LiteLLM, mit Rückfall auf Soniox (sprache_anbieter.py)
     sprache = await sprach_wahl(zugang)
     # Ein Schlüssel im Gesagten wird vor allem anderen entfernt (schluessel_filter.py): Verlauf, Modell, Gedächtnis, Untertitel
     stt = absichern(haus_stt(sprache.stt, STT_TERMS) if sprache.stt.anbieter == "haus" else soniox_stt())
     tts = haus_tts(sprache.tts) if sprache.tts.anbieter == "haus" else soniox_tts()
+    aussprache.anhaengen(tts)  # Namen so, wie die Stimme sie richtig spricht; Verlauf und Untertitel behalten "Wais"
 
     transcript: list[tuple[str, str]] = []  # fürs Lernen
     # Fremdinhalte im laufenden Zug (Websuche, Bildschirm, PC, Entwicklungs-Ergebnisse) merken: kein
@@ -735,11 +765,20 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     learn_task: asyncio.Task | None = None
     pause_short, pause_long = pause_prompts(identity.name)
 
+    # Innehalten statt Abbrechen (wiedergabe.py, WAMO_INNEHALTEN): ein einzelnes Wort der Person lässt WAMO an der Wortgrenze innehalten,
+    # kommt nichts nach, spricht WAMO dort weiter. Der Halt hängt am Tonausgang dieser Sitzung (je Sitzung einer). Die Sprachausgabe im
+    # Haus liefert ganze Sätze ohne Wortzeiten: dort gibt es keinen Halt, es gilt die Zeitgrenze des Gates wie bisher.
+    halt = halt_fuer(transport.output(), haus=sprache.tts.anbieter == "haus")
+    # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
+    wache = TurnWache()
     soft_gate = SoftInterruptGate(
         max_words=SOFT_INTERRUPT_MAX_WORDS,
         playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
         grenze=stopp_grenze_an(),  # Stopp an der nächsten hörbaren Wortgrenze (WAMO_STOPP_GRENZE)
         ducken=ducken_an(),  # Stimme vorsorglich leiser, sobald die Person spricht (WAMO_DUCKEN)
+        halt=halt,
+        weiter_secs=innehalten_weiter_secs(),  # WAMO_INNEHALTEN_WEITER_SECS: so viel Stille, dann geht es an derselben Stelle weiter
+        max_pause_secs=innehalten_max_secs(),  # WAMO_INNEHALTEN_MAX_SECS: so lange hält WAMO höchstens inne
     )
 
     user_agg, assistant_agg = LLMContextAggregatorPair(
@@ -773,6 +812,11 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                         echo_modus=echo_filter_an() and echo_modus_an(),  # bei erkennbarem Echo unterbricht nur ein Stoppwort
                         # Rückmeldelaut bei laufendem Werkzeug startet keinen Zug (WAMO_RUECKMELDUNG_WERKZEUG)
                         werkzeug_laeuft=soft_gate.werkzeug_laeuft if rueckmeldung_werkzeug_an() else None,
+                        on_partial=soft_gate.ansatz if halt else None,  # ein Wort: innehalten statt ignorieren (WAMO_INNEHALTEN)
+                        fragt=soft_gate.fragt,  # "Ja" während einer Frage von WAMO ist die Antwort, kein Zuhören
+                        # Stimmprüfung streng: arbeiten Werkzeug oder Modell, startet erst das endgültige Transkript den Zug (stimme_waechter.py)
+                        nur_endgueltig=nur_endgueltig(stimme.waechter, soft_gate.werkzeug_laeuft, wache.modell_beschaeftigt)
+                        if stimme else None,
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.
@@ -801,8 +845,6 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     )
 
     aktivitaet = ActivityReporter()  # Rückruf für Werkzeugergebnisse folgt unten (pc_ergebnis)
-    # Gegen doppelte Antworten: dieselbe Lage geht nur einmal an das Modell (turn_wache.py)
-    wache = TurnWache()
     # Doppelte Aufrufe im selben Zug und abgebrochene Werkzeuge (werkzeug_wache.py)
     doppel = DoppelWache(turn_nr=lambda: turn.turn_nr) if werkzeug_doppelt_an() else None
 
@@ -823,16 +865,34 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             logger.warning("Ja-Wächter: Freigabe-Zustand nicht lesbar, es gilt als offen")
             return True
 
+    # Füllwörter (fuellwoerter.py): nur mit der Soniox-Stimme, denn die Aufnahmen müssen klingen wie die Antwort.
+    # Eine Bank je Stimme und Einstellung für alle Sitzungen des Kerns, ein Spieler je Sitzung.
+    fuellwoerter: list = []
+    if (fuellwoerter_an() or mhm_an()) and sprache.tts.anbieter != "haus":
+        fuellwort_bank = bank_fuer(SONIOX_VOICE, stimme_einstellung())
+
+        async def fuellwort_sprechen(text: str) -> bytes:
+            return await soniox_sprechen(os.environ["SONIOX_API_KEY"], SONIOX_TTS_URL, SONIOX_VOICE, stimme_einstellung(), text)
+
+        fuellwoerter = [
+            FuellwortSpieler(fuellwort_bank, werkzeug=fuellwoerter_an(), nach_secs=fuellwort_secs(), mhm=mhm_an(),
+                             sprechen=fuellwort_sprechen)
+        ]
+
     pipeline = Pipeline(
         [
             transport.input(),
             AudioInputMonitor(),  # Diagnose: Lücken und Pegel des Browser-Mikrofons, Stille-Wächter
+            *([stimme.pruefer] if stimme else []),  # Stimmabdruck: spricht die eingelernte Stimme? Einlernen auf Klick (stimme_pruefer.py)
             stt,
             SchluesselFilter(),  # zweite Stufe: auch Text, der nicht aus der Spracherkennung kommt
             SpeakerTracker(),  # wer spricht -> Farbe im Stimmen-Rand
+            *([stimme.waechter] if stimme else []),  # sicher fremde Äußerungen gehen nicht ans Modell (stimme_waechter.py)
             user_agg,
             soft_gate,
-            *([JaWaechter(offen=freigabe_offen, gefaerbt=lambda: turn.tainted)] if ja_waechter_an() else []),  # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER)
+            # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER); gefärbt auch, wenn das Ja nicht sicher die Stimme der Person war
+            *([JaWaechter(offen=freigabe_offen, gefaerbt=lambda: turn.tainted or (stimme is not None and stimme.nicht_sicher_eigen()))]
+              if ja_waechter_an() else []),
             *([AbbruchHinweis(name="AbbruchHinweisVorne")] if abbruch_hinweis_an() else []),  # CANCELLED im Verlauf erklären (WAMO_ABBRUCH_HINWEIS)
             wache.vorne(),
             llm,
@@ -843,9 +903,11 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
               if (wartesatz_an() or wartesatz_modell_an()) else []),  # langer Werkzeugaufruf oder langsames Modell: kurzer Satz
             aktivitaet,  # Werkzeugaufrufe live an die Oberfläche (Zeitleiste)
             *([AusgabenKuerzer(ausgaben)] if ausgaben.schwelle > 0 else []),  # lange Ergebnisse kürzen, hinter der Zeitleiste (sie sieht das Original)
+            *fuellwoerter,  # "Moment." statt Stille, wenn ein Werkzeug läuft (fuellwoerter.py, WAMO_FUELLWOERTER)
             tts,
+            *([WiedergabeStart(halt)] if halt else []),  # ab hier zählen die Wort-Zeitstempel (erster Ton der Antwort am Ausgang)
             transport.output(),
-            PlaybackTracker(soft_gate),
+            PlaybackTracker(soft_gate, halt),  # meldet Wörter, wenn ihr Ton wirklich hinausgeht (mit Halt), sonst nach dem Zeitstempel
             assistant_agg,
         ]
     )
@@ -865,6 +927,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     )
     if dev:
         dev.attach(task)
+    if stimme is not None:
+        tippen_beobachten(task.rtvi, stimme.gate)  # getippter Text aus der Oberfläche zählt wie die eigene Stimme
     try:
         directory = ProfileDirectory(shared_database())
         profiles = directory if directory.configured else None
@@ -887,6 +951,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                                    modell_modus=modus_wirksam(zugang), modell_quelle=zugang.quelle,
                                    modell_hinweis=llm_wahl.grund,
                                    entwicklung_grund=entwicklung_betrieb.anzeige_grund(is_admin, ent_grund)))
+
+    async def stimme_sagen(text: str) -> None:
+        """WAMO spricht einen Satz der Stimmprüfung (Anleitung beim Einlernen, Fehler), ohne das Modell zu fragen."""
+        await task.queue_frames([TTSSpeakFrame(text)])
 
     async def ansage(text: str) -> None:
         """Kurze Meldung im Gespräch (Live-Bild an oder aus): wird gesprochen, das Modell erfährt es ohne zu antworten."""
@@ -989,6 +1057,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         buerogeraete = Buerogeraete(identity, memory, fremdinhalt=turn.taint, ist_fremd=lambda: turn.tainted)
         buerogeraete.anbinden(senden=send, melden=melde_llm)
         geraete_schemas = await buerogeraete.schemas()
+        if geraete_schemas and stimme is not None:  # auch diese Handler stehen im Schema: durch das Gate der Stimmprüfung
+            geraete_schemas = schemas_absichern(geraete_schemas, stimme.gate)
         if geraete_schemas:
             standard_tools += geraete_schemas
             context.set_tools(ToolsSchema(standard_tools=standard_tools))
@@ -1046,6 +1116,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         latenz = None
         if pc:
             pc_schemas = gate_pc_tools(list(pc.standard_tools), pc_allowed, turn.taint, doppel)
+            if stimme is not None:  # Handler im Schema registriert Pipecat selbst: auch sie fragen vorher das Gate der Stimmprüfung
+                pc_schemas = schemas_absichern(pc_schemas, stimme.gate)
             context.set_tools(ToolsSchema(standard_tools=[*standard_tools, *pc_schemas, *screen_schemas]))
             state["pc_tools"] = True
             started = time.monotonic()
@@ -1077,7 +1149,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 await pc_client.close()
         with contextlib.suppress(Exception):
             await set_pc("getrennt")
-            await melde_llm(f"Systemhinweis, bitte kurz und ruhig weitergeben: {grund} WAMO kann den Laptop jetzt nicht mehr bedienen.")
+            await melde_llm(f"Systemhinweis, bitte kurz und ruhig weitergeben: {grund} {NAME_KURZ} kann den Laptop jetzt nicht mehr "
+                            "bedienen.")
 
     async def pc_wechsel(erreichbar: bool, latenz_ms: int | None) -> None:
         """Tunnel weg oder zurück (pc_tunnel.TunnelHost.ueberwache); Werkzeuge beim ersten Erfolg anhängen."""
@@ -1120,6 +1193,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         await send(profil_message(identity))
         await send_betrieb()
         vorgaenge.erneut_senden()  # die Oberfläche (wieder) verbunden: alle bekannten Vorgänge noch einmal, ohne zu warten
+        if stimme is not None:
+            await stimme.client_bereit()  # Stand der Stimmprüfung und Text der Einwilligung
+        else:
+            await send(nachricht_aus())  # Labor: es gibt keine Stimmprüfung, die Bedienelemente bleiben weg
 
     @task.rtvi.event_handler("on_client_message")
     async def on_client_message(_rtvi, msg):
@@ -1171,6 +1248,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             # Labor-Freigaben (labor_freigaben.py) gibt es nur in einer Laborsitzung, dort gehen sie oben über labor_sitzung.client_nachricht an
             # labor_werkz.entscheiden. Hier, in jeder anderen Sitzung, auch bei einem Admin, ist der Klick ohne Wirkung.
             logger.warning("Labor-Freigabe ohne Laborsitzung abgewiesen")
+        elif msg.type == "stimmabdruck" and stimme is not None:
+            # Einlernen, abbrechen, löschen (stimme_sitzung.py): nur per Klick in der angemeldeten Oberfläche, nie per Sprache, nie im Labor
+            await stimme.nachricht(data)
         elif msg.type == "modellzugang":
             # Eigener Claude-Schlüssel: hinterlegen, ersetzen, löschen, Stand (gilt ab der nächsten Sitzung).
             # Der Inhalt dieser Nachricht wird nie geloggt und nie zurückgeschickt.
@@ -1209,12 +1289,22 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     @user_agg.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(_agg, _strategy, message):
+        if not message.content.strip():
+            return  # leer, etwa eine sicher fremde Stimme (stimme_waechter.py): kein Zug, kein Eintrag im Verlauf und im Gedächtnis
+        # Eine Äußerung, die nicht sicher von der Person stammt (Profil mit Abdruck, Stimme nicht sicher erkannt), färbt den Zug wie
+        # Fremdinhalte: kein Lernen daraus, kein Hinweis des Ja-Wächters, im Protokoll mit Markierung (stimme_gate.nicht_sicher_eigen).
+        unsicher = stimme is not None and stimme.nicht_sicher_eigen()
         transcript.append(("user", message.content))
         turn.new_user_turn(message.content)
+        if unsicher:
+            turn.taint()
         new_user_turns = sum(1 for role, _ in transcript[learned_upto:] if role == "user")
         if new_user_turns >= LEARN_EVERY_USER_TURNS and not (learn_task and not learn_task.done()):
             start_learning(live=True)
-        await memory.log_turn(role="user", content=message.content)
+        if unsicher:
+            await memory.log_turn(role="user", content=message.content, speaker_label=SPRECHER_UNSICHER)
+        else:
+            await memory.log_turn(role="user", content=message.content)
 
     async def announce(saved: list[Gemerkt]) -> None:
         for entry in saved:
@@ -1255,6 +1345,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         if greeting:
             await task.queue_frames([TTSSpeakFrame(greeting)])
         _keep(asyncio.create_task(cache_vorwaermen()))  # die erste Frage soll einen warmen Prompt-Cache finden
+        if stimme is not None and state["stimme_laden"] is None and state["live"]:
+            # Abdruck laden, bei unbekanntem Stand mit wachsender Pause erneut: das Gespräch wartet nicht
+            state["stimme_laden"] = _keep(asyncio.create_task(stimme.laden_bis_bekannt()))
         # Sitzung erst nach der Begrüßung anlegen (der Insert kostete vor dem ersten Ton Zeit)
         await memory.start_session(channel=os.getenv("WAMO_CHANNEL") or "web")
         # Profil regelmäßig neu prüfen und Höchstdauer einhalten (M5)
@@ -1320,7 +1413,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         guard_task = state["guard"]
         if guard_task is not None and guard_task is not asyncio.current_task():
             guard_task.cancel()
-        for name in ("pc_waechter", "sperr_probe", "geraet_wache", "labor_wache"):
+        for name in ("pc_waechter", "sperr_probe", "geraet_wache", "labor_wache", "stimme_laden"):
             hintergrund = state[name]
             if hintergrund is not None and hintergrund is not asyncio.current_task():
                 hintergrund.cancel()
@@ -1369,7 +1462,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def on_pipeline_finished(_task, _frame):
         await cleanup()
 
-    return Session(task=task, cleanup=cleanup)
+    return Session(task=task, cleanup=cleanup, stimme=stimme, turn=turn)
 
 
 async def run_bot(

@@ -29,9 +29,9 @@ export function modusErklaerung(modus: ModellModus, hatApiSchluessel: boolean): 
     );
   }
   return hatApiSchluessel
-    ? "WAMO wählt für jede Aufgabe das beste erlaubte Modell: im Gespräch Claude Haiku mit deinem Schlüssel, andere " +
+    ? "W.A.I.S. wählt für jede Aufgabe das beste erlaubte Modell: im Gespräch Claude Haiku mit deinem Schlüssel, andere " +
         "Aufgaben bevorzugt im Haus."
-    : "WAMO wählt für jede Aufgabe das beste Modell. Ohne eigenen API-Schlüssel sind das die Hausmodelle.";
+    : "W.A.I.S. wählt für jede Aufgabe das beste Modell. Ohne eigenen API-Schlüssel sind das die Hausmodelle.";
 }
 
 /**

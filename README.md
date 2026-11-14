@@ -1,8 +1,20 @@
-# WAMO
+# W.A.I.S.
 
-Sprachassistent der WAMOCON GmbH: Livegespräch mit natürlichen Unterbrechungen, Oberfläche im WMC-Design,
+W.A.I.S. (WAMOCON’s Artificial Intelligence System, deutsch „WAMOCONs künstliches intelligentes System“, kurz „Wais“, gesprochen wie das englische „ways“) ist der Sprachassistent der WAMOCON GmbH: Livegespräch mit natürlichen Unterbrechungen, Oberfläche im WMC-Design,
 Werkzeuge für den Windows-PC, Entwicklungsaufträge mit ECC und REA, mehrere Nutzerprofile mit persönlichem und
 gemeinsamem Gedächtnis.
+
+**Name.** Geschrieben wird der Assistent überall, wo Menschen ihn lesen, als „W.A.I.S.“ (mit Schlusspunkt). In gesprochenen
+Antworten, Ansagen und im Verlauf heißt er kurz „Wais“; so verlangt es die Persona, denn „W.A.I.S.“ läse die Stimme als einzelne
+Buchstaben. Die deutsche Stimme liest „Wais“ allerdings wie „weiß“. Deshalb schreibt `voice-core/aussprache.py` den Namen nur für
+die Sprachausgabe um: „Wais“ und „W.A.I.S.“ werden „Ways“ (so trifft die Stimme die Aussprache, Hörprobe vom 14.11.2026),
+„WAMOCON’s“ wird „Wamokons“, und den buchstabierten Namen („W, A, I, S“, auch „W-A-I-S“, „W. A. I. S.“ und „W A I S“)
+spricht die Stimme als „Weh Ej, Ei Es“ (gemischt deutsch und englisch, `NAME_BUCHSTABIERT_TTS`). Das hängt als Text-Transform am TTS-Dienst,
+Verlauf und Untertitel behalten „Wais“. Alle Schreibweisen stehen als Konstanten in `voice-core/persona.py` (`NAME_ANZEIGE`,
+`NAME_KURZ`, `NAME_LANG`, `NAME_LANG_DE`, `NAME_TTS`, `NAME_BUCHSTABIERT`, `NAME_BUCHSTABIERT_TTS`), die der Oberfläche in `ui/src/lib/anzeigename.ts`. Die Spracherkennung
+kennt „Wais“ und „W.A.I.S.“ als Begriffe; als Anrede zählen auch „Waze“, „Ways“, „WAIS“, „Weis“ und der frühere Name „WAMO“.
+Der interne Name bleibt WAMO: Ordner, Pakete, Umgebungsvariablen `WAMO_*`, Dienste, Datenbankschemas, Dateinamen, Log-Meldungen
+und der Repo-Name heißen weiter `wamo`. In den technischen Abschnitten dieser Datei steht deshalb „WAMO“ für W.A.I.S.
 
 | Ordner | Was | Läuft auf |
 | --- | --- | --- |
@@ -187,6 +199,35 @@ scripts\wamo-desktop.cmd                  # startet Voice-Core, Oberfläche und 
 ```
 
 Beim ersten Anmelden richtet die Oberfläche die Authenticator-App ein (QR-Code). Ohne zweiten Faktor kein Zugang.
+
+### Oberfläche: Kommandozentrale, Darstellungen, Hellmodus und Schriften
+
+Die Hauptansicht ist eine Kommandozentrale im WMC-Corporate-Design (`ui/src/components/kommando/`). Links steht der Block „Gespräch“
+(Stimmlinie, Legende, letzte Zeilen von Person und W.A.I.S.) mit den Karten Gedächtnis, geteilte Arbeit und Einstellungen, in der Mitte der
+Kern als Lichtkugel in HUD-Ringen mit Zustandsschild, Untertiteln und Eingabepille, rechts die Reiter Aufträge, Vorgänge, Erledigt und
+Büro. Neben dem Kern zeigt die Aufgabenanzeige den laufenden Auftrag mit Schritten und Fortschritt, solange W.A.I.S. handelt. Der Verlauf ist
+eine Schublade, die Einstellungen sind eine zweite Ansicht derselben Seite (Hash `#einstellungen`).
+
+- **Darstellungen:** Normal, Fokus, Zentrale und Nacht (Umschalter über dem Kern, auch in den Einstellungen). Nacht erzwingt dunkel.
+- **Hellmodus:** Dunkel ist der Standard, Hell wählbar (Sonne und Mond in der Kopfzeile und Block „Helligkeit“ in den Einstellungen,
+  Wahl je Gerät im `localStorage`). Beide Themen sind Rollenvariablen in `ui/src/app/globals.css` (`:root` und
+  `:root[data-theme="light"]`), nirgends stehen feste Farben in Komponenten.
+- **Farben:** WMC-Rot `#F40E0E` als Hauptfarbe für Flächen, Linien, Glut und große Schrift; kleine rote Schrift nimmt `--core-schrift`
+  (im Hellmodus dunkler). Dazu Grautöne, kein Blau. Bedienelemente (Knöpfe, Felder, Schalter, Chips) haben mit `--steuer-rand` einen
+  Rand mit mindestens 3:1, Glas- und Kartenkanten (`--kante`) bleiben zart. Der Test `ui/src/lib/knopfKontrast.test.ts` prüft die
+  Kontraste beider Themen und durchsucht alle Stylesheets.
+- **Schriften** (lokal, OFL, `ui/src/app/fonts`): Unbounded für Wortmarke, Titel und große Zahlen, JetBrains Mono für Beschriftungen in
+  Versalien und Zähler, Atkinson Hyperlegible für Fließtext.
+- **Kopfzeile:** Die Statusmodule stehen nach Rangfolge in einer Zeile (Büro, Modelle, PC, Mikro, Stimme, dann PC-Steuerung,
+  Entwicklung, Netz). Was nicht passt, fällt als ganzes Modul weg, nie ein Wort; unter 1600 px zeigt der Menüknopf alle Module
+  (`kommando/kopfzeile.css`, `lib/modellKurz.ts`).
+- **Stimme:** Das Modul „Stimme“ zeigt Eigen, Fremd, Fremd · ignoriert (strenger Modus), Unklar oder Nicht eingelernt. Einlernen,
+  Neu einlernen und Löschen des Stimmabdrucks gibt es in den Einstellungen (Abschnitt Stimme) und in der Einlernansicht in der Mitte
+  (zuerst die Einwilligung). Für Laborkonten ist das alles unsichtbar.
+- **Stylesheets:** `globals.css` hält Variablen und Grundregeln, `kommando.css` den Aufbau der Kommandozentrale, `hud.css` das Aussehen
+  und die gemeinsamen Bausteine (Beschriftung, Abzeichen, Karte, Meldung, Knöpfe, Felder, Schalter), dazu je ein Teil-Stylesheet für
+  Kopfzeile, Freigaben, Canvas, Verlauf, Anmeldung, Teilen, Einstellungen und weitere.
+- **Vorschau ohne Server:** `NEXT_PUBLIC_WAMO_VORSCHAU=1 npx next dev` und die Modi im Kopf von `ui/src/components/Vorschau.tsx`.
 
 ### Komponententests (Oberfläche)
 
@@ -677,6 +718,26 @@ Der Router bleibt ausschließlich lesbar. Mögliche Schreibaktionen stehen nur a
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
   spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel). Mit
   `WAMO_STOPP_GRENZE` (Standard an) wählt der Kern die Wortgrenze selbst und schickt `leiser_stopp` mit `sofort`.
+- **Innehalten statt Abbrechen** (14.11.2026, `voice-core/wiedergabe.py` und `voice-core/soft_interrupt.py`, Schalter `WAMO_INNEHALTEN`,
+  Standard an, Messung steht aus). Ein einzelnes echtes Wort der Person, während WAMO spricht („Danke“, „Du“), lässt WAMO an der
+  nächsten Wortgrenze innehalten, wie ein Mensch, der merkt, dass der andere ansetzt. Kommt nach `WAMO_INNEHALTEN_WEITER_SECS`
+  (Standard 0,7) Sekunden Stille nichts nach, spricht WAMO genau dort weiter (frühestens 0,6 Sekunden nach dem Anhalten,
+  `MIN_HALT_SECS`); höchstens `WAMO_INNEHALTEN_MAX_SECS` (Standard 2,5) Sekunden lang hält es inne. Zwei echte Wörter oder ein Stoppwort („Stopp“, „Warte“, „Moment“, „Nein“, „Abbrechen“) brechen ab
+  wie bisher, Rückmeldelaute („mhm“, „ja genau“) halten WAMO nicht an, ein „Danke“ allein lässt nur innehalten. Ein einzelnes Wort,
+  das WAMO eben selbst gesprochen hat, und erkanntes Echo lassen WAMO nie innehalten. Technik: Je Sitzung hängt ein `AusgabeHalt`
+  in `write_audio_frame` des Tonausgangs (Pipecat 1.12 schreibt den Ton in Happen von 40 ms und wartet jeweils, bis die
+  WebRTC-Spur den Happen abgeholt hat, die Stelle heißt in der installierten Version genauso und verhält sich gleich). Der Halt
+  lässt den nächsten Happen warten (die Spur sendet Stille, nichts geht verloren) und macht an derselben Stelle weiter. Eine
+  Pause dauert nie länger als 4 s (`MAX_PAUSE_SECS`), denn Pipecat hielte ein Schreiben ab 10 s für eine tote Verbindung. Der
+  `PlaybackTracker` meldet ein Wort erst, wenn sein Ton wirklich hinausgeht (gemessen am geschriebenen Ton statt nach dem
+  Zeitstempel, der dem Ton bis zu 0,5 s vorauseilte). Zusammenspiel mit dem übrigen Sprachverhalten: Während eines Halts gibt es
+  weder `leiser_stopp` noch ein Dämpfen; eine schon gedämpfte Stimme nimmt das Gate beim Weitersprechen zurück (danach 8 s keine
+  neue Dämpfung). Bestätigt die Erkennung einen Einwurf, steht der Ton schon an der Wortgrenze: Der Halt hält an, der Abbruch folgt
+  sofort, ohne Ausblenden in der Oberfläche und ohne Wartezeit für den Vorsprung der Zeitstempel, und der Verlauf braucht kein
+  Kürzen auf das Gehörte. Ohne Halt (`WAMO_INNEHALTEN=aus`, Sprachausgabe im Haus mit ganzen Sätzen ohne Wortzeiten, ein Ausgang
+  ohne `write_audio_frame`) gilt alles wie vorher: Dämpfen, Stopp an der hörbaren Wortgrenze mit `leiser_stopp`, Zeitgrenze.
+  Offen: `SOFT_INTERRUPT_LAG_SECS` und die Dauer von „Verstummen“ sind nur ohne Halt gemessen, mit Halt zu messen (Messszenario
+  `ein_wort` für das Innehalten, `einwurf` für das Verstummen).
 - **Stimme und Sprachverhalten** (22.10.2026, Messweg `scripts/wamo_stimme.py` und `scripts/wamo-stimme-messen.cjs`,
   Befunde und Zahlen: Abschnitt „Stimme messen“ unten). Schalter im Kern, jeder einzeln abschaltbar:
   `WAMO_STOPP_GRENZE` (Stopp an der ersten noch erreichbaren hörbaren Wortgrenze, Satz- oder Kommaende bis 0,3 s später
@@ -762,7 +823,7 @@ Sitzung in derselben Sitzung ein Gespräch mit Stimme. Die Logik steht in `ui/sr
 - **Verdrängung (Grenze):** Der Kern führt je Profil eine Sitzung, eine neue löst die laufende ab (`WAMO_SITZUNG_EINZELN`). Die
   Oberfläche erfährt vor dem Start nichts von einer Sitzung auf einem anderen Gerät, das Tippen kann sie deshalb dort verdrängen. Der
   Schalter gehört nur auf ein Gerät je Person (Hinweis in der Einstellung). Erkennbar ist nur der umgekehrte Fall: Hat eine neuere Sitzung
-  die hier abgelöst, startet das Tippen nicht von selbst neu, sondern zeigt „WAMO läuft in einem anderen Fenster“ mit „Hier übernehmen“.
+  die hier abgelöst, startet das Tippen nicht von selbst neu, sondern zeigt „W.A.I.S. läuft in einem anderen Fenster“ mit „Hier übernehmen“.
   Eine Abfrage im Kern, die das vorher zeigt, gehört in KP-1C.
 - **Hinweis für Betreiber:** Eine still gestartete Sitzung ist für den Server eine ganz normale Sitzung. Bis zu ihrem Ende (spätestens 20
   Minuten nach der letzten Eingabe, bei PC-Steuerung oder offener Karte länger) zählt sie für die Ruheprüfung und für `ausleiten` in
@@ -774,7 +835,7 @@ Sitzung in derselben Sitzung ein Gespräch mit Stimme. Die Logik steht in `ui/sr
 Der Test spielt über ein virtuelles Mikrofon Sprechproben und Geräusche gegen einen lokalen Kern (Unterwegs) und nimmt
 WAMOs Ausgabestrom, das Mikrofon und die Lautstärke des Wiedergabeelements mit einer gemeinsamen Uhr auf. Die Person
 spricht immer dann, wenn WAMO in einem bestimmten Zustand ist („seit 5 s am Sprechen“). Szenarien: `fakten`, `kurz`,
-`lang`, `einwurf`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`, `werkzeug_mhm`. Voraussetzung: ein temporäres
+`lang`, `einwurf`, `ein_wort`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`, `werkzeug_mhm`. Voraussetzung: ein temporäres
 Testkonto (`scripts/wamo_nutzer.py anlegen`, danach `sperren`), `konto.json` im Messordner (nicht im Repo), Oberfläche aus
 einer Kopie gebaut (`NEXT_PUBLIC_VOICE_CORE_URL=http://127.0.0.1:7861`).
 
@@ -844,7 +905,7 @@ abschaltbar mit `aus`, `0`, `nein`, einschaltbar mit `an`, `1`, `ja`):
 | `WAMO_TTS_SATZLEERZEICHEN` | aus | Lauf brach beim Echo-Szenario ab (Browser geschlossen), Echo und Pause nicht gemessen; die übrigen Kennzahlen in der Streuung. Nutzen (Satzzeichen nicht vorlesen) nur in der Hörprobe prüfbar |
 | `WAMO_PERSONA_RUECKFRAGEN` | an seit 04.11.2026 (Entscheidung Niko, zu viele Rückfragen im Test; die frühere Messung war unvollständig) | Lauf unvollständig (Datenbankausfall, Einwurf, Backchannel, Echo, Pause fehlen); erster Ton nach Faktenfrage 2840 ms gegen 2316 bis 2617 ms in den anderen Läufen, bei 6 Fragen nicht entscheidbar |
 | `WAMO_PERSONA_PC_ORDNER` | aus | Sitzung mit den Faktenfragen fiel auf ein Hausmodell (Datenbank nicht erreichbar), nicht gemessen; erster Ton bei Websuche p95 5852 ms gegen 2441 bis 2791 ms (ein Ausreißer bei 4 Antworten) |
-| `WAMO_JA_WAECHTER` | aus | Lauf nicht mehr zustande gekommen, nicht gemessen. Außerdem erfasst kein Szenario das „Ja“ auf eine Rückfrage, nötig wäre ein eigenes Szenario samt Freigabe-Testfällen im Messweg |
+| `WAMO_JA_WAECHTER` | an | Seit 14.11.2026 an: Ein kurzes Ja auf eine echte Rückfrage führt den Auftrag aus, statt erneut zu fragen (`voice-core/ja_waechter.py`). Freigaben bleiben unberührt. Messung steht aus |
 
 Nicht gemessen und offen: `WAMO_JA_WAECHTER` (kein Lauf), Echo und Pause für `WAMO_TTS_SATZLEERZEICHEN`, Einwurf,
 Backchannel, Echo, Pause für `WAMO_PERSONA_RUECKFRAGEN`, Faktenfragen für `WAMO_PERSONA_PC_ORDNER`, die Kombination aller
@@ -886,6 +947,12 @@ Standard aus, bis gemessen) und eine Kennzahl:
 | --- | --- | --- |
 | `WAMO_PERSONA_GESPRAECH` | aus | Prompt-Block "Gesprächsführung": bei Selbstkorrektur gilt nur die letzte Fassung, Rückbezug statt Neufragen, nichts wiederholen, nur eine Frage, knappe Bestätigung. Eine Freigabe ersetzt das nie |
 | `WAMO_WARTESATZ_MODELL` | aus | Liefert das Modell nach einer Anfrage `WAMO_WARTESATZ_MODELL_SECS` (Standard 2,5) lang weder Zeichen noch Marker noch Werkzeugaufruf, sagt WAMO einmal "Einen Moment." (nicht im Verlauf). Ein unvollständiger Satz der Person (Marker ◐ und ○) löst nichts aus |
+| `WAMO_PERSONA_NATUERLICH` | an | Natürliche Sprechweise: Die meisten Antworten beginnen mit einer kurzen Reaktion als eigenem Satz ("Klar.", "Okay.", "Hm, gute Frage."), die sofort gesprochen wird, danach zusammenhängende Sätze, ab und zu ein "ähm", Abrunden mit einer eigenen Einschätzung, keine Anschlussfrage nach erledigten Aufträgen (`voice-core/persona.py`, gilt auch für Laborprofile). Mit `aus` gilt die frühere ruhige Sprechweise mit kurzen Sätzen |
+| `WAMO_FUELLWOERTER` | an | Startet das Modell ein Werkzeug, ohne vorher etwas zu sagen, und ist nach `WAMO_FUELLWORT_SECS` (Standard 0,4) noch kein Ton da, spielt WAMO ein vorab aufgenommenes "Moment." (`voice-core/fuellwoerter.py`). Läuft das Werkzeug weitere 6 Sekunden still, einmal "Dauert noch einen Moment.". Die Aufnahmen entstehen einmal je Stimme und Einstellung beim ersten Gesprächsstart und liegen danach im Cache-Ordner des Dienstes. Nur mit der Soniox-Stimme, Messung steht aus |
+| `WAMO_MHM` | aus | Hält das Modell den Satz der Person für unfertig, sagt WAMO selten ein kurzes "Mhm" (Ruhezeit 20 Sekunden, nie wenn die Person weiterspricht) |
+| `WAMO_INNEHALTEN` | an | Ein einzelnes echtes Wort der Person ("Danke", "Du"), während WAMO spricht, lässt WAMO an der nächsten Wortgrenze innehalten (der Tonausgang pausiert, `voice-core/wiedergabe.py`); kommt nichts nach, spricht WAMO dort weiter. Zwei Wörter oder ein Stoppwort brechen ab wie bisher, Rückmeldelaute nie. Mit `aus` bewirkt ein einzelnes Wort nichts, ein Einwurf stoppt wie vorher mit Ausblenden in der Oberfläche. Nicht bei der Sprachausgabe im Haus (ganze Sätze) |
+| `WAMO_INNEHALTEN_WEITER_SECS` | 0,7 | So viel Stille nach dem letzten Wort der Person, dann spricht WAMO an derselben Stelle weiter (0,2 bis 3) |
+| `WAMO_INNEHALTEN_MAX_SECS` | 2,5 | So lange hält WAMO höchstens inne, auch wenn die Person weiterspricht (0,5 bis 3,5; Pipecat verträgt keine Pause über 10 s, der Halt gibt spätestens nach 4 s frei) |
 
 Neue Kennzahl `folge_ton_ms` (Szenario `einwurf`): Zeit vom Ende des Einwurfs bis zum ersten Ton der Folgeantwort. Zu messen
 (Testprofil gesperrt, Messplan im Dokument, Abschnitt 5): Basis mit beiden Schaltern aus, je ein Lauf mit nur einem an, dazu
@@ -956,6 +1023,108 @@ Schwelle 3000`), nie Inhalte. Die Verbrauchsanzeige der Oberfläche zeigt das Ko
 Sprachmodell sieht. Der Host liest die Ausgabe weiterhin vollständig (bis zu seinen eigenen Kappungen), und die Kappung beim
 Lesen (Speicher und Laufzeit im Host) bleibt zurückgestellt. Ungeprüft sind der Lauf gegen echte Sitzungen und das Verhalten des
 Modells beim Nachladen; die Stichwortliste für Problemzeilen ist eine Annahme und lässt sich an echten Ausgaben schärfen.
+
+### Stimmabdruck (nur deine Stimme zählt)
+
+Jede Person kann W.A.I.S. ihre Stimme einlernen, damit W.A.I.S. nur noch diese Stimme hört und alle anderen Stimmen ignoriert. Es gilt je Profil
+und nur im Büro, nie im Testlabor (Laborprofile bekommen weder Einlernen noch Prüfung, die Nachricht `stimmabdruck` wird für sie von der
+Laborsperre abgewiesen). Code: `voice-core/stimme_*.py`, Tests: `voice-core/test_stimme_*.py`.
+
+**Bedienung.** Der Kern schickt beim Verbinden den Text der Einwilligung (Version `stimme-1`). In den Einstellungen der Oberfläche liest die
+Person ihn, bestätigt ihn und startet das Einlernen (Klick, nie per Sprache). W.A.I.S. sagt kurz, worum es geht, dann liest die Person den Text
+vor oder erzählt frei, bis der Balken voll ist (20 Sekunden reine Sprache). Währenddessen hört die Spracherkennung nur Stille, W.A.I.S. antwortet
+also nicht auf den Vorlesetext. Danach steht der Abdruck im Profil. **Löschen** in den Einstellungen entfernt den Abdruck
+vollständig (DSGVO Art. 17, zugleich Widerruf der Einwilligung). Wer nicht einlernt, hat keinen Nachteil: Ohne Abdruck prüft W.A.I.S. nichts und
+sperrt nichts. Einen vorhandenen Abdruck zu **ersetzen oder zu löschen** (und danach in derselben Sitzung neu einzulernen) geht in jedem Modus
+außer `aus` nur mit Nachweis: Die Person wurde gerade sicher an der Stimme erkannt, oder die Anmeldung mit zweitem Faktor ist jünger als
+10 Minuten (Zeitpunkt aus dem Token, `amr`). Sonst meldet die Oberfläche einen Fehler und bittet, sich neu anzumelden. Im Modus `aus` geht Löschen weiter immer.
+
+**Modi** (`WAMO_STIMME_PRUEFUNG`, wirkt nur für Profile mit Abdruck):
+
+| Modus | Wirkung |
+| --- | --- |
+| `streng` (Standard) | Eine **sicher fremde** Äußerung erreicht das Sprachmodell nicht: kein Zug, kein Eintrag im Verlauf und im Gedächtnis, eine Meldung an die Oberfläche (`ignoriert`). Unklare oder kurze Äußerungen gehen durch, aber alle Werkzeuge außer Uhrzeit, Websuche und Canvas sind gesperrt, solange die Stimme nicht sicher die eigene war (oder die Person nicht getippt hat). |
+| `beobachten` | Misst, zeigt das Ergebnis in der Oberfläche und schreibt es ins Log, sperrt und verwirft nichts. Geeignet zum Einstellen der Schwellen. |
+| `aus` | Keine Prüfung, kein Einlernen. Löschen eines vorhandenen Abdrucks geht trotzdem. Ohne Datenbank ist die Prüfung ebenfalls aus. |
+
+**Schwellen** (alle in `voice-core/.env.example`, am Server über `wamo-core-env`; leer heißt Standard, Unbrauchbares auch):
+
+| Schalter | Standard | Bedeutung |
+| --- | --- | --- |
+| `WAMO_STIMME_EIGEN_MIN` | 0,5 | Ab diesem Wert (Kosinus der Abdrücke, 0,35 bis 0,95) gilt eine Äußerung als die eigene Stimme |
+| `WAMO_STIMME_FREMD_MAX` | 0,3 | Bis zu diesem Wert (0 bis 0,8) gilt sie als sicher fremd; muss unter `EIGEN_MIN` liegen, sonst gelten beide Standardwerte |
+| `WAMO_STIMME_MIN_SECS` | 1 | So viel reine Sprache braucht eine Äußerung für ein Urteil (0,3 bis 10); kürzere ("Ja", "mach") erben das Vertrauen nur, wenn sie nach der eigenen Stimme klingen (Wert ab `EIGEN_MIN`), sonst gilt die Stimme als nicht sicher erkannt |
+| `WAMO_STIMME_KURZ_VERTRAUEN_SECS` | 15 | So lange läuft das Vertrauen höchstens weiter, wenn seit der letzten sicheren Erkennung nur kurze Äußerungen kamen (1 bis 120); eine sichere Erkennung oder getippter Text beginnt neu |
+| `WAMO_STIMME_VERTRAUEN_SECS` | 120 | So lange gilt "eigen" für kurze Folgesätze und Werkzeuge (10 bis 3600) |
+| `WAMO_STIMME_MODELL` | Cache-Ordner | Pfad der Modelldatei, Standard `XDG_CACHE_HOME/wamo/sprecher/nemo_en_titanet_large.onnx`, sonst `voice-core/.cache/sprecher/` |
+
+**Wie geprüft wird.** Das Modell (NeMo TitaNet-Large als ONNX über `sherpa-onnx`, 192 Werte je Stimme) läuft im Kern auf der CPU, einmal je
+Prozess für alle Sitzungen. Abdruck und Prüfzustand gehören je Sitzung zum Profil, einen Abdruck-Zwischenspeicher über Profile hinweg gibt
+es nicht. Der Ton der letzten 10 Sekunden liegt nur im Arbeitsspeicher; beim Sprechende (VAD) wird die Äußerung (höchstens die letzten 8
+Sekunden) berechnet und mit dem Abdruck verglichen. Das Ergebnis steht im Log (`Stimme: 0.78 bei 2.3 s -> eigen`, nie Inhalte). Zum Einlernen
+teilt der Kern die Sprache in Stücke von 3 Sekunden, nimmt den Mittelwert und verwirft die Aufnahme, wenn die Stücke zu unterschiedlich
+klingen (zu unruhig oder mehrere Stimmen). Gespeichert werden nur 192 Zahlen, nie eine Aufnahme.
+
+**Antwortzeit.** Die Prüfung beginnt beim Sprechende und läuft parallel zur Spracherkennung. Der Wächter hält nur das **endgültige** Transkript
+einer Äußerung an, bis das Urteil da ist, höchstens 1,5 Sekunden; die Zwischenstände laufen ungebremst durch, Unterbrechen bleibt so schnell
+wie vorher. Die Antwort für die eigene Stimme wird also höchstens um den Teil der Prüfzeit später, der über die Wartezeit der Spracherkennung
+hinausgeht (rund 250 ms für 8 Sekunden Sprache auf einem PC, am Server nicht gemessen). Läuft die Frist ab, gilt die Äußerung als unklar und
+geht durch. Der Wächter ersetzt das Transkript einer fremden Stimme durch ein Leerzeichen, der Zug endet dann leer (`on_user_turn_stopped`
+in `bot.py` kehrt zurück).
+
+**Meldungen an die Oberfläche** (Servernachrichten, Details in der Kopfzeile von `voice-core/bot.py`):
+
+- `{"type": "stimme", "status": "aus"|"fehlt"|"laedt"|"kaputt"|"bereit", "modus": "..."}` Stand beim Verbinden und nach jeder Änderung. `fehlt`: nichts eingelernt (nichts wird geprüft oder gesperrt), `kaputt`: Modell oder Datenbank nicht verfügbar (streng sperrt dann Werkzeuge, Tippen geht; war die Datenbank nicht lesbar, liest der Kern den Stand nach 30 s, 1, 2 und dann alle 5 Minuten neu, bis er bekannt ist).
+- `{"type": "stimme", "ergebnis": "eigen"|"fremd"|"unklar", "wert": 0.78, "modus": "..."}` je Äußerung; zusätzlich `"ignoriert": true`, wenn eine sicher fremde Äußerung nicht ans Modell ging.
+- `{"type": "stimmabdruck", "status": "start"|"aufnahme"|"rechnet"|"fertig"|"fehler"|"abgebrochen"|"geloescht", "sekunden": 8.4, "ziel": 20, "text": "..."}` beim Einlernen und Löschen.
+- `{"type": "stimmabdruck_einwilligung", "version": "stimme-1", "text": "..."}` beim Verbinden (nicht im Modus aus, nie im Labor; im Labor kommt nur `{"type": "stimme", "status": "aus", "modus": "aus"}`).
+- Von der Oberfläche: Client-Nachricht `stimmabdruck` mit `{"aktion": "start", "einwilligung": "stimme-1"}`, `{"aktion": "abbrechen"}` oder `{"aktion": "loeschen"}`. Der Start gilt nur mit genau der aktuellen Version der Einwilligung.
+
+**Datenschutz.** Gespeichert werden nur der Abdruck (192 Zahlen) sowie Zeitpunkt und Version der Einwilligung in `speakers` (Spalte
+`voiceprint`, Migration `0001`, Rolle `wamo_core`, für die Oberfläche nicht lesbar), nie eine Aufnahme. Berechnung und Vergleich laufen im
+Kern auf dem eigenen Server, nichts davon geht an Soniox oder Anthropic. Zweck, Rechtsgrundlage (ausdrückliche Einwilligung, Art. 9 Abs. 2
+lit. a DSGVO), Löschung und den Wortlaut der Einwilligung nennt der Abschnitt 4 in `docs/labor-datenschutz-entwurf.md` (Entwurf, eine
+verantwortliche Person prüft ihn). Offen vor dem Echtbetrieb: die Datenschutz-Folgenabschätzung nach Art. 35 DSGVO und die Aufbewahrung der
+Sicherungen.
+
+**Modelldatei.** Die Datei (`nemo_en_titanet_large.onnx`, rund 100 MB, SHA-256 `d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77`)
+lädt der Kern beim ersten Bedarf von GitHub (Release `speaker-recongition-models` von sherpa-onnx) nach, prüft die Summe und prüft sie bei jedem
+Prozessstart erneut; eine falsche Datei im Cache-Ordner wird gelöscht (ein Pfad aus `WAMO_STIMME_MODELL` nie), nach einem Fehlschlag wartet der Kern 60 Sekunden, 5 Minuten, danach 30 Minuten bis zum nächsten Versuch. Der Download ist auf 150 MB und 10 Minuten begrenzt. Ohne Datei (und ohne Netz) gibt es kein Einlernen und
+keine Prüfung, das Gespräch läuft weiter. Am Server ist das ausgehende Netz begrenzt, deshalb vorab ablegen (Pfade nach der Unit
+`wamo-core@.service`, `CacheDirectory=wamo-core`, `XDG_CACHE_HOME=/var/cache/wamo-core`, am Server nicht ausgeführt):
+
+```bash
+# auf einem Rechner mit Netz
+curl -L -o nemo_en_titanet_large.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx
+sha256sum nemo_en_titanet_large.onnx        # muss die oben genannte Summe zeigen
+scp nemo_en_titanet_large.onnx wamo-sokrates2:/tmp/
+# auf Sokrates-2
+sudo install -d -o wamo-core -g wamo-core -m 0700 /var/cache/wamo-core/wamo /var/cache/wamo-core/wamo/sprecher
+sudo install -o wamo-core -g wamo-core -m 0600 /tmp/nemo_en_titanet_large.onnx /var/cache/wamo-core/wamo/sprecher/
+rm /tmp/nemo_en_titanet_large.onnx
+sudo -u wamo-core sha256sum /var/cache/wamo-core/wamo/sprecher/nemo_en_titanet_large.onnx
+```
+
+Liegt die Datei woanders, nennt `WAMO_STIMME_MODELL` (über `wamo-core-env`) den Pfad; kein `WAMO_STIMME_*` steht in der Liste der Schalter, die
+`scripts/wamo_kern_sokrates2.py` aus der `.env` des PCs übernimmt: Modus und Schwellen sind Sicherheitseinstellungen des Servers (nur über
+`wamo-core-env`), und der Pfad gilt je Rechner. Die Bibliothek `sherpa-onnx` 2.0.1 steht in
+`voice-core/pyproject.toml` und `uv.lock`; für Linux aarch64 und Python 3.12 gibt es beide Wheels (`sherpa-onnx` und `sherpa-onnx-core`,
+laut PyPI am 14.11.2026). Ein echter Lauf auf dem Server steht aus.
+
+**Grenzen.** Die Stimmprüfung ersetzt keine Freigabe: Aktionen mit Risiko brauchen weiter die Freigabe per Klick. Sie schützt nicht gegen
+Aufnahmen oder geklonte Stimmen. Sie kann sich irren (Erkältung, Lärm, Mikrofon): Eine eigene Äußerung, die als sicher fremd gilt, wird im Modus
+streng ignoriert, getippter Text geht immer; bei häufigen Fehlurteilen `WAMO_STIMME_FREMD_MAX` senken, `beobachten` einschalten oder
+neu einlernen. Spricht jemand Fremdes, während WAMO redet, ist das Urteil unklar (Echo): der Satz geht durch, nur die Werkzeuge bleiben
+gesperrt. Kurze Äußerungen (unter einer Sekunde Sprache, etwa "Ja") tragen das Vertrauen nur weiter, wenn sie nach der eigenen Stimme klingen, und höchstens
+15 Sekunden nach der letzten sicheren Erkennung; klingen sie anders, ist die Stimme nicht sicher erkannt (Werkzeuge gesperrt, die Äußerung geht ans Modell).
+Ein neues Stück Sprache nach einem fertigen Satz (Satzzeichen im Transkript), nach Ende des Zuges oder nach Rede von WAMO wird für sich geprüft; mitten in
+einem unfertigen Satz bleibt es beim Zug, deshalb kann ein Einwurf einer fremden Stimme innerhalb eines Satzes der Person noch am Urteil des Satzes hängen.
+Eine Äußerung, die nicht sicher die Stimme der Person war (Profil mit Abdruck, Modus `streng`), färbt den Zug wie Fremdinhalte:
+WAMO lernt nichts daraus, der Ja-Wächter hängt keinen Hinweis an, und im Gesprächsprotokoll (`turns.speaker_label`) steht `stimme-unsicher`.
+Ohne Abdruck oder im Modus `beobachten` ändert sich nichts.
+Die Untertitel der Oberfläche können einen ignorierten Satz noch zeigen. Die Schwellen 0,5 und 0,3 sind Richtwerte aus Beispielaufnahmen
+des Modells, mit den Mikrofonen im Büro noch nicht gemessen: vor dem Einsatz einige Gespräche im Modus `beobachten` laufen lassen, die Werte im Log
+ansehen, die Schwellen bei Bedarf anpassen und danach wieder `streng` (Standard) einstellen.
 
 ## Nutzer und Gedächtnis
 
@@ -1357,6 +1526,9 @@ Betrieb `infra/sokrates2/README.md` Abschnitt 16). Das Handy kommt über WireGua
   gesperrt); der Host entfernt den Freigabe-Schlüssel aus seiner Umgebung, Kindprozesse erben ihn nicht.
 - Anmeldung und Datenbank im LAN nur verschlüsselt und geprüft gegen die eigene CA (`WAMO_CA_FILE`); die WAMO-Ports
   auf Sokrates-2 nehmen nur Verbindungen aus Loopback und dem Büro-LAN an (HTTP 55321 zusätzlich aus dem Caddy-Netz).
+- Stimmabdruck (nur Büro-Profile, nur mit ausdrücklicher Einwilligung, Abschnitt "Stimmabdruck"): Im Modus streng erreicht eine sicher fremde
+  Stimme das Sprachmodell nicht, und Werkzeuge außer Uhrzeit, Websuche und Canvas verlangen die eingelernte Stimme oder getippten Text. Das ist keine
+  Freigabe und kein Schutz gegen Aufnahmen oder geklonte Stimmen. Der Abdruck (192 Zahlen) liegt nur in `speakers`, nie eine Aufnahme.
 
 ---
 

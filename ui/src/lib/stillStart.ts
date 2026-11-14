@@ -29,11 +29,11 @@ export const STARTS_FENSTER_MS = 10 * 60 * 1000;
 
 /** Text des Kerns, wenn eine neue Sitzung dieses Profils die laufende ablöst (voice-core/sitzungen.py, GRUND_UEBERNOMMEN). Ein Test hält beide gleich. */
 export const GRUND_UEBERNOMMEN = "Eine neue Sitzung dieses Profils hat übernommen.";
-export const HINWEIS_ANDERES_FENSTER = "WAMO läuft in einem anderen Fenster. Mit „Hier übernehmen“ startet die Sitzung hier, die andere endet dabei.";
+export const HINWEIS_ANDERES_FENSTER = "W.A.I.S. läuft in einem anderen Fenster. Mit „Hier übernehmen“ startet die Sitzung hier, die andere endet dabei.";
 export const HINWEIS_ZU_OFT = "Zu viele stille Starts in kurzer Zeit. Bitte „Gespräch starten“ benutzen oder ein paar Minuten warten.";
-export const HINWEIS_RUHE = "Die Sitzung wurde nach 20 Minuten ohne Eingabe beendet. Beim nächsten Tippen startet WAMO wieder.";
+export const HINWEIS_RUHE = "Die Sitzung wurde nach 20 Minuten ohne Eingabe beendet. Beim nächsten Tippen startet W.A.I.S. wieder.";
 export const TEXT_VERBINDET = "Verbinde, deine Nachricht wird gleich gesendet.";
-export const TEXT_STILL_BEREIT = "Bereit, Mikrofon aus. WAMO antwortet als Text. Mit dem Mikrofonknopf sprichst du mit ihm.";
+export const TEXT_STILL_BEREIT = "Bereit, Mikrofon aus. W.A.I.S. antwortet als Text. Mit dem Mikrofonknopf sprichst du mit ihm.";
 
 /** Hat der Kern diese Sitzung mit dem Übernahmetext beendet? */
 export function istUebernommen(grund: string | null | undefined): boolean {

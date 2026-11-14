@@ -13,6 +13,8 @@ import {
   type Presence,
 } from "@/lib/wamo";
 import { useEffektiveDarstellung } from "./ansicht";
+import { Aufgabenanzeige } from "./Aufgabenanzeige";
+import { KERN_TITEL_ID } from "./einlernFokus";
 import { PraesenzKern } from "./PraesenzKern";
 import { ZentraleStatus } from "./ZentraleStatus";
 
@@ -28,24 +30,38 @@ const PRESENCE_TEXT: Record<Presence, string> = {
 /** Was WAMO gerade tut, in Worten: Freigabe wartet, Werkzeug läuft oder Gesprächszustand. */
 function useZustand() {
   const presence = useSelect(wamo, (s) => s.presence);
-  const werkzeug = useSelect(wamo, (s) => (istOnline(s) ? laufendesWerkzeug(s) : null));
+  const werkzeug = useSelect(wamo, (s) =>
+    istOnline(s) ? laufendesWerkzeug(s) : null,
+  );
   const freigabe = useSelect(wamo, wartetAufEntscheidung);
   const text = freigabe
     ? "wartet auf deine Entscheidung"
     : werkzeug
       ? `handelt: ${LABEL[werkzeug] ?? werkzeug}`
       : PRESENCE_TEXT[presence];
-  return { presence, text, kennung: freigabe ? "freigabe" : werkzeug ? "handelt" : presence };
+  return {
+    presence,
+    text,
+    kennung: freigabe ? "freigabe" : werkzeug ? "handelt" : presence,
+  };
 }
 
 /**
  * Namensschild als Pille: Kleinstzeile mit dem Zustand über dem Namen. Im DOM steht der Name zuerst,
  * damit Screenreader "WAMO hört zu" lesen; die Reihenfolge dreht nur das CSS.
  */
-function Namensschild({ presence, text, kennung }: { presence: Presence; text: string; kennung: string }) {
+function Namensschild({
+  presence,
+  text,
+  kennung,
+}: {
+  presence: Presence;
+  text: string;
+  kennung: string;
+}) {
   return (
     <p className="kz-schild" data-presence={presence} data-zustand={kennung}>
-      <span className="kz-schild-name">WAMO</span>
+      <span className="kz-schild-name">W.A.I.S.</span>
       <span className="kz-schild-status">{text}</span>
     </p>
   );
@@ -53,22 +69,39 @@ function Namensschild({ presence, text, kennung }: { presence: Presence; text: s
 
 /**
  * Obere Hälfte der Bühne: Kern, Namensschild (in der Zentrale großer Name mit Statuszeilen und Zähler)
- * und die Live-Untertitel. Der Hinweissatz kommt aus LiveCaption (Sag einfach, was du brauchst).
+ * und die Live-Untertitel, daneben die Aufgabenanzeige, sobald eine Aufgabe läuft. Der Hinweissatz kommt aus LiveCaption (Sag einfach, was du brauchst).
  */
 export const Kernbereich = memo(function Kernbereich() {
   const { effektiv } = useEffektiveDarstellung();
   const { presence, text, kennung } = useZustand();
   const zentrale = effektiv === "zentrale";
+  // Aufgabenanzeige: sobald Werkzeugschritte da sind, rückt sie neben den Kern (die Zentrale hat ihre eigene Statusliste)
+  const mitAufgabe =
+    useSelect(wamo, (s) => s.aufgabe.schritte.length > 0) && !zentrale;
   return (
-    <section id="kz-p-kern" className="kz-kernbereich" data-p="kern" data-presence={presence} aria-label="Gesprächszustand">
-      <div className="kz-kernwrap">
-        <PraesenzKern levels={levelsRef} dichte={zentrale ? 1.5 : 1} />
+    <section
+      id="kz-p-kern"
+      className="kz-kernbereich"
+      data-p="kern"
+      data-presence={presence}
+      data-aufgabe={mitAufgabe ? "true" : undefined}
+      aria-labelledby={KERN_TITEL_ID}
+    >
+      {/* Ziel für den Fokus nach dem Schließen der Einlernansicht (kommando/einlernFokus.ts) */}
+      <h2 id={KERN_TITEL_ID} className="sr-only" tabIndex={-1}>
+        Gesprächszustand
+      </h2>
+      <div className="kz-buehne">
+        <div className="kz-kernwrap">
+          <PraesenzKern levels={levelsRef} dichte={zentrale ? 1.5 : 1} />
+        </div>
+        {zentrale ? (
+          <ZentraleStatus presence={presence} zustand={text} />
+        ) : (
+          <Namensschild presence={presence} text={text} kennung={kennung} />
+        )}
       </div>
-      {zentrale ? (
-        <ZentraleStatus presence={presence} zustand={text} />
-      ) : (
-        <Namensschild presence={presence} text={text} kennung={kennung} />
-      )}
+      {mitAufgabe && <Aufgabenanzeige />}
       <LiveCaption />
     </section>
   );

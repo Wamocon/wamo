@@ -6,7 +6,7 @@
 //
 //   node scripts/wamo-stimme-messen.cjs <lauf> [szenarien] [wiederholungen]   (szenarien: "einwurf:8,echo" nennt je Szenario die Wiederholungen)
 //
-// Szenarien (Komma): fakten, kurz, lang, einwurf, backchannel, geraeusch, echo, schnell, pause, werkzeug, werkzeug_mhm (Standard: alle).
+// Szenarien (Komma): fakten, kurz, lang, einwurf, ein_wort, backchannel, geraeusch, echo, schnell, pause, werkzeug, werkzeug_mhm (Standard: alle).
 //
 // Umgebung:
 //   WAMO_MESS_DIR     Messordner mit konto.json ({email, password, secret?}) und clips/ (python wamo_stimme.py clips)
@@ -44,8 +44,8 @@ const DIR = process.env.WAMO_MESS_DIR || process.cwd();
 const URL = process.env.WAMO_UI_URL || "http://127.0.0.1:3100";
 const REPO = process.env.WAMO_REPO || path.join(__dirname, "..");
 const [lauf, szenarioArg, wdhArg] = process.argv.slice(2);
-const ALLE = ["fakten", "kurz", "lang", "einwurf", "backchannel", "geraeusch", "echo", "schnell", "pause", "werkzeug", "werkzeug_mhm"];
-const WIEDERHOLUNGEN = { fakten: 8, kurz: 5, lang: 3, einwurf: 6, backchannel: 5, geraeusch: 5, echo: 3, schnell: 5, pause: 6, werkzeug: 5, werkzeug_mhm: 5 };
+const ALLE = ["fakten", "kurz", "lang", "einwurf", "ein_wort", "backchannel", "geraeusch", "echo", "schnell", "pause", "werkzeug", "werkzeug_mhm"];
+const WIEDERHOLUNGEN = { fakten: 8, kurz: 5, lang: 3, einwurf: 6, ein_wort: 5, backchannel: 5, geraeusch: 5, echo: 3, schnell: 5, pause: 6, werkzeug: 5, werkzeug_mhm: 5 };
 if (!lauf || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(lauf)) {
   console.error("Aufruf: node wamo-stimme-messen.cjs <lauf> [szenarien] [wiederholungen] (lauf: Buchstaben, Ziffern, . _ -)");
   process.exit(2);
@@ -296,6 +296,15 @@ function seite({ modus, echoPegel }) {
       if (!l.ok) { await warteAntwort(l.q.ende, 1, 40); return { ok: false, grund: l.grund }; }
       const e = sprich(rep % 2 ? "einwurf_b" : "einwurf_a", { rolle: "einwurf" });
       return { ...(await warteAntwort(e.ende, 25, 70)), ok: true };
+    },
+    // Ein einzelnes Wort ("Danke") mitten in der langen Antwort: WAMO soll an der Wortgrenze innehalten und danach an derselben Stelle
+    // weitersprechen (WAMO_INNEHALTEN), nicht abbrechen. Nach dem Wort 4 s abwarten (Pause höchstens 2,5 s), dann muss WAMO wieder sprechen.
+    async ein_wort(rep) {
+      const l = await langeAntwort(rep, 5.0);
+      if (!l.ok) { await warteAntwort(l.q.ende, 1, 40); return { ok: false, grund: l.grund }; }
+      const e = sprich("ein_wort", { rolle: "ein_wort" });
+      await schlaf(Math.max(0, (e.ende - jetzt()) * 1000) + 4000);
+      return { ...(await warteAntwort(l.q.ende, 1, 70)), ok: true, weiter_nach_4s: botAktiv() };
     },
     async backchannel(rep) {
       const l = await langeAntwort(rep, 4.0);

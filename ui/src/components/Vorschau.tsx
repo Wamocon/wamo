@@ -8,14 +8,18 @@ import { istDarstellung, darstellungSetzen } from "@/components/kommando/darstel
 import { LoginGate } from "@/components/LoginGate";
 import { bueroBeispiel } from "@/components/vorschauBuero";
 import { WamoAnsicht } from "@/components/WamoAnsicht";
+import { aufgabeAus } from "@/lib/aufgabenanzeige";
 import { bueroAttrappeSetzen } from "@/lib/bueroApi";
 import { bildAnzeigen, liveBildLoeschen } from "@/lib/liveBild";
 import { stilleText } from "@/lib/mikrofon";
 import type { Vorgang, VorgangSchritt } from "@/lib/nachrichten";
+import { abdruckGestartet, abdruckOeffnen, STIMME_LEER } from "@/lib/stimme";
 import { bereiteText, schluesselHinweis } from "@/lib/textEingabe";
 import type { WamoAktionen } from "@/lib/useWamo";
 import {
   HISTORY,
+  abdruckAnsichtSchliessen,
+  applyServerMessage,
   entferneMemo,
   historyRef,
   initialState,
@@ -60,6 +64,12 @@ import {
  *   /?vorschau=1&code=1             zusätzlich ein Code-Element im Canvas (Kopierknopf mit Bestätigung "Kopiert")
  *   /?vorschau=1&vorgaenge=1        Tafel "Vorgänge" mit fünf Beispielen (läuft mit Schritten und Kriterien, wartet auf Freigabe,
  *                                   fertig, fehlgeschlagen, abgebrochen); der Reiter "Vorgänge" ist am Handy der vierte
+ *
+ * Stimmerkennung (Modul in der Kopfzeile, Einlernansicht, Abschnitt Stimme in den Einstellungen; Einlernen und Löschen laufen als Attrappe):
+ *   /?vorschau=1&stimme=bereit      Abdruck eingelernt, letzte Äußerung Eigen 0,78; auch fremd (0,31), ignoriert (Fremd · ignoriert), unklar (0,55)
+ *   /?vorschau=1&stimme=fehlt       nicht eingelernt (Modul "Nicht eingelernt", Knopf Stimme einlernen in den Einstellungen)
+ *   /?vorschau=1&stimme=einwilligung  Einlernansicht mit dem Einwilligungsschritt
+ *   /?vorschau=1&stimme=einlernen   Einlernansicht mitten in der Aufnahme (8,4 von 20 s); auch fertig und fehler
  *
  * Einstellungen (Adresse mit Hash, zum Beispiel /?vorschau=1&rolle=admin#einstellungen/verbrauch):
  *   &kontingent=beispiel            Kontingent mit drei Limits (sonst leer: noch keine Angaben)
@@ -246,7 +256,45 @@ function attrappenBild(): string {
   return c.toDataURL("image/jpeg", 0.8).replace(/^data:image\/jpeg;base64,/, "");
 }
 
+/** Attrappe des Einlernens: nach dem Start läuft die Aufnahme in Schritten bis zum Ergebnis, Abbrechen und Löschen wirken sofort. */
+let einlernUhr: ReturnType<typeof setInterval> | null = null;
+const einlernenStoppen = () => {
+  if (einlernUhr) clearInterval(einlernUhr);
+  einlernUhr = null;
+};
+const ATTRAPPE_STIMMABDRUCK: NonNullable<WamoAktionen["stimmabdruck"]> = {
+  start: (version) => {
+    const s = wamo.get();
+    if (s.abdruck?.phase !== "einwilligung" || s.einwilligung?.version !== version) return false;
+    applyServerMessage({ type: "stimmabdruck", status: "start", sekunden: 0, ziel: 20 });
+    wamo.set((x) => ({ ...x, abdruck: abdruckGestartet(x.abdruck) }));
+    let sekunden = 0;
+    einlernenStoppen();
+    einlernUhr = setInterval(() => {
+      sekunden += 0.8;
+      if (sekunden < 20) return applyServerMessage({ type: "stimmabdruck", status: "aufnahme", sekunden, ziel: 20 });
+      einlernenStoppen();
+      applyServerMessage({ type: "stimmabdruck", status: "fertig", sekunden: 20, ziel: 20 });
+      applyServerMessage({ type: "stimme_status", status: "bereit", modus: "streng" });
+    }, 250);
+    return true;
+  },
+  abbrechen: () => {
+    einlernenStoppen();
+    abdruckAnsichtSchliessen();
+    return true;
+  },
+  loeschen: () => {
+    setTimeout(() => {
+      applyServerMessage({ type: "stimmabdruck", status: "geloescht" });
+      applyServerMessage({ type: "stimme_status", status: "fehlt", modus: "streng" });
+    }, 300);
+    return true;
+  },
+};
+
 const KEINE_AKTIONEN: WamoAktionen = {
+  stimmabdruck: ATTRAPPE_STIMMABDRUCK,
   connect: async () => {},
   disconnect: async () => {},
   decide: (a) => {
@@ -305,6 +353,36 @@ function param(name: string) {
 export function Vorschau({ modus }: { modus: string }) {
   if (modus === "anmeldung") return <LoginGate vorschau>{() => null}</LoginGate>;
   return <Hauptvorschau />;
+}
+
+/** Stimmerkennung für die Vorschau (&stimme=bereit, fremd, ignoriert, unklar, fehlt, einwilligung, einlernen, fertig, fehler); ohne Angabe meldet der Kern nichts. */
+function beispielStimme(online: boolean): Pick<WamoState, "stimme" | "abdruck" | "einwilligung"> {
+  const art = param("stimme");
+  const keine = { stimme: STIMME_LEER, abdruck: null, einwilligung: null };
+  if (!art || !online) return keine;
+  const einwilligung = { version: "stimme-1", text: "W.A.I.S. legt aus deiner Stimme einen Abdruck an, damit es dich von anderen Stimmen unterscheiden kann.\nGespeichert wird nur der Abdruck, keine Aufnahme. Du kannst ihn jederzeit in den Einstellungen löschen." };
+  const fehlt = { ...STIMME_LEER, status: "fehlt" as const, modus: "streng" as const };
+  const ergebnis = (e: "eigen" | "fremd" | "unklar", wert: number) => ({ ...STIMME_LEER, status: "bereit" as const, modus: "streng" as const, ergebnis: e, wert });
+  switch (art) {
+    case "bereit":
+      return { stimme: ergebnis("eigen", 0.78), abdruck: null, einwilligung };
+    case "fremd":
+      return { stimme: ergebnis("fremd", 0.31), abdruck: null, einwilligung };
+    case "unklar":
+      return { stimme: ergebnis("unklar", 0.55), abdruck: null, einwilligung };
+    case "ignoriert":
+      return { stimme: { ...ergebnis("fremd", 0.12), ignoriert: true, ignoriertZaehler: 1 }, abdruck: null, einwilligung };
+    case "einwilligung":
+      return { stimme: fehlt, abdruck: abdruckOeffnen(), einwilligung };
+    case "einlernen":
+      return { stimme: fehlt, abdruck: { phase: "aufnahme", sekunden: 8.4, ziel: 20 }, einwilligung };
+    case "fertig":
+      return { stimme: ergebnis("eigen", 0.82), abdruck: { phase: "fertig", sekunden: 20, ziel: 20 }, einwilligung };
+    case "fehler":
+      return { stimme: fehlt, abdruck: { phase: "fehler", sekunden: 6, ziel: 20, text: "Zu wenig Sprache. Bitte lies noch einmal, möglichst ohne lange Pausen." }, einwilligung };
+    default:
+      return { stimme: fehlt, abdruck: null, einwilligung };
+  }
 }
 
 function beispiel(): { state: WamoState; presence: Presence } {
@@ -447,8 +525,10 @@ function beispiel(): { state: WamoState; presence: Presence } {
           entwicklung: param("entwicklung") === "aus" ? "aus" : "an",
         },
     micOn: true,
+    ...beispielStimme(online),
   };
-  return { state, presence };
+  // Aufgabenanzeige: aus den Beispiel-Aktivitäten abgeleitet (im Betrieb schreibt sie der Store mit jeder Meldung fort)
+  return { state: { ...state, aufgabe: aufgabeAus(state.activities) }, presence };
 }
 
 function Hauptvorschau() {
@@ -536,6 +616,7 @@ function Hauptvorschau() {
       if (autoTimer) clearTimeout(autoTimer);
       if (lbTimer) clearTimeout(lbTimer);
       bueroAttrappeSetzen(null);
+      einlernenStoppen();
       resetWamo();
     };
   }, [state, presence]);

@@ -666,7 +666,7 @@ class UiaSchicht:
     def klicken(self, hwnd: int, liste: Liste | None, ziel: Knoten) -> dict:
         """Klickt per Muster. liste=None (nach einer Freigabe) prüft nur das Element selbst, nicht den ganzen Aufbau."""
         if ziel.geschuetzt:
-            raise UiaFehler("Passwortfelder bedient WAMO nicht.")
+            raise UiaFehler("Passwortfelder bedient W.A.I.S. nicht.")
         muster = self._muster_fuer_klick(ziel)
 
         def vorher(k: Knoten) -> None:
@@ -697,11 +697,11 @@ class UiaSchicht:
 
     def lesen(self, hwnd: int, liste: Liste, ziel: Knoten) -> dict:
         if ziel.geschuetzt:
-            raise UiaFehler("Passwortfelder liest WAMO nicht.")
+            raise UiaFehler("Passwortfelder liest W.A.I.S. nicht.")
 
         def vorher(k: Knoten) -> None:
             if k.geschuetzt:
-                raise UiaFehler("Passwortfelder liest WAMO nicht.")
+                raise UiaFehler("Passwortfelder liest W.A.I.S. nicht.")
 
         if "wert" not in ziel.muster:
             return {"wert": sicherer_text(ziel.name, WERT_MAX), "gekuerzt": False}  # nur der Anzeigename
@@ -709,7 +709,7 @@ class UiaSchicht:
         if not fertig:
             raise UiaFehler(MELDUNG_KEINE_ANTWORT)
         if feld_geschuetzt(ziel.name, ziel.aid, ziel.passwort, str(wert or "")):  # auch Werte unter harmlosem Namen
-            raise UiaFehler("Passwortfelder liest WAMO nicht.")
+            raise UiaFehler("Passwortfelder liest W.A.I.S. nicht.")
         return {"wert": sicherer_text(wert, WERT_MAX), "gekuerzt": len(str(wert or "")) > WERT_MAX}
 
     def seite_lesen(self, hwnd: int, abschnitt: int = 1, nur_sichtbar: bool = True) -> dict:
@@ -778,9 +778,9 @@ class UiaSchicht:
 def pruefe_beschreibbar(k: Knoten) -> None:
     """UiaFehler, wenn in dieses Element kein Text gesetzt werden darf."""
     if k.geschuetzt:
-        raise UiaFehler("Passwortfelder beschreibt WAMO nicht.")
+        raise UiaFehler("Passwortfelder beschreibt W.A.I.S. nicht.")
     if ADRESSFELD_NAME.search(k.name) or ADRESSFELD_NAME.search(k.aid):
-        raise UiaFehler("Adressleisten befüllt WAMO nicht (Webseiten öffnet webseite_oeffnen mit geprüfter Adresse).")
+        raise UiaFehler("Adressleisten befüllt W.A.I.S. nicht (Webseiten öffnet webseite_oeffnen mit geprüfter Adresse).")
     if "wert" not in k.muster:
         raise UiaFehler(f"{k.typ} „{k.name}“ nimmt keinen Text an")
     if k.nur_lesen:

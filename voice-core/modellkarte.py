@@ -250,7 +250,7 @@ KARTE: tuple[Modell, ...] = (
         "haus", live_neu_s=3.61, hinweis="taugt nicht fürs Gespräch mit Werkzeugen",
     ),
     Modell(
-        "wamo-allgemein", "haus", "WAMO Allgemein", "neutraler Alias für ein allgemeines Hausmodell (Verhalten wie qwen3.8-27b)",
+        "wamo-allgemein", "haus", "W.A.I.S. Allgemein", "neutraler Alias für ein allgemeines Hausmodell (Verhalten wie qwen3.8-27b)",
         {
             **_gespraech(("2026-10-22_064337_litellm_wamo-allgemein.json",), T, 0.824, 0.510, 0.980, 1.441, 1.519, 24.804, 51, "mittel",
                          *_live("wamo-allgemein", T, 0.19, 1.485, 0.20, "2026-10-22_063059_latenz_litellm_wamo-allgemein.json"),
@@ -271,20 +271,20 @@ KARTE: tuple[Modell, ...] = (
         "haus", live_neu_s=1.485, hinweis="schneller Allrounder für Aufgaben im Hintergrund (Analyse 12 von 12 in 2 s), kein Gesprächsmodell",
     ),
     Modell(
-        "wamo-review", "haus", "WAMO Review", "neutraler Alias, vermutlich für Prüfungen; denkt vor der Antwort",
+        "wamo-review", "haus", "W.A.I.S. Review", "neutraler Alias, vermutlich für Prüfungen; denkt vor der Antwort",
         {"code": _e(1.0, "schnell", _m("code_ok", 1.0, "Anteil", T, MK + "2026-10-22_063816_code_litellm_wamo-review.json", n=8),
                     _m("code_s", 4.64, "s", T, MK + "2026-10-22_063816_code_litellm_wamo-review.json"), n=8)},
         "haus", hinweis="nur Code gemessen (8 von 8); im Streaming kommt Inhalt erst nach der Denkphase: kein Gesprächsmodell",
     ),
     # ---- Spezialisten --------------------------------------------------------------------------------------------
     Modell(
-        "wamo-vision", "haus", "WAMO Bildmodell", "neutraler Alias für die Bildbeschreibung (Antwortzeit wie gemma4-31b)",
+        "wamo-vision", "haus", "W.A.I.S. Bildmodell", "neutraler Alias für die Bildbeschreibung (Antwortzeit wie gemma4-31b)",
         {"bilder": _e(1.0, "mittel", _m("vision_ok", 1.0, "Anteil", T, BS + "2026-10-21_082206_litellm_wamo-vision.json", BS + "2026-10-22_054457_litellm_wamo-vision.json", n=2),
                       _m("vision_s", 14.17, "s", T, BS + "2026-10-21_082206_litellm_wamo-vision.json", BS + "2026-10-22_054457_litellm_wamo-vision.json", n=2), n=2)},
         "haus", spezialist_fuer=("bilder",), hinweis="Standard für Hausprofile beim Bildschirm; Lernen 4/4 und Zusammenfassung 1/1 im Lauf vom 22.10. (nicht gelistet, das Original ist gemma4-31b)",
     ),
     Modell(
-        "wamo-coder", "haus", "WAMO Coder", "wamocon-coder, feinabgestimmter Coder (Claude Code gegen LiteLLM mit MAX_THINKING_TOKENS=0)",
+        "wamo-coder", "haus", "W.A.I.S. Coder", "wamocon-coder, feinabgestimmter Coder (Claude Code gegen LiteLLM mit MAX_THINKING_TOKENS=0)",
         {"code": _e(0.875, "mittel", _m("code_ok", 0.875, "Anteil", T, MK + "2026-10-22_055452_code_litellm_wamo-coder.json", n=8),
                     _m("code_s", 7.235, "s", T, MK + "2026-10-22_055452_code_litellm_wamo-coder.json"), n=8)},
         "haus", spezialist_fuer=("code",), hinweis="Standard für Code im Haus; die erste Anfrage nach Leerlauf lädt das Modell (bis 30 s)",
@@ -309,7 +309,7 @@ KARTE: tuple[Modell, ...] = (
         "haus", spezialist_fuer=("bewertung",), hinweis="liefert JSON mit urteil und begruendung (plus eigene Felder)",
     ),
     Modell(
-        "wamo-embed", "haus", "WAMO Einbettung", "neutraler Alias für die Einbettung, gleiche Werte wie qwen3-embedding",
+        "wamo-embed", "haus", "W.A.I.S. Einbettung", "neutraler Alias für die Einbettung, gleiche Werte wie qwen3-embedding",
         {"einbettung": _e(1.0, "schnell", _m("einbettung_treffer", 1.0, "Anteil", T, MK + "2026-10-22_063459_einbettung_litellm_wamo-embed.json", n=6),
                           _m("einbettung_dimension", 4096, "Dimension", T, MK + "2026-10-22_063459_einbettung_litellm_wamo-embed.json"),
                           _m("einbettung_s", 0.17, "s", T, MK + "2026-10-22_063459_einbettung_litellm_wamo-embed.json"), n=6)},

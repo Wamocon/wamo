@@ -9,7 +9,7 @@ import { stilleAusgeblendet, stilleWiederAufnehmen } from "@/lib/mikrofon";
 import { wamo } from "@/lib/wamo";
 
 const GERAET = "Onboard MIC (Intel® Smart Sound Technologie für digitale Mikrofone)";
-const MIKROFON_FEHLER = { art: "mikrofon" as const, text: `Das Mikrofon („${GERAET}“) liefert keinen Ton, WAMO hört dich nicht.` };
+const MIKROFON_FEHLER = { art: "mikrofon" as const, text: `Das Mikrofon („${GERAET}“) liefert keinen Ton, W.A.I.S. hört dich nicht.` };
 
 function zeigen() {
   const onSchliessen = vi.fn();

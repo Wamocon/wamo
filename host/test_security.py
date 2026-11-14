@@ -809,11 +809,14 @@ class WamoOberflaecheTests(unittest.TestCase):
     def test_eigene_oberflaeche_ist_gesperrt(self):
         for exe, titel in [("electron.exe", "WAMO"), ("chrome.exe", "WAMO - Google Chrome"),
                            ("msedge.exe", "WAMO und 2 weitere Seiten - Persönlich – Microsoft Edge"),
-                           ("chrome.exe", "WAMO")]:
+                           ("chrome.exe", "WAMO"), ("chrome.exe", "W.A.I.S. - Google Chrome"),
+                           ("msedge.exe", "W.A.I.S. und 2 weitere Seiten - Persönlich – Microsoft Edge"),
+                           ("chrome.exe", "Einstellungen | W.A.I.S.")]:
             with self.subTest(exe=exe, titel=titel), self.assertRaises(ValueError):
                 host.wc.check_input_target(exe, titel)
         for exe, titel in [("Code.exe", "wamo - Visual Studio Code"), ("WINWORD.EXE", "WAMO-Konzept.docx - Word"),
-                           ("Code.exe", "WAMO.md - wamo - Visual Studio Code")]:
+                           ("Code.exe", "WAMO.md - wamo - Visual Studio Code"),
+                           ("WINWORD.EXE", "W.A.I.S.-Konzept.docx - Word")]:
             with self.subTest(exe=exe, titel=titel):
                 host.wc.check_input_target(exe, titel)  # andere Fenster mit "wamo" im Namen bleiben erlaubt
         host.wc.check_target("electron.exe", "WAMO")  # ansehen (Bildschirmfoto) bleibt erlaubt

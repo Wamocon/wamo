@@ -46,6 +46,11 @@ class Ssh:
         return [b for b in self.befehle if re.search(r"systemctl\s+(restart|start)\s+wamo-core", b)]
 
 
+def test_stimmpruefung_und_schwellen_gehen_nie_vom_pc_auf_den_server():
+    """Modus und Schwellen der Stimmprüfung sind Sicherheitseinstellungen des Servers (wamo-core-env): eine .env des PCs setzt sie nicht."""
+    assert not [n for n in k.AUS_ENV if n.startswith("WAMO_STIMME_")]
+
+
 def test_aus_env_enthaelt_keinen_entwicklungsschalter():
     assert not [n for n in k.AUS_ENV if n.startswith("WAMO_ENTWICKLUNG")]
     assert "WAMO_ENTWICKLUNG_BUERO" not in k.AUS_ENV and "WAMO_ENTWICKLUNG_PROFILE" not in k.AUS_ENV
