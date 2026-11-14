@@ -12,6 +12,7 @@ dependencies = [
     "tzdata>=2026.5",
     "pyjwt[crypto]>=2.10",
     "cryptography==50.0.2",
+    "sherpa-onnx>=2.0.1,<3",
 ]
 
 [dependency-groups]

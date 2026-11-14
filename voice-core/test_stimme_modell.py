@@ -1,0 +1,247 @@
+"""Tests für stimme_modell.py: Rechenwege rund um den Stimmabdruck, Laden und Prüfsumme des Modells.
+
+Ausführen:  python -m pytest -q test_stimme_modell.py   (im Ordner voice-core/)
+
+Der letzte Block braucht das echte Modell (Ordner .cache/sprecher/ oder WAMO_STIMME_MODELL) und wird sonst übersprungen.
+"""
+
+import asyncio
+import hashlib
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import httpx
+import numpy as np
+
+import stimme_modell as sm
+from stimme_modell import (
+    DIM,
+    Embedder,
+    NEUER_VERSUCH_SECS,
+    StimmModell,
+    als_vektor,
+    aus_vektor,
+    einlern_stuecke,
+    kosinus,
+    mittelpunkt,
+    modell_pfad,
+    normalisieren,
+    sprachbloecke,
+)
+
+RATE = 16000
+
+
+def ton(secs: float, amplitude: int = 8000) -> bytes:
+    t = np.arange(int(RATE * secs)) / RATE
+    return (np.sin(2 * np.pi * 220 * t) * amplitude).astype(np.int16).tobytes()
+
+
+def stille(secs: float) -> bytes:
+    return bytes(int(RATE * secs) * 2)
+
+
+class VektorTests(unittest.TestCase):
+    def test_hin_und_zurueck_ueber_die_datenbank(self):
+        v = normalisieren(np.random.default_rng(1).normal(size=DIM).astype(np.float32))
+        zurueck = aus_vektor(als_vektor(v))
+        self.assertIsNotNone(zurueck)
+        self.assertAlmostEqual(kosinus(v, zurueck), 1.0, places=5)
+
+    def test_liste_wird_auch_gelesen(self):
+        self.assertIsNotNone(aus_vektor([0.1] * DIM))
+
+    def test_falsche_laenge_oder_unbrauchbares_wird_abgelehnt(self):
+        for wert in ("[0.1,0.2]", None, 5, "", "[a,b]", [float("nan")] * DIM):
+            with self.subTest(wert=wert):
+                self.assertIsNone(aus_vektor(wert))
+
+    def test_nullvektor_ist_kein_abdruck(self):
+        self.assertIsNone(aus_vektor([0.0] * DIM))
+
+    def test_mittelwert_ist_normiert_und_misst_die_streuung(self):
+        a = np.zeros(DIM, dtype=np.float32)
+        a[0] = 1
+        mitte, streuung = mittelpunkt([a, a, a])
+        self.assertAlmostEqual(float(np.linalg.norm(mitte)), 1.0, places=5)
+        self.assertAlmostEqual(streuung, 1.0, places=5)
+        b = np.zeros(DIM, dtype=np.float32)
+        b[1] = 1
+        self.assertLess(mittelpunkt([a, b])[1], 0.8)
+
+
+class AudioTests(unittest.TestCase):
+    def test_pausen_fallen_weg(self):
+        pcm = ton(1.0) + stille(2.0) + ton(1.0)
+        self.assertAlmostEqual(len(sprachbloecke(pcm, RATE)) / 2 / RATE, 2.0, places=1)
+
+    def test_nur_stille_ergibt_nichts(self):
+        self.assertEqual(sprachbloecke(stille(1.0), RATE), b"")
+
+    def test_stuecke_gleich_lang_rest_faellt_weg(self):
+        stuecke = einlern_stuecke(ton(10.0), RATE)
+        self.assertEqual(len(stuecke), 3)
+        self.assertTrue(all(len(s) == RATE * 3 * 2 for s in stuecke))
+
+
+class ModellPfadTests(unittest.TestCase):
+    def test_eigener_pfad_geht_vor(self):
+        self.assertEqual(modell_pfad({"WAMO_STIMME_MODELL": "/x/y/m.onnx", "XDG_CACHE_HOME": "/var/cache/wamo-core"}), Path("/x/y/m.onnx"))
+
+    def test_im_cache_ordner_des_dienstes(self):
+        pfad = modell_pfad({"XDG_CACHE_HOME": "/var/cache/wamo-core"})
+        self.assertEqual(pfad, Path("/var/cache/wamo-core") / "wamo" / "sprecher" / sm.MODELL_NAME)
+
+    def test_sonst_neben_dem_code(self):
+        pfad = modell_pfad({})
+        self.assertEqual(pfad, Path(sm.__file__).resolve().parent / ".cache" / "sprecher" / sm.MODELL_NAME)
+        self.assertEqual(modell_pfad({"XDG_CACHE_HOME": "  ", "WAMO_STIMME_MODELL": " "}), pfad)
+
+
+class FalscherExtraktor:
+    dim = DIM + 1
+
+
+class AttrappeExtraktor:
+    """Ersatz für den Extraktor von sherpa-onnx: zählt gleichzeitige Aufrufe."""
+
+    dim = DIM
+
+    def __init__(self):
+        self.gleichzeitig = 0
+        self.hoechstens = 0
+        self._sperre = threading.Lock()
+
+    def create_stream(self):
+        return mock.Mock()
+
+    def compute(self, stream):
+        with self._sperre:
+            self.gleichzeitig += 1
+            self.hoechstens = max(self.hoechstens, self.gleichzeitig)
+        time.sleep(0.03)
+        with self._sperre:
+            self.gleichzeitig -= 1
+        return [1.0] + [0.0] * (DIM - 1)
+
+
+class EmbedderTests(unittest.TestCase):
+    def test_falsche_laenge_des_modells_wird_abgelehnt(self):
+        with self.assertRaises(ValueError):
+            Embedder(Path("x.onnx"), extraktor=FalscherExtraktor())
+
+    def test_abdruck_ist_normiert(self):
+        e = Embedder(Path("x.onnx"), extraktor=AttrappeExtraktor())
+        v = e.embed(ton(1.0), RATE)
+        self.assertEqual(v.shape, (DIM,))
+        self.assertAlmostEqual(float(np.linalg.norm(v)), 1.0, places=5)
+
+    def test_mehrere_sitzungen_rechnen_nie_gleichzeitig_im_selben_modell(self):
+        extraktor = AttrappeExtraktor()
+        e = Embedder(Path("x.onnx"), extraktor=extraktor)
+        threads = [threading.Thread(target=e.embed, args=(ton(0.5), RATE)) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(extraktor.hoechstens, 1)
+
+
+class LadeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_falsche_datei_wird_geloescht_und_spaeter_neu_versucht(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = Path(tmp) / "modell.onnx"
+            pfad.write_bytes(b"ausgetauscht")
+            jetzt = [100.0]
+            modell = StimmModell(pfad, sha256="0" * 64, uhr=lambda: jetzt[0])
+            self.assertIsNone(await modell.get())
+            self.assertFalse(pfad.exists())
+            self.assertFalse(modell.bereit)
+            with mock.patch("stimme_modell.herunterladen", mock.AsyncMock()) as laden:
+                self.assertIsNone(await modell.get())  # gleich danach: kein neuer Versuch
+                laden.assert_not_awaited()
+                jetzt[0] += NEUER_VERSUCH_SECS + 1
+                await modell.get()
+                laden.assert_awaited_once()
+
+    async def test_gute_datei_wird_einmal_geladen_und_dann_wiederverwendet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = Path(tmp) / "modell.onnx"
+            pfad.write_bytes(b"inhalt")
+            modell = StimmModell(pfad, sha256=hashlib.sha256(b"inhalt").hexdigest())
+            with mock.patch("stimme_modell.Embedder", return_value="rechner") as klasse:
+                ergebnisse = await asyncio.gather(modell.get(), modell.get(), modell.get())
+                self.assertEqual(ergebnisse, ["rechner"] * 3)
+                self.assertTrue(modell.bereit)
+                self.assertEqual(await modell.get(), "rechner")
+            klasse.assert_called_once()
+
+    async def test_fehlt_die_datei_wird_sie_geladen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = Path(tmp) / "unter" / "modell.onnx"
+
+            async def laden(ziel, **kwargs):
+                ziel.parent.mkdir(parents=True, exist_ok=True)
+                ziel.write_bytes(b"neu")
+
+            modell = StimmModell(pfad, sha256=hashlib.sha256(b"neu").hexdigest())
+            with mock.patch("stimme_modell.herunterladen", side_effect=laden) as geladen, \
+                    mock.patch("stimme_modell.Embedder", return_value="rechner"):
+                self.assertEqual(await modell.get(), "rechner")
+            geladen.assert_awaited_once()
+
+    async def test_fehler_beim_laden_ist_nicht_bereit_und_wirft_nicht(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            modell = StimmModell(Path(tmp) / "m.onnx", sha256="0" * 64)
+            with mock.patch("stimme_modell.herunterladen", mock.AsyncMock(side_effect=httpx.ConnectError("kein Netz"))):
+                self.assertIsNone(await modell.get())
+            self.assertFalse(modell.bereit)
+            self.assertTrue(modell.gescheitert)
+
+
+class DownloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_richtige_pruefsumme_benennt_um(self):
+        inhalt = b"x" * 3000
+        with tempfile.TemporaryDirectory() as tmp:
+            ziel = Path(tmp) / "a" / "m.onnx"
+            transport = httpx.MockTransport(lambda anfrage: httpx.Response(200, content=inhalt))
+            await sm.herunterladen(ziel, url="https://example.invalid/m.onnx", sha256=hashlib.sha256(inhalt).hexdigest(), transport=transport)
+            self.assertEqual(ziel.read_bytes(), inhalt)
+            self.assertFalse(ziel.with_name("m.onnx.part").exists())
+
+    async def test_falsche_pruefsumme_hinterlaesst_nichts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ziel = Path(tmp) / "m.onnx"
+            transport = httpx.MockTransport(lambda anfrage: httpx.Response(200, content=b"anderes"))
+            with self.assertRaises(ValueError):
+                await sm.herunterladen(ziel, url="https://example.invalid/m.onnx", sha256="0" * 64, transport=transport)
+            self.assertFalse(ziel.exists())
+            self.assertFalse(ziel.with_name("m.onnx.part").exists())
+
+    async def test_fehlerantwort_wirft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transport = httpx.MockTransport(lambda anfrage: httpx.Response(404))
+            with self.assertRaises(httpx.HTTPStatusError):
+                await sm.herunterladen(Path(tmp) / "m.onnx", url="https://example.invalid/m.onnx", sha256="0" * 64, transport=transport)
+
+
+@unittest.skipUnless(modell_pfad().is_file(), "Modell fehlt (.cache/sprecher/ oder WAMO_STIMME_MODELL)")
+class EchtesModellTests(unittest.TestCase):
+    def test_pruefsumme_der_vorhandenen_datei_stimmt(self):
+        self.assertEqual(sm.datei_sha256(modell_pfad()), sm.MODELL_SHA256)
+
+    def test_abdruck_hat_192_werte_und_ist_stabil(self):
+        modell = Embedder()
+        pcm = ton(3.0) + np.random.default_rng(2).integers(-800, 800, RATE * 2, dtype=np.int16).tobytes()
+        a, b = modell.embed(pcm, RATE), modell.embed(pcm, RATE)
+        self.assertEqual(a.shape, (DIM,))
+        self.assertAlmostEqual(float(np.linalg.norm(a)), 1.0, places=4)
+        self.assertAlmostEqual(kosinus(a, b), 1.0, places=4)
+
+
+if __name__ == "__main__":
+    unittest.main()
