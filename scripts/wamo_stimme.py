@@ -47,6 +47,7 @@ SPRECHPROBEN = {
     "frage_lang_3": "Beschreibe mir bitte ausführlich, wie ein Flugzeug fliegen kann.",
     "einwurf_a": "Moment, stopp, ich habe da eine andere Frage.",
     "einwurf_b": "Warte mal, was kostet das eigentlich?",
+    "ein_wort": "Danke.",  # ein einzelnes Wort mitten in WAMOs Antwort: WAMO soll innehalten und weitersprechen (WAMO_INNEHALTEN)
     "mhm": "Mhm.",
     "ja_genau": "Ja, genau.",
     "aha": "Aha, ach so.",
@@ -158,6 +159,11 @@ SCHWELLE_MIC = 0.004  # das virtuelle Mikrofon hat einen Rauschboden von etwa 0,
 STILLE_ENDE_S = 0.9  # so lange kein Ton heißt: WAMO ist verstummt (kürzere Pausen sind Satz- und Wortpausen)
 VERPASST_NACH_S = 4.0  # ein Einwurf, auf den WAMO länger als so viele Sekunden weiterspricht, gilt als verpasst
 HART_FALL_MS = 35  # fällt der Pegel in weniger als dieser Zeit von 50 % auf nichts, wurde hart abgeschnitten
+# Szenario ein_wort: WAMO hält inne, wenn nach dem Wort höchstens EIN_WORT_INNEHALTEN_MAX_S später eine Stille von mindestens
+# EIN_WORT_PAUSE_MIN_S beginnt und danach höchstens EIN_WORT_PAUSE_MAX_S später wieder gesprochen wird (Pause höchstens 2,5 s + Spielraum)
+EIN_WORT_INNEHALTEN_MAX_S = 3.0
+EIN_WORT_PAUSE_MIN_S = 0.5
+EIN_WORT_PAUSE_MAX_S = 4.0
 ANTWORT_TRENNER_S = 1.2  # Stille, die zwei Antworten trennt
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")  # Laufnamen und Beschriftungen: nie Pfade
 
@@ -298,6 +304,8 @@ KERN_MUSTER = [
     ("rueckmeldung", re.compile(r"Rückmeldung erkannt")),
     ("ducken", re.compile(r"Stimme gedämpft")),
     ("wiederaufnahme", re.compile(r"Wiederaufnahme")),
+    ("innehalten", re.compile(r"WAMO hält inne")),
+    ("weitersprechen", re.compile(r"WAMO spricht weiter")),
     ("wartesatz", re.compile(r"Wartesatz")),
     ("zug_bei_werkzeug", re.compile(r"Zug bei laufendem Werkzeug")),
     ("rueckmeldung_werkzeug", re.compile(r"Rückmeldung bei laufendem Werkzeug")),
@@ -411,6 +419,25 @@ def analysiere_szenario(sz: dict, bot: np.ndarray, mic: np.ndarray, kern: list[d
                 ereign.append({"rolle": "werkzeug_mhm", "name": c["name"],
                                "zug_gestartet": len(im_fenster(kern, ("zug_bei_werkzeug", "weiche_unterbrechung", "einwurf"), wa, wa + 4.0)) > 0,
                                "als_rueckmeldung": len(im_fenster(kern, ("rueckmeldung_werkzeug",), wa, wa + 4.0)) > 0})
+                continue
+            if c["rolle"] == "ein_wort":
+                # Ein einzelnes Wort mitten in der Antwort: WAMO soll innehalten und danach weitersprechen, nicht abbrechen
+                ton = erster_ton(sm, rel(c["t0"]) - 0.05)
+                onset = ton if ton is not None and ton < rel(c["t0"]) + 0.6 else rel(c["t0"])
+                wa = wall(c["t0"])
+                tv = verstummen(sh, onset, EIN_WORT_PAUSE_MIN_S)
+                nach = next((s for s, _ in sh if tv is not None and s > tv), None)
+                pause = round((nach - tv) * 1000) if tv is not None and nach is not None else None
+                innegehalten = (tv is not None and (tv - onset) < EIN_WORT_INNEHALTEN_MAX_S and pause is not None
+                                and pause <= EIN_WORT_PAUSE_MAX_S * 1000)
+                ereign.append({
+                    "rolle": "ein_wort", "name": c["name"], "bot_sprach": aktiv_bei(sh, onset, 0.3),
+                    "innegehalten": bool(innegehalten), "weiter": nach is not None,
+                    "innehalten_ms": round((tv - onset) * 1000) if tv is not None else None, "pause_ms": pause,
+                    "abgebrochen_log": len(im_fenster(kern, ("weiche_unterbrechung",), wa, wa + 6.0)) > 0,
+                    "innehalten_log": len(im_fenster(kern, ("innehalten",), wa, wa + 4.5)) > 0,
+                    "weiter_log": len(im_fenster(kern, ("weitersprechen",), wa, wa + 6.0)) > 0,
+                })
                 continue
             if c["rolle"] not in ("einwurf", "backchannel", "geraeusch"):
                 continue
@@ -536,6 +563,17 @@ def zusammenfassen(daten: dict[str, list[dict]]) -> dict:
     z["werkzeug_mhm_zug"] = sum(1 for e in evs if e["zug_gestartet"])  # falscher Zug bei laufendem Werkzeug
     z["werkzeug_mhm_rueckmeldung"] = sum(1 for e in evs if e["als_rueckmeldung"])
     z["werkzeug_mhm_ergebnis"] = [bool(r.get("ergebnis_nach_mhm")) for r in wm]  # das Werkzeug lieferte sein Ergebnis
+    ew_alle = daten.get("ein_wort", [])
+    ew = [e for r in ew_alle for e in r.get("ereignisse", []) if e["rolle"] == "ein_wort" and e["bot_sprach"]]
+    z["ein_wort_ereignisse"] = len(ew)
+    z["ein_wort_ungueltig"] = (sum(1 for r in ew_alle if not r.get("ok"))
+                               + sum(1 for r in ew_alle for e in r.get("ereignisse", []) if e["rolle"] == "ein_wort" and not e["bot_sprach"]))
+    z["ein_wort_innegehalten"] = sum(1 for e in ew if e["innegehalten"])  # Stille nach dem Wort und danach wieder Sprache (Ton)
+    z["ein_wort_abgebrochen"] = sum(1 for e in ew if e["abgebrochen_log"])  # Log: weiche Unterbrechung (soll nicht vorkommen)
+    z["ein_wort_log"] = sum(1 for e in ew if e["innehalten_log"])  # Log: WAMO hält inne
+    z["ein_wort_weiter_log"] = sum(1 for e in ew if e["weiter_log"])  # Log: WAMO spricht weiter
+    z["ein_wort_innehalten_ms"] = [e["innehalten_ms"] for e in ew if e["innegehalten"] and e.get("innehalten_ms") is not None]
+    z["ein_wort_pause_ms"] = [e["pause_ms"] for e in ew if e["innegehalten"] and e.get("pause_ms") is not None]
     sc = [r for r in daten.get("schnell", []) if r.get("ok")]
     z["schnell_antworten"] = [r["antworten"] for r in sc if "antworten" in r]
     z["schnell_ueberlappung_ms"] = [r["ueberlappung_ms"] for r in sc if "ueberlappung_ms" in r]
@@ -571,6 +609,11 @@ def drucken(name: str, z: dict) -> None:
     if z.get("werkzeug_mhm_ereignisse"):
         print(f"  werkzeug+mhm {z['werkzeug_mhm_ereignisse']} Rückmeldelaute | Zug gestartet {z['werkzeug_mhm_zug']} | als Rückmeldung erkannt "
               f"{z['werkzeug_mhm_rueckmeldung']} | Ergebnis kam {_anteil(z['werkzeug_mhm_ergebnis'])}")
+    if z.get("ein_wort_ereignisse") or z.get("ein_wort_ungueltig"):
+        print(f"  ein Wort    gültig {z['ein_wort_ereignisse']} (ungültig {z['ein_wort_ungueltig']}) | innegehalten und weitergesprochen (Ton) "
+              f"{z['ein_wort_innegehalten']}/{z['ein_wort_ereignisse']} | Log: innegehalten {z['ein_wort_log']}, weitergesprochen "
+              f"{z['ein_wort_weiter_log']}, abgebrochen {z['ein_wort_abgebrochen']} | bis zur Stille ms {_verteilung(z['ein_wort_innehalten_ms'])}"
+              f" | Pause ms {_verteilung(z['ein_wort_pause_ms'])}")
     if z.get("schnell_antworten"):
         print(f"  schnell     Antworten je Doppelfrage {z['schnell_antworten']} | Überlappung ms {_verteilung(z['schnell_ueberlappung_ms'])}")
     for luecke in (1.5, 2.5):
@@ -625,7 +668,9 @@ def hoerprobe(ordner: Path, lauf: str, ziel: Path, label: str) -> None:
             "werkzeug": ("werkzeug", "frage", -1.0, 17.0),
             # Pakete A und B: lange Antwort (Satzende, Betonung), Pause mitten im Satz, Rückmeldelaut bei laufendem Werkzeug
             "antwort": ("lang", "frage", -1.0, 17.0), "pause": ("pause", "pause_a", -1.0, 16.0),
-            "werkzeug_mhm": ("werkzeug_mhm", "werkzeug_mhm", -4.0, 16.0)}
+            "werkzeug_mhm": ("werkzeug_mhm", "werkzeug_mhm", -4.0, 16.0),
+            # Innehalten statt Abbrechen: ein Wort mitten in der Antwort, Pause, dann geht es an derselben Stelle weiter
+            "ein_wort": ("ein_wort", "ein_wort", -5.0, 11.0)}
     for name, (szenario, rolle, vor, nach) in plan.items():
         sz = next((s for s in j["szenarien"] if s["name"] == szenario), None)
         if sz is None:

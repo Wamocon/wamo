@@ -676,6 +676,26 @@ Der Router bleibt ausschließlich lesbar. Mögliche Schreibaktionen stehen nur a
 - **Weicher Stopp**: Nach einer Unterbrechung blendet die Oberfläche WAMOs Stimme in der nächsten Wortpause aus,
   spätestens nach 600 ms (`ui/src/lib/weicherStopp.ts`, im 20-Hz-Takt mit dem selbst gemessenen Pegel). Mit
   `WAMO_STOPP_GRENZE` (Standard an) wählt der Kern die Wortgrenze selbst und schickt `leiser_stopp` mit `sofort`.
+- **Innehalten statt Abbrechen** (14.11.2026, `voice-core/wiedergabe.py` und `voice-core/soft_interrupt.py`, Schalter `WAMO_INNEHALTEN`,
+  Standard an, Messung steht aus). Ein einzelnes echtes Wort der Person, während WAMO spricht („Danke“, „Du“), lässt WAMO an der
+  nächsten Wortgrenze innehalten, wie ein Mensch, der merkt, dass der andere ansetzt. Kommt nach `WAMO_INNEHALTEN_WEITER_SECS`
+  (Standard 0,7) Sekunden Stille nichts nach, spricht WAMO genau dort weiter; höchstens `WAMO_INNEHALTEN_MAX_SECS` (Standard 2,5)
+  Sekunden lang hält es inne. Zwei echte Wörter oder ein Stoppwort („Stopp“, „Warte“, „Moment“, „Nein“, „Abbrechen“) brechen ab
+  wie bisher, Rückmeldelaute („mhm“, „ja genau“) halten WAMO nicht an, ein „Danke“ allein lässt nur innehalten. Ein einzelnes Wort,
+  das WAMO eben selbst gesprochen hat, und erkanntes Echo lassen WAMO nie innehalten. Technik: Je Sitzung hängt ein `AusgabeHalt`
+  in `write_audio_frame` des Tonausgangs (Pipecat 1.12 schreibt den Ton in Happen von 40 ms und wartet jeweils, bis die
+  WebRTC-Spur den Happen abgeholt hat, die Stelle heißt in der installierten Version genauso und verhält sich gleich). Der Halt
+  lässt den nächsten Happen warten (die Spur sendet Stille, nichts geht verloren) und macht an derselben Stelle weiter. Eine
+  Pause dauert nie länger als 4 s (`MAX_PAUSE_SECS`), denn Pipecat hielte ein Schreiben ab 10 s für eine tote Verbindung. Der
+  `PlaybackTracker` meldet ein Wort erst, wenn sein Ton wirklich hinausgeht (gemessen am geschriebenen Ton statt nach dem
+  Zeitstempel, der dem Ton bis zu 0,5 s vorauseilte). Zusammenspiel mit dem übrigen Sprachverhalten: Während eines Halts gibt es
+  weder `leiser_stopp` noch ein Dämpfen; eine schon gedämpfte Stimme nimmt das Gate beim Weitersprechen zurück (danach 8 s keine
+  neue Dämpfung). Bestätigt die Erkennung einen Einwurf, steht der Ton schon an der Wortgrenze: Der Halt hält an, der Abbruch folgt
+  sofort, ohne Ausblenden in der Oberfläche und ohne Wartezeit für den Vorsprung der Zeitstempel, und der Verlauf braucht kein
+  Kürzen auf das Gehörte. Ohne Halt (`WAMO_INNEHALTEN=aus`, Sprachausgabe im Haus mit ganzen Sätzen ohne Wortzeiten, ein Ausgang
+  ohne `write_audio_frame`) gilt alles wie vorher: Dämpfen, Stopp an der hörbaren Wortgrenze mit `leiser_stopp`, Zeitgrenze.
+  Offen: `SOFT_INTERRUPT_LAG_SECS` und die Dauer von „Verstummen“ sind nur ohne Halt gemessen, mit Halt zu messen (Messszenario
+  `ein_wort` für das Innehalten, `einwurf` für das Verstummen).
 - **Stimme und Sprachverhalten** (22.10.2026, Messweg `scripts/wamo_stimme.py` und `scripts/wamo-stimme-messen.cjs`,
   Befunde und Zahlen: Abschnitt „Stimme messen“ unten). Schalter im Kern, jeder einzeln abschaltbar:
   `WAMO_STOPP_GRENZE` (Stopp an der ersten noch erreichbaren hörbaren Wortgrenze, Satz- oder Kommaende bis 0,3 s später
@@ -773,7 +793,7 @@ Sitzung in derselben Sitzung ein Gespräch mit Stimme. Die Logik steht in `ui/sr
 Der Test spielt über ein virtuelles Mikrofon Sprechproben und Geräusche gegen einen lokalen Kern (Unterwegs) und nimmt
 WAMOs Ausgabestrom, das Mikrofon und die Lautstärke des Wiedergabeelements mit einer gemeinsamen Uhr auf. Die Person
 spricht immer dann, wenn WAMO in einem bestimmten Zustand ist („seit 5 s am Sprechen“). Szenarien: `fakten`, `kurz`,
-`lang`, `einwurf`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`, `werkzeug_mhm`. Voraussetzung: ein temporäres
+`lang`, `einwurf`, `ein_wort`, `backchannel`, `geraeusch`, `echo`, `schnell`, `pause`, `werkzeug`, `werkzeug_mhm`. Voraussetzung: ein temporäres
 Testkonto (`scripts/wamo_nutzer.py anlegen`, danach `sperren`), `konto.json` im Messordner (nicht im Repo), Oberfläche aus
 einer Kopie gebaut (`NEXT_PUBLIC_VOICE_CORE_URL=http://127.0.0.1:7861`).
 
@@ -843,7 +863,7 @@ abschaltbar mit `aus`, `0`, `nein`, einschaltbar mit `an`, `1`, `ja`):
 | `WAMO_TTS_SATZLEERZEICHEN` | aus | Lauf brach beim Echo-Szenario ab (Browser geschlossen), Echo und Pause nicht gemessen; die übrigen Kennzahlen in der Streuung. Nutzen (Satzzeichen nicht vorlesen) nur in der Hörprobe prüfbar |
 | `WAMO_PERSONA_RUECKFRAGEN` | an seit 04.11.2026 (Entscheidung Niko, zu viele Rückfragen im Test; die frühere Messung war unvollständig) | Lauf unvollständig (Datenbankausfall, Einwurf, Backchannel, Echo, Pause fehlen); erster Ton nach Faktenfrage 2840 ms gegen 2316 bis 2617 ms in den anderen Läufen, bei 6 Fragen nicht entscheidbar |
 | `WAMO_PERSONA_PC_ORDNER` | aus | Sitzung mit den Faktenfragen fiel auf ein Hausmodell (Datenbank nicht erreichbar), nicht gemessen; erster Ton bei Websuche p95 5852 ms gegen 2441 bis 2791 ms (ein Ausreißer bei 4 Antworten) |
-| `WAMO_JA_WAECHTER` | aus | Lauf nicht mehr zustande gekommen, nicht gemessen. Außerdem erfasst kein Szenario das „Ja“ auf eine Rückfrage, nötig wäre ein eigenes Szenario samt Freigabe-Testfällen im Messweg |
+| `WAMO_JA_WAECHTER` | an | Seit 14.11.2026 an: Ein kurzes Ja auf eine echte Rückfrage führt den Auftrag aus, statt erneut zu fragen (`voice-core/ja_waechter.py`). Freigaben bleiben unberührt. Messung steht aus |
 
 Nicht gemessen und offen: `WAMO_JA_WAECHTER` (kein Lauf), Echo und Pause für `WAMO_TTS_SATZLEERZEICHEN`, Einwurf,
 Backchannel, Echo, Pause für `WAMO_PERSONA_RUECKFRAGEN`, Faktenfragen für `WAMO_PERSONA_PC_ORDNER`, die Kombination aller
@@ -885,8 +905,12 @@ Standard aus, bis gemessen) und eine Kennzahl:
 | --- | --- | --- |
 | `WAMO_PERSONA_GESPRAECH` | aus | Prompt-Block "Gesprächsführung": bei Selbstkorrektur gilt nur die letzte Fassung, Rückbezug statt Neufragen, nichts wiederholen, nur eine Frage, knappe Bestätigung. Eine Freigabe ersetzt das nie |
 | `WAMO_WARTESATZ_MODELL` | aus | Liefert das Modell nach einer Anfrage `WAMO_WARTESATZ_MODELL_SECS` (Standard 2,5) lang weder Zeichen noch Marker noch Werkzeugaufruf, sagt WAMO einmal "Einen Moment." (nicht im Verlauf). Ein unvollständiger Satz der Person (Marker ◐ und ○) löst nichts aus |
+| `WAMO_PERSONA_NATUERLICH` | an | Natürliche Sprechweise: Die meisten Antworten beginnen mit einer kurzen Reaktion als eigenem Satz ("Klar.", "Okay.", "Hm, gute Frage."), die sofort gesprochen wird, danach zusammenhängende Sätze, ab und zu ein "ähm", Abrunden mit einer eigenen Einschätzung, keine Anschlussfrage nach erledigten Aufträgen (`voice-core/persona.py`, gilt auch für Laborprofile). Mit `aus` gilt die frühere ruhige Sprechweise mit kurzen Sätzen |
 | `WAMO_FUELLWOERTER` | an | Startet das Modell ein Werkzeug, ohne vorher etwas zu sagen, und ist nach `WAMO_FUELLWORT_SECS` (Standard 0,4) noch kein Ton da, spielt WAMO ein vorab aufgenommenes "Moment." (`voice-core/fuellwoerter.py`). Läuft das Werkzeug weitere 6 Sekunden still, einmal "Dauert noch einen Moment.". Die Aufnahmen entstehen einmal je Stimme und Einstellung beim ersten Gesprächsstart und liegen danach im Cache-Ordner des Dienstes. Nur mit der Soniox-Stimme, Messung steht aus |
 | `WAMO_MHM` | aus | Hält das Modell den Satz der Person für unfertig, sagt WAMO selten ein kurzes "Mhm" (Ruhezeit 20 Sekunden, nie wenn die Person weiterspricht) |
+| `WAMO_INNEHALTEN` | an | Ein einzelnes echtes Wort der Person ("Danke", "Du"), während WAMO spricht, lässt WAMO an der nächsten Wortgrenze innehalten (der Tonausgang pausiert, `voice-core/wiedergabe.py`); kommt nichts nach, spricht WAMO dort weiter. Zwei Wörter oder ein Stoppwort brechen ab wie bisher, Rückmeldelaute nie. Mit `aus` bewirkt ein einzelnes Wort nichts, ein Einwurf stoppt wie vorher mit Ausblenden in der Oberfläche. Nicht bei der Sprachausgabe im Haus (ganze Sätze) |
+| `WAMO_INNEHALTEN_WEITER_SECS` | 0,7 | So viel Stille nach dem letzten Wort der Person, dann spricht WAMO an derselben Stelle weiter (0,2 bis 3) |
+| `WAMO_INNEHALTEN_MAX_SECS` | 2,5 | So lange hält WAMO höchstens inne, auch wenn die Person weiterspricht (0,5 bis 3,5; Pipecat verträgt keine Pause über 10 s, der Halt gibt spätestens nach 4 s frei) |
 
 Neue Kennzahl `folge_ton_ms` (Szenario `einwurf`): Zeit vom Ende des Einwurfs bis zum ersten Ton der Folgeantwort. Zu messen
 (Testprofil gesperrt, Messplan im Dokument, Abschnitt 5): Basis mit beiden Schaltern aus, je ein Lauf mit nur einem an, dazu

@@ -32,6 +32,17 @@ Ablauf
   * Verlauf: Das Gate wartet nach der Unterbrechung nur dann auf den gesprochenen Text, wenn ein Sprachabschnitt läuft,
     dessen Text noch nicht im Verlauf steht. Steht er schon da (die Antwort war fertig, nur der Ton lief noch) oder
     wurde nichts gesprochen, geht es sofort weiter statt eine Sekunde zu warten.
+  * Innehalten statt Abbrechen (WAMO_INNEHALTEN, Standard an, wiedergabe.py): Mit einem AusgabeHalt am Tonausgang der Sitzung
+    hält WAMO bei einem einzelnen echten Wort der Person ("Danke", "Du") an der nächsten Wortgrenze inne, wie ein Mensch, der
+    merkt, dass der andere ansetzt. Kommt nach weiter_secs Stille nichts nach (höchstens max_pause_secs), spricht WAMO genau dort
+    weiter. Zwei echte Wörter oder ein Stoppwort ("Stopp", "Nein", "Moment") brechen wie bisher ab, Rückmeldelaute ("mhm") halten
+    WAMO gar nicht an. Weil der PlaybackTracker mit dem Halt jedes Wort erst meldet, wenn sein Ton hinausgeht (nicht nach dem
+    Zeitstempel), steht der Ton bei einem bestätigten Einwurf schon an der Wortgrenze: Der Halt hält an, der Abbruch folgt sofort.
+    Weder die Zeitverschiebung der Zeitstempel (playback_lag_secs) noch das Ausblenden in der Oberfläche (leiser_stopp) sind dann
+    nötig, und der Verlauf braucht kein Kürzen. Während eines Halts gibt es kein leiser_stopp und kein Dämpfen; beim Weitersprechen
+    nimmt das Gate eine schon gedämpfte Stimme zurück (wie nach jeder Entwarnung, danach eine Weile nicht erneut dämpfen), und alles
+    gilt wieder wie vorher. Je Sitzung gehören ein Halt, ein Gate und ein Tracker zusammen, es gibt keinen gemeinsamen Zustand.
+    Ohne Halt (WAMO_INNEHALTEN=aus, Sprachausgabe im Haus mit ganzen Sätzen, Ausgang ohne write_audio_frame) gilt alles wie vorher.
 """
 
 from __future__ import annotations
@@ -46,6 +57,7 @@ from collections.abc import Callable
 from loguru import logger
 
 from env_schalter import schalter_an
+from ja_waechter import ist_kurzes_ja
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -57,6 +69,8 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     InterimTranscriptionFrame,
     LLMContextFrame,
+    OutputAudioRawFrame,
+    SystemFrame,
     TTSStartedFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
@@ -71,6 +85,9 @@ from pipecat.turns.user_start.min_words_user_turn_start_strategy import (
 )
 
 SENTENCE_END = (".", "!", "?", "…", ":")
+
+# Was mit einem Wort geschieht, wenn sein Ton hinausgehen soll (SoftInterruptGate.wort_beginnt)
+SPIELEN, HALTEN, SCHNEIDEN = "spielen", "halten", "schneiden"
 
 # Rueckmeldelaute: zeigen Zuhoeren, sind kein Einwurf. Alles andere zaehlt ("Doch", "Nein", "Stopp").
 BACKCHANNEL_WORDS = frozenset(
@@ -199,9 +216,20 @@ def rueckmeldung_werkzeug_an(wert: str | None = None) -> bool:
     return schalter_an("WAMO_RUECKMELDUNG_WERKZEUG", wert)
 
 
-def hat_stoppwort(text: str) -> bool:
-    """Enthält der Text ein Wort, mit dem man WAMO anhält oder etwas wissen will ("Stopp", "Moment", "Was", "Nein")?"""
-    return any(_wort(w) in STOPP_WORDS for w in text.split())
+# Wörter aus STOPP_WORDS, die für sich allein nur zum Innehalten führen, wenn das Innehalten an ist (WAMO_INNEHALTEN): ein
+# "Danke" mitten in der Antwort ist eher ein Ansetzen als ein Abbruch. Ohne Innehalten bleibt es ein Stoppwort wie immer.
+WEICHE_STOPPWOERTER = frozenset({"danke"})
+# Wörter, die ein einzelnes Wort zum Abbruch machen, aber nicht in STOPP_WORDS stehen, weil ohne Innehalten ein einzelnes Wort nie
+# unterbricht. Mit Innehalten würde so ein Wort sonst nur innehalten lassen ("Abbrechen", "Nee", "Ruhe").
+ZUSATZ_STOPPWOERTER = frozenset({"abbrechen", "abbruch", "nee", "ruhe", "wart", "aufhoeren"})
+
+
+def hat_stoppwort(text: str, ohne: frozenset[str] = frozenset(), zusaetzlich: frozenset[str] = frozenset()) -> bool:
+    """Enthält der Text ein Wort, mit dem man WAMO anhält oder etwas wissen will ("Stopp", "Moment", "Was", "Nein")?
+    ohne: Wörter, die hier nicht zählen (WEICHE_STOPPWOERTER), zusaetzlich: weitere Stoppwörter (ZUSATZ_STOPPWOERTER),
+    beides nur bei eingeschaltetem Innehalten."""
+    woerter = STOPP_WORDS | zusaetzlich if zusaetzlich else STOPP_WORDS
+    return any(w in woerter and w not in ohne for w in (_wort(x) for x in text.split()))
 
 
 def _wort(w: str) -> str:
@@ -299,6 +327,30 @@ def ist_echo(text: str, kurz: list[str], lang: list[str] | None = None) -> bool:
     return echo_urteil(text, kurz, lang) == "echo"
 
 
+# Fragebeginn mitten im Satz, bevor das Fragezeichen erklingt: "Soll ich ...", "Möchtest du ...", "Darf ich ..."
+FRAGE_BEGINN = re.compile(
+    r"^\W*(soll|sollen|darf|dürfen|kann|können|will|willst|wollen|möchte|möchtest|möchten|magst|mag)\w*\s+(ich|du|wir|er|sie)\b",
+    re.IGNORECASE,
+)
+
+
+def ist_frage(satz: str) -> bool:
+    """Ein zu Ende gesprochener Satz ist eine Frage: Fragezeichen am Ende (auch hinter Anführungszeichen) oder "soll ich"."""
+    t = satz.strip().rstrip(" .")
+    return bool(re.search(r"\?[!\"'”»)]*$", t)) or "soll ich" in t.lower()
+
+
+def fragt_bisher(satz: str) -> bool:
+    """Ist der Satz, so weit er erklungen ist, eine Frage? Das Fragezeichen fehlt mitten im Satz noch, also zählt der Beginn."""
+    return bool(satz.strip()) and (ist_frage(satz) or bool(FRAGE_BEGINN.match(satz)))
+
+
+def ist_antwort(text: str) -> bool:
+    """Eine Antwort auf die Frage von WAMO ("Ja", "genau", "okay", "mach"), kein Zuhören ("mhm") und keine Nachfrage ("Ja?",
+    "Ja, aber ...")."""
+    return ist_kurzes_ja(text)
+
+
 class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
     """Wie MinWords, aber während WAMO spricht, zählen Rückmeldelaute nicht mit.
 
@@ -317,12 +369,20 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         beurteilt: Callable[[str], None] | None = None,
         echo_modus: bool = False,
         werkzeug_laeuft: Callable[[], bool] | None = None,
+        on_partial: Callable[[str], None] | None = None,
+        fragt: Callable[[], bool] | None = None,
         **kwargs,
     ):
         """beurteilt: wird mit "rueckmeldung" oder "echo" gerufen, wenn der erkannte Text kein Einwurf ist (das Gate
         nimmt dann die vorsorglich gedämpfte Stimme wieder zurück). werkzeug_laeuft: sagt, ob gerade ein Werkzeug läuft
-        (SoftInterruptGate.werkzeug_laeuft); dann gelten dieselben Regeln wie beim Sprechen, None lässt alles wie bisher."""
+        (SoftInterruptGate.werkzeug_laeuft); dann gelten dieselben Regeln wie beim Sprechen, None lässt alles wie bisher.
+        on_partial: Innehalten (SoftInterruptGate.ansatz). Ein einzelnes echtes Wort, während WAMO spricht, wird dort gemeldet
+        statt ignoriert; ein "Danke" allein unterbricht dann nicht mehr (WEICHE_STOPPWOERTER). None: wie bisher.
+        fragt: sagt, ob WAMO gerade eine Frage stellt (SoftInterruptGate.fragt). Dann ist ein "Ja", "genau" oder "okay" die
+        Antwort und kein Rückmeldelaut (ist_antwort): es startet den Zug und bleibt im Transkript. None: wie bisher."""
         super().__init__(**kwargs)
+        self._fragt = fragt
+        self._on_partial = on_partial
         self._werkzeug_laeuft = werkzeug_laeuft
         self.werkzeug_rueckmeldungen = 0  # Rückmeldelaute, die bei laufendem Werkzeug keinen Zug starteten
         self._werkzeug_gemeldet = 0.0
@@ -357,10 +417,13 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
         count = meaningful_word_count(frame.text, interim=isinstance(frame, InterimTranscriptionFrame))
         # Schweigt WAMO (Werkzeug läuft), gilt wie bei Pipecat schon ein Wort; MIN_INTERRUPT_WORDS betrifft nur das Sprechen.
         # Ein Stoppwort ("Stopp", "Moment", "Nein", "Was") unterbricht auch unter der Schwelle sofort (12.11.2026).
-        stoppwort = self._bot_speaking and count >= 1 and hat_stoppwort(frame.text)
+        # Mit Innehalten (on_partial) führt ein Wort wie "Danke" allein nur zum Innehalten.
+        halten = self._on_partial is not None and self._bot_speaking
+        weich, zusatz = (WEICHE_STOPPWOERTER, ZUSATZ_STOPPWOERTER) if halten else (frozenset(), frozenset())
+        stoppwort = self._bot_speaking and count >= 1 and hat_stoppwort(frame.text, weich, zusatz)
         if count >= (self._min_words if self._bot_speaking else 1) or stoppwort:
             urteil = self._urteil(frame.text)
-            if urteil != "echo" and self.echo_modus_aktiv() and not hat_stoppwort(frame.text):
+            if urteil != "echo" and self.echo_modus_aktiv() and not hat_stoppwort(frame.text, zusaetzlich=zusatz):
                 self.echo_vermutet += 1
                 jetzt = time.monotonic()
                 if jetzt - self._echo_vermutet_gemeldet > 5.0:  # höchstens alle 5 s, ohne Inhalt
@@ -387,7 +450,17 @@ class MeaningfulWordsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
             logger.debug(f"{self}: Einwurf erkannt ({frame.text!r})")
             await self.trigger_user_turn_started()
             return ProcessFrameResult.STOP
-        if ist_rueckmeldung(frame.text):
+        if (self._bot_speaking and self._fragt is not None and self._fragt() and ist_antwort(frame.text)
+                and self._urteil(frame.text) != "echo"):
+            # Ein "Ja" mitten in der Frage von WAMO ist die Antwort: es startet den Zug, statt als Zuhören verworfen zu werden.
+            logger.info(f"{self}: Antwort auf die Frage von WAMO")
+            await self.trigger_user_turn_started()
+            return ProcessFrameResult.STOP
+        if halten and count >= 1 and self._urteil(frame.text) == "einwurf" and not self.echo_modus_aktiv():
+            # Ein einzelnes echtes Wort: kein Einwurf, aber WAMO hält inne und wartet ab, ob mehr kommt. Echo (ein Wort, das
+            # WAMO gerade selbst gesprochen hat, oder erkanntes Echo) hält WAMO nie an.
+            self._on_partial(frame.text)
+        elif ist_rueckmeldung(frame.text):
             self.rueckmeldungen += 1
             jetzt = time.monotonic()
             if werkzeug:
@@ -418,6 +491,10 @@ DUCK_SPERRE_ECHO_SECS = 30.0  # Echo erkannt: die Dämpfung würde mit dem Echo 
 DUCK_SPERRE_KURZ_SECS = 1.5  # nach dem Ende der Sprache ohne Urteil der Erkennung nur kurz
 DUCK_BEURTEILT_SECS = 0.3  # Rückmeldung oder Echo erkannt: so lange warten, ob doch ein Einwurf folgt ("Ja, aber ...")
 DUCK_MAX_SECS = 3.0  # spätestens nach dieser Zeit ohne bestätigten Einwurf wieder normal (Echo hält die Sprachaktivität an)
+# Innehalten (WAMO_INNEHALTEN)
+WATCH_SECS = 0.05  # so oft prüft das Gate Innehalten, Weitersprechen und Abbruch ohne Wortgrenze
+POLL_SECS = 0.02  # so oft schaut der Tracker höchstens nach, ob ein Wort an der Reihe ist
+TOLERANZ_NS = 30_000_000  # ein Wort gilt als erreicht, wenn der Ton bis auf 30 ms dort ist
 
 
 def stopp_grenze_an(wert: str | None = None) -> bool:
@@ -442,6 +519,11 @@ class SoftInterruptGate(FrameProcessor):
     ducken=True: Beginnt die Person zu sprechen, während WAMO redet, dämpft die Oberfläche die Stimme vorsorglich
     (Nachricht stimme_leiser). Bestätigt die Spracherkennung einen Einwurf, folgt der Stopp; sind es nur Rückmeldelaute,
     Echo oder Geräusche, nimmt das Gate die Dämpfung zurück und dämpft in den nächsten DUCK_SPERRE_SECS nicht erneut.
+
+    halt: Innehalten (siehe Kopf der Datei). ansatz() meldet ein einzelnes echtes Wort der Person, wort_beginnt() hält an der
+    nächsten Wortgrenze an (HALTEN), check_timers() setzt nach weiter_secs Stille (höchstens max_pause_secs) fort oder bricht ohne
+    Wortgrenze nach grenzwarte_secs ab. Mit halt stoppt ein bestätigter Einwurf exakt am Ton: playback_lag_secs, grenze (Wahl der
+    erreichbaren Grenze) und leiser_stopp entfallen, grenze=False zählt weiter Satzende und Wörter (max_words).
     """
 
     def __init__(
@@ -453,10 +535,28 @@ class SoftInterruptGate(FrameProcessor):
         uhr: Callable[[], float] = time.monotonic,
         grenze: bool = False,
         ducken: bool = False,
+        halt=None,
+        weiter_secs: float = 0.7,
+        max_pause_secs: float = 2.5,
+        grenzwarte_secs: float = 0.4,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._uhr = uhr
+        # Innehalten: die Person setzt an (ein Wort), WAMO hält an der nächsten Wortgrenze inne (_ansatz_seit), dann steht der Ton
+        # (_haelt_seit) und wartet, ob mehr kommt
+        self._halt = halt
+        self._weiter_secs = weiter_secs
+        self._max_pause_secs = max_pause_secs
+        self._grenzwarte_secs = grenzwarte_secs
+        self._ansatz_seit: float | None = None
+        self._haelt_seit: float | None = None
+        self._ansatz_text = ""
+        self._letzter_ansatz = 0.0
+        self._fortgesetzt_text = ""  # dieser Ansatz hat schon einmal angehalten, nicht noch einmal
+        self._user_quiet_since = 0.0  # Ende der letzten Sprache der Person
+        self._armed_at = 0.0
+        self._watch_task: asyncio.Task | None = None
         self._grenze_modus = grenze
         self._ducken = ducken
         self._grenzen: deque[tuple[float, bool]] = deque(maxlen=200)  # (Tracker-Zeit des Wortbeginns, Satz- oder Kommaende davor)
@@ -480,6 +580,8 @@ class SoftInterruptGate(FrameProcessor):
         self._pending = False  # die Person spricht, Unterbrechung steht aus
         self._firing = False  # Grenze gefunden, Unterbrechung laeuft
         self._last_word_ended_sentence = False
+        self._satz: list[str] = []  # Wörter des Satzes, den WAMO gerade spricht (nur was erklungen ist)
+        self._frage_fertig = False  # der zuletzt zu Ende gesprochene Satz war eine Frage
         self._last_word_ended_phrase = False  # Satz- oder Kommaende
         self._words_left = 0  # so viele Wörter darf WAMO nach dem Einwurf noch sprechen
         self._held: list[Frame] = []
@@ -564,6 +666,7 @@ class SoftInterruptGate(FrameProcessor):
             or self._duckt
             or self._pending
             or self._firing
+            or self.haelt_inne
             or self._uhr() < self._duck_gesperrt_bis
             or (self._duck_task and not self._duck_task.done())
         ):
@@ -572,7 +675,7 @@ class SoftInterruptGate(FrameProcessor):
 
     async def _duck_nach(self):
         await asyncio.sleep(DUCK_VERZOEGERUNG_SECS)
-        if not (self._vad_spricht and self._bot_speaking) or self._duckt or self._firing:
+        if not (self._vad_spricht and self._bot_speaking) or self._duckt or self._firing or self.haelt_inne:
             return
         self._duckt = True
         logger.info(f"{self}: Stimme gedämpft")
@@ -613,6 +716,9 @@ class SoftInterruptGate(FrameProcessor):
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
             self._last_word_ended_sentence = False
+            self._satz, self._frage_fertig = [], False
+            self._fortgesetzt_text = ""
+            self._clear_ansatz(fortsetzen=True)  # nie in eine neue Antwort hinein stumm bleiben
         elif isinstance(frame, VADUserStartedSpeakingFrame) and direction == FrameDirection.DOWNSTREAM:
             await self.push_frame(frame, direction)
             self._vad_spricht = True
@@ -623,11 +729,13 @@ class SoftInterruptGate(FrameProcessor):
         elif isinstance(frame, VADUserStoppedSpeakingFrame) and direction == FrameDirection.DOWNSTREAM:
             await self.push_frame(frame, direction)
             self._vad_spricht = False
+            self._user_quiet_since = self._uhr()
             if self._duckt and not (self._pending or self._firing):
                 self._frist("_duck_ende_task", DUCK_NACH_VAD_ENDE_SECS, "Sprache zu Ende", DUCK_SPERRE_KURZ_SECS)
             return
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            self._clear_ansatz(fortsetzen=True)
             if self._duckt and not (self._pending or self._firing):
                 self._kurz(self._entducken("Antwort zu Ende"), "soft_interrupt_entducken")
             if self._pending:
@@ -635,7 +743,8 @@ class SoftInterruptGate(FrameProcessor):
                 self._start_fire("Antwort zu Ende", interrupt=False)
                 return
         elif isinstance(frame, InterruptionFrame):
-            # Unterbrechung von anderer Stelle: nichts mehr zurueckhalten.
+            # Unterbrechung von anderer Stelle: nichts mehr zurueckhalten (den Ausgang öffnet der Tracker mit dem Abbruch).
+            self._clear_ansatz()
             await self.push_frame(frame, direction)
             if self._pending:
                 self._start_fire("externe Unterbrechung", interrupt=False)
@@ -666,32 +775,164 @@ class SoftInterruptGate(FrameProcessor):
         await self.push_frame(frame, direction)
 
     def on_word_played(self, text: str, im_verlauf: bool = True) -> bool:
-        """Vom PlaybackTracker aufgerufen, wenn laut Zeitstempel ein neues Wort beginnt.
+        """Alte Schnittstelle des Trackers ohne Halt: True = abgeschnitten (siehe wort_beginnt)."""
+        return self.wort_beginnt(text, im_verlauf) == SCHNEIDEN
+
+    def wort_beginnt(self, text: str, im_verlauf: bool = True) -> str:
+        """Vom PlaybackTracker aufgerufen, wenn laut Zeitstempel (mit Halt: wenn der Ton) ein neues Wort beginnt.
 
         Beginnt ein neues Wort, ist das vorige fertig: hier liegt eine Wortgrenze.
-        Gibt True zurueck, wenn das Wort abgeschnitten wird (gilt dann als nicht gesprochen).
+        SPIELEN: das Wort geht hinaus. SCHNEIDEN: abgeschnitten, gilt als nicht gesprochen. HALTEN (nur mit Halt): WAMO hält vor
+        diesem Wort inne, es kommt später wieder.
         """
         if self._firing:
-            return True
+            return SCHNEIDEN
         jetzt = self._uhr()
-        if self._grenze_modus:
+        if self._halt is not None:
+            if self._pending:
+                if grund := self._grenze_mit_halt():
+                    self._halt.anhalten()  # der Ton steht genau hier; der Abbruch verwirft den Rest
+                    self._start_fire(grund)
+                    return SCHNEIDEN
+            elif self._haelt_seit is not None:
+                return HALTEN
+            elif self._ansatz_seit is not None:
+                self._anhalten("Wortgrenze")
+                return HALTEN
+        elif self._grenze_modus:
             self._grenzen.append((jetzt, self._last_word_ended_phrase))
             if self._pending and self._plane_grenze(jetzt):
-                return True
+                return SCHNEIDEN
         elif self._pending:
             if self._last_word_ended_sentence:
                 self._start_fire("Satzende")
-                return True
+                return SCHNEIDEN
             if self._words_left <= 0:
                 self._start_fire("Wortlimit")
-                return True
+                return SCHNEIDEN
             self._words_left -= 1
         self._last_word_ended_sentence = text.rstrip().endswith(SENTENCE_END)
+        self._satz_verfolgen(text)
         self._last_word_ended_phrase = text.rstrip().endswith(SENTENCE_END + (",", ";"))
         for w in text.split():  # das Haus-TTS liefert ganze Sätze, Soniox einzelne Wörter
             if wort := _wort(w):
                 self._woerter.append((jetzt, wort, im_verlauf))
+        return SPIELEN
+
+    def _grenze_mit_halt(self) -> str | None:
+        """Mit Halt, bestätigter Einwurf, ein neues Wort beginnt: ist hier Schluss? Der Grund oder None. Die Stoppgrenze
+        (WAMO_STOPP_GRENZE) hört an der ersten Wortgrenze auf, sonst gelten wie bisher Satzende und höchstens max_words weitere Wörter."""
+        if self._grenze_modus:
+            return "Wortgrenze"
+        if self._last_word_ended_sentence:
+            return "Satzende"
+        if self._words_left <= 0:
+            return "Wortlimit"
+        self._words_left -= 1
+        return None
+
+    @property
+    def haelt_inne(self) -> bool:
+        """Hat die Person angesetzt (ein Wort gemeldet), oder steht der Ton schon? Dann gibt es kein Dämpfen."""
+        return self._ansatz_seit is not None or self._haelt_seit is not None
+
+    def _satz_verfolgen(self, text: str) -> None:
+        """Merkt sich, ob der Satz, den WAMO gerade spricht oder zuletzt beendet hat, eine Frage ist (nur was erklungen ist)."""
+        if not text.strip():
+            return
+        self._satz.append(text.strip())
+        if text.rstrip().rstrip("\"'”»)").endswith(SENTENCE_END):
+            self._frage_fertig = ist_frage(" ".join(self._satz))
+            self._satz = []
+
+    def fragt(self) -> bool:
+        """Stellt WAMO gerade eine Frage? Mitten im Satz zählt der Fragebeginn ("Soll ich"), nach dem Satz das Fragezeichen.
+        Folgt nach der Frage eine Aussage, ist die Frage vorbei."""
+        teil = " ".join(self._satz)
+        return fragt_bisher(teil) if teil else self._frage_fertig
+
+    def ansatz(self, text: str):
+        """Von der Start-Strategie (on_partial): ein einzelnes echtes Wort der Person, während WAMO spricht.
+
+        WAMO hält an der nächsten Wortgrenze inne und wartet ab, ob die Person weiterspricht. Ohne Halt, ohne laufende Antwort
+        oder bei schon bestätigtem Einwurf geschieht nichts.
+        """
+        if self._halt is None or not self._bot_speaking or self._pending or self._firing:
+            return
+        schluessel = " ".join(w for w in (_wort(x) for x in text.split()) if w)
+        if schluessel == self._fortgesetzt_text:
+            return  # derselbe Ansatz hat schon einmal angehalten und kam nicht weiter
+        self._ansatz_text = schluessel
+        self._letzter_ansatz = self._uhr()
+        if self._ansatz_seit is None and self._haelt_seit is None:
+            self._ansatz_seit = self._letzter_ansatz
+            if self._duck_task and not self._duck_task.done():
+                self._duck_task.cancel()  # noch nicht gedämpft: während des Halts gar nicht erst dämpfen
+            logger.debug(f"{self}: Person setzt an ({text!r}), WAMO hält an der nächsten Wortgrenze inne")
+            self._ensure_watch()
+
+    def _anhalten(self, grund: str):
+        self._ansatz_seit = None
+        self._haelt_seit = self._uhr()
+        self._halt.anhalten()
+        logger.info(f"{self}: WAMO hält inne ({grund}, Ansatz {self._ansatz_text!r})")
+
+    def _fortsetzen(self, grund: str):
+        self._haelt_seit = None
+        self._fortgesetzt_text = self._ansatz_text
+        self._halt.fortsetzen()
+        logger.info(f"{self}: WAMO spricht weiter ({grund}, Ansatz {self._ansatz_text!r})")
+        if self._duckt:
+            # Eine Dämpfung aus der Zeit vor dem Halt: wie nach jeder Entwarnung zurücknehmen und eine Weile nicht erneut dämpfen
+            self._duck_gesperrt_bis = max(self._duck_gesperrt_bis, self._uhr() + DUCK_SPERRE_SECS)
+            self._kurz(self._entducken("Weitersprechen"), "soft_interrupt_entducken")
+
+    def _clear_ansatz(self, *, fortsetzen: bool = False):
+        """Ansatz und Halt vergessen. fortsetzen: den Ausgang öffnen (bei Abbruch von außen tut das der Tracker mit dem Abbruch)."""
+        if fortsetzen and self._haelt_seit is not None and self._halt is not None:
+            self._halt.fortsetzen()
+        self._ansatz_seit = None
+        self._haelt_seit = None
+
+    def check_timers(self) -> bool:
+        """Innehalten, Weitersprechen und Abbrechen ohne Wortgrenze. True: weiter beobachten."""
+        if self._firing or self._halt is None:
+            return False
+        jetzt = self._uhr()
+        if self._pending:
+            if jetzt - self._armed_at >= self._grenzwarte_secs:
+                # Keine Wortgrenze in Sicht (lange Pause zwischen zwei Sätzen): jetzt abbrechen.
+                self._halt.anhalten()
+                self._start_fire("ohne Wortgrenze")
+                return False
+            return True
+        if self._ansatz_seit is not None:
+            if jetzt - self._ansatz_seit >= self._grenzwarte_secs:
+                self._anhalten("ohne Wortgrenze")
+            return True
+        if self._haelt_seit is not None:
+            if jetzt - self._haelt_seit >= self._max_pause_secs:
+                self._fortsetzen("Höchstdauer")
+                return False
+            still_seit = max(self._letzter_ansatz, self._user_quiet_since)
+            if not self._vad_spricht and jetzt - still_seit >= self._weiter_secs:
+                self._fortsetzen("kein weiteres Wort")
+                return False
+            return True
         return False
+
+    def _ensure_watch(self):
+        if self._watch_task is None or self._watch_task.done():
+            self._watch_task = self.create_task(self._watch(), name="soft_interrupt_watch")
+
+    async def _watch(self):
+        try:
+            while True:
+                await asyncio.sleep(WATCH_SECS)
+                if not self.check_timers():
+                    return
+        finally:
+            self._watch_task = None
 
     def _naechste_grenze(self, jetzt: float) -> tuple[float, bool] | None:
         """Früheste Wortgrenze (Tracker-Zeit), an der die Stimme noch rechtzeitig zu stoppen ist. Das Ausblenden dauert
@@ -731,10 +972,19 @@ class SoftInterruptGate(FrameProcessor):
         self._words_left = self._max_words
         self._ungehoert = 0
         self._arm_count += 1
+        self._armed_at = self._uhr()
         self._fristen_abbrechen()  # der Einwurf ist bestätigt: die Dämpfung geht in den Stopp über
+        steht = self._haelt_seit is not None or (self._halt is not None and self._halt.haelt)
+        self._ansatz_seit = None
+        self._haelt_seit = None
         if self._max_wait_secs > 0:
             self._grenze_task = self.create_task(self._zeitgrenze(self._arm_count), name="soft_interrupt_zeitgrenze")
-        if self._grenze_modus:
+        if self._halt is not None:
+            if steht:
+                self._start_fire("Einwurf bestätigt")  # der Ton steht schon, der Abbruch kann sofort folgen
+                return
+            self._ensure_watch()  # ohne Wortgrenze bricht check_timers nach grenzwarte_secs ab
+        elif self._grenze_modus:
             self._plane_grenze(self._uhr())  # schon gemeldete, noch nicht hörbare Grenzen gelten sofort
         logger.debug(f"{self}: Person spricht, WAMO beendet erst den Satz")
 
@@ -756,7 +1006,13 @@ class SoftInterruptGate(FrameProcessor):
 
     async def _fire(self, reason: str, interrupt: bool):
         try:
-            if interrupt:
+            if interrupt and self._halt is not None:
+                # Der Ton steht schon an der Wortgrenze (oder steht ab jetzt): kein Ausblenden in der Oberfläche, keine Wartezeit.
+                # Der Abbruch verwirft den Rest, der Tracker öffnet den Ausgang für die nächste Antwort.
+                self._halt.anhalten()
+                logger.info(f"{self}: weiche Unterbrechung ({reason}, Ton angehalten)")
+                await self.push_frame(InterruptionFrame())
+            elif interrupt:
                 # Die Oberflaeche hoert, was gerade erklingt: sie blendet in der naechsten Wortpause
                 # aus. Der Server bricht danach ab (Zeitstempel laufen dem Ton voraus).
                 await self.push_frame(RTVIServerMessageFrame(data={"type": "leiser_stopp"}))
@@ -792,6 +1048,7 @@ class SoftInterruptGate(FrameProcessor):
 
     async def _fire_ende(self):
         self._firing = False
+        self._clear_ansatz()
         self._duckt = False  # die Oberfläche setzt die Lautstärke mit der nächsten Antwort zurück
         self._ungehoert = 0  # kam kein Abschlussereignis der Antwort (Text schon im Verlauf), bleibt nichts für später stehen
         self._fire_task = None
@@ -839,6 +1096,11 @@ class SoftInterruptGate(FrameProcessor):
         if self._grenze_task and not self._grenze_task.done():
             await self.cancel_task(self._grenze_task)
         self._grenze_task = None
+        if self._watch_task and not self._watch_task.done():
+            await self.cancel_task(self._watch_task)
+        self._watch_task = None
+        if self._halt is not None:
+            self._halt.fortsetzen()  # nie einen angehaltenen Ausgang zurücklassen
 
 
 def ohne_letzte_woerter(text: str, n: int) -> str:
@@ -871,14 +1133,37 @@ def kuerze_auf_gehoertes(context, n: int) -> bool:
 
 
 class PlaybackTracker(FrameProcessor):
-    """Sitzt hinter transport.output() und meldet dem Gate jedes abgespielte Wort."""
+    """Sitzt hinter transport.output() und meldet dem Gate jedes abgespielte Wort.
 
-    def __init__(self, gate: SoftInterruptGate, **kwargs):
+    Ohne Halt gilt der Zeitstempel: Pipecat schickt das Wort, wenn seine Uhrzeit erreicht ist, und das Gate rechnet den Vorsprung
+    vor dem hörbaren Ton ein (playback_lag_secs). Mit Halt (AusgabeHalt, Innehalten) wartet ein Wort, bis der geschriebene Ton
+    seine Stelle erreicht hat, und alles danach wartet mit (die Reihenfolge für den Verlauf bleibt). Hält WAMO inne, warten die
+    Wörter mit; ein abgeschnittenes Wort und alles Wartende gelten nach einem Abbruch als nicht gesprochen.
+    """
+
+    def __init__(
+        self,
+        gate: SoftInterruptGate,
+        halt=None,
+        *,
+        max_wait_secs: float = 3.0,
+        uhr: Callable[[], float] = time.monotonic,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._gate = gate
+        self._halt = halt
+        self._max_wait = max_wait_secs  # Sicherung, falls nie Ton kommt
+        self._uhr = uhr
+        self._queue: deque[tuple[float, Frame]] = deque()
+        self._task: asyncio.Task | None = None
+        self._sperre = asyncio.Lock()  # eine Zustellung nach der anderen: ein neues Wort überholt kein wartendes
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if self._halt is not None:
+            await self._mit_halt(frame, direction)
+            return
         if isinstance(frame, TTSStartedFrame) and direction == FrameDirection.DOWNSTREAM:
             if getattr(frame, "append_to_context", True):
                 self._gate.antwort_beginnt()
@@ -886,3 +1171,93 @@ class PlaybackTracker(FrameProcessor):
             if self._gate.on_word_played(frame.text, getattr(frame, "append_to_context", True)):
                 return  # abgeschnitten -> nicht in den Gespraechsverlauf
         await self.push_frame(frame, direction)
+
+    async def _mit_halt(self, frame: Frame, direction: FrameDirection):
+        if direction != FrameDirection.DOWNSTREAM:
+            await self.push_frame(frame, direction)
+            return
+        if isinstance(frame, InterruptionFrame):
+            self._queue.clear()  # nicht mehr gespielt -> nicht in den Verlauf
+            self._halt.abschneiden()
+            await self.push_frame(frame, direction)
+            return
+        if isinstance(frame, BotStoppedSpeakingFrame):
+            await self._leeren()  # der Ton ist durch, alles Wartende auch
+            await self.push_frame(frame, direction)
+            return
+        if isinstance(frame, TTSStartedFrame) and getattr(frame, "append_to_context", True):
+            self._gate.antwort_beginnt()  # zählt, wenn der Abschnitt ankommt, auch wenn Wörter davor noch warten
+        if isinstance(frame, (SystemFrame, OutputAudioRawFrame)):
+            await self.push_frame(frame, direction)
+            return
+        async with self._sperre:
+            if self._queue or self._muss_warten(frame):
+                self._queue.append((self._uhr(), frame))
+                self._task_sichern()
+                return
+            if not await self._zustellen(frame):
+                self._queue.appendleft((self._uhr(), frame))
+                self._task_sichern()
+
+    def _muss_warten(self, frame: Frame) -> bool:
+        if not isinstance(frame, TTSTextFrame) or not frame.pts:
+            return False
+        if self._halt.haelt:
+            return True
+        gespielt = self._halt.gespielt_bis_ns()
+        return gespielt is None or gespielt + TOLERANZ_NS < frame.pts
+
+    async def _zustellen(self, frame: Frame) -> bool:
+        """False: das Wort wartet, weil WAMO davor innehält."""
+        if isinstance(frame, TTSTextFrame):
+            entscheidung = self._gate.wort_beginnt(frame.text, getattr(frame, "append_to_context", True))
+            if entscheidung == HALTEN:
+                return False
+            if entscheidung == SCHNEIDEN:
+                return True  # abgeschnitten -> nicht in den Gespraechsverlauf
+        await self.push_frame(frame)
+        return True
+
+    def _task_sichern(self):
+        if self._task is None or self._task.done():
+            self._task = self.create_task(self._leeren_nach_ton(), name="playback_tracker")
+
+    async def _warten(self):
+        await self._halt.warte_auf_fortschritt(POLL_SECS)
+
+    async def _leeren_nach_ton(self):
+        try:
+            while self._queue:
+                seit, frame = self._queue[0]
+                haelt = self._halt.haelt
+                ueberfaellig = self._uhr() - seit > self._max_wait and not haelt
+                if self._muss_warten(frame) and not ueberfaellig:
+                    await self._warten()
+                    continue
+                async with self._sperre:
+                    if not self._queue or self._queue[0][1] is not frame:
+                        continue  # inzwischen geleert (Abbruch, Ende der Antwort)
+                    self._queue.popleft()
+                    zugestellt = await self._zustellen(frame)
+                    if not zugestellt:
+                        self._queue.appendleft((seit, frame))
+                if not zugestellt:
+                    await self._warten()
+        finally:
+            self._task = None
+
+    async def _leeren(self):
+        if self._task:
+            await self.cancel_task(self._task)
+            self._task = None
+        while self._queue:
+            _, frame = self._queue.popleft()
+            if isinstance(frame, TTSTextFrame) and self._gate.wort_beginnt(frame.text, getattr(frame, "append_to_context", True)) == SCHNEIDEN:
+                continue
+            await self.push_frame(frame)
+
+    async def cleanup(self):
+        await super().cleanup()
+        if self._task:
+            await self.cancel_task(self._task)
+            self._task = None

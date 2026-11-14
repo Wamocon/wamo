@@ -17,7 +17,9 @@ Gesprächsoptimierung (docs/gespraech-optimierung.md, beide Standard aus bis zur
   WAMO_PERSONA_GESPRAECH       Persona: Gesprächsführung (Selbstkorrektur, Rückbezug, nicht wiederholen, eine Frage)
   WAMO_WARTESATZ_MODELL        ein kurzer Satz, wenn das Modell nach einer Anfrage zu lange kein Zeichen liefert (wartesatz.py);
                                WAMO_WARTESATZ_MODELL_SECS: Zahl, Standard 2,5
-Füllwörter (fuellwoerter.py, Entscheidung vom 14.11.2026, Messung steht aus):
+Füllwörter und Sprechweise (fuellwoerter.py, persona.py, Entscheidung vom 14.11.2026, Messung steht aus):
+  WAMO_PERSONA_NATUERLICH      Persona: natürliche Sprechweise, sofort hörbare Reaktion als eigener kurzer Satz, zusammenhängende
+                               Sätze, Abrunden ohne Anschlussfrage (Standard an; aus = frühere ruhige Sprechweise)
   WAMO_FUELLWOERTER            vorab aufgenommenes "Moment.", wenn ein Werkzeug startet und WAMO sonst schweigt (Standard an);
                                WAMO_FUELLWORT_SECS: Zahl, Standard 0,4
   WAMO_MHM                     Rückmeldelaut "Mhm", wenn das Modell den Satz der Person für unfertig hält (Standard aus)
@@ -29,6 +31,12 @@ Stimmabdruck (stimme_gate.py, stimme_modell.py, seit 14.11.2026; wirkt nur für 
   WAMO_STIMME_MIN_SECS         Zahl, Standard 1: so viel reine Sprache braucht eine Äußerung, damit sie als eigen oder fremd zählt (0,3 bis 10)
   WAMO_STIMME_VERTRAUEN_SECS   Zahl, Standard 120: so lange gilt "eigen" für kurze Folgesätze und Werkzeuge (10 bis 3600)
   WAMO_STIMME_MODELL           Pfad der Modelldatei (Standard: Cache-Ordner des Dienstes XDG_CACHE_HOME/wamo/sprecher/, sonst voice-core/.cache/sprecher/)
+Innehalten statt Abbrechen (wiedergabe.py, soft_interrupt.py, Entscheidung vom 14.11.2026, Messung steht aus):
+  WAMO_INNEHALTEN              ein einzelnes echtes Wort der Person ("Danke", "Du"), während WAMO spricht, lässt WAMO an der nächsten
+                               Wortgrenze innehalten; kommt nichts nach, spricht WAMO dort weiter (Standard an; aus = einzelne Wörter
+                               ändern nichts, Stopp wie bisher am hörbaren Wortende mit Ausblenden in der Oberfläche)
+  WAMO_INNEHALTEN_WEITER_SECS  Zahl: so viel Stille nach dem letzten Wort, dann geht es weiter (Standard 0,7)
+  WAMO_INNEHALTEN_MAX_SECS     Zahl: so lange hält WAMO höchstens inne (Standard 2,5; höchstens 3,5)
 Fehlerbehebungen aus der Sitzung vom 31.10.2026 (Standard an, sie ändern kein Sprachverhalten, nur Fehlerfälle):
   WAMO_ABBRUCH_HINWEIS         abgebrochenes Werkzeug im Verlauf als "ohne Ergebnis, Auftrag offen" erklären (werkzeug_wache.py)
   WAMO_WERKZEUG_DOPPELT        dieselbe Öffnen-Aktion im selben Zug nicht wiederholen, weitere Seite mit Hinweis (werkzeug_wache.py)
@@ -77,8 +85,9 @@ STANDARDWERTE: dict[str, bool] = {
     # laufendem Werkzeug. Stoppwörter und echte Einwürfe wirken weiter,
     # eine Freigabe entscheidet nie die Sprache (test_werkzeug_rueckmeldung.py).
     "WAMO_RUECKMELDUNG_WERKZEUG": True,
-    # AUS: nicht gemessen (der Lauf kam nicht mehr zustande); der Wächter braucht Messung UND die Freigabe-Prüfung.
-    "WAMO_JA_WAECHTER": False,
+    # AN seit 14.11.2026 (Entscheidung Niko: Gesprächsverhalten wie das Vorbild, "Ja" auf eine Rückfrage führt aus). Freigaben
+    # bleiben unberührt: der Wächter gibt keinen Hinweis bei Freigabe-Rückfragen und nie, wenn im Verlauf eine Freigabe wartet.
+    "WAMO_JA_WAECHTER": True,
     # AUS: Gesprächsoptimierung, noch nicht gemessen (Messplan in docs/gespraech-optimierung.md, Abschnitt 5).
     "WAMO_PERSONA_GESPRAECH": False,
     "WAMO_WARTESATZ_MODELL": False,

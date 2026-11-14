@@ -175,6 +175,17 @@ class KernLogTest(unittest.TestCase):
         self.assertEqual((z["werkzeug_mhm_ereignisse"], z["werkzeug_mhm_zug"], z["werkzeug_mhm_rueckmeldung"]), (3, 1, 2))
         self.assertEqual(z["werkzeug_mhm_ergebnis"], [True, False])
 
+    def test_innehalten_ereignisse(self):
+        text = (
+            "2026-11-14 10:00:00.100 | INFO | g - SoftInterruptGate#3: WAMO hält inne (Wortgrenze, Ansatz 'danke')\n"
+            "2026-11-14 10:00:01.900 | INFO | g - SoftInterruptGate#3: WAMO spricht weiter (kein weiteres Wort, Ansatz 'danke')\n"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "k.log"
+            p.write_text(text, encoding="utf-8")
+            arten = [e["art"] for e in w.kern_ereignisse(p)]
+        self.assertEqual(arten, ["innehalten", "weitersprechen"])
+
     def test_fehlende_datei(self):
         self.assertEqual(w.kern_ereignisse(Path("gibt-es-nicht.log")), [])
 
@@ -227,6 +238,60 @@ class SzenarioTest(unittest.TestCase):
         self.assertFalse(r["ereignisse"][0]["bot_sprach"])
         z = w.zusammenfassen({"einwurf": [r]})
         self.assertEqual((z["einwurf_gueltig"], z["einwurf_ungueltig"]), (0, 1))
+
+    def ein_wort(self, bot, kern):
+        """Szenario ein_wort: lange Antwort, die Person sagt bei 7 s "Danke" (0,5 s lang), Aufnahme bis 20 s."""
+        mic = signal([(0.5, 1.5), (7.0, 7.5)], 20.0, pegel=0.1)
+        sz = {
+            "sr": RATE, "von": 100.0, "bis": 120.0, "wallDiff": 1_000_000.0, "vol": [], "name": "ein_wort",
+            "events": [
+                {"typ": "rep", "rep": 0, "t0": 100.0},
+                {"typ": "clip", "name": "frage", "t0": 100.5, "dauer": 1.0, "rolle": "frage", "rep": 0},
+                {"typ": "clip", "name": "ein_wort", "t0": 107.0, "dauer": 0.5, "rolle": "ein_wort", "rep": 0},
+            ],
+            "ergebnisse": [{"rep": 0, "ok": True}],
+        }
+        return w.analysiere_szenario(sz, bot, mic, kern)[0]
+
+    def test_ein_wort_haelt_inne_und_spricht_weiter(self):
+        bot = signal([(2.0, 7.4), (8.6, 14.0)], 20.0)  # 1,2 s Stille mitten in der Antwort
+        kern = [{"t": 1000.0 + 107.6, "art": "innehalten", "grund": ""}, {"t": 1000.0 + 108.6, "art": "weitersprechen", "grund": ""}]
+        ev = self.ein_wort(bot, kern)["ereignisse"][0]
+        self.assertEqual(ev["rolle"], "ein_wort")
+        self.assertTrue(ev["bot_sprach"])
+        self.assertTrue(ev["innegehalten"])
+        self.assertTrue(ev["weiter"])
+        self.assertAlmostEqual(ev["pause_ms"], 1200, delta=60)
+        self.assertAlmostEqual(ev["innehalten_ms"], 400, delta=60)
+        self.assertFalse(ev["abgebrochen_log"])
+        self.assertTrue(ev["innehalten_log"] and ev["weiter_log"])
+
+    def test_ein_wort_das_zum_abbruch_fuehrte(self):
+        bot = signal([(2.0, 7.4)], 20.0)  # danach nichts mehr
+        kern = [{"t": 1000.0 + 107.6, "art": "weiche_unterbrechung", "grund": "Wortgrenze"}]
+        ev = self.ein_wort(bot, kern)["ereignisse"][0]
+        self.assertFalse(ev["innegehalten"], "WAMO hat danach nicht weitergesprochen")
+        self.assertFalse(ev["weiter"])
+        self.assertTrue(ev["abgebrochen_log"])
+
+    def test_ein_wort_ohne_pause_ist_ein_fehlschlag_und_zaehlt_nicht_als_innehalten(self):
+        bot = signal([(2.0, 14.0)], 20.0)  # WAMO redet einfach weiter
+        ev = self.ein_wort(bot, [])["ereignisse"][0]
+        self.assertFalse(ev["innegehalten"])
+        self.assertFalse(ev["innehalten_log"])
+
+    def test_ein_wort_kennzahlen(self):
+        gut = {"rolle": "ein_wort", "name": "ein_wort", "bot_sprach": True, "innegehalten": True, "weiter": True, "pause_ms": 1200,
+               "innehalten_ms": 400, "abgebrochen_log": False, "innehalten_log": True, "weiter_log": True}
+        schlecht = {**gut, "innegehalten": False, "weiter": False, "pause_ms": None, "innehalten_ms": None, "abgebrochen_log": True,
+                    "innehalten_log": False, "weiter_log": False}
+        ungueltig = {**gut, "bot_sprach": False}
+        z = w.zusammenfassen({"ein_wort": [{"ok": True, "ereignisse": [gut]}, {"ok": True, "ereignisse": [schlecht]},
+                                           {"ok": True, "ereignisse": [ungueltig]}, {"ok": False}]})
+        self.assertEqual(z["ein_wort_ereignisse"], 2)
+        self.assertEqual((z["ein_wort_innegehalten"], z["ein_wort_abgebrochen"], z["ein_wort_log"], z["ein_wort_weiter_log"]), (1, 1, 1, 1))
+        self.assertEqual(z["ein_wort_pause_ms"], [1200])
+        self.assertEqual(z["ein_wort_ungueltig"], 2, "keine laufende Stimme und eine fehlgeschlagene Wiederholung")
 
     def test_pause_dazwischen(self):
         bot = signal([(3.5, 5.0)], 12.0)

@@ -82,7 +82,7 @@ class StandardwerteTest(unittest.TestCase):
 
     ERWARTET = {
         "WAMO_TTS_SATZLEERZEICHEN": False, "WAMO_PERSONA_RUECKFRAGEN": True, "WAMO_PERSONA_PC_ORDNER": False,
-        "WAMO_PAUSEN_PROMPT": True, "WAMO_RUECKMELDUNG_WERKZEUG": True, "WAMO_JA_WAECHTER": False,
+        "WAMO_PAUSEN_PROMPT": True, "WAMO_RUECKMELDUNG_WERKZEUG": True, "WAMO_JA_WAECHTER": True,
         "WAMO_PERSONA_GESPRAECH": False, "WAMO_WARTESATZ_MODELL": False, "WAMO_MHM": False,
     }
 
@@ -108,6 +108,10 @@ NEUE_NAMEN = (
     "WAMO_PAUSEN_PROMPT", "WAMO_LERNEN_OHNE_MOMENT", "WAMO_RUECKMELDUNG_WERKZEUG", "WAMO_JA_WAECHTER", "WAMO_ECHO_MODUS",
     # Füllwörter (fuellwoerter.py), seit 14.11.2026
     "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM",
+    # Natürliche Sprechweise der Persona (persona.py), seit 14.11.2026
+    "WAMO_PERSONA_NATUERLICH",
+    # Innehalten statt Abbrechen (wiedergabe.py), seit 14.11.2026
+    "WAMO_INNEHALTEN", "WAMO_INNEHALTEN_WEITER_SECS", "WAMO_INNEHALTEN_MAX_SECS",
 )
 
 # Stimmabdruck (stimme_gate.py, stimme_modell.py): Modus, Schwellen und Modellpfad, alle seit 14.11.2026

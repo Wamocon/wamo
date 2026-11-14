@@ -8,6 +8,19 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Innehalten statt Abbrechen (`voice-core/wiedergabe.py`, Schalter `WAMO_INNEHALTEN`, `WAMO_INNEHALTEN_WEITER_SECS` und `WAMO_INNEHALTEN_MAX_SECS`, Standard an): Ein einzelnes echtes
+  Wort der Person, während WAMO spricht ("Danke", "Du"), lässt WAMO an der nächsten Wortgrenze innehalten (der Tonausgang pausiert in `write_audio_frame`, je Sitzung ein eigener
+  `AusgabeHalt`). Kommt nach 0,7 Sekunden Stille nichts nach (höchstens 2,5 Sekunden Pause, nie über 4 Sekunden), spricht WAMO genau dort weiter. Zwei Wörter oder ein Stoppwort
+  ("Stopp", "Warte", "Nein", "Moment", "Abbrechen") brechen wie bisher ab, Rückmeldelaute nie; "Danke" allein lässt nur innehalten. Der `PlaybackTracker` meldet Wörter erst, wenn ihr Ton
+  hinausgeht. Während eines Halts gibt es kein `leiser_stopp` und kein Dämpfen, beim Weitersprechen wird eine schon gedämpfte Stimme zurückgenommen; ein bestätigter Einwurf stoppt mit
+  Halt exakt an der Wortgrenze (ohne Ausblenden und ohne Wartezeit). Ohne Halt (Schalter aus, Sprachausgabe im Haus) gilt alles wie vorher. Messszenario `ein_wort` im Messweg
+  (`scripts/wamo_stimme.py`, `scripts/wamo-stimme-messen.cjs`), Tests `voice-core/test_wiedergabe.py`, `test_innehalten.py`, `test_innehalten_pipeline.py`, `test_bot_innehalten.py`.
+- "Ja" während einer Frage von WAMO ist die Antwort und kein Rückmeldelaut: es startet den Zug und bleibt im Transkript (`soft_interrupt.py`, `SoftInterruptGate.fragt`,
+  `ist_antwort`), "mhm", "Ja, aber" und "Ja?" bleiben Zuhören. Der Ja-Wächter (`WAMO_JA_WAECHTER`) ist jetzt standardmäßig an: ein Ja auf eine Rückfrage führt aus.
+- Natürliche Sprechweise der Persona (`WAMO_PERSONA_NATUERLICH`, Standard an): sofort hörbare Reaktion als eigener kurzer Satz, zusammenhängende Sätze,
+  ab und zu "ähm" oder "also", Abrunden ohne Anschlussfrage nach erledigten Aufträgen. Gilt auch für Laborprofile (`labor_prompt.py` nutzt `persona.base_vor`).
+  Mit `aus` gilt die frühere ruhige Sprechweise. Unterbrechen erst ab zwei Wörtern (`MIN_INTERRUPT_WORDS`, Standard jetzt 2, Stoppwörter weiter sofort),
+  Smart-Turn wartet 0,6 statt 0,5 Sekunden, die Sprachaktivitätserkennung wieder 0,2 statt 0,15 Sekunden (`WAMO_VAD_STOP_SECS`, Standard von Pipecat).
 - Stimmabdruck: Jedes Profil im Büro kann seine Stimme einlernen, damit WAMO nur noch diese Stimme hört (`voice-core/stimme_*.py`, README Abschnitt "Stimmabdruck"). Einlernen nur per Klick
   in der Oberfläche und nur mit der Einwilligung `stimme-1` (Text beim Verbinden vom Kern an die Oberfläche, gespeichert mit Zeitpunkt und Version in `speakers`), 20 Sekunden reine
   Sprache in Stücken von 3 Sekunden mit Mittelwert und Streuungsprüfung, Löschen jederzeit (entfernt die Zeile vollständig). Prüfung je Äußerung aus einem Ringpuffer beim Sprechende

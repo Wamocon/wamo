@@ -188,6 +188,7 @@ from soniox_tts import LazySonioxTTSService, stimme_einstellung
 from stimme_gate import schemas_absichern, tippen_beobachten, werkzeuge_absichern
 from stimme_sitzung import StimmSitzung, nachricht_aus
 from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
+from wiedergabe import WiedergabeStart, halt_fuer, innehalten_max_secs, innehalten_weiter_secs
 
 load_dotenv(override=True)
 
@@ -228,8 +229,10 @@ DEFAULT_STT_TERMS = (
 )
 STT_TERMS = [t.strip() for t in os.getenv("SONIOX_TERMS", DEFAULT_STT_TERMS).split(",") if t.strip()]
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL_FAST") or "claude-haiku-5-5"
-# Wörter ohne Rückmeldelaute, ab denen WAMO unterbrochen wird ("Doch" reicht, "mhm" nicht)
-MIN_INTERRUPT_WORDS = int(os.getenv("MIN_INTERRUPT_WORDS") or 1)
+# Wörter ohne Rückmeldelaute, ab denen WAMO unterbrochen wird ("mhm" nie). 2 seit 14.11.2026: Bruchstücke der Live-Erkennung
+# (" Al", " Du") brachen sonst an der falschen Stelle ab; Stoppwörter wie "stopp" oder "warte" unterbrechen weiter sofort. Ein einzelnes
+# echtes Wort lässt WAMO nur innehalten und danach weitersprechen (WAMO_INNEHALTEN, wiedergabe.py).
+MIN_INTERRUPT_WORDS = int(os.getenv("MIN_INTERRUPT_WORDS") or 2)
 # Lernen im laufenden Gespräch: nach so vielen neuen Sätzen der Person wertet Haiku den Abschnitt
 # aus; Neues landet sofort im System-Prompt.
 LEARN_EVERY_USER_TURNS = int(os.getenv("LEARN_EVERY_USER_TURNS") or 4)
@@ -237,10 +240,9 @@ LEARN_OVERLAP = 4  # so viele frühere Zeilen als Kontext mitgeben
 SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS") or 60000)
 SUMMARY_TARGET_TOKENS = int(os.getenv("SUMMARY_TARGET_TOKENS") or 25000)
 DEFAULT_GREETING = "Hallo {name}, WAMO ist bereit."
-# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält (Standard von Pipecat 0,2 s).
-# 0,15 s spart 50 ms bis zum Transkript (gemessen am 21.10.2026: 308 gegen 356 ms) und trennt Sätze mit Pausen nicht
-# häufiger; Pipecat meldet einmal je Sitzung, dass der Wert vom Standard abweicht (Warnung im Log, harmlos).
-VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.15)
+# Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält. Seit 14.11.2026 wieder der Standard
+# von Pipecat (0,2 s): 0,15 s sparte rund 50 ms bis zum Transkript, schnitt Sätze mit kurzen Denkpausen aber eher in Stücke.
+VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.2)
 # Was als Lebenszeichen einer Sitzung zählt: der Pipecat-Standard (Sprache) plus Text, Antworten des Modells und Werkzeuge. Ohne den Zusatz
 # bekam eine Sitzung ohne Sprache (stiller Start beim Tippen, nur Text) nie ein Lebenszeichen und wurde 300 Sekunden nach dem Start beendet, auch mitten
 # im Schreiben (Journal 12.11.2026: 08:49:34 und 08:55:08, jeweils trotz Antworten des Modells kurz davor). Test: test_bot_leerlauf.py
@@ -258,8 +260,8 @@ IDLE_FRAMES = (
     FunctionCallResultFrame,
 )
 # Hält Smart-Turn einen Satz für unvollständig, wartet WAMO so lange (Sekunden Stille) auf den Rest; danach entscheidet
-# Claude mit dem Satzende-Marker. Jeder unvollständige Befund kostete bis zu 0,85 s (früher 1,0 s).
-SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.5)
+# Claude mit dem Satzende-Marker. 0,6 s seit 14.11.2026 (vorher 0,5 s): etwas mehr Geduld bei Denkpausen mitten im Satz.
+SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.6)
 TURN_INCOMPLETE_SHORT_SECS = float(os.getenv("TURN_INCOMPLETE_SHORT_SECS") or 1.5)
 TURN_INCOMPLETE_LONG_SECS = float(os.getenv("TURN_INCOMPLETE_LONG_SECS") or 3.0)  # 8 s wirkten wie ein Hänger
 # Weiche Unterbrechung: nach einem Einwurf spricht WAMO den Satz zu Ende, höchstens aber das
@@ -757,11 +759,18 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     learn_task: asyncio.Task | None = None
     pause_short, pause_long = pause_prompts(identity.name)
 
+    # Innehalten statt Abbrechen (wiedergabe.py, WAMO_INNEHALTEN): ein einzelnes Wort der Person lässt WAMO an der Wortgrenze innehalten,
+    # kommt nichts nach, spricht WAMO dort weiter. Der Halt hängt am Tonausgang dieser Sitzung (je Sitzung einer). Die Sprachausgabe im
+    # Haus liefert ganze Sätze ohne Wortzeiten: dort gibt es keinen Halt, es gilt die Zeitgrenze des Gates wie bisher.
+    halt = halt_fuer(transport.output(), haus=sprache.tts.anbieter == "haus")
     soft_gate = SoftInterruptGate(
         max_words=SOFT_INTERRUPT_MAX_WORDS,
         playback_lag_secs=SOFT_INTERRUPT_LAG_SECS,
         grenze=stopp_grenze_an(),  # Stopp an der nächsten hörbaren Wortgrenze (WAMO_STOPP_GRENZE)
         ducken=ducken_an(),  # Stimme vorsorglich leiser, sobald die Person spricht (WAMO_DUCKEN)
+        halt=halt,
+        weiter_secs=innehalten_weiter_secs(),  # WAMO_INNEHALTEN_WEITER_SECS: so viel Stille, dann geht es an derselben Stelle weiter
+        max_pause_secs=innehalten_max_secs(),  # WAMO_INNEHALTEN_MAX_SECS: so lange hält WAMO höchstens inne
     )
 
     user_agg, assistant_agg = LLMContextAggregatorPair(
@@ -795,6 +804,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                         echo_modus=echo_filter_an() and echo_modus_an(),  # bei erkennbarem Echo unterbricht nur ein Stoppwort
                         # Rückmeldelaut bei laufendem Werkzeug startet keinen Zug (WAMO_RUECKMELDUNG_WERKZEUG)
                         werkzeug_laeuft=soft_gate.werkzeug_laeuft if rueckmeldung_werkzeug_an() else None,
+                        on_partial=soft_gate.ansatz if halt else None,  # ein Wort: innehalten statt ignorieren (WAMO_INNEHALTEN)
+                        fragt=soft_gate.fragt,  # "Ja" während einer Frage von WAMO ist die Antwort, kein Zuhören
                     )
                 ],
                 # Satzende: Smart-Turn schlägt vor, Claude entscheidet, ob die Person fertig ist.
@@ -883,8 +894,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             *([AusgabenKuerzer(ausgaben)] if ausgaben.schwelle > 0 else []),  # lange Ergebnisse kürzen, hinter der Zeitleiste (sie sieht das Original)
             *fuellwoerter,  # "Moment." statt Stille, wenn ein Werkzeug läuft (fuellwoerter.py, WAMO_FUELLWOERTER)
             tts,
+            *([WiedergabeStart(halt)] if halt else []),  # ab hier zählen die Wort-Zeitstempel (erster Ton der Antwort am Ausgang)
             transport.output(),
-            PlaybackTracker(soft_gate),
+            PlaybackTracker(soft_gate, halt),  # meldet Wörter, wenn ihr Ton wirklich hinausgeht (mit Halt), sonst nach dem Zeitstempel
             assistant_agg,
         ]
     )

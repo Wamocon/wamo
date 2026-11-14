@@ -71,7 +71,7 @@ RUECKSCHAU = 16  # so viele Nachrichten vor dem Ja werden auf Freigabe-Meldungen
 
 
 def ja_waechter_an(wert: str | None = None) -> bool:
-    """WAMO_JA_WAECHTER: festen Hinweis an ein Ja auf eine echte Rückfrage hängen (Standard aus, bis gemessen)."""
+    """WAMO_JA_WAECHTER: festen Hinweis an ein Ja auf eine echte Rückfrage hängen (Standard an seit 14.11.2026)."""
     return schalter_an("WAMO_JA_WAECHTER", wert)
 
 

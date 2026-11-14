@@ -65,6 +65,8 @@ AUS_ENV = (
     # Sprachverhalten (voice-core/soft_interrupt.py, wartesatz.py): Stopp an der Wortgrenze, Dämpfen, Rückmeldelaute, Wartesatz
     "WAMO_STOPP_GRENZE", "WAMO_DUCKEN", "WAMO_RUECKMELDUNG", "WAMO_WARTESATZ", "WAMO_WARTESATZ_SECS",
     "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM",  # Füllwörter (voice-core/fuellwoerter.py)
+    "WAMO_PERSONA_NATUERLICH",  # natürliche Sprechweise (voice-core/persona.py)
+    "WAMO_INNEHALTEN", "WAMO_INNEHALTEN_WEITER_SECS", "WAMO_INNEHALTEN_MAX_SECS",  # Innehalten statt Abbrechen (voice-core/wiedergabe.py)
     # Stimmabdruck (voice-core/stimme_gate.py): Modus und Schwellen. Nicht dabei: WAMO_STIMME_MODELL, der Pfad der Modelldatei gilt je
     # Rechner (auf dem Server gilt der Cache-Ordner des Dienstes, ein Pfad vom PC wäre dort falsch); er steht nur in der Liste des Servers.
     "WAMO_STIMME_PRUEFUNG", "WAMO_STIMME_EIGEN_MIN", "WAMO_STIMME_FREMD_MAX", "WAMO_STIMME_MIN_SECS", "WAMO_STIMME_VERTRAUEN_SECS",
