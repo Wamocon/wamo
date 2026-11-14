@@ -26,7 +26,17 @@ Nachrichten an die Oberfläche (RTVI-Servernachrichten, zusätzlich zu canvas, a
   {"type": "mikrofon", "zustand": "still"|"fehlt"|"ok", "sekunden"}
                                                                    10 s nur digitale Stille vom Mikrofon, "fehlt": 5 s gar
                                                                    keine Audiopakete, "ok": wieder Ton (audio_monitor.py)
+  {"type": "stimme", "status": "aus"|"fehlt"|"laedt"|"kaputt"|"bereit", "modus"}
+  {"type": "stimme", "ergebnis": "eigen"|"fremd"|"unklar", "wert", "modus", "ignoriert"?}
+                                                                   Stimmprüfung (stimme_*.py): Stand und Ergebnis je Äußerung;
+                                                                   "ignoriert": eine sicher fremde Äußerung ging nicht ans Modell
+  {"type": "stimmabdruck", "status": "start"|"aufnahme"|"rechnet"|"fertig"|"fehler"|"abgebrochen"|"geloescht",
+   "sekunden"?, "ziel"?, "text"?}                                  Einlernen des Stimmabdrucks (nie in Laborsitzungen)
+  {"type": "stimmabdruck_einwilligung", "version", "text"}         Text der Einwilligung beim Verbinden (stimme_einwilligung.py)
 Nachrichten von der Oberfläche:
+  {"type": "stimmabdruck", "data": {"aktion": "start", "einwilligung": "stimme-1"} | {"aktion": "abbrechen"} | {"aktion": "loeschen"}}
+                                          Stimmabdruck einlernen (nur mit der aktuellen Version der Einwilligung), abbrechen oder
+                                          löschen (stimme_sitzung.py; nie für Laborprofile)
   {"type": "vergessen", "data": {"id"}}   eigenen Eintrag deaktivieren (memory.forget)
   {"type": "freigabe", "data": {"job": "pc", "id", "entscheidung"}}
                                           Freigabe einer kritischen PC-Aktion (pc_freigaben.py; nur admin, PC-Steuerung
@@ -175,6 +185,8 @@ from soft_interrupt import (
     stopp_grenze_an,
 )
 from soniox_tts import LazySonioxTTSService, stimme_einstellung
+from stimme_gate import schemas_absichern, tippen_beobachten, werkzeuge_absichern
+from stimme_sitzung import StimmSitzung, nachricht_aus
 from tools import CANVAS_TYPE, TurnState, gemerkt_message, register_tools
 
 load_dotenv(override=True)
@@ -524,6 +536,7 @@ class Session:
 
     task: PipelineTask
     cleanup: Callable[[], Awaitable[None]]
+    stimme: StimmSitzung | None = None  # Stimmprüfung dieser Sitzung (stimme_sitzung.py); None für Laborprofile
 
 
 def pausen_prompt_an(wert: str | None = None) -> bool:
@@ -609,6 +622,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
                    "client_ready": False, "live": True, "cleaned": False, "guard": None,
                    "pc_weg": False, "pc_tools": False, "pc_waechter": None, "geraet_wache": None, "labor_wache": None,  # pc_weg: Hinweis im Prompt
+                   "stimme_laden": None,  # Hintergrundaufgabe: Abdruck laden (stimme_sitzung.vorbereiten)
                    "geraet_ok": geraet_zugang is None, "geraet_entzogen": False,  # Tunnel je Gerät: erst nach dem Namensabgleich, nie nach einem Entzug
                    "pc_name": None, "pc_belegt": False,
                    "pc_gesperrt": False, "sperr_probe": None}  # Bildschirm am PC gesperrt (Host: status=locked)
@@ -656,6 +670,13 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     except Exception:
         await zugang.schliessen()  # ein bei der Prüfung gebauter Client darf nicht offen bleiben
         raise
+
+    # Stimmprüfung (stimme_sitzung.py): Abdruck, Prüfzustand, Prüfer und Wächter gehören dieser Sitzung, der Rechner dem Prozess. Laborprofile
+    # bekommen nie eine (None). Ab hier fragt jedes Werkzeug außer Uhrzeit, Websuche und Canvas vorher, ob zuletzt die eingelernte Stimme sprach
+    # oder die Person tippte; ohne Abdruck wird nichts geprüft und nichts gesperrt. Muss vor allen register_function stehen.
+    stimme = None if labor_sitzung else StimmSitzung.fuer(identity, memory, senden=lambda d: send(d), sagen=lambda t: stimme_sagen(t))
+    if stimme is not None:
+        werkzeuge_absichern(llm, stimme.gate)
 
     # Spracherkennung und Sprachausgabe je Profil (Zugang.stt/tts) oder für alle (WAMO_STT_ANBIETER/WAMO_TTS_ANBIETER):
     # Soniox oder im Haus über LiteLLM, mit Rückfall auf Soniox (sprache_anbieter.py)
@@ -842,9 +863,11 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         [
             transport.input(),
             AudioInputMonitor(),  # Diagnose: Lücken und Pegel des Browser-Mikrofons, Stille-Wächter
+            *([stimme.pruefer] if stimme else []),  # Stimmabdruck: spricht die eingelernte Stimme? Einlernen auf Klick (stimme_pruefer.py)
             stt,
             SchluesselFilter(),  # zweite Stufe: auch Text, der nicht aus der Spracherkennung kommt
             SpeakerTracker(),  # wer spricht -> Farbe im Stimmen-Rand
+            *([stimme.waechter] if stimme else []),  # sicher fremde Äußerungen gehen nicht ans Modell (stimme_waechter.py)
             user_agg,
             soft_gate,
             *([JaWaechter(offen=freigabe_offen, gefaerbt=lambda: turn.tainted)] if ja_waechter_an() else []),  # Ja auf Rückfrage: ausführen (WAMO_JA_WAECHTER)
@@ -881,6 +904,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     )
     if dev:
         dev.attach(task)
+    if stimme is not None:
+        tippen_beobachten(task.rtvi, stimme.gate)  # getippter Text aus der Oberfläche zählt wie die eigene Stimme
     try:
         directory = ProfileDirectory(shared_database())
         profiles = directory if directory.configured else None
@@ -903,6 +928,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                                    modell_modus=modus_wirksam(zugang), modell_quelle=zugang.quelle,
                                    modell_hinweis=llm_wahl.grund,
                                    entwicklung_grund=entwicklung_betrieb.anzeige_grund(is_admin, ent_grund)))
+
+    async def stimme_sagen(text: str) -> None:
+        """WAMO spricht einen Satz der Stimmprüfung (Anleitung beim Einlernen, Fehler), ohne das Modell zu fragen."""
+        await task.queue_frames([TTSSpeakFrame(text)])
 
     async def ansage(text: str) -> None:
         """Kurze Meldung im Gespräch (Live-Bild an oder aus): wird gesprochen, das Modell erfährt es ohne zu antworten."""
@@ -1005,6 +1034,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         buerogeraete = Buerogeraete(identity, memory, fremdinhalt=turn.taint, ist_fremd=lambda: turn.tainted)
         buerogeraete.anbinden(senden=send, melden=melde_llm)
         geraete_schemas = await buerogeraete.schemas()
+        if geraete_schemas and stimme is not None:  # auch diese Handler stehen im Schema: durch das Gate der Stimmprüfung
+            geraete_schemas = schemas_absichern(geraete_schemas, stimme.gate)
         if geraete_schemas:
             standard_tools += geraete_schemas
             context.set_tools(ToolsSchema(standard_tools=standard_tools))
@@ -1062,6 +1093,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         latenz = None
         if pc:
             pc_schemas = gate_pc_tools(list(pc.standard_tools), pc_allowed, turn.taint, doppel)
+            if stimme is not None:  # Handler im Schema registriert Pipecat selbst: auch sie fragen vorher das Gate der Stimmprüfung
+                pc_schemas = schemas_absichern(pc_schemas, stimme.gate)
             context.set_tools(ToolsSchema(standard_tools=[*standard_tools, *pc_schemas, *screen_schemas]))
             state["pc_tools"] = True
             started = time.monotonic()
@@ -1136,6 +1169,10 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         await send(profil_message(identity))
         await send_betrieb()
         vorgaenge.erneut_senden()  # die Oberfläche (wieder) verbunden: alle bekannten Vorgänge noch einmal, ohne zu warten
+        if stimme is not None:
+            await stimme.client_bereit()  # Stand der Stimmprüfung und Text der Einwilligung
+        else:
+            await send(nachricht_aus())  # Labor: es gibt keine Stimmprüfung, die Bedienelemente bleiben weg
 
     @task.rtvi.event_handler("on_client_message")
     async def on_client_message(_rtvi, msg):
@@ -1187,6 +1224,9 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             # Labor-Freigaben (labor_freigaben.py) gibt es nur in einer Laborsitzung, dort gehen sie oben über labor_sitzung.client_nachricht an
             # labor_werkz.entscheiden. Hier, in jeder anderen Sitzung, auch bei einem Admin, ist der Klick ohne Wirkung.
             logger.warning("Labor-Freigabe ohne Laborsitzung abgewiesen")
+        elif msg.type == "stimmabdruck" and stimme is not None:
+            # Einlernen, abbrechen, löschen (stimme_sitzung.py): nur per Klick in der angemeldeten Oberfläche, nie per Sprache, nie im Labor
+            await stimme.nachricht(data)
         elif msg.type == "modellzugang":
             # Eigener Claude-Schlüssel: hinterlegen, ersetzen, löschen, Stand (gilt ab der nächsten Sitzung).
             # Der Inhalt dieser Nachricht wird nie geloggt und nie zurückgeschickt.
@@ -1225,6 +1265,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
 
     @user_agg.event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(_agg, _strategy, message):
+        if stimme is not None and stimme.zug_verworfen() and not message.content.strip():
+            return  # eine sicher fremde Stimme: kein Zug, kein Eintrag im Verlauf und im Gedächtnis (stimme_waechter.py)
         transcript.append(("user", message.content))
         turn.new_user_turn(message.content)
         new_user_turns = sum(1 for role, _ in transcript[learned_upto:] if role == "user")
@@ -1271,6 +1313,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         if greeting:
             await task.queue_frames([TTSSpeakFrame(greeting)])
         _keep(asyncio.create_task(cache_vorwaermen()))  # die erste Frage soll einen warmen Prompt-Cache finden
+        if stimme is not None and state["stimme_laden"] is None and state["live"]:
+            state["stimme_laden"] = _keep(asyncio.create_task(stimme.vorbereiten()))  # Abdruck laden: das Gespräch wartet nicht
         # Sitzung erst nach der Begrüßung anlegen (der Insert kostete vor dem ersten Ton Zeit)
         await memory.start_session(channel=os.getenv("WAMO_CHANNEL") or "web")
         # Profil regelmäßig neu prüfen und Höchstdauer einhalten (M5)
@@ -1336,7 +1380,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
         guard_task = state["guard"]
         if guard_task is not None and guard_task is not asyncio.current_task():
             guard_task.cancel()
-        for name in ("pc_waechter", "sperr_probe", "geraet_wache", "labor_wache"):
+        for name in ("pc_waechter", "sperr_probe", "geraet_wache", "labor_wache", "stimme_laden"):
             hintergrund = state[name]
             if hintergrund is not None and hintergrund is not asyncio.current_task():
                 hintergrund.cancel()
@@ -1385,7 +1429,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     async def on_pipeline_finished(_task, _frame):
         await cleanup()
 
-    return Session(task=task, cleanup=cleanup)
+    return Session(task=task, cleanup=cleanup, stimme=stimme)
 
 
 async def run_bot(
