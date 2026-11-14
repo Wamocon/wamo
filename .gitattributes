@@ -26,3 +26,7 @@ Caddyfile text eol=lf
 *.socket text eol=lf
 # Labor-Daten werden unverändert nach /etc/wamo-labor/daten installiert: LF, auch beim Auschecken unter Windows
 infra/sokrates2/labor-daten/* text eol=lf
+# Eingabe-Erweiterung des Remote-Desktop-Gateways: kommt unverändert ins JAR für Sokrates-2, LF auch unter Windows (test_rd_skripte.py)
+infra/sokrates2/wamo-rd/erweiterung/*.json text eol=lf
+infra/sokrates2/wamo-rd/erweiterung/*.js text eol=lf
+infra/sokrates2/wamo-rd/erweiterung/*.css text eol=lf
