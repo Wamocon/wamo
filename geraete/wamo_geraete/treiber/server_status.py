@@ -1,5 +1,6 @@
-"""Status der Server: Sokrates-2 lokal (/proc, statvfs, nvidia-smi, systemctl is-active), Sokrates-1 und Caesar per SSH
-als wamo-status mit Zwangsbefehl (infra/sparks/wamo_status.py), LiteLLM nur über /health/liveliness.
+"""Status der Server: Sokrates-2 lokal (/proc, statvfs, nvidia-smi, systemctl is-active; für eine Vorlage
+name@*.service die beste Instanz), Sokrates-1 und Caesar per SSH als wamo-status mit Zwangsbefehl
+(infra/sparks/wamo_status.py), LiteLLM nur über /health/liveliness.
 
 SSH: eigener Schlüssel und eigene known_hosts des Dienstes (StateDirectory), -F none, BatchMode, kurze Zeitgrenze.
 Der Befehl ist fest ("alles"); was der Server antwortet, wird als Zahlen und enge Namen übernommen."""
@@ -11,7 +12,7 @@ import json
 import os
 
 from ..http_klein import HttpFehler, anfrage
-from ..konfig import Geraet
+from ..konfig import VORLAGE_ENDUNG, Geraet
 from ..text import ganzzahl, name, zahl
 from . import GeraetFehler, NichtEingerichtet
 
@@ -90,10 +91,34 @@ async def _gpu_lokal() -> list[dict] | str:
     return gpu_aus_csv(daten.decode("utf-8", "replace")) if rc == 0 else "nicht lesbar"
 
 
+# Zustände von systemd, beste zuerst. Für eine Vorlage zählt die beste Instanz: aktiv, sobald eine Instanz läuft.
+ZUSTAENDE_RANG = ("active", "reloading", "refreshing", "activating", "deactivating", "maintenance", "inactive",
+                  "failed")
+
+
+def beste_instanz(rc: int, ausgabe: str) -> str:
+    """Auswertung von systemctl is-active name@*.service: systemd erweitert das Muster über die geladenen Units und
+    gibt je Instanz eine Zeile aus (ohne Namen). Rückgabewert 0: mindestens eine aktiv, 3: keine aktiv, 4: keine
+    geladen; alles andere ist ein Fehler (Bus nicht erreichbar, Muster abgelehnt). Ohne Zeile ist keine Instanz
+    geladen, also inactive. Zeilen, die kein bekannter Zustand sind, zählen nicht."""
+    if rc not in (0, 3, 4):
+        return "unbekannt"
+    zeilen = [name(z, 20) for z in ausgabe.splitlines()[:64] if z.strip()]
+    if not zeilen:
+        return "inactive"
+    bekannt = [z for z in zeilen if z in ZUSTAENDE_RANG]
+    return min(bekannt, key=ZUSTAENDE_RANG.index) if bekannt else "unbekannt"
+
+
 async def _dienste_lokal(units: tuple[str, ...]) -> dict[str, str]:
     erg: dict[str, str] = {}
     for unit in units:
         try:
+            if unit.endswith(VORLAGE_ENDUNG):
+                # Kern-Slots: die alte Unit wamo-core.service ist absichtlich aus, es läuft eine Instanz der Vorlage
+                rc, daten = await _befehl(["/usr/bin/systemctl", "is-active", unit], 2, 1024)
+                erg[unit] = beste_instanz(rc, daten.decode("ascii", "replace"))
+                continue
             _, daten = await _befehl(["/usr/bin/systemctl", "is-active", unit], 2, 200)
             erg[unit] = name(daten.decode("ascii", "replace"), 20) or "unbekannt"
         except (OSError, GeraetFehler):

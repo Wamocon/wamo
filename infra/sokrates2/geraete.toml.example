@@ -20,7 +20,9 @@ kennung = "sokrates-2"
 name = "Sokrates-2"
 klasse = "server"
 treiber = "server-lokal"
-dienste = ["wamo-core.service", "wamo-geraete.service", "wamo-firewall.service", "docker.service"]
+# wamo-core@*.service: Kern-Slots, aktiv, sobald eine Instanz (a oder b) läuft. Die alte Unit wamo-core.service ist im
+# Slot-Betrieb absichtlich aus und gehört nicht in diese Liste. Andere Platzhalter als name@*.service verhindern den Start.
+dienste = ["wamo-core@*.service", "wamo-geraete.service", "wamo-firewall.service", "docker.service"]
 
 [[geraet]]
 kennung = "sokrates-1"

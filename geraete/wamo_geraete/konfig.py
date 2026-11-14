@@ -31,7 +31,10 @@ BUERO_NETZ = ipaddress.ip_network("192.168.178.0/24")
 SOKRATES2 = "192.168.178.136"
 KENNUNG_RE = re.compile(r"^[a-z][a-z0-9-]{1,21}[a-z0-9]$")
 ZUGANG_RE = re.compile(r"^[A-Z][A-Z0-9]{1,15}$")
-DIENST_RE = re.compile(r"^[a-z0-9][a-z0-9@._-]{0,60}\.service$")
+# Units name.service (auch eine feste Instanz name@x.service) und genau eine Platzhalterform: name@*.service steht für
+# "mindestens eine Instanz der Vorlage aktiv" (Kern-Slots wamo-core@a und wamo-core@b, siehe treiber/server_status.py)
+VORLAGE_ENDUNG = "@*.service"
+DIENST_RE = re.compile(r"^(?:[a-z0-9][a-z0-9@._-]{0,60}|[a-z0-9][a-z0-9._-]{0,57}@\*)\.service$")
 MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 MDNS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,62}\.local$")
 FREIGABE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._$-]{0,79}$")
@@ -170,7 +173,7 @@ def _optionen(treiber: str, kennung: str, roh: dict[str, Any]) -> dict[str, Any]
         was = f"{kennung}.{k}"
         if k == "dienste":
             if not isinstance(v, list) or len(v) > 20 or not all(isinstance(d, str) and DIENST_RE.fullmatch(d) for d in v):
-                raise KonfigFehler(f"{was}: Liste von höchstens 20 Units name.service")
+                raise KonfigFehler(f"{was}: Liste von höchstens 20 Units name.service oder name@*.service")
             o[k] = tuple(v)
         elif k in ("litellm_port", "tr064_port"):
             o[k] = _ganz(v, was, 1, 65535)

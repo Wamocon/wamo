@@ -55,6 +55,34 @@ def test_klasse_passt_zum_treiber():
         geraet_aus({"kennung": "s2", "klasse": "server", "treiber": "server-ssh", "adresse": "192.168.178.136"})
 
 
+def server(dienste):
+    return geraet_aus({"kennung": "sokrates-2", "klasse": "server", "treiber": "server-lokal", "dienste": dienste})
+
+
+def test_dienste_mit_vorlage_der_kern_slots():
+    # Kern-Slots: wamo-core@*.service steht für "mindestens eine Instanz der Vorlage aktiv"
+    g_ = server(["wamo-core@*.service", "wamo-core@a.service", "docker.service", "wamo-geraete.service"])
+    assert g_.opt("dienste") == ("wamo-core@*.service", "wamo-core@a.service", "docker.service", "wamo-geraete.service")
+
+
+@pytest.mark.parametrize("falsch", [
+    "*.service", "wamo-*.service", "wamo-core*.service", "wamo-core@a*.service", "wamo-core@*a.service",
+    "wamo-core@**.service", "wamo-core@?.service", "wamo-core@[ab].service", "wamo-core@*.socket", "wamo-core@*",
+    "@*.service", "wamo@core@*.service", "Wamo-core@*.service", "wamo-core@*.service\n", " wamo-core@*.service",
+    "wamo-core@ *.service", "wamo-core@*.*", "x" * 59 + "@*.service",
+])
+def test_dienste_andere_platzhalter_abgelehnt(falsch):
+    with pytest.raises(KonfigFehler):
+        server([falsch])
+
+
+def test_beispielkonfiguration_nennt_die_kern_slots():
+    konfig = aus_daten(tomllib.loads(BEISPIEL.read_text(encoding="utf-8")))
+    dienste = konfig.geraete["sokrates-2"].opt("dienste")
+    assert "wamo-core@*.service" in dienste
+    assert "wamo-core.service" not in dienste  # die alte Unit ist im Slot-Betrieb absichtlich aus
+
+
 def test_geheimnisse_nur_mit_praefix():
     konfig = aus_daten({"geraet": []}, {"WAMO_GERAETE_NAS1_BENUTZER": "b", "WAMO_GERAETE_NAS1_PASSWORT": "p"})
     assert konfig.geheimnis("NAS1", "PASSWORT") == "p"

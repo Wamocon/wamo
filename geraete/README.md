@@ -69,6 +69,24 @@ ssh sokrates2 "sudo -u wamo-geraete env WAMO_GERAETE_KONFIG=/etc/wamo-geraete/ge
 Rückweg: `sudo bash ~/wamo-infra/wamo-geraete-rueckweg.sh [--entfernen | --alles]`, auf den Sparks
 `wamo-status-rueckweg.sh [--entfernen]`.
 
+## Server-Status und Dienste von Sokrates-2
+
+Sokrates-2 fragt der Dienst lokal ab (Treiber `server-lokal`): Laufzeit, Last, Speicher und Platte aus `/proc` und `statvfs`, die
+GPU über `nvidia-smi` und je Eintrag in `dienste` den Zustand über `systemctl is-active` (feste Befehlszeile ohne Shell, Zeitlimit
+2 Sekunden). Die Büro-Karte zählt jeden Dienst mit `failed`, `inactive` oder `deactivating` als Störung („läuft, 1 Dienst nicht aktiv“).
+
+- **Kern-Slots:** Der Kern läuft als Vorlage `wamo-core@.service` in Instanz `a` oder `b`, bei jedem Release im Wechsel
+  (`infra/sokrates2/wamo-core-slots.sh`). Die alte Unit `wamo-core.service` ist absichtlich aus und wird nie gestartet. In `dienste`
+  steht deshalb `wamo-core@*.service`. Dafür ruft der Dienst `systemctl is-active wamo-core@*.service` auf: systemd erweitert das
+  Muster selbst über die geladenen Instanzen und gibt je Instanz eine Zeile aus. Das Ergebnis steht unter dem Schlüssel
+  `wamo-core@*.service`: `active`, sobald eine Instanz läuft, sonst der Zustand der besten Instanz (Rangfolge `active`, `reloading`,
+  `refreshing`, `activating`, `deactivating`, `maintenance`, `inactive`, `failed`). Ist keine Instanz geladen, heißt es `inactive`;
+  scheitert `systemctl` selbst (Rückgabewert außer 0, 3 und 4), heißt es `unbekannt`.
+- **Erlaubte Einträge:** `name.service`, eine feste Instanz `name@x.service` und als einziger Platzhalter `name@*.service`. Andere
+  Muster (`*.service`, `wamo-*.service`, `name@?.service`, `name@[ab].service`, `name@a*.service`) verhindern den Start.
+- **Getestet** mit einer Attrappe für `systemctl` (`tests/test_server_status.py`); am Server prüft man es mit
+  `systemctl is-active 'wamo-core@*.service'` (eine Zeile je geladene Instanz).
+
 ## SNMPv3 für Switches und Access Points
 
 Treiber `snmp` (Klassen `switch` und `accesspoint`), nur lesen. Derzeit ist **kein Switch eingetragen**: Ohne Eintrag gibt es
@@ -174,6 +192,8 @@ Inhalte, Grenze je Profil und Rückmeldung nach der Wirkung (Zustand erneut lese
 ```powershell
 cd geraete; uv run pytest -q
 cd ..\voice-core; uv run pytest -q test_geraete_client.py test_geraete_werkzeuge.py test_buero_api.py
+# nur Server-Status und Konfiguration
+cd ..\geraete; uv run pytest -q tests/test_server_status.py tests/test_konfig_text.py
 ```
 
 SNMP gegen einen echten Agenten (Docker, Wegwerf-Container): siehe den Kopf von `geraete/tests/test_snmp_container.py`.
