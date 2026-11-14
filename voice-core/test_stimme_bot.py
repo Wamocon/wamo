@@ -322,6 +322,12 @@ async def test_startstrategie_fragt_bei_laufender_arbeit_den_waechter():
     await session.cleanup()
 
 
+def test_bot_laedt_den_abdruck_bis_der_stand_bekannt_ist():
+    """Ein Fehler beim ersten Laden darf Werkzeuge nicht bis zum Sitzungsende sperren (stimme_sitzung.laden_bis_bekannt)."""
+    assert "asyncio.create_task(stimme.laden_bis_bekannt())" in BOT_QUELLE
+    assert "stimme.vorbereiten()" not in BOT_QUELLE
+
+
 def test_bot_nennt_die_neuen_nachrichten_in_der_kopfzeile():
     for text in ("stimmabdruck_einwilligung", '"type": "stimme"', '"type": "stimmabdruck"'):
         assert text in BOT_QUELLE.split("Start lokal:")[0], text

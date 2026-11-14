@@ -626,7 +626,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     state: dict = {"pc": "verbindet" if pc_enabled else "aus", "pc_latenz_ms": None, "pc_steuerung": False,
                    "client_ready": False, "live": True, "cleaned": False, "guard": None,
                    "pc_weg": False, "pc_tools": False, "pc_waechter": None, "geraet_wache": None, "labor_wache": None,  # pc_weg: Hinweis im Prompt
-                   "stimme_laden": None,  # Hintergrundaufgabe: Abdruck laden (stimme_sitzung.vorbereiten)
+                   "stimme_laden": None,  # Hintergrundaufgabe: Abdruck laden (stimme_sitzung.laden_bis_bekannt)
                    "geraet_ok": geraet_zugang is None, "geraet_entzogen": False,  # Tunnel je Gerät: erst nach dem Namensabgleich, nie nach einem Entzug
                    "pc_name": None, "pc_belegt": False,
                    "pc_gesperrt": False, "sperr_probe": None}  # Bildschirm am PC gesperrt (Host: status=locked)
@@ -1341,7 +1341,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
             await task.queue_frames([TTSSpeakFrame(greeting)])
         _keep(asyncio.create_task(cache_vorwaermen()))  # die erste Frage soll einen warmen Prompt-Cache finden
         if stimme is not None and state["stimme_laden"] is None and state["live"]:
-            state["stimme_laden"] = _keep(asyncio.create_task(stimme.vorbereiten()))  # Abdruck laden: das Gespräch wartet nicht
+            # Abdruck laden, bei unbekanntem Stand mit wachsender Pause erneut: das Gespräch wartet nicht
+            state["stimme_laden"] = _keep(asyncio.create_task(stimme.laden_bis_bekannt()))
         # Sitzung erst nach der Begrüßung anlegen (der Insert kostete vor dem ersten Ton Zeit)
         await memory.start_session(channel=os.getenv("WAMO_CHANNEL") or "web")
         # Profil regelmäßig neu prüfen und Höchstdauer einhalten (M5)

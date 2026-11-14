@@ -194,6 +194,62 @@ class VorbereitenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(b.gate.grund_der_stimme(), "Stimme noch nicht erkannt")
 
 
+class NachladenTests(unittest.IsolatedAsyncioTestCase):
+    """Scheiterte das Laden beim Start, blieb der Stand bis zum Sitzungsende unbekannt (kaputt), und der Modus streng sperrte Werkzeuge per
+    Sprache, auch für ein Profil ohne Abdruck. laden_bis_bekannt liest den Stand deshalb mit wachsender Pause neu, bis er bekannt ist."""
+
+    async def lauf(self, db, *, heil_nach: int, modell=None):
+        s, gesendet, _, _ = neu(db, modell=modell)
+        pausen: list[float] = []
+
+        async def schlafen(secs):
+            if secs >= ss.NACHLADEN_SECS[0]:  # die kurzen Pausen zwischen den drei Versuchen eines Ladens zählen nicht
+                pausen.append(secs)
+                if len(pausen) == heil_nach:
+                    db.fehler = None  # die Datenbank ist wieder da
+
+        with mock.patch.object(ss.asyncio, "sleep", schlafen):
+            await asyncio.wait_for(s.laden_bis_bekannt(), 5.0)
+        return s, gesendet, pausen
+
+    async def test_ohne_abdruck_erholt_sich_der_stand_und_nichts_bleibt_gesperrt(self):
+        s, gesendet, pausen = await self.lauf(FakeDb(fehler=asyncpg.PostgresError("weg")), heil_nach=3)
+        self.assertEqual(s.gate.status, "fehlt")
+        self.assertIsNone(await s.gate.pruefen("programm_oeffnen"))
+        self.assertEqual([x["status"] for x in arten(gesendet, "stimme")][-2:], ["kaputt", "fehlt"])
+        self.assertEqual(pausen, list(ss.NACHLADEN_SECS[:3]))
+        self.assertEqual(ss.NACHLADEN_SECS[0], 30.0)
+        self.assertTrue(all(a < b for a, b in zip(ss.NACHLADEN_SECS, ss.NACHLADEN_SECS[1:])))  # die Pause wächst
+
+    async def test_mit_abdruck_wird_die_pruefung_bereit(self):
+        s, _, _ = await self.lauf(FakeDb({USER_A: als_vektor(EIGENER)}, fehler=asyncpg.PostgresError("weg")), heil_nach=1)
+        self.assertEqual(s.gate.status, "bereit")
+
+    async def test_die_pause_bleibt_nach_der_letzten_stufe_gleich(self):
+        n = len(ss.NACHLADEN_SECS) + 2
+        _, _, pausen = await self.lauf(FakeDb(fehler=asyncpg.PostgresError("weg")), heil_nach=n)
+        self.assertEqual(pausen[-3:], [ss.NACHLADEN_SECS[-1]] * 3)
+
+    async def test_bekannter_stand_laedt_nicht_neu(self):
+        db = FakeDb()
+        s, _, pausen = await self.lauf(db, heil_nach=99)
+        self.assertEqual((s.gate.status, pausen, len(db.calls)), ("fehlt", [], 1))
+
+    async def test_geloescht_waehrend_der_pause_wird_nicht_ueberschrieben(self):
+        db = FakeDb({USER_A: als_vektor(EIGENER)}, fehler=asyncpg.PostgresError("weg"))
+        s, _, _, _ = neu(db)
+
+        async def schlafen(secs):
+            if secs >= ss.NACHLADEN_SECS[0]:
+                s.gate.setze_abdruck(None, geloescht=True)  # die Person löscht ihren Abdruck (mit Nachweis)
+                db.fehler = None
+
+        with mock.patch.object(ss.asyncio, "sleep", schlafen):
+            await asyncio.wait_for(s.laden_bis_bekannt(), 5.0)
+        self.assertEqual(s.gate.status, "fehlt")
+        self.assertIsNone(s.gate.abdruck)
+
+
 class ClientBereitTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_und_einwilligung_gehen_an_die_oberflaeche(self):
         s, gesendet, _, _ = neu(FakeDb())
