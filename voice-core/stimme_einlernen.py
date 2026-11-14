@@ -148,6 +148,15 @@ class Einlernen:
         if beim_rechnen:
             await self.warten()
 
+    def aufraeumen(self) -> None:
+        """Die Sitzung endet: Aufnahme verwerfen, ein laufendes Rechnen abbrechen. Danach wird nichts mehr gespeichert."""
+        self._gen += 1
+        self._lauf = None
+        self._abgebrochen = True
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+        self._rechnet = False
+
     def bot_spricht(self, spricht: bool) -> None:
         self._bot_spricht = spricht
         lauf = self._lauf

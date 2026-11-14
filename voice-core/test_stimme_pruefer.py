@@ -262,6 +262,13 @@ class EinlernenImPrueferTests(PrueferBasis):
         self.assertIsNone(await self.v.urteil_abwarten(0.05))
         self.assertEqual(self.modell.rechner.aufrufe, 0)
 
+    async def test_cleanup_beendet_das_einlernen(self):
+        self.gate.setze_abdruck(None)
+        await self.v.einlernen_starten("stimme-1", mock.sentinel.am)
+        self.assertTrue(self.v.einlernen_aktiv)
+        await self.v.cleanup()
+        self.assertFalse(self.v.einlernen_aktiv)
+
     async def test_status_melden(self):
         await self.v.status_melden()
         self.assertEqual(self.meldungen("stimme")[-1], {"type": "stimme", "status": "bereit", "modus": "streng"})

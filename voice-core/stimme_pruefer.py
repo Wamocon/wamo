@@ -269,6 +269,7 @@ class Stimmpruefer(FrameProcessor):
 
     async def cleanup(self):
         await super().cleanup()
+        self._einlernen.aufraeumen()
         for task in list(self._tasks):
             task.cancel()
         self._ruhe.set()  # wer noch wartet, bekommt kein Urteil statt ewig zu warten

@@ -274,6 +274,18 @@ class EinlernenTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("start", [m["status"] for m in self.meldungen()])
         self.sagen.assert_not_awaited()
 
+    async def test_aufraeumen_beendet_ein_laufendes_rechnen_ohne_zu_speichern(self):
+        """Endet die Sitzung, während der Abdruck berechnet wird, darf danach nichts mehr in die Datenbank gehen."""
+        await self.e.starten("stimme-1", EINWILLIGUNG_AM)
+        await self.anleitung_vorbei()
+        await self.aufnehmen(ZIEL_SECS + 0.1)
+        self.assertTrue(self.e.beschaeftigt)
+        self.e.aufraeumen()
+        await asyncio.sleep(0.05)
+        self.speichern.assert_not_awaited()
+        self.assertFalse(self.e.beschaeftigt)
+        self.assertFalse(await self.e.sammeln(audio(8000), RATE))
+
     async def test_die_aufnahme_wird_nirgends_gespeichert(self):
         """Nur der Abdruck geht an speichern: drei Argumente, kein Ton."""
         await self.e.starten("stimme-1", EINWILLIGUNG_AM)

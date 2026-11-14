@@ -60,6 +60,9 @@ class StimmWaechter(FrameProcessor):
     async def _pruefen(self, frame: TranscriptionFrame) -> TranscriptionFrame:
         if not frame.text.strip():
             return frame
+        # Eine Unterbrechung (die Person fällt WAMO ins Wort) bricht in Pipecat das Frame ab, das ein Verarbeiter gerade bearbeitet. Während des
+        # Wartens gehört das Transkript aber der Person: es darf nicht verloren gehen.
+        frame.interruptible = False
         urteil = await self._pruefer.urteil_abwarten(self._warten)  # None: Frist abgelaufen oder nichts geprüft, gilt als unklar
         if urteil is None or urteil.urteil != FREMD or urteil.wert is None or urteil.secs < self._gate.schwellen.min_secs:
             return frame

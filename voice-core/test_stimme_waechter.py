@@ -142,6 +142,18 @@ class VerwerfenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([t.text.strip() for t in texte], ["", ""])
         self.assertEqual(len(meldungen), 1)
 
+    async def test_eine_unterbrechung_waehrend_des_wartens_verliert_das_transkript_nicht(self):
+        """Pipecat bricht bei einer Unterbrechung das Frame ab, das ein Verarbeiter gerade bearbeitet. Das gehaltene Transkript der Person darf
+        dabei nicht verloren gehen (zum Beispiel wenn sie WAMO ins Wort fällt, während das Urteil noch aussteht)."""
+        from pipecat.frames.frames import InterruptionFrame
+        from pipecat.tests.utils import SleepFrame
+
+        pruefer = AttrappePruefer(urteil(EIGEN), dauer=0.2)
+        waechter = StimmWaechter(bereites_gate(), pruefer)
+        unten, _ = await run_test(waechter, frames_to_send=[final("Mach die Heizung an"), SleepFrame(0.05), InterruptionFrame(), SleepFrame(0.4)])
+        texte = [f.text for f in unten if isinstance(f, TranscriptionFrame)]
+        self.assertEqual(texte, ["Mach die Heizung an"])
+
     async def test_nur_in_fahrtrichtung_abwaerts(self):
         pruefer = AttrappePruefer(urteil(FREMD))
         waechter = StimmWaechter(bereites_gate(), pruefer)
