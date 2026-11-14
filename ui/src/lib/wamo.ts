@@ -278,7 +278,7 @@ export function reduceBotTranscript(c: Caption, text: string): Caption {
 }
 
 /** Nur die gesprochenen Wörter eines Zugs (nach einer Unterbrechung). */
-export const gesprochen = (c: Caption) =>
+export const gesprochen = (c: Pick<Caption, "text" | "spoken">) =>
   c.text.trim() ? c.text.trim().split(/\s+/).slice(0, c.spoken).join(" ") : "";
 
 let logId = 0;

@@ -148,10 +148,6 @@
 }
 .kz-chip:hover:not(:disabled) { border-color: var(--core); color: var(--ink); }
 .kz-chip[aria-pressed="true"], .kz-chip[aria-expanded="true"] { background: transparent; border-color: var(--core); color: var(--core); }
-.kz .voice-line { height: 72px; border-radius: 6px; background: rgba(255, 255, 255, 0.025); }
-.kz .legend { font: 400 10.5px/1.2 var(--hud); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
-.kz .legend-user::before, .kz .legend-bot::before { width: 8px; height: 8px; border-radius: 2px; }
-.kz .legend-bot::before { box-shadow: 0 0 8px var(--voice-wamo); }
 
 /* ---------- Rechts: Reiter, Freigaben, Zeitleiste ---------- */
 .kz-reiter-seite { gap: 18px; }

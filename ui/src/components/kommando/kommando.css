@@ -257,8 +257,6 @@
 .kz-chip[aria-pressed="true"], .kz-chip[aria-expanded="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .kz-chip:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.kz .voice { width: min(100%, 580px); }
-.kz .voice-line { height: 44px; border-radius: 10px; background: color-mix(in srgb, var(--surface) 60%, transparent); }
 
 /* ---------- Zentrale ---------- */
 .kz-zentrale { display: flex; flex-direction: column; align-items: center; gap: 12px; }
@@ -432,7 +430,6 @@
   .kz-kopf { grid-template-columns: 1fr; justify-items: center; }
   .kz-titel, .kz-wahl-wrap { grid-column: 1; }
   .kz-titel { justify-self: center; align-items: center; }
-  .kz .voice { display: none; }
   .kz-chip, .kz-wahl button { min-height: 44px; }
   .kz-pille-mikro, .kz-pille-senden { width: 44px; height: 44px; }
   .kz-pille-feld { height: 44px; }

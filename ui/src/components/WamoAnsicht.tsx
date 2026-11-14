@@ -12,6 +12,7 @@ import { Bedienung } from "@/components/kommando/Bedienung";
 import { BueroKarte } from "@/components/kommando/BueroKarte";
 import { useBueroStandHalten } from "@/components/kommando/useBueroStand";
 import { gemerktZurueckgenommen } from "@/components/kommando/gemerktSitzung";
+import { Gespraech } from "@/components/kommando/Gespraech";
 import { Kernbereich } from "@/components/kommando/Kernbereich";
 import { KommandoRahmen } from "@/components/kommando/Rahmen";
 import { AuftraegeLeer, ErledigtListe, Hinweise, VorgaengeLeer } from "@/components/kommando/Seitenleisten";
@@ -186,7 +187,12 @@ export function WamoAnsicht({ aktionen, sitzung }: { aktionen: WamoAktionen; sit
           <CanvasBereich />
         </>
       }
-      hinweise={<Hinweise modellzugang={ansicht.modellzugang} />}
+      hinweise={
+        <>
+          <Gespraech />
+          <Hinweise modellzugang={ansicht.modellzugang} />
+        </>
+      }
       auftraege={
         <>
           <Freigaben onDecide={aktionen.decide} />

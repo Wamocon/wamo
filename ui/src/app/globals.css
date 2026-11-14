@@ -2,6 +2,7 @@
 @import "../components/kommando/kommando.css"; /* Kommandozentrale: alle Regeln unter .kz */
 @import "../components/kommando/hud.css"; /* HUD-Gestaltung der Kommandozentrale: Schriften, Glasflächen, Formen */
 @import "../components/kommando/kernRinge.css"; /* Kern: Lichtkugel in HUD-Ringen, Regeln mit Präfix .kr- */
+@import "../components/kommando/gespraech.css"; /* Block Gespräch (linke Spalte): Stimmlinie, Legende, Zeilen */
 @import "../components/kommando/aufgabenanzeige.css"; /* Aufgabenanzeige neben dem Kern: Regeln mit Präfix .az */
 @import "../components/kommando/seitengriff.css"; /* Griffe der Seitenleisten (Breite ziehen): Regeln mit Präfix .kz-griff */
 @import "../components/kommando/vorgaenge.css"; /* Tafel "Vorgänge" (Karten, Balken, Schritte): Regeln mit Präfix .vg- */
@@ -38,6 +39,7 @@
   /* Rollen */
   --bg: #07070a;
   --panel: rgba(15, 15, 21, 0.78); /* Glasflächen der Seitenspalten und Karten */
+  --glas-leicht: rgba(255, 255, 255, 0.025); /* zarte Fläche, zum Beispiel hinter der Stimmlinie */
   --panel-solid: #111117;
   --surface: #111117;
   --ink: #f1ede6;
@@ -317,8 +319,7 @@ p, li { text-wrap: pretty; }
 .caption-bot[data-cut] span:not([data-spoken]) { text-decoration: line-through; text-decoration-thickness: 2px; }
 .caption[data-ended] .caption-bot { opacity: 0.6; transition: opacity 400ms 4s var(--ease-out); }
 
-/* Stimmlinie */
-.voice { display: flex; flex-direction: column; gap: 4px; }
+/* Stimmlinie und Legende (Block Gespräch, kommando/gespraech.css) */
 .voice-line { width: 100%; height: 56px; display: block; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; }
 .legend { display: flex; justify-content: space-between; margin: 0; font-size: 13px; color: var(--ink-soft); }
 .legend-user::before, .legend-bot::before {
@@ -746,7 +747,6 @@ p, li { text-wrap: pretty; }
   /* PC-Steuerung an: wichtiger als die Betriebsart (die steht weiter im Menü) */
   .status-items:has([data-feld="pcsteuerung"]) [data-feld="betriebsart"] { display: none; }
   .timeline > ol > li:nth-child(n + 4) { display: none; } /* eingeklappt: 3 */
-  .voice { display: none; }
   .actions {
     order: 9; position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; margin: 0;
     height: 64px; padding: 10px 12px;

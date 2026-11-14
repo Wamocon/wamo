@@ -1,0 +1,30 @@
+/* =====================================================================
+   Block "Gespräch" ganz oben in der linken Spalte (Gespraech.tsx): Überschrift mit Abzeichen, Stimmlinie, Legende und die
+   letzten Zeilen von Person und WAMO. Eingebunden über globals.css. Die Grundregeln für .voice-line und .legend stehen in
+   globals.css (Farben der Stimmen), hier die Gestaltung im HUD-Stil. Regeln mit Präfix .kz-
+   ===================================================================== */
+
+.kz-gespraech { display: flex; flex-direction: column; gap: 16px; }
+.kz-gespraech-kopf {
+  margin: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font: 600 12px/1.2 var(--display); letter-spacing: 0.2em; text-transform: uppercase; color: var(--ink);
+}
+.kz-gespraech .hud-badge[data-state="an"]::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor;
+}
+
+.kz-gespraech .voice-line { height: 72px; border-radius: 6px; background: var(--glas-leicht); }
+.kz-gespraech .legend { margin-top: -8px; font: 400 10.5px/1.2 var(--hud); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-soft); }
+.kz-gespraech .legend-user::before, .kz-gespraech .legend-bot::before { width: 8px; height: 8px; margin-right: 6px; border-radius: 2px; vertical-align: baseline; }
+.kz-gespraech .legend-bot::before { box-shadow: 0 0 8px var(--voice-wamo); }
+
+.kz-zeilen { display: flex; flex-direction: column; gap: 14px; }
+.kz-zeilen p { margin: 0; overflow-wrap: anywhere; animation: hud-auf 0.35s ease-out both; }
+.kz-wer { display: block; margin-bottom: 3px; font: 600 10px/1.2 var(--hud); letter-spacing: 0.2em; text-transform: uppercase; }
+.kz-zeile-mensch { color: var(--ink-soft); font-size: 15px; line-height: 1.45; }
+.kz-zeile-mensch .kz-wer { color: var(--ink-soft); }
+.kz-zeile-mensch[data-leer] { font-size: 14px; }
+.kz-zeile-wamo { color: var(--ink); font-size: 17px; line-height: 1.5; }
+.kz-zeile-wamo .kz-wer { color: var(--core); }
+/* lange Antworten: die Spalte bleibt ruhig, der volle Text steht im Verlauf */
+.kz-zeile-wamo .kz-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 9; line-clamp: 9; overflow: hidden; }
