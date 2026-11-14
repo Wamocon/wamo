@@ -33,6 +33,7 @@ import { overlayFarben, type OverlayFarben } from "@/lib/stimmfarben";
 import { abdruckGestartet, abdruckLaeuft, kannEinlernen, kannLoeschen, STIMME_LEER } from "@/lib/stimme";
 import { HAENGT_HINWEIS, HAENGT_NACH_MS, textAbschicken, unterstuetztText } from "@/lib/textEingabe";
 import { vorgaengeBeenden } from "@/lib/vorgaenge";
+import { aufgabeBeenden } from "@/lib/aufgabenanzeige";
 import { erstelleFrist, fristMeldung, sollVerlaengern } from "@/lib/verbindungsfrist";
 import { anmeldungAbgelaufen, maxStundenHier, merkeAbmeldeGrund } from "@/lib/anmeldung";
 import {
@@ -510,6 +511,7 @@ export function useWamo(): WamoAktionen {
         abdruck: null,
         einwilligung: null,
         vorgaenge: vorgaengeBeenden(s.vorgaenge, Date.now()), // der Kern bricht seine Vorgänge mit der Sitzung ab
+        aufgabe: aufgabeBeenden(s.aufgabe, performance.now()), // die letzte Aufgabe bleibt stehen, aber nie als laufend
         approvals: [],
         auftraege: [],
         micOn: true,
