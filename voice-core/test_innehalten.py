@@ -115,6 +115,36 @@ class InnehaltenGateTest(_HaltTest):
         self.assertEqual(g.wort_beginnt("das"), SPIELEN)
         self.assertFalse(self.halt.haelt)
 
+    def test_weitersprechen_fruehestens_nach_der_mindestpause_ab_dem_anhalten(self):
+        """Der Ansatz liegt vor dem Anhalten (WAMO wartet auf die Wortgrenze): die Stille zählt ab dem Ansatz, die Mindestpause
+        ab dem Anhalten. Im Log lagen sonst Anhalten und Weitersprechen 0,12 s auseinander."""
+        g = self.gate()
+        g.ansatz(" Danke")  # t=0, keine Wortgrenze in Sicht
+        self.t = 0.45
+        self.assertTrue(g.check_timers())
+        self.assertTrue(self.halt.haelt, "nach grenzwarte_secs hält WAMO ohne Wortgrenze inne")
+        mindest = soft_interrupt.MIN_HALT_SECS
+        self.t = 0.75  # 0,7 s Stille seit dem Ansatz sind um, der Halt dauert erst 0,3 s
+        self.assertTrue(g.check_timers(), "zu früh: erst die Mindestpause abwarten")
+        self.assertTrue(self.halt.haelt)
+        self.t = 0.45 + mindest - 0.01
+        self.assertTrue(g.check_timers())
+        self.assertTrue(self.halt.haelt)
+        self.t = 0.45 + mindest + 0.01
+        self.assertFalse(g.check_timers(), "Mindestpause um und Stille lang genug: weiter")
+        self.assertFalse(self.halt.haelt)
+
+    def test_die_mindestpause_geht_nie_ueber_die_hoechstpause_hinaus(self):
+        with mock.patch.object(soft_interrupt, "MIN_HALT_SECS", 5.0):
+            g = self.gate()  # max_pause_secs=2.5
+            self.anhalten_auf_ansatz(g)
+            self.t = 2.4
+            self.assertTrue(g.check_timers())
+            self.assertTrue(self.halt.haelt)
+            self.t = 2.6
+            self.assertFalse(g.check_timers())
+            self.assertFalse(self.halt.haelt, "die Höchstpause gilt zuerst")
+
     def test_spricht_die_person_noch_wartet_wamo_hoechstens_die_maximale_pause(self):
         g = self.gate()
         self.anhalten_auf_ansatz(g)

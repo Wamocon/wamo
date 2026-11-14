@@ -506,6 +506,10 @@ DUCK_BEURTEILT_SECS = 0.3  # Rückmeldung oder Echo erkannt: so lange warten, ob
 DUCK_MAX_SECS = 3.0  # spätestens nach dieser Zeit ohne bestätigten Einwurf wieder normal (Echo hält die Sprachaktivität an)
 # Innehalten (WAMO_INNEHALTEN)
 WATCH_SECS = 0.05  # so oft prüft das Gate Innehalten, Weitersprechen und Abbruch ohne Wortgrenze
+# So lange steht der Ton mindestens, gerechnet ab dem Anhalten (nicht ab dem Ansatz): Die Stille zählt ab dem Ansatz, das Anhalten
+# folgt aber erst an der nächsten Wortgrenze. Im Log lagen Anhalten und Weitersprechen so nur 0,12 s auseinander, ein Stolpern statt
+# einer Pause. Der Wert ist geschätzt und per Hörprobe nachzustellen; die Höchstpause (max_pause_secs) geht ihm immer vor.
+MIN_HALT_SECS = 0.6
 POLL_SECS = 0.02  # so oft schaut der Tracker höchstens nach, ob ein Wort an der Reihe ist
 TOLERANZ_NS = 30_000_000  # ein Wort gilt als erreicht, wenn der Ton bis auf 30 ms dort ist
 
@@ -928,7 +932,8 @@ class SoftInterruptGate(FrameProcessor):
                 self._fortsetzen("Höchstdauer")
                 return False
             still_seit = max(self._letzter_ansatz, self._user_quiet_since)
-            if not self._vad_spricht and jetzt - still_seit >= self._weiter_secs:
+            weiter_ab = max(still_seit + self._weiter_secs, self._haelt_seit + MIN_HALT_SECS)  # die Höchstpause oben geht vor
+            if not self._vad_spricht and jetzt >= weiter_ab:
                 self._fortsetzen("kein weiteres Wort")
                 return False
             return True
