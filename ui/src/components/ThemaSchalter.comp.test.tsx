@@ -69,14 +69,22 @@ describe("ThemaSchalter", () => {
       themaNacht(true); // so erzwingt kommando/Rahmen.tsx dunkel
     });
     expect(wurzel.getAttribute("data-theme")).toBe("dark");
-    expect((schalter() as HTMLButtonElement).disabled).toBe(true);
+    // gesperrt über aria-disabled statt disabled: der Knopf bleibt fokussierbar, und der Grund steht als Beschreibung daran
+    expect((schalter() as HTMLButtonElement).disabled).toBe(false);
+    expect(schalter().getAttribute("aria-disabled")).toBe("true");
     expect(schalter().getAttribute("title")).toBe("In der Darstellung Nacht bleibt die Oberfläche dunkel");
+    const beschreibung = document.getElementById(schalter().getAttribute("aria-describedby") ?? "");
+    expect(beschreibung?.textContent).toBe("In der Darstellung Nacht bleibt die Oberfläche dunkel");
+    fireEvent.click(schalter()); // tut nichts
+    expect(wurzel.getAttribute("data-theme")).toBe("dark");
+    expect(localStorage.getItem(THEMA_SCHLUESSEL)).toBe("hell");
     act(() => {
       darstellungSetzen("normal", false);
       themaNacht(false);
     });
     expect(wurzel.getAttribute("data-theme")).toBe("light");
-    expect((schalter() as HTMLButtonElement).disabled).toBe(false);
+    expect(schalter().hasAttribute("aria-disabled")).toBe(false);
+    expect(schalter().hasAttribute("aria-describedby")).toBe(false);
   });
 });
 
