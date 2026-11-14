@@ -193,6 +193,16 @@ class PruefenTests(PrueferBasis):
         self.assertEqual(self.gate.grund_der_stimme(), "Stimme nicht sicher erkannt")
         self.assertNotIn("wert", self.meldungen("stimme")[-1])
 
+    async def test_nan_aus_dem_modell_gilt_als_unklar(self):
+        await self.sprechen(8000, 2.0)
+        self.v.on_turn_end()
+        self.modell.rechner.festes_ergebnis = np.full(DIM, np.nan, dtype=np.float32)
+        urteil = await self.sprechen(8000, 2.0)
+        self.assertEqual(urteil.urteil, UNKLAR)
+        self.assertIsNone(urteil.wert)
+        self.assertEqual(self.gate.grund_der_stimme(), "Stimme nicht sicher erkannt")
+        self.assertNotIn("wert", self.meldungen("stimme")[-1])
+
     async def test_ohne_abdruck_oder_im_modus_aus_wird_nicht_gerechnet(self):
         self.gate.setze_abdruck(None)
         self.assertIsNone(await self.sprechen(8000, 2.0))

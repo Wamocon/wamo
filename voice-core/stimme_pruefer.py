@@ -234,6 +234,8 @@ class Stimmpruefer(FrameProcessor):
             if rechner is None or not pcm:
                 raise RuntimeError("kein Modell" if rechner is None else "kein Ton ausgeschnitten")
             wert = kosinus(await asyncio.to_thread(rechner.embed, pcm, rate), abdruck)
+            if not math.isfinite(wert):
+                raise ValueError("Ähnlichkeit ist keine endliche Zahl")
         except Exception as e:  # nicht geprüft heißt nicht erkannt: nie das alte Ergebnis weiterverwenden
             if gate.abdruck is None:
                 return  # der Abdruck wurde während des Rechnens gelöscht

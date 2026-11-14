@@ -75,7 +75,10 @@ class Embedder:
             strom = self._extraktor.create_stream()
             strom.accept_waveform(sample_rate=sample_rate, waveform=pcm_in_float(pcm))
             strom.input_finished()
-            return normalisieren(np.array(self._extraktor.compute(strom), dtype=np.float32))
+            roh = np.array(self._extraktor.compute(strom), dtype=np.float32)
+        if roh.shape != (DIM,) or not np.all(np.isfinite(roh)) or not float(np.linalg.norm(roh)) > 0:
+            raise ValueError("Das Modell lieferte keinen gültigen Abdruck (NaN, unendlich, Nullvektor oder falsche Länge)")
+        return normalisieren(roh)
 
 
 class StimmModell:

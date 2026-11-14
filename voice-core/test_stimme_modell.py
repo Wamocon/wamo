@@ -140,6 +140,14 @@ class EmbedderTests(unittest.TestCase):
         self.assertEqual(v.shape, (DIM,))
         self.assertAlmostEqual(float(np.linalg.norm(v)), 1.0, places=5)
 
+    def test_nan_oder_unendlich_oder_nullvektor_aus_dem_modell_ist_ein_fehler(self):
+        for schlecht in ([float("nan")] + [0.5] * (DIM - 1), [float("inf")] + [0.0] * (DIM - 1), [0.0] * DIM):
+            extraktor = AttrappeExtraktor()
+            extraktor.compute = lambda strom, werte=schlecht: werte
+            e = Embedder(Path("x.onnx"), extraktor=extraktor)
+            with self.assertRaises(ValueError):
+                e.embed(ton(1.0), RATE)
+
     def test_mehrere_sitzungen_rechnen_nie_gleichzeitig_im_selben_modell(self):
         extraktor = AttrappeExtraktor()
         e = Embedder(Path("x.onnx"), extraktor=extraktor)
