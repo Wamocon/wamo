@@ -342,10 +342,34 @@ FRAGE_BEGINN = re.compile(
 )
 
 
+SOLL_ICH = re.compile(r"\bsoll\s+ich\b", re.IGNORECASE)  # als ganze Wörter: "Tagessoll ich ..." ist keine Frage
+
+# Gängige Abkürzungen mit Punkt beenden keinen Satz: "Soll ich z. B. den Ordner öffnen?" bleibt bis zum Fragezeichen eine Frage.
+# Die Sprachausgabe liefert zweiteilige wie "z. B." auch als zwei Wörter. Der erste Teil beendet nie einen Satz, der zweite nur
+# ohne den passenden ersten davor ("Wir nehmen Plan B." endet).
+ABKUERZUNGEN = frozenset({
+    "z.b.", "d.h.", "u.a.", "dr.", "prof.", "bzw.", "ca.", "usw.", "etc.", "ggf.", "evtl.", "vgl.", "inkl.", "bspw.", "nr.",
+})
+ABKUERZUNG_TEILE = {"z.": "b.", "d.": "h.", "u.": "a."}  # erster Teil, zweiter Teil
+_SATZZEICHEN_DANACH = "\"'”»)"  # Anführungszeichen und Klammer hinter dem Satzende
+_ZEICHEN_DAVOR = "\"'„“‚‘»«("  # Anführungszeichen und Klammer vor einem Wort
+
+
+def satz_endet(wort: str, davor: str = "") -> bool:
+    """Endet mit diesem Wort ein Satz? Satzzeichen am Ende (auch vor Anführungszeichen oder Klammer), aber keine gängige Abkürzung
+    mit Punkt. davor: das Wort davor, für Abkürzungen aus zwei Wörtern ("z." und "B.")."""
+    w = wort.strip().rstrip(_SATZZEICHEN_DANACH)
+    if not w.endswith(SENTENCE_END):
+        return False
+    klein = w.lstrip(_ZEICHEN_DAVOR).lower()
+    erster_teil = davor.strip().lstrip(_ZEICHEN_DAVOR).lower()
+    return not (klein in ABKUERZUNGEN or klein in ABKUERZUNG_TEILE or ABKUERZUNG_TEILE.get(erster_teil) == klein)
+
+
 def ist_frage(satz: str) -> bool:
     """Ein zu Ende gesprochener Satz ist eine Frage: Fragezeichen am Ende (auch hinter Anführungszeichen) oder "soll ich"."""
     t = satz.strip().rstrip(" .")
-    return bool(re.search(r"\?[!\"'”»)]*$", t)) or "soll ich" in t.lower()
+    return bool(re.search(r"\?[!\"'”»)]*$", t)) or bool(SOLL_ICH.search(t))
 
 
 def fragt_bisher(satz: str) -> bool:
@@ -857,8 +881,10 @@ class SoftInterruptGate(FrameProcessor):
         """Merkt sich, ob der Satz, den WAMO gerade spricht oder zuletzt beendet hat, eine Frage ist (nur was erklungen ist)."""
         if not text.strip():
             return
+        woerter = text.split()  # Soniox liefert einzelne Wörter, die Sprachausgabe im Haus ganze Sätze
+        davor = woerter[-2] if len(woerter) > 1 else (self._satz[-1].split()[-1] if self._satz else "")
         self._satz.append(text.strip())
-        if text.rstrip().rstrip("\"'”»)").endswith(SENTENCE_END):
+        if satz_endet(woerter[-1], davor):  # "z. B." und andere Abkürzungen beenden den Satz nicht
             self._frage_fertig = ist_frage(" ".join(self._satz))
             self._satz = []
 
