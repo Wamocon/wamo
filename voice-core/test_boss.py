@@ -217,7 +217,8 @@ async def test_modell_das_zu_anthropic_fuehrt_wird_uebersprungen(hz, monkeypatch
     assert w.modell == "gemma4-31b" and "führt zu Anthropic" in w.grund
 
 
-async def test_vertraulich_mit_claude_profil_nur_haus(cz, monkeypatch):
+async def test_waehlen_vertraulich_mit_claude_profil_nur_haus(cz, monkeypatch):
+    # eigener Name: unter dem alten Namen verdeckte der gleichnamige Werkzeugtest weiter unten diesen Test, er lief nie
     _gateway(monkeypatch)
     w = await boss.waehlen("code", cz, vertraulich=True)
     assert w.anbieter == "litellm"

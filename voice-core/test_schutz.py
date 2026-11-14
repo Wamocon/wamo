@@ -221,11 +221,16 @@ class DiffAusGit(unittest.TestCase):
         self.assertEqual(S.klassifizieren(q.aenderungen(self.alt, n))["klasse"], "sonder")   # das Löschen des Wächters zählt
 
     def test_moduswechsel_und_sonderzeichen_im_namen(self):
-        os.chmod(os.path.join(self.w, "voice-core", "start.sh"), 0o755)
+        # Windows kennt kein Ausführungsrecht (Git für Windows setzt core.filemode=false): dort prüft der Test nur den Namen,
+        # den Moduswechsel prüft er unter Linux, wo der Anker läuft
+        moduswechsel = os.name != "nt"
+        if moduswechsel:
+            os.chmod(os.path.join(self.w, "voice-core", "start.sh"), 0o755)
         Path(self.w, "docs", "ä öü.md").write_text("u\n")
         q, n = self.neu()
         a = dict((p, s) for s, p in q.aenderungen(self.alt, n))
-        self.assertEqual(a[b"voice-core/start.sh"], "M")
+        if moduswechsel:
+            self.assertEqual(a[b"voice-core/start.sh"], "M")
         self.assertIn("docs/ä öü.md".encode("utf-8"), a)
 
     def test_ungueltige_commits_werden_abgewiesen(self):

@@ -276,13 +276,20 @@ class CaddyRouteTests(unittest.TestCase):
         self.assertIn("path_regexp ^/wamo/release/[0-9a-f-]+/freigeben$", z)
         self.assertIn("handle @freigeben {", z)
         self.assertEqual([x for x in z if "freigabe.sock" in x], ["reverse_proxy unix//run/wamo-freigabe/freigabe.sock {"])
-        self.assertEqual([x for x in z if "core.sock" in x], ["reverse_proxy unix//run/wamo-core/core.sock {"])   # der Kern bleibt, wie er war
-        self.assertEqual(z.count("handle {"), 1)   # der Rest geht wie bisher an den Kern
+        # Der Rest geht an den Kern. Seit den Kern-Slots (Schritt 2.2) steht die Standardroute nicht mehr in der Site, sondern in der
+        # Include-Datei slot.inc (vor der Umstellung slot.inc.legacy mit dem Socket der alten Unit, test_kern_slots.py prüft beide Fassungen).
+        self.assertEqual(z.count("handle {"), 0)
+        self.assertEqual([x for x in z if "core.sock" in x or "core-" in x], [])   # kein Kern-Socket fest in der Site
+        self.assertLess(z.index("handle @freigeben {"), z.index("import /etc/caddy/kern/slot.inc"))   # die Freigabe greift vor dem Kern
+        legacy = self.code((INFRA / "wamo-caddy" / "kern" / "slot.inc.legacy").read_text(encoding="utf-8"))
+        self.assertEqual(legacy.count("handle {"), 1)
+        self.assertEqual([x for x in legacy if "core.sock" in x], ["import kern_weiter /run/wamo-core/core.sock"])   # der Kern bleibt, wie er war
         self.assertNotIn("{8}", self.site())   # geschweifte Klammern im Muster würde Caddy als Platzhalter lesen
 
     def test_die_route_faengt_nichts_anderes_ab(self):
         text = self.site()
-        pfad = re.search(r"path_regexp (\S+)", text)[1]
+        # das Muster der Freigabe-Route, nicht das der Dateigrenzen in (kern_weiter), das in der Datei weiter oben steht
+        pfad = re.search(r"@freigeben \{[^}]*?path_regexp (\S+)", text)[1]
         muster = re.compile(pfad)
         gut = "/wamo/release/0b9f2c1e-4a6d-4f0e-9a1b-2c3d4e5f6a7b/freigeben"
         self.assertTrue(muster.search(gut))

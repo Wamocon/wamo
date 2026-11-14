@@ -18,6 +18,12 @@ import dev_guard as g
 
 PROJECT = Path(tempfile.gettempdir()) / "wmc-test-projekt"
 REPO = g.REPO_ROOT.as_posix()  # das WAMO-Repo auf diesem Rechner
+# Der Ordnername des Repos hängt vom Checkout ab (wamo, ein Arbeitsbaum, w.a.i.s auf GitHub). Die Umgehungsversuche
+# entstehen deshalb aus dem echten Namen und nicht aus einem festen Wort.
+NAME = g.REPO_ROOT.name
+NAME_EINFACH = NAME[0] + "''" + NAME[1:]      # w''amo: Quoting, das die Shell auflöst
+NAME_DOPPELT = NAME[0] + '""' + NAME[1:]      # w""amo
+NAME_PLATZHALTER = NAME[0] + "?" + NAME[2:]   # w?mo: Platzhalter statt eines Zeichens
 
 
 def bash(cmd):
@@ -132,9 +138,9 @@ class BashTests(unittest.TestCase):
     def test_repo_protection_uses_resolved_paths(self):
         self.assertEqual(bash(f"type {g.REPO_ROOT / 'voice-core' / 'bot.py'}"), "block")
         parent = g.REPO_ROOT.parent.as_posix()
-        self.assertEqual(bash(f"cat {parent}/w''amo/voice-core/memory.py"), "block")  # Quoting aufgelöst
-        self.assertEqual(bash(f'cat {parent}/w""amo/x'), "block")
-        self.assertEqual(bash(f"cat {parent}/w?mo/voice-core/bot.py"), "approval")  # Platzhalter
+        self.assertEqual(bash(f"cat {parent}/{NAME_EINFACH}/voice-core/memory.py"), "block")  # Quoting aufgelöst
+        self.assertEqual(bash(f"cat {parent}/{NAME_DOPPELT}/x"), "block")
+        self.assertEqual(bash(f"cat {parent}/{NAME_PLATZHALTER}/voice-core/bot.py"), "approval")  # Platzhalter
         self.assertEqual(bash(f"ls {parent}/*"), "approval")
         self.assertEqual(g.decide("Read", {"file_path": f"{REPO}/README.md"}, PROJECT)[0], "block")
         self.assertEqual(g.decide("Read", {"file_path": "C:\\Users\\beispiel\\Projekte\\wamo\\x.txt"}, PROJECT)[0],
@@ -298,8 +304,9 @@ class ReviewRegressionTests(unittest.TestCase):
 
     def test_more_bypasses(self):
         if os.name == "nt":   # Laufwerkspfade gibt es nur unter Windows
-            self.assertEqual(bash("cat D:/IDEA/Projekt/w''amo/voice-core/.env"), "block")
-            self.assertEqual(bash('cat D:/IDEA/Projekt/w""amo/x'), "block")
+            eltern = g.REPO_ROOT.parent.as_posix()   # mit Laufwerksbuchstaben, zum Beispiel D:/IDEA/Projekt
+            self.assertEqual(bash(f"cat {eltern}/{NAME_EINFACH}/voice-core/.env"), "block")
+            self.assertEqual(bash(f"cat {eltern}/{NAME_DOPPELT}/x"), "block")
         for cmd in ["rm -rf ~/*", "rm -rf ~/Documents", "rm -r -f /", "rm -rf /*", "rm -rf $HOME"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(bash(cmd), "block")
