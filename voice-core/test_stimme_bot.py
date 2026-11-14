@@ -163,6 +163,61 @@ async def test_werkzeuge_des_modells_laufen_durch_das_gate_ausser_den_offenen():
     await session.cleanup()
 
 
+BUERO_ENV = {  # Büro-Kern mit Entwicklungsaufträgen für dieses Profil (wie test_entwicklung_betrieb.py)
+    "WAMO_BETRIEB": "buero", "WAMO_ENTWICKLUNG_BUERO": "an", "WAMO_ENTWICKLUNG_ORT": "sokrates2", "WAMO_ENTWICKLUNG_PROFILE": USER,
+    "WAMO_ENTWICKLUNG_KOSTEN_AUFTRAG_USD": "3", "WAMO_ENTWICKLUNG_KOSTEN_TAG_USD": "10",
+}
+
+
+async def test_jedes_werkzeug_einer_voll_gebauten_sitzung_fragt_das_gate(monkeypatch):
+    """Admin im Büro mit PC, Bildschirm, Bürogeräten, Entwicklung, Boss und Fernzugriff: jeder Eintrag in llm._functions und jeder Handler
+    im Schema trägt die Marke des Gates dieser Sitzung oder steht in OFFENE_WERKZEUGE. Ein neues Werkzeug, das am Gate vorbei registriert
+    wird, fällt hier auf."""
+    import geraete_werkzeuge
+    import rd_api
+    from pipecat.adapters.schemas.function_schema import FunctionSchema
+    from pipecat.adapters.schemas.tools_schema import ToolsSchema
+    from stimme_gate import OFFENE_WERKZEUGE
+
+    for name, wert in BUERO_ENV.items():
+        monkeypatch.setenv(name, wert)
+
+    async def host_handler(params):
+        await params.result_callback({"status": "success"})
+
+    pc_werkzeuge = ToolsSchema(standard_tools=[FunctionSchema(n, "PC", {}, [], handler=host_handler)
+                                               for n in ("programm_oeffnen", "fenster_auflisten", "datei_schreiben")])
+
+    class Client:
+        async def close(self):
+            pass
+
+    async def geraete(self, timeout=1.5):
+        alles = ["steuern", "drucken", "scannen", "nas_suchen", "router_geraete", "unbekannte_geraete"]
+        self._geraete = {"buero-1": {"kennung": "buero-1", "name": "Alles", "klasse": "drucker", "faehigkeiten": alles}}
+        return self._baue_schemas()
+
+    store = m.MemoryStore(USER, BotDb())
+    with mock.patch.object(bot, "pc_host_fuer", return_value=True), mock.patch.object(bot, "host_client", return_value=Client()), \
+            mock.patch.object(bot, "host_tools", mock.AsyncMock(return_value=pc_werkzeuge)), \
+            mock.patch.object(bot, "entwicklung_problem", return_value=None), \
+            mock.patch.object(bot, "entwicklung_quelle", return_value="api"), \
+            mock.patch.object(geraete_werkzeuge.Buerogeraete, "schemas", geraete), mock.patch.object(rd_api, "aktiv", return_value=True):
+        session, stufen, llm = await bauen(Identity(USER, "Erika", "admin", "sie"), store=store)
+        await abwarten()  # die PC-Werkzeuge kommen im Hintergrund dazu (start_pc)
+        gate = session.stimme.gate
+        nutzer = next(p for p in stufen if isinstance(p, LLMUserAggregator))
+        schemas = [s for s in nutzer.context.tools.standard_tools if isinstance(s, FunctionSchema) and s.handler is not None]
+        namen = set(llm._functions) | {s.name for s in schemas}
+        erwartet = {"merken", "fernzugriff_oeffnen", "aufgabe_verteilen", "entwicklung_vorbereiten", "bildschirm_ansehen",
+                    "buerogeraet_status", "programm_oeffnen", "datei_schreiben"}
+        assert erwartet <= namen, erwartet - namen  # die Sitzung ist wirklich voll gebaut
+        offen = [n for n, f in llm._functions.items() if n not in OFFENE_WERKZEUGE and getattr(f.handler, MARKE, None) is not gate]
+        offen += [s.name for s in schemas if s.name not in OFFENE_WERKZEUGE and getattr(s.handler, MARKE, None) is not gate]
+        assert offen == []
+        await session.cleanup()
+
+
 def test_host_und_geraete_werkzeuge_mit_handler_im_schema_werden_eingepackt():
     """Pipecat registriert Handler aus dem Schema selbst: Host- und Bürogeräte-Werkzeuge müssen vor dem Kontext durch das Gate."""
     assert "schemas_absichern(pc_schemas, stimme.gate)" in BOT_QUELLE
