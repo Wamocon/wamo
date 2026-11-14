@@ -41,7 +41,7 @@ GEMEINSAM = [
 ]
 # Wortgleich mit bot.INTERRUPTED_NOTE (test_bewertung.py prüft das)
 UNTERBROCHEN = (
-    "[Hinweis für WAMO: Du wurdest gerade unterbrochen. Deine letzte Antwort endet dort, wo du "
+    "[Hinweis für W.A.I.S.: Du wurdest gerade unterbrochen. Deine letzte Antwort endet dort, wo du "
     "aufgehört hast. War der Einwurf nur ein Laut oder eine kurze Zustimmung ohne neue Frage, mach "
     "ohne Entschuldigung genau dort weiter. Sonst reagiere natürlich auf den Einwurf und knüpfe dann, "
     "falls noch relevant, an deinem letzten Gedanken an, statt von vorn zu beginnen.]"
@@ -52,7 +52,7 @@ PC_AUS = {"status": "rejected", "summary": "Die PC-Steuerung ist aus. Sie lässt
 PC_GESPERRT = {
     "status": "locked",
     "summary": "Der Bildschirm ist gesperrt (oder der Bildschirmschoner läuft). Tippen, Klicken, Ansehen und Öffnen "
-    "gehen erst wieder, wenn die Person ihn selbst entsperrt; WAMO kann das nicht.",
+    "gehen erst wieder, wenn die Person ihn selbst entsperrt; W.A.I.S. kann das nicht.",
 }
 MARKER = ("fertig", "warten", "egal")
 

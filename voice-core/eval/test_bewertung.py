@@ -13,6 +13,7 @@ import bewertung as bw
 import faelle
 from faelle import FAELLE, Fall, enthaelt, gleich, mindestens, optional, ruf
 from pc_host import LLM_TOOLS
+from persona import NAME_KURZ
 from screen import SCHEMAS as BILDSCHIRM
 from tools import CANVAS_SCHEMA, WEBSUCHE_SCHEMA, ZEIT_SCHEMA
 
@@ -48,8 +49,8 @@ def test_nur_bekannte_werkzeuge_und_marker():
 
 
 def test_keine_persona_beispiele_woertlich_als_eingabe():
-    persona_text = (EVAL.parent / "persona.py").read_text(encoding="utf-8").lower()
-    for wendung in ("senden-knopf", "ordner radar", "wamo, öffne", "statement aufs canvas",
+    persona_text = (EVAL.parent / "persona.py").read_text(encoding="utf-8").replace("{name_kurz}", NAME_KURZ).lower()
+    for wendung in ("senden-knopf", "ordner radar", "wais, öffne", "statement aufs canvas",
                     "lass mich kurz überlegen", "hm, gute frage"):
         assert wendung in persona_text  # die Wendungen stehen in der Persona ...
         assert not any(wendung in f.eingabe.lower() for f in FAELLE), wendung  # ... aber nicht im Testsatz

@@ -38,7 +38,7 @@ class KurzesJaTest(unittest.TestCase):
             self.assertFalse(ist_kurzes_ja(t), t)
 
     def test_nachrichten_von_wamo_selbst_sind_kein_ja(self):
-        for t in ("[PC-Freigabe: ja]", "[Hinweis für WAMO: ja]", "[ja]"):
+        for t in ("[PC-Freigabe: ja]", "[Hinweis für W.A.I.S.: ja]", "[ja]"):
             self.assertFalse(ist_kurzes_ja(t), t)
 
 

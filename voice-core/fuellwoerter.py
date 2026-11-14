@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
+from aussprache import fuer_sprachausgabe
 from env_schalter import schalter_an, zahl_im_bereich
 
 from pipecat.frames.frames import (
@@ -128,7 +129,8 @@ async def soniox_sprechen(api_key: str, url: str, stimme: str, einstellung: dict
     ton = bytearray()
     async with websockets.connect(url, max_size=None) as ws:
         await ws.send(json.dumps(konfig))
-        await ws.send(json.dumps({"text": text + " ", "text_end": False, "stream_id": kennung}))
+        # Geht an der Pipeline vorbei, darum hier selbst: Namen so, wie die Stimme sie richtig spricht (aussprache.py)
+        await ws.send(json.dumps({"text": fuer_sprachausgabe(text) + " ", "text_end": False, "stream_id": kennung}))
         await ws.send(json.dumps({"text": "", "text_end": True, "stream_id": kennung}))
         async for roh in ws:
             nachricht = json.loads(roh)
@@ -160,8 +162,10 @@ class FuellwortBank:
         return bool(self._ton)
 
     def _pfad(self, text: str) -> Path:
+        # Schlüssel ist der gesprochene Text: ändert sich die Aussprache eines Namens, entsteht eine neue Aufnahme
         schluessel = json.dumps(
-            {"voice": self._stimme, "tuning": self._einstellung, "text": text, "model": MODELL, "rate": ABTASTRATE},
+            {"voice": self._stimme, "tuning": self._einstellung, "text": fuer_sprachausgabe(text), "model": MODELL,
+             "rate": ABTASTRATE},
             sort_keys=True,
         )
         return self._ordner / f"{hashlib.sha1(schluessel.encode()).hexdigest()[:16]}.pcm"

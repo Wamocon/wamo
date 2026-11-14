@@ -36,7 +36,7 @@ from pipecat.frames.frames import Frame, LLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 HINWEIS = (
-    "[Hinweis für WAMO: Die Person hat deine Rückfrage mit Ja beantwortet. Führ den Auftrag jetzt aus und frag nicht "
+    "[Hinweis für W.A.I.S.: Die Person hat deine Rückfrage mit Ja beantwortet. Führ den Auftrag jetzt aus und frag nicht "
     "noch einmal. Das gilt nicht für Freigaben: Was in der Oberfläche freigegeben werden muss, bleibt dort. Ausgenommen sind "
     "Nachrichten an andere (erst den Wortlaut nennen), Kaufen, Löschen und Veröffentlichen.]"
 )

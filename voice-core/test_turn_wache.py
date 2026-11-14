@@ -33,7 +33,7 @@ from turn_wache import TurnWache, verlauf_stand
 
 def kontext() -> LLMContext:
     return LLMContext(messages=[
-        {"role": "assistant", "content": "Hallo, WAMO ist bereit."},
+        {"role": "assistant", "content": "Hallo, Wais ist bereit."},
         {"role": "user", "content": "Welches Betriebssystem läuft auf meinem PC?"},
     ])
 

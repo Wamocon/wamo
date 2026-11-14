@@ -123,6 +123,7 @@ from abnahme import llm_beurteiler
 from activity import ActivityReporter
 from ausgaben_kuerzen import Ausgaben, AusgabenKuerzer, register_nachladen
 from audio_monitor import AudioInputMonitor, SpeakerTracker
+import aussprache
 from auth_gate import Identity, anmeldung_max_secs, identity_from_body, install_access_gate, stunden_text
 import entwicklung_betrieb
 from dev_agent import DevAgent, abnahme_befehle_im_betrieb, entwicklung_enabled, entwicklung_problem
@@ -169,7 +170,7 @@ import bild_fern
 from bildstrom import NICHT_ERLAUBT as BILD_NICHT_ERLAUBT, Bildstrom
 import labor_werkzeuge
 from pc_freigaben import PcFreigaben
-from persona import build_system_prompt
+from persona import NAME_ANZEIGE, NAME_FRUEHER, NAME_KURZ, build_system_prompt
 from screen import PC_OFF, foto as screen_foto, register_screen_tools
 from sitzungen import Sitzung, Sitzungen
 from soft_interrupt import (
@@ -222,10 +223,11 @@ SONIOX_TTS_URL = os.getenv("SONIOX_TTS_URL") or "wss://tts-rt.eu.soniox.com/tts-
 SONIOX_DEFAULT_VOICE = "Bryce"  # Standardstimme von Pipecat 1.12 (SonioxTTSService)
 SONIOX_VOICE = os.getenv("SONIOX_VOICE") or SONIOX_DEFAULT_VOICE
 # Fachbegriffe für die Spracherkennung. Bewusst nur "terms", kein "general": ein allgemeiner
-# Kontext drückte seine Wörter in fremde Sätze. .env: SONIOX_TERMS (kommagetrennt), leer = aus.
+# Kontext drückte seine Wörter in fremde Sätze. .env: SONIOX_TERMS (kommagetrennt), leer = aus. Der Name steht in beiden
+# Schreibweisen darin (persona.py), der frühere Name bleibt, solange ihn noch jemand sagt.
 DEFAULT_STT_TERMS = (
-    "WAMO, WAMOCON, Eschborn, öffne mal, VS Code, Visual Studio Code, Claude Code, Chrome, Explorer, "
-    "Canvas, Dark Mode, SQL-Statement, Supabase, Vercel, GitHub"
+    f"{NAME_KURZ}, {NAME_ANZEIGE}, {NAME_FRUEHER}, WAMOCON, Eschborn, öffne mal, VS Code, Visual Studio Code, Claude Code, "
+    "Chrome, Explorer, Canvas, Dark Mode, SQL-Statement, Supabase, Vercel, GitHub"
 )
 STT_TERMS = [t.strip() for t in os.getenv("SONIOX_TERMS", DEFAULT_STT_TERMS).split(",") if t.strip()]
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL_FAST") or "claude-haiku-5-5"
@@ -239,7 +241,8 @@ LEARN_EVERY_USER_TURNS = int(os.getenv("LEARN_EVERY_USER_TURNS") or 4)
 LEARN_OVERLAP = 4  # so viele frühere Zeilen als Kontext mitgeben
 SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS") or 60000)
 SUMMARY_TARGET_TOKENS = int(os.getenv("SUMMARY_TARGET_TOKENS") or 25000)
-DEFAULT_GREETING = "Hallo {name}, WAMO ist bereit."
+# Geschrieben mit der Kurzform (so steht sie im Verlauf); die Stimme spricht sie über aussprache.py richtig aus
+DEFAULT_GREETING = f"Hallo {{name}}, {NAME_KURZ} ist bereit."
 # Stille nach dem Sprechende, bis die Spracherkennung (VAD) den Redebeitrag für beendet hält. Seit 14.11.2026 wieder der Standard
 # von Pipecat (0,2 s): 0,15 s sparte rund 50 ms bis zum Transkript, schnitt Sätze mit kurzen Denkpausen aber eher in Stücke.
 VAD_STOP_SECS = float(os.getenv("WAMO_VAD_STOP_SECS") or 0.2)
@@ -283,7 +286,7 @@ MAX_SITZUNG_MIN = float(os.getenv("WAMO_MAX_SITZUNG_MIN") or 120)
 SPERR_PROBE_SECS = 10.0  # lokal: so oft fragt eine Sitzung bei gesperrtem Bildschirm nach dem Entsperren
 
 INTERRUPTED_NOTE = (
-    "[Hinweis für WAMO: Du wurdest gerade unterbrochen. Deine letzte Antwort endet dort, wo du "
+    "[Hinweis für W.A.I.S.: Du wurdest gerade unterbrochen. Deine letzte Antwort endet dort, wo du "
     "aufgehört hast. War der Einwurf nur ein Laut oder eine kurze Zustimmung ohne neue Frage, mach "
     "ohne Entschuldigung genau dort weiter. Sonst reagiere natürlich auf den Einwurf und knüpfe dann, "
     "falls noch relevant, an deinem letzten Gedanken an, statt von vorn zu beginnen.]"
@@ -516,7 +519,7 @@ class SessionGuard:
             return "Das Profil lässt sich nicht mehr prüfen." if self._failures >= self.max_failures else None
         self._failures = 0
         if profile is None or not labor.profil_aktiv(profile):  # Laborprofil: nur über labor_aktiv (labor.py)
-            return "Das WAMO-Profil ist nicht mehr aktiv."
+            return "Das W.A.I.S.-Profil ist nicht mehr aktiv."
         if grund := labor.aenderung(self.identity, profile):  # Art, Freischaltung oder Platz eines Laborprofils geändert
             return grund
         if profile.rolle != self.identity.rolle:
@@ -586,8 +589,8 @@ def pause_prompts(name: str, neu: bool | None = None) -> tuple[str, str]:
 
 def summary_prompt(name: str) -> str:
     return (
-        f"Fasse das bisherige Gespräch zwischen {name} und WAMO auf Deutsch knapp zusammen: Themen, "
-        "Entscheidungen, offene Aufträge, Namen, Zahlen, Links und was WAMO am PC getan hat. "
+        f"Fasse das bisherige Gespräch zwischen {name} und W.A.I.S. auf Deutsch knapp zusammen: Themen, "
+        "Entscheidungen, offene Aufträge, Namen, Zahlen, Links und was W.A.I.S. am PC getan hat. "
         "Nichts erfinden, keine Wertungen."
     )
 
@@ -686,6 +689,7 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
     # Ein Schlüssel im Gesagten wird vor allem anderen entfernt (schluessel_filter.py): Verlauf, Modell, Gedächtnis, Untertitel
     stt = absichern(haus_stt(sprache.stt, STT_TERMS) if sprache.stt.anbieter == "haus" else soniox_stt())
     tts = haus_tts(sprache.tts) if sprache.tts.anbieter == "haus" else soniox_tts()
+    aussprache.anhaengen(tts)  # Namen so, wie die Stimme sie richtig spricht; Verlauf und Untertitel behalten "Wais"
 
     transcript: list[tuple[str, str]] = []  # fürs Lernen
     # Fremdinhalte im laufenden Zug (Websuche, Bildschirm, PC, Entwicklungs-Ergebnisse) merken: kein
@@ -1138,7 +1142,8 @@ async def build_session(transport, identity: Identity, sitzung: Sitzung | None =
                 await pc_client.close()
         with contextlib.suppress(Exception):
             await set_pc("getrennt")
-            await melde_llm(f"Systemhinweis, bitte kurz und ruhig weitergeben: {grund} WAMO kann den Laptop jetzt nicht mehr bedienen.")
+            await melde_llm(f"Systemhinweis, bitte kurz und ruhig weitergeben: {grund} {NAME_KURZ} kann den Laptop jetzt nicht mehr "
+                            "bedienen.")
 
     async def pc_wechsel(erreichbar: bool, latenz_ms: int | None) -> None:
         """Tunnel weg oder zurück (pc_tunnel.TunnelHost.ueberwache); Werkzeuge beim ersten Erfolg anhängen."""

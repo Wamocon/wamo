@@ -727,7 +727,7 @@ class DevAgent:
     def _abnahme_beschreibung(self) -> str:
         """Beschreibung des Arguments abnahme. Sie sagt dem Modell, was in dieser Betriebsart geht: Befehle nur, wo sie laufen
         können (sonst würde es Kriterien ableiten, die nie prüfbar sind), auf Sokrates-2 mit dem, was die Sandbox dort hat."""
-        text = ("Prüfbares Ziel: 1 bis 5 kurze, messbare Kriterien als Liste von Texten (je höchstens 300 Zeichen), die WAMO "
+        text = ("Prüfbares Ziel: 1 bis 5 kurze, messbare Kriterien als Liste von Texten (je höchstens 300 Zeichen), die W.A.I.S. "
                 f"nach jeder Runde selbst prüft. Nennt {self._auftraggeber} kein Ziel, leite 1 bis 3 Kriterien selbst ab und "
                 "nenne sie in einem Satz, ohne zusätzliche Rückfrage. Nie vage wie „mach es gut“. Eine Aussage beurteilt ein "
                 "kleines Modell nach dem Abschlussbericht, zum Beispiel „Die README erklärt die Installation“.")
