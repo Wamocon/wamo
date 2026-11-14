@@ -108,6 +108,8 @@ NEUE_NAMEN = (
     "WAMO_PAUSEN_PROMPT", "WAMO_LERNEN_OHNE_MOMENT", "WAMO_RUECKMELDUNG_WERKZEUG", "WAMO_JA_WAECHTER", "WAMO_ECHO_MODUS",
     # Füllwörter (fuellwoerter.py), seit 14.11.2026
     "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM",
+    # Natürliche Sprechweise der Persona (persona.py), seit 14.11.2026
+    "WAMO_PERSONA_NATUERLICH",
 )
 
 

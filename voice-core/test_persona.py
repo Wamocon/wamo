@@ -101,7 +101,7 @@ class PersonaPaketATests(unittest.TestCase):
         # Der neue Standard (mit Tab-Regel) steht in PersonaTabTests.
         with mock.patch.dict(os.environ, {"WAMO_PERSONA_RUECKFRAGEN": "aus", "WAMO_PERSONA_PC_ORDNER": "",
                                           "WAMO_PERSONA_BROWSER": "aus", "WAMO_PERSONA_TAB": "aus",
-                                          "WAMO_PERSONA_ABNAHME": "aus"}):
+                                          "WAMO_PERSONA_ABNAHME": "aus", "WAMO_PERSONA_NATUERLICH": "aus"}):
             voll = build_system_prompt("Max", "du", ["x"], ["y"], pc_werkzeuge=True, entwicklung=True, pc_erreichbar=False)
             kurz = build_system_prompt("Max", "sie", pc_werkzeuge=False)
         # SHA-256 der Prompts vor Paket A (Stand a3e86b6)
@@ -373,3 +373,55 @@ class PersonaRepoPflichtTests(unittest.TestCase):
         p = self.bauen(abnahme=True, repo_pflicht=True)
         self.assertNotIn(" – ", p)
         self.assertNotIn(" - ", p.replace("\n- ", "\n"))
+
+
+class PersonaNatuerlichTests(unittest.TestCase):
+    """Natürliche Sprechweise (WAMO_PERSONA_NATUERLICH, Standard an seit 14.11.2026): sofort hörbare Reaktion als eigener kurzer
+    Satz, zusammenhängende Sätze, Abrunden ohne Anschlussfrage. Mit "aus" gilt die frühere ruhige Sprechweise."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+
+        p = mock.patch.dict(os.environ, {"WAMO_PERSONA_NATUERLICH": ""})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_standard_ist_die_natuerliche_sprechweise(self):
+        text = build_system_prompt("Max", "du")
+        self.assertIn("Reagiere sofort hörbar", text)
+        self.assertIn("zusammenhängende Sätze", text)
+        self.assertIn("Nach erledigten Aufträgen hängst du keine Frage", text)
+        self.assertNotIn("höchstens etwa fünfzehn", text)
+        self.assertNotIn("Floskel", text)
+
+    def test_aus_bringt_die_fruehere_sprechweise(self):
+        from persona import persona_natuerlich_an
+
+        self.assertTrue(persona_natuerlich_an(""))
+        self.assertFalse(persona_natuerlich_an("aus"))
+        text = build_system_prompt("Max", "du", natuerlich=False)
+        self.assertIn("höchstens etwa fünfzehn", text)
+        self.assertNotIn("Reagiere sofort hörbar", text)
+
+    def test_marker_und_mehrere_personen_bleiben(self):
+        for natuerlich in (True, False):
+            text = build_system_prompt("Max", "du", natuerlich=natuerlich)
+            self.assertIn("Satzende-Marker", text)
+            self.assertIn("Sprechen mehrere Personen", text)
+            self.assertIn("Dein Name", text)
+
+    def test_ohne_gedankenstriche_und_markdown(self):
+        from persona import BASE_VOR_NATUERLICH
+
+        self.assertNotRegex(BASE_VOR_NATUERLICH, "[–—]| - ")
+        self.assertNotIn("**", BASE_VOR_NATUERLICH)
+        self.assertIsNone(FORBIDDEN.search(BASE_VOR_NATUERLICH))
+
+    def test_labor_folgt_demselben_schalter(self):
+        from labor_prompt import build_labor_prompt
+
+        an = build_labor_prompt("Gast", "du", natuerlich=True)
+        aus = build_labor_prompt("Gast", "du", natuerlich=False)
+        self.assertIn("Reagiere sofort hörbar", an)
+        self.assertIn("höchstens etwa fünfzehn", aus)

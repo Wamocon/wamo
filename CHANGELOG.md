@@ -8,6 +8,10 @@ Die Abschnitte der Versionen entstehen mit `scripts/wamo_version.py` aus den Com
 
 ### Hinzugefügt
 
+- Natürliche Sprechweise der Persona (`WAMO_PERSONA_NATUERLICH`, Standard an): sofort hörbare Reaktion als eigener kurzer Satz, zusammenhängende Sätze,
+  ab und zu "ähm" oder "also", Abrunden ohne Anschlussfrage nach erledigten Aufträgen. Gilt auch für Laborprofile (`labor_prompt.py` nutzt `persona.base_vor`).
+  Mit `aus` gilt die frühere ruhige Sprechweise. Unterbrechen erst ab zwei Wörtern (`MIN_INTERRUPT_WORDS`, Standard jetzt 2, Stoppwörter weiter sofort),
+  Smart-Turn wartet 0,6 statt 0,5 Sekunden.
 - Füllwörter im Gespräch (`voice-core/fuellwoerter.py`, Schalter `WAMO_FUELLWOERTER`, Standard an): Startet das Modell ein Werkzeug, ohne vorher etwas zu sagen, spielt WAMO nach
   0,4 Sekunden (`WAMO_FUELLWORT_SECS`) ein vorab aufgenommenes "Moment." und bei langem Warten einmal "Dauert noch einen Moment.". Der Ton geht als einfacher Ausgangston hinaus,
   nichts davon landet im Verlauf, Unterbrechungen wirken wie immer. Eine Bank je Stimme und Einstellung für alle Sitzungen, ein Spieler je Sitzung, Aufnahmen erst beim Start der

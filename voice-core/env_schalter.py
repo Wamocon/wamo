@@ -17,7 +17,9 @@ Gesprächsoptimierung (docs/gespraech-optimierung.md, beide Standard aus bis zur
   WAMO_PERSONA_GESPRAECH       Persona: Gesprächsführung (Selbstkorrektur, Rückbezug, nicht wiederholen, eine Frage)
   WAMO_WARTESATZ_MODELL        ein kurzer Satz, wenn das Modell nach einer Anfrage zu lange kein Zeichen liefert (wartesatz.py);
                                WAMO_WARTESATZ_MODELL_SECS: Zahl, Standard 2,5
-Füllwörter (fuellwoerter.py, Entscheidung vom 14.11.2026, Messung steht aus):
+Füllwörter und Sprechweise (fuellwoerter.py, persona.py, Entscheidung vom 14.11.2026, Messung steht aus):
+  WAMO_PERSONA_NATUERLICH      Persona: natürliche Sprechweise, sofort hörbare Reaktion als eigener kurzer Satz, zusammenhängende
+                               Sätze, Abrunden ohne Anschlussfrage (Standard an; aus = frühere ruhige Sprechweise)
   WAMO_FUELLWOERTER            vorab aufgenommenes "Moment.", wenn ein Werkzeug startet und WAMO sonst schweigt (Standard an);
                                WAMO_FUELLWORT_SECS: Zahl, Standard 0,4
   WAMO_MHM                     Rückmeldelaut "Mhm", wenn das Modell den Satz der Person für unfertig hält (Standard aus)

@@ -216,8 +216,9 @@ DEFAULT_STT_TERMS = (
 )
 STT_TERMS = [t.strip() for t in os.getenv("SONIOX_TERMS", DEFAULT_STT_TERMS).split(",") if t.strip()]
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL_FAST") or "claude-haiku-5-5"
-# Wörter ohne Rückmeldelaute, ab denen WAMO unterbrochen wird ("Doch" reicht, "mhm" nicht)
-MIN_INTERRUPT_WORDS = int(os.getenv("MIN_INTERRUPT_WORDS") or 1)
+# Wörter ohne Rückmeldelaute, ab denen WAMO unterbrochen wird ("mhm" nie). 2 seit 14.11.2026: Bruchstücke der Live-Erkennung
+# (" Al", " Du") brachen sonst an der falschen Stelle ab; Stoppwörter wie "stopp" oder "warte" unterbrechen weiter sofort.
+MIN_INTERRUPT_WORDS = int(os.getenv("MIN_INTERRUPT_WORDS") or 2)
 # Lernen im laufenden Gespräch: nach so vielen neuen Sätzen der Person wertet Haiku den Abschnitt
 # aus; Neues landet sofort im System-Prompt.
 LEARN_EVERY_USER_TURNS = int(os.getenv("LEARN_EVERY_USER_TURNS") or 4)
@@ -246,8 +247,8 @@ IDLE_FRAMES = (
     FunctionCallResultFrame,
 )
 # Hält Smart-Turn einen Satz für unvollständig, wartet WAMO so lange (Sekunden Stille) auf den Rest; danach entscheidet
-# Claude mit dem Satzende-Marker. Jeder unvollständige Befund kostete bis zu 0,85 s (früher 1,0 s).
-SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.5)
+# Claude mit dem Satzende-Marker. 0,6 s seit 14.11.2026 (vorher 0,5 s): etwas mehr Geduld bei Denkpausen mitten im Satz.
+SMART_TURN_STOP_SECS = float(os.getenv("SMART_TURN_STOP_SECS") or 0.6)
 TURN_INCOMPLETE_SHORT_SECS = float(os.getenv("TURN_INCOMPLETE_SHORT_SECS") or 1.5)
 TURN_INCOMPLETE_LONG_SECS = float(os.getenv("TURN_INCOMPLETE_LONG_SECS") or 3.0)  # 8 s wirkten wie ein Hänger
 # Weiche Unterbrechung: nach einem Einwurf spricht WAMO den Satz zu Ende, höchstens aber das
