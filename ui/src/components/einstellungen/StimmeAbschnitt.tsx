@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useEffect, useId, useRef, useState } from "react";
+import { einlernOeffnerMerken } from "@/components/kommando/einlernFokus";
 import { einstellungenSchliessen } from "@/lib/einstellungenHash";
 import {
   ergebnisText,
@@ -37,6 +38,7 @@ export const StimmeAbschnitt = memo(function StimmeAbschnitt({ aktionen }: { akt
   const loeschenOk = kannLoeschen(stand, online) && aktionen !== undefined;
 
   const einlernen = () => {
+    einlernOeffnerMerken(einlernKnopf.current); // Ziel für den Fokus, wenn die Einlernansicht wieder zugeht
     if (!abdruckAnsichtOeffnen()) return;
     einstellungenSchliessen();
   };

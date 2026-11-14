@@ -1,10 +1,13 @@
 // Komponententest der Einlernansicht (components/kommando/StimmeEinlernen.tsx, lib/stimme.ts): erst die Einwilligung (Text vom Kern, Haken, dann
-// Start), danach Vorlesetext, Fortschrittsbalken, Statuszeile und Abbrechen oder Schließen.
+// Start), danach Vorlesetext, Fortschrittsbalken, Statuszeile und Abbrechen oder Schließen; nach dem Schließen der Fokus auf dem öffnenden Knopf
+// oder der Überschrift des Kerns (kommando/KernOderEinlernen.tsx).
 // Ausführen im Ordner ui/:  npm run test:komponenten
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { StimmeAbschnitt } from "@/components/einstellungen/StimmeAbschnitt";
+import { KernOderEinlernen } from "@/components/kommando/KernOderEinlernen";
 import { StimmeEinlernen } from "@/components/kommando/StimmeEinlernen";
-import { abdruckAnsichtOeffnen, applyServerMessage, resetWamo, wamo } from "@/lib/wamo";
+import { abdruckAnsichtOeffnen, abdruckAnsichtSchliessen, applyServerMessage, resetWamo, wamo } from "@/lib/wamo";
 
 const EINWILLIGUNG = "WAMO speichert aus deiner Stimme einen Abdruck.\nDu kannst ihn jederzeit löschen.";
 
@@ -95,6 +98,60 @@ describe("StimmeEinlernen: Einwilligung", () => {
     oeffnen();
     render(<StimmeEinlernen aktionen={aktionen()} />);
     expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2 }));
+  });
+});
+
+describe("StimmeEinlernen: Fokus nach Schließen", () => {
+  /** Aktionen wie in useWamo: Abbrechen und Schließen machen die Ansicht zu. */
+  function schliessende() {
+    return { ...aktionen(), abbrechen: vi.fn(() => (abdruckAnsichtSchliessen(), true)) };
+  }
+  const kernTitel = () => screen.getByRole("heading", { level: 2, name: "Gesprächszustand" });
+  /** Wie ein Klick mit Maus oder Tastatur: der Knopf hat den Fokus, dann verschwindet er mit der Ansicht. */
+  function klicken(name: string) {
+    const knopf = screen.getByRole("button", { name });
+    knopf.focus();
+    fireEvent.click(knopf);
+  }
+
+  it("Abbrechen in der Einwilligung: ohne öffnenden Knopf geht der Fokus auf die Überschrift des Kerns", () => {
+    oeffnen();
+    render(<KernOderEinlernen stimmabdruck={schliessende()} />);
+    klicken("Abbrechen");
+    expect(wamo.get().abdruck).toBeNull();
+    expect(document.activeElement).toBe(kernTitel());
+  });
+
+  it("Schließen nach dem Ergebnis: der Fokus geht zurück auf den Knopf, der das Einlernen geöffnet hat", () => {
+    wamo.set((s) => ({ ...s, presence: "idle" }));
+    applyServerMessage({ type: "stimme_status", status: "fehlt", modus: "streng" });
+    applyServerMessage({ type: "stimmabdruck_einwilligung", version: "stimme-1", text: EINWILLIGUNG });
+    const a = schliessende();
+    render(
+      <>
+        <StimmeAbschnitt aktionen={a} />
+        <KernOderEinlernen stimmabdruck={a} />
+      </>,
+    );
+    klicken("Stimme einlernen");
+    expect(document.activeElement).toBe(screen.getByRole("heading", { level: 2, name: "Stimme einlernen" }));
+    act(() => wamo.set((s) => ({ ...s, abdruck: { phase: "fertig", sekunden: 20, ziel: 20 } })));
+    klicken("Schließen");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Stimme einlernen" }));
+  });
+
+  it("steht der Fokus woanders (zum Beispiel im Eingabefeld), bleibt er dort, wenn der Kern die Ansicht schließt", () => {
+    oeffnen();
+    render(
+      <>
+        <input aria-label="Nachricht" />
+        <KernOderEinlernen stimmabdruck={schliessende()} />
+      </>,
+    );
+    const feld = screen.getByRole("textbox", { name: "Nachricht" });
+    feld.focus();
+    act(() => applyServerMessage({ type: "stimmabdruck", status: "abgebrochen" }));
+    expect(document.activeElement).toBe(feld);
   });
 });
 

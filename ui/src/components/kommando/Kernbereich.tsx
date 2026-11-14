@@ -14,6 +14,7 @@ import {
 } from "@/lib/wamo";
 import { useEffektiveDarstellung } from "./ansicht";
 import { Aufgabenanzeige } from "./Aufgabenanzeige";
+import { KERN_TITEL_ID } from "./einlernFokus";
 import { PraesenzKern } from "./PraesenzKern";
 import { ZentraleStatus } from "./ZentraleStatus";
 
@@ -84,8 +85,12 @@ export const Kernbereich = memo(function Kernbereich() {
       data-p="kern"
       data-presence={presence}
       data-aufgabe={mitAufgabe ? "true" : undefined}
-      aria-label="Gesprächszustand"
+      aria-labelledby={KERN_TITEL_ID}
     >
+      {/* Ziel für den Fokus nach dem Schließen der Einlernansicht (kommando/einlernFokus.ts) */}
+      <h2 id={KERN_TITEL_ID} className="sr-only" tabIndex={-1}>
+        Gesprächszustand
+      </h2>
       <div className="kz-buehne">
         <div className="kz-kernwrap">
           <PraesenzKern levels={levelsRef} dichte={zentrale ? 1.5 : 1} />
