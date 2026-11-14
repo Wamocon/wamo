@@ -65,6 +65,9 @@ AUS_ENV = (
     # Sprachverhalten (voice-core/soft_interrupt.py, wartesatz.py): Stopp an der Wortgrenze, Dämpfen, Rückmeldelaute, Wartesatz
     "WAMO_STOPP_GRENZE", "WAMO_DUCKEN", "WAMO_RUECKMELDUNG", "WAMO_WARTESATZ", "WAMO_WARTESATZ_SECS",
     "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM",  # Füllwörter (voice-core/fuellwoerter.py)
+    # Stimmabdruck (voice-core/stimme_gate.py): Modus und Schwellen. Nicht dabei: WAMO_STIMME_MODELL, der Pfad der Modelldatei gilt je
+    # Rechner (auf dem Server gilt der Cache-Ordner des Dienstes, ein Pfad vom PC wäre dort falsch); er steht nur in der Liste des Servers.
+    "WAMO_STIMME_PRUEFUNG", "WAMO_STIMME_EIGEN_MIN", "WAMO_STIMME_FREMD_MAX", "WAMO_STIMME_MIN_SECS", "WAMO_STIMME_VERTRAUEN_SECS",
     # Sprachpakete A und B (voice-core/soniox_tts.py, persona.py, bot.py, learning.py, soft_interrupt.py, ja_waechter.py):
     # Tempo und Pausen der Stimme, Leerzeichen am Satzende, Persona, Pausen-Texte, Lernen, Rückmeldelaut bei Werkzeug, Ja-Wächter
     "SONIOX_SPEED", "SONIOX_REDUCE_SILENCE", "WAMO_TTS_SATZLEERZEICHEN", "WAMO_PERSONA_RUECKFRAGEN", "WAMO_PERSONA_BROWSER", "WAMO_PERSONA_TAB", "WAMO_PERSONA_PC_ORDNER", "WAMO_PERSONA_GESPRAECH", "WAMO_WARTESATZ_MODELL", "WAMO_RD_AKTIV", "WAMO_WARTESATZ_MODELL_SECS",

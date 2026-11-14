@@ -21,6 +21,14 @@ Füllwörter (fuellwoerter.py, Entscheidung vom 14.11.2026, Messung steht aus):
   WAMO_FUELLWOERTER            vorab aufgenommenes "Moment.", wenn ein Werkzeug startet und WAMO sonst schweigt (Standard an);
                                WAMO_FUELLWORT_SECS: Zahl, Standard 0,4
   WAMO_MHM                     Rückmeldelaut "Mhm", wenn das Modell den Satz der Person für unfertig hält (Standard aus)
+Stimmabdruck (stimme_gate.py, stimme_modell.py, seit 14.11.2026; wirkt nur für Profile mit eingelerntem Abdruck, nie für Laborprofile):
+  WAMO_STIMME_PRUEFUNG         aus | beobachten | streng (Standard streng): beobachten misst und meldet nur, streng lässt eine sicher fremde
+                               Äußerung nicht ans Modell und sperrt Werkzeuge außer Uhrzeit, Websuche und Canvas
+  WAMO_STIMME_EIGEN_MIN        Zahl, Standard 0,5: ab diesem Wert (Kosinus, 0,2 bis 0,95) gilt die Äußerung als die eigene Stimme
+  WAMO_STIMME_FREMD_MAX        Zahl, Standard 0,3: bis zu diesem Wert (0 bis 0,8) gilt sie als fremd; muss unter EIGEN_MIN liegen
+  WAMO_STIMME_MIN_SECS         Zahl, Standard 1: so viel reine Sprache braucht eine Äußerung, damit sie als eigen oder fremd zählt (0,3 bis 10)
+  WAMO_STIMME_VERTRAUEN_SECS   Zahl, Standard 120: so lange gilt "eigen" für kurze Folgesätze und Werkzeuge (10 bis 3600)
+  WAMO_STIMME_MODELL           Pfad der Modelldatei (Standard: Cache-Ordner des Dienstes XDG_CACHE_HOME/wamo/sprecher/, sonst voice-core/.cache/sprecher/)
 Fehlerbehebungen aus der Sitzung vom 31.10.2026 (Standard an, sie ändern kein Sprachverhalten, nur Fehlerfälle):
   WAMO_ABBRUCH_HINWEIS         abgebrochenes Werkzeug im Verlauf als "ohne Ergebnis, Auftrag offen" erklären (werkzeug_wache.py)
   WAMO_WERKZEUG_DOPPELT        dieselbe Öffnen-Aktion im selben Zug nicht wiederholen, weitere Seite mit Hinweis (werkzeug_wache.py)

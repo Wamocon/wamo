@@ -110,6 +110,14 @@ NEUE_NAMEN = (
     "WAMO_FUELLWOERTER", "WAMO_FUELLWORT_SECS", "WAMO_MHM",
 )
 
+# Stimmabdruck (stimme_gate.py, stimme_modell.py): Modus, Schwellen und Modellpfad, alle seit 14.11.2026
+STIMME_UEBERTRAGEN = (
+    "WAMO_STIMME_PRUEFUNG", "WAMO_STIMME_EIGEN_MIN", "WAMO_STIMME_FREMD_MAX", "WAMO_STIMME_MIN_SECS", "WAMO_STIMME_VERTRAUEN_SECS",
+)
+# Der Modellpfad gilt je Rechner: er steht in der Liste des Servers (dort setzbar), aber nie in der Liste, die der PC aus seiner .env übernimmt
+STIMME_MODELL = "WAMO_STIMME_MODELL"
+STIMME = (*STIMME_UEBERTRAGEN, STIMME_MODELL)
+
 
 # Prüfbares Ziel für Entwicklungsaufträge (Standard an), Befehlskriterien (Standard aus) und Schwelle zum Kürzen langer
 # Werkzeugausgaben (Standard 3000, 0 = aus), alle seit 09.11.2026
@@ -130,6 +138,23 @@ class ErlaubnislisteTest(unittest.TestCase):
         for name in NEUE_NAMEN:
             if name != "WAMO_ECHO_MODUS":
                 self.assertIn(name, env_schalter.__doc__)
+
+    def test_stimme_steht_in_beiden_listen_und_in_der_beschreibung(self):
+        wurzel = Path(__file__).resolve().parent.parent
+        for datei in ("infra/sokrates2/wamo_core_env.py", "scripts/wamo_kern_sokrates2.py"):
+            text = (wurzel / datei).read_text(encoding="utf-8")
+            for name in STIMME_UEBERTRAGEN:
+                self.assertIn(f'"{name}"', text, f"{name} fehlt in {datei}")
+        self.assertIn(f'"{STIMME_MODELL}"', (wurzel / "infra/sokrates2/wamo_core_env.py").read_text(encoding="utf-8"))
+        self.assertNotIn(f'"{STIMME_MODELL}"', (wurzel / "scripts/wamo_kern_sokrates2.py").read_text(encoding="utf-8"))
+        for name in STIMME:
+            self.assertIn(name, env_schalter.__doc__)
+
+    def test_stimme_steht_leer_in_den_vorlagen(self):
+        """Leer heißt Standard: Modus streng (wirkt nur mit Abdruck), Schwellen 0,5 und 0,3, eine Sekunde, 120 Sekunden."""
+        text = (Path(__file__).resolve().parent / ".env.example").read_text(encoding="utf-8")
+        for name in STIMME:
+            self.assertRegex(text, rf"(?m)^{name}=$", f"{name} fehlt oder hat einen Wert in voice-core/.env.example")
 
     def test_abnahme_und_ausgaben_stehen_in_beiden_listen(self):
         """Der Hilfsdienst auf Sokrates-2 lehnt unbekannte Schlüssel ab (nichts wird übernommen): beide Listen müssen gleich sein."""
