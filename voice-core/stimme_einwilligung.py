@@ -5,7 +5,7 @@ Der Kern schickt den Text beim Start der Sitzung an die Oberfläche (einwilligun
 (speakers.consent_at, speakers.consent_text_version, siehe stimme_speicher.py).
 
 Wer den Text ändert, vergibt eine neue Version (stimme-2, ...): Ein Abdruck mit älterer Version bleibt gespeichert, die Einwilligung für ein
-neues Einlernen gilt aber nur für die aktuelle. Derselbe Wortlaut steht im Abschnitt "Stimmabdruck" von docs/labor-datenschutz-entwurf.md;
+neues Einlernen gilt aber nur für die aktuelle. Derselbe Wortlaut steht im Abschnitt 4 (Stimmabdruck) von docs/labor-datenschutz-entwurf.md;
 test_stimme_einwilligung_doku.py prüft, dass beide übereinstimmen.
 """
 
