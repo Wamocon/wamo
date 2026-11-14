@@ -61,6 +61,18 @@ class RueckfrageTest(unittest.TestCase):
                   "Darf ich das genehmigen?", "Soll ich das veröffentlichen?", "Soll ich das mit sudo ausführen?"):
             self.assertFalse(ist_rueckfrage(t), t)
 
+    def test_handlungen_mit_folgen_sind_keine_rueckfrage(self):
+        """Überschreiben, Verschieben, Herunterfahren, Beenden, Neustart, Zurücksetzen, Kündigen und Formatieren bleiben bei der Persona."""
+        for t in ("Soll ich die Datei überschreiben?", "Soll ich den Ordner verschieben?", "Soll ich den Rechner herunterfahren?",
+                  "Soll ich das Programm beenden?", "Soll ich den Dienst neu starten?", "Soll ich den Rechner neustarten?",
+                  "Soll ich die Einstellungen zurücksetzen?", "Soll ich den Vertrag kündigen?", "Soll ich den Stick formatieren?",
+                  "Möchtest du, dass ich alles zurücksetze", "● Fertig. Soll ich ihn jetzt herunterfahren?"):
+            self.assertFalse(ist_rueckfrage(t), t)
+
+    def test_harmlose_rueckfragen_bleiben_rueckfragen(self):
+        for t in ("Soll ich die Datei öffnen?", "Soll ich weitersuchen?", "Soll ich die Liste vorlesen?", "Soll ich das Licht anmachen?"):
+            self.assertTrue(ist_rueckfrage(t), t)
+
 
 class HinweisTest(unittest.TestCase):
     def test_ja_auf_rueckfrage_bekommt_den_hinweis(self):

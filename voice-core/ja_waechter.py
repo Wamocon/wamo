@@ -59,7 +59,9 @@ FREIGABE_RE = re.compile(
     r"allow|confirm|autoris|sudo|admin|sperre|pc-steuerung|"
     # Handlungen mit Folgen für andere oder Kosten: dort gilt die zweistufige Bestätigung der Persona (Wortlaut nennen, Ja)
     r"send|schick|schreib|nachricht|mail|lösch|entfern|kauf|bestell|bezahl|überweis|veröffentlich|publish|push|deploy|install|"
-    r"abschick|teil(?:e|en) ",
+    r"abschick|teil(?:e|en) |"
+    # Überschreiben, Verschieben und Systemeingriffe: ebenfalls zweistufig, kein Hinweis
+    r"überschreib|verschieb|herunterfahr|beend|neu\s?start|zurücksetz|kündig|formatier",
     re.IGNORECASE,
 )
 # Fragen nach einer Auswahl oder einer Angabe beantwortet kein Ja
