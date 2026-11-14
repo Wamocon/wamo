@@ -1,10 +1,17 @@
 """Nur diese Stimme hören: eine sicher fremde Äußerung erreicht das Sprachmodell nicht (Modus streng, nur mit eingelerntem Abdruck).
 
 Der Wächter sitzt hinter der Spracherkennung und vor dem Aggregator des Nutzers. Er hält ausschließlich das endgültige Transkript einer
-Äußerung (TranscriptionFrame) an, bis das Urteil des Prüfers (stimme_pruefer.py) da ist, höchstens WARTEN_SECS. Die Prüfung beginnt beim
-Sprechende und läuft parallel zur Spracherkennung, die Antwortzeit wächst für die eigene Stimme also höchstens um den Rest der Prüfzeit, der
-über die Wartezeit der Spracherkennung hinausgeht. Zwischenstände (InterimTranscriptionFrame) laufen ungebremst durch: Unterbrechen durch die
-Person bleibt so schnell wie ohne Prüfung.
+Äußerung (TranscriptionFrame) an, bis das Urteil des Prüfers (stimme_pruefer.py) zu genau dieser Äußerung da ist (aeusserung_zuordnen),
+höchstens WARTEN_SECS; spätere Äußerungen halten es nicht auf. Die Prüfung beginnt beim Sprechende und läuft parallel zur Spracherkennung,
+die Antwortzeit wächst für die eigene Stimme also höchstens um den Rest der Prüfzeit, der über die Wartezeit der Spracherkennung hinausgeht.
+Zwischenstände (InterimTranscriptionFrame) hält und ändert der Wächter nie. Steht aber ein endgültiges Transkript bei ihm, warten alle Frames
+dahinter in seiner geordneten Warteschlange, auch die Zwischenstände der nächsten Äußerung; nur Systemframes (VAD-Meldungen) laufen vorbei.
+
+Haltezeit und Stop-Strategie: Die Stop-Strategie (TurnAnalyzerUserTurnStopStrategy) wartet nach dem Sprechende nur so lange auf ein
+Transkript, wie die Spracherkennung laut STTMetadataFrame braucht (ttfs_p99_latency, bei Soniox 0,35 s). Hält der Wächter länger, beendete sie
+einen Zug aus zwei Äußerungen mit dem Text der ersten, während die zweite noch hier stand. Deshalb rechnet der Wächter im Modus streng seine
+Haltezeit auf diese Angabe auf. Kosten: Nur wenn zu einer Äußerung gar kein Transkript kommt, endet der Zug um WARTEN_SECS später; ein
+endgültiges Transkript beendet ihn wie bisher sofort. WARTEN_SECS bleibt deshalb kurz: Die Prüfung von 8 s Sprache dauert rund 250 ms.
 
 Verworfen wird nur, wenn alles zutrifft: Modus streng, Abdruck und Modell bereit, das Urteil ist fremd (Wert unter der Fremd-Schwelle), die
 Äußerung hatte genug Sprache (min_secs) und WAMO sprach nicht gleichzeitig (sonst ist das Urteil unklar, siehe StimmGate.einstufen). Alles
@@ -38,13 +45,13 @@ from dataclasses import replace
 
 from loguru import logger
 
-from pipecat.frames.frames import Frame, TranscriptionFrame
+from pipecat.frames.frames import Frame, STTMetadataFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 
 from stimme_gate import FREMD, StimmGate
 
-WARTEN_SECS = 1.5  # so lange hält das endgültige Transkript höchstens auf das Urteil
+WARTEN_SECS = 1.0  # so lange hält das endgültige Transkript höchstens auf das Urteil (geht in die Frist der Stop-Strategie ein)
 SATZZEICHEN = (".", "!", "?", "…")  # so endet ein fertiger Satz im Transkript
 
 
@@ -77,7 +84,11 @@ class StimmWaechter(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TranscriptionFrame):
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, STTMetadataFrame) and self._gate.modus == "streng":
+            # Die Stop-Strategie soll auf ein Transkript warten, das hier noch auf sein Urteil steht (siehe oben). Nur der Modus zählt: Der
+            # Abdruck lädt erst nach dem Start, und diese Angabe kommt nur einmal.
+            frame = replace(frame, ttfs_p99_latency=(frame.ttfs_p99_latency or 0.0) + self._warten)
+        elif direction == FrameDirection.DOWNSTREAM and isinstance(frame, TranscriptionFrame):
             if _satz_fertig(frame.text):
                 self._pruefer.satz_ende()  # was danach gesprochen wird, gehört nicht mehr zu diesem Satz (auch wenn er verworfen wird)
             if self.aktiv():
@@ -90,7 +101,8 @@ class StimmWaechter(FrameProcessor):
         # Eine Unterbrechung (die Person fällt WAMO ins Wort) bricht in Pipecat das Frame ab, das ein Verarbeiter gerade bearbeitet. Während des
         # Wartens gehört das Transkript aber der Person: es darf nicht verloren gehen.
         frame.interruptible = False
-        urteil = await self._pruefer.urteil_abwarten(self._warten)  # None: Frist abgelaufen oder nichts geprüft, gilt als unklar
+        nr = self._pruefer.aeusserung_zuordnen()  # die Äußerung zu diesem Transkript, nicht die jüngste
+        urteil = await self._pruefer.urteil_abwarten(self._warten, nr)  # None: Frist abgelaufen oder nichts geprüft, gilt als unklar
         if urteil is None or urteil.urteil != FREMD or urteil.wert is None or urteil.secs < self._gate.schwellen.min_secs:
             return frame
         if urteil.nr != self._gemeldet_nr:

@@ -278,6 +278,34 @@ class UrteilAbwartenTests(PrueferBasis):
         self.uhr.t += URTEIL_MAX_ALTER_SECS + 1
         self.assertIsNone(await self.v.urteil_abwarten(0.05))
 
+    async def test_transkript_gehoert_zur_beendeten_aeusserung_nicht_zur_naechsten(self):
+        """Kommt das Transkript einer beendeten Äußerung erst, während die nächste läuft, gilt das Urteil der beendeten. Es wartet nicht auf
+        das Ende der nächsten und bekommt nicht deren Urteil."""
+        self.modell.rechner.dauer = 0.1
+        await self.sprechen(-8000, 2.0, warten=False)  # ein Gast, die Prüfung läuft
+        self.v.on_speech_start(self.uhr.t + 0.2, 0.2)  # die Person spricht schon wieder
+        nr = self.v.aeusserung_zuordnen()
+        urteil = await self.v.urteil_abwarten(1.0, nr)
+        self.assertIsNotNone(urteil)
+        self.assertEqual((urteil.nr, urteil.urteil), (nr, FREMD))
+
+    async def test_transkript_mitten_in_der_rede_gehoert_zur_laufenden_aeusserung(self):
+        """Schließt die Erkennung mitten in der Rede ab, gehört das Transkript zur laufenden Äußerung: es wartet auf deren Urteil."""
+        await self.sprechen(8000, 2.0)
+        self.v.on_turn_end()
+        self.v.on_speech_start(self.uhr.t + 0.2, 0.2)
+        wartend = asyncio.create_task(self.v.urteil_abwarten(2.0, self.v.aeusserung_zuordnen()))
+        for _ in range(100):
+            self.uhr.t += 0.02
+            await self.v.on_audio(audio(-8000))
+        self.v.on_speech_stop(self.uhr.t, 0.2)
+        self.assertEqual((await wartend).urteil, FREMD)
+
+    async def test_ein_zweites_transkript_derselben_aeusserung_bekommt_dasselbe_urteil(self):
+        a = await self.sprechen(-8000, 2.0)
+        b = await self.v.urteil_abwarten(0.05, self.v.aeusserung_zuordnen())
+        self.assertEqual(a, b)
+
     async def test_urteile_sind_durchnummeriert(self):
         a = await self.sprechen(8000, 2.0)
         self.v.on_turn_end()

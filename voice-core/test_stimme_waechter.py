@@ -11,7 +11,7 @@ from unittest import mock
 import numpy as np
 
 from pipecat.frames.frames import InputAudioRawFrame, InterimTranscriptionFrame, TranscriptionFrame
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.tests.utils import run_test
 from pipecat.transcriptions.language import Language
@@ -49,21 +49,31 @@ def urteil(art: str, secs: float = 2.0, wert: float = 0.12, nr: int = 1) -> Urte
 class AttrappePruefer:
     """Gibt nach dauer Sekunden das vorbereitete Urteil zurück, oder None, wenn die Frist vorher abläuft."""
 
-    def __init__(self, ergebnis: Urteil | None, dauer: float = 0.0):
+    def __init__(self, ergebnis: Urteil | None, dauer: float = 0.0, *, dauern: list[float] | None = None):
+        """dauern: je Anfrage eine eigene Dauer (die erste für das erste Transkript usw.), sonst gilt dauer für alle."""
         self.ergebnis = ergebnis
         self.dauer = dauer
+        self.dauern = dauern
         self.fragen: list[float] = []
+        self.nummern: list[int | None] = []
         self.satzenden = 0
+        self._zugeordnet = 0
 
     def satz_ende(self) -> None:
         self.satzenden += 1
 
-    async def urteil_abwarten(self, frist: float):
+    def aeusserung_zuordnen(self) -> int:
+        self._zugeordnet += 1
+        return self._zugeordnet
+
+    async def urteil_abwarten(self, frist: float, nr: int | None = None):
         self.fragen.append(frist)
-        if self.dauer > frist:
+        self.nummern.append(nr)
+        dauer = self.dauern[len(self.fragen) - 1] if self.dauern else self.dauer
+        if dauer > frist:
             await asyncio.sleep(frist)
             return None
-        await asyncio.sleep(self.dauer)
+        await asyncio.sleep(dauer)
         return self.ergebnis
 
 
@@ -154,6 +164,11 @@ class VerwerfenTests(unittest.IsolatedAsyncioTestCase):
         texte, _ = await durchlassen(StimmWaechter(bereites_gate(), pruefer), [final("  ")])
         self.assertEqual([t.text for t in texte], ["  "])
         self.assertEqual(pruefer.fragen, [])
+
+    async def test_jedes_transkript_fragt_nach_dem_urteil_seiner_aeusserung(self):
+        pruefer = AttrappePruefer(urteil(EIGEN))
+        await durchlassen(StimmWaechter(bereites_gate(), pruefer), [final("eins"), final("zwei")])
+        self.assertEqual(pruefer.nummern, [1, 2])
 
     async def test_mehrere_transkripte_zu_einem_urteil_nur_eine_meldung(self):
         waechter = StimmWaechter(bereites_gate(), AttrappePruefer(urteil(FREMD)))
@@ -253,6 +268,15 @@ class MitEchtemPrueferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([t.text for t in texte], ["Mach die Heizung an"])
         self.assertEqual(meldungen, [])
 
+    async def test_spaetes_transkript_bekommt_das_urteil_seiner_aeusserung(self):
+        """Das Transkript eines Gastes kommt erst, als die Person schon wieder spricht: es gilt das Urteil der Äußerung des Gastes. Es wartet
+        nicht auf das Ende der laufenden (sonst käme es erst nach deren Ende beim Aggregator an, und der Zug endete ohne sie)."""
+        await self.sprechen(-8000, 2.0)
+        self.pruefer.on_speech_start(self.uhr.t + 0.2, 0.2)
+        texte, meldungen = await durchlassen(self.waechter, [final("Schließ die Tür")])
+        self.assertEqual(texte[0].text.strip(), "")
+        self.assertEqual(meldungen[0]["ergebnis"], "fremd")
+
     async def test_laufende_aeusserung_ohne_ende_haelt_hoechstens_die_frist_auf(self):
         self.pruefer.on_speech_start(self.uhr.t + 0.2, 0.2)  # VAD meldet nie ein Ende
         waechter = StimmWaechter(self.gate, self.pruefer, warten=0.05)
@@ -314,6 +338,100 @@ class MitEchtemAggregatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kontextframes, [])
         self.assertEqual(kontext.messages, [])  # nichts im Verlauf
         self.assertTrue(waechter.zug_verworfen())
+
+
+class FesteMarke:
+    """Smart-Turn-Ersatz für die Stop-Strategie: liefert der Reihe nach die vorgegebenen Urteile zum Satzende."""
+
+    def __init__(self, *urteile):
+        from pipecat.audio.turn.base_turn_analyzer import BaseTurnParams, EndOfTurnState
+
+        self.urteile = list(urteile)
+        self.unfertig = EndOfTurnState.INCOMPLETE
+        self.speech_triggered = False
+        self.params = BaseTurnParams()
+
+    def set_sample_rate(self, rate):
+        pass
+
+    def update_vad_start_secs(self, secs):
+        pass
+
+    def append_audio(self, buffer, is_speech):
+        return self.unfertig
+
+    async def analyze_end_of_turn(self):
+        return self.urteile.pop(0), None
+
+    def clear(self):
+        pass
+
+    async def cleanup(self):
+        pass
+
+
+class VadStempel(FrameProcessor):
+    """Setzt den Zeitstempel der VAD-Meldungen beim Durchgang, wie VAD ihn im Betrieb setzt (die Stop-Strategie rechnet ihre Frist ab dort)."""
+
+    async def process_frame(self, frame, direction):
+        from pipecat.frames.frames import VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+
+        await super().process_frame(frame, direction)
+        if isinstance(frame, (VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)):
+            frame.timestamp = time.time()
+        await self.push_frame(frame, direction)
+
+
+class HaltezeitTests(unittest.IsolatedAsyncioTestCase):
+    """Der Wächter hält das endgültige Transkript bis zum Urteil an. Die Stop-Strategie wartet nach dem Sprechende aber nur so lange auf ein
+    Transkript, wie die Spracherkennung laut ihrer Angabe braucht (STTMetadataFrame, ttfs_p99_latency). Ohne Ausgleich beendete sie einen Zug
+    aus zwei Äußerungen mit dem Text der ersten, während die zweite noch beim Wächter stand."""
+
+    async def metadaten(self, modus: str) -> float:
+        from pipecat.frames.frames import STTMetadataFrame
+
+        unten, _ = await run_test(StimmWaechter(bereites_gate(modus), AttrappePruefer(None)),
+                                  frames_to_send=[STTMetadataFrame(service_name="stt", ttfs_p99_latency=0.35)])
+        return next(f.ttfs_p99_latency for f in unten if isinstance(f, STTMetadataFrame))
+
+    async def test_die_stop_strategie_kennt_die_haltezeit(self):
+        self.assertAlmostEqual(await self.metadaten("streng"), 0.35 + WARTEN_SECS)
+
+    async def test_ohne_verwerfen_bleibt_die_frist_der_spracherkennung(self):
+        for modus in ("beobachten", "aus"):
+            self.assertAlmostEqual(await self.metadaten(modus), 0.35, msg=modus)
+
+    async def test_zug_endet_erst_mit_dem_gehaltenen_transkript(self):
+        """Zwei Äußerungen in einem Zug, das Urteil zur zweiten kommt 0,8 s nach ihrem Transkript (Smart-Turn: erst unfertig, dann fertig)."""
+        from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
+        from pipecat.frames.frames import STTMetadataFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+        from pipecat.pipeline.pipeline import Pipeline
+        from pipecat.processors.aggregators.llm_context import LLMContext
+        from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
+        from pipecat.tests.utils import SleepFrame
+        from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import TurnAnalyzerUserTurnStopStrategy
+        from pipecat.turns.user_turn_strategies import UserTurnStrategies
+        from soft_interrupt import MeaningfulWordsUserTurnStartStrategy
+
+        marke = FesteMarke(EndOfTurnState.INCOMPLETE, EndOfTurnState.COMPLETE)
+        nutzer, _ = LLMContextAggregatorPair(LLMContext(), user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                start=[MeaningfulWordsUserTurnStartStrategy(min_words=2, enable_interruptions=False)],
+                stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=marke)])))
+        zuege: list[str] = []
+
+        @nutzer.event_handler("on_user_turn_stopped")
+        async def _zug_zu(_agg, _strategie, nachricht):
+            zuege.append(nachricht.content)
+
+        waechter = StimmWaechter(bereites_gate(), AttrappePruefer(urteil(EIGEN), dauern=[0.0, 0.8]))
+        frames = [STTMetadataFrame(service_name="stt", ttfs_p99_latency=0.35),
+                  VADUserStartedSpeakingFrame(start_secs=0.2), zwischenstand("Mach die"), SleepFrame(0.05),
+                  VADUserStoppedSpeakingFrame(stop_secs=0.2), final("Mach die"), SleepFrame(0.2),
+                  VADUserStartedSpeakingFrame(start_secs=0.2), zwischenstand("Heizung an"), SleepFrame(0.05),
+                  VADUserStoppedSpeakingFrame(stop_secs=0.2), final("Heizung an"), SleepFrame(2.0)]
+        await run_test(Pipeline([VadStempel(), waechter, nutzer]), frames_to_send=frames)
+        self.assertEqual(zuege, ["Mach die Heizung an"])
 
 
 class NurEndgueltigTests(unittest.IsolatedAsyncioTestCase):
